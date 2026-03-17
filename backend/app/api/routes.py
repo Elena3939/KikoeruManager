@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from sqlalchemy import desc
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
@@ -252,6 +253,18 @@ async def _scan_and_create_tasks():
         "found_count": len(tasks),
         "task_ids": created_task_ids
     }
+
+@app.get("/api/backup/history")
+async def get_backup_history():
+    """获取备份历史记录"""
+    from ..models.database import BackupRecord, get_db
+    
+    db = next(get_db())
+    try:
+        records = db.query(BackupRecord).order_by(desc(BackupRecord.created_at)).all()
+        return [record.to_dict() for record in records]
+    finally:
+        db.close()
 
 @app.get("/api/tasks", response_model=List[TaskResponse])
 async def get_tasks(status: Optional[str] = None):

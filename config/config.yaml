@@ -189,6 +189,6 @@ backup_zip:
   path_copy_target: E:\0\临时\asmr\目录
   copy_structure_before_zip: true
   password: sxy4649777
-  compression_threads: 8
+  compression_threads: 0
   archive_format: zip
-  compression_level: 8
+  compression_level: 7

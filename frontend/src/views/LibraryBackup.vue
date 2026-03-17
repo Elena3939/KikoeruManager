@@ -93,6 +93,10 @@
         </div>
       </template>
       <el-progress :percentage="status.progress || 0" :status="status.state === 'failed' ? 'exception' : status.state === 'completed' ? 'success' : ''" :stroke-width="16" />
+      <div class="status-meta" v-if="status.running && (status.speed || status.eta)">
+        <el-tag size="small" type="info" v-if="status.speed" class="meta-tag">速度: {{ status.speed }}</el-tag>
+        <el-tag size="small" type="info" v-if="status.eta" class="meta-tag">剩余时间: {{ status.eta }}</el-tag>
+      </div>
       <div class="meta-row" v-if="status.output_zip_path">输出文件：{{ status.output_zip_path }}</div>
       <div class="meta-row" v-if="status.path_snapshot_dir">目录结构复制目标：{{ status.path_snapshot_dir }}</div>
       <div class="meta-row error-row" v-if="status.error">错误：{{ status.error }}</div>
@@ -101,6 +105,39 @@
           {{ line }}
         </div>
       </el-scrollbar>
+    </el-card>
+
+    <el-card class="history-card">
+      <template #header>
+        <div class="card-header">
+          <span>历史记录</span>
+          <el-button size="small" @click="fetchBackupHistory">刷新历史</el-button>
+        </div>
+      </template>
+      <el-table :data="backupHistory" stripe style="width: 100%" height="400px">
+        <el-table-column prop="filename" label="文件名" min-width="200" />
+        <el-table-column label="大小变化" width="180">
+          <template #default="{ row }">
+            {{ formatSize(row.pre_size_bytes) }} -> {{ formatSize(row.post_size_bytes) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="压缩率" width="100">
+          <template #default="{ row }">
+            {{ (row.compression_ratio * 100).toFixed(2) }}%
+          </template>
+        </el-table-column>
+        <el-table-column prop="speed_avg" label="平均速度" width="120" />
+        <el-table-column label="耗时" width="100">
+          <template #default="{ row }">
+            {{ formatDuration(row.duration_seconds) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="备份日期" width="160">
+          <template #default="{ row }">
+            {{ formatDate(row.created_at) }}
+          </template>
+        </el-table-column>
+      </el-table>
     </el-card>
   </div>
 </template>
@@ -134,6 +171,7 @@ const backupConfig = ref({
   compression_level: 9,
   compression_threads: 0
 })
+const backupHistory = ref([])
 
 let timer = null
 
@@ -157,6 +195,39 @@ async function loadConfig() {
     ...backupConfig.value,
     ...(data?.backup_zip || {})
   }
+}
+
+async function fetchBackupHistory() {
+  try {
+    const data = await backupApi.history()
+    backupHistory.value = data || []
+  } catch (error) {
+    console.error('获取备份历史失败:', error)
+  }
+}
+
+function formatSize(bytes) {
+  if (!bytes) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return '0s'
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  if (h > 0) return `${h}h ${m}m ${s}s`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '-'
+  const date = new Date(dateStr)
+  return date.toLocaleString()
 }
 
 async function saveBackupConfig(showSuccess = true) {
@@ -197,6 +268,8 @@ async function fetchBackupStatus(showError = true) {
       startPolling()
     } else {
       stopPolling()
+      // 如果任务刚刚结束（从 running 变为 false），刷新历史记录
+      fetchBackupHistory()
     }
   } catch (error) {
     if (showError) {
@@ -245,6 +318,7 @@ async function cancelBackup() {
 onMounted(async () => {
   await loadConfig()
   await fetchBackupStatus(false)
+  await fetchBackupHistory()
 })
 
 onBeforeUnmount(() => {
@@ -294,6 +368,17 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.status-meta {
+  margin-top: 12px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.meta-tag {
+  font-family: monospace;
 }
 
 .meta-row {

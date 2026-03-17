@@ -101,16 +101,15 @@
       </template>
       
       <el-table :data="recentTasks" v-loading="loading" style="width: 100%" row-key="id">
-        <el-table-column prop="id" label="ID" width="80">
+        <el-table-column prop="id" label="ID" width="320">
           <template #default="{ row }">
-            <span class="task-id">{{ row.id.slice(0, 8) }}</span>
+            <span class="task-id">{{ row.id }}</span>
           </template>
         </el-table-column>
         
-        <el-table-column prop="source_path" label="源文件" show-overflow-tooltip min-width="250">
+        <el-table-column prop="source_path" label="源文件" show-overflow-tooltip min-width="300">
           <template #default="{ row }">
             <div class="source-file-cell">
-              <span class="rjcode-badge" v-if="row.rjcode">{{ row.rjcode }}</span>
               <span class="filename">{{ getFileName(row.source_path) }}</span>
             </div>
           </template>
@@ -130,20 +129,21 @@
           </template>
         </el-table-column>
         
-        <el-table-column prop="progress" label="进度" width="200">
+        <el-table-column prop="progress" label="进度" width="180">
           <template #default="{ row }">
-            <div class="progress-wrapper">
+            <div class="progress-cell">
               <el-progress 
                 :percentage="row.progress" 
                 :status="getProgressStatus(row.status)"
-                :stroke-width="16"
+                :stroke-width="12"
+                :show-text="false"
               />
-              <span class="progress-text">{{ row.current_step }}</span>
+              <span class="progress-label">{{ row.current_step }}</span>
             </div>
           </template>
         </el-table-column>
         
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="140" fixed="right" align="center">
           <template #default="{ row }">
             <el-button-group v-if="row.status === 'processing'">
               <el-button size="small" @click="pauseTask(row.id)">暂停</el-button>
@@ -259,7 +259,7 @@
           </template>
         </el-table-column>
         
-        <el-table-column prop="processed_at" label="处理时间" width="160">
+        <el-table-column prop="processed_at" label="处理时间" width="200">
           <template #default="{ row }">
             <span class="time-text">{{ formatDate(row.processed_at) }}</span>
           </template>
@@ -276,7 +276,7 @@
           </template>
         </el-table-column>
         
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="120" fixed="right" align="center">
           <template #default="{ row }">
             <el-button 
               size="small" 
@@ -730,37 +730,46 @@ function formatDate(dateString) {
   color: #64748b;
 }
 
-.progress-wrapper {
+.progress-cell {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
 }
 
-.progress-text {
-  font-size: 12px;
+.progress-cell :deep(.el-progress) {
+  flex: 1;
+  margin-bottom: 0;
+  max-width: 100px;
+}
+
+.progress-label {
+  font-size: 13px;
   color: #64748b;
+  white-space: nowrap;
+  min-width: 40px;
 }
 
 .source-file-cell {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.rjcode-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  background-color: #8b5cf6;
-  color: white;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  width: fit-content;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
 }
 
 .filename {
   color: #334155;
   font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-id {
+  font-family: monospace;
+  color: #64748b;
+  white-space: nowrap;
 }
 
 .action-card {
