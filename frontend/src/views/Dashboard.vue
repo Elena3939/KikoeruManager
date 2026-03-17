@@ -100,14 +100,21 @@
         </div>
       </template>
       
-      <el-table :data="recentTasks" v-loading="loading" style="width: 100%">
+      <el-table :data="recentTasks" v-loading="loading" style="width: 100%" row-key="id">
         <el-table-column prop="id" label="ID" width="80">
           <template #default="{ row }">
             <span class="task-id">{{ row.id.slice(0, 8) }}</span>
           </template>
         </el-table-column>
         
-        <el-table-column prop="source_path" label="源文件" show-overflow-tooltip />
+        <el-table-column prop="source_path" label="源文件" show-overflow-tooltip min-width="250">
+          <template #default="{ row }">
+            <div class="source-file-cell">
+              <span class="rjcode-badge" v-if="row.rjcode">{{ row.rjcode }}</span>
+              <span class="filename">{{ getFileName(row.source_path) }}</span>
+            </div>
+          </template>
+        </el-table-column>
         
         <el-table-column prop="type" label="类型" width="100">
           <template #default="{ row }">
@@ -454,6 +461,11 @@ async function refreshData() {
   }
 }
 
+function getFileName(path) {
+  if (!path) return ''
+  return path.split(/[\\/]/).pop()
+}
+
 function getTaskTypeLabel(type) {
   const labels = {
     'auto_process': '自动处理',
@@ -727,6 +739,28 @@ function formatDate(dateString) {
 .progress-text {
   font-size: 12px;
   color: #64748b;
+}
+
+.source-file-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rjcode-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background-color: #8b5cf6;
+  color: white;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  width: fit-content;
+}
+
+.filename {
+  color: #334155;
+  font-size: 14px;
 }
 
 .action-card {

@@ -14,6 +14,7 @@
       <el-table 
         :data="taskStore.tasks"
         style="width: 100%"
+        row-key="id"
       >
         <el-table-column type="expand">
           <template #default="{ row }">
