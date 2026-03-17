@@ -375,7 +375,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import {
   Refresh,
   Search,
@@ -391,11 +391,29 @@ import {
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { libraryApi } from '../api'
 
+const PAGE_SIZES = [10, 20, 50, 100]
+const PAGE_SIZE_STORAGE_KEY = 'kikoeru.ui.library.pageSize'
+
+function loadPersistedPageSize(fallback) {
+  try {
+    const raw = window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY)
+    const num = Number(raw)
+    if (PAGE_SIZES.includes(num)) return num
+  } catch (_) {}
+  return fallback
+}
+
+function persistPageSize(size) {
+  try {
+    window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(size))
+  } catch (_) {}
+}
+
 const loading = ref(false)
 const files = ref([])
 const searchQuery = ref('')
 const currentPage = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(loadPersistedPageSize(20))
 const renamingId = ref(null)
 const apiRenamingId = ref(null)
 const selectedRows = ref([])
@@ -475,6 +493,11 @@ const filteredFolderFiles = computed(() => {
 })
 
 const visibleFileCount = computed(() => countFiles(filteredFolderFiles.value))
+
+watch(pageSize, (size) => {
+  persistPageSize(size)
+  currentPage.value = 1
+})
 
 onMounted(() => {
   refreshLibrary()
