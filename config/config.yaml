@@ -1,8 +1,8 @@
 storage:
-  input_path: E:\0\临时\asmr\待处理
-  temp_path: E:\0\临时\asmr\temp
-  library_path: E:\0\临时\asmr\asmr
-  processed_archives_path: E:\0\临时\asmr\删除
+  input_path: D:\VJC\ziliao\新建文件夹\待处理
+  temp_path: D:\VJC\ziliao\新建文件夹\temp
+  library_path: D:\VJC\ziliao\新建文件夹\asmr
+  processed_archives_path: D:\VJC\ziliao\新建文件夹\新建文件夹
   existing_folders_path: E:\0\临时\asmr\已存在
   asmr_subtitle_path: E:\0\临时\asmr\字幕
 processing:
@@ -48,7 +48,7 @@ metadata:
   connect_timeout: 10
   read_timeout: 10
   sleep_interval: 3
-  http_proxy: 127.0.0.1:7890
+  http_proxy: 127.0.0.1:7897
   cache_enabled: true
   fetch_cover: false
   make_folder_icon: false
@@ -97,7 +97,7 @@ path_mapping:
   rules: []
   open_mode: auto
 kikoeru_server:
-  enabled: true
+  enabled: false
   server_url: http://asmr.elena39.xyz:16080
   username: admin
   password: sxy46497777
