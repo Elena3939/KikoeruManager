@@ -26,6 +26,7 @@
         ref="conflictsTable"
         :data="conflicts" 
         style="width: 100%"
+        row-key="id"
         :header-cell-style="{ 'white-space': 'nowrap' }"
         @selection-change="handleSelectionChange"
       >

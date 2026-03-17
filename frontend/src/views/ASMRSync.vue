@@ -50,7 +50,7 @@
         </div>
       </template>
 
-      <el-table :data="scanResults" style="width: 100%" @selection-change="handleSelectionChange">
+      <el-table :data="scanResults" style="width: 100%" row-key="rjcode" @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="55" />
         <el-table-column prop="rjcode" label="RJ号" width="120" />
         <el-table-column prop="folder_name" label="文件夹名称" min-width="250">

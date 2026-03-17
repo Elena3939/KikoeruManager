@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
@@ -275,7 +276,8 @@ async def get_tasks(status: Optional[str] = None):
             output_path=task.output_path,
             progress=task.progress,
             current_step=task.current_step,
-            error_message=task.error_message
+            error_message=task.error_message,
+            rjcode=task.rjcode
         )
         for task in tasks
     ]
@@ -3930,7 +3932,8 @@ from fastapi.responses import FileResponse
 def get_base_path():
     if getattr(sys, 'frozen', False):
         return sys._MEIPASS
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 返回项目根目录 (backend/app/api -> ../../../)
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _base_path = get_base_path()
 

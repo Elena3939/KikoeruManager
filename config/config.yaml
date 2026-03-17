@@ -1,8 +1,8 @@
 storage:
-  input_path: D:\VJC\ziliao\新建文件夹\待处理
-  temp_path: D:\VJC\ziliao\新建文件夹\temp
-  library_path: D:\VJC\ziliao\新建文件夹\asmr
-  processed_archives_path: D:\VJC\ziliao\新建文件夹\新建文件夹
+  input_path: E:\0\临时\asmr\待处理
+  temp_path: E:\0\临时\asmr\temp
+  library_path: E:\0\临时\asmr\asmr
+  processed_archives_path: E:\0\临时\asmr\删除
   existing_folders_path: E:\0\临时\asmr\已存在
   asmr_subtitle_path: E:\0\临时\asmr\字幕
 processing:
@@ -48,7 +48,7 @@ metadata:
   connect_timeout: 10
   read_timeout: 10
   sleep_interval: 3
-  http_proxy: 127.0.0.1:7897
+  http_proxy: 127.0.0.1:7890
   cache_enabled: true
   fetch_cover: false
   make_folder_icon: false
@@ -97,12 +97,12 @@ path_mapping:
   rules: []
   open_mode: auto
 kikoeru_server:
-  enabled: false
+  enabled: true
   server_url: http://asmr.elena39.xyz:16080
   username: admin
   password: sxy46497777
-  api_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwOi8va2lrb2VydSIsInN1YiI6ImFkbWluIiwiYXVkIjoiaHR0cDovL2tpa29lcnUvYXBpIiwibmFtZSI6ImFkbWluIiwiZ3JvdXAiOiJhZG1pbmlzdHJhdG9yIiwiaWF0IjoxNzczNjYxMDE3LCJleHAiOjE3NzYyNTMwMTd9.kaCjgM6EFiKShqvc6TbMcEIiauiYB3gNaUZFQVoNKBs
-  token_expires: 1773747392
+  api_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwOi8va2lrb2VydSIsInN1YiI6ImFkbWluIiwiYXVkIjoiaHR0cDovL2tpa29lcnUvYXBpIiwibmFtZSI6ImFkbWluIiwiZ3JvdXAiOiJhZG1pbmlzdHJhdG9yIiwiaWF0IjoxNzczNzUyMzYzLCJleHAiOjE3NzYzNDQzNjN9.Ni_EfA5Ejvcu1rE6jgcpb9dUTeD1P5382Iq-FTURUvM
+  token_expires: 1773838737
   timeout: 10
   cache_ttl: 50
   http_proxy: ''
@@ -185,10 +185,10 @@ asmr_process_move_subtitle: true
 backup_zip:
   enabled: true
   source_path: ''
-  output_dir: D:\VJC\ziliao\新建文件夹\压缩后
-  path_copy_target: D:\VJC\ziliao\新建文件夹\复制目录
+  output_dir: E:\0\临时\asmr
+  path_copy_target: E:\0\临时\asmr\目录
   copy_structure_before_zip: true
   password: sxy4649777
   compression_threads: 8
   archive_format: zip
-  compression_level: 9
+  compression_level: 8

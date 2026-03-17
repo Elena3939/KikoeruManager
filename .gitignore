@@ -19,6 +19,10 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+venv/
+.venv/
+env/
+backend/venv/
 
 # Node
 node_modules/
@@ -36,6 +40,15 @@ yarn-error.log*
 # OS
 .DS_Store
 Thumbs.db
+*.exe
+*.dll
+*.bin
+
+# Log and DB
+*.log
+*.db
+backend/data/app.log
+backend/data/cache.db
 
 # Project specific
 backend/build/
@@ -43,3 +56,5 @@ backend/dist/
 frontend/dist/
 frontend/node_modules/
 *.spec
+setup-run.log
+setup-run2.log
