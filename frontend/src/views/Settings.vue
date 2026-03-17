@@ -972,7 +972,7 @@
                     :disabled="true"
                     clearable
                   />
-                  <div class="form-tip">远程 Kikoeru 服务器连接使用直连模式，不通过代理</div>/n                </el-form-item>
+                  <div class="form-tip">远程 Kikoeru 服务器连接使用直连模式，不通过代理</div></el-form-item>
               </el-col>
               <el-col :span="12">
                 <el-form-item label="重试次数">
