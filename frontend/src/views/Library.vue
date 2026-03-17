@@ -182,6 +182,7 @@
               <path d="M1.5 3.5C1.5 2.67 2.17 2 3 2H5.88C6.27 2 6.64 2.16 6.9 2.44L7.72 3.33C7.84 3.46 8 3.5 8.12 3.5H13C13.83 3.5 14.5 4.17 14.5 5V12.5C14.5 13.33 13.83 14 13 14H3C2.17 14 1.5 13.33 1.5 12.5V3.5Z" fill="rgba(64,158,255,0.12)" stroke="#409eff" stroke-width="1.2"/>
             </svg>
             <span class="fm-header-name">{{ folderContentsInfo.folderName || '文件管理' }}</span>
+            <span v-if="folderContentsInfo.totalSize > 0" class="fm-header-size">{{ formatFileSize(folderContentsInfo.totalSize) }}</span>
           </div>
           <div class="fm-header-right">
             <span class="fm-header-count">
@@ -240,7 +241,6 @@
             />
           </div>
           <div class="fm-th fm-col-name">文件名</div>
-          <div class="fm-th fm-col-path">相对路径</div>
           <div class="fm-th fm-col-size">大小</div>
           <div class="fm-th fm-col-time">修改时间</div>
           <div class="fm-th fm-col-action">操作</div>
@@ -341,25 +341,19 @@
               </div>
             </div>
 
-            <!-- 相对路径 -->
-            <div class="fm-td fm-col-path">
-              <span class="fm-mono-sm" :title="row.relative_path">{{ row.relative_path }}</span>
-            </div>
-
             <!-- 大小 -->
             <div class="fm-td fm-col-size">
-              <span class="fm-size-text">{{ row.type === 'file' ? formatFileSize(row.size) : '—' }}</span>
+              <span class="fm-size-text">{{ formatFileSize(row.size) }}</span>
             </div>
 
             <!-- 修改时间 -->
             <div class="fm-td fm-col-time">
-              <span class="fm-mono-sm">{{ row.type === 'file' ? formatDate(row.modified_time) : '—' }}</span>
+              <span class="fm-mono-sm">{{ formatDate(row.modified_time) }}</span>
             </div>
 
             <!-- 操作 -->
             <div class="fm-td fm-col-action" @click.stop>
               <template v-if="row.type === 'file'">
-                <button class="fm-link fm-link--primary" @click="openSubFile(row)">打开</button>
                 <button class="fm-link fm-link--danger" @click="deleteSubFile(row)">删除</button>
               </template>
               <template v-else-if="row.type === 'dir'">
@@ -413,7 +407,7 @@ const tampermonkeyLoaded = ref(false)
 const folderContentsDialogVisible = ref(false)
 const folderContentsLoading = ref(false)
 const folderContentsSearch = ref('')
-const folderContentsInfo = ref({ folderName: '', folderPath: '', totalFiles: 0 })
+const folderContentsInfo = ref({ folderName: '', folderPath: '', totalFiles: 0, totalSize: 0 })
 const folderContentsFiles = ref([])
 const selectedFileIds = ref(new Set())
 const expandedIds = ref(new Set())
@@ -446,7 +440,7 @@ function buildTree (items) {
       curPath = curPath ? `${curPath}/${seg}` : seg
       const key = `dir:${curPath}`
       if (!dirMap.has(key)) {
-        const node = { id: key, name: seg, type: 'dir', relative_path: curPath, children: [] }
+        const node = { id: key, name: seg, type: 'dir', relative_path: curPath, size: 0, modified_time: null, children: [] }
         dirMap.set(key, node)
         children.push(node)
       }
@@ -454,6 +448,19 @@ function buildTree (items) {
     }
     children.push({ ...item, id: `file:${item.path}`, type: 'file' })
   }
+  // 聚合每个目录的 size 和 modified_time
+  function aggregateDir (node) {
+    let totalSize = 0, latestTime = null
+    for (const child of node.children || []) {
+      if (child.type === 'dir') aggregateDir(child)
+      totalSize += (child.size || 0)
+      const t = child.modified_time || null
+      if (t && (!latestTime || t > latestTime)) latestTime = t
+    }
+    node.size = totalSize
+    node.modified_time = latestTime
+  }
+  for (const n of root) { if (n.type === 'dir') aggregateDir(n) }
   return root
 }
 
@@ -644,7 +651,7 @@ async function deleteItem (row) {
   try {
     const c = await libraryApi.delete(row.path, false)
     if (c.need_confirm) {
-      await ElMessageBox.confirm(`确定删除此${c.type === 'folder' ? '文件夹' : '文件'}吗？\n名称: ${c.name}\n\n此操作不可恢复！`, '删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
+      await ElMessageBox.confirm(`确定删除此${c.type === 'folder' ? '文件夹' : '文件'}吗？\n名称: ${c.name}\n大小: ${formatFileSize(c.size)}\n\n此操作不可恢复！`, '删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
       await libraryApi.delete(row.path, true); ElMessage.success('删除成功'); await refreshLibrary()
     }
   } catch (e) { if (e === 'cancel' || e?.message === 'cancel') return; ElMessage.error('删除失败: ' + (e.response?.data?.detail || e.message)) }
@@ -663,8 +670,10 @@ async function loadFolderContents (path, name = '') {
   folderContentsLoading.value = true
   try {
     const data = await libraryApi.folderContents(path)
-    folderContentsInfo.value = { folderName: data.folder_name || name, folderPath: data.folder_path || path, totalFiles: data.total_files || 0 }
-    folderContentsFiles.value = data.items || []
+    const items = data.items || []
+    const totalSize = items.reduce((sum, f) => sum + (f.size || 0), 0)
+    folderContentsInfo.value = { folderName: data.folder_name || name, folderPath: data.folder_path || path, totalFiles: data.total_files || 0, totalSize }
+    folderContentsFiles.value = items
     selectedFileIds.value = new Set()
     // 默认展开第一层目录
     const s = new Set()
@@ -773,6 +782,8 @@ async function handleBatchApiRename () {}
 .fm-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .fm-header-name { font-size: 13px; font-weight: 600; color: #303133; font-family: 'JetBrains Mono', Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 680px; }
 .fm-header-right { flex-shrink: 0; }
+.fm-header-size { font-size: 12px; color: #909399; background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 10px; padding: 1px 8px; margin-left: 6px; font-family: 'JetBrains Mono', Consolas, monospace; flex-shrink: 0; }
+.fm-header-size { font-size: 12px; color: #909399; background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 10px; padding: 1px 8px; margin-left: 6px; font-family: 'JetBrains Mono', Consolas, monospace; flex-shrink: 0; }
 .fm-header-count { font-size: 12px; color: #606266; background: #f0f7ff; border: 1px solid #c6e2ff; border-radius: 12px; padding: 2px 10px; }
 .fm-header-count b { color: #409eff; }
 
@@ -780,7 +791,7 @@ async function handleBatchApiRename () {}
 .fm-body { display: flex; flex-direction: column; height: 540px; background: #fff; }
 
 /* toolbar */
-.fm-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; background: #f8f9fa; border-bottom: 1px solid #e4e7ed; flex-shrink: 0; }
+.fm-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 9px 16px; background: #f8f9fa; border-bottom: 1px solid #e4e7ed; flex-shrink: 0; }
 .fm-toolbar-left { display: flex; align-items: center; gap: 6px; }
 .fm-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 11px; font-size: 12px; font-weight: 500; border-radius: 5px; border: 1px solid transparent; cursor: pointer; transition: all .15s; white-space: nowrap; line-height: 1.5; }
 .fm-btn--danger { color: #f56c6c; background: #fff0f0; border-color: #fbc4c4; }
@@ -800,7 +811,7 @@ async function handleBatchApiRename () {}
 .fm-search-clear:hover { color: #909399; }
 
 /* thead */
-.fm-thead { display: flex; align-items: center; height: 34px; padding: 0 14px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; flex-shrink: 0; user-select: none; }
+.fm-thead { display: flex; align-items: center; height: 36px; padding: 0 16px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; flex-shrink: 0; user-select: none; }
 .fm-th { font-size: 12px; font-weight: 600; color: #606266; display: flex; align-items: center; }
 
 /* scroll */
@@ -815,14 +826,14 @@ async function handleBatchApiRename () {}
 
 /* ─── 列宽（thead + row 共享） ───────────────────────────────── */
 .fm-col-check  { width: 42px;  flex-shrink: 0; justify-content: center; }
-.fm-col-name   { flex: 0 0 300px; min-width: 0; overflow: hidden; }
-.fm-col-path   { flex: 1; min-width: 0; overflow: hidden; padding: 0 10px; }
-.fm-col-size   { width: 88px;  flex-shrink: 0; justify-content: flex-end; padding-right: 14px; }
-.fm-col-time   { width: 155px; flex-shrink: 0; }
-.fm-col-action { width: 110px; flex-shrink: 0; justify-content: center; gap: 4px; }
+.fm-col-name   { flex: 1; min-width: 0; overflow: hidden; }
+.fm-col-size   { width: 110px; flex-shrink: 0; justify-content: flex-end; padding-right: 24px; }
+.fm-col-time   { flex: 1; min-width: 0; display: flex; justify-content: center; align-items: center; }
+.fm-td.fm-col-time .fm-mono-sm { text-align: center; }
+.fm-col-action { width: 100px; flex-shrink: 0; justify-content: center; gap: 6px; }
 
 /* row */
-.fm-row { display: flex; align-items: center; padding: 0 14px; height: 32px; border-bottom: 1px solid #ebeef5; transition: background .1s; }
+.fm-row { display: flex; align-items: center; padding: 0 16px; height: 36px; border-bottom: 1px solid #ebeef5; transition: background .1s; }
 .fm-row--dir { background: #fafbfc; cursor: pointer; }
 .fm-row--dir:hover { background: #ecf5ff; }
 .fm-row--file:hover { background: #f5f7ff; }
@@ -830,7 +841,7 @@ async function handleBatchApiRename () {}
 .fm-td { display: flex; align-items: center; overflow: hidden; }
 
 /* name cell */
-.fm-name-cell { position: relative; display: flex; align-items: center; gap: 3px; width: 100%; overflow: hidden; }
+.fm-name-cell { position: relative; display: flex; align-items: center; gap: 4px; width: 100%; overflow: hidden; }
 .fm-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: #e8eaf0; }
 .fm-arrow-wrap { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex-shrink: 0; border-radius: 3px; color: #909399; cursor: pointer; transition: color .12s, background .12s; }
 .fm-arrow-wrap:hover { background: #dde4ff; color: #409eff; }
@@ -842,10 +853,11 @@ async function handleBatchApiRename () {}
 .fm-name-text--dir { font-weight: 600; color: #1c1f2e; }
 .fm-mono-sm { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #909399; font-family: 'JetBrains Mono', Consolas, monospace; width: 100%; }
 .fm-size-text { display: block; font-size: 12px; color: #606266; font-variant-numeric: tabular-nums; text-align: right; }
-.fm-link { background: none; border: none; padding: 2px 5px; font-size: 12px; font-weight: 500; cursor: pointer; border-radius: 3px; transition: background .1s; white-space: nowrap; }
-.fm-link--primary { color: #409eff; }
-.fm-link--primary:hover { background: #ecf5ff; }
-.fm-link--danger { color: #f56c6c; }
-.fm-link--danger:hover { background: #fef0f0; }
+.fm-link { background: none; border: 1px solid transparent; padding: 2px 8px; font-size: 12px; font-weight: 500; cursor: pointer; border-radius: 4px; transition: background .1s, border-color .1s; white-space: nowrap; min-width: 36px; text-align: center; }
+.fm-link--primary { color: #409eff; border-color: #c6e2ff; background: #f0f7ff; }
+.fm-link--primary:hover { background: #409eff; color: #fff; border-color: #409eff; }
+.fm-link--danger { color: #f56c6c; border-color: #fbc4c4; background: #fff0f0; }
+.fm-link--danger:hover { background: #f56c6c; color: #fff; border-color: #f56c6c; }
 .fm-check { width: 14px; height: 14px; cursor: pointer; accent-color: #409eff; }
+.fm-link-placeholder { display: inline-block; min-width: 36px; padding: 2px 8px; }
 </style>
