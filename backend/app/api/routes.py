@@ -23,6 +23,7 @@ from ..core.task_engine import TaskEngine, Task, TaskType, get_task_engine
 from ..core.watcher import get_watcher
 from ..core.password_cleanup import get_cleanup_service
 from ..core.processed_archive_cleanup import get_processed_archive_cleanup_service
+from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
 from ..config.settings import get_config, save_config
 
@@ -141,6 +142,7 @@ class ConfigResponse(BaseModel):
     auto_process: Optional[dict] = None
     process_existing: Optional[dict] = None
     asmr_sync_step: Optional[dict] = None
+    backup_zip: Optional[dict] = None
 
 # API路由
 @app.post("/api/tasks", response_model=TaskResponse)
@@ -339,7 +341,8 @@ async def get_configuration():
         asmr_sync=config.asmr_sync.model_dump() if hasattr(config, 'asmr_sync') else None,
         auto_process=config.auto_process.model_dump() if hasattr(config, 'auto_process') else None,
         process_existing=config.process_existing.model_dump() if hasattr(config, 'process_existing') else None,
-        asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None
+        asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None,
+        backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None
     )
 
 @app.post("/api/config")
@@ -432,6 +435,14 @@ async def update_configuration(request: Request):
         else:
             logger.info("[ASMR] 未接收到 ASMR 同步配置")
 
+        if 'backup_zip' in config_data:
+            try:
+                from ..config.settings import BackupZipConfig
+                backup_zip_config = BackupZipConfig(**config_data['backup_zip'])
+                config_data['backup_zip'] = backup_zip_config.model_dump()
+            except Exception as e:
+                logger.error(f"[BACKUP_ZIP] 配置验证失败: {e}")
+
         result = save_config(config_data)
         logger.info(f"配置已保存，分类规则数: {len(config_data.get('classification', []))}")
 
@@ -491,6 +502,29 @@ async def reload_configuration():
     except Exception as e:
         logger.error(f"重新加载配置失败：{e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"重新加载配置失败：{str(e)}")
+
+
+@app.get("/api/library-backup/status")
+async def get_library_backup_status():
+    service = get_backup_zip_service()
+    return service.get_status()
+
+
+@app.post("/api/library-backup/start")
+async def start_library_backup():
+    service = get_backup_zip_service()
+    try:
+        return await service.start()
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"启动库存打包失败: {str(e)}")
+
+
+@app.post("/api/library-backup/cancel")
+async def cancel_library_backup():
+    service = get_backup_zip_service()
+    return await service.cancel()
 
 
 @app.post("/api/watcher/start")
