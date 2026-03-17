@@ -51,6 +51,11 @@
           <span>同步下载</span>
         </el-menu-item>
 
+        <el-menu-item index="/library-backup">
+          <el-icon><FolderOpened /></el-icon>
+          <span>库存打包</span>
+        </el-menu-item>
+
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
           <span>设置</span>
@@ -90,7 +95,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { Box, HomeFilled, List, WarningFilled, Setting, Document, Lock, Folder, Download } from '@element-plus/icons-vue'
+import { Box, HomeFilled, List, WarningFilled, Setting, Document, Lock, Folder, Download, FolderOpened } from '@element-plus/icons-vue'
 import { useWatcherStore } from './stores'
 
 // 直接定义版本号（确保每次构建都会更新）
@@ -243,5 +248,4 @@ html, body {
 }
 
 </style>
-
 

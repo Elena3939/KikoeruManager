@@ -8,6 +8,7 @@ import Library from '../views/Library.vue'
 import PasswordVault from '../views/PasswordVault.vue'
 import ExistingFolders from '../views/ExistingFolders.vue'
 import ASMRSync from '../views/ASMRSync.vue'
+import LibraryBackup from '../views/LibraryBackup.vue'
 
 const routes = [
   {
@@ -44,6 +45,11 @@ const routes = [
     path: '/asmr-sync',
     name: 'ASMRSync',
     component: ASMRSync
+  },
+  {
+    path: '/library-backup',
+    name: 'LibraryBackup',
+    component: LibraryBackup
   },
   {
     path: '/settings',

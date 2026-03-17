@@ -82,6 +82,26 @@ start "Prekikoeru Backend" cmd /k "cd /d %~dp0backend && venv\Scripts\python.exe
 
 timeout /t 3 /nobreak >nul
 
+REM Try to locate npm and add to PATH if needed
+where npm >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] npm not found in PATH, trying to locate it...
+    if exist "C:\Program Files\nodejs\npm.cmd" (
+        set "PATH=C:\Program Files\nodejs;%PATH%"
+    ) else if exist "%APPDATA%\npm\npm.cmd" (
+        set "PATH=%APPDATA%\npm;%PATH%"
+    ) else if exist "%APPDATA%\JetBrains\PyCharm2025.3\node\versions\24.14.0\npm.cmd" (
+        set "PATH=%APPDATA%\JetBrains\PyCharm2025.3\node\versions\24.14.0;%PATH%"
+    ) else (
+        for /f "tokens=*" %%P in ('where /Q npm 2^>nul') do set "NPM_PATH=%%P"
+        if defined NPM_PATH (
+            set "PATH=%NPM_PATH%;%PATH%"
+        ) else (
+            echo [WARNING] npm still not found, frontend may fail to start
+        )
+    )
+)
+
 start "Prekikoeru Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
 
 echo ========================================

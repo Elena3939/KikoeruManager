@@ -73,6 +73,23 @@ export const configApi = {
   }
 }
 
+export const backupApi = {
+  status: async () => {
+    const response = await apiClient.get('/library-backup/status')
+    return response.data
+  },
+
+  start: async () => {
+    const response = await apiClient.post('/library-backup/start')
+    return response.data
+  },
+
+  cancel: async () => {
+    const response = await apiClient.post('/library-backup/cancel')
+    return response.data
+  }
+}
+
 export const watcherApi = {
   status: async () => {
     const response = await apiClient.get('/watcher/status')
@@ -540,5 +557,6 @@ export default {
   pathMapping: pathMappingApi,
   kikoeru: kikoeruApi,
   health: healthApi,
-  asmrSync: asmrSyncApi
+  asmrSync: asmrSyncApi,
+  backup: backupApi
 }

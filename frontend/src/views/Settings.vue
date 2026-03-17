@@ -135,7 +135,6 @@
             </div>
           </el-card>
         </el-collapse-item>
-        
         <!-- 监视器设置 -->
         <el-collapse-item name="watcher">
           <template #title>
@@ -1471,6 +1470,17 @@ const defaultConfig = {
     min_keep_count: 10,
     cron_expression: '0 0 * * 0'
   },
+  backup_zip: {
+    enabled: false,
+    source_path: '',
+    output_dir: '',
+    path_copy_target: '',
+    copy_structure_before_zip: true,
+    password: '',
+    archive_format: 'zip',
+    compression_level: 9,
+    compression_threads: 0
+  },
   path_mappings: [],
   path_mapping_enabled: false,
   // Kikoeru 服务器查重配置
@@ -1636,6 +1646,10 @@ async function loadConfig() {
         ...(data?.processed_archive_cleanup || {}),
         min_keep_count: data?.processed_archive_cleanup?.min_keep_count ?? defaultConfig.archive_cleanup.min_keep_count
       },
+      backup_zip: {
+        ...defaultConfig.backup_zip,
+        ...(data?.backup_zip || {})
+      },
       classification: data?.classification || defaultConfig.classification,
       path_mappings: data?.path_mapping?.rules || defaultConfig.path_mappings,
       path_mapping_enabled: data?.path_mapping?.enabled ?? defaultConfig.path_mapping_enabled,
@@ -1742,6 +1756,17 @@ async function saveConfig() {
       processed_archive_cleanup: {
         ...config.value.archive_cleanup,
         min_keep_count: config.value.archive_cleanup.min_keep_count ?? 10
+      },
+      backup_zip: {
+        enabled: config.value.backup_zip?.enabled ?? false,
+        source_path: config.value.backup_zip?.source_path || '',
+        output_dir: config.value.backup_zip?.output_dir || '',
+        path_copy_target: config.value.backup_zip?.path_copy_target || '',
+        copy_structure_before_zip: config.value.backup_zip?.copy_structure_before_zip ?? true,
+        password: config.value.backup_zip?.password || '',
+        archive_format: config.value.backup_zip?.archive_format || 'zip',
+        compression_level: config.value.backup_zip?.compression_level ?? 9,
+        compression_threads: config.value.backup_zip?.compression_threads ?? 0
       },
       path_mapping: {
         enabled: config.value.path_mapping_enabled,
@@ -2187,8 +2212,8 @@ async function runArchiveCleanup() {
   }
 }
 
-onMounted(() => {
-  loadConfig()
+onMounted(async () => {
+  await loadConfig()
 })
 </script>
 

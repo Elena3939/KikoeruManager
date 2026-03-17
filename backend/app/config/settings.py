@@ -202,6 +202,17 @@ class ASMRSyncStepConfig(BaseModel):
     classify: bool = True  # 智能分类
     move_subtitle_folder: bool = True  # 移动字幕文件夹
 
+class BackupZipConfig(BaseModel):
+    enabled: bool = False
+    source_path: str = ""
+    output_dir: str = ""
+    path_copy_target: str = ""
+    copy_structure_before_zip: bool = True
+    password: str = ""
+    archive_format: str = "zip"
+    compression_level: int = 9
+    compression_threads: int = 0
+
 class AppConfig(BaseModel):
     """应用配置"""
     storage: StorageConfig = StorageConfig()
@@ -229,6 +240,7 @@ class AppConfig(BaseModel):
     auto_process: AutoProcessConfig = AutoProcessConfig()
     process_existing: ProcessExistingFolderConfig = ProcessExistingFolderConfig()
     asmr_sync_step: ASMRSyncStepConfig = ASMRSyncStepConfig()
+    backup_zip: BackupZipConfig = BackupZipConfig()
 
 # 全局配置实例
 _config: Optional[AppConfig] = None
@@ -456,6 +468,34 @@ def load_config(config_path: str = None) -> AppConfig:
                 for key, value in defaults.items():
                     if key not in config_data['asmr_sync_step']:
                         config_data['asmr_sync_step'][key] = value
+
+            if 'backup_zip' not in config_data or not config_data['backup_zip']:
+                config_data['backup_zip'] = {
+                    'enabled': False,
+                    'source_path': '',
+                    'output_dir': '',
+                    'path_copy_target': '',
+                    'copy_structure_before_zip': True,
+                    'password': '',
+                    'archive_format': 'zip',
+                    'compression_level': 9,
+                    'compression_threads': 0
+                }
+            else:
+                defaults = {
+                    'enabled': False,
+                    'source_path': '',
+                    'output_dir': '',
+                    'path_copy_target': '',
+                    'copy_structure_before_zip': True,
+                    'password': '',
+                    'archive_format': 'zip',
+                    'compression_level': 9,
+                    'compression_threads': 0
+                }
+                for key, value in defaults.items():
+                    if key not in config_data['backup_zip']:
+                        config_data['backup_zip'][key] = value
 
             _config = AppConfig(**config_data)
             logger.info(f"[CONFIG] 加载后 template = '{_config.rename.template}'")
