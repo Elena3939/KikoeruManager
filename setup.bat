@@ -1,13 +1,31 @@
 @echo off
+setlocal
 title Prekikoeru Setup
+set "ROOT_DIR=%~dp0"
+pushd "%ROOT_DIR%"
+set "PYTHONHOME="
+set "PYTHONPATH="
+set "VIRTUAL_ENV="
+set "CONDA_PREFIX="
+set "CONDA_DEFAULT_ENV="
+set "NPM_CONFIG_PREFIX="
+set "npm_config_prefix="
 echo ========================================
 echo Prekikoeru Setup Wizard
 echo ========================================
 echo.
 
 set "PYTHON_CMD="
-py -3 --version >nul 2>&1
-if not errorlevel 1 set "PYTHON_CMD=py -3"
+for %%V in (3.13 3.12 3.11 3.10) do (
+    if not defined PYTHON_CMD (
+        py -%%V --version >nul 2>&1
+        if not errorlevel 1 set "PYTHON_CMD=py -%%V"
+    )
+)
+if not defined PYTHON_CMD (
+    py -3 --version >nul 2>&1
+    if not errorlevel 1 set "PYTHON_CMD=py -3"
+)
 if not defined PYTHON_CMD (
     python --version >nul 2>&1
     if not errorlevel 1 set "PYTHON_CMD=python"
@@ -134,4 +152,5 @@ echo   Frontend: http://localhost:5173
 echo   Backend:  http://localhost:8000
 echo   API Docs: http://localhost:8000/docs
 echo.
+popd
 pause

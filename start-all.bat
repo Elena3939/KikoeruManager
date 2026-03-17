@@ -7,8 +7,16 @@ echo ========================================
 echo.
 
 set "PYTHON_CMD="
-py -3 --version >nul 2>&1
-if not errorlevel 1 set "PYTHON_CMD=py -3"
+for %%V in (3.13 3.12 3.11 3.10) do (
+    if not defined PYTHON_CMD (
+        py -%%V --version >nul 2>&1
+        if not errorlevel 1 set "PYTHON_CMD=py -%%V"
+    )
+)
+if not defined PYTHON_CMD (
+    py -3 --version >nul 2>&1
+    if not errorlevel 1 set "PYTHON_CMD=py -3"
+)
 if not defined PYTHON_CMD (
     python --version >nul 2>&1
     if not errorlevel 1 set "PYTHON_CMD=python"
