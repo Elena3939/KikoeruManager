@@ -610,7 +610,7 @@ async def get_passwords(
     sort_by: Optional[str] = "created_at",
     sort_order: Optional[str] = "desc",
     page: int = 1,
-    page_size: int = 50
+    page_size: int = 20
 ):
     """获取密码列表，支持筛选和排序
     
