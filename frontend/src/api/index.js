@@ -87,6 +87,11 @@ export const backupApi = {
   cancel: async () => {
     const response = await apiClient.post('/library-backup/cancel')
     return response.data
+  },
+
+  history: async () => {
+    const response = await apiClient.get('/backup/history')
+    return response.data
   }
 }
 

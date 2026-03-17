@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, JSON, Index, text
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, JSON, Index, text, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timezone
@@ -289,6 +289,49 @@ class ProcessedArchiveCleanupLog(Base):
             'freed_space_mb': self.freed_space_bytes / (1024 * 1024) if self.freed_space_bytes else 0,
             'config_snapshot': self.config_snapshot,
             'deleted_archives_summary': self.deleted_archives_summary,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+class BackupRecord(Base):
+    """库存压缩备份记录表"""
+    __tablename__ = 'backup_records'
+
+    id = Column(String(36), primary_key=True)
+    filename = Column(String(255), nullable=False)  # 压缩包文件名
+    output_path = Column(Text, nullable=False)      # 输出路径
+    source_path = Column(Text, nullable=False)      # 源路径
+    
+    pre_size_bytes = Column(BigInteger, default=0)  # 压缩前大小
+    post_size_bytes = Column(BigInteger, default=0) # 压缩后大小
+    compression_ratio = Column(Float, default=0)    # 压缩率 (0-1)
+    
+    duration_seconds = Column(Integer, default=0)   # 耗时（秒）
+    status = Column(String(50), default='completed')# 状态: completed, failed
+    error_message = Column(Text)                    # 错误信息
+    
+    # 统计信息
+    speed_avg = Column(String(50))                  # 平均速度
+    
+    # 时间点
+    backup_start_time = Column(DateTime)            # 记录文件名中标识的起始时间
+    backup_end_time = Column(DateTime)              # 记录文件名中标识的结束时间
+    created_at = Column(DateTime, default=get_local_now)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'filename': self.filename,
+            'output_path': self.output_path,
+            'source_path': self.source_path,
+            'pre_size_bytes': self.pre_size_bytes,
+            'post_size_bytes': self.post_size_bytes,
+            'compression_ratio': self.compression_ratio,
+            'duration_seconds': self.duration_seconds,
+            'status': self.status,
+            'error_message': self.error_message,
+            'speed_avg': self.speed_avg,
+            'backup_start_time': self.backup_start_time.isoformat() if self.backup_start_time else None,
+            'backup_end_time': self.backup_end_time.isoformat() if self.backup_end_time else None,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 

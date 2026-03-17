@@ -5,9 +5,10 @@ import subprocess
 import asyncio
 import sys
 import filetype
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Callable, Union
 from pathlib import Path
 import logging
+from datetime import datetime
 
 from ..config.settings import get_config
 from ..core.task_engine import Task
@@ -1368,6 +1369,8 @@ class ExtractService:
                 self.seven_zip, 'x',
                 '-y',  # 自动确认
                 '-o' + output_path,  # 输出目录
+                '-bsp1', # 启用进度输出
+                '-bso1', # 将进度输出到 stdout
                 archive_info.path
             ]
             
@@ -1389,8 +1392,55 @@ class ExtractService:
                     password_source = "无"
                 else:
                     password_source = "默认"
-                task.update_progress(40, f"尝试解压 (密码来源: {password_source})")
-                result = await self._run_7z_command(cmd)
+                
+                # 创建进度解析回调
+                start_time = datetime.now()
+                last_update = 0
+
+                def progress_callback(line: str):
+                    nonlocal last_update
+                    # 解析 7z 进度行，例如:  12% 123/1000 5678/100000000
+                    percent_match = re.search(r"(\d{1,3})%", line)
+                    if percent_match:
+                        raw_percent = int(percent_match.group(1))
+                        # 解压阶段占 10% - 95%
+                        mapped = 10 + int(raw_percent * 0.85)
+                        
+                        now = datetime.now()
+                        elapsed = (now - start_time).total_seconds()
+                        
+                        speed_str = ""
+                        eta_str = ""
+                        
+                        # 提取已处理字节数以计算速度
+                        # 7z 的进度行通常包含多个 x/y 部分，通常最后一个是字节
+                        matches = re.findall(r"(\d+)/\d+", line)
+                        if matches and elapsed > 0:
+                            current_bytes = int(matches[-1])
+                            speed = current_bytes / elapsed
+                            if speed > 1024 * 1024:
+                                speed_str = f"{speed / (1024 * 1024):.2f} MB/s"
+                            elif speed > 1024:
+                                speed_str = f"{speed / 1024:.2f} KB/s"
+                            else:
+                                speed_str = f"{speed:.0f} B/s"
+                            
+                            if raw_percent > 0:
+                                total_seconds = elapsed * 100 / raw_percent
+                                remaining = total_seconds - elapsed
+                                if remaining > 0:
+                                    m, s = divmod(int(remaining), 60)
+                                    h, m = divmod(m, 60)
+                                    eta_str = f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+
+                        # 控制更新频率
+                        current_ts = now.timestamp()
+                        if current_ts - last_update >= 1 or raw_percent == 100:
+                            last_update = current_ts
+                            task.update_progress(min(99, mapped), f"解压中 {raw_percent}%" + (f" ({speed_str}, 剩余 {eta_str})" if speed_str else ""))
+
+                task.update_progress(40, f"准备解压 (密码来源: {password_source})")
+                result = await self._run_7z_command(cmd, progress_callback=progress_callback)
                 
                 if result.returncode == 0:
                     # 记录成功使用的密码
@@ -1481,7 +1531,7 @@ class ExtractService:
                 else:
                     logger.error(f"清理解压目录失败: {output_path}, {e}")
     
-    async def _run_7z_command(self, cmd: List[str]) -> subprocess.CompletedProcess:
+    async def _run_7z_command(self, cmd: List[str], progress_callback: Optional[Callable[[str], None]] = None) -> subprocess.CompletedProcess:
         """运行7z命令"""
         # 记录命令（显示密码用于调试）
         logger.info(f"执行7z命令: {' '.join(cmd)}")
@@ -1493,6 +1543,7 @@ class ExtractService:
                 'stderr': subprocess.PIPE
             }
             if sys.platform == 'win32':
+                from subprocess import CREATE_NO_WINDOW
                 kwargs['creationflags'] = CREATE_NO_WINDOW
 
             # 使用 asyncio.create_subprocess_exec 直接执行
@@ -1501,22 +1552,48 @@ class ExtractService:
                 **kwargs
             )
             
-            stdout, stderr = await process.communicate()
+            stdout_data = bytearray()
+            stderr_data = bytearray()
+
+            async def read_stream(stream, buffer, is_stdout=False):
+                while True:
+                    chunk = await stream.read(4096)
+                    if not chunk:
+                        break
+                    buffer.extend(chunk)
+                    if is_stdout and progress_callback:
+                        # 尝试解码并按行/回车处理进度
+                        try:
+                            text = chunk.decode('utf-8', errors='ignore')
+                            # 7z 进度输出常用 \r 或 \n
+                            for line in text.replace('\r', '\n').split('\n'):
+                                if line.strip():
+                                    progress_callback(line.strip())
+                        except:
+                            pass
+
+            # 并行读取 stdout 和 stderr
+            await asyncio.gather(
+                read_stream(process.stdout, stdout_data, is_stdout=True),
+                read_stream(process.stderr, stderr_data)
+            )
             
-            if process.returncode != 0:
-                logger.error(f"7z命令执行失败，返回码: {process.returncode}")
+            return_code = await process.wait()
+            
+            if return_code != 0:
+                logger.error(f"7z命令执行失败，返回码: {return_code}")
                 # 使用 gbk 解码错误输出（与原来代码一致）
                 try:
-                    err_text = stderr.decode('gbk', errors='ignore')
+                    err_text = bytes(stderr_data).decode('gbk', errors='ignore')
                     logger.error(f"错误输出: {err_text[:200]}")
                 except:
                     pass
             
             return subprocess.CompletedProcess(
                 args=cmd,
-                returncode=process.returncode if process.returncode is not None else -1,
-                stdout=stdout,
-                stderr=stderr
+                returncode=return_code,
+                stdout=bytes(stdout_data),
+                stderr=bytes(stderr_data)
             )
         except Exception as e:
             logger.error(f"执行7z命令异常: {e}")
