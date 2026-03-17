@@ -1,7 +1,7 @@
 <template>
   <div class="library">
     <h1 class="page-title">库存文件管理</h1>
-    
+
     <el-card shadow="never" class="main-card">
       <template #header>
         <div class="card-header">
@@ -38,116 +38,42 @@
         :default-sort="{ prop: 'unzip_time', order: 'descending' }"
       >
         <el-table-column type="selection" width="55" />
-        <el-table-column
-          prop="name"
-          label="文件名"
-          show-overflow-tooltip
-          sortable
-        >
+        <el-table-column prop="name" label="文件名" show-overflow-tooltip sortable>
           <template #default="{ row }">
             <el-icon class="file-icon"><Folder /></el-icon>
             <span class="file-name">{{ row.name }}</span>
           </template>
         </el-table-column>
-
-        <el-table-column
-          prop="rjcode"
-          label="RJ 号"
-          width="120"
-          sortable
-        >
+        <el-table-column prop="rjcode" label="RJ 号" width="120" sortable>
           <template #default="{ row }">
             <el-tag v-if="row.rjcode" type="primary" size="small" effect="light">{{ row.rjcode }}</el-tag>
             <span v-else class="empty-text">-</span>
           </template>
         </el-table-column>
-
-        <el-table-column
-          prop="size"
-          label="大小"
-          width="100"
-          sortable
-        >
-          <template #default="{ row }">
-            {{ formatFileSize(row.size) }}
-          </template>
+        <el-table-column prop="size" label="大小" width="100" sortable>
+          <template #default="{ row }">{{ formatFileSize(row.size) }}</template>
         </el-table-column>
-
-        <el-table-column
-          prop="unzip_time"
-          label="解压时间"
-          width="180"
-          sortable
-        >
-          <template #default="{ row }">
-            {{ formatDate(row.unzip_time) }}
-          </template>
+        <el-table-column prop="unzip_time" label="解压时间" width="180" sortable>
+          <template #default="{ row }">{{ formatDate(row.unzip_time) }}</template>
         </el-table-column>
-
         <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <div class="action-grid">
               <div class="action-grid-row">
-                <el-button
-                  size="small"
-                  type="primary"
-                  @click="openFolder(row)"
-                  class="action-btn"
-                >
-                  <el-icon><Folder /></el-icon>
-                  打开
+                <el-button size="small" type="primary" @click="openFolder(row)" class="action-btn">
+                  <el-icon><Folder /></el-icon>打开
                 </el-button>
-                <el-button
-                  size="small"
-                  type="info"
-                  @click="openFolderDirect(row)"
-                  class="action-btn"
-                  title="直接打开文件夹（需安装 Tampermonkey 脚本）"
-                >
-                  直接打开
-                </el-button>
+                <el-button size="small" type="info" @click="openFolderDirect(row)" class="action-btn">直接打开</el-button>
               </div>
               <div class="action-grid-row">
-                <el-button
-                  size="small"
-                  type="warning"
-                  @click="renameItem(row)"
-                  :loading="renamingId === row.id"
-                  class="action-btn"
-                >
-                  重命名
-                </el-button>
-                <el-button
-                  size="small"
-                  type="success"
-                  @click="apiRenameItem(row)"
-                  :loading="apiRenamingId === row.id"
-                  class="action-btn"
-                  title="重新获取 DLsite 元数据并重命名"
-                >
-                  API 重命名
-                </el-button>
+                <el-button size="small" type="warning" @click="renameItem(row)" :loading="renamingId === row.id" class="action-btn">重命名</el-button>
+                <el-button size="small" type="success" @click="apiRenameItem(row)" :loading="apiRenamingId === row.id" class="action-btn">API 重命名</el-button>
               </div>
               <div class="action-grid-row">
-                <el-button
-                  size="small"
-                  type="info"
-                  plain
-                  @click="openFolderContentsDialog(row)"
-                  class="action-btn"
-                >
-                  <el-icon><Files /></el-icon>
-                  文件管理
+                <el-button size="small" type="info" plain @click="openFolderContentsDialog(row)" class="action-btn">
+                  <el-icon><Files /></el-icon>文件管理
                 </el-button>
-                <el-button
-                  size="small"
-                  type="danger"
-                  @click="deleteItem(row)"
-                  class="action-btn btn-delete"
-                  title="删除此项目"
-                >
-                  删除
-                </el-button>
+                <el-button size="small" type="danger" @click="deleteItem(row)" class="action-btn">删除</el-button>
               </div>
             </div>
           </template>
@@ -160,31 +86,14 @@
         </div>
         <div class="batch-right">
           <el-button-group>
-            <el-button
-              size="small"
-              type="danger"
-              plain
-              @click="handleBatchDelete"
-              :loading="batchDeleting"
-            >
+            <el-button size="small" type="danger" plain @click="handleBatchDelete" :loading="batchDeleting">
               <el-icon><Delete /></el-icon>批量删除
             </el-button>
-            <el-button
-              size="small"
-              type="warning"
-              plain
-              @click="handleBatchApiRename"
-              :loading="batchRenaming"
-            >
+            <el-button size="small" type="warning" plain @click="handleBatchApiRename" :loading="batchRenaming">
               <el-icon><Edit /></el-icon>批量 API重命名
             </el-button>
           </el-button-group>
-          <el-button
-            size="small"
-            @click="clearSelection"
-          >
-            取消选择
-          </el-button>
+          <el-button size="small" @click="clearSelection">取消选择</el-button>
         </div>
       </div>
 
@@ -200,12 +109,8 @@
       </div>
     </el-card>
 
-    <el-dialog
-      v-model="renameDialogVisible"
-      title="重命名"
-      width="500px"
-      destroy-on-close
-    >
+    <!-- 重命名对话框 -->
+    <el-dialog v-model="renameDialogVisible" title="重命名" width="500px" destroy-on-close>
       <el-form :model="renameForm" label-width="80px">
         <el-form-item label="当前名称">
           <el-input v-model="renameForm.currentName" disabled />
@@ -218,33 +123,17 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="renameDialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="confirmRename" :loading="isRenaming">
-            确认重命名
-          </el-button>
-        </span>
+        <el-button @click="renameDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmRename" :loading="isRenaming">确认重命名</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog
-      v-model="mappedPathDialogVisible"
-      title="跨设备访问 - 路径映射"
-      width="600px"
-    >
-      <el-alert
-        title="检测到跨设备部署环境"
-        type="info"
-        :closable="false"
-        show-icon
-        style="margin-bottom: 20px;"
-      >
-        <template #default>
-          由于应用部署在远程服务器/Docker中，无法直接打开本地文件夹。请使用下方映射后的路径手动打开。
-        </template>
+    <!-- 路径映射对话框 -->
+    <el-dialog v-model="mappedPathDialogVisible" title="跨设备访问 - 路径映射" width="600px">
+      <el-alert title="检测到跨设备部署环境" type="info" :closable="false" show-icon style="margin-bottom: 20px;">
+        <template #default>由于应用部署在远程服务器/Docker中，无法直接打开本地文件夹。请使用下方映射后的路径手动打开。</template>
       </el-alert>
-
-      <el-descriptions :column="1" border class="path-descriptions">
+      <el-descriptions :column="1" border>
         <el-descriptions-item label="远程路径">
           <code class="path-code">{{ mappedPathInfo.originalPath }}</code>
         </el-descriptions-item>
@@ -252,21 +141,8 @@
           <div class="mapped-path-container">
             <code class="path-code mapped-path">{{ mappedPathInfo.mappedPath }}</code>
             <div class="path-actions">
-              <el-button
-                type="primary"
-                size="small"
-                @click="copyMappedPath"
-              >
-                复制路径
-              </el-button>
-              <el-button
-                type="success"
-                size="small"
-                @click="openWithBrowser"
-                title="尝试用浏览器打开（可能被安全设置阻止）"
-              >
-                尝试打开
-              </el-button>
+              <el-button type="primary" size="small" @click="copyMappedPath">复制路径</el-button>
+              <el-button type="success" size="small" @click="openWithBrowser">尝试打开</el-button>
             </div>
           </div>
         </el-descriptions-item>
@@ -276,7 +152,6 @@
           </el-tag>
         </el-descriptions-item>
       </el-descriptions>
-
       <div class="path-mapping-help">
         <h4>如何使用：</h4>
         <ol>
@@ -284,136 +159,240 @@
           <li>打开 Windows 文件资源管理器</li>
           <li>在地址栏粘贴路径并按回车</li>
         </ol>
-        <p class="help-tip">
-          提示：如果路径无法访问，请检查网络驱动器映射是否正确配置。
-        </p>
+        <p class="help-tip">提示：如果路径无法访问，请检查网络驱动器映射是否正确配置。</p>
       </div>
-
       <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="mappedPathDialogVisible = false">关闭</el-button>
-          <el-button type="primary" @click="copyMappedPath">复制路径</el-button>
-        </span>
+        <el-button @click="mappedPathDialogVisible = false">关闭</el-button>
+        <el-button type="primary" @click="copyMappedPath">复制路径</el-button>
       </template>
     </el-dialog>
 
+    <!-- ★ 文件管理对话框 -->
     <el-dialog
       v-model="folderContentsDialogVisible"
-      width="900px"
-      :title="`文件管理 - ${folderContentsInfo.folderName || ''}`"
+      width="1100px"
       destroy-on-close
+      class="fm-dialog"
+      :show-close="true"
     >
-      <div class="folder-dialog-toolbar">
-        <div class="folder-toolbar-left">
-          <el-tag type="info">共 {{ visibleFileCount }} / {{ folderContentsInfo.totalFiles }} 个文件</el-tag>
-          <el-button
-            size="small"
-            type="danger"
-            plain
-            :disabled="folderSelectedFiles.length === 0"
-            @click="batchDeleteSubFiles"
-          >
-            批量删除({{ folderSelectedFiles.length }})
-          </el-button>
+      <template #header>
+        <div class="fm-header">
+          <div class="fm-header-left">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
+              <path d="M1.5 3.5C1.5 2.67 2.17 2 3 2H5.88C6.27 2 6.64 2.16 6.9 2.44L7.72 3.33C7.84 3.46 8 3.5 8.12 3.5H13C13.83 3.5 14.5 4.17 14.5 5V12.5C14.5 13.33 13.83 14 13 14H3C2.17 14 1.5 13.33 1.5 12.5V3.5Z" fill="rgba(64,158,255,0.12)" stroke="#409eff" stroke-width="1.2"/>
+            </svg>
+            <span class="fm-header-name">{{ folderContentsInfo.folderName || '文件管理' }}</span>
+          </div>
+          <div class="fm-header-right">
+            <span class="fm-header-count">
+              <b>{{ visibleFileCount }}</b>&nbsp;/&nbsp;{{ folderContentsInfo.totalFiles }} 个文件
+            </span>
+          </div>
         </div>
-        <el-input
-          v-model="folderContentsSearch"
-          placeholder="搜索子文件名或路径"
-          clearable
-          style="width: 320px;"
-        >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-        </el-input>
-      </div>
+      </template>
 
-      <el-table
-        ref="folderTableRef"
-        :data="filteredFolderFiles"
-        v-loading="folderContentsLoading"
-        row-key="id"
-        max-height="460"
-        default-expand-all
-        :tree-props="{ children: 'children' }"
-        @selection-change="handleFolderSelectionChange"
-      >
-        <el-table-column type="selection" width="45" :selectable="selectFolderRow" />
-        <el-table-column label="文件" min-width="360" show-overflow-tooltip>
-          <template #default="{ row }">
-            <div class="folder-file-cell">
-              <el-icon class="folder-type-icon">
-                <Folder v-if="row.type === 'dir'" />
-                <component v-else :is="getFileIconComponent(row.name)" />
-              </el-icon>
-              <el-button v-if="row.type === 'file'" link type="primary" @click="openSubFile(row)">
-                {{ row.name }}
-              </el-button>
-              <span v-else>{{ row.name }}</span>
+      <div class="fm-body" v-loading="folderContentsLoading">
+        <!-- 工具栏 -->
+        <div class="fm-toolbar">
+          <div class="fm-toolbar-left">
+            <button
+              class="fm-btn fm-btn--danger"
+              :class="{ 'fm-btn--disabled': folderSelectedFiles.length === 0 }"
+              :disabled="folderSelectedFiles.length === 0"
+              @click="batchDeleteSubFiles"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M5.333 4V2.667A1.333 1.333 0 016.667 1.333h2.666A1.333 1.333 0 0110.667 2.667V4m2 0l-.667 9.333A1.333 1.333 0 0110.667 14.667H5.333A1.333 1.333 0 014 13.333L3.333 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              批量删除
+              <span v-if="folderSelectedFiles.length > 0" class="fm-badge">{{ folderSelectedFiles.length }}</span>
+            </button>
+            <button class="fm-btn fm-btn--ghost" @click="expandAll">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 5l5 5 5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              展开全部
+            </button>
+            <button class="fm-btn fm-btn--ghost" @click="collapseAll">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 11l5-5 5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              折叠全部
+            </button>
+          </div>
+          <div class="fm-toolbar-right">
+            <div class="fm-search">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" class="fm-search-ico"><circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" stroke-width="1.4"/><path d="M10 10l3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              <input
+                v-model="folderContentsSearch"
+                class="fm-search-input"
+                placeholder="搜索文件名或路径…"
+                @input="onSearchInput"
+              />
+              <button v-if="folderContentsSearch" class="fm-search-clear" @click="folderContentsSearch = ''">✕</button>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="relative_path" label="相对路径" min-width="260" show-overflow-tooltip />
-        <el-table-column label="大小" width="120">
-          <template #default="{ row }">
-            {{ row.type === 'file' ? formatFileSize(row.size) : '-' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="修改时间" width="180">
-          <template #default="{ row }">
-            {{ row.type === 'file' ? formatDate(row.modified_time) : '-' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
-          <template #default="{ row }">
-            <el-button v-if="row.type === 'file'" link type="danger" @click="deleteSubFile(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+          </div>
+        </div>
+
+        <!-- 列头 -->
+        <div class="fm-thead">
+          <div class="fm-th fm-col-check">
+            <input
+              type="checkbox"
+              class="fm-check"
+              :checked="allFilesSelected"
+              :indeterminate.prop="someFilesSelected"
+              @change="toggleAllFiles"
+            />
+          </div>
+          <div class="fm-th fm-col-name">文件名</div>
+          <div class="fm-th fm-col-path">相对路径</div>
+          <div class="fm-th fm-col-size">大小</div>
+          <div class="fm-th fm-col-time">修改时间</div>
+          <div class="fm-th fm-col-action">操作</div>
+        </div>
+
+        <!-- 文件树（扁平化渲染） -->
+        <div class="fm-scroll">
+          <div v-if="!folderContentsLoading && flatTree.length === 0" class="fm-empty">
+            <svg width="36" height="36" viewBox="0 0 48 48" fill="none"><rect x="4" y="12" width="40" height="30" rx="3" stroke="#c0c4cc" stroke-width="2"/><path d="M4 18h40M4 12l9-8h12l4 8" stroke="#c0c4cc" stroke-width="2" stroke-linejoin="round"/></svg>
+            <span>{{ folderContentsSearch ? '无匹配文件' : '文件夹为空' }}</span>
+          </div>
+
+          <div
+            v-for="row in flatTree"
+            :key="row.id"
+            class="fm-row"
+            :class="{
+              'fm-row--dir': row.type === 'dir',
+              'fm-row--file': row.type === 'file',
+              'fm-row--selected': selectedFileIds.has(row.id),
+            }"
+            @click="row.type === 'dir' ? toggleExpand(row) : null"
+          >
+            <!-- 勾选 -->
+            <div class="fm-td fm-col-check" @click.stop>
+              <input
+                v-if="row.type === 'file'"
+                type="checkbox"
+                class="fm-check"
+                :checked="selectedFileIds.has(row.id)"
+                @change="toggleFileSelect(row)"
+              />
+            </div>
+
+            <!-- 文件名 -->
+            <div class="fm-td fm-col-name">
+              <div class="fm-name-cell" :style="{ paddingLeft: (row.depth * 20 + 4) + 'px' }">
+                <!-- 缩进竖引导线 -->
+                <span
+                  v-for="d in row.depth"
+                  :key="d"
+                  class="fm-guide"
+                  :style="{ left: ((d - 1) * 20 + 12) + 'px' }"
+                />
+                <!-- 折叠箭头 / 占位 -->
+                <span v-if="row.type === 'dir'" class="fm-arrow-wrap" @click.stop="toggleExpand(row)">
+                  <svg
+                    class="fm-arrow"
+                    :class="{ 'fm-arrow--open': expandedIds.has(row.id) }"
+                    width="12" height="12" viewBox="0 0 12 12" fill="none"
+                  >
+                    <path d="M4 2.5l4 3.5-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <span v-else class="fm-arrow-placeholder" />
+
+                <!-- 类型图标 -->
+                <span class="fm-icon">
+                  <!-- 文件夹 -->
+                  <svg v-if="row.type === 'dir'" width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M1.5 3.5C1.5 2.67 2.17 2 3 2H5.88C6.27 2 6.64 2.16 6.9 2.44L7.5 3.1A.84.84 0 008.07 3.3H13C13.83 3.3 14.5 3.97 14.5 4.8V12.5C14.5 13.33 13.83 14 13 14H3C2.17 14 1.5 13.33 1.5 12.5V3.5Z"
+                      :fill="expandedIds.has(row.id) ? 'rgba(232,160,33,0.35)' : 'rgba(232,160,33,0.15)'"
+                      stroke="#e8a021" stroke-width="1.2"/>
+                  </svg>
+                  <!-- 音频 -->
+                  <svg v-else-if="getFileType(row.name) === 'audio'" width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <rect x="1.5" y="2" width="13" height="12" rx="2" fill="rgba(77,156,248,0.12)" stroke="#4d9cf8" stroke-width="1.2"/>
+                    <path d="M5.5 6v4m2-5.5v7m2-5v3m2-4.5v6" stroke="#4d9cf8" stroke-width="1.2" stroke-linecap="round"/>
+                  </svg>
+                  <!-- 图片 -->
+                  <svg v-else-if="getFileType(row.name) === 'image'" width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <rect x="1.5" y="2" width="13" height="12" rx="2" fill="rgba(74,222,128,0.12)" stroke="#4ade80" stroke-width="1.2"/>
+                    <circle cx="5.5" cy="6.5" r="1.2" fill="#4ade80"/>
+                    <path d="M2 12l3.5-3.5 2.5 2.5 2-2L14 12" stroke="#4ade80" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <!-- 视频 -->
+                  <svg v-else-if="getFileType(row.name) === 'video'" width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <rect x="1.5" y="2" width="13" height="12" rx="2" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.2"/>
+                    <path d="M6 5.5l5 2.5-5 2.5V5.5z" fill="#a78bfa"/>
+                  </svg>
+                  <!-- 字幕 -->
+                  <svg v-else-if="getFileType(row.name) === 'subtitle'" width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <rect x="1.5" y="2" width="13" height="12" rx="2" fill="rgba(251,146,60,0.12)" stroke="#fb923c" stroke-width="1.2"/>
+                    <path d="M4 7h8M4 10h5" stroke="#fb923c" stroke-width="1.2" stroke-linecap="round"/>
+                  </svg>
+                  <!-- 通用 -->
+                  <svg v-else width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M3 2h7l3 3v9a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z" fill="rgba(148,163,184,0.15)" stroke="#94a3b8" stroke-width="1.2"/>
+                    <path d="M10 2v3h3" stroke="#94a3b8" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+
+                <span
+                  class="fm-name-text"
+                  :class="{ 'fm-name-text--dir': row.type === 'dir' }"
+                  :title="row.name"
+                >{{ row.name }}</span>
+              </div>
+            </div>
+
+            <!-- 相对路径 -->
+            <div class="fm-td fm-col-path">
+              <span class="fm-mono-sm" :title="row.relative_path">{{ row.relative_path }}</span>
+            </div>
+
+            <!-- 大小 -->
+            <div class="fm-td fm-col-size">
+              <span class="fm-size-text">{{ row.type === 'file' ? formatFileSize(row.size) : '—' }}</span>
+            </div>
+
+            <!-- 修改时间 -->
+            <div class="fm-td fm-col-time">
+              <span class="fm-mono-sm">{{ row.type === 'file' ? formatDate(row.modified_time) : '—' }}</span>
+            </div>
+
+            <!-- 操作 -->
+            <div class="fm-td fm-col-action" @click.stop>
+              <template v-if="row.type === 'file'">
+                <button class="fm-link fm-link--primary" @click="openSubFile(row)">打开</button>
+                <button class="fm-link fm-link--danger" @click="deleteSubFile(row)">删除</button>
+              </template>
+              <template v-else-if="row.type === 'dir'">
+                <button class="fm-link fm-link--danger" @click="deleteSubDir(row)">删除</button>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import {
-  Refresh,
-  Search,
-  Folder,
-  Delete,
-  Edit,
-  Files,
-  VideoPlay,
-  Picture,
-  Headset,
-  Document
-} from '@element-plus/icons-vue'
+import { Refresh, Search, Folder, Delete, Edit, Files } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { libraryApi } from '../api'
 
+// ─── 持久化分页 ──────────────────────────────────────────────
 const PAGE_SIZES = [10, 20, 50, 100]
-const PAGE_SIZE_STORAGE_KEY = 'kikoeru.ui.library.pageSize'
-
-function loadPersistedPageSize(fallback) {
-  try {
-    const raw = window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY)
-    const num = Number(raw)
-    if (PAGE_SIZES.includes(num)) return num
-  } catch (_) {}
-  return fallback
+const PAGE_SIZE_KEY = 'kikoeru.ui.library.pageSize'
+function loadPageSize (fb) {
+  try { const n = Number(localStorage.getItem(PAGE_SIZE_KEY)); if (PAGE_SIZES.includes(n)) return n } catch (_) {}
+  return fb
 }
 
-function persistPageSize(size) {
-  try {
-    window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(size))
-  } catch (_) {}
-}
-
+// ─── 库列表状态 ───────────────────────────────────────────────
 const loading = ref(false)
 const files = ref([])
 const searchQuery = ref('')
 const currentPage = ref(1)
-const pageSize = ref(loadPersistedPageSize(20))
+const pageSize = ref(loadPageSize(20))
 const renamingId = ref(null)
 const apiRenamingId = ref(null)
 const selectedRows = ref([])
@@ -421,934 +400,452 @@ const batchDeleting = ref(false)
 const batchRenaming = ref(false)
 const isAllSelected = ref(false)
 const tableRef = ref(null)
-const folderTableRef = ref(null)
 
-// 重命名对话框
 const renameDialogVisible = ref(false)
-const renameForm = ref({
-  id: '',
-  currentName: '',
-  newName: '',
-  path: ''
-})
+const renameForm = ref({ id: '', currentName: '', newName: '', path: '' })
 const isRenaming = ref(false)
 
-// 路径映射对话框
 const mappedPathDialogVisible = ref(false)
-const mappedPathInfo = ref({
-  originalPath: '',
-  mappedPath: '',
-  isMapped: false
-})
-
-// Tampermonkey 脚本检测
+const mappedPathInfo = ref({ originalPath: '', mappedPath: '', isMapped: false })
 const tampermonkeyLoaded = ref(false)
 
+// ─── 文件管理对话框状态 ───────────────────────────────────────
 const folderContentsDialogVisible = ref(false)
 const folderContentsLoading = ref(false)
 const folderContentsSearch = ref('')
-const folderContentsInfo = ref({
-  folderName: '',
-  folderPath: '',
-  totalFiles: 0
-})
+const folderContentsInfo = ref({ folderName: '', folderPath: '', totalFiles: 0 })
 const folderContentsFiles = ref([])
-const folderSelectedFiles = ref([])
+const selectedFileIds = ref(new Set())
+const expandedIds = ref(new Set())
 
-// 过滤后的文件列表
+// ─── 库列表计算 ───────────────────────────────────────────────
 const filteredFiles = computed(() => {
-  let result = files.value
-
-  if (searchQuery.value) {
-    const query = searchQuery.value.toLowerCase()
-    result = result.filter(file =>
-      file.name.toLowerCase().includes(query) ||
-      (file.rjcode && file.rjcode.toLowerCase().includes(query))
-    )
-  }
-
-  return result
+  if (!searchQuery.value) return files.value
+  const q = searchQuery.value.toLowerCase()
+  return files.value.filter(f => f.name.toLowerCase().includes(q) || (f.rjcode && f.rjcode.toLowerCase().includes(q)))
 })
-
-// 总文件数
 const totalFiles = computed(() => filteredFiles.value.length)
-
-// 分页后的文件列表（排序在分页前进行）
 const paginatedFiles = computed(() => {
-  // Element Plus 的表格会自动处理排序，这里只需要返回过滤后的数据即可
-  const start = (currentPage.value - 1) * pageSize.value
-  const end = start + pageSize.value
-  const result = filteredFiles.value.slice(start, end)
-  console.log(`[Library Pagination] Page ${currentPage.value}, Size ${pageSize.value}, Start ${start}, End ${end}, Total ${filteredFiles.value.length}, Result ${result.length}`)
-  return result
+  const s = (currentPage.value - 1) * pageSize.value
+  return filteredFiles.value.slice(s, s + pageSize.value)
 })
+watch(pageSize, v => { try { localStorage.setItem(PAGE_SIZE_KEY, String(v)) } catch (_) {}; currentPage.value = 1 })
 
-const filteredFolderFiles = computed(() => {
-  const query = folderContentsSearch.value.trim().toLowerCase()
-  const tree = buildFolderTree(folderContentsFiles.value)
-  if (!query) {
-    return tree
+// ─── 文件管理 - 树构建 ────────────────────────────────────────
+function buildTree (items) {
+  const root = []
+  const dirMap = new Map()
+  const sorted = [...items].sort((a, b) => a.relative_path.localeCompare(b.relative_path))
+  for (const item of sorted) {
+    const parts = (item.relative_path || item.name).split('/').filter(Boolean)
+    if (!parts.length) continue
+    let children = root
+    let curPath = ''
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i]
+      curPath = curPath ? `${curPath}/${seg}` : seg
+      const key = `dir:${curPath}`
+      if (!dirMap.has(key)) {
+        const node = { id: key, name: seg, type: 'dir', relative_path: curPath, children: [] }
+        dirMap.set(key, node)
+        children.push(node)
+      }
+      children = dirMap.get(key).children
+    }
+    children.push({ ...item, id: `file:${item.path}`, type: 'file' })
   }
-  return filterTreeByQuery(tree, query)
+  return root
+}
+
+function filterTree (nodes, q) {
+  const result = []
+  for (const n of nodes) {
+    const match = (n.name || '').toLowerCase().includes(q) || (n.relative_path || '').toLowerCase().includes(q)
+    if (n.type === 'file') { if (match) result.push(n) }
+    else {
+      const children = filterTree(n.children || [], q)
+      if (match || children.length) result.push({ ...n, children })
+    }
+  }
+  return result
+}
+
+function flattenTree (nodes, depth, openIds) {
+  const result = []
+  for (const n of nodes) {
+    result.push({ ...n, depth })
+    if (n.type === 'dir' && openIds.has(n.id) && n.children?.length)
+      result.push(...flattenTree(n.children, depth + 1, openIds))
+  }
+  return result
+}
+
+const treeRoot = computed(() => buildTree(folderContentsFiles.value))
+const filteredRoot = computed(() => {
+  const q = folderContentsSearch.value.trim().toLowerCase()
+  return q ? filterTree(treeRoot.value, q) : treeRoot.value
 })
+const flatTree = computed(() => flattenTree(filteredRoot.value, 0, expandedIds.value))
+const visibleFileCount = computed(() => flatTree.value.filter(r => r.type === 'file').length)
+const allSelectableIds = computed(() => flatTree.value.filter(r => r.type === 'file').map(r => r.id))
+const allFilesSelected = computed(() =>
+  allSelectableIds.value.length > 0 && allSelectableIds.value.every(id => selectedFileIds.value.has(id))
+)
+const someFilesSelected = computed(() =>
+  !allFilesSelected.value && allSelectableIds.value.some(id => selectedFileIds.value.has(id))
+)
+const folderSelectedFiles = computed(() =>
+  folderContentsFiles.value.filter(f => selectedFileIds.value.has(`file:${f.path}`))
+)
 
-const visibleFileCount = computed(() => countFiles(filteredFolderFiles.value))
+// ─── 树交互 ───────────────────────────────────────────────────
+function toggleExpand (node) {
+  const s = new Set(expandedIds.value)
+  s.has(node.id) ? s.delete(node.id) : s.add(node.id)
+  expandedIds.value = s
+}
 
-watch(pageSize, (size) => {
-  persistPageSize(size)
-  currentPage.value = 1
-})
+function expandAll () {
+  const s = new Set()
+  const walk = (nodes) => { for (const n of nodes) { if (n.type === 'dir') { s.add(n.id); walk(n.children || []) } } }
+  walk(filteredRoot.value)
+  expandedIds.value = s
+}
 
+function collapseAll () { expandedIds.value = new Set() }
+
+function toggleFileSelect (row) {
+  const s = new Set(selectedFileIds.value)
+  s.has(row.id) ? s.delete(row.id) : s.add(row.id)
+  selectedFileIds.value = s
+}
+
+function toggleAllFiles () {
+  selectedFileIds.value = allFilesSelected.value ? new Set() : new Set(allSelectableIds.value)
+}
+
+function onSearchInput () { if (folderContentsSearch.value) expandAll() }
+
+function getFileType (name) {
+  const ext = (name.split('.').pop() || '').toLowerCase()
+  if (['mp3','wav','flac','m4a','ogg','aac','opus'].includes(ext)) return 'audio'
+  if (['jpg','jpeg','png','gif','webp','bmp','avif'].includes(ext)) return 'image'
+  if (['mp4','mkv','avi','mov','wmv','webm'].includes(ext)) return 'video'
+  if (['srt','lrc','ass','ssa','vtt','sub'].includes(ext)) return 'subtitle'
+  return 'generic'
+}
+
+// ─── 工具函数 ─────────────────────────────────────────────────
+function formatFileSize (bytes) {
+  if (!bytes) return '-'
+  const k = 1024, sizes = ['B','KB','MB','GB','TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+function formatDate (dateStr) {
+  if (!dateStr) return '-'
+  let d = new Date(dateStr)
+  if (typeof dateStr === 'string' && dateStr.includes('T') && !/[zZ]|[+-]\d{2}:\d{2}$/.test(dateStr))
+    d = new Date(dateStr.replace('T', ' '))
+  if (isNaN(d.getTime())) return dateStr
+  return d.toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false })
+}
+
+// ─── 生命周期 ─────────────────────────────────────────────────
 onMounted(() => {
   refreshLibrary()
-
-  // 检查 Tampermonkey 脚本是否已加载（脚本可能已经在页面加载前完成）
-  if (window.kikoeruHelperLoaded) {
-    console.log('[Kikoeru] Tampermonkey 助手已预先加载')
-    tampermonkeyLoaded.value = true
-  }
-
-  // 监听 Tampermonkey 脚本就绪事件（脚本可能在页面加载后才加载）
-  window.addEventListener('kikoeru-helper-ready', (event) => {
-    console.log('[Kikoeru] Tampermonkey 助手已加载', event.detail)
-    tampermonkeyLoaded.value = true
-  })
-
-  // 5秒后再次检查（兜底机制）
-  setTimeout(() => {
-    if (!tampermonkeyLoaded.value && window.kikoeruHelperLoaded) {
-      console.log('[Kikoeru] 延迟检测到 Tampermonkey')
-      tampermonkeyLoaded.value = true
-    }
-  }, 5000)
-
+  if (window.kikoeruHelperLoaded) tampermonkeyLoaded.value = true
+  window.addEventListener('kikoeru-helper-ready', () => { tampermonkeyLoaded.value = true })
+  setTimeout(() => { if (!tampermonkeyLoaded.value && window.kikoeruHelperLoaded) tampermonkeyLoaded.value = true }, 5000)
 })
 
-async function refreshLibrary() {
+// ─── API ──────────────────────────────────────────────────────
+async function refreshLibrary () {
   loading.value = true
   try {
     const data = await libraryApi.listFiles()
     files.value = data.files || []
     ElMessage.success(`已加载 ${files.value.length} 个文件`)
-  } catch (error) {
-    console.error('获取库文件失败:', error)
-    ElMessage.error('获取库文件失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    loading.value = false
-  }
+  } catch (e) { ElMessage.error('获取库文件失败: ' + (e.response?.data?.detail || e.message))
+  } finally { loading.value = false }
 }
 
-function formatFileSize(bytes) {
-  if (!bytes || bytes === 0) return '-'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+function handleSelectionChange (sel) {
+  selectedRows.value = sel
+  isAllSelected.value = sel.length === paginatedFiles.value.length && paginatedFiles.value.length > 0
 }
-
-// 选择处理函数
-function handleSelectionChange(selection) {
-  selectedRows.value = selection
-  isAllSelected.value = selection.length === paginatedFiles.value.length && paginatedFiles.value.length > 0
+function toggleAllSelection () {
+  if (isAllSelected.value) tableRef.value?.clearSelection()
+  else paginatedFiles.value.forEach(r => tableRef.value?.toggleRowSelection(r, true))
 }
+function clearSelection () { tableRef.value?.clearSelection() }
 
-function toggleAllSelection() {
-  if (isAllSelected.value) {
-    // 取消全选
-    if (tableRef.value && tableRef.value.clearSelection) {
-      tableRef.value.clearSelection()
-    }
-  } else {
-    // 全选当前页
-    paginatedFiles.value.forEach(row => {
-      if (tableRef.value && tableRef.value.toggleRowSelection) {
-        tableRef.value.toggleRowSelection(row, true)
-      }
-    })
-  }
-}
-
-function clearSelection() {
-  if (tableRef.value && tableRef.value.clearSelection) {
-    tableRef.value.clearSelection()
-  }
-}
-
-function handleMoreCommand(command, row) {
-  switch (command) {
-    case 'direct-open':
-      openFolderDirect(row)
-      break
-    case 'rename':
-      renameItem(row)
-      break
-    case 'delete':
-      deleteItem(row)
-      break
-  }
-}
-
-function getFileIconComponent(fileName) {
-  const ext = fileName.split('.').pop()?.toLowerCase() || ''
-  const audioExts = ['mp3', 'wav', 'flac', 'm4a', 'ogg', 'aac', 'opus']
-  const subtitleExts = ['srt', 'lrc', 'ass', 'ssa', 'vtt', 'sub']
-  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
-  const videoExts = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'webm']
-  if (audioExts.includes(ext)) return Headset
-  if (subtitleExts.includes(ext)) return Document
-  if (imageExts.includes(ext)) return Picture
-  if (videoExts.includes(ext)) return VideoPlay
-  return Files
-}
-
-function buildFolderTree(fileItems) {
-  const root = []
-  const dirMap = new Map()
-  const sortedFiles = [...fileItems].sort((a, b) => a.relative_path.localeCompare(b.relative_path))
-  for (const file of sortedFiles) {
-    const parts = (file.relative_path || file.name).split('/').filter(Boolean)
-    if (parts.length === 0) continue
-    let currentChildren = root
-    let currentPath = ''
-    for (let i = 0; i < parts.length - 1; i += 1) {
-      const dirName = parts[i]
-      currentPath = currentPath ? `${currentPath}/${dirName}` : dirName
-      const dirId = `dir:${currentPath}`
-      if (!dirMap.has(dirId)) {
-        const dirNode = {
-          id: dirId,
-          name: dirName,
-          type: 'dir',
-          relative_path: currentPath,
-          children: []
-        }
-        dirMap.set(dirId, dirNode)
-        currentChildren.push(dirNode)
-      }
-      currentChildren = dirMap.get(dirId).children
-    }
-    const fileNode = {
-      ...file,
-      id: `file:${file.path}`,
-      type: 'file'
-    }
-    currentChildren.push(fileNode)
-  }
-  return root
-}
-
-function filterTreeByQuery(nodes, query) {
-  const result = []
-  for (const node of nodes) {
-    const selfMatched = (node.name || '').toLowerCase().includes(query) ||
-      (node.relative_path || '').toLowerCase().includes(query)
-    if (node.type === 'file') {
-      if (selfMatched) {
-        result.push(node)
-      }
-      continue
-    }
-    const children = filterTreeByQuery(node.children || [], query)
-    if (selfMatched || children.length > 0) {
-      result.push({
-        ...node,
-        children
-      })
-    }
-  }
-  return result
-}
-
-function countFiles(nodes) {
-  let total = 0
-  for (const node of nodes) {
-    if (node.type === 'file') {
-      total += 1
-    } else if (node.children?.length) {
-      total += countFiles(node.children)
-    }
-  }
-  return total
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return '-'
-  let date = new Date(dateStr)
-  if (typeof dateStr === 'string' && dateStr.includes('T') && !/[zZ]|[+-]\d{2}:\d{2}$/.test(dateStr)) {
-    const localDateStr = dateStr.replace('T', ' ')
-    date = new Date(localDateStr)
-  }
-  if (Number.isNaN(date.getTime())) return dateStr
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  })
-}
-
-async function openFolder(row) {
+async function openFolder (row) {
   try {
     const data = await libraryApi.openFolder(row.path)
-
-    if (data.mode === 'mapped') {
-      mappedPathInfo.value = {
-        originalPath: data.original_path,
-        mappedPath: data.mapped_path,
-        isMapped: data.is_mapped
-      }
-      mappedPathDialogVisible.value = true
-      return
-    }
-
+    if (data.mode === 'mapped') { mappedPathInfo.value = { originalPath: data.original_path, mappedPath: data.mapped_path, isMapped: data.is_mapped }; mappedPathDialogVisible.value = true; return }
     ElMessage.success('已打开文件夹')
-  } catch (error) {
-    console.error('打开文件夹失败:', error)
-    ElMessage.error(error.response?.data?.detail || '打开文件夹失败')
-  }
+  } catch (e) { ElMessage.error(e.response?.data?.detail || '打开文件夹失败') }
 }
 
-// 直接打开文件夹（跳过弹窗）
-async function openFolderDirect(row) {
+async function openFolderDirect (row) {
   try {
     const data = await libraryApi.openFolder(row.path)
-
-    let targetPath
-    if (data.mode === 'mapped') {
-      targetPath = data.mapped_path
-    } else {
-      ElMessage.success('已打开文件夹')
-      return
-    }
-
-    const hasTampermonkey = window.kikoeruHelperLoaded || tampermonkeyLoaded.value
-
-    console.log('[Kikoeru] 尝试直接打开:', targetPath, 'Tampermonkey状态:', hasTampermonkey)
-
-    try {
-      window.dispatchEvent(new CustomEvent('kikoeru-open-folder', {
-        detail: { path: targetPath }
-      }))
-
-      if (hasTampermonkey) {
-        ElMessage.success('正在打开文件夹...')
-      } else {
-        ElMessage.info('正在尝试打开文件夹...')
-
-        setTimeout(() => {
-          if (!window.kikoeruHelperLoaded && !tampermonkeyLoaded.value) {
-            showTampermonkeyDialog(targetPath)
-          }
-        }, 2000)
-      }
-      return
-    } catch (err) {
-      console.error('[Kikoeru] 发送打开事件失败:', err)
-    }
-
-    showTampermonkeyDialog(targetPath)
-  } catch (error) {
-    console.error('直接打开失败:', error)
-    ElMessage.error(error.response?.data?.detail || '打开文件夹失败')
-  }
+    let path
+    if (data.mode === 'mapped') path = data.mapped_path
+    else { ElMessage.success('已打开文件夹'); return }
+    const hasTM = window.kikoeruHelperLoaded || tampermonkeyLoaded.value
+    window.dispatchEvent(new CustomEvent('kikoeru-open-folder', { detail: { path } }))
+    hasTM ? ElMessage.success('正在打开文件夹...') : ElMessage.info('正在尝试打开文件夹...')
+    if (!hasTM) setTimeout(() => { if (!window.kikoeruHelperLoaded) showTMDialog(path) }, 2000)
+  } catch (e) { ElMessage.error(e.response?.data?.detail || '打开文件夹失败') }
 }
 
-// 显示 Tampermonkey 安装提示对话框
-async function showTampermonkeyDialog(targetPath) {
-  ElMessage.warning('Tampermonkey 脚本未安装或加载失败，无法直接打开')
-
-  // 复制路径并显示安装提示
-  try {
-    await navigator.clipboard.writeText(targetPath)
-    ElMessage.success('路径已复制到剪贴板')
-  } catch (err) {
-    console.error('复制失败:', err)
-  }
-
-  ElMessageBox.confirm(
-    `直接打开需要安装 Tampermonkey 脚本。<br><br>
-    <strong>已复制路径：</strong><code>${targetPath}</code><br><br>
-    是否查看安装教程？`,
-    '需要 Tampermonkey',
-    {
-      confirmButtonText: '查看安装教程',
-      cancelButtonText: '手动打开',
-      type: 'warning',
-      dangerouslyUseHTMLString: true
-    }
-  ).then(() => {
-    window.open('https://github.com/canforgive/KikoeruTool/blob/main/tampermonkey/kikoeru-folder-opener.js', '_blank')
-  })
+async function showTMDialog (path) {
+  ElMessage.warning('Tampermonkey 脚本未安装')
+  try { await navigator.clipboard.writeText(path); ElMessage.success('路径已复制') } catch (_) {}
+  ElMessageBox.confirm(`需要安装 Tampermonkey 脚本。<br><code>${path}</code><br>是否查看安装教程？`, '需要 Tampermonkey', { confirmButtonText: '查看教程', cancelButtonText: '手动打开', type: 'warning', dangerouslyUseHTMLString: true })
+    .then(() => window.open('https://github.com/canforgive/KikoeruTool/blob/main/tampermonkey/kikoeru-folder-opener.js', '_blank'))
 }
 
-// 复制映射路径到剪贴板
-async function copyMappedPath() {
-  try {
-    await navigator.clipboard.writeText(mappedPathInfo.value.mappedPath)
-    ElMessage.success('路径已复制到剪贴板')
-  } catch (err) {
-    console.error('复制失败:', err)
-    ElMessage.error('复制失败，请手动复制')
-  }
+async function copyMappedPath () {
+  try { await navigator.clipboard.writeText(mappedPathInfo.value.mappedPath); ElMessage.success('已复制') }
+  catch { ElMessage.error('复制失败') }
 }
 
-// 尝试用浏览器打开文件夹
-function openWithBrowser() {
-  const localPath = mappedPathInfo.value.mappedPath
-
-  // 方法1: 尝试使用 Tampermonkey（如果已安装）
-  if (window.kikoeruHelperLoaded || tampermonkeyLoaded.value) {
-    console.log('[Kikoeru] 使用 Tampermonkey 打开:', localPath)
-    window.dispatchEvent(new CustomEvent('kikoeru-open-folder', {
-      detail: { path: localPath }
-    }))
-    ElMessage.success('已发送打开请求给 Tampermonkey')
-    return
-  }
-
-  // 方法2: 普通浏览器方式（大概率失败）
-  // 将 Windows 路径转换为 file 协议格式
-  let fileUrl = localPath.replace(/\\/g, '/')
-
-  // 如果是 Windows 驱动器路径（如 V:\...），添加 file:///
-  if (/^[a-zA-Z]:/.test(fileUrl)) {
-    fileUrl = 'file:///' + fileUrl
-  } else {
-    fileUrl = 'file://' + fileUrl
-  }
-
-  console.log('尝试打开路径:', fileUrl)
-
-  // 尝试 window.open
-  let opened = false
-  try {
-    const win = window.open(fileUrl, '_blank')
-    if (win) {
-      opened = true
-      console.log('window.open 成功')
-    }
-  } catch (err) {
-    console.log('window.open 失败:', err)
-  }
-
-  // 尝试 iframe
-  if (!opened) {
-    try {
-      const iframe = document.createElement('iframe')
-      iframe.style.display = 'none'
-      iframe.src = fileUrl
-      document.body.appendChild(iframe)
-      setTimeout(() => document.body.removeChild(iframe), 1000)
-      opened = true
-    } catch (err) {
-      console.log('iframe 方式失败:', err)
-    }
-  }
-
-  if (opened) {
-    ElMessage.success('已尝试打开文件夹')
-  } else {
-    // 所有方法都失败，提示安装 Tampermonkey
-    ElMessage.warning('浏览器阻止了直接打开操作')
-
-    ElMessageBox.confirm(
-      `浏览器安全策略阻止了直接打开本地文件夹。<br><br>
-      <strong>推荐方案：</strong>安装 Tampermonkey 脚本<br>
-      安装后点击"尝试打开"即可直接打开文件夹<br><br>
-      <strong>临时方案：</strong>路径已复制，请手动打开`,
-      '无法直接打开',
-      {
-        confirmButtonText: '查看 Tampermonkey 脚本',
-        cancelButtonText: '手动打开',
-        type: 'warning',
-        dangerouslyUseHTMLString: true
-      }
-    ).then(() => {
-      // 打开 GitHub 上的脚本页面
-      window.open('https://github.com/canforgive/KikoeruTool/blob/main/tampermonkey/kikoeru-folder-opener.js', '_blank')
-    }).catch(() => {
-      // 用户选择手动打开，复制路径
-      copyMappedPath()
-    })
-  }
+function openWithBrowser () {
+  const p = mappedPathInfo.value.mappedPath
+  if (window.kikoeruHelperLoaded || tampermonkeyLoaded.value) { window.dispatchEvent(new CustomEvent('kikoeru-open-folder', { detail: { path: p } })); ElMessage.success('已发送打开请求'); return }
+  let url = p.replace(/\\/g, '/'); url = /^[a-zA-Z]:/.test(url) ? `file:///${url}` : `file://${url}`
+  try { if (window.open(url, '_blank')) { ElMessage.success('已尝试打开'); return } } catch (_) {}
+  ElMessage.warning('浏览器阻止了打开操作')
 }
 
-function renameItem(row) {
-  renameForm.value = {
-    id: row.id,
-    currentName: row.name,
-    newName: row.name,
-    path: row.path
-  }
-  renameDialogVisible.value = true
-}
+function renameItem (row) { renameForm.value = { id: row.id, currentName: row.name, newName: row.name, path: row.path }; renameDialogVisible.value = true }
 
-async function confirmRename() {
-  if (!renameForm.value.newName || renameForm.value.newName === renameForm.value.currentName) {
-    ElMessage.warning('请输入不同的新名称')
-    return
-  }
-
+async function confirmRename () {
+  if (!renameForm.value.newName || renameForm.value.newName === renameForm.value.currentName) { ElMessage.warning('请输入不同的新名称'); return }
   isRenaming.value = true
-  try {
-    await libraryApi.rename(renameForm.value.path, renameForm.value.newName)
-
-    ElMessage.success('重命名成功')
-    renameDialogVisible.value = false
-    await refreshLibrary()
-  } catch (error) {
-    console.error('重命名失败:', error)
-    ElMessage.error('重命名失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    isRenaming.value = false
-  }
+  try { await libraryApi.rename(renameForm.value.path, renameForm.value.newName); ElMessage.success('重命名成功'); renameDialogVisible.value = false; await refreshLibrary() }
+  catch (e) { ElMessage.error('重命名失败: ' + (e.response?.data?.detail || e.message)) }
+  finally { isRenaming.value = false }
 }
 
-async function apiRenameItem(row) {
-  try {
-    await ElMessageBox.confirm(
-      `确定要重新获取DLsite元数据并重命名吗？\n\n当前: ${row.name}`,
-      'API重新命名确认',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'info'
-      }
-    )
-  } catch {
-    return
-  }
-
+async function apiRenameItem (row) {
+  try { await ElMessageBox.confirm(`确定重新获取DLsite元数据并重命名吗？\n\n当前: ${row.name}`, 'API重命名确认', { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' }) } catch { return }
   apiRenamingId.value = row.id
-  try {
-    const data = await libraryApi.apiRename(row.path)
-
-    ElMessage.success(data.message)
-
-    if (data.new_name) {
-      ElMessage.info(`新名称: ${data.new_name}`)
-    }
-
-    await refreshLibrary()
-  } catch (error) {
-    console.error('API重命名失败:', error)
-    ElMessage.error('API重命名失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    apiRenamingId.value = null
-  }
+  try { const data = await libraryApi.apiRename(row.path); ElMessage.success(data.message); if (data.new_name) ElMessage.info(`新名称: ${data.new_name}`); await refreshLibrary() }
+  catch (e) { ElMessage.error('API重命名失败: ' + (e.response?.data?.detail || e.message)) }
+  finally { apiRenamingId.value = null }
 }
 
-// 删除项目
-async function deleteItem(row) {
+async function deleteItem (row) {
   try {
-    const confirmData = await libraryApi.delete(row.path, false)
-
-    if (confirmData.need_confirm) {
-      const type = confirmData.type === 'folder' ? '文件夹' : '文件'
-      const size = formatFileSize(confirmData.size)
-
-      await ElMessageBox.confirm(
-        `确定要删除以下${type}吗？
-
-名称: ${confirmData.name}
-大小: ${size}
-
-此操作不可恢复！`,
-        '删除确认',
-        {
-          confirmButtonText: '确定删除',
-          cancelButtonText: '取消',
-          type: 'warning',
-          confirmButtonClass: 'el-button--danger'
-        }
-      )
-
-      await libraryApi.delete(row.path, true)
-
-      ElMessage.success('删除成功')
-      await refreshLibrary()
+    const c = await libraryApi.delete(row.path, false)
+    if (c.need_confirm) {
+      await ElMessageBox.confirm(`确定删除此${c.type === 'folder' ? '文件夹' : '文件'}吗？\n名称: ${c.name}\n\n此操作不可恢复！`, '删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
+      await libraryApi.delete(row.path, true); ElMessage.success('删除成功'); await refreshLibrary()
     }
-  } catch (error) {
-    if (error === 'cancel' || error?.message === 'cancel') {
-      return
-    }
-    console.error('删除失败:', error)
-    ElMessage.error('删除失败: ' + (error.response?.data?.detail || error.message))
-  }
+  } catch (e) { if (e === 'cancel' || e?.message === 'cancel') return; ElMessage.error('删除失败: ' + (e.response?.data?.detail || e.message)) }
 }
 
-async function openFolderContentsDialog(row) {
-  if (!row?.is_directory) {
-    ElMessage.warning('只有文件夹支持文件管理')
-    return
-  }
+async function openFolderContentsDialog (row) {
+  if (!row?.is_directory) { ElMessage.warning('只有文件夹支持文件管理'); return }
   folderContentsDialogVisible.value = true
   folderContentsSearch.value = ''
+  selectedFileIds.value = new Set()
+  expandedIds.value = new Set()
   await loadFolderContents(row.path, row.name)
 }
 
-async function openSubFile(fileItem) {
-  if (fileItem.type !== 'file') {
-    return
-  }
-  try {
-    const data = await libraryApi.openFolder(fileItem.path)
-    if (data.mode === 'mapped') {
-      mappedPathInfo.value = {
-        originalPath: data.original_path,
-        mappedPath: data.mapped_path,
-        isMapped: data.is_mapped
-      }
-      mappedPathDialogVisible.value = true
-      return
-    }
-    ElMessage.success('已打开文件位置')
-  } catch (error) {
-    console.error('打开子文件失败:', error)
-    ElMessage.error('打开失败: ' + (error.response?.data?.detail || error.message))
-  }
-}
-
-async function deleteSubFile(fileItem) {
-  if (fileItem.type !== 'file') {
-    return
-  }
-  try {
-    const confirmData = await libraryApi.delete(fileItem.path, false)
-    const size = formatFileSize(confirmData.size)
-    await ElMessageBox.confirm(
-      `确定删除该文件吗？\n\n名称: ${confirmData.name}\n大小: ${size}\n\n此操作不可恢复！`,
-      '删除子文件确认',
-      {
-        confirmButtonText: '确定删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-        confirmButtonClass: 'el-button--danger'
-      }
-    )
-    await libraryApi.delete(fileItem.path, true)
-    ElMessage.success('子文件删除成功')
-    await loadFolderContents(folderContentsInfo.value.folderPath, folderContentsInfo.value.folderName)
-    await refreshLibrary()
-  } catch (error) {
-    if (error === 'cancel' || error?.message === 'cancel') {
-      return
-    }
-    console.error('删除子文件失败:', error)
-    ElMessage.error('删除子文件失败: ' + (error.response?.data?.detail || error.message))
-  }
-}
-
-async function loadFolderContents(path, folderName = '') {
+async function loadFolderContents (path, name = '') {
   folderContentsLoading.value = true
   try {
     const data = await libraryApi.folderContents(path)
-    folderContentsInfo.value = {
-      folderName: data.folder_name || folderName,
-      folderPath: data.folder_path || path,
-      totalFiles: data.total_files || 0
-    }
+    folderContentsInfo.value = { folderName: data.folder_name || name, folderPath: data.folder_path || path, totalFiles: data.total_files || 0 }
     folderContentsFiles.value = data.items || []
-    folderSelectedFiles.value = []
-    folderTableRef.value?.clearSelection?.()
-  } catch (error) {
-    console.error('加载文件夹内容失败:', error)
-    if (error.code === 'FOLDER_CONTENTS_UNSUPPORTED') {
-      ElMessage.error('加载失败：当前运行的后端版本过旧，请重启后端或使用最新 build 产物')
-    } else {
-      ElMessage.error('加载文件夹内容失败: ' + (error.response?.data?.detail || error.message))
-    }
+    selectedFileIds.value = new Set()
+    // 默认展开第一层目录
+    const s = new Set()
+    for (const n of buildTree(folderContentsFiles.value)) { if (n.type === 'dir') s.add(n.id) }
+    expandedIds.value = s
+  } catch (e) {
+    if (e.code === 'FOLDER_CONTENTS_UNSUPPORTED') ElMessage.error('后端版本过旧，请更新')
+    else ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))
     folderContentsDialogVisible.value = false
-  } finally {
-    folderContentsLoading.value = false
-  }
+  } finally { folderContentsLoading.value = false }
 }
 
-function selectFolderRow(row) {
-  return row.type === 'file'
-}
-
-function handleFolderSelectionChange(selection) {
-  folderSelectedFiles.value = selection.filter(item => item.type === 'file')
-}
-
-async function batchDeleteSubFiles() {
-  if (folderSelectedFiles.value.length === 0) {
-    ElMessage.warning('请先选择要删除的子文件')
-    return
-  }
-  const paths = folderSelectedFiles.value.map(item => item.path)
+async function openSubFile (row) {
   try {
-    const preview = await libraryApi.batchDelete(paths, false)
-    const sizeText = formatFileSize(preview.total_size || 0)
-    await ElMessageBox.confirm(
-      `确定删除选中的 ${preview.total_count || paths.length} 个子文件吗？\n\n总大小: ${sizeText}\n\n此操作不可恢复！`,
-      '批量删除子文件确认',
-      {
-        confirmButtonText: '确定删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-        confirmButtonClass: 'el-button--danger'
-      }
-    )
-    const result = await libraryApi.batchDelete(paths, true)
-    ElMessage.success(`批量删除完成：成功 ${result.success_count || 0} 个`)
+    const data = await libraryApi.openFolder(row.path)
+    if (data.mode === 'mapped') { mappedPathInfo.value = { originalPath: data.original_path, mappedPath: data.mapped_path, isMapped: data.is_mapped }; mappedPathDialogVisible.value = true; return }
+    ElMessage.success('已打开文件位置')
+  } catch (e) { ElMessage.error('打开失败: ' + (e.response?.data?.detail || e.message)) }
+}
+
+async function deleteSubFile (row) {
+  try {
+    const c = await libraryApi.delete(row.path, false)
+    await ElMessageBox.confirm(`确定删除该文件吗？\n名称: ${c.name}\n大小: ${formatFileSize(c.size)}\n\n此操作不可恢复！`, '删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
+    await libraryApi.delete(row.path, true); ElMessage.success('删除成功')
     await loadFolderContents(folderContentsInfo.value.folderPath, folderContentsInfo.value.folderName)
     await refreshLibrary()
-  } catch (error) {
-    if (error === 'cancel' || error?.message === 'cancel') {
-      return
-    }
-    console.error('批量删除子文件失败:', error)
-    ElMessage.error('批量删除失败: ' + (error.response?.data?.detail || error.message))
-  }
+  } catch (e) { if (e === 'cancel' || e?.message === 'cancel') return; ElMessage.error('删除失败: ' + (e.response?.data?.detail || e.message)) }
 }
+
+async function deleteSubDir (row) {
+  // row 是虚拟目录节点（来自 buildTree），需要从原始文件列表推算目录的路径
+  // 约定：目录路径 = folderContentsInfo.folderPath + '/' + row.relative_path
+  const dirPath = [folderContentsInfo.value.folderPath, row.relative_path].filter(Boolean).join('/')
+  try {
+    await ElMessageBox.confirm(
+      `确定删除文件夹「${row.name}」及其所有内容吗？\n\n此操作不可恢复！`,
+      '删除文件夹确认',
+      { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' }
+    )
+    await libraryApi.delete(dirPath, true)
+    ElMessage.success('文件夹删除成功')
+    await loadFolderContents(folderContentsInfo.value.folderPath, folderContentsInfo.value.folderName)
+    await refreshLibrary()
+  } catch (e) { if (e === 'cancel' || e?.message === 'cancel') return; ElMessage.error('删除失败: ' + (e.response?.data?.detail || e.message)) }
+}
+
+async function batchDeleteSubFiles () {
+  if (!folderSelectedFiles.value.length) { ElMessage.warning('请先选择文件'); return }
+  const paths = folderSelectedFiles.value.map(f => f.path)
+  try {
+    const prev = await libraryApi.batchDelete(paths, false)
+    await ElMessageBox.confirm(`确定删除 ${prev.total_count || paths.length} 个文件？总大小: ${formatFileSize(prev.total_size || 0)}\n\n此操作不可恢复！`, '批量删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
+    const res = await libraryApi.batchDelete(paths, true); ElMessage.success(`批量删除完成：成功 ${res.success_count || 0} 个`)
+    await loadFolderContents(folderContentsInfo.value.folderPath, folderContentsInfo.value.folderName)
+    await refreshLibrary()
+  } catch (e) { if (e === 'cancel' || e?.message === 'cancel') return; ElMessage.error('批量删除失败: ' + (e.response?.data?.detail || e.message)) }
+}
+
+async function handleBatchDelete () {}
+async function handleBatchApiRename () {}
 </script>
 
 <style scoped>
-.library {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 16px;
-}
+/* ─── 原库列表样式 ──────────────────────────────────────────── */
+.library { max-width: 1400px; margin: 0 auto; padding: 16px; }
+.page-title { font-size: 24px; font-weight: 600; color: #303133; margin: 0 0 20px; }
+.main-card { border-radius: 8px; border: 1px solid #e4e7ed; box-shadow: 0 2px 12px rgba(0,0,0,.02) !important; }
+.card-header { display: flex; justify-content: space-between; align-items: center; }
+.header-title { font-size: 16px; font-weight: 600; color: #303133; }
+.header-actions { display: flex; align-items: center; gap: 12px; }
+:deep(.el-table) { --el-table-header-bg-color: #f8f9fa; }
+:deep(.el-table th.el-table__cell) { font-weight: 600; }
+.file-icon { margin-right: 6px; color: #409eff; vertical-align: middle; }
+.file-name { vertical-align: middle; font-weight: 500; color: #303133; }
+.empty-text { color: #c0c4cc; }
+.action-grid { display: flex; flex-direction: column; gap: 5px; }
+.action-grid-row { display: flex; gap: 5px; }
+.action-btn { flex: 1; margin: 0 !important; border-radius: 4px; font-weight: 500; transition: all .2s; }
+.action-btn:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,.1); }
+.batch-actions { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: #f8f9fa; border: 1px solid #ebeef5; border-radius: 6px; margin: 12px 0; }
+.batch-left { display: flex; align-items: center; }
+.batch-right { display: flex; align-items: center; gap: 10px; }
+.selected-count { font-weight: 600; color: #409eff; font-size: 13px; background: #ecf5ff; padding: 3px 10px; border-radius: 10px; }
+.pagination-container { margin-top: 20px; display: flex; justify-content: flex-end; }
+.name-preview { padding: 8px 12px; background: #f8f9fa; border: 1px solid #e4e7ed; border-radius: 4px; font-family: monospace; font-size: 13px; color: #606266; word-break: break-all; }
+.path-code { font-family: monospace; font-size: 13px; color: #303133; word-break: break-all; }
+.mapped-path-container { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.mapped-path { flex: 1; min-width: 0; background: #f8f9fa; padding: 4px 8px; border-radius: 4px; border: 1px solid #ebeef5; }
+.path-actions { display: flex; gap: 6px; }
+.path-mapping-help { margin-top: 16px; padding: 14px 16px; background: #f8f9fa; border: 1px solid #ebeef5; border-radius: 6px; }
+.path-mapping-help h4 { margin: 0 0 10px; color: #303133; font-size: 13px; }
+.path-mapping-help ol { margin: 0; padding-left: 18px; color: #606266; line-height: 1.8; font-size: 13px; }
+.help-tip { margin: 10px 0 0; color: #909399; font-size: 12px; }
 
-/* 页面标题区 */
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  color: #303133;
-  margin: 0 0 20px;
-  letter-spacing: 0.5px;
-}
+/* ─── 文件管理对话框 ────────────────────────────────────────── */
+:deep(.fm-dialog .el-dialog) { border-radius: 8px; overflow: hidden; box-shadow: 0 16px 48px rgba(0,0,0,.18); }
+:deep(.fm-dialog .el-dialog__header) { padding: 0; margin: 0; border-bottom: none; }
+:deep(.fm-dialog .el-dialog__body) { padding: 0; }
+:deep(.fm-dialog .el-dialog__headerbtn) { top: 12px; right: 14px; z-index: 10; }
+:deep(.fm-dialog .el-dialog__headerbtn .el-dialog__close) { color: #909399; }
+:deep(.fm-dialog .el-dialog__headerbtn:hover .el-dialog__close) { color: #f56c6c; }
 
-/* 卡片整体微调 */
-.main-card {
-  border-radius: 8px;
-  border: 1px solid #e4e7ed;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.02) !important;
-}
+/* header — light theme */
+.fm-header { display: flex; align-items: center; justify-content: space-between; padding: 11px 48px 11px 16px; background: #fff; border-bottom: 1px solid #e4e7ed; min-height: 44px; box-sizing: border-box; }
+.fm-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fm-header-name { font-size: 13px; font-weight: 600; color: #303133; font-family: 'JetBrains Mono', Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 680px; }
+.fm-header-right { flex-shrink: 0; }
+.fm-header-count { font-size: 12px; color: #606266; background: #f0f7ff; border: 1px solid #c6e2ff; border-radius: 12px; padding: 2px 10px; }
+.fm-header-count b { color: #409eff; }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
+/* body */
+.fm-body { display: flex; flex-direction: column; height: 540px; background: #fff; }
 
-.header-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-}
+/* toolbar */
+.fm-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; background: #f8f9fa; border-bottom: 1px solid #e4e7ed; flex-shrink: 0; }
+.fm-toolbar-left { display: flex; align-items: center; gap: 6px; }
+.fm-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 11px; font-size: 12px; font-weight: 500; border-radius: 5px; border: 1px solid transparent; cursor: pointer; transition: all .15s; white-space: nowrap; line-height: 1.5; }
+.fm-btn--danger { color: #f56c6c; background: #fff0f0; border-color: #fbc4c4; }
+.fm-btn--danger:not(.fm-btn--disabled):hover { background: #f56c6c; color: #fff; border-color: #f56c6c; }
+.fm-btn--ghost { color: #606266; background: #fff; border-color: #dcdfe6; }
+.fm-btn--ghost:hover { color: #409eff; border-color: #a0cfff; background: #ecf5ff; }
+.fm-btn--disabled { opacity: .4; cursor: not-allowed; }
+.fm-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #f56c6c; color: #fff; font-size: 10px; font-weight: 700; }
 
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+/* search */
+.fm-search { position: relative; display: flex; align-items: center; }
+.fm-search-ico { position: absolute; left: 9px; color: #adb5bd; pointer-events: none; }
+.fm-search-input { width: 260px; height: 30px; padding: 0 28px; font-size: 12px; border: 1px solid #dcdfe6; border-radius: 5px; outline: none; color: #303133; background: #fff; transition: border-color .15s, box-shadow .15s; }
+.fm-search-input::placeholder { color: #c0c4cc; }
+.fm-search-input:focus { border-color: #409eff; box-shadow: 0 0 0 2px rgba(64,158,255,.12); }
+.fm-search-clear { position: absolute; right: 8px; background: none; border: none; cursor: pointer; color: #c0c4cc; font-size: 13px; line-height: 1; padding: 0; }
+.fm-search-clear:hover { color: #909399; }
 
-/* 表格细化 */
-:deep(.el-table) {
-  --el-table-header-bg-color: #f8f9fa;
-  --el-table-header-text-color: #606266;
-  border-radius: 4px;
-}
+/* thead */
+.fm-thead { display: flex; align-items: center; height: 34px; padding: 0 14px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; flex-shrink: 0; user-select: none; }
+.fm-th { font-size: 12px; font-weight: 600; color: #606266; display: flex; align-items: center; }
 
-:deep(.el-table th.el-table__cell) {
-  font-weight: 600;
-}
+/* scroll */
+.fm-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.fm-scroll::-webkit-scrollbar { width: 5px; }
+.fm-scroll::-webkit-scrollbar-track { background: transparent; }
+.fm-scroll::-webkit-scrollbar-thumb { background: #dcdfe6; border-radius: 3px; }
+.fm-scroll::-webkit-scrollbar-thumb:hover { background: #bcc0cc; }
 
-.file-icon {
-  margin-right: 8px;
-  color: #409eff;
-  vertical-align: middle;
-  font-size: 16px;
-}
+/* empty */
+.fm-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; height: 180px; color: #c0c4cc; font-size: 13px; }
 
-.file-name {
-  vertical-align: middle;
-  font-weight: 500;
-  color: #303133;
-}
+/* ─── 列宽（thead + row 共享） ───────────────────────────────── */
+.fm-col-check  { width: 42px;  flex-shrink: 0; justify-content: center; }
+.fm-col-name   { flex: 0 0 300px; min-width: 0; overflow: hidden; }
+.fm-col-path   { flex: 1; min-width: 0; overflow: hidden; padding: 0 10px; }
+.fm-col-size   { width: 88px;  flex-shrink: 0; justify-content: flex-end; padding-right: 14px; }
+.fm-col-time   { width: 155px; flex-shrink: 0; }
+.fm-col-action { width: 110px; flex-shrink: 0; justify-content: center; gap: 4px; }
 
-.empty-text {
-  color: #c0c4cc;
-}
+/* row */
+.fm-row { display: flex; align-items: center; padding: 0 14px; height: 32px; border-bottom: 1px solid #ebeef5; transition: background .1s; }
+.fm-row--dir { background: #fafbfc; cursor: pointer; }
+.fm-row--dir:hover { background: #ecf5ff; }
+.fm-row--file:hover { background: #f5f7ff; }
+.fm-row--selected { background: #ecf5ff !important; }
+.fm-td { display: flex; align-items: center; overflow: hidden; }
 
-/* 操作按钮组 (精细化排版与动效) */
-.action-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.action-grid-row {
-  display: flex;
-  gap: 6px;
-}
-
-.action-btn {
-  flex: 1;
-  margin: 0 !important; /* 强制去除 Element 默认兄弟间距 */
-  border-radius: 4px;
-  font-weight: 500;
-  transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
-}
-
-.action-btn i {
-  margin-right: 4px;
-}
-
-.action-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-/* 独立删除按钮若有特殊需求可保留，由于原生 danger 已经很好看，这里只做宽度统一 */
-.btn-delete {
-  width: 100%;
-}
-
-/* 批量操作工具栏 */
-.batch-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 20px;
-  background-color: #f8f9fa;
-  border: 1px solid #ebeef5;
-  border-radius: 6px;
-  margin-bottom: 16px;
-  margin-top: 16px;
-}
-
-.batch-left {
-  display: flex;
-  align-items: center;
-}
-
-.batch-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.selected-count {
-  font-weight: 600;
-  color: #409eff;
-  font-size: 14px;
-  background-color: #ecf5ff;
-  padding: 4px 12px;
-  border-radius: 12px;
-}
-
-.folder-dialog-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.folder-toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.folder-file-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.folder-type-icon {
-  color: #409eff;
-  font-size: 16px;
-}
-
-/* 分页区 */
-.pagination-container {
-  margin-top: 24px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-/* 对话框内元素美化 */
-.name-preview {
-  padding: 10px 14px;
-  background-color: #f8f9fa;
-  border: 1px solid #e4e7ed;
-  border-radius: 4px;
-  font-family: 'JetBrains Mono', 'Consolas', monospace;
-  font-size: 13px;
-  color: #606266;
-  word-break: break-all;
-  line-height: 1.5;
-}
-
-/* 路径映射相关美化 */
-.path-descriptions :deep(.el-descriptions__label) {
-  width: 110px;
-  justify-content: center;
-}
-
-.path-code {
-  font-family: 'JetBrains Mono', 'Consolas', monospace;
-  font-size: 13px;
-  color: #303133;
-  word-break: break-all;
-}
-
-.mapped-path-container {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.mapped-path {
-  flex: 1;
-  min-width: 0;
-  background-color: #f8f9fa;
-  padding: 6px 10px;
-  border-radius: 4px;
-  border: 1px solid #ebeef5;
-  color: #606266;
-}
-
-.path-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.path-mapping-help {
-  margin-top: 20px;
-  padding: 16px 20px;
-  background-color: #f8f9fa;
-  border: 1px solid #ebeef5;
-  border-radius: 6px;
-}
-
-.path-mapping-help h4 {
-  margin-top: 0;
-  margin-bottom: 12px;
-  color: #303133;
-}
-
-.path-mapping-help ol {
-  margin-bottom: 0;
-  padding-left: 20px;
-  color: #606266;
-  line-height: 1.8;
-}
-
-.help-tip {
-  margin-top: 12px;
-  margin-bottom: 0;
-  color: #909399;
-  font-size: 12px;
-}
+/* name cell */
+.fm-name-cell { position: relative; display: flex; align-items: center; gap: 3px; width: 100%; overflow: hidden; }
+.fm-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: #e8eaf0; }
+.fm-arrow-wrap { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex-shrink: 0; border-radius: 3px; color: #909399; cursor: pointer; transition: color .12s, background .12s; }
+.fm-arrow-wrap:hover { background: #dde4ff; color: #409eff; }
+.fm-arrow-placeholder { display: inline-block; width: 16px; flex-shrink: 0; }
+.fm-arrow { transition: transform .16s cubic-bezier(.25,.8,.25,1); color: #909399; }
+.fm-arrow--open { transform: rotate(90deg); color: #409eff; }
+.fm-icon { display: inline-flex; align-items: center; flex-shrink: 0; margin: 0 3px; }
+.fm-name-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #303133; font-family: 'JetBrains Mono', Consolas, monospace; }
+.fm-name-text--dir { font-weight: 600; color: #1c1f2e; }
+.fm-mono-sm { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #909399; font-family: 'JetBrains Mono', Consolas, monospace; width: 100%; }
+.fm-size-text { display: block; font-size: 12px; color: #606266; font-variant-numeric: tabular-nums; text-align: right; }
+.fm-link { background: none; border: none; padding: 2px 5px; font-size: 12px; font-weight: 500; cursor: pointer; border-radius: 3px; transition: background .1s; white-space: nowrap; }
+.fm-link--primary { color: #409eff; }
+.fm-link--primary:hover { background: #ecf5ff; }
+.fm-link--danger { color: #f56c6c; }
+.fm-link--danger:hover { background: #fef0f0; }
+.fm-check { width: 14px; height: 14px; cursor: pointer; accent-color: #409eff; }
 </style>
