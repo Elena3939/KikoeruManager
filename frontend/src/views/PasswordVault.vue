@@ -335,6 +335,24 @@ import { Plus, Delete, Document, Search, View, Hide, Timer, Refresh, Setting, So
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { passwordApi, cleanupApi } from '../api'
 
+const PAGE_SIZES = [10, 20, 50, 100]
+const PAGE_SIZE_STORAGE_KEY = 'kikoeru.ui.passwordVault.pageSize'
+
+function loadPersistedPageSize(fallback) {
+  try {
+    const raw = window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY)
+    const num = Number(raw)
+    if (PAGE_SIZES.includes(num)) return num
+  } catch (_) {}
+  return fallback
+}
+
+function persistPageSize(size) {
+  try {
+    window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(size))
+  } catch (_) {}
+}
+
 const loading = ref(false)
 // 【优化】：对于单纯展示不发生深度变更的大数组，使用 shallowRef，跳过 Vue 递归劫持所有对象深层级属性的操作，极大减少页面卡顿
 const passwords = shallowRef([])
@@ -344,7 +362,7 @@ const searchQuery = ref('')
 const passwordSortBy = ref('created_at')
 const passwordSortOrder = ref('desc')
 const currentPage = ref(1)
-const pageSize = ref(50)
+const pageSize = ref(loadPersistedPageSize(50))
 const totalCount = ref(0)
 const isServerPaginated = ref(false)
 const showAddDialog = ref(false)
@@ -389,6 +407,10 @@ const tablePasswords = computed(() => {
 onMounted(() => {
   loadPasswords()
   loadCleanupStatus()
+})
+
+watch(pageSize, (size) => {
+  persistPageSize(size)
 })
 
 async function loadPasswords() {
