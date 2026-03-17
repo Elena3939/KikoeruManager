@@ -29,6 +29,25 @@ if errorlevel 1 (
 )
 echo [OK] Node.js found
 
+set "NPM_CMD="
+for /f "delims=" %%P in ('where npm.cmd 2^>nul') do (
+    if not defined NPM_CMD set "NPM_CMD=%%~fP"
+)
+if not defined NPM_CMD if exist "C:\Program Files\nodejs\npm.cmd" set "NPM_CMD=C:\Program Files\nodejs\npm.cmd"
+if not defined NPM_CMD if exist "%APPDATA%\npm\npm.cmd" set "NPM_CMD=%APPDATA%\npm\npm.cmd"
+if not defined NPM_CMD (
+    echo [ERROR] npm.cmd not found!
+    echo Please reinstall Node.js and ensure npm is available.
+    pause
+    exit /b 1
+)
+call "%NPM_CMD%" --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] npm check failed: %NPM_CMD%
+    pause
+    exit /b 1
+)
+
 echo.
 echo [1/4] Creating directories...
 if not exist "test_data\input" mkdir test_data\input
@@ -87,7 +106,7 @@ echo [3/4] Installing frontend dependencies...
 cd frontend
 if not exist "node_modules" (
     echo Installing npm packages...
-    npm install
+    call "%NPM_CMD%" install
     if errorlevel 1 (
         echo [ERROR] Frontend install failed
         pause
