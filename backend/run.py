@@ -120,10 +120,15 @@ def create_tray_icon(stop_event):
         from PIL import Image, ImageDraw
         
         def create_icon_image():
+            # 创建与应用图标一致的设计
             img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
-            draw.ellipse([8, 8, 56, 56], fill=(66, 133, 244, 255))
-            draw.text((18, 22), "P", fill=(255, 255, 255, 255))
+            # 蓝色圆形背景
+            draw.ellipse([4, 4, 60, 60], fill=(66, 133, 244, 255))
+            # 白色字母 K
+            draw.rectangle([20, 15, 28, 49], fill=(255, 255, 255, 255))
+            draw.polygon([(28, 15), (28, 23), (40, 32), (40, 25), (28, 15)], fill=(255, 255, 255, 255))
+            draw.polygon([(28, 49), (28, 41), (42, 32), (42, 39), (28, 49)], fill=(255, 255, 255, 255))
             return img
         
         def on_exit(icon, item):
@@ -136,7 +141,7 @@ def create_tray_icon(stop_event):
         icon = pystray.Icon(
             "prekikoeru",
             create_icon_image(),
-            "Prekikoeru",
+            "Prekikoeru - 后台运行中",
             menu=pystray.Menu(
                 pystray.MenuItem("打开 Web 界面", on_open, default=True),
                 pystray.Menu.SEPARATOR,
@@ -144,9 +149,16 @@ def create_tray_icon(stop_event):
             )
         )
         
+        logger = logging.getLogger(__name__)
+        logger.info("✅ 系统托盘图标已创建 - 程序在后台运行")
+        logger.info(f"🌐 服务地址：{get_server_url()}")
+        logger.info("💡 提示：可以通过系统托盘图标打开界面或退出程序")
+        
         icon.run()
     except Exception as e:
-        logging.getLogger(__name__).error(f"系统托盘初始化失败: {e}")
+        logging.getLogger(__name__).error(f"系统托盘初始化失败：{e}")
+        print(f"\n⚠️  系统托盘初始化失败，程序将在前台运行")
+        print(f"💡 服务地址：{get_server_url()}")
 
 def main():
     global ACTUAL_PORT
@@ -160,26 +172,36 @@ def main():
     logger = logging.getLogger(__name__)
     logger.info("="*50)
     logger.info("Prekikoeru 启动中...")
-    logger.info(f"基础路径: {base_path}")
-    logger.info(f"前端路径: {frontend_path}")
-    logger.info(f"打包模式: {IS_FROZEN}")
+    logger.info(f"基础路径：{base_path}")
+    logger.info(f"前端路径：{frontend_path}")
+    logger.info(f"打包模式：{IS_FROZEN}")
     if IS_FROZEN:
-        logger.info(f"EXE目录: {get_exe_dir()}")
-        logger.info(f"数据目录: {os.environ.get('DATA_PATH')}")
-        logger.info(f"配置文件: {os.environ.get('CONFIG_PATH')}")
+        logger.info(f"EXE 目录：{get_exe_dir()}")
+        logger.info(f"数据目录：{os.environ.get('DATA_PATH')}")
+        logger.info(f"配置文件：{os.environ.get('CONFIG_PATH')}")
     logger.info("="*50)
+    
+    # 打印友好的启动提示
+    print("\n" + "="*50)
+    print("🚀 Prekikoeru 启动中...")
+    print("="*50)
 
     # 查找可用端口
     try:
         port = find_available_port(8000)
         if port != 8000:
             logger.warning(f"端口 8000 已被占用，自动切换到端口 {port}")
-            print(f"\n[提示] 端口 8000 已被占用，自动切换到端口 {port}")
-        logger.info(f"使用端口: {port}")
-        print(f"服务地址: {get_server_url()}")
+            print(f"\n⚠️  端口 8000 已被占用，自动切换到端口 {port}")
+        logger.info(f"使用端口：{port}")
+        server_url = get_server_url()
+        print(f"\n🌐 服务地址：{server_url}")
+        if IS_FROZEN:
+            print(f"\n💡 程序已在后台运行，请在系统托盘中找到图标")
+            print(f"   或者访问：{server_url}")
+        print("="*50 + "\n")
     except RuntimeError as e:
         logger.error(str(e))
-        print(f"错误: {e}")
+        print(f"错误：{e}")
         sys.exit(1)
 
     init_database()
