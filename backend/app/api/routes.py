@@ -542,6 +542,26 @@ async def cancel_library_backup():
     return await service.cancel()
 
 
+@app.post("/api/library-backup/resume")
+async def resume_library_backup():
+    """从断点恢复库存打包任务"""
+    service = get_backup_zip_service()
+    try:
+        return await service.resume()
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"恢复库存打包失败: {str(e)}")
+
+
+@app.get("/api/library-backup/checkpoint")
+async def get_library_backup_checkpoint():
+    """获取库存打包断点信息"""
+    service = get_backup_zip_service()
+    checkpoint = service.get_checkpoint_info()
+    return checkpoint or {"has_checkpoint": False}
+
+
 @app.post("/api/watcher/start")
 async def start_watcher():
     """启动文件夹监视器"""

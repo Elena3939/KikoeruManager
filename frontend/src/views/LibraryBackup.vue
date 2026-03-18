@@ -5,6 +5,7 @@
       <div class="header-actions">
         <el-button type="primary" :loading="saving" @click="saveBackupConfig">保存配置</el-button>
         <el-button :disabled="status.running || actionLoading" type="success" :loading="actionLoading" @click="startBackup">开始打包</el-button>
+        <el-button :disabled="!status.has_checkpoint || status.running || actionLoading" type="warning" :loading="actionLoading" @click="resumeBackup">恢复任务</el-button>
         <el-button :disabled="!status.running || actionLoading" type="danger" @click="cancelBackup">取消任务</el-button>
         <el-button @click="fetchBackupStatus">刷新状态</el-button>
       </div>
@@ -96,6 +97,7 @@
       <div class="status-meta" v-if="status.running && (status.speed || status.eta)">
         <el-tag size="small" type="info" v-if="status.speed" class="meta-tag">速度: {{ status.speed }}</el-tag>
         <el-tag size="small" type="info" v-if="status.eta" class="meta-tag">剩余时间: {{ status.eta }}</el-tag>
+        <el-tag size="small" type="info" v-if="status.total_bytes > 0" class="meta-tag">{{ formatSize(status.processed_bytes) }} / {{ formatSize(status.total_bytes) }}</el-tag>
       </div>
       <div class="meta-row" v-if="status.output_zip_path">输出文件：{{ status.output_zip_path }}</div>
       <div class="meta-row" v-if="status.path_snapshot_dir">目录结构复制目标：{{ status.path_snapshot_dir }}</div>
@@ -158,7 +160,10 @@ const status = ref({
   error: null,
   output_zip_path: '',
   path_snapshot_dir: '',
-  logs: []
+  logs: [],
+  processed_bytes: 0,
+  total_bytes: 0,
+  has_checkpoint: false
 })
 const backupConfig = ref({
   enabled: false,
@@ -186,7 +191,7 @@ function startPolling() {
   stopPolling()
   timer = setInterval(() => {
     fetchBackupStatus(false)
-  }, 2000)
+  }, 1000)
 }
 
 async function loadConfig() {
@@ -243,7 +248,9 @@ async function saveBackupConfig(showSuccess = true) {
         password: backupConfig.value.password || '',
         archive_format: backupConfig.value.archive_format || 'zip',
         compression_level: backupConfig.value.compression_level ?? 9,
-        compression_threads: backupConfig.value.compression_threads ?? 0
+        compression_threads: backupConfig.value.compression_threads ?? 0,
+        dictionary_size_mb: backupConfig.value.dictionary_size_mb ?? 0,
+        solid_archive: backupConfig.value.solid_archive ?? true
       }
     })
     if (showSuccess) {
@@ -315,6 +322,20 @@ async function cancelBackup() {
   }
 }
 
+async function resumeBackup() {
+  try {
+    actionLoading.value = true
+    const result = await backupApi.resume()
+    status.value = { ...status.value, ...(result || {}) }
+    startPolling()
+    ElMessage.success('库存打包任务已恢复')
+  } catch (error) {
+    ElMessage.error('恢复库存打包失败：' + (error.response?.data?.detail || error.message))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
 onMounted(async () => {
   await loadConfig()
   await fetchBackupStatus(false)
@@ -356,6 +377,11 @@ onBeforeUnmount(() => {
 .setting-card,
 .status-card {
   margin-bottom: 16px;
+}
+
+/* 进度条平滑过渡 */
+:deep(.el-progress-bar__inner) {
+  transition: width 0.8s ease-out;
 }
 
 .form-tip {
