@@ -56,24 +56,43 @@
         <el-table-column prop="unzip_time" label="解压时间" width="180" sortable>
           <template #default="{ row }">{{ formatDate(row.unzip_time) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+
+        <!-- ★ 优化后的操作列 -->
+        <el-table-column
+          label="操作"
+          width="260"
+          fixed="right"
+          align="center"
+          header-align="center"
+        >
           <template #default="{ row }">
             <div class="action-grid">
+              <!-- 第一行：打开 -->
               <div class="action-grid-row">
-                <el-button size="small" type="primary" @click="openFolder(row)" class="action-btn">
+                <el-button size="small" type="primary" plain @click="openFolder(row)" class="action-btn">
                   <el-icon><Folder /></el-icon>打开
                 </el-button>
-                <el-button size="small" type="info" @click="openFolderDirect(row)" class="action-btn">直接打开</el-button>
+                <el-button size="small" type="primary" plain @click="openFolderDirect(row)" class="action-btn">
+                  直接打开
+                </el-button>
               </div>
+              <!-- 第二行：重命名 -->
               <div class="action-grid-row">
-                <el-button size="small" type="warning" @click="renameItem(row)" :loading="renamingId === row.id" class="action-btn">重命名</el-button>
-                <el-button size="small" type="success" @click="apiRenameItem(row)" :loading="apiRenamingId === row.id" class="action-btn">API 重命名</el-button>
+                <el-button size="small" type="warning" plain @click="renameItem(row)" :loading="renamingId === row.id" class="action-btn">
+                  重命名
+                </el-button>
+                <el-button size="small" type="warning" plain @click="apiRenameItem(row)" :loading="apiRenamingId === row.id" class="action-btn">
+                  API 重命名
+                </el-button>
               </div>
+              <!-- 第三行：文件管理 + 删除 -->
               <div class="action-grid-row">
-                <el-button size="small" type="info" plain @click="openFolderContentsDialog(row)" class="action-btn">
+                <el-button size="small" plain @click="openFolderContentsDialog(row)" class="action-btn action-btn--neutral">
                   <el-icon><Files /></el-icon>文件管理
                 </el-button>
-                <el-button size="small" type="danger" @click="deleteItem(row)" class="action-btn">删除</el-button>
+                <el-button size="small" type="danger" plain @click="deleteItem(row)" class="action-btn">
+                  删除
+                </el-button>
               </div>
             </div>
           </template>
@@ -85,14 +104,12 @@
           <span class="selected-count">已选择 {{ selectedRows.length }} 项</span>
         </div>
         <div class="batch-right">
-          <el-button-group>
-            <el-button size="small" type="danger" plain @click="handleBatchDelete" :loading="batchDeleting">
-              <el-icon><Delete /></el-icon>批量删除
-            </el-button>
-            <el-button size="small" type="warning" plain @click="handleBatchApiRename" :loading="batchRenaming">
-              <el-icon><Edit /></el-icon>批量 API重命名
-            </el-button>
-          </el-button-group>
+          <el-button size="small" type="danger" plain @click="handleBatchDelete" :loading="batchDeleting">
+            <el-icon><Delete /></el-icon>批量删除
+          </el-button>
+          <el-button size="small" type="warning" plain @click="handleBatchApiRename" :loading="batchRenaming">
+            <el-icon><Edit /></el-icon>批量 API重命名
+          </el-button>
           <el-button size="small" @click="clearSelection">取消选择</el-button>
         </div>
       </div>
@@ -278,14 +295,12 @@
             <!-- 文件名 -->
             <div class="fm-td fm-col-name">
               <div class="fm-name-cell" :style="{ paddingLeft: (row.depth * 20 + 4) + 'px' }">
-                <!-- 缩进竖引导线 -->
                 <span
                   v-for="d in row.depth"
                   :key="d"
                   class="fm-guide"
                   :style="{ left: ((d - 1) * 20 + 12) + 'px' }"
                 />
-                <!-- 折叠箭头 / 占位 -->
                 <span v-if="row.type === 'dir'" class="fm-arrow-wrap" @click.stop="toggleExpand(row)">
                   <svg
                     class="fm-arrow"
@@ -297,36 +312,29 @@
                 </span>
                 <span v-else class="fm-arrow-placeholder" />
 
-                <!-- 类型图标 -->
                 <span class="fm-icon">
-                  <!-- 文件夹 -->
                   <svg v-if="row.type === 'dir'" width="14" height="14" viewBox="0 0 16 16" fill="none">
                     <path d="M1.5 3.5C1.5 2.67 2.17 2 3 2H5.88C6.27 2 6.64 2.16 6.9 2.44L7.5 3.1A.84.84 0 008.07 3.3H13C13.83 3.3 14.5 3.97 14.5 4.8V12.5C14.5 13.33 13.83 14 13 14H3C2.17 14 1.5 13.33 1.5 12.5V3.5Z"
                       :fill="expandedIds.has(row.id) ? 'rgba(232,160,33,0.35)' : 'rgba(232,160,33,0.15)'"
                       stroke="#e8a021" stroke-width="1.2"/>
                   </svg>
-                  <!-- 音频 -->
                   <svg v-else-if="getFileType(row.name) === 'audio'" width="14" height="14" viewBox="0 0 16 16" fill="none">
                     <rect x="1.5" y="2" width="13" height="12" rx="2" fill="rgba(77,156,248,0.12)" stroke="#4d9cf8" stroke-width="1.2"/>
                     <path d="M5.5 6v4m2-5.5v7m2-5v3m2-4.5v6" stroke="#4d9cf8" stroke-width="1.2" stroke-linecap="round"/>
                   </svg>
-                  <!-- 图片 -->
                   <svg v-else-if="getFileType(row.name) === 'image'" width="14" height="14" viewBox="0 0 16 16" fill="none">
                     <rect x="1.5" y="2" width="13" height="12" rx="2" fill="rgba(74,222,128,0.12)" stroke="#4ade80" stroke-width="1.2"/>
                     <circle cx="5.5" cy="6.5" r="1.2" fill="#4ade80"/>
                     <path d="M2 12l3.5-3.5 2.5 2.5 2-2L14 12" stroke="#4ade80" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                   </svg>
-                  <!-- 视频 -->
                   <svg v-else-if="getFileType(row.name) === 'video'" width="14" height="14" viewBox="0 0 16 16" fill="none">
                     <rect x="1.5" y="2" width="13" height="12" rx="2" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.2"/>
                     <path d="M6 5.5l5 2.5-5 2.5V5.5z" fill="#a78bfa"/>
                   </svg>
-                  <!-- 字幕 -->
                   <svg v-else-if="getFileType(row.name) === 'subtitle'" width="14" height="14" viewBox="0 0 16 16" fill="none">
                     <rect x="1.5" y="2" width="13" height="12" rx="2" fill="rgba(251,146,60,0.12)" stroke="#fb923c" stroke-width="1.2"/>
                     <path d="M4 7h8M4 10h5" stroke="#fb923c" stroke-width="1.2" stroke-linecap="round"/>
                   </svg>
-                  <!-- 通用 -->
                   <svg v-else width="14" height="14" viewBox="0 0 16 16" fill="none">
                     <path d="M3 2h7l3 3v9a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z" fill="rgba(148,163,184,0.15)" stroke="#94a3b8" stroke-width="1.2"/>
                     <path d="M10 2v3h3" stroke="#94a3b8" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
@@ -448,7 +456,6 @@ function buildTree (items) {
     }
     children.push({ ...item, id: `file:${item.path}`, type: 'file' })
   }
-  // 聚合每个目录的 size 和 modified_time
   function aggregateDir (node) {
     let totalSize = 0, latestTime = null
     for (const child of node.children || []) {
@@ -675,7 +682,6 @@ async function loadFolderContents (path, name = '') {
     folderContentsInfo.value = { folderName: data.folder_name || name, folderPath: data.folder_path || path, totalFiles: data.total_files || 0, totalSize }
     folderContentsFiles.value = items
     selectedFileIds.value = new Set()
-    // 默认展开第一层目录
     const s = new Set()
     for (const n of buildTree(folderContentsFiles.value)) { if (n.type === 'dir') s.add(n.id) }
     expandedIds.value = s
@@ -684,14 +690,6 @@ async function loadFolderContents (path, name = '') {
     else ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))
     folderContentsDialogVisible.value = false
   } finally { folderContentsLoading.value = false }
-}
-
-async function openSubFile (row) {
-  try {
-    const data = await libraryApi.openFolder(row.path)
-    if (data.mode === 'mapped') { mappedPathInfo.value = { originalPath: data.original_path, mappedPath: data.mapped_path, isMapped: data.is_mapped }; mappedPathDialogVisible.value = true; return }
-    ElMessage.success('已打开文件位置')
-  } catch (e) { ElMessage.error('打开失败: ' + (e.response?.data?.detail || e.message)) }
 }
 
 async function deleteSubFile (row) {
@@ -705,8 +703,6 @@ async function deleteSubFile (row) {
 }
 
 async function deleteSubDir (row) {
-  // row 是虚拟目录节点（来自 buildTree），需要从原始文件列表推算目录的路径
-  // 约定：目录路径 = folderContentsInfo.folderPath + '/' + row.relative_path
   const dirPath = [folderContentsInfo.value.folderPath, row.relative_path].filter(Boolean).join('/')
   try {
     await ElMessageBox.confirm(
@@ -738,25 +734,61 @@ async function handleBatchApiRename () {}
 </script>
 
 <style scoped>
-/* ─── 原库列表样式 ──────────────────────────────────────────── */
+/* ─── 库列表 ─────────────────────────────────────────────────── */
 .library { max-width: 1400px; margin: 0 auto; padding: 16px; }
 .page-title { font-size: 24px; font-weight: 600; color: #303133; margin: 0 0 20px; }
 .main-card { border-radius: 8px; border: 1px solid #e4e7ed; box-shadow: 0 2px 12px rgba(0,0,0,.02) !important; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .header-title { font-size: 16px; font-weight: 600; color: #303133; }
-.header-actions { display: flex; align-items: center; gap: 12px; }
+.header-actions { display: flex; align-items: center; gap: 15px; }
+.header-actions > :deep(.el-button) { min-width: 80px; justify-content: center; margin: 0; }
 :deep(.el-table) { --el-table-header-bg-color: #f8f9fa; }
 :deep(.el-table th.el-table__cell) { font-weight: 600; }
 .file-icon { margin-right: 6px; color: #409eff; vertical-align: middle; }
 .file-name { vertical-align: middle; font-weight: 500; color: #303133; }
 .empty-text { color: #c0c4cc; }
-.action-grid { display: flex; flex-direction: column; gap: 5px; }
-.action-grid-row { display: flex; gap: 5px; }
-.action-btn { flex: 1; margin: 0 !important; border-radius: 4px; font-weight: 500; transition: all .2s; }
-.action-btn:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,.1); }
+
+/* ─── 操作列按钮（优化版） ──────────────────────────────────── */
+.action-grid {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  width: 100%;
+}
+.action-grid-row {
+  display: flex;
+  gap: 4px;
+  width: 228px;
+}
+.action-btn {
+  flex: 1;
+  margin: 0 !important;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 0;
+  transition: all .15s;
+}
+.action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .08);
+}
+/* 文件管理按钮单独走灰色系 */
+.action-btn--neutral {
+  color: #606266 !important;
+  border-color: #dcdfe6 !important;
+}
+.action-btn--neutral:hover {
+  color: #409eff !important;
+  border-color: #a0cfff !important;
+  background: #ecf5ff !important;
+}
+
+/* ─── 批量操作 ───────────────────────────────────────────────── */
 .batch-actions { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: #f8f9fa; border: 1px solid #ebeef5; border-radius: 6px; margin: 12px 0; }
 .batch-left { display: flex; align-items: center; }
-.batch-right { display: flex; align-items: center; gap: 10px; }
+.batch-right { display: flex; align-items: center; gap: 8px; }
 .selected-count { font-weight: 600; color: #409eff; font-size: 13px; background: #ecf5ff; padding: 3px 10px; border-radius: 10px; }
 .pagination-container { margin-top: 20px; display: flex; justify-content: flex-end; }
 .name-preview { padding: 8px 12px; background: #f8f9fa; border: 1px solid #e4e7ed; border-radius: 4px; font-family: monospace; font-size: 13px; color: #606266; word-break: break-all; }
@@ -777,20 +809,16 @@ async function handleBatchApiRename () {}
 :deep(.fm-dialog .el-dialog__headerbtn .el-dialog__close) { color: #909399; }
 :deep(.fm-dialog .el-dialog__headerbtn:hover .el-dialog__close) { color: #f56c6c; }
 
-/* header — light theme */
 .fm-header { display: flex; align-items: center; justify-content: space-between; padding: 11px 48px 11px 16px; background: #fff; border-bottom: 1px solid #e4e7ed; min-height: 44px; box-sizing: border-box; }
 .fm-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .fm-header-name { font-size: 13px; font-weight: 600; color: #303133; font-family: 'JetBrains Mono', Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 680px; }
 .fm-header-right { flex-shrink: 0; }
 .fm-header-size { font-size: 12px; color: #909399; background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 10px; padding: 1px 8px; margin-left: 6px; font-family: 'JetBrains Mono', Consolas, monospace; flex-shrink: 0; }
-.fm-header-size { font-size: 12px; color: #909399; background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 10px; padding: 1px 8px; margin-left: 6px; font-family: 'JetBrains Mono', Consolas, monospace; flex-shrink: 0; }
 .fm-header-count { font-size: 12px; color: #606266; background: #f0f7ff; border: 1px solid #c6e2ff; border-radius: 12px; padding: 2px 10px; }
 .fm-header-count b { color: #409eff; }
 
-/* body */
 .fm-body { display: flex; flex-direction: column; height: 540px; background: #fff; }
 
-/* toolbar */
 .fm-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 9px 16px; background: #f8f9fa; border-bottom: 1px solid #e4e7ed; flex-shrink: 0; }
 .fm-toolbar-left { display: flex; align-items: center; gap: 6px; }
 .fm-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 11px; font-size: 12px; font-weight: 500; border-radius: 5px; border: 1px solid transparent; cursor: pointer; transition: all .15s; white-space: nowrap; line-height: 1.5; }
@@ -801,7 +829,6 @@ async function handleBatchApiRename () {}
 .fm-btn--disabled { opacity: .4; cursor: not-allowed; }
 .fm-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #f56c6c; color: #fff; font-size: 10px; font-weight: 700; }
 
-/* search */
 .fm-search { position: relative; display: flex; align-items: center; }
 .fm-search-ico { position: absolute; left: 9px; color: #adb5bd; pointer-events: none; }
 .fm-search-input { width: 260px; height: 30px; padding: 0 28px; font-size: 12px; border: 1px solid #dcdfe6; border-radius: 5px; outline: none; color: #303133; background: #fff; transition: border-color .15s, box-shadow .15s; }
@@ -810,21 +837,17 @@ async function handleBatchApiRename () {}
 .fm-search-clear { position: absolute; right: 8px; background: none; border: none; cursor: pointer; color: #c0c4cc; font-size: 13px; line-height: 1; padding: 0; }
 .fm-search-clear:hover { color: #909399; }
 
-/* thead */
 .fm-thead { display: flex; align-items: center; height: 36px; padding: 0 16px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; flex-shrink: 0; user-select: none; }
 .fm-th { font-size: 12px; font-weight: 600; color: #606266; display: flex; align-items: center; }
 
-/* scroll */
 .fm-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; }
 .fm-scroll::-webkit-scrollbar { width: 5px; }
 .fm-scroll::-webkit-scrollbar-track { background: transparent; }
 .fm-scroll::-webkit-scrollbar-thumb { background: #dcdfe6; border-radius: 3px; }
 .fm-scroll::-webkit-scrollbar-thumb:hover { background: #bcc0cc; }
 
-/* empty */
 .fm-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; height: 180px; color: #c0c4cc; font-size: 13px; }
 
-/* ─── 列宽（thead + row 共享） ───────────────────────────────── */
 .fm-col-check  { width: 42px;  flex-shrink: 0; justify-content: center; }
 .fm-col-name   { flex: 1; min-width: 0; overflow: hidden; }
 .fm-col-size   { width: 110px; flex-shrink: 0; justify-content: flex-end; padding-right: 24px; }
@@ -832,7 +855,6 @@ async function handleBatchApiRename () {}
 .fm-td.fm-col-time .fm-mono-sm { text-align: center; }
 .fm-col-action { width: 100px; flex-shrink: 0; justify-content: center; gap: 6px; }
 
-/* row */
 .fm-row { display: flex; align-items: center; padding: 0 16px; height: 36px; border-bottom: 1px solid #ebeef5; transition: background .1s; }
 .fm-row--dir { background: #fafbfc; cursor: pointer; }
 .fm-row--dir:hover { background: #ecf5ff; }
@@ -840,7 +862,6 @@ async function handleBatchApiRename () {}
 .fm-row--selected { background: #ecf5ff !important; }
 .fm-td { display: flex; align-items: center; overflow: hidden; }
 
-/* name cell */
 .fm-name-cell { position: relative; display: flex; align-items: center; gap: 4px; width: 100%; overflow: hidden; }
 .fm-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: #e8eaf0; }
 .fm-arrow-wrap { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex-shrink: 0; border-radius: 3px; color: #909399; cursor: pointer; transition: color .12s, background .12s; }
@@ -859,5 +880,4 @@ async function handleBatchApiRename () {}
 .fm-link--danger { color: #f56c6c; border-color: #fbc4c4; background: #fff0f0; }
 .fm-link--danger:hover { background: #f56c6c; color: #fff; border-color: #f56c6c; }
 .fm-check { width: 14px; height: 14px; cursor: pointer; accent-color: #409eff; }
-.fm-link-placeholder { display: inline-block; min-width: 36px; padding: 2px 8px; }
 </style>
