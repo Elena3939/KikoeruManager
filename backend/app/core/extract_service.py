@@ -1099,20 +1099,18 @@ class ExtractService:
         
         filename = Path(archive_path).name
         
-        # 提取RJ号
-        rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', filename, re.IGNORECASE)
-        rjcode = rj_match.group(0).upper() if rj_match else None
+        rjcodes = self._extract_rjcode_candidates(archive_path)
         
         db = next(get_db())
         passwords = []
         
         try:
-            # 1. 首先尝试精确匹配RJ号
-            if rjcode:
-                entries = db.query(PasswordEntry).filter(PasswordEntry.rjcode == rjcode).all()
+            if rjcodes:
+                from sqlalchemy import func
+                entries = db.query(PasswordEntry).filter(func.upper(PasswordEntry.rjcode).in_(rjcodes)).all()
                 for entry in entries:
                     passwords.append(entry.password)
-                    logger.info(f"找到RJ号匹配的密码: {rjcode}")
+                    logger.info(f"找到RJ号匹配的密码: {entry.rjcode}")
             
             # 2. 其次尝试文件名匹配
             entries = db.query(PasswordEntry).filter(PasswordEntry.filename == filename).all()
@@ -1133,6 +1131,33 @@ class ExtractService:
             return passwords
         finally:
             db.close()
+
+    def _extract_rjcode_candidates(self, archive_path: str) -> List[str]:
+        candidates: List[str] = []
+        seen = set()
+
+        def add_code(code: str):
+            code = code.upper()
+            if code and code not in seen:
+                seen.add(code)
+                candidates.append(code)
+
+        path_text = str(archive_path)
+        for match in re.finditer(r'[RVB]J\s*[-_.]?\s*(\d{6}|\d{8})(?!\d)', path_text, re.IGNORECASE):
+            digits = match.group(1)
+            add_code(f"RJ{digits}")
+
+        path_obj = Path(archive_path)
+        parts = list(path_obj.parts)
+        if path_obj.suffix:
+            parts.append(path_obj.stem)
+        for part in parts:
+            cleaned = re.sub(r'^\d+[._-]', '', part)
+            number_match = re.fullmatch(r'(\d{6}|\d{8})', cleaned)
+            if number_match:
+                add_code(f"RJ{number_match.group(1)}")
+
+        return candidates
     
     async def _record_password_usage(self, password: str, archive_path: str):
         """记录密码使用情况"""
@@ -1163,17 +1188,25 @@ class ExtractService:
         例如: 对于RJ123456，返回 ['RJ123456', 'RJ123457', 'RJ123455']
         """
         passwords = []
-        # 从文件名中提取RJ号 (例如: RJ123456)
-        filename = os.path.basename(archive_path)
-        # 匹配 RJ 后跟 6-8 位数字
-        match = re.search(r'RJ(\d{6,8})', filename, re.IGNORECASE)
-        if match:
-            rj_number = int(match.group(1))
-            rj_code = f"RJ{rj_number}"
-            rj_plus_one = f"RJ{rj_number + 1}"
-            rj_minus_one = f"RJ{rj_number - 1}"
-            passwords = [rj_code, rj_plus_one, rj_minus_one]
-            logger.debug(f"从文件名提取RJ号生成密码: {passwords}")
+        seen = set()
+        rjcodes = self._extract_rjcode_candidates(archive_path)
+        for rjcode in rjcodes:
+            digits = re.sub(r'^[RVB]J', '', rjcode, flags=re.IGNORECASE)
+            if not digits.isdigit():
+                continue
+            width = len(digits)
+            rj_number = int(digits)
+            variants = [
+                f"RJ{digits}",
+                f"RJ{str(rj_number + 1).zfill(width)}",
+                f"RJ{str(max(0, rj_number - 1)).zfill(width)}",
+            ]
+            for pwd in variants:
+                if pwd not in seen:
+                    seen.add(pwd)
+                    passwords.append(pwd)
+        if passwords:
+            logger.debug(f"从路径提取RJ号生成密码: {passwords}")
         return passwords
 
     async def _get_archive_info(self, archive_path: str) -> Optional[ArchiveInfo]:
