@@ -3,16 +3,32 @@ import shutil
 import subprocess
 import sys
 
+def check_build_dependencies():
+    try:
+        import pystray  # noqa: F401
+        import PIL  # noqa: F401
+        return True
+    except Exception as e:
+        print(f"缺少打包依赖: {e}")
+        print("请先执行: pip install -r requirements.txt")
+        return False
+
 def build(console_mode=True):
     name = 'prekikoeru' if console_mode else 'prekikoeru-noconsole'
+    
+    icon_path = r'D:\Tool\0edba671-6c04-463c-9b4f-7f1cec565830.ico'
+    icon_option = [icon_path] if os.path.exists(icon_path) else []
+    datas = [('../frontend/dist', 'frontend/dist'), ('config', 'backend/config')]
+    if os.path.exists(icon_path):
+        datas.append((icon_path, '.'))
     
     spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
 
 a = Analysis(
-    ['run.py'],
-    pathex=[],
+    ['../desktop_app.py'],
+    pathex=['..'],
     binaries=[],
-    datas=[('app', 'app'), ('../frontend/dist', 'frontend/dist')],
+    datas={datas},
     hiddenimports=['uvicorn', 'fastapi', 'sqlalchemy', 'yaml', 'watchdog', 'filetype', 'requests', 'aiohttp', 'pystray', 'PIL'],
     hookspath=[],
     hooksconfig={{}},
@@ -42,6 +58,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon={icon_option if icon_option else []},
 )
 '''
     
@@ -67,6 +84,8 @@ exe = EXE(
 
 def main():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    if not check_build_dependencies():
+        sys.exit(1)
     
     print("=" * 50)
     print("Building prekikoeru - two versions")

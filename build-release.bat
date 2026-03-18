@@ -33,6 +33,13 @@ if errorlevel 1 (
 popd
 
 pushd "%BACKEND%"
+call "%PYTHON_EXE%" -m pip install -r requirements.txt --disable-pip-version-check
+if errorlevel 1 (
+  popd
+  echo 后端依赖安装失败
+  exit /b 1
+)
+
 call "%PYTHON_EXE%" -m pip install pyinstaller --disable-pip-version-check
 if errorlevel 1 (
   popd
@@ -40,7 +47,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON%" --distpath "dist" --workpath "build" --specpath "." --add-data "app;app" --add-data "..\frontend\dist;frontend/dist" --add-data "..\config\config.yaml;config" run.py
+call "%PYTHON_EXE%" -c "import pystray, PIL; print('pystray ok')"
+if errorlevel 1 (
+  popd
+  echo 依赖校验失败: pystray/Pillow 未正确安装
+  exit /b 1
+)
+
+call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON%;." ..\desktop_app.py
 if errorlevel 1 (
   popd
   echo 打包失败
