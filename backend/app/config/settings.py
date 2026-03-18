@@ -212,6 +212,8 @@ class BackupZipConfig(BaseModel):
     archive_format: str = "zip"
     compression_level: int = 9
     compression_threads: int = 0
+    dictionary_size_mb: int = 0    # 0=自动根据压缩级别选择
+    solid_archive: bool = True     # 7z格式启用固实压缩（提升压缩率）
 
 class AppConfig(BaseModel):
     """应用配置"""

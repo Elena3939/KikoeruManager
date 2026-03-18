@@ -335,6 +335,29 @@ class BackupRecord(Base):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
+class BackupCheckpoint(Base):
+    """压缩断点续传记录表"""
+    __tablename__ = 'backup_checkpoints'
+
+    id = Column(String(36), primary_key=True)
+    source_path = Column(Text)
+    output_dir = Column(Text)
+    archive_path = Column(Text)
+    archive_format = Column(String(10))
+    compression_level = Column(Integer)
+    password_hash = Column(String(64))
+    file_manifest = Column(Text)          # JSON string
+    completed_chunks = Column(Text)       # JSON string
+    current_chunk_index = Column(Integer, default=0)
+    total_chunks = Column(Integer)
+    total_files = Column(Integer)
+    processed_files = Column(Integer, default=0)
+    total_bytes = Column(BigInteger, default=0)
+    processed_bytes = Column(BigInteger, default=0)
+    state = Column(String(20))           # in_progress / interrupted / completed
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
 class WaitingRetryTask(Base):
     """等待重试任务表"""
     __tablename__ = 'waiting_retry_tasks'

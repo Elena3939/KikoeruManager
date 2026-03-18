@@ -89,6 +89,16 @@ export const backupApi = {
     return response.data
   },
 
+  resume: async () => {
+    const response = await apiClient.post('/library-backup/resume')
+    return response.data
+  },
+
+  checkpoint: async () => {
+    const response = await apiClient.get('/library-backup/checkpoint')
+    return response.data
+  },
+
   history: async () => {
     const response = await apiClient.get('/backup/history')
     return response.data
