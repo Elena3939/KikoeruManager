@@ -960,9 +960,12 @@ async def get_logs(lines: int = 100):
     """获取日志文件内容"""
     import os
     log_dir = os.environ.get('DATA_PATH', './data')
-    log_file = os.path.join(log_dir, 'app.log')
-    
-    if not os.path.exists(log_file):
+    log_files = [
+        os.path.join(log_dir, 'app.log'),
+        os.path.join(log_dir, 'desktop_app.log'),
+    ]
+    log_file = next((path for path in log_files if os.path.exists(path)), None)
+    if not log_file:
         return {"logs": []}
     
     try:
