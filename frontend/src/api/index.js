@@ -231,14 +231,16 @@ export const libraryApi = {
     return response.data
   },
 
-  browseFiles: async ({ libraryId = null, page = 1, pageSize = 200, search = '', currentPath = '' } = {}) => {
+  browseFiles: async ({ libraryId = null, page = 1, pageSize = 200, search = '', currentPath = '', sortBy = 'size', sortOrder = 'desc' } = {}) => {
     const response = await apiClient.get('/library/browser/files', {
       params: {
         library_id: libraryId,
         page,
         page_size: pageSize,
         search,
-        current_path: currentPath || undefined
+        current_path: currentPath || undefined,
+        sort_by: sortBy,
+        sort_order: sortOrder
       }
     })
     return response.data
