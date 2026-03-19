@@ -58,3 +58,5 @@ frontend/node_modules/
 *.spec
 setup-run.log
 setup-run2.log
+config/config.yaml
+.claude/
