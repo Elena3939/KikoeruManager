@@ -160,6 +160,13 @@ class TaskEngine:
         self._progress_callbacks: list[Callable] = []
         self._retry_scheduler_task: Optional[asyncio.Task] = None  # 重试调度器任务
 
+    def set_max_concurrent(self, max_concurrent: int):
+        """动态更新最大并发数"""
+        max_concurrent = max(1, int(max_concurrent))
+        if self.max_concurrent != max_concurrent:
+            logger.info(f"更新任务引擎最大并发数: {self.max_concurrent} -> {max_concurrent}")
+            self.max_concurrent = max_concurrent
+
     def is_rjcode_processing(self, rjcode: str) -> bool:
         """检查RJ号是否正在被处理"""
         return rjcode in self._processing_rjcodes
@@ -1662,6 +1669,10 @@ _task_engine: Optional[TaskEngine] = None
 def get_task_engine() -> TaskEngine:
     """获取任务引擎实例"""
     global _task_engine
+    from ..config.settings import get_config
+    configured_max_workers = max(1, int(get_config().processing.max_workers))
     if _task_engine is None:
-        _task_engine = TaskEngine()
+        _task_engine = TaskEngine(max_concurrent=configured_max_workers)
+    else:
+        _task_engine.set_max_concurrent(configured_max_workers)
     return _task_engine
