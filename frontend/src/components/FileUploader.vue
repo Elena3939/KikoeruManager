@@ -21,6 +21,17 @@
       <p class="upload-desc">支持多种文件格式</p>
 
       <div v-if="displayFiles.length > 0" class="selected-files">
+        <div class="target-library-row">
+          <span class="target-library-label">解压目标库</span>
+          <el-select v-model="targetLibraryId" style="width: 100%" placeholder="选择目标库存">
+            <el-option
+              v-for="library in libraries"
+              :key="library.id"
+              :label="library.name"
+              :value="library.id"
+            />
+          </el-select>
+        </div>
         <!-- 显示分组后的文件 -->
         <div v-for="(group, index) in displayFiles" :key="group._uid" class="file-item">
           <el-icon><Document /></el-icon>
@@ -48,9 +59,10 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Upload, Document } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { libraryApi } from '../api'
 
 const emit = defineEmits(['upload-success'])
 
@@ -58,6 +70,18 @@ const fileInput = ref(null)
 const isDragOver = ref(false)
 const selectedFiles = ref([])
 const uploading = ref(false)
+const libraries = ref([])
+const targetLibraryId = ref('')
+
+onMounted(async () => {
+  try {
+    const data = await libraryApi.listLibraries()
+    libraries.value = data.libraries || []
+    targetLibraryId.value = data.default_extract_library_id || data.default_library_id || libraries.value[0]?.id || ''
+  } catch (error) {
+    console.error('failed to load libraries', error)
+  }
+})
 
 // 生成分卷组显示名称
 function getVolumeBaseName(filename) {
@@ -261,6 +285,9 @@ async function startUpload() {
     for (const file of selectedFiles.value) {
       formData.append('files', file._file)
     }
+    if (targetLibraryId.value) {
+      formData.append('target_library_id', targetLibraryId.value)
+    }
 
     const response = await fetch('/api/upload', {
       method: 'POST',
@@ -329,6 +356,20 @@ async function startUpload() {
   margin-top: 24px;
   width: 100%;
   max-width: 600px;
+}
+
+.target-library-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.target-library-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
 }
 
 .file-item {
