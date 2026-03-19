@@ -53,7 +53,7 @@
               </el-option>
             </el-select>
             <el-button :loading="loading" @click="refreshLibrary"><el-icon><Refresh /></el-icon>刷新</el-button>
-            <el-button :loading="statsLoading" @click="refreshStats(true)">刷新统计</el-button>
+            <el-button :loading="statsLoading" @click="handleStatsAction">{{ canCancelStats ? '取消统计' : '刷新统计' }}</el-button>
             <el-button @click="toggleAllSelection">{{ isAllSelected ? '取消全选' : '全选' }}</el-button>
             <el-input v-model="searchQuery" clearable placeholder="搜索文件名或RJ号" style="width: 250px" @keyup.enter="handleSearch" @clear="handleSearch">
               <template #prefix><el-icon><Search /></el-icon></template>
@@ -300,6 +300,7 @@ const countedLibraries = computed(() => libraries.value.filter(item => {
 }).length)
 const currentStatsProgress = computed(() => Math.max(0, Math.min(100, Number(currentStats.value?.progress_percent || 0))))
 const showCurrentStatsProgress = computed(() => currentStats.value?.status === 'pending' && currentStatsProgress.value > 0)
+const canCancelStats = computed(() => currentStats.value?.status === 'pending')
 const aggregateProgress = computed(() => {
   const relevant = libraries.value
     .map(item => statsMap.value[item.id])
@@ -476,6 +477,28 @@ async function refreshStats (forceRefresh = false, options = {}) {
   } finally {
     if (silent) statsPolling.value = false
     else statsLoading.value = false
+  }
+}
+
+async function handleStatsAction () {
+  if (canCancelStats.value) {
+    await cancelStats()
+    return
+  }
+  await refreshStats(true)
+}
+
+async function cancelStats () {
+  if (!selectedLibraryId.value) return
+  statsLoading.value = true
+  try {
+    const data = await libraryApi.cancelStats(selectedLibraryId.value)
+    ElMessage.success(data.message || '统计任务已取消')
+    await refreshStats(false, { silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '取消统计失败')
+  } finally {
+    statsLoading.value = false
   }
 }
 
@@ -915,6 +938,8 @@ function statsSizeCardText (stats) {
   if (!stats) return '\u7b49\u5f85\u7edf\u8ba1'
   if (stats.status === 'pending') return '\u7edf\u8ba1\u66f4\u65b0\u4e2d'
   if (stats.status === 'idle') return '\u672a\u624b\u52a8\u7edf\u8ba1'
+  if (stats.status === 'canceled') return '\u5df2\u53d6\u6d88\uff0c\u4fdd\u7559\u5f53\u524d\u8fdb\u5ea6'
+  if (stats.status === 'error') return '\u7edf\u8ba1\u4e2d\u65ad\uff0c\u4fdd\u7559\u5df2\u5b8c\u6210\u6570\u636e'
   if (stats.status === 'unsupported') return '\u6682\u4e0d\u652f\u6301\u5f53\u524d\u7edf\u8ba1'
   return formatGB(stats.total_size_gb)
 }
@@ -929,6 +954,8 @@ function statsStatusCardText (stats) {
     const ts = stats?.last_completed_at
     return ts ? `\u540e\u53f0\u66f4\u65b0\u4e2d\uff0c\u6700\u8fd1\u7edf\u8ba1\u4e8e ${formatDate(ts * 1000)}` : '\u540e\u53f0\u6b63\u5728\u66f4\u65b0'
   }
+  if (status === 'canceled') return '\u5df2\u624b\u52a8\u53d6\u6d88\uff0c\u4ecd\u4fdd\u7559\u5df2\u7edf\u8ba1\u8fdb\u5ea6'
+  if (status === 'error') return stats?.last_error || '\u7edf\u8ba1\u4e2d\u9014\u51fa\u73b0\u5f02\u5e38\uff0c\u8bf7\u67e5\u770b\u8fdc\u7a0b\u7edf\u8ba1\u65e5\u5fd7'
   if (status === 'idle') return '\u8fdc\u7a0b\u5e93\u9ed8\u8ba4\u4e0d\u81ea\u52a8\u5168\u91cf\u7edf\u8ba1\uff0c\u8bf7\u624b\u52a8\u70b9\u5237\u65b0\u7edf\u8ba1'
   if (status === 'unsupported') return '\u5f53\u524d\u4ec5\u663e\u793a\u5065\u5eb7\u72b6\u6001'
   return '\u7b49\u5f85\u7edf\u8ba1'
