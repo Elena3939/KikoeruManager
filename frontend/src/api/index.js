@@ -251,6 +251,23 @@ export const libraryApi = {
     return response.data
   },
 
+  cancelStats: async (libraryId) => {
+    const response = await apiClient.post('/library/browser/stats/cancel', {
+      library_id: libraryId
+    })
+    return response.data
+  },
+
+  getStatsLogs: async ({ libraryId = null, lines = 200 } = {}) => {
+    const response = await apiClient.get('/library/browser/stats/logs', {
+      params: {
+        library_id: libraryId || undefined,
+        lines
+      }
+    })
+    return response.data
+  },
+
   listFiles: async () => {
     const response = await apiClient.get('/library/files')
     return response.data
