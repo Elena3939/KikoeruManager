@@ -1642,6 +1642,32 @@ async def get_library_browser_stats(force_refresh: bool = False):
         raise HTTPException(status_code=500, detail=f"库存统计失败: {str(e)}")
 
 
+@app.post("/api/library/browser/stats/cancel")
+async def cancel_library_browser_stats(request: Request):
+    try:
+        data = await request.json()
+        library_id = data.get("library_id")
+        if not library_id:
+            raise HTTPException(status_code=400, detail="缺少库存 ID")
+        manager = get_library_manager()
+        return await manager.cancel_stats(library_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"取消库存统计失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"取消库存统计失败: {str(e)}")
+
+
+@app.get("/api/library/browser/stats/logs")
+async def get_library_browser_stats_logs(library_id: Optional[str] = None, lines: int = 200):
+    try:
+        manager = get_library_manager()
+        return manager.read_stats_logs(library_id=library_id, lines=lines)
+    except Exception as e:
+        logger.error(f"鑾峰彇搴撳瓨缁熻鏃ュ織澶辫触: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"鑾峰彇搴撳瓨缁熻鏃ュ織澶辫触: {str(e)}")
+
+
 @app.post("/api/library/browser/folder-contents")
 async def get_library_browser_folder_contents(request: Request):
     try:

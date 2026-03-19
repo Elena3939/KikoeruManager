@@ -29,6 +29,14 @@ def _stats_cache_file_path() -> str:
     return os.path.join(data_dir, "library_stats_cache.json")
 
 
+def _stats_log_file_path() -> str:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_dir, "..", "..", ".."))
+    data_dir = os.path.join(project_root, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    return os.path.join(data_dir, "library_stats.log")
+
+
 def _gb(value: int) -> float:
     return round(value / (1024 ** 3), 2)
 
@@ -371,6 +379,42 @@ class LibraryManager:
                 json.dump(payload, handle, ensure_ascii=False, indent=2)
         except Exception:
             return
+
+    def _append_stats_log(self, library: LibraryDefinition, level: str, message: str):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{timestamp}] [{level}] [{library.id}] [{library.name}] {message}\n"
+        path = _stats_log_file_path()
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line)
+        except Exception:
+            return
+
+    def read_stats_logs(self, library_id: Optional[str] = None, lines: int = 200) -> dict[str, Any]:
+        path = _stats_log_file_path()
+        if not os.path.exists(path):
+            return {
+                "path": path,
+                "lines": [],
+                "total": 0,
+            }
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                content = handle.readlines()
+        except Exception as exc:
+            raise RuntimeError(f"读取远程统计日志失败: {exc}") from exc
+
+        filtered = content
+        if library_id:
+            filtered = [line for line in content if f"[{library_id}]" in line]
+
+        limit = max(1, min(int(lines or 200), 2000))
+        tail = filtered[-limit:]
+        return {
+            "path": path,
+            "lines": [line.rstrip("\n") for line in tail],
+            "total": len(filtered),
+        }
 
     def list_libraries(self) -> list[dict[str, Any]]:
         cfg = self.load_config()
@@ -756,6 +800,13 @@ class LibraryManager:
             cached = self._stats_cache.get(library.id)
             expired = not cached or (time.time() - cached.get("updated_at", 0)) > ttl
             task = self._stats_tasks.get(library.id)
+            if library.type == "synology_filestation" and cached and cached.get("status") == "pending" and (task is None or task.done()):
+                cached["status"] = "error"
+                cached["warning"] = "远程统计任务已中断，请重新点击刷新统计继续"
+                cached["updated_at"] = time.time()
+                self._stats_cache[library.id] = cached
+                self._persist_stats()
+                task = None
             should_refresh = force if library.type == "synology_filestation" else (force or expired)
             if should_refresh:
                 if task is None or task.done():
@@ -771,6 +822,9 @@ class LibraryManager:
                         "last_completed_at": (cached or {}).get("last_completed_at"),
                         "updated_at": time.time(),
                     }
+                    if library.type == "synology_filestation":
+                        self._persist_stats()
+                        self._append_stats_log(library, "INFO", "已创建远程库存统计后台任务")
                     task = asyncio.create_task(self._refresh_stats_for_library(library))
                     self._stats_tasks[library.id] = task
 
@@ -803,6 +857,29 @@ class LibraryManager:
                 "total_size_bytes": total_bytes,
                 "total_size_gb": _gb(total_bytes),
             },
+        }
+
+    async def cancel_stats(self, library_id: str) -> dict[str, Any]:
+        library = self.get_library_definition(library_id)
+        task = self._stats_tasks.get(library.id)
+        cached = self._stats_cache.get(library.id) or {}
+        if task and not task.done():
+            task.cancel()
+            self._append_stats_log(library, "WARN", "收到手动取消请求，准备停止远程统计任务")
+        cached["library_id"] = library.id
+        cached["library_name"] = library.name
+        cached["library_type"] = library.type
+        cached["status"] = "canceled"
+        cached["updated_at"] = time.time()
+        cached["health"] = self._health_for_library(library, float(self.load_config()["health_warning_free_gb"]))
+        self._stats_cache[library.id] = cached
+        if library.type == "synology_filestation":
+            self._persist_stats()
+        return {
+            "ok": True,
+            "library_id": library.id,
+            "status": "canceled",
+            "message": "统计任务已取消",
         }
 
     async def _refresh_stats_for_library(self, library: LibraryDefinition):
@@ -1046,6 +1123,9 @@ class LibraryManager:
         completed: int,
         total: int,
         last_completed_at: Optional[float],
+        current_item: Optional[str] = None,
+        warning_count: int = 0,
+        last_error: Optional[str] = None,
     ):
         progress_percent = round((completed / total) * 100, 2) if total else 100.0
         self._stats_cache[library.id] = {
@@ -1059,10 +1139,14 @@ class LibraryManager:
             "progress_done": completed,
             "progress_total": total,
             "progress_percent": progress_percent,
+            "current_item": current_item,
+            "warning_count": warning_count,
+            "last_error": last_error,
             "health": self._health_for_library(library, float(self.load_config()["health_warning_free_gb"])),
             "last_completed_at": last_completed_at,
             "updated_at": time.time(),
         }
+        self._persist_stats()
 
     async def _remote_path_size(
         self,
@@ -1071,6 +1155,7 @@ class LibraryManager:
         is_directory: bool,
         modified_ts: Optional[int] = None,
         initial_size: Optional[int] = None,
+        max_wait_seconds: Optional[int] = None,
     ) -> int:
         normalized_path = self._normalize_remote_path(path)
         cache_key = f"remote::{normalized_path}"
@@ -1083,7 +1168,8 @@ class LibraryManager:
             taskid = str(start_data.get("taskid") or start_data.get("task_id") or "")
             size = 0
             if taskid:
-                deadline = time.time() + max(int(client.config.timeout), 30)
+                wait_seconds = max_wait_seconds or max(int(client.config.timeout), 30)
+                deadline = time.time() + wait_seconds
                 while time.time() < deadline:
                     status_data = await client.dir_size_status(taskid)
                     size = self._extract_dir_size_value(status_data)
@@ -1418,26 +1504,80 @@ class LibraryManager:
         folder_count = 0
         total_size = 0
         completed = 0
+        warning_count = 0
+        last_error = None
         cached = self._stats_cache.get(library.id) or {}
         last_completed_at = cached.get("last_completed_at")
-        self._update_remote_stats_progress(library, folder_count, total_size, completed, len(top_level_items), last_completed_at)
+        self._append_stats_log(
+            library,
+            "INFO",
+            f"开始远程库存统计，目标路径={start_path}，顶层项目数={len(top_level_items)}",
+        )
+        self._update_remote_stats_progress(
+            library,
+            folder_count,
+            total_size,
+            completed,
+            len(top_level_items),
+            last_completed_at,
+            current_item=None,
+            warning_count=warning_count,
+            last_error=last_error,
+        )
         for item in top_level_items:
             additional = item.get("additional", {}) or {}
-            if item.get("isdir", False):
-                child_path = self._normalize_remote_path(item.get("path") or item.get("real_path") or "")
-                folder_count += 1
-                folder_count += await self._remote_collect_folder_count(client, child_path)
-                total_size += await self._remote_path_size(
-                    client,
-                    child_path,
-                    True,
-                    additional.get("time", {}).get("mtime"),
-                    initial_size=additional.get("size"),
-                )
-            else:
-                total_size += int(additional.get("size") or 0)
+            item_name = item.get("name") or ""
+            try:
+                if item.get("isdir", False):
+                    child_path = self._normalize_remote_path(item.get("path") or item.get("real_path") or "")
+                    nested_folder_count = await self._remote_collect_folder_count(client, child_path)
+                    nested_size = await self._remote_path_size(
+                        client,
+                        child_path,
+                        True,
+                        additional.get("time", {}).get("mtime"),
+                        initial_size=additional.get("size"),
+                        max_wait_seconds=max(int(client.config.timeout) * 10, 300),
+                    )
+                    folder_count += 1 + nested_folder_count
+                    total_size += nested_size
+                    self._append_stats_log(
+                        library,
+                        "INFO",
+                        f"统计目录完成: {item_name}，新增文件夹={1 + nested_folder_count}，累计大小={_gb(total_size)} GB",
+                    )
+                else:
+                    file_size = int(additional.get("size") or 0)
+                    total_size += file_size
+                    self._append_stats_log(
+                        library,
+                        "INFO",
+                        f"统计文件完成: {item_name}，累计大小={_gb(total_size)} GB",
+                    )
+            except asyncio.CancelledError:
+                self._append_stats_log(library, "WARN", f"远程库存统计被手动取消，停止于项目: {item_name}")
+                raise
+            except Exception as exc:
+                warning_count += 1
+                last_error = f"{item_name}: {exc}"
+                self._append_stats_log(library, "ERROR", f"统计项目失败，已跳过: {last_error}")
             completed += 1
-            self._update_remote_stats_progress(library, folder_count, total_size, completed, len(top_level_items), last_completed_at)
+            self._update_remote_stats_progress(
+                library,
+                folder_count,
+                total_size,
+                completed,
+                len(top_level_items),
+                last_completed_at,
+                current_item=item_name,
+                warning_count=warning_count,
+                last_error=last_error,
+            )
+        self._append_stats_log(
+            library,
+            "INFO",
+            f"远程库存统计完成，文件夹={folder_count}，总大小={_gb(total_size)} GB，警告数={warning_count}",
+        )
         return {
             "library_id": library.id,
             "library_name": library.name,
@@ -1450,32 +1590,65 @@ class LibraryManager:
             "progress_done": completed,
             "progress_total": len(top_level_items),
             "progress_percent": 100.0,
+            "warning_count": warning_count,
+            "last_error": last_error,
         }
 
     async def _refresh_stats_for_library(self, library: LibraryDefinition):
+        previous = dict(self._stats_cache.get(library.id) or {})
         try:
             if library.type == "local":
                 stats = await asyncio.to_thread(self._collect_local_stats, library)
             else:
                 stats = await self._collect_remote_stats(library)
+        except asyncio.CancelledError:
+            stats = {
+                "library_id": library.id,
+                "library_name": library.name,
+                "library_type": library.type,
+                "status": "canceled",
+                "folder_count": int(previous.get("folder_count", 0) or 0),
+                "total_size_bytes": int(previous.get("total_size_bytes", 0) or 0),
+                "total_size_gb": _gb(int(previous.get("total_size_bytes", 0) or 0)),
+                "progress_done": int(previous.get("progress_done", 0) or 0),
+                "progress_total": int(previous.get("progress_total", 0) or 0),
+                "progress_percent": float(previous.get("progress_percent", 0) or 0),
+                "current_item": previous.get("current_item"),
+                "warning_count": int(previous.get("warning_count", 0) or 0),
+                "last_error": previous.get("last_error"),
+                "last_completed_at": previous.get("last_completed_at"),
+            }
+            self._append_stats_log(library, "WARN", "远程库存统计任务已取消，保留当前进度快照")
         except Exception as exc:
             stats = {
                 "library_id": library.id,
                 "library_name": library.name,
                 "library_type": library.type,
                 "status": "error",
-                "folder_count": 0,
-                "total_size_bytes": 0,
-                "total_size_gb": 0,
+                "folder_count": int(previous.get("folder_count", 0) or 0),
+                "total_size_bytes": int(previous.get("total_size_bytes", 0) or 0),
+                "total_size_gb": _gb(int(previous.get("total_size_bytes", 0) or 0)),
+                "progress_done": int(previous.get("progress_done", 0) or 0),
+                "progress_total": int(previous.get("progress_total", 0) or 0),
+                "progress_percent": float(previous.get("progress_percent", 0) or 0),
+                "current_item": previous.get("current_item"),
+                "warning_count": int(previous.get("warning_count", 0) or 0),
+                "last_error": previous.get("last_error") or str(exc),
+                "last_completed_at": previous.get("last_completed_at"),
                 "warning": str(exc),
             }
+            self._append_stats_log(library, "ERROR", f"远程库存统计异常结束，保留当前进度快照: {exc}")
         health = self._health_for_library(library, float(self.load_config()["health_warning_free_gb"]))
         stats["health"] = health
         stats["updated_at"] = time.time()
-        stats["last_completed_at"] = time.time()
+        if stats.get("status") == "ready":
+            stats["last_completed_at"] = time.time()
+        else:
+            stats["last_completed_at"] = stats.get("last_completed_at") or previous.get("last_completed_at")
         self._stats_cache[library.id] = stats
         if library.type == "synology_filestation":
             self._persist_stats()
+        self._stats_tasks.pop(library.id, None)
 
     def _extract_rjcode(self, value: str) -> Optional[str]:
         import re
