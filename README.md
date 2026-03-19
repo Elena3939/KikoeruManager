@@ -1,4 +1,5 @@
-# Prekikoeru - DLsite 音声作品智能整理工具
+﻿# Prekikoeru - DLsite 音声作品智能整理工具
+<!-- build trigger: minor doc change -->
 
 现代化的 DLsite 音声作品压缩包自动处理工具，支持智能解压、元数据获取、文件分类、ASMR 同步下载等功能。
 
