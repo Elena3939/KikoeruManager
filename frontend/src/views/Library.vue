@@ -461,12 +461,12 @@ function scheduleListPoll (items) {
 }
 
 async function refreshStats (forceRefresh = false, options = {}) {
-  const { silent = false } = options
+  const { silent = false, refreshLibraryId = null } = options
   clearStatsPoll()
   if (silent) statsPolling.value = true
   else statsLoading.value = true
   try {
-    const data = await libraryApi.getStats(forceRefresh)
+    const data = await libraryApi.getStats(forceRefresh, refreshLibraryId)
     const nextMap = {}
     for (const item of data.libraries || []) nextMap[item.library_id] = item
     statsMap.value = nextMap
@@ -485,7 +485,7 @@ async function handleStatsAction () {
     await cancelStats()
     return
   }
-  await refreshStats(true)
+  await refreshStats(true, { refreshLibraryId: selectedLibraryId.value })
 }
 
 async function cancelStats () {
@@ -650,7 +650,7 @@ async function confirmRename () {
     await libraryApi.browserRename(selectedLibraryId.value, renameForm.value.path, renameForm.value.newName)
     renameDialogVisible.value = false
     ElMessage.success('重命名成功')
-    await Promise.all([refreshLibrary(), refreshStats(true)])
+    await Promise.all([refreshLibrary(), refreshStats(true, { refreshLibraryId: selectedLibraryId.value })])
   } catch (error) {
     ElMessage.error('重命名失败: ' + (error.response?.data?.detail || error.message))
   } finally {
@@ -666,7 +666,7 @@ async function apiRenameItem (row) {
   try {
     const data = await libraryApi.apiRename(row.path, selectedLibraryId.value)
     ElMessage.success(data.message || 'API 重命名成功')
-    await Promise.all([refreshLibrary(), refreshStats(true)])
+    await Promise.all([refreshLibrary(), refreshStats(true, { refreshLibraryId: selectedLibraryId.value })])
   } catch (error) {
     ElMessage.error('API重命名失败: ' + (error.response?.data?.detail || error.message))
   } finally {
@@ -680,7 +680,7 @@ async function deleteItem (row) {
     await ElMessageBox.confirm(`确定删除此${preview.type === 'folder' ? '文件夹' : '文件'}吗？\n名称: ${preview.name}\n大小: ${formatFileSize(preview.size)}\n\n此操作不可恢复！`, '删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
     await libraryApi.browserDelete(selectedLibraryId.value, row.path, true)
     ElMessage.success('删除成功')
-    await Promise.all([refreshLibrary(), refreshStats(true)])
+    await Promise.all([refreshLibrary(), refreshStats(true, { refreshLibraryId: selectedLibraryId.value })])
   } catch (error) {
     if (error === 'cancel' || error?.message === 'cancel') return
     ElMessage.error('删除失败: ' + (error.response?.data?.detail || error.message))
@@ -697,7 +697,7 @@ async function handleBatchDelete () {
     const result = await libraryApi.browserBatchDelete(selectedLibraryId.value, paths, true)
     ElMessage.success(`批量删除完成：成功 ${result.success_count || 0} 项`)
     clearSelection()
-    await Promise.all([refreshLibrary(), refreshStats(true)])
+    await Promise.all([refreshLibrary(), refreshStats(true, { refreshLibraryId: selectedLibraryId.value })])
   } catch (error) {
     if (error === 'cancel' || error?.message === 'cancel') return
     ElMessage.error('批量删除失败: ' + (error.response?.data?.detail || error.message))
@@ -712,7 +712,7 @@ async function handleBatchApiRename () {
   try {
     const data = await libraryApi.batchApiRename(selectedRows.value.map(row => row.path))
     ElMessage.success(data.message || '已提交批量 API 重命名')
-    await Promise.all([refreshLibrary(), refreshStats(true)])
+    await Promise.all([refreshLibrary(), refreshStats(true, { refreshLibraryId: selectedLibraryId.value })])
   } catch (error) {
     ElMessage.error('批量 API重命名失败: ' + (error.response?.data?.detail || error.message))
   } finally {
@@ -761,7 +761,7 @@ async function deletePath (path) {
     await ElMessageBox.confirm(`确定删除 ${preview.name} 吗？\n大小: ${formatFileSize(preview.size)}\n\n此操作不可恢复！`, '删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
     await libraryApi.browserDelete(selectedLibraryId.value, path, true)
     ElMessage.success('删除成功')
-    await Promise.all([loadFolderContents(folderContentsInfo.value.folderPath, folderContentsInfo.value.folderName), refreshLibrary(), refreshStats(true)])
+    await Promise.all([loadFolderContents(folderContentsInfo.value.folderPath, folderContentsInfo.value.folderName), refreshLibrary(), refreshStats(true, { refreshLibraryId: selectedLibraryId.value })])
   } catch (error) {
     if (error === 'cancel' || error?.message === 'cancel') return
     ElMessage.error('删除失败: ' + (error.response?.data?.detail || error.message))
@@ -776,7 +776,7 @@ async function batchDeleteSubFiles () {
     await ElMessageBox.confirm(`确定删除 ${preview.total_count || paths.length} 个文件？总大小: ${formatFileSize(preview.total_size || 0)}\n\n此操作不可恢复！`, '批量删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
     const result = await libraryApi.browserBatchDelete(selectedLibraryId.value, paths, true)
     ElMessage.success(`批量删除完成：成功 ${result.success_count || 0} 个`)
-    await Promise.all([loadFolderContents(folderContentsInfo.value.folderPath, folderContentsInfo.value.folderName), refreshLibrary(), refreshStats(true)])
+    await Promise.all([loadFolderContents(folderContentsInfo.value.folderPath, folderContentsInfo.value.folderName), refreshLibrary(), refreshStats(true, { refreshLibraryId: selectedLibraryId.value })])
   } catch (error) {
     if (error === 'cancel' || error?.message === 'cancel') return
     ElMessage.error('批量删除失败: ' + (error.response?.data?.detail || error.message))

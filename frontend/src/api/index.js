@@ -244,9 +244,12 @@ export const libraryApi = {
     return response.data
   },
 
-  getStats: async (forceRefresh = false) => {
+  getStats: async (forceRefresh = false, libraryId = null) => {
     const response = await apiClient.get('/library/browser/stats', {
-      params: { force_refresh: forceRefresh }
+      params: {
+        force_refresh: forceRefresh,
+        library_id: libraryId || undefined
+      }
     })
     return response.data
   },

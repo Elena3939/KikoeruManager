@@ -793,9 +793,10 @@ class LibraryManager:
             "message": "群晖连接成功",
         }
 
-    async def ensure_stats(self, force: bool = False) -> dict[str, Any]:
+    async def ensure_stats(self, force: bool = False, library_id: Optional[str] = None) -> dict[str, Any]:
         cfg = self.load_config()
         ttl = int(cfg["stats_cache_ttl_seconds"])
+        target_library_id = library_id or None
         for library in self._active_libraries(cfg):
             cached = self._stats_cache.get(library.id)
             expired = not cached or (time.time() - cached.get("updated_at", 0)) > ttl
@@ -807,7 +808,8 @@ class LibraryManager:
                 self._stats_cache[library.id] = cached
                 self._persist_stats()
                 task = None
-            should_refresh = force if library.type == "synology_filestation" else (force or expired)
+            force_this_library = force and (not target_library_id or library.id == target_library_id)
+            should_refresh = force_this_library if library.type == "synology_filestation" else (force_this_library or expired)
             if should_refresh:
                 if task is None or task.done():
                     self._stats_cache[library.id] = {
