@@ -80,9 +80,9 @@
         </div>
       </div>
 
-      <el-table ref="tableRef" :data="files" v-loading="loading" row-key="id" empty-text="暂无文件" @selection-change="handleSelectionChange">
+      <el-table ref="tableRef" :data="files" v-loading="loading" row-key="id" empty-text="暂无文件" @selection-change="handleSelectionChange" @sort-change="handleSortChange">
         <el-table-column type="selection" width="55" />
-        <el-table-column prop="name" label="文件名" show-overflow-tooltip>
+        <el-table-column prop="name" label="文件名" sortable="custom" show-overflow-tooltip>
           <template #default="{ row }">
             <el-icon class="file-icon"><Folder v-if="row.is_directory" /><Files v-else /></el-icon>
             <button v-if="row.is_directory" type="button" class="file-link-btn" @click="openFolder(row)">{{ row.name }}</button>
@@ -95,10 +95,10 @@
             <span v-else class="empty-text">-</span>
           </template>
         </el-table-column>
-        <el-table-column prop="size" label="大小" width="120">
+        <el-table-column prop="size" label="大小" sortable="custom" width="120">
           <template #default="{ row }">{{ formatRowSize(row) }}</template>
         </el-table-column>
-        <el-table-column prop="unzip_time" label="时间" width="180">
+        <el-table-column prop="modified_time" label="时间" sortable="custom" width="180">
           <template #default="{ row }">{{ formatDate(row.unzip_time || row.modified_time) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="260" fixed="right" align="center" header-align="center">
@@ -233,13 +233,15 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Refresh, Search, Folder, FolderOpened, Delete, Edit, Files, Document, Picture, VideoPlay, Headset, Tickets } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { libraryApi } from '../api'
 
 const PAGE_SIZES = [10, 20, 50, 100]
 const PAGE_SIZE_KEY = 'kikoeru.ui.library.pageSize'
+const DEFAULT_SORT_BY = 'size'
+const DEFAULT_SORT_ORDER = 'desc'
 const loading = ref(false)
 const statsLoading = ref(false)
 const listPolling = ref(false)
@@ -251,10 +253,13 @@ const selectedLibraryId = ref('')
 const searchQuery = ref('')
 const currentPage = ref(loadNumber('kikoeru.ui.library.page', 1))
 const pageSize = ref(loadNumber(PAGE_SIZE_KEY, 20))
+const sortBy = ref(DEFAULT_SORT_BY)
+const sortOrder = ref(DEFAULT_SORT_ORDER)
 const selectedRows = ref([])
 const batchDeleting = ref(false)
 const batchRenaming = ref(false)
 const tableRef = ref(null)
+const suppressSortChange = ref(false)
 const apiRenamingId = ref(null)
 const currentPath = ref('')
 const browseRootPath = ref('')
@@ -404,6 +409,19 @@ function storeNumber (key, value) {
   try { localStorage.setItem(key, String(value)) } catch (_) {}
 }
 
+function loadString (key, fallback) {
+  try {
+    const value = localStorage.getItem(key)
+    return value || fallback
+  } catch (_) {
+    return fallback
+  }
+}
+
+function storeString (key, value) {
+  try { localStorage.setItem(key, String(value)) } catch (_) {}
+}
+
 async function loadLibraries () {
   const data = await libraryApi.listLibraries()
   libraries.value = data.libraries || []
@@ -420,7 +438,9 @@ function saveLibraryState (libraryId) {
     searchQuery: searchQuery.value,
     currentPage: currentPage.value,
     currentPath: currentPath.value,
-    browseRootPath: browseRootPath.value
+    browseRootPath: browseRootPath.value,
+    sortBy: sortBy.value,
+    sortOrder: sortOrder.value
   }
 }
 
@@ -430,6 +450,8 @@ function restoreLibraryState (libraryId) {
   currentPage.value = state.currentPage || 1
   currentPath.value = state.currentPath || ''
   browseRootPath.value = state.browseRootPath || ''
+  sortBy.value = state.sortBy || loadString('kikoeru.ui.library.sortBy', DEFAULT_SORT_BY)
+  sortOrder.value = state.sortOrder || loadString('kikoeru.ui.library.sortOrder', DEFAULT_SORT_ORDER)
 }
 
 function clearStatsPoll () {
@@ -514,7 +536,9 @@ async function refreshLibrary (options = {}) {
       page: currentPage.value,
       pageSize: pageSize.value,
       search: searchQuery.value.trim(),
-      currentPath: currentPath.value
+      currentPath: currentPath.value,
+      sortBy: sortBy.value,
+      sortOrder: sortOrder.value
     })
     files.value = data.files || []
     totalFiles.value = data.total || 0
@@ -529,6 +553,7 @@ async function refreshLibrary (options = {}) {
     scheduleListPoll(files.value)
     const maxPage = Math.max(1, Math.ceil(Math.max(totalFiles.value, 1) / pageSize.value))
     if (currentPage.value > maxPage) currentPage.value = maxPage
+    await applyTableSortIndicator()
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || error.message || '获取库存文件失败')
   } finally {
@@ -537,9 +562,33 @@ async function refreshLibrary (options = {}) {
   }
 }
 
+async function applyTableSortIndicator () {
+  await nextTick()
+  const order = sortOrder.value === 'asc' ? 'ascending' : 'descending'
+  const prop = sortBy.value === 'time' ? 'modified_time' : sortBy.value
+  suppressSortChange.value = true
+  tableRef.value?.sort(prop, order)
+  await nextTick()
+  suppressSortChange.value = false
+}
+
 async function handleSearch () {
   currentPage.value = 1
   await refreshLibrary()
+}
+
+async function handleSortChange ({ prop, order }) {
+  if (suppressSortChange.value) return
+  const nextSortBy = prop === 'modified_time' ? 'time' : (prop || DEFAULT_SORT_BY)
+  const nextSortOrder = order === 'ascending' ? 'asc' : order === 'descending' ? 'desc' : DEFAULT_SORT_ORDER
+  sortBy.value = nextSortBy
+  sortOrder.value = nextSortOrder
+  storeString('kikoeru.ui.library.sortBy', sortBy.value)
+  storeString('kikoeru.ui.library.sortOrder', sortOrder.value)
+  saveLibraryState(selectedLibraryId.value)
+  const shouldRefreshNow = currentPage.value === 1
+  currentPage.value = 1
+  if (shouldRefreshNow) await refreshLibrary()
 }
 
 function handleSelectionChange (selection) {

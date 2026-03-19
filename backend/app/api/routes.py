@@ -1619,11 +1619,21 @@ async def browse_library_files(
     page_size: int = 200,
     search: str = "",
     current_path: Optional[str] = None,
+    sort_by: str = "size",
+    sort_order: str = "desc",
 ):
     try:
         manager = get_library_manager()
         current_library = manager.get_library_definition(library_id)
-        data = await manager.list_files(library_id, page=page, page_size=page_size, search=search, current_path=current_path)
+        data = await manager.list_files(
+            library_id,
+            page=page,
+            page_size=page_size,
+            search=search,
+            current_path=current_path,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
         data["libraries"] = manager.list_libraries()
         data["library_id"] = current_library.id
         return data

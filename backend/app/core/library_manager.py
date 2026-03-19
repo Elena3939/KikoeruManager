@@ -535,13 +535,31 @@ class LibraryManager:
             "total_space_gb": None,
         }
 
-    async def list_files(self, library_id: Optional[str], page: int = 1, page_size: int = 200, search: str = "", current_path: Optional[str] = None) -> dict[str, Any]:
+    async def list_files(
+        self,
+        library_id: Optional[str],
+        page: int = 1,
+        page_size: int = 200,
+        search: str = "",
+        current_path: Optional[str] = None,
+        sort_by: str = "size",
+        sort_order: str = "desc",
+    ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
-            return await asyncio.to_thread(self._list_local_files, library, page, page_size, search, current_path)
-        return await self._list_remote_files(library, page, page_size, search, current_path)
+            return await asyncio.to_thread(self._list_local_files, library, page, page_size, search, current_path, sort_by, sort_order)
+        return await self._list_remote_files(library, page, page_size, search, current_path, sort_by, sort_order)
 
-    def _list_local_files(self, library: LibraryDefinition, page: int, page_size: int, search: str, current_path: Optional[str]) -> dict[str, Any]:
+    def _list_local_files(
+        self,
+        library: LibraryDefinition,
+        page: int,
+        page_size: int,
+        search: str,
+        current_path: Optional[str],
+        sort_by: str,
+        sort_order: str,
+    ) -> dict[str, Any]:
         browse_root = os.path.abspath(library.browse_root_path or library.root_path)
         target_path = os.path.abspath(current_path or browse_root)
         if not os.path.exists(browse_root):
@@ -585,7 +603,7 @@ class LibraryManager:
                 }
             )
 
-        items = self._sort_local_items_by_size(items)
+        items = self._sort_local_items(items, sort_by, sort_order)
         total = len(items)
         start = max(0, (page - 1) * page_size)
         end = start + page_size
@@ -1003,7 +1021,44 @@ class LibraryManager:
         }
         return size
 
-    def _sort_local_items_by_size(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _normalize_library_sort_by(self, sort_by: Optional[str]) -> str:
+        return sort_by if sort_by in {"name", "size", "time"} else "size"
+
+    def _normalize_library_sort_order(self, sort_order: Optional[str]) -> str:
+        return "asc" if str(sort_order).lower() == "asc" else "desc"
+
+    def _sort_local_items(self, items: list[dict[str, Any]], sort_by: str, sort_order: str) -> list[dict[str, Any]]:
+        normalized_sort_by = self._normalize_library_sort_by(sort_by)
+        normalized_sort_order = self._normalize_library_sort_order(sort_order)
+        if normalized_sort_by == "name":
+            return sorted(
+                items,
+                key=lambda value: (
+                    value.get("name", "").lower(),
+                    -float(value.get("_sort_time") or 0),
+                    -int(value.get("size") or 0),
+                ),
+                reverse=normalized_sort_order == "desc",
+            )
+        if normalized_sort_by == "time":
+            return sorted(
+                items,
+                key=lambda value: (
+                    float(value.get("_sort_time") or 0),
+                    value.get("name", "").lower(),
+                    -int(value.get("size") or 0),
+                ),
+                reverse=normalized_sort_order == "desc",
+            )
+        if normalized_sort_order == "asc":
+            return sorted(
+                items,
+                key=lambda value: (
+                    int(value.get("size") or 0),
+                    value.get("name", "").lower(),
+                    -float(value.get("_sort_time") or 0),
+                ),
+            )
         return sorted(
             items,
             key=lambda value: (
@@ -1013,7 +1068,37 @@ class LibraryManager:
             ),
         )
 
-    def _sort_remote_page_items_by_size(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _sort_remote_page_items(self, items: list[dict[str, Any]], sort_by: str, sort_order: str) -> list[dict[str, Any]]:
+        normalized_sort_by = self._normalize_library_sort_by(sort_by)
+        normalized_sort_order = self._normalize_library_sort_order(sort_order)
+        if normalized_sort_by == "name":
+            return sorted(
+                items,
+                key=lambda value: (
+                    value.get("name", "").lower(),
+                    -float(value.get("_mtime") or 0),
+                ),
+                reverse=normalized_sort_order == "desc",
+            )
+        if normalized_sort_by == "time":
+            return sorted(
+                items,
+                key=lambda value: (
+                    float(value.get("_mtime") or 0),
+                    value.get("name", "").lower(),
+                ),
+                reverse=normalized_sort_order == "desc",
+            )
+        if normalized_sort_order == "asc":
+            return sorted(
+                items,
+                key=lambda value: (
+                    value.get("size") is None,
+                    int(value.get("size") or 0),
+                    value.get("name", "").lower(),
+                    -float(value.get("_mtime") or 0),
+                ),
+            )
         return sorted(
             items,
             key=lambda value: (
@@ -1273,23 +1358,36 @@ class LibraryManager:
             "size": size,
         }
 
-    async def _list_remote_files(self, library: LibraryDefinition, page: int, page_size: int, search: str, current_path: Optional[str]) -> dict[str, Any]:
+    async def _list_remote_files(
+        self,
+        library: LibraryDefinition,
+        page: int,
+        page_size: int,
+        search: str,
+        current_path: Optional[str],
+        sort_by: str,
+        sort_order: str,
+    ) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("杩滅▼搴撳瓨鏈厤缃兢鏅栬繛鎺ュ弬鏁?")
 
         client = SynologyFileStationClient(library.synology)
         browse_root, target_path = self._resolve_remote_target_path(library, current_path)
         search_lower = search.lower().strip()
+        normalized_sort_by = self._normalize_library_sort_by(sort_by)
+        normalized_sort_order = self._normalize_library_sort_order(sort_order)
+        remote_sort_by = "name" if normalized_sort_by == "name" else "mtime"
+        remote_sort_direction = "asc" if normalized_sort_order == "asc" else "desc"
         if search_lower:
             raw_items = await self._list_remote_directory(client, target_path)
             items_with_index = list(enumerate(raw_items))
         else:
             offset = max(0, (page - 1) * page_size)
             if target_path == "/":
-                data = await client.list_share(offset=offset, limit=page_size, sort_by="name", sort_direction="asc")
+                data = await client.list_share(offset=offset, limit=page_size, sort_by=remote_sort_by, sort_direction=remote_sort_direction)
                 raw_items = data.get("shares") or data.get("files") or []
             else:
-                data = await client.list(target_path, offset=offset, limit=page_size, sort_by="name", sort_direction="asc")
+                data = await client.list(target_path, offset=offset, limit=page_size, sort_by=remote_sort_by, sort_direction=remote_sort_direction)
                 raw_items = data.get("files") or []
             items_with_index = list(enumerate(raw_items, start=offset))
         files = []
@@ -1318,6 +1416,7 @@ class LibraryManager:
                 }
             )
         if search_lower:
+            files = self._sort_remote_page_items(files, normalized_sort_by, normalized_sort_order)
             total = len(files)
             start = max(0, (page - 1) * page_size)
             end = start + page_size
@@ -1336,7 +1435,8 @@ class LibraryManager:
             else:
                 item["size"] = int(item.get("size") or 0)
                 item["size_status"] = "ready"
-        page_items = self._sort_remote_page_items_by_size(page_items)
+        if normalized_sort_by == "size" or search_lower:
+            page_items = self._sort_remote_page_items(page_items, normalized_sort_by, normalized_sort_order)
         for item in page_items:
             item.pop("_mtime", None)
         return {
