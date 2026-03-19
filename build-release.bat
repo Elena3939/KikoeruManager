@@ -6,6 +6,10 @@ cd /d "%~dp0"
 set "ROOT=%cd%"
 for %%I in ("%ROOT%") do set "PROJECT_NAME=%%~nxI"
 
+REM ========================================
+REM 应用程序图标路径配置
+REM 可自定义图标路径
+REM ========================================
 set "ICON=D:\Tool\0edba671-6c04-463c-9b4f-7f1cec565830.ico"
 set "BACKEND=%ROOT%\backend"
 set "FRONTEND=%ROOT%\frontend"
