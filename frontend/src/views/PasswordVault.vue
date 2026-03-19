@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="password-vault">
     <h1 class="page-title">密码库</h1>
     
@@ -106,7 +106,7 @@
             <span v-else class="text-gray">-</span>
           </template>
         </el-table-column>
-        <el-table-column prop="use_count" label="使用次数" width="100" sortable>
+        <el-table-column prop="use_count" label="使用次数" width="120" sortable label-class-name="usage-count-header" align="center" header-align="center">
           <template #default="{ row }">
             <el-tag :type="row.use_count > 0 ? 'success' : 'info'" size="small">
               {{ row.use_count }}
@@ -835,4 +835,13 @@ watch(showCleanupDialog, (newVal) => {
 .stats-bar {
   margin-bottom: 16px;
 }
+
+:deep(.usage-count-header .cell) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
+}
 </style>
+
