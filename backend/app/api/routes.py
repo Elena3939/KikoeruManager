@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import tempfile
@@ -27,6 +27,7 @@ from ..core.password_cleanup import get_cleanup_service
 from ..core.processed_archive_cleanup import get_processed_archive_cleanup_service
 from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
+from ..core.library_manager import get_library_manager
 from ..config.settings import get_config, save_config
 
 # 初始化FastAPI应用
@@ -113,6 +114,7 @@ class TaskCreate(BaseModel):
     source_path: str
     task_type: str = "auto_process"
     auto_classify: bool = True
+    target_library_id: Optional[str] = None
 
 class TaskResponse(BaseModel):
     id: str
@@ -167,6 +169,9 @@ async def create_task(task_create: TaskCreate):
     if not task:
         raise HTTPException(status_code=400, detail=f"无法处理文件: {task_create.source_path}")
 
+    if task_create.target_library_id:
+        task.task_metadata["target_library_id"] = task_create.target_library_id
+
     return TaskResponse(
         id=task.id,
         type=task.type.value,
@@ -181,7 +186,7 @@ async def create_task(task_create: TaskCreate):
 
 # ========== 文件上传 API ==========
 @app.post("/api/upload")
-async def upload_files(files: List[UploadFile] = File(...)):
+async def upload_files(files: List[UploadFile] = File(...), target_library_id: Optional[str] = Form(None)):
     """上传文件并触发扫描（复用分卷识别逻辑）"""
     config = get_config()
     input_path = config.storage.input_path
@@ -208,6 +213,12 @@ async def upload_files(files: List[UploadFile] = File(...)):
     # 改为调用扫描逻辑，复用分卷文件识别
     # 扫描逻辑会正确识别分卷文件，只为主文件创建任务
     scan_result = await _scan_and_create_tasks()
+    if target_library_id and scan_result["task_ids"]:
+        engine = get_task_engine()
+        for task_id in scan_result["task_ids"]:
+            task = engine.get_task(task_id)
+            if task:
+                task.task_metadata["target_library_id"] = target_library_id
 
     return {
         "message": f"成功上传 {len(uploaded_files)} 个文件，{scan_result['message']}",
@@ -341,8 +352,29 @@ async def cancel_task(task_id: str):
 async def get_configuration():
     """获取配置"""
     config = get_config()
+    storage_data = config.storage.model_dump()
+    library_cfg = get_library_manager().load_config()
+    storage_data["libraries"] = [
+        {
+            "id": library.id,
+            "name": library.name,
+            "type": library.type,
+            "path": library.path,
+            "browse_path": library.browse_path,
+            "enabled": library.enabled,
+            "writable": library.writable,
+            "description": library.description,
+            "tags": library.tags,
+            "synology": library.synology.__dict__ if library.synology else None,
+        }
+        for library in library_cfg["libraries"]
+    ]
+    storage_data["default_library_id"] = library_cfg["default_library_id"]
+    storage_data["default_extract_library_id"] = library_cfg["default_extract_library_id"]
+    storage_data["health_warning_free_gb"] = library_cfg["health_warning_free_gb"]
+    storage_data["stats_cache_ttl_seconds"] = library_cfg["stats_cache_ttl_seconds"]
     return ConfigResponse(
-        storage=config.storage.model_dump(),
+        storage=storage_data,
         processing=config.processing.model_dump(),
         watcher=config.watcher.model_dump(),
         filter=config.filter.model_dump(),
@@ -464,6 +496,7 @@ async def update_configuration(request: Request):
         # 重新读取配置文件确保数据已写入
         from ..config.settings import get_config
         current_config = get_config()
+        get_task_engine()
         logger.info(f"当前配置中的分类规则: {[r.dict() for r in current_config.classification]}")
 
         # 如果密码清理配置变更，重启清理服务
@@ -502,6 +535,7 @@ async def reload_configuration():
         
         # 重新加载配置
         new_config = reload_config()
+        get_task_engine()
         
         logger.info(f"[CONFIG RELOAD] 配置重新加载成功")
         logger.info(f"[CONFIG RELOAD] storage.input_path = {new_config.storage.input_path}")
@@ -1555,6 +1589,158 @@ async def reprocess_archive(archive_id: str):
         db.close()
 
 # 库存管理API
+@app.get("/api/library/libraries")
+async def get_library_definitions():
+    manager = get_library_manager()
+    current_library = manager.get_library_definition()
+    return {
+        "libraries": manager.list_libraries(),
+        "default_library_id": current_library.id,
+        "default_extract_library_id": manager.default_extract_library_id(),
+    }
+
+
+@app.post("/api/library/test-connection")
+async def test_library_connection(request: Request):
+    try:
+        data = await request.json()
+        library = data.get("library") or data
+        manager = get_library_manager()
+        return await manager.test_connection(library)
+    except Exception as e:
+        logger.error(f"库存连接测试失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"库存连接测试失败: {str(e)}")
+
+
+@app.get("/api/library/browser/files")
+async def browse_library_files(
+    library_id: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 200,
+    search: str = "",
+    current_path: Optional[str] = None,
+):
+    try:
+        manager = get_library_manager()
+        current_library = manager.get_library_definition(library_id)
+        data = await manager.list_files(library_id, page=page, page_size=page_size, search=search, current_path=current_path)
+        data["libraries"] = manager.list_libraries()
+        data["library_id"] = current_library.id
+        return data
+    except Exception as e:
+        logger.error(f"库存浏览失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"库存浏览失败: {str(e)}")
+
+
+@app.get("/api/library/browser/stats")
+async def get_library_browser_stats(force_refresh: bool = False):
+    try:
+        manager = get_library_manager()
+        return await manager.ensure_stats(force=force_refresh)
+    except Exception as e:
+        logger.error(f"库存统计失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"库存统计失败: {str(e)}")
+
+
+@app.post("/api/library/browser/folder-contents")
+async def get_library_browser_folder_contents(request: Request):
+    try:
+        data = await request.json()
+        library_id = data.get("library_id")
+        folder_path = data.get("path")
+        if not folder_path:
+            raise HTTPException(status_code=400, detail="缺少文件夹路径")
+        manager = get_library_manager()
+        return await manager.folder_contents(library_id, folder_path)
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"获取库存文件夹内容失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取库存文件夹内容失败: {str(e)}")
+
+
+@app.post("/api/library/browser/rename")
+async def rename_library_browser_item(request: Request):
+    try:
+        data = await request.json()
+        path = data.get("path")
+        new_name = data.get("new_name")
+        library_id = data.get("library_id")
+        if not path or not new_name:
+            raise HTTPException(status_code=400, detail="缺少必要参数")
+        manager = get_library_manager()
+        return await manager.rename(library_id, path, new_name)
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"库存重命名失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"库存重命名失败: {str(e)}")
+
+
+@app.post("/api/library/browser/delete")
+async def delete_library_browser_item(request: Request):
+    try:
+        data = await request.json()
+        path = data.get("path")
+        library_id = data.get("library_id")
+        confirmed = data.get("confirmed", False)
+        if not path:
+            raise HTTPException(status_code=400, detail="缺少路径")
+        manager = get_library_manager()
+        return await manager.delete(library_id, path, confirmed=confirmed)
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"库存删除失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"库存删除失败: {str(e)}")
+
+
+@app.post("/api/library/browser/batch-delete")
+async def batch_delete_library_browser_items(request: Request):
+    try:
+        data = await request.json()
+        paths = data.get("paths") or []
+        library_id = data.get("library_id")
+        confirmed = data.get("confirmed", False)
+        if not paths:
+            raise HTTPException(status_code=400, detail="路径列表不能为空")
+        manager = get_library_manager()
+        return await manager.batch_delete(library_id, paths, confirmed=confirmed)
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"库存批量删除失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"库存批量删除失败: {str(e)}")
+
+
+@app.post("/api/library/browser/open-folder")
+async def open_library_browser_folder(request: Request):
+    try:
+        data = await request.json()
+        path = data.get("path")
+        library_id = data.get("library_id")
+        force_local = data.get("force_local", False)
+        if not path:
+            raise HTTPException(status_code=400, detail="路径不能为空")
+        manager = get_library_manager()
+        return await manager.open_folder(library_id, path, force_local=force_local)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"库存打开目录失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"库存打开目录失败: {str(e)}")
+
+
 @app.get("/api/library/files")
 async def get_library_files():
     """获取库内所有文件（只扫描前两级目录）"""
@@ -1767,16 +1953,21 @@ async def api_rename_library_file(request: Request):
     try:
         data = await request.json()
         file_path = data.get("path")
+        library_id = data.get("library_id")
+        manager = get_library_manager() if library_id else None
+        library = manager.get_library_definition(library_id) if library_id else None
+        is_remote_library = bool(library and library.type == "synology_filestation")
         
         if not file_path:
             raise HTTPException(status_code=400, detail="缺少文件路径")
         
-        if not os.path.exists(file_path):
+        if not is_remote_library and not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="文件不存在")
         
         # 提取RJ号
         import re
-        rj_match = re.search(r'[RVB]J\d{6,8}', os.path.basename(file_path), re.IGNORECASE)
+        target_name = str(PurePosixPath(file_path).name) if is_remote_library else os.path.basename(file_path)
+        rj_match = re.search(r'[RVB]J\d{6,8}', target_name, re.IGNORECASE)
         if not rj_match:
             raise HTTPException(status_code=400, detail="无法从文件名提取RJ号")
         
@@ -1873,18 +2064,25 @@ async def api_rename_library_file(request: Request):
             logger.info(f"[{rjcode}] 使用简单格式生成名称: {new_name}")
         
         # 构建新路径
-        parent_dir = os.path.dirname(file_path)
-        new_path = os.path.join(parent_dir, new_name)
+        if is_remote_library:
+            parent_dir = str(PurePosixPath(file_path).parent)
+            new_path = str(PurePosixPath(parent_dir) / new_name)
+        else:
+            parent_dir = os.path.dirname(file_path)
+            new_path = os.path.join(parent_dir, new_name)
         
         # 检查新名称是否已存在
-        if os.path.exists(new_path) and new_path != file_path:
+        if not is_remote_library and os.path.exists(new_path) and new_path != file_path:
             raise HTTPException(status_code=400, detail="新名称已存在")
         
         if new_path == file_path:
             return {"message": "名称已是最新，无需重命名", "name": new_name}
         
         # 执行重命名
-        os.rename(file_path, new_path)
+        if is_remote_library:
+            await manager.rename(library_id, file_path, new_name)
+        else:
+            os.rename(file_path, new_path)
         logger.info(f"API重命名成功: {file_path} -> {new_path}")
         
         return {

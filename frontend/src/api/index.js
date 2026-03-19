@@ -31,11 +31,12 @@ export const taskApi = {
     return response.data
   },
 
-  create: async (sourcePath, taskType = 'auto_process', autoClassify = true) => {
+  create: async (sourcePath, taskType = 'auto_process', autoClassify = true, targetLibraryId = null) => {
     const response = await apiClient.post('/tasks', {
       source_path: sourcePath,
       task_type: taskType,
-      auto_classify: autoClassify
+      auto_classify: autoClassify,
+      target_library_id: targetLibraryId
     })
     return response.data
   },
@@ -220,8 +221,46 @@ export const processedArchiveApi = {
 }
 
 export const libraryApi = {
+  listLibraries: async () => {
+    const response = await apiClient.get('/library/libraries')
+    return response.data
+  },
+
+  testConnection: async (library) => {
+    const response = await apiClient.post('/library/test-connection', { library })
+    return response.data
+  },
+
+  browseFiles: async ({ libraryId = null, page = 1, pageSize = 200, search = '', currentPath = '' } = {}) => {
+    const response = await apiClient.get('/library/browser/files', {
+      params: {
+        library_id: libraryId,
+        page,
+        page_size: pageSize,
+        search,
+        current_path: currentPath || undefined
+      }
+    })
+    return response.data
+  },
+
+  getStats: async (forceRefresh = false) => {
+    const response = await apiClient.get('/library/browser/stats', {
+      params: { force_refresh: forceRefresh }
+    })
+    return response.data
+  },
+
   listFiles: async () => {
     const response = await apiClient.get('/library/files')
+    return response.data
+  },
+
+  browserFolderContents: async (libraryId, path) => {
+    const response = await apiClient.post('/library/browser/folder-contents', {
+      library_id: libraryId,
+      path
+    })
     return response.data
   },
 
@@ -270,8 +309,19 @@ export const libraryApi = {
     return response.data
   },
 
-  apiRename: async (path) => {
-    const response = await apiClient.post('/library/api-rename', { path })
+  browserRename: async (libraryId, path, newName) => {
+    const response = await apiClient.post('/library/browser/rename', {
+      library_id: libraryId,
+      path,
+      new_name: newName
+    })
+    return response.data
+  },
+
+  apiRename: async (path, libraryId = null) => {
+    const payload = { path }
+    if (libraryId) payload.library_id = libraryId
+    const response = await apiClient.post('/library/api-rename', payload)
     return response.data
   },
 
@@ -280,8 +330,26 @@ export const libraryApi = {
     return response.data
   },
 
+  browserDelete: async (libraryId, path, confirmed = false) => {
+    const response = await apiClient.post('/library/browser/delete', {
+      library_id: libraryId,
+      path,
+      confirmed
+    })
+    return response.data
+  },
+
   batchDelete: async (paths, confirmed = false) => {
     const response = await apiClient.post('/library/batch-delete', { paths, confirmed })
+    return response.data
+  },
+
+  browserBatchDelete: async (libraryId, paths, confirmed = false) => {
+    const response = await apiClient.post('/library/browser/batch-delete', {
+      library_id: libraryId,
+      paths,
+      confirmed
+    })
     return response.data
   },
 
@@ -292,6 +360,15 @@ export const libraryApi = {
 
   openFolder: async (path, forceLocal = false) => {
     const response = await apiClient.post('/library/open-folder', { path, force_local: forceLocal })
+    return response.data
+  },
+
+  browserOpenFolder: async (libraryId, path, forceLocal = false) => {
+    const response = await apiClient.post('/library/browser/open-folder', {
+      library_id: libraryId,
+      path,
+      force_local: forceLocal
+    })
     return response.data
   }
 }

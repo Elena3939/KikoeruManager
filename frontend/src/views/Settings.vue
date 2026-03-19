@@ -115,6 +115,208 @@
                 </el-form-item>
               </el-col>
             </el-row>
+
+            <el-divider>多库存配置</el-divider>
+
+            <el-alert
+              title="这里新增的是多库存配置，不会替换或删除你原来的单库存字段。旧字段仍然保留用于兼容老功能。"
+              type="warning"
+              :closable="false"
+              style="margin-bottom: 16px;"
+            />
+
+            <el-row :gutter="20">
+              <el-col :span="12">
+                <el-form-item label="默认浏览库存">
+                  <el-select v-model="config.storage.default_library_id" style="width: 100%;">
+                    <el-option
+                      v-for="library in (config.storage.libraries || []).filter(item => item.enabled)"
+                      :key="library.id"
+                      :label="`${library.name} (${library.id})`"
+                      :value="library.id"
+                    />
+                  </el-select>
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="默认解压目标库存">
+                  <el-select v-model="config.storage.default_extract_library_id" style="width: 100%;">
+                    <el-option
+                      v-for="library in (config.storage.libraries || []).filter(item => item.enabled)"
+                      :key="`extract-${library.id}`"
+                      :label="`${library.name} (${library.id})`"
+                      :value="library.id"
+                    />
+                  </el-select>
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <el-row :gutter="20">
+              <el-col :span="12">
+                <el-form-item label="剩余空间预警阈值（GB）">
+                  <el-input-number v-model="config.storage.health_warning_free_gb" :min="0" :step="10" style="width: 100%;" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="统计缓存秒数">
+                  <el-input-number v-model="config.storage.stats_cache_ttl_seconds" :min="30" :step="30" style="width: 100%;" />
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <div v-for="(library, index) in config.storage.libraries" :key="`${library.id}-${index}`" class="rule-item">
+              <el-card shadow="never">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                  <strong>{{ library.name || `库存 ${index + 1}` }}</strong>
+                  <el-button type="danger" link size="small" @click="removeStorageLibrary(index)">
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </div>
+
+                <el-row :gutter="12">
+                  <el-col :span="12">
+                    <el-form-item label="浏览起始路径">
+                      <el-input
+                        v-model="library.browse_path"
+                        :placeholder="library.type === 'synology_filestation' ? '例如 /ASMR，留空则从远程根目录开始' : '留空则从库存路径开始'"
+                      />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+
+                <el-row :gutter="12">
+                  <el-col :span="8">
+                    <el-form-item label="库存 ID">
+                      <el-input v-model="library.id" placeholder="例如 local-main" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-form-item label="库存名称">
+                      <el-input v-model="library.name" placeholder="显示名称" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-form-item label="库存类型">
+                      <el-select v-model="library.type" style="width: 100%;" @change="syncRemoteLibraryPath(library)">
+                        <el-option label="本地库存" value="local" />
+                        <el-option label="群晖 FileStation" value="synology_filestation" />
+                      </el-select>
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+
+                <el-row :gutter="12">
+                  <el-col :span="12">
+                    <el-form-item v-if="library.type !== 'synology_filestation'" label="库存路径">
+                      <el-input v-model="library.path" placeholder="本地填写目录，远程填写根路径" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="12">
+                    <el-form-item label="说明">
+                      <el-input v-model="library.description" placeholder="可选说明" />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+
+                <el-row :gutter="12">
+                  <el-col :span="8">
+                    <el-form-item label="启用">
+                      <el-switch v-model="library.enabled" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-form-item label="允许写入">
+                      <el-switch v-model="library.writable" />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+
+                <template v-if="library.type === 'synology_filestation'">
+                  <el-divider>群晖连接参数</el-divider>
+                  <el-row :gutter="12">
+                    <el-col :span="12">
+                      <el-form-item label="群晖地址">
+                        <el-input v-model="library.synology.base_url" placeholder="例如 https://nas.example.com:5001" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="12">
+                      <el-form-item label="远程根目录">
+                        <el-input v-model="library.synology.root_path" placeholder="/music/asmr" @input="syncRemoteLibraryPath(library)" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <el-row :gutter="12">
+                    <el-col :span="8">
+                      <el-form-item label="用户名">
+                        <el-input v-model="library.synology.username" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="密码">
+                        <el-input v-model="library.synology.password" type="password" show-password />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="会话名">
+                        <el-input v-model="library.synology.session_name" placeholder="FileStation" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <el-row :gutter="12">
+                    <el-col :span="8">
+                      <el-form-item label="OTP 动态码">
+                        <el-input v-model="library.synology.otp_code" placeholder="首次验证时填写" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="设备名称">
+                        <el-input v-model="library.synology.device_name" :placeholder="library.name || library.id || 'Codex'" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="设备令牌 ID">
+                        <el-input v-model="library.synology.device_id" placeholder="测试连接成功后会自动回填" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <el-row :gutter="12">
+                    <el-col :span="8">
+                      <el-form-item label="超时（秒）">
+                        <el-input-number v-model="library.synology.timeout" :min="5" :step="5" style="width: 100%;" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="记住设备">
+                        <el-switch v-model="library.synology.enable_device_token" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="校验证书">
+                        <el-switch v-model="library.synology.verify_ssl" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                    <el-button size="small" type="primary" :loading="testingLibraryId === library.id" @click="testStorageLibrary(library)">测试连接</el-button>
+                    <el-link v-if="buildSynologyWebUrl(library)" :href="buildSynologyWebUrl(library)" target="_blank" type="primary">打开群晖目录</el-link>
+                  </div>
+                  <div class="form-tip">
+                    首次测试如果启用了二步验证，请填写当前 OTP 动态码。测试成功后如果回填了“设备令牌 ID”，后续浏览通常就不需要重复输入 OTP。
+                  </div>
+                </template>
+              </el-card>
+            </div>
+
+            <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+              <el-button type="primary" size="small" @click="addStorageLibrary('local')">
+                <el-icon><Plus /></el-icon> 添加本地库存
+              </el-button>
+              <el-button type="warning" size="small" @click="addStorageLibrary('synology_filestation')">
+                <el-icon><Plus /></el-icon> 添加群晖库存
+              </el-button>
+            </div>
+
             <el-row>
               <el-col :span="24">
                 <el-button type="primary" size="small" @click="createTestDirs">
@@ -1381,10 +1583,56 @@ import { ref, onMounted } from 'vue'
 import { Folder, FolderOpened, Plus, Delete, Check, QuestionFilled, Tools, Warning, View, ArrowRight, Document, Connection, Key, Link, Search, User, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useConfigStore } from '../stores'
-import { configApi, kikoeruApi, pathMappingApi, cleanupApi } from '../api'
+import { configApi, kikoeruApi, pathMappingApi, cleanupApi, libraryApi } from '../api'
 
 const configStore = useConfigStore()
 const loading = ref(false)
+const testingLibraryId = ref('')
+
+function createDefaultLibrary(type = 'local', index = 1) {
+  return {
+    id: type === 'synology_filestation' ? `remote-library-${index}` : `local-library-${index}`,
+    name: type === 'synology_filestation' ? `远程库存 ${index}` : `本地库存 ${index}`,
+    type,
+    path: '',
+    browse_path: '',
+    enabled: true,
+    writable: true,
+    description: '',
+    tags: [],
+    synology: {
+      base_url: '',
+      username: '',
+      password: '',
+      root_path: '/',
+      otp_code: '',
+      device_name: '',
+      device_id: '',
+      enable_device_token: true,
+      session_name: 'FileStation',
+      timeout: 30,
+      verify_ssl: true
+    }
+  }
+}
+
+function normalizeLibraryConfig(library, index = 1) {
+  const base = createDefaultLibrary(library?.type || 'local', index)
+  const normalized = {
+    ...base,
+    ...(library || {}),
+    synology: {
+      ...base.synology,
+      ...(library?.synology || {})
+    }
+  }
+  if (normalized.type === 'synology_filestation') {
+    normalized.synology.root_path = normalized.synology.root_path || normalized.path || '/'
+    normalized.path = normalized.synology.root_path
+    normalized.synology.device_name = normalized.synology.device_name || normalized.name || normalized.id
+  }
+  return normalized
+}
 
 const defaultConfig = {
   storage: {
@@ -1393,7 +1641,12 @@ const defaultConfig = {
     library_path: '/library',
     processed_archives_path: '/processed',
     existing_folders_path: '/existing',
-    asmr_subtitle_path: ''
+    asmr_subtitle_path: '',
+    libraries: [],
+    default_library_id: '',
+    default_extract_library_id: '',
+    health_warning_free_gb: 200,
+    stats_cache_ttl_seconds: 300
   },
   processing: {
     max_workers: 4
@@ -1602,7 +1855,12 @@ async function loadConfig() {
       // 存储路径配置（深度合并）
       storage: {
         ...defaultConfig.storage,
-        ...(data?.storage || {})
+        ...(data?.storage || {}),
+        libraries: (data?.storage?.libraries || defaultConfig.storage.libraries).map((library, index) => normalizeLibraryConfig(library, index + 1)),
+        default_library_id: data?.storage?.default_library_id || '',
+        default_extract_library_id: data?.storage?.default_extract_library_id || '',
+        health_warning_free_gb: data?.storage?.health_warning_free_gb ?? defaultConfig.storage.health_warning_free_gb,
+        stats_cache_ttl_seconds: data?.storage?.stats_cache_ttl_seconds ?? defaultConfig.storage.stats_cache_ttl_seconds
       },
       // 处理配置（深度合并）
       processing: {
@@ -1711,6 +1969,22 @@ async function loadConfig() {
         move_subtitle_folder: data?.asmr_sync_step?.move_subtitle_folder ?? true
       }
     }
+    if (!config.value.storage.libraries.length) {
+      config.value.storage.libraries = [
+        normalizeLibraryConfig({
+          id: 'default-local',
+          name: '默认库存',
+          type: 'local',
+          path: config.value.storage.library_path || ''
+        }, 1)
+      ]
+    }
+    if (!config.value.storage.default_library_id) {
+      config.value.storage.default_library_id = config.value.storage.libraries[0]?.id || ''
+    }
+    if (!config.value.storage.default_extract_library_id) {
+      config.value.storage.default_extract_library_id = config.value.storage.default_library_id
+    }
     console.log('配置加载成功:', config.value)
     console.log('存储路径:', config.value.storage)
   } catch (error) {
@@ -1728,6 +2002,22 @@ async function saveConfig() {
     loading.value = true
     
     console.log('当前 config.value.storage:', config.value.storage)
+    if (!config.value.storage.libraries.length) {
+      config.value.storage.libraries = [
+        normalizeLibraryConfig({
+          id: 'default-local',
+          name: '默认库存',
+          type: 'local',
+          path: config.value.storage.library_path || ''
+        }, 1)
+      ]
+    }
+    if (!config.value.storage.default_library_id) {
+      config.value.storage.default_library_id = config.value.storage.libraries[0]?.id || ''
+    }
+    if (!config.value.storage.default_extract_library_id) {
+      config.value.storage.default_extract_library_id = config.value.storage.default_library_id
+    }
     
     // 构建要保存的配置数据，将前端配置映射到后端格式
     const configToSave = {
@@ -1737,7 +2027,41 @@ async function saveConfig() {
         library_path: config.value.storage.library_path || '',
         processed_archives_path: config.value.storage.processed_archives_path || '',
         existing_folders_path: config.value.storage.existing_folders_path || '',
-        asmr_subtitle_path: config.value.storage.asmr_subtitle_path || ''
+        asmr_subtitle_path: config.value.storage.asmr_subtitle_path || '',
+        libraries: (config.value.storage.libraries || []).map((library, index) => {
+          const normalized = normalizeLibraryConfig(library, index + 1)
+          syncRemoteLibraryPath(normalized)
+          return {
+            id: normalized.id,
+            name: normalized.name,
+            type: normalized.type,
+            path: normalized.type === 'synology_filestation' ? normalized.synology.root_path : normalized.path,
+            browse_path: normalized.browse_path || '',
+            enabled: normalized.enabled,
+            writable: normalized.writable,
+            description: normalized.description || '',
+            tags: normalized.tags || [],
+            synology: normalized.type === 'synology_filestation'
+              ? {
+                  base_url: normalized.synology.base_url || '',
+                  username: normalized.synology.username || '',
+                  password: normalized.synology.password || '',
+                  root_path: normalized.synology.root_path || '/',
+                  otp_code: normalized.synology.otp_code || '',
+                  device_name: normalized.synology.device_name || normalized.name || normalized.id,
+                  device_id: normalized.synology.device_id || '',
+                  enable_device_token: normalized.synology.enable_device_token ?? true,
+                  session_name: normalized.synology.session_name || 'FileStation',
+                  timeout: normalized.synology.timeout ?? 30,
+                  verify_ssl: normalized.synology.verify_ssl ?? true
+                }
+              : null
+          }
+        }),
+        default_library_id: config.value.storage.default_library_id || '',
+        default_extract_library_id: config.value.storage.default_extract_library_id || config.value.storage.default_library_id || '',
+        health_warning_free_gb: config.value.storage.health_warning_free_gb ?? 200,
+        stats_cache_ttl_seconds: config.value.storage.stats_cache_ttl_seconds ?? 300
       },
       processing: config.value.processing,
       watcher: config.value.watcher,
@@ -1853,6 +2177,74 @@ function resetConfig() {
     config.value = JSON.parse(JSON.stringify(defaultConfig))
     await saveConfig()
   }).catch(() => {})
+}
+
+function addStorageLibrary(type = 'local') {
+  const nextIndex = (config.value.storage.libraries?.length || 0) + 1
+  const nextLibrary = createDefaultLibrary(type, nextIndex)
+  if (type === 'local' && !nextLibrary.path) {
+    nextLibrary.path = config.value.storage.library_path || ''
+  }
+  if (type === 'synology_filestation') {
+    nextLibrary.synology.device_name = nextLibrary.name
+    nextLibrary.path = nextLibrary.synology.root_path
+  }
+  config.value.storage.libraries = [...(config.value.storage.libraries || []), nextLibrary]
+  if (!config.value.storage.default_library_id) {
+    config.value.storage.default_library_id = nextLibrary.id
+  }
+  if (!config.value.storage.default_extract_library_id) {
+    config.value.storage.default_extract_library_id = nextLibrary.id
+  }
+}
+
+function removeStorageLibrary(index) {
+  const libraries = [...(config.value.storage.libraries || [])]
+  const removed = libraries[index]
+  libraries.splice(index, 1)
+  config.value.storage.libraries = libraries
+  if (removed?.id && config.value.storage.default_library_id === removed.id) {
+    config.value.storage.default_library_id = libraries[0]?.id || ''
+  }
+  if (removed?.id && config.value.storage.default_extract_library_id === removed.id) {
+    config.value.storage.default_extract_library_id = config.value.storage.default_library_id || libraries[0]?.id || ''
+  }
+}
+
+function syncRemoteLibraryPath(library) {
+  if (library?.type === 'synology_filestation') {
+    library.synology = {
+      ...createDefaultLibrary('synology_filestation', 1).synology,
+      ...(library.synology || {})
+    }
+    library.synology.root_path = library.synology.root_path || library.path || '/'
+    library.synology.device_name = library.synology.device_name || library.name || library.id
+    library.path = library.synology.root_path
+  }
+}
+
+function buildSynologyWebUrl(library) {
+  const baseUrl = library?.synology?.base_url?.replace(/\/+$/, '') || ''
+  const rootPath = library?.synology?.root_path || library?.path || '/'
+  if (!baseUrl || !rootPath) return ''
+  const normalizedPath = rootPath.startsWith('/') ? rootPath : `/${rootPath}`
+  return `${baseUrl}//file/?launchApp=SYNO.SDS.App.FileStation3.Instance&launchParam=${encodeURIComponent(`path=${normalizedPath}`)}`
+}
+
+async function testStorageLibrary(library) {
+  try {
+    syncRemoteLibraryPath(library)
+    testingLibraryId.value = library.id || `library-${Date.now()}`
+    const response = await libraryApi.testConnection(normalizeLibraryConfig(library))
+    if (response.device_id) {
+      library.synology.device_id = response.device_id
+    }
+    ElMessage.success(response.message || '连接成功')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '连接测试失败')
+  } finally {
+    testingLibraryId.value = ''
+  }
 }
 
 /**

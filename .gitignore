@@ -49,6 +49,7 @@ Thumbs.db
 *.db
 backend/data/app.log
 backend/data/cache.db
+data/library_stats_cache.json
 
 # Project specific
 backend/build/

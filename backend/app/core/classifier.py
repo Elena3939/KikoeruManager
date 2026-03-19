@@ -2,12 +2,14 @@ import os
 import re
 import shutil
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Optional, Dict
 import logging
 
 from ..config.settings import get_config, ClassificationRule
 from ..models.database import LibrarySnapshot, ConflictWork, get_db
 from ..core.task_engine import Task
+from ..core.library_manager import get_library_manager
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +196,9 @@ class SmartClassifier:
         # 1. 检查是否已存在
         task.update_progress(82, "检查重复")
         existing = self._check_existing(rjcode)
+        manager = get_library_manager()
+        target_library_id = task.task_metadata.get('target_library_id') if getattr(task, 'task_metadata', None) else None
+        target_library = manager.get_library_definition(target_library_id)
         
         if existing:
             # 使用DUPLICATE类型（解压后的重复检测，已有元数据但统一标记为重复）
@@ -216,11 +221,18 @@ class SmartClassifier:
         
         # 2. 应用分类规则（传入源路径以提取文件夹名中的社团名）
         task.update_progress(85, "应用分类规则")
-        target_path = self._apply_classification_rules(metadata, source_path)
+        target_path = self._apply_classification_rules(metadata, source_path, target_library)
         
         # 3. 移动文件
         task.update_progress(90, "移动到库存")
-        final_path = self._move_with_rename(source_path, target_path)
+        if target_library.type == 'local':
+            final_path = self._move_with_rename(source_path, target_path)
+        else:
+            relative_target_dir = os.path.relpath(target_path, target_library.root_path).replace("\\", "/")
+            if relative_target_dir == '.':
+                relative_target_dir = ''
+            final_path = await manager.upload_directory_to_library(target_library.id, source_path, relative_target_dir)
+            shutil.rmtree(source_path, ignore_errors=True)
         
         # 4. 更新库存快照
         self._update_library_snapshot(rjcode, final_path)
@@ -351,14 +363,14 @@ class SmartClassifier:
         finally:
             db.close()
     
-    def _apply_classification_rules(self, metadata: Dict, source_path: str = None) -> str:
+    def _apply_classification_rules(self, metadata: Dict, source_path: str = None, target_library=None) -> str:
         """应用分类规则生成目标路径
         
         Args:
             metadata: 元数据字典
             source_path: 源文件夹路径（用于提取文件夹名中的社团名）
         """
-        library_base = self.config.storage.library_path
+        library_base = target_library.root_path if target_library is not None else self.config.storage.library_path
         
         for rule in self.config.classification:
             if not rule.enabled:
@@ -368,6 +380,8 @@ class SmartClassifier:
             if path is not None:
                 # path 可能是空字符串（表示无子目录）
                 if path:
+                    if target_library is not None and target_library.type != 'local':
+                        return str(PurePosixPath(library_base) / path.replace("\\", "/"))
                     return os.path.join(library_base, path)
                 else:
                     return library_base
