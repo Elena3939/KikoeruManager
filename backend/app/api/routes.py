@@ -1633,10 +1633,10 @@ async def browse_library_files(
 
 
 @app.get("/api/library/browser/stats")
-async def get_library_browser_stats(force_refresh: bool = False):
+async def get_library_browser_stats(force_refresh: bool = False, library_id: Optional[str] = None):
     try:
         manager = get_library_manager()
-        return await manager.ensure_stats(force=force_refresh)
+        return await manager.ensure_stats(force=force_refresh, library_id=library_id)
     except Exception as e:
         logger.error(f"库存统计失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"库存统计失败: {str(e)}")
