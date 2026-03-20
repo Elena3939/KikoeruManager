@@ -1,106 +1,121 @@
 #!/usr/bin/env python3
 """
-Prekikoeru 桌面应用入口 (带系统托盘)
-用于 Windows 打包
+Prekikoeru desktop entrypoint with system tray support.
+Used for Windows packaging.
 """
-import sys
-import os
-import threading
-import webbrowser
-import time
-import pystray
-import socket
-from PIL import Image
-import uvicorn
-import logging
-import signal
 
-# 将项目根目录添加到 python 路径，确保可以找到 backend 包
+import logging
+import os
+import socket
+import sys
+import threading
+import time
+import webbrowser
+import tkinter as tk
+from tkinter import messagebox
+
+import pystray
+import uvicorn
+from PIL import Image, ImageDraw
+
+APP_NAME = "Prekikoeru"
+APP_TITLE = f"{APP_NAME}（运行中）"
+DEFAULT_PORT = 8000
+LOCK_PORT = 29173
+HOST = "127.0.0.1"
+
+
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# 配置日志
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
 
 class DesktopApp:
     def __init__(self):
         self.stop_event = threading.Event()
         self.backend_thread = None
         self.icon = None
-        self.port = 8000
-        self.lock_port = 29173  # 专门用于单实例锁定的端口
-        self.host = "127.0.0.1"
+        self.port = DEFAULT_PORT
+        self.lock_port = LOCK_PORT
+        self.host = HOST
         self.url = f"http://{self.host}:{self.port}"
         self.lock_socket = None
         self.backend_error = None
         self.server = None
-        
-        # 查找图标路径
         self.icon_path = self._find_icon()
 
     def check_single_instance(self):
-        """检查应用是否已经在运行"""
+        """Return True when this is the first running instance."""
         try:
             self.lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # 尝试绑定端口，如果失败说明应用已在运行
             self.lock_socket.bind((self.host, self.lock_port))
-            # 锁定成功，我们是第一个实例
             return True
         except socket.error:
-            # 绑定失败，说明已有实例
             return False
 
-    def _find_icon(self):
-        """查找图标文件路径"""
-        user_icon = r"D:\Tool\0edba671-6c04-463c-9b4f-7f1cec565830.ico"
-        logger.info(f"检查主图标路径: {user_icon}")
-        if os.path.exists(user_icon):
-            logger.info(f"找到主图标: {user_icon}")
-            return user_icon
+    def _icon_candidates(self):
+        bundle_dir = getattr(sys, "_MEIPASS", project_root) if getattr(sys, "frozen", False) else project_root
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else project_root
+        return [
+            os.path.join(exe_dir, "app.ico"),
+            os.path.join(bundle_dir, "app.ico"),
+            os.path.join(bundle_dir, "backend", "app.ico"),
+            os.path.join(project_root, "backend", "app.ico"),
+        ]
 
-        # 打包后的资源路径
-        if getattr(sys, 'frozen', False):
-            base_path = sys._MEIPASS
-            icon_filename = os.path.basename(user_icon)
-            path = os.path.join(base_path, icon_filename)
-            logger.info(f"检查打包内图标路径: {path}")
+    def _find_icon(self):
+        for path in self._icon_candidates():
+            logger.info("Checking icon path: %s", path)
             if os.path.exists(path):
-                logger.info(f"找到打包内图标: {path}")
+                logger.info("Using icon: %s", path)
                 return path
-        
-        # 尝试项目根目录下的 fallback 图标
-        project_icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "app.ico")
-        logger.info(f"检查备用图标路径: {project_icon}")
-        if os.path.exists(project_icon):
-            logger.info(f"找到备用图标: {project_icon}")
-            return project_icon
-            
-        logger.warning("未找到任何图标，将使用默认占位图")
+        logger.warning("No application icon found; falling back to generated placeholder icon")
         return None
 
+    def _create_generated_icon(self):
+        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((6, 6, 58, 58), radius=14, fill=(30, 41, 59, 255))
+        draw.rectangle((20, 14, 28, 50), fill=(255, 255, 255, 255))
+        draw.polygon(((30, 30), (46, 14), (52, 20), (38, 34), (52, 50), (46, 56)), fill=(255, 255, 255, 255))
+        return image
+
+    def _load_tray_image(self):
+        if self.icon_path and os.path.exists(self.icon_path):
+            try:
+                with Image.open(self.icon_path) as img:
+                    return img.convert("RGBA").resize((32, 32), Image.Resampling.LANCZOS)
+            except Exception as exc:
+                logger.warning("Failed to load tray icon from %s: %s", self.icon_path, exc)
+        logger.warning("Falling back to generated tray icon")
+        return self._create_generated_icon()
+
     def run_backend(self):
-        """运行后端服务"""
+        """Run the backend service."""
         try:
             from backend.app.api.routes import app
-            logger.info(f"正在启动后端服务于 {self.url}")
+
+            logger.info("Starting backend service at %s", self.url)
             config = uvicorn.Config(
                 app,
                 host=self.host,
                 port=self.port,
                 log_level="warning",
                 access_log=False,
-                log_config=None
+                log_config=None,
             )
             self.server = uvicorn.Server(config)
             self.server.run()
-        except Exception as e:
-            self.backend_error = str(e)
-            logger.error(f"后端启动失败: {e}", exc_info=True)
+        except Exception as exc:
+            self.backend_error = str(exc)
+            logger.error("Backend startup failed: %s", exc, exc_info=True)
 
     def wait_for_backend(self, timeout_seconds=20):
         deadline = time.time() + timeout_seconds
@@ -115,135 +130,154 @@ class DesktopApp:
         return False
 
     def open_browser(self, icon=None, item=None):
-        """在浏览器中打开应用"""
         webbrowser.open(self.url)
 
-    def show_status(self, icon, item):
-        """显示当前运行状态"""
-        icon.notify("应用正在后台运行", "Prekikoeru")
+    def show_status(self, icon=None, item=None):
+        tray_icon = icon or self.icon
+        if tray_icon:
+            try:
+                tray_icon.notify(
+                    f"监听地址: {self.host}:{self.port}",
+                    f"{APP_NAME} 正在后台运行",
+                )
+            except Exception as exc:
+                logger.warning("Failed to show tray notification: %s", exc)
 
-    def on_quit(self, icon, item):
-        """优雅退出应用"""
-        logger.info("正在退出应用...")
+    def _noop(self, icon=None, item=None):
+        return None
+
+    def _menu_status_label(self, item):
+        return f"{APP_NAME} 运行中"
+
+    def _menu_port_label(self, item):
+        return f"监听端口: {self.port}"
+
+    def _menu_address_label(self, item):
+        return f"访问地址: {self.url}"
+
+    def on_quit(self, icon=None, item=None):
+        logger.info("Exiting application")
         if self.icon:
             self.icon.stop()
-        
-        # 释放锁定端口
+        if self.server:
+            self.server.should_exit = True
         if self.lock_socket:
             self.lock_socket.close()
-            
-        # 强制退出，确保所有线程结束
         os._exit(0)
 
-    def setup_tray(self):
-        """设置系统托盘"""
-        try:
-            logger.info(f"正在加载图标，路径: {self.icon_path}")
-            if self.icon_path and os.path.exists(self.icon_path):
-                # 显式转换图像格式以确保兼容性
-                with Image.open(self.icon_path) as img:
-                    image = img.convert('RGBA')
-                    # Windows 托盘建议使用 16x16 或 32x32，pystray 虽能处理但预缩放更稳定
-                    image = image.resize((32, 32), Image.Resampling.LANCZOS)
-            else:
-                # 创建一个简单的占位图标
-                image = Image.new('RGBA', (64, 64), color=(73, 109, 137, 255))
-            
-            menu = pystray.Menu(
-                pystray.MenuItem("打开浏览器界面", self.open_browser, default=True),
-                pystray.MenuItem("查看运行状态", self.show_status),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("访问地址: " + self.url, lambda: None, enabled=False),
-                pystray.MenuItem("托盘运行中 (点击退出)", lambda: None, enabled=False),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("退出应用", self.on_quit)
-            )
-            
-            self.icon = pystray.Icon("kikoeruTool", image, "Prekikoeru (运行中)", menu)
-            
-            # 启动通知
-            def notify_start():
-                try:
-                    self.icon.notify("Prekikoeru 已在后台启动", "您可以通过托盘图标进行管理")
-                except Exception as e:
-                    logger.warning(f"发送启动通知失败: {e}")
+    def _show_fallback_control_window(self, error_message):
+        logger.error("Showing fallback control window because tray initialization failed")
+        root = tk.Tk()
+        root.title(APP_NAME)
+        root.geometry("420x180")
+        root.resizable(False, False)
 
-            threading.Timer(2.0, notify_start).start()
-            
-            logger.info("系统托盘已启动并阻塞主线程")
+        def open_browser():
+            webbrowser.open(self.url)
+
+        def quit_app():
+            root.destroy()
+            self.on_quit(None, None)
+
+        message = (
+            f"{APP_NAME} 正在运行，但系统托盘初始化失败。\n\n"
+            f"地址: {self.url}\n\n"
+            f"错误: {error_message}"
+        )
+        tk.Label(root, text=message, justify="left", wraplength=380).pack(padx=20, pady=(20, 16))
+
+        button_frame = tk.Frame(root)
+        button_frame.pack()
+        tk.Button(button_frame, text="打开 Web 界面", width=14, command=open_browser).pack(side="left", padx=8)
+        tk.Button(button_frame, text="退出程序", width=14, command=quit_app).pack(side="left", padx=8)
+
+        root.protocol("WM_DELETE_WINDOW", quit_app)
+        root.mainloop()
+
+    def setup_tray(self):
+        """Use pystray native menu with runtime metadata and no startup toast."""
+        try:
+            image = self._load_tray_image()
+            menu = pystray.Menu(
+                pystray.MenuItem(self._menu_status_label, self._noop, enabled=False),
+                pystray.MenuItem(self._menu_port_label, self._noop, enabled=False),
+                pystray.MenuItem(self._menu_address_label, self._noop, enabled=False),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("打开 Web 界面", self.open_browser, default=True),
+                pystray.MenuItem("显示运行状态", self.show_status),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("退出程序", self.on_quit),
+            )
+
+            self.icon = pystray.Icon(APP_NAME, image, APP_TITLE, menu)
+            logger.info("System tray initialized using pystray native menu")
             self.icon.run()
-        except Exception as e:
-            logger.error(f"托盘图标设置失败 (致命错误): {e}", exc_info=True)
-            # 保持后端运行
-            while True:
-                time.sleep(1)
+        except Exception as exc:
+            logger.error("Failed to initialize tray icon: %s", exc, exc_info=True)
+            self._show_fallback_control_window(str(exc))
 
     def run(self):
-        # 1. 检查单实例
         if not self.check_single_instance():
-            import tkinter as tk
-            from tkinter import messagebox
             root = tk.Tk()
             root.withdraw()
             messagebox.showwarning("提示", "应用已在运行中，请在系统托盘查看。")
             sys.exit(0)
 
-        # 2. 设置环境变量与基础路径
-        if getattr(sys, 'frozen', False):
+        if getattr(sys, "frozen", False):
             base_dir = os.path.dirname(sys.executable)
             bundle_dir = sys._MEIPASS
         else:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
+            base_dir = project_root
             bundle_dir = base_dir
 
-        data_dir = os.path.join(base_dir, 'data')
-        config_dir = os.path.join(data_dir, 'config')
+        data_dir = os.path.join(base_dir, "data")
+        config_dir = os.path.join(data_dir, "config")
         os.makedirs(config_dir, exist_ok=True)
 
-        os.environ['DATA_PATH'] = data_dir
-        config_path = os.path.join(config_dir, 'config.yaml')
-        os.environ['CONFIG_PATH'] = config_path
-        log_path = os.path.join(data_dir, 'app.log')
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        os.environ["DATA_PATH"] = data_dir
+        config_path = os.path.join(config_dir, "config.yaml")
+        os.environ["CONFIG_PATH"] = config_path
+
+        log_path = os.path.join(data_dir, "app.log")
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.INFO)
         root_logger.handlers = []
-        file_handler = logging.FileHandler(log_path, encoding='utf-8')
+
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
+
         if sys.stdout:
             console_handler = logging.StreamHandler()
             console_handler.setFormatter(formatter)
             root_logger.addHandler(console_handler)
 
-        # 如果外部配置文件不存在，则从包内复制
         if not os.path.exists(config_path):
             import shutil
-            bundled_config = os.path.join(bundle_dir, 'backend', 'config', 'config.yaml')
-            if os.path.exists(bundled_config):
-                shutil.copy2(bundled_config, config_path)
-                logger.info(f"已从包内复制默认配置到: {config_path}")
-            else:
-                # 尝试另一个可能的路径
-                bundled_config = os.path.join(bundle_dir, 'config', 'config.yaml')
+
+            bundled_candidates = [
+                os.path.join(bundle_dir, "backend", "config", "config.yaml"),
+                os.path.join(bundle_dir, "config", "config.yaml"),
+            ]
+            for bundled_config in bundled_candidates:
                 if os.path.exists(bundled_config):
                     shutil.copy2(bundled_config, config_path)
-                    logger.info(f"已从包内复制默认配置到: {config_path}")
+                    logger.info("Copied default config to %s", config_path)
+                    break
 
-        # 3. 启动后端线程
         self.backend_thread = threading.Thread(target=self.run_backend, daemon=True)
         self.backend_thread.start()
 
-        # 4. 等待后端启动后打开浏览器 (如果是初次运行)
         if self.wait_for_backend():
             self.open_browser()
         else:
-            logger.error("后端未在预期时间内启动")
+            logger.error("Backend did not become ready in time")
             if self.backend_error:
-                logger.error(f"后端错误信息: {self.backend_error}")
+                logger.error("Backend error: %s", self.backend_error)
 
-        # 5. 启动托盘图标 (阻塞主线程)
         self.setup_tray()
+
 
 if __name__ == "__main__":
     app_instance = DesktopApp()

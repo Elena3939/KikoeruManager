@@ -139,9 +139,9 @@ def create_tray_icon(stop_event):
             webbrowser.open(get_server_url())
         
         icon = pystray.Icon(
-            "prekikoeru",
+            "KikoeruTool_Elena",
             create_icon_image(),
-            "Prekikoeru - 后台运行中",
+            "KikoeruTool_Elena - 后台运行中",
             menu=pystray.Menu(
                 pystray.MenuItem("打开 Web 界面", on_open, default=True),
                 pystray.Menu.SEPARATOR,
@@ -171,7 +171,7 @@ def main():
 
     logger = logging.getLogger(__name__)
     logger.info("="*50)
-    logger.info("Prekikoeru 启动中...")
+    logger.info("KikoeruTool_Elena 启动中...")
     logger.info(f"基础路径：{base_path}")
     logger.info(f"前端路径：{frontend_path}")
     logger.info(f"打包模式：{IS_FROZEN}")
@@ -183,7 +183,7 @@ def main():
     
     # 打印友好的启动提示
     print("\n" + "="*50)
-    print("🚀 Prekikoeru 启动中...")
+    print("🚀 KikoeruTool_Elena 启动中...")
     print("="*50)
 
     # 查找可用端口

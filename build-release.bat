@@ -4,11 +4,11 @@ chcp 65001 >nul
 
 cd /d "%~dp0"
 set "ROOT=%cd%"
-for %%I in ("%ROOT%") do set "PROJECT_NAME=%%~nxI"
+set "PROJECT_NAME=Prekikoeru"
 
 set "BACKEND=%ROOT%\backend"
 set "FRONTEND=%ROOT%\frontend"
-set "ICON=D:\Tool\0edba671-6c04-463c-9b4f-7f1cec565830.ico"
+set "ICON=%BACKEND%\app.ico"
 set "FALLBACK_ICON=%BACKEND%\app.ico"
 set "VENV_PYTHON=%BACKEND%\venv\Scripts\python.exe"
 set "PYTHON_LAUNCHER="
@@ -84,7 +84,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call %PYTHON_LAUNCHER% -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON%;." ..\desktop_app.py
+call %PYTHON_LAUNCHER% -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import pystray._base --hidden-import pystray._win32 --hidden-import pystray._util --hidden-import pystray._util.win32 --hidden-import PIL --hidden-import PIL.Image --hidden-import PIL.ImageDraw --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON%;." ..\desktop_app.py
 if errorlevel 1 (
   popd
   echo Packaging failed.

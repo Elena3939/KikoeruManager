@@ -1,30 +1,37 @@
 @echo off
-set ICON_PATH=D:\Tool\0edba671-6c04-463c-9b4f-7f1cec565830.ico
+set ICON_PATH=backend\app.ico
 set PROJECT_NAME=Prekikoeru
 
 echo ========================================
-echo   Prekikoeru 打包脚本
+echo   Prekikoeru build script
 echo ========================================
 
-echo [1/3] 正在构建前端 (Vue)...
+echo [1/3] Building frontend...
 cd frontend
 call npm install
 call npm run build
 if %errorlevel% neq 0 (
-    echo 前端构建失败!
+    echo Frontend build failed.
     pause
     exit /b %errorlevel%
 )
 cd ..
 
-echo [2/3] 确保安装必要的 Python 包...
+echo [2/3] Installing Python packaging dependencies...
 pip install pyinstaller pystray Pillow uvicorn fastapi sqlalchemy pydantic-settings pyyaml watchdog filetype requests httpx python-multipart aiofiles websockets apscheduler aiohttp opencc-python-reimplemented croniter
 
-echo [3/3] 正在使用 PyInstaller 打包...
-echo 这可能需要几分钟，请稍候...
+echo [3/3] Packaging with PyInstaller...
+echo This may take a few minutes.
 
 pyinstaller --onefile --noconsole ^
     --icon="%ICON_PATH%" ^
+    --hidden-import=pystray ^
+    --hidden-import=pystray._base ^
+    --hidden-import=pystray._win32 ^
+    --hidden-import=pystray._util ^
+    --hidden-import=pystray._util.win32 ^
+    --hidden-import=PIL.Image ^
+    --hidden-import=PIL.ImageDraw ^
     --add-data "backend;backend" ^
     --add-data "frontend/dist;frontend/dist" ^
     --add-data "%ICON_PATH%;." ^
@@ -33,13 +40,13 @@ pyinstaller --onefile --noconsole ^
     desktop_app.py
 
 if %errorlevel% neq 0 (
-    echo 打包失败!
+    echo Packaging failed.
     pause
     exit /b %errorlevel%
 )
 
 echo ========================================
-echo   打包完成!
-echo   可执行文件位于：dist\%PROJECT_NAME%.exe
+echo   Packaging complete
+echo   Executable: dist\%PROJECT_NAME%.exe
 echo ========================================
 pause
