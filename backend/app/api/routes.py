@@ -4235,6 +4235,13 @@ for path in possible_paths:
 if frontend_build_path:
     # 提供静态资源文件（JS、CSS、图片等）
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_build_path, "assets")), name="assets")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def serve_favicon():
+        favicon_path = os.path.join(frontend_build_path, "favicon.ico")
+        if os.path.exists(favicon_path):
+            return FileResponse(favicon_path, media_type="image/x-icon")
+        raise HTTPException(status_code=404, detail="Favicon not found")
     
     # 捕获所有非 API 路由，返回 index.html（SPA 支持）
     @app.get("/{full_path:path}")
