@@ -1,143 +1,118 @@
-# 已有文件夹处理 - 查重检验功能更新
+# 已有文件夹查重说明
 
-## 新增功能
+## 1. 这个功能解决什么问题
 
-### 1. 自动查重检查
-在扫描已有文件夹时，系统现在会自动执行查重检查：
-- 检测直接重复（相同 RJ 号）
-- 检测关联作品（原作/翻译版本）
-- 支持多语言版本识别
+很多用户的库存里已经有一批“手动解压”或“历史遗留”的作品文件夹，它们不是由 Prekikoeru 本身解压出来的，因此不能直接走普通压缩包流程。
 
-### 2. 可视化冲突提示
-- **表格中显示状态**: 每个文件夹都会显示查重状态标签
-  - 红色标签: 发现冲突（点击可查看详情）
-  - 绿色标签: 无冲突
-  - 灰色标签: 检查中
-  
-- **冲突警告横幅**: 扫描完成后如果有冲突，会显示警告提示
+“已有文件夹”模块就是为这种场景准备的。
 
-### 3. 冲突详情对话框
-点击"查看冲突"按钮或状态标签，可以查看：
-- **冲突类型**: 直接重复、原作已存在、翻译版已存在等
-- **已存在作品信息**: 路径、大小、语言等
-- **关联作品列表**: 如果有关联作品在库中，会显示详细信息
-- **分析报告**: 包含语言统计、作品类型等
-- **建议操作**: 系统会推荐最佳处理方案
+它可以：
 
-### 4. 批量查重检查
-新增"检查选中项重复"按钮，可以：
-- 选择多个文件夹
-- 批量执行查重检查
-- 实时更新每个文件夹的查重状态
+- 扫描已有文件夹目录
+- 提取 RJ 号
+- 对每个文件夹做增强查重
+- 支持按选择的策略继续处理并入库
 
-## API 更新
+## 2. 工作流程
 
-### 扫描端点增强
-```
-POST /api/existing-folders/scan?check_duplicates=true
-```
+1. 在设置中配置 `existing_folders_path`
+2. 打开“已有文件夹”页面
+3. 执行扫描
+4. 查看每个文件夹的查重结果
+5. 对冲突项选择处理方式
+6. 提交处理任务
 
-返回数据现在包含查重信息：
-```json
-{
-  "message": "扫描完成，找到 10 个文件夹，其中 3 个可能有冲突",
-  "count": 10,
-  "conflict_count": 3,
-  "folders": [
-    {
-      "name": "RJ01234567 作品名称",
-      "path": "E:/已有文件夹/RJ01234567 作品名称",
-      "rjcode": "RJ01234567",
-      "duplicate_info": {
-        "is_duplicate": true,
-        "conflict_type": "LINKED_WORK_TRANSLATION",
-        "direct_duplicate": null,
-        "linked_works_found": [...],
-        "related_rjcodes": ["RJ01234567", "RJ01234568"],
-        "analysis_info": {...},
-        "resolution_options": [...]
-      }
-    }
-  ]
-}
-```
+## 3. 支持的能力
 
-### 新增批量查重端点
-```
-POST /api/existing-folders/check-duplicates
-```
+### 扫描缓存
 
-请求体：
-```json
-{
-  "folders": ["/path/to/folder1", "/path/to/folder2"],
-  "check_linked_works": true,
-  "cue_languages": ["CHI_HANS", "CHI_HANT", "ENG"]
-}
-```
+系统会把扫描结果缓存到数据库，避免每次都从头全量解析。
 
-## 界面使用说明
+### 重复检查
 
-### 1. 扫描文件夹
-1. 进入"已有文件夹"页面
-2. 点击"刷新"按钮
-3. 系统会自动扫描并执行查重检查
+支持：
 
-### 2. 查看冲突
-1. 在表格中查找带有红色标签的行
-2. 点击"查看冲突"按钮或红色标签
-3. 在弹出的对话框中查看详细信息
+- 直接重复
+- 关联作品查重
+- 语言版本冲突
 
-### 3. 批量检查
-1. 在表格中选择多个文件夹（勾选复选框）
-2. 点击"检查选中项重复"按钮
-3. 等待检查完成后查看结果
+### 冲突详情
 
-### 4. 处理冲突
-1. 在冲突详情对话框中查看建议操作
-2. 选择推荐的解决方案
-3. 点击"确认处理"按钮
+前端会展示：
 
-## 支持的冲突类型
+- 冲突类型
+- 已存在路径
+- 关联作品列表
+- 当前作品在作品族中的类型
+- 推荐处理动作
 
-| 冲突类型 | 说明 | 推荐操作 |
-|---------|------|---------|
-| DUPLICATE | 直接重复（相同RJ号） | 保留新版/保留旧版 |
-| LINKED_WORK_ORIGINAL | 原作已存在 | 保留两者（原作和翻译版） |
-| LINKED_WORK_TRANSLATION | 翻译版已存在 | 保留两者（不同语言） |
-| LINKED_WORK_CHILD | 子版本已存在 | 保留两者（不同版本） |
-| LANGUAGE_VARIANT | 语言变体 | 保留两者 |
-| MULTIPLE_VERSIONS | 多版本 | 根据大小判断 |
+### 按策略继续处理
 
-## 注意事项
+你可以在冲突弹窗中：
 
-1. **网络依赖**: 查重检查需要访问 DLsite API，请确保网络通畅
-2. **API 缓存**: DLsite API 响应会缓存 24 小时
-3. **性能考虑**: 大量文件夹可能需要较长时间检查，请耐心等待
-4. **RJ 号识别**: 请确保文件夹名包含正确的 RJ 号格式（RJ + 6-8位数字）
+- 删除当前文件夹
+- 继续处理
+- 按推荐策略处理
 
-## 故障排除
+## 4. 与普通任务的区别
 
-### 问题: 查重检查很慢
-**解决**: 
-- 减少同时检查的文件夹数量
-- 关闭"扫描时检查重复"选项，改为手动检查选中项
+普通任务针对压缩包，流程包含解压。
 
-### 问题: 关联作品检查不到
-**解决**:
-- 确保网络可以访问 dlsite.com
-- 检查该作品在 DLsite 上确实有翻译版本
-- 等待 24 小时缓存过期后重试
+已有文件夹任务针对已经存在的目录，流程通常是：
 
-### 问题: RJ 号识别失败
-**解决**:
-- 确保文件夹名包含 RJ 号（如 RJ01234567）
-- 支持的格式: RJ + 6-8位数字
-- 不区分大小写
+1. 提取 RJ 号
+2. 查重
+3. 获取元数据
+4. 重命名
+5. 过滤
+6. 导入字幕
+7. 分类
 
-## 后续计划
+不会重复执行解压步骤。
 
-- [ ] 支持直接从冲突详情创建处理任务
-- [ ] 添加"一键处理所有冲突"功能
-- [ ] 支持自定义冲突解决策略
-- [ ] 集成 Kikoeru 仓库搜索
+## 5. 相关接口
+
+前端主要使用以下接口：
+
+- `GET /api/existing-folders`
+- `POST /api/existing-folders/scan`
+- `POST /api/existing-folders/check-duplicates`
+- `POST /api/existing-folders/process`
+- `POST /api/existing-folders/process-with-resolution`
+- `POST /api/existing-folders/delete`
+- `POST /api/existing-folders/refresh-cache`
+- `POST /api/existing-folders/clear-cache`
+
+## 6. 数据存储
+
+已有文件夹相关缓存与记录位于数据库中，对应模型定义在：
+
+[database.py](D:/Clash%20Verge/KikoeruTool_Elena/backend/app/models/database.py)
+
+其中包含：
+
+- 文件夹路径
+- RJ 号
+- 缓存时间
+- 查重结果
+
+## 7. 适用场景
+
+- 迁移旧库存
+- 接手别人整理过的目录
+- 想对现有目录重新套用重命名和分类规则
+- 想批量排查库存中的重复或冲突版本
+
+## 8. 使用建议
+
+- 首次使用时先关闭自动批量处理，先看查重结果是否符合预期
+- 先验证重命名模板，再批量处理已有文件夹
+- 如果库存中长期保留多语言版本，不要把所有冲突都当成“错误”
+- 大批量处理前建议备份库存目录
+
+## 9. 相关代码位置
+
+- [ExistingFolders.vue](D:/Clash%20Verge/KikoeruTool_Elena/frontend/src/views/ExistingFolders.vue)
+- [task_engine.py](D:/Clash%20Verge/KikoeruTool_Elena/backend/app/core/task_engine.py)
+- [database.py](D:/Clash%20Verge/KikoeruTool_Elena/backend/app/models/database.py)
+- [routes.py](D:/Clash%20Verge/KikoeruTool_Elena/backend/app/api/routes.py)

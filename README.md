@@ -1,113 +1,122 @@
-﻿# Prekikoeru - DLsite 音声作品智能整理工具
-<!-- build trigger: minor doc change -->
+# Prekikoeru
 
-现代化的 DLsite 音声作品压缩包自动处理工具，支持智能解压、元数据获取、文件分类、ASMR 同步下载等功能。
+Prekikoeru 是一个面向 DLsite 音声作品整理场景的桌面/Web 混合工具，核心目标是把压缩包、已有文件夹、字幕目录和库存目录串成一条可配置的整理流水线。
 
-> **重要提示**: 使用本软件即表示您已阅读并同意 [免责声明与使用条款](DISCLAIMER.md)。本软件仅限 18 周岁及以上成年人使用。
+项目当前包含：
 
-## 功能亮点
+- FastAPI 后端
+- Vue 3 + Element Plus 前端
+- Windows 桌面打包入口与系统托盘
+- Docker 部署方案
+- 已有文件夹处理、增强查重、ASMR 同步下载、库存打包等专项能力
 
-- **智能解压**: 自动识别压缩格式、修复后缀名、支持密码爆破、分卷合并
-- **元数据获取**: 自动从 DLsite 获取作品信息，支持关联作品查询
-- **智能分类**: 按社团、系列等规则自动分类到存储库
-- **ASMR 同步下载**: 扫描字幕文件夹，自动下载对应资源
-- **字幕处理**: LRC 广告清理、繁简转换
-- **重复检测**: 检测重复作品和多语言版本
-- **文件夹监视**: 自动监视文件夹，新文件自动处理
-- **Web UI**: 现代化的 Web 界面，支持实时进度查看
+> 使用前请先阅读 [免责声明](DISCLAIMER.md)。项目适用于成年人对本地文件进行整理、归档与检索。
+
+## 主要功能
+
+- 自动扫描输入目录并创建处理任务
+- 解压压缩包、支持 7-Zip、嵌套压缩包和密码列表
+- 抓取作品元数据并按模板重命名
+- 过滤不需要的文件或目录
+- 按社团、系列、RJ 号范围等规则分类入库
+- 检测直接重复、关联作品冲突、翻译版本冲突
+- 处理“已有文件夹”而不重新解压
+- 从字幕目录扫描 RJ 号，执行 ASMR 同步下载
+- 管理密码库、已处理压缩包清理、库存打包
+- 提供 Kikoeru 服务器查重与路径映射能力
+
+## 页面模块
+
+当前前端页面与仓库代码一致，包含：
+
+- 概览
+- 任务队列
+- 问题作品
+- 库存管理
+- 密码库
+- 已有文件夹
+- 同步下载
+- 库存打包
+- 设置
+- 日志
 
 ## 快速开始
 
-### Windows 用户
+### Windows 普通使用
 
-1. 从 [Releases](https://github.com/canforgive/KikoeruTool/releases) 下载最新版本
-2. 解压后双击运行 `prekikoeru.exe`
-3. 浏览器访问 http://localhost:8000
+1. 先执行 [setup.bat](D:/Clash%20Verge/KikoeruTool_Elena/setup.bat) 安装依赖。
+2. 执行 [start-all.bat](D:/Clash%20Verge/KikoeruTool_Elena/start-all.bat) 启动前后端。
+3. 浏览器访问 `http://localhost:5173`。
+4. 后端 API 文档位于 `http://localhost:8000/docs`。
 
-### Docker 部署
-
-```bash
-# 拉取镜像
-docker pull ghcr.io/canforgive/kikoerutool:latest
-```
-
-**docker-compose.yml 示例：**
-
-```yaml
-version: '3'
-services:
-  prekikoeru:
-    image: ghcr.io/canforgive/kikoerutool:latest
-    container_name: prekikoeru
-    ports:
-      - "8000:8000"
-    environment:
-      - PUID=1000  # 通过 'id' 命令查到的 uid
-      - PGID=1000  # 通过 'id' 命令查到的 gid
-      - CONFIG_PATH=/app/config
-      - TZ=Asia/Shanghai  # 建议设置时区，防止日志时间错乱
-    volumes:
-      - /path/to/config:/app/config    # 配置文件目录
-      - /path/to/data:/app/data        # 数据库目录
-      - /path/to/input:/input          # 待处理压缩包目录
-      - /path/to/library:/library      # 音声库存目录
-      - /path/to/temp:/temp            # 临时解压目录
-      - /path/to/processed:/processed  # 已处理压缩包目录
-      - /path/to/existing:/existing    # 已有作品目录
-      - /path/to/subtitles:/Subtitles  # ASMR同步字幕目录
-    restart: unless-stopped
-```
-
-启动后访问 http://localhost:8000
+如果你要打包桌面版，可参考 [docs/BUILD.md](docs/BUILD.md)。
 
 ### 本地开发
 
-```bash
-# 后端
-cd backend && pip install -r requirements.txt
-python -m app.main
+1. 安装 Python 3.11+ 与 Node.js 18+。
+2. 后端依赖位于 [backend/requirements.txt](backend/requirements.txt)。
+3. 前端依赖位于 [frontend/package.json](frontend/package.json)。
+4. 可直接使用 [start-dev.bat](D:/Clash%20Verge/KikoeruTool_Elena/start-dev.bat)、[start-dev.ps1](D:/Clash%20Verge/KikoeruTool_Elena/start-dev.ps1) 或 [start-dev.sh](D:/Clash%20Verge/KikoeruTool_Elena/start-dev.sh)。
 
-# 前端（新终端）
-cd frontend && npm install
-npm run dev
-```
+### Docker 部署
 
-## 文档
+仓库已提供 [Dockerfile](D:/Clash%20Verge/KikoeruTool_Elena/Dockerfile) 与 [docker-compose.yml](D:/Clash%20Verge/KikoeruTool_Elena/docker-compose.yml)。详细说明见 [DOCKER_DEPLOY.md](DOCKER_DEPLOY.md)。
 
-- **[免责声明与使用条款](DISCLAIMER.md)** - 使用软件默认同意
-- [软件介绍](docs/INTRODUCTION.md) - 详细功能说明和使用指南
-- [本地开发指南](docs/LOCAL_DEV.md) - 开发环境配置
-- [构建指南](docs/BUILD.md) - 打包和发布
-- [API 文档](http://localhost:8000/docs) - 服务启动后访问
+## 配置说明
+
+项目的配置模型定义在 [backend/app/config/settings.py](backend/app/config/settings.py)。
+
+常用配置包括：
+
+- 存储路径：输入目录、临时目录、库存目录、已处理压缩包目录、已有文件夹目录、字幕目录
+- 解压配置：7-Zip 路径、密码列表、嵌套解压深度
+- 元数据配置：超时、代理、封面处理
+- 重命名配置：模板、CV 拼接、标签数量、扁平化子目录
+- 分类配置：按社团、系列、RJ 号范围分类
+- 自动流程配置：普通任务、已有文件夹、ASMR 同步的步骤开关
+- Kikoeru 服务器查重配置
+- 密码库清理、已处理压缩包清理、库存打包配置
+
+仓库内现有示例配置文件在 [backend/config/config.yaml](backend/config/config.yaml)。
+
+注意：
+
+- 开发模式下，如果没有设置 `CONFIG_PATH`，后端会按默认逻辑寻找或创建运行时配置文件。
+- Docker 部署时通过环境变量将配置固定到 `/app/config/config.yaml`。
+- 桌面打包版会在 `exe` 同级的 `data/config/config.yaml` 中生成可编辑配置。
+
+## 文档索引
+
+- [QUICK_START.md](QUICK_START.md)：最短上手路径
+- [START_GUIDE.md](START_GUIDE.md)：Windows 首次安装与启动说明
+- [docs/INTRODUCTION.md](docs/INTRODUCTION.md)：产品介绍与模块说明
+- [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)：本地开发说明
+- [docs/BUILD.md](docs/BUILD.md)：Windows 打包说明
+- [docs/TESTING.md](docs/TESTING.md)：测试说明
+- [docs/7ZIP_CONFIG.md](docs/7ZIP_CONFIG.md)：7-Zip 配置说明
+- [DOCKER_DEPLOY.md](DOCKER_DEPLOY.md)：Docker 部署说明
+- [CONFIG_HOT_RELOAD_README.md](CONFIG_HOT_RELOAD_README.md)：配置重载说明
+- [EXISTING_FOLDERS_DUPLICATE_CHECK.md](EXISTING_FOLDERS_DUPLICATE_CHECK.md)：已有文件夹查重说明
+- [DUPLICATE_CHECK_IMPROVEMENT.md](DUPLICATE_CHECK_IMPROVEMENT.md)：增强查重说明
+- [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)：技术架构说明
 
 ## 项目结构
 
-```
-prekikoeru/
-├── backend/           # FastAPI 后端
-│   ├── app/
-│   │   ├── api/       # API 路由
-│   │   ├── core/      # 核心服务
-│   │   ├── models/    # 数据模型
-│   │   └── config/    # 配置管理
-│   └── requirements.txt
-├── frontend/          # Vue3 前端
-│   ├── src/
-│   │   ├── views/     # 页面组件
-│   │   ├── api/       # API 封装
-│   │   └── stores/    # 状态管理
-│   └── package.json
-└── docs/              # 文档
+```text
+Prekikoeru/
+├── backend/                 后端服务、配置模型、核心处理逻辑
+├── frontend/                前端界面与页面模块
+├── docs/                    补充文档
+├── desktop_app.py           Windows 桌面版入口
+├── build-release.bat        Windows 单文件打包脚本
+├── package.bat              旧版打包脚本
+├── start-all.bat            一键启动前后端
+├── start-dev.*              开发环境启动脚本
+└── docker-compose.yml       Docker Compose 示例
 ```
 
-## 许可证
+## 维护建议
 
-MIT License
-
-## 致谢
-
-本项目参考和借鉴了以下开源项目，感谢各位作者对社区的贡献：
-
-- [Sakyoriii/prekikoeru](https://github.com/Sakyoriii/prekikoeru) - DLsite 资源自动解压整理工具
-- [yodhcn/dlsite-doujin-renamer](https://github.com/yodhcn/dlsite-doujin-renamer) - DLsite 同人作品重命名工具
-- [Number178/kikoeru-quasar](https://github.com/Number178/kikoeru-quasar) - Kikoeru 前端项目
+- 不要把真实账号、Token、代理和密码直接提交到仓库配置文件中。
+- 变更配置模型时，同步更新 [backend/app/config/settings.py](backend/app/config/settings.py) 和相关文档。
+- 调整页面模块时，同步更新本文档与 [docs/INTRODUCTION.md](docs/INTRODUCTION.md)。

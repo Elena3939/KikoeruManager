@@ -1,170 +1,116 @@
-# 本地开发测试指南
+# 本地开发说明
 
-## 快速开始（无需Docker、无需打包）
+## 1. 环境要求
 
-### 1. 安装依赖
+- Python 3.11+
+- Node.js 18+
+- npm
+- 7-Zip
 
-```bash
-# 后端依赖
-cd backend
-pip install -r requirements.txt
+## 2. 依赖位置
 
-# 前端依赖
-cd ../frontend
-npm install
-```
+- 后端依赖：[backend/requirements.txt](D:/Clash%20Verge/KikoeruTool_Elena/backend/requirements.txt)
+- 测试依赖：[backend/requirements-test.txt](D:/Clash%20Verge/KikoeruTool_Elena/backend/requirements-test.txt)
+- 前端依赖：[frontend/package.json](D:/Clash%20Verge/KikoeruTool_Elena/frontend/package.json)
 
-### 2. 启动服务
+## 3. 一键启动脚本
 
-#### Windows 用户
+开发环境推荐直接使用项目已有脚本：
 
-双击运行 `start-dev.bat` 或在命令行执行：
-```cmd
-start-dev.bat
-```
+- [start-dev.bat](D:/Clash%20Verge/KikoeruTool_Elena/start-dev.bat)
+- [start-dev.ps1](D:/Clash%20Verge/KikoeruTool_Elena/start-dev.ps1)
+- [start-dev.sh](D:/Clash%20Verge/KikoeruTool_Elena/start-dev.sh)
 
-#### Linux/Mac 用户
+脚本会处理：
 
-```bash
-chmod +x start-dev.sh
-./start-dev.sh
-```
+- Python/Node.js 检查
+- 后端虚拟环境创建
+- 依赖修复
+- 前端依赖安装
+- 前后端启动
 
-### 3. 访问应用
+## 4. 手动启动
 
-- 前端界面: http://localhost:5173
-- 后端API: http://localhost:8000
-- API文档: http://localhost:8000/docs
+### 后端
 
-### 4. 手动启动（分步）
-
-如果不想使用脚本，可以分别启动：
-
-**终端1 - 启动后端：**
 ```bash
 cd backend
-python -m app.main
+py -3.11 -m venv venv
+venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe -m app.main
 ```
 
-**终端2 - 启动前端：**
+### 前端
+
 ```bash
 cd frontend
+npm install
 npm run dev
 ```
 
-### 5. 测试步骤
+## 5. 默认访问地址
 
-1. **准备测试文件**
-   ```bash
-   # 创建测试目录
-   mkdir -p test_data/input
-   mkdir -p test_data/library
-   mkdir -p test_data/temp
-   
-   # 复制压缩包到测试目录
-   cp your-test-file.zip test_data/input/
-   ```
+- 前端：`http://localhost:5173`
+- 后端：`http://localhost:8000`
+- API 文档：`http://localhost:8000/docs`
 
-2. **修改配置**
-   编辑 `config/config.yaml`：
-   ```yaml
-   storage:
-     input_path: "./test_data/input"
-     temp_path: "./test_data/temp"
-     library_path: "./test_data/library"
-   ```
+## 6. 配置文件在开发环境中的使用方式
 
-3. **开始测试**
-   - 打开 http://localhost:5173
-   - 拖拽文件到上传区域，或
-   - 直接复制文件到 `test_data/input` 文件夹
-   - 观察任务处理进度
+当前仓库需要你明确区分：
 
-### 6. 调试模式
+- 示例配置：[backend/config/config.yaml](D:/Clash%20Verge/KikoeruTool_Elena/backend/config/config.yaml)
+- 运行时配置：由 `CONFIG_PATH` 或默认路径决定
 
-**启用详细日志：**
-```bash
-# Windows
-set LOG_LEVEL=DEBUG
-python -m app.main
+建议做法：
 
-# Linux/Mac
-LOG_LEVEL=DEBUG python -m app.main
+### 方式一：显式指定
+
+在启动前设置：
+
+```bat
+set CONFIG_PATH=D:\Clash Verge\KikoeruTool_Elena\backend\config\config.yaml
 ```
 
-**使用 VS Code 调试：**
-已创建 `.vscode/launch.json`，按 F5 即可启动调试。
+或 PowerShell：
 
-### 7. 热重载
-
-- 后端：修改代码后自动重启（uvicorn --reload）
-- 前端：修改代码后自动刷新（vite HMR）
-
-### 8. 常用命令
-
-```bash
-# 查看后端日志
-tail -f backend/logs/app.log
-
-# 清空测试数据
-rm -rf test_data/temp/* test_data/library/*
-
-# 重置数据库
-rm backend/data/cache.db
-
-# 运行单元测试
-cd backend
-pytest
+```powershell
+$env:CONFIG_PATH="D:\Clash Verge\KikoeruTool_Elena\backend\config\config.yaml"
 ```
 
-### 9. 故障排除
+### 方式二：复制示例到实际运行位置
 
-**问题1: 前端无法连接后端**
-- 检查后端是否在 8000 端口运行
-- 检查 `frontend/vite.config.js` 中的代理配置
+如果你不想依赖环境变量，就把示例配置复制到运行时默认位置再启动。
 
-**问题2: 文件无法解压**
-- 确保 7-Zip 已安装并添加到 PATH
-- Windows: `where 7z`
-- Linux: `which 7z`
+## 7. 调试建议
 
-**问题3: 权限错误**
-- 以管理员身份运行终端
-- 或修改文件夹权限: `chmod -R 777 test_data`
+### 后端
 
-**问题4: 端口被占用**
-- 后端: 修改 `backend/app/main.py` 中的端口
-- 前端: 修改 `frontend/vite.config.js` 中的端口
+- 直接使用 `python -m app.main`
+- API 文档可用于快速验证接口
+- 主要日志文件在 `data/app.log`
 
-### 10. 生产环境打包
+### 前端
 
-测试完成后，如需打包：
+- 使用 Vite 开发服务器
+- 直接打开浏览器开发者工具查看接口请求与页面状态
 
-```bash
-# Windows EXE
-build-windows.bat
+## 8. 开发注意事项
 
-# Docker 镜像
-docker-compose build
-```
+- 修改配置模型后要同步更新前端设置页
+- 修改路由后要同步更新菜单与文档
+- 不要把真实账号、Token 和私有地址提交到配置文件
+- 如果要验证打包行为，不要只在 Vite 模式下测试
 
----
+## 9. 运行中常见问题
 
-## 文件说明
+### 8000 或 5173 被占用
 
-- `start-dev.bat` - Windows 一键启动脚本
-- `start-dev.sh` - Linux/Mac 一键启动脚本
-- `config/config.yaml` - 配置文件
-- `test_data/` - 测试数据目录
+结束旧进程后再重启。
 
----
+### `7z` 不可用
 
-## 快速测试流程
+检查系统是否安装 7-Zip，并确认路径可执行。
 
-1. **启动服务**: 双击 `start-dev.bat` (Windows) 或 `./start-dev.sh` (Linux)
-2. **准备文件**: 复制压缩包到 `test_data/input/`
-3. **打开界面**: 浏览器访问 http://localhost:5173
-4. **查看结果**: 观察任务处理和文件输出到 `test_data/library/`
-5. **停止服务**: 在终端按 Ctrl+C
+### 前端能打开但接口报错
 
-就这么简单！
+优先检查后端是否启动、配置路径是否正确、日志里是否有配置解析失败信息。

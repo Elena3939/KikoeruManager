@@ -1,58 +1,157 @@
-# Prekikoeru 快速启动指南
+# Prekikoeru 启动指南
 
-## 安装（首次使用）
+这份文档面向日常使用者，重点说明第一次安装、启动和常见入口。
 
-双击运行 `setup.bat`，自动安装所有依赖。
+## 首次安装
 
-## 日常启动
+### 方法一：推荐方式
 
-### 方式1：一键启动（推荐）
-双击 `start-all.bat`
-- 自动启动前后端服务
-- 打开两个命令行窗口
-- 关闭窗口即可停止服务
+直接执行：
 
-### 方式2：单独启动
-- **只启动后端**: 双击 `backend\start.bat`
-- **只启动前端**: 双击 `frontend\start.bat`
+```bat
+setup.bat
+```
+
+脚本会自动完成：
+
+- 环境检查
+- 后端虚拟环境创建
+- Python 依赖安装
+- 前端依赖安装
+
+### 方法二：手动安装
+
+后端：
+
+```bat
+cd backend
+py -3.11 -m venv venv
+venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+前端：
+
+```bat
+cd frontend
+npm install
+```
+
+## 日常启动方式
+
+### 一键启动
+
+```bat
+start-all.bat
+```
+
+适合普通使用。脚本会：
+
+- 检查依赖
+- 启动后端窗口
+- 启动前端窗口
+
+### 分开启动
+
+只启动后端：
+
+```bat
+cd backend
+start.bat
+```
+
+只启动前端：
+
+```bat
+cd frontend
+start.bat
+```
+
+### 开发模式启动
+
+Windows CMD：
+
+```bat
+start-dev.bat
+```
+
+Windows PowerShell：
+
+```powershell
+.\start-dev.ps1
+```
+
+Linux/macOS：
+
+```bash
+chmod +x start-dev.sh
+./start-dev.sh
+```
 
 ## 访问地址
 
-- **前端界面**: http://localhost:5173
-- **后端API**: http://localhost:8000
-- **API文档**: http://localhost:8000/docs
+- 前端：`http://localhost:5173`
+- 后端：`http://localhost:8000`
+- API 文档：`http://localhost:8000/docs`
+
+## 推荐的首次配置顺序
+
+1. 打开“设置”
+2. 配置存储路径
+3. 配置 7-Zip 路径
+4. 配置密码列表
+5. 配置重命名模板
+6. 配置分类规则
+7. 视需要开启监视器
 
 ## 目录说明
 
+- `backend/`：后端服务
+- `frontend/`：前端界面
+- `data/`：运行日志和数据库
+- `test_data/`：脚本会创建的测试目录
+
+## 配置文件位置
+
+当前项目存在两类配置文件来源：
+
+- 仓库内示例配置：[backend/config/config.yaml](backend/config/config.yaml)
+- 实际运行时配置：由运行环境根据 `CONFIG_PATH` 或默认逻辑决定
+
+桌面打包版首次运行后，会在 `exe` 同级目录生成：
+
+```text
+data/config/config.yaml
 ```
-prekikoeru/
-├── start-all.bat      # 一键启动（用这个！）
-├── setup.bat          # 首次安装
-├── backend/
-│   └── start.bat      # 后端启动
-├── frontend/
-│   └── start.bat      # 前端启动
-├── test_data/         # 测试数据目录
-└── config/            # 配置文件
-```
+
+如果你希望开发环境直接使用仓库示例配置，建议手动设置 `CONFIG_PATH`，或将示例复制到实际运行位置。
+
+## 停止服务
+
+- 前端窗口中按 `Ctrl+C`
+- 关闭脚本弹出的命令行窗口
+- 或手动结束占用 5173 / 8000 端口的进程
 
 ## 常见问题
 
-### 1. 提示缺少Python
-安装 Python 3.11+：https://www.python.org/downloads/
+### Python 未找到
 
-### 2. 提示缺少Node.js
-安装 Node.js 18+：https://nodejs.org/
+安装 Python 3.11+，并确认 `py` 或 `python` 命令可用。
 
-### 3. 端口被占用
-- 后端端口 8000
-- 前端端口 5173
+### npm 未找到
 
-在 config/config.yaml 中修改端口配置。
+安装 Node.js 18+，并确认 `npm.cmd` 可用。
 
-### 4. 如何停止服务？
-直接关闭命令行窗口，或按 `Ctrl+C`
+### 端口被占用
 
-## 测试数据
+项目默认使用：
 
-将压缩包放入 `test_data\input\` 目录，系统会自动处理。
+- 8000：后端
+- 5173：前端
+
+先关闭旧进程，再重新启动。
+
+### 页面能打开但没有数据
+
+- 确认后端已启动
+- 检查 `http://localhost:8000/docs`
+- 查看日志页面或 `data/app.log`

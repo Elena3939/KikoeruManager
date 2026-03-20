@@ -1,167 +1,121 @@
-# 配置热重载功能说明
+# 配置重载说明
 
-## 功能概述
+Prekikoeru 当前提供两种配置更新方式：
 
-应用程序现已支持配置文件的实时读取和热重载功能，修改配置后无需重启程序即可生效。
+- 手动重载：通过 API 或前端按钮重新读取配置文件
+- 自动监视：`settings.py` 中已实现 `watchdog` 监听，但只有显式调用 `start_config_watcher()` 的启动入口才会启用
 
-## 实现方式
+## 当前项目状态
 
-### 1. 自动监控（推荐）
+### 一定可用的方式
 
-系统使用 `watchdog` 库监控配置文件变化，当检测到配置文件被修改时，会自动重新加载配置。
+手动重载接口：
 
-**工作原理：**
-- 应用启动时自动启动配置文件监控器
-- 监控 `config/config.yaml` 文件的变化
-- 文件修改后 0.5 秒内自动检测并重新加载
-- 所有模块会立即使用新的配置值
+```text
+POST /api/config/reload
+```
 
-**支持的修改方式：**
-- 直接编辑 `config/config.yaml` 文件
-- 通过其他程序修改配置文件
-- 使用版本控制工具更新配置文件
+前端 `设置` 页也已经接入这个接口。
 
-### 2. 手动刷新
+### 已实现但不是所有入口默认启用的方式
 
-在前端界面中提供了"从配置文件刷新"按钮，点击后会：
-1. 调用后端 `/api/config/reload` 接口
-2. 从磁盘重新读取配置文件
-3. 更新内存中的配置对象
-4. 刷新前端显示的配置值
+自动文件监视逻辑定义在：
 
-**使用方法：**
-1. 修改 `config/config.yaml` 文件
-2. 在设置页面点击右上角的"从配置文件刷新"按钮
-3. 确认配置已更新
+[settings.py](D:/Clash%20Verge/KikoeruTool_Elena/backend/app/config/settings.py)
 
-### 3. 前端保存配置
+其中包括：
 
-通过前端界面修改配置并保存时：
-1. 配置会自动保存到 `config/config.yaml`
-2. 内存中的配置对象会立即更新
-3. 相关文件监控系统会检测到变化
-4. 所有服务会使用最新配置
+- `ConfigFileChangeHandler`
+- `start_config_watcher()`
+- `stop_config_watcher()`
+- `reload_config()`
+
+当前仓库中，自动监视由 [backend/run.py](D:/Clash%20Verge/KikoeruTool_Elena/backend/run.py) 调用；而常用启动入口如 `python -m app.main` 和当前桌面打包入口并不会默认启动自动监视。
+
+换句话说：
+
+- 如果你用常规开发脚本或桌面版，建议把“手动重载”当作标准方式
+- 如果你准备切到 `backend/run.py` 作为入口，可以使用自动监听配置文件变化
 
 ## 配置文件位置
 
+### Docker
+
+```text
+/app/config/config.yaml
+```
+
+### Windows 桌面打包版
+
+```text
+<exe目录>\data\config\config.yaml
+```
+
 ### 开发环境
-```
-d:\Clash Verge\KikoeruTool-1.6.4\config\config.yaml
-```
 
-### 生产环境（打包后）
-```
-<data_directory>\config\config.yaml
-```
-其中 `<data_directory>` 通常是：
-- Windows: `C:\Users\<用户名>\AppData\Roaming\Prekikoeru\data`
-- Linux: `~/.local/share/Prekikoeru/data`
-- macOS: `~/Library/Application Support/Prekikoeru/data`
+开发环境具体取决于 `CONFIG_PATH` 是否设置。
 
-## 配置热重载流程
+- 设置了 `CONFIG_PATH`：按该路径读取
+- 未设置：按默认路径解析并在运行目录中创建
 
-```
-配置文件修改
-    ↓
-watchdog 检测到变化（0.5 秒防抖）
-    ↓
-自动重新加载配置到内存
-    ↓
-通知所有注册的回调函数
-    ↓
-各服务模块使用新配置
-    ↓
-日志记录加载结果
-```
+仓库中提供的示例配置位于：
 
-## API 接口
+[backend/config/config.yaml](D:/Clash%20Verge/KikoeruTool_Elena/backend/config/config.yaml)
 
-### POST /api/config/reload
+## 手动重载用法
 
-手动触发配置重新加载
+### 方式一：前端按钮
 
-**请求示例：**
+进入“设置”页面，点击“从配置文件刷新”或同类操作按钮。
+
+### 方式二：直接调用 API
+
 ```bash
 curl -X POST http://localhost:8000/api/config/reload
 ```
 
-**响应示例：**
-```json
-{
-  "message": "配置重新加载成功",
-  "config_file": "/path/to/config/config.yaml",
-  "timestamp": "2026-03-16T12:34:56.789012"
-}
-```
+成功时会返回：
 
-## 日志输出
+- 消息
+- 当前配置文件路径
+- 时间戳
 
-配置热重载时会输出以下日志：
+## 自动监视工作方式
 
-```
-[CONFIG] 检测到配置文件修改：/path/to/config.yaml
-[CONFIG] 开始重新加载配置文件...
-[CONFIG] 配置重新加载成功
-[CONFIG] storage.input_path = /new/input/path
-[CONFIG] rename.template = '{rjcode} {work_name}'
-```
+自动监视基于 `watchdog`，流程如下：
+
+1. 启动配置观察器
+2. 监听配置文件所在目录
+3. 检测到文件变化后进行防抖
+4. 调用 `load_config()` 或 `reload_config()`
+5. 通知已注册的回调
+
+## 哪些修改适合重载
+
+- 存储路径
+- 解压参数
+- 重命名模板
+- 分类规则
+- 过滤规则
+- 密码库清理与已处理压缩包清理策略
+- Kikoeru 与 ASMR 相关配置
 
 ## 注意事项
 
-1. **并发安全**：配置读写操作使用锁机制，确保线程安全
-2. **防抖处理**：文件修改后延迟 0.5 秒加载，避免多次触发
-3. **错误处理**：如果配置文件格式错误，会保留原有配置并记录错误日志
-4. **服务影响**：配置热重载不会影响正在进行的任务
-5. **特殊服务**：密码清理和压缩包清理服务会在配置变更后自动重启
+- 正在运行的任务不会自动回滚
+- 修改配置前建议备份
+- 配置文件编码应为 UTF-8
+- YAML 语法错误会导致重载失败
 
-## 测试功能
+## 故障排查
 
-可以使用提供的测试脚本验证热重载功能：
+### 调用重载后仍然无变化
 
-```bash
-python test_config_hot_reload.py
-```
+- 检查 `CONFIG_PATH` 指向的到底是哪份文件
+- 检查日志中的配置文件路径
+- 确认你修改的是运行时配置，而不是仓库示例配置
 
-测试内容：
-- 自动监控配置文件变化
-- 手动调用 reload API
-- 配置恢复原状
+### 自动监视没有触发
 
-## 故障排除
-
-### 配置未自动更新
-
-1. 检查日志输出，确认 watchdog 是否检测到变化
-2. 确认配置文件路径正确
-3. 检查 YAML 语法是否正确
-4. 尝试手动点击"从配置文件刷新"按钮
-
-### 配置加载失败
-
-1. 查看 `data/app.log` 日志文件
-2. 确认配置文件编码为 UTF-8
-3. 检查配置项是否符合格式要求
-4. 使用 YAML 验证工具检查语法
-
-## 技术细节
-
-### 后端实现
-
-- **文件监控**：`watchdog.observers.Observer`
-- **事件处理**：`ConfigFileChangeHandler`
-- **配置加载**：`load_config()` 函数
-- **回调机制**：`register_config_change_callback()`
-
-### 前端实现
-
-- **刷新按钮**：Settings.vue 页面顶部
-- **API 调用**：`configApi.reload()`
-- **状态管理**：Vue 3 Composition API
-- **图标组件**：Element Plus Refresh 图标
-
-## 版本信息
-
-- 功能添加时间：2026-03-16
-- 依赖库：watchdog >= 3.0.0
-- API 版本：1.0.0
-- 前端版本：1.1.0
+- 确认当前启动入口是否调用了 `start_config_watcher()`
+- 如果没有，直接使用手动重载接口
