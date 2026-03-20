@@ -41,9 +41,14 @@ def setup_paths():
         os.environ['DATA_PATH'] = data_dir
         config_path = os.path.join(data_dir, 'config', 'config.yaml')
         os.environ['CONFIG_PATH'] = config_path
-        bundled_config_path = os.path.join(base_path, 'config', 'config.yaml')
-        if not os.path.exists(config_path) and os.path.exists(bundled_config_path):
-            shutil.copy2(bundled_config_path, config_path)
+        bundled_candidates = [
+            os.path.join(base_path, 'config', 'config.yaml'),
+        ]
+        if not os.path.exists(config_path):
+            for bundled_config_path in bundled_candidates:
+                if os.path.exists(bundled_config_path):
+                    shutil.copy2(bundled_config_path, config_path)
+                    break
 
 def setup_logging():
     log_dir = os.environ.get('DATA_PATH', './data')

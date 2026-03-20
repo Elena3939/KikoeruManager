@@ -114,7 +114,7 @@ chmod +x start-dev.sh
 
 当前项目存在两类配置文件来源：
 
-- 仓库内示例配置：[backend/config/config.yaml](backend/config/config.yaml)
+- 仓库内默认配置：[backend/config/config.yaml](backend/config/config.yaml)
 - 实际运行时配置：由运行环境根据 `CONFIG_PATH` 或默认逻辑决定
 
 桌面打包版首次运行后，会在 `exe` 同级目录生成：

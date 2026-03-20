@@ -1,0 +1,160 @@
+storage:
+  input_path: /input
+  temp_path: /temp
+  library_path: /library
+  processed_archives_path: /processed
+  existing_folders_path: /existing
+  asmr_subtitle_path: ''
+processing:
+  max_workers: 4
+  retry_count: 3
+  file_stable_checks: 3
+  file_stable_interval: 2
+  max_wait_time: 3600
+watcher:
+  enabled: true
+  scan_interval: 30
+  auto_start: true
+  auto_classify: true
+  delete_after_process: false
+extract:
+  seven_zip_path: 7z
+  auto_repair_extension: true
+  verify_after_extract: true
+  password_list: []
+  extract_nested_archives: true
+  max_nested_depth: 5
+filter:
+  enabled: true
+  filter_dir: true
+  rules:
+    - name: 过滤无SE的WAV文件
+      pattern: (?:SE|音|音效)(?:[な無]し|CUT).*\.WAV$
+      target: file
+      action: exclude
+      enabled: true
+    - name: 过滤MP3文件
+      pattern: \.mp3$
+      target: file
+      action: exclude
+      enabled: false
+metadata:
+  locale: zh_cn
+  connect_timeout: 10
+  read_timeout: 10
+  sleep_interval: 3
+  http_proxy: null
+  cache_enabled: true
+  fetch_cover: true
+  make_folder_icon: true
+  remove_jpg_file: true
+rename:
+  template: '{rjcode} {work_name}'
+  date_format: '%y%m%d'
+  delimiter: ' '
+  cv_list_left: '(CV '
+  cv_list_right: )
+  exclude_square_brackets: false
+  illegal_char_to_full_width: false
+  tags_max_number: 5
+  tags_ordered_list: []
+  flatten_single_subfolder: true
+  flatten_depth: 3
+  remove_empty_folders: true
+  api_rename_follow_template: false
+  use_japanese_metadata: false
+classification:
+  - type: none
+    enabled: true
+    path_template: ''
+    custom_name: null
+    fallback: null
+    max_tags: null
+    rjcode_range: null
+password_cleanup:
+  enabled: false
+  max_use_count: 1
+  cron_expression: 0 0 * * 0
+  preserve_days: 30
+  exclude_sources: []
+processed_archive_cleanup:
+  enabled: false
+  cron_expression: 0 1 * * 0
+  strategy: age
+  preserve_days: 30
+  max_count: 1000
+  max_size_gb: 50.0
+  exclude_reprocessing: true
+  scan_on_startup: true
+  min_keep_count: 10
+path_mapping:
+  enabled: false
+  rules: []
+  open_mode: auto
+kikoeru_server:
+  enabled: false
+  server_url: ''
+  username: ''
+  password: ''
+  api_token: ''
+  token_expires: 0
+  timeout: 10
+  cache_ttl: 300
+  http_proxy: null
+  check_in_preextract: true
+  retry_count: 3
+  retry_delay: 1.0
+asmr_sync:
+  enabled: true
+  api_base_url: https://api.asmr-200.com/api
+  max_concurrent_downloads: 3
+  http_proxy: null
+  retry_interval_hours: 1.0
+  max_retry_count: 10
+  retry_cron: 0 */1 * * *
+  retry_count: 3
+  retry_delay: 5
+  lrc_clean_enabled: true
+  lrc_clean_patterns:
+    - '@[\w]{3,}'
+    - Telegram
+    - telegram
+    - 电报
+    - tg群
+    - TG群
+    - QQ群[：:]\s*\d+
+    - 群号[：:]\s*\d+
+  simplify_chinese_enabled: true
+auto_process:
+  check_duplicate: true
+  extract: true
+  fetch_metadata: true
+  rename: true
+  filter: true
+  classify: true
+  archive: true
+process_existing:
+  check_duplicate: true
+  fetch_metadata: true
+  rename: true
+  filter: true
+  import_lrc: true
+  classify: true
+asmr_sync_step:
+  download: true
+  sync_subtitle: true
+  rename: true
+  classify: true
+  move_subtitle_folder: true
+backup_zip:
+  enabled: false
+  source_path: ''
+  output_dir: ''
+  path_copy_target: ''
+  copy_structure_before_zip: true
+  password: ''
+  archive_format: zip
+  compression_level: 9
+  compression_threads: 0
+  dictionary_size_mb: 0
+  solid_archive: true

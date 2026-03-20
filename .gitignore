@@ -60,4 +60,6 @@ frontend/node_modules/
 setup-run.log
 setup-run2.log
 config/config.yaml
+data/config/config.yaml
+backend/config/config.local.backup.yaml
 .claude/

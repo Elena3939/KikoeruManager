@@ -58,7 +58,7 @@ npm run dev
 
 当前仓库需要你明确区分：
 
-- 示例配置：[backend/config/config.yaml](D:/Clash%20Verge/KikoeruTool_Elena/backend/config/config.yaml)
+- 默认配置：[backend/config/config.yaml](D:/Clash%20Verge/KikoeruTool_Elena/backend/config/config.yaml)
 - 运行时配置：由 `CONFIG_PATH` 或默认路径决定
 
 建议做法：

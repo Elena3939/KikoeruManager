@@ -77,7 +77,7 @@ Prekikoeru 是一个面向 DLsite 音声作品整理场景的桌面/Web 混合�
 - Kikoeru 服务器查重配置
 - 密码库清理、已处理压缩包清理、库存打包配置
 
-仓库内现有示例配置文件在 [backend/config/config.yaml](backend/config/config.yaml)。
+仓库内现有默认配置文件在 [backend/config/config.yaml](backend/config/config.yaml)。
 
 注意：
 

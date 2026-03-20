@@ -243,5 +243,5 @@ data/app.log
 ## 12. 当前实现上的注意点
 
 - 自动配置文件监视能力已实现，但不是所有启动入口默认启用
-- 仓库中的 [backend/config/config.yaml](backend/config/config.yaml) 更适合作为模板，不一定等于运行时真正使用的配置文件
+- 仓库中的 [backend/config/config.yaml](backend/config/config.yaml) 更适合作为默认模板，不一定等于运行时真正使用的配置文件
 - 旧命名 `KikoeruTool_Elena` 在部分代码与依赖描述中仍有历史残留，文档层统一以 `Prekikoeru` 为准

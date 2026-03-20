@@ -96,7 +96,7 @@ Docker 环境下后端通过环境变量固定读取：
 
 首次运行如文件不存在，会在该位置生成默认配置。
 
-仓库中的 [backend/config/config.yaml](backend/config/config.yaml) 可作为模板参考，但 Docker 实际运行以挂载目录中的配置为准。
+仓库中的 [backend/config/config.yaml](backend/config/config.yaml) 可作为默认模板参考，但 Docker 实际运行以挂载目录中的配置为准。
 
 ## 健康检查
 
