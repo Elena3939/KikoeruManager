@@ -1,9 +1,12 @@
-import asyncio
+﻿import asyncio
 import json
+import logging
 import os
+import re
 import shutil
 import time
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
@@ -13,6 +16,8 @@ import aiohttp
 import yaml
 
 from ..config.settings import get_config
+
+logger = logging.getLogger(__name__)
 
 
 def _config_file_path() -> str:
@@ -39,6 +44,54 @@ def _stats_log_file_path() -> str:
 
 def _gb(value: int) -> float:
     return round(value / (1024 ** 3), 2)
+
+
+SYNOLOGY_COMMON_ERROR_MESSAGES: dict[int, str] = {
+    100: "未知错误",
+    101: "参数错误",
+    102: "API not found",
+    103: "Method not found",
+    104: "API version not supported",
+    105: "当前账号权限不足",
+    106: "Login session expired, please sign in again",
+    107: "Login session interrupted, please sign in again",
+}
+
+SYNOLOGY_AUTH_ERROR_MESSAGES: dict[int, str] = {
+    400: "Invalid username or password",
+    401: "Account disabled",
+    402: "账号权限不足",
+    403: "需要二步验证或设备验证",
+    404: "OTP verification failed",
+}
+
+SYNOLOGY_FILESTATION_ERROR_MESSAGES: dict[int, str] = {
+    117: "Target file or folder already exists",
+    118: "Target file or folder does not exist or was moved",
+    119: "目标路径无效、不存在，或当前账号无权访问",
+}
+
+
+def _synology_error_message(api: str, code: Optional[int]) -> Optional[str]:
+    if code is None:
+        return None
+    if code in SYNOLOGY_COMMON_ERROR_MESSAGES:
+        return SYNOLOGY_COMMON_ERROR_MESSAGES[code]
+    if api == "SYNO.API.Auth":
+        return SYNOLOGY_AUTH_ERROR_MESSAGES.get(code)
+    if api.startswith("SYNO.FileStation."):
+        return SYNOLOGY_FILESTATION_ERROR_MESSAGES.get(code)
+    return None
+
+
+def _format_synology_error(api: str, action: str, data: dict[str, Any]) -> str:
+    error = data.get("error") or {}
+    code = error.get("code")
+    readable = _synology_error_message(api, code)
+    code_text = f"code {code}" if code is not None else "unknown code"
+    if readable:
+        return f"Synology {action} failed ({code_text}: {readable}): {json.dumps(data, ensure_ascii=False)}"
+    return f"Synology {action} failed ({code_text}): {json.dumps(data, ensure_ascii=False)}"
 
 
 @dataclass
@@ -142,9 +195,26 @@ class SynologyFileStationClient:
         self.config = config
         self._sid: Optional[str] = None
         self._device_id: str = config.device_id or ""
+        self._api_info_cache: dict[str, tuple[str, int]] = {}
+
+    async def _read_response_payload(self, response: aiohttp.ClientResponse, api: str) -> dict[str, Any]:
+        try:
+            return await response.json(content_type=None)
+        except Exception as exc:
+            body = await response.text()
+            try:
+                return json.loads(body)
+            except Exception as decode_exc:
+                content_type = response.headers.get("Content-Type", "")
+                snippet = (body or "").strip().replace("\n", " ")
+                snippet = snippet[:200]
+                raise RuntimeError(
+                    f"群晖 FileStation 响应解析失败: API={api}, HTTP {response.status}, Content-Type={content_type}, Body={snippet}"
+                ) from decode_exc
 
     async def _request(self, api: str, method: str, version: int, params: dict[str, Any], files=None):
-        timeout = aiohttp.ClientTimeout(total=self.config.timeout)
+        timeout_value = int(self.config.timeout or 0)
+        timeout = aiohttp.ClientTimeout(total=None if timeout_value <= 0 else timeout_value)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             if not self._sid and api != "SYNO.API.Auth":
                 await self._login(session)
@@ -156,19 +226,107 @@ class SynologyFileStationClient:
             url = f"{self.config.base_url.rstrip('/')}/webapi/entry.cgi"
             if files:
                 form = aiohttp.FormData()
-                for key, value in payload.items():
+                query_payload = {
+                    "api": api,
+                    "method": method,
+                    "version": str(version),
+                }
+                if self._sid and api != "SYNO.API.Auth":
+                    query_payload["_sid"] = self._sid
+                for key, value in params.items():
                     form.add_field(key, str(value))
                 for file_key, file_value in files:
                     form.add_field(file_key, file_value[0], filename=file_value[1], content_type="application/octet-stream")
-                async with session.post(url, data=form, ssl=self.config.verify_ssl) as response:
-                    data = await response.json()
+                async with session.post(url, params=query_payload, data=form, ssl=self.config.verify_ssl) as response:
+                    data = await self._read_response_payload(response, api)
             else:
                 async with session.get(url, params=payload, ssl=self.config.verify_ssl) as response:
-                    data = await response.json()
+                    data = await self._read_response_payload(response, api)
 
             if not data.get("success"):
-                raise RuntimeError(f"群晖 FileStation 请求失败: {data}")
+                raise RuntimeError(_format_synology_error(api, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
             return data.get("data") or {}
+
+    def _is_error_code(self, exc: Exception, code: int) -> bool:
+        message = str(exc)
+        patterns = [
+            rf'浠ｇ爜\s*{code}\b',
+            rf'"code"\s*:\s*{code}\b',
+            rf"'code'\s*:\s*{code}\b",
+        ]
+        return any(re.search(pattern, message, re.IGNORECASE) for pattern in patterns)
+
+    async def _post_file_upload(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        api_name: str,
+        query_params: dict[str, Any],
+        form_fields: dict[str, Any],
+        local_path: str,
+        remote_name: Optional[str] = None,
+        *,
+        quote_fields: bool = False,
+        include_content_type: bool = False,
+    ) -> dict[str, Any]:
+        file_name = remote_name or os.path.basename(local_path)
+        with open(local_path, "rb") as handle:
+            file_bytes = handle.read()
+        boundary = f"----CodexSynology{uuid.uuid4().hex}"
+
+        body = bytearray()
+        for key, value in form_fields.items():
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+            body.extend(str(value).encode("utf-8"))
+            body.extend(b"\r\n")
+
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode("utf-8"))
+        if include_content_type:
+            body.extend(b"Content-Type: application/octet-stream\r\n")
+        body.extend(b"\r\n")
+        body.extend(file_bytes)
+        body.extend(b"\r\n")
+        body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+        headers = {
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }
+
+        async with session.post(url, params=query_params, data=bytes(body), headers=headers, ssl=self.config.verify_ssl) as response:
+            data = await self._read_response_payload(response, api_name)
+
+        if not data.get("success"):
+            raise RuntimeError(_format_synology_error(api_name, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
+        return data.get("data") or {}
+
+    async def _resolve_api_route(self, session: aiohttp.ClientSession, api_name: str, default_path: str = "entry.cgi", default_version: int = 2) -> tuple[str, int]:
+        cached = self._api_info_cache.get(api_name)
+        if cached:
+            return cached
+
+        url = f"{self.config.base_url.rstrip('/')}/webapi/query.cgi"
+        params = {
+            "api": "SYNO.API.Info",
+            "method": "query",
+            "version": "1",
+            "query": api_name,
+        }
+        async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+            data = await self._read_response_payload(response, "SYNO.API.Info")
+
+        path = default_path
+        version = default_version
+        if data.get("success"):
+            info = (data.get("data") or {}).get(api_name) or {}
+            raw_path = str(info.get("path") or default_path).lstrip("/")
+            path = raw_path or default_path
+            version = int(info.get("maxVersion") or default_version)
+
+        resolved = (path, version)
+        self._api_info_cache[api_name] = resolved
+        return resolved
 
     async def _login(self, session: aiohttp.ClientSession):
         url = f"{self.config.base_url.rstrip('/')}/webapi/auth.cgi"
@@ -195,14 +353,14 @@ class SynologyFileStationClient:
             auth_errors = (data.get("error") or {}).get("errors") or {}
             auth_types = [item.get("type") for item in auth_errors.get("types") or [] if item.get("type")]
             if "otp" in auth_types:
-                raise RuntimeError(f"群晖登录失败：当前账号启用了二步验证，需要填写一次性验证码(OTP)。{data}")
+                raise RuntimeError(f"\u7fa4\u6656\u767b\u5f55\u5931\u8d25\uff08\u4ee3\u7801 403\uff1a\u9700\u8981\u4e8c\u6b65\u9a8c\u8bc1\uff0c\u8bf7\u586b\u5199\u4e00\u6b21\u6027\u9a8c\u8bc1\u7801 OTP\uff09: {json.dumps(data, ensure_ascii=False)}")
         if not data.get("success"):
-            raise RuntimeError(f"群晖登录失败: {data}")
+            raise RuntimeError(_format_synology_error("SYNO.API.Auth", "\u767b\u5f55", data))
         login_data = data.get("data") or {}
         self._sid = login_data.get("sid")
         self._device_id = login_data.get("did") or self._device_id
         if not self._sid:
-            raise RuntimeError("群晖登录成功但未返回 sid")
+            raise RuntimeError("\u7fa4\u6656\u767b\u5f55\u6210\u529f\u4f46\u672a\u8fd4\u56de sid")
 
     @property
     def device_id(self) -> str:
@@ -279,16 +437,58 @@ class SynologyFileStationClient:
         )
 
     async def create_folder(self, parent_path: str, name: str):
-        return await self._request(
-            "SYNO.FileStation.CreateFolder",
-            "create",
-            2,
+        normalized_parent = str(PurePosixPath(parent_path or "/"))
+        timeout = aiohttp.ClientTimeout(total=self.config.timeout)
+        variants = [
             {
-                "folder_path": parent_path,
+                "folder_path": normalized_parent,
                 "name": name,
                 "force_parent": "true",
             },
-        )
+            {
+                "folder_path": f'["{normalized_parent}"]',
+                "name": f'["{name}"]',
+                "force_parent": "true",
+            },
+            {
+                "folder_path": normalized_parent,
+                "name": name,
+            },
+            {
+                "folder_path": f'["{normalized_parent}"]',
+                "name": name,
+            },
+        ]
+        last_error: Optional[Exception] = None
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            if not self._sid:
+                await self._login(session)
+            api_path, api_version = await self._resolve_api_route(session, "SYNO.FileStation.CreateFolder", default_path="entry.cgi", default_version=2)
+            url = f"{self.config.base_url.rstrip('/')}/webapi/{api_path.lstrip('/')}"
+            for variant in variants:
+                params = {
+                    "api": "SYNO.FileStation.CreateFolder",
+                    "method": "create",
+                    "version": str(api_version),
+                    **variant,
+                }
+                if self._sid:
+                    params["_sid"] = self._sid
+                try:
+                    async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+                        data = await self._read_response_payload(response, "SYNO.FileStation.CreateFolder")
+                    if not data.get("success"):
+                        raise RuntimeError(_format_synology_error("SYNO.FileStation.CreateFolder", "create folder", data))
+                    return data.get("data") or {}
+                except Exception as exc:
+                    last_error = exc
+                    if not (self._is_error_code(exc, 101) or self._is_error_code(exc, 119)):
+                        continue
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("群晖创建目录失败")
 
     async def rename(self, path: str, new_name: str):
         return await self._request(
@@ -312,19 +512,144 @@ class SynologyFileStationClient:
             },
         )
 
-    async def upload_file(self, dest_folder: str, local_path: str):
-        with open(local_path, "rb") as handle:
-            await self._request(
-                "SYNO.FileStation.Upload",
-                "upload",
-                2,
-                {
-                    "path": dest_folder,
-                    "create_parents": "true",
-                    "overwrite": "false",
+    async def upload_file(self, dest_folder: str, local_path: str, overwrite: bool = False, remote_name: Optional[str] = None):
+        normalized_path = str(PurePosixPath(dest_folder or "/"))
+        overwrite_value = "true" if overwrite else "false"
+        upload_total_timeout = max(12, min(int(self.config.timeout or 30), 18))
+        timeout = aiohttp.ClientTimeout(total=upload_total_timeout, connect=min(10, upload_total_timeout))
+        payload_variants = [
+            {
+                "query": {},
+                "form": {
+                    "api": "SYNO.FileStation.Upload",
+                    "method": "upload",
+                    "version": "2",
+                    "_sid": "",
+                    "path": normalized_path,
+                    "overwrite": overwrite_value,
                 },
-                files=[("file", (handle, os.path.basename(local_path)))],
-            )
+                "quote_fields": True,
+                "include_content_type": False,
+                "include_sid": True,
+            },
+            {
+                "query": {},
+                "form": {
+                    "path": normalized_path,
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": True,
+                "include_content_type": False,
+                "include_sid": True,
+            },
+            {
+                "query": {"path": normalized_path, "overwrite": overwrite_value},
+                "form": {},
+                "quote_fields": True,
+                "include_content_type": False,
+                "include_sid": True,
+            },
+            {
+                "query": {},
+                "form": {
+                    "path": normalized_path,
+                    "create_parents": "true",
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": True,
+                "include_content_type": False,
+                "include_sid": True,
+            },
+            {
+                "query": {},
+                "form": {
+                    "path": f'["{normalized_path}"]',
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": True,
+                "include_content_type": True,
+                "include_sid": True,
+            },
+            {
+                "query": {},
+                "form": {
+                    "path": normalized_path,
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": False,
+                "include_content_type": True,
+                "include_sid": True,
+            },
+            {
+                "query": {},
+                "form": {
+                    "path": normalized_path,
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": True,
+                "include_content_type": True,
+                "include_sid": False,
+            },
+        ]
+        last_error: Optional[Exception] = None
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            if not self._sid:
+                await self._login(session)
+            api_path, api_version = await self._resolve_api_route(session, "SYNO.FileStation.Upload", default_path="entry.cgi", default_version=2)
+            upload_url = f"{self.config.base_url.rstrip('/')}/webapi/{api_path.lstrip('/')}"
+            base_query = {
+                "api": "SYNO.FileStation.Upload",
+                "method": "upload",
+                "version": str(api_version),
+            }
+
+            for index, variant in enumerate(payload_variants):
+                try:
+                    query = dict(base_query)
+                    query.update(variant["query"])
+                    form = dict(variant["form"])
+                    include_sid = variant.get("include_sid", True)
+                    if self._sid and include_sid:
+                        query.setdefault("_sid", self._sid)
+                        if "_sid" in form:
+                            form["_sid"] = self._sid
+                    logger.info(
+                        "[SynologyUpload] 尝试变体 %s/%s path=%s api_path=%s api_version=%s query_keys=%s form_keys=%s",
+                        index + 1,
+                        len(payload_variants),
+                        normalized_path,
+                        api_path,
+                        api_version,
+                        sorted(query.keys()),
+                        sorted(form.keys()),
+                    )
+                    await self._post_file_upload(
+                        session,
+                        upload_url,
+                        "SYNO.FileStation.Upload",
+                        query,
+                        form,
+                        local_path,
+                        remote_name=remote_name,
+                        quote_fields=variant["quote_fields"],
+                        include_content_type=variant["include_content_type"],
+                    )
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        "[SynologyUpload] 变体失败 %s/%s path=%s error=%s",
+                        index + 1,
+                        len(payload_variants),
+                        normalized_path,
+                        exc,
+                    )
+                    last_error = exc
+                    if not self._is_error_code(exc, 101) or index == len(payload_variants) - 1:
+                        continue
+
+        if last_error:
+            raise last_error
 
 
 def build_synology_web_url(base_url: str, root_path: str) -> str:
@@ -342,6 +667,9 @@ class LibraryManager:
         self._stats_tasks: dict[str, asyncio.Task] = {}
         self._size_cache: dict[str, dict[str, Any]] = {}
         self._remote_size_tasks: dict[str, asyncio.Task] = {}
+        self._filter_preview_cancel_flags: dict[str, bool] = {}
+        self._filter_preview_jobs: dict[str, dict[str, Any]] = {}
+        self._filter_preview_tasks: dict[str, asyncio.Task] = {}
         self._load_persisted_stats()
 
     def load_config(self) -> dict[str, Any]:
@@ -402,7 +730,7 @@ class LibraryManager:
             with open(path, "r", encoding="utf-8") as handle:
                 content = handle.readlines()
         except Exception as exc:
-            raise RuntimeError(f"读取远程统计日志失败: {exc}") from exc
+            raise RuntimeError(f"读取库存日志失败: {exc}") from exc
 
         filtered = content
         if library_id:
@@ -481,7 +809,7 @@ class LibraryManager:
     def _health_for_library(self, library: LibraryDefinition, warning_free_gb: float) -> dict[str, Any]:
         if library.type == "local":
             if not library.root_path:
-                return {"status": "error", "warnings": [], "errors": ["未配置路径"]}
+                return {"status": "error", "warnings": [], "errors": ["Path is not configured"]}
             exists = os.path.exists(library.root_path)
             readable = exists and os.access(library.root_path, os.R_OK)
             writable = readable and os.access(library.root_path, os.W_OK)
@@ -490,7 +818,7 @@ class LibraryManager:
             free_gb = None
             total_gb = None
             if not readable:
-                errors.append("路径不存在或不可读")
+                errors.append("Path does not exist or is not readable")
             else:
                 try:
                     usage = shutil.disk_usage(library.root_path)
@@ -622,7 +950,7 @@ class LibraryManager:
 
     async def _list_remote_files(self, library: LibraryDefinition, page: int, page_size: int, search: str) -> dict[str, Any]:
         if not library.synology:
-            raise RuntimeError("远程库存未配置群晖连接参数")
+            raise RuntimeError("远程库缺少群晖连接配置")
 
         client = SynologyFileStationClient(library.synology)
         offset = max(0, (page - 1) * page_size)
@@ -670,7 +998,7 @@ class LibraryManager:
         library_root = os.path.abspath(library.root_path)
         target_path = os.path.abspath(path)
         if not (target_path == library_root or target_path.startswith(library_root + os.sep)):
-            raise PermissionError("只能查看库存目录内的文件夹")
+            raise PermissionError("只能查看当前库存根目录内的文件夹")
         if not os.path.isdir(target_path):
             raise FileNotFoundError("目标文件夹不存在")
 
@@ -695,12 +1023,14 @@ class LibraryManager:
                 )
                 item_id += 1
         items.sort(key=lambda item: item["relative_path"])
-        return {
+        result = {
             "folder_name": os.path.basename(target_path),
             "folder_path": target_path,
             "total_files": len(items),
             "items": items,
         }
+        self._append_stats_log(library, "INFO", f"文件树读取 path={target_path} total={len(items)}")
+        return result
 
     async def rename(self, library_id: str, path: str, new_name: str) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
@@ -713,6 +1043,7 @@ class LibraryManager:
         client = SynologyFileStationClient(library.synology)
         await client.rename(target_path, new_name)
         new_path = str(PurePosixPath(target_path).parent / new_name)
+        self._append_stats_log(library, "INFO", f"重命名 path={target_path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
     def _local_rename(self, library: LibraryDefinition, path: str, new_name: str) -> dict[str, Any]:
@@ -720,6 +1051,7 @@ class LibraryManager:
         parent_dir = os.path.dirname(path)
         new_path = os.path.join(parent_dir, new_name)
         os.rename(path, new_path)
+        self._append_stats_log(library, "INFO", f"重命名 path={path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
     async def delete(self, library_id: str, path: str, confirmed: bool = False) -> dict[str, Any]:
@@ -727,15 +1059,22 @@ class LibraryManager:
         if library.type == "local":
             return await asyncio.to_thread(self._local_delete, library, path, confirmed)
         if not confirmed:
+            self._append_stats_log(library, "INFO", f"删除预检 path={path}")
             return {"need_confirm": True, "type": "remote", "name": PurePosixPath(path).name, "path": path, "size": None}
         client = SynologyFileStationClient(library.synology)
         await client.delete(path)
+        self._append_stats_log(library, "INFO", f"删除完成 path={path}")
         return {"message": "删除成功", "path": path}
 
     def _local_delete(self, library: LibraryDefinition, path: str, confirmed: bool) -> dict[str, Any]:
         self._assert_local_path_in_library(library, path)
         if not confirmed:
             size = self._path_size(path)
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"删除预检 path={path} type={'folder' if os.path.isdir(path) else 'file'} size={size}",
+            )
             return {
                 "need_confirm": True,
                 "type": "folder" if os.path.isdir(path) else "file",
@@ -748,12 +1087,13 @@ class LibraryManager:
             shutil.rmtree(path)
         else:
             os.remove(path)
+        self._append_stats_log(library, "INFO", f"删除完成 path={path}")
         return {"message": "删除成功", "path": path}
 
     async def batch_delete(self, library_id: str, paths: list[str], confirmed: bool = False) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type != "local":
-            raise RuntimeError("远程库暂不支持批量删除")
+            raise RuntimeError("当前远程库不支持这里的批量删除")
         return await asyncio.to_thread(self._local_batch_delete, library, paths, confirmed)
 
     def _local_batch_delete(self, library: LibraryDefinition, paths: list[str], confirmed: bool) -> dict[str, Any]:
@@ -761,6 +1101,7 @@ class LibraryManager:
             self._assert_local_path_in_library(library, path)
         if not confirmed:
             total_size = sum(self._path_size(path) for path in paths)
+            self._append_stats_log(library, "INFO", f"批删预检 total={len(paths)} size={total_size}")
             return {"need_confirm": True, "total_count": len(paths), "total_size": total_size}
         success_count = 0
         failed_paths = []
@@ -773,13 +1114,18 @@ class LibraryManager:
                 success_count += 1
             except Exception as exc:
                 failed_paths.append({"path": path, "error": str(exc)})
+        self._append_stats_log(
+            library,
+            "INFO",
+            f"批删完成 success={success_count} failed={len(failed_paths)} total={len(paths)}",
+        )
         return {"message": "批量删除完成", "success_count": success_count, "failed_paths": failed_paths}
 
     async def open_folder(self, library_id: str, path: str, force_local: bool = False) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "synology_filestation":
             return {
-                "message": "远程库存请使用群晖链接访问",
+                "message": "远程库请通过群晖链接打开",
                 "mode": "remote",
                 "remote_url": library.synology.base_url if library.synology else "",
                 "web_url": build_synology_web_url(library.synology.base_url, path) if library.synology else "",
@@ -799,7 +1145,7 @@ class LibraryManager:
             }
 
         if not library.synology:
-            raise RuntimeError("远程库存缺少群晖连接参数")
+            raise RuntimeError("远程库缺少群晖连接参数")
         client = SynologyFileStationClient(library.synology)
         result = await client.test_connection(library.root_path)
         return {
@@ -821,7 +1167,7 @@ class LibraryManager:
             task = self._stats_tasks.get(library.id)
             if library.type == "synology_filestation" and cached and cached.get("status") == "pending" and (task is None or task.done()):
                 cached["status"] = "error"
-                cached["warning"] = "远程统计任务已中断，请重新点击刷新统计继续"
+                cached["warning"] = "Remote stats task was interrupted; please refresh again"
                 cached["updated_at"] = time.time()
                 self._stats_cache[library.id] = cached
                 self._persist_stats()
@@ -844,7 +1190,7 @@ class LibraryManager:
                     }
                     if library.type == "synology_filestation":
                         self._persist_stats()
-                        self._append_stats_log(library, "INFO", "已创建远程库存统计后台任务")
+                        self._append_stats_log(library, "INFO", "远程统计任务已启动")
                     task = asyncio.create_task(self._refresh_stats_for_library(library))
                     self._stats_tasks[library.id] = task
 
@@ -885,7 +1231,7 @@ class LibraryManager:
         cached = self._stats_cache.get(library.id) or {}
         if task and not task.done():
             task.cancel()
-            self._append_stats_log(library, "WARN", "收到手动取消请求，准备停止远程统计任务")
+            self._append_stats_log(library, "WARN", "收到远程统计取消请求")
         cached["library_id"] = library.id
         cached["library_name"] = library.name
         cached["library_type"] = library.type
@@ -899,7 +1245,7 @@ class LibraryManager:
             "ok": True,
             "library_id": library.id,
             "status": "canceled",
-            "message": "统计任务已取消",
+            "message": "Stats task canceled",
         }
 
     async def _refresh_stats_for_library(self, library: LibraryDefinition):
@@ -913,7 +1259,7 @@ class LibraryManager:
                 "folder_count": 0,
                 "total_size_bytes": 0,
                 "total_size_gb": 0,
-                "warning": "远程库统计依赖群晖目录遍历，当前版本先返回实时健康信息",
+                "warning": "远程库统计仍依赖群晖目录遍历，当前版本先返回健康信息",
             }
         health = self._health_for_library(library, float(self.load_config()["health_warning_free_gb"]))
         stats["health"] = health
@@ -947,7 +1293,7 @@ class LibraryManager:
             return await asyncio.to_thread(self._move_directory_to_local_library, library, source_dir, relative_target_dir)
 
         if not library.synology:
-            raise RuntimeError("远程库存未配置群晖连接参数")
+            raise RuntimeError("远程库缺少群晖连接配置")
         client = SynologyFileStationClient(library.synology)
         target_root = PurePosixPath(library.root_path)
         if relative_target_dir:
@@ -984,7 +1330,7 @@ class LibraryManager:
         library_root = os.path.abspath(library.root_path)
         target_path = os.path.abspath(path)
         if not (target_path == library_root or target_path.startswith(library_root + os.sep)):
-            raise PermissionError("目标路径不在当前库存目录中")
+            raise PermissionError("目标路径超出当前库存根目录")
 
     def _path_size(self, path: str) -> int:
         if os.path.isfile(path):
@@ -1340,23 +1686,39 @@ class LibraryManager:
         info = await client.stat(normalized_path)
         item = self._first_remote_info_item(info)
         if not item:
-            raise FileNotFoundError("鐩爣鏂囦欢涓嶅瓨鍦?")
-        additional = item.get("additional", {}) or {}
-        timestamp = additional.get("time", {}).get("mtime")
+            raise FileNotFoundError("目标路径不存在")
         is_directory = bool(item.get("isdir", False))
-        size = await self._remote_path_size(
-            client,
-            normalized_path,
-            is_directory,
-            timestamp,
-            initial_size=additional.get("size"),
-        )
         return {
             "type": "folder" if is_directory else "file",
             "name": item.get("name") or PurePosixPath(normalized_path).name,
             "path": normalized_path,
-            "size": size,
+            "size": None,
+            "folder_count": 0,
+            "size_disabled": True,
         }
+
+    def _apply_remote_stats_deletion(
+        self,
+        library: LibraryDefinition,
+        deleted_bytes: int = 0,
+        deleted_folder_count: int = 0,
+    ) -> None:
+        if library.type != "synology_filestation":
+            return
+
+        cached = self._stats_cache.get(library.id)
+        if not cached or cached.get("status") == "pending":
+            return
+
+        next_total_size = max(0, int(cached.get("total_size_bytes", 0) or 0) - max(0, int(deleted_bytes or 0)))
+        next_folder_count = max(0, int(cached.get("folder_count", 0) or 0) - max(0, int(deleted_folder_count or 0)))
+
+        cached["total_size_bytes"] = next_total_size
+        cached["total_size_gb"] = _gb(next_total_size)
+        cached["folder_count"] = next_folder_count
+        cached["updated_at"] = time.time()
+        self._stats_cache[library.id] = cached
+        self._persist_stats()
 
     async def _list_remote_files(
         self,
@@ -1369,7 +1731,7 @@ class LibraryManager:
         sort_order: str,
     ) -> dict[str, Any]:
         if not library.synology:
-            raise RuntimeError("杩滅▼搴撳瓨鏈厤缃兢鏅栬繛鎺ュ弬鏁?")
+            raise RuntimeError("远程库缺少群晖连接配置")
 
         client = SynologyFileStationClient(library.synology)
         browse_root, target_path = self._resolve_remote_target_path(library, current_path)
@@ -1426,12 +1788,9 @@ class LibraryManager:
             page_items = files
         for item in page_items:
             is_directory = bool(item["is_directory"])
-            cached_size, size_status = self._get_remote_cached_size(item["path"], item.get("_mtime"), is_directory)
             if is_directory:
-                item["size"] = cached_size
-                item["size_status"] = size_status
-                if size_status != "ready":
-                    self._ensure_remote_size_task(library, item["path"], item.get("_mtime"))
+                item["size"] = None
+                item["size_status"] = "disabled"
             else:
                 item["size"] = int(item.get("size") or 0)
                 item["size_status"] = "ready"
@@ -1451,17 +1810,17 @@ class LibraryManager:
 
     async def _remote_folder_contents(self, library: LibraryDefinition, path: str) -> dict[str, Any]:
         if not library.synology:
-            raise RuntimeError("杩滅▼搴撳瓨鏈厤缃兢鏅栬繛鎺ュ弬鏁?")
+            raise RuntimeError("远程库缺少群晖连接配置")
         browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
         target_path = self._normalize_remote_path(path)
         if not self._remote_path_is_within_root(target_path, browse_root):
-            raise PermissionError("鍙兘鏌ョ湅褰撳墠搴撳瓨鑼冨洿鍐呯殑鏂囦欢澶?")
+            raise PermissionError("只能查看当前库存范围内的文件夹")
 
         client = SynologyFileStationClient(library.synology)
         info = await client.stat(target_path)
         info_item = self._first_remote_info_item(info)
         if not info_item or not info_item.get("isdir", False):
-            raise FileNotFoundError("鐩爣鏂囦欢澶逛笉瀛樺湪")
+            raise FileNotFoundError("目标文件夹不存在")
 
         items: list[dict[str, Any]] = []
         counter = 0
@@ -1494,12 +1853,14 @@ class LibraryManager:
 
         await walk(target_path)
         items.sort(key=lambda item: item["relative_path"])
-        return {
+        result = {
             "folder_name": PurePosixPath(target_path).name or target_path,
             "folder_path": target_path,
             "total_files": len(items),
             "items": items,
         }
+        self._append_stats_log(library, "INFO", f"文件树读取 path={target_path} total={len(items)}")
+        return result
 
     async def folder_contents(self, library_id: str, path: str) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
@@ -1507,23 +1868,1026 @@ class LibraryManager:
             return await asyncio.to_thread(self._local_folder_contents, library, path)
         return await self._remote_folder_contents(library, path)
 
+    def _normalize_filter_rules(self, rules: Optional[list[Any]] = None) -> list[dict[str, str]]:
+        source_rules = rules if rules is not None else (get_config().filter.rules or [])
+        normalized_rules: list[dict[str, str]] = []
+        for index, rule in enumerate(source_rules):
+            if isinstance(rule, dict):
+                name = str(rule.get("name") or f"规则 {index + 1}")
+                pattern = str(rule.get("pattern") or "").strip()
+                target = str(rule.get("target") or "file").lower()
+                enabled = bool(rule.get("enabled", True))
+            else:
+                name = str(getattr(rule, "name", f"规则 {index + 1}"))
+                pattern = str(getattr(rule, "pattern", "") or "").strip()
+                target = str(getattr(rule, "target", "file") or "file").lower()
+                enabled = bool(getattr(rule, "enabled", True))
+            if not enabled or not pattern or target not in {"file", "folder", "all"}:
+                continue
+            normalized_rules.append({
+                "name": name,
+                "pattern": pattern,
+                "target": target,
+            })
+        return normalized_rules
+
+    def _match_filter_rule_names(self, name: str, target_type: str, rules: list[dict[str, str]]) -> list[str]:
+        matched: list[str] = []
+        for rule in rules:
+            if rule["target"] not in {target_type, "all"}:
+                continue
+            try:
+                if re.search(rule["pattern"], name, re.IGNORECASE):
+                    matched.append(rule["name"])
+            except re.error as exc:
+                logger.warning("过滤规则正则无效，已跳过: %s (%s)", rule["pattern"], exc)
+        return matched
+
+    def _should_skip_filter_preview_name(self, name: str) -> bool:
+        return str(name or "").lower() in {"#recycle", "@eadir"}
+
+    def _build_preview_item(
+        self,
+        *,
+        path: str,
+        relative_path: str,
+        item_type: str,
+        size: Optional[int] = 0,
+        modified_time: Optional[str] = None,
+        matched_rules: Optional[list[str]] = None,
+        selectable: bool = True,
+        covered_by: str = "",
+        delete_path: Optional[str] = None,
+        size_status: str = "ready",
+    ) -> dict[str, Any]:
+        normalized_relative = str(relative_path or "").replace("\\", "/").strip("/")
+        normalized_path = str(path or "").replace("\\", "/")
+        return {
+            "id": f"{item_type}:{normalized_path}",
+            "name": PurePosixPath(normalized_relative or normalized_path).name if "/" in normalized_relative else (normalized_relative or os.path.basename(path)),
+            "path": path,
+            "relative_path": normalized_relative,
+            "type": item_type,
+            "size": None if size is None else int(size or 0),
+            "modified_time": modified_time,
+            "matched_rules": matched_rules or [],
+            "selectable": selectable,
+            "covered_by": covered_by or "",
+            "delete_path": delete_path or path,
+            "size_status": size_status,
+        }
+
+    def _begin_filter_preview_request(self, request_id: Optional[str]) -> None:
+        if request_id:
+            self._filter_preview_cancel_flags[request_id] = False
+
+    def _finish_filter_preview_request(self, request_id: Optional[str]) -> None:
+        if request_id:
+            self._filter_preview_cancel_flags.pop(request_id, None)
+
+    def cancel_filter_delete_preview(self, request_id: str) -> dict[str, Any]:
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id:
+            raise ValueError("缺少预审请求 ID")
+        self._filter_preview_cancel_flags[normalized_request_id] = True
+        return {"message": "已发送删除过滤预审取消请求", "request_id": normalized_request_id}
+
+    def _create_filter_preview_client(self, library: LibraryDefinition) -> SynologyFileStationClient:
+        if not library.synology:
+            raise RuntimeError("远程库缺少群晖连接配置")
+        preview_timeout = 0
+        return SynologyFileStationClient(replace(library.synology, timeout=preview_timeout))
+
+    def _init_filter_preview_job(
+        self,
+        job_id: str,
+        library: LibraryDefinition,
+        target_path: str,
+        rules: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        payload = {
+            "job_id": job_id,
+            "library_id": library.id,
+            "library_name": library.name,
+            "folder_name": PurePosixPath(target_path).name or target_path,
+            "folder_path": target_path,
+            "rules": rules,
+            "items": [],
+            "selected_count": 0,
+            "selected_size": 0,
+            "selected_size_exact": True,
+            "size_disabled": False,
+            "scanned_entries": 0,
+            "discovered_entries": 0,
+            "pending_directories": 1,
+            "status": "pending",
+            "current_path": target_path,
+            "progress_message": "已创建删除过滤预审任务",
+            "warning": "",
+            "error": "",
+            "started_at": time.time(),
+            "updated_at": time.time(),
+        }
+        self._filter_preview_jobs[job_id] = payload
+        return payload
+
+    def _update_filter_preview_job(self, job_id: str, **fields: Any) -> dict[str, Any]:
+        job = self._filter_preview_jobs.get(job_id)
+        if not job:
+            raise KeyError(job_id)
+        job.update(fields)
+        job["updated_at"] = time.time()
+        return job
+
+    def _build_filter_preview_job_response(self, job: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "job_id": job.get("job_id"),
+            "library_id": job.get("library_id"),
+            "library_name": job.get("library_name"),
+            "folder_name": job.get("folder_name"),
+            "folder_path": job.get("folder_path"),
+            "rules": job.get("rules") or [],
+            "items": job.get("items") or [],
+            "selected_count": int(job.get("selected_count") or 0),
+            "selected_size": int(job.get("selected_size") or 0),
+            "selected_size_exact": bool(job.get("selected_size_exact", True)),
+            "size_disabled": bool(job.get("size_disabled", False)),
+            "scanned_entries": int(job.get("scanned_entries") or 0),
+            "discovered_entries": int(job.get("discovered_entries") or 0),
+            "pending_directories": int(job.get("pending_directories") or 0),
+            "status": job.get("status") or "pending",
+            "current_path": job.get("current_path") or "",
+            "progress_message": job.get("progress_message") or "",
+            "warning": job.get("warning") or "",
+            "error": job.get("error") or "",
+            "started_at": job.get("started_at"),
+            "updated_at": job.get("updated_at"),
+        }
+
+    def _create_remote_filter_preview_state(self, client: SynologyFileStationClient, request_id: Optional[str] = None) -> dict[str, Any]:
+        return {
+            "visited_entries": 0,
+            "max_entries": 0,
+            "truncated": False,
+            "reason": "",
+            "request_id": str(request_id or "").strip(),
+        }
+
+    async def _list_remote_directory_with_retry(
+        self,
+        client: SynologyFileStationClient,
+        current_path: str,
+        *,
+        retries: int = 3,
+        retry_delay_seconds: float = 1.5,
+    ) -> list[dict[str, Any]]:
+        last_error: Optional[Exception] = None
+        for attempt in range(1, retries + 1):
+            try:
+                return await self._list_remote_directory(client, current_path)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt >= retries:
+                    break
+                await asyncio.sleep(retry_delay_seconds * attempt)
+        if last_error:
+            raise last_error
+        return []
+
+    def _mark_remote_filter_preview_truncated(self, state: dict[str, Any], reason: str) -> None:
+        if state.get("truncated"):
+            return
+        state["truncated"] = True
+        state["reason"] = reason
+
+    def _touch_remote_filter_preview_entry(self, state: dict[str, Any]) -> bool:
+        if state.get("truncated"):
+            return False
+        request_id = str(state.get("request_id") or "").strip()
+        if request_id and self._filter_preview_cancel_flags.get(request_id):
+            self._mark_remote_filter_preview_truncated(state, "删除过滤预审已手动取消")
+            return False
+        state["visited_entries"] = int(state.get("visited_entries") or 0) + 1
+        max_entries = int(state.get("max_entries") or 0)
+        if max_entries > 0 and int(state["visited_entries"]) > max_entries:
+            self._mark_remote_filter_preview_truncated(state, "远程目录条目过多，预览仅显示前一部分结果")
+            return False
+        return True
+
+    def _collect_local_filter_preview_descendants(
+        self,
+        target_path: str,
+        folder_path: str,
+        delete_path: str,
+    ) -> list[dict[str, Any]]:
+        descendants: list[dict[str, Any]] = []
+        for root, dirs, files in os.walk(folder_path):
+            dirs.sort()
+            files.sort()
+            if os.path.abspath(root) != os.path.abspath(folder_path):
+                stat = os.stat(root)
+                descendants.append(
+                    self._build_preview_item(
+                        path=root,
+                        relative_path=os.path.relpath(root, target_path).replace("\\", "/"),
+                        item_type="dir",
+                        size=self._path_size(root),
+                        modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        selectable=False,
+                        covered_by=delete_path,
+                        delete_path=delete_path,
+                    )
+                )
+            for filename in files:
+                file_path = os.path.join(root, filename)
+                stat = os.stat(file_path)
+                descendants.append(
+                    self._build_preview_item(
+                        path=file_path,
+                        relative_path=os.path.relpath(file_path, target_path).replace("\\", "/"),
+                        item_type="file",
+                        size=stat.st_size,
+                        modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        selectable=False,
+                        covered_by=delete_path,
+                        delete_path=delete_path,
+                    )
+                )
+        return descendants
+
+    def _local_filter_delete_preview(
+        self,
+        library: LibraryDefinition,
+        path: str,
+        rules: Optional[list[Any]] = None,
+    ) -> dict[str, Any]:
+        self._assert_local_path_in_library(library, path)
+        target_path = os.path.abspath(path)
+        if not os.path.isdir(target_path):
+            raise FileNotFoundError("目标文件夹不存在")
+
+        active_rules = self._normalize_filter_rules(rules)
+        preview_items: list[dict[str, Any]] = []
+        selected_count = 0
+        selected_size = 0
+
+        for root, dirs, files in os.walk(target_path, topdown=True):
+            dirs.sort()
+            files.sort()
+            remaining_dirs: list[str] = []
+            for directory in dirs:
+                if self._should_skip_filter_preview_name(directory):
+                    continue
+                folder_path = os.path.join(root, directory)
+                matched_rules = self._match_filter_rule_names(directory, "folder", active_rules)
+                if matched_rules:
+                    stat = os.stat(folder_path)
+                    folder_size = self._path_size(folder_path)
+                    preview_items.append(
+                        self._build_preview_item(
+                            path=folder_path,
+                            relative_path=os.path.relpath(folder_path, target_path).replace("\\", "/"),
+                            item_type="dir",
+                            size=folder_size,
+                            modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                            matched_rules=matched_rules,
+                        )
+                    )
+                    preview_items.extend(self._collect_local_filter_preview_descendants(target_path, folder_path, folder_path))
+                    selected_count += 1
+                    selected_size += folder_size
+                    continue
+                remaining_dirs.append(directory)
+            dirs[:] = remaining_dirs
+
+            for filename in files:
+                if self._should_skip_filter_preview_name(filename):
+                    continue
+                matched_rules = self._match_filter_rule_names(filename, "file", active_rules)
+                if not matched_rules:
+                    continue
+                file_path = os.path.join(root, filename)
+                stat = os.stat(file_path)
+                preview_items.append(
+                    self._build_preview_item(
+                        path=file_path,
+                        relative_path=os.path.relpath(file_path, target_path).replace("\\", "/"),
+                        item_type="file",
+                        size=stat.st_size,
+                        modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        matched_rules=matched_rules,
+                    )
+                )
+                selected_count += 1
+                selected_size += stat.st_size
+
+        preview_items.sort(key=lambda item: (item["relative_path"].count("/"), item["relative_path"].lower(), item["type"] != "dir"))
+        return {
+            "folder_name": os.path.basename(target_path),
+            "folder_path": target_path,
+            "rules": active_rules,
+            "items": preview_items,
+            "selected_count": selected_count,
+            "selected_size": selected_size,
+            "selected_size_exact": True,
+            "truncated": False,
+            "truncated_reason": "",
+            "scanned_entries": len(preview_items),
+        }
+
+    async def _collect_remote_filter_preview_descendants(
+        self,
+        client: SynologyFileStationClient,
+        target_path: str,
+        folder_path: str,
+        delete_path: str,
+        state: Optional[dict[str, Any]] = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        descendants: list[dict[str, Any]] = []
+        preview_state = state or self._create_remote_filter_preview_state(client)
+
+        async def walk(current_path: str) -> int:
+            subtotal = 0
+            if preview_state.get("truncated"):
+                return subtotal
+            try:
+                children = await self._list_remote_directory(client, current_path)
+            except Exception as exc:
+                logger.warning("远程过滤删除预览读取目录失败 %s: %s", current_path, exc)
+                self._mark_remote_filter_preview_truncated(
+                    preview_state,
+                    f"Failed to read remote directory; preview stopped at {PurePosixPath(current_path).name or current_path}",
+                )
+                return subtotal
+            for child in children:
+                if not self._touch_remote_filter_preview_entry(preview_state):
+                    break
+                name = child.get("name") or ""
+                if self._should_skip_filter_preview_name(name):
+                    continue
+                raw_child_path = child.get("path") or child.get("real_path") or ""
+                child_path = self._normalize_remote_path(raw_child_path or str(PurePosixPath(current_path) / name))
+                additional = child.get("additional", {}) or {}
+                timestamp = additional.get("time", {}).get("mtime")
+                modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None
+                relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
+                if child.get("isdir", False):
+                    folder_size = await walk(child_path)
+                    descendants.append(
+                        self._build_preview_item(
+                            path=child_path,
+                            relative_path=relative_path,
+                            item_type="dir",
+                            size=folder_size,
+                            modified_time=modified_time,
+                            selectable=False,
+                            covered_by=delete_path,
+                            delete_path=delete_path,
+                            size_status="partial" if preview_state.get("truncated") else "estimated",
+                        )
+                    )
+                    subtotal += folder_size
+                    continue
+                file_size = int(additional.get("size") or 0)
+                descendants.append(
+                    self._build_preview_item(
+                        path=child_path,
+                        relative_path=relative_path,
+                        item_type="file",
+                        size=file_size,
+                        modified_time=modified_time,
+                        selectable=False,
+                        covered_by=delete_path,
+                        delete_path=delete_path,
+                        size_status="ready",
+                    )
+                )
+                subtotal += file_size
+
+            return subtotal
+
+        total_size = await walk(folder_path)
+        return descendants, total_size
+
+    async def _remote_filter_delete_preview(
+        self,
+        library: LibraryDefinition,
+        path: str,
+        rules: Optional[list[Any]] = None,
+        request_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if not library.synology:
+            raise RuntimeError("远程库缺少群晖连接配置")
+        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
+        target_path = self._normalize_remote_path(path)
+        if not self._remote_path_is_within_root(target_path, browse_root):
+            raise PermissionError("目标路径超出当前库存范围")
+
+        active_rules = self._normalize_filter_rules(rules)
+        normalized_request_id = str(request_id or "").strip()
+        self._begin_filter_preview_request(normalized_request_id)
+        client = self._create_filter_preview_client(library)
+        info = await client.stat(target_path)
+        info_item = self._first_remote_info_item(info)
+        if not info_item or not info_item.get("isdir", False):
+            raise FileNotFoundError("目标文件夹不存在")
+
+        preview_items: list[dict[str, Any]] = []
+        selected_count = 0
+        selected_size = 0
+        preview_state = self._create_remote_filter_preview_state(client, normalized_request_id)
+
+        async def walk(current_path: str):
+            nonlocal selected_count, selected_size
+            if preview_state.get("truncated"):
+                return
+            try:
+                children = await self._list_remote_directory(client, current_path)
+            except Exception as exc:
+                logger.warning("远程过滤删除预览读取目录失败 %s: %s", current_path, exc)
+                self._mark_remote_filter_preview_truncated(
+                    preview_state,
+                    f"Failed to read remote directory; preview stopped at {PurePosixPath(current_path).name or current_path}",
+                )
+                return
+            remaining_directories: list[dict[str, Any]] = []
+            for child in children:
+                if not self._touch_remote_filter_preview_entry(preview_state):
+                    break
+                name = child.get("name") or ""
+                if self._should_skip_filter_preview_name(name):
+                    continue
+                if child.get("isdir", False):
+                    remaining_directories.append(child)
+                    continue
+                matched_rules = self._match_filter_rule_names(name, "file", active_rules)
+                if not matched_rules:
+                    continue
+                raw_child_path = child.get("path") or child.get("real_path") or ""
+                child_path = self._normalize_remote_path(raw_child_path or str(PurePosixPath(current_path) / name))
+                additional = child.get("additional", {}) or {}
+                timestamp = additional.get("time", {}).get("mtime")
+                modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None
+                relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
+                size = int(additional.get("size") or 0)
+                preview_items.append(
+                    self._build_preview_item(
+                        path=child_path,
+                        relative_path=relative_path,
+                        item_type="file",
+                        size=size,
+                        modified_time=modified_time,
+                        matched_rules=matched_rules,
+                        size_status="ready",
+                    )
+                )
+                selected_count += 1
+                selected_size += size
+
+            for child in remaining_directories:
+                name = child.get("name") or ""
+                raw_child_path = child.get("path") or child.get("real_path") or ""
+                child_path = self._normalize_remote_path(raw_child_path or str(PurePosixPath(current_path) / name))
+                additional = child.get("additional", {}) or {}
+                timestamp = additional.get("time", {}).get("mtime")
+                modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None
+                relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
+                matched_rules = self._match_filter_rule_names(name, "folder", active_rules)
+                if matched_rules:
+                    descendants, folder_size = await self._collect_remote_filter_preview_descendants(
+                        client,
+                        target_path,
+                        child_path,
+                        child_path,
+                        preview_state,
+                    )
+                    preview_items.append(
+                        self._build_preview_item(
+                            path=child_path,
+                            relative_path=relative_path,
+                            item_type="dir",
+                            size=folder_size,
+                            modified_time=modified_time,
+                            matched_rules=matched_rules,
+                            size_status="partial" if preview_state.get("truncated") else "estimated",
+                        )
+                    )
+                    preview_items.extend(descendants)
+                    selected_count += 1
+                    selected_size += folder_size
+                    continue
+                await walk(child_path)
+
+        await walk(target_path)
+        preview_items.sort(key=lambda item: (item["relative_path"].count("/"), item["relative_path"].lower(), item["type"] != "dir"))
+        return {
+            "folder_name": PurePosixPath(target_path).name or target_path,
+            "folder_path": target_path,
+            "rules": active_rules,
+            "items": preview_items,
+            "selected_count": selected_count,
+            "selected_size": selected_size,
+            "selected_size_exact": not preview_state.get("truncated"),
+            "size_disabled": False,
+            "truncated": bool(preview_state.get("truncated")),
+            "truncated_reason": str(preview_state.get("reason") or ""),
+            "scanned_entries": int(preview_state.get("visited_entries") or 0),
+        }
+
+    async def filter_delete_preview(
+        self,
+        library_id: str,
+        path: str,
+        rules: Optional[list[Any]] = None,
+        request_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        library = self.get_library_definition(library_id)
+        if library.type == "local":
+            return await asyncio.to_thread(self._local_filter_delete_preview, library, path, rules)
+        return await self._remote_filter_delete_preview(library, path, rules, request_id)
+
+    async def start_filter_delete_preview_job(
+        self,
+        library_id: str,
+        path: str,
+        rules: Optional[list[Any]] = None,
+    ) -> dict[str, Any]:
+        library = self.get_library_definition(library_id)
+        if library.type == "local":
+            preview = await asyncio.to_thread(self._local_filter_delete_preview, library, path, rules)
+            preview["status"] = "completed"
+            preview["progress_message"] = "本地预审完成"
+            preview["current_path"] = path
+            preview["scanned_entries"] = int(preview.get("selected_count") or len(preview.get("items") or []))
+            preview["discovered_entries"] = int(preview.get("scanned_entries") or 0)
+            preview["pending_directories"] = 0
+            return preview
+        if not library.synology:
+            raise RuntimeError("远程库缺少群晖连接配置")
+
+        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
+        target_path = self._normalize_remote_path(path)
+        if not self._remote_path_is_within_root(target_path, browse_root):
+            raise PermissionError("目标路径超出当前库存范围")
+
+        active_rules = self._normalize_filter_rules(rules)
+        job_id = uuid.uuid4().hex
+        self._append_stats_log(
+            library,
+            "INFO",
+            f"预审开始 job={job_id} path={target_path} rules={len(active_rules)}",
+        )
+        self._init_filter_preview_job(job_id, library, target_path, active_rules)
+        logger.info("删除过滤预审开始 library=%s job=%s path=%s rules=%s", library.id, job_id, target_path, len(active_rules))
+        task = asyncio.create_task(self._run_remote_filter_delete_preview_job(job_id, library, target_path, active_rules))
+        self._filter_preview_tasks[job_id] = task
+        return self._build_filter_preview_job_response(self._filter_preview_jobs[job_id])
+
+    def get_filter_delete_preview_job(self, job_id: str) -> dict[str, Any]:
+        normalized_job_id = str(job_id or "").strip()
+        if not normalized_job_id:
+            raise ValueError("缺少预审任务 ID")
+        job = self._filter_preview_jobs.get(normalized_job_id)
+        if not job:
+            raise KeyError(normalized_job_id)
+        return self._build_filter_preview_job_response(job)
+
+    async def cancel_filter_delete_preview_job(self, job_id: str) -> dict[str, Any]:
+        normalized_job_id = str(job_id or "").strip()
+        if not normalized_job_id:
+            raise ValueError("缺少预审任务 ID")
+        task = self._filter_preview_tasks.get(normalized_job_id)
+        job = self._filter_preview_jobs.get(normalized_job_id)
+        if not task and not job:
+            raise KeyError(normalized_job_id)
+        if task and not task.done():
+            task.cancel()
+        if job:
+            library_id = str(job.get("library_id") or "").strip()
+            if library_id:
+                self._append_stats_log(
+                    self.get_library_definition(library_id),
+                    "WARN",
+                    f"预审取消请求 job={normalized_job_id} path={job.get('folder_path') or ''}",
+                )
+        logger.warning("删除过滤预审取消请求 job=%s", normalized_job_id)
+        if job:
+            self._update_filter_preview_job(
+                normalized_job_id,
+                status="canceled",
+                progress_message="删除过滤预审已取消",
+                warning="预审已取消，请重新扫描后再删除",
+            )
+            return self._build_filter_preview_job_response(job)
+        return {
+            "job_id": normalized_job_id,
+            "status": "canceled",
+            "progress_message": "删除过滤预审已取消",
+            "warning": "预审已取消，请重新扫描后再删除",
+        }
+
+    async def _run_remote_filter_delete_preview_job(
+        self,
+        job_id: str,
+        library: LibraryDefinition,
+        target_path: str,
+        active_rules: list[dict[str, str]],
+    ) -> None:
+        client = self._create_filter_preview_client(library)
+        preview_items: list[dict[str, Any]] = []
+        selected_count = 0
+        selected_size = 0
+        scanned_entries = 0
+        discovered_entries = 0
+        pending_directories = 1
+        last_publish_at = 0.0
+        last_progress_log_at = 0.0
+        last_progress_log_entries = 0
+        request_semaphore = asyncio.Semaphore(1)
+        skipped_directory_count = 0
+        skipped_directory_examples: list[str] = []
+        self._update_filter_preview_job(job_id, status="running", items=preview_items)
+
+        def build_scan_warning() -> str:
+            if skipped_directory_count <= 0:
+                return ""
+            sample = ""
+            if skipped_directory_examples:
+                sample = f"，例如 {skipped_directory_examples[0]}"
+            return f"扫描时跳过 {skipped_directory_count} 个目录，当前结果不完整{sample}"
+
+        def publish(force: bool = False, **fields: Any) -> None:
+            nonlocal last_publish_at, last_progress_log_at, last_progress_log_entries
+            now = time.time()
+            if not force and (now - last_publish_at) < 0.4:
+                return
+            last_publish_at = now
+            payload = dict(fields)
+            if skipped_directory_count > 0 and "warning" not in payload and str(payload.get("status") or "") not in {"error", "canceled"}:
+                payload["warning"] = build_scan_warning()
+            self._update_filter_preview_job(job_id, **payload)
+            should_log_progress = (
+                force
+                or scanned_entries == 0
+                or (scanned_entries - last_progress_log_entries) >= 200
+                or (now - last_progress_log_at) >= 10
+            )
+            if should_log_progress:
+                current_path = str(fields.get("current_path") or self._filter_preview_jobs.get(job_id, {}).get("current_path") or target_path)
+                progress_message = str(fields.get("progress_message") or self._filter_preview_jobs.get(job_id, {}).get("progress_message") or "")
+                status = str(fields.get("status") or self._filter_preview_jobs.get(job_id, {}).get("status") or "pending")
+                self._append_stats_log(
+                    library,
+                    "INFO",
+                    f"预审进度 job={job_id} status={status} scanned={scanned_entries} matched={selected_count} pending={pending_directories} current={current_path} message={progress_message}",
+                )
+                last_progress_log_at = now
+                last_progress_log_entries = scanned_entries
+
+        async def record_skipped_directory(current_path: str, exc: Exception) -> None:
+            nonlocal skipped_directory_count
+            skipped_directory_count += 1
+            example = PurePosixPath(current_path).name or current_path
+            if len(skipped_directory_examples) < 3:
+                skipped_directory_examples.append(example)
+            logger.warning("删除过滤预审跳过目录 %s: %s", current_path, exc)
+            self._append_stats_log(
+                library,
+                "WARN",
+                f"预审跳过目录 path={current_path} error={exc}",
+            )
+            publish(
+                True,
+                current_path=current_path,
+                warning=build_scan_warning(),
+                progress_message=f"跳过目录 {example}",
+                scanned_entries=scanned_entries,
+                discovered_entries=discovered_entries,
+                pending_directories=pending_directories,
+            )
+
+        def is_retryable_preview_error(exc: Exception) -> bool:
+            if isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError, OSError)):
+                return True
+            message = str(exc or "").lower()
+            return (
+                "cannot connect to host" in message
+                or "timeout" in message
+                or "信号灯超时时间已到" in str(exc)
+                or "由本地系统中止网络连接" in str(exc)
+            )
+
+        async def list_children(current_path: str) -> Optional[list[dict[str, Any]]]:
+            retry_attempt = 0
+            while True:
+                async with request_semaphore:
+                    try:
+                        return await self._list_remote_directory_with_retry(
+                            client,
+                            current_path,
+                            retries=1,
+                            retry_delay_seconds=2.0,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        if is_retryable_preview_error(exc):
+                            retry_attempt += 1
+                            retry_wait = min(15.0, max(2.0, retry_attempt * 2.0))
+                            if retry_attempt == 1 or retry_attempt % 5 == 0:
+                                self._append_stats_log(
+                                    library,
+                                    "WARN",
+                                    f"预审重试 path={current_path} attempt={retry_attempt} error={exc}",
+                                )
+                            publish(
+                                True,
+                                current_path=current_path,
+                                progress_message=f"目录响应超时，正在重试（第 {retry_attempt} 次）",
+                                scanned_entries=scanned_entries,
+                                discovered_entries=discovered_entries,
+                                pending_directories=pending_directories,
+                            )
+                        else:
+                            await record_skipped_directory(current_path, exc)
+                            return None
+                await asyncio.sleep(retry_wait)
+
+        async def stat_target(current_path: str) -> dict[str, Any]:
+            attempt = 0
+            while True:
+                try:
+                    return await client.stat(current_path)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    attempt += 1
+                    if not is_retryable_preview_error(exc):
+                        raise
+                    retry_wait = min(15.0, max(2.0, attempt * 2.0))
+                    if attempt == 1 or attempt % 5 == 0:
+                        self._append_stats_log(
+                            library,
+                            "WARN",
+                            f"预审根目录重试 path={current_path} attempt={attempt} error={exc}",
+                        )
+                    publish(
+                        True,
+                        current_path=current_path,
+                        progress_message=f"根目录读取超时，正在重试（第 {attempt} 次）",
+                        scanned_entries=scanned_entries,
+                        discovered_entries=discovered_entries,
+                        pending_directories=pending_directories,
+                    )
+                    await asyncio.sleep(retry_wait)
+
+        async def collect_descendants(folder_path: str) -> int:
+            nonlocal scanned_entries, discovered_entries, pending_directories
+
+            async def walk(current_path: str) -> int:
+                nonlocal scanned_entries, discovered_entries, pending_directories
+                subtotal = 0
+                publish(current_path=current_path, progress_message=f"正在扫描 {PurePosixPath(current_path).name or current_path}", scanned_entries=scanned_entries)
+                children = await list_children(current_path)
+                if children is None:
+                    pending_directories = max(0, pending_directories - 1)
+                    publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
+                    return subtotal
+                discovered_entries += len(children)
+                publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
+                child_tasks: list[asyncio.Task[int]] = []
+                for child in children:
+                    scanned_entries += 1
+                    name = child.get("name") or ""
+                    if self._should_skip_filter_preview_name(name):
+                        continue
+                    raw_child_path = child.get("path") or child.get("real_path") or ""
+                    child_path = self._normalize_remote_path(raw_child_path or str(PurePosixPath(current_path) / name))
+                    additional = child.get("additional", {}) or {}
+                    if child.get("isdir", False):
+                        pending_directories += 1
+                        child_tasks.append(asyncio.create_task(walk(child_path)))
+                        publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
+                        continue
+                    file_size = int(additional.get("size") or 0)
+                    subtotal += file_size
+                    publish(
+                        scanned_entries=scanned_entries,
+                        discovered_entries=discovered_entries,
+                        pending_directories=pending_directories,
+                        selected_count=selected_count,
+                        selected_size=selected_size,
+                    )
+                if child_tasks:
+                    subtotal += sum(int(value or 0) for value in await asyncio.gather(*child_tasks))
+                pending_directories = max(0, pending_directories - 1)
+                publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
+                return subtotal
+
+            return await walk(folder_path)
+
+        async def walk(current_path: str) -> None:
+            nonlocal selected_count, selected_size, scanned_entries, discovered_entries, pending_directories
+            publish(status="pending", current_path=current_path, progress_message=f"正在扫描 {PurePosixPath(current_path).name or current_path}", scanned_entries=scanned_entries)
+            children = await list_children(current_path)
+            if children is None:
+                pending_directories = max(0, pending_directories - 1)
+                publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
+                return
+            discovered_entries += len(children)
+            publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
+            matched_directories: list[tuple[str, str, Optional[str], list[str]]] = []
+            unmatched_directory_paths: list[str] = []
+            for child in children:
+                scanned_entries += 1
+                name = child.get("name") or ""
+                if self._should_skip_filter_preview_name(name):
+                    continue
+                if child.get("isdir", False):
+                    raw_child_path = child.get("path") or child.get("real_path") or ""
+                    child_path = self._normalize_remote_path(raw_child_path or str(PurePosixPath(current_path) / name))
+                    additional = child.get("additional", {}) or {}
+                    timestamp = additional.get("time", {}).get("mtime")
+                    modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None
+                    relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
+                    matched_rules = self._match_filter_rule_names(name, "folder", active_rules)
+                    if matched_rules:
+                        matched_directories.append((child_path, relative_path, modified_time, matched_rules))
+                    else:
+                        unmatched_directory_paths.append(child_path)
+                    continue
+                matched_rules = self._match_filter_rule_names(name, "file", active_rules)
+                if not matched_rules:
+                    continue
+                raw_child_path = child.get("path") or child.get("real_path") or ""
+                child_path = self._normalize_remote_path(raw_child_path or str(PurePosixPath(current_path) / name))
+                additional = child.get("additional", {}) or {}
+                timestamp = additional.get("time", {}).get("mtime")
+                modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None
+                relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
+                size = int(additional.get("size") or 0)
+                preview_items.append(
+                    self._build_preview_item(
+                        path=child_path,
+                        relative_path=relative_path,
+                        item_type="file",
+                        size=size,
+                        modified_time=modified_time,
+                        matched_rules=matched_rules,
+                        size_status="ready",
+                    )
+                )
+                selected_count += 1
+                selected_size += size
+                publish(
+                    scanned_entries=scanned_entries,
+                    discovered_entries=discovered_entries,
+                    pending_directories=pending_directories,
+                    selected_count=selected_count,
+                    selected_size=selected_size,
+                )
+
+            if matched_directories:
+                pending_directories += len(matched_directories)
+                publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
+                folder_sizes = await asyncio.gather(*(collect_descendants(item[0]) for item in matched_directories))
+                for directory_item, folder_size in zip(matched_directories, folder_sizes):
+                    child_path, relative_path, modified_time, matched_rules = directory_item
+                    preview_items.append(
+                        self._build_preview_item(
+                            path=child_path,
+                            relative_path=relative_path,
+                            item_type="dir",
+                            size=folder_size,
+                            modified_time=modified_time,
+                            matched_rules=matched_rules,
+                            size_status="estimated",
+                        )
+                    )
+                    selected_count += 1
+                    selected_size += folder_size
+                    publish(
+                        scanned_entries=scanned_entries,
+                        discovered_entries=discovered_entries,
+                        pending_directories=pending_directories,
+                        selected_count=selected_count,
+                        selected_size=selected_size,
+                    )
+            if unmatched_directory_paths:
+                pending_directories += len(unmatched_directory_paths)
+                publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
+                await asyncio.gather(*(walk(child_path) for child_path in unmatched_directory_paths))
+            pending_directories = max(0, pending_directories - 1)
+            publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
+
+        try:
+            info = await stat_target(target_path)
+            info_item = self._first_remote_info_item(info)
+            if not info_item or not info_item.get("isdir", False):
+                raise FileNotFoundError("目标文件夹不存在")
+            await walk(target_path)
+            preview_items.sort(key=lambda item: (item["relative_path"].count("/"), item["relative_path"].lower(), item["type"] != "dir"))
+            publish(
+                True,
+                status="completed",
+                selected_count=selected_count,
+                selected_size=selected_size,
+                scanned_entries=scanned_entries,
+                discovered_entries=discovered_entries,
+                pending_directories=0,
+                current_path=target_path,
+                progress_message="删除过滤预审完成",
+                warning=build_scan_warning(),
+                error="",
+                selected_size_exact=skipped_directory_count == 0,
+            )
+            logger.info("删除过滤预审完成 job=%s path=%s scanned=%s matched=%s size=%s", job_id, target_path, scanned_entries, selected_count, selected_size)
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"预审完成 job={job_id} path={target_path} scanned={scanned_entries} matched={selected_count} size={selected_size} skipped={skipped_directory_count}",
+            )
+        except asyncio.CancelledError:
+            publish(
+                True,
+                status="canceled",
+                items=list(preview_items),
+                selected_count=selected_count,
+                selected_size=selected_size,
+                selected_size_exact=False,
+                scanned_entries=scanned_entries,
+                discovered_entries=discovered_entries,
+                pending_directories=0,
+                progress_message="删除过滤预审已取消",
+                warning="预审已取消，请重新扫描后再删除",
+            )
+            logger.warning("删除过滤预审已取消 job=%s path=%s scanned=%s matched=%s", job_id, target_path, scanned_entries, selected_count)
+            self._append_stats_log(
+                library,
+                "WARN",
+                f"预审取消 job={job_id} path={target_path} scanned={scanned_entries} matched={selected_count}",
+            )
+            raise
+        except Exception as exc:
+            logger.error("删除过滤预审失败 %s: %s", target_path, exc, exc_info=True)
+            publish(
+                True,
+                status="error",
+                items=list(preview_items),
+                selected_count=selected_count,
+                selected_size=selected_size,
+                selected_size_exact=False,
+                scanned_entries=scanned_entries,
+                discovered_entries=discovered_entries,
+                pending_directories=0,
+                progress_message="删除过滤预审失败",
+                warning="预审未完整完成，当前结果不可直接用于删除",
+                error=str(exc),
+            )
+            self._append_stats_log(
+                library,
+                "ERROR",
+                f"预审失败 job={job_id} path={target_path} scanned={scanned_entries} matched={selected_count} error={exc}",
+            )
+        finally:
+            self._filter_preview_tasks.pop(job_id, None)
+
     async def delete(self, library_id: str, path: str, confirmed: bool = False) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
             return await asyncio.to_thread(self._local_delete, library, path, confirmed)
         if not library.synology:
-            raise RuntimeError("杩滅▼搴撳瓨鏈厤缃兢鏅栬繛鎺ュ弬鏁?")
+            raise RuntimeError("远程库缺少群晖连接配置")
         browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
         target_path = self._normalize_remote_path(path)
         if not self._remote_path_is_within_root(target_path, browse_root):
-            raise PermissionError("鐩爣璺緞涓嶅湪褰撳墠搴撳瓨鑼冨洿鍐?")
+            raise PermissionError("目标路径超出当前库存范围")
         client = SynologyFileStationClient(library.synology)
         if not confirmed:
             preview = await self._remote_delete_preview(client, target_path)
             preview["need_confirm"] = True
+            self._append_stats_log(library, "INFO", f"删除预检 path={target_path} type={preview.get('type') or 'unknown'}")
             return preview
+        preview = await self._remote_delete_preview(client, target_path)
+        self._append_stats_log(
+            library,
+            "INFO",
+            f"删除开始 path={target_path} type={preview.get('type') or 'unknown'} size={int(preview.get('size') or 0)}",
+        )
         await client.delete(target_path)
-        return {"message": "鍒犻櫎鎴愬姛", "path": target_path}
+        self._apply_remote_stats_deletion(
+            library,
+            deleted_bytes=int(preview.get("size") or 0),
+            deleted_folder_count=int(preview.get("folder_count") or 0),
+        )
+        self._append_stats_log(
+            library,
+            "INFO",
+            f"删除完成 path={target_path} type={preview.get('type') or 'unknown'} size={int(preview.get('size') or 0)}",
+        )
+        return {"message": "删除成功", "path": target_path}
 
     async def _remote_batch_delete(self, library: LibraryDefinition, paths: list[str], confirmed: bool) -> dict[str, Any]:
         client = SynologyFileStationClient(library.synology)
@@ -1532,34 +2896,73 @@ class LibraryManager:
                 *(self._remote_delete_preview(client, path) for path in paths),
                 return_exceptions=True,
             )
-            total_size = 0
             for preview in previews:
                 if isinstance(preview, Exception):
                     continue
-                total_size += int(preview.get("size") or 0)
-            return {"need_confirm": True, "total_count": len(paths), "total_size": total_size}
+            self._append_stats_log(library, "INFO", f"批删预检 total={len(paths)}")
+            return {
+                "need_confirm": True,
+                "total_count": len(paths),
+                "total_size": None,
+                "total_folder_count": 0,
+                "size_disabled": True,
+            }
 
+        self._append_stats_log(
+            library,
+            "INFO",
+            f"批删开始 total={len(paths)}",
+        )
+        previews = await asyncio.gather(
+            *(self._remote_delete_preview(client, path) for path in paths),
+            return_exceptions=True,
+        )
         success_count = 0
+        deleted_bytes = 0
+        deleted_folder_count = 0
         failed_paths = []
-        for path in paths:
+        for path, preview in zip(paths, previews):
+            if isinstance(preview, Exception):
+                failed_paths.append({"path": path, "error": str(preview)})
+                self._append_stats_log(library, "ERROR", f"批删预检失败 path={path} error={preview}")
+                continue
             try:
                 await client.delete(path)
                 success_count += 1
+                deleted_bytes += int(preview.get("size") or 0)
+                deleted_folder_count += int(preview.get("folder_count") or 0)
+                self._append_stats_log(
+                    library,
+                    "INFO",
+                    f"批删单项完成 path={path} size={int(preview.get('size') or 0)} success={success_count}/{len(paths)}",
+                )
             except Exception as exc:
                 failed_paths.append({"path": path, "error": str(exc)})
-        return {"message": "鎵归噺鍒犻櫎瀹屾垚", "success_count": success_count, "failed_paths": failed_paths}
+                self._append_stats_log(library, "ERROR", f"批删单项失败 path={path} error={exc}")
+        if success_count:
+            self._apply_remote_stats_deletion(
+                library,
+                deleted_bytes=deleted_bytes,
+                deleted_folder_count=deleted_folder_count,
+            )
+        self._append_stats_log(
+            library,
+            "INFO",
+            f"批删结束 success={success_count} failed={len(failed_paths)} bytes={deleted_bytes}",
+        )
+        return {"message": "批量删除完成", "success_count": success_count, "failed_paths": failed_paths}
 
     async def batch_delete(self, library_id: str, paths: list[str], confirmed: bool = False) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
             return await asyncio.to_thread(self._local_batch_delete, library, paths, confirmed)
         if not library.synology:
-            raise RuntimeError("杩滅▼搴撳瓨鏈厤缃兢鏅栬繛鎺ュ弬鏁?")
+            raise RuntimeError("远程库缺少群晖连接配置")
         browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path)
         normalized_paths = [self._normalize_remote_path(path) for path in paths]
         for path in normalized_paths:
             if not self._remote_path_is_within_root(path, browse_root):
-                raise PermissionError("鐩爣璺緞涓嶅湪褰撳墠搴撳瓨鑼冨洿鍐?")
+                raise PermissionError("目标路径超出当前库存范围")
         return await self._remote_batch_delete(library, normalized_paths, confirmed)
 
     def _collect_local_stats(self, library: LibraryDefinition) -> dict[str, Any]:
@@ -1596,7 +2999,7 @@ class LibraryManager:
 
     async def _collect_remote_stats(self, library: LibraryDefinition) -> dict[str, Any]:
         if not library.synology:
-            raise RuntimeError("杩滅▼搴撳瓨鏈厤缃兢鏅栬繛鎺ュ弬鏁?")
+            raise RuntimeError("远程库缺少群晖连接配置")
         client = SynologyFileStationClient(library.synology)
         start_path = self._normalize_remote_path(library.browse_root_path or library.root_path)
         top_level_items = [
@@ -1613,7 +3016,7 @@ class LibraryManager:
         self._append_stats_log(
             library,
             "INFO",
-            f"开始远程库存统计，目标路径={start_path}，顶层项目数={len(top_level_items)}",
+            f"远程统计开始 path={start_path} top={len(top_level_items)}",
         )
         self._update_remote_stats_progress(
             library,
@@ -1646,7 +3049,7 @@ class LibraryManager:
                     self._append_stats_log(
                         library,
                         "INFO",
-                        f"统计目录完成: {item_name}，新增文件夹={1 + nested_folder_count}，累计大小={_gb(total_size)} GB",
+                        f"统计目录 item={item_name} folders={1 + nested_folder_count} total={_gb(total_size)}GB",
                     )
                 else:
                     file_size = int(additional.get("size") or 0)
@@ -1654,15 +3057,15 @@ class LibraryManager:
                     self._append_stats_log(
                         library,
                         "INFO",
-                        f"统计文件完成: {item_name}，累计大小={_gb(total_size)} GB",
+                        f"统计文件 item={item_name} total={_gb(total_size)}GB",
                     )
             except asyncio.CancelledError:
-                self._append_stats_log(library, "WARN", f"远程库存统计被手动取消，停止于项目: {item_name}")
+                self._append_stats_log(library, "WARN", f"远程统计取消 item={item_name}")
                 raise
             except Exception as exc:
                 warning_count += 1
                 last_error = f"{item_name}: {exc}"
-                self._append_stats_log(library, "ERROR", f"统计项目失败，已跳过: {last_error}")
+                self._append_stats_log(library, "ERROR", f"统计项失败 item={item_name} error={exc}")
             completed += 1
             self._update_remote_stats_progress(
                 library,
@@ -1678,7 +3081,7 @@ class LibraryManager:
         self._append_stats_log(
             library,
             "INFO",
-            f"远程库存统计完成，文件夹={folder_count}，总大小={_gb(total_size)} GB，警告数={warning_count}",
+            f"远程统计完成 folders={folder_count} size={_gb(total_size)}GB warnings={warning_count}",
         )
         return {
             "library_id": library.id,
@@ -1720,7 +3123,7 @@ class LibraryManager:
                 "last_error": previous.get("last_error"),
                 "last_completed_at": previous.get("last_completed_at"),
             }
-            self._append_stats_log(library, "WARN", "远程库存统计任务已取消，保留当前进度快照")
+            self._append_stats_log(library, "WARN", "远程统计已取消，保留当前进度")
         except Exception as exc:
             stats = {
                 "library_id": library.id,
@@ -1739,7 +3142,7 @@ class LibraryManager:
                 "last_completed_at": previous.get("last_completed_at"),
                 "warning": str(exc),
             }
-            self._append_stats_log(library, "ERROR", f"远程库存统计异常结束，保留当前进度快照: {exc}")
+            self._append_stats_log(library, "ERROR", f"远程统计异常结束: {exc}")
         health = self._health_for_library(library, float(self.load_config()["health_warning_free_gb"]))
         stats["health"] = health
         stats["updated_at"] = time.time()
@@ -1767,3 +3170,6 @@ def get_library_manager() -> LibraryManager:
     if _library_manager is None:
         _library_manager = LibraryManager()
     return _library_manager
+
+
+
