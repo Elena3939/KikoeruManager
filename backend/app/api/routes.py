@@ -146,6 +146,7 @@ class ConfigResponse(BaseModel):
     auto_process: Optional[dict] = None
     process_existing: Optional[dict] = None
     asmr_sync_step: Optional[dict] = None
+    rj_subtitle: Optional[dict] = None
     backup_zip: Optional[dict] = None
 
 # API路由
@@ -389,6 +390,7 @@ async def get_configuration():
         auto_process=config.auto_process.model_dump() if hasattr(config, 'auto_process') else None,
         process_existing=config.process_existing.model_dump() if hasattr(config, 'process_existing') else None,
         asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None,
+        rj_subtitle=config.rj_subtitle.model_dump() if hasattr(config, 'rj_subtitle') else None,
         backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None
     )
 
@@ -489,6 +491,14 @@ async def update_configuration(request: Request):
                 config_data['backup_zip'] = backup_zip_config.model_dump()
             except Exception as e:
                 logger.error(f"[BACKUP_ZIP] 配置验证失败: {e}")
+
+        if 'rj_subtitle' in config_data:
+            try:
+                from ..config.settings import RJSubtitleConfig
+                rj_subtitle_config = RJSubtitleConfig(**config_data['rj_subtitle'])
+                config_data['rj_subtitle'] = rj_subtitle_config.model_dump()
+            except Exception as e:
+                logger.error(f"[RJ_SUBTITLE] 配置验证失败: {e}")
 
         result = save_config(config_data)
         logger.info(f"配置已保存，分类规则数: {len(config_data.get('classification', []))}")
@@ -993,6 +1003,7 @@ async def import_passwords_from_text(request: Request):
 async def get_logs(lines: int = 100):
     """获取日志文件内容"""
     import os
+    from collections import deque
     log_dir = os.environ.get('DATA_PATH', './data')
     log_files = [
         os.path.join(log_dir, 'app.log'),
@@ -1003,11 +1014,10 @@ async def get_logs(lines: int = 100):
         return {"logs": []}
     
     try:
-        with open(log_file, 'r', encoding='utf-8') as f:
-            all_lines = f.readlines()
-            # 返回最后N行
-            recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
-            return {"logs": [line.strip() for line in recent_lines if line.strip()]}
+        line_limit = max(50, min(int(lines or 100), 5000))
+        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+            recent_lines = deque((line.strip() for line in f if line.strip()), maxlen=line_limit)
+            return {"logs": list(recent_lines)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
 
@@ -1697,6 +1707,87 @@ async def get_library_browser_folder_contents(request: Request):
     except Exception as e:
         logger.error(f"获取库存文件夹内容失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取库存文件夹内容失败: {str(e)}")
+
+
+@app.post("/api/library/browser/filter-delete-preview")
+async def get_library_browser_filter_delete_preview(request: Request):
+    try:
+        data = await request.json()
+        library_id = data.get("library_id")
+        folder_path = data.get("path")
+        request_id = data.get("request_id")
+        if not folder_path:
+            raise HTTPException(status_code=400, detail="缺少目标目录路径")
+        manager = get_library_manager()
+        try:
+            return await manager.filter_delete_preview(library_id, folder_path, request_id=request_id)
+        finally:
+            manager._finish_filter_preview_request(request_id)
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"过滤删除预览失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"过滤删除预览失败: {str(e)}")
+
+
+@app.post("/api/library/browser/filter-delete-preview/start")
+async def start_library_browser_filter_delete_preview(request: Request):
+    try:
+        data = await request.json()
+        library_id = data.get("library_id")
+        folder_path = data.get("path")
+        if not folder_path:
+            raise HTTPException(status_code=400, detail="缺少目标目录路径")
+        manager = get_library_manager()
+        return await manager.start_filter_delete_preview_job(library_id, folder_path)
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"启动过滤删除预审失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动过滤删除预审失败: {str(e)}")
+
+
+@app.get("/api/library/browser/filter-delete-preview/status")
+async def get_library_browser_filter_delete_preview_status(job_id: str):
+    try:
+        manager = get_library_manager()
+        return manager.get_filter_delete_preview_job(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="过滤删除预审任务不存在")
+    except Exception as e:
+        logger.error(f"获取过滤删除预审状态失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取过滤删除预审状态失败: {str(e)}")
+
+
+@app.post("/api/library/browser/filter-delete-preview/cancel")
+async def cancel_library_browser_filter_delete_preview(request: Request):
+    try:
+        data = await request.json()
+        request_id = data.get("request_id")
+        job_id = data.get("job_id")
+        manager = get_library_manager()
+        if job_id:
+            return await manager.cancel_filter_delete_preview_job(job_id)
+        return manager.cancel_filter_delete_preview(request_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="过滤删除预审任务不存在")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"取消过滤删除预审失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"取消过滤删除预审失败: {str(e)}")
 
 
 @app.post("/api/library/browser/rename")
@@ -3133,6 +3224,12 @@ async def process_existing_folders(request: Request):
         # 创建处理任务
         engine = get_task_engine()
         created_tasks = []
+        skipped_existing = 0
+        skipped_duplicate = 0
+        skipped_existing = 0
+        skipped_duplicate = 0
+        skipped_existing = 0
+        skipped_duplicate = 0
         
         for folder_path in valid_folders:
             task = Task(
@@ -3794,6 +3891,484 @@ async def get_kikoeru_token():
 
 # ========== ASMR 同步下载 API ==========
 
+class RJSubtitleScanRequest(BaseModel):
+    """RJ 字幕扫描请求"""
+    folder_path: str
+    library_id: Optional[str] = None
+    scan_depth: int = 3
+    scan_one_level_only: Optional[bool] = None
+
+
+class RJSubtitleStartRequest(BaseModel):
+    """RJ 字幕抓取开始请求"""
+    items: List[dict]  # [{rjcode, folder_path, folder_name}]
+    overwrite_existing: bool = False
+    enable_metadata_match: bool = True
+    skip_if_existing_subtitles: bool = False
+    naming_strategy: str = "audio"
+    use_filter_rules: bool = False
+    subtitle_filter_rules: List[dict] = []
+
+
+class RJSubtitleManualCompleteRequest(BaseModel):
+    applied_pairs: int = 0
+    deleted_subtitles: int = 0
+    naming_strategy: str = "audio"
+
+
+class RJSubtitleAvailabilityRequest(BaseModel):
+    rjcode: str
+
+
+@app.post("/api/rj-subtitle/scan")
+async def rj_subtitle_scan(request: RJSubtitleScanRequest):
+    """扫描单个 RJ 文件夹或批量父目录"""
+    from ..core.rj_subtitle_service import get_rj_subtitle_service
+
+    try:
+        folder_path = request.folder_path
+        service = get_rj_subtitle_service()
+        scan_depth = request.scan_depth
+        if request.scan_one_level_only is not None:
+            scan_depth = 1 if request.scan_one_level_only else max(3, scan_depth)
+        if request.library_id:
+            manager = get_library_manager()
+            library = manager.get_library_definition(request.library_id)
+            if library.type == "synology_filestation":
+                items = await service.scan_remote(
+                    request.library_id,
+                    folder_path,
+                    scan_depth=scan_depth,
+                )
+                return {
+                    "success": True,
+                    "folder_path": folder_path,
+                    "total_found": len(items),
+                    "ready_count": len([item for item in items if item["status"] == "ready"]),
+                    "items": items,
+                }
+        if not os.path.exists(folder_path):
+            raise HTTPException(status_code=400, detail="指定的文件夹不存在")
+        if not os.path.isdir(folder_path):
+            raise HTTPException(status_code=400, detail="指定的路径不是文件夹")
+
+        items = service.scan(
+            folder_path,
+            scan_depth=scan_depth,
+        )
+
+        return {
+            "success": True,
+            "folder_path": folder_path,
+            "total_found": len(items),
+            "ready_count": len([item for item in items if item["status"] == "ready"]),
+            "items": items,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"扫描 RJ 字幕目录失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"扫描失败: {str(e)}")
+
+
+@app.post("/api/rj-subtitle/scan-stream")
+async def rj_subtitle_scan_stream(request: RJSubtitleScanRequest):
+    """流式扫描 RJ 目录，发现一个就返回一个。"""
+    from ..core.rj_subtitle_service import get_rj_subtitle_service
+
+    async def generate():
+        service = get_rj_subtitle_service()
+        folder_path = request.folder_path
+        scan_depth = request.scan_depth
+        if request.scan_one_level_only is not None:
+            scan_depth = 1 if request.scan_one_level_only else max(3, scan_depth)
+
+        total_found = 0
+        ready_count = 0
+        existing_count = 0
+        no_audio_count = 0
+
+        def dump(payload):
+            return json.dumps(payload, ensure_ascii=False) + "\n"
+
+        display_name = PurePosixPath(folder_path).name or os.path.basename(folder_path) or folder_path
+        yield dump({
+            "type": "target_result",
+            "path": folder_path,
+            "name": display_name,
+            "status": "pending",
+            "message": "正在扫描..."
+        })
+
+        try:
+            if request.library_id:
+                manager = get_library_manager()
+                library = manager.get_library_definition(request.library_id)
+                if library.type == "synology_filestation":
+                    async for item in service.scan_remote_iter(request.library_id, folder_path, scan_depth=scan_depth):
+                        total_found += 1
+                        if item.get("status") == "ready":
+                            ready_count += 1
+                        elif item.get("status") == "existing":
+                            existing_count += 1
+                        elif item.get("status") == "no_audio":
+                            no_audio_count += 1
+                        yield dump({"type": "item", "item": item})
+                    yield dump({
+                        "type": "target_result",
+                        "path": folder_path,
+                        "name": display_name,
+                        "status": "success" if total_found else "no_match",
+                        "message": f"识别到 {total_found} 个 RJ 目录，可执行 {ready_count} 个" if total_found else "未识别到可执行 RJ 文件夹",
+                        "summary": {
+                            "found": total_found,
+                            "ready": ready_count,
+                            "existing": existing_count,
+                            "no_audio": no_audio_count,
+                        }
+                    })
+                    yield dump({
+                        "type": "complete",
+                        "folder_path": folder_path,
+                        "total_found": total_found,
+                        "ready_count": ready_count,
+                        "existing_count": existing_count,
+                        "no_audio_count": no_audio_count,
+                    })
+                    return
+
+            if not os.path.exists(folder_path):
+                raise HTTPException(status_code=400, detail="指定的文件夹不存在")
+            if not os.path.isdir(folder_path):
+                raise HTTPException(status_code=400, detail="指定的路径不是文件夹")
+
+            for item in service.scan_iter(folder_path, scan_depth=scan_depth):
+                total_found += 1
+                if item.get("status") == "ready":
+                    ready_count += 1
+                elif item.get("status") == "existing":
+                    existing_count += 1
+                elif item.get("status") == "no_audio":
+                    no_audio_count += 1
+                yield dump({"type": "item", "item": item})
+
+            yield dump({
+                "type": "target_result",
+                "path": folder_path,
+                "name": display_name,
+                "status": "success" if total_found else "no_match",
+                "message": f"识别到 {total_found} 个 RJ 目录，可执行 {ready_count} 个" if total_found else "未识别到可执行 RJ 文件夹",
+                "summary": {
+                    "found": total_found,
+                    "ready": ready_count,
+                    "existing": existing_count,
+                    "no_audio": no_audio_count,
+                }
+            })
+            yield dump({
+                "type": "complete",
+                "folder_path": folder_path,
+                "total_found": total_found,
+                "ready_count": ready_count,
+                "existing_count": existing_count,
+                "no_audio_count": no_audio_count,
+            })
+        except HTTPException as exc:
+            yield dump({
+                "type": "target_result",
+                "path": folder_path,
+                "name": display_name,
+                "status": "failed",
+                "message": exc.detail,
+            })
+            yield dump({"type": "error", "error": exc.detail})
+        except Exception as exc:
+            logger.error(f"流式扫描 RJ 字幕目录失败: {exc}", exc_info=True)
+            message = f"扫描失败: {str(exc)}"
+            yield dump({
+                "type": "target_result",
+                "path": folder_path,
+                "name": display_name,
+                "status": "failed",
+                "message": message,
+            })
+            yield dump({"type": "error", "error": message})
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.post("/api/rj-subtitle/start")
+async def rj_subtitle_start(request: RJSubtitleStartRequest):
+    """开始 RJ 字幕抓取任务"""
+    from ..core.task_engine import Task, TaskType, get_task_engine
+
+    try:
+        if not request.items:
+            raise HTTPException(status_code=400, detail="没有可执行的 RJ 文件夹")
+
+        engine = get_task_engine()
+        created_tasks = []
+        skipped_existing = 0
+        skipped_duplicate = 0
+
+        for item in request.items:
+            folder_path = item.get("folder_path")
+            rjcode = item.get("rjcode")
+            folder_name = item.get("folder_name", "")
+            library_id = item.get("library_id")
+            if not folder_path:
+                continue
+            if request.skip_if_existing_subtitles and int(item.get("existing_subtitle_count") or 0) > 0:
+                skipped_existing += 1
+                continue
+
+            duplicate_task = next((
+                current_task for current_task in engine.get_all_tasks()
+                if current_task.type == TaskType.RJ_SUBTITLE_FETCH
+                and str(current_task.task_metadata.get("folder_path") or current_task.source_path) == str(folder_path)
+                and current_task.status.value in {"pending", "processing", "paused"}
+            ), None)
+            if duplicate_task:
+                skipped_duplicate += 1
+                continue
+
+            task = Task(
+                task_type=TaskType.RJ_SUBTITLE_FETCH,
+                source_path=folder_path,
+                auto_classify=False,
+                metadata={
+                    "folder_path": folder_path,
+                    "rjcode": rjcode,
+                    "folder_name": folder_name,
+                    "library_id": library_id,
+                    "overwrite": request.overwrite_existing,
+                    "enable_metadata_match": request.enable_metadata_match,
+                    "skip_if_existing_subtitles": request.skip_if_existing_subtitles,
+                    "naming_strategy": request.naming_strategy,
+                    "use_filter_rules": request.use_filter_rules,
+                    "subtitle_filter_rules": request.subtitle_filter_rules,
+                }
+            )
+
+            await engine.submit(task)
+            created_tasks.append({
+                "task_id": task.id,
+                "rjcode": rjcode,
+                "folder_name": folder_name,
+                "folder_path": folder_path,
+                "library_id": library_id,
+            })
+
+        return {
+            "success": True,
+            "message": f"已创建 {len(created_tasks)} 个 RJ 字幕抓取任务",
+            "created_count": len(created_tasks),
+            "skipped_existing": skipped_existing,
+            "skipped_duplicate": skipped_duplicate,
+            "tasks": created_tasks,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"启动 RJ 字幕抓取失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动失败: {str(e)}")
+
+
+@app.post("/api/rj-subtitle/task/{task_id}/manual-complete")
+async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCompleteRequest):
+    from ..core.task_engine import TaskStatus, TaskType, get_task_engine
+
+    try:
+        engine = get_task_engine()
+        task = engine.get_task(task_id)
+        if not task or task.type != TaskType.RJ_SUBTITLE_FETCH:
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+        applied_pairs = max(0, int(request.applied_pairs or 0))
+        deleted_subtitles = max(0, int(request.deleted_subtitles or 0))
+        naming_strategy = str(request.naming_strategy or task.task_metadata.get("naming_strategy") or "audio").lower()
+
+        task.task_metadata = task.task_metadata or {}
+        task.task_metadata["awaiting_manual_match"] = False
+        task.task_metadata["manual_match_completed"] = True
+        task.task_metadata["manual_match_completed_at"] = datetime.now().isoformat()
+        task.task_metadata["manual_match_applied_pairs"] = applied_pairs
+        task.task_metadata["manual_match_deleted_subtitles"] = deleted_subtitles
+        task.task_metadata["naming_strategy"] = naming_strategy
+
+        summary = f"后处理完成，已应用 {applied_pairs} 组配对"
+        if deleted_subtitles:
+            summary += f"，删除 {deleted_subtitles} 个未选字幕"
+
+        task.progress = 100
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = datetime.now()
+        task.current_step = summary
+
+        logs = task.task_metadata.get("progress_log", [])
+        logs.append({
+            "time": datetime.now().isoformat(),
+            "progress": 100,
+            "level": "success",
+            "message": summary,
+        })
+        task.task_metadata["progress_log"] = logs[-30:]
+
+        return {"success": True, "task_id": task_id, "message": summary}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"标记 RJ 字幕后处理完成失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"标记失败: {str(e)}")
+
+
+@app.post("/api/rj-subtitle/task/{task_id}/clear")
+async def rj_subtitle_clear_task(task_id: str):
+    from ..core.task_engine import TaskType, get_task_engine
+
+    try:
+        engine = get_task_engine()
+        task = engine.get_task(task_id)
+        if not task or task.type != TaskType.RJ_SUBTITLE_FETCH:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task.status.value in {"pending", "processing", "paused"}:
+            raise HTTPException(status_code=400, detail="任务仍在执行中，不能清理")
+
+        engine.remove_task(task_id)
+        return {"success": True, "task_id": task_id, "message": "任务已清理"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"清理 RJ 字幕任务失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"清理失败: {str(e)}")
+
+
+@app.post("/api/rj-subtitle/subtitle-availability")
+async def rj_subtitle_availability(request: RJSubtitleAvailabilityRequest):
+    from ..core.rj_subtitle_service import get_rj_subtitle_service
+
+    try:
+        rjcode = str(request.rjcode or "").strip().upper()
+        if not rjcode:
+            raise HTTPException(status_code=400, detail="RJ号不能为空")
+
+        service = get_rj_subtitle_service()
+        source, attempts = await service.find_best_subtitle_source(rjcode)
+
+        return {
+            "success": True,
+            "rjcode": rjcode,
+            "has_subtitle": bool(source),
+            "selected_source": {
+                "rjcode": source.get("rjcode", ""),
+                "lang": source.get("lang", ""),
+                "work_type": source.get("work_type", ""),
+                "title": source.get("title", ""),
+                "subtitle_count": len(source.get("subtitle_files", []) or []),
+            } if source else None,
+            "attempts": attempts,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"检测 RJ 字幕可用性失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"检测失败: {str(e)}")
+
+
+@app.get("/api/rj-subtitle/status")
+async def rj_subtitle_status():
+    """获取 RJ 字幕抓取任务状态"""
+    from ..core.task_engine import TaskType, get_task_engine
+
+    try:
+        engine = get_task_engine()
+        all_tasks = engine.get_all_tasks()
+        rj_tasks = [task for task in all_tasks if task.type == TaskType.RJ_SUBTITLE_FETCH]
+        status_weight = {
+            "processing": 0,
+            "pending": 1,
+            "paused": 2,
+            "completed": 3,
+            "failed": 4,
+        }
+        rj_tasks.sort(
+            key=lambda task: (
+                status_weight.get(task.status.value, 99),
+                -(task.created_at.timestamp() if task.created_at else 0),
+            )
+        )
+
+        return {
+            "total_tasks": len(rj_tasks),
+            "processing": len([task for task in rj_tasks if task.status.value == "processing"]),
+            "pending": len([task for task in rj_tasks if task.status.value == "pending"]),
+            "completed": len([task for task in rj_tasks if task.status.value == "completed"]),
+            "failed": len([task for task in rj_tasks if task.status.value == "failed"]),
+            "tasks": [
+                {
+                    "id": task.id,
+                    "rjcode": task.task_metadata.get("rjcode", ""),
+                    "actual_rjcode": task.task_metadata.get("actual_rjcode", ""),
+                    "folder_name": task.task_metadata.get("folder_name", ""),
+                    "folder_path": task.task_metadata.get("folder_path", task.source_path),
+                    "library_id": task.task_metadata.get("library_id", ""),
+                    "status": task.status.value,
+                    "is_cancelled": task.is_cancelled(),
+                    "progress": task.progress,
+                    "current_step": task.current_step,
+                    "error_message": task.error_message,
+                    "created_at": task.created_at.isoformat() if task.created_at else None,
+                    "started_at": task.started_at.isoformat() if task.started_at else None,
+                    "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+                    "source_lang": task.task_metadata.get("source_lang", ""),
+                    "source_work_type": task.task_metadata.get("source_work_type", ""),
+                    "source_title": task.task_metadata.get("source_title", ""),
+                    "downloaded_count": task.task_metadata.get("downloaded_count", 0),
+                    "existing_subtitle_count": task.task_metadata.get("existing_subtitle_count", 0),
+                    "subtitle_dir": task.task_metadata.get("subtitle_dir", ""),
+                    "written_files": task.task_metadata.get("written_files", []),
+                    "skipped_files": task.task_metadata.get("skipped_files", []),
+                    "write_errors": task.task_metadata.get("write_errors", []),
+                    "failed_files": task.task_metadata.get("failed_files", []),
+                    "match_result": task.task_metadata.get("match_result", {}),
+                    "search_attempts": task.task_metadata.get("search_attempts", []),
+                    "download_files": task.task_metadata.get("download_files", []),
+                    "content_deduped_count": task.task_metadata.get("content_deduped_count", 0),
+                    "content_deduped_files": task.task_metadata.get("content_deduped_files", []),
+                    "progress_log": task.task_metadata.get("progress_log", []),
+                    "awaiting_manual_match": task.task_metadata.get("awaiting_manual_match", False),
+                    "manual_match_completed": task.task_metadata.get("manual_match_completed", False),
+                    "manual_match_applied_pairs": task.task_metadata.get("manual_match_applied_pairs", 0),
+                    "manual_match_deleted_subtitles": task.task_metadata.get("manual_match_deleted_subtitles", 0),
+                    "naming_strategy": task.task_metadata.get("naming_strategy", "audio"),
+                }
+                for task in rj_tasks
+            ]
+        }
+    except Exception as e:
+        logger.error(f"获取 RJ 字幕抓取状态失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取状态失败: {str(e)}")
+
+@app.get("/api/rj-subtitle/connectivity-test")
+async def rj_subtitle_connectivity_test():
+    """测试 RJ 字幕流程依赖的远端连通性。"""
+    from ..core.asmr_download_service import get_asmr_download_service
+
+    try:
+        service = get_asmr_download_service()
+        return await service.test_connectivity()
+    except Exception as e:
+        logger.error(f"RJ 字幕连通性测试失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"连通性测试失败: {str(e)}")
+
+
 class ASMRSyncScanRequest(BaseModel):
     """ASMR 同步扫描请求"""
     folder_path: str
@@ -4235,6 +4810,13 @@ for path in possible_paths:
 if frontend_build_path:
     # 提供静态资源文件（JS、CSS、图片等）
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_build_path, "assets")), name="assets")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def serve_favicon():
+        favicon_path = os.path.join(frontend_build_path, "favicon.ico")
+        if os.path.exists(favicon_path):
+            return FileResponse(favicon_path, media_type="image/x-icon")
+        raise HTTPException(status_code=404, detail="Favicon not found")
     
     # 捕获所有非 API 路由，返回 index.html（SPA 支持）
     @app.get("/{full_path:path}")

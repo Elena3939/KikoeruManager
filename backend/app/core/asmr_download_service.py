@@ -8,9 +8,12 @@ import re
 import aiohttp
 import asyncio
 import logging
+import time
 from typing import Optional, List, Dict, Callable, Tuple
 from pathlib import Path
 from datetime import datetime
+
+from ..config.settings import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +83,188 @@ class ASMRDownloadService:
         self._current_api_index = (self._current_api_index + 1) % len(self.API_BASE_URLS)
         logger.info(f"切换 API 服务器到: {self._get_api_base()}")
 
+    def _get_runtime_config(self):
+        """Return the latest ASMR sync config so proxy changes apply immediately."""
+        if self.config is not None:
+            return getattr(self.config, "asmr_sync", self.config)
+        try:
+            return get_config().asmr_sync
+        except Exception:
+            return None
+
+    def _get_proxy(self) -> Optional[str]:
+        config = self._get_runtime_config()
+        proxy = getattr(config, "http_proxy", None) if config else None
+        if not proxy:
+            return None
+
+        proxy = str(proxy).strip()
+        if not proxy:
+            return None
+
+        if "://" not in proxy:
+            proxy = f"http://{proxy}"
+        return proxy
+
+    def _mask_proxy(self, proxy: Optional[str]) -> str:
+        if not proxy:
+            return ""
+        return re.sub(r"//([^/@]+)@", "//***:***@", proxy)
+
+    def _proxy_request_kwargs(self) -> Dict:
+        proxy = self._get_proxy()
+        return {"proxy": proxy} if proxy else {}
+
+    def _browser_like_headers(self, referer: Optional[str] = None) -> Dict[str, str]:
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/134.0.0.0 Safari/537.36"
+            ),
+        }
+        if referer:
+            headers["Referer"] = referer
+        return headers
+
+    async def _legacy_test_connectivity(self) -> Dict:
+        """测试 ASMR API 与 DLsite 的基本连通性。"""
+        session = await self._get_session()
+        request_kwargs = self._proxy_request_kwargs()
+        request_kwargs = self._proxy_request_kwargs()
+        request_kwargs = self._proxy_request_kwargs()
+        checks = []
+
+        async def run_check(name: str, url: str):
+            started_at = time.perf_counter()
+            try:
+                timeout = aiohttp.ClientTimeout(total=15, connect=5)
+                async with session.get(url, timeout=timeout) as response:
+                    latency_ms = int((time.perf_counter() - started_at) * 1000)
+                    reachable = response.status < 500
+                    checks.append({
+                        'name': name,
+                        'url': url,
+                        'ok': reachable,
+                        'status': 'ok' if reachable else 'error',
+                        'http_status': response.status,
+                        'latency_ms': latency_ms,
+                        'message': '可连接' if reachable else f'HTTP {response.status}',
+                    })
+            except asyncio.TimeoutError:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                checks.append({
+                    'name': name,
+                    'url': url,
+                    'ok': False,
+                    'status': 'timeout',
+                    'http_status': None,
+                    'latency_ms': latency_ms,
+                    'message': '连接超时',
+                })
+            except Exception as exc:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                checks.append({
+                    'name': name,
+                    'url': url,
+                    'ok': False,
+                    'status': 'error',
+                    'http_status': None,
+                    'latency_ms': latency_ms,
+                    'message': str(exc),
+                })
+
+        await run_check('ASMR.one 主节点', f'{self.API_BASE_URLS[0]}/workInfo/00000000')
+        if len(self.API_BASE_URLS) > 1:
+            await run_check('ASMR.one 备用节点', f'{self.API_BASE_URLS[1]}/workInfo/00000000')
+        await run_check('DLsite 关联接口', f'{self.DLSITE_API}?workno=RJ00000000')
+
+        ok_count = len([item for item in checks if item['ok']])
+        return {
+            'success': ok_count > 0,
+            'summary': {
+                'total': len(checks),
+                'ok': ok_count,
+                'failed': len(checks) - ok_count,
+            },
+            'checks': checks,
+            'current_api_base': self._get_api_base(),
+            'tested_at': datetime.now().isoformat(),
+        }
+
+    async def test_connectivity(self) -> Dict:
+        """Test ASMR.one primary and fallback API connectivity."""
+        session = await self._get_session()
+        checks = []
+        proxy = self._get_proxy()
+        request_kwargs = self._proxy_request_kwargs()
+
+        async def run_check(name: str, url: str):
+            started_at = time.perf_counter()
+            try:
+                timeout = aiohttp.ClientTimeout(total=15, connect=5)
+                async with session.get(url, timeout=timeout, **request_kwargs) as response:
+                    latency_ms = int((time.perf_counter() - started_at) * 1000)
+                    reachable = response.status < 500
+                    checks.append({
+                        'name': name,
+                        'url': url,
+                        'ok': reachable,
+                        'status': 'ok' if reachable else 'error',
+                        'http_status': response.status,
+                        'latency_ms': latency_ms,
+                        'message': (
+                            '节点可达（404 代表接口在线）'
+                            if reachable and response.status == 404
+                            else ('可连接' if reachable else f'HTTP {response.status}')
+                        ),
+                    })
+            except asyncio.TimeoutError:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                checks.append({
+                    'name': name,
+                    'url': url,
+                    'ok': False,
+                    'status': 'timeout',
+                    'http_status': None,
+                    'latency_ms': latency_ms,
+                    'message': '连接超时',
+                })
+            except Exception as exc:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                checks.append({
+                    'name': name,
+                    'url': url,
+                    'ok': False,
+                    'status': 'error',
+                    'http_status': None,
+                    'latency_ms': latency_ms,
+                    'message': str(exc),
+                })
+
+        await run_check('ASMR.one 主节点', f'{self.API_BASE_URLS[0]}/workInfo/00000000')
+        if len(self.API_BASE_URLS) > 1:
+            await run_check('ASMR.one 备用节点', f'{self.API_BASE_URLS[1]}/workInfo/00000000')
+
+        ok_count = len([item for item in checks if item['ok']])
+        return {
+            'success': ok_count > 0,
+            'summary': {
+                'total': len(checks),
+                'ok': ok_count,
+                'failed': len(checks) - ok_count,
+            },
+            'checks': checks,
+            'current_api_base': self._get_api_base(),
+            'proxy_enabled': bool(proxy),
+            'proxy_url': self._mask_proxy(proxy),
+            'tested_at': datetime.now().isoformat(),
+        }
+
     async def get_linked_works_from_dlsite(self, rjcode: str) -> List[LinkedWorkInfo]:
         """
         从 DLsite API 获取作品的所有关联版本
@@ -104,14 +289,19 @@ class ASMRDownloadService:
                 return cached['data']
 
         session = await self._get_session()
+        request_kwargs = self._proxy_request_kwargs()
+        request_headers = self._browser_like_headers("https://www.dlsite.com/")
+        request_timeout = aiohttp.ClientTimeout(total=25, connect=8, sock_read=20)
         works = []
 
         try:
             # 获取作品信息
             url = f"{self.DLSITE_API}?workno=RJ{rjcode_num}"
-            logger.info(f"[DLsite] 获取关联作品: {url}")
+            logger.info(
+                f"[DLsite] 获取关联作品: {url} | proxy={'on' if request_kwargs.get('proxy') else 'off'}"
+            )
 
-            async with session.get(url) as response:
+            async with session.get(url, headers=request_headers, timeout=request_timeout, **request_kwargs) as response:
                 if response.status != 200:
                     logger.warning(f"[DLsite] 获取作品信息失败: HTTP {response.status}")
                     works.append(LinkedWorkInfo(f"RJ{rjcode_num}", 'JPN', 'original'))
@@ -163,7 +353,7 @@ class ASMRDownloadService:
                 if is_child and original_workno:
                     try:
                         parent_url = f"{self.DLSITE_API}?workno={original_workno}"
-                        async with session.get(parent_url) as parent_response:
+                        async with session.get(parent_url, headers=request_headers, timeout=request_timeout, **request_kwargs) as parent_response:
                             if parent_response.status == 200:
                                 parent_data = await parent_response.json()
                                 if parent_data and isinstance(parent_data, list) and len(parent_data) > 0:
@@ -214,6 +404,7 @@ class ASMRDownloadService:
             rjcode_num = rjcode
 
         session = await self._get_session()
+        request_kwargs = self._proxy_request_kwargs()
 
         # 尝试所有 API 服务器
         for attempt in range(len(self.API_BASE_URLS)):
@@ -222,7 +413,7 @@ class ASMRDownloadService:
 
             try:
                 logger.info(f"[ASMR] 获取作品信息: {url}")
-                async with session.get(url) as response:
+                async with session.get(url, **request_kwargs) as response:
                     if response.status == 200:
                         data = await response.json()
                         logger.info(f"[ASMR] 成功获取作品信息: {data.get('title', '未知标题')}")
@@ -291,6 +482,7 @@ class ASMRDownloadService:
             rjcode_num = rjcode
 
         session = await self._get_session()
+        request_kwargs = self._proxy_request_kwargs()
 
         for attempt in range(len(self.API_BASE_URLS)):
             api_base = self._get_api_base()
@@ -298,7 +490,7 @@ class ASMRDownloadService:
 
             try:
                 logger.info(f"[ASMR] 获取文件列表: {url}")
-                async with session.get(url) as response:
+                async with session.get(url, **request_kwargs) as response:
                     if response.status == 200:
                         data = await response.json()
                         file_count = len(data) if isinstance(data, list) else 0
@@ -402,6 +594,7 @@ class ASMRDownloadService:
             是否成功
         """
         session = await self._get_session()
+        request_kwargs = self._proxy_request_kwargs()
 
         for attempt in range(max_retries):
             try:
@@ -419,7 +612,7 @@ class ASMRDownloadService:
                     # 文件已存在，检查大小是否完整
                     existing_size = os.path.getsize(dest_path)
                     # 先获取远程文件大小
-                    async with session.head(url, timeout=aiohttp.ClientTimeout(total=30)) as head_response:
+                    async with session.head(url, timeout=aiohttp.ClientTimeout(total=30), **request_kwargs) as head_response:
                         if head_response.status == 200:
                             remote_size = int(head_response.headers.get('content-length', 0))
                             if remote_size > 0 and existing_size >= remote_size:
@@ -436,7 +629,7 @@ class ASMRDownloadService:
                 if resume_offset > 0:
                     headers['Range'] = f'bytes={resume_offset}-'
 
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout), **request_kwargs) as response:
                     # 处理响应状态
                     if resume_offset > 0 and response.status == 206:
                         # 服务器支持断点续传

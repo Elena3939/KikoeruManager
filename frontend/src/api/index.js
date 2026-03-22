@@ -1,6 +1,8 @@
 import axios from 'axios'
 
 const API_BASE = '/api'
+const FILTER_DELETE_PREVIEW_TIMEOUT = 30 * 60 * 1000
+const RJ_SUBTITLE_SCAN_TIMEOUT = 0
 
 const apiClient = axios.create({
   baseURL: API_BASE,
@@ -282,6 +284,44 @@ export const libraryApi = {
     const response = await apiClient.post('/library/browser/folder-contents', {
       library_id: libraryId,
       path
+    })
+    return response.data
+  },
+
+  browserFilterDeletePreview: async (libraryId, path, options = {}) => {
+    const response = await apiClient.post('/library/browser/filter-delete-preview', {
+      library_id: libraryId,
+      path,
+      request_id: options.requestId || undefined
+    }, {
+      timeout: options.timeout || FILTER_DELETE_PREVIEW_TIMEOUT,
+      signal: options.signal
+    })
+    return response.data
+  },
+
+  startFilterDeletePreviewJob: async (libraryId, path) => {
+    const response = await apiClient.post('/library/browser/filter-delete-preview/start', {
+      library_id: libraryId,
+      path
+    }, {
+      timeout: FILTER_DELETE_PREVIEW_TIMEOUT
+    })
+    return response.data
+  },
+
+  getFilterDeletePreviewStatus: async (jobId) => {
+    const response = await apiClient.get('/library/browser/filter-delete-preview/status', {
+      params: { job_id: jobId },
+      timeout: FILTER_DELETE_PREVIEW_TIMEOUT
+    })
+    return response.data
+  },
+
+  cancelFilterDeletePreview: async ({ requestId = null, jobId = null } = {}) => {
+      const response = await apiClient.post('/library/browser/filter-delete-preview/cancel', {
+      request_id: requestId || undefined,
+      job_id: jobId || undefined
     })
     return response.data
   },
@@ -656,6 +696,116 @@ export const asmrSyncApi = {
   }
 }
 
+export const rjSubtitleApi = {
+  scan: async (folderPath, options = {}) => {
+    const response = await apiClient.post('/rj-subtitle/scan', {
+      folder_path: folderPath,
+      library_id: options.libraryId || undefined,
+      scan_depth: options.scanDepth ?? 3
+    }, {
+      timeout: options.timeout ?? RJ_SUBTITLE_SCAN_TIMEOUT
+    })
+    return response.data
+  },
+
+  scanStream: async (folderPath, options = {}) => {
+    const response = await fetch(`${API_BASE}/rj-subtitle/scan-stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Accept': 'application/x-ndjson'
+      },
+      body: JSON.stringify({
+        folder_path: folderPath,
+        library_id: options.libraryId || undefined,
+        scan_depth: options.scanDepth ?? 3
+      }),
+      signal: options.signal
+    })
+
+    if (!response.ok) {
+      let detail = response.statusText || '扫描失败'
+      try {
+        const data = await response.json()
+        detail = data?.detail || detail
+      } catch (_) {
+      }
+      throw new Error(detail)
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) {
+      throw new Error('当前浏览器不支持流式读取')
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.trim()) continue
+        const payload = JSON.parse(line)
+        await Promise.resolve(options.onEvent?.(payload))
+      }
+    }
+
+    if (buffer.trim()) {
+      const payload = JSON.parse(buffer)
+      await Promise.resolve(options.onEvent?.(payload))
+    }
+  },
+
+  start: async (items, options = {}) => {
+    const response = await apiClient.post('/rj-subtitle/start', {
+      items,
+      overwrite_existing: options.overwriteExisting ?? false,
+      enable_metadata_match: options.enableMetadataMatch ?? true,
+      skip_if_existing_subtitles: options.skipIfExistingSubtitles ?? false,
+      naming_strategy: options.namingStrategy ?? 'audio',
+      use_filter_rules: options.useFilterRules ?? false,
+      subtitle_filter_rules: options.subtitleFilterRules || []
+    })
+    return response.data
+  },
+
+  status: async () => {
+    const response = await apiClient.get('/rj-subtitle/status')
+    return response.data
+  },
+
+  cancel: async (taskId) => {
+    const response = await apiClient.post(`/tasks/${taskId}/cancel`)
+    return response.data
+  },
+
+  completeManual: async (taskId, payload = {}) => {
+    const response = await apiClient.post(`/rj-subtitle/task/${taskId}/manual-complete`, {
+      applied_pairs: payload.appliedPairs ?? 0,
+      deleted_subtitles: payload.deletedSubtitles ?? 0,
+      naming_strategy: payload.namingStrategy || 'audio'
+    })
+    return response.data
+  },
+
+  clearTask: async (taskId) => {
+    const response = await apiClient.post(`/rj-subtitle/task/${taskId}/clear`)
+    return response.data
+  },
+
+  checkSubtitleAvailability: async (rjcode) => {
+    const response = await apiClient.post('/rj-subtitle/subtitle-availability', {
+      rjcode
+    })
+    return response.data
+  }
+}
+
 export default {
   task: taskApi,
   config: configApi,
@@ -672,5 +822,6 @@ export default {
   kikoeru: kikoeruApi,
   health: healthApi,
   asmrSync: asmrSyncApi,
+  rjSubtitle: rjSubtitleApi,
   backup: backupApi
 }

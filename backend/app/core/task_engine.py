@@ -27,6 +27,7 @@ class TaskType(str, Enum):
     AUTO_PROCESS = "auto_process"
     PROCESS_EXISTING_FOLDER = "process_existing_folder"  # 处理已存在的文件夹（跳过解压）
     ASMR_SYNC_DOWNLOAD = "asmr_sync_download"  # ASMR 同步下载任务
+    RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
 
 class Task:
     """任务对象"""
@@ -630,12 +631,18 @@ class TaskEngine:
                 elif task.type == TaskType.ASMR_SYNC_DOWNLOAD:
                     # ASMR 同步下载任务
                     await self._process_asmr_sync_download(task)
+                elif task.type == TaskType.RJ_SUBTITLE_FETCH:
+                    await self._process_rj_subtitle_fetch(task)
 
                 # 只有当任务没有被设置为其他状态（如 waiting_retry）时才标记为完成
                 if task.status == TaskStatus.PROCESSING:
                     task.complete()
                     logger.info(f"[{rjcode}] ========== 任务完成 ==========")
                 
+        except asyncio.CancelledError:
+            append_progress_log('任务已取消', task.progress, 'warning')
+            if not task.is_cancelled():
+                task.cancel()
         except Exception as e:
             logger.error(f"[{rjcode}] 任务失败: {e}", exc_info=True)
             task.fail(str(e))
@@ -811,6 +818,21 @@ class TaskEngine:
     def get_task(self, task_id: str) -> Optional[Task]:
         """获取任务"""
         return self.tasks.get(task_id)
+
+    def remove_task(self, task_id: str) -> bool:
+        """移除已结束任务"""
+        task = self.tasks.get(task_id)
+        if not task:
+            return False
+
+        if task.status in [TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED]:
+            raise RuntimeError("任务仍在执行中，不能清理")
+
+        self.tasks.pop(task_id, None)
+        self.processing.discard(task_id)
+        if task.rjcode:
+            self._processing_rjcodes.discard(task.rjcode)
+        return True
     
     def update_task_status(self, task_id: str, status: TaskStatus, message: Optional[str] = None):
         """更新任务状态"""
@@ -1359,6 +1381,10 @@ class TaskEngine:
         rjcode = task.task_metadata.get('rjcode', '')
         subtitle_folder = task.task_metadata.get('subtitle_folder', '')
         work_title = task.task_metadata.get('work_title', '')
+        written_count = 0
+
+        def append_progress_log(*args, **kwargs):
+            return None
 
         logger.info(f"[{rjcode}] 开始 ASMR 同步下载任务")
 
@@ -1648,6 +1674,7 @@ class TaskEngine:
                 logger.info(f"[{rjcode}] 步骤[移动字幕文件夹]已禁用，跳过")
 
             task.update_progress(100, "完成")
+            append_progress_log(f"完成，写入 {written_count} 个字幕", 100, 'success')
             task.complete()
             logger.info(f"[{rjcode}] ASMR 同步下载任务完成")
 
@@ -1662,6 +1689,154 @@ class TaskEngine:
                     logger.info(f"[{rjcode}] 清理临时目录: {download_dir}")
                 except Exception as cleanup_error:
                     logger.warning(f"[{rjcode}] 清理临时目录失败: {cleanup_error}")
+
+    async def _process_rj_subtitle_fetch(self, task: Task):
+        """处理 RJ 字幕抓取任务"""
+        from .rj_subtitle_service import get_rj_subtitle_service
+
+        rj_service = get_rj_subtitle_service()
+        folder_path = task.task_metadata.get('folder_path') or task.source_path
+        library_id = task.task_metadata.get('library_id') or None
+        overwrite = bool(task.task_metadata.get('overwrite', False))
+        enable_metadata_match = bool(task.task_metadata.get('enable_metadata_match', True))
+        naming_strategy = str(task.task_metadata.get('naming_strategy') or 'audio').lower()
+        use_filter_rules = bool(task.task_metadata.get('use_filter_rules', False))
+        subtitle_filter_rules = task.task_metadata.get('subtitle_filter_rules') or []
+
+        rjcode = task.task_metadata.get('rjcode') or self._extract_rjcode(folder_path) or "未知"
+        task.rjcode = rjcode
+
+        logger.info(f"[{rjcode}] 开始 RJ 字幕抓取任务: {folder_path}")
+
+        try:
+            task.update_progress(5, "准备扫描 RJ 文件夹")
+            task.task_metadata['download_files'] = []
+            task.task_metadata['progress_log'] = []
+
+            def append_progress_log(message: str, progress: Optional[int] = None, level: str = 'info'):
+                if not message:
+                    return
+                logs = task.task_metadata.get('progress_log', [])
+                last = logs[-1] if logs else None
+                if last and last.get('message') == message and last.get('progress') == progress and last.get('level') == level:
+                    return
+                logs.append({
+                    'time': datetime.now().isoformat(),
+                    'progress': task.progress if progress is None else progress,
+                    'message': message,
+                    'level': level,
+                })
+                task.task_metadata['progress_log'] = logs[-30:]
+
+            append_progress_log("准备扫描 RJ 文件夹", 5)
+
+            def progress_callback(progress: int, step: str):
+                task.update_progress(progress, step)
+                append_progress_log(step, progress)
+
+            def file_progress_callback(file_name, file_index, total_files, downloaded_bytes, total_bytes):
+                files = task.task_metadata.get('download_files', [])
+                found = False
+                for item in files:
+                    if item['name'] == file_name:
+                        item['downloaded'] = downloaded_bytes
+                        item['total'] = total_bytes
+                        item['progress'] = int((downloaded_bytes / total_bytes) * 100) if total_bytes > 0 else 0
+                        found = True
+                        break
+                if not found:
+                    files.append({
+                        'name': file_name,
+                        'index': file_index,
+                        'total_files': total_files,
+                        'downloaded': downloaded_bytes,
+                        'total': total_bytes,
+                        'progress': int((downloaded_bytes / total_bytes) * 100) if total_bytes > 0 else 0,
+                        'status': 'downloading',
+                    })
+                task.task_metadata['download_files'] = files
+
+            result = await rj_service.process_folder(
+                folder_path=folder_path,
+                library_id=library_id,
+                overwrite=overwrite,
+                enable_metadata_match=enable_metadata_match,
+                naming_strategy=naming_strategy,
+                use_filter_rules=use_filter_rules,
+                subtitle_filter_rules=subtitle_filter_rules,
+                progress_callback=progress_callback,
+                file_progress_callback=file_progress_callback,
+                should_cancel=task.is_cancelled,
+            )
+
+            download_display_map = {
+                str(item.get('name') or ''): str(item.get('display_name') or item.get('name') or '')
+                for item in result.get('download_files', []) or []
+                if item.get('name')
+            }
+            if download_display_map:
+                files = task.task_metadata.get('download_files', [])
+                for item in files:
+                    display_name = download_display_map.get(str(item.get('name') or ''))
+                    if display_name:
+                        item['display_name'] = display_name
+                task.task_metadata['download_files'] = files
+
+            task.task_metadata.update({
+                'folder_path': folder_path,
+                'library_id': library_id,
+                'rjcode': result.get('rjcode', rjcode),
+                'actual_rjcode': result.get('actual_rjcode', ''),
+                'source_lang': result.get('source_lang', ''),
+                'source_work_type': result.get('source_work_type', ''),
+                'source_title': result.get('source_title', ''),
+                'downloaded_count': result.get('downloaded_count', 0),
+                'existing_subtitle_count': result.get('existing_subtitle_count', 0),
+                'subtitle_dir': result.get('subtitle_dir', ''),
+                'written_files': result.get('written_files', []),
+                'skipped_files': result.get('skipped_files', []),
+                'write_errors': result.get('write_errors', []),
+                'failed_files': result.get('failed_files', []),
+                'match_result': result.get('match_result', {}),
+                'search_attempts': result.get('search_attempts', []),
+                'lrc_clean_result': result.get('lrc_clean_result'),
+                'simplify_result': result.get('simplify_result'),
+                'content_deduped_count': result.get('content_deduped_count', 0),
+                'content_deduped_files': result.get('content_deduped_files', []),
+                'awaiting_manual_match': result.get('awaiting_manual_match', False),
+            })
+
+            deduped_count = int(result.get('content_deduped_count') or 0)
+            if deduped_count > 0:
+                append_progress_log(f"已按内容合并 {deduped_count} 个完全重复字幕", task.progress)
+
+            if not result.get('success'):
+                error_message = result.get('error', 'RJ 字幕抓取失败')
+                append_progress_log(error_message, task.progress, 'error')
+                task.fail(error_message)
+                return
+
+            if result.get('awaiting_manual_match'):
+                task.progress = 100
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = datetime.now()
+                task.current_step = '已抓取原始字幕，等待筛选与匹配'
+                append_progress_log(task.current_step, 100)
+                logger.info(f'[{rjcode}] RJ 字幕原始抓取完成，等待用户筛选与匹配')
+                return
+
+            written_count = len(result.get('written_files', []))
+            skipped_count = len(result.get('skipped_files', []))
+            unmatched_count = len(result.get('match_result', {}).get('unmatched_audio', []))
+            task.update_progress(100, f"完成，写入 {written_count} 个字幕")
+            task.complete()
+            if result.get('partial'):
+                task.current_step = f"部分完成，写入 {written_count}，跳过 {skipped_count}，未匹配音频 {unmatched_count}"
+            logger.info(f"[{rjcode}] RJ 字幕抓取完成，写入 {written_count} 个字幕")
+
+        except Exception as e:
+            logger.error(f"[{rjcode}] RJ 字幕抓取任务失败: {e}", exc_info=True)
+            task.fail(str(e))
 
 # 全局任务引擎实例
 _task_engine: Optional[TaskEngine] = None

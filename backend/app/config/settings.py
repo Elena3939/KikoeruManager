@@ -202,6 +202,18 @@ class ASMRSyncStepConfig(BaseModel):
     classify: bool = True  # 智能分类
     move_subtitle_folder: bool = True  # 移动字幕文件夹
 
+class RJSubtitleConfig(BaseModel):
+    """RJ 字幕抓取配置"""
+    overwrite_existing: bool = False
+    scan_one_level_only: bool = True
+    enable_metadata_match: bool = True
+    naming_strategy: str = "audio"
+    use_filter_rules: bool = False
+    show_source_search: bool = True
+    show_written_files: bool = True
+    show_download_progress: bool = True
+    show_issues: bool = True
+
 class BackupZipConfig(BaseModel):
     enabled: bool = False
     source_path: str = ""
@@ -242,6 +254,7 @@ class AppConfig(BaseModel):
     auto_process: AutoProcessConfig = AutoProcessConfig()
     process_existing: ProcessExistingFolderConfig = ProcessExistingFolderConfig()
     asmr_sync_step: ASMRSyncStepConfig = ASMRSyncStepConfig()
+    rj_subtitle: RJSubtitleConfig = RJSubtitleConfig()
     backup_zip: BackupZipConfig = BackupZipConfig()
 
 # 全局配置实例
@@ -470,6 +483,35 @@ def load_config(config_path: str = None) -> AppConfig:
                 for key, value in defaults.items():
                     if key not in config_data['asmr_sync_step']:
                         config_data['asmr_sync_step'][key] = value
+
+            if 'rj_subtitle' not in config_data or not config_data['rj_subtitle']:
+                config_data['rj_subtitle'] = {
+                    'overwrite_existing': False,
+                    'scan_one_level_only': True,
+                    'enable_metadata_match': True,
+                    'naming_strategy': 'audio',
+                    'use_filter_rules': False,
+                    'show_source_search': True,
+                    'show_written_files': True,
+                    'show_download_progress': True,
+                    'show_issues': True
+                }
+                logger.info("添加缺失的 rj_subtitle 配置，使用默认值")
+            else:
+                defaults = {
+                    'overwrite_existing': False,
+                    'scan_one_level_only': True,
+                    'enable_metadata_match': True,
+                    'naming_strategy': 'audio',
+                    'use_filter_rules': False,
+                    'show_source_search': True,
+                    'show_written_files': True,
+                    'show_download_progress': True,
+                    'show_issues': True
+                }
+                for key, value in defaults.items():
+                    if key not in config_data['rj_subtitle']:
+                        config_data['rj_subtitle'][key] = value
 
             if 'backup_zip' not in config_data or not config_data['backup_zip']:
                 config_data['backup_zip'] = {
