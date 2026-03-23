@@ -2126,3 +2126,169 @@ RJ 字幕抓取工作台最近已按下面的方向调整：
 - `合并` 能看到真实文件对比
 - 本地替换失败不会出现“旧内容没了、新内容也没写完”
 - 远程替换失败不会留下半完成目录
+## 14. 最近补充交接（2026-03-24：分卷解压 / 问题作品 / 库存真实搜索）
+
+这一节用于让后续线程直接接住最近一轮高频修复，避免再重复踩坑。
+
+### 1. 分卷压缩识别与解压链路
+
+最近已补过以下结论：
+
+- 分卷识别不能只识别 `.7z.001`
+- 还要兼容：
+  - `.zip` + `.z01/.z02`
+  - `.rar` + `.r00/.r01`
+  - `.part1.rar/.part2.rar`
+- 主卷文件先到、分卷后到时，不能过早建任务
+- `7z` 子进程不能在高并发下无限放大
+- 不能在“读取压缩包内容”阶段因为加密目录头或交互式密码输入卡死
+
+本轮已经做过的关键处理：
+
+- `backend/app/core/file_processor.py`
+  - 主卷 `.zip/.rar` 也会纳入分卷等待识别
+  - `VolumeSet` 支持 `entry_path`
+- `backend/app/core/extract_service.py`
+  - `7z` 可用性检查已做缓存
+  - `7z` 解压并发已单独限流
+  - 临时解压目录改成唯一目录，避免并发冲突
+  - `stdin=DEVNULL`，避免 7z 等交互式密码输入
+  - 压缩包预读失败时会回退为直接尝试解压
+  - 解压成功后，如果密码库条目自带 `rjcode`，会写入：
+    - `task.task_metadata['inferred_rjcode']`
+    - `task.task_metadata['rjcode']`
+    - `task.rjcode`
+- `backend/app/core/task_engine.py`
+  - 任务会优先复用 `inferred_rjcode`
+  - 元数据阶段和重命名前会再次回填有效 RJ
+- `backend/app/core/rename_service.py`
+  - `metadata.rjcode` 缺失时，会回退到：
+    - `metadata.inferred_rjcode`
+    - `task.rjcode`
+
+后续必须记住：
+
+- “密码库带 RJ，但路径本身没 RJ” 已经不是异常分支
+- 这种情况下最终文件夹命名也应继续使用密码库带出的 RJ
+- 不要再把这条 RJ 只停留在解压阶段
+
+### 2. 解压失败与问题作品列表
+
+最近查到的一个关键根因是：
+
+- 某些解压失败任务之前只会 `fail`
+- 但不会写入 `conflict_works`
+- 导致前端“问题作品”页面看起来像没记录
+
+目前已明确收口为：
+
+- `backend/app/core/task_engine.py`
+  - 解压失败会写入一条 `EXTRACT_FAILED`
+- `backend/app/core/classifier.py`
+  - 去重时对无 RJ 记录会回退用 `new_path`
+- `backend/app/core/conflict_resolution_service.py`
+  - 会按问题类型动态下发可用动作
+  - `EXTRACT_FAILED` 默认只允许 `SKIP`
+- `frontend/src/views/Conflicts.vue`
+  - 解压失败项不再沿用重复作品界面
+  - 会单独显示失败原因和失败提示
+
+后续如果用户反馈“问题作品没显示”，先检查：
+
+1. 解压失败有没有落 `conflict_works`
+2. `available_actions` 是否被后端正确下发
+3. 前端是不是把 `EXTRACT_FAILED` 误当重复项渲染
+
+### 3. 保留新版 / 跳过 / 合并 重构现状
+
+当前问题作品顶层动作已经收敛为：
+
+- `KEEP_NEW`
+- `SKIP`
+- `MERGE`
+
+最近相关主要入口：
+
+- `frontend/src/views/Conflicts.vue`
+- `frontend/src/components/conflicts/ConflictMergeWorkbench.vue`
+- `frontend/src/api/index.js`
+- `backend/app/api/routes.py`
+- `backend/app/core/conflict_resolution_service.py`
+- `backend/app/core/folder_compare_service.py`
+
+最近明确落地过的点：
+
+- `KEEP_OLD` 在新链路里已视为兼容别名，不应继续作为顶层动作暴露
+- `KEEP_NEW` 会先走删除预审 / 删除确认
+- `MERGE` 不再是“简单并存”，而是进入文件级工作台
+- 远程落地已接到 `library_manager.py`
+  - 包括阶段目录上传
+  - 远程 copy/move
+  - 备份切换
+
+### 4. 库存页真实搜索现状
+
+库存页搜索最近已从“当前页过滤”改成“真实搜索”。
+
+当前正确目标：
+
+- 本地库：
+  - 用户主动搜索时走真实递归搜索
+  - 平时浏览仍走轻量目录列表
+- 远程库：
+  - 只能走群晖搜索接口
+  - 不要再用本地递归全盘扫作为远程搜索兜底
+
+最近已明确做过的点：
+
+- `frontend/src/views/Library.vue`
+  - 搜索命中文件名高亮
+  - 搜索结果可“定位”到真实目录
+  - 搜索结果进入目录后，必须退出搜索态，不能串台
+  - “命中路径”列已移除，保留命中文件名即可
+- `backend/app/core/library_manager.py`
+  - 本地搜索只在搜索时触发
+  - RJ 搜索会折叠到最近的 RJ 文件夹
+  - 远程搜索现在只走群晖接口
+  - 当搜索根是 `/` 时，不应只对 `/` 搜一次
+  - 应改为：
+    1. `list_share`
+    2. 对每个 share 分别调用群晖搜索接口
+    3. 再汇总结果
+
+后续必须记住：
+
+- 远程搜索如果再出问题，优先排查：
+  - `SYNO.FileStation.Search` 对当前路径是否生效
+  - 根目录 `/` 是否需要按 share 拆分搜索
+  - 返回字段里到底是 `path`、`real_path` 还是别的字段
+- 不要再把远程搜索退回到“我们自己递归扫盘”
+
+### 5. 库存统计口径现状
+
+最近已经确认过一个高频误区：
+
+- 用户在资源管理器看到的目录属性大小
+- 不一定等于库存统计显示的“当前库统计”
+
+原因通常是：
+
+- 用户看的只是某个子目录
+- 库存统计算的是整个库存根目录 / browse root
+
+后续排查时先确认：
+
+1. 当前库存根路径到底是什么
+2. `browse_root_path` 和 `root_path` 是否一致
+3. 用户截图看的是否是根目录，还是根目录下的子目录
+
+不要第一时间假设“统计接口算错了”。
+
+### 6. 这轮最低验证记录
+
+本轮最近已执行过：
+
+- `py -3 -m py_compile backend/app/core/extract_service.py backend/app/core/file_processor.py backend/app/core/task_engine.py backend/app/core/rename_service.py backend/app/core/library_manager.py backend/app/api/routes.py`
+- `npm.cmd run build`
+
+如果后续继续修改这些链路，至少重复上述两类验证。

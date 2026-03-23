@@ -19,6 +19,8 @@ from ..config.settings import get_config
 
 logger = logging.getLogger(__name__)
 
+LIBRARY_SEARCH_RESULT_LIMIT = 2000
+
 
 def _config_file_path() -> str:
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -405,6 +407,53 @@ class SynologyFileStationClient:
             },
         )
 
+    async def start_search(self, folder_path: str, keyword: str, recursive: bool = True):
+        return await self._request(
+            "SYNO.FileStation.Search",
+            "start",
+            2,
+            {
+                "folder_path": folder_path,
+                "pattern": keyword,
+                "recursive": "true" if recursive else "false",
+            },
+        )
+
+    async def search_status(self, taskid: str):
+        return await self._request(
+            "SYNO.FileStation.Search",
+            "status",
+            2,
+            {
+                "taskid": taskid,
+            },
+        )
+
+    async def list_search(self, taskid: str, offset: int = 0, limit: int = 200, sort_by: str = "name", sort_direction: str = "asc"):
+        return await self._request(
+            "SYNO.FileStation.Search",
+            "list",
+            2,
+            {
+                "taskid": taskid,
+                "offset": offset,
+                "limit": limit,
+                "sort_by": sort_by,
+                "sort_direction": sort_direction,
+                "additional": '["time","size","real_path"]',
+            },
+        )
+
+    async def stop_search(self, taskid: str):
+        return await self._request(
+            "SYNO.FileStation.Search",
+            "stop",
+            2,
+            {
+                "taskid": taskid,
+            },
+        )
+
     async def stat(self, path: str):
         return await self._request(
             "SYNO.FileStation.List",
@@ -511,6 +560,61 @@ class SynologyFileStationClient:
                 "accurate_progress": "true",
             },
         )
+
+    async def copy(self, path: str, dest_folder_path: str, overwrite: bool = True):
+        task = await self._request(
+            "SYNO.FileStation.CopyMove",
+            "start",
+            3,
+            {
+                "path": f'["{path}"]',
+                "dest_folder_path": f'"{dest_folder_path}"',
+                "remove_src": "false",
+                "overwrite": "true" if overwrite else "false",
+                "accurate_progress": "true",
+            },
+        )
+        task_id = task.get("taskid")
+        if task_id:
+            await self._wait_copy_move_task(str(task_id))
+        return task
+
+    async def move(self, path: str, dest_folder_path: str, overwrite: bool = True):
+        task = await self._request(
+            "SYNO.FileStation.CopyMove",
+            "start",
+            3,
+            {
+                "path": f'["{path}"]',
+                "dest_folder_path": f'"{dest_folder_path}"',
+                "remove_src": "true",
+                "overwrite": "true" if overwrite else "false",
+                "accurate_progress": "true",
+            },
+        )
+        task_id = task.get("taskid")
+        if task_id:
+            await self._wait_copy_move_task(str(task_id))
+        return task
+
+    async def _wait_copy_move_task(self, task_id: str, timeout_seconds: int = 300):
+        started = time.time()
+        last_status = None
+        while time.time() - started <= max(10, timeout_seconds):
+            status = await self._request(
+                "SYNO.FileStation.CopyMove",
+                "status",
+                3,
+                {
+                    "taskid": f'"{task_id}"',
+                },
+            )
+            last_status = status
+            finished = bool(status.get("finished")) or bool(status.get("result"))
+            if finished:
+                return status
+            await asyncio.sleep(1.0)
+        raise RuntimeError(f"Synology CopyMove task timed out: {task_id}, status={last_status}")
 
     async def upload_file(self, dest_folder: str, local_path: str, overwrite: bool = False, remote_name: Optional[str] = None):
         normalized_path = str(PurePosixPath(dest_folder or "/"))
@@ -874,9 +978,224 @@ class LibraryManager:
         sort_order: str = "desc",
     ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
+        if str(search or "").strip():
+            if library.type == "local":
+                return await asyncio.to_thread(
+                    self._search_local_files,
+                    library,
+                    page,
+                    page_size,
+                    search,
+                    current_path,
+                    sort_by,
+                    sort_order,
+                )
+            return await self._search_remote_files(
+                library,
+                page,
+                page_size,
+                search,
+                current_path,
+                sort_by,
+                sort_order,
+            )
         if library.type == "local":
             return await asyncio.to_thread(self._list_local_files, library, page, page_size, search, current_path, sort_by, sort_order)
         return await self._list_remote_files(library, page, page_size, search, current_path, sort_by, sort_order)
+
+    def _search_match_text(self, keyword: str, *values: Any) -> bool:
+        normalized_keyword = str(keyword or "").strip().lower()
+        if not normalized_keyword:
+            return False
+        for value in values:
+            text = str(value or "").lower()
+            if normalized_keyword in text:
+                return True
+        return False
+
+    def _is_rj_search_keyword(self, keyword: str) -> bool:
+        normalized = str(keyword or "").strip().upper()
+        if not normalized:
+            return False
+        return self._extract_rjcode(normalized) == normalized
+
+    def _find_nearest_local_rj_directory(self, path: str, search_root: str) -> Optional[str]:
+        current = os.path.abspath(path)
+        root = os.path.abspath(search_root)
+        if os.path.isfile(current):
+            current = os.path.dirname(current)
+        while current and (current == root or current.startswith(root + os.sep)):
+            if self._extract_rjcode(os.path.basename(current) or current):
+                return current
+            if current == root:
+                break
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+        return None
+
+    def _find_nearest_remote_rj_directory(self, path: str, search_root: str) -> Optional[str]:
+        current = PurePosixPath(self._normalize_remote_path(path))
+        root = PurePosixPath(self._normalize_remote_path(search_root))
+        if "." in current.name:
+            current = current.parent
+        while True:
+            current_str = str(current)
+            if current_str == ".":
+                current_str = "/"
+            if current_str != str(root) and not current_str.startswith(str(root).rstrip("/") + "/"):
+                return None
+            if self._extract_rjcode(current.name or current_str):
+                return current_str
+            if current == root or str(current) in {"", "/"}:
+                break
+            current = current.parent
+        return None
+
+    def _build_local_search_entry(
+        self,
+        library: LibraryDefinition,
+        *,
+        item_id: int,
+        search_root: str,
+        full_path: str,
+        name: str,
+        is_directory: bool,
+        stat_result: os.stat_result,
+    ) -> dict[str, Any]:
+        relative_path = os.path.relpath(full_path, search_root).replace("\\", "/")
+        parent_path = os.path.dirname(full_path) if not is_directory else full_path
+        return {
+            "id": f"{library.id}:search:{item_id}",
+            "name": name,
+            "path": full_path,
+            "relative_path": relative_path,
+            "parent_path": parent_path,
+            "rjcode": self._extract_rjcode(relative_path) or self._extract_rjcode(name),
+            "size": None if is_directory else stat_result.st_size,
+            "size_status": "disabled" if is_directory else "ready",
+            "modified_time": datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
+            "unzip_time": datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
+            "is_directory": is_directory,
+            "library_id": library.id,
+            "library_name": library.name,
+            "search_hit": True,
+            "_sort_time": stat_result.st_mtime,
+        }
+
+    def _search_local_files(
+        self,
+        library: LibraryDefinition,
+        page: int,
+        page_size: int,
+        search: str,
+        current_path: Optional[str],
+        sort_by: str,
+        sort_order: str,
+    ) -> dict[str, Any]:
+        browse_root = os.path.abspath(library.browse_root_path or library.root_path)
+        search_root = os.path.abspath(current_path or browse_root)
+        if not os.path.exists(browse_root):
+            return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": browse_root, "browse_root_path": browse_root, "search_mode": True}
+        if not (search_root == browse_root or search_root.startswith(browse_root + os.sep)):
+            search_root = browse_root
+        if not os.path.isdir(search_root):
+            return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": search_root, "browse_root_path": browse_root, "search_mode": True}
+
+        keyword = str(search or "").strip()
+        rj_only_search = self._is_rj_search_keyword(keyword)
+        matches: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        queue: list[str] = [search_root]
+        visited_dirs = 0
+        truncated = False
+
+        while queue:
+            current_dir = queue.pop()
+            visited_dirs += 1
+            try:
+                with os.scandir(current_dir) as entries:
+                    children = list(entries)
+            except OSError:
+                continue
+
+            for entry in children:
+                name = entry.name
+                if self._should_skip_entry(name):
+                    continue
+
+                try:
+                    is_directory = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+
+                full_path = entry.path
+                relative_path = os.path.relpath(full_path, search_root).replace("\\", "/")
+                rjcode = self._extract_rjcode(relative_path) or self._extract_rjcode(name)
+                if self._search_match_text(keyword, name, relative_path, rjcode):
+                    target_path = full_path
+                    target_name = name
+                    target_is_directory = is_directory
+                    if rj_only_search:
+                        nearest_rj_dir = self._find_nearest_local_rj_directory(full_path, search_root)
+                        if not nearest_rj_dir:
+                            if is_directory:
+                                queue.append(full_path)
+                            continue
+                        target_path = nearest_rj_dir
+                        target_name = os.path.basename(nearest_rj_dir)
+                        target_is_directory = True
+                    if target_path not in seen_paths:
+                        try:
+                            stat_result = os.stat(target_path)
+                        except OSError:
+                            stat_result = None
+                        if stat_result:
+                            seen_paths.add(target_path)
+                            matches.append(
+                                self._build_local_search_entry(
+                                    library,
+                                    item_id=len(matches),
+                                    search_root=search_root,
+                                    full_path=target_path,
+                                    name=target_name,
+                                    is_directory=target_is_directory,
+                                    stat_result=stat_result,
+                                )
+                            )
+                            if len(matches) >= LIBRARY_SEARCH_RESULT_LIMIT:
+                                truncated = True
+                                queue.clear()
+                                break
+
+                if is_directory:
+                    queue.append(full_path)
+
+            if truncated:
+                break
+
+        matches = self._sort_local_items(matches, sort_by, sort_order)
+        total = len(matches)
+        start = max(0, (page - 1) * page_size)
+        end = start + page_size
+        page_items = matches[start:end]
+        for item in page_items:
+            item.pop("_sort_time", None)
+        return {
+            "files": page_items,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "current_path": search_root,
+            "browse_root_path": browse_root,
+            "parent_path": None if search_root == browse_root else os.path.dirname(search_root),
+            "search_mode": True,
+            "search_root_path": search_root,
+            "search_query": keyword,
+            "search_truncated": truncated,
+            "scanned_directories": visited_dirs,
+        }
 
     def _list_local_files(
         self,
@@ -1031,6 +1350,223 @@ class LibraryManager:
         }
         self._append_stats_log(library, "INFO", f"文件树读取 path={target_path} total={len(items)}")
         return result
+
+    async def _wait_remote_search_ready(
+        self,
+        client: SynologyFileStationClient,
+        task_id: str,
+        *,
+        timeout_seconds: float = 12.0,
+        poll_interval: float = 0.4,
+    ) -> None:
+        deadline = time.time() + max(1.0, timeout_seconds)
+        while time.time() < deadline:
+            try:
+                status = await client.search_status(task_id)
+            except Exception:
+                return
+
+            if status.get("finished") is True:
+                return
+            if status.get("has_more") is False and status.get("finished") in {None, False}:
+                return
+            await asyncio.sleep(poll_interval)
+
+    def _build_remote_search_entry(
+        self,
+        library: LibraryDefinition,
+        *,
+        item_id: int,
+        search_root: str,
+        item: dict[str, Any],
+    ) -> dict[str, Any]:
+        name = item.get("name") or ""
+        path = self._normalize_remote_path(item.get("path") or item.get("real_path") or name)
+        relative_path = str(PurePosixPath(path).relative_to(PurePosixPath(search_root))).replace("\\", "/") if path.startswith(search_root.rstrip("/") + "/") or path == search_root else name
+        additional = item.get("additional", {}) or {}
+        timestamp = additional.get("time", {}).get("mtime", int(time.time()))
+        is_directory = bool(item.get("isdir", False))
+        return {
+            "id": f"{library.id}:search:{item_id}",
+            "name": name,
+            "path": path,
+            "relative_path": relative_path,
+            "parent_path": path if is_directory else str(PurePosixPath(path).parent),
+            "rjcode": self._extract_rjcode(relative_path) or self._extract_rjcode(name),
+            "size": None if is_directory else int(additional.get("size") or 0),
+            "size_status": "disabled" if is_directory else "ready",
+            "modified_time": datetime.fromtimestamp(timestamp).isoformat(),
+            "unzip_time": datetime.fromtimestamp(timestamp).isoformat(),
+            "is_directory": is_directory,
+            "library_id": library.id,
+            "library_name": library.name,
+            "search_hit": True,
+            "_mtime": timestamp,
+        }
+
+    async def _resolve_remote_search_scopes(
+        self,
+        client: SynologyFileStationClient,
+        search_root: str,
+    ) -> list[str]:
+        normalized_root = self._normalize_remote_path(search_root)
+        if normalized_root != "/":
+            return [normalized_root]
+
+        scopes: list[str] = []
+        seen_paths: set[str] = set()
+        offset = 0
+        limit = 200
+        while True:
+            data = await client.list_share(offset=offset, limit=limit, sort_by="name", sort_direction="asc")
+            raw_items = data.get("shares") or data.get("files") or []
+            for item in raw_items:
+                raw_path = item.get("path") or item.get("real_path") or item.get("name") or ""
+                normalized_path = self._normalize_remote_path(raw_path)
+                if normalized_path in seen_paths:
+                    continue
+                seen_paths.add(normalized_path)
+                scopes.append(normalized_path)
+            total = int(data.get("total", len(raw_items)) or len(raw_items))
+            offset += len(raw_items)
+            if not raw_items or offset >= total:
+                break
+        return scopes or [normalized_root]
+
+    async def _run_remote_search_scope(
+        self,
+        client: SynologyFileStationClient,
+        *,
+        scope_path: str,
+        keyword: str,
+        page_size: int,
+        sort_by: str,
+        sort_direction: str,
+    ) -> tuple[list[dict[str, Any]], int]:
+        task_id = None
+        try:
+            started = await client.start_search(scope_path, keyword, recursive=True)
+            task_id = started.get("taskid") or started.get("task_id")
+            if not task_id:
+                raise RuntimeError("群晖搜索接口未返回 taskid")
+            await self._wait_remote_search_ready(client, task_id, timeout_seconds=20.0)
+            data = await client.list_search(
+                task_id,
+                offset=0,
+                limit=min(max(page_size, 1), LIBRARY_SEARCH_RESULT_LIMIT),
+                sort_by=sort_by,
+                sort_direction=sort_direction,
+            )
+            raw_items = data.get("files") or data.get("items") or []
+            total = int(data.get("total", len(raw_items)) or len(raw_items))
+            return raw_items, total
+        finally:
+            if task_id:
+                try:
+                    await client.stop_search(task_id)
+                except Exception:
+                    logger.debug("停止群晖搜索任务失败: %s", task_id, exc_info=True)
+
+    async def _search_remote_files(
+        self,
+        library: LibraryDefinition,
+        page: int,
+        page_size: int,
+        search: str,
+        current_path: Optional[str],
+        sort_by: str,
+        sort_order: str,
+    ) -> dict[str, Any]:
+        if not library.synology:
+            raise RuntimeError("远程库缺少群晖连接配置")
+
+        client = SynologyFileStationClient(library.synology)
+        browse_root, search_root = self._resolve_remote_target_path(library, current_path)
+        keyword = str(search or "").strip()
+        rj_only_search = self._is_rj_search_keyword(keyword)
+        normalized_sort_by = self._normalize_library_sort_by(sort_by)
+        normalized_sort_order = self._normalize_library_sort_order(sort_order)
+        remote_sort_by = "name" if normalized_sort_by == "name" else "mtime"
+        remote_sort_direction = "asc" if normalized_sort_order == "asc" else "desc"
+        search_scopes = await self._resolve_remote_search_scopes(client, search_root)
+        collected_raw_items: list[dict[str, Any]] = []
+        total = 0
+        search_scope_count = 0
+        for scope_path in search_scopes:
+            raw_items, scope_total = await self._run_remote_search_scope(
+                client,
+                scope_path=scope_path,
+                keyword=keyword,
+                page_size=page_size,
+                sort_by=remote_sort_by,
+                sort_direction=remote_sort_direction,
+            )
+            search_scope_count += 1
+            total += scope_total
+            collected_raw_items.extend(raw_items)
+
+        files: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        remote_stat_cache: dict[str, dict[str, Any]] = {}
+        for index, item in enumerate(collected_raw_items):
+            item_name = item.get("name") or ""
+            if self._should_skip_entry(item_name):
+                continue
+
+            target_item = item
+            target_path = self._normalize_remote_path(item.get("path") or item.get("real_path") or item_name)
+            if rj_only_search:
+                nearest_rj_dir = self._find_nearest_remote_rj_directory(target_path, search_root)
+                if not nearest_rj_dir:
+                    continue
+                target_path = nearest_rj_dir
+                cached_info = remote_stat_cache.get(target_path)
+                if not cached_info:
+                    info = await client.stat(target_path)
+                    cached_info = self._first_remote_info_item(info) or {
+                        "name": PurePosixPath(target_path).name,
+                        "path": target_path,
+                        "real_path": target_path,
+                        "isdir": True,
+                        "additional": {},
+                    }
+                    remote_stat_cache[target_path] = cached_info
+                target_item = cached_info
+
+            normalized_target_path = self._normalize_remote_path(target_path)
+            if normalized_target_path in seen_paths:
+                continue
+            seen_paths.add(normalized_target_path)
+            files.append(
+                self._build_remote_search_entry(
+                    library,
+                    item_id=index,
+                    search_root=search_root,
+                    item=target_item,
+                )
+            )
+
+        files = self._sort_remote_page_items(files, normalized_sort_by, normalized_sort_order)
+        deduped_total = len(files)
+        start = max(0, (page - 1) * page_size)
+        end = start + page_size
+        page_items = files[start:end]
+        for item in page_items:
+            item.pop("_mtime", None)
+        return {
+            "files": page_items,
+            "page": page,
+            "page_size": page_size,
+            "total": deduped_total,
+            "current_path": search_root,
+            "browse_root_path": browse_root,
+            "parent_path": None if search_root == browse_root else self._remote_parent_path(search_root),
+            "search_mode": True,
+            "search_root_path": search_root,
+            "search_query": keyword,
+            "search_truncated": deduped_total >= LIBRARY_SEARCH_RESULT_LIMIT,
+            "search_scope_count": search_scope_count,
+        }
 
     async def rename(self, library_id: str, path: str, new_name: str) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
@@ -1325,6 +1861,137 @@ class LibraryManager:
                 await client.create_folder(remote_dir, directory)
             for filename in files:
                 await client.upload_file(remote_dir, os.path.join(root, filename))
+
+    async def _ensure_remote_directory(self, client: SynologyFileStationClient, remote_dir: str):
+        normalized = self._normalize_remote_path(remote_dir)
+        if normalized in {"", "/"}:
+            return
+        parts = PurePosixPath(normalized).parts
+        current = parts[0] if parts and parts[0] == "/" else ""
+        for part in parts[1:] if current == "/" else parts:
+            parent = current or "/"
+            next_path = str(PurePosixPath(parent) / part)
+            try:
+                await client.create_folder(parent, part)
+            except Exception as exc:
+                if "already exists" not in str(exc).lower():
+                    info = await client.stat(next_path)
+                    item = self._first_remote_info_item(info)
+                    if not item or not item.get("isdir", False):
+                        raise
+            current = next_path
+
+    async def replace_remote_directory_with_local(self, library_id: str, source_dir: str, target_path: str) -> str:
+        library = self.get_library_definition(library_id)
+        if library.type != "synology_filestation" or not library.synology:
+            raise RuntimeError("目标库存不是群晖远程库存")
+
+        client = SynologyFileStationClient(library.synology)
+        target = self._normalize_remote_path(target_path)
+        parent = str(PurePosixPath(target).parent)
+        target_name = PurePosixPath(target).name
+        stage_name = f"{target_name}.__prekikoeru_stage__.{uuid.uuid4().hex[:8]}"
+        backup_name = f"{target_name}.__prekikoeru_backup__.{uuid.uuid4().hex[:8]}"
+        stage_path = str(PurePosixPath(parent) / stage_name)
+        backup_path = str(PurePosixPath(parent) / backup_name)
+
+        await self._upload_directory_to_synology(client, source_dir, stage_path)
+        try:
+            await client.rename(target, backup_name)
+            try:
+                await client.rename(stage_path, target_name)
+            except Exception:
+                await client.rename(backup_path, target_name)
+                raise
+            await client.delete(backup_path)
+            return target
+        except Exception:
+            try:
+                await client.delete(stage_path)
+            except Exception:
+                logger.warning("清理远程阶段目录失败: %s", stage_path, exc_info=True)
+            raise
+
+    async def merge_remote_directory_with_local(
+        self,
+        library_id: str,
+        target_path: str,
+        source_dir: str,
+        compare_items: list[dict[str, Any]],
+        decisions: dict[str, str],
+    ) -> str:
+        library = self.get_library_definition(library_id)
+        if library.type != "synology_filestation" or not library.synology:
+            raise RuntimeError("目标库存不是群晖远程库存")
+
+        client = SynologyFileStationClient(library.synology)
+        target = self._normalize_remote_path(target_path)
+        parent = str(PurePosixPath(target).parent)
+        target_name = PurePosixPath(target).name
+        stage_name = f"{target_name}.__prekikoeru_stage__.{uuid.uuid4().hex[:8]}"
+        backup_name = f"{target_name}.__prekikoeru_backup__.{uuid.uuid4().hex[:8]}"
+        stage_path = str(PurePosixPath(parent) / stage_name)
+        backup_path = str(PurePosixPath(parent) / backup_name)
+
+        normalized_decisions = {
+            str(relative_path or ""): str(action or "").strip().lower()
+            for relative_path, action in (decisions or {}).items()
+        }
+
+        await self._upload_directory_to_synology(client, source_dir, stage_path)
+
+        for item in compare_items:
+            relative_path = str(item.get("relative_path") or "")
+            if not relative_path:
+                continue
+            decision = normalized_decisions.get(relative_path)
+            item_type = str(item.get("type") or "")
+            if item_type == "dir":
+                if decision == "delete":
+                    continue
+                if str(item.get("status") or "") == "old_only":
+                    await self._ensure_remote_directory(client, str(PurePosixPath(stage_path) / relative_path))
+                continue
+
+            if item_type != "file":
+                continue
+
+            old_path = str(item.get("old_path") or "")
+            new_path = str(item.get("new_path") or "")
+            if decision == "delete":
+                stage_file = self._normalize_remote_path(str(PurePosixPath(stage_path) / relative_path))
+                try:
+                    await client.delete(stage_file)
+                except Exception:
+                    pass
+                continue
+            if decision == "use_old" and old_path:
+                remote_dir = self._normalize_remote_path(str(PurePosixPath(stage_path) / PurePosixPath(relative_path).parent))
+                await self._ensure_remote_directory(client, remote_dir)
+                await client.copy(old_path, remote_dir, overwrite=True)
+                continue
+            if decision == "use_new" and not new_path:
+                stage_file = self._normalize_remote_path(str(PurePosixPath(stage_path) / relative_path))
+                try:
+                    await client.delete(stage_file)
+                except Exception:
+                    pass
+
+        try:
+            await client.rename(target, backup_name)
+            try:
+                await client.rename(stage_path, target_name)
+            except Exception:
+                await client.rename(backup_path, target_name)
+                raise
+            await client.delete(backup_path)
+            return target
+        except Exception:
+            try:
+                await client.delete(stage_path)
+            except Exception:
+                logger.warning("清理远程合并阶段目录失败: %s", stage_path, exc_info=True)
+            raise
 
     def _assert_local_path_in_library(self, library: LibraryDefinition, path: str):
         library_root = os.path.abspath(library.root_path)

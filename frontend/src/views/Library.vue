@@ -105,12 +105,22 @@
         </div>
       </div>
 
+      <el-alert
+        v-if="librarySearchState.active"
+        :title="librarySearchSummary"
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 14px"
+      />
+
       <el-table
         :key="libraryTableKey"
         ref="tableRef"
         :data="files"
         v-loading="loading"
         :row-key="libraryRowKey"
+        :row-class-name="libraryRowClassName"
         empty-text="暂无文件"
         @selection-change="handleSelectionChange"
         @sort-change="handleSortChange"
@@ -119,8 +129,9 @@
         <el-table-column prop="name" label="文件名" sortable="custom" show-overflow-tooltip>
           <template #default="{ row }">
             <el-icon class="file-icon"><Folder v-if="row.is_directory" /><Files v-else /></el-icon>
-            <button v-if="row.is_directory" type="button" class="file-link-btn" @click="openFolder(row)">{{ row.name }}</button>
-            <span v-else class="file-name">{{ row.name }}</span>
+            <button v-if="isSearchResultRow(row)" type="button" class="file-link-btn" @click="locateLibrarySearchResult(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
+            <button v-else-if="row.is_directory" type="button" class="file-link-btn" @click="openFolder(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
+            <span v-else class="file-name" v-html="renderLibrarySearchHighlight(row.name)"></span>
           </template>
         </el-table-column>
         <el-table-column prop="rjcode" label="RJ 号" width="120">
@@ -153,6 +164,15 @@
                 <el-button size="small" plain class="action-btn action-btn-api" :disabled="!row.is_directory || apiRenameBusy" :loading="apiRenamingId === row.id" @click="apiRenameItem(row)">API 重命名</el-button>
               </div>
               <div class="action-row">
+                <el-button
+                  v-if="isSearchResultRow(row) && !row.is_directory"
+                  size="small"
+                  plain
+                  class="action-btn action-btn-open"
+                  @click="locateLibrarySearchResult(row)"
+                >
+                  定位
+                </el-button>
                 <el-button
                   size="small"
                   plain
@@ -942,6 +962,8 @@ const apiRenamingId = ref(null)
 const currentPath = ref('')
 const browseRootPath = ref('')
 const parentPath = ref('')
+const librarySearchState = ref({ active: false, query: '', rootPath: '', truncated: false, scannedDirectories: 0 })
+const locatedLibraryPath = ref('')
 const renameDialogVisible = ref(false)
 const renameForm = ref({ currentName: '', newName: '', path: '' })
 const isRenaming = ref(false)
@@ -1110,6 +1132,13 @@ const currentPathDisplay = computed(() => {
   if (normalizedCurrent === normalizedRoot) return '/'
   if (normalizedCurrent.startsWith(`${normalizedRoot}/`)) return normalizedCurrent.slice(normalizedRoot.length)
   return normalizedCurrent
+})
+const librarySearchSummary = computed(() => {
+  if (!librarySearchState.value.active) return ''
+  const scope = currentPathDisplay.value || '/'
+  const query = librarySearchState.value.query || searchQuery.value.trim()
+  const suffix = librarySearchState.value.truncated ? '，结果已按上限截断' : ''
+  return `真实搜索：在 ${scope} 下搜索 “${query}”${suffix}`
 })
 
 const currentFolderRJCode = computed(() => extractRJCode(currentPath.value || ''))
@@ -1864,6 +1893,13 @@ async function refreshLibrary (options = {}) {
     currentPath.value = data.current_path || currentPath.value || data.browse_root_path || ''
     browseRootPath.value = data.browse_root_path || browseRootPath.value || currentPath.value
     parentPath.value = data.parent_path || ''
+    librarySearchState.value = {
+      active: Boolean(data.search_mode),
+      query: data.search_query || searchQuery.value.trim(),
+      rootPath: data.search_root_path || '',
+      truncated: Boolean(data.search_truncated),
+      scannedDirectories: Number(data.scanned_directories || 0)
+    }
     scheduleListPoll(files.value)
     const maxPage = Math.max(1, Math.ceil(Math.max(totalFiles.value, 1) / pageSize.value))
     if (currentPage.value > maxPage) currentPage.value = maxPage
@@ -1887,6 +1923,7 @@ async function applyTableSortIndicator () {
 }
 
 async function handleSearch () {
+  locatedLibraryPath.value = ''
   currentPage.value = 1
   await refreshLibrary()
 }
@@ -1912,6 +1949,28 @@ function handleSelectionChange (selection) {
 function getFileName (path) {
   if (!path) return ''
   return String(path).split(/[\\/]/).pop()
+}
+
+function escapeLibrarySearchHtml (value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function escapeLibrarySearchRegExp (value) {
+  return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function renderLibrarySearchHighlight (value) {
+  const text = String(value ?? '')
+  const keyword = String((librarySearchState.value.query || searchQuery.value || '').trim())
+  const escaped = escapeLibrarySearchHtml(text)
+  if (!librarySearchState.value.active || !keyword) return escaped
+  const pattern = new RegExp(`(${escapeLibrarySearchRegExp(keyword)})`, 'ig')
+  return escaped.replace(pattern, '<mark class="library-search-mark">$1</mark>')
 }
 
 function extractRJCode (value) {
@@ -3877,6 +3936,7 @@ async function cancelRJSubtitleTask (task) {
 
 async function navigateToPath (path) {
   const shouldRefreshNow = currentPage.value === 1
+  locatedLibraryPath.value = ''
   currentPath.value = path || browseRootPath.value || currentPath.value
   currentPage.value = 1
   clearSelection()
@@ -3888,8 +3948,28 @@ async function goToParent () {
   await navigateToPath(parentPath.value)
 }
 
+function isSearchResultRow (row) {
+  return Boolean(librarySearchState.value.active && row?.search_hit)
+}
+
+async function locateLibrarySearchResult (row) {
+  if (!row?.path) return
+  locatedLibraryPath.value = row.path
+  searchQuery.value = ''
+  librarySearchState.value = { active: false, query: '', rootPath: '', truncated: false, scannedDirectories: 0 }
+  currentPath.value = row.is_directory ? row.path : (row.parent_path || row.path)
+  currentPage.value = 1
+  clearSelection()
+  await refreshLibrary()
+}
+
 async function openFolder (row) {
+  if (isSearchResultRow(row)) {
+    await locateLibrarySearchResult(row)
+    return
+  }
   if (row?.is_directory) {
+    locatedLibraryPath.value = ''
     await navigateToPath(row.path)
     return
   }
@@ -4588,6 +4668,11 @@ function libraryRowKey (row) {
   ].join('::')
 }
 
+function libraryRowClassName ({ row }) {
+  if (locatedLibraryPath.value && row?.path === locatedLibraryPath.value) return 'library-row-located'
+  return ''
+}
+
 function formatRowSize (row) {
   if (isRemoteCurrentLibrary.value && row?.is_directory) return '-'
   if (row?.size_status === 'pending' && (row.size === null || row.size === undefined)) return '统计中'
@@ -4772,6 +4857,8 @@ function statsStatusTextDisplay (stats) {
 .file-name { vertical-align: middle; font-weight: 500; color: #303133; }
 .file-link-btn { padding: 0; border: none; background: transparent; color: #303133; font: inherit; font-weight: 500; cursor: pointer; }
 .file-link-btn:hover { color: #409eff; }
+:deep(.library-search-mark) { background: #fff1a8; color: #7a4b00; padding: 0 2px; border-radius: 4px; }
+:deep(.el-table .library-row-located > td.el-table__cell) { background: #eef7ff !important; }
 .empty-text { color: #c0c4cc; }
 .action-grid { display: inline-flex; flex-direction: column; gap: 4px; align-items: center; width: 100%; }
 .action-row { display: flex; gap: 4px; width: 228px; }
