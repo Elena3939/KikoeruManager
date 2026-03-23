@@ -10,6 +10,7 @@ from ..config.settings import get_config, ClassificationRule
 from ..models.database import LibrarySnapshot, ConflictWork, get_db
 from ..core.task_engine import Task
 from ..core.library_manager import get_library_manager
+from ..core.folder_compare_service import get_folder_compare_service
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,9 @@ class SmartClassifier:
         返回最终路径
         """
         rjcode = metadata.get('rjcode', '')
+        resolution = (task.task_metadata or {}).get('existing_folder_resolution') if getattr(task, 'task_metadata', None) else None
+        resolution_existing_path = (task.task_metadata or {}).get('existing_path') if getattr(task, 'task_metadata', None) else None
+        merge_decisions = (task.task_metadata or {}).get('merge_decisions') if getattr(task, 'task_metadata', None) else None
         
         # 1. 检查是否已存在
         task.update_progress(82, "检查重复")
@@ -200,7 +204,7 @@ class SmartClassifier:
         target_library_id = task.task_metadata.get('target_library_id') if getattr(task, 'task_metadata', None) else None
         target_library = manager.get_library_definition(target_library_id)
         
-        if existing:
+        if existing and not (resolution in {"KEEP_NEW", "MERGE"} and resolution_existing_path and os.path.abspath(existing['path']) == os.path.abspath(str(resolution_existing_path))):
             # 使用DUPLICATE类型（解压后的重复检测，已有元数据但统一标记为重复）
             conflict_type = 'DUPLICATE'
             
@@ -222,10 +226,21 @@ class SmartClassifier:
         # 2. 应用分类规则（传入源路径以提取文件夹名中的社团名）
         task.update_progress(85, "应用分类规则")
         target_path = self._apply_classification_rules(metadata, source_path, target_library)
-        
+
         # 3. 移动文件
         task.update_progress(90, "移动到库存")
-        if target_library.type == 'local':
+        if resolution == "KEEP_NEW" and resolution_existing_path:
+            task.update_progress(92, "替换现有目录")
+            final_path = get_folder_compare_service().safe_replace_directory(source_path, str(resolution_existing_path))
+        elif resolution == "MERGE" and resolution_existing_path:
+            task.update_progress(92, "生成并写入合并结果")
+            final_path = get_folder_compare_service().apply_merge(
+                source_path,
+                str(resolution_existing_path),
+                merge_decisions or {},
+                str(resolution_existing_path),
+            )
+        elif target_library.type == 'local':
             final_path = self._move_with_rename(source_path, target_path)
         else:
             relative_target_dir = os.path.relpath(target_path, target_library.root_path).replace("\\", "/")
@@ -326,10 +341,16 @@ class SmartClassifier:
         try:
             # 检查是否已存在相同的冲突记录（相同的RJ号）
             # 无论新文件路径是否相同，只要是同一个RJ号且状态为PENDING，就不添加
-            existing_conflict = db.query(ConflictWork).filter(
-                ConflictWork.rjcode == rjcode,
-                ConflictWork.status == 'PENDING'
-            ).first()
+            if rjcode:
+                existing_conflict = db.query(ConflictWork).filter(
+                    ConflictWork.rjcode == rjcode,
+                    ConflictWork.status == 'PENDING'
+                ).first()
+            else:
+                existing_conflict = db.query(ConflictWork).filter(
+                    ConflictWork.new_path == new_path,
+                    ConflictWork.status == 'PENDING'
+                ).first()
             
             if existing_conflict:
                 logger.info(f"冲突记录已存在，跳过重复添加: {rjcode}")

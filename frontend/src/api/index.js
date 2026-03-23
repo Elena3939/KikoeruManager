@@ -190,8 +190,14 @@ export const conflictApi = {
     return response.data
   },
 
-  resolve: async (conflictId, action) => {
-    const response = await apiClient.post(`/conflicts/${conflictId}/resolve`, { action })
+  preview: async (conflictId, action) => {
+    const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action })
+    return response.data
+  },
+
+  resolve: async (conflictId, payload) => {
+    const requestPayload = typeof payload === 'string' ? { action: payload } : payload
+    const response = await apiClient.post(`/conflicts/${conflictId}/resolve`, requestPayload)
     return response.data
   },
 

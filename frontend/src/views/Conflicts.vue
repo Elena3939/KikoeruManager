@@ -1,192 +1,436 @@
 <template>
-  <div class="conflicts">
+  <div class="conflicts-page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">问题作品</h1>
-        <p class="page-desc">检测到重复或冲突的作品，请手动选择处理方式</p>
+        <h1>问题作品</h1>
+        <p>只保留“保留新版 / 跳过 / 合并”三种顶层动作，删除审查与文件级合并统一从这里进入。</p>
       </div>
-      <div class="batch-actions" v-if="selectedConflicts.length > 0">
-        <span class="selected-count">已选择 {{ selectedConflicts.length }} 项</span>
-        <el-button-group>
-          <el-button size="small" type="primary" @click="handleBatchAction('KEEP_NEW')">
-            批量保留新版
-          </el-button>
-          <el-button size="small" @click="handleBatchAction('KEEP_OLD')">
-            批量保留旧版
-          </el-button>
-          <el-button size="small" type="info" @click="handleBatchAction('SKIP')">
-            批量跳过
-          </el-button>
-        </el-button-group>
+      <div class="header-actions">
+        <el-button :loading="loading" @click="fetchConflicts">刷新列表</el-button>
       </div>
     </div>
-    
-    <el-card v-loading="loading" :element-loading-text="loadingText">
-      <el-table 
-        ref="conflictsTable"
-        :data="conflicts" 
-        style="width: 100%"
-        row-key="id"
-        :header-cell-style="{ 'white-space': 'nowrap' }"
-        @selection-change="handleSelectionChange"
-      >
-        <el-table-column type="selection" width="40" />
-        <el-table-column type="expand" width="40">
-          <template #default="{ row }">
-            <div class="conflict-detail">
-              <el-row :gutter="20">
-                <el-col :xs="24" :sm="24" :md="12">
-                  <h4>库存中已存在</h4>
-                  <el-descriptions :column="1" border>
-                    <el-descriptions-item label="路径">
-                      <div class="path-text">{{ row.existing_path }}</div>
-                    </el-descriptions-item>
-                  </el-descriptions>
-                </el-col>
-                <el-col :xs="24" :sm="24" :md="12">
-                  <h4>新检测到</h4>
-                  <el-descriptions :column="1" border>
-                    <el-descriptions-item label="路径">
-                      <div class="path-text">{{ row.new_path }}</div>
-                    </el-descriptions-item>
-                    <template v-if="row.new_metadata">
-                      <el-descriptions-item label="作品名">{{ row.new_metadata.work_name }}</el-descriptions-item>
-                      <el-descriptions-item label="社团">{{ row.new_metadata.maker_name }}</el-descriptions-item>
-                      <el-descriptions-item label="声优">{{ row.new_metadata.cvs?.join(', ') }}</el-descriptions-item>
-                    </template>
-                  </el-descriptions>
-                </el-col>
-              </el-row>
-            </div>
-          </template>
-        </el-table-column>
-        
-        <el-table-column label="RJ号" width="130">
-          <template #default="{ row }">
-            <div class="rjcode-cell">
-              <span class="rjcode-text">{{ row.rjcode }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="conflict_type" label="冲突类型" width="110">
-          <template #default="{ row }">
-            <el-tag :type="getConflictTypeType(row.conflict_type)" size="small" class="conflict-type-tag">
-              {{ getConflictTypeLabel(row.conflict_type) }}
+
+    <el-alert
+      v-if="errorMessage"
+      :title="errorMessage"
+      type="error"
+      show-icon
+      :closable="false"
+      class="page-alert"
+    />
+
+    <div v-if="loading && !conflicts.length" class="loading-shell" v-loading="true" />
+
+    <el-empty
+      v-else-if="!conflicts.length"
+      description="当前没有待处理的问题作品"
+    />
+
+    <div v-else class="page-body">
+      <aside class="conflict-list">
+        <button
+          v-for="conflict in conflicts"
+          :key="conflict.id"
+          type="button"
+          class="conflict-card"
+          :class="{ active: conflict.id === activeConflictId }"
+          @click="activeConflictId = conflict.id"
+        >
+          <div class="card-head">
+            <strong>{{ conflict.rjcode || '未识别 RJ' }}</strong>
+            <el-tag :type="conflict.context?.existing?.is_remote ? 'warning' : 'primary'" effect="plain">
+              {{ conflict.context?.existing?.is_remote ? '远程库存' : '本地库存' }}
             </el-tag>
+          </div>
+          <div class="card-body">
+            <p>{{ getConflictTypeLabel(conflict.conflict_type) }}</p>
+            <span>{{ formatDate(conflict.created_at) }}</span>
+          </div>
+        </button>
+      </aside>
+
+      <section class="conflict-detail" v-if="activeConflict">
+        <div class="detail-head">
+          <div>
+            <h2>{{ activeConflict.rjcode || '未识别 RJ' }}</h2>
+            <p>{{ getConflictTypeLabel(activeConflict.conflict_type) }}</p>
+          </div>
+          <div class="action-row">
+            <el-button
+              v-if="canUseAction(activeConflict, 'KEEP_NEW')"
+              type="primary"
+              :loading="isActionLoading(activeConflict.id, 'KEEP_NEW')"
+              :disabled="isConflictBusy(activeConflict.id)"
+              @click="handleKeepNew(activeConflict)"
+            >
+              保留新版
+            </el-button>
+            <el-button
+              v-if="canUseAction(activeConflict, 'SKIP')"
+              type="info"
+              :loading="isActionLoading(activeConflict.id, 'SKIP')"
+              :disabled="isConflictBusy(activeConflict.id)"
+              @click="handleSkip(activeConflict)"
+            >
+              跳过
+            </el-button>
+            <el-button
+              v-if="canUseAction(activeConflict, 'MERGE')"
+              type="warning"
+              :loading="mergeLoading && mergeConflictId === activeConflict.id"
+              :disabled="isConflictBusy(activeConflict.id)"
+              @click="openMergeWorkbench(activeConflict)"
+            >
+              合并
+            </el-button>
+          </div>
+        </div>
+
+        <el-alert
+          v-if="isExtractFailed(activeConflict)"
+          title="这是一条解压失败问题项，不是重复作品冲突"
+          type="error"
+          show-icon
+          :closable="false"
+          class="detail-alert"
+        >
+          <template #default>
+            <span>{{ activeConflict.new_metadata?.error_message || '解压阶段失败，请检查密码、分卷完整性或压缩包本身是否损坏。' }}</span>
           </template>
-        </el-table-column>
-        
-        <el-table-column prop="existing_path" label="已存在路径" min-width="200">
-          <template #default="{ row }">
-            <div class="path-cell" :title="row.existing_path">{{ row.existing_path }}</div>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="new_path" label="新文件路径" min-width="200">
-          <template #default="{ row }">
-            <div class="path-cell" :title="row.new_path">{{ row.new_path }}</div>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="created_at" label="检测时间" min-width="150">
-          <template #default="{ row }">
-            {{ formatDate(row.created_at) }}
-          </template>
-        </el-table-column>
-        
-        <el-table-column label="操作" min-width="280" fixed="right">
-          <template #default="{ row }">
-            <el-button-group class="action-buttons">
-              <el-button size="small" type="primary" @click="handleAction(row, 'KEEP_NEW')" :loading="processingIds.has(row.id)">
-                保留新版
-              </el-button>
-              <el-button size="small" @click="handleAction(row, 'KEEP_OLD')" :loading="processingIds.has(row.id)">
-                保留旧版
-              </el-button>
-              <el-button size="small" type="warning" @click="handleAction(row, 'MERGE')" :loading="processingIds.has(row.id)">
-                合并
-              </el-button>
-              <el-button size="small" type="info" @click="handleAction(row, 'SKIP')" :loading="processingIds.has(row.id)">
-                跳过
-              </el-button>
-            </el-button-group>
-          </template>
-        </el-table-column>
-      </el-table>
-      
-      <el-empty v-if="conflicts.length === 0" description="没有问题作品" />
-    </el-card>
+        </el-alert>
+
+        <div class="detail-grid">
+          <el-card shadow="never">
+            <template #header>{{ isExtractFailed(activeConflict) ? '失败来源' : '当前新内容' }}</template>
+            <div class="meta-block">
+              <label>来源路径</label>
+              <pre>{{ activeConflict.new_path || '-' }}</pre>
+            </div>
+            <div class="meta-block">
+              <label>来源类型</label>
+              <span>{{ activeConflict.context?.new_path_kind === 'archive' ? '压缩包' : '目录' }}</span>
+            </div>
+            <div class="meta-block">
+              <label>文件大小</label>
+              <span>{{ formatFileSize(activeConflict.context?.source?.stats?.size) }}</span>
+            </div>
+            <div class="meta-block">
+              <label>创建时间</label>
+              <span>{{ formatTimestamp(activeConflict.context?.source?.stats?.created_at) }}</span>
+            </div>
+            <div class="meta-block" v-if="activeConflict.new_metadata">
+              <label>{{ isExtractFailed(activeConflict) ? '附带信息' : '作品信息' }}</label>
+              <span>{{ activeConflict.new_metadata.work_name || '-' }}</span>
+              <span>{{ activeConflict.new_metadata.maker_name || '-' }}</span>
+              <span>{{ Array.isArray(activeConflict.new_metadata.cvs) ? activeConflict.new_metadata.cvs.join(' / ') : '-' }}</span>
+            </div>
+            <div class="meta-block" v-if="activeConflict.new_metadata?.error_message">
+              <label>失败原因</label>
+              <span>{{ activeConflict.new_metadata.error_message }}</span>
+            </div>
+          </el-card>
+
+          <el-card shadow="never">
+            <template #header>{{ isExtractFailed(activeConflict) ? '处理建议' : '已存在目录' }}</template>
+            <div class="meta-block">
+              <label>{{ isExtractFailed(activeConflict) ? '建议动作' : '目标路径' }}</label>
+              <pre v-if="!isExtractFailed(activeConflict)">{{ activeConflict.existing_path || '-' }}</pre>
+              <span v-else>可直接跳过并删除当前失败来源；如果你已经补充了正确密码或完整分卷，建议回到任务列表重新处理。</span>
+            </div>
+            <div class="meta-block" v-if="!isExtractFailed(activeConflict)">
+              <label>落地位置</label>
+              <span>{{ activeConflict.context?.existing?.library_name || '默认库存' }}</span>
+              <span>{{ activeConflict.context?.existing?.is_remote ? '群晖远程目录' : '本地目录' }}</span>
+            </div>
+            <div class="meta-block" v-if="!isExtractFailed(activeConflict)">
+              <label>文件大小</label>
+              <span>{{ formatFileSize(activeConflict.context?.existing?.stats?.size) }}</span>
+            </div>
+            <div class="meta-block" v-if="!isExtractFailed(activeConflict)">
+              <label>创建时间</label>
+              <span>{{ formatTimestamp(activeConflict.context?.existing?.stats?.created_at) }}</span>
+            </div>
+            <div class="meta-block">
+              <label>{{ isExtractFailed(activeConflict) ? '记录时间' : '检测时间' }}</label>
+              <span>{{ formatDate(activeConflict.created_at) }}</span>
+            </div>
+          </el-card>
+        </div>
+
+        <el-card shadow="never" class="action-help">
+          <template #header>{{ isExtractFailed(activeConflict) ? '失败说明' : '动作说明' }}</template>
+          <ul v-if="!isExtractFailed(activeConflict)" class="help-list">
+            <li>保留新版：先经过删除审查，再安全替换已有目录，失败时走最小化破坏路径。</li>
+            <li>跳过：不解压，直接删除当前压缩包或待处理目录，原有目录保持不变。</li>
+            <li>合并：进入组件文件夹对比视图，逐文件决定保留新文件、旧文件或删除。</li>
+          </ul>
+          <ul v-else class="help-list">
+            <li>当前问题发生在解压阶段，不代表库存中已经有重复作品。</li>
+            <li>如果错误是密码不正确、分卷缺失或压缩包损坏，修复后重新处理通常更合适。</li>
+            <li>如果确认不再处理这个包，可以直接点击“跳过”删除失败来源。</li>
+          </ul>
+        </el-card>
+      </section>
+    </div>
+
+    <ConflictMergeWorkbench
+      v-model="mergeDialogVisible"
+      :conflict="mergeConflict"
+      :preview="mergePreview"
+      :decisions="mergeDecisions"
+      :loading="mergeLoading"
+      :submitting="mergeSubmitting"
+      @update:decisions="handleDecisionUpdate"
+      @refresh="refreshMergePreview"
+      @submit="submitMerge"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
 import { conflictApi } from '../api'
+
+const ACTIVE_CONFLICT_STORAGE_KEY = 'prekikoeru-conflicts-active-id'
 
 const conflicts = ref([])
 const loading = ref(false)
-const loadingText = ref('加载中...')
-const selectedConflicts = ref([])
-const conflictsTable = ref(null)
-const processingIds = ref(new Set())
-let intervalId = null
+const errorMessage = ref('')
+const activeConflictId = ref(localStorage.getItem(ACTIVE_CONFLICT_STORAGE_KEY) || '')
+const actionState = reactive({})
 
-onMounted(async () => {
-  await fetchConflicts()
-  intervalId = setInterval(fetchConflicts, 5000)
+const mergeDialogVisible = ref(false)
+const mergeLoading = ref(false)
+const mergeSubmitting = ref(false)
+const mergeConflictId = ref('')
+const mergePreview = ref(null)
+const mergeDecisions = ref({})
+const mergePreviewCache = reactive({})
+const mergeDecisionCache = reactive({})
+
+const activeConflict = computed(() => conflicts.value.find(conflict => conflict.id === activeConflictId.value) || null)
+const mergeConflict = computed(() => conflicts.value.find(conflict => conflict.id === mergeConflictId.value) || null)
+
+watch(activeConflictId, value => {
+  if (value) {
+    localStorage.setItem(ACTIVE_CONFLICT_STORAGE_KEY, value)
+  } else {
+    localStorage.removeItem(ACTIVE_CONFLICT_STORAGE_KEY)
+  }
 })
 
-onUnmounted(() => {
-  if (intervalId) {
-    clearInterval(intervalId)
-  }
+onMounted(() => {
+  fetchConflicts()
 })
 
 async function fetchConflicts() {
+  loading.value = true
+  errorMessage.value = ''
   try {
     const data = await conflictApi.list()
     conflicts.value = data.conflicts || []
+    syncActiveConflict()
   } catch (error) {
     console.error('获取问题作品失败:', error)
+    errorMessage.value = error.response?.data?.detail || error.message || '获取问题作品失败'
+  } finally {
+    loading.value = false
   }
+}
+
+function syncActiveConflict() {
+  if (!conflicts.value.length) {
+    activeConflictId.value = ''
+    return
+  }
+  if (!conflicts.value.some(conflict => conflict.id === activeConflictId.value)) {
+    activeConflictId.value = conflicts.value[0].id
+  }
+}
+
+function markAction(conflictId, action, value) {
+  const key = `${conflictId}:${action}`
+  if (value) {
+    actionState[key] = true
+  } else {
+    delete actionState[key]
+  }
+}
+
+function isActionLoading(conflictId, action) {
+  return Boolean(actionState[`${conflictId}:${action}`])
+}
+
+function isConflictBusy(conflictId) {
+  return Object.keys(actionState).some(key => key.startsWith(`${conflictId}:`)) ||
+    (mergeSubmitting.value && mergeConflictId.value === conflictId)
+}
+
+function canUseAction(conflict, action) {
+  return Array.isArray(conflict?.available_actions) && conflict.available_actions.includes(action)
+}
+
+function isExtractFailed(conflict) {
+  return conflict?.conflict_type === 'EXTRACT_FAILED'
+}
+
+async function handleKeepNew(conflict) {
+  markAction(conflict.id, 'KEEP_NEW', true)
+  try {
+    const previewResponse = await conflictApi.preview(conflict.id, 'KEEP_NEW')
+    const preview = previewResponse.preview || {}
+    const summary = [
+      `将删除目标目录：${preview.path || conflict.existing_path || '-'}`,
+      `文件夹数：${preview.folder_count ?? 0}`,
+      `文件数：${preview.file_count ?? 0}`,
+      `大小：${formatFileSize(preview.size)}`
+    ].join('\n')
+
+    await ElMessageBox.confirm(summary, '删除审查确认', {
+      confirmButtonText: '确认删除并写入新版',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+
+    await conflictApi.resolve(conflict.id, {
+      action: 'KEEP_NEW',
+      confirmed: true
+    })
+    ElMessage.success('已完成保留新版')
+    removeConflict(conflict.id)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('保留新版失败:', error)
+      ElMessage.error(error.response?.data?.detail || error.message || '保留新版失败')
+    }
+  } finally {
+    markAction(conflict.id, 'KEEP_NEW', false)
+  }
+}
+
+async function handleSkip(conflict) {
+  markAction(conflict.id, 'SKIP', true)
+  try {
+    await ElMessageBox.confirm(
+      `将直接删除待处理来源：${conflict.new_path || '-'}`,
+      '跳过当前压缩包',
+      {
+        confirmButtonText: '确认跳过',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    await conflictApi.resolve(conflict.id, {
+      action: 'SKIP'
+    })
+    ElMessage.success('已跳过当前包')
+    removeConflict(conflict.id)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('跳过失败:', error)
+      ElMessage.error(error.response?.data?.detail || error.message || '跳过失败')
+    }
+  } finally {
+    markAction(conflict.id, 'SKIP', false)
+  }
+}
+
+async function openMergeWorkbench(conflict, forceRefresh = false) {
+  mergeConflictId.value = conflict.id
+  mergeDialogVisible.value = true
+  mergeLoading.value = true
+  try {
+    let preview = mergePreviewCache[conflict.id]
+    if (!preview || forceRefresh) {
+      preview = await conflictApi.preview(conflict.id, 'MERGE')
+      mergePreviewCache[conflict.id] = preview
+    }
+    mergePreview.value = preview
+    mergeDecisions.value = {
+      ...(mergeDecisionCache[conflict.id] || preview.default_decisions || {})
+    }
+  } catch (error) {
+    console.error('生成合并预览失败:', error)
+    ElMessage.error(error.response?.data?.detail || error.message || '生成合并预览失败')
+    mergeDialogVisible.value = false
+  } finally {
+    mergeLoading.value = false
+  }
+}
+
+function handleDecisionUpdate(value) {
+  mergeDecisions.value = value
+  if (mergeConflictId.value) {
+    mergeDecisionCache[mergeConflictId.value] = { ...value }
+  }
+}
+
+function refreshMergePreview() {
+  if (!mergeConflict.value) {
+    return
+  }
+  openMergeWorkbench(mergeConflict.value, true)
+}
+
+async function submitMerge() {
+  if (!mergeConflict.value || !mergePreview.value) {
+    return
+  }
+  mergeSubmitting.value = true
+  try {
+    await conflictApi.resolve(mergeConflict.value.id, {
+      action: 'MERGE',
+      merge_session_id: mergePreview.value.session_id,
+      merge_decisions: mergeDecisions.value
+    })
+    ElMessage.success('合并结果已提交')
+    const resolvedId = mergeConflict.value.id
+    mergeDialogVisible.value = false
+    mergePreview.value = null
+    mergeConflictId.value = ''
+    removeConflict(resolvedId)
+  } catch (error) {
+    console.error('提交合并失败:', error)
+    ElMessage.error(error.response?.data?.detail || error.message || '提交合并失败')
+  } finally {
+    mergeSubmitting.value = false
+  }
+}
+
+function removeConflict(conflictId) {
+  conflicts.value = conflicts.value.filter(conflict => conflict.id !== conflictId)
+  delete mergePreviewCache[conflictId]
+  delete mergeDecisionCache[conflictId]
+  if (mergeConflictId.value === conflictId) {
+    mergeConflictId.value = ''
+    mergePreview.value = null
+    mergeDecisions.value = {}
+  }
+  syncActiveConflict()
 }
 
 function getConflictTypeLabel(type) {
-  const labels = {
-    'DUPLICATE': '完全重复',
-    'LANGUAGE_VARIANT': '多语言版本',
-    'MULTIPLE_VERSIONS': '多版本'
-  }
-  return labels[type] || type
+  return {
+    DUPLICATE: '完全重复',
+    LANGUAGE_VARIANT: '多语言版本',
+    MULTIPLE_VERSIONS: '多版本冲突',
+    LINKED_WORK: '关联作品',
+    EXTRACT_FAILED: '解压失败'
+  }[type] || type || '未知冲突'
 }
 
-function getConflictTypeType(type) {
-  const types = {
-    'DUPLICATE': 'danger',
-    'LANGUAGE_VARIANT': 'warning',
-    'MULTIPLE_VERSIONS': 'info'
+function formatDate(value) {
+  if (!value) {
+    return '-'
   }
-  return types[type] || ''
-}
-
-function formatDate(date) {
-  if (!date) return ''
-  // 尝试处理不同格式的日期字符串
-  let dateObj
-  if (typeof date === 'string') {
-    if (date.includes('T')) {
-      // 如果是ISO 8601格式 (如 '2026-03-01T14:05:00' )，这是UTC时间，需转为本地时间
-      dateObj = new Date(date + 'Z') // 添加'Z'标识UTC
-    } else {
-      dateObj = new Date(date)
-    }
-  } else {
-    dateObj = new Date(date)
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return '-'
   }
-  // 格式化为中文本地格式
-  return dateObj.toLocaleString('zh-CN', {
+  return date.toLocaleString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -197,289 +441,231 @@ function formatDate(date) {
   })
 }
 
-async function handleAction(conflict, action) {
-  const actionLabels = {
-    'KEEP_NEW': '保留新版',
-    'KEEP_OLD': '保留旧版',
-    'MERGE': '合并',
-    'SKIP': '跳过'
+function formatTimestamp(value) {
+  if (value === null || value === undefined) {
+    return '-'
   }
-  
-  try {
-    await ElMessageBox.confirm(
-      `确定要${actionLabels[action]}吗？`,
-      '确认操作',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-    
-    processingIds.value.add(conflict.id)
-    loadingText.value = '处理中...'
-    loading.value = true
-    
-    await conflictApi.resolve(conflict.id, action)
-    
-    ElMessage.success('操作成功')
-    conflicts.value = conflicts.value.filter(c => c.id !== conflict.id)
-  } catch (error) {
-    if (error !== 'cancel') {
-      console.error('操作失败:', error)
-      ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
-    }
-  } finally {
-    processingIds.value.delete(conflict.id)
-    loading.value = false
-    loadingText.value = '加载中...'
-  }
+  return formatDate(new Date(Number(value) * 1000).toISOString())
 }
 
-function handleSelectionChange(selection) {
-  selectedConflicts.value = selection
-}
-
-async function handleBatchAction(action) {
-  const actionLabels = {
-    'KEEP_NEW': '保留新版',
-    'KEEP_OLD': '保留旧版',
-    'SKIP': '跳过'
+function formatFileSize(size) {
+  if (size === null || size === undefined) return '-'
+  const value = Number(size)
+  if (!Number.isFinite(value) || value < 0) return '-'
+  if (value < 1024) return `${value} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let current = value / 1024
+  let unitIndex = 0
+  while (current >= 1024 && unitIndex < units.length - 1) {
+    current /= 1024
+    unitIndex += 1
   }
-  
-  if (selectedConflicts.value.length === 0) {
-    ElMessage.warning('请先选择要处理的问题作品')
-    return
-  }
-  
-  try {
-    await ElMessageBox.confirm(
-      `确定要对选中的 ${selectedConflicts.value.length} 个问题作品执行"${actionLabels[action]}"操作吗？`,
-      '批量操作确认',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-    
-    loadingText.value = `正在批量处理 ${selectedConflicts.value.length} 个问题作品...`
-    loading.value = true
-    
-    let successCount = 0
-    let failCount = 0
-    
-    for (const conflict of selectedConflicts.value) {
-      try {
-        processingIds.value.add(conflict.id)
-        await conflictApi.resolve(conflict.id, action)
-        successCount++
-        conflicts.value = conflicts.value.filter(c => c.id !== conflict.id)
-      } catch (error) {
-        failCount++
-        console.error(`处理 ${conflict.rjcode} 失败:`, error)
-      } finally {
-        processingIds.value.delete(conflict.id)
-      }
-    }
-    
-    if (successCount > 0) {
-      ElMessage.success(`成功处理 ${successCount} 个问题作品`)
-    }
-    if (failCount > 0) {
-      ElMessage.warning(`${failCount} 个问题作品处理失败`)
-    }
-    
-    selectedConflicts.value = []
-    if (conflictsTable.value) {
-      conflictsTable.value.clearSelection()
-    }
-  } catch (error) {
-    if (error !== 'cancel') {
-      console.error('批量操作失败:', error)
-      ElMessage.error('批量操作失败: ' + (error.response?.data?.detail || error.message))
-    }
-  } finally {
-    loading.value = false
-    loadingText.value = '加载中...'
-  }
+  return `${current.toFixed(current >= 10 ? 1 : 2)} ${units[unitIndex]}`
 }
 </script>
 
 <style scoped>
-.conflicts {
-  width: 100%;
-  max-width: 100%;
-  margin: 0 auto;
-  padding: 0 20px;
-  box-sizing: border-box;
+.conflicts-page {
+  display: grid;
+  gap: 20px;
+  padding: 0 20px 24px;
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
+  gap: 16px;
   align-items: flex-start;
-  margin-bottom: 24px;
 }
 
-.page-title {
-  font-size: 28px;
-  font-weight: 600;
-  color: #1e293b;
+.page-header h1 {
   margin: 0 0 8px;
+  font-size: 28px;
+  color: #0f172a;
 }
 
-.page-desc {
-  color: #64748b;
+.page-header p {
   margin: 0;
+  color: #64748b;
+  line-height: 1.6;
 }
 
-.batch-actions {
+.header-actions {
   display: flex;
-  align-items: center;
   gap: 12px;
 }
 
-.selected-count {
-  color: #409eff;
-  font-weight: 500;
+.page-alert {
+  margin-bottom: -4px;
 }
 
-.rjcode-cell {
+.detail-alert {
+  margin-bottom: 16px;
+}
+
+.loading-shell {
+  min-height: 320px;
+  border-radius: 18px;
+  background: #fff;
+}
+
+.page-body {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 620px;
+}
+
+.conflict-list {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.conflict-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #dbe4f0;
+  border-radius: 16px;
+  background: #fff;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.conflict-card:hover,
+.conflict-card.active {
+  border-color: #2563eb;
+  box-shadow: 0 10px 30px rgba(37, 99, 235, 0.12);
+  transform: translateY(-1px);
+}
+
+.card-head,
+.card-body {
   display: flex;
+  justify-content: space-between;
+  gap: 12px;
   align-items: center;
 }
 
-.rjcode-text {
-  display: inline-block;
-  padding: 2px 8px;
-  background-color: #ecf5ff;
-  color: #409eff;
-  border: 1px solid #d9ecff;
-  border-radius: 4px;
-  font-family: monospace;
-  font-weight: 600;
+.card-head strong {
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.card-body {
+  margin-top: 10px;
+  align-items: flex-start;
+}
+
+.card-body p,
+.card-body span {
+  margin: 0;
+  color: #64748b;
   font-size: 13px;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-  box-sizing: border-box;
-  line-height: 1.4;
-  vertical-align: middle;
-}
-
-.path-cell {
-  word-break: break-all;
-  white-space: normal;
-  line-height: 1.4;
-  max-height: 60px;
-  overflow-y: auto;
-  font-size: 13px;
-  color: #606266;
-}
-
-.path-text {
-  word-break: break-all;
-  white-space: pre-wrap;
-  line-height: 1.5;
-  font-family: monospace;
-  font-size: 12px;
-  background-color: #f5f7fa;
-  padding: 8px;
-  border-radius: 4px;
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-.conflict-type-tag {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-}
-
-.action-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.action-buttons .el-button {
-  flex: 1;
-  min-width: 60px;
 }
 
 .conflict-detail {
-  padding: 20px;
-  background-color: #f8fafc;
-  border-radius: 8px;
+  display: grid;
+  gap: 16px;
 }
 
-.conflict-detail h4 {
-  margin: 0 0 12px;
-  font-size: 14px;
+.detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 20px 22px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #f8fbff 0%, #eef6ff 100%);
+  border: 1px solid #dbe4f0;
+}
+
+.detail-head h2 {
+  margin: 0 0 8px;
+  color: #172554;
+}
+
+.detail-head p {
+  margin: 0;
   color: #64748b;
 }
 
-@media screen and (max-width: 1200px) {
-  .conflicts {
-    padding: 0 10px;
+.action-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.meta-block {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.meta-block:last-child {
+  margin-bottom: 0;
+}
+
+.meta-block label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.meta-block span,
+.meta-block pre {
+  margin: 0;
+  color: #1e293b;
+  line-height: 1.6;
+}
+
+.meta-block pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 12px;
+  font-family: Consolas, Monaco, monospace;
+}
+
+.action-help {
+  border-radius: 18px;
+}
+
+.help-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #475569;
+  line-height: 1.8;
+}
+
+@media (max-width: 1080px) {
+  .page-body,
+  .detail-grid {
+    grid-template-columns: 1fr;
   }
-  
-  .page-title {
-    font-size: 24px;
-  }
-  
-  .page-header {
+}
+
+@media (max-width: 768px) {
+  .page-header,
+  .detail-head {
     flex-direction: column;
-    gap: 16px;
   }
-  
-  .batch-actions {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-}
 
-@media screen and (max-width: 768px) {
-  .action-buttons {
-    flex-direction: column;
-  }
-  
-  .action-buttons .el-button {
+  .action-row,
+  .header-actions {
     width: 100%;
   }
-}
 
-:deep(.el-table) {
-  font-size: 14px;
-}
-
-:deep(.el-table__header) {
-  font-weight: 600;
-}
-
-:deep(.el-table__cell) {
-  padding: 8px 0;
-}
-
-:deep(.el-table .cell) {
-  white-space: normal;
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-:deep(.el-table__body-wrapper) {
-  overflow-x: auto;
-}
-
-:deep(.el-table__fixed-right) {
-  height: 100% !important;
-}
-
-:deep(.el-table__fixed-right-patch) {
-  background-color: #f5f7fa;
+  .action-row :deep(.el-button),
+  .header-actions :deep(.el-button) {
+    flex: 1;
+  }
 }
 </style>

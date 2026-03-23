@@ -1024,49 +1024,133 @@ async def get_logs(lines: int = 100):
 @app.get("/api/conflicts")
 async def get_conflicts():
     """获取问题作品列表"""
+    from ..core.conflict_resolution_service import get_conflict_resolution_service
     from ..models.database import ConflictWork, get_db
-    
+
     db = next(get_db())
     try:
-        conflicts = db.query(ConflictWork).filter(ConflictWork.status == 'PENDING').all()
+        resolution_service = get_conflict_resolution_service()
+        conflicts = db.query(ConflictWork).filter(ConflictWork.status == "PENDING").all()
         return {
             "conflicts": [
                 {
-                    "id": c.id,
-                    "rjcode": c.rjcode,
-                    "conflict_type": c.conflict_type,
-                    "existing_path": c.existing_path,
-                    "new_path": c.new_path,
-                    "new_metadata": c.new_metadata,
-                    "status": c.status,
-                    "created_at": c.created_at.isoformat() if c.created_at else None
+                    "id": conflict.id,
+                    "task_id": conflict.task_id,
+                    "rjcode": conflict.rjcode,
+                    "conflict_type": conflict.conflict_type,
+                    "existing_path": conflict.existing_path,
+                    "new_path": conflict.new_path,
+                    "new_metadata": conflict.new_metadata,
+                    "status": conflict.status,
+                    "created_at": conflict.created_at.isoformat() if conflict.created_at else None,
+                    "available_actions": resolution_service.get_available_actions(conflict),
+                    "context": resolution_service.describe_conflict(conflict),
                 }
-                for c in conflicts
+                for conflict in conflicts
             ]
         }
+    finally:
+        db.close()
+
+@app.post("/api/conflicts/{conflict_id}/preview")
+async def preview_conflict_resolution(conflict_id: str, payload: dict):
+    """生成问题作品处理预览"""
+    from ..core.conflict_resolution_service import get_conflict_resolution_service
+    from ..models.database import ConflictWork, get_db
+
+    db = next(get_db())
+    try:
+        conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+        if not conflict:
+            raise HTTPException(status_code=404, detail="问题作品不存在")
+
+        service = get_conflict_resolution_service()
+        action = service.normalize_action(payload.get("action"))
+        if action not in service.get_available_actions(conflict):
+            raise HTTPException(status_code=400, detail="当前问题项不支持该操作")
+
+        if action == "KEEP_NEW":
+            preview = await service.get_delete_preview(conflict)
+            return {
+                "action": action,
+                "conflict_id": conflict.id,
+                "preview": preview,
+            }
+
+        if action == "MERGE":
+            merge_preview = await service.create_merge_preview(conflict)
+            return {
+                "action": action,
+                "conflict_id": conflict.id,
+                **merge_preview,
+            }
+
+        raise HTTPException(status_code=400, detail="当前动作不需要预览")
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("生成问题作品预览失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"生成处理预览失败: {exc}")
     finally:
         db.close()
 
 @app.post("/api/conflicts/{conflict_id}/resolve")
 async def resolve_conflict(conflict_id: str, action: dict):
     """处理问题作品"""
+    from ..core.conflict_resolution_service import get_conflict_resolution_service
+    from ..core.task_engine import TaskStatus, get_task_engine
     from ..models.database import ConflictWork, ProcessedArchive, get_db
-    from ..core.extract_service import ExtractService
-    from ..core.filter_service import FilterService
-    from ..core.metadata_service import MetadataService
-    from ..core.classifier import SmartClassifier
-    from ..core.task_engine import Task, TaskType, TaskStatus, get_task_engine
-    import shutil
-    import re
-    
+
     db = next(get_db())
     try:
         conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
         if not conflict:
             raise HTTPException(status_code=404, detail="问题作品不存在")
-        
-        action_type = action.get("action")
-        config = get_config()
+
+        service = get_conflict_resolution_service()
+        action_type = service.normalize_action(action.get("action"))
+        if action_type not in service.get_available_actions(conflict):
+            raise HTTPException(status_code=400, detail="当前问题项不支持该操作")
+        confirmed = bool(action.get("confirmed"))
+
+        if action_type == "KEEP_NEW":
+            if not confirmed:
+                raise HTTPException(status_code=400, detail="保留新版前必须先完成删除审查确认")
+            result = await service.resolve_keep_new(conflict)
+        elif action_type == "MERGE":
+            result = await service.resolve_merge(
+                conflict,
+                action.get("merge_session_id"),
+                action.get("merge_decisions") or {},
+            )
+        else:
+            result = await service.resolve_skip(conflict)
+
+        conflict.status = action_type
+
+        engine = get_task_engine()
+        if conflict.task_id:
+            engine.update_task_status(str(conflict.task_id), TaskStatus.COMPLETED, f"冲突已处理: {action_type}")
+
+        if conflict.new_path:
+            archive_record = db.query(ProcessedArchive).filter(
+                ProcessedArchive.filename == os.path.basename(str(conflict.new_path))
+            ).first()
+            if archive_record:
+                archive_record.status = "completed"
+                archive_record.processed_at = datetime.now()
+
+        db.commit()
+        return {
+            "success": True,
+            "conflict_id": conflict.id,
+            "action": action_type,
+            **result,
+        }
         
         # 检查new_path是否是压缩包（预检阶段的冲突）
         from ..core.watcher import ArchiveHandler
@@ -1368,6 +1452,15 @@ async def resolve_conflict(conflict_id: str, action: dict):
         db.commit()
         return {"message": "处理成功"}
         
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc))
     except Exception as e:
         db.rollback()
         logger.error(f"处理冲突失败: {e}", exc_info=True)
@@ -2759,6 +2852,87 @@ class ExistingFolderResponse(BaseModel):
     size: int
     is_directory: bool
 
+
+def _normalize_existing_folder_resolution_options(options: list[dict] | None) -> list[dict]:
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    alias_map = {
+        "KEEP_OLD": "SKIP",
+        "KEEP_BOTH": "MERGE",
+        "MERGE_LANG": "MERGE",
+    }
+    label_map = {
+        "KEEP_NEW": "保留新版",
+        "MERGE": "合并",
+        "SKIP": "跳过",
+    }
+    description_map = {
+        "KEEP_NEW": "采用当前新目录作为最终结果，并在确认后替换已存在目录",
+        "MERGE": "进入文件级对比视图，按文件决定保留新旧内容后生成最终目录",
+        "SKIP": "放弃当前目录，保持已有目录不变并删除当前待处理目录",
+    }
+
+    for option in options or []:
+        action = alias_map.get(str(option.get("action") or "").strip().upper(), str(option.get("action") or "").strip().upper())
+        if action not in {"KEEP_NEW", "MERGE", "SKIP"} or action in seen:
+            continue
+        normalized.append({
+            "action": action,
+            "label": label_map[action],
+            "description": option.get("description") or description_map[action],
+            "recommend": bool(option.get("recommend")),
+        })
+        seen.add(action)
+
+    if normalized:
+        return normalized
+
+    return [
+        {
+            "action": "KEEP_NEW",
+            "label": "保留新版",
+            "description": description_map["KEEP_NEW"],
+            "recommend": True,
+        },
+        {
+            "action": "MERGE",
+            "label": "合并",
+            "description": description_map["MERGE"],
+            "recommend": False,
+        },
+        {
+            "action": "SKIP",
+            "label": "跳过",
+            "description": description_map["SKIP"],
+            "recommend": False,
+        },
+    ]
+
+
+async def _resolve_existing_folder_conflict_path(folder_path: str, preferred_path: str | None = None) -> str | None:
+    if preferred_path and os.path.exists(preferred_path):
+        return preferred_path
+
+    from ..core.duplicate_service import get_duplicate_service
+
+    folder_name = os.path.basename(folder_path)
+    rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', folder_name, re.IGNORECASE)
+    rjcode = rj_match.group(0).upper() if rj_match else None
+    if not rjcode:
+        return None
+
+    duplicate_service = get_duplicate_service()
+    check_result = await duplicate_service.check_duplicate_enhanced(
+        rjcode,
+        check_linked_works=True,
+        cue_languages=["CHI_HANS", "CHI_HANT", "ENG"],
+    )
+    if check_result.direct_duplicate:
+        return check_result.direct_duplicate.get("path")
+    if check_result.linked_works_found:
+        return check_result.linked_works_found[0].get("path")
+    return None
+
 @app.get("/api/existing-folders", response_model=List[ExistingFolderResponse])
 async def get_existing_folders():
     """获取已存在文件夹目录中的所有文件夹"""
@@ -2954,7 +3128,7 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                                 
                                 # 获取推荐的解决选项
                                 resolution_options = await duplicate_service.get_conflict_resolution_options(check_result)
-                                folder_info["duplicate_info"]["resolution_options"] = resolution_options
+                                folder_info["duplicate_info"]["resolution_options"] = _normalize_existing_folder_resolution_options(resolution_options)
                                 conflict_count += 1
                             
                             folder_info["status"] = "checked"
@@ -3154,7 +3328,7 @@ async def check_existing_folders_duplicates(request: Request):
                     
                     # 获取推荐的解决选项
                     resolution_options = await duplicate_service.get_conflict_resolution_options(check_result)
-                    result["resolution_options"] = resolution_options
+                    result["resolution_options"] = _normalize_existing_folder_resolution_options(resolution_options)
                 
                 results.append(result)
                 
@@ -3295,6 +3469,57 @@ async def delete_existing_folder(request: Request):
         logger.error(f"删除文件夹失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
 
+
+@app.post("/api/existing-folders/merge-preview")
+async def get_existing_folder_merge_preview(request: Request):
+    """生成已存在文件夹的合并对比预览"""
+    try:
+        data = await request.json()
+        folder_path = data.get("folder_path")
+        existing_path = data.get("existing_path")
+
+        if not folder_path:
+            raise HTTPException(status_code=400, detail="未提供待处理文件夹路径")
+
+        config = get_config()
+        existing_folders_path = config.storage.existing_folders_path
+        if not folder_path.startswith(existing_folders_path):
+            raise HTTPException(status_code=400, detail="路径不在已存在文件夹目录中")
+        if not os.path.exists(folder_path):
+            raise HTTPException(status_code=404, detail="待处理文件夹不存在")
+
+        resolved_existing_path = await _resolve_existing_folder_conflict_path(folder_path, existing_path)
+        if not resolved_existing_path:
+            raise HTTPException(status_code=404, detail="未找到可合并的现有目录")
+        if not os.path.exists(resolved_existing_path):
+            raise HTTPException(status_code=404, detail="目标现有目录不存在")
+
+        from ..core.folder_compare_service import get_folder_compare_service
+
+        compare_service = get_folder_compare_service()
+        items = compare_service.build_compare_items(folder_path, resolved_existing_path)
+        decisions = compare_service.build_default_decisions(items)
+
+        summary = {
+            "new_only": sum(1 for item in items if item.get("type") == "file" and item.get("status") == "new_only"),
+            "old_only": sum(1 for item in items if item.get("type") == "file" and item.get("status") == "old_only"),
+            "modified": sum(1 for item in items if item.get("type") == "file" and item.get("status") == "modified"),
+            "unchanged": sum(1 for item in items if item.get("type") == "file" and item.get("status") == "unchanged"),
+        }
+
+        return {
+            "folder_path": folder_path,
+            "existing_path": resolved_existing_path,
+            "items": items,
+            "default_decisions": decisions,
+            "summary": summary,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"生成合并预览失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"生成合并预览失败: {str(e)}")
+
 @app.post("/api/existing-folders/process-with-resolution")
 async def process_existing_folder_with_resolution(request: Request):
     """使用指定的解决方案处理已有文件夹
@@ -3302,8 +3527,10 @@ async def process_existing_folder_with_resolution(request: Request):
     请求体格式：
     {
         "folder_path": "/path/to/folder",
-        "resolution": "KEEP_NEW|KEEP_OLD|KEEP_BOTH|MERGE|SKIP",
-        "auto_classify": true
+        "resolution": "KEEP_NEW|MERGE|SKIP",
+        "auto_classify": true,
+        "existing_path": "/path/to/current/library/folder",
+        "merge_decisions": {"relative/path.txt": "use_new"}
     }
     """
     try:
@@ -3311,12 +3538,21 @@ async def process_existing_folder_with_resolution(request: Request):
         folder_path = data.get("folder_path")
         resolution = data.get("resolution")
         auto_classify = data.get("auto_classify", True)
+        preferred_existing_path = data.get("existing_path")
+        merge_decisions = data.get("merge_decisions") or {}
         
         if not folder_path:
             raise HTTPException(status_code=400, detail="未提供文件夹路径")
         
         if not resolution:
             raise HTTPException(status_code=400, detail="未提供解决方案")
+        normalized_resolution = str(resolution).strip().upper()
+        if normalized_resolution == "KEEP_OLD":
+            normalized_resolution = "SKIP"
+        if normalized_resolution in {"KEEP_BOTH", "MERGE_LANG"}:
+            normalized_resolution = "MERGE"
+        if normalized_resolution not in {"KEEP_NEW", "MERGE", "SKIP"}:
+            raise HTTPException(status_code=400, detail="不支持的解决方案")
         
         # 安全检查：确保路径在 existing_folders_path 目录下
         config = get_config()
@@ -3329,16 +3565,21 @@ async def process_existing_folder_with_resolution(request: Request):
             raise HTTPException(status_code=404, detail="文件夹不存在")
         
         # 根据解决方案执行不同操作
-        if resolution == "SKIP":
+        if normalized_resolution == "SKIP":
             # 抛弃新版 - 删除文件夹
             import shutil
             shutil.rmtree(folder_path)
             logger.info(f"已抛弃新版（删除文件夹）: {folder_path}")
-            return {"message": "已抛弃新版，文件夹已删除", "resolution": resolution}
+            return {"message": "已跳过当前目录，待处理文件夹已删除", "resolution": normalized_resolution}
         
-        elif resolution in ["KEEP_NEW", "KEEP_BOTH", "MERGE", "MERGE_LANG"]:
+        elif normalized_resolution in ["KEEP_NEW", "MERGE"]:
+            resolved_existing_path = await _resolve_existing_folder_conflict_path(folder_path, preferred_existing_path)
+            if not resolved_existing_path:
+                raise HTTPException(status_code=404, detail="未找到要替换或合并的现有目录")
+            if not os.path.exists(resolved_existing_path):
+                raise HTTPException(status_code=404, detail="现有目录不存在")
+
             # 这些操作都需要创建处理任务
-            # 从 ConflictWork 中查找并更新状态
             from ..models.database import ConflictWork, get_db
             db = next(get_db())
             try:
@@ -3355,24 +3596,30 @@ async def process_existing_folder_with_resolution(request: Request):
                     ).first()
                     
                     if conflict:
-                        conflict.status = resolution
+                        conflict.status = normalized_resolution
                         db.commit()
-                        logger.info(f"更新冲突记录状态: {rjcode} -> {resolution}")
+                        logger.info(f"更新冲突记录状态: {rjcode} -> {normalized_resolution}")
                 
                 # 创建处理任务
                 engine = get_task_engine()
                 task = Task(
                     task_type=TaskType.PROCESS_EXISTING_FOLDER,
                     source_path=folder_path,
-                    auto_classify=auto_classify
+                    auto_classify=auto_classify,
+                    metadata={
+                        "existing_folder_resolution": normalized_resolution,
+                        "existing_path": resolved_existing_path,
+                        "merge_decisions": merge_decisions if normalized_resolution == "MERGE" else {},
+                    }
                 )
                 await engine.submit(task)
                 
                 return {
-                    "message": f"已创建处理任务，解决方案: {resolution}",
-                    "resolution": resolution,
+                    "message": f"已创建处理任务，解决方案: {normalized_resolution}",
+                    "resolution": normalized_resolution,
                     "task_id": task.id,
-                    "folder_path": folder_path
+                    "folder_path": folder_path,
+                    "existing_path": resolved_existing_path,
                 }
                 
             finally:
@@ -3516,7 +3763,9 @@ async def enhanced_duplicate_check(request: Request):
         )
         
         # 获取推荐的解决选项
-        resolution_options = await service.get_conflict_resolution_options(result)
+        resolution_options = _normalize_existing_folder_resolution_options(
+            await service.get_conflict_resolution_options(result)
+        )
         
         return {
             "is_duplicate": result.is_duplicate,
