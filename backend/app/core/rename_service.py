@@ -35,6 +35,15 @@ class RenameService:
         if not metadata:
             raise Exception("缺少元数据，无法重命名")
 
+        fallback_rjcode = str(
+            metadata.get('rjcode')
+            or metadata.get('inferred_rjcode')
+            or getattr(task, 'rjcode', '')
+            or ''
+        ).strip().upper()
+        if fallback_rjcode:
+            metadata['rjcode'] = fallback_rjcode
+
         if not metadata.get('rjcode'):
             raise Exception(f"元数据中缺少RJ号，无法重命名。可用字段: {list(metadata.keys())}")
 

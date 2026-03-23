@@ -89,6 +89,10 @@ function getVolumeBaseName(filename) {
   const zipMatch = filename.match(/^(.+)\.z\d{2}$/i)
   if (zipMatch) return zipMatch[1]
 
+  // 匹配 .r00, .r01 等旧式 RAR 分卷
+  const rarLegacyMatch = filename.match(/^(.+)\.r\d{2}$/i)
+  if (rarLegacyMatch) return rarLegacyMatch[1]
+
   // 匹配 .part1.rar, .part2.rar 等 RAR 分卷
   const rarMatch = filename.match(/^(.+)\.part\d+\.(rar|7z|zip|exe)$/i)
   if (rarMatch) return rarMatch[1]
@@ -116,6 +120,17 @@ function getVolumeGroupInfo(filename, allFiles) {
     const hasVolumeFiles = allFiles.some(f =>
       f.name.toLowerCase() === `${nameWithoutExt.toLowerCase()}.z01` ||
       f.name.toLowerCase().match(new RegExp(`^${nameWithoutExt.toLowerCase()}\\.z\\d{2}$`))
+    )
+    if (hasVolumeFiles) {
+      return { baseName: nameWithoutExt, isVolume: true }
+    }
+  }
+
+  // 检查是否是旧式 RAR 分卷的主文件 (.rar)
+  if (filename.toLowerCase().endsWith('.rar')) {
+    const nameWithoutExt = filename.slice(0, -4)
+    const hasVolumeFiles = allFiles.some(f =>
+      f.name.toLowerCase().match(new RegExp(`^${nameWithoutExt.toLowerCase()}\\.r\\d{2}$`))
     )
     if (hasVolumeFiles) {
       return { baseName: nameWithoutExt, isVolume: true }

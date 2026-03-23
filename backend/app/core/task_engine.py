@@ -202,6 +202,64 @@ class TaskEngine:
         rjcode = self._extract_rjcode(task.source_path) or "未知"
         logger.info(f"[{rjcode}] 任务提交 - ID: {task.id[:8]}..., 源文件: {os.path.basename(task.source_path)}")
         return task.id
+
+    def _get_effective_rjcode(self, task: Task, fallback_path: Optional[str] = None) -> str:
+        """统一获取当前任务可用的 RJ 号，优先复用已推断结果。"""
+        candidates = [
+            getattr(task, "rjcode", None),
+            (task.task_metadata or {}).get("rjcode"),
+            (task.task_metadata or {}).get("inferred_rjcode"),
+            self._extract_rjcode(fallback_path or task.source_path),
+        ]
+        for candidate in candidates:
+            value = str(candidate or "").strip().upper()
+            if value and value != "未知":
+                return value
+        return ""
+
+    def _sync_task_rjcode(self, task: Task, rjcode: Optional[str], source: Optional[str] = None) -> str:
+        """把有效 RJ 号同步回任务对象和元数据，供后续重命名、归档和分类统一使用。"""
+        normalized = str(rjcode or "").strip().upper()
+        if not normalized or normalized == "未知":
+            return ""
+
+        if task.task_metadata is None:
+            task.task_metadata = {}
+
+        task.rjcode = normalized
+        task.task_metadata["rjcode"] = normalized
+        task.task_metadata.setdefault("inferred_rjcode", normalized)
+        if source:
+            task.task_metadata["rjcode_source"] = source
+        return normalized
+
+    def _record_problem_work_for_extract_failure(self, task: Task, rjcode: Optional[str], reason: str):
+        """将解压阶段失败的任务记录到问题作品列表，避免前端无项可见"""
+        from .classifier import SmartClassifier
+
+        source_path = str(task.source_path or "").strip()
+        if not source_path or not os.path.exists(source_path):
+            return
+
+        normalized_rjcode = (rjcode or "").strip()
+        if normalized_rjcode == "未知":
+            normalized_rjcode = self._extract_rjcode(source_path) or ""
+
+        metadata = dict(task.task_metadata or {})
+        metadata["failure_stage"] = "extract"
+        metadata["error_message"] = reason
+        metadata["available_actions"] = ["SKIP"]
+
+        classifier = SmartClassifier()
+        classifier._add_to_conflict_works(
+            task.id,
+            normalized_rjcode or None,
+            "EXTRACT_FAILED",
+            "",
+            source_path,
+            metadata,
+            status="PENDING",
+        )
     
     async def _process_task(self, task: Task):
         """处理单个任务"""
@@ -211,8 +269,9 @@ class TaskEngine:
         from .rename_service import RenameService
         from .classifier import SmartClassifier
         
-        rjcode = self._extract_rjcode(task.source_path) or "未知"
-        task.rjcode = rjcode
+        inferred_rjcode = str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
+        rjcode = self._extract_rjcode(task.source_path) or inferred_rjcode or "未知"
+        self._sync_task_rjcode(task, rjcode if rjcode != "未知" else None, source="source_path")
         logger.info(f"[{rjcode}] ========== 开始处理任务 ==========")
         logger.info(f"[{rjcode}] 任务ID: {task.id}, 类型: {task.type.value}")
         logger.info(f"[{rjcode}] 源路径: {task.source_path}")
@@ -259,6 +318,11 @@ class TaskEngine:
                     extracted_path = await extract_service.extract(task)
                     logger.info(f"[{rjcode}] 解压结果路径: {extracted_path}")
                     if not extracted_path:
+                        self._record_problem_work_for_extract_failure(
+                            task,
+                            rjcode,
+                            task.error_message or "解压失败"
+                        )
                         logger.error(f"[{rjcode}] 解压失败，任务终止")
                         return
                 else:
@@ -275,13 +339,12 @@ class TaskEngine:
 
                 # 步骤1.5: 解压后重复检查（如果预检时无法提取 RJ 号）
                 # 从解压后的文件夹路径提取 RJ 号
-                extracted_rjcode = self._extract_rjcode(extracted_path)
+                extracted_rjcode = self._extract_rjcode(extracted_path) or str(task.task_metadata.get('inferred_rjcode') or '').strip().upper()
                 logger.info(f"[{rjcode}] 从解压后路径提取到的RJ号: {extracted_rjcode}")
                 
                 if extracted_rjcode and extracted_rjcode != rjcode:
                     # 更新任务的 RJ 号
-                    task.rjcode = extracted_rjcode
-                    rjcode = extracted_rjcode
+                    rjcode = self._sync_task_rjcode(task, extracted_rjcode, source="extracted_path")
                     logger.info(f"[{rjcode}] 更新任务RJ号为解压后提取的RJ号")
                     
                     # 如果预检时没有提取到 RJ 号，现在进行重复检查
@@ -306,12 +369,18 @@ class TaskEngine:
                 if config.auto_process.fetch_metadata:
                     task.update_progress(40, "获取元数据")
                     metadata = await metadata_service.fetch(extracted_path, task)
+                    effective_rjcode = self._get_effective_rjcode(task, extracted_path)
+                    if effective_rjcode and not metadata.get('rjcode'):
+                        metadata['rjcode'] = effective_rjcode
                     logger.debug(f"[{rjcode}] 元数据: {metadata.get('work_name', '未知')}")
                     task.task_metadata = metadata
+                    if effective_rjcode:
+                        self._sync_task_rjcode(task, effective_rjcode, source=task.task_metadata.get('rjcode_source') or 'metadata_fallback')
                 else:
                     logger.info(f"[{rjcode}] 步骤[获取元数据]已禁用，跳过")
-                    metadata = {'rjcode': rjcode}
+                    metadata = {'rjcode': self._get_effective_rjcode(task, extracted_path) or rjcode}
                     task.task_metadata = metadata
+                    self._sync_task_rjcode(task, metadata.get('rjcode'), source='task_fallback')
 
                 await task.wait_if_paused()
                 if task.is_cancelled():
@@ -419,7 +488,10 @@ class TaskEngine:
                 task.update_progress(5, "预检中")
                 rjcode = self._extract_rjcode(existing_folder_path)
                 logger.debug(f"[{rjcode}] 提取到的RJ号: {rjcode}")
-                if config.process_existing.check_duplicate and rjcode and task.auto_classify:
+                resolution_mode = str((task.task_metadata or {}).get('existing_folder_resolution') or '').strip().upper()
+                if resolution_mode in {"KEEP_NEW", "MERGE"}:
+                    logger.info(f"[{rjcode}] 已指定冲突处理方案 {resolution_mode}，跳过重复预检")
+                elif config.process_existing.check_duplicate and rjcode and task.auto_classify:
                     from .duplicate_service import get_duplicate_service
                     duplicate_service = get_duplicate_service()
 
@@ -480,12 +552,18 @@ class TaskEngine:
                 if config.process_existing.fetch_metadata:
                     task.update_progress(30, "获取元数据")
                     metadata = await metadata_service.fetch(extracted_path, task)
+                    effective_rjcode = self._get_effective_rjcode(task, extracted_path)
+                    if effective_rjcode and not metadata.get('rjcode'):
+                        metadata['rjcode'] = effective_rjcode
                     logger.debug(f"[{rjcode}] 元数据: {metadata.get('work_name', '未知')}")
                     task.task_metadata = metadata
+                    if effective_rjcode:
+                        self._sync_task_rjcode(task, effective_rjcode, source=task.task_metadata.get('rjcode_source') or 'metadata_fallback')
                 else:
                     logger.info(f"[{rjcode}] 步骤[获取元数据]已禁用，跳过")
-                    metadata = {'rjcode': rjcode}
+                    metadata = {'rjcode': self._get_effective_rjcode(task, extracted_path) or rjcode}
                     task.task_metadata = metadata
+                    self._sync_task_rjcode(task, metadata.get('rjcode'), source='task_fallback')
 
                 await task.wait_if_paused()
                 if task.is_cancelled():
@@ -1137,6 +1215,64 @@ class TaskEngine:
                     except Exception as e:
                         logger.warning(f"清理解压失败残留失败: {potential_path}, {e}")
 
+    async def _move_file_with_retry(self, source_path: str, dest_path: str, attempts: int = 5, delay_seconds: float = 1.0):
+        """带重试地移动文件，缓解 Windows 下解压后句柄释放延迟导致的占用问题"""
+        last_error = None
+        for attempt in range(1, attempts + 1):
+            try:
+                shutil.move(source_path, dest_path)
+                return
+            except FileNotFoundError:
+                raise
+            except PermissionError as exc:
+                last_error = exc
+                logger.warning(
+                    f"移动文件时仍被占用，稍后重试 ({attempt}/{attempts}): {source_path} -> {dest_path}, {exc}"
+                )
+            except OSError as exc:
+                last_error = exc
+                logger.warning(
+                    f"移动文件失败，稍后重试 ({attempt}/{attempts}): {source_path} -> {dest_path}, {exc}"
+                )
+
+            if attempt < attempts:
+                await asyncio.sleep(delay_seconds)
+
+        if last_error:
+            raise last_error
+
+    async def _cleanup_empty_source_dir(self, source_dir: str, protected_paths: Optional[list[str]] = None):
+        """归档完成后清理空源目录，避免分卷目录残留且需要用户手动删除"""
+        normalized_source = os.path.abspath(str(source_dir or ""))
+        if not normalized_source or not os.path.isdir(normalized_source):
+            return
+
+        protected = {
+            os.path.abspath(path)
+            for path in (protected_paths or [])
+            if path
+        }
+        if normalized_source in protected:
+            return
+
+        for attempt in range(1, 6):
+            try:
+                if os.listdir(normalized_source):
+                    logger.info(f"源目录非空，跳过自动删除: {normalized_source}")
+                    return
+                os.rmdir(normalized_source)
+                logger.info(f"已自动清理空源目录: {normalized_source}")
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError as exc:
+                logger.warning(f"删除空源目录时仍被占用，稍后重试 ({attempt}/5): {normalized_source}, {exc}")
+            except OSError as exc:
+                logger.warning(f"删除空源目录失败，稍后重试 ({attempt}/5): {normalized_source}, {exc}")
+
+            if attempt < 5:
+                await asyncio.sleep(1)
+
     async def _archive_source_file(self, task: Task):
         """将源压缩包移动到已处理目录并记录"""
         import shutil
@@ -1301,15 +1437,15 @@ class TaskEngine:
                     dest_path = os.path.join(processed_dir, f"{name}({counter}){ext}")
                     counter += 1
 
-                # 移动文件
-                shutil.move(file_path, dest_path)
+                # 移动文件，允许在 7z 刚退出时等待句柄释放
+                await self._move_file_with_retry(file_path, dest_path)
                 logger.info(f"压缩包已归档: {file_path} -> {dest_path}")
                 archived_files.append((filename, dest_path, file_path))
 
             # 记录主文件（第一个分卷或唯一文件）到数据库
             if archived_files:
                 main_filename, main_dest_path, main_source_path = archived_files[0]
-                rjcode = self._extract_rjcode(main_source_path)
+                rjcode = self._extract_rjcode(main_source_path) or str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
                 file_size = os.path.getsize(main_dest_path)
 
                 db = next(get_db())
@@ -1353,6 +1489,17 @@ class TaskEngine:
                     db.rollback()
                 finally:
                     db.close()
+
+            await self._cleanup_empty_source_dir(
+                source_dir,
+                protected_paths=[
+                    getattr(config.storage, 'input_path', ''),
+                    processed_dir,
+                    getattr(config.storage, 'temp_path', ''),
+                    getattr(config.storage, 'library_path', ''),
+                    getattr(config.storage, 'existing_folders_path', ''),
+                ],
+            )
 
         except Exception as e:
             logger.error(f"归档压缩包失败: {e}")

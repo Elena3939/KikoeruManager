@@ -80,6 +80,9 @@ class ArchiveHandler(FileSystemEventHandler):
         if re.search(r'\.z\d{2}$', filename):
             logger.debug(f"ZIP 分卷文件标记为已处理: {file_path}")
             self.mark_processed(file_path)
+        elif re.search(r'\.r\d{2}$', filename):
+            logger.debug(f"旧式 RAR 分卷文件标记为已处理: {file_path}")
+            self.mark_processed(file_path)
         elif re.search(r'\.7z\.\d{3}$', filename):
             logger.debug(f"7z 分卷文件标记为已处理: {file_path}")
             self.mark_processed(file_path)

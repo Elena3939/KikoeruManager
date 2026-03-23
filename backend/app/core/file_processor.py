@@ -23,10 +23,11 @@ logger = logging.getLogger(__name__)
 
 class VolumeSet:
     """分卷组信息"""
-    def __init__(self, base_name: str, volumes: List[str], volume_type: str):
+    def __init__(self, base_name: str, volumes: List[str], volume_type: str, entry_path: Optional[str] = None):
         self.base_name = base_name
         self.volumes = volumes  # 排序后的分卷路径列表
         self.type = volume_type
+        self.entry_path = entry_path or (volumes[0] if volumes else "")
         self.is_complete = False
 
 
@@ -260,16 +261,18 @@ class FileProcessor:
         filename = Path(file_path).name.lower()
         ext = Path(file_path).suffix.lower()
 
-        # 先检查是否是分卷文件后缀，如果是非首卷则跳过
-        # ZIP 分卷: .z01, .z02, ... .z99 (z01是首卷)
+        # 先检查是否是分卷文件后缀，只有真正的主执行文件才创建任务
+        # ZIP 分卷: .z01, .z02, ... .z99，应该由 *.zip 主文件触发处理
         z_match = re.search(r'\.z(\d{2})$', filename)
         if z_match:
-            vol_num = int(z_match.group(1))
-            if vol_num > 1:  # z02, z03... 是非首卷
-                logger.debug(f"[FileProcessor] 跳过 ZIP 分卷非首卷文件: {filename}")
-                return False
-            # z01 是首卷，通过魔数检测
-            return self._detect_archive_by_magic(file_path)
+            logger.debug(f"[FileProcessor] 跳过 ZIP 分卷文件，等待 *.zip 主文件: {filename}")
+            return False
+
+        # 旧式 RAR 分卷: .r00, .r01, ...，应该由 *.rar 主文件触发处理
+        rar_old_match = re.search(r'\.r(\d{2})$', filename)
+        if rar_old_match:
+            logger.debug(f"[FileProcessor] 跳过旧式 RAR 分卷文件，等待 *.rar 主文件: {filename}")
+            return False
 
         # 7z 分卷: .7z.001, .7z.002, ... (.7z.001 是首卷)
         sevenzip_match = re.search(r'\.7z\.(\d{3})$', filename)
@@ -328,12 +331,29 @@ class FileProcessor:
         directory = os.path.dirname(file_path)
         filename = os.path.basename(file_path)
 
+        zip_main_match = re.search(r'^(?P<base>.+)\.zip$', filename, re.IGNORECASE)
+        zip_part_match = re.search(r'^(?P<base>.+)\.z\d{2}$', filename, re.IGNORECASE)
+        if zip_main_match or zip_part_match:
+            base_name = (zip_main_match or zip_part_match).group('base')
+            volume_set = self._build_zip_volume_set(directory, base_name)
+            if volume_set:
+                logger.info(f"[FileProcessor] 检测到 ZIP 分卷组: {base_name}")
+                return volume_set
+
+        rar_main_match = re.search(r'^(?P<base>.+)\.rar$', filename, re.IGNORECASE)
+        rar_part_match = re.search(r'^(?P<base>.+)\.r\d{2}$', filename, re.IGNORECASE)
+        if rar_main_match or rar_part_match:
+            base_name = (rar_main_match or rar_part_match).group('base')
+            volume_set = self._build_rar_old_volume_set(directory, base_name)
+            if volume_set:
+                logger.info(f"[FileProcessor] 检测到旧式 RAR 分卷组: {base_name}")
+                return volume_set
+
         # 分卷模式识别（按优先级排序，更具体的模式在前）
         patterns = [
             (r'\.7z\.(\d{3})$', '7z_volume_with_ext'),  # .7z.001, .7z.002 (7z分卷，带.7z扩展名)
             (r'\.part(\d+)\.(rar|zip|7z)$', 'part'),
             (r'\.part(\d+)$', 'part_no_ext'),  # 无扩展名的RAR分卷格式
-            (r'\.z(\d{2})$', 'zip_volume'),
             (r'\.(\d{3})$', '7z_volume'),  # 纯数字分卷（如 .001, .002）
             (r'\.(\d{2})$', 'generic'),
         ]
@@ -351,7 +371,7 @@ class FileProcessor:
 
                 # 分卷组需要至少2个文件
                 if len(volumes) > 1:
-                    return VolumeSet(base_name, volumes, vtype)
+                    return VolumeSet(base_name, volumes, vtype, entry_path=volumes[0])
 
         return None
 
@@ -446,7 +466,7 @@ class FileProcessor:
                     logger.error(f"[FileProcessor] 等待分卷稳定超时: {volume}")
                     return None
 
-        return file_path
+        return volume_set.entry_path or file_path
 
     async def _handle_potential_volume(
         self,
@@ -470,16 +490,26 @@ class FileProcessor:
             r'\.part(\d+)\.(rar|zip|7z)$',  # 带扩展名的分卷
             r'\.part(\d+)$',                  # 无扩展名的分卷
             r'\.z\d{2}$',                     # ZIP分卷
+            r'\.r\d{2}$',                     # 旧式 RAR 分卷
             r'\.\d{3}$',                      # 7z分卷
+        ]
+        basename = os.path.basename(file_path)
+        main_volume_patterns = [
+            r'^.+\.zip$',
+            r'^.+\.rar$',
+            r'^.+\.part1(?:\.(rar|zip|7z))?$',
         ]
 
         is_potential_volume = any(
-            re.search(p, os.path.basename(file_path), re.IGNORECASE)
+            re.search(p, basename, re.IGNORECASE)
             for p in part_patterns
+        ) or any(
+            re.search(p, basename, re.IGNORECASE)
+            for p in main_volume_patterns
         )
 
         if is_potential_volume:
-            logger.info(f"[FileProcessor] 检测到可能是分卷文件，等待其他分卷: {os.path.basename(file_path)}")
+            logger.info(f"[FileProcessor] 检测到可能是分卷文件，等待其他分卷: {basename}")
             # 等待一段时间让其他分卷文件出现
             await asyncio.sleep(10)
 
@@ -493,7 +523,10 @@ class FileProcessor:
                     mark_processed=mark_processed
                 )
             else:
-                logger.info(f"[FileProcessor] 等待后仍未检测到分卷组，作为普通文件处理: {os.path.basename(file_path)}")
+                if re.search(r'\.(z\d{2}|r\d{2})$', basename, re.IGNORECASE):
+                    logger.warning(f"[FileProcessor] 分卷主文件尚未出现，暂不创建任务: {basename}")
+                    return None
+                logger.info(f"[FileProcessor] 等待后仍未检测到分卷组，作为普通文件处理: {basename}")
                 return file_path
 
         return file_path
@@ -544,6 +577,81 @@ class FileProcessor:
             if resume_fn:
                 resume_fn()
 
+    def _build_zip_volume_set(self, directory: str, base_name: str) -> Optional[VolumeSet]:
+        zip_path = os.path.join(directory, f"{base_name}.zip")
+        if not os.path.exists(zip_path):
+            return None
+
+        volumes = []
+        try:
+            for file in os.listdir(directory):
+                if re.fullmatch(rf'{re.escape(base_name)}\.z\d{{2}}', file, re.IGNORECASE):
+                    volumes.append(os.path.join(directory, file))
+        except Exception as exc:
+            logger.error(f"[FileProcessor] 查找 ZIP 分卷失败: {exc}")
+            return None
+
+        if not volumes:
+            return None
+
+        volumes.append(zip_path)
+        ordered = sorted(volumes, key=self._volume_sort_key)
+        return VolumeSet(base_name, ordered, 'zip_volume_main', entry_path=zip_path)
+
+    def _build_rar_old_volume_set(self, directory: str, base_name: str) -> Optional[VolumeSet]:
+        rar_path = os.path.join(directory, f"{base_name}.rar")
+        if not os.path.exists(rar_path):
+            return None
+
+        volumes = [rar_path]
+        try:
+            for file in os.listdir(directory):
+                if re.fullmatch(rf'{re.escape(base_name)}\.r\d{{2}}', file, re.IGNORECASE):
+                    volumes.append(os.path.join(directory, file))
+        except Exception as exc:
+            logger.error(f"[FileProcessor] 查找旧式 RAR 分卷失败: {exc}")
+            return None
+
+        if len(volumes) <= 1:
+            return None
+
+        ordered = sorted(volumes, key=self._volume_sort_key)
+        return VolumeSet(base_name, ordered, 'rar_volume_main', entry_path=rar_path)
+
+    def _volume_sort_key(self, path: str):
+        filename = os.path.basename(path).lower()
+
+        part_match = re.search(r'\.part(\d+)(?:\.(?:rar|zip|7z|exe))?$', filename, re.IGNORECASE)
+        if part_match:
+            return (0, int(part_match.group(1)), filename)
+
+        sevenzip_match = re.search(r'\.7z\.(\d{3})$', filename, re.IGNORECASE)
+        if sevenzip_match:
+            return (1, int(sevenzip_match.group(1)), filename)
+
+        pure_numeric_match = re.search(r'\.(\d{3})$', filename, re.IGNORECASE)
+        if pure_numeric_match:
+            return (2, int(pure_numeric_match.group(1)), filename)
+
+        zip_split_match = re.search(r'\.z(\d{2})$', filename, re.IGNORECASE)
+        if zip_split_match:
+            return (3, int(zip_split_match.group(1)), filename)
+
+        rar_old_match = re.search(r'\.r(\d{2})$', filename, re.IGNORECASE)
+        if rar_old_match:
+            return (4, int(rar_old_match.group(1)), filename)
+
+        if filename.endswith('.zip'):
+            return (5, 0, filename)
+        if filename.endswith('.rar'):
+            return (5, 1, filename)
+
+        two_digit_match = re.search(r'\.(\d{2})$', filename, re.IGNORECASE)
+        if two_digit_match:
+            return (6, int(two_digit_match.group(1)), filename)
+
+        return (9, 0, filename)
+
     def _find_all_volumes(self, directory: str, base_name: str, pattern: str) -> List[str]:
         """查找所有分卷文件
 
@@ -567,7 +675,7 @@ class FileProcessor:
         except Exception as e:
             logger.error(f"[FileProcessor] 列出目录失败: {e}")
 
-        result = sorted(volumes)
+        result = sorted(volumes, key=self._volume_sort_key)
         logger.info(f"[FileProcessor] 最终分卷列表: {[os.path.basename(v) for v in result]}")
         return result
 
