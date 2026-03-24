@@ -923,7 +923,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { Refresh, Search, Folder, FolderOpened, Delete, Edit, Files, Document, Picture, VideoPlay, Headset, Tickets, ArrowDown, Loading } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { libraryApi, rjSubtitleApi } from '../api'
@@ -982,6 +982,9 @@ const labels = {
 let statsPollTimer = null
 let listPollTimer = null
 let subtitleStatusPollTimer = null
+let libraryInitialized = false
+let libraryViewActive = false
+let libraryKeydownBound = false
 function createSubtitleScanSessionState () {
   return {
     scannedTargets: 0,
@@ -1624,19 +1627,64 @@ const selectedSubtitleCandidates = computed(() => selectedRows.value.filter(row 
 const selectedApiRenameRows = computed(() => selectedRows.value.filter(row => row?.is_directory))
 const apiRenameBusy = computed(() => Boolean(apiRenamingId.value) || batchRenaming.value)
 
-onMounted(async () => {
-  await loadLibraries()
-  await refreshLibrary()
-  loadRJSubtitlePreferences()
-  refreshStats(false, { silent: true })
+function bindLibraryKeydown () {
+  if (libraryKeydownBound) return
   window.addEventListener('keydown', handleSubtitleDialogKeydown)
-})
+  libraryKeydownBound = true
+}
 
-onBeforeUnmount(() => {
+function unbindLibraryKeydown () {
+  if (!libraryKeydownBound) return
+  window.removeEventListener('keydown', handleSubtitleDialogKeydown)
+  libraryKeydownBound = false
+}
+
+function stopLibraryPolling () {
   clearStatsPoll()
   clearListPoll()
   clearSubtitleStatusPoll()
-  window.removeEventListener('keydown', handleSubtitleDialogKeydown)
+}
+
+async function initializeLibraryPage () {
+  if (libraryInitialized) return
+  await loadLibraries()
+  await refreshLibrary()
+  loadRJSubtitlePreferences()
+  await refreshStats(false, { silent: true })
+  libraryInitialized = true
+}
+
+async function resumeLibraryPage () {
+  bindLibraryKeydown()
+  await refreshLibrary({ silent: true })
+  await refreshStats(false, { silent: true })
+  if (subtitleDialogVisible.value) {
+    await refreshRJSubtitleStatus(false, { silent: true })
+  }
+}
+
+onMounted(async () => {
+  bindLibraryKeydown()
+  await initializeLibraryPage()
+  libraryViewActive = true
+})
+
+onActivated(async () => {
+  if (libraryViewActive) return
+  libraryViewActive = true
+  await resumeLibraryPage()
+})
+
+onDeactivated(() => {
+  libraryViewActive = false
+  stopLibraryPolling()
+  unbindLibraryKeydown()
+})
+
+onBeforeUnmount(() => {
+  libraryViewActive = false
+  stopLibraryPolling()
+  unbindLibraryKeydown()
 })
 
 watch(pageSize, async value => {

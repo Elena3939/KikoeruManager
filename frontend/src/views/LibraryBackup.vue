@@ -145,7 +145,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Folder, FolderOpened, Key } from '@element-plus/icons-vue'
 import { configApi, backupApi } from '../api'
@@ -179,6 +179,8 @@ const backupConfig = ref({
 const backupHistory = ref([])
 
 let timer = null
+let libraryBackupInitialized = false
+let libraryBackupViewActive = false
 
 function stopPolling() {
   if (timer) {
@@ -337,12 +339,29 @@ async function resumeBackup() {
 }
 
 onMounted(async () => {
-  await loadConfig()
+  if (!libraryBackupInitialized) {
+    await loadConfig()
+    await fetchBackupStatus(false)
+    await fetchBackupHistory()
+    libraryBackupInitialized = true
+  }
+  libraryBackupViewActive = true
+})
+
+onActivated(async () => {
+  if (libraryBackupViewActive) return
+  libraryBackupViewActive = true
   await fetchBackupStatus(false)
   await fetchBackupHistory()
 })
 
+onDeactivated(() => {
+  libraryBackupViewActive = false
+  stopPolling()
+})
+
 onBeforeUnmount(() => {
+  libraryBackupViewActive = false
   stopPolling()
 })
 </script>

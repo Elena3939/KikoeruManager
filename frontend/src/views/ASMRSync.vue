@@ -11,12 +11,7 @@
       <div class="scan-section">
         <el-form :inline="true">
           <el-form-item label="字幕文件夹">
-            <el-input
-              v-model="subtitleFolder"
-              placeholder="选择包含字幕文件的文件夹"
-              style="width: 400px"
-              clearable
-            >
+            <el-input v-model="subtitleFolder" placeholder="选择包含字幕文件的文件夹" style="width: 400px" clearable>
               <template #append>
                 <el-button @click="selectFolder">选择</el-button>
               </template>
@@ -24,16 +19,15 @@
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="scanFolder" :loading="scanning">
-              <el-icon><Search /></el-icon>
+              <el-icon>
+                <Search />
+              </el-icon>
               扫描
             </el-button>
-            <el-button
-              type="success"
-              @click="startSync"
-              :loading="syncing"
-              :disabled="selectedItems.length === 0"
-            >
-              <el-icon><Download /></el-icon>
+            <el-button type="success" @click="startSync" :loading="syncing" :disabled="selectedItems.length === 0">
+              <el-icon>
+                <Download />
+              </el-icon>
               开始同步下载
             </el-button>
           </el-form-item>
@@ -56,7 +50,9 @@
         <el-table-column prop="folder_name" label="文件夹名称" min-width="250">
           <template #default="{ row }">
             <div class="folder-name">
-              <el-icon><Folder /></el-icon>
+              <el-icon>
+                <Folder />
+              </el-icon>
               <span>{{ row.folder_name }}</span>
             </div>
           </template>
@@ -81,7 +77,9 @@
     <!-- 预览对话框 -->
     <el-dialog v-model="previewDialogVisible" title="下载预览" width="900px">
       <div v-if="previewLoading" class="preview-loading">
-        <el-icon class="is-loading"><Loading /></el-icon>
+        <el-icon class="is-loading">
+          <Loading />
+        </el-icon>
         <span>正在获取作品信息...</span>
       </div>
       <div v-else-if="previewData" class="preview-content">
@@ -118,7 +116,8 @@
             <el-table-column prop="file_count" label="文件数" width="80" />
             <el-table-column label="可用" width="80">
               <template #default="{ row }">
-                <el-tag size="small" :type="row.available ? 'success' : 'danger'">{{ row.available ? '是' : '否' }}</el-tag>
+                <el-tag size="small" :type="row.available ? 'success' : 'danger'">{{ row.available ? '是' : '否'
+                }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
@@ -133,7 +132,9 @@
             <el-table-column label="文件路径" min-width="300">
               <template #default="{ row }">
                 <div class="file-path">
-                  <el-icon><Document /></el-icon>
+                  <el-icon>
+                    <Document />
+                  </el-icon>
                   <span :title="row.path || row.title">{{ row.title }}</span>
                 </div>
               </template>
@@ -161,7 +162,9 @@
           <span>下载任务</span>
           <div class="header-actions">
             <el-button size="small" @click="refreshStatus" :loading="refreshing">
-              <el-icon><Refresh /></el-icon>刷新
+              <el-icon>
+                <Refresh />
+              </el-icon>刷新
             </el-button>
           </div>
         </div>
@@ -170,7 +173,9 @@
       <!-- 等待重试的任务 -->
       <div v-if="waitingRetryTasks.length > 0" class="waiting-section">
         <div class="section-title">
-          <el-icon><Clock /></el-icon>
+          <el-icon>
+            <Clock />
+          </el-icon>
           <span>等待重试 ({{ waitingRetryTasks.length }} 个)</span>
           <span v-if="nextRetryTime" class="next-retry-time">
             下次自动重试: {{ formatNextRetryTime(nextRetryTime) }}
@@ -206,7 +211,9 @@
               <span class="task-title">{{ task.work_title }}</span>
             </div>
             <div class="task-actions">
-              <el-tag :type="task.status === 'completed' ? 'success' : task.status === 'failed' ? 'danger' : task.status === 'paused' ? 'info' : task.status === 'waiting_retry' ? 'warning' : 'warning'" size="small">
+              <el-tag
+                :type="task.status === 'completed' ? 'success' : task.status === 'failed' ? 'danger' : task.status === 'paused' ? 'info' : task.status === 'waiting_retry' ? 'warning' : 'warning'"
+                size="small">
                 {{ getStatusText(task.status) }}
               </el-tag>
               <!-- 暂停/继续按钮 -->
@@ -217,37 +224,43 @@
                 <el-button type="primary" @click="resumeTask(task.id)" :loading="task.resuming">继续</el-button>
               </el-button-group>
               <!-- 等待重试任务的手动重试按钮 -->
-              <el-button v-if="task.status === 'waiting_retry'" size="small" type="primary" @click="retryWaitingTask(task.id)" :loading="task.retrying">
+              <el-button v-if="task.status === 'waiting_retry'" size="small" type="primary"
+                @click="retryWaitingTask(task.id)" :loading="task.retrying">
                 立即重试
               </el-button>
               <!-- 重试失败文件按钮 -->
-              <el-button v-if="task.failed_files && task.failed_files.length > 0" size="small" type="warning" @click="retryFailed(task.id)" :loading="task.retrying">
+              <el-button v-if="task.failed_files && task.failed_files.length > 0" size="small" type="warning"
+                @click="retryFailed(task.id)" :loading="task.retrying">
                 重试失败文件 ({{ task.failed_files.length }})
               </el-button>
             </div>
           </div>
-          <el-progress
-            :percentage="task.progress"
+          <el-progress :percentage="task.progress"
             :status="task.status === 'completed' ? 'success' : task.status === 'failed' ? 'exception' : ''"
-            :stroke-width="10"
-            style="margin: 12px 0;"
-          />
+            :stroke-width="10" style="margin: 12px 0;" />
           <div class="task-step">
-            <el-icon v-if="task.status === 'processing'"><Loading /></el-icon>
+            <el-icon v-if="task.status === 'processing'">
+              <Loading />
+            </el-icon>
             <span>{{ task.current_step }}</span>
           </div>
           <div v-if="task.error_message" class="task-error">
-            <el-icon><WarningFilled /></el-icon>
+            <el-icon>
+              <WarningFilled />
+            </el-icon>
             {{ task.error_message }}
           </div>
 
           <!-- 字幕同步结果 -->
-          <div v-if="task.sync_result && task.sync_result.renamed_files && task.sync_result.renamed_files.length > 0" class="sync-result">
+          <div v-if="task.sync_result && task.sync_result.renamed_files && task.sync_result.renamed_files.length > 0"
+            class="sync-result">
             <el-collapse>
               <el-collapse-item>
                 <template #title>
                   <span class="sync-list-title">
-                    <el-icon><Document /></el-icon>
+                    <el-icon>
+                      <Document />
+                    </el-icon>
                     字幕同步映射 ({{ task.sync_result.renamed_files.length }} 对)
                   </span>
                 </template>
@@ -278,7 +291,9 @@
               <el-collapse-item>
                 <template #title>
                   <span class="failed-list-title">
-                    <el-icon><WarningFilled /></el-icon>
+                    <el-icon>
+                      <WarningFilled />
+                    </el-icon>
                     失败文件 ({{ task.failed_files.length }} 个)
                   </span>
                 </template>
@@ -298,19 +313,17 @@
               <el-collapse-item>
                 <template #title>
                   <span class="file-list-title">
-                    <el-icon><Folder /></el-icon>
+                    <el-icon>
+                      <Folder />
+                    </el-icon>
                     文件下载进度 ({{ task.download_files.length }} 个文件)
                   </span>
                 </template>
                 <div class="file-items">
                   <div v-for="file in task.download_files" :key="file.name" class="file-item">
                     <div class="file-name">{{ file.name }}</div>
-                    <el-progress
-                      :percentage="file.progress"
-                      :stroke-width="6"
-                      :show-text="false"
-                      style="width: 100px; margin: 0 8px;"
-                    />
+                    <el-progress :percentage="file.progress" :stroke-width="6" :show-text="false"
+                      style="width: 100px; margin: 0 8px;" />
                     <span class="file-size">{{ formatSize(file.downloaded) }} / {{ formatSize(file.total) }}</span>
                   </div>
                 </div>
@@ -324,7 +337,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, Download, Folder, Loading, Refresh, Document, WarningFilled, Clock } from '@element-plus/icons-vue'
 import { asmrSyncApi, configApi } from '../api'
@@ -342,6 +355,8 @@ const previewData = ref(null)
 const tasks = ref([])
 const nextRetryTime = ref('')
 let statusInterval = null
+let asmrSyncInitialized = false
+let asmrSyncViewActive = false
 
 // 计算属性：分离等待重试的任务和活动任务
 const waitingRetryTasks = computed(() => {
@@ -575,84 +590,431 @@ const formatSize = (bytes) => {
   return `${size.toFixed(2)} ${units[i]}`
 }
 
-onMounted(async () => {
+function stopStatusPolling () {
+  if (statusInterval) {
+    clearInterval(statusInterval)
+    statusInterval = null
+  }
+}
+
+function startStatusPolling () {
+  stopStatusPolling()
+  statusInterval = setInterval(refreshStatus, 3000)
+}
+
+async function initializeASMRSyncPage () {
+  if (asmrSyncInitialized) return
   await loadSavedFolder()
   await loadWaitingRetryTasks()
-  refreshStatus()
-  statusInterval = setInterval(refreshStatus, 3000)
-  // 自动扫描字幕文件夹
+  await refreshStatus()
   if (subtitleFolder.value) {
-    scanFolder()
+    await scanFolder()
   }
+  asmrSyncInitialized = true
+}
+
+onMounted(async () => {
+  await initializeASMRSyncPage()
+  asmrSyncViewActive = true
+  startStatusPolling()
+  // 自动扫描字幕文件夹
+})
+
+onActivated(async () => {
+  if (asmrSyncViewActive) return
+  asmrSyncViewActive = true
+  await loadWaitingRetryTasks()
+  await refreshStatus()
+  startStatusPolling()
+})
+
+onDeactivated(() => {
+  asmrSyncViewActive = false
+  stopStatusPolling()
 })
 
 onUnmounted(() => {
-  if (statusInterval) clearInterval(statusInterval)
+  asmrSyncViewActive = false
+  stopStatusPolling()
 })
 </script>
 
 <style scoped>
-.asm-sync-page { padding: 20px; }
-.page-header { margin-bottom: 20px; }
-.header-content { display: flex; align-items: center; gap: 12px; }
-.header-content .title { font-size: 18px; font-weight: 600; }
-.scan-section { margin-top: 16px; }
-.results-card { margin-bottom: 20px; }
-.results-header { display: flex; justify-content: space-between; align-items: center; }
-.folder-name { display: flex; align-items: center; gap: 8px; }
-.preview-loading { display: flex; flex-direction: column; align-items: center; padding: 40px; gap: 12px; }
-.preview-content { padding: 16px 0; }
-.version-list, .file-list { margin-top: 20px; }
-.version-list h4, .file-list h4 { margin-bottom: 12px; color: #606266; font-size: 14px; }
-.file-path { display: flex; align-items: center; gap: 6px; }
-.file-path span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.preview-error { padding: 40px; }
-.tasks-card { margin-top: 20px; }
-.task-list { display: flex; flex-direction: column; gap: 12px; }
-.task-item { border-left: 4px solid #409EFF; }
-.task-item.completed { border-left-color: #67C23A; }
-.task-item.failed { border-left-color: #F56C6C; }
-.task-item.paused { border-left-color: #909399; }
-.task-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-.task-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.task-rjcode { font-weight: bold; color: #409EFF; }
-.task-original-rj { color: #909399; font-size: 12px; }
-.task-title { color: #606266; font-size: 13px; }
-.task-actions { display: flex; align-items: center; gap: 8px; }
-.task-step { display: flex; align-items: center; gap: 6px; color: #909399; font-size: 12px; }
-.task-error { display: flex; align-items: center; gap: 6px; color: #F56C6C; font-size: 12px; margin-top: 8px; padding: 8px; background: #fef0f0; border-radius: 4px; }
-.file-download-list { margin-top: 12px; }
-.file-list-title { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-.file-items { display: flex; flex-direction: column; gap: 8px; }
-.file-item { display: flex; align-items: center; padding: 8px; background: #f5f7fa; border-radius: 4px; }
-.file-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-size { font-size: 11px; color: #909399; min-width: 120px; text-align: right; }
-.failed-files { margin-top: 12px; }
-.failed-list-title { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #F56C6C; }
-.failed-items { display: flex; flex-direction: column; gap: 4px; }
-.failed-item { display: flex; justify-content: space-between; padding: 6px 8px; background: #fef0f0; border-radius: 4px; font-size: 12px; }
-.failed-name { color: #606266; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.failed-reason { color: #F56C6C; margin-left: 8px; }
-.sync-result { margin-top: 12px; }
-.sync-list-title { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #67C23A; }
-.sync-items { display: flex; flex-direction: column; gap: 8px; }
-.sync-item { display: flex; flex-direction: column; padding: 10px; background: #f0f9eb; border-radius: 4px; gap: 4px; }
-.sync-row { display: flex; align-items: center; gap: 8px; }
-.sync-label { color: #909399; font-size: 11px; white-space: nowrap; min-width: 70px; }
-.sync-original { font-size: 12px; color: #E6A23C; font-weight: 500; }
-.sync-new { font-size: 12px; color: #409EFF; font-weight: 500; }
-.sync-subtitle { font-size: 12px; color: #67C23A; font-weight: 500; }
-.sync-arrow-down { color: #67C23A; font-weight: bold; font-size: 14px; text-align: center; }
-.waiting-section { margin-bottom: 16px; padding: 12px; background: #fdf6ec; border-radius: 8px; }
-.section-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: #E6A23C; margin-bottom: 12px; }
-.next-retry-time { margin-left: auto; font-size: 12px; font-weight: normal; color: #909399; }
-.waiting-list { display: flex; flex-direction: column; gap: 8px; }
-.waiting-item { padding: 12px; }
-.waiting-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.waiting-info { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px; }
-.retry-reason { color: #E6A23C; }
-.retry-count { color: #909399; }
-.retry-after { color: #409EFF; margin-left: 8px; }
-.waiting-actions { display: flex; gap: 8px; }
-.header-actions { display: flex; gap: 8px; }
+.asm-sync-page {
+  padding: 20px;
+}
+
+.page-header {
+  margin-bottom: 20px;
+}
+
+.header-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-content .title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.scan-section {
+  margin-top: 16px;
+}
+
+.results-card {
+  margin-bottom: 20px;
+}
+
+.results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.folder-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px;
+  gap: 12px;
+}
+
+.preview-content {
+  padding: 16px 0;
+}
+
+.version-list,
+.file-list {
+  margin-top: 20px;
+}
+
+.version-list h4,
+.file-list h4 {
+  margin-bottom: 12px;
+  color: #606266;
+  font-size: 14px;
+}
+
+.file-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-path span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-error {
+  padding: 40px;
+}
+
+.tasks-card {
+  margin-top: 20px;
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.task-item {
+  border-left: 4px solid #409EFF;
+}
+
+.task-item.completed {
+  border-left-color: #67C23A;
+}
+
+.task-item.failed {
+  border-left-color: #F56C6C;
+}
+
+.task-item.paused {
+  border-left-color: #909399;
+}
+
+.task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.task-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.task-rjcode {
+  font-weight: bold;
+  color: #409EFF;
+}
+
+.task-original-rj {
+  color: #909399;
+  font-size: 12px;
+}
+
+.task-title {
+  color: #606266;
+  font-size: 13px;
+}
+
+.task-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.task-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #F56C6C;
+  font-size: 12px;
+  margin-top: 8px;
+  padding: 8px;
+  background: #fef0f0;
+  border-radius: 4px;
+}
+
+.file-download-list {
+  margin-top: 12px;
+}
+
+.file-list-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.file-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+
+.file-name {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  font-size: 11px;
+  color: #909399;
+  min-width: 120px;
+  text-align: right;
+}
+
+.failed-files {
+  margin-top: 12px;
+}
+
+.failed-list-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #F56C6C;
+}
+
+.failed-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.failed-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: #fef0f0;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.failed-name {
+  color: #606266;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.failed-reason {
+  color: #F56C6C;
+  margin-left: 8px;
+}
+
+.sync-result {
+  margin-top: 12px;
+}
+
+.sync-list-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #67C23A;
+}
+
+.sync-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sync-item {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  background: #f0f9eb;
+  border-radius: 4px;
+  gap: 4px;
+}
+
+.sync-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sync-label {
+  color: #909399;
+  font-size: 11px;
+  white-space: nowrap;
+  min-width: 70px;
+}
+
+.sync-original {
+  font-size: 12px;
+  color: #E6A23C;
+  font-weight: 500;
+}
+
+.sync-new {
+  font-size: 12px;
+  color: #409EFF;
+  font-weight: 500;
+}
+
+.sync-subtitle {
+  font-size: 12px;
+  color: #67C23A;
+  font-weight: 500;
+}
+
+.sync-arrow-down {
+  color: #67C23A;
+  font-weight: bold;
+  font-size: 14px;
+  text-align: center;
+}
+
+.waiting-section {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #fdf6ec;
+  border-radius: 8px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #E6A23C;
+  margin-bottom: 12px;
+}
+
+.next-retry-time {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: normal;
+  color: #909399;
+}
+
+.waiting-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.waiting-item {
+  padding: 12px;
+}
+
+.waiting-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.waiting-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.retry-reason {
+  color: #E6A23C;
+}
+
+.retry-count {
+  color: #909399;
+}
+
+.retry-after {
+  color: #409EFF;
+  margin-left: 8px;
+}
+
+.waiting-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
 </style>
