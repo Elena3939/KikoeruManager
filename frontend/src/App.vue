@@ -1,14 +1,13 @@
 <template>
   <el-container class="app-container">
-    <!-- 侧边栏 -->
     <el-aside width="220px" class="sidebar">
       <div class="logo">
         <el-icon :size="32"><Box /></el-icon>
         <span class="logo-text">Prekikoeru</span>
       </div>
-      
+
       <el-menu
-        :default-active="$route.path"
+        :default-active="route.path"
         router
         class="sidebar-menu"
         background-color="#1e293b"
@@ -19,28 +18,28 @@
           <el-icon><HomeFilled /></el-icon>
           <span>概览</span>
         </el-menu-item>
-        
+
         <el-menu-item index="/tasks">
           <el-icon><List /></el-icon>
           <span>任务队列</span>
         </el-menu-item>
-        
+
         <el-menu-item index="/conflicts">
           <el-icon><WarningFilled /></el-icon>
           <span>问题作品</span>
           <el-badge v-if="conflictCount > 0" :value="conflictCount" class="conflict-badge" />
         </el-menu-item>
-        
+
         <el-menu-item index="/library">
           <el-icon><Box /></el-icon>
           <span>库存管理</span>
         </el-menu-item>
-        
+
         <el-menu-item index="/passwords">
           <el-icon><Lock /></el-icon>
           <span>密码库</span>
         </el-menu-item>
-        
+
         <el-menu-item index="/existing-folders">
           <el-icon><Folder /></el-icon>
           <span>已有文件夹</span>
@@ -48,7 +47,7 @@
 
         <el-menu-item index="/asmr-sync">
           <el-icon><Download /></el-icon>
-          <span>同步下载</span>
+          <span>ASMR 同步下载</span>
         </el-menu-item>
 
         <el-menu-item index="/library-backup">
@@ -60,19 +59,19 @@
           <el-icon><Setting /></el-icon>
           <span>设置</span>
         </el-menu-item>
-        
+
         <el-menu-item index="/logs">
           <el-icon><Document /></el-icon>
           <span>日志</span>
         </el-menu-item>
       </el-menu>
-      
+
       <div class="sidebar-footer">
         <div class="watcher-status">
           <el-tag :type="watcherStatus.is_running ? 'success' : 'info'" size="small">
             {{ watcherStatus.is_running ? '监视中' : '已停止' }}
           </el-tag>
-          <el-button 
+          <el-button
             :type="watcherStatus.is_running ? 'danger' : 'primary'"
             size="small"
             @click="toggleWatcher"
@@ -85,27 +84,58 @@
         </div>
       </div>
     </el-aside>
-    
-    <!-- 主内容区 -->
-    <el-main class="main-content">
-      <router-view />
-    </el-main>
+
+    <el-container class="main-shell" direction="vertical">
+      <AppTabs />
+
+      <el-main class="main-content">
+        <router-view v-slot="{ Component, route: viewRoute }">
+          <keep-alive :include="cachedViews">
+            <component
+              :is="Component"
+              v-if="viewRoute.meta?.cache"
+              :key="tabStore.viewKey(viewRoute.path, viewRoute.name || viewRoute.path)"
+            />
+          </keep-alive>
+          <component
+            :is="Component"
+            v-if="!viewRoute.meta?.cache"
+            :key="tabStore.viewKey(viewRoute.path, viewRoute.fullPath)"
+          />
+        </router-view>
+      </el-main>
+    </el-container>
   </el-container>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
-import { Box, HomeFilled, List, WarningFilled, Setting, Document, Lock, Folder, Download, FolderOpened } from '@element-plus/icons-vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import {
+  Box,
+  Document,
+  Download,
+  Folder,
+  FolderOpened,
+  HomeFilled,
+  List,
+  Lock,
+  Setting,
+  WarningFilled
+} from '@element-plus/icons-vue'
+import AppTabs from './components/layout/AppTabs.vue'
 import { useWatcherStore } from './stores'
+import { useTabStore } from './stores/tabStore'
 
-// 直接定义版本号（确保每次构建都会更新）
 const appVersion = '1.0.2'
-
+const route = useRoute()
 const watcherStore = useWatcherStore()
+const tabStore = useTabStore()
 const conflictCount = ref(0)
 const watcherStatus = ref({ is_running: false, watch_path: '', pending_files: [] })
+const cachedViews = computed(() => tabStore.cachedViewNames)
 
-let intervalId
+let intervalId = null
 
 onMounted(async () => {
   await refreshStatus()
@@ -113,7 +143,10 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (intervalId) clearInterval(intervalId)
+  if (intervalId) {
+    clearInterval(intervalId)
+    intervalId = null
+  }
 })
 
 async function refreshStatus() {
@@ -137,19 +170,22 @@ async function toggleWatcher() {
 }
 
 .sidebar {
-  background-color: #1e293b;
   display: flex;
   flex-direction: column;
+  background:
+    linear-gradient(180deg, #1e293b 0%, #182433 100%);
+  box-shadow: 10px 0 30px rgba(15, 23, 42, 0.16);
 }
 
 .logo {
-  height: 64px;
   display: flex;
   align-items: center;
   justify-content: center;
+  height: 64px;
   padding: 0 20px;
-  border-bottom: 1px solid #334155;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
   color: #ffffff;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.18) 0%, rgba(30, 41, 59, 0) 100%);
 }
 
 .logo-text {
@@ -165,13 +201,15 @@ async function toggleWatcher() {
 
 .sidebar-footer {
   padding: 16px;
-  border-top: 1px solid #334155;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.22);
 }
 
 .watcher-status {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
 .conflict-badge {
@@ -180,50 +218,51 @@ async function toggleWatcher() {
 
 .version-info {
   margin-top: 8px;
-  text-align: center;
   padding-top: 8px;
-  border-top: 1px solid #334155;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  text-align: center;
 }
 
 .version-text {
-  font-size: 12px;
-  color: #94a3b8;
-  background-color: #0f172a;
+  display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
-  display: inline-block;
+  background-color: #0f172a;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.main-shell {
+  min-width: 0;
+  background:
+    radial-gradient(circle at top right, rgba(96, 165, 250, 0.12) 0%, rgba(241, 245, 249, 0) 28%),
+    linear-gradient(180deg, #f6f9fc 0%, #eef4f9 100%);
 }
 
 .main-content {
-  background-color: #f1f5f9;
+  min-width: 0;
   padding: 20px;
   overflow-y: auto;
-  min-width: 0; /* 防止 flex 子元素溢出 */
+  background: transparent;
 }
 
-/* 响应式布局 */
 @media screen and (max-width: 768px) {
   .app-container {
     flex-direction: column;
   }
-  
+
   .sidebar {
     width: 100% !important;
     height: auto;
     max-height: 60px;
     overflow: hidden;
   }
-  
-  .sidebar.expanded {
-    max-height: none;
-  }
-  
+
   .main-content {
     padding: 10px;
   }
 }
 
-/* 确保表格容器可以横向滚动 */
 :deep(.el-card) {
   overflow: visible;
 }
@@ -231,21 +270,18 @@ async function toggleWatcher() {
 :deep(.el-card__body) {
   overflow-x: auto;
 }
-
 </style>
 
 <style>
-html, body {
+html,
+body {
+  height: 100%;
   margin: 0;
   padding: 0;
-  height: 100%;
-  overflow: hidden; /* 禁用系统级滚动 */
+  overflow: hidden;
 }
 
 #app {
   height: 100vh;
-  overflow-y: auto; /* 仅在应用容器内滚动 */
 }
-
 </style>
-
