@@ -1,39 +1,50 @@
 <template>
   <div class="logs">
-    <h1 class="page-title">日志</h1>
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">系统日志</h1>
+        <p class="page-subtitle">查看实时日志、筛选模块与级别，并在需要时暂停自动刷新。</p>
+      </div>
+      <div class="header-actions">
+        <el-button :type="isPaused ? 'success' : 'warning'" @click="togglePause">
+          <el-icon><component :is="isPaused ? VideoPlay : VideoPause" /></el-icon>
+          {{ isPaused ? '恢复自动刷新' : '暂停自动刷新' }}
+        </el-button>
+        <el-button @click="refreshLogs(true)">
+          <el-icon><Refresh /></el-icon>
+          刷新
+        </el-button>
+        <el-button type="danger" @click="clearLogs">
+          <el-icon><Delete /></el-icon>
+          清空视图
+        </el-button>
+      </div>
+    </div>
 
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>系统日志</span>
-          <div class="header-actions">
-            <el-button :type="isPaused ? 'success' : 'warning'" @click="togglePause">
-              <el-icon><component :is="isPaused ? VideoPlay : VideoPause" /></el-icon>
-              {{ isPaused ? '恢复自动刷新' : '暂停自动刷新' }}
-            </el-button>
-            <el-button @click="refreshLogs(true)">
-              <el-icon><Refresh /></el-icon>
-              刷新
-            </el-button>
-            <el-button type="danger" @click="clearLogs">
-              <el-icon><Delete /></el-icon>
-              清空视图
-            </el-button>
+    <el-card class="logs-card" shadow="never">
+      <div class="filter-section">
+        <div class="filter-group filter-group--levels">
+          <span class="filter-label">日志级别</span>
+          <div class="level-filter-list">
+            <button
+              v-for="level in allLevels"
+              :key="level"
+              type="button"
+              class="level-filter-chip"
+              :class="[
+                `is-${level.toLowerCase()}`,
+                { 'is-active': isLevelSelected(level) }
+              ]"
+              @click="toggleLevel(level)"
+            >
+              <span class="level-filter-dot" />
+              <span>{{ level }}</span>
+            </button>
           </div>
         </div>
-      </template>
 
-      <div class="filter-section">
         <div class="filter-group">
-          <span class="filter-label">日志级别：</span>
-          <el-checkbox-group v-model="selectedLevels" size="small">
-            <el-checkbox-button v-for="level in allLevels" :key="level" :value="level">
-              <span :class="`level-badge level-${level.toLowerCase()}`">{{ level }}</span>
-            </el-checkbox-button>
-          </el-checkbox-group>
-        </div>
-        <div class="filter-group">
-          <span class="filter-label">模块筛选：</span>
+          <span class="filter-label">模块筛选</span>
           <el-select
             v-model="selectedModules"
             multiple
@@ -47,22 +58,24 @@
             <el-option v-for="mod in availableModules" :key="mod" :label="mod" :value="mod" />
           </el-select>
         </div>
+
         <div class="filter-group">
-          <span class="filter-label">搜索：</span>
+          <span class="filter-label">搜索</span>
           <el-input
             v-model="searchKeyword"
             placeholder="搜索日志内容"
             clearable
             size="small"
-            style="width: 220px"
+            style="width: 240px"
           >
             <template #prefix>
               <el-icon><Search /></el-icon>
             </template>
           </el-input>
         </div>
+
         <div class="filter-group">
-          <span class="filter-label">显示条数：</span>
+          <span class="filter-label">显示条数</span>
           <el-select v-model="logLimit" size="small" style="width: 110px" @change="refreshLogs(true)">
             <el-option :value="100" label="100 条" />
             <el-option :value="300" label="300 条" />
@@ -71,13 +84,14 @@
             <el-option :value="2000" label="2000 条" />
           </el-select>
         </div>
+
         <div class="filter-stats">{{ filteredLogs.length }} / {{ logs.length }} 条</div>
       </div>
 
       <div ref="logContainer" class="log-container" :class="{ paused: isPaused }" @scroll.passive="handleScroll">
         <div class="log-toolbar-status">
           <span v-if="isPaused" class="log-status-indicator paused">已暂停自动刷新</span>
-          <span v-else-if="!autoFollowLogs" class="log-status-indicator">正在查看历史日志</span>
+          <span v-else-if="!autoFollowLogs" class="log-status-indicator history">正在查看历史日志</span>
           <span v-else class="log-status-indicator active">自动跟随中</span>
         </div>
 
@@ -98,8 +112,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { Refresh, Delete, VideoPlay, VideoPause, Search } from '@element-plus/icons-vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { Delete, Refresh, Search, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { logApi } from '../api'
 
@@ -120,11 +134,11 @@ let intervalId = null
 let lastLogSignature = ''
 
 const moduleColors = {
-  Prekikoeru: '#8b5cf6',
-  '关联查询': '#a855f7',
-  '字幕抓取': '#7c3aed',
-  CONFIG: '#06b6d4',
-  'CONFIG SAVE': '#0891b2',
+  Prekikoeru: '#6d8ef7',
+  关联查询: '#8b5cf6',
+  字幕抓取: '#7c3aed',
+  CONFIG: '#0ea5e9',
+  'CONFIG SAVE': '#0284c7',
   RENAME: '#10b981',
   'API RENAME': '#059669',
   解压: '#f59e0b',
@@ -138,7 +152,7 @@ const moduleColors = {
 
 const availableModules = computed(() => {
   const modules = new Set()
-  logs.value.forEach(log => {
+  logs.value.forEach((log) => {
     if (log.module) modules.add(log.module)
   })
   return Array.from(modules).sort()
@@ -146,7 +160,7 @@ const availableModules = computed(() => {
 
 const filteredLogs = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
-  return logs.value.filter(log => {
+  return logs.value.filter((log) => {
     if (!selectedLevels.value.includes(log.level)) return false
     if (selectedModules.value.length > 0 && !selectedModules.value.includes(log.module)) return false
     if (!keyword) return true
@@ -157,8 +171,21 @@ const filteredLogs = computed(() => {
   })
 })
 
+function isLevelSelected(level) {
+  return selectedLevels.value.includes(level)
+}
+
+function toggleLevel(level) {
+  if (selectedLevels.value.includes(level)) {
+    if (selectedLevels.value.length === 1) return
+    selectedLevels.value = selectedLevels.value.filter((item) => item !== level)
+    return
+  }
+  selectedLevels.value = [...selectedLevels.value, level]
+}
+
 function getModuleColor(moduleName) {
-  return moduleColors[moduleName] || '#6b7280'
+  return moduleColors[moduleName] || '#64748b'
 }
 
 function parseModule(message, rawLine) {
@@ -263,7 +290,7 @@ async function refreshLogs(force = false) {
 
 async function clearLogs() {
   try {
-    await ElMessageBox.confirm('确定要清空当前页面日志显示吗？这不会删除后端日志文件。', '确认', {
+    await ElMessageBox.confirm('确定要清空当前页面的日志显示吗？这不会删除后端日志文件。', '确认', {
       type: 'warning'
     })
     logs.value = []
@@ -287,27 +314,42 @@ onUnmounted(() => {
 
 <style scoped>
 .logs {
-  max-width: 1400px;
+  max-width: 1480px;
   margin: 0 auto;
 }
 
-.page-title {
-  margin: 0 0 24px;
-  font-size: 28px;
-  font-weight: 600;
-  color: #1e293b;
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
 }
 
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.page-title {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.page-subtitle {
+  margin: 8px 0 0;
+  color: #64748b;
+  font-size: 14px;
 }
 
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+}
+
+.logs-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
 }
 
 .filter-section {
@@ -316,51 +358,128 @@ onUnmounted(() => {
   align-items: center;
   gap: 16px;
   margin-bottom: 16px;
-  padding: 12px 16px;
-  background-color: #f8fafc;
-  border-radius: 8px;
+  padding: 14px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98) 0%, rgba(241, 245, 249, 0.92) 100%);
 }
 
 .filter-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+}
+
+.filter-group--levels {
+  align-items: flex-start;
 }
 
 .filter-label {
-  font-size: 14px;
   color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
+  line-height: 30px;
 }
 
 .filter-stats {
   margin-left: auto;
-  font-size: 13px;
   color: #94a3b8;
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.level-badge {
-  padding: 2px 6px;
+.level-filter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.level-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #d7e0ea;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #64748b;
   font-size: 12px;
-  font-weight: 500;
-  border-radius: 4px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
 }
 
-.level-debug { background-color: #e2e8f0; color: #475569; }
-.level-info { background-color: #dbeafe; color: #1d4ed8; }
-.level-warning { background-color: #fef3c7; color: #b45309; }
-.level-error { background-color: #fee2e2; color: #b91c1c; }
+.level-filter-chip:hover {
+  border-color: #c1cfde;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
+}
+
+.level-filter-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.45;
+}
+
+.level-filter-chip.is-active .level-filter-dot {
+  opacity: 1;
+}
+
+.level-filter-chip.is-debug {
+  color: #64748b;
+}
+
+.level-filter-chip.is-debug.is-active {
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.level-filter-chip.is-info {
+  color: #3b82f6;
+}
+
+.level-filter-chip.is-info.is-active {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.level-filter-chip.is-warning {
+  color: #d97706;
+}
+
+.level-filter-chip.is-warning.is-active {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.level-filter-chip.is-error {
+  color: #ef4444;
+}
+
+.level-filter-chip.is-error.is-active {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
 
 .log-container {
   height: 620px;
   overflow-y: auto;
-  padding: 12px 16px 16px;
+  padding: 10px 14px 16px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #1f2937 0%, #233047 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  color: #e2e8f0;
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.6;
-  color: #e2e8f0;
-  background-color: #1e293b;
-  border-radius: 8px;
 }
 
 .log-container.paused {
@@ -373,63 +492,91 @@ onUnmounted(() => {
   z-index: 2;
   display: flex;
   justify-content: flex-end;
-  padding-bottom: 8px;
-  background: linear-gradient(to bottom, rgba(30, 41, 59, 0.98), rgba(30, 41, 59, 0.86));
+  padding: 2px 0 10px;
+  background: transparent;
 }
 
 .log-status-indicator {
-  padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border: 1px solid rgba(147, 197, 253, 0.22);
+  border-radius: 999px;
+  color: #ffffff;
   font-size: 12px;
   font-weight: 700;
-  color: #fff;
-  background-color: #3b82f6;
-  border-radius: 4px;
-}
-
-.log-status-indicator.paused {
-  background-color: #f59e0b;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
 }
 
 .log-status-indicator.active {
-  background-color: #10b981;
+  background: rgba(16, 185, 129, 0.94);
+}
+
+.log-status-indicator.history {
+  background: rgba(59, 130, 246, 0.92);
+}
+
+.log-status-indicator.paused {
+  background: rgba(245, 158, 11, 0.94);
 }
 
 .log-line {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 3px 0;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: background-color 0.16s ease;
+}
+
+.log-line:hover {
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .log-time {
   flex-shrink: 0;
-  color: #64748b;
+  color: #7b8aa3;
   white-space: nowrap;
 }
 
 .log-level {
   min-width: 50px;
   padding: 0 4px;
+  border-radius: 999px;
   font-size: 11px;
   font-weight: 700;
   text-align: center;
   white-space: nowrap;
-  border-radius: 3px;
   flex-shrink: 0;
 }
 
-.log-debug .log-level { background-color: #374151; color: #9ca3af; }
-.log-info .log-level { background-color: #1e3a5f; color: #60a5fa; }
-.log-warning .log-level { background-color: #78350f; color: #fbbf24; }
-.log-error .log-level { background-color: #7f1d1d; color: #f87171; }
+.log-debug .log-level {
+  background: #374151;
+  color: #cbd5e1;
+}
+
+.log-info .log-level {
+  background: #17355d;
+  color: #7cc0ff;
+}
+
+.log-warning .log-level {
+  background: #6b3f12;
+  color: #fbbf24;
+}
+
+.log-error .log-level {
+  background: #6f1f1f;
+  color: #fca5a5;
+}
 
 .log-module {
-  padding: 1px 6px;
-  font-size: 11px;
-  font-weight: 500;
-  color: #fff;
-  border-radius: 3px;
   flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .log-message {
@@ -438,7 +585,15 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
-.log-debug { opacity: 0.72; }
-.log-warning { background-color: rgba(245, 158, 11, 0.1); }
-.log-error { background-color: rgba(239, 68, 68, 0.1); }
+.log-debug {
+  opacity: 0.72;
+}
+
+.log-warning {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.log-error {
+  background: rgba(239, 68, 68, 0.08);
+}
 </style>
