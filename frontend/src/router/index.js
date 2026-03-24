@@ -9,6 +9,7 @@ import PasswordVault from '../views/PasswordVault.vue'
 import ExistingFolders from '../views/ExistingFolders.vue'
 import ASMRSync from '../views/ASMRSync.vue'
 import LibraryBackup from '../views/LibraryBackup.vue'
+import SubtitleImport from '../views/SubtitleImport.vue'
 
 const routes = [
   {
@@ -49,6 +50,16 @@ const routes = [
     meta: {
       title: '库存管理',
       icon: 'Box',
+      cache: true
+    }
+  },
+  {
+    path: '/subtitle-import',
+    name: 'SubtitleImport',
+    component: SubtitleImport,
+    meta: {
+      title: '字幕补配',
+      icon: 'Tickets',
       cache: true
     }
   },

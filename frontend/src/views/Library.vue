@@ -924,6 +924,7 @@
 
 <script setup>
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Refresh, Search, Folder, FolderOpened, Delete, Edit, Files, Document, Picture, VideoPlay, Headset, Tickets, ArrowDown, Loading } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { libraryApi, rjSubtitleApi } from '../api'
@@ -937,6 +938,8 @@ const LIBRARY_ACTION_SCOPE_KEY = 'kikoeru.ui.library.toolbarActionScope'
 const SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const DEFAULT_SORT_BY = 'size'
 const DEFAULT_SORT_ORDER = 'desc'
+const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
 const statsLoading = ref(false)
 const listPolling = ref(false)
@@ -1038,7 +1041,17 @@ const subtitleInspectorAudioSearch = ref('')
 const subtitleInspectorSubtitleSearch = ref('')
 const subtitleInspectorExpandedIds = ref(new Set())
 const subtitleInspectorSelectedIds = ref(new Set())
-const subtitleInspectorInfo = ref({ taskId: '', libraryId: '', folderPath: '', subtitleDir: '', totalFiles: 0, totalSize: 0 })
+const subtitleInspectorInfo = ref({
+  taskId: '',
+  libraryId: '',
+  audioLibraryId: '',
+  subtitleLibraryId: '',
+  folderPath: '',
+  subtitleDir: '',
+  sourceMode: '',
+  totalFiles: 0,
+  totalSize: 0
+})
 const subtitleMatchSelection = ref({ audioPath: '', subtitlePath: '' })
 const subtitleSequenceMode = ref(false)
 const subtitleSequenceSelection = ref({ audioPaths: [], subtitlePaths: [] })
@@ -1052,6 +1065,7 @@ const subtitleRenameDialogVisible = ref(false)
 const subtitleRenameForm = ref({ currentName: '', newName: '', path: '' })
 const subtitleRenameLoading = ref(false)
 const subtitleInspectorLastSelectedId = ref('')
+const subtitleRouteFocusKey = ref('')
 const subtitleOptions = ref({
   overwriteExisting: false,
   scanDepth: 3,
@@ -1320,7 +1334,17 @@ function findTaskMatchingPreferredSelection (tasks = subtitleTasks.value) {
   return sortSubtitleTasksByCreatedAt(tasks).find(task => buildSubtitleTaskSelectionKey(task) === subtitlePreferredSelectionKey.value) || null
 }
 function clearSubtitleInspectorState () {
-  subtitleInspectorInfo.value = { taskId: '', libraryId: '', folderPath: '', subtitleDir: '', totalFiles: 0, totalSize: 0 }
+  subtitleInspectorInfo.value = {
+    taskId: '',
+    libraryId: '',
+    audioLibraryId: '',
+    subtitleLibraryId: '',
+    folderPath: '',
+    subtitleDir: '',
+    sourceMode: '',
+    totalFiles: 0,
+    totalSize: 0
+  }
   subtitleInspectorItems.value = []
   subtitleInspectorAudioItems.value = []
   subtitleInspectorExpandedIds.value = new Set()
@@ -1414,6 +1438,9 @@ const subtitleClearableTaskCounts = computed(() => {
   }
 })
 const activeSubtitleInspectTask = computed(() => subtitleTasks.value.find(task => task.id === subtitleInspectorInfo.value.taskId) || null)
+const linkedSubtitleImportSourceModes = new Set(['linked_translation_archive_import', 'subtitle_folder_import'])
+const isLinkedSubtitleImportWorkbench = computed(() => linkedSubtitleImportSourceModes.has(String(activeSubtitleInspectTask.value?.source_mode || subtitleInspectorInfo.value.sourceMode || '').toLowerCase()))
+const subtitleManualApplyLabel = computed(() => isLinkedSubtitleImportWorkbench.value ? '重命名并导入' : '一键应用同名')
 function matchesSubtitleExecutableFilter (item, filter = subtitleSelectionFilter.value) {
   if (filter === 'all') return true
   if (filter === 'queued') return item?.queue_state === 'queued'
@@ -1563,6 +1590,8 @@ const subtitleWorkbenchCtx = computed(() => ({
   subtitleManualPairs: subtitleManualPairs.value,
   subtitleSelectedManualPairId: subtitleSelectedManualPairId.value,
   subtitlePairApplying: subtitlePairApplying.value,
+  subtitleManualApplyLabel: subtitleManualApplyLabel.value,
+  isLinkedSubtitleImportWorkbench: isLinkedSubtitleImportWorkbench.value,
   subtitleAudioFilterMode: subtitleAudioFilterMode.value,
   subtitleSubtitleFilterMode: subtitleSubtitleFilterMode.value,
   subtitleMatchSelection: subtitleMatchSelection.value,
@@ -1667,12 +1696,14 @@ onMounted(async () => {
   bindLibraryKeydown()
   await initializeLibraryPage()
   libraryViewActive = true
+  await consumeSubtitleRouteFocus()
 })
 
 onActivated(async () => {
   if (libraryViewActive) return
   libraryViewActive = true
   await resumeLibraryPage()
+  await consumeSubtitleRouteFocus()
 })
 
 onDeactivated(() => {
@@ -1757,6 +1788,14 @@ watch(subtitleDialogVisible, async visible => {
   subtitleActiveTaskId.value = ''
   await refreshRJSubtitleStatus(false, { silent: true })
 })
+
+watch(
+  () => route.fullPath,
+  async () => {
+    if (!libraryViewActive) return
+    await consumeSubtitleRouteFocus()
+  }
+)
 
 function loadNumber (key, fallback) {
   try {
@@ -2613,6 +2652,52 @@ async function openSubtitleTaskPanel () {
   await refreshRJSubtitleStatus(false, { silent: true })
 }
 
+function getSubtitleRouteFocusPayload () {
+  const subtitleDialog = route.query.subtitleDialog
+  const subtitleTaskId = route.query.subtitleTaskId
+  const subtitleImport = route.query.subtitleImport
+  const shouldOpen = subtitleDialog === '1' || subtitleImport === '1'
+  const taskId = typeof subtitleTaskId === 'string' ? subtitleTaskId.trim() : ''
+  return {
+    shouldOpen,
+    taskId,
+    focusKey: shouldOpen && taskId ? `${subtitleDialog || subtitleImport}:${taskId}` : ''
+  }
+}
+
+async function clearSubtitleRouteFocusQuery () {
+  const nextQuery = { ...route.query }
+  delete nextQuery.subtitleDialog
+  delete nextQuery.subtitleTaskId
+  delete nextQuery.subtitleImport
+  await router.replace({
+    path: route.path,
+    query: nextQuery
+  })
+}
+
+async function consumeSubtitleRouteFocus () {
+  const { shouldOpen, taskId, focusKey } = getSubtitleRouteFocusPayload()
+  if (!shouldOpen || !taskId) return
+  if (subtitleRouteFocusKey.value === focusKey && subtitleDialogVisible.value) return
+
+  subtitleRouteFocusKey.value = focusKey
+  subtitleDialogVisible.value = true
+  await nextTick()
+  await refreshRJSubtitleStatus(false, { silent: true })
+
+  const matchedTask = subtitleTasks.value.find(item => item.id === taskId)
+  if (!matchedTask) return
+
+  if (matchedTask.subtitle_dir) {
+    await inspectSubtitleTask(matchedTask)
+  } else {
+    focusSubtitleTask(matchedTask.id)
+  }
+
+  await clearSubtitleRouteFocusQuery()
+}
+
 async function openRJSubtitleDialog (rows = [], options = {}) {
   const { scanCurrentFolder = false } = options
   const requestToken = ++subtitleSelectionRequestToken.value
@@ -3328,7 +3413,10 @@ async function applySubtitleManualPairs () {
     return
   }
 
-  const inspectorLibraryId = subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
+  const audioLibraryId = subtitleInspectorInfo.value.audioLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
+  const subtitleLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || audioLibraryId
+  const isLinkedImport = isLinkedSubtitleImportWorkbench.value
+  const effectiveNamingStrategy = isLinkedImport ? (subtitleOptions.value.namingStrategy || 'audio') : subtitleOptions.value.namingStrategy
   const appliedPairCount = subtitleManualPairs.value.length
   const sequenceCleanupRows = subtitleLastPairBuildMode.value === 'sequence'
     ? subtitleInspectorSubtitleFiles.value.filter(item => !subtitleManualPairs.value.some(pair => pair.subtitle_path === item.path))
@@ -3351,11 +3439,12 @@ async function applySubtitleManualPairs () {
   }
 
   const namingStrategyLabel = subtitleOptions.value.namingStrategy === 'subtitle' ? '以字幕名为准' : '以音频名为准'
+  const applyActionLabel = isLinkedImport ? '重命名并导入' : '确定应用'
   try {
     await ElMessageBox.confirm(
-      `确定应用 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${sequenceCleanupRows.length ? `\n未纳入顺序配对的 ${sequenceCleanupRows.length} 个原始字幕会一并删除。` : ''}`,
+      `确定处理 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${sequenceCleanupRows.length ? `\n未纳入顺序配对的 ${sequenceCleanupRows.length} 个原始字幕会一并删除。` : ''}${isLinkedImport ? '\n确认后会先在本地工作区完成重命名，再导入目标库存。' : ''}`,
       '应用配对确认',
-      { confirmButtonText: '确定应用', cancelButtonText: '取消', type: 'warning' }
+      { confirmButtonText: applyActionLabel, cancelButtonText: '取消', type: 'warning' }
     )
   } catch (_) {
     return
@@ -3363,6 +3452,20 @@ async function applySubtitleManualPairs () {
 
   subtitlePairApplying.value = true
   try {
+    const currentSubtitleFiles = [...subtitleInspectorSubtitleFiles.value]
+    const resolveCurrentSubtitleSourcePath = (pair) => {
+      const exactMatch = currentSubtitleFiles.find(item => item.path === pair.subtitle_path)
+      if (exactMatch?.path) return exactMatch.path
+
+      const sameNameMatches = currentSubtitleFiles.filter(item => item.name === pair.subtitle_name)
+      if (sameNameMatches.length === 1) return sameNameMatches[0].path
+
+      const sameRelativeMatches = currentSubtitleFiles.filter(item => (item.relative_path || item.name) === pair.subtitle_relative_path)
+      if (sameRelativeMatches.length === 1) return sameRelativeMatches[0].path
+
+      return pair.subtitle_path
+    }
+
     const operations = subtitleManualPairs.value.flatMap(pair => {
       const next = []
       if (pair.audio_name !== pair.target_audio_name) {
@@ -3376,7 +3479,7 @@ async function applySubtitleManualPairs () {
       if (pair.subtitle_name !== pair.target_subtitle_name) {
         next.push({
           kind: 'subtitle',
-          source_path: pair.subtitle_path,
+          source_path: resolveCurrentSubtitleSourcePath(pair),
           current_name: pair.subtitle_name,
           target_name: pair.target_subtitle_name
         })
@@ -3391,38 +3494,56 @@ async function applySubtitleManualPairs () {
       }))
 
     for (const pair of phaseOne) {
-      await libraryApi.browserRename(inspectorLibraryId, pair.source_path, pair.temp_name)
-      pair.temp_path = joinPath(String(pair.source_path || '').replace(/[\\/][^\\/]+$/, ''), pair.temp_name)
+      const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
+      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.source_path, pair.temp_name)
+      pair.temp_path = renameResult?.new_path || joinPath(String(pair.source_path || '').replace(/[\\/][^\\/]+$/, ''), pair.temp_name)
     }
 
     for (const pair of phaseOne) {
-      await libraryApi.browserRename(inspectorLibraryId, pair.temp_path, pair.target_name)
+      const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
+      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name)
+      pair.final_path = renameResult?.new_path || joinPath(String(pair.temp_path || '').replace(/[\\/][^\\/]+$/, ''), pair.target_name)
     }
 
     for (const subtitle of sequenceCleanupRows) {
-      await libraryApi.browserDelete(inspectorLibraryId, resolveSubtitleEntryPath(subtitle), true)
+      await libraryApi.browserDelete(subtitleLibraryId, resolveSubtitleEntryPath(subtitle), true)
     }
 
+    const currentTaskId = subtitleInspectorInfo.value.taskId
     if (subtitleInspectorInfo.value.taskId) {
       await rjSubtitleApi.completeManual(subtitleInspectorInfo.value.taskId, {
         appliedPairs: appliedPairCount,
         deletedSubtitles: sequenceCleanupRows.length,
-        namingStrategy: subtitleOptions.value.namingStrategy
+        namingStrategy: effectiveNamingStrategy
       })
-      markSubtitleTaskManualMatchCompleted(subtitleInspectorInfo.value.taskId, {
-        appliedPairs: appliedPairCount,
-        deletedSubtitles: sequenceCleanupRows.length,
-        namingStrategy: subtitleOptions.value.namingStrategy,
-        currentStep: `后处理完成，已应用 ${appliedPairCount} 组配对${sequenceCleanupRows.length ? `，删除 ${sequenceCleanupRows.length} 个未选字幕` : ''}`
-      })
+
+      await Promise.all([
+        refreshLibrary({ silent: true }),
+        refreshRJSubtitleStatus(false, { silent: true })
+      ])
+
+      if (isLinkedImport) {
+        const refreshedTask = subtitleTasks.value.find(task => task.id === currentTaskId)
+        if (refreshedTask?.subtitle_dir) {
+          await inspectSubtitleTask(refreshedTask, { force: true })
+        } else {
+          clearSubtitleInspectorState()
+        }
+      } else {
+        await reloadSubtitleInspector()
+      }
+    } else {
+      await reloadSubtitleInspector()
+      await Promise.all([
+        refreshLibrary({ silent: true }),
+        refreshRJSubtitleStatus(false, { silent: true })
+      ])
     }
 
-    await reloadSubtitleInspector()
-    await Promise.all([refreshLibrary({ silent: true }), refreshRJSubtitleStatus(false)])
-    ElMessage.success(`已应用 ${appliedPairCount} 组配对${sequenceCleanupRows.length ? `，并删除 ${sequenceCleanupRows.length} 个未选字幕` : ''}`)
+    ElMessage.success(`${isLinkedImport ? '已重命名并导入' : '已应用'} ${appliedPairCount} 组配对${sequenceCleanupRows.length ? `，并删除 ${sequenceCleanupRows.length} 个未选字幕` : ''}`)
     clearSubtitleManualPairs()
   } catch (error) {
-    ElMessage.error('应用配对失败: ' + (error.response?.data?.detail || error.message))
+    ElMessage.error(`${isLinkedImport ? '重命名并导入' : '应用配对'}失败: ` + (error.response?.data?.detail || error.message))
   } finally {
     subtitlePairApplying.value = false
   }
@@ -4092,8 +4213,11 @@ function syncSubtitleInspectorTaskState () {
     ...subtitleInspectorInfo.value,
     taskId: task.id,
     libraryId: task.library_id || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
+    audioLibraryId: task.library_id || subtitleInspectorInfo.value.audioLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
+    subtitleLibraryId: task.subtitle_library_id || subtitleInspectorInfo.value.subtitleLibraryId || task.library_id || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
     folderPath: task.folder_path,
-    subtitleDir: task.subtitle_dir
+    subtitleDir: task.subtitle_dir,
+    sourceMode: task.source_mode || subtitleInspectorInfo.value.sourceMode || ''
   }
 }
 
@@ -4144,8 +4268,11 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
     subtitleInspectorInfo.value = {
       taskId: '',
       libraryId: inspectorLibraryId,
+      audioLibraryId: inspectorLibraryId,
+      subtitleLibraryId: inspectorLibraryId,
       folderPath: item.folder_path || '',
       subtitleDir: subtitleData.folder_path || subtitleDir,
+      sourceMode: '',
       totalFiles: subtitleData.total_files || 0,
       totalSize: (subtitleData.items || []).reduce((sum, child) => sum + (child.size || 0), 0)
     }
@@ -4183,10 +4310,11 @@ async function inspectSubtitleTask (task, options = {}) {
   }
   subtitleInspectorLoading.value = true
   try {
-    const inspectorLibraryId = task.library_id || selectedLibraryId.value
+    const audioLibraryId = task.library_id || selectedLibraryId.value
+    const subtitleLibraryId = task.subtitle_library_id || audioLibraryId
     const [subtitleData, audioData] = await Promise.all([
-      libraryApi.browserFolderContents(inspectorLibraryId, task.subtitle_dir),
-      libraryApi.browserFolderContents(inspectorLibraryId, task.folder_path)
+      libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir),
+      libraryApi.browserFolderContents(audioLibraryId, task.folder_path)
     ])
     subtitleInspectorSearch.value = ''
     subtitleInspectorItems.value = subtitleData.items || []
@@ -4194,9 +4322,12 @@ async function inspectSubtitleTask (task, options = {}) {
     resetSubtitleManualMatchState()
     subtitleInspectorInfo.value = {
       taskId: task.id,
-      libraryId: inspectorLibraryId,
+      libraryId: audioLibraryId,
+      audioLibraryId,
+      subtitleLibraryId,
       folderPath: task.folder_path || '',
       subtitleDir: subtitleData.folder_path || task.subtitle_dir,
+      sourceMode: task.source_mode || '',
       totalFiles: subtitleData.total_files || 0,
       totalSize: (subtitleData.items || []).reduce((sum, item) => sum + (item.size || 0), 0)
     }
@@ -4321,7 +4452,7 @@ async function batchDeleteSubtitleTreeEntries () {
   try {
     for (const row of sortedRows) {
       const path = resolveSubtitleEntryPath(row)
-      await libraryApi.browserDelete(subtitleInspectorInfo.value.libraryId || selectedLibraryId.value, path, true)
+      await libraryApi.browserDelete(subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value, path, true)
     }
 
     clearSubtitleInspectorSelection()
@@ -4376,7 +4507,7 @@ async function confirmSubtitleRename () {
 
   subtitleRenameLoading.value = true
   try {
-    await libraryApi.browserRename(subtitleInspectorInfo.value.libraryId || selectedLibraryId.value, subtitleRenameForm.value.path, subtitleRenameForm.value.newName)
+    await libraryApi.browserRename(subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value, subtitleRenameForm.value.path, subtitleRenameForm.value.newName)
     subtitleRenameDialogVisible.value = false
     ElMessage.success('字幕文件重命名成功')
     await Promise.all([reloadSubtitleInspector(), refreshLibrary({ silent: true })])
@@ -4400,7 +4531,7 @@ function resolveSubtitleEntryPath (row) {
 async function deleteSubtitleTreeEntry (row) {
   if (subtitleInspectorBusy.value) return
   const path = resolveSubtitleEntryPath(row)
-  const inspectorLibraryId = subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
+  const inspectorLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
   try {
     const preview = await libraryApi.browserDelete(inspectorLibraryId, path, false)
     await ElMessageBox.confirm(buildDeletePreviewMessage(preview), '删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })

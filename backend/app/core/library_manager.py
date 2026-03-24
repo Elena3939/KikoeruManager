@@ -1003,6 +1003,24 @@ class LibraryManager:
             return await asyncio.to_thread(self._list_local_files, library, page, page_size, search, current_path, sort_by, sort_order)
         return await self._list_remote_files(library, page, page_size, search, current_path, sort_by, sort_order)
 
+    async def global_search_files(
+        self,
+        library_id: Optional[str],
+        keyword: str,
+        *,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+    ) -> dict[str, Any]:
+        return await self.list_files(
+            library_id,
+            page=1,
+            page_size=LIBRARY_SEARCH_RESULT_LIMIT,
+            search=keyword,
+            current_path=None,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
     def _search_match_text(self, keyword: str, *values: Any) -> bool:
         normalized_keyword = str(keyword or "").strip().lower()
         if not normalized_keyword:
@@ -1356,21 +1374,24 @@ class LibraryManager:
         client: SynologyFileStationClient,
         task_id: str,
         *,
-        timeout_seconds: float = 12.0,
-        poll_interval: float = 0.4,
-    ) -> None:
+        timeout_seconds: float = 20.0,
+        poll_interval: float = 0.6,
+    ) -> dict[str, Any]:
         deadline = time.time() + max(1.0, timeout_seconds)
+        last_status: dict[str, Any] = {}
         while time.time() < deadline:
             try:
                 status = await client.search_status(task_id)
             except Exception:
-                return
+                return last_status
+
+            last_status = status or {}
+            logger.info("远程搜索状态: task_id=%s status=%s", task_id, last_status)
 
             if status.get("finished") is True:
-                return
-            if status.get("has_more") is False and status.get("finished") in {None, False}:
-                return
+                return last_status
             await asyncio.sleep(poll_interval)
+        return last_status
 
     def _build_remote_search_entry(
         self,
@@ -1443,29 +1464,81 @@ class LibraryManager:
         sort_by: str,
         sort_direction: str,
     ) -> tuple[list[dict[str, Any]], int]:
-        task_id = None
-        try:
-            started = await client.start_search(scope_path, keyword, recursive=True)
-            task_id = started.get("taskid") or started.get("task_id")
-            if not task_id:
-                raise RuntimeError("群晖搜索接口未返回 taskid")
-            await self._wait_remote_search_ready(client, task_id, timeout_seconds=20.0)
-            data = await client.list_search(
-                task_id,
-                offset=0,
-                limit=min(max(page_size, 1), LIBRARY_SEARCH_RESULT_LIMIT),
-                sort_by=sort_by,
-                sort_direction=sort_direction,
-            )
-            raw_items = data.get("files") or data.get("items") or []
-            total = int(data.get("total", len(raw_items)) or len(raw_items))
-            return raw_items, total
-        finally:
-            if task_id:
-                try:
-                    await client.stop_search(task_id)
-                except Exception:
-                    logger.debug("停止群晖搜索任务失败: %s", task_id, exc_info=True)
+        max_rounds = 1
+        wait_before_fetch_seconds = 60.0
+        request_limit = min(max(page_size, 200), LIBRARY_SEARCH_RESULT_LIMIT)
+
+        for round_index in range(1, max_rounds + 1):
+            task_id = None
+            try:
+                logger.info(
+                    "远程搜索开始: scope=%s keyword=%s recursive=%s round=%s/%s",
+                    scope_path,
+                    keyword,
+                    True,
+                    round_index,
+                    max_rounds,
+                )
+                started = await client.start_search(scope_path, keyword, recursive=True)
+                task_id = started.get("taskid") or started.get("task_id")
+                if not task_id:
+                    raise RuntimeError("群晖搜索接口未返回 taskid")
+                logger.info(
+                    "远程搜索任务已创建: scope=%s keyword=%s task_id=%s round=%s/%s",
+                    scope_path,
+                    keyword,
+                    task_id,
+                    round_index,
+                    max_rounds,
+                )
+                logger.info(
+                    "远程搜索等待结果: scope=%s keyword=%s task_id=%s wait_seconds=%.1f",
+                    scope_path,
+                    keyword,
+                    task_id,
+                    wait_before_fetch_seconds,
+                )
+                await asyncio.sleep(wait_before_fetch_seconds)
+
+                offset = 0
+                total = 0
+                raw_items: list[dict[str, Any]] = []
+                while offset < LIBRARY_SEARCH_RESULT_LIMIT:
+                    data = await client.list_search(
+                        task_id,
+                        offset=offset,
+                        limit=request_limit,
+                        sort_by=sort_by,
+                        sort_direction=sort_direction,
+                    )
+                    page_items = data.get("files") or data.get("items") or []
+                    page_total = int(data.get("total", len(page_items)) or len(page_items))
+                    if page_total > total:
+                        total = page_total
+                    raw_items.extend(page_items)
+                    offset += len(page_items)
+                    if not page_items or offset >= page_total:
+                        break
+                logger.info(
+                    "远程搜索结果: scope=%s keyword=%s task_id=%s round=%s/%s waited=%.1fs raw_items=%s total=%s",
+                    scope_path,
+                    keyword,
+                    task_id,
+                    round_index,
+                    max_rounds,
+                    wait_before_fetch_seconds,
+                    len(raw_items),
+                    total,
+                )
+                if raw_items or total:
+                    return raw_items[:LIBRARY_SEARCH_RESULT_LIMIT], total
+            finally:
+                if task_id:
+                    try:
+                        await client.stop_search(task_id)
+                    except Exception:
+                        logger.debug("停止群晖搜索任务失败: %s", task_id, exc_info=True)
+        return [], 0
 
     async def _search_remote_files(
         self,
@@ -1484,11 +1557,21 @@ class LibraryManager:
         browse_root, search_root = self._resolve_remote_target_path(library, current_path)
         keyword = str(search or "").strip()
         rj_only_search = self._is_rj_search_keyword(keyword)
+        api_search_root = browse_root if keyword else search_root
         normalized_sort_by = self._normalize_library_sort_by(sort_by)
         normalized_sort_order = self._normalize_library_sort_order(sort_order)
         remote_sort_by = "name" if normalized_sort_by == "name" else "mtime"
         remote_sort_direction = "asc" if normalized_sort_order == "asc" else "desc"
-        search_scopes = await self._resolve_remote_search_scopes(client, search_root)
+        search_scopes = await self._resolve_remote_search_scopes(client, api_search_root)
+        logger.info(
+            "远程库存搜索: library=%s browse_root=%s search_root=%s api_search_root=%s keyword=%s scopes=%s",
+            library.id,
+            browse_root,
+            search_root,
+            api_search_root,
+            keyword,
+            search_scopes,
+        )
         collected_raw_items: list[dict[str, Any]] = []
         total = 0
         search_scope_count = 0
@@ -1515,11 +1598,15 @@ class LibraryManager:
 
             target_item = item
             target_path = self._normalize_remote_path(item.get("path") or item.get("real_path") or item_name)
+            if not self._remote_path_is_within_root(target_path, browse_root):
+                continue
             if rj_only_search:
-                nearest_rj_dir = self._find_nearest_remote_rj_directory(target_path, search_root)
+                nearest_rj_dir = self._find_nearest_remote_rj_directory(target_path, browse_root)
                 if not nearest_rj_dir:
                     continue
                 target_path = nearest_rj_dir
+                if not self._remote_path_is_within_root(target_path, browse_root):
+                    continue
                 cached_info = remote_stat_cache.get(target_path)
                 if not cached_info:
                     info = await client.stat(target_path)
@@ -1541,7 +1628,7 @@ class LibraryManager:
                 self._build_remote_search_entry(
                     library,
                     item_id=index,
-                    search_root=search_root,
+                    search_root=browse_root,
                     item=target_item,
                 )
             )
@@ -1897,17 +1984,17 @@ class LibraryManager:
 
         await self._upload_directory_to_synology(client, source_dir, stage_path)
         try:
-            await client.rename(target, backup_name)
+            await self._retry_remote_rename(client, target, backup_name)
             try:
-                await client.rename(stage_path, target_name)
+                await self._retry_remote_rename(client, stage_path, target_name)
             except Exception:
-                await client.rename(backup_path, target_name)
+                await self._retry_remote_rename(client, backup_path, target_name)
                 raise
-            await client.delete(backup_path)
+            await self._retry_remote_delete(client, backup_path)
             return target
         except Exception:
             try:
-                await client.delete(stage_path)
+                await self._retry_remote_delete(client, stage_path)
             except Exception:
                 logger.warning("清理远程阶段目录失败: %s", stage_path, exc_info=True)
             raise
@@ -1978,17 +2065,17 @@ class LibraryManager:
                     pass
 
         try:
-            await client.rename(target, backup_name)
+            await self._retry_remote_rename(client, target, backup_name)
             try:
-                await client.rename(stage_path, target_name)
+                await self._retry_remote_rename(client, stage_path, target_name)
             except Exception:
-                await client.rename(backup_path, target_name)
+                await self._retry_remote_rename(client, backup_path, target_name)
                 raise
-            await client.delete(backup_path)
+            await self._retry_remote_delete(client, backup_path)
             return target
         except Exception:
             try:
-                await client.delete(stage_path)
+                await self._retry_remote_delete(client, stage_path)
             except Exception:
                 logger.warning("清理远程合并阶段目录失败: %s", stage_path, exc_info=True)
             raise
@@ -2173,6 +2260,36 @@ class LibraryManager:
             if not raw_items or len(items) >= total:
                 break
             offset += len(raw_items)
+        return items
+
+    async def _list_remote_directory_recursive(self, client: SynologyFileStationClient, folder_path: str) -> list[dict[str, Any]]:
+        root_path = self._normalize_remote_path(folder_path)
+        queue: list[str] = [root_path]
+        visited: set[str] = set()
+        items: list[dict[str, Any]] = []
+
+        while queue:
+            current_path = self._normalize_remote_path(queue.pop(0))
+            if current_path in visited:
+                continue
+            visited.add(current_path)
+
+            try:
+                children = await self._list_remote_directory(client, current_path)
+            except Exception:
+                logger.warning("远程递归列目录失败: path=%s", current_path, exc_info=True)
+                continue
+
+            for child in children:
+                name = child.get("name") or ""
+                if self._should_skip_entry(name):
+                    continue
+                child_path = self._normalize_remote_path(child.get("path") or child.get("real_path") or name)
+                items.append(child)
+                if child.get("isdir", False) and child_path not in visited:
+                    queue.append(child_path)
+
+        logger.info("远程递归列目录完成: root=%s visited=%s items=%s", root_path, len(visited), len(items))
         return items
 
     def _first_remote_info_item(self, data: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -2722,6 +2839,109 @@ class LibraryManager:
         if last_error:
             raise last_error
         return []
+
+    def _is_retryable_synology_remote_error(self, exc: Exception) -> bool:
+        message = str(exc or "")
+        lowered = message.lower()
+        return any(token in lowered for token in [
+            "code 408",
+            '"code": 408',
+            "code 1200",
+            '"code": 1200',
+            "信号灯超时时间已到",
+            "timeout",
+        ])
+
+    async def _remote_path_exists(self, client: SynologyFileStationClient, path: str) -> bool:
+        try:
+            info = await client.stat(path)
+        except Exception as exc:
+            if self._is_error_code(exc, 119):
+                return False
+            raise
+        item = self._first_remote_info_item(info)
+        return bool(item)
+
+    async def _retry_remote_rename(
+        self,
+        client: SynologyFileStationClient,
+        path: str,
+        new_name: str,
+        *,
+        retries: int = 4,
+        retry_delay_seconds: float = 5.0,
+    ) -> None:
+        normalized_path = self._normalize_remote_path(path)
+        target_path = str(PurePosixPath(normalized_path).parent / new_name)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, retries + 1):
+            try:
+                await client.rename(normalized_path, new_name)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if self._is_retryable_synology_remote_error(exc):
+                    try:
+                        if await self._remote_path_exists(client, target_path):
+                            return
+                    except Exception:
+                        logger.debug("远程重命名结果校验失败: %s -> %s", normalized_path, target_path, exc_info=True)
+                    if attempt < retries:
+                        logger.warning(
+                            "远程重命名超时，准备重试: path=%s target=%s attempt=%s/%s error=%s",
+                            normalized_path,
+                            target_path,
+                            attempt,
+                            retries,
+                            exc,
+                        )
+                        await asyncio.sleep(retry_delay_seconds * attempt)
+                        continue
+                raise
+        if last_error:
+            raise last_error
+
+    async def _retry_remote_delete(
+        self,
+        client: SynologyFileStationClient,
+        path: str,
+        *,
+        retries: int = 4,
+        retry_delay_seconds: float = 5.0,
+    ) -> None:
+        normalized_path = self._normalize_remote_path(path)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, retries + 1):
+            try:
+                await client.delete(normalized_path)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if self._is_error_code(exc, 119):
+                    return
+                if self._is_retryable_synology_remote_error(exc):
+                    try:
+                        if not await self._remote_path_exists(client, normalized_path):
+                            return
+                    except Exception:
+                        logger.debug("远程删除结果校验失败: %s", normalized_path, exc_info=True)
+                    if attempt < retries:
+                        logger.warning(
+                            "远程删除超时，准备重试: path=%s attempt=%s/%s error=%s",
+                            normalized_path,
+                            attempt,
+                            retries,
+                            exc,
+                        )
+                        await asyncio.sleep(retry_delay_seconds * attempt)
+                        continue
+                raise
+        if last_error:
+            raise last_error
 
     def _mark_remote_filter_preview_truncated(self, state: dict[str, Any], reason: str) -> None:
         if state.get("truncated"):

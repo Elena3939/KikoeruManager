@@ -1032,7 +1032,10 @@ async def get_conflicts():
     db = next(get_db())
     try:
         resolution_service = get_conflict_resolution_service()
-        conflicts = db.query(ConflictWork).filter(ConflictWork.status == "PENDING").all()
+        conflicts = db.query(ConflictWork).filter(
+            ConflictWork.status == "PENDING",
+            ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
+        ).all()
         return {
             "conflicts": [
                 {
@@ -4171,6 +4174,41 @@ class RJSubtitleAvailabilityRequest(BaseModel):
     rjcode: str
 
 
+class LinkedSubtitleArchivePreviewRequest(BaseModel):
+    archive_path: str
+    preferred_library_id: Optional[str] = None
+
+
+class LinkedSubtitleFolderPreviewRequest(BaseModel):
+    folder_path: str
+    preferred_library_id: Optional[str] = None
+
+
+class LinkedSubtitleArchiveImportRequest(BaseModel):
+    archive_path: str
+    preferred_library_id: Optional[str] = None
+    target_library_id: Optional[str] = None
+    target_folder_path: Optional[str] = None
+    use_filter_rules: bool = False
+    subtitle_filter_rules: List[dict] = []
+
+
+class LinkedSubtitleFolderImportRequest(BaseModel):
+    folder_path: str
+    preferred_library_id: Optional[str] = None
+    target_library_id: Optional[str] = None
+    target_folder_path: Optional[str] = None
+    use_filter_rules: bool = False
+    subtitle_filter_rules: List[dict] = []
+
+
+class LinkedSubtitlePendingImportExecuteRequest(BaseModel):
+    target_library_id: Optional[str] = None
+    target_folder_path: Optional[str] = None
+    use_filter_rules: bool = False
+    subtitle_filter_rules: List[dict] = []
+
+
 @app.post("/api/rj-subtitle/scan")
 async def rj_subtitle_scan(request: RJSubtitleScanRequest):
     """扫描单个 RJ 文件夹或批量父目录"""
@@ -4434,6 +4472,7 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
 
 @app.post("/api/rj-subtitle/task/{task_id}/manual-complete")
 async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCompleteRequest):
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
     from ..core.task_engine import TaskStatus, TaskType, get_task_engine
 
     try:
@@ -4445,6 +4484,7 @@ async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCom
         applied_pairs = max(0, int(request.applied_pairs or 0))
         deleted_subtitles = max(0, int(request.deleted_subtitles or 0))
         naming_strategy = str(request.naming_strategy or task.task_metadata.get("naming_strategy") or "audio").lower()
+        linked_finalize_result = await get_linked_subtitle_import_service().finalize_manual_match_task(task)
 
         task.task_metadata = task.task_metadata or {}
         task.task_metadata["awaiting_manual_match"] = False
@@ -4457,6 +4497,21 @@ async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCom
         summary = f"后处理完成，已应用 {applied_pairs} 组配对"
         if deleted_subtitles:
             summary += f"，删除 {deleted_subtitles} 个未选字幕"
+
+        summary = f"后处理完成，已应用 {applied_pairs} 组配对"
+        if deleted_subtitles:
+            summary += f"，删除 {deleted_subtitles} 个未选字幕"
+        if linked_finalize_result.get("applied"):
+            summary += f"，最终写入 {int(linked_finalize_result.get('final_file_count') or 0)} 个字幕"
+
+        summary_parts = [f"后处理完成，已应用 {applied_pairs} 组配对"]
+        if deleted_subtitles:
+            summary_parts.append(f"删除 {deleted_subtitles} 个未选字幕")
+        if linked_finalize_result.get("applied"):
+            summary_parts.append(
+                f"已确认导入目标目录，共 {int(linked_finalize_result.get('final_file_count') or 0)} 个字幕"
+            )
+        summary = "，".join(summary_parts)
 
         task.progress = 100
         task.status = TaskStatus.COMPLETED
@@ -4581,6 +4636,16 @@ async def rj_subtitle_status():
                     "source_lang": task.task_metadata.get("source_lang", ""),
                     "source_work_type": task.task_metadata.get("source_work_type", ""),
                     "source_title": task.task_metadata.get("source_title", ""),
+                    "source_mode": task.task_metadata.get("source_mode", ""),
+                    "target_rjcode": task.task_metadata.get("target_rjcode", ""),
+                    "target_folder_path": task.task_metadata.get("target_folder_path", ""),
+                    "target_library_id": task.task_metadata.get("target_library_id", ""),
+                    "subtitle_library_id": task.task_metadata.get("subtitle_library_id", task.task_metadata.get("library_id", "")),
+                    "source_archive_path": task.task_metadata.get("source_archive_path", ""),
+                    "source_subtitle_folder_path": task.task_metadata.get("source_subtitle_folder_path", ""),
+                    "import_reason": task.task_metadata.get("import_reason", ""),
+                    "kikoeru_checked_rjcode": task.task_metadata.get("kikoeru_checked_rjcode", ""),
+                    "kikoeru_has_subtitle": task.task_metadata.get("kikoeru_has_subtitle", False),
                     "downloaded_count": task.task_metadata.get("downloaded_count", 0),
                     "existing_subtitle_count": task.task_metadata.get("existing_subtitle_count", 0),
                     "subtitle_dir": task.task_metadata.get("subtitle_dir", ""),
@@ -4606,6 +4671,134 @@ async def rj_subtitle_status():
     except Exception as e:
         logger.error(f"获取 RJ 字幕抓取状态失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(e)}")
+
+
+@app.get("/api/subtitle-import/pending")
+async def list_pending_linked_subtitle_imports():
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+
+    try:
+        service = get_linked_subtitle_import_service()
+        items = await service.list_pending_imports()
+        return {
+            "success": True,
+            "items": items,
+        }
+    except Exception as e:
+        logger.error(f"获取字幕补配预检列表失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取预检列表失败: {str(e)}")
+
+
+@app.post("/api/subtitle-import/pending/{record_id}/execute")
+async def execute_pending_linked_subtitle_import(record_id: str, request: LinkedSubtitlePendingImportExecuteRequest):
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+
+    try:
+        service = get_linked_subtitle_import_service()
+        result = await service.execute_pending_import(
+            record_id,
+            target_library_id=request.target_library_id,
+            target_folder_path=request.target_folder_path,
+            use_filter_rules=request.use_filter_rules,
+            subtitle_filter_rules=request.subtitle_filter_rules,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"执行字幕补配预检单失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"执行补配失败: {str(e)}")
+
+
+@app.post("/api/subtitle-import/archive/preview")
+async def preview_linked_subtitle_archive_import(request: LinkedSubtitleArchivePreviewRequest):
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+
+    try:
+        service = get_linked_subtitle_import_service()
+        preview = await service.preview_archive_import(
+            request.archive_path,
+            preferred_library_id=request.preferred_library_id,
+        )
+        return {"success": True, "preview": preview}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"压缩包字幕补配预检失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"预检失败: {str(e)}")
+
+
+@app.post("/api/subtitle-import/archive/import")
+async def execute_linked_subtitle_archive_import(request: LinkedSubtitleArchiveImportRequest):
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+
+    try:
+        service = get_linked_subtitle_import_service()
+        result = await service.execute_archive_import(
+            request.archive_path,
+            preferred_library_id=request.preferred_library_id,
+            target_library_id=request.target_library_id,
+            target_folder_path=request.target_folder_path,
+            use_filter_rules=request.use_filter_rules,
+            subtitle_filter_rules=request.subtitle_filter_rules,
+        )
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"压缩包字幕补配执行失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+
+
+@app.post("/api/subtitle-import/folder/preview")
+async def preview_linked_subtitle_folder_import(request: LinkedSubtitleFolderPreviewRequest):
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+
+    try:
+        service = get_linked_subtitle_import_service()
+        preview = await service.preview_subtitle_folder_import(
+            request.folder_path,
+            preferred_library_id=request.preferred_library_id,
+        )
+        return {"success": True, "preview": preview}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"字幕文件夹补配预检失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"预检失败: {str(e)}")
+
+
+@app.post("/api/subtitle-import/folder/import")
+async def execute_linked_subtitle_folder_import(request: LinkedSubtitleFolderImportRequest):
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+
+    try:
+        service = get_linked_subtitle_import_service()
+        result = await service.execute_subtitle_folder_import(
+            request.folder_path,
+            preferred_library_id=request.preferred_library_id,
+            target_library_id=request.target_library_id,
+            target_folder_path=request.target_folder_path,
+            use_filter_rules=request.use_filter_rules,
+            subtitle_filter_rules=request.subtitle_filter_rules,
+        )
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"字幕文件夹补配执行失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+
 
 @app.get("/api/rj-subtitle/connectivity-test")
 async def rj_subtitle_connectivity_test():

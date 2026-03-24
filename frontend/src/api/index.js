@@ -812,6 +812,63 @@ export const rjSubtitleApi = {
   }
 }
 
+export const subtitleImportApi = {
+  listPending: async () => {
+    const response = await apiClient.get('/subtitle-import/pending')
+    return response.data
+  },
+
+  executePending: async (recordId, options = {}) => {
+    const response = await apiClient.post(`/subtitle-import/pending/${recordId}/execute`, {
+      target_library_id: options.targetLibraryId || undefined,
+      target_folder_path: options.targetFolderPath || undefined,
+      use_filter_rules: options.useFilterRules ?? false,
+      subtitle_filter_rules: options.subtitleFilterRules || []
+    })
+    return response.data
+  },
+
+  previewArchive: async (archivePath, options = {}) => {
+    const response = await apiClient.post('/subtitle-import/archive/preview', {
+      archive_path: archivePath,
+      preferred_library_id: options.preferredLibraryId || undefined
+    })
+    return response.data
+  },
+
+  importArchive: async (archivePath, options = {}) => {
+    const response = await apiClient.post('/subtitle-import/archive/import', {
+      archive_path: archivePath,
+      preferred_library_id: options.preferredLibraryId || undefined,
+      target_library_id: options.targetLibraryId || undefined,
+      target_folder_path: options.targetFolderPath || undefined,
+      use_filter_rules: options.useFilterRules ?? false,
+      subtitle_filter_rules: options.subtitleFilterRules || []
+    })
+    return response.data
+  },
+
+  previewFolder: async (folderPath, options = {}) => {
+    const response = await apiClient.post('/subtitle-import/folder/preview', {
+      folder_path: folderPath,
+      preferred_library_id: options.preferredLibraryId || undefined
+    })
+    return response.data
+  },
+
+  importFolder: async (folderPath, options = {}) => {
+    const response = await apiClient.post('/subtitle-import/folder/import', {
+      folder_path: folderPath,
+      preferred_library_id: options.preferredLibraryId || undefined,
+      target_library_id: options.targetLibraryId || undefined,
+      target_folder_path: options.targetFolderPath || undefined,
+      use_filter_rules: options.useFilterRules ?? false,
+      subtitle_filter_rules: options.subtitleFilterRules || []
+    })
+    return response.data
+  }
+}
+
 export default {
   task: taskApi,
   config: configApi,
@@ -829,5 +886,6 @@ export default {
   health: healthApi,
   asmrSync: asmrSyncApi,
   rjSubtitle: rjSubtitleApi,
+  subtitleImport: subtitleImportApi,
   backup: backupApi
 }

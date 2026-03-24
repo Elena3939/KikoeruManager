@@ -35,6 +35,11 @@
           <span>库存管理</span>
         </el-menu-item>
 
+        <el-menu-item index="/subtitle-import">
+          <el-icon><Tickets /></el-icon>
+          <span>字幕补配</span>
+        </el-menu-item>
+
         <el-menu-item index="/passwords">
           <el-icon><Lock /></el-icon>
           <span>密码库</span>
@@ -117,6 +122,7 @@ import {
   List,
   Lock,
   Setting,
+  Tickets,
   WarningFilled
 } from '@element-plus/icons-vue'
 import router from './router'

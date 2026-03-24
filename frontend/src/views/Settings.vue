@@ -461,6 +461,12 @@
                 </el-form-item>
               </el-col>
               <el-col :span="6">
+                <el-form-item label="字幕补配预检">
+                  <el-switch v-model="config.auto_process.import_linked_translation_subtitles" />
+                  <div class="form-tip">翻译作命中原作且原作无字幕时，优先进入字幕补配</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
                 <el-form-item label="解压文件">
                   <el-switch v-model="config.auto_process.extract" />
                   <div class="form-tip">解压压缩包（不建议关闭）</div>
@@ -1779,6 +1785,7 @@ const defaultConfig = {
   // 正常解压缩流程步骤配置
   auto_process: {
     check_duplicate: true,
+    import_linked_translation_subtitles: true,
     extract: true,
     fetch_metadata: true,
     rename: true,
@@ -1945,6 +1952,7 @@ async function loadConfig() {
       // 正常解压缩流程步骤配置
       auto_process: {
         check_duplicate: data?.auto_process?.check_duplicate ?? true,
+        import_linked_translation_subtitles: data?.auto_process?.import_linked_translation_subtitles ?? true,
         extract: data?.auto_process?.extract ?? true,
         fetch_metadata: data?.auto_process?.fetch_metadata ?? true,
         rename: data?.auto_process?.rename ?? true,
@@ -2131,6 +2139,7 @@ async function saveConfig() {
       },
       auto_process: {
         check_duplicate: config.value.auto_process?.check_duplicate ?? true,
+        import_linked_translation_subtitles: config.value.auto_process?.import_linked_translation_subtitles ?? true,
         extract: config.value.auto_process?.extract ?? true,
         fetch_metadata: config.value.auto_process?.fetch_metadata ?? true,
         rename: config.value.auto_process?.rename ?? true,

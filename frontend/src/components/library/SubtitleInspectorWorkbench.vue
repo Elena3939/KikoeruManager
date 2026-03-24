@@ -62,7 +62,7 @@
               {{ view.subtitleSequenceMode ? '生成顺序预配对' : '按当前列表预配对' }}
             </el-button>
             <el-button size="small" type="primary" :disabled="!view.subtitleManualPairs.length" :loading="view.subtitlePairApplying" @click="view.applySubtitleManualPairs">
-              一键应用同名
+              {{ view.subtitleManualApplyLabel || '一键应用同名' }}
             </el-button>
           </div>
         </div>

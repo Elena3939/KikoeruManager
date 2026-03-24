@@ -249,6 +249,116 @@ class ExtractService:
             logger.debug("嵌套压缩包解压已禁用")
         
         return output_path
+
+    async def get_archive_info(self, archive_path: str) -> Optional[ArchiveInfo]:
+        """Public wrapper for archive listing."""
+        return await self._get_archive_info(archive_path)
+
+    async def extract_selected_entries(
+        self,
+        archive_path: str,
+        entry_names: List[str],
+        output_path: Optional[str] = None,
+    ) -> str:
+        """
+        Extract only the selected archive entries into a temporary directory.
+
+        This reuses the existing password discovery flow and preserves the
+        original relative paths inside the archive.
+        """
+        if not await self._ensure_7z_available():
+            raise RuntimeError("找不到 7z 可执行文件，无法提取指定条目")
+
+        normalized_entries: List[str] = []
+        seen_entries = set()
+        for item in entry_names or []:
+            name = str(item or "").strip()
+            if not name or name in seen_entries:
+                continue
+            seen_entries.add(name)
+            normalized_entries.append(name)
+
+        if not normalized_entries:
+            raise ValueError("没有可提取的压缩包条目")
+
+        archive_info = await self._get_archive_info(archive_path)
+        if not archive_info:
+            archive_info = ArchiveInfo(archive_path, [], None)
+
+        created_temp_dir = False
+        if output_path:
+            os.makedirs(output_path, exist_ok=True)
+        else:
+            safe_name = re.sub(r'[<>:\"|?*]', '', Path(archive_path).stem.strip()) or "selected_extract"
+            output_path = tempfile.mkdtemp(
+                prefix=f"{safe_name}_selected_",
+                dir=self.config.storage.temp_path
+            )
+            created_temp_dir = True
+
+        list_file_path = os.path.join(output_path, "_selected_entries.txt")
+        with open(list_file_path, "w", encoding="utf-8", newline="\n") as fp:
+            for name in normalized_entries:
+                fp.write(name)
+                fp.write("\n")
+
+        def cleanup_attempt_output():
+            for name in os.listdir(output_path):
+                current_path = os.path.join(output_path, name)
+                if os.path.abspath(current_path) == os.path.abspath(list_file_path):
+                    continue
+                try:
+                    if os.path.isdir(current_path):
+                        shutil.rmtree(current_path, ignore_errors=True)
+                    else:
+                        os.remove(current_path)
+                except Exception:
+                    logger.debug("清理选择性解压残留失败: %s", current_path, exc_info=True)
+
+        password_candidates = await self._get_password_candidates_for_archive(archive_info.path)
+        vault_passwords = [item["password"] for item in password_candidates]
+        rj_passwords = self._get_rj_passwords(archive_info.path)
+        password_list = []
+        password_list.extend(rj_passwords)
+        password_list.extend(vault_passwords)
+        if archive_info.password and archive_info.password not in password_list:
+            password_list.append(archive_info.password)
+        password_list.append("")
+        password_list.extend(self.config.extract.password_list)
+
+        seen_passwords = set()
+        unique_passwords = []
+        for password in password_list:
+            if password in seen_passwords:
+                continue
+            seen_passwords.add(password)
+            unique_passwords.append(password)
+
+        for password in unique_passwords:
+            cleanup_attempt_output()
+            password_args = [f"-p{password}"] if password else ["-p"]
+            cmd = [
+                self.seven_zip,
+                "x",
+                "-y",
+                f"-o{output_path}",
+                *password_args,
+                archive_info.path,
+                f"@{list_file_path}",
+            ]
+
+            result = await self._run_7z_command(cmd)
+            if result.returncode == 0:
+                archive_info.password = password
+                return output_path
+
+        cleanup_attempt_output()
+        if created_temp_dir:
+            try:
+                os.remove(list_file_path)
+            except OSError:
+                pass
+        raise RuntimeError("选择性解压失败：未能使用现有密码策略提取目标条目")
     
     async def _extract_nested_archives(self, directory: str, task: Task, max_depth: int = 5, current_depth: int = 0, processed_paths: Optional[set] = None, parent_password: Optional[str] = None) -> int:
         """

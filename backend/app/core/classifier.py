@@ -152,7 +152,7 @@ class SmartClassifier:
                 return True
             
             # 检查关联作品是否找到
-            found_linked = [rj for r, res in result.items() if res.is_found and r != rjcode]
+            found_linked = [r for r, res in result.items() if res.is_found and r != rjcode]
             if found_linked:
                 logger.info(f"[Kikoeru预检] 在远程服务器找到关联作品: {found_linked}")
                 

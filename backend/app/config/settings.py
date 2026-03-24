@@ -178,6 +178,7 @@ class ASMRSyncConfig(BaseModel):
 class AutoProcessConfig(BaseModel):
     """正常解压缩流程步骤配置"""
     check_duplicate: bool = True  # 预检重复
+    import_linked_translation_subtitles: bool = True  # 命中关联原作且原作无字幕时，自动仅导入字幕
     extract: bool = True  # 解压（不建议关闭）
     fetch_metadata: bool = True  # 获取元数据
     rename: bool = True  # 重命名
@@ -209,6 +210,8 @@ class RJSubtitleConfig(BaseModel):
     enable_metadata_match: bool = True
     naming_strategy: str = "audio"
     use_filter_rules: bool = False
+    auto_import_use_filter_rules: bool = True
+    auto_import_filter_rules: list[FilterRule] = []
     show_source_search: bool = True
     show_written_files: bool = True
     show_download_progress: bool = True
@@ -413,6 +416,7 @@ def load_config(config_path: str = None) -> AppConfig:
             if 'auto_process' not in config_data or not config_data['auto_process']:
                 config_data['auto_process'] = {
                     'check_duplicate': True,
+                    'import_linked_translation_subtitles': True,
                     'extract': True,
                     'fetch_metadata': True,
                     'rename': True,
@@ -425,6 +429,7 @@ def load_config(config_path: str = None) -> AppConfig:
                 # 确保所有字段都存在
                 defaults = {
                     'check_duplicate': True,
+                    'import_linked_translation_subtitles': True,
                     'extract': True,
                     'fetch_metadata': True,
                     'rename': True,

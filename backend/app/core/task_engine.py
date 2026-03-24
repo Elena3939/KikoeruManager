@@ -289,27 +289,67 @@ class TaskEngine:
                 metadata_service = MetadataService()
                 classifier = SmartClassifier()
 
-                # 步骤0: 预检重复
-                logger.info(f"[{rjcode}] 步骤0: 预检重复")
+                # 步骤0: 预检（先字幕补配，再普通查重）
+                logger.info(f"[{rjcode}] 步骤0: 预检")
                 task.update_progress(5, "预检中")
                 rjcode = self._extract_rjcode(task.source_path)
                 logger.info(f"[{rjcode}] 提取到的RJ号: {rjcode}")
                 
+                linked_result = {"handled": False, "reason": "not_run", "preview": {}}
                 if not rjcode:
-                    logger.warning(f"[未知] 无法从文件名提取RJ号，跳过预检查重: {os.path.basename(task.source_path)}")
-                elif not config.auto_process.check_duplicate:
-                    logger.info(f"[{rjcode}] 预检查重已禁用，跳过")
+                    logger.warning(f"[未知] 无法从文件名提取RJ号，跳过字幕补配预检和预检查重: {os.path.basename(task.source_path)}")
                 elif not task.auto_classify:
-                    logger.info(f"[{rjcode}] auto_classify=False，跳过预检查重")
+                    logger.info(f"[{rjcode}] auto_classify=False，跳过字幕补配预检和预检查重")
                 else:
-                    is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
-                    logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
-                    if is_duplicate:
-                        logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
-                        task.status = TaskStatus.COMPLETED
-                        task.update_progress(100, "重复作品，请在问题作品页面处理")
-                        task.completed_at = datetime.now()
-                        return
+                    if getattr(config.auto_process, 'import_linked_translation_subtitles', False):
+                        from .linked_subtitle_import_service import get_linked_subtitle_import_service
+
+                        linked_import_service = get_linked_subtitle_import_service()
+                        try:
+                            linked_result = await linked_import_service.queue_pending_archive_import(task, rjcode)
+                        except Exception as exc:
+                            linked_result = {"handled": False, "reason": str(exc)}
+                            logger.warning(f"[{rjcode}] 关联字幕自动导入预检失败，回退原问题队列逻辑: {exc}")
+
+                        if linked_result.get("handled"):
+                            record = linked_result.get("record") or {}
+                            preview = linked_result.get("preview") or {}
+                            task.task_metadata = {
+                                **(task.task_metadata or {}),
+                                "linked_subtitle_import": record,
+                                "linked_subtitle_preview": preview,
+                                "source_mode": "linked_translation_archive_pending",
+                            }
+                            task.output_path = ""
+                            task.status = TaskStatus.COMPLETED
+                            task.update_progress(100, "已加入字幕补配预检列表，请在字幕补配页继续处理")
+                            task.completed_at = datetime.now()
+                            logger.info(
+                                f"[{rjcode}] 命中关联字幕补配预检分支，已挂入字幕补配页: "
+                                f"target={preview.get('target_rjcode', '')} record={record.get('id', '')}"
+                            )
+                            return
+                    else:
+                        logger.info(f"[{rjcode}] 字幕补配预检已禁用，跳过")
+
+                    preview = linked_result.get("preview") or {}
+                    logger.info(
+                        f"[{rjcode}] 未进入字幕补配预检分支: "
+                        f"target={preview.get('target_rjcode', '')} "
+                        f"reason={linked_result.get('reason') or preview.get('reason') or 'conditions_not_met'}"
+                    )
+
+                    if not config.auto_process.check_duplicate:
+                        logger.info(f"[{rjcode}] 预检查重已禁用，跳过")
+                    else:
+                        is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
+                        logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
+                        if is_duplicate:
+                            logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
+                            task.status = TaskStatus.COMPLETED
+                            task.update_progress(100, "重复作品，请在问题作品页面处理")
+                            task.completed_at = datetime.now()
+                            return
 
                 # 步骤1: 解压
                 logger.info(f"[{rjcode}] 步骤1: 解压")

@@ -1720,6 +1720,195 @@ class RJSubtitleService:
             progress_callback(98, f"原始字幕写入完成，保留 {len(written_files)}，跳过 {len(skipped_files)}")
         return subtitle_dir, written_files, skipped_files, write_errors
 
+    async def import_subtitles_to_folder(
+        self,
+        *,
+        folder_path: str,
+        source_subtitles: List[Dict],
+        library_id: Optional[str] = None,
+        overwrite: Optional[bool] = None,
+        use_filter_rules: Optional[bool] = None,
+        subtitle_filter_rules: Optional[List[Dict]] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> Dict:
+        """Import already-extracted subtitle files into an existing RJ folder."""
+        from ..config.settings import get_config
+        from .library_manager import get_library_manager
+
+        config = get_config()
+        overwrite = getattr(config.rj_subtitle, 'overwrite_existing', False) if overwrite is None else overwrite
+        use_filter_rules = getattr(config.rj_subtitle, 'auto_import_use_filter_rules', True) if use_filter_rules is None else use_filter_rules
+        if subtitle_filter_rules is None:
+            subtitle_filter_rules = getattr(config.rj_subtitle, 'auto_import_filter_rules', []) or []
+
+        normalized_subtitles = []
+        for item in source_subtitles or []:
+            normalized = self._normalize_subtitle_file(item)
+            if normalized.get('ext') not in self.SUBTITLE_EXTENSIONS:
+                continue
+            normalized_subtitles.append(normalized)
+
+        empty_match_result = {
+            'matches': [],
+            'matched_group_count': 0,
+            'matched_subtitle_count': 0,
+            'unmatched_audio': [],
+            'unmatched_subtitles': [],
+        }
+
+        if not normalized_subtitles:
+            return {
+                'success': False,
+                'error': '未检测到可导入的字幕文件',
+                'download_files': [],
+                'downloaded_count': 0,
+                'content_deduped_count': 0,
+                'content_deduped_files': [],
+                'written_files': [],
+                'skipped_files': [],
+                'write_errors': [],
+                'awaiting_manual_match': False,
+                'existing_subtitle_count': 0,
+                'subtitle_dir': '',
+                'match_result': empty_match_result,
+            }
+
+        if use_filter_rules:
+            normalized_subtitles = self._apply_subtitle_filter_rules(
+                normalized_subtitles,
+                subtitle_filter_rules or [],
+            )
+
+        if not normalized_subtitles:
+            return {
+                'success': False,
+                'error': '字幕过滤后没有可导入的文件',
+                'download_files': [],
+                'downloaded_count': 0,
+                'content_deduped_count': 0,
+                'content_deduped_files': [],
+                'written_files': [],
+                'skipped_files': [],
+                'write_errors': [],
+                'awaiting_manual_match': False,
+                'existing_subtitle_count': 0,
+                'subtitle_dir': '',
+                'match_result': empty_match_result,
+            }
+
+        if should_cancel and should_cancel():
+            raise asyncio.CancelledError()
+
+        if progress_callback:
+            progress_callback(18, f"准备导入 {len(normalized_subtitles)} 个字幕文件")
+
+        audio_items: List[Any]
+        existing_subtitle_count = 0
+        content_deduped_files: List[Dict] = []
+        temp_dir: Optional[str] = None
+
+        try:
+            if library_id:
+                manager = get_library_manager()
+                library = manager.get_library_definition(library_id)
+                if library.type != 'synology_filestation':
+                    raise ValueError('指定库存不是远程库存')
+                folder_info = await manager.folder_contents(library_id, folder_path)
+                remote_items = folder_info.get('items') or []
+                audio_items = self._collect_remote_audio_entries(remote_items)
+                existing_subtitle_count = self._count_remote_existing_subtitles(remote_items)
+                downloaded_files, content_deduped_files = self._dedupe_downloaded_subtitles_by_content(
+                    normalized_subtitles,
+                    audio_items,
+                )
+                if not downloaded_files:
+                    return {
+                        'success': False,
+                        'error': '内容去重后没有可导入的字幕文件',
+                        'download_files': [],
+                        'downloaded_count': 0,
+                        'content_deduped_count': len(content_deduped_files),
+                        'content_deduped_files': content_deduped_files,
+                        'written_files': [],
+                        'skipped_files': [],
+                        'write_errors': [],
+                        'awaiting_manual_match': False,
+                        'existing_subtitle_count': existing_subtitle_count,
+                        'subtitle_dir': '',
+                        'match_result': empty_match_result,
+                    }
+                temp_root = os.path.join(config.storage.temp_path, 'rj_subtitle_import')
+                os.makedirs(temp_root, exist_ok=True)
+                temp_dir = tempfile.mkdtemp(prefix='linked_import_', dir=temp_root)
+                subtitle_dir, written_files, skipped_files, write_errors = await self._write_remote_downloaded_subtitles(
+                    library_id=library_id,
+                    folder_path=folder_path,
+                    downloaded_files=downloaded_files,
+                    overwrite=overwrite,
+                    temp_dir=temp_dir,
+                    progress_callback=progress_callback,
+                    should_cancel=should_cancel,
+                )
+            else:
+                folder = Path(folder_path)
+                audio_items = self._collect_audio_files(folder)
+                existing_subtitle_count = self._count_existing_subtitles(folder)
+                downloaded_files, content_deduped_files = self._dedupe_downloaded_subtitles_by_content(
+                    normalized_subtitles,
+                    audio_items,
+                )
+                if not downloaded_files:
+                    return {
+                        'success': False,
+                        'error': '内容去重后没有可导入的字幕文件',
+                        'download_files': [],
+                        'downloaded_count': 0,
+                        'content_deduped_count': len(content_deduped_files),
+                        'content_deduped_files': content_deduped_files,
+                        'written_files': [],
+                        'skipped_files': [],
+                        'write_errors': [],
+                        'awaiting_manual_match': False,
+                        'existing_subtitle_count': existing_subtitle_count,
+                        'subtitle_dir': '',
+                        'match_result': empty_match_result,
+                    }
+                subtitle_dir, written_files, skipped_files, write_errors = self._write_local_downloaded_subtitles(
+                    folder=folder,
+                    downloaded_files=downloaded_files,
+                    overwrite=overwrite,
+                    progress_callback=progress_callback,
+                    should_cancel=should_cancel,
+                )
+
+            success = len(written_files) > 0
+            awaiting_manual_match = success and bool(audio_items)
+            match_result = {
+                **empty_match_result,
+                'unmatched_audio': [] if audio_items else ['目标目录未检测到音频文件'],
+            }
+
+            return {
+                'success': success,
+                'partial': bool(success and write_errors),
+                'error': None if success else '未能导入任何字幕文件',
+                'download_files': downloaded_files if success else [],
+                'downloaded_count': len(downloaded_files) if success else 0,
+                'content_deduped_count': len(content_deduped_files),
+                'content_deduped_files': content_deduped_files,
+                'written_files': written_files,
+                'skipped_files': skipped_files,
+                'write_errors': write_errors,
+                'awaiting_manual_match': awaiting_manual_match,
+                'existing_subtitle_count': existing_subtitle_count,
+                'subtitle_dir': subtitle_dir,
+                'match_result': match_result,
+            }
+        finally:
+            if temp_dir and os.path.isdir(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
     async def _write_remote_subtitles(
         self,
         library_id: str,
