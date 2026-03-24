@@ -85,26 +85,22 @@
       </div>
     </el-aside>
 
-    <el-container class="main-shell" direction="vertical">
-      <AppTabs />
-
-      <el-main class="main-content">
-        <router-view v-slot="{ Component, route: viewRoute }">
-          <keep-alive :include="cachedViews">
-            <component
-              :is="Component"
-              v-if="viewRoute.meta?.cache"
-              :key="tabStore.viewKey(viewRoute.path, viewRoute.name || viewRoute.path)"
-            />
-          </keep-alive>
+    <el-main class="main-content main-shell">
+      <router-view v-slot="{ Component, route: viewRoute }">
+        <keep-alive :include="cachedViews">
           <component
             :is="Component"
-            v-if="!viewRoute.meta?.cache"
-            :key="tabStore.viewKey(viewRoute.path, viewRoute.fullPath)"
+            v-if="viewRoute.meta?.cache"
+            :key="viewRoute.name || viewRoute.path"
           />
-        </router-view>
-      </el-main>
-    </el-container>
+        </keep-alive>
+        <component
+          :is="Component"
+          v-if="!viewRoute.meta?.cache"
+          :key="viewRoute.fullPath"
+        />
+      </router-view>
+    </el-main>
   </el-container>
 </template>
 
@@ -123,17 +119,20 @@ import {
   Setting,
   WarningFilled
 } from '@element-plus/icons-vue'
-import AppTabs from './components/layout/AppTabs.vue'
+import router from './router'
 import { useWatcherStore } from './stores'
-import { useTabStore } from './stores/tabStore'
 
 const appVersion = '1.0.2'
 const route = useRoute()
 const watcherStore = useWatcherStore()
-const tabStore = useTabStore()
 const conflictCount = ref(0)
 const watcherStatus = ref({ is_running: false, watch_path: '', pending_files: [] })
-const cachedViews = computed(() => tabStore.cachedViewNames)
+const cachedViews = computed(() =>
+  router
+    .getRoutes()
+    .filter((item) => item.meta?.cache && item.name)
+    .map((item) => item.name)
+)
 
 let intervalId = null
 
@@ -232,18 +231,16 @@ async function toggleWatcher() {
   font-size: 12px;
 }
 
-.main-shell {
-  min-width: 0;
-  background:
-    radial-gradient(circle at top right, rgba(96, 165, 250, 0.12) 0%, rgba(241, 245, 249, 0) 28%),
-    linear-gradient(180deg, #f6f9fc 0%, #eef4f9 100%);
-}
-
 .main-content {
   min-width: 0;
   padding: 20px;
   overflow-y: auto;
-  background: transparent;
+}
+
+.main-shell {
+  background:
+    radial-gradient(circle at top right, rgba(96, 165, 250, 0.12) 0%, rgba(241, 245, 249, 0) 28%),
+    linear-gradient(180deg, #f6f9fc 0%, #eef4f9 100%);
 }
 
 @media screen and (max-width: 768px) {

@@ -107,7 +107,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="source_path" label="源文件" show-overflow-tooltip min-width="300">
+        <el-table-column prop="source_path" label="源文件" show-overflow-tooltip min-width="250">
           <template #default="{ row }">
             <div class="source-file-cell">
               <span class="filename">{{ getFileName(row.source_path) }}</span>
@@ -143,7 +143,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="140" fixed="right" align="center">
+        <el-table-column label="操作" width="180" fixed="right" align="center">
           <template #default="{ row }">
             <el-button-group v-if="row.status === 'processing'">
               <el-button size="small" @click="pauseTask(row.id)">暂停</el-button>
@@ -247,25 +247,25 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="file_size" label="大小" width="100">
+        <el-table-column prop="file_size" label="大小" width="120">
           <template #default="{ row }">
             {{ formatFileSize(row.file_size) }}
           </template>
         </el-table-column>
 
-        <el-table-column prop="process_count" label="处理次数" width="100">
+        <el-table-column prop="process_count" label="处理次数" width="120">
           <template #default="{ row }">
             <el-tag type="info" size="small">{{ row.process_count || 1 }} 次</el-tag>
           </template>
         </el-table-column>
 
-        <el-table-column prop="processed_at" label="处理时间" width="200">
+        <el-table-column prop="processed_at" label="处理时间" width="220">
           <template #default="{ row }">
             <span class="time-text">{{ formatDate(row.processed_at) }}</span>
           </template>
         </el-table-column>
 
-        <el-table-column prop="status" label="状态" width="100">
+        <el-table-column prop="status" label="状态" width="110">
           <template #default="{ row }">
             <el-tag
               :type="row.status === 'completed' ? 'success' : (row.status === 'reprocessing' ? 'warning' : 'info')"
@@ -410,7 +410,7 @@ let intervalId
 onMounted(async () => {
   await refreshData()
   await fetchWatcherStatus()
-  await fetchProcessedArchives()
+  await fetchProcessedArchivesSilently()
   intervalId = setInterval(refreshData, 3000)
 })
 
@@ -438,7 +438,7 @@ async function refreshData() {
 
   if (shouldRefreshArchives) {
     console.log('检测到任务状态变化，刷新已处理压缩包列表')
-    await fetchProcessedArchives()
+    await fetchProcessedArchivesSilently()
     lastRefreshTime = now
   }
 
@@ -565,7 +565,8 @@ async function fetchWatcherStatus() {
 }
 
 // 获取已处理压缩包列表
-async function fetchProcessedArchives() {
+async function fetchProcessedArchives(options = {}) {
+  const { silent = false } = options
   archivesLoading.value = true
   try {
     await processedArchiveApi.scan()
@@ -613,6 +614,26 @@ function toggleArchiveSortOrder() {
 }
 
 // 重新处理压缩包
+async function fetchProcessedArchivesSilently() {
+  archivesLoading.value = true
+  try {
+    await processedArchiveApi.scan()
+    const params = {
+      sort_by: archiveSortBy.value,
+      sort_order: archiveSortOrder.value
+    }
+    if (archiveSearchQuery.value) {
+      params.search = archiveSearchQuery.value
+    }
+    const data = await processedArchiveApi.list(params)
+    archives.value = data.archives || []
+  } catch (error) {
+    console.error('Silent refresh of processed archives failed:', error)
+  } finally {
+    archivesLoading.value = false
+  }
+}
+
 async function reprocessArchive(archiveId) {
   reprocessingId.value = archiveId
   try {

@@ -1659,6 +1659,7 @@ const defaultConfig = {
     delete_after_process: false
   },
   extract: {
+    seven_zip_path: '7z',
     auto_repair_extension: true,
     verify_after_extract: true,
     password_list: [],

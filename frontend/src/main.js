@@ -5,7 +5,6 @@ import 'element-plus/dist/index.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import App from './App.vue'
 import router from './router'
-import { useTabStore } from './stores/tabStore'
 
 const app = createApp(App)
 const pinia = createPinia()
@@ -17,13 +16,5 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
 app.use(pinia)
 app.use(router)
 app.use(ElementPlus)
-
-const tabStore = useTabStore(pinia)
-
-router.afterEach((to) => {
-  tabStore.openTab(to)
-})
-
-tabStore.openTab(router.currentRoute.value)
 
 app.mount('#app')

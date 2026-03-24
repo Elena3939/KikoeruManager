@@ -134,6 +134,7 @@ class ConfigResponse(BaseModel):
     storage: dict
     processing: dict
     watcher: dict
+    extract: Optional[dict] = None
     filter: dict
     metadata: dict
     rename: dict
@@ -378,6 +379,7 @@ async def get_configuration():
         storage=storage_data,
         processing=config.processing.model_dump(),
         watcher=config.watcher.model_dump(),
+        extract=config.extract.model_dump(),
         filter=config.filter.model_dump(),
         metadata=config.metadata.model_dump(),
         rename=config.rename.model_dump(),
