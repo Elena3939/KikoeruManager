@@ -81,57 +81,71 @@
         @selection-change="handleSelectionChange"
       >
         <el-table-column type="selection" width="55" />
-        <el-table-column prop="rjcode" label="RJ号" width="120" sortable>
+        <el-table-column prop="rjcode" label="RJ号" width="120" sortable align="center" header-align="center">
           <template #default="{ row }">
-            <el-tag v-if="row.rjcode" type="info" size="small">{{ row.rjcode }}</el-tag>
-            <span v-else class="text-gray">-</span>
+            <div class="table-cell-content table-cell-content-center">
+              <el-tag v-if="row.rjcode" type="info" size="small">{{ row.rjcode }}</el-tag>
+              <span v-else class="text-gray placeholder-text">-</span>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column prop="filename" label="文件名" min-width="200">
+        <el-table-column prop="filename" label="文件名" min-width="200" align="center" header-align="center">
           <template #default="{ row }">
-            <span v-if="row.filename">{{ row.filename }}</span>
-            <span v-else class="text-gray">-</span>
+            <div class="table-cell-content table-cell-content-center">
+              <span v-if="row.filename">{{ row.filename }}</span>
+              <span v-else class="text-gray placeholder-text">-</span>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column prop="password" label="密码" width="200">
+        <el-table-column prop="password" label="密码" width="200" align="center" header-align="center">
           <template #default="{ row }">
-            <div class="password-cell">
+            <div class="password-cell table-cell-content-center">
               <span class="password-text">{{ row.password }}</span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="备注" min-width="150">
+        <el-table-column prop="description" label="备注" min-width="150" align="center" header-align="center">
           <template #default="{ row }">
-            <span v-if="row.description">{{ row.description }}</span>
-            <span v-else class="text-gray">-</span>
+            <div class="table-cell-content table-cell-content-center">
+              <span v-if="row.description">{{ row.description }}</span>
+              <span v-else class="text-gray placeholder-text">-</span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column prop="use_count" label="使用次数" width="120" sortable label-class-name="usage-count-header" align="center" header-align="center">
           <template #default="{ row }">
-            <el-tag :type="row.use_count > 0 ? 'success' : 'info'" size="small">
-              {{ row.use_count }}
-            </el-tag>
+            <div class="table-cell-content table-cell-content-center">
+              <el-tag :type="row.use_count > 0 ? 'success' : 'info'" size="small">
+                {{ row.use_count }}
+              </el-tag>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column prop="last_used_at" label="最后使用" width="150">
+        <el-table-column prop="last_used_at" label="最后使用" width="150" align="center" header-align="center">
           <template #default="{ row }">
-            <span v-if="row._formatted_last_used">{{ row._formatted_last_used }}</span>
-            <span v-else class="text-gray">未使用</span>
+            <div class="table-cell-content table-cell-content-center">
+              <span v-if="row._formatted_last_used">{{ row._formatted_last_used }}</span>
+              <span v-else class="text-gray">未使用</span>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" width="150">
+        <el-table-column prop="created_at" label="创建时间" width="170" align="center" header-align="center">
           <template #default="{ row }">
-            {{ row._formatted_created_at }}
+            <div class="table-cell-content table-cell-content-center">
+              {{ row._formatted_created_at }}
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right" align="center" header-align="center">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="handleEdit(row)">
-              编辑
-            </el-button>
-            <el-button link type="danger" size="small" @click="handleDelete(row)">
-              删除
-            </el-button>
+            <div class="table-actions">
+              <el-button link type="primary" size="small" @click="handleEdit(row)">
+                编辑
+              </el-button>
+              <el-button link type="danger" size="small" @click="handleDelete(row)">
+                删除
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -804,7 +818,6 @@ watch(showCleanupDialog, (newVal) => {
 .main-card {
   min-height: 600px;
 }
-
 .toolbar {
   display: flex;
   align-items: center;
@@ -816,6 +829,30 @@ watch(showCleanupDialog, (newVal) => {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 24px;
+}
+
+.table-cell-content {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+.table-cell-content-center {
+  justify-content: center;
+}
+
+.table-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 24px;
+  width: 100%;
+}
+
+.placeholder-text {
+  letter-spacing: 0.04em;
 }
 
 .text-gray {
@@ -831,6 +868,8 @@ watch(showCleanupDialog, (newVal) => {
 :deep(.el-table) {
   margin-top: 10px;
 }
+
+
 
 .stats-bar {
   margin-bottom: 16px;

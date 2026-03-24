@@ -3,7 +3,9 @@
     <div class="page-header">
       <div>
         <h1>问题作品</h1>
-        <p>只保留“保留新版 / 跳过 / 合并”三种顶层动作，删除审查与文件级合并统一从这里进入。</p>
+        <p>
+          重复作品以及解压失败作品处理
+        </p>
       </div>
       <div class="header-actions">
         <el-button :loading="loading" @click="fetchConflicts">刷新列表</el-button>
