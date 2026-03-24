@@ -210,7 +210,7 @@
       </div>
 
       <div class="pagination-wrap">
-        <el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" :total="totalFiles" layout="total, sizes, prev, pager, next" background />
+        <el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" :total="totalFiles" layout="total, sizes, prev, pager, next, jumper" background />
       </div>
     </el-card>
 

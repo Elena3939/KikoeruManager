@@ -35,7 +35,7 @@
           </div>
           <div class="stat-info">
             <div class="stat-value">{{ stats.completed }}</div>
-            <div class="stat-label">已完成（点击查看库文件）</div>
+            <div class="stat-label">已完成（击查看库文点件）</div>
           </div>
         </el-card>
       </el-col>

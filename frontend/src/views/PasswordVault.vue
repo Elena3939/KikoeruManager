@@ -150,13 +150,14 @@
         </el-table-column>
       </el-table>
 
-      <div style="margin-top: 16px; display: flex; justify-content: flex-end;">
+      <div class="pagination-bar">
         <el-pagination
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
           :page-sizes="[10, 20, 50, 100]"
           :total="totalCount"
           layout="total, sizes, prev, pager, next, jumper"
+          background
           @size-change="handlePageSizeChange"
           @current-change="handlePageChange"
         />
@@ -818,11 +819,25 @@ watch(showCleanupDialog, (newVal) => {
 .main-card {
   min-height: 600px;
 }
+
+.main-card :deep(.el-card__body) {
+  min-height: 600px;
+  display: flex;
+  flex-direction: column;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
   margin-bottom: 20px;
   gap: 12px;
+}
+
+.pagination-bar {
+  margin-top: auto;
+  padding-top: 16px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .password-cell {
