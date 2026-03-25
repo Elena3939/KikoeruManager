@@ -101,11 +101,6 @@
       </template>
 
       <el-table :data="recentTasks" v-loading="loading" style="width: 100%" row-key="id">
-        <el-table-column prop="id" label="ID" width="320">
-          <template #default="{ row }">
-            <span class="task-id">{{ row.id }}</span>
-          </template>
-        </el-table-column>
 
         <el-table-column prop="source_path" label="源文件" show-overflow-tooltip min-width="250">
           <template #default="{ row }">
@@ -115,7 +110,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="type" label="类型" width="100">
+        <el-table-column prop="type" label="类型" width="200">
           <template #default="{ row }">
             <el-tag size="small">{{ getTaskTypeLabel(row.type) }}</el-tag>
           </template>
@@ -129,7 +124,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="progress" label="进度" width="180">
+        <el-table-column prop="progress" label="进度" width="400">
           <template #default="{ row }">
             <div class="progress-cell">
               <el-progress

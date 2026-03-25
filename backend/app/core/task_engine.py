@@ -260,6 +260,50 @@ class TaskEngine:
             metadata,
             status="PENDING",
         )
+
+    def _resolve_retry_extract_conflict(self, task: Task):
+        """当问题作品中的解压失败项重试成功后，将原记录标记为已处理。"""
+        if task.status != TaskStatus.COMPLETED:
+            return
+
+        metadata = dict(task.task_metadata or {})
+        conflict_id = str(metadata.get("retry_conflict_id") or "").strip()
+        source_path = str(metadata.get("retry_conflict_source_path") or task.source_path or "").strip()
+        if not conflict_id and not source_path:
+            return
+
+        from ..models.database import ConflictWork, get_db
+
+        db = next(get_db())
+        try:
+            query = db.query(ConflictWork).filter(
+                ConflictWork.conflict_type == "EXTRACT_FAILED",
+                ConflictWork.status == "PENDING",
+            )
+            conflict = None
+            if conflict_id:
+                conflict = query.filter(ConflictWork.id == conflict_id).first()
+            if not conflict and source_path:
+                conflict = query.filter(ConflictWork.new_path == source_path).first()
+            if not conflict:
+                return
+
+            next_metadata = dict(conflict.new_metadata or {})
+            next_metadata["retry_result"] = "completed"
+            next_metadata["retry_completed_at"] = datetime.now().isoformat()
+            next_metadata["retry_task_id"] = task.id
+            if task.output_path:
+                next_metadata["retry_output_path"] = task.output_path
+
+            conflict.new_metadata = next_metadata
+            conflict.status = "RETRIED"
+            db.commit()
+            logger.info("解压失败问题项重试成功，已移出问题作品: conflict_id=%s task_id=%s", conflict.id, task.id)
+        except Exception as exc:
+            db.rollback()
+            logger.error("更新解压失败问题项状态失败: %s", exc, exc_info=True)
+        finally:
+            db.close()
     
     async def _process_task(self, task: Task):
         """处理单个任务"""
@@ -293,6 +337,31 @@ class TaskEngine:
                 logger.info(f"[{rjcode}] 步骤0: 预检")
                 task.update_progress(5, "预检中")
                 rjcode = self._extract_rjcode(task.source_path)
+                if not rjcode and os.path.isfile(task.source_path):
+                    try:
+                        archive_rj_result = await extract_service.infer_rjcode_from_archive(
+                            task.source_path,
+                            max_nested_depth=3,
+                        )
+                    except Exception as exc:
+                        archive_rj_result = None
+                        logger.warning(f"[未知] 压缩包预检推断 RJ 失败: {os.path.basename(task.source_path)} error={exc}")
+
+                    if archive_rj_result and archive_rj_result.get("rjcode"):
+                        rjcode = self._sync_task_rjcode(
+                            task,
+                            archive_rj_result.get("rjcode"),
+                            source=archive_rj_result.get("source") or "archive_precheck",
+                        )
+                        logger.info(
+                            f"[{rjcode}] 预检阶段从压缩包内容推断到 RJ 号: "
+                            f"source={archive_rj_result.get('source') or 'archive_precheck'}"
+                        )
+                    else:
+                        logger.info(
+                            f"[未知] 压缩包预检未推断出 RJ 号: "
+                            f"source={os.path.basename(task.source_path)}"
+                        )
                 logger.info(f"[{rjcode}] 提取到的RJ号: {rjcode}")
                 
                 linked_result = {"handled": False, "reason": "not_run", "preview": {}}
@@ -767,6 +836,7 @@ class TaskEngine:
             logger.info(f"[{rjcode}] ========== 任务失败 ==========")
         finally:
             # 清理任务产生的临时文件（无论成功还是失败）
+            self._resolve_retry_extract_conflict(task)
             await self._cleanup_failed_task(task)
             self.processing.discard(task.id)
             # 清除RJ号处理标记

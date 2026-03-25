@@ -491,13 +491,12 @@ class FileProcessor:
             r'\.part(\d+)$',                  # 无扩展名的分卷
             r'\.z\d{2}$',                     # ZIP分卷
             r'\.r\d{2}$',                     # 旧式 RAR 分卷
-            r'\.\d{3}$',                      # 7z分卷
+            r'\.7z\.\d{3}$',                  # 7z 分卷首尾格式
         ]
         basename = os.path.basename(file_path)
         main_volume_patterns = [
-            r'^.+\.zip$',
-            r'^.+\.rar$',
             r'^.+\.part1(?:\.(rar|zip|7z))?$',
+            r'^.+\.7z\.001$',
         ]
 
         is_potential_volume = any(

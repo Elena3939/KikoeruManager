@@ -105,7 +105,7 @@
                 @click="view.selectSubtitleAudio(audio)"
               >
                 <div class="subtitle-match-name">
-                  {{ audio.name }}
+                  {{ formatSubtitleItemName(audio) }}
                   <span v-if="view.isAudioPaired(audio.path)" class="subtitle-match-badge badge-paired">已配对</span>
                   <span v-if="view.isAudioSuspicious(audio.path)" class="subtitle-match-badge badge-low">待确认</span>
                   <span v-if="view.getSubtitleSequenceIndex('audio', audio.path)" class="subtitle-match-badge badge-seq">#{{ view.getSubtitleSequenceIndex('audio', audio.path) }}</span>
@@ -147,11 +147,11 @@
                 <div class="subtitle-match-preview-grid">
                   <div class="subtitle-match-preview-block">
                     <span class="subtitle-match-preview-label">音频</span>
-                    <span class="subtitle-match-preview-value" :title="pair.audio_name">{{ pair.audio_name }}</span>
+                    <span class="subtitle-match-preview-value" :title="formatSubtitleName(pair.audio_name)">{{ formatSubtitleName(pair.audio_name) }}</span>
                   </div>
                   <div class="subtitle-match-preview-block">
                     <span class="subtitle-match-preview-label">字幕</span>
-                    <span class="subtitle-match-preview-value" :title="pair.subtitle_name">{{ pair.subtitle_name }}</span>
+                    <span class="subtitle-match-preview-value" :title="formatSubtitleName(pair.subtitle_name)">{{ formatSubtitleName(pair.subtitle_name) }}</span>
                   </div>
                   <div class="subtitle-match-preview-block subtitle-match-preview-block-wide">
                     <span class="subtitle-match-preview-label">应用后</span>
@@ -196,7 +196,7 @@
                 @click="view.selectSubtitleFile(subtitle)"
               >
                 <div class="subtitle-match-name">
-                  {{ subtitle.name }}
+                  {{ formatSubtitleItemName(subtitle) }}
                   <span v-if="view.isSubtitlePaired(subtitle.path)" class="subtitle-match-badge badge-paired">已配对</span>
                   <span v-if="view.isSubtitleSuspicious(subtitle.path)" class="subtitle-match-badge badge-low">待确认</span>
                   <span v-if="view.getSubtitleSequenceIndex('subtitle', subtitle.path)" class="subtitle-match-badge badge-seq">#{{ view.getSubtitleSequenceIndex('subtitle', subtitle.path) }}</span>
@@ -286,6 +286,26 @@ const props = defineProps({
 })
 
 const view = computed(() => props.ctx || {})
+
+function stripTrailingAudioExtension(value = '') {
+  let current = String(value || '')
+  while (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(current)) {
+    current = current.replace(/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i, '')
+  }
+  return current
+}
+
+function formatSubtitleName(name = '') {
+  const raw = String(name || '')
+  const extMatch = raw.match(/\.[^.]+$/)
+  const subtitleExt = extMatch?.[0] || ''
+  const baseName = subtitleExt ? raw.slice(0, -subtitleExt.length) : raw
+  return `${stripTrailingAudioExtension(baseName)}${subtitleExt}`
+}
+
+function formatSubtitleItemName(item = {}) {
+  return formatSubtitleName(item?.display_name || item?.name || '')
+}
 </script>
 
 <style scoped>

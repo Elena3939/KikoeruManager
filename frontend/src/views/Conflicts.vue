@@ -68,6 +68,15 @@
               保留新版
             </el-button>
             <el-button
+              v-if="isExtractFailed(activeConflict)"
+              type="primary"
+              :loading="isActionLoading(activeConflict.id, 'RETRY')"
+              :disabled="isConflictBusy(activeConflict.id)"
+              @click="handleRetry(activeConflict)"
+            >
+              重试
+            </el-button>
+            <el-button
               v-if="canUseAction(activeConflict, 'SKIP')"
               type="info"
               :loading="isActionLoading(activeConflict.id, 'SKIP')"
@@ -193,7 +202,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
-import { conflictApi } from '../api'
+import { conflictApi, taskApi } from '../api'
 
 const ACTIVE_CONFLICT_STORAGE_KEY = 'prekikoeru-conflicts-active-id'
 
@@ -276,6 +285,44 @@ function canUseAction(conflict, action) {
 
 function isExtractFailed(conflict) {
   return conflict?.conflict_type === 'EXTRACT_FAILED'
+}
+
+async function waitForRetryTask(taskId) {
+  const deadline = Date.now() + 10 * 60 * 1000
+
+  while (Date.now() < deadline) {
+    await new Promise(resolve => window.setTimeout(resolve, 1500))
+    const task = await taskApi.get(taskId)
+    if (task.status === 'completed') {
+      return task
+    }
+    if (task.status === 'failed') {
+      throw new Error(task.error_message || '重试失败')
+    }
+  }
+
+  throw new Error('重试超时，请到任务列表查看进度')
+}
+
+async function handleRetry(conflict) {
+  markAction(conflict.id, 'RETRY', true)
+  try {
+    const result = await conflictApi.retry(conflict.id)
+    ElMessage.success(result.already_running ? '已存在重试任务，正在跟踪结果' : '已开始重试')
+    await waitForRetryTask(result.task_id)
+    await fetchConflicts()
+    if (conflicts.value.some(item => item.id === conflict.id)) {
+      ElMessage.warning('重试任务已完成，但问题项仍在列表里，请刷新后再确认')
+      return
+    }
+    ElMessage.success('重试成功，已移出问题作品')
+  } catch (error) {
+    console.error('重试问题作品失败:', error)
+    await fetchConflicts()
+    ElMessage.error(error.response?.data?.detail || error.message || '重试失败')
+  } finally {
+    markAction(conflict.id, 'RETRY', false)
+  }
 }
 
 async function handleKeepNew(conflict) {

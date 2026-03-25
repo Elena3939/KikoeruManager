@@ -80,6 +80,17 @@
                   </template>
                 </el-alert>
 
+                <div v-if="canRetryActivePendingPreview" class="alert-actions">
+                  <el-button
+                    size="small"
+                    text
+                    :loading="retryingPendingId === activePendingItem.id"
+                    @click="retryActivePendingPreview"
+                  >
+                    重试远程搜索
+                  </el-button>
+                </div>
+
                 <el-descriptions :column="2" border>
                   <el-descriptions-item label="来源压缩包">{{ activePendingItem.preview?.source_label || '-' }}</el-descriptions-item>
                   <el-descriptions-item label="来源 RJ">{{ activePendingItem.preview?.source_rjcode || '-' }}</el-descriptions-item>
@@ -101,7 +112,7 @@
                       :key="entry"
                       class="entry-chip"
                     >
-                      {{ entry }}
+                      {{ formatSubtitleEntryDisplay(entry) }}
                     </span>
                   </div>
                 </div>
@@ -122,11 +133,9 @@
                       v-for="candidate in activePendingItem.preview.candidates"
                       :key="candidateKey(candidate)"
                       class="candidate-item"
-                      :class="{ disabled: candidate.has_existing_subtitles }"
                     >
                       <el-radio
                         :label="candidateKey(candidate)"
-                        :disabled="candidate.has_existing_subtitles"
                       >
                         <span class="candidate-title">{{ candidate.folder_name || candidate.folder_path }}</span>
                       </el-radio>
@@ -230,6 +239,17 @@
                   </template>
                 </el-alert>
 
+                <div v-if="canRetryFolderPreview" class="alert-actions">
+                  <el-button
+                    size="small"
+                    text
+                    :loading="folderPreviewLoading"
+                    @click="previewFolderImport"
+                  >
+                    重新检查目标目录
+                  </el-button>
+                </div>
+
                 <el-descriptions :column="2" border>
                   <el-descriptions-item label="来源 RJ">{{ folderPreview.source_rjcode || '-' }}</el-descriptions-item>
                   <el-descriptions-item label="目标原作 RJ">{{ folderPreview.target_rjcode || '-' }}</el-descriptions-item>
@@ -245,7 +265,7 @@
                       :key="entry"
                       class="entry-chip"
                     >
-                      {{ entry }}
+                      {{ formatSubtitleEntryDisplay(entry) }}
                     </span>
                   </div>
                 </div>
@@ -266,11 +286,9 @@
                       v-for="candidate in folderPreview.candidates"
                       :key="candidateKey(candidate)"
                       class="candidate-item"
-                      :class="{ disabled: candidate.has_existing_subtitles }"
                     >
                       <el-radio
                         :label="candidateKey(candidate)"
-                        :disabled="candidate.has_existing_subtitles"
                       >
                         <span class="candidate-title">{{ candidate.folder_name || candidate.folder_path }}</span>
                       </el-radio>
@@ -291,17 +309,28 @@
         </el-row>
       </el-tab-pane>
     </el-tabs>
+
+    <SubtitleImportWorkbench
+      v-if="activeWorkbenchTaskId"
+      :task-id="activeWorkbenchTaskId"
+      @clear-task="clearImportWorkbench"
+      @task-finished="handleWorkbenchTaskFinished"
+      @select-task="openImportedTask"
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { subtitleImportApi } from '../api'
+import { rjSubtitleApi, subtitleImportApi } from '../api'
+import SubtitleImportWorkbench from '../components/subtitle-import/SubtitleImportWorkbench.vue'
 
+const route = useRoute()
 const router = useRouter()
 const SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
+const SUBTITLE_IMPORT_WORKBENCH_TASK_KEY = 'kikoeru.ui.subtitleImport.activeTaskId'
 
 function loadJson(key, fallback) {
   try {
@@ -333,6 +362,26 @@ function sanitizeSubtitleFilterRules(rules = []) {
     }))
 }
 
+function stripTrailingAudioExtension(value = '') {
+  let current = String(value || '')
+  while (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(current)) {
+    current = current.replace(/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i, '')
+  }
+  return current
+}
+
+function formatSubtitleEntryDisplay(entry = '') {
+  const normalized = String(entry || '').replace(/\\/g, '/')
+  if (!normalized) return ''
+  const parts = normalized.split('/')
+  const fileName = parts.pop() || ''
+  const extMatch = fileName.match(/\.[^.]+$/)
+  const subtitleExt = extMatch?.[0] || ''
+  const baseName = subtitleExt ? fileName.slice(0, -subtitleExt.length) : fileName
+  const cleanedFileName = `${stripTrailingAudioExtension(baseName)}${subtitleExt}`
+  return [...parts, cleanedFileName].filter(Boolean).join('/')
+}
+
 function getSubtitleWorkbenchFilterOptions() {
   const saved = loadJson(SUBTITLE_OPTIONS_KEY, {})
   return {
@@ -341,11 +390,36 @@ function getSubtitleWorkbenchFilterOptions() {
   }
 }
 
+function persistWorkbenchTaskId(taskId = '') {
+  try {
+    if (taskId) localStorage.setItem(SUBTITLE_IMPORT_WORKBENCH_TASK_KEY, String(taskId))
+    else localStorage.removeItem(SUBTITLE_IMPORT_WORKBENCH_TASK_KEY)
+  } catch (_) {}
+}
+
+function readPersistedWorkbenchTaskId() {
+  try {
+    return String(localStorage.getItem(SUBTITLE_IMPORT_WORKBENCH_TASK_KEY) || '')
+  } catch (_) {
+    return ''
+  }
+}
+
+function isPendingLinkedSubtitleWorkbenchTask(task = {}) {
+  const sourceMode = String(task?.source_mode || '').trim().toLowerCase()
+  return (
+    ['linked_translation_archive_import', 'subtitle_folder_import'].includes(sourceMode) &&
+    task?.awaiting_manual_match &&
+    !task?.manual_match_completed
+  )
+}
+
 const activeTab = ref('archive')
 const pendingLoading = ref(false)
 const pendingItems = ref([])
 const activePendingId = ref('')
 const executingPendingId = ref('')
+const retryingPendingId = ref('')
 const archiveCandidateSelection = reactive({})
 
 const folderPath = ref('')
@@ -353,6 +427,7 @@ const folderPreviewLoading = ref(false)
 const folderImporting = ref(false)
 const folderPreview = ref(null)
 const folderCandidateSelection = ref('')
+const activeWorkbenchTaskId = ref(String(route.query.taskId || ''))
 
 const activePendingItem = computed(() => {
   return pendingItems.value.find(item => item.id === activePendingId.value) || null
@@ -369,6 +444,17 @@ const selectedFolderCandidate = computed(() => {
   return (folderPreview.value?.candidates || []).find(candidate => candidateKey(candidate) === folderCandidateSelection.value) || null
 })
 
+const canRetryActivePendingPreview = computed(() => {
+  const item = activePendingItem.value
+  if (!item || retryingPendingId.value) return false
+  return !item.can_execute || Number(item.preview?.candidate_count || 0) <= 0
+})
+
+const canRetryFolderPreview = computed(() => {
+  if (!folderPreview.value || folderPreviewLoading.value) return false
+  return !canExecuteFolderImport.value || Number(folderPreview.value?.candidate_count || 0) <= 0
+})
+
 const canExecuteFolderImport = computed(() => {
   if (!folderPreview.value) return false
   const readyCount = Number(folderPreview.value.ready_candidate_count || 0)
@@ -380,11 +466,11 @@ watch(activePendingItem, (item) => {
   if (!item) return
   if (!archiveCandidateSelection[item.id]) {
     const selected = item.preview?.selected_candidate
-    if (selected && !selected.has_existing_subtitles) {
+    if (selected) {
       archiveCandidateSelection[item.id] = candidateKey(selected)
       return
     }
-    const firstReady = (item.preview?.candidates || []).find(candidate => !candidate.has_existing_subtitles)
+    const firstReady = (item.preview?.candidates || [])[0]
     if (firstReady) archiveCandidateSelection[item.id] = candidateKey(firstReady)
   }
 }, { immediate: true })
@@ -395,17 +481,58 @@ watch(folderPreview, (preview) => {
     return
   }
   const selected = preview.selected_candidate
-  if (selected && !selected.has_existing_subtitles) {
+  if (selected) {
     folderCandidateSelection.value = candidateKey(selected)
     return
   }
-  const firstReady = (preview.candidates || []).find(candidate => !candidate.has_existing_subtitles)
+  const firstReady = (preview.candidates || [])[0]
   folderCandidateSelection.value = firstReady ? candidateKey(firstReady) : ''
 }, { immediate: true })
 
 onMounted(async () => {
   await loadPendingImports()
+  await restoreActiveWorkbenchTask()
 })
+
+watch(() => route.query.taskId, (value) => {
+  activeWorkbenchTaskId.value = String(value || '')
+  if (value) persistWorkbenchTaskId(activeWorkbenchTaskId.value)
+}, { immediate: true })
+
+async function restoreActiveWorkbenchTask() {
+  try {
+    const requestedId = String(route.query.taskId || activeWorkbenchTaskId.value || readPersistedWorkbenchTaskId() || '')
+    const data = await rjSubtitleApi.status()
+    const candidates = (data.tasks || []).filter(task => isPendingLinkedSubtitleWorkbenchTask(task))
+    const matchedTask = (requestedId && candidates.find(task => task.id === requestedId)) || candidates.at(-1) || null
+    if (!matchedTask) {
+      persistWorkbenchTaskId('')
+      activeWorkbenchTaskId.value = ''
+      if (route.query.taskId) {
+        const nextQuery = { ...route.query }
+        delete nextQuery.taskId
+        router.replace({
+          path: '/subtitle-import',
+          query: nextQuery
+        })
+      }
+      return
+    }
+    activeWorkbenchTaskId.value = String(matchedTask.id || '')
+    persistWorkbenchTaskId(activeWorkbenchTaskId.value)
+    if (route.query.taskId !== activeWorkbenchTaskId.value) {
+      router.replace({
+        path: '/subtitle-import',
+        query: {
+          ...route.query,
+          taskId: activeWorkbenchTaskId.value
+        }
+      })
+    }
+  } catch (error) {
+    ElMessage.error('恢复字幕补配工作台失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
 
 async function loadPendingImports() {
   pendingLoading.value = true
@@ -419,6 +546,21 @@ async function loadPendingImports() {
     ElMessage.error('加载字幕补配预检单失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     pendingLoading.value = false
+  }
+}
+
+async function retryActivePendingPreview() {
+  const item = activePendingItem.value
+  if (!item?.id) return
+
+  retryingPendingId.value = item.id
+  try {
+    await loadPendingImports()
+    ElMessage.success('已重新检查当前预检单的目标目录候选')
+  } catch (error) {
+    ElMessage.error('重试候选检查失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    retryingPendingId.value = ''
   }
 }
 
@@ -494,14 +636,35 @@ async function executeFolderImport() {
 }
 
 function openImportedTask(taskId) {
-  router.push({
-    path: '/library',
+  const nextTaskId = String(taskId || '')
+  if (!nextTaskId) return
+  if (activeWorkbenchTaskId.value === nextTaskId && route.query.taskId === nextTaskId) return
+  activeWorkbenchTaskId.value = nextTaskId
+  persistWorkbenchTaskId(activeWorkbenchTaskId.value)
+  router.replace({
+    path: '/subtitle-import',
     query: {
-      subtitleDialog: '1',
-      subtitleImport: '1',
-      subtitleTaskId: taskId
+      ...route.query,
+      taskId: activeWorkbenchTaskId.value
     }
   })
+}
+
+function clearImportWorkbench() {
+  activeWorkbenchTaskId.value = ''
+  persistWorkbenchTaskId('')
+  const nextQuery = { ...route.query }
+  delete nextQuery.taskId
+  router.replace({
+    path: '/subtitle-import',
+    query: nextQuery
+  })
+}
+
+function handleWorkbenchTaskFinished(taskId) {
+  if (String(taskId || '') === readPersistedWorkbenchTaskId()) {
+    persistWorkbenchTaskId('')
+  }
 }
 
 function candidateKey(candidate) {
@@ -533,15 +696,80 @@ function formatSize(size) {
 <style scoped>
 .subtitle-import-page {
   display: grid;
-  gap: 18px;
+  gap: 14px;
 }
 
 .hero-card,
 .panel-card {
-  border: none;
+  border: 1px solid #e6edf7;
   border-radius: 22px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97) 0%, #ffffff 100%);
-  box-shadow: 0 16px 36px rgba(31, 46, 67, 0.08);
+  background:
+    radial-gradient(circle at top right, rgba(116, 164, 255, 0.10), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, #ffffff 100%);
+  box-shadow: 0 12px 30px rgba(31, 46, 67, 0.07);
+  overflow: hidden;
+}
+
+.hero-card :deep(.el-card__body) {
+  padding: 18px 20px;
+}
+
+.panel-card :deep(.el-card__header) {
+  padding: 14px 18px 12px;
+  border-bottom-color: #edf2f8;
+  background: linear-gradient(180deg, rgba(248, 251, 255, 0.92) 0%, rgba(255, 255, 255, 0.96) 100%);
+}
+
+.panel-card :deep(.el-card__body) {
+  padding: 16px 18px 18px;
+}
+
+.panel-card :deep(.el-empty) {
+  padding: 22px 0 8px;
+}
+
+.panel-card :deep(.el-empty__image) {
+  width: 86px;
+  height: 86px;
+  margin-bottom: 10px;
+}
+
+.panel-card :deep(.el-empty__description) {
+  margin-top: 0;
+}
+
+.page-tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.page-tabs :deep(.el-tabs__nav-wrap::after) {
+  display: none;
+}
+
+.page-tabs :deep(.el-tabs__nav) {
+  gap: 8px;
+  padding: 5px;
+  border-radius: 16px;
+  border: 1px solid #e6edf7;
+  background: linear-gradient(180deg, #f7faff 0%, #fdfefe 100%);
+}
+
+.page-tabs :deep(.el-tabs__item) {
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 12px;
+  color: #647791;
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.page-tabs :deep(.el-tabs__item.is-active) {
+  color: #204d8f;
+  background: linear-gradient(180deg, #edf4ff 0%, #e4efff 100%);
+  box-shadow: inset 0 0 0 1px #d8e6ff, 0 8px 18px rgba(64, 158, 255, 0.12);
+}
+
+.page-tabs :deep(.el-tabs__content) {
+  padding-top: 12px;
 }
 
 .hero-head,
@@ -557,16 +785,16 @@ function formatSize(size) {
 
 .page-title {
   margin: 0;
-  font-size: 32px;
+  font-size: 28px;
   line-height: 1.2;
   color: #20344d;
 }
 
 .hero-desc {
-  margin-top: 10px;
-  max-width: 900px;
-  font-size: 14px;
-  line-height: 1.75;
+  margin-top: 8px;
+  max-width: 760px;
+  font-size: 13px;
+  line-height: 1.65;
   color: #5d718a;
 }
 
@@ -574,33 +802,52 @@ function formatSize(size) {
 .detail-shell,
 .candidate-list {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+}
+
+.pending-list {
+  max-height: 560px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .pending-item,
 .candidate-item {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  padding: 14px;
+  padding: 12px 14px;
   border: 1px solid #e6edf6;
-  border-radius: 16px;
-  background: #ffffff;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   text-align: left;
   cursor: pointer;
   transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+  position: relative;
 }
 
 .pending-item:hover,
 .candidate-item:hover {
   border-color: #bfd4f6;
-  box-shadow: 0 10px 24px rgba(59, 88, 135, 0.08);
+  box-shadow: 0 8px 20px rgba(59, 88, 135, 0.08);
   transform: translateY(-1px);
 }
 
 .pending-item.active {
-  border-color: #9fc4ff;
-  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.08);
+  border-color: #8fb8ff;
+  background: linear-gradient(180deg, #f6faff 0%, #edf5ff 100%);
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.11);
+}
+
+.pending-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #409eff 0%, #7db4ff 100%);
 }
 
 .pending-item-head,
@@ -631,21 +878,41 @@ function formatSize(size) {
 
 .block-box {
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 12px 14px;
   border-radius: 16px;
   border: 1px solid #e8eef6;
-  background: #fbfcfe;
+  background: linear-gradient(180deg, #fbfcfe 0%, #ffffff 100%);
+}
+
+.alert-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -2px;
 }
 
 .entry-chip {
   display: inline-flex;
   align-items: center;
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-radius: 999px;
   background: #eef4ff;
   color: #31599b;
   font-size: 12px;
+}
+
+.detail-shell :deep(.el-alert) {
+  border-radius: 14px;
+}
+
+.detail-shell :deep(.el-descriptions__cell) {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.candidate-item :deep(.el-radio) {
+  align-items: flex-start;
+  white-space: normal;
 }
 
 .candidate-item.disabled {
@@ -657,6 +924,11 @@ function formatSize(size) {
 @media (max-width: 992px) {
   .page-title {
     font-size: 28px;
+  }
+
+  .pending-list {
+    max-height: none;
+    padding-right: 0;
   }
 }
 </style>

@@ -190,6 +190,11 @@ export const conflictApi = {
     return response.data
   },
 
+  retry: async (conflictId) => {
+    const response = await apiClient.post(`/conflicts/${conflictId}/retry`)
+    return response.data
+  },
+
   preview: async (conflictId, action) => {
     const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action })
     return response.data
@@ -239,7 +244,7 @@ export const libraryApi = {
     return response.data
   },
 
-  browseFiles: async ({ libraryId = null, page = 1, pageSize = 200, search = '', currentPath = '', sortBy = 'size', sortOrder = 'desc' } = {}) => {
+  browseFiles: async ({ libraryId = null, page = 1, pageSize = 200, search = '', currentPath = '', sortBy = 'size', sortOrder = 'desc', forceRefresh = false } = {}) => {
     const response = await apiClient.get('/library/browser/files', {
       params: {
         library_id: libraryId,
@@ -248,7 +253,8 @@ export const libraryApi = {
         search,
         current_path: currentPath || undefined,
         sort_by: sortBy,
-        sort_order: sortOrder
+        sort_order: sortOrder,
+        force_refresh: forceRefresh || undefined
       }
     })
     return response.data
@@ -815,6 +821,11 @@ export const rjSubtitleApi = {
 export const subtitleImportApi = {
   listPending: async () => {
     const response = await apiClient.get('/subtitle-import/pending')
+    return response.data
+  },
+
+  cleanupTask: async (taskId) => {
+    const response = await apiClient.post(`/subtitle-import/task/${taskId}/cleanup`)
     return response.data
   },
 

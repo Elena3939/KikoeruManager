@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..config.settings import get_config
 from ..models.database import ConflictWork, LibrarySnapshot, get_db
 from .dlsite_service import get_dlsite_service
 from .extract_service import ExtractService
@@ -25,9 +26,9 @@ class LinkedSubtitleImportService:
 
     PENDING_CONFLICT_TYPE = "LINKED_SUBTITLE_IMPORT"
     PENDING_SOURCE_MODE = "linked_translation_archive_pending"
-    BROWSER_SEARCH_PAGE_SIZE = 200
-    BROWSER_SEARCH_MAX_PAGES = 20
     WORKBENCH_RELATIVE_DIR = "_prekikoeru_subtitle_workbench/linked"
+    REMOTE_SEARCH_RETRY_DELAYS = (1.0, 2.0, 4.0)
+    REMOTE_PENDING_REASON = "远程库存暂未检出原作目录，请稍后重试"
 
     def __init__(self):
         self.extract_service = ExtractService()
@@ -134,6 +135,59 @@ class LinkedSubtitleImportService:
         if not target or not os.path.isdir(target):
             return
         shutil.rmtree(target, ignore_errors=True)
+        self._cleanup_empty_workbench_shell(target)
+
+    def _cleanup_empty_workbench_shell(self, path_hint: Optional[str]) -> None:
+        target = str(path_hint or "").strip()
+        if not target:
+            return
+
+        current = Path(target)
+        if current.name.lower() == "subtitles":
+            current = current.parent
+        if not current.exists():
+            current = current.parent
+        if not str(current):
+            return
+
+        expected_parts = [part.lower() for part in self.WORKBENCH_RELATIVE_DIR.split("/") if part]
+        if not expected_parts:
+            return
+
+        shell_leaf: Optional[Path] = None
+        for candidate in [current, *current.parents]:
+            if candidate.name.lower() != expected_parts[-1]:
+                continue
+
+            probe = candidate
+            matched = True
+            for expected_name in reversed(expected_parts[:-1]):
+                probe = probe.parent
+                if probe.name.lower() != expected_name:
+                    matched = False
+                    break
+            if matched:
+                shell_leaf = candidate
+                break
+
+        if shell_leaf is None:
+            return
+
+        shell_root = shell_leaf
+        for _ in expected_parts[:-1]:
+            shell_root = shell_root.parent
+
+        cleanup_target = current
+        stop_parent = shell_root.parent
+        while cleanup_target != stop_parent:
+            if not cleanup_target.exists() or not cleanup_target.is_dir():
+                cleanup_target = cleanup_target.parent
+                continue
+            try:
+                cleanup_target.rmdir()
+            except OSError:
+                break
+            cleanup_target = cleanup_target.parent
 
     def _select_local_workbench_library(self) -> Dict[str, Any]:
         libraries = self.library_manager.list_libraries()
@@ -205,6 +259,126 @@ class LinkedSubtitleImportService:
             subtitle_filter_rules or [],
         )
 
+    def _build_workbench_clean_subtitle_name(self, subtitle: Dict[str, Any]) -> str:
+        normalized = self.subtitle_service._normalize_subtitle_file(subtitle)
+        ext = str(normalized.get("ext") or "").strip().lower()
+        base_name = str(normalized.get("base_name") or "").strip()
+        if not base_name:
+            source_name = str(normalized.get("name") or "").strip()
+            base_name = os.path.splitext(source_name)[0]
+            base_name = self.subtitle_service._strip_trailing_audio_extension(base_name)
+        cleaned_name = f"{base_name}{ext}" if ext else base_name
+        return cleaned_name.strip()
+
+    def _prepare_workbench_stage_subtitles(
+        self,
+        source_subtitles: List[Dict[str, Any]],
+        *,
+        use_filter_rules: bool = False,
+        subtitle_filter_rules: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        prepared_subtitles = self._prepare_workbench_source_subtitles(
+            source_subtitles,
+            use_filter_rules=use_filter_rules,
+            subtitle_filter_rules=subtitle_filter_rules,
+        )
+        initial_count = len(prepared_subtitles)
+        stage_groups: Dict[str, List[Dict[str, Any]]] = {}
+        for item in prepared_subtitles:
+            normalized = self.subtitle_service._normalize_subtitle_file(item)
+            cleaned_name = self._build_workbench_clean_subtitle_name(normalized)
+            if not cleaned_name:
+                continue
+            normalized.setdefault("source_name", normalized.get("name") or os.path.basename(str(normalized.get("path") or "")))
+            normalized["cleaned_workbench_name"] = cleaned_name
+            stage_groups.setdefault(cleaned_name.lower(), []).append(normalized)
+
+        staged_subtitles: List[Dict[str, Any]] = []
+        content_deduped_files: List[Dict[str, Any]] = []
+        renamed_collision_files: List[Dict[str, Any]] = []
+        seen_stage_names: set[str] = set()
+
+        for group_name in sorted(stage_groups.keys()):
+            group = stage_groups[group_name]
+            deduped_group, deduped_records = self.subtitle_service._dedupe_downloaded_subtitles_by_content(group, [])
+            target_name = str(group[0].get("cleaned_workbench_name") or "").strip()
+            for record in deduped_records:
+                content_deduped_files.append({
+                    **record,
+                    "target_name": target_name,
+                })
+
+            deduped_group = sorted(
+                deduped_group,
+                key=lambda item: (
+                    str(item.get("display_name") or item.get("name") or ""),
+                    str(item.get("source_name") or ""),
+                    str(item.get("path") or ""),
+                ),
+            )
+            for item in deduped_group:
+                final_name = str(item.get("cleaned_workbench_name") or target_name or item.get("name") or "").strip()
+                if not final_name:
+                    continue
+                stem, ext = os.path.splitext(final_name)
+                candidate_name = final_name
+                collision_index = 1
+                while candidate_name.lower() in seen_stage_names:
+                    collision_index += 1
+                    candidate_name = f"{stem}_{collision_index}{ext}"
+                if candidate_name != final_name:
+                    renamed_collision_files.append({
+                        "source_name": item.get("source_name") or item.get("name") or "",
+                        "preferred_name": final_name,
+                        "final_name": candidate_name,
+                    })
+                seen_stage_names.add(candidate_name.lower())
+                staged_subtitles.append({
+                    **item,
+                    "display_name": candidate_name,
+                    "relative_path": candidate_name,
+                })
+
+        staged_subtitles.sort(key=lambda item: str(item.get("relative_path") or item.get("display_name") or item.get("name") or ""))
+        filtered_out_count = max(0, len(source_subtitles or []) - initial_count)
+        logger.info(
+            "[字幕补配] 工作台字幕整理完成: source=%s filtered_out=%s staged=%s content_merged=%s renamed_collisions=%s",
+            len(source_subtitles or []),
+            filtered_out_count,
+            len(staged_subtitles),
+            len(content_deduped_files),
+            len(renamed_collision_files),
+        )
+        return {
+            "subtitles": staged_subtitles,
+            "filtered_out_count": filtered_out_count,
+            "content_deduped_count": len(content_deduped_files),
+            "content_deduped_files": content_deduped_files,
+            "renamed_collision_files": renamed_collision_files,
+        }
+
+    def _append_task_progress_log(
+        self,
+        task: Task,
+        messages: List[str],
+        *,
+        level: str = "info",
+    ) -> None:
+        if not messages:
+            return
+        metadata = dict(task.task_metadata or {})
+        progress_log = list(metadata.get("progress_log") or [])
+        now = datetime.now().isoformat()
+        for message in messages:
+            progress_log.append({
+                "time": now,
+                "progress": int(task.progress or 100),
+                "level": level,
+                "message": message,
+            })
+        metadata["progress_log"] = progress_log[-30:]
+        task.task_metadata = metadata
+
     async def _create_manual_match_workbench(
         self,
         *,
@@ -229,13 +403,13 @@ class LinkedSubtitleImportService:
         os.makedirs(local_subtitle_dir, exist_ok=True)
 
         try:
-            prepared_subtitles = self._prepare_workbench_source_subtitles(
+            stage_plan = self._prepare_workbench_stage_subtitles(
                 source_subtitles,
                 use_filter_rules=use_filter_rules,
                 subtitle_filter_rules=subtitle_filter_rules,
             )
             copied_items = self._copy_source_subtitles_to_workspace(
-                prepared_subtitles,
+                stage_plan.get("subtitles") or [],
                 destination_dir=local_subtitle_dir,
             )
             if not copied_items:
@@ -243,6 +417,7 @@ class LinkedSubtitleImportService:
         except Exception:
             if os.path.isdir(local_workspace_root):
                 shutil.rmtree(local_workspace_root, ignore_errors=True)
+                self._cleanup_empty_workbench_shell(local_workspace_root)
             raise
 
         return {
@@ -251,6 +426,10 @@ class LinkedSubtitleImportService:
             "subtitle_dir": local_subtitle_dir,
             "staged_files": copied_items,
             "downloaded_count": len(copied_items),
+            "filtered_out_count": int(stage_plan.get("filtered_out_count") or 0),
+            "content_deduped_count": int(stage_plan.get("content_deduped_count") or 0),
+            "content_deduped_files": stage_plan.get("content_deduped_files") or [],
+            "renamed_collision_files": stage_plan.get("renamed_collision_files") or [],
         }
 
     async def _publish_workbench_to_target(
@@ -268,12 +447,21 @@ class LinkedSubtitleImportService:
 
         if library.type == "synology_filestation":
             target_subtitle_dir = f"{normalized_target_folder.rstrip('/')}/subtitles"
-            await self.library_manager.replace_remote_directory_with_local(
-                library_id,
-                subtitle_dir,
-                target_subtitle_dir,
-            )
+            workbench_subtitle_dir = os.path.abspath(subtitle_dir)
+            if not os.path.isdir(workbench_subtitle_dir):
+                raise FileNotFoundError(f"字幕工作台目录不存在: {workbench_subtitle_dir}")
+            client = SynologyFileStationClient(library.synology)
+            await self.library_manager._ensure_remote_directory(client, normalized_target_folder)
+            await self.library_manager._ensure_remote_directory(client, target_subtitle_dir)
+            for root, _, files in os.walk(workbench_subtitle_dir):
+                relative_root = os.path.relpath(root, workbench_subtitle_dir)
+                remote_dir = target_subtitle_dir if relative_root == "." else str(PurePosixPath(target_subtitle_dir) / relative_root.replace(os.sep, "/"))
+                await self.library_manager._ensure_remote_directory(client, remote_dir)
+                for filename in files:
+                    staged_file = os.path.join(root, filename)
+                    await client.upload_file(remote_dir, staged_file, overwrite=True, remote_name=filename)
             shutil.rmtree(workbench_root_dir, ignore_errors=True)
+            self._cleanup_empty_workbench_shell(workbench_root_dir)
             return target_subtitle_dir
 
         workbench_subtitle_dir = os.path.abspath(subtitle_dir)
@@ -281,14 +469,24 @@ class LinkedSubtitleImportService:
         target_subtitle_dir = os.path.join(target_folder, "subtitles")
         if not os.path.isdir(workbench_subtitle_dir):
             raise FileNotFoundError(f"字幕工作台目录不存在: {workbench_subtitle_dir}")
-        if os.path.isdir(target_subtitle_dir):
-            shutil.rmtree(target_subtitle_dir, ignore_errors=True)
-        elif os.path.exists(target_subtitle_dir):
-            os.remove(target_subtitle_dir)
-        os.makedirs(target_folder, exist_ok=True)
-        shutil.move(workbench_subtitle_dir, target_folder)
+        os.makedirs(target_subtitle_dir, exist_ok=True)
+        for root, dirs, files in os.walk(workbench_subtitle_dir):
+            relative_root = os.path.relpath(root, workbench_subtitle_dir)
+            destination_root = target_subtitle_dir if relative_root == "." else os.path.join(target_subtitle_dir, relative_root)
+            os.makedirs(destination_root, exist_ok=True)
+            for directory in dirs:
+                os.makedirs(os.path.join(destination_root, directory), exist_ok=True)
+            for filename in files:
+                source_file = os.path.join(root, filename)
+                destination_file = os.path.join(destination_root, filename)
+                if os.path.isdir(destination_file):
+                    shutil.rmtree(destination_file, ignore_errors=True)
+                elif os.path.exists(destination_file):
+                    os.remove(destination_file)
+                shutil.move(source_file, destination_file)
         try:
             shutil.rmtree(workbench_root_dir, ignore_errors=True)
+            self._cleanup_empty_workbench_shell(workbench_root_dir)
         except Exception:
             logger.warning("[字幕补配] 清理本地工作台目录失败: %s", workbench_root_dir, exc_info=True)
         return target_subtitle_dir
@@ -396,21 +594,23 @@ class LinkedSubtitleImportService:
 
     def _refresh_preview_execution_state(self, preview: Dict[str, Any]) -> Dict[str, Any]:
         candidates = list(preview.get("candidates") or [])
-        ready_candidates = [item for item in candidates if not item.get("has_existing_subtitles")]
+        ready_candidates = candidates
         selected_candidate = preview.get("selected_candidate")
-        if selected_candidate and selected_candidate.get("has_existing_subtitles"):
-            selected_candidate = None
         if not selected_candidate and len(ready_candidates) == 1:
             selected_candidate = ready_candidates[0]
 
         stage_reason = str(preview.get("stage_reason") or "")
+        candidate_search_status = str(preview.get("candidate_search_status") or "")
+        candidate_search_reason = str(preview.get("candidate_search_reason") or "")
         subtitle_count = int(preview.get("subtitle_count") or 0)
-        can_stage_pending = not stage_reason
+        can_stage_pending = not stage_reason or candidate_search_status == "pending_remote"
         can_execute = can_stage_pending and subtitle_count > 0 and len(ready_candidates) > 0
 
         execute_reason = ""
         if stage_reason:
             execute_reason = stage_reason
+        elif candidate_search_status == "pending_remote":
+            execute_reason = candidate_search_reason or self.REMOTE_PENDING_REASON
         elif not subtitle_count:
             execute_reason = "来源内容中没有可导入的字幕文件"
         elif len(ready_candidates) > 1:
@@ -580,59 +780,96 @@ class LinkedSubtitleImportService:
                 candidates.append(dedupe_key)
         return candidates
 
+    async def _locate_direct_rj_candidate(
+        self,
+        library_id: str,
+        target_rjcode: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not target_rjcode:
+            return None
+
+        library = self.library_manager.get_library_definition(library_id)
+        direct_path = ""
+        if library.type == "synology_filestation":
+            if not getattr(library, "synology", None):
+                return None
+            browse_root = self.library_manager._normalize_remote_path(library.browse_root_path or library.root_path or "/")
+            direct_path = self.library_manager._normalize_remote_path(
+                f"{browse_root.rstrip('/')}/{target_rjcode}" if browse_root != "/" else f"/{target_rjcode}"
+            )
+            client = SynologyFileStationClient(library.synology)
+            try:
+                info = await client.stat(direct_path)
+                item = self.library_manager._first_remote_info_item(info)
+                if not item or not bool(item.get("isdir", False)):
+                    return None
+            except Exception:
+                return None
+        else:
+            browse_root = os.path.abspath(library.browse_root_path or library.root_path or "")
+            if not browse_root:
+                return None
+            direct_path = os.path.join(browse_root, target_rjcode)
+            if not os.path.isdir(direct_path):
+                return None
+
+        logger.info(
+            "[字幕补配] 命中目录规则直查: library=%s rj=%s path=%s",
+            library_id,
+            target_rjcode,
+            direct_path,
+        )
+        try:
+            return await self._summarize_candidate(library_id, direct_path)
+        except Exception as exc:
+            logger.warning("[字幕补配] 目录规则直查摘要失败: library=%s path=%s error=%s", library_id, direct_path, exc)
+            return None
+
     async def _search_library_browser_candidates(
         self,
         library_id: str,
         target_rjcode: str,
     ) -> List[Dict[str, Any]]:
-        result = await self.library_manager.global_search_files(
-            library_id,
-            target_rjcode,
-            sort_by="name",
-            sort_order="asc",
-        )
-        items = list(result.get("files") or [])
-        logger.info(
-            "[字幕补配] 目标目录全局搜索完成: library=%s total=%s returned=%s",
-            library_id,
-            int(result.get("total") or len(items)),
-            len(items),
-        )
-        return items
+        library = self.library_manager.get_library_definition(library_id)
+        search_rounds: List[tuple[bool, float]] = [(False, 0.0)]
+        if library.type == "synology_filestation":
+            search_rounds.extend((True, delay) for delay in self.REMOTE_SEARCH_RETRY_DELAYS)
 
-        page = 1
-        page_size = self.BROWSER_SEARCH_PAGE_SIZE
-        total = None
-        items: List[Dict[str, Any]] = []
+        last_items: List[Dict[str, Any]] = []
+        for round_index, (force_refresh, delay_seconds) in enumerate(search_rounds, start=1):
+            if delay_seconds > 0:
+                logger.info(
+                    "[字幕补配] 远程目标目录未命中，等待后重试: library=%s rj=%s round=%s delay=%.1fs force_refresh=%s",
+                    library_id,
+                    target_rjcode,
+                    round_index,
+                    delay_seconds,
+                    force_refresh,
+                )
+                await asyncio.sleep(delay_seconds)
 
-        while page <= self.BROWSER_SEARCH_MAX_PAGES:
-            result = await self.library_manager.list_files(
+            result = await self.library_manager.global_search_files(
                 library_id,
-                page=page,
-                page_size=page_size,
-                search=target_rjcode,
-                current_path=None,
+                target_rjcode,
                 sort_by="name",
                 sort_order="asc",
+                force_refresh=force_refresh,
             )
-            page_items = list(result.get("files") or [])
-            total = int(result.get("total") or len(page_items))
-            items.extend(page_items)
-
+            items = list(result.get("files") or [])
+            total = int(result.get("total") or len(items))
+            last_items = items
             logger.info(
-                "[字幕补配] 目标目录搜索分页: library=%s page=%s page_size=%s page_files=%s total=%s",
+                "[字幕补配] 目标目录搜索结果: library=%s total=%s returned=%s round=%s force_refresh=%s",
                 library_id,
-                page,
-                page_size,
-                len(page_items),
                 total,
+                len(items),
+                round_index,
+                force_refresh,
             )
+            if items or total:
+                return items
 
-            if not page_items or page * page_size >= total:
-                break
-            page += 1
-
-        return items
+        return last_items
 
     async def _summarize_candidate(self, library_id: str, folder_path: str) -> Optional[Dict[str, Any]]:
         library = self.library_manager.get_library_definition(library_id)
@@ -678,78 +915,18 @@ class LinkedSubtitleImportService:
         if not getattr(library, "synology", None):
             raise RuntimeError("远程库存缺少群晖连接配置")
 
-        client = SynologyFileStationClient(library.synology)
         normalized_folder_path = self.library_manager._normalize_remote_path(folder_path)
-        folder_info = await client.stat(normalized_folder_path)
-        folder_info_item = self.library_manager._first_remote_info_item(folder_info)
-        if not folder_info_item or not bool(folder_info_item.get("isdir", False)):
-            raise FileNotFoundError("目标目录不存在")
-
         folder_name = PurePosixPath(normalized_folder_path).name or normalized_folder_path
         subtitle_dir = f"{normalized_folder_path.rstrip('/')}/subtitles"
-
-        top_level_items: List[Dict[str, Any]] = []
-        try:
-            top_level_items = await self.library_manager._list_remote_directory_with_retry(
-                client,
-                normalized_folder_path,
-                retries=2,
-                retry_delay_seconds=0.8,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[字幕补配] 读取目标目录顶层失败，改用最小摘要继续: library=%s path=%s error=%s",
-                library.id,
-                normalized_folder_path,
-                exc,
-            )
-
-        filtered_top_level_items: List[Dict[str, Any]] = []
-        total_size = 0
-        audio_count = 0
-        file_samples: List[str] = []
-        for item in top_level_items:
-            name = str(item.get("name") or "")
-            if self.library_manager._should_skip_entry(name):
-                continue
-            filtered_top_level_items.append(item)
-            if len(file_samples) < 12:
-                file_samples.append(name)
-            if bool(item.get("isdir", False)):
-                continue
-            size = int((item.get("additional") or {}).get("size") or 0)
-            total_size += size
-            if os.path.splitext(name)[1].lower() in self.subtitle_service.AUDIO_EXTENSIONS:
-                audio_count += 1
-
-        existing_subtitle_count = 0
-        try:
-            subtitle_dir_info = await client.stat(subtitle_dir)
-            subtitle_dir_item = self.library_manager._first_remote_info_item(subtitle_dir_info)
-            if subtitle_dir_item and bool(subtitle_dir_item.get("isdir", False)):
-                subtitle_items = await self.library_manager._list_remote_directory_with_retry(
-                    client,
-                    subtitle_dir,
-                    retries=2,
-                    retry_delay_seconds=0.8,
-                )
-                for item in subtitle_items:
-                    name = str(item.get("name") or "")
-                    if self.library_manager._should_skip_entry(name):
-                        continue
-                    if bool(item.get("isdir", False)):
-                        existing_subtitle_count = max(existing_subtitle_count, 1)
-                        continue
-                    if os.path.splitext(name)[1].lower() in self.subtitle_service.SUBTITLE_EXTENSIONS:
-                        existing_subtitle_count += 1
-        except Exception as exc:
-            if "code 119" not in str(exc):
-                logger.warning(
-                    "[字幕补配] 读取远程 subtitles 摘要失败，按无现有字幕继续: library=%s path=%s error=%s",
-                    library.id,
-                    subtitle_dir,
-                    exc,
-                )
+        folder_info = await self.library_manager.folder_contents(library.id, normalized_folder_path)
+        items = list(folder_info.get("items") or [])
+        audio_count = len(self.subtitle_service._collect_remote_audio_entries(items))
+        existing_subtitle_count = self.subtitle_service._count_remote_existing_subtitles(items)
+        total_size = sum(int(item.get("size") or 0) for item in items)
+        file_samples = [
+            str(item.get("relative_path") or item.get("name") or "")
+            for item in items[:12]
+        ]
 
         return {
             "library_id": library.id,
@@ -761,7 +938,7 @@ class LinkedSubtitleImportService:
             "existing_subtitle_count": existing_subtitle_count,
             "has_existing_subtitles": existing_subtitle_count > 0,
             "has_audio": audio_count > 0,
-            "total_files": len(filtered_top_level_items),
+            "total_files": len(items),
             "total_size": total_size,
             "subtitle_dir": subtitle_dir,
             "file_samples": file_samples,
@@ -772,9 +949,13 @@ class LinkedSubtitleImportService:
         self,
         target_rjcode: str,
         preferred_library_id: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         if not target_rjcode:
-            return []
+            return {
+                "candidates": [],
+                "search_status": "not_found",
+                "search_reason": "",
+            }
 
         library_config = self.library_manager.load_config()
         libraries = [
@@ -830,19 +1011,22 @@ class LinkedSubtitleImportService:
                 return []
 
             logger.info(
-                "[瀛楀箷琛ラ厤] 寮€濮嬫悳绱㈢洰鏍囩洰褰? library=%s type=%s rj=%s",
+                "[字幕补配] 开始搜索目标目录: library=%s type=%s rj=%s",
                 library_id,
                 library.get("type") or "",
                 target_rjcode,
             )
+            direct_summary = await self._locate_direct_rj_candidate(library_id, target_rjcode)
+            if direct_summary:
+                return [direct_summary]
             try:
                 search_items = await self._search_library_browser_candidates(library_id, target_rjcode)
             except Exception as exc:
-                logger.warning("[瀛楀箷琛ラ厤] 鎼滅储鐩爣鐩綍澶辫触: library=%s rj=%s error=%s", library_id, target_rjcode, exc)
+                logger.warning("[字幕补配] 搜索目标目录失败: library=%s rj=%s error=%s", library_id, target_rjcode, exc)
                 return []
 
             logger.info(
-                "[瀛楀箷琛ラ厤] 鐩爣鐩綍鎼滅储瀹屾垚: library=%s type=%s total=%s",
+                "[字幕补配] 目标目录搜索完成: library=%s type=%s total=%s",
                 library_id,
                 library.get("type") or "",
                 len(search_items),
@@ -859,20 +1043,23 @@ class LinkedSubtitleImportService:
                 try:
                     summary = await self._summarize_candidate(library_id, folder_path)
                 except Exception as exc:
-                    logger.warning("[瀛楀箷琛ラ厤] 璇诲彇鐩爣鐩綍鎽樿澶辫触: library=%s path=%s error=%s", library_id, folder_path, exc)
+                    logger.warning("[字幕补配] 读取目标目录摘要失败: library=%s path=%s error=%s", library_id, folder_path, exc)
                     continue
 
                 if summary:
                     results.append(summary)
             return results
 
-        library_results = await asyncio.gather(
-            *(collect_library_candidates(library) for library in ordered_libraries),
+        local_libraries = [item for item in ordered_libraries if item.get("type") != "synology_filestation"]
+        remote_libraries = [item for item in ordered_libraries if item.get("type") == "synology_filestation"]
+
+        local_results = await asyncio.gather(
+            *(collect_library_candidates(library) for library in local_libraries),
             return_exceptions=True,
         )
-        for result in library_results:
+        for result in local_results:
             if isinstance(result, Exception):
-                logger.warning("[瀛楀箷琛ラ厤] 骞惰鎼滅储鐩爣鐩綍澶辫触: %s", result)
+                logger.warning("[字幕补配] 本地目标目录搜索失败: %s", result)
                 continue
             for summary in result:
                 library_id = str(summary.get("library_id") or "").strip()
@@ -883,56 +1070,63 @@ class LinkedSubtitleImportService:
                 seen_paths.add(dedupe_key)
                 candidates.append(summary)
 
-        candidates.sort(
-            key=lambda item: (
-                1 if item.get("has_existing_subtitles") else 0,
-                item.get("library_name") or "",
-                item.get("folder_path") or "",
-            )
-        )
-        return candidates
-
-        for library in ordered_libraries:
-            library_id = library.get("id")
-            if not library_id:
-                continue
-            logger.info(
-                "[字幕补配] 开始搜索目标目录: library=%s type=%s rj=%s",
-                library_id,
-                library.get("type") or "",
-                target_rjcode,
-            )
+        remote_search_pending = False
+        if remote_libraries:
+            remote_tasks: dict[asyncio.Task, Dict[str, Any]] = {
+                asyncio.create_task(collect_library_candidates(library)): library
+                for library in remote_libraries
+            }
             try:
-                search_items = await self._search_library_browser_candidates(library_id, target_rjcode)
-            except Exception as exc:
-                logger.warning("[字幕补配] 搜索目标目录失败: library=%s rj=%s error=%s", library_id, target_rjcode, exc)
-                continue
+                pending_remote_tasks = set(remote_tasks.keys())
+                remote_match_found = False
+                while pending_remote_tasks:
+                    done, pending_remote_tasks = await asyncio.wait(
+                        pending_remote_tasks,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in done:
+                        library = remote_tasks[task]
+                        try:
+                            result = await task
+                        except Exception as exc:
+                            logger.warning(
+                                "[字幕补配] 远程目标目录搜索失败: library=%s error=%s",
+                                library.get("id") or "",
+                                exc,
+                            )
+                            continue
 
-            logger.info(
-                "[字幕补配] 目标目录搜索完成: library=%s type=%s total=%s",
-                library_id,
-                library.get("type") or "",
-                len(search_items),
-            )
+                        appended_count = 0
+                        for summary in result:
+                            library_id = str(summary.get("library_id") or "").strip()
+                            folder_path = str(summary.get("folder_path") or "").strip()
+                            dedupe_key = (library_id, folder_path)
+                            if not library_id or not folder_path or dedupe_key in seen_paths:
+                                continue
+                            seen_paths.add(dedupe_key)
+                            candidates.append(summary)
+                            appended_count += 1
 
-            for item in search_items:
-                if not bool(item.get("is_directory")):
-                    continue
-                folder_path = str(item.get("path") or "")
+                        if appended_count > 0:
+                            remote_match_found = True
+                            logger.info(
+                                "[字幕补配] 远程目标目录提前命中: rj=%s library=%s candidate_count=%s",
+                                target_rjcode,
+                                library.get("id") or "",
+                                appended_count,
+                            )
+                            for pending_task in pending_remote_tasks:
+                                pending_task.cancel()
+                            pending_remote_tasks.clear()
+                            break
 
-                dedupe_key = (library_id, folder_path)
-                if not folder_path or dedupe_key in seen_paths:
-                    continue
-                seen_paths.add(dedupe_key)
-
-                try:
-                    summary = await self._summarize_candidate(library_id, folder_path)
-                except Exception as exc:
-                    logger.warning("[字幕补配] 读取目标目录摘要失败: library=%s path=%s error=%s", library_id, folder_path, exc)
-                    continue
-
-                if summary:
-                    candidates.append(summary)
+                if not remote_match_found:
+                    remote_search_pending = True
+                    logger.info("[字幕补配] 远程目标目录暂未检出: rj=%s", target_rjcode)
+            finally:
+                for task in remote_tasks:
+                    if not task.done():
+                        task.cancel()
 
         candidates.sort(
             key=lambda item: (
@@ -941,7 +1135,11 @@ class LinkedSubtitleImportService:
                 item.get("folder_path") or "",
             )
         )
-        return candidates
+        return {
+            "candidates": candidates,
+            "search_status": "matched" if candidates else ("pending_remote" if remote_search_pending else "not_found"),
+            "search_reason": "" if candidates else (self.REMOTE_PENDING_REASON if remote_search_pending else "库存中未找到原作目录"),
+        }
 
     async def _resolve_translation_target_rjcode(self, source_rjcode: str, translation_info: Any) -> str:
         target_rjcode = ""
@@ -951,17 +1149,63 @@ class LinkedSubtitleImportService:
             return target_rjcode
 
         try:
+            product_info = await self.dlsite_service.get_product_info(source_rjcode)
+        except Exception as exc:
+            product_info = None
+            logger.warning("[字幕补配] 读取作品语言版本失败: source_rj=%s error=%s", source_rjcode, exc)
+
+        if product_info and product_info.get("product"):
+            product = product_info.get("product") or {}
+            language_editions = product.get("language_editions", [])
+            if isinstance(language_editions, dict):
+                language_editions = list(language_editions.values())
+
+            jpn_candidates: List[str] = []
+            seen_jpn = set()
+            for edition in language_editions or []:
+                normalized = str(edition.get("workno") or "").strip().upper()
+                if not normalized or normalized == source_rjcode:
+                    continue
+                lang = str(edition.get("lang") or "").strip().upper()
+                if lang != "JPN":
+                    continue
+                if normalized not in seen_jpn:
+                    seen_jpn.add(normalized)
+                    jpn_candidates.append(normalized)
+
+            if len(jpn_candidates) == 1:
+                logger.info(
+                    "[字幕补配] 从 language_editions 反推原作: source_rj=%s target_rj=%s",
+                    source_rjcode,
+                    jpn_candidates[0],
+                )
+                return jpn_candidates[0]
+
+        try:
             linked_works = await self.dlsite_service.get_linked_works(source_rjcode)
         except Exception as exc:
             logger.warning("[字幕补配] 读取关联链失败: source_rj=%s error=%s", source_rjcode, exc)
             return ""
 
+        jpn_linked_candidates: List[str] = []
         for workno, work in (linked_works or {}).items():
             normalized = str(workno or "").strip().upper()
             if not normalized or normalized == source_rjcode:
                 continue
-            if str(getattr(work, "work_type", "") or "").lower() == "original":
+            work_type = str(getattr(work, "work_type", "") or "").lower()
+            lang = str(getattr(work, "lang", "") or "").strip().upper()
+            if work_type == "original":
                 return normalized
+            if lang == "JPN" and normalized not in jpn_linked_candidates:
+                jpn_linked_candidates.append(normalized)
+
+        if len(jpn_linked_candidates) == 1:
+            logger.info(
+                "[字幕补配] 从关联链语言反推原作: source_rj=%s target_rj=%s",
+                source_rjcode,
+                jpn_linked_candidates[0],
+            )
+            return jpn_linked_candidates[0]
         return ""
 
     async def _build_common_preview(
@@ -985,11 +1229,19 @@ class LinkedSubtitleImportService:
             except Exception as exc:
                 logger.warning("[字幕补配] 查询 Kikoeru 失败: rj=%s error=%s", target_rjcode, exc)
 
-        candidates = await self.search_target_candidates(
+        candidate_bundle = await self.search_target_candidates(
             target_rjcode,
             preferred_library_id=preferred_library_id,
         ) if target_rjcode else []
-        ready_candidates = [item for item in candidates if not item.get("has_existing_subtitles")]
+        if isinstance(candidate_bundle, dict):
+            candidates = list(candidate_bundle.get("candidates") or [])
+            candidate_search_status = str(candidate_bundle.get("search_status") or "")
+            candidate_search_reason = str(candidate_bundle.get("search_reason") or "")
+        else:
+            candidates = list(candidate_bundle or [])
+            candidate_search_status = ""
+            candidate_search_reason = ""
+        ready_candidates = candidates
         selected_candidate = ready_candidates[0] if len(ready_candidates) == 1 else None
 
         stage_reason = ""
@@ -1001,20 +1253,19 @@ class LinkedSubtitleImportService:
             stage_reason = "未能定位对应原作 RJ"
         elif not kikoeru_has_subtitle:
             stage_reason = "原作未在 Kikoeru 命中，暂不进入字幕补配"
-        elif not candidates:
+        elif not candidates and candidate_search_status == "not_found":
             stage_reason = "库存中未找到原作目录"
-        elif not ready_candidates:
-            stage_reason = "命中的原作目录已经存在字幕"
-
         execute_reason = ""
         if stage_reason:
             execute_reason = stage_reason
+        elif candidate_search_status == "pending_remote":
+            execute_reason = candidate_search_reason or self.REMOTE_PENDING_REASON
         elif not subtitle_count:
             execute_reason = "来源内容中没有可导入的字幕文件"
         elif len(ready_candidates) > 1:
             execute_reason = "命中多个可用目标目录，需要在字幕补配页手动选择"
 
-        can_stage_pending = not stage_reason
+        can_stage_pending = not stage_reason or candidate_search_status == "pending_remote"
         can_execute = can_stage_pending and subtitle_count > 0 and len(ready_candidates) > 0
 
         return {
@@ -1036,6 +1287,8 @@ class LinkedSubtitleImportService:
             "selected_candidate": selected_candidate,
             "candidate_count": len(candidates),
             "ready_candidate_count": len(ready_candidates),
+            "candidate_search_status": candidate_search_status,
+            "candidate_search_reason": candidate_search_reason,
             "can_stage_pending": can_stage_pending,
             "can_execute": can_execute,
             "can_auto_import": bool(selected_candidate and can_execute),
@@ -1044,7 +1297,12 @@ class LinkedSubtitleImportService:
             "reason": stage_reason or execute_reason,
         }
 
-    async def preview_archive_import(self, archive_path: str, preferred_library_id: Optional[str] = None) -> Dict[str, Any]:
+    async def preview_archive_import(
+        self,
+        archive_path: str,
+        preferred_library_id: Optional[str] = None,
+        source_rjcode_hint: Optional[str] = None,
+    ) -> Dict[str, Any]:
         archive_path = await self._wait_for_archive_file(archive_path)
         archive_path = str(archive_path or "").strip()
         if not archive_path:
@@ -1055,7 +1313,7 @@ class LinkedSubtitleImportService:
             raise ValueError("指定路径不是压缩包文件")
 
         archive_info = await self.extract_service.get_archive_info(archive_path)
-        source_rjcode = self._extract_rjcode_from_paths(
+        source_rjcode = str(source_rjcode_hint or "").strip().upper() or self._extract_rjcode_from_paths(
             archive_path,
             getattr(archive_info, "inferred_rjcode", "") if archive_info else "",
         )
@@ -1115,8 +1373,6 @@ class LinkedSubtitleImportService:
         if target_library_id and target_folder_path:
             for candidate in candidates:
                 if candidate.get("library_id") == target_library_id and candidate.get("folder_path") == target_folder_path:
-                    if candidate.get("has_existing_subtitles"):
-                        raise ValueError("目标目录已经存在字幕，不能执行字幕补配导入")
                     return candidate
             raise ValueError("指定的目标目录不在当前候选列表中")
 
@@ -1124,7 +1380,7 @@ class LinkedSubtitleImportService:
         if selected_candidate:
             return selected_candidate
 
-        ready_candidates = [item for item in candidates if not item.get("has_existing_subtitles")]
+        ready_candidates = candidates
         if len(ready_candidates) == 1:
             return ready_candidates[0]
         if not ready_candidates:
@@ -1175,8 +1431,12 @@ class LinkedSubtitleImportService:
             f"写入数量: {len(written_files)}",
             "等待人工配对",
         ]
+        if import_result.get("filtered_out_count"):
+            detail_lines.append(f"过滤排除数: {import_result.get('filtered_out_count')}")
         if import_result.get("content_deduped_count"):
             detail_lines.append(f"内容去重合并数: {import_result.get('content_deduped_count')}")
+        if import_result.get("renamed_collision_files"):
+            detail_lines.append(f"重名顺延数: {len(import_result.get('renamed_collision_files') or [])}")
 
         task = Task(
             task_type=TaskType.RJ_SUBTITLE_FETCH,
@@ -1202,8 +1462,10 @@ class LinkedSubtitleImportService:
                 "kikoeru_has_subtitle": kikoeru_has_subtitle,
                 "downloaded_count": import_result.get("downloaded_count", 0),
                 "download_files": import_result.get("download_files", []),
+                "filtered_out_count": import_result.get("filtered_out_count", 0),
                 "content_deduped_count": import_result.get("content_deduped_count", 0),
                 "content_deduped_files": import_result.get("content_deduped_files", []),
+                "renamed_collision_files": import_result.get("renamed_collision_files", []),
                 "existing_subtitle_count": import_result.get("existing_subtitle_count", 0),
                 "subtitle_dir": import_result.get("subtitle_dir", ""),
                 "linked_workbench_root_dir": import_result.get("linked_workbench_root_dir", ""),
@@ -1222,6 +1484,89 @@ class LinkedSubtitleImportService:
         task.completed_at = datetime.now()
         engine.tasks[task.id] = task
         return task
+
+    async def cleanup_workbench_subtitles(self, task_id: str) -> Dict[str, Any]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            raise ValueError("任务 ID 不能为空")
+
+        engine = get_task_engine()
+        task = engine.get_task(normalized_task_id)
+        if not task:
+            raise ValueError("字幕补配任务不存在")
+
+        metadata = dict(task.task_metadata or {})
+        source_mode = str(metadata.get("source_mode") or "").strip().lower()
+        if source_mode not in {"linked_translation_archive_import", "subtitle_folder_import"}:
+            raise ValueError("当前任务不是字幕补配工作台任务")
+        if bool(metadata.get("manual_match_completed")):
+            raise ValueError("当前任务已完成重命名导入，无需再清理工作台字幕")
+
+        subtitle_dir = str(metadata.get("subtitle_dir") or "").strip()
+        if not subtitle_dir:
+            raise ValueError("当前任务没有可清理的字幕工作台目录")
+        if not os.path.isdir(subtitle_dir):
+            raise FileNotFoundError("字幕工作台目录不存在，无法执行清理")
+
+        config = get_config().asmr_sync
+        lrc_enabled = bool(config.lrc_clean_enabled)
+        simplify_enabled = bool(config.simplify_chinese_enabled)
+        if not lrc_enabled and not simplify_enabled:
+            raise ValueError("当前设置未启用 LRC 广告清理或字幕繁体转简体")
+
+        logger.info(
+            "[字幕补配] 执行工作台字幕清理: task_id=%s subtitle_dir=%s lrc_enabled=%s simplify_enabled=%s",
+            normalized_task_id,
+            subtitle_dir,
+            lrc_enabled,
+            simplify_enabled,
+        )
+
+        lrc_result = {
+            "enabled": lrc_enabled,
+            "total_files": 0,
+            "cleaned_files": 0,
+            "total_removed_lines": 0,
+            "errors": [],
+        }
+        simplify_result = {
+            "enabled": simplify_enabled,
+            "total_files": 0,
+            "converted_files": 0,
+            "errors": [],
+        }
+
+        if lrc_enabled:
+            lrc_result = self.subtitle_service.subtitle_service.clean_lrc_files_in_folder(
+                subtitle_dir,
+                list(config.lrc_clean_patterns or []),
+            )
+            lrc_result["enabled"] = True
+        if simplify_enabled:
+            simplify_result = self.subtitle_service.subtitle_service.convert_subtitles_to_simplified_in_folder(
+                subtitle_dir
+            )
+            simplify_result["enabled"] = True
+
+        result = {
+            "task_id": normalized_task_id,
+            "subtitle_dir": subtitle_dir,
+            "lrc_clean": lrc_result,
+            "simplify_chinese": simplify_result,
+            "cleaned_at": datetime.now().isoformat(),
+        }
+        metadata["linked_subtitle_cleanup_result"] = result
+        task.task_metadata = metadata
+        self._append_task_progress_log(
+            task,
+            [
+                "已执行工作台字幕清理",
+                f"LRC 广告清理: 文件 {int(lrc_result.get('total_files') or 0)}，清理 {int(lrc_result.get('cleaned_files') or 0)}，移除广告行 {int(lrc_result.get('total_removed_lines') or 0)}",
+                f"字幕繁体转简体: 文件 {int(simplify_result.get('total_files') or 0)}，转换 {int(simplify_result.get('converted_files') or 0)}",
+            ],
+        )
+        engine.tasks[task.id] = task
+        return result
 
     async def execute_archive_import(
         self,
@@ -1272,8 +1617,10 @@ class LinkedSubtitleImportService:
                 "error": None,
                 "download_files": workbench_result.get("staged_files", []),
                 "downloaded_count": int(workbench_result.get("downloaded_count") or 0),
-                "content_deduped_count": 0,
-                "content_deduped_files": [],
+                "filtered_out_count": int(workbench_result.get("filtered_out_count") or 0),
+                "content_deduped_count": int(workbench_result.get("content_deduped_count") or 0),
+                "content_deduped_files": workbench_result.get("content_deduped_files", []),
+                "renamed_collision_files": workbench_result.get("renamed_collision_files", []),
                 "written_files": [
                     {
                         "subtitle_name": item.get("name") or "",
@@ -1363,8 +1710,10 @@ class LinkedSubtitleImportService:
             "error": None,
             "download_files": workbench_result.get("staged_files", []),
             "downloaded_count": int(workbench_result.get("downloaded_count") or 0),
-            "content_deduped_count": 0,
-            "content_deduped_files": [],
+            "filtered_out_count": int(workbench_result.get("filtered_out_count") or 0),
+            "content_deduped_count": int(workbench_result.get("content_deduped_count") or 0),
+            "content_deduped_files": workbench_result.get("content_deduped_files", []),
+            "renamed_collision_files": workbench_result.get("renamed_collision_files", []),
             "written_files": [
                 {
                     "subtitle_name": item.get("name") or "",
@@ -1423,6 +1772,82 @@ class LinkedSubtitleImportService:
     def _can_execute_pending_import(self, preview: Dict[str, Any]) -> bool:
         return bool(preview.get("can_execute"))
 
+    def _should_retry_pending_candidate_search(self, preview: Dict[str, Any]) -> bool:
+        if not preview:
+            return False
+        if not str(preview.get("target_rjcode") or "").strip():
+            return False
+        if not bool(preview.get("is_translation_work")):
+            return False
+        if not bool(preview.get("kikoeru_has_subtitle")):
+            return False
+        if str(preview.get("stage_reason") or "").strip():
+            return False
+
+        candidates = list(preview.get("candidates") or [])
+        candidate_search_status = str(preview.get("candidate_search_status") or "").strip().lower()
+        if candidates:
+            return False
+        return candidate_search_status in {"", "pending_remote", "not_found"}
+
+    async def _refresh_pending_preview_candidates(
+        self,
+        preview: Dict[str, Any],
+        *,
+        preferred_library_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self._should_retry_pending_candidate_search(preview):
+            return self._refresh_preview_execution_state(dict(preview or {}))
+
+        next_preview = dict(preview or {})
+        target_rjcode = str(next_preview.get("target_rjcode") or "").strip()
+        if not target_rjcode:
+            return self._refresh_preview_execution_state(next_preview)
+
+        current_selected = next_preview.get("selected_candidate") or {}
+        effective_preferred_library_id = (
+            preferred_library_id
+            or str(current_selected.get("library_id") or "").strip()
+            or None
+        )
+
+        logger.info(
+            "[字幕补配] 重新检查待处理预检单候选: target_rj=%s previous_status=%s previous_candidate_count=%s preferred_library=%s",
+            target_rjcode,
+            next_preview.get("candidate_search_status") or "",
+            len(next_preview.get("candidates") or []),
+            effective_preferred_library_id or "",
+        )
+
+        candidate_bundle = await self.search_target_candidates(
+            target_rjcode,
+            preferred_library_id=effective_preferred_library_id,
+        )
+        candidates = list(candidate_bundle.get("candidates") or []) if isinstance(candidate_bundle, dict) else list(candidate_bundle or [])
+        candidate_search_status = str(candidate_bundle.get("search_status") or "") if isinstance(candidate_bundle, dict) else ""
+        candidate_search_reason = str(candidate_bundle.get("search_reason") or "") if isinstance(candidate_bundle, dict) else ""
+
+        selected_candidate = None
+        selected_library_id = str(current_selected.get("library_id") or "").strip()
+        selected_folder_path = str(current_selected.get("folder_path") or "").strip()
+        if selected_library_id and selected_folder_path:
+            for candidate in candidates:
+                if str(candidate.get("library_id") or "").strip() == selected_library_id and str(candidate.get("folder_path") or "").strip() == selected_folder_path:
+                    selected_candidate = candidate
+                    break
+        if not selected_candidate and len(candidates) == 1:
+            selected_candidate = candidates[0]
+
+        next_preview.update({
+            "candidates": candidates,
+            "selected_candidate": selected_candidate,
+            "candidate_count": len(candidates),
+            "ready_candidate_count": len(candidates),
+            "candidate_search_status": candidate_search_status,
+            "candidate_search_reason": candidate_search_reason,
+        })
+        return self._refresh_preview_execution_state(next_preview)
+
     def _serialize_pending_record(self, conflict: ConflictWork) -> Dict[str, Any]:
         preview = dict((conflict.analysis_info or {}).get("preview") or {})
         preview.setdefault("target_rjcode", (conflict.new_metadata or {}).get("target_rjcode") or "")
@@ -1442,7 +1867,17 @@ class LinkedSubtitleImportService:
         }
 
     async def queue_pending_archive_import(self, task: Task, rjcode: str) -> Dict[str, Any]:
-        preview = await self.preview_archive_import(task.source_path)
+        hinted_rjcode = str(
+            rjcode
+            or getattr(task, "rjcode", "")
+            or (task.task_metadata or {}).get("rjcode")
+            or (task.task_metadata or {}).get("inferred_rjcode")
+            or ""
+        ).strip().upper()
+        preview = await self.preview_archive_import(
+            task.source_path,
+            source_rjcode_hint=hinted_rjcode,
+        )
         should_create_pending = self._should_create_pending_import(preview)
         if should_create_pending:
             preview = await self._stage_archive_subtitles_for_preview(task.source_path, preview)
@@ -1554,7 +1989,22 @@ class LinkedSubtitleImportService:
                 ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
                 ConflictWork.status == "PENDING",
             ).order_by(ConflictWork.created_at.desc()).all()
-            return [self._serialize_pending_record(item) for item in rows]
+            items: List[Dict[str, Any]] = []
+            updated = False
+            for row in rows:
+                preview = dict((row.analysis_info or {}).get("preview") or {})
+                refreshed_preview = await self._refresh_pending_preview_candidates(preview)
+                if refreshed_preview != preview:
+                    row.analysis_info = {
+                        **(row.analysis_info or {}),
+                        "preview": refreshed_preview,
+                        "candidate_refreshed_at": datetime.now().isoformat(),
+                    }
+                    updated = True
+                items.append(self._serialize_pending_record(row))
+            if updated:
+                db.commit()
+            return items
         finally:
             db.close()
 
@@ -1592,7 +2042,14 @@ class LinkedSubtitleImportService:
             if not record:
                 raise ValueError("字幕补配预检单不存在")
 
-            record_preview = dict((record.analysis_info or {}).get("preview") or {})
+            record_preview = await self._refresh_pending_preview_candidates(
+                dict((record.analysis_info or {}).get("preview") or {})
+            )
+            record.analysis_info = {
+                **(record.analysis_info or {}),
+                "preview": record_preview,
+                "candidate_refreshed_at": datetime.now().isoformat(),
+            }
             result = await self.execute_archive_import(
                 str(record.new_path or ""),
                 target_library_id=target_library_id,
@@ -1605,6 +2062,7 @@ class LinkedSubtitleImportService:
             )
 
             if not result.get("success"):
+                db.commit()
                 return result
 
             self._cleanup_stage_dir(

@@ -1441,6 +1441,65 @@ class ExtractService:
         candidates = await self._get_password_candidates_for_archive(archive_path)
         return [item["password"] for item in candidates]
 
+    def _looks_like_archive_entry(self, entry_name: str) -> bool:
+        normalized = str(entry_name or "").strip().lower().replace("\\", "/")
+        if not normalized:
+            return False
+
+        archive_suffixes = (
+            ".zip",
+            ".rar",
+            ".7z",
+            ".tar",
+            ".tar.gz",
+            ".tgz",
+            ".tar.bz2",
+            ".tbz2",
+            ".tar.xz",
+            ".txz",
+            ".gz",
+            ".bz2",
+            ".xz",
+        )
+        if normalized.endswith(archive_suffixes):
+            return True
+
+        if re.search(r"\.(part\d+\.(rar|zip|7z)|7z\.\d{3}|z\d{2})$", normalized, re.IGNORECASE):
+            return True
+
+        return False
+
+    def _extract_rjcode_candidates_from_text(self, text: str) -> List[str]:
+        candidates: List[str] = []
+        seen = set()
+
+        def add_code(code: str):
+            value = str(code or "").strip().upper()
+            if value and value not in seen:
+                seen.add(value)
+                candidates.append(value)
+
+        normalized_text = str(text or "")
+        for match in re.finditer(r'[RVB]J\s*[-_.]?\s*(\d{6}|\d{8})(?!\d)', normalized_text, re.IGNORECASE):
+            add_code(f"RJ{match.group(1)}")
+
+        path_parts = re.split(r"[\\/]", normalized_text)
+        for part in path_parts:
+            part = str(part or "").strip()
+            if not part:
+                continue
+            part_candidates = [part]
+            stem = Path(part).stem
+            if stem and stem != part:
+                part_candidates.append(stem)
+            for item in part_candidates:
+                cleaned = re.sub(r'^\d+[._-]', '', item)
+                number_match = re.fullmatch(r'(\d{6}|\d{8})', cleaned)
+                if number_match:
+                    add_code(f"RJ{number_match.group(1)}")
+
+        return candidates
+
     def _extract_rjcode_candidates(self, archive_path: str) -> List[str]:
         candidates: List[str] = []
         seen = set()
@@ -1467,6 +1526,260 @@ class ExtractService:
                 add_code(f"RJ{number_match.group(1)}")
 
         return candidates
+
+    async def infer_rjcode_from_archive(self, archive_path: str, max_nested_depth: int = 1) -> Optional[Dict[str, str]]:
+        """在正式解压前，从压缩包目录和内层压缩包中尽力推断 RJ 号。"""
+        seen_archives = set()
+        return await self._infer_rjcode_from_archive_internal(
+            archive_path=str(archive_path or ""),
+            max_nested_depth=max(0, int(max_nested_depth)),
+            current_depth=0,
+            seen_archives=seen_archives,
+        )
+
+    def _find_archive_candidates_in_directory(self, directory: str, max_results: int = 8) -> List[str]:
+        candidates: List[str] = []
+        seen = set()
+        root_dir = os.path.abspath(str(directory or ""))
+        if not root_dir or not os.path.isdir(root_dir):
+            return candidates
+
+        for current_root, dirs, files in os.walk(root_dir):
+            dirs.sort()
+            files.sort()
+
+            relative_root = os.path.relpath(current_root, root_dir)
+            relative_root = "" if relative_root == "." else relative_root
+            relative_root_posix = relative_root.replace("\\", "/")
+            if relative_root_posix:
+                root_candidates = self._extract_rjcode_candidates_from_text(relative_root_posix)
+                if root_candidates:
+                    return [f"dir::{relative_root_posix}::{root_candidates[0]}"]
+
+            for filename in files:
+                file_path = os.path.join(current_root, filename)
+                relative_path = os.path.relpath(file_path, root_dir).replace("\\", "/")
+                entry_candidates = self._extract_rjcode_candidates_from_text(relative_path)
+                if entry_candidates:
+                    return [f"path::{relative_path}::{entry_candidates[0]}"]
+
+                is_archive_candidate = self._looks_like_archive_entry(filename)
+                if not is_archive_candidate:
+                    try:
+                        is_archive_candidate = self._detect_by_magic_bytes(file_path) is not None
+                    except Exception:
+                        is_archive_candidate = False
+
+                if is_archive_candidate and file_path not in seen:
+                    seen.add(file_path)
+                    candidates.append(file_path)
+                    if len(candidates) >= max_results:
+                        return candidates
+
+        return candidates
+
+    async def _infer_rjcode_from_archive_internal(
+        self,
+        archive_path: str,
+        max_nested_depth: int,
+        current_depth: int,
+        seen_archives: set,
+    ) -> Optional[Dict[str, str]]:
+        normalized_archive_path = os.path.abspath(str(archive_path or ""))
+        if not normalized_archive_path or normalized_archive_path in seen_archives:
+            return None
+        seen_archives.add(normalized_archive_path)
+
+        direct_candidates = self._extract_rjcode_candidates(normalized_archive_path)
+        if direct_candidates:
+            result = {"rjcode": direct_candidates[0], "source": "archive_path"}
+            logger.info(
+                "[RJ 推断] 命中压缩包路径: archive=%s rjcode=%s depth=%s",
+                normalized_archive_path,
+                result["rjcode"],
+                current_depth,
+            )
+            return result
+
+        archive_info = await self._get_archive_info(normalized_archive_path)
+        if not archive_info:
+            logger.info(
+                "[RJ 推断] 无法读取压缩包目录，终止本层预检: archive=%s depth=%s",
+                normalized_archive_path,
+                current_depth,
+            )
+            return None
+
+        inferred_rjcode = str(getattr(archive_info, "inferred_rjcode", "") or "").strip().upper()
+        if inferred_rjcode:
+            result = {"rjcode": inferred_rjcode, "source": "password_entry"}
+            logger.info(
+                "[RJ 推断] 命中密码库关联: archive=%s rjcode=%s depth=%s",
+                normalized_archive_path,
+                result["rjcode"],
+                current_depth,
+            )
+            return result
+
+        nested_archive_entries: List[str] = []
+        opaque_archive_entries: List[str] = []
+        logger.info(
+            "[RJ 推断] 开始扫描压缩包条目: archive=%s depth=%s total_entries=%s",
+            normalized_archive_path,
+            current_depth,
+            len(archive_info.file_list or []),
+        )
+        for item in archive_info.file_list or []:
+            entry_name = str((item or {}).get("name") or "").strip()
+            if not entry_name:
+                continue
+
+            entry_candidates = self._extract_rjcode_candidates_from_text(entry_name)
+            if entry_candidates:
+                result = {"rjcode": entry_candidates[0], "source": f"archive_entry:{entry_name}"}
+                logger.info(
+                    "[RJ 推断] 命中压缩包条目: archive=%s entry=%s rjcode=%s depth=%s",
+                    normalized_archive_path,
+                    entry_name,
+                    result["rjcode"],
+                    current_depth,
+                )
+                return result
+
+            if self._looks_like_archive_entry(entry_name):
+                nested_archive_entries.append(entry_name)
+            elif not bool((item or {}).get("is_dir")):
+                entry_suffix = Path(entry_name).suffix.lower()
+                entry_size = int((item or {}).get("size") or 0)
+                if not entry_suffix and entry_size > 0:
+                    opaque_archive_entries.append(entry_name)
+
+        logger.info(
+            "[RJ 推断] 条目扫描未直接命中: archive=%s depth=%s nested_candidates=%s opaque_candidates=%s",
+            normalized_archive_path,
+            current_depth,
+            len(nested_archive_entries),
+            len(opaque_archive_entries),
+        )
+
+        if current_depth >= max_nested_depth:
+            logger.info(
+                "[RJ 推断] 已达到最大嵌套深度，停止继续向内预检: archive=%s depth=%s max_depth=%s",
+                normalized_archive_path,
+                current_depth,
+                max_nested_depth,
+            )
+            return None
+
+        probe_entries = list(nested_archive_entries[:5])
+        if not probe_entries:
+            probe_entries.extend(opaque_archive_entries[:3])
+
+        for entry_name in probe_entries:
+            temp_dir = None
+            try:
+                logger.info(
+                    "[RJ 推断] 开始探测内层条目: archive=%s entry=%s depth=%s",
+                    normalized_archive_path,
+                    entry_name,
+                    current_depth + 1,
+                )
+                temp_dir = await self.extract_selected_entries(
+                    normalized_archive_path,
+                    [entry_name],
+                )
+                nested_archive_path = os.path.join(temp_dir, *str(entry_name).replace("\\", "/").split("/"))
+                if not os.path.exists(nested_archive_path):
+                    logger.debug(
+                        "[RJ 推断] 内层压缩包条目提取后未找到文件: archive=%s entry=%s temp=%s",
+                        normalized_archive_path,
+                        entry_name,
+                        temp_dir,
+                    )
+
+                extracted_tree_candidates = self._find_archive_candidates_in_directory(temp_dir)
+                logger.info(
+                    "[RJ 推断] 提取内层条目后扫描临时目录: archive=%s entry=%s depth=%s tree_candidates=%s",
+                    normalized_archive_path,
+                    entry_name,
+                    current_depth + 1,
+                    len(extracted_tree_candidates),
+                )
+                if extracted_tree_candidates:
+                    first_candidate = extracted_tree_candidates[0]
+                    if first_candidate.startswith("dir::"):
+                        _, relative_dir, inferred_code = first_candidate.split("::", 2)
+                        result = {
+                            "rjcode": inferred_code,
+                            "source": f"nested_directory:{entry_name}->{relative_dir}",
+                        }
+                        logger.info(
+                            "[RJ 推断] 命中提取后的嵌套目录: archive=%s entry=%s relative_dir=%s rjcode=%s depth=%s",
+                            normalized_archive_path,
+                            entry_name,
+                            relative_dir,
+                            inferred_code,
+                            current_depth + 1,
+                        )
+                        return result
+                    if first_candidate.startswith("path::"):
+                        _, relative_path, inferred_code = first_candidate.split("::", 2)
+                        result = {
+                            "rjcode": inferred_code,
+                            "source": f"nested_entry_path:{entry_name}->{relative_path}",
+                        }
+                        logger.info(
+                            "[RJ 推断] 命中提取后的嵌套路径: archive=%s entry=%s relative_path=%s rjcode=%s depth=%s",
+                            normalized_archive_path,
+                            entry_name,
+                            relative_path,
+                            inferred_code,
+                            current_depth + 1,
+                        )
+                        return result
+
+                candidate_archive_paths: List[str] = []
+                if os.path.exists(nested_archive_path) and os.path.isfile(nested_archive_path):
+                    candidate_archive_paths.append(nested_archive_path)
+                for candidate_path in extracted_tree_candidates:
+                    if candidate_path.startswith(("dir::", "path::")):
+                        continue
+                    if candidate_path not in candidate_archive_paths:
+                        candidate_archive_paths.append(candidate_path)
+
+                for candidate_archive_path in candidate_archive_paths[:5]:
+                    nested_result = await self._infer_rjcode_from_archive_internal(
+                        archive_path=candidate_archive_path,
+                        max_nested_depth=max_nested_depth,
+                        current_depth=current_depth + 1,
+                        seen_archives=seen_archives,
+                    )
+                    if nested_result and nested_result.get("rjcode"):
+                        nested_source = nested_result.get("source") or "nested_archive"
+                        relative_candidate_path = os.path.relpath(candidate_archive_path, temp_dir).replace("\\", "/")
+                        nested_result["source"] = f"nested_archive:{entry_name}->{relative_candidate_path}->{nested_source}"
+                        logger.info(
+                            "[RJ 推断] 命中内层压缩包: archive=%s entry=%s candidate=%s rjcode=%s depth=%s",
+                            normalized_archive_path,
+                            entry_name,
+                            relative_candidate_path,
+                            nested_result["rjcode"],
+                            current_depth + 1,
+                        )
+                        return nested_result
+            except Exception as exc:
+                logger.debug(
+                    "[RJ 推断] 检查内层压缩包失败: archive=%s entry=%s depth=%s error=%s",
+                    normalized_archive_path,
+                    entry_name,
+                    current_depth + 1,
+                    exc,
+                )
+            finally:
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+
+        return None
     
     async def _record_password_usage(self, password: str, archive_path: str):
         """记录密码使用情况"""

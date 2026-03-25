@@ -1057,6 +1057,68 @@ async def get_conflicts():
     finally:
         db.close()
 
+@app.post("/api/conflicts/{conflict_id}/retry")
+async def retry_extract_failed_conflict(conflict_id: str):
+    """重试问题作品中的解压失败项。"""
+    from ..models.database import ConflictWork, get_db
+
+    db = next(get_db())
+    try:
+        conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+        if not conflict:
+            raise HTTPException(status_code=404, detail="问题作品不存在")
+        if conflict.status != "PENDING":
+            raise HTTPException(status_code=400, detail="当前问题项已不是待处理状态")
+        if conflict.conflict_type != "EXTRACT_FAILED":
+            raise HTTPException(status_code=400, detail="只有解压失败问题项支持重试")
+
+        source_path = str(conflict.new_path or "").strip()
+        if not source_path:
+            raise HTTPException(status_code=400, detail="缺少待重试的源路径")
+        if not os.path.exists(source_path):
+            raise HTTPException(status_code=404, detail="待重试的源文件不存在")
+
+        engine = get_task_engine()
+        normalized_source_path = os.path.normcase(os.path.normpath(source_path))
+        existing_task = next(
+            (
+                task for task in engine.get_all_tasks()
+                if os.path.normcase(os.path.normpath(str(task.source_path or ""))) == normalized_source_path
+                and task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}
+            ),
+            None,
+        )
+        if existing_task:
+            existing_task.task_metadata["retry_conflict_id"] = conflict.id
+            existing_task.task_metadata["retry_conflict_source_path"] = source_path
+            return {
+                "success": True,
+                "message": "已存在同源重试任务，继续跟踪当前任务",
+                "task_id": existing_task.id,
+                "already_running": True,
+            }
+
+        task = Task(
+            task_type=TaskType.AUTO_PROCESS,
+            source_path=source_path,
+            auto_classify=True,
+        )
+        task.task_metadata["retry_conflict_id"] = conflict.id
+        task.task_metadata["retry_conflict_source_path"] = source_path
+        task.task_metadata["retry_from_conflicts"] = True
+        if conflict.rjcode:
+            task.task_metadata["inferred_rjcode"] = conflict.rjcode
+
+        await engine.submit(task)
+        return {
+            "success": True,
+            "message": "已开始重试解压失败作品",
+            "task_id": task.id,
+            "already_running": False,
+        }
+    finally:
+        db.close()
+
 @app.post("/api/conflicts/{conflict_id}/preview")
 async def preview_conflict_resolution(conflict_id: str, payload: dict):
     """生成问题作品处理预览"""
@@ -1729,21 +1791,43 @@ async def browse_library_files(
     current_path: Optional[str] = None,
     sort_by: str = "size",
     sort_order: str = "desc",
+    force_refresh: bool = False,
 ):
     try:
         manager = get_library_manager()
         current_library = manager.get_library_definition(library_id)
-        data = await manager.list_files(
-            library_id,
-            page=page,
-            page_size=page_size,
-            search=search,
-            current_path=current_path,
-            sort_by=sort_by,
-            sort_order=sort_order,
+        keyword = str(search or "").strip()
+        use_remote_global_search = (
+            bool(keyword)
+            and current_library.type == "synology_filestation"
+            and manager._is_rj_search_keyword(keyword)
         )
+        if use_remote_global_search:
+            data = await manager.global_search_files(
+                None,
+                keyword,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                force_refresh=force_refresh,
+            )
+            files = list(data.get("files") or [])
+            if data.get("library_id") and data.get("library_id") != current_library.id:
+                if len(files) == 1 and bool(files[0].get("is_directory")) and files[0].get("path"):
+                    data["auto_locate_path"] = files[0].get("parent_path") or files[0].get("path")
+                    data["auto_locate_highlight_path"] = files[0].get("path")
+        else:
+            data = await manager.list_files(
+                library_id,
+                page=page,
+                page_size=page_size,
+                search=search,
+                current_path=current_path,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                force_refresh=force_refresh,
+            )
         data["libraries"] = manager.list_libraries()
-        data["library_id"] = current_library.id
+        data["library_id"] = data.get("library_id") or current_library.id
         return data
     except Exception as e:
         logger.error(f"库存浏览失败: {e}", exc_info=True)
@@ -1798,6 +1882,8 @@ async def get_library_browser_folder_contents(request: Request):
         return await manager.folder_contents(library_id, folder_path)
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except FileNotFoundError as e:
@@ -1901,6 +1987,10 @@ async def rename_library_browser_item(request: Request):
         return await manager.rename(library_id, path, new_name)
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
@@ -4656,14 +4746,17 @@ async def rj_subtitle_status():
                     "match_result": task.task_metadata.get("match_result", {}),
                     "search_attempts": task.task_metadata.get("search_attempts", []),
                     "download_files": task.task_metadata.get("download_files", []),
+                    "filtered_out_count": task.task_metadata.get("filtered_out_count", 0),
                     "content_deduped_count": task.task_metadata.get("content_deduped_count", 0),
                     "content_deduped_files": task.task_metadata.get("content_deduped_files", []),
+                    "renamed_collision_files": task.task_metadata.get("renamed_collision_files", []),
                     "progress_log": task.task_metadata.get("progress_log", []),
                     "awaiting_manual_match": task.task_metadata.get("awaiting_manual_match", False),
                     "manual_match_completed": task.task_metadata.get("manual_match_completed", False),
                     "manual_match_applied_pairs": task.task_metadata.get("manual_match_applied_pairs", 0),
                     "manual_match_deleted_subtitles": task.task_metadata.get("manual_match_deleted_subtitles", 0),
                     "naming_strategy": task.task_metadata.get("naming_strategy", "audio"),
+                    "linked_subtitle_cleanup_result": task.task_metadata.get("linked_subtitle_cleanup_result"),
                 }
                 for task in rj_tasks
             ]
@@ -4798,6 +4891,23 @@ async def execute_linked_subtitle_folder_import(request: LinkedSubtitleFolderImp
     except Exception as e:
         logger.error(f"字幕文件夹补配执行失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+
+
+@app.post("/api/subtitle-import/task/{task_id}/cleanup")
+async def cleanup_linked_subtitle_workbench(task_id: str):
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+
+    try:
+        service = get_linked_subtitle_import_service()
+        result = await service.cleanup_workbench_subtitles(task_id)
+        return {"success": True, "result": result}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"瀛楀箷琛ラ厤宸ヤ綔鍙版枃鏈竻鐞嗗け璐? {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"娓呯悊澶辫触: {str(e)}")
 
 
 @app.get("/api/rj-subtitle/connectivity-test")

@@ -5,10 +5,12 @@ DLsite API 服务 - 用于获取作品关联信息和翻译链
 import asyncio
 import httpx
 import logging
+import re
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import lru_cache
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,172 @@ class DLsiteApiService:
         self.client: Optional[httpx.AsyncClient] = None
         self.cache: Dict[str, Dict] = {}  # 缓存 API 响应
         self.cache_ttl = timedelta(hours=24)  # 缓存 24 小时
+
+    def _normalize_workno(self, rjcode: str) -> str:
+        value = str(rjcode or '').strip().upper()
+        match = re.search(r'[RVB]J(?:\d{6}|\d{8})', value, re.IGNORECASE)
+        return match.group(0).upper() if match else value
+
+    def _build_product_api_url(self, rjcode: str, locale: Optional[str] = None) -> str:
+        workno = self._normalize_workno(rjcode)
+        url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={workno}"
+        if locale:
+            url = f"{url}&locale={locale}"
+        return url
+
+    def _build_product_page_url(self, rjcode: str, locale: Optional[str] = None) -> str:
+        workno = self._normalize_workno(rjcode)
+        url = f"https://www.dlsite.com/maniax/work/=/product_id/{workno}.html"
+        if locale:
+            url = f"{url}/?locale={locale}"
+        return url
+
+    def _extract_product_codes_from_url(self, url: str) -> Dict[str, str]:
+        parsed = urlparse(str(url or ''))
+        path_match = re.search(r'/product_id/([RVB]J(?:\d{6}|\d{8}))\.html', parsed.path, re.IGNORECASE)
+        query = parse_qs(parsed.query)
+        return {
+            'product_workno': path_match.group(1).upper() if path_match else '',
+            'translation_workno': str((query.get('translation') or [''])[0] or '').strip().upper(),
+        }
+
+    def _extract_translation_linkage_from_html(self, html: str, requested_workno: str) -> Dict[str, str]:
+        normalized_requested = self._normalize_workno(requested_workno)
+        if not html or not normalized_requested:
+            return {}
+
+        pattern = re.compile(
+            r'product_id/([RVB]J(?:\d{6}|\d{8}))\.html[^"\'>\s]*translation=([RVB]J(?:\d{6}|\d{8}))',
+            re.IGNORECASE,
+        )
+        for match in pattern.finditer(str(html or '')):
+            product_workno = match.group(1).upper()
+            translation_workno = match.group(2).upper()
+            if translation_workno == normalized_requested and product_workno != normalized_requested:
+                return {
+                    'product_workno': product_workno,
+                    'translation_workno': translation_workno,
+                }
+        return {}
+
+    async def _fetch_product_payload(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
+        data = await self._fetch_api(self._build_product_api_url(rjcode, locale=locale))
+        if data and isinstance(data, list) and len(data) > 0:
+            return data[0]
+        return None
+
+    async def _resolve_translation_page_fallback(self, rjcode: str, locale: Optional[str] = None) -> Dict[str, str]:
+        workno = self._normalize_workno(rjcode)
+        if not workno:
+            return {}
+
+        page_url = self._build_product_page_url(workno, locale=locale)
+        cache_key = f"page_fallback:{page_url}"
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                return dict(cached_data['data'] or {})
+
+        logger.info("[DLsite] 尝试页面 fallback: %s", page_url)
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                page_url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                },
+            )
+            final_codes = self._extract_product_codes_from_url(str(response.url))
+            if final_codes.get('translation_workno') == workno and final_codes.get('product_workno'):
+                result = final_codes
+            else:
+                result = self._extract_translation_linkage_from_html(response.text, workno)
+
+            self.cache[cache_key] = {
+                'data': result,
+                'timestamp': datetime.now()
+            }
+            if result:
+                logger.info(
+                    "[DLsite] 页面 fallback 命中: requested=%s product=%s translation=%s",
+                    workno,
+                    result.get('product_workno') or '',
+                    result.get('translation_workno') or '',
+                )
+            else:
+                logger.info("[DLsite] 页面 fallback 未命中: requested=%s", workno)
+            return result
+        except Exception as exc:
+            logger.warning("[DLsite] 页面 fallback 失败: requested=%s error=%s", workno, exc)
+            return {}
+
+    async def get_product_info(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
+        requested_workno = self._normalize_workno(rjcode)
+        if not requested_workno:
+            return None
+
+        product = await self._fetch_product_payload(requested_workno, locale=locale)
+        if product:
+            return {
+                'product': product,
+                'requested_workno': requested_workno,
+                'resolved_workno': self._normalize_workno(product.get('workno') or requested_workno),
+                'fallback_used': False,
+                'parent_workno': '',
+                'edition_info': None,
+            }
+
+        fallback = await self._resolve_translation_page_fallback(requested_workno, locale=locale)
+        parent_workno = self._normalize_workno(fallback.get('product_workno') or '')
+        translation_workno = self._normalize_workno(fallback.get('translation_workno') or '')
+        if not parent_workno or translation_workno != requested_workno:
+            return None
+
+        parent_product = await self._fetch_product_payload(parent_workno, locale=locale)
+        if not parent_product:
+            logger.warning("[DLsite] fallback 找到父作品但父作品 API 仍为空: requested=%s parent=%s", requested_workno, parent_workno)
+            return None
+
+        language_editions = parent_product.get('language_editions', [])
+        if isinstance(language_editions, dict):
+            language_editions = list(language_editions.values())
+        edition_info = next(
+            (edition for edition in language_editions if self._normalize_workno(edition.get('workno') or '') == requested_workno),
+            None,
+        )
+
+        effective_product = dict(parent_product)
+        translation_info = dict(parent_product.get('translation_info') or {})
+        effective_product['translation_info'] = {
+            **translation_info,
+            'is_original': False,
+            'is_parent': False,
+            'is_child': True,
+            'parent_workno': parent_workno,
+            'original_workno': translation_info.get('original_workno') or parent_workno,
+            'lang': (edition_info or {}).get('lang') or translation_info.get('lang', 'JPN'),
+        }
+        effective_product['workno'] = requested_workno
+        if edition_info and edition_info.get('work_name'):
+            effective_product['work_name'] = edition_info.get('work_name')
+
+        logger.info(
+            "[DLsite] 使用页面 fallback 补全作品信息: requested=%s parent=%s locale=%s edition_found=%s",
+            requested_workno,
+            parent_workno,
+            locale or '',
+            bool(edition_info),
+        )
+        return {
+            'product': effective_product,
+            'requested_workno': requested_workno,
+            'resolved_workno': parent_workno,
+            'fallback_used': True,
+            'parent_workno': parent_workno,
+            'edition_info': edition_info,
+        }
     
     async def _get_client(self) -> httpx.AsyncClient:
         """获取或创建 HTTP 客户端"""
@@ -71,7 +239,10 @@ class DLsiteApiService:
                 timeout=httpx.Timeout(30.0, connect=10.0),
                 verify=False,  # 禁用 SSL 验证（避免某些网络环境问题）
                 follow_redirects=True,
-                proxy=proxy_url  # 使用配置的代理
+                proxies={
+                    'http://': proxy_url,
+                    'https://': proxy_url,
+                } if proxy_url else None
             )
         return self.client
     
@@ -133,14 +304,10 @@ class DLsiteApiService:
         返回:
             TranslationInfo: 包含 is_original, is_parent, is_child 等信息
         """
-        # 尝试从 API2 获取
-        url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={rjcode}"
-        data = await self._fetch_api(url)
-        
-        if data and isinstance(data, list) and len(data) > 0:
-            product = data[0]
-            translation_info = product.get('translation_info', {})
-            
+        product_info = await self.get_product_info(rjcode)
+        if product_info and product_info.get('product'):
+            translation_info = dict((product_info.get('product') or {}).get('translation_info', {}) or {})
+
             return TranslationInfo(
                 is_original=translation_info.get('is_original', False),
                 is_parent=translation_info.get('is_parent', False),
@@ -304,13 +471,12 @@ class DLsiteApiService:
     
     async def get_work_info(self, rjcode: str) -> Optional[Dict]:
         """获取作品详细信息"""
-        url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={rjcode}"
-        data = await self._fetch_api(url)
+        product_info = await self.get_product_info(rjcode)
         
-        if data and isinstance(data, list) and len(data) > 0:
-            product = data[0]
+        if product_info and product_info.get('product'):
+            product = product_info.get('product') or {}
             return {
-                'rjcode': rjcode,
+                'rjcode': self._normalize_workno(product.get('workno') or rjcode),
                 'title': product.get('work_name', ''),
                 'maker_name': product.get('maker_name', ''),
                 'release_date': product.get('regist_date', ''),

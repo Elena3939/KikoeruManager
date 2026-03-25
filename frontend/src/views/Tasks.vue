@@ -38,21 +38,18 @@
           </template>
         </el-table-column>
         
-        <el-table-column prop="id" label="ID" width="320">
-          <template #default="{ row }">
-            <span class="task-id">{{ row.id }}</span>
-          </template>
-        </el-table-column>
+
         
         <el-table-column prop="source_path" label="源文件" show-overflow-tooltip min-width="300">
           <template #default="{ row }">
             <div class="source-file-cell">
               <span class="filename">{{ getFileName(row.source_path) }}</span>
+              <span v-if="shouldMarkTargetFolder(row)" class="source-path-hint">????</span>
             </div>
           </template>
         </el-table-column>
         
-        <el-table-column prop="type" label="类型" width="120">
+        <el-table-column prop="type" label="类型" width="200">
           <template #default="{ row }">
             <el-tag size="small" effect="plain">
               {{ getTaskTypeLabel(row.type) }}
@@ -68,7 +65,7 @@
           </template>
         </el-table-column>
         
-        <el-table-column prop="progress" label="进度" width="180">
+        <el-table-column prop="progress" label="进度" width="450">
           <template #default="{ row }">
             <div class="progress-cell">
               <el-progress 
@@ -172,7 +169,14 @@ function getTaskTypeLabel(type) {
     'metadata': '元数据',
     'rename': '重命名'
   }
+  labels['rj_subtitle_fetch'] = '????'
   return labels[type] || type
+}
+
+function shouldMarkTargetFolder(row) {
+  if (!row || row.type !== 'rj_subtitle_fetch') return false
+  const sourceMode = String(row.source_mode || row.metadata?.source_mode || '').toLowerCase()
+  return sourceMode === 'linked_translation_archive_import' || sourceMode === 'subtitle_folder_import'
 }
 
 function getStatusLabel(status) {
@@ -296,6 +300,17 @@ async function retryTask(task) {
   color: #334155;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-path-hint {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fff4e5;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.4;
   white-space: nowrap;
 }
 

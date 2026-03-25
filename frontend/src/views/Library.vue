@@ -903,7 +903,7 @@
     <FolderContentsDialog
       ref="folderDialogRef"
       v-model="folderDialogVisible"
-      :library-id="selectedLibraryId"
+      :library-id="folderDialogLibraryId || selectedLibraryId"
       :folder-path="folderDialogPath"
       :folder-name="folderDialogName"
       @mutated="handleFolderDialogMutated"
@@ -967,8 +967,9 @@ const browseRootPath = ref('')
 const parentPath = ref('')
 const librarySearchState = ref({ active: false, query: '', rootPath: '', truncated: false, scannedDirectories: 0 })
 const locatedLibraryPath = ref('')
+const pendingLibraryLocate = ref(null)
 const renameDialogVisible = ref(false)
-const renameForm = ref({ currentName: '', newName: '', path: '' })
+const renameForm = ref({ currentName: '', newName: '', path: '', libraryId: '' })
 const isRenaming = ref(false)
 const mappedPathDialogVisible = ref(false)
 const mappedPathInfo = ref({ originalPath: '', mappedPath: '', isMapped: false })
@@ -988,6 +989,7 @@ let subtitleStatusPollTimer = null
 let libraryInitialized = false
 let libraryViewActive = false
 let libraryKeydownBound = false
+let forceLibraryRefreshOnce = false
 function createSubtitleScanSessionState () {
   return {
     scannedTargets: 0,
@@ -1003,6 +1005,7 @@ function createSubtitleScanSessionState () {
   }
 }
 const folderDialogVisible = ref(false)
+const folderDialogLibraryId = ref('')
 const folderDialogPath = ref('')
 const folderDialogName = ref('')
 const filterDeleteDialogVisible = ref(false)
@@ -1677,9 +1680,10 @@ function stopLibraryPolling () {
 async function initializeLibraryPage () {
   if (libraryInitialized) return
   await loadLibraries()
-  await refreshLibrary()
   loadRJSubtitlePreferences()
-  await refreshStats(false, { silent: true })
+  if (selectedLibraryId.value) {
+    await refreshStats(false, { silent: true })
+  }
   libraryInitialized = true
 }
 
@@ -1727,7 +1731,9 @@ watch(pageSize, async value => {
 watch(currentPage, async (value, oldValue) => {
   if (value === oldValue || !selectedLibraryId.value) return
   storeNumber('kikoeru.ui.library.page', value)
-  await refreshLibrary()
+  const forceRefresh = forceLibraryRefreshOnce
+  forceLibraryRefreshOnce = false
+  await refreshLibrary({ forceRefresh })
 })
 
 watch(toolbarActionScope, value => {
@@ -1738,6 +1744,16 @@ watch(selectedLibraryId, async (newId, oldId) => {
   if (!newId) return
   if (oldId) saveLibraryState(oldId)
   restoreLibraryState(newId)
+  if (pendingLibraryLocate.value?.libraryId === newId) {
+    const targetPath = pendingLibraryLocate.value.path || ''
+    const highlightPath = pendingLibraryLocate.value.highlightPath || targetPath
+    searchQuery.value = ''
+    librarySearchState.value = { active: false, query: '', rootPath: '', truncated: false, scannedDirectories: 0 }
+    currentPath.value = targetPath
+    currentPage.value = 1
+    locatedLibraryPath.value = highlightPath
+    pendingLibraryLocate.value = null
+  }
   clearSelection()
   subtitlePreferredSelectionKey.value = ''
   clearSubtitleInspectorState()
@@ -1955,7 +1971,7 @@ async function cancelStats () {
 }
 
 async function refreshLibrary (options = {}) {
-  const { silent = false } = options
+  const { silent = false, forceRefresh = false } = options
   if (!selectedLibraryId.value) return
   clearListPoll()
   if (silent) listPolling.value = true
@@ -1968,12 +1984,20 @@ async function refreshLibrary (options = {}) {
       search: searchQuery.value.trim(),
       currentPath: currentPath.value,
       sortBy: sortBy.value,
-      sortOrder: sortOrder.value
+      sortOrder: sortOrder.value,
+      forceRefresh
     })
     files.value = data.files || []
     totalFiles.value = data.total || 0
     if (data.libraries?.length) libraries.value = data.libraries
     if (data.library_id && data.library_id !== selectedLibraryId.value) {
+      if (data.auto_locate_path) {
+        pendingLibraryLocate.value = {
+          libraryId: data.library_id,
+          path: data.auto_locate_path,
+          highlightPath: data.auto_locate_highlight_path || data.auto_locate_path
+        }
+      }
       selectedLibraryId.value = data.library_id
       return
     }
@@ -2011,8 +2035,13 @@ async function applyTableSortIndicator () {
 
 async function handleSearch () {
   locatedLibraryPath.value = ''
+  const shouldRefreshNow = currentPage.value === 1
+  forceLibraryRefreshOnce = true
   currentPage.value = 1
-  await refreshLibrary()
+  if (shouldRefreshNow) {
+    await refreshLibrary({ forceRefresh: true })
+    forceLibraryRefreshOnce = false
+  }
 }
 
 async function handleSortChange ({ prop, order }) {
@@ -4126,10 +4155,11 @@ async function locateLibrarySearchResult (row) {
   locatedLibraryPath.value = row.path
   searchQuery.value = ''
   librarySearchState.value = { active: false, query: '', rootPath: '', truncated: false, scannedDirectories: 0 }
-  currentPath.value = row.is_directory ? row.path : (row.parent_path || row.path)
+  currentPath.value = row.parent_path || row.path
+  const shouldRefreshNow = currentPage.value === 1
   currentPage.value = 1
   clearSelection()
-  await refreshLibrary()
+  if (shouldRefreshNow) await refreshLibrary()
 }
 
 async function openFolder (row) {
@@ -4582,7 +4612,12 @@ function buildBatchDeletePreviewMessage (preview, count) {
 }
 
 function renameItem (row) {
-  renameForm.value = { currentName: row.name, newName: row.name, path: row.path }
+  renameForm.value = {
+    currentName: row.name,
+    newName: row.name,
+    path: row.path,
+    libraryId: row.library_id || selectedLibraryId.value
+  }
   renameDialogVisible.value = true
 }
 
@@ -4593,7 +4628,7 @@ async function confirmRename () {
   }
   isRenaming.value = true
   try {
-    await libraryApi.browserRename(selectedLibraryId.value, renameForm.value.path, renameForm.value.newName)
+    await libraryApi.browserRename(renameForm.value.libraryId || selectedLibraryId.value, renameForm.value.path, renameForm.value.newName)
     renameDialogVisible.value = false
     ElMessage.success('重命名成功')
     await Promise.all([
@@ -4727,6 +4762,7 @@ function isLibraryRowSelectable () {
 
 async function openFolderContentsDialog (row) {
   if (!row?.is_directory) return
+  folderDialogLibraryId.value = row.library_id || selectedLibraryId.value
   folderDialogPath.value = row.path
   folderDialogName.value = row.name
   folderDialogVisible.value = true
@@ -4738,7 +4774,7 @@ async function handleFolderDialogMutated ({ deletedBytes = 0, deletedFolderCount
     refreshStatsAfterMutation({
       deletedBytes,
       deletedFolderCount,
-      libraryId: selectedLibraryId.value
+      libraryId: folderDialogLibraryId.value || selectedLibraryId.value
     })
   ])
 }

@@ -1,4 +1,5 @@
 ﻿import asyncio
+import copy
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import aiohttp
 import yaml
@@ -189,6 +190,7 @@ def load_library_config() -> dict[str, Any]:
         "default_extract_library_id": storage.get("default_extract_library_id") or storage.get("default_library_id") or active_libraries[0].id,
         "health_warning_free_gb": storage.get("health_warning_free_gb", 200.0),
         "stats_cache_ttl_seconds": storage.get("stats_cache_ttl_seconds", 300),
+        "remote_search_cache_ttl_seconds": storage.get("remote_search_cache_ttl_seconds", 60),
     }
 
 
@@ -771,6 +773,8 @@ class LibraryManager:
         self._stats_tasks: dict[str, asyncio.Task] = {}
         self._size_cache: dict[str, dict[str, Any]] = {}
         self._remote_size_tasks: dict[str, asyncio.Task] = {}
+        self._remote_search_tasks: dict[tuple[str, str, str, int, str, str], asyncio.Task] = {}
+        self._remote_search_result_cache: dict[tuple[str, str, str, str, str, int, int], dict[str, Any]] = {}
         self._filter_preview_cancel_flags: dict[str, bool] = {}
         self._filter_preview_jobs: dict[str, dict[str, Any]] = {}
         self._filter_preview_tasks: dict[str, asyncio.Task] = {}
@@ -778,6 +782,95 @@ class LibraryManager:
 
     def load_config(self) -> dict[str, Any]:
         return load_library_config()
+
+    def _remote_search_cache_ttl_seconds(self) -> int:
+        raw_value = self.load_config().get("remote_search_cache_ttl_seconds", 60)
+        try:
+            ttl = int(raw_value)
+        except Exception:
+            ttl = 60
+        return max(30, min(ttl, 120))
+
+    def _remote_empty_search_cache_ttl_seconds(self) -> int:
+        return min(12, max(5, self._remote_search_cache_ttl_seconds() // 6))
+
+    def _build_remote_search_cache_key(
+        self,
+        *,
+        library_id: str,
+        current_path: Optional[str],
+        keyword: str,
+        sort_by: str,
+        sort_order: str,
+        page: int,
+        page_size: int,
+    ) -> tuple[str, str, str, str, str, int, int]:
+        return (
+            library_id,
+            self._normalize_remote_path(current_path or "/"),
+            str(keyword or "").strip(),
+            sort_by,
+            sort_order,
+            int(page),
+            int(page_size),
+        )
+
+    def _get_cached_remote_search_result(
+        self,
+        cache_key: tuple[str, str, str, str, str, int, int],
+        *,
+        force_refresh: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        if force_refresh:
+            logger.info(
+                "远程搜索绕过缓存: library=%s current_path=%s keyword=%s reason=force_refresh",
+                cache_key[0],
+                cache_key[1],
+                cache_key[2],
+            )
+            return None
+        cached = self._remote_search_result_cache.get(cache_key)
+        if not cached:
+            return None
+        expires_at = float(cached.get("expires_at", 0) or 0)
+        if expires_at <= time.time():
+            self._remote_search_result_cache.pop(cache_key, None)
+            return None
+        logger.info(
+            "远程搜索命中缓存: library=%s current_path=%s keyword=%s cache=%s total=%s ttl_remaining=%.1fs",
+            cache_key[0],
+            cache_key[1],
+            cache_key[2],
+            cached.get("cache_kind") or "result",
+            int(cached.get("total", 0) or 0),
+            max(0.0, expires_at - time.time()),
+        )
+        return copy.deepcopy(cached.get("data") or {})
+
+    def _set_cached_remote_search_result(
+        self,
+        cache_key: tuple[str, str, str, str, str, int, int],
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        total = int(data.get("total", 0) or 0)
+        cache_kind = "empty" if total <= 0 else "result"
+        ttl_seconds = self._remote_empty_search_cache_ttl_seconds() if cache_kind == "empty" else self._remote_search_cache_ttl_seconds()
+        logger.info(
+            "远程搜索写入缓存: library=%s current_path=%s keyword=%s cache=%s total=%s ttl=%.1fs",
+            cache_key[0],
+            cache_key[1],
+            cache_key[2],
+            cache_kind,
+            total,
+            float(ttl_seconds),
+        )
+        self._remote_search_result_cache[cache_key] = {
+            "expires_at": time.time() + ttl_seconds,
+            "cache_kind": cache_kind,
+            "total": total,
+            "data": copy.deepcopy(data),
+        }
+        return copy.deepcopy(data)
 
     def _active_libraries(self, cfg: Optional[dict[str, Any]] = None) -> list[LibraryDefinition]:
         cfg = cfg or self.load_config()
@@ -976,6 +1069,7 @@ class LibraryManager:
         current_path: Optional[str] = None,
         sort_by: str = "size",
         sort_order: str = "desc",
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if str(search or "").strip():
@@ -998,6 +1092,7 @@ class LibraryManager:
                 current_path,
                 sort_by,
                 sort_order,
+                force_refresh=force_refresh,
             )
         if library.type == "local":
             return await asyncio.to_thread(self._list_local_files, library, page, page_size, search, current_path, sort_by, sort_order)
@@ -1010,7 +1105,55 @@ class LibraryManager:
         *,
         sort_by: str = "name",
         sort_order: str = "asc",
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
+        normalized_keyword = str(keyword or "").strip()
+        if not library_id and self._is_rj_search_keyword(normalized_keyword):
+            remote_libraries = [
+                library
+                for library in self._active_libraries()
+                if library.type == "synology_filestation"
+            ]
+            if remote_libraries:
+                tasks: dict[asyncio.Task, LibraryDefinition] = {
+                    asyncio.create_task(
+                        self.list_files(
+                            library.id,
+                            page=1,
+                            page_size=LIBRARY_SEARCH_RESULT_LIMIT,
+                            search=normalized_keyword,
+                            current_path=None,
+                            sort_by=sort_by,
+                            sort_order=sort_order,
+                            force_refresh=force_refresh,
+                        )
+                    ): library
+                    for library in remote_libraries
+                }
+                try:
+                    pending = set(tasks.keys())
+                    while pending:
+                        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                        for task in done:
+                            result = await task
+                            files = list(result.get("files") or [])
+                            total = int(result.get("total") or len(files))
+                            if files or total:
+                                winner = tasks[task]
+                                logger.info(
+                                    "远程全局搜索命中: keyword=%s library=%s total=%s",
+                                    normalized_keyword,
+                                    winner.id,
+                                    total,
+                                )
+                                for pending_task in pending:
+                                    pending_task.cancel()
+                                result["library_id"] = winner.id
+                                return result
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
         return await self.list_files(
             library_id,
             page=1,
@@ -1019,6 +1162,7 @@ class LibraryManager:
             current_path=None,
             sort_by=sort_by,
             sort_order=sort_order,
+            force_refresh=force_refresh,
         )
 
     def _search_match_text(self, keyword: str, *values: Any) -> bool:
@@ -1083,7 +1227,7 @@ class LibraryManager:
         stat_result: os.stat_result,
     ) -> dict[str, Any]:
         relative_path = os.path.relpath(full_path, search_root).replace("\\", "/")
-        parent_path = os.path.dirname(full_path) if not is_directory else full_path
+        parent_path = os.path.dirname(full_path)
         return {
             "id": f"{library.id}:search:{item_id}",
             "name": name,
@@ -1412,7 +1556,7 @@ class LibraryManager:
             "name": name,
             "path": path,
             "relative_path": relative_path,
-            "parent_path": path if is_directory else str(PurePosixPath(path).parent),
+            "parent_path": str(PurePosixPath(path).parent) if path != "/" else "/",
             "rjcode": self._extract_rjcode(relative_path) or self._extract_rjcode(name),
             "size": None if is_directory else int(additional.get("size") or 0),
             "size_status": "disabled" if is_directory else "ready",
@@ -1458,87 +1602,121 @@ class LibraryManager:
         self,
         client: SynologyFileStationClient,
         *,
+        library_id: str,
         scope_path: str,
         keyword: str,
         page_size: int,
         sort_by: str,
         sort_direction: str,
     ) -> tuple[list[dict[str, Any]], int]:
-        max_rounds = 1
-        wait_before_fetch_seconds = 60.0
-        request_limit = min(max(page_size, 200), LIBRARY_SEARCH_RESULT_LIMIT)
+        request_key = (
+            library_id,
+            self._normalize_remote_path(scope_path),
+            str(keyword or "").strip(),
+            min(max(page_size, 200), LIBRARY_SEARCH_RESULT_LIMIT),
+            sort_by,
+            sort_direction,
+        )
+        existing_task = self._remote_search_tasks.get(request_key)
+        if existing_task and not existing_task.done():
+            logger.info(
+                "远程搜索复用进行中的请求: library=%s scope=%s keyword=%s",
+                library_id,
+                scope_path,
+                keyword,
+            )
+            return await existing_task
 
-        for round_index in range(1, max_rounds + 1):
-            task_id = None
-            try:
-                logger.info(
-                    "远程搜索开始: scope=%s keyword=%s recursive=%s round=%s/%s",
-                    scope_path,
-                    keyword,
-                    True,
-                    round_index,
-                    max_rounds,
-                )
-                started = await client.start_search(scope_path, keyword, recursive=True)
-                task_id = started.get("taskid") or started.get("task_id")
-                if not task_id:
-                    raise RuntimeError("群晖搜索接口未返回 taskid")
-                logger.info(
-                    "远程搜索任务已创建: scope=%s keyword=%s task_id=%s round=%s/%s",
-                    scope_path,
-                    keyword,
-                    task_id,
-                    round_index,
-                    max_rounds,
-                )
-                logger.info(
-                    "远程搜索等待结果: scope=%s keyword=%s task_id=%s wait_seconds=%.1f",
-                    scope_path,
-                    keyword,
-                    task_id,
-                    wait_before_fetch_seconds,
-                )
-                await asyncio.sleep(wait_before_fetch_seconds)
+        async def _execute_search() -> tuple[list[dict[str, Any]], int]:
+            max_rounds = 1
+            request_limit = request_key[3]
 
-                offset = 0
-                total = 0
-                raw_items: list[dict[str, Any]] = []
-                while offset < LIBRARY_SEARCH_RESULT_LIMIT:
-                    data = await client.list_search(
-                        task_id,
-                        offset=offset,
-                        limit=request_limit,
-                        sort_by=sort_by,
-                        sort_direction=sort_direction,
+            for round_index in range(1, max_rounds + 1):
+                task_id = None
+                started_at = time.time()
+                try:
+                    logger.info(
+                        "远程搜索开始: scope=%s keyword=%s recursive=%s round=%s/%s",
+                        scope_path,
+                        keyword,
+                        True,
+                        round_index,
+                        max_rounds,
                     )
-                    page_items = data.get("files") or data.get("items") or []
-                    page_total = int(data.get("total", len(page_items)) or len(page_items))
-                    if page_total > total:
-                        total = page_total
-                    raw_items.extend(page_items)
-                    offset += len(page_items)
-                    if not page_items or offset >= page_total:
-                        break
-                logger.info(
-                    "远程搜索结果: scope=%s keyword=%s task_id=%s round=%s/%s waited=%.1fs raw_items=%s total=%s",
-                    scope_path,
-                    keyword,
-                    task_id,
-                    round_index,
-                    max_rounds,
-                    wait_before_fetch_seconds,
-                    len(raw_items),
-                    total,
-                )
-                if raw_items or total:
-                    return raw_items[:LIBRARY_SEARCH_RESULT_LIMIT], total
-            finally:
-                if task_id:
-                    try:
-                        await client.stop_search(task_id)
-                    except Exception:
-                        logger.debug("停止群晖搜索任务失败: %s", task_id, exc_info=True)
-        return [], 0
+                    started = await client.start_search(scope_path, keyword, recursive=True)
+                    task_id = started.get("taskid") or started.get("task_id")
+                    if not task_id:
+                        raise RuntimeError("群晖搜索接口未返回 taskid")
+                    logger.info(
+                        "远程搜索任务已创建: scope=%s keyword=%s task_id=%s round=%s/%s",
+                        scope_path,
+                        keyword,
+                        task_id,
+                        round_index,
+                        max_rounds,
+                    )
+                    logger.info(
+                        "远程搜索等待结果: scope=%s keyword=%s task_id=%s",
+                        scope_path,
+                        keyword,
+                        task_id,
+                    )
+                    await self._wait_remote_search_ready(
+                        client,
+                        task_id,
+                        timeout_seconds=55.0,
+                        poll_interval=1.0,
+                    )
+
+                    offset = 0
+                    total = 0
+                    raw_items: list[dict[str, Any]] = []
+                    while offset < LIBRARY_SEARCH_RESULT_LIMIT:
+                        data = await client.list_search(
+                            task_id,
+                            offset=offset,
+                            limit=request_limit,
+                            sort_by=sort_by,
+                            sort_direction=sort_direction,
+                        )
+                        page_items = data.get("files") or data.get("items") or []
+                        page_total = int(data.get("total", len(page_items)) or len(page_items))
+                        if page_total > total:
+                            total = page_total
+                        raw_items.extend(page_items)
+                        offset += len(page_items)
+                        if not page_items or offset >= page_total:
+                            break
+                    waited_seconds = max(0.0, time.time() - started_at)
+                    logger.info(
+                        "远程搜索结果: scope=%s keyword=%s task_id=%s round=%s/%s waited=%.1fs raw_items=%s total=%s",
+                        scope_path,
+                        keyword,
+                        task_id,
+                        round_index,
+                        max_rounds,
+                        waited_seconds,
+                        len(raw_items),
+                        total,
+                    )
+                    if raw_items or total:
+                        return raw_items[:LIBRARY_SEARCH_RESULT_LIMIT], total
+                finally:
+                    if task_id:
+                        try:
+                            await client.stop_search(task_id)
+                        except Exception:
+                            logger.debug("停止群晖搜索任务失败: %s", task_id, exc_info=True)
+            return [], 0
+
+        search_task = asyncio.create_task(_execute_search())
+        self._remote_search_tasks[request_key] = search_task
+        try:
+            return await search_task
+        finally:
+            current_task = self._remote_search_tasks.get(request_key)
+            if current_task is search_task:
+                self._remote_search_tasks.pop(request_key, None)
 
     async def _search_remote_files(
         self,
@@ -1549,11 +1727,25 @@ class LibraryManager:
         current_path: Optional[str],
         sort_by: str,
         sort_order: str,
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
 
         client = SynologyFileStationClient(library.synology)
+        cache_key = self._build_remote_search_cache_key(
+            library_id=library.id,
+            current_path=current_path,
+            keyword=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+        )
+        cached_result = self._get_cached_remote_search_result(cache_key, force_refresh=force_refresh)
+        if cached_result is not None:
+            return cached_result
         browse_root, search_root = self._resolve_remote_target_path(library, current_path)
         keyword = str(search or "").strip()
         rj_only_search = self._is_rj_search_keyword(keyword)
@@ -1575,18 +1767,61 @@ class LibraryManager:
         collected_raw_items: list[dict[str, Any]] = []
         total = 0
         search_scope_count = 0
-        for scope_path in search_scopes:
-            raw_items, scope_total = await self._run_remote_search_scope(
-                client,
-                scope_path=scope_path,
-                keyword=keyword,
-                page_size=page_size,
-                sort_by=remote_sort_by,
-                sort_direction=remote_sort_direction,
-            )
-            search_scope_count += 1
-            total += scope_total
-            collected_raw_items.extend(raw_items)
+        if rj_only_search and len(search_scopes) > 1:
+            scope_tasks: dict[asyncio.Task, str] = {
+                asyncio.create_task(
+                    self._run_remote_search_scope(
+                        client,
+                        library_id=library.id,
+                        scope_path=scope_path,
+                        keyword=keyword,
+                        page_size=page_size,
+                        sort_by=remote_sort_by,
+                        sort_direction=remote_sort_direction,
+                    )
+                ): scope_path
+                for scope_path in search_scopes
+            }
+            try:
+                pending = set(scope_tasks.keys())
+                while pending:
+                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    search_scope_count += len(done)
+                    for task in done:
+                        raw_items, scope_total = await task
+                        total += scope_total
+                        collected_raw_items.extend(raw_items)
+                        if raw_items or scope_total:
+                            logger.info(
+                                "远程 RJ 搜索提前命中: library=%s keyword=%s scope=%s raw_items=%s total=%s",
+                                library.id,
+                                keyword,
+                                scope_tasks[task],
+                                len(raw_items),
+                                scope_total,
+                            )
+                            for pending_task in pending:
+                                pending_task.cancel()
+                            pending.clear()
+                            break
+            finally:
+                for task in scope_tasks:
+                    if not task.done():
+                        task.cancel()
+        else:
+            for scope_path in search_scopes:
+                raw_items, scope_total = await self._run_remote_search_scope(
+                    client,
+                    library_id=library.id,
+                    scope_path=scope_path,
+                    keyword=keyword,
+                    page_size=page_size,
+                    sort_by=remote_sort_by,
+                    sort_direction=remote_sort_direction,
+                )
+                search_scope_count += 1
+                total += scope_total
+                collected_raw_items.extend(raw_items)
 
         files: list[dict[str, Any]] = []
         seen_paths: set[str] = set()
@@ -1640,7 +1875,7 @@ class LibraryManager:
         page_items = files[start:end]
         for item in page_items:
             item.pop("_mtime", None)
-        return {
+        result = {
             "files": page_items,
             "page": page,
             "page_size": page_size,
@@ -1654,17 +1889,53 @@ class LibraryManager:
             "search_truncated": deduped_total >= LIBRARY_SEARCH_RESULT_LIMIT,
             "search_scope_count": search_scope_count,
         }
+        return self._set_cached_remote_search_result(cache_key, result)
 
     async def rename(self, library_id: str, path: str, new_name: str) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
             return await asyncio.to_thread(self._local_rename, library, path, new_name)
-        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
-        target_path = self._normalize_remote_path(path)
-        if not self._remote_path_is_within_root(target_path, browse_root):
-            raise PermissionError("只能重命名当前库存范围内的项目")
+        new_name = self._validate_remote_new_name(new_name)
+        _, target_path = self._resolve_remote_operation_path(
+            library,
+            path,
+            action="库存重命名",
+            new_name=new_name,
+        )
         client = SynologyFileStationClient(library.synology)
-        await client.rename(target_path, new_name)
+        try:
+            info = await client.stat(target_path)
+            info_item = self._first_remote_info_item(info)
+            if not info_item:
+                raise FileNotFoundError("目标路径不存在")
+        except FileNotFoundError:
+            raise
+        except Exception as exc:
+            if client._is_error_code(exc, 119):
+                await self._raise_remote_code_119_context(
+                    client=client,
+                    library=library,
+                    action="库存重命名预检",
+                    incoming_path=path,
+                    target_path=target_path,
+                    original_error=exc,
+                    new_name=new_name,
+                )
+            raise
+        try:
+            await client.rename(target_path, new_name)
+        except Exception as exc:
+            if client._is_error_code(exc, 119):
+                await self._raise_remote_code_119_context(
+                    client=client,
+                    library=library,
+                    action="库存重命名",
+                    incoming_path=path,
+                    target_path=target_path,
+                    original_error=exc,
+                    new_name=new_name,
+                )
+            raise
         new_path = str(PurePosixPath(target_path).parent / new_name)
         self._append_stats_log(library, "INFO", f"重命名 path={target_path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
@@ -2215,7 +2486,8 @@ class LibraryManager:
     def _normalize_remote_path(self, path: str) -> str:
         if not path:
             return "/"
-        normalized = str(PurePosixPath(path))
+        raw = unquote(str(path).strip()).replace("\\", "/")
+        normalized = str(PurePosixPath(raw))
         if normalized in {".", ""}:
             return "/"
         if not normalized.startswith("/"):
@@ -2235,6 +2507,193 @@ class LibraryManager:
         if not self._remote_path_is_within_root(target_path, browse_root):
             target_path = browse_root
         return browse_root, target_path
+
+    def _has_illegal_remote_path_segments(self, path: Optional[str]) -> bool:
+        raw = unquote(str(path or "").strip()).replace("\\", "/")
+        if not raw:
+            return False
+        if "\x00" in raw:
+            return True
+        parts = [segment for segment in raw.split("/") if segment]
+        return any(segment in {".", ".."} for segment in parts)
+
+    def _validate_remote_new_name(self, new_name: str) -> str:
+        normalized = str(new_name or "").strip()
+        if not normalized:
+            raise ValueError("新名称不能为空")
+        if normalized in {".", ".."}:
+            raise ValueError("新名称非法")
+        if any(char in normalized for char in ('/', '\\', '\x00')):
+            raise ValueError("新名称包含非法路径字符")
+        return normalized
+
+    def _log_remote_path_resolution(
+        self,
+        *,
+        action: str,
+        library: LibraryDefinition,
+        incoming_path: Optional[str],
+        target_path: str,
+        resolution_source: str,
+        new_name: Optional[str] = None,
+    ) -> None:
+        logger.info(
+            "远程路径解析: action=%s library_id=%s library_root=%s browse_root=%s incoming_path=%s computed_target_path=%s resolution_source=%s new_name=%s",
+            action,
+            library.id,
+            self._normalize_remote_path(library.root_path or "/"),
+            self._normalize_remote_path(library.browse_root_path or library.root_path or "/"),
+            incoming_path,
+            target_path,
+            resolution_source,
+            new_name,
+        )
+
+    def _resolve_remote_operation_path(
+        self,
+        library: LibraryDefinition,
+        incoming_path: Optional[str],
+        *,
+        action: str,
+        new_name: Optional[str] = None,
+    ) -> tuple[str, str]:
+        library_root = self._normalize_remote_path(library.root_path or "/")
+        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
+        raw_incoming_path = str(incoming_path or "").strip()
+        decoded_incoming_path = unquote(raw_incoming_path).strip().replace("\\", "/")
+
+        if self._has_illegal_remote_path_segments(decoded_incoming_path):
+            raise ValueError(
+                f"{action}失败：incoming path 非法，禁止使用相对路径跳转（library_id={library.id}, incoming_path={incoming_path})"
+            )
+
+        if not decoded_incoming_path:
+            target_path = browse_root
+            resolution_source = "default_browse_root"
+        elif decoded_incoming_path.startswith("/"):
+            target_path = self._normalize_remote_path(decoded_incoming_path)
+            resolution_source = "absolute"
+        else:
+            target_path = self._normalize_remote_path(str(PurePosixPath(browse_root) / decoded_incoming_path))
+            resolution_source = "relative_to_browse_root"
+
+        if not self._remote_path_is_within_root(target_path, browse_root):
+            logger.warning(
+                "远程路径越界: action=%s library_id=%s library_root=%s browse_root=%s incoming_path=%s computed_target_path=%s new_name=%s",
+                action,
+                library.id,
+                library_root,
+                browse_root,
+                incoming_path,
+                target_path,
+                new_name,
+            )
+            if self._remote_path_is_within_root(target_path, library_root):
+                raise PermissionError(
+                    f"{action}失败：incoming path 落在 library root 内，但不在当前 browse root 下，疑似 library/root 不匹配 "
+                    f"(library_id={library.id}, library_root={library_root}, browse_root={browse_root}, incoming_path={incoming_path}, computed_target_path={target_path})"
+                )
+            raise PermissionError(
+                f"{action}失败：incoming path 与当前库存不匹配，可能传入了其他库的路径 "
+                f"(library_id={library.id}, library_root={library_root}, browse_root={browse_root}, incoming_path={incoming_path}, computed_target_path={target_path})"
+            )
+
+        self._log_remote_path_resolution(
+            action=action,
+            library=library,
+            incoming_path=incoming_path,
+            target_path=target_path,
+            resolution_source=resolution_source,
+            new_name=new_name,
+        )
+        return browse_root, target_path
+
+    async def _probe_remote_path(self, client: SynologyFileStationClient, path: str) -> dict[str, Any]:
+        normalized_path = self._normalize_remote_path(path)
+        try:
+            info = await client.stat(normalized_path)
+            return {
+                "exists": True,
+                "path": normalized_path,
+                "item": self._first_remote_info_item(info),
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "exists": False,
+                "path": normalized_path,
+                "item": None,
+                "error": str(exc),
+            }
+
+    async def _remote_child_visible(self, client: SynologyFileStationClient, parent_path: str, child_name: str) -> Optional[bool]:
+        try:
+            children = await self._list_remote_directory(client, parent_path)
+        except Exception:
+            return None
+        target_name = str(child_name or "")
+        return any(str(child.get("name") or "") == target_name for child in children)
+
+    async def _raise_remote_code_119_context(
+        self,
+        *,
+        client: SynologyFileStationClient,
+        library: LibraryDefinition,
+        action: str,
+        incoming_path: Optional[str],
+        target_path: str,
+        original_error: Exception,
+        new_name: Optional[str] = None,
+    ) -> None:
+        library_root = self._normalize_remote_path(library.root_path or "/")
+        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
+        parent_path = self._remote_parent_path(target_path)
+        root_probe = await self._probe_remote_path(client, browse_root)
+        parent_probe = root_probe if parent_path == browse_root else await self._probe_remote_path(client, parent_path)
+        child_visible = None
+        if parent_probe.get("exists") and parent_path != target_path:
+            child_visible = await self._remote_child_visible(client, parent_path, PurePosixPath(target_path).name)
+
+        logger.warning(
+            "远程路径诊断(code=119): action=%s library_id=%s library_root=%s browse_root=%s incoming_path=%s computed_target_path=%s parent_path=%s new_name=%s root_exists=%s parent_exists=%s child_visible=%s original_error=%s",
+            action,
+            library.id,
+            library_root,
+            browse_root,
+            incoming_path,
+            target_path,
+            parent_path,
+            new_name,
+            root_probe.get("exists"),
+            parent_probe.get("exists"),
+            child_visible,
+            original_error,
+        )
+
+        if not root_probe.get("exists"):
+            raise PermissionError(
+                f"{action}失败：当前库存根目录不可访问，可能是 library/root 配置错误，或当前账号无权访问 "
+                f"(library_id={library.id}, library_root={library_root}, browse_root={browse_root}, incoming_path={incoming_path}, computed_target_path={target_path})"
+            )
+        if parent_path != target_path and not parent_probe.get("exists"):
+            raise FileNotFoundError(
+                f"{action}失败：目标父目录不存在或不可访问，可能是路径已被改名/删除，或 library/root 不匹配 "
+                f"(library_id={library.id}, incoming_path={incoming_path}, computed_target_path={target_path}, parent_path={parent_path})"
+            )
+        if child_visible is False:
+            raise FileNotFoundError(
+                f"{action}失败：目标路径不存在，或操作前已被改名/删除 "
+                f"(library_id={library.id}, incoming_path={incoming_path}, computed_target_path={target_path})"
+            )
+        if child_visible is True:
+            raise PermissionError(
+                f"{action}失败：目标路径已定位，但当前账号可能无权访问，或路径/名称包含群晖不接受的字符 "
+                f"(library_id={library.id}, incoming_path={incoming_path}, computed_target_path={target_path}, new_name={new_name})"
+            )
+        raise RuntimeError(
+            f"{action}失败：群晖返回 code 119，无法确认是路径不存在、路径非法还是权限不足 "
+            f"(library_id={library.id}, library_root={library_root}, browse_root={browse_root}, incoming_path={incoming_path}, computed_target_path={target_path}, new_name={new_name})"
+        )
 
     def _remote_parent_path(self, path: str) -> str:
         normalized = self._normalize_remote_path(path)
@@ -2595,13 +3054,26 @@ class LibraryManager:
     async def _remote_folder_contents(self, library: LibraryDefinition, path: str) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
-        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
-        target_path = self._normalize_remote_path(path)
-        if not self._remote_path_is_within_root(target_path, browse_root):
-            raise PermissionError("只能查看当前库存范围内的文件夹")
+        browse_root, target_path = self._resolve_remote_operation_path(
+            library,
+            path,
+            action="获取库存文件夹内容",
+        )
 
         client = SynologyFileStationClient(library.synology)
-        info = await client.stat(target_path)
+        try:
+            info = await client.stat(target_path)
+        except Exception as exc:
+            if client._is_error_code(exc, 119):
+                await self._raise_remote_code_119_context(
+                    client=client,
+                    library=library,
+                    action="获取库存文件夹内容",
+                    incoming_path=path,
+                    target_path=target_path,
+                    original_error=exc,
+                )
+            raise
         info_item = self._first_remote_info_item(info)
         if not info_item or not info_item.get("isdir", False):
             raise FileNotFoundError("目标文件夹不存在")
