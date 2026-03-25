@@ -2,8 +2,12 @@
 DLsite API 服务 - 用于获取作品关联信息和翻译链
 参考 VoiceLinks 的实现
 """
+
 import asyncio
+import html
 import httpx
+import inspect
+import json
 import logging
 import re
 from typing import Dict, List, Optional, Set
@@ -53,7 +57,7 @@ class DLsiteApiService:
 
     def _normalize_workno(self, rjcode: str) -> str:
         value = str(rjcode or '').strip().upper()
-        match = re.search(r'[RVB]J(?:\d{6}|\d{8})', value, re.IGNORECASE)
+        match = re.search(r'[RVB]J(?:\d{8}|\d{6})(?!\d)', value, re.IGNORECASE)
         return match.group(0).upper() if match else value
 
     def _build_product_api_url(self, rjcode: str, locale: Optional[str] = None) -> str:
@@ -70,9 +74,18 @@ class DLsiteApiService:
             url = f"{url}/?locale={locale}"
         return url
 
+    def _get_browser_headers(self, accept: str = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8') -> Dict[str, str]:
+        return {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': accept,
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+        }
+
     def _extract_product_codes_from_url(self, url: str) -> Dict[str, str]:
         parsed = urlparse(str(url or ''))
-        path_match = re.search(r'/product_id/([RVB]J(?:\d{6}|\d{8}))\.html', parsed.path, re.IGNORECASE)
+        path_match = re.search(r'/product_id/([RVB]J(?:\d{8}|\d{6}))\.html', parsed.path, re.IGNORECASE)
         query = parse_qs(parsed.query)
         return {
             'product_workno': path_match.group(1).upper() if path_match else '',
@@ -85,7 +98,7 @@ class DLsiteApiService:
             return {}
 
         pattern = re.compile(
-            r'product_id/([RVB]J(?:\d{6}|\d{8}))\.html[^"\'>\s]*translation=([RVB]J(?:\d{6}|\d{8}))',
+            r'product_id/([RVB]J(?:\d{8}|\d{6}))\.html[^"\'>\s]*translation=([RVB]J(?:\d{8}|\d{6}))',
             re.IGNORECASE,
         )
         for match in pattern.finditer(str(html or '')):
@@ -97,6 +110,186 @@ class DLsiteApiService:
                     'translation_workno': translation_workno,
                 }
         return {}
+
+    def _decode_html_value(self, value: Optional[str]) -> str:
+        return html.unescape(str(value or '').strip())
+
+    def _decode_json_string(self, value: Optional[str]) -> str:
+        raw = str(value or '')
+        if not raw:
+            return ''
+        try:
+            return html.unescape(json.loads(f'"{raw}"'))
+        except Exception:
+            return html.unescape(raw.replace('\\"', '"').replace("\\/", "/"))
+
+    def _extract_json_string(self, text: str, key: str) -> str:
+        if not text:
+            return ''
+        patterns = [
+            rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"',
+            rf"'{re.escape(key)}'\s*:\s*'((?:\\.|[^'\\])*)'",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if match:
+                return self._decode_json_string(match.group(1))
+        return ''
+
+    def _extract_html_meta(self, text: str, key: str) -> str:
+        if not text:
+            return ''
+        patterns = [
+            rf'<meta[^>]+property=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']+)["\']',
+            rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{re.escape(key)}["\']',
+            rf'<meta[^>]+name=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']+)["\']',
+            rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']{re.escape(key)}["\']',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return self._decode_html_value(match.group(1))
+        return ''
+
+    def _normalize_image_url(self, url: str) -> str:
+        value = self._decode_html_value(url)
+        if not value:
+            return ''
+        if value.startswith('//'):
+            return f'https:{value}'
+        return value
+
+    def _normalize_release_date(self, value: str) -> str:
+        raw = self._decode_html_value(value)
+        if not raw:
+            return ''
+        match = re.search(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', raw)
+        if not match:
+            return raw[:10]
+        year, month, day = match.groups()
+        return f"{year}-{int(month):02d}-{int(day):02d}"
+
+    def _extract_name_list(self, text: str, section_pattern: str) -> List[Dict[str, str]]:
+        if not text:
+            return []
+        section_match = re.search(section_pattern, text, re.IGNORECASE | re.DOTALL)
+        if not section_match:
+            return []
+        names = []
+        seen = set()
+        for raw_name in re.findall(r'"name"\s*:\s*"((?:\\.|[^"\\])*)"', section_match.group(1), re.IGNORECASE):
+            decoded = self._decode_json_string(raw_name)
+            if decoded and decoded not in seen:
+                seen.add(decoded)
+                names.append({'name': decoded})
+        return names
+
+    def _extract_image_main_url(self, text: str) -> str:
+        if not text:
+            return ''
+        match = re.search(
+            r'"image_main"\s*:\s*\{.*?"url"\s*:\s*"((?:\\.|[^"\\])*)"',
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return ''
+        return self._decode_json_string(match.group(1))
+
+    def _parse_product_from_html(self, requested_workno: str, page_url: str, final_url: str, page_html: str) -> Optional[Dict]:
+        if not page_html:
+            return None
+
+        title = self._extract_json_string(page_html, 'work_name') or self._extract_html_meta(page_html, 'og:title')
+        maker_name = self._extract_json_string(page_html, 'maker_name')
+        maker_id = self._extract_json_string(page_html, 'maker_id')
+        series_name = self._extract_json_string(page_html, 'series_name')
+        series_id = self._extract_json_string(page_html, 'series_id')
+        release_date = self._normalize_release_date(
+            self._extract_json_string(page_html, 'regist_date')
+            or self._extract_html_meta(page_html, 'article:published_time')
+            or self._extract_html_meta(page_html, 'release_date')
+        )
+        image_url = self._normalize_image_url(
+            self._extract_image_main_url(page_html)
+        ) or self._normalize_image_url(self._extract_html_meta(page_html, 'og:image'))
+
+        genres = self._extract_name_list(page_html, r'"genres"\s*:\s*\[(.*?)\]')
+        voice_by = self._extract_name_list(page_html, r'"voice_by"\s*:\s*\[(.*?)\]')
+
+        if not maker_name:
+            maker_match = re.search(
+                r'/maker_id/([A-Z]{2}\d+)\.html[^>]*>\s*<[^>]+>\s*([^<]+?)\s*</',
+                page_html,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if maker_match:
+                maker_id = maker_id or maker_match.group(1).upper()
+                maker_name = self._decode_html_value(maker_match.group(2))
+
+        if not title:
+            title_match = re.search(r'<h1[^>]*>\s*(.*?)\s*</h1>', page_html, re.IGNORECASE | re.DOTALL)
+            if title_match:
+                title = self._decode_html_value(re.sub(r'<[^>]+>', '', title_match.group(1)))
+
+        resolved_codes = self._extract_product_codes_from_url(final_url or page_url)
+        resolved_workno = self._normalize_workno(
+            resolved_codes.get('product_workno')
+            or self._extract_json_string(page_html, 'workno')
+            or requested_workno
+        )
+
+        if not any([title, maker_name, image_url, release_date, genres, voice_by]):
+            return None
+
+        return {
+            'workno': resolved_workno or requested_workno,
+            'work_name': title,
+            'maker_id': maker_id,
+            'maker_name': maker_name,
+            'regist_date': release_date,
+            'series_name': series_name,
+            'series_id': series_id,
+            'image_main': {'url': image_url} if image_url else {},
+            'genres': genres,
+            'creaters': {'voice_by': voice_by} if voice_by else {},
+            'translation_info': {'is_original': True, 'lang': 'JPN'},
+        }
+
+    async def _fetch_product_page_metadata(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
+        workno = self._normalize_workno(rjcode)
+        if not workno:
+            return None
+
+        page_url = self._build_product_page_url(workno, locale=locale)
+        cache_key = f"page_metadata:{page_url}"
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                return cached_data['data']
+
+        logger.info("[DLsite] 尝试页面元数据抓取: %s", page_url)
+        try:
+            client = await self._get_client()
+            response = await client.get(page_url, headers=self._get_browser_headers())
+            product = self._parse_product_from_html(workno, page_url, str(response.url), response.text)
+            self.cache[cache_key] = {
+                'data': product,
+                'timestamp': datetime.now()
+            }
+            if product:
+                logger.info(
+                    "[DLsite] 页面元数据抓取成功: requested=%s resolved=%s title=%s",
+                    workno,
+                    self._normalize_workno(product.get('workno') or workno),
+                    product.get('work_name') or '',
+                )
+            else:
+                logger.info("[DLsite] 页面元数据未提取到有效字段: requested=%s", workno)
+            return product
+        except Exception as exc:
+            logger.warning("[DLsite] 页面元数据抓取失败: requested=%s error=%s", workno, exc)
+            return None
 
     async def _fetch_product_payload(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
         data = await self._fetch_api(self._build_product_api_url(rjcode, locale=locale))
@@ -163,6 +356,7 @@ class DLsiteApiService:
                 'requested_workno': requested_workno,
                 'resolved_workno': self._normalize_workno(product.get('workno') or requested_workno),
                 'fallback_used': False,
+                'fallback_source': 'api',
                 'parent_workno': '',
                 'edition_info': None,
             }
@@ -170,129 +364,144 @@ class DLsiteApiService:
         fallback = await self._resolve_translation_page_fallback(requested_workno, locale=locale)
         parent_workno = self._normalize_workno(fallback.get('product_workno') or '')
         translation_workno = self._normalize_workno(fallback.get('translation_workno') or '')
-        if not parent_workno or translation_workno != requested_workno:
-            return None
+        if parent_workno and translation_workno == requested_workno:
+            parent_product = await self._fetch_product_payload(parent_workno, locale=locale)
+            if parent_product:
+                language_editions = parent_product.get('language_editions', [])
+                if isinstance(language_editions, dict):
+                    language_editions = list(language_editions.values())
+                edition_info = next(
+                    (edition for edition in language_editions if self._normalize_workno(edition.get('workno') or '') == requested_workno),
+                    None,
+                )
 
-        parent_product = await self._fetch_product_payload(parent_workno, locale=locale)
-        if not parent_product:
-            logger.warning("[DLsite] fallback 找到父作品但父作品 API 仍为空: requested=%s parent=%s", requested_workno, parent_workno)
-            return None
+                effective_product = dict(parent_product)
+                translation_info = dict(parent_product.get('translation_info') or {})
+                effective_product['translation_info'] = {
+                    **translation_info,
+                    'is_original': False,
+                    'is_parent': False,
+                    'is_child': True,
+                    'parent_workno': parent_workno,
+                    'original_workno': translation_info.get('original_workno') or parent_workno,
+                    'lang': (edition_info or {}).get('lang') or translation_info.get('lang', 'JPN'),
+                }
+                effective_product['workno'] = requested_workno
+                if edition_info and edition_info.get('work_name'):
+                    effective_product['work_name'] = edition_info.get('work_name')
 
-        language_editions = parent_product.get('language_editions', [])
-        if isinstance(language_editions, dict):
-            language_editions = list(language_editions.values())
-        edition_info = next(
-            (edition for edition in language_editions if self._normalize_workno(edition.get('workno') or '') == requested_workno),
-            None,
-        )
+                logger.info(
+                    "[DLsite] 使用页面 fallback 补全翻译作品信息: requested=%s parent=%s locale=%s edition_found=%s",
+                    requested_workno,
+                    parent_workno,
+                    locale or '',
+                    bool(edition_info),
+                )
+                return {
+                    'product': effective_product,
+                    'requested_workno': requested_workno,
+                    'resolved_workno': parent_workno,
+                    'fallback_used': True,
+                    'fallback_source': 'translation_page',
+                    'parent_workno': parent_workno,
+                    'edition_info': edition_info,
+                }
 
-        effective_product = dict(parent_product)
-        translation_info = dict(parent_product.get('translation_info') or {})
-        effective_product['translation_info'] = {
-            **translation_info,
-            'is_original': False,
-            'is_parent': False,
-            'is_child': True,
-            'parent_workno': parent_workno,
-            'original_workno': translation_info.get('original_workno') or parent_workno,
-            'lang': (edition_info or {}).get('lang') or translation_info.get('lang', 'JPN'),
-        }
-        effective_product['workno'] = requested_workno
-        if edition_info and edition_info.get('work_name'):
-            effective_product['work_name'] = edition_info.get('work_name')
+            logger.warning(
+                "[DLsite] 页面 fallback 找到父作品，但父作品 API 返回空数据: requested=%s parent=%s",
+                requested_workno,
+                parent_workno,
+            )
 
-        logger.info(
-            "[DLsite] 使用页面 fallback 补全作品信息: requested=%s parent=%s locale=%s edition_found=%s",
-            requested_workno,
-            parent_workno,
-            locale or '',
-            bool(edition_info),
-        )
-        return {
-            'product': effective_product,
-            'requested_workno': requested_workno,
-            'resolved_workno': parent_workno,
-            'fallback_used': True,
-            'parent_workno': parent_workno,
-            'edition_info': edition_info,
-        }
+        page_product = await self._fetch_product_page_metadata(requested_workno, locale=locale)
+        if page_product:
+            return {
+                'product': page_product,
+                'requested_workno': requested_workno,
+                'resolved_workno': self._normalize_workno(page_product.get('workno') or requested_workno),
+                'fallback_used': True,
+                'fallback_source': 'page_metadata',
+                'parent_workno': parent_workno,
+                'edition_info': None,
+            }
+
+        return None
     
     async def _get_client(self) -> httpx.AsyncClient:
         """获取或创建 HTTP 客户端"""
         if self.client is None or self.client.is_closed:
-            # 从配置加载代理设置
             from ..config.settings import get_config
+
             config = get_config()
             proxy_url = None
             if config.metadata.http_proxy:
                 proxy_url = f"http://{config.metadata.http_proxy}"
-                logger.debug(f"[DLsite] 使用代理：{proxy_url}")
-            
-            self.client = httpx.AsyncClient(
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/json, text/plain, */*',
-                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'Connection': 'keep-alive',
-                },
-                timeout=httpx.Timeout(30.0, connect=10.0),
-                verify=False,  # 禁用 SSL 验证（避免某些网络环境问题）
-                follow_redirects=True,
-                proxies={
-                    'http://': proxy_url,
-                    'https://': proxy_url,
-                } if proxy_url else None
-            )
+                logger.debug("[DLsite] 使用代理: %s", proxy_url)
+
+            client_kwargs = {
+                'headers': self._get_browser_headers('application/json, text/plain, */*'),
+                'timeout': httpx.Timeout(30.0, connect=10.0),
+                'verify': False,  # 避免部分网络环境下的 SSL 问题
+                'follow_redirects': True,
+            }
+            if proxy_url:
+                async_client_params = inspect.signature(httpx.AsyncClient.__init__).parameters
+                if 'proxy' in async_client_params:
+                    client_kwargs['proxy'] = proxy_url
+                elif 'proxies' in async_client_params:
+                    client_kwargs['proxies'] = {
+                        'http://': proxy_url,
+                        'https://': proxy_url,
+                    }
+
+            self.client = httpx.AsyncClient(**client_kwargs)
         return self.client
     
     async def _fetch_api(self, url: str) -> Optional[Dict]:
         """从 DLsite API 获取数据"""
         cache_key = url
-        
-        # 检查缓存
+
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
             if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
-                logger.debug(f"使用缓存数据：{url}")
+                logger.debug("[DLsite] 使用缓存数据: %s", url)
                 return cached_data['data']
-        
-        logger.info(f"[DLsite] 正在请求 API: {url}")
-        
+
+        logger.info("[DLsite] 正在请求 API: %s", url)
+
         try:
             client = await self._get_client()
-            logger.debug(f"[DLsite] 使用客户端配置：verify=False, timeout=30s")
+            logger.debug("[DLsite] 使用客户端配置: verify=False, timeout=30s")
             response = await client.get(url)
-            
-            logger.info(f"[DLsite] 响应状态码：{response.status_code}")
-            
+
+            logger.info("[DLsite] 响应状态码：%s", response.status_code)
+
             if response.status_code == 200:
                 data = response.json()
-                # 保存到缓存
                 self.cache[cache_key] = {
                     'data': data,
                     'timestamp': datetime.now()
                 }
                 return data
-            elif response.status_code == 404:
-                logger.warning(f"API 返回 404: {url}")
+            if response.status_code == 404:
+                logger.warning("API 返回 404: %s", url)
                 return None
-            else:
-                logger.error(f"API 请求失败：{url}, 状态码：{response.status_code}")
-                return None
+
+            logger.error("API 请求失败: %s, 状态码: %s", url, response.status_code)
+            return None
         except httpx.ConnectError as e:
-            logger.error(f"API 连接失败：{url}")
-            logger.error(f"错误详情：{str(e)}")
-            logger.error("可能原因：1) 网络连接问题 2) DLsite 服务器不可达 3) 防火墙阻止")
+            logger.error("API 连接失败: %s", url)
+            logger.error("错误详情: %s", str(e))
+            logger.error("可能原因: 1) 网络连接异常 2) DLsite 不可达 3) 代理或防火墙拦截")
             return None
         except httpx.ReadTimeout as e:
-            logger.error(f"API 读取超时：{url} (超过 30 秒)")
-            logger.error(f"错误详情：{str(e)}")
+            logger.error("API 读取超时: %s (超过 30 秒)", url)
+            logger.error("错误详情: %s", str(e))
             return None
         except Exception as e:
-            logger.error(f"API 请求异常：{url}")
-            logger.error(f"错误类型：{type(e).__name__}")
-            logger.error(f"错误详情：{str(e)}")
+            logger.error("API 请求异常: %s", url)
+            logger.error("错误类型: %s", type(e).__name__)
+            logger.error("错误详情: %s", str(e))
             import traceback
             logger.debug(traceback.format_exc())
             return None

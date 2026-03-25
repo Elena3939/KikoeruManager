@@ -15,12 +15,23 @@ import uvicorn
 import logging
 import signal
 
+def configure_stdio():
+    """Force UTF-8 stdio on Windows so DLsite metadata logs render correctly."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
 # 将项目根目录添加到 python 路径，确保可以找到 backend 包
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # 配置日志
+configure_stdio()
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -212,7 +223,7 @@ class DesktopApp:
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
         if sys.stdout:
-            console_handler = logging.StreamHandler()
+            console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setFormatter(formatter)
             root_logger.addHandler(console_handler)
 

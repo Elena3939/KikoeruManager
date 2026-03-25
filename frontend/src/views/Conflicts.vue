@@ -68,7 +68,7 @@
               保留新版
             </el-button>
             <el-button
-              v-if="isExtractFailed(activeConflict)"
+              v-if="canUseAction(activeConflict, 'RETRY')"
               type="primary"
               :loading="isActionLoading(activeConflict.id, 'RETRY')"
               :disabled="isConflictBusy(activeConflict.id)"

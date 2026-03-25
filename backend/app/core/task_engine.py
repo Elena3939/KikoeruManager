@@ -248,7 +248,7 @@ class TaskEngine:
         metadata = dict(task.task_metadata or {})
         metadata["failure_stage"] = "extract"
         metadata["error_message"] = reason
-        metadata["available_actions"] = ["SKIP"]
+        metadata["available_actions"] = ["RETRY", "SKIP"]
 
         classifier = SmartClassifier()
         classifier._add_to_conflict_works(
@@ -1212,7 +1212,7 @@ class TaskEngine:
         import re
             
         # 优先匹配标准格式 [RVB]J + 6/8 位数字（搜索整个路径）
-        pattern = r'[RVB]J(\d{6}|\d{8})(?!\d)'
+        pattern = r'[RVB]J(\d{8}|\d{6})(?!\d)'
         match = re.search(pattern, path, re.IGNORECASE)
         if match:
             return match.group(0).upper()
@@ -1225,7 +1225,7 @@ class TaskEngine:
             # 移除常见前缀如 "39." 等
             clean_name = re.sub(r'^\d+\.', '', last_part)
             # 匹配 6 位或 8 位纯数字
-            num_match = re.match(r'^(\d{6}|\d{8})$', clean_name)
+            num_match = re.match(r'^(\d{8}|\d{6})$', clean_name)
             if num_match:
                 num = num_match.group(1)
                 return f"RJ{num}"

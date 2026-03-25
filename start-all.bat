@@ -1,5 +1,6 @@
 @echo off
 setlocal
+chcp 65001 >nul
 title Prekikoeru Launcher
 echo ========================================
 echo Prekikoeru All-in-One Launcher
@@ -87,7 +88,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING
     taskkill /PID %%P /F >nul 2>&1
 )
 
-start "Prekikoeru Backend" cmd /k "cd /d %~dp0backend && venv\Scripts\python.exe -m app.main"
+start "Prekikoeru Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && cd /d %~dp0backend && venv\Scripts\python.exe -m app.main"
 
 timeout /t 3 /nobreak >nul
 

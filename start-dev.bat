@@ -157,7 +157,7 @@ echo Press Ctrl+C to stop
 echo.
 
 REM Start backend in new window
-start "Prekikoeru Backend" cmd /k "cd /d %ROOT_DIR%backend && venv\Scripts\python.exe -m app.main"
+start "Prekikoeru Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && cd /d %ROOT_DIR%backend && venv\Scripts\python.exe -m app.main"
 
 REM Wait for backend
 timeout /t 3 /nobreak >nul

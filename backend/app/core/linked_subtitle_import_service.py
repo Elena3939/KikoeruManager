@@ -594,8 +594,10 @@ class LinkedSubtitleImportService:
 
     def _refresh_preview_execution_state(self, preview: Dict[str, Any]) -> Dict[str, Any]:
         candidates = list(preview.get("candidates") or [])
-        ready_candidates = candidates
+        ready_candidates = [item for item in candidates if bool(item.get("ready_for_import"))]
         selected_candidate = preview.get("selected_candidate")
+        if selected_candidate and not bool(selected_candidate.get("ready_for_import")):
+            selected_candidate = None
         if not selected_candidate and len(ready_candidates) == 1:
             selected_candidate = ready_candidates[0]
 
@@ -603,7 +605,9 @@ class LinkedSubtitleImportService:
         candidate_search_status = str(preview.get("candidate_search_status") or "")
         candidate_search_reason = str(preview.get("candidate_search_reason") or "")
         subtitle_count = int(preview.get("subtitle_count") or 0)
-        can_stage_pending = not stage_reason or candidate_search_status == "pending_remote"
+        can_stage_pending = bool(preview.get("should_queue_pending")) and (
+            not stage_reason or candidate_search_status == "pending_remote"
+        )
         can_execute = can_stage_pending and subtitle_count > 0 and len(ready_candidates) > 0
 
         execute_reason = ""
@@ -613,6 +617,8 @@ class LinkedSubtitleImportService:
             execute_reason = candidate_search_reason or self.REMOTE_PENDING_REASON
         elif not subtitle_count:
             execute_reason = "来源内容中没有可导入的字幕文件"
+        elif candidates and not ready_candidates:
+            execute_reason = "原作目录已有字幕，按重复作品处理"
         elif len(ready_candidates) > 1:
             execute_reason = "命中多个可用目标目录，需要在字幕补配页手动选择"
 
@@ -1220,12 +1226,21 @@ class LinkedSubtitleImportService:
         target_rjcode = await self._resolve_translation_target_rjcode(source_rjcode, translation_info)
         is_translation_work = bool(source_rjcode and target_rjcode and target_rjcode != source_rjcode)
 
-        kikoeru_result = None
-        kikoeru_has_subtitle = False
+        source_kikoeru_result = None
+        source_exists_in_kikoeru = False
+        if source_rjcode:
+            try:
+                source_kikoeru_result = await self.kikoeru_service.check_duplicate(source_rjcode, use_cache=True)
+                source_exists_in_kikoeru = bool(source_kikoeru_result and source_kikoeru_result.is_found)
+            except Exception as exc:
+                logger.warning("[字幕补配] 查询来源作品 Kikoeru 失败: rj=%s error=%s", source_rjcode, exc)
+
+        target_kikoeru_result = None
+        target_exists_in_kikoeru = False
         if target_rjcode:
             try:
-                kikoeru_result = await self.kikoeru_service.check_duplicate(target_rjcode, use_cache=True)
-                kikoeru_has_subtitle = bool(kikoeru_result and kikoeru_result.is_found)
+                target_kikoeru_result = await self.kikoeru_service.check_duplicate(target_rjcode, use_cache=True)
+                target_exists_in_kikoeru = bool(target_kikoeru_result and target_kikoeru_result.is_found)
             except Exception as exc:
                 logger.warning("[字幕补配] 查询 Kikoeru 失败: rj=%s error=%s", target_rjcode, exc)
 
@@ -1241,20 +1256,40 @@ class LinkedSubtitleImportService:
             candidates = list(candidate_bundle or [])
             candidate_search_status = ""
             candidate_search_reason = ""
-        ready_candidates = candidates
+        ready_candidates = [item for item in candidates if bool(item.get("ready_for_import"))]
         selected_candidate = ready_candidates[0] if len(ready_candidates) == 1 else None
+
+        treat_as_new_work = (
+            bool(source_rjcode)
+            and (
+                not target_rjcode
+                or (not target_exists_in_kikoeru and not candidates)
+            )
+        )
+        should_queue_pending = (
+            bool(source_rjcode)
+            and is_translation_work
+            and not source_exists_in_kikoeru
+            and target_exists_in_kikoeru
+            and subtitle_count > 0
+            and (candidate_search_status == "pending_remote" or len(ready_candidates) > 0)
+        )
 
         stage_reason = ""
         if not source_rjcode:
             stage_reason = "无法识别来源作品 RJ 号"
+        elif treat_as_new_work:
+            stage_reason = "未命中任何关联作品，按新作直接解压入库"
         elif not is_translation_work:
             stage_reason = "当前作品不是可补配到原作的翻译作品"
-        elif not target_rjcode:
-            stage_reason = "未能定位对应原作 RJ"
-        elif not kikoeru_has_subtitle:
-            stage_reason = "原作未在 Kikoeru 命中，暂不进入字幕补配"
+        elif source_exists_in_kikoeru:
+            stage_reason = "来源作品已在 Kikoeru 命中，按重复作品处理"
+        elif not target_exists_in_kikoeru:
+            stage_reason = "Kikoeru 未命中原作，按普通解压入库处理"
         elif not candidates and candidate_search_status == "not_found":
             stage_reason = "库存中未找到原作目录"
+        elif candidates and not ready_candidates:
+            stage_reason = "原作目录已有字幕，按重复作品处理"
         execute_reason = ""
         if stage_reason:
             execute_reason = stage_reason
@@ -1265,7 +1300,7 @@ class LinkedSubtitleImportService:
         elif len(ready_candidates) > 1:
             execute_reason = "命中多个可用目标目录，需要在字幕补配页手动选择"
 
-        can_stage_pending = not stage_reason or candidate_search_status == "pending_remote"
+        can_stage_pending = should_queue_pending and (not stage_reason or candidate_search_status == "pending_remote")
         can_execute = can_stage_pending and subtitle_count > 0 and len(ready_candidates) > 0
 
         return {
@@ -1281,14 +1316,20 @@ class LinkedSubtitleImportService:
                 "lang": str(getattr(translation_info, "lang", "") or "") if translation_info else "",
             },
             "kikoeru_checked_rjcode": target_rjcode,
-            "kikoeru_has_subtitle": kikoeru_has_subtitle,
-            "kikoeru_title": getattr(kikoeru_result, "title", "") if kikoeru_result else "",
+            "kikoeru_has_subtitle": target_exists_in_kikoeru,
+            "kikoeru_title": getattr(target_kikoeru_result, "title", "") if target_kikoeru_result else "",
+            "kikoeru_source_checked_rjcode": source_rjcode,
+            "kikoeru_source_found": source_exists_in_kikoeru,
+            "kikoeru_source_title": getattr(source_kikoeru_result, "title", "") if source_kikoeru_result else "",
+            "kikoeru_target_found": target_exists_in_kikoeru,
             "candidates": candidates,
             "selected_candidate": selected_candidate,
             "candidate_count": len(candidates),
             "ready_candidate_count": len(ready_candidates),
             "candidate_search_status": candidate_search_status,
             "candidate_search_reason": candidate_search_reason,
+            "treat_as_new_work": treat_as_new_work,
+            "should_queue_pending": should_queue_pending,
             "can_stage_pending": can_stage_pending,
             "can_execute": can_execute,
             "can_auto_import": bool(selected_candidate and can_execute),
@@ -1373,14 +1414,18 @@ class LinkedSubtitleImportService:
         if target_library_id and target_folder_path:
             for candidate in candidates:
                 if candidate.get("library_id") == target_library_id and candidate.get("folder_path") == target_folder_path:
+                    if not bool(candidate.get("ready_for_import")):
+                        raise ValueError("目标目录已有字幕，不能进入字幕补配")
                     return candidate
             raise ValueError("指定的目标目录不在当前候选列表中")
 
         selected_candidate = preview.get("selected_candidate")
         if selected_candidate:
+            if not bool(selected_candidate.get("ready_for_import")):
+                raise ValueError("目标目录已有字幕，不能进入字幕补配")
             return selected_candidate
 
-        ready_candidates = candidates
+        ready_candidates = [item for item in candidates if bool(item.get("ready_for_import"))]
         if len(ready_candidates) == 1:
             return ready_candidates[0]
         if not ready_candidates:
@@ -1767,7 +1812,7 @@ class LinkedSubtitleImportService:
         }
 
     def _should_create_pending_import(self, preview: Dict[str, Any]) -> bool:
-        return bool(preview.get("can_stage_pending"))
+        return bool(preview.get("should_queue_pending"))
 
     def _can_execute_pending_import(self, preview: Dict[str, Any]) -> bool:
         return bool(preview.get("can_execute"))

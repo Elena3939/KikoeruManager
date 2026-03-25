@@ -1520,13 +1520,28 @@ class LibraryManager:
         *,
         timeout_seconds: float = 20.0,
         poll_interval: float = 0.6,
+        fallback_wait_seconds: float = 5.0,
     ) -> dict[str, Any]:
         deadline = time.time() + max(1.0, timeout_seconds)
         last_status: dict[str, Any] = {}
         while time.time() < deadline:
             try:
                 status = await client.search_status(task_id)
-            except Exception:
+            except Exception as exc:
+                if client._is_error_code(exc, 103):
+                    logger.info(
+                        "远程搜索状态接口不受支持，改用固定等待: task_id=%s wait=%.1fs",
+                        task_id,
+                        fallback_wait_seconds,
+                    )
+                else:
+                    logger.warning(
+                        "远程搜索状态读取失败，改用固定等待: task_id=%s wait=%.1fs",
+                        task_id,
+                        fallback_wait_seconds,
+                        exc_info=True,
+                    )
+                await asyncio.sleep(max(0.5, fallback_wait_seconds))
                 return last_status
 
             last_status = status or {}
@@ -1666,6 +1681,7 @@ class LibraryManager:
                         task_id,
                         timeout_seconds=55.0,
                         poll_interval=1.0,
+                        fallback_wait_seconds=5.0,
                     )
 
                     offset = 0
@@ -2704,7 +2720,7 @@ class LibraryManager:
 
     async def _list_remote_directory(self, client: SynologyFileStationClient, folder_path: str) -> list[dict[str, Any]]:
         folder_path = self._normalize_remote_path(folder_path)
-        chunk_size = 500
+        chunk_size = 3000
         offset = 0
         items: list[dict[str, Any]] = []
         while True:

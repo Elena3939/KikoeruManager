@@ -42,7 +42,7 @@ class RJSubtitleService:
 
     def extract_rjcode(self, value: str) -> Optional[str]:
         """从路径或名称中提取 RJ 号"""
-        match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', value, re.IGNORECASE)
+        match = re.search(r'[RVB]J(\d{8}|\d{6})(?!\d)', value, re.IGNORECASE)
         if match:
             return match.group(0).upper()
         return None

@@ -14,6 +14,16 @@ IS_FROZEN = getattr(sys, 'frozen', False)
 # 全局变量存储实际使用的端口
 ACTUAL_PORT = 8000
 
+def configure_stdio():
+    """Force UTF-8 stdio on Windows so DLsite metadata logs render correctly."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
 def get_base_path():
     if IS_FROZEN:
         return sys._MEIPASS
@@ -65,7 +75,7 @@ def setup_logging():
     root_logger.addHandler(file_handler)
     
     if sys.stdout:
-        console_handler = logging.StreamHandler()
+        console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)
     
@@ -162,6 +172,7 @@ def create_tray_icon(stop_event):
 
 def main():
     global ACTUAL_PORT
+    configure_stdio()
     setup_paths()
     setup_logging()
 
