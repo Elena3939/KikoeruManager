@@ -152,12 +152,12 @@
                 <div class="action-row">
                   <el-button
                     type="primary"
-                    :disabled="!activePendingItem.can_execute || !selectedArchiveCandidate"
-                    :loading="executingPendingId === activePendingItem.id"
-                    @click="executePendingImport()"
-                  >
-                    导入并打开字幕工作台
-                  </el-button>
+                  :disabled="!activePendingItem.can_execute || !selectedArchiveCandidate"
+                  :loading="executingPendingId === activePendingItem.id"
+                  @click="executePendingImport()"
+                >
+                  导入并加入补配工作台
+                </el-button>
                 </div>
               </div>
             </el-card>
@@ -193,7 +193,7 @@
                   :disabled="!canExecuteFolderImport"
                   @click="executeFolderImport"
                 >
-                  导入并打开字幕工作台
+                  导入并加入补配工作台
                 </el-button>
                 <el-button @click="openImportWorkbench()">打开工作台</el-button>
               </div>
@@ -319,7 +319,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { rjSubtitleApi, subtitleImportApi } from '../api'
@@ -330,6 +330,7 @@ const router = useRouter()
 const SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const SUBTITLE_IMPORT_WORKBENCH_TASK_KEY = 'kikoeru.ui.subtitleImport.activeTaskId'
 const SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY = 'kikoeru.ui.subtitleImport.workbenchVisible'
+const AUTO_IMPORT_POLL_INTERVAL_MS = 2500
 
 function loadJson(key, fallback) {
   try {
@@ -439,6 +440,9 @@ const folderCandidateSelection = ref('')
 const activeWorkbenchTaskId = ref(String(route.query.taskId || ''))
 const workbenchDialogVisible = ref(Boolean(route.query.taskId || readPersistedWorkbenchDialogVisible()))
 const workbenchDialogInitialized = ref(Boolean(route.query.taskId || readPersistedWorkbenchTaskId() || readPersistedWorkbenchDialogVisible()))
+const autoImportingPendingId = ref('')
+const autoImportBlockedIds = ref(new Set())
+let autoImportTimer = null
 
 const activePendingItem = computed(() => {
   return pendingItems.value.find(item => item.id === activePendingId.value) || null
@@ -505,18 +509,27 @@ onMounted(async () => {
   await restoreActiveWorkbenchTask()
 })
 
+onUnmounted(() => {
+  stopAutoImportPolling()
+})
+
 watch(() => route.query.taskId, (value) => {
   if (value) {
     activeWorkbenchTaskId.value = String(value || '')
     persistWorkbenchTaskId(activeWorkbenchTaskId.value)
     workbenchDialogInitialized.value = true
     workbenchDialogVisible.value = true
+    return
+  }
+  if (!workbenchDialogVisible.value) {
+    activeWorkbenchTaskId.value = ''
   }
 }, { immediate: true })
 
 watch(workbenchDialogVisible, (visible) => {
   persistWorkbenchDialogVisible(visible)
   if (!visible) {
+    stopAutoImportPolling()
     const nextQuery = { ...route.query }
     delete nextQuery.taskId
     if (route.query.taskId) {
@@ -528,6 +541,8 @@ watch(workbenchDialogVisible, (visible) => {
     return
   }
   workbenchDialogInitialized.value = true
+  startAutoImportPolling()
+  queueAutoImportProcessing()
   if (activeWorkbenchTaskId.value && route.query.taskId !== activeWorkbenchTaskId.value) {
     router.replace({
       path: '/subtitle-import',
@@ -538,6 +553,29 @@ watch(workbenchDialogVisible, (visible) => {
     })
   }
 })
+
+watch(activeWorkbenchTaskId, (taskId) => {
+  const normalized = String(taskId || '')
+  persistWorkbenchTaskId(normalized)
+  if (!workbenchDialogVisible.value) return
+  if (String(route.query.taskId || '') === normalized) {
+    return
+  }
+  const nextQuery = { ...route.query }
+  if (normalized) nextQuery.taskId = normalized
+  else delete nextQuery.taskId
+  router.replace({
+    path: '/subtitle-import',
+    query: nextQuery
+  })
+})
+
+watch(pendingItems, () => {
+  pruneAutoImportBlockedIds()
+  if (workbenchDialogVisible.value) {
+    queueAutoImportProcessing()
+  }
+}, { deep: false })
 
 async function restoreActiveWorkbenchTask() {
   try {
@@ -560,7 +598,7 @@ async function restoreActiveWorkbenchTask() {
     }
     activeWorkbenchTaskId.value = String(matchedTask.id || '')
     persistWorkbenchTaskId(activeWorkbenchTaskId.value)
-    if (workbenchDialogVisible.value && route.query.taskId !== activeWorkbenchTaskId.value) {
+    if (route.query.taskId !== activeWorkbenchTaskId.value) {
       router.replace({
         path: '/subtitle-import',
         query: {
@@ -589,6 +627,75 @@ async function loadPendingImports() {
   }
 }
 
+function getSelectedArchiveCandidateForItem(item) {
+  if (!item) return null
+  const key = archiveCandidateSelection[item.id]
+  if (key) {
+    const matched = (item.preview?.candidates || []).find(candidate => candidateKey(candidate) === key)
+    if (matched) return matched
+  }
+  const selected = item.preview?.selected_candidate
+  if (selected) return selected
+  const candidates = item.preview?.candidates || []
+  return candidates.length === 1 ? candidates[0] : null
+}
+
+function pruneAutoImportBlockedIds() {
+  const currentIds = new Set((pendingItems.value || []).map(item => String(item.id || '')))
+  autoImportBlockedIds.value = new Set(
+    [...autoImportBlockedIds.value].filter(id => currentIds.has(String(id || '')))
+  )
+}
+
+function findNextAutoImportItem() {
+  return (pendingItems.value || []).find(item => (
+    item?.can_execute &&
+    getSelectedArchiveCandidateForItem(item) &&
+    !autoImportBlockedIds.value.has(String(item.id || ''))
+  )) || null
+}
+
+function stopAutoImportPolling() {
+  if (autoImportTimer) {
+    clearInterval(autoImportTimer)
+    autoImportTimer = null
+  }
+}
+
+function startAutoImportPolling() {
+  if (autoImportTimer) return
+  autoImportTimer = setInterval(() => {
+    queueAutoImportProcessing()
+  }, AUTO_IMPORT_POLL_INTERVAL_MS)
+}
+
+function queueAutoImportProcessing() {
+  if (!workbenchDialogVisible.value) return
+  void processAutoImportQueue()
+}
+
+async function processAutoImportQueue() {
+  if (!workbenchDialogVisible.value) return
+  if (pendingLoading.value || executingPendingId.value || autoImportingPendingId.value) return
+  const item = findNextAutoImportItem()
+  if (!item) return
+  const candidate = getSelectedArchiveCandidateForItem(item)
+  if (!candidate) return
+
+  autoImportingPendingId.value = String(item.id || '')
+  try {
+    await executePendingImportRecord(item, candidate, { autoTriggered: true })
+  } catch (error) {
+    autoImportBlockedIds.value = new Set([
+      ...autoImportBlockedIds.value,
+      String(item.id || '')
+    ])
+    ElMessage.error(`自动导入 ${item.preview?.source_label || getFileName(item.source_path)} 失败: ${error.response?.data?.detail || error.message}`)
+  } finally {
+    autoImportingPendingId.value = ''
+  }
+}
+
 async function retryActivePendingPreview() {
   const item = activePendingItem.value
   if (!item?.id) return
@@ -604,11 +711,9 @@ async function retryActivePendingPreview() {
   }
 }
 
-async function executePendingImport() {
-  const item = activePendingItem.value
-  const candidate = selectedArchiveCandidate.value
-  if (!item || !candidate) return
-
+async function executePendingImportRecord(item, candidate, options = {}) {
+  if (!item || !candidate) return null
+  const { autoTriggered = false } = options
   executingPendingId.value = item.id
   try {
     const filterOptions = getSubtitleWorkbenchFilterOptions()
@@ -618,15 +723,28 @@ async function executePendingImport() {
       useFilterRules: filterOptions.useFilterRules,
       subtitleFilterRules: filterOptions.subtitleFilterRules
     })
-    ElMessage.success(data.import_result?.awaiting_manual_match ? '字幕补配导入成功，正在进入工作台' : '字幕补配导入成功')
+    if (!autoTriggered) {
+      ElMessage.success(data.import_result?.awaiting_manual_match ? '字幕补配导入成功，已自动加入工作台' : '字幕补配导入成功')
+    }
     await loadPendingImports()
     if (data.task?.id) {
       openImportedTask(data.task.id)
     }
-  } catch (error) {
-    ElMessage.error('执行字幕补配失败: ' + (error.response?.data?.detail || error.message))
+    return data
   } finally {
     executingPendingId.value = ''
+  }
+}
+
+async function executePendingImport() {
+  const item = activePendingItem.value
+  const candidate = selectedArchiveCandidate.value
+  if (!item || !candidate) return
+
+  try {
+    await executePendingImportRecord(item, candidate, { autoTriggered: false })
+  } catch (error) {
+    ElMessage.error('执行字幕补配失败: ' + (error.response?.data?.detail || error.message))
   }
 }
 
@@ -664,7 +782,7 @@ async function executeFolderImport() {
       useFilterRules: filterOptions.useFilterRules,
       subtitleFilterRules: filterOptions.subtitleFilterRules
     })
-    ElMessage.success(data.import_result?.awaiting_manual_match ? '字幕文件夹补配成功，正在进入工作台' : '字幕文件夹补配成功')
+    ElMessage.success(data.import_result?.awaiting_manual_match ? '字幕文件夹补配成功，已自动加入工作台' : '字幕文件夹补配成功')
     if (data.task?.id) {
       openImportedTask(data.task.id)
     }
@@ -683,13 +801,6 @@ function openImportedTask(taskId) {
   if (activeWorkbenchTaskId.value === nextTaskId && route.query.taskId === nextTaskId) return
   activeWorkbenchTaskId.value = nextTaskId
   persistWorkbenchTaskId(activeWorkbenchTaskId.value)
-  router.replace({
-    path: '/subtitle-import',
-    query: {
-      ...route.query,
-      taskId: activeWorkbenchTaskId.value
-    }
-  })
 }
 
 function openImportWorkbench() {

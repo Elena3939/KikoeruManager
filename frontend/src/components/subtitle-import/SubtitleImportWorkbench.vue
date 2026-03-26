@@ -39,7 +39,7 @@
             :key="task.id"
             type="button"
             class="import-task-row"
-            :class="{ active: task.id === selectedTaskId, failed: isFailedTask(task) }"
+            :class="[getTaskStateClass(task), { active: task.id === selectedTaskId }]"
             @click="selectWorkbenchTask(task.id)"
           >
             <div class="import-task-row-main">
@@ -54,43 +54,50 @@
               </div>
             </div>
 
-            <div class="import-task-row-status">
+            <div class="import-task-row-side">
               <el-tooltip
                 v-if="getTaskFailureReason(task)"
                 :content="getTaskFailureReason(task)"
                 placement="top"
               >
-                <el-tag size="small" effect="light" :type="getTaskStatusTagType(task)">
+                <span
+                  :class="[
+                    isCompletedTask(task) ? 'task-status-text' : 'task-status-pill',
+                    `state-${getTaskStateClass(task)}`
+                  ]"
+                >
                   {{ getTaskStatusLabel(task) }}
-                </el-tag>
+                </span>
               </el-tooltip>
-              <el-tag
+              <span
                 v-else
-                size="small"
-                effect="light"
-                :type="getTaskStatusTagType(task)"
+                :class="[
+                  isCompletedTask(task) ? 'task-status-text' : 'task-status-pill',
+                  `state-${getTaskStateClass(task)}`
+                ]"
               >
                 {{ getTaskStatusLabel(task) }}
-              </el-tag>
-              <div class="import-task-row-progress">{{ getTaskProgressText(task) }}</div>
-            </div>
+              </span>
 
-            <div class="import-task-row-actions">
-              <el-button
-                size="small"
-                :type="task.id === selectedTaskId ? 'primary' : 'default'"
-                @click.stop="selectWorkbenchTask(task.id)"
-              >
-                查看
-              </el-button>
-              <el-button
-                v-if="canRetryTask(task)"
-                size="small"
-                :loading="retryingTaskId === task.id"
-                @click.stop="retryWorkbenchTask(task)"
-              >
-                重试
-              </el-button>
+              <div class="import-task-row-progress">{{ getTaskProgressText(task) }}</div>
+
+              <div class="import-task-row-actions">
+                <el-button
+                  size="small"
+                  :type="task.id === selectedTaskId ? 'primary' : 'default'"
+                  @click.stop="selectWorkbenchTask(task.id)"
+                >
+                  查看
+                </el-button>
+                <el-button
+                  v-if="canRetryTask(task)"
+                  size="small"
+                  :loading="retryingTaskId === task.id"
+                  @click.stop="retryWorkbenchTask(task)"
+                >
+                  重试
+                </el-button>
+              </div>
             </div>
           </button>
         </div>
@@ -111,128 +118,109 @@
         <el-empty v-if="!taskLoading && !linkedTasks.length" description="当前工作台没有可展示的字幕补配任务。" />
 
         <template v-else-if="activeTask">
-          <div class="import-workbench-summary">
-            <div class="import-workbench-summary-main" :class="{ active: activeTask.id === selectedTaskId }">
-              <div class="import-workbench-summary-top">
-                <div>
-                  <div class="import-workbench-summary-title">{{ activeTask.folder_name || getFileName(activeTask.folder_path) }}</div>
-                  <div class="import-workbench-summary-path">{{ activeTask.folder_path || '-' }}</div>
-                </div>
-                <el-tag size="small" effect="light" :type="getTaskStatusTagType(activeTask)">
-                  {{ getTaskStatusLabel(activeTask) }}
-                </el-tag>
+          <el-card shadow="never" class="import-config-card">
+            <template #header>
+              <div class="import-config-head">
+                <span>补配选项</span>
               </div>
-              <div class="import-workbench-summary-chips">
-                <span class="import-chip import-chip-primary">{{ getTaskDisplayRJCode(activeTask) }}</span>
-                <span v-if="getTaskSourceRJCode(activeTask)" class="import-chip">来源 {{ getTaskSourceRJCode(activeTask) }}</span>
-                <span v-if="activeTask.target_rjcode" class="import-chip">目标 {{ activeTask.target_rjcode }}</span>
-                <span class="import-chip">{{ getTaskProgressText(activeTask) }}</span>
-                <span v-if="getTaskManualStateText(activeTask)" class="import-chip">{{ getTaskManualStateText(activeTask) }}</span>
+            </template>
+
+            <div class="import-config-stack">
+              <div class="import-config-row">
+                <div>
+                  <div class="import-config-title">命名依据</div>
+                  <div class="import-config-tip">最终一键应用时，决定字幕和音频按谁的名字落地。</div>
+                </div>
+                <el-radio-group v-model="subtitleOptions.namingStrategy" size="small">
+                  <el-radio-button label="audio">以音频名为准</el-radio-button>
+                  <el-radio-button label="subtitle">以字幕名为准</el-radio-button>
+                </el-radio-group>
+              </div>
+
+              <div class="import-config-row import-config-row-wrap">
+                <div class="import-config-title-row">
+                  <div>
+                    <div class="import-config-title">字幕过滤规则</div>
+                    <div class="import-config-tip">规则支持实时编辑、启停和持久化，下次打开工作台会继续保留。</div>
+                  </div>
+                  <el-switch v-model="subtitleOptions.useFilterRules" inline-prompt active-text="开" inactive-text="关" />
+                </div>
+
+                <div class="import-filter-actions">
+                  <el-button size="small" @click="addSubtitleFilterRule">添加规则</el-button>
+                </div>
+
+                <div class="import-filter-list">
+                  <div v-if="!subtitleOptions.subtitleFilterRules.length" class="import-filter-empty">当前没有补配过滤规则。</div>
+                  <div v-for="rule in subtitleOptions.subtitleFilterRules" :key="rule.id" class="import-filter-editor">
+                    <div class="import-filter-editor-head">
+                      <el-switch v-model="rule.enabled" size="small" />
+                      <el-select v-model="rule.target" size="small" class="import-filter-target">
+                        <el-option label="文件名" value="name" />
+                        <el-option label="路径" value="path" />
+                        <el-option label="全部" value="all" />
+                      </el-select>
+                      <el-button size="small" text type="danger" @click="removeSubtitleFilterRule(rule.id)">删除</el-button>
+                    </div>
+                    <el-input v-model="rule.name" size="small" placeholder="规则名，可留空" />
+                    <el-input v-model="rule.pattern" size="small" placeholder="输入正则表达式，例如 \\.mp3$ 或 @[^\\s]+" />
+                  </div>
+                </div>
+              </div>
+
+              <div class="import-config-row">
+                <div>
+                  <div class="import-config-title">字幕正文清理</div>
+                  <div class="import-config-tip">复用设置页里的 LRC 广告清理和繁体转简体，对当前工作台字幕执行一次处理。</div>
+                </div>
+                <div class="import-config-inline-actions">
+                  <el-button size="small" :loading="subtitleCleanupLoading" @click="applySubtitleCleanup">应用字幕清理</el-button>
+                </div>
+              </div>
+
+              <div v-if="subtitleCleanupSummary" class="import-cleanup-summary">
+                {{ subtitleCleanupSummary }}
               </div>
             </div>
+          </el-card>
 
-            <el-card shadow="never" class="import-config-card">
-              <template #header>
-                <div class="import-config-head">
-                  <span>补配选项</span>
-                </div>
+          <div class="import-task-main">
+            <el-alert
+              v-if="isFailedTask(activeTask)"
+              title="当前任务执行失败"
+              type="error"
+              :closable="false"
+              show-icon
+            >
+              <template #default>
+                {{ getTaskFailureReason(activeTask) || '请检查原因后重试该任务。' }}
               </template>
+            </el-alert>
 
-              <div class="import-config-stack">
-                <div class="import-config-row">
-                  <div>
-                    <div class="import-config-title">命名依据</div>
-                    <div class="import-config-tip">最终一键应用时，决定字幕和音频按谁的名字落地。</div>
-                  </div>
-                  <el-radio-group v-model="subtitleOptions.namingStrategy" size="small">
-                    <el-radio-button label="audio">以音频名为准</el-radio-button>
-                    <el-radio-button label="subtitle">以字幕名为准</el-radio-button>
-                  </el-radio-group>
-                </div>
+            <el-alert
+              v-else-if="activeTask && !activeTask.subtitle_dir"
+              title="当前任务还在准备字幕目录"
+              type="info"
+              :closable="false"
+              show-icon
+            >
+              <template #default>
+                {{ activeTask.current_step || '稍后刷新状态即可进入字幕补配工作台。' }}
+              </template>
+            </el-alert>
 
-                <div class="import-config-row import-config-row-wrap">
-                  <div class="import-config-title-row">
-                    <div>
-                      <div class="import-config-title">字幕过滤规则</div>
-                      <div class="import-config-tip">规则支持实时编辑、启停和持久化，下次打开工作台会继续保留。</div>
-                    </div>
-                    <el-switch v-model="subtitleOptions.useFilterRules" inline-prompt active-text="开" inactive-text="关" />
-                  </div>
+            <SubtitleInspectorWorkbench
+              v-if="activeTask.subtitle_dir"
+              :ctx="subtitleWorkbenchCtx"
+            />
 
-                  <div class="import-filter-actions">
-                    <el-button size="small" @click="addSubtitleFilterRule">添加规则</el-button>
-                  </div>
-
-                  <div class="import-filter-list">
-                    <div v-if="!subtitleOptions.subtitleFilterRules.length" class="import-filter-empty">当前没有补配过滤规则。</div>
-                    <div v-for="rule in subtitleOptions.subtitleFilterRules" :key="rule.id" class="import-filter-editor">
-                      <div class="import-filter-editor-head">
-                        <el-switch v-model="rule.enabled" size="small" />
-                        <el-select v-model="rule.target" size="small" class="import-filter-target">
-                          <el-option label="文件名" value="name" />
-                          <el-option label="路径" value="path" />
-                          <el-option label="全部" value="all" />
-                        </el-select>
-                        <el-button size="small" text type="danger" @click="removeSubtitleFilterRule(rule.id)">删除</el-button>
-                      </div>
-                      <el-input v-model="rule.name" size="small" placeholder="规则名，可留空" />
-                      <el-input v-model="rule.pattern" size="small" placeholder="输入正则表达式，例如 \\.mp3$ 或 @[^\\s]+" />
-                    </div>
-                  </div>
-                </div>
-
-                <div class="import-config-row">
-                  <div>
-                    <div class="import-config-title">字幕正文清理</div>
-                    <div class="import-config-tip">复用设置页里的 LRC 广告清理和繁体转简体，对当前工作台字幕执行一次处理。</div>
-                  </div>
-                  <div class="import-config-inline-actions">
-                    <el-button size="small" :loading="subtitleCleanupLoading" @click="applySubtitleCleanup">应用字幕清理</el-button>
-                  </div>
-                </div>
-
-                <div v-if="subtitleCleanupSummary" class="import-cleanup-summary">
-                  {{ subtitleCleanupSummary }}
-                </div>
+            <el-card v-else class="import-task-placeholder" shadow="never">
+              <div class="import-task-placeholder-title">{{ getTaskStatusLabel(activeTask) }}</div>
+              <div class="import-task-placeholder-text">
+                {{ getTaskFailureReason(activeTask) || activeTask.current_step || '当前任务还没有可查看的字幕工作区。' }}
               </div>
             </el-card>
           </div>
-
-          <el-alert
-            v-if="isFailedTask(activeTask)"
-            title="当前任务执行失败"
-            type="error"
-            :closable="false"
-            show-icon
-          >
-            <template #default>
-              {{ getTaskFailureReason(activeTask) || '请检查原因后重试该任务。' }}
-            </template>
-          </el-alert>
-
-          <el-alert
-            v-else-if="activeTask && !activeTask.subtitle_dir"
-            title="当前任务还在准备字幕目录"
-            type="info"
-            :closable="false"
-            show-icon
-          >
-            <template #default>
-              {{ activeTask.current_step || '稍后刷新状态即可进入字幕补配工作台。' }}
-            </template>
-          </el-alert>
-
-          <SubtitleInspectorWorkbench
-            v-if="activeTask.subtitle_dir"
-            :ctx="subtitleWorkbenchCtx"
-          />
-
-          <el-card v-else class="import-task-placeholder" shadow="never">
-            <div class="import-task-placeholder-title">{{ getTaskStatusLabel(activeTask) }}</div>
-            <div class="import-task-placeholder-text">
-              {{ getTaskFailureReason(activeTask) || activeTask.current_step || '当前任务还没有可查看的字幕工作区。' }}
-            </div>
-          </el-card>
         </template>
 
         <el-empty v-else description="请选择一条补配任务查看详情。" />
@@ -254,7 +242,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Folder, FolderOpened, Document, Picture, VideoPlay, Headset, Tickets } from '@element-plus/icons-vue'
 import { libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
@@ -364,6 +352,8 @@ const subtitleSelectedManualPairId = ref('')
 const subtitlePairApplying = ref(false)
 const subtitleAudioFilterMode = ref('all')
 const subtitleSubtitleFilterMode = ref('all')
+const TASK_STATUS_REFRESH_MS = 4000
+let taskStatusTimer = null
 
 watch(() => subtitleOptions.value.namingStrategy, () => {
   syncSubtitlePairTargetNames()
@@ -451,11 +441,16 @@ function isProcessingTask(task) {
   return Boolean(String(task?.status || '').toLowerCase() === 'processing' || String(task?.status || '').toLowerCase() === 'pending' || task?.awaiting_manual_match)
 }
 
-function getTaskStatusTagType(task) {
-  if (isFailedTask(task)) return 'danger'
-  if (isCompletedTask(task)) return 'success'
-  if (isProcessingTask(task)) return 'primary'
-  return 'info'
+function isAwaitingManualTask(task) {
+  return Boolean(task?.awaiting_manual_match && !task?.manual_match_completed && !isFailedTask(task))
+}
+
+function getTaskStateClass(task) {
+  if (isFailedTask(task)) return 'failed'
+  if (isAwaitingManualTask(task)) return 'awaiting'
+  if (isCompletedTask(task)) return 'completed'
+  if (isProcessingTask(task)) return 'processing'
+  return 'idle'
 }
 
 function getTaskFailureReason(task) {
@@ -1541,6 +1536,19 @@ const completedTaskCount = computed(() => linkedTasks.value.filter(task => isCom
 const failedTaskCount = computed(() => linkedTasks.value.filter(task => isFailedTask(task)).length)
 const clearableTaskCount = computed(() => linkedTasks.value.filter(task => canClearTask(task)).length)
 
+onMounted(() => {
+  taskStatusTimer = window.setInterval(() => {
+    refreshTaskStatus(false, { inspect: false })
+  }, TASK_STATUS_REFRESH_MS)
+})
+
+onUnmounted(() => {
+  if (taskStatusTimer) {
+    window.clearInterval(taskStatusTimer)
+    taskStatusTimer = null
+  }
+})
+
 const subtitleWorkbenchCtx = computed(() => ({
   subtitleInspectorInfo: subtitleInspectorInfo.value,
   subtitleInspectorBusy: subtitleInspectorBusy.value,
@@ -1725,8 +1733,8 @@ const subtitleWorkbenchCtx = computed(() => ({
 
 .import-workbench-body {
   display: grid;
-  grid-template-rows: auto auto;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
   overflow: visible;
 }
 
@@ -1743,6 +1751,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
   overflow: hidden;
+  max-height: calc(100vh - 180px);
 }
 
 .import-task-list-head {
@@ -1772,18 +1781,18 @@ const subtitleWorkbenchCtx = computed(() => ({
 .import-task-list-body {
   display: grid;
   gap: 6px;
-  max-height: 164px;
+  max-height: calc(100vh - 150px);
   padding: 8px 12px;
   overflow: auto;
 }
 
 .import-task-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 136px 96px;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 14px;
   width: 100%;
-  min-height: 76px;
-  padding: 10px 12px;
+  min-height: 88px;
+  padding: 12px 16px;
   border-radius: 14px;
   border: 1px solid #e4ebf7;
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
@@ -1800,19 +1809,35 @@ const subtitleWorkbenchCtx = computed(() => ({
 }
 
 .import-task-row.active {
-  border-color: #6ea8ff;
-  background: linear-gradient(180deg, #f6faff 0%, #eef5ff 100%);
-  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
+  border-color: #ffb000;
+  box-shadow: 0 0 0 3px rgba(255, 176, 0, 0.5);
 }
 
 .import-task-row.failed {
   border-color: #efc4c4;
+  background: linear-gradient(180deg, #fff8f8 0%, #fff2f2 100%);
+}
+
+.import-task-row.completed {
+  border-color: #cce6cf;
+  background: linear-gradient(180deg, #f8fff9 0%, #f1fbf2 100%);
+}
+
+.import-task-row.awaiting {
+  border-color: #e4ebf7;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+}
+
+.import-task-row.processing {
+  border-color: #e4ebf7;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
 }
 
 .import-task-row-main {
   display: grid;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
+  align-content: start;
 }
 
 .import-task-row-rj {
@@ -1822,7 +1847,7 @@ const subtitleWorkbenchCtx = computed(() => ({
 }
 
 .import-task-row-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: #223754;
   line-height: 1.35;
@@ -1834,32 +1859,106 @@ const subtitleWorkbenchCtx = computed(() => ({
   flex-wrap: wrap;
   gap: 6px;
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.45;
   color: #70829a;
 }
 
 .import-task-row-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.import-task-row-side {
   display: grid;
-  justify-items: start;
-  gap: 4px;
+  grid-template-columns: auto auto auto;
+  justify-content: end;
+  align-items: center;
+  column-gap: 14px;
+  min-width: 0;
+  width: 100%;
+}
+
+.task-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  min-width: 0;
+  width: 100%;
+  max-width: 110px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #d6e2f4;
+  background: #fff;
+  color: #415975;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.task-status-text {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.task-status-pill.state-processing {
+  border-color: #d6e2f4;
+  background: #ffffff;
+  color: #415975;
+}
+
+.task-status-pill.state-awaiting {
+  border-color: #f1c85b;
+  background: #fff7dc;
+  color: #9c6a00;
+}
+
+.task-status-pill.state-completed {
+  border-color: #cce6cf;
+  background: #edf9ef;
+  color: #2f8a43;
+}
+
+.task-status-text.state-completed {
+  color: #2f8a43;
+}
+
+.task-status-pill.state-failed {
+  border-color: #efc4c4;
+  background: #fff1f1;
+  color: #c23d3d;
 }
 
 .import-task-row-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 84px;
   font-size: 11px;
   line-height: 1.5;
   color: #62758f;
-  word-break: break-word;
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .import-task-row-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
+  align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: auto;
+}
+
+.import-task-row-actions :deep(.el-button) {
+  min-width: 58px;
+  height: 28px;
+  margin-left: 0;
 }
 
 .import-task-pagination {
@@ -1869,67 +1968,23 @@ const subtitleWorkbenchCtx = computed(() => ({
 }
 
 .import-task-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+  gap: 12px;
   padding: 12px;
   overflow: visible;
-}
-
-.import-workbench-summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 316px;
-  gap: 10px;
   align-items: start;
 }
 
-.import-workbench-summary-main,
 .import-config-card {
   border-radius: 18px;
 }
 
-.import-workbench-summary-main {
-  padding: 12px 14px;
-  border: 1px solid #e4ecf7;
-  background: linear-gradient(135deg, #f8fbff 0%, #f3f8ff 100%);
-  min-height: 96px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}
-
-.import-workbench-summary-main.active {
-  border-color: #6ea8ff;
-  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.10);
-  background: linear-gradient(135deg, #f4f9ff 0%, #edf5ff 100%);
-}
-
-.import-workbench-summary-top {
-  display: flex;
-  justify-content: space-between;
+.import-task-main {
+  grid-column: 2;
+  display: grid;
   gap: 10px;
-  align-items: flex-start;
-}
-
-.import-workbench-summary-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: #223754;
-}
-
-.import-workbench-summary-path {
-  margin-top: 4px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: #70829a;
-  word-break: break-all;
-}
-
-.import-workbench-summary-chips {
-  display: flex;
-  gap: 5px;
-  flex-wrap: wrap;
-  margin-top: 8px;
+  min-width: 0;
 }
 
 .import-chip {
@@ -1959,7 +2014,7 @@ const subtitleWorkbenchCtx = computed(() => ({
 .import-config-card {
   border: 1px solid #e7edf6;
   background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
-  height: 100%;
+  grid-column: 1;
   position: sticky;
   top: 8px;
   align-self: start;
@@ -1972,8 +2027,6 @@ const subtitleWorkbenchCtx = computed(() => ({
 
 .import-config-card :deep(.el-card__body) {
   padding: 10px 12px 12px;
-  max-height: 420px;
-  overflow: auto;
 }
 
 .import-config-stack {
@@ -2015,9 +2068,6 @@ const subtitleWorkbenchCtx = computed(() => ({
 .import-filter-list {
   display: grid;
   gap: 6px;
-  max-height: 240px;
-  overflow: auto;
-  padding-right: 2px;
 }
 
 .import-filter-actions {
@@ -2082,27 +2132,28 @@ const subtitleWorkbenchCtx = computed(() => ({
   line-height: 1.7;
 }
 
-.import-task-detail > :deep(.el-alert) {
+.import-task-main > :deep(.el-alert) {
   border-radius: 16px;
 }
 
 .import-task-detail > :deep(.el-empty) {
+  grid-column: 1 / -1;
   min-height: 240px;
   border-radius: 18px;
   border: 1px dashed #dbe6f5;
   background: linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
 }
 
-.import-task-detail > :deep(.subtitle-inspector-workbench),
-.import-task-detail > :deep(.el-card) {
+.import-task-main > :deep(.subtitle-inspector-workbench),
+.import-task-main > :deep(.el-card) {
   border-radius: 18px;
 }
 
-.import-task-detail > :deep(.subtitle-tree-card) {
+.import-task-main > :deep(.subtitle-tree-card) {
   flex: 0 0 auto;
 }
 
-.import-task-detail > :deep(.subtitle-tree-card .el-card__body) {
+.import-task-main > :deep(.subtitle-tree-card .el-card__body) {
   display: flex;
   flex-direction: column;
   min-height: 720px;
@@ -2136,12 +2187,21 @@ const subtitleWorkbenchCtx = computed(() => ({
 }
 
 @media (max-width: 960px) {
-  .import-workbench-summary {
+  .import-task-row {
+    grid-template-columns: 1fr;
+    min-height: 112px;
+  }
+
+  .import-task-row-side {
     grid-template-columns: 1fr;
   }
 
-  .import-task-row {
-    grid-template-columns: 1fr;
+  .import-task-row-side,
+  .import-task-row-status,
+  .import-task-row-progress {
+    justify-content: flex-start;
+    text-align: left;
+    width: 100%;
   }
 
   .import-task-row-actions {
@@ -2155,6 +2215,15 @@ const subtitleWorkbenchCtx = computed(() => ({
 
   .import-workbench-modal {
     padding: 14px;
+  }
+
+  .import-task-detail {
+    grid-template-columns: 1fr;
+  }
+
+  .import-config-card,
+  .import-task-main {
+    grid-column: 1;
   }
 }
 </style>
