@@ -1442,7 +1442,13 @@ const subtitleClearableTaskCounts = computed(() => {
 })
 const activeSubtitleInspectTask = computed(() => subtitleTasks.value.find(task => task.id === subtitleInspectorInfo.value.taskId) || null)
 const linkedSubtitleImportSourceModes = new Set(['linked_translation_archive_import', 'subtitle_folder_import'])
-const isLinkedSubtitleImportWorkbench = computed(() => linkedSubtitleImportSourceModes.has(String(activeSubtitleInspectTask.value?.source_mode || subtitleInspectorInfo.value.sourceMode || '').toLowerCase()))
+function normalizeSubtitleTaskSourceMode(value) {
+  return String(value || '').trim().toLowerCase()
+}
+function isLinkedSubtitleImportSourceMode(value) {
+  return linkedSubtitleImportSourceModes.has(normalizeSubtitleTaskSourceMode(value))
+}
+const isLinkedSubtitleImportWorkbench = computed(() => isLinkedSubtitleImportSourceMode(activeSubtitleInspectTask.value?.source_mode || subtitleInspectorInfo.value.sourceMode || ''))
 const subtitleManualApplyLabel = computed(() => isLinkedSubtitleImportWorkbench.value ? '重命名并导入' : '一键应用同名')
 function matchesSubtitleExecutableFilter (item, filter = subtitleSelectionFilter.value) {
   if (filter === 'all') return true
@@ -2684,13 +2690,12 @@ async function openSubtitleTaskPanel () {
 function getSubtitleRouteFocusPayload () {
   const subtitleDialog = route.query.subtitleDialog
   const subtitleTaskId = route.query.subtitleTaskId
-  const subtitleImport = route.query.subtitleImport
-  const shouldOpen = subtitleDialog === '1' || subtitleImport === '1'
+  const shouldOpen = subtitleDialog === '1'
   const taskId = typeof subtitleTaskId === 'string' ? subtitleTaskId.trim() : ''
   return {
     shouldOpen,
     taskId,
-    focusKey: shouldOpen && taskId ? `${subtitleDialog || subtitleImport}:${taskId}` : ''
+    focusKey: shouldOpen && taskId ? `${subtitleDialog}:${taskId}` : ''
   }
 }
 
@@ -3978,9 +3983,11 @@ async function refreshRJSubtitleStatus (showMessage = false, options = {}) {
       subtitleActiveTaskId.value,
       subtitleInspectorInfo.value.taskId
     ].filter(Boolean))
-    const remoteTasks = (data.tasks || []).map(task => normalizeRJSubtitleTaskPayload(task, {
-      preserveDetail: detailTaskIds.has(task.id)
-    }))
+    const remoteTasks = (data.tasks || [])
+      .filter(task => !isLinkedSubtitleImportSourceMode(task?.source_mode))
+      .map(task => normalizeRJSubtitleTaskPayload(task, {
+        preserveDetail: detailTaskIds.has(task.id)
+      }))
     subtitleTasks.value = mergeSubtitleTasksWithOptimistic(remoteTasks)
     syncSubtitleInspectorTaskState()
     syncSubtitleSelectionState()

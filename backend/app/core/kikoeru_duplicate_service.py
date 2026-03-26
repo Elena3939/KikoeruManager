@@ -45,6 +45,8 @@ class KikoeruCheckResult:
     match_type: str = "exact"
     matched_rjcode: str = ""
     tolerance: int = 0
+    lyric_status: str = ""
+    has_lyric_hint: bool = False
     
     def __post_init__(self):
         if self.checked_at is None:
@@ -470,6 +472,8 @@ class KikoeruDuplicateService:
                 result.is_found = True
                 result.work_id = work_id
                 result.title = work.get('title', '')
+                result.lyric_status = str(work.get('lyric_status', '') or '')
+                result.has_lyric_hint = bool(result.lyric_status.strip())
                 
                 # 获取社团名
                 circle = work.get('circle', {})

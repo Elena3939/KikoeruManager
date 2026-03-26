@@ -9,16 +9,16 @@
           </div>
         </div>
         <div class="hero-actions">
+          <el-button @click="openImportWorkbench()">打开工作台</el-button>
           <el-button :loading="pendingLoading" @click="loadPendingImports">刷新预检单</el-button>
         </div>
       </div>
     </el-card>
 
-    <el-tabs v-model="activeTab" class="page-tabs">
+    <el-tabs v-show="!workbenchDialogVisible" v-model="activeTab" class="page-tabs">
       <el-tab-pane label="压缩包补配" name="archive">
-        <el-row :gutter="18">
-          <el-col :xs="24" :lg="9">
-            <el-card shadow="never" class="panel-card">
+        <div class="top-panel-grid archive-panel-grid">
+          <el-card shadow="never" class="panel-card source-panel-card">
               <template #header>
                 <div class="panel-header">
                   <span>自动检测来源</span>
@@ -53,10 +53,8 @@
                 </button>
               </div>
             </el-card>
-          </el-col>
 
-          <el-col :xs="24" :lg="15">
-            <el-card shadow="never" class="panel-card">
+            <el-card shadow="never" class="panel-card preview-panel-card">
               <template #header>
                 <div class="panel-header">
                   <span>预检结果</span>
@@ -97,8 +95,8 @@
                   <el-descriptions-item label="目标原作 RJ">{{ activePendingItem.preview?.target_rjcode || '-' }}</el-descriptions-item>
                   <el-descriptions-item label="字幕候选数">{{ activePendingItem.preview?.subtitle_count ?? 0 }}</el-descriptions-item>
                   <el-descriptions-item label="Kikoeru 原作命中">
-                    <el-tag :type="activePendingItem.preview?.kikoeru_has_subtitle ? 'success' : 'info'">
-                      {{ activePendingItem.preview?.kikoeru_has_subtitle ? '已命中原作' : '未命中原作' }}
+                    <el-tag :type="activePendingItem.preview?.kikoeru_has_work ? 'success' : 'info'">
+                      {{ activePendingItem.preview?.kikoeru_has_work ? '已命中原作' : '未命中原作' }}
                     </el-tag>
                   </el-descriptions-item>
                   <el-descriptions-item label="预检时间">{{ formatDate(activePendingItem.created_at) }}</el-descriptions-item>
@@ -163,14 +161,12 @@
                 </div>
               </div>
             </el-card>
-          </el-col>
-        </el-row>
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="字幕文件夹补配" name="folder">
-        <el-row :gutter="18">
-          <el-col :xs="24" :lg="10">
-            <el-card shadow="never" class="panel-card">
+        <div class="top-panel-grid folder-panel-grid">
+          <el-card shadow="never" class="panel-card source-panel-card">
               <template #header>
                 <div class="panel-header">
                   <span>手动字幕来源</span>
@@ -178,7 +174,7 @@
                 </div>
               </template>
 
-              <el-form label-position="top">
+              <el-form label-position="top" class="manual-source-form">
                 <el-form-item label="字幕文件夹路径">
                   <el-input
                     v-model="folderPath"
@@ -189,7 +185,7 @@
                 </el-form-item>
               </el-form>
 
-              <div class="action-row">
+              <div class="action-row manual-action-row">
                 <el-button :loading="folderPreviewLoading" @click="previewFolderImport">预检目标</el-button>
                 <el-button
                   type="primary"
@@ -199,23 +195,16 @@
                 >
                   导入并打开字幕工作台
                 </el-button>
+                <el-button @click="openImportWorkbench()">打开工作台</el-button>
               </div>
 
-              <el-alert
-                title="适用场景"
-                type="info"
-                :closable="false"
-                show-icon
-              >
-                <template #default>
-                  手头单独拿到了字幕目录时，可以直接在这里补进原作目录，再进入库存页做筛选、删除和手动配对。
-                </template>
-              </el-alert>
+              <div class="scene-tip-card">
+                <div class="scene-tip-title">适用场景</div>
+                <div class="scene-tip-text">手头单独拿到了字幕目录时，可以直接在这里补进原作目录，再进入库存页做筛选、删除和手动配对。</div>
+              </div>
             </el-card>
-          </el-col>
 
-          <el-col :xs="24" :lg="14">
-            <el-card shadow="never" class="panel-card">
+            <el-card shadow="never" class="panel-card preview-panel-card">
               <template #header>
                 <div class="panel-header">
                   <span>文件夹预检结果</span>
@@ -305,18 +294,27 @@
                 </div>
               </div>
             </el-card>
-          </el-col>
-        </el-row>
+        </div>
       </el-tab-pane>
     </el-tabs>
 
-    <SubtitleImportWorkbench
-      v-if="activeWorkbenchTaskId"
-      :task-id="activeWorkbenchTaskId"
-      @clear-task="clearImportWorkbench"
-      @task-finished="handleWorkbenchTaskFinished"
-      @select-task="openImportedTask"
-    />
+    <el-dialog
+      v-model="workbenchDialogVisible"
+      class="subtitle-import-workbench-dialog"
+      append-to-body
+      :destroy-on-close="false"
+      :close-on-click-modal="false"
+      :show-close="false"
+      top="3vh"
+      width="96vw"
+    >
+      <SubtitleImportWorkbench
+        v-if="workbenchDialogInitialized"
+        :task-id="activeWorkbenchTaskId"
+        @close="closeImportWorkbench"
+        @select-task="openImportedTask"
+      />
+    </el-dialog>
   </div>
 </template>
 
@@ -331,6 +329,7 @@ const route = useRoute()
 const router = useRouter()
 const SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const SUBTITLE_IMPORT_WORKBENCH_TASK_KEY = 'kikoeru.ui.subtitleImport.activeTaskId'
+const SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY = 'kikoeru.ui.subtitleImport.workbenchVisible'
 
 function loadJson(key, fallback) {
   try {
@@ -405,13 +404,23 @@ function readPersistedWorkbenchTaskId() {
   }
 }
 
-function isPendingLinkedSubtitleWorkbenchTask(task = {}) {
+function persistWorkbenchDialogVisible(visible) {
+  try {
+    localStorage.setItem(SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY, visible ? '1' : '0')
+  } catch (_) {}
+}
+
+function readPersistedWorkbenchDialogVisible() {
+  try {
+    return localStorage.getItem(SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY) === '1'
+  } catch (_) {
+    return false
+  }
+}
+
+function isLinkedSubtitleWorkbenchTask(task = {}) {
   const sourceMode = String(task?.source_mode || '').trim().toLowerCase()
-  return (
-    ['linked_translation_archive_import', 'subtitle_folder_import'].includes(sourceMode) &&
-    task?.awaiting_manual_match &&
-    !task?.manual_match_completed
-  )
+  return ['linked_translation_archive_import', 'subtitle_folder_import'].includes(sourceMode)
 }
 
 const activeTab = ref('archive')
@@ -428,6 +437,8 @@ const folderImporting = ref(false)
 const folderPreview = ref(null)
 const folderCandidateSelection = ref('')
 const activeWorkbenchTaskId = ref(String(route.query.taskId || ''))
+const workbenchDialogVisible = ref(Boolean(route.query.taskId || readPersistedWorkbenchDialogVisible()))
+const workbenchDialogInitialized = ref(Boolean(route.query.taskId || readPersistedWorkbenchTaskId() || readPersistedWorkbenchDialogVisible()))
 
 const activePendingItem = computed(() => {
   return pendingItems.value.find(item => item.id === activePendingId.value) || null
@@ -495,15 +506,44 @@ onMounted(async () => {
 })
 
 watch(() => route.query.taskId, (value) => {
-  activeWorkbenchTaskId.value = String(value || '')
-  if (value) persistWorkbenchTaskId(activeWorkbenchTaskId.value)
+  if (value) {
+    activeWorkbenchTaskId.value = String(value || '')
+    persistWorkbenchTaskId(activeWorkbenchTaskId.value)
+    workbenchDialogInitialized.value = true
+    workbenchDialogVisible.value = true
+  }
 }, { immediate: true })
+
+watch(workbenchDialogVisible, (visible) => {
+  persistWorkbenchDialogVisible(visible)
+  if (!visible) {
+    const nextQuery = { ...route.query }
+    delete nextQuery.taskId
+    if (route.query.taskId) {
+      router.replace({
+        path: '/subtitle-import',
+        query: nextQuery
+      })
+    }
+    return
+  }
+  workbenchDialogInitialized.value = true
+  if (activeWorkbenchTaskId.value && route.query.taskId !== activeWorkbenchTaskId.value) {
+    router.replace({
+      path: '/subtitle-import',
+      query: {
+        ...route.query,
+        taskId: activeWorkbenchTaskId.value
+      }
+    })
+  }
+})
 
 async function restoreActiveWorkbenchTask() {
   try {
     const requestedId = String(route.query.taskId || activeWorkbenchTaskId.value || readPersistedWorkbenchTaskId() || '')
     const data = await rjSubtitleApi.status()
-    const candidates = (data.tasks || []).filter(task => isPendingLinkedSubtitleWorkbenchTask(task))
+    const candidates = (data.tasks || []).filter(task => isLinkedSubtitleWorkbenchTask(task))
     const matchedTask = (requestedId && candidates.find(task => task.id === requestedId)) || candidates.at(-1) || null
     if (!matchedTask) {
       persistWorkbenchTaskId('')
@@ -520,7 +560,7 @@ async function restoreActiveWorkbenchTask() {
     }
     activeWorkbenchTaskId.value = String(matchedTask.id || '')
     persistWorkbenchTaskId(activeWorkbenchTaskId.value)
-    if (route.query.taskId !== activeWorkbenchTaskId.value) {
+    if (workbenchDialogVisible.value && route.query.taskId !== activeWorkbenchTaskId.value) {
       router.replace({
         path: '/subtitle-import',
         query: {
@@ -637,6 +677,8 @@ async function executeFolderImport() {
 
 function openImportedTask(taskId) {
   const nextTaskId = String(taskId || '')
+  workbenchDialogInitialized.value = true
+  workbenchDialogVisible.value = true
   if (!nextTaskId) return
   if (activeWorkbenchTaskId.value === nextTaskId && route.query.taskId === nextTaskId) return
   activeWorkbenchTaskId.value = nextTaskId
@@ -650,19 +692,14 @@ function openImportedTask(taskId) {
   })
 }
 
-function clearImportWorkbench() {
-  activeWorkbenchTaskId.value = ''
-  persistWorkbenchTaskId('')
-  const nextQuery = { ...route.query }
-  delete nextQuery.taskId
-  router.replace({
-    path: '/subtitle-import',
-    query: nextQuery
-  })
+function openImportWorkbench() {
+  workbenchDialogInitialized.value = true
+  workbenchDialogVisible.value = true
 }
 
-function handleWorkbenchTaskFinished(taskId) {
-  if (String(taskId || '') === readPersistedWorkbenchTaskId()) {
+function closeImportWorkbench() {
+  workbenchDialogVisible.value = false
+  if (!activeWorkbenchTaskId.value) {
     persistWorkbenchTaskId('')
   }
 }
@@ -696,46 +733,47 @@ function formatSize(size) {
 <style scoped>
 .subtitle-import-page {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .hero-card,
 .panel-card {
   border: 1px solid #e6edf7;
-  border-radius: 22px;
+  border-radius: 18px;
   background:
     radial-gradient(circle at top right, rgba(116, 164, 255, 0.10), transparent 28%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, #ffffff 100%);
-  box-shadow: 0 12px 30px rgba(31, 46, 67, 0.07);
+  box-shadow: 0 8px 24px rgba(31, 46, 67, 0.06);
   overflow: hidden;
 }
 
 .hero-card :deep(.el-card__body) {
-  padding: 18px 20px;
+  padding: 14px 16px;
 }
 
 .panel-card :deep(.el-card__header) {
-  padding: 14px 18px 12px;
+  padding: 12px 14px 10px;
   border-bottom-color: #edf2f8;
   background: linear-gradient(180deg, rgba(248, 251, 255, 0.92) 0%, rgba(255, 255, 255, 0.96) 100%);
 }
 
 .panel-card :deep(.el-card__body) {
-  padding: 16px 18px 18px;
+  padding: 12px 14px 14px;
 }
 
 .panel-card :deep(.el-empty) {
-  padding: 22px 0 8px;
+  padding: 12px 0 2px;
 }
 
 .panel-card :deep(.el-empty__image) {
-  width: 86px;
-  height: 86px;
-  margin-bottom: 10px;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 4px;
 }
 
 .panel-card :deep(.el-empty__description) {
   margin-top: 0;
+  font-size: 12px;
 }
 
 .page-tabs :deep(.el-tabs__header) {
@@ -747,17 +785,17 @@ function formatSize(size) {
 }
 
 .page-tabs :deep(.el-tabs__nav) {
-  gap: 8px;
-  padding: 5px;
-  border-radius: 16px;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 14px;
   border: 1px solid #e6edf7;
   background: linear-gradient(180deg, #f7faff 0%, #fdfefe 100%);
 }
 
 .page-tabs :deep(.el-tabs__item) {
-  height: 38px;
-  padding: 0 16px;
-  border-radius: 12px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 10px;
   color: #647791;
   transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
 }
@@ -769,7 +807,7 @@ function formatSize(size) {
 }
 
 .page-tabs :deep(.el-tabs__content) {
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .hero-head,
@@ -778,47 +816,76 @@ function formatSize(size) {
 .action-row {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   align-items: flex-start;
   flex-wrap: wrap;
 }
 
+.hero-head {
+  align-items: center;
+}
+
 .page-title {
   margin: 0;
-  font-size: 28px;
+  font-size: 26px;
   line-height: 1.2;
   color: #20344d;
 }
 
 .hero-desc {
-  margin-top: 8px;
-  max-width: 760px;
-  font-size: 13px;
-  line-height: 1.65;
+  margin-top: 6px;
+  max-width: 720px;
+  font-size: 12px;
+  line-height: 1.55;
   color: #5d718a;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.top-panel-grid {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+}
+
+.archive-panel-grid {
+  grid-template-columns: minmax(320px, 0.88fr) minmax(420px, 1.38fr);
+}
+
+.folder-panel-grid {
+  grid-template-columns: minmax(340px, 0.92fr) minmax(440px, 1.28fr);
+}
+
+.source-panel-card :deep(.el-card__body),
+.preview-panel-card :deep(.el-card__body) {
+  min-height: 172px;
 }
 
 .pending-list,
 .detail-shell,
 .candidate-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .pending-list {
-  max-height: 560px;
+  max-height: 330px;
   overflow: auto;
-  padding-right: 4px;
+  padding-right: 3px;
 }
 
 .pending-item,
 .candidate-item {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   width: 100%;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid #e6edf6;
-  border-radius: 14px;
+  border-radius: 12px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   text-align: left;
   cursor: pointer;
@@ -855,7 +922,7 @@ function formatSize(size) {
 .candidate-meta,
 .chip-list {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
@@ -871,16 +938,16 @@ function formatSize(size) {
 .candidate-meta,
 .candidate-path,
 .section-tip {
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: 11px;
+  line-height: 1.5;
   color: #71839b;
 }
 
 .block-box {
   display: grid;
-  gap: 8px;
-  padding: 12px 14px;
-  border-radius: 16px;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: 14px;
   border: 1px solid #e8eef6;
   background: linear-gradient(180deg, #fbfcfe 0%, #ffffff 100%);
 }
@@ -894,11 +961,11 @@ function formatSize(size) {
 .entry-chip {
   display: inline-flex;
   align-items: center;
-  padding: 5px 10px;
+  padding: 4px 9px;
   border-radius: 999px;
   background: #eef4ff;
   color: #31599b;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .detail-shell :deep(.el-alert) {
@@ -906,8 +973,8 @@ function formatSize(size) {
 }
 
 .detail-shell :deep(.el-descriptions__cell) {
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 .candidate-item :deep(.el-radio) {
@@ -921,14 +988,71 @@ function formatSize(size) {
   opacity: 0.72;
 }
 
+.manual-source-form :deep(.el-form-item) {
+  margin-bottom: 10px;
+}
+
+.manual-action-row {
+  align-items: center;
+}
+
+.scene-tip-card {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #e6edf7;
+  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+}
+
+.scene-tip-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #29405f;
+}
+
+.scene-tip-text {
+  font-size: 11px;
+  line-height: 1.55;
+  color: #6c7f97;
+}
+
 @media (max-width: 992px) {
   .page-title {
-    font-size: 28px;
+    font-size: 24px;
   }
 
   .pending-list {
     max-height: none;
     padding-right: 0;
   }
+
+  .top-panel-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.subtitle-import-page :deep(.subtitle-import-workbench-dialog) {
+  padding: 0;
+}
+
+.subtitle-import-page :deep(.subtitle-import-workbench-dialog .el-dialog) {
+  width: min(96vw, 1520px);
+  margin: 0 auto;
+  border-radius: 24px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #f7fbff 0%, #f4f8fe 100%);
+  box-shadow: 0 26px 80px rgba(24, 42, 72, 0.24);
+}
+
+.subtitle-import-page :deep(.subtitle-import-workbench-dialog .el-dialog__header) {
+  display: none;
+}
+
+.subtitle-import-page :deep(.subtitle-import-workbench-dialog .el-dialog__body) {
+  padding: 0;
+  max-height: calc(100vh - 18px);
+  overflow: auto;
 }
 </style>

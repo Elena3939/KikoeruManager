@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
+﻿from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -4735,7 +4735,7 @@ async def rj_subtitle_status():
                     "source_subtitle_folder_path": task.task_metadata.get("source_subtitle_folder_path", ""),
                     "import_reason": task.task_metadata.get("import_reason", ""),
                     "kikoeru_checked_rjcode": task.task_metadata.get("kikoeru_checked_rjcode", ""),
-                    "kikoeru_has_subtitle": task.task_metadata.get("kikoeru_has_subtitle", False),
+                    "kikoeru_has_work": task.task_metadata.get("kikoeru_has_work", False),
                     "downloaded_count": task.task_metadata.get("downloaded_count", 0),
                     "existing_subtitle_count": task.task_metadata.get("existing_subtitle_count", 0),
                     "subtitle_dir": task.task_metadata.get("subtitle_dir", ""),

@@ -1,156 +1,242 @@
 <template>
-  <el-card shadow="never" class="import-workbench-card">
-    <template #header>
-      <div class="import-workbench-head">
-        <div>
-          <div class="import-workbench-title">字幕补配工作台</div>
-          <div class="import-workbench-desc">这里只处理当前字幕补配任务的筛选、配对和导入，不再带库存任务队列和下载进度。</div>
-        </div>
-        <div class="import-workbench-actions">
-          <el-button size="small" :loading="taskLoading" @click="refreshTaskStatus(true, { inspect: true, forceInspect: true })">刷新状态</el-button>
-          <el-button size="small" @click="handleClearTask">关闭工作台</el-button>
-        </div>
+  <div class="import-workbench-modal" v-loading="taskLoading">
+    <div class="import-workbench-head">
+      <div>
+        <div class="import-workbench-title">字幕补配工作台</div>
+        <div class="import-workbench-desc">工作台会保留补配历史，不会因为完成、失败或临时关闭而自动清空。你可以随时回来继续处理或回看结果。</div>
       </div>
-    </template>
-
-    <el-empty v-if="!taskId" description="执行字幕补配后，这里会直接进入当前补配任务工作台。" />
-
-    <div v-else class="import-workbench-layout">
-      <el-card shadow="never" class="import-queue-card">
-        <template #header>
-          <div class="import-config-head">
-            <span>补配队列</span>
-            <el-tag size="small" type="info">待处理 {{ linkedTasks.length }}</el-tag>
-          </div>
-        </template>
-
-        <el-empty v-if="!linkedTasks.length && !taskLoading" description="当前没有待处理的字幕补配任务。" />
-
-        <div v-else class="import-queue-list">
-          <button
-            v-for="task in linkedTasks"
-            :key="task.id"
-            type="button"
-            class="import-queue-item"
-            :class="{ active: task.id === selectedTaskId }"
-            @click="selectWorkbenchTask(task.id)"
-          >
-            <div class="import-queue-head">
-              <strong>{{ task.folder_name || getFileName(task.folder_path) }}</strong>
-              <el-tag size="small" :type="task.id === selectedTaskId ? 'primary' : 'info'">
-                {{ task.manual_match_completed ? '已完成' : '待补配' }}
-              </el-tag>
-            </div>
-            <div class="import-queue-meta">
-              <span>{{ getTaskDisplayRJCode(task) }}</span>
-              <span v-if="getTaskSourceRJCode(task)">来源 {{ getTaskSourceRJCode(task) }}</span>
-              <span>{{ task.downloaded_count || 0 }} 字幕</span>
-            </div>
-            <div class="import-queue-path">{{ task.folder_path || '-' }}</div>
-          </button>
-        </div>
-      </el-card>
-
-      <div class="import-workbench-shell">
-      <div v-if="activeTask" class="import-workbench-summary" :class="{ active: activeTask.id === selectedTaskId }">
-        <div class="import-workbench-summary-main" :class="{ active: activeTask.id === selectedTaskId }">
-          <div class="import-workbench-summary-title">{{ activeTask.folder_name || getFileName(activeTask.folder_path) }}</div>
-          <div class="import-workbench-summary-path">{{ activeTask.folder_path || '-' }}</div>
-          <div class="import-workbench-summary-chips">
-            <span class="import-chip import-chip-primary">{{ getTaskDisplayRJCode(activeTask) }}</span>
-            <span v-if="getTaskSourceRJCode(activeTask)" class="import-chip">来源 {{ getTaskSourceRJCode(activeTask) }}</span>
-            <span class="import-chip">{{ getTaskStatusLabel(activeTask) }}</span>
-            <span v-if="getTaskManualStateText(activeTask)" class="import-chip">{{ getTaskManualStateText(activeTask) }}</span>
-          </div>
-        </div>
-
-        <el-card shadow="never" class="import-config-card">
-          <template #header>
-            <div class="import-config-head">
-              <span>补配选项</span>
-            </div>
-          </template>
-
-          <div class="import-config-stack">
-            <div class="import-config-row">
-              <div>
-                <div class="import-config-title">命名依据</div>
-                <div class="import-config-tip">最终一键应用时，决定字幕和音频按谁的名字落地。</div>
-              </div>
-              <el-radio-group v-model="subtitleOptions.namingStrategy" size="small">
-                <el-radio-button label="audio">以音频名为准</el-radio-button>
-                <el-radio-button label="subtitle">以字幕名为准</el-radio-button>
-              </el-radio-group>
-            </div>
-
-            <div class="import-config-row import-config-row-wrap">
-              <div class="import-config-title-row">
-                <div>
-                  <div class="import-config-title">字幕过滤规则</div>
-                  <div class="import-config-tip">进入工作台前的过滤规则改成在这里维护，支持总开关、单条启停和即时编辑。</div>
-                </div>
-                <el-switch v-model="subtitleOptions.useFilterRules" inline-prompt active-text="开" inactive-text="关" />
-              </div>
-
-              <div class="import-filter-actions">
-                <el-button size="small" @click="addSubtitleFilterRule">添加规则</el-button>
-              </div>
-
-              <div class="import-filter-list">
-                <div v-if="!subtitleOptions.subtitleFilterRules.length" class="import-filter-empty">当前没有补配过滤规则。</div>
-                <div v-for="rule in subtitleOptions.subtitleFilterRules" :key="rule.id" class="import-filter-editor">
-                  <div class="import-filter-editor-head">
-                    <el-switch v-model="rule.enabled" size="small" />
-                    <el-select v-model="rule.target" size="small" class="import-filter-target">
-                      <el-option label="文件名" value="name" />
-                      <el-option label="路径" value="path" />
-                      <el-option label="全部" value="all" />
-                    </el-select>
-                    <el-button size="small" text type="danger" @click="removeSubtitleFilterRule(rule.id)">删除</el-button>
-                  </div>
-                  <el-input v-model="rule.name" size="small" placeholder="规则名，可留空" />
-                  <el-input v-model="rule.pattern" size="small" placeholder="输入正则表达式，例如 \\.mp3$ 或 @[^\\s]+" />
-                </div>
-              </div>
-            </div>
-
-            <div class="import-config-row">
-              <div>
-                <div class="import-config-title">字幕正文清理</div>
-                <div class="import-config-tip">复用设置页里的 LRC 广告清理和繁体转简体，对当前工作台字幕执行一次处理。</div>
-              </div>
-              <div class="import-config-inline-actions">
-                <el-button size="small" :loading="subtitleCleanupLoading" @click="applySubtitleCleanup">应用字幕清理</el-button>
-              </div>
-            </div>
-
-            <div v-if="subtitleCleanupSummary" class="import-cleanup-summary">
-              {{ subtitleCleanupSummary }}
-            </div>
-          </div>
-        </el-card>
+      <div class="import-workbench-actions">
+        <el-button size="small" :loading="taskLoading" @click="refreshTaskStatus(true, { inspect: true, forceInspect: true })">刷新状态</el-button>
+        <el-button size="small" :disabled="!clearableTaskCount" :loading="queueClearing" @click="clearFinishedTasks">清空队列</el-button>
+        <el-button size="small" @click="emit('close')">关闭工作台</el-button>
       </div>
-
-      <el-alert
-        v-if="activeTask && !activeTask.subtitle_dir"
-        title="当前任务还在准备字幕目录"
-        type="info"
-        :closable="false"
-        show-icon
-      >
-        <template #default>
-          {{ activeTask.current_step || '稍后刷新状态即可进入字幕补配工作台。' }}
-        </template>
-      </el-alert>
-
-      <el-empty v-else-if="!taskLoading && !activeTask" description="没有找到当前字幕补配任务，可能已被清理或任务 ID 已失效。" />
-
-      <SubtitleInspectorWorkbench
-        v-else
-        :ctx="subtitleWorkbenchCtx"
-      />
+    </div>
+    <div class="import-workbench-toolbar">
+      <div class="import-toolbar-stats">
+        <span class="toolbar-pill">全部 {{ linkedTasks.length }}</span>
+        <span class="toolbar-pill toolbar-pill-primary">进行中 {{ processingTaskCount }}</span>
+        <span class="toolbar-pill toolbar-pill-success">已完成 {{ completedTaskCount }}</span>
+        <span class="toolbar-pill toolbar-pill-danger">失败 {{ failedTaskCount }}</span>
+      </div>
+      <div class="import-toolbar-tip">仅手动清理已完成或已失败任务，进行中的任务会继续保留。</div>
     </div>
 
+    <div class="import-workbench-body">
+      <section class="import-task-list-card">
+        <div class="import-task-list-head">
+          <div>
+            <div class="import-section-title">任务列表</div>
+            <div class="import-section-tip">长驻式队列视图，支持查看历史、失败原因和手动重试。</div>
+          </div>
+          <el-tag size="small" type="info">分页 {{ queuePage }} / {{ totalQueuePages }}</el-tag>
+        </div>
+
+        <el-empty v-if="!linkedTasks.length && !taskLoading" description="当前没有字幕补配任务，打开工作台后新任务会继续留在这里。" />
+
+        <div v-else class="import-task-list-body">
+          <button
+            v-for="task in pagedLinkedTasks"
+            :key="task.id"
+            type="button"
+            class="import-task-row"
+            :class="{ active: task.id === selectedTaskId, failed: isFailedTask(task) }"
+            @click="selectWorkbenchTask(task.id)"
+          >
+            <div class="import-task-row-main">
+              <div class="import-task-row-rj">{{ getTaskDisplayRJCode(task) }}</div>
+              <div class="import-task-row-title">{{ task.folder_name || getFileName(task.folder_path) }}</div>
+              <div class="import-task-row-meta">
+                <span v-if="getTaskSourceRJCode(task)">来源 {{ getTaskSourceRJCode(task) }}</span>
+                <span v-if="task.target_rjcode">目标 {{ task.target_rjcode }}</span>
+                <span>{{ task.downloaded_count || 0 }} 字幕</span>
+                <span v-if="task.manual_match_completed">已应用 {{ task.manual_match_applied_pairs || 0 }} 组</span>
+                <span>{{ formatTaskTimeline(task) }}</span>
+              </div>
+            </div>
+
+            <div class="import-task-row-status">
+              <el-tooltip
+                v-if="getTaskFailureReason(task)"
+                :content="getTaskFailureReason(task)"
+                placement="top"
+              >
+                <el-tag size="small" effect="light" :type="getTaskStatusTagType(task)">
+                  {{ getTaskStatusLabel(task) }}
+                </el-tag>
+              </el-tooltip>
+              <el-tag
+                v-else
+                size="small"
+                effect="light"
+                :type="getTaskStatusTagType(task)"
+              >
+                {{ getTaskStatusLabel(task) }}
+              </el-tag>
+              <div class="import-task-row-progress">{{ getTaskProgressText(task) }}</div>
+            </div>
+
+            <div class="import-task-row-actions">
+              <el-button
+                size="small"
+                :type="task.id === selectedTaskId ? 'primary' : 'default'"
+                @click.stop="selectWorkbenchTask(task.id)"
+              >
+                查看
+              </el-button>
+              <el-button
+                v-if="canRetryTask(task)"
+                size="small"
+                :loading="retryingTaskId === task.id"
+                @click.stop="retryWorkbenchTask(task)"
+              >
+                重试
+              </el-button>
+            </div>
+          </button>
+        </div>
+
+        <div v-if="linkedTasks.length > queuePageSize" class="import-task-pagination">
+          <el-pagination
+            v-model:current-page="queuePage"
+            small
+            background
+            layout="prev, pager, next"
+            :page-size="queuePageSize"
+            :total="linkedTasks.length"
+          />
+        </div>
+      </section>
+
+      <section class="import-task-detail">
+        <el-empty v-if="!taskLoading && !linkedTasks.length" description="当前工作台没有可展示的字幕补配任务。" />
+
+        <template v-else-if="activeTask">
+          <div class="import-workbench-summary">
+            <div class="import-workbench-summary-main" :class="{ active: activeTask.id === selectedTaskId }">
+              <div class="import-workbench-summary-top">
+                <div>
+                  <div class="import-workbench-summary-title">{{ activeTask.folder_name || getFileName(activeTask.folder_path) }}</div>
+                  <div class="import-workbench-summary-path">{{ activeTask.folder_path || '-' }}</div>
+                </div>
+                <el-tag size="small" effect="light" :type="getTaskStatusTagType(activeTask)">
+                  {{ getTaskStatusLabel(activeTask) }}
+                </el-tag>
+              </div>
+              <div class="import-workbench-summary-chips">
+                <span class="import-chip import-chip-primary">{{ getTaskDisplayRJCode(activeTask) }}</span>
+                <span v-if="getTaskSourceRJCode(activeTask)" class="import-chip">来源 {{ getTaskSourceRJCode(activeTask) }}</span>
+                <span v-if="activeTask.target_rjcode" class="import-chip">目标 {{ activeTask.target_rjcode }}</span>
+                <span class="import-chip">{{ getTaskProgressText(activeTask) }}</span>
+                <span v-if="getTaskManualStateText(activeTask)" class="import-chip">{{ getTaskManualStateText(activeTask) }}</span>
+              </div>
+            </div>
+
+            <el-card shadow="never" class="import-config-card">
+              <template #header>
+                <div class="import-config-head">
+                  <span>补配选项</span>
+                </div>
+              </template>
+
+              <div class="import-config-stack">
+                <div class="import-config-row">
+                  <div>
+                    <div class="import-config-title">命名依据</div>
+                    <div class="import-config-tip">最终一键应用时，决定字幕和音频按谁的名字落地。</div>
+                  </div>
+                  <el-radio-group v-model="subtitleOptions.namingStrategy" size="small">
+                    <el-radio-button label="audio">以音频名为准</el-radio-button>
+                    <el-radio-button label="subtitle">以字幕名为准</el-radio-button>
+                  </el-radio-group>
+                </div>
+
+                <div class="import-config-row import-config-row-wrap">
+                  <div class="import-config-title-row">
+                    <div>
+                      <div class="import-config-title">字幕过滤规则</div>
+                      <div class="import-config-tip">规则支持实时编辑、启停和持久化，下次打开工作台会继续保留。</div>
+                    </div>
+                    <el-switch v-model="subtitleOptions.useFilterRules" inline-prompt active-text="开" inactive-text="关" />
+                  </div>
+
+                  <div class="import-filter-actions">
+                    <el-button size="small" @click="addSubtitleFilterRule">添加规则</el-button>
+                  </div>
+
+                  <div class="import-filter-list">
+                    <div v-if="!subtitleOptions.subtitleFilterRules.length" class="import-filter-empty">当前没有补配过滤规则。</div>
+                    <div v-for="rule in subtitleOptions.subtitleFilterRules" :key="rule.id" class="import-filter-editor">
+                      <div class="import-filter-editor-head">
+                        <el-switch v-model="rule.enabled" size="small" />
+                        <el-select v-model="rule.target" size="small" class="import-filter-target">
+                          <el-option label="文件名" value="name" />
+                          <el-option label="路径" value="path" />
+                          <el-option label="全部" value="all" />
+                        </el-select>
+                        <el-button size="small" text type="danger" @click="removeSubtitleFilterRule(rule.id)">删除</el-button>
+                      </div>
+                      <el-input v-model="rule.name" size="small" placeholder="规则名，可留空" />
+                      <el-input v-model="rule.pattern" size="small" placeholder="输入正则表达式，例如 \\.mp3$ 或 @[^\\s]+" />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="import-config-row">
+                  <div>
+                    <div class="import-config-title">字幕正文清理</div>
+                    <div class="import-config-tip">复用设置页里的 LRC 广告清理和繁体转简体，对当前工作台字幕执行一次处理。</div>
+                  </div>
+                  <div class="import-config-inline-actions">
+                    <el-button size="small" :loading="subtitleCleanupLoading" @click="applySubtitleCleanup">应用字幕清理</el-button>
+                  </div>
+                </div>
+
+                <div v-if="subtitleCleanupSummary" class="import-cleanup-summary">
+                  {{ subtitleCleanupSummary }}
+                </div>
+              </div>
+            </el-card>
+          </div>
+
+          <el-alert
+            v-if="isFailedTask(activeTask)"
+            title="当前任务执行失败"
+            type="error"
+            :closable="false"
+            show-icon
+          >
+            <template #default>
+              {{ getTaskFailureReason(activeTask) || '请检查原因后重试该任务。' }}
+            </template>
+          </el-alert>
+
+          <el-alert
+            v-else-if="activeTask && !activeTask.subtitle_dir"
+            title="当前任务还在准备字幕目录"
+            type="info"
+            :closable="false"
+            show-icon
+          >
+            <template #default>
+              {{ activeTask.current_step || '稍后刷新状态即可进入字幕补配工作台。' }}
+            </template>
+          </el-alert>
+
+          <SubtitleInspectorWorkbench
+            v-if="activeTask.subtitle_dir"
+            :ctx="subtitleWorkbenchCtx"
+          />
+
+          <el-card v-else class="import-task-placeholder" shadow="never">
+            <div class="import-task-placeholder-title">{{ getTaskStatusLabel(activeTask) }}</div>
+            <div class="import-task-placeholder-text">
+              {{ getTaskFailureReason(activeTask) || activeTask.current_step || '当前任务还没有可查看的字幕工作区。' }}
+            </div>
+          </el-card>
+        </template>
+
+        <el-empty v-else description="请选择一条补配任务查看详情。" />
+      </section>
     </div>
 
     <el-dialog v-model="subtitleRenameDialogVisible" title="重命名字幕文件" width="500px">
@@ -164,7 +250,7 @@
         <el-button type="primary" :loading="subtitleRenameLoading" @click="confirmSubtitleRename">确认重命名</el-button>
       </template>
     </el-dialog>
-  </el-card>
+  </div>
 </template>
 
 <script setup>
@@ -181,10 +267,10 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['clear-task', 'task-finished', 'select-task'])
-const taskId = computed(() => props.taskId)
+const emit = defineEmits(['close', 'select-task'])
 
 const SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
+const SUBTITLE_IMPORT_QUEUE_STATE_KEY = 'kikoeru.ui.subtitleImport.workbenchQueueState'
 
 function loadJson(key, fallback) {
   try {
@@ -236,6 +322,11 @@ const taskLoading = ref(false)
 const linkedTasks = ref([])
 const activeTask = ref(null)
 const selectedTaskId = ref('')
+const queuePageSize = 8
+const queueState = loadJson(SUBTITLE_IMPORT_QUEUE_STATE_KEY, {})
+const queuePage = ref(Math.max(1, Number(queueState.page || 1)))
+const queueClearing = ref(false)
+const retryingTaskId = ref('')
 const subtitleRenameDialogVisible = ref(false)
 const subtitleRenameForm = ref({ currentName: '', newName: '', path: '' })
 const subtitleRenameLoading = ref(false)
@@ -287,15 +378,18 @@ watch(subtitleOptions, (value) => {
 }, { deep: true })
 
 watch(() => props.taskId, async (value) => {
-  selectedTaskId.value = String(value || '')
-  if (!value) {
-    activeTask.value = null
-    linkedTasks.value = []
-    clearSubtitleInspectorState()
-    return
-  }
+  if (value) selectedTaskId.value = String(value || '')
   await refreshTaskStatus(false, { inspect: true, forceInspect: true })
 }, { immediate: true })
+
+watch(queuePage, (value) => {
+  saveJson(SUBTITLE_IMPORT_QUEUE_STATE_KEY, { page: value })
+})
+
+watch(linkedTasks, (tasks) => {
+  const maxPage = Math.max(1, Math.ceil(tasks.length / queuePageSize))
+  if (queuePage.value > maxPage) queuePage.value = maxPage
+}, { deep: false })
 
 function normalizeRJSubtitleTaskPayload(task) {
   const trimTail = (items, limit) => Array.isArray(items) ? items.slice(-limit) : []
@@ -325,10 +419,10 @@ function getTaskSourceRJCode(task) {
 function getTaskStatusLabel(task) {
   if (!task) return '未知状态'
   if (task.manual_match_completed) return '已完成补配'
-  if (task.awaiting_manual_match) return '待筛选与配对'
   if (task.status === 'processing') return '处理中'
   if (task.status === 'pending') return '排队中'
   if (task.status === 'failed') return '执行失败'
+  if (task.awaiting_manual_match) return '待筛选与配对'
   if (task.status === 'completed') return '已完成'
   return task.status || '未知状态'
 }
@@ -345,14 +439,71 @@ function isLinkedSubtitleWorkbenchTask(task) {
   return ['linked_translation_archive_import', 'subtitle_folder_import'].includes(sourceMode)
 }
 
-function isPendingLinkedSubtitleWorkbenchTask(task) {
-  return isLinkedSubtitleWorkbenchTask(task) && !task?.manual_match_completed && Boolean(task?.awaiting_manual_match || task?.subtitle_dir)
+function isFailedTask(task) {
+  return String(task?.status || '').toLowerCase() === 'failed'
+}
+
+function isCompletedTask(task) {
+  return Boolean(task?.manual_match_completed || String(task?.status || '').toLowerCase() === 'completed')
+}
+
+function isProcessingTask(task) {
+  return Boolean(String(task?.status || '').toLowerCase() === 'processing' || String(task?.status || '').toLowerCase() === 'pending' || task?.awaiting_manual_match)
+}
+
+function getTaskStatusTagType(task) {
+  if (isFailedTask(task)) return 'danger'
+  if (isCompletedTask(task)) return 'success'
+  if (isProcessingTask(task)) return 'primary'
+  return 'info'
+}
+
+function getTaskFailureReason(task) {
+  if (!task) return ''
+  return String(task?.error_message || task?.current_step || '').trim()
+}
+
+function getTaskProgressText(task) {
+  if (!task) return '-'
+  if (isFailedTask(task)) return task.current_step || '执行失败'
+  if (task.manual_match_completed) return `已完成 ${task.manual_match_applied_pairs || 0} 组`
+  if (task.awaiting_manual_match) return `待配对 ${task.downloaded_count || 0} 字幕`
+  if (Number.isFinite(Number(task.progress))) return `${Math.max(0, Math.min(100, Number(task.progress || 0)))}%`
+  return task.current_step || '-'
+}
+
+function formatTaskTimeline(task) {
+  const value = task?.completed_at || task?.started_at || task?.created_at
+  if (!value) return '时间未知'
+  return formatDate(value)
+}
+
+function sortLinkedTasks(tasks = []) {
+  return [...tasks].sort((left, right) => {
+    const leftTime = new Date(left?.completed_at || left?.started_at || left?.created_at || 0).getTime() || 0
+    const rightTime = new Date(right?.completed_at || right?.started_at || right?.created_at || 0).getTime() || 0
+    return rightTime - leftTime
+  })
+}
+
+function canRetryTask(task) {
+  if (!isFailedTask(task)) return false
+  const sourceMode = String(task?.source_mode || '').trim().toLowerCase()
+  if (sourceMode === 'linked_translation_archive_import') return Boolean(task?.source_archive_path)
+  if (sourceMode === 'subtitle_folder_import') return Boolean(task?.source_subtitle_folder_path)
+  return false
+}
+
+function canClearTask(task) {
+  return Boolean(task && (isFailedTask(task) || isCompletedTask(task)))
 }
 
 function selectWorkbenchTask(taskId, options = {}) {
   const normalized = String(taskId || '')
   if (!normalized) return
   selectedTaskId.value = normalized
+  const matchedTask = linkedTasks.value.find(task => task.id === normalized)
+  if (matchedTask) activeTask.value = matchedTask
   if (options.sync !== false && props.taskId !== normalized) {
     emit('select-task', normalized)
   }
@@ -363,10 +514,15 @@ function ensureSelectedWorkbenchTask(tasks = []) {
   const matched = (preferredId && tasks.find(task => task.id === preferredId)) || tasks[0] || null
   if (!matched) {
     selectedTaskId.value = ''
+    queuePage.value = 1
     return null
   }
   if (selectedTaskId.value !== matched.id) {
     selectedTaskId.value = matched.id
+  }
+  const matchedIndex = tasks.findIndex(task => task.id === matched.id)
+  if (matchedIndex >= 0) {
+    queuePage.value = Math.max(1, Math.floor(matchedIndex / queuePageSize) + 1)
   }
   if (props.taskId !== matched.id) {
     emit('select-task', matched.id)
@@ -382,20 +538,6 @@ function removeSubtitleFilterRule(ruleId) {
   subtitleOptions.value.subtitleFilterRules = subtitleOptions.value.subtitleFilterRules.filter(rule => rule.id !== ruleId)
 }
 
-function canCloseWorkbenchTask(task) {
-  if (linkedTasks.value.length) return false
-  if (!task) return true
-  return Boolean(task.manual_match_completed || !task.awaiting_manual_match)
-}
-
-function handleClearTask() {
-  if (!canCloseWorkbenchTask(activeTask.value)) {
-    ElMessage.warning('这条字幕补配还没完成重命名导入，页面刷新后也会继续回到当前工作台')
-    return
-  }
-  emit('clear-task')
-}
-
 function buildCleanupSummary(result = {}) {
   const lrc = result?.lrc_clean || {}
   const simplify = result?.simplify_chinese || {}
@@ -407,22 +549,22 @@ function buildCleanupSummary(result = {}) {
 
 async function refreshTaskStatus(showMessage = false, options = {}) {
   const { inspect = true, forceInspect = false } = options
-  if (!props.taskId && !selectedTaskId.value) return
 
   taskLoading.value = true
   try {
     const data = await rjSubtitleApi.status()
-    linkedTasks.value = (data.tasks || [])
-      .filter(task => isPendingLinkedSubtitleWorkbenchTask(task))
-      .map(task => normalizeRJSubtitleTaskPayload(task))
+    linkedTasks.value = sortLinkedTasks(
+      (data.tasks || [])
+        .filter(task => isLinkedSubtitleWorkbenchTask(task))
+        .map(task => normalizeRJSubtitleTaskPayload(task))
+    )
 
     const found = ensureSelectedWorkbenchTask(linkedTasks.value)
     if (!found) {
       activeTask.value = null
       clearSubtitleInspectorState()
       subtitleCleanupSummary.value = ''
-      emit('task-finished', props.taskId || selectedTaskId.value)
-      if (showMessage) ElMessage.warning('没有找到待处理的字幕补配任务')
+      if (showMessage) ElMessage.warning('当前没有可用的字幕补配任务')
       return
     }
 
@@ -440,6 +582,71 @@ async function refreshTaskStatus(showMessage = false, options = {}) {
     ElMessage.error('获取字幕补配任务状态失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     taskLoading.value = false
+  }
+}
+
+async function clearFinishedTasks() {
+  const targets = linkedTasks.value.filter(task => canClearTask(task))
+  if (!targets.length) {
+    ElMessage.warning('当前没有可清理的已完成或已失败任务')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定清空 ${targets.length} 条已完成或已失败任务吗？进行中的任务会保留。`,
+      '清空队列确认',
+      { confirmButtonText: '清空队列', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (_) {
+    return
+  }
+
+  queueClearing.value = true
+  try {
+    for (const task of targets) {
+      await rjSubtitleApi.clearTask(task.id)
+    }
+    await refreshTaskStatus(false, { inspect: true, forceInspect: true })
+    ElMessage.success(`已清空 ${targets.length} 条历史任务`)
+  } catch (error) {
+    ElMessage.error('清空队列失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    queueClearing.value = false
+  }
+}
+
+async function retryWorkbenchTask(task) {
+  if (!canRetryTask(task)) return
+
+  retryingTaskId.value = String(task.id || '')
+  try {
+    const commonOptions = {
+      preferredLibraryId: task.target_library_id || undefined,
+      targetLibraryId: task.target_library_id || undefined,
+      targetFolderPath: task.target_folder_path || undefined,
+      useFilterRules: subtitleOptions.value.useFilterRules !== false,
+      subtitleFilterRules: (subtitleOptions.value.subtitleFilterRules || [])
+        .map(rule => normalizeSubtitleFilterRule(rule))
+        .filter(rule => String(rule.pattern || '').trim())
+    }
+
+    let result = null
+    if (String(task.source_mode || '').trim().toLowerCase() === 'linked_translation_archive_import') {
+      result = await subtitleImportApi.importArchive(task.source_archive_path, commonOptions)
+    } else if (String(task.source_mode || '').trim().toLowerCase() === 'subtitle_folder_import') {
+      result = await subtitleImportApi.importFolder(task.source_subtitle_folder_path, commonOptions)
+    }
+
+    await refreshTaskStatus(false, { inspect: true, forceInspect: true })
+    if (result?.task?.id) {
+      selectWorkbenchTask(result.task.id)
+    }
+    ElMessage.success('已重新创建字幕补配任务')
+  } catch (error) {
+    ElMessage.error('重试字幕补配任务失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    retryingTaskId.value = ''
   }
 }
 
@@ -1183,6 +1390,8 @@ async function applySubtitleManualPairs() {
   }
 
   subtitlePairApplying.value = true
+  const phaseOneRenamed = []
+  const phaseTwoRenamed = []
   try {
     const currentSubtitleFiles = [...subtitleInspectorSubtitleFiles.value]
     const resolveCurrentSubtitleSourcePath = (pair) => {
@@ -1217,11 +1426,14 @@ async function applySubtitleManualPairs() {
       const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
       const renameResult = await libraryApi.browserRename(operationLibraryId, pair.source_path, pair.temp_name)
       pair.temp_path = renameResult?.new_path || joinPath(String(pair.source_path || '').replace(/[\\/][^\\/]+$/, ''), pair.temp_name)
+      phaseOneRenamed.push(pair)
     }
 
     for (const pair of phaseOne) {
       const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
-      await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name)
+      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name)
+      pair.final_path = renameResult?.new_path || joinPath(String(pair.temp_path || '').replace(/[\\/][^\\/]+$/, ''), pair.target_name)
+      phaseTwoRenamed.push(pair)
     }
 
     for (const subtitle of sequenceCleanupRows) {
@@ -1236,11 +1448,37 @@ async function applySubtitleManualPairs() {
     })
 
     await refreshTaskStatus(false, { inspect: true, forceInspect: true })
-    emit('task-finished', currentTaskId)
     ElMessage.success(`已重命名并导入 ${appliedPairCount} 组配对${sequenceCleanupRows.length ? `，并删除 ${sequenceCleanupRows.length} 个未选字幕` : ''}`)
     clearSubtitleManualPairs()
   } catch (error) {
-    ElMessage.error('重命名并导入失败: ' + (error.response?.data?.detail || error.message))
+    const rollbackErrors = []
+    try {
+      for (const pair of [...phaseTwoRenamed].reverse()) {
+        const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
+        try {
+          await libraryApi.browserRename(operationLibraryId, pair.final_path || pair.target_path || pair.temp_path, pair.current_name)
+        } catch (rollbackError) {
+          rollbackErrors.push(`${pair.target_name} -> ${pair.current_name}: ${rollbackError.response?.data?.detail || rollbackError.message}`)
+        }
+      }
+      for (const pair of [...phaseOneRenamed].reverse()) {
+        if (phaseTwoRenamed.includes(pair)) continue
+        const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
+        try {
+          await libraryApi.browserRename(operationLibraryId, pair.temp_path || pair.source_path, pair.current_name)
+        } catch (rollbackError) {
+          rollbackErrors.push(`${pair.temp_name} -> ${pair.current_name}: ${rollbackError.response?.data?.detail || rollbackError.message}`)
+        }
+      }
+    } catch (_) {
+      // Ignore outer rollback aggregation failures; detailed per-item errors are already collected.
+    }
+    const detail = error.response?.data?.detail || error.message
+    if (rollbackErrors.length) {
+      ElMessage.error(`重命名并导入失败，且自动回滚未完全成功: ${detail}；回滚异常 ${rollbackErrors[0]}`)
+    } else {
+      ElMessage.error('重命名并导入失败，已自动回滚已改名文件: ' + detail)
+    }
   } finally {
     subtitlePairApplying.value = false
   }
@@ -1292,6 +1530,16 @@ const subtitleInspectorSelectableRows = computed(() => subtitleInspectorFlatTree
 const subtitleInspectorAllSelected = computed(() => subtitleInspectorSelectableRows.value.length > 0 && subtitleInspectorSelectableRows.value.every(row => subtitleInspectorSelectedIds.value.has(row.id)))
 const subtitleInspectorSomeSelected = computed(() => !subtitleInspectorAllSelected.value && subtitleInspectorSelectableRows.value.some(row => subtitleInspectorSelectedIds.value.has(row.id)))
 const subtitleInspectorSelectedRows = computed(() => subtitleInspectorFlatTree.value.filter(row => subtitleInspectorSelectedIds.value.has(row.id)))
+const totalQueuePages = computed(() => Math.max(1, Math.ceil(linkedTasks.value.length / queuePageSize)))
+const pagedLinkedTasks = computed(() => {
+  const currentPage = Math.min(Math.max(1, queuePage.value), totalQueuePages.value)
+  const start = (currentPage - 1) * queuePageSize
+  return linkedTasks.value.slice(start, start + queuePageSize)
+})
+const processingTaskCount = computed(() => linkedTasks.value.filter(task => isProcessingTask(task)).length)
+const completedTaskCount = computed(() => linkedTasks.value.filter(task => isCompletedTask(task)).length)
+const failedTaskCount = computed(() => linkedTasks.value.filter(task => isFailedTask(task)).length)
+const clearableTaskCount = computed(() => linkedTasks.value.filter(task => canClearTask(task)).length)
 
 const subtitleWorkbenchCtx = computed(() => ({
   subtitleInspectorInfo: subtitleInspectorInfo.value,
@@ -1372,33 +1620,24 @@ const subtitleWorkbenchCtx = computed(() => ({
 </script>
 
 <style scoped>
-.import-workbench-card {
-  border: 1px solid #e6edf7;
-  border-radius: 22px;
+.import-workbench-modal {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: 12px;
+  padding: 16px;
+  overflow: visible;
   background:
-    radial-gradient(circle at top right, rgba(116, 164, 255, 0.10), transparent 26%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, #ffffff 100%);
-  box-shadow: 0 12px 30px rgba(31, 46, 67, 0.07);
-  overflow: hidden;
+    radial-gradient(circle at top right, rgba(116, 164, 255, 0.12), transparent 24%),
+    linear-gradient(180deg, rgba(249, 252, 255, 0.98) 0%, #f4f8fe 100%);
 }
 
-.import-workbench-card :deep(.el-card__header) {
-  padding: 16px 18px 12px;
-  border-bottom-color: #edf2f8;
-  background: linear-gradient(180deg, rgba(248, 251, 255, 0.92) 0%, rgba(255, 255, 255, 0.96) 100%);
-}
-
-.import-workbench-card :deep(.el-card__body) {
-  padding: 16px 18px 18px;
-}
-
-.import-workbench-card :deep(.el-empty) {
+.import-workbench-modal :deep(.el-empty) {
   padding: 24px 0 8px;
 }
 
-.import-workbench-card :deep(.el-empty__image) {
-  width: 88px;
-  height: 88px;
+.import-workbench-modal :deep(.el-empty__image) {
+  width: 80px;
+  height: 80px;
   margin-bottom: 8px;
 }
 
@@ -1406,21 +1645,21 @@ const subtitleWorkbenchCtx = computed(() => ({
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  align-items: flex-start;
+  align-items: center;
   flex-wrap: wrap;
 }
 
 .import-workbench-title {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   color: #20344d;
 }
 
 .import-workbench-desc {
-  margin-top: 4px;
-  max-width: 920px;
-  font-size: 12px;
-  line-height: 1.6;
+  margin-top: 2px;
+  max-width: 780px;
+  font-size: 11px;
+  line-height: 1.5;
   color: #667a93;
 }
 
@@ -1430,101 +1669,217 @@ const subtitleWorkbenchCtx = computed(() => ({
   flex-wrap: wrap;
 }
 
-.import-workbench-layout {
-  display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
+.import-workbench-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-radius: 14px;
+  border: 1px solid #e3ebf7;
+  background: rgba(255, 255, 255, 0.78);
 }
 
-.import-workbench-shell {
-  display: grid;
-  gap: 12px;
+.import-toolbar-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.import-queue-card {
-  border: 1px solid #e7edf6;
-  border-radius: 18px;
-  position: sticky;
-  top: 14px;
+.toolbar-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid #d6e2f4;
+  background: #fff;
+  color: #415975;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.toolbar-pill-primary {
+  border-color: #c9dcff;
+  background: #edf4ff;
+  color: #2a61ad;
+}
+
+.toolbar-pill-success {
+  border-color: #cde9d0;
+  background: #f2fbf3;
+  color: #2f8a43;
+}
+
+.toolbar-pill-danger {
+  border-color: #f0c9c9;
+  background: #fff2f2;
+  color: #c23d3d;
+}
+
+.import-toolbar-tip {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6e8099;
+}
+
+.import-workbench-body {
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 10px;
+  overflow: visible;
+}
+
+.import-task-list-card,
+.import-task-detail {
+  border: 1px solid #e6edf7;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, #ffffff 100%);
+  box-shadow: 0 8px 20px rgba(31, 46, 67, 0.05);
+}
+
+.import-task-list-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
   overflow: hidden;
 }
 
-.import-queue-card :deep(.el-card__header) {
-  padding: 12px 14px 10px;
-  border-bottom-color: #edf2f8;
+.import-task-list-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid #edf2f8;
   background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
 }
 
-.import-queue-card :deep(.el-card__body) {
-  padding: 12px;
+.import-section-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #24364f;
 }
 
-.import-queue-list {
-  display: grid;
-  gap: 8px;
-  max-height: calc(100vh - 280px);
-  overflow: auto;
-  padding-right: 4px;
+.import-section-tip {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #71839b;
 }
 
-.import-queue-item {
+.import-task-list-body {
   display: grid;
   gap: 6px;
+  max-height: 164px;
+  padding: 8px 12px;
+  overflow: auto;
+}
+
+.import-task-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 136px 96px;
+  gap: 10px;
   width: 100%;
-  padding: 12px;
+  min-height: 76px;
+  padding: 10px 12px;
   border-radius: 14px;
-  border: 1px solid #e5ecf7;
+  border: 1px solid #e4ebf7;
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   text-align: left;
+  align-items: center;
   cursor: pointer;
   transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
 }
 
-.import-queue-item:hover {
+.import-task-row:hover {
   border-color: #bfd4f6;
   box-shadow: 0 10px 24px rgba(59, 88, 135, 0.08);
   transform: translateY(-1px);
 }
 
-.import-queue-item.active {
+.import-task-row.active {
   border-color: #6ea8ff;
   background: linear-gradient(180deg, #f6faff 0%, #eef5ff 100%);
   box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
-  transform: translateY(-1px);
-  position: relative;
 }
 
-.import-queue-item.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 10px;
-  bottom: 10px;
-  width: 4px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #409eff 0%, #66b1ff 100%);
+.import-task-row.failed {
+  border-color: #efc4c4;
 }
 
-.import-queue-head,
-.import-queue-meta {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
+.import-task-row-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
-.import-queue-meta,
-.import-queue-path {
+.import-task-row-rj {
   font-size: 12px;
-  line-height: 1.6;
+  font-weight: 700;
+  color: #2c5ea8;
+}
+
+.import-task-row-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #223754;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.import-task-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.5;
   color: #70829a;
+}
+
+.import-task-row-status {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+}
+
+.import-task-row-progress {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #62758f;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.import-task-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.import-task-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 12px 12px;
+}
+
+.import-task-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  overflow: visible;
 }
 
 .import-workbench-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 316px;
+  gap: 10px;
   align-items: start;
 }
 
@@ -1534,13 +1889,13 @@ const subtitleWorkbenchCtx = computed(() => ({
 }
 
 .import-workbench-summary-main {
-  padding: 14px 16px;
+  padding: 12px 14px;
   border: 1px solid #e4ecf7;
   background: linear-gradient(135deg, #f8fbff 0%, #f3f8ff 100%);
-  min-height: 112px;
+  min-height: 96px;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: space-between;
 }
 
 .import-workbench-summary-main.active {
@@ -1549,15 +1904,22 @@ const subtitleWorkbenchCtx = computed(() => ({
   background: linear-gradient(135deg, #f4f9ff 0%, #edf5ff 100%);
 }
 
+.import-workbench-summary-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
 .import-workbench-summary-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
   color: #223754;
 }
 
 .import-workbench-summary-path {
-  margin-top: 6px;
-  font-size: 12px;
+  margin-top: 4px;
+  font-size: 11px;
   line-height: 1.5;
   color: #70829a;
   word-break: break-all;
@@ -1565,20 +1927,20 @@ const subtitleWorkbenchCtx = computed(() => ({
 
 .import-workbench-summary-chips {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: wrap;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .import-chip {
   display: inline-flex;
   align-items: center;
-  padding: 6px 10px;
+  padding: 5px 8px;
   border-radius: 999px;
   border: 1px solid #d8e4f5;
   background: #ffffff;
   color: #33527e;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -1598,20 +1960,25 @@ const subtitleWorkbenchCtx = computed(() => ({
   border: 1px solid #e7edf6;
   background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
   height: 100%;
+  position: sticky;
+  top: 8px;
+  align-self: start;
 }
 
 .import-config-card :deep(.el-card__header) {
-  padding: 12px 14px 10px;
+  padding: 10px 12px 8px;
   border-bottom-color: #edf2f8;
 }
 
 .import-config-card :deep(.el-card__body) {
-  padding: 12px 14px 14px;
+  padding: 10px 12px 12px;
+  max-height: 420px;
+  overflow: auto;
 }
 
 .import-config-stack {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .import-config-row {
@@ -1633,21 +2000,24 @@ const subtitleWorkbenchCtx = computed(() => ({
 }
 
 .import-config-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   color: #223754;
 }
 
 .import-config-tip {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.5;
   color: #70829a;
 }
 
 .import-filter-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .import-filter-actions {
@@ -1679,8 +2049,8 @@ const subtitleWorkbenchCtx = computed(() => ({
 
 .import-filter-editor {
   display: grid;
-  gap: 6px;
-  padding: 8px;
+  gap: 5px;
+  padding: 6px;
   border-radius: 12px;
   background: #f8fbff;
   border: 1px solid #e2ebfb;
@@ -1712,20 +2082,48 @@ const subtitleWorkbenchCtx = computed(() => ({
   line-height: 1.7;
 }
 
-.import-workbench-shell > :deep(.el-alert) {
+.import-task-detail > :deep(.el-alert) {
   border-radius: 16px;
 }
 
-.import-workbench-shell > :deep(.el-empty) {
+.import-task-detail > :deep(.el-empty) {
   min-height: 240px;
   border-radius: 18px;
   border: 1px dashed #dbe6f5;
   background: linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
 }
 
-.import-workbench-shell > :deep(.subtitle-inspector-workbench),
-.import-workbench-shell > :deep(.el-card) {
+.import-task-detail > :deep(.subtitle-inspector-workbench),
+.import-task-detail > :deep(.el-card) {
   border-radius: 18px;
+}
+
+.import-task-detail > :deep(.subtitle-tree-card) {
+  flex: 0 0 auto;
+}
+
+.import-task-detail > :deep(.subtitle-tree-card .el-card__body) {
+  display: flex;
+  flex-direction: column;
+  min-height: 720px;
+}
+
+.import-task-placeholder {
+  border: 1px dashed #d8e3f2;
+  background: linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
+}
+
+.import-task-placeholder-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #24364f;
+}
+
+.import-task-placeholder-text {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #6d8099;
 }
 
 .name-preview {
@@ -1738,21 +2136,25 @@ const subtitleWorkbenchCtx = computed(() => ({
 }
 
 @media (max-width: 960px) {
-  .import-workbench-layout {
-    grid-template-columns: 1fr;
-  }
-
   .import-workbench-summary {
     grid-template-columns: 1fr;
   }
 
-  .import-queue-card {
-    position: static;
+  .import-task-row {
+    grid-template-columns: 1fr;
   }
 
-  .import-queue-list {
+  .import-task-row-actions {
+    justify-content: flex-start;
+  }
+
+  .import-task-list-body {
     max-height: none;
     padding-right: 0;
+  }
+
+  .import-workbench-modal {
+    padding: 14px;
   }
 }
 </style>

@@ -309,24 +309,26 @@ function formatSubtitleItemName(item = {}) {
 </script>
 
 <style scoped>
+.subtitle-tree-card { display: flex; flex-direction: column; min-height: 0; }
+.subtitle-tree-card :deep(.el-card__body) { display: flex; flex-direction: column; min-height: 0; }
 .subtitle-section-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .subtitle-section-tip { font-size: 12px; color: #7c8ba1; line-height: 1.5; }
 .subtitle-mini-chip { display: inline-flex; align-items: center; padding: 7px 11px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #f4f6f9; color: #59697f; border: 1px solid #e6ebf2; }
 .subtitle-tree-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
 .subtitle-tree-action-tip { font-size: 12px; color: #7c8ba1; }
-.subtitle-tree-shell { display: grid; gap: 12px; min-height: 520px; }
+.subtitle-tree-shell { display: flex; flex-direction: column; gap: 12px; min-height: 780px; }
 .subtitle-inspector-empty { display: grid; gap: 10px; padding: 18px 0 8px; }
 .subtitle-empty-tip { text-align: center; font-size: 12px; color: #7c8ba1; }
 .subtitle-tree-info { display: grid; gap: 8px; padding: 14px; border-radius: 14px; background: #f8fbff; border: 1px solid #e5eefb; }
 .subtitle-tree-title { font-size: 15px; font-weight: 700; color: #223754; }
 .subtitle-tree-path { font-size: 12px; color: #75859b; word-break: break-all; line-height: 1.6; }
 .subtitle-tree-meta { display: flex; gap: 8px; flex-wrap: wrap; }
-.subtitle-match-shell { display: grid; gap: 10px; }
+.subtitle-match-shell { display: flex; flex-direction: column; gap: 10px; flex: 1; }
 .subtitle-match-header { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
 .subtitle-sequence-hint { margin-top: 8px; font-size: 12px; line-height: 1.6; color: #5d7396; }
 .subtitle-match-done-alert { margin-top: -2px; }
 .subtitle-match-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr) minmax(0, 1fr); gap: 14px; }
-.subtitle-match-panel, .subtitle-match-center { min-width: 0; border: 1px solid #e5ebf5; border-radius: 16px; background: #fbfcfe; padding: 10px; display: grid; gap: 8px; align-content: start; }
+.subtitle-match-panel, .subtitle-match-center { min-width: 0; border: 1px solid #e5ebf5; border-radius: 16px; background: #fbfcfe; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .subtitle-match-panel-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
 .subtitle-match-preview-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: start; }
 .subtitle-match-panel-tools, .subtitle-match-preview-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
@@ -335,7 +337,7 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-box-meta { font-size: 12px; color: #73849a; }
 .subtitle-match-filter-select { width: 120px; }
 .subtitle-match-search { width: 100%; }
-.subtitle-match-list, .subtitle-match-pair-list { display: grid; gap: 8px; max-height: 392px; overflow: auto; padding-right: 4px; }
+.subtitle-match-list, .subtitle-match-pair-list { display: grid; gap: 8px; min-height: 360px; max-height: 560px; overflow: auto; padding-right: 4px; }
 .subtitle-match-item, .subtitle-match-pair { width: 100%; text-align: left; border: 1px solid #e6ecf5; border-radius: 12px; background: #fff; padding: 10px; cursor: pointer; transition: border-color .18s ease, box-shadow .18s ease, background .18s ease; }
 .subtitle-match-item:hover, .subtitle-match-pair:hover { border-color: #b8cff5; box-shadow: 0 8px 18px rgba(54, 90, 150, .08); }
 .subtitle-match-item.active, .subtitle-match-pair.active { border-color: #7eb1ff; box-shadow: 0 0 0 3px rgba(64, 158, 255, .08); background: #f7fbff; }
@@ -372,7 +374,7 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-tree-selection-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .subtitle-tree-selection-tip { font-size: 12px; color: #8a97aa; }
 .subtitle-tree-head { margin-top: 2px; }
-.subtitle-tree-scroll { max-height: 440px; }
+.subtitle-tree-scroll { min-height: 260px; max-height: 520px; overflow: auto; }
 .subtitle-tree-row-actions { display: flex; gap: 8px; }
 .fm-head, .fm-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) 110px 170px 120px; align-items: center; }
 .fm-head { min-height: 36px; padding: 0 12px; border-bottom: 1px solid #e8edf5; background: #f6f8fb; font-size: 12px; font-weight: 700; color: #5f7188; }

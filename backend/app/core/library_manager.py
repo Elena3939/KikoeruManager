@@ -794,6 +794,14 @@ class LibraryManager:
     def _remote_empty_search_cache_ttl_seconds(self) -> int:
         return min(12, max(5, self._remote_search_cache_ttl_seconds() // 6))
 
+    def _remote_search_timeout_seconds(self) -> float:
+        raw = self.load_config().get("remote_search_timeout_seconds", 30)
+        try:
+            val = float(raw)
+        except Exception:
+            val = 30.0
+        return max(10.0, min(val, 120.0))
+
     def _build_remote_search_cache_key(
         self,
         *,
@@ -1518,39 +1526,64 @@ class LibraryManager:
         client: SynologyFileStationClient,
         task_id: str,
         *,
-        timeout_seconds: float = 20.0,
-        poll_interval: float = 0.6,
-        fallback_wait_seconds: float = 5.0,
+        timeout_seconds: float = 30.0,
+        initial_delay: float = 0.5,
+        max_delay: float = 3.0,
     ) -> dict[str, Any]:
-        deadline = time.time() + max(1.0, timeout_seconds)
-        last_status: dict[str, Any] = {}
-        while time.time() < deadline:
+        """轮询 search_status 直到搜索完成或超时，使用指数退避。"""
+        start_time = time.monotonic()
+        deadline = start_time + timeout_seconds
+        delay = initial_delay
+        poll_count = 0
+        last_probe: dict[str, Any] = {}
+
+        logger.info(
+            "远程搜索开始轮询等待: task_id=%s timeout=%.1fs",
+            task_id,
+            timeout_seconds,
+        )
+
+        while True:
+            await asyncio.sleep(delay)
+            poll_count += 1
+            elapsed = time.monotonic() - start_time
+
             try:
-                status = await client.search_status(task_id)
-            except Exception as exc:
-                if client._is_error_code(exc, 103):
-                    logger.info(
-                        "远程搜索状态接口不受支持，改用固定等待: task_id=%s wait=%.1fs",
-                        task_id,
-                        fallback_wait_seconds,
-                    )
-                else:
-                    logger.warning(
-                        "远程搜索状态读取失败，改用固定等待: task_id=%s wait=%.1fs",
-                        task_id,
-                        fallback_wait_seconds,
-                        exc_info=True,
-                    )
-                await asyncio.sleep(max(0.5, fallback_wait_seconds))
-                return last_status
+                probe = await client.list_search(
+                    task_id, offset=0, limit=1,
+                    sort_by="name", sort_direction="asc",
+                )
+                last_probe = probe or {}
+                finished = last_probe.get("finished", False)
+                probe_total = int(last_probe.get("total", 0) or 0)
+                logger.info(
+                    "远程搜索状态轮询: task_id=%s poll=%d elapsed=%.1fs finished=%s total=%d",
+                    task_id,
+                    poll_count,
+                    elapsed,
+                    finished,
+                    probe_total,
+                )
+                if finished:
+                    return last_probe
+            except Exception:
+                logger.warning(
+                    "远程搜索轮询查询失败: task_id=%s poll=%d",
+                    task_id,
+                    poll_count,
+                    exc_info=True,
+                )
 
-            last_status = status or {}
-            logger.info("远程搜索状态: task_id=%s status=%s", task_id, last_status)
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "远程搜索等待超时: task_id=%s timeout=%.1fs polls=%d",
+                    task_id,
+                    timeout_seconds,
+                    poll_count,
+                )
+                return last_probe
 
-            if status.get("finished") is True:
-                return last_status
-            await asyncio.sleep(poll_interval)
-        return last_status
+            delay = min(delay * 2, max_delay)
 
     def _build_remote_search_entry(
         self,
@@ -1643,45 +1676,42 @@ class LibraryManager:
             return await existing_task
 
         async def _execute_search() -> tuple[list[dict[str, Any]], int]:
-            max_rounds = 1
             request_limit = request_key[3]
+            max_warmup_retries = 3
+            retry_delay = 2.0
+            attempt = 0
+            consecutive_start_errors = 0
 
-            for round_index in range(1, max_rounds + 1):
+            while attempt < max_warmup_retries:
+                attempt += 1
                 task_id = None
-                started_at = time.time()
+                attempt_start = time.time()
                 try:
                     logger.info(
-                        "远程搜索开始: scope=%s keyword=%s recursive=%s round=%s/%s",
+                        "远程搜索开始: scope=%s keyword=%s recursive=%s attempt=%d/%d",
                         scope_path,
                         keyword,
                         True,
-                        round_index,
-                        max_rounds,
+                        attempt,
+                        max_warmup_retries,
                     )
                     started = await client.start_search(scope_path, keyword, recursive=True)
                     task_id = started.get("taskid") or started.get("task_id")
                     if not task_id:
                         raise RuntimeError("群晖搜索接口未返回 taskid")
+                    consecutive_start_errors = 0
                     logger.info(
-                        "远程搜索任务已创建: scope=%s keyword=%s task_id=%s round=%s/%s",
+                        "远程搜索任务已创建: scope=%s keyword=%s task_id=%s attempt=%d/%d",
                         scope_path,
                         keyword,
                         task_id,
-                        round_index,
-                        max_rounds,
-                    )
-                    logger.info(
-                        "远程搜索等待结果: scope=%s keyword=%s task_id=%s",
-                        scope_path,
-                        keyword,
-                        task_id,
+                        attempt,
+                        max_warmup_retries,
                     )
                     await self._wait_remote_search_ready(
                         client,
                         task_id,
-                        timeout_seconds=55.0,
-                        poll_interval=1.0,
-                        fallback_wait_seconds=5.0,
+                        timeout_seconds=self._remote_search_timeout_seconds(),
                     )
 
                     offset = 0
@@ -1703,26 +1733,68 @@ class LibraryManager:
                         offset += len(page_items)
                         if not page_items or offset >= page_total:
                             break
-                    waited_seconds = max(0.0, time.time() - started_at)
+                    attempt_seconds = max(0.0, time.time() - attempt_start)
                     logger.info(
-                        "远程搜索结果: scope=%s keyword=%s task_id=%s round=%s/%s waited=%.1fs raw_items=%s total=%s",
+                        "远程搜索结果: scope=%s keyword=%s task_id=%s attempt=%d/%d attempt_time=%.1fs raw_items=%s total=%s",
                         scope_path,
                         keyword,
                         task_id,
-                        round_index,
-                        max_rounds,
-                        waited_seconds,
+                        attempt,
+                        max_warmup_retries,
+                        attempt_seconds,
                         len(raw_items),
                         total,
                     )
                     if raw_items or total:
                         return raw_items[:LIBRARY_SEARCH_RESULT_LIMIT], total
+
+                    if attempt_seconds >= 3.0:
+                        logger.info(
+                            "远程搜索耗时%.1fs仍无结果，判定为真空: scope=%s keyword=%s",
+                            attempt_seconds,
+                            scope_path,
+                            keyword,
+                        )
+                        return [], 0
+
+                    if attempt < max_warmup_retries:
+                        logger.info(
+                            "远程搜索秒回空结果(索引预热中)，%.1fs后重试: scope=%s keyword=%s attempt=%d/%d",
+                            retry_delay,
+                            scope_path,
+                            keyword,
+                            attempt,
+                            max_warmup_retries,
+                        )
+                except Exception as exc:
+                    consecutive_start_errors += 1
+                    logger.warning(
+                        "远程搜索异常: scope=%s keyword=%s attempt=%d/%d consecutive_errors=%d",
+                        scope_path,
+                        keyword,
+                        attempt,
+                        max_warmup_retries,
+                        consecutive_start_errors,
+                        exc_info=True,
+                    )
+                    if consecutive_start_errors >= 2:
+                        logger.warning(
+                            "远程搜索连续%d次异常，放弃: scope=%s keyword=%s",
+                            consecutive_start_errors,
+                            scope_path,
+                            keyword,
+                        )
+                        return [], 0
                 finally:
                     if task_id:
                         try:
                             await client.stop_search(task_id)
                         except Exception:
                             logger.debug("停止群晖搜索任务失败: %s", task_id, exc_info=True)
+
+                if attempt < max_warmup_retries:
+                    await asyncio.sleep(retry_delay)
+
             return [], 0
 
         search_task = asyncio.create_task(_execute_search())
@@ -1920,9 +1992,7 @@ class LibraryManager:
         )
         client = SynologyFileStationClient(library.synology)
         try:
-            info = await client.stat(target_path)
-            info_item = self._first_remote_info_item(info)
-            if not info_item:
+            if not await self._remote_path_exists(client, target_path):
                 raise FileNotFoundError("目标路径不存在")
         except FileNotFoundError:
             raise
@@ -2635,12 +2705,26 @@ class LibraryManager:
                 "error": None,
             }
         except Exception as exc:
-            return {
-                "exists": False,
-                "path": normalized_path,
-                "item": None,
-                "error": str(exc),
-            }
+            try:
+                if normalized_path == "/":
+                    data = await client.list_share(offset=0, limit=1, sort_by="name", sort_direction="asc")
+                    sample_items = data.get("shares") or data.get("files") or []
+                else:
+                    data = await client.list(normalized_path, offset=0, limit=1, sort_by="name", sort_direction="asc")
+                    sample_items = data.get("files") or []
+                return {
+                    "exists": True,
+                    "path": normalized_path,
+                    "item": sample_items[0] if sample_items else {"path": normalized_path, "isdir": True},
+                    "error": f"stat_failed_then_list_succeeded: {exc}",
+                }
+            except Exception as list_exc:
+                return {
+                    "exists": False,
+                    "path": normalized_path,
+                    "item": None,
+                    "error": f"stat={exc}; list={list_exc}",
+                }
 
     async def _remote_child_visible(self, client: SynologyFileStationClient, parent_path: str, child_name: str) -> Optional[bool]:
         try:
@@ -3077,20 +3161,39 @@ class LibraryManager:
         )
 
         client = SynologyFileStationClient(library.synology)
+        info_item: Optional[dict[str, Any]] = None
         try:
             info = await client.stat(target_path)
+            info_item = self._first_remote_info_item(info)
         except Exception as exc:
             if client._is_error_code(exc, 119):
-                await self._raise_remote_code_119_context(
-                    client=client,
-                    library=library,
-                    action="获取库存文件夹内容",
-                    incoming_path=path,
-                    target_path=target_path,
-                    original_error=exc,
-                )
-            raise
-        info_item = self._first_remote_info_item(info)
+                try:
+                    fallback_data = (
+                        await client.list_share(offset=0, limit=1, sort_by="name", sort_direction="asc")
+                        if target_path == "/"
+                        else await client.list(target_path, offset=0, limit=1, sort_by="name", sort_direction="asc")
+                    )
+                    fallback_items = fallback_data.get("shares") or fallback_data.get("files") or []
+                    info_item = fallback_items[0] if fallback_items else {"path": target_path, "isdir": True}
+                    logger.warning(
+                        "远程文件夹摘要回退到 list: library_id=%s path=%s original_error=%s",
+                        library.id,
+                        target_path,
+                        exc,
+                    )
+                    info_item = info_item or {"path": target_path, "isdir": True}
+                except Exception:
+                    await self._raise_remote_code_119_context(
+                        client=client,
+                        library=library,
+                        action="获取库存文件夹内容",
+                        incoming_path=path,
+                        target_path=target_path,
+                        original_error=exc,
+                    )
+                    raise
+            else:
+                raise
         if not info_item or not info_item.get("isdir", False):
             raise FileNotFoundError("目标文件夹不存在")
 
@@ -3341,14 +3444,20 @@ class LibraryManager:
         ])
 
     async def _remote_path_exists(self, client: SynologyFileStationClient, path: str) -> bool:
+        normalized_path = self._normalize_remote_path(path)
         try:
-            info = await client.stat(path)
-        except Exception as exc:
-            if self._is_error_code(exc, 119):
-                return False
-            raise
-        item = self._first_remote_info_item(info)
-        return bool(item)
+            info = await client.stat(normalized_path)
+            item = self._first_remote_info_item(info)
+            if item:
+                return True
+        except Exception:
+            pass
+
+        parent_path = self._remote_parent_path(normalized_path)
+        if parent_path == normalized_path:
+            return False
+        child_visible = await self._remote_child_visible(client, parent_path, PurePosixPath(normalized_path).name)
+        return bool(child_visible)
 
     async def _retry_remote_rename(
         self,
