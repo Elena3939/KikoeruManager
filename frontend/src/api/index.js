@@ -829,6 +829,14 @@ export const subtitleImportApi = {
     return response.data
   },
 
+  clearPending: async (options = {}) => {
+    const response = await apiClient.post('/subtitle-import/pending/clear', {
+      record_ids: options.recordIds || [],
+      clear_all: options.clearAll ?? false
+    })
+    return response.data
+  },
+
   executePending: async (recordId, options = {}) => {
     const response = await apiClient.post(`/subtitle-import/pending/${recordId}/execute`, {
       target_library_id: options.targetLibraryId || undefined,

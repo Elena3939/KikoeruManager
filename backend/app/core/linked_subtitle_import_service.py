@@ -40,12 +40,85 @@ class LinkedSubtitleImportService:
     def _extract_rjcode(self, value: str) -> str:
         return self.subtitle_service.extract_rjcode(str(value or "")) or ""
 
+    def _normalize_single_rjcode(self, value: str) -> str:
+        extracted = self._extract_rjcode(value)
+        return extracted or str(value or "").strip().upper()
+
+    def _extract_all_rjcodes(self, value: str) -> List[str]:
+        return [
+            match.group(0).upper()
+            for match in re.finditer(r"[RVB]J(?:\d{8}|\d{6})(?!\d)", str(value or ""), re.IGNORECASE)
+        ]
+
+    def _has_multiple_rjcodes(self, value: str) -> bool:
+        return len(self._extract_all_rjcodes(value)) > 1
+
     def _extract_rjcode_from_paths(self, *values: str) -> str:
         for value in values:
             rjcode = self._extract_rjcode(value)
             if rjcode:
                 return rjcode
         return ""
+
+    async def _repair_cached_preview_rj_fields(
+        self,
+        preview: Dict[str, Any],
+        *,
+        source_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        next_preview = dict(preview or {})
+        next_preview.setdefault("source_path", str(source_path or "").strip())
+
+        raw_source_rjcode = str(next_preview.get("source_rjcode") or "").strip().upper()
+        raw_target_rjcode = str(next_preview.get("target_rjcode") or "").strip().upper()
+        source_dirty = self._has_multiple_rjcodes(raw_source_rjcode)
+        target_dirty = self._has_multiple_rjcodes(raw_target_rjcode)
+
+        if not source_dirty and not target_dirty:
+            return next_preview
+
+        repaired_source_rjcode = self._extract_rjcode_from_paths(
+            next_preview.get("source_path", ""),
+            next_preview.get("source_label", ""),
+            next_preview.get("source_subtitle_dir", ""),
+            next_preview.get("staged_subtitle_dir", ""),
+            raw_source_rjcode,
+        )
+        if not repaired_source_rjcode:
+            repaired_source_rjcode = self._extract_rjcode(raw_source_rjcode)
+
+        if not repaired_source_rjcode:
+            next_preview["source_rjcode"] = self._extract_rjcode(raw_source_rjcode)
+            next_preview["target_rjcode"] = self._extract_rjcode(raw_target_rjcode)
+            return next_preview
+
+        preferred_library_id = str(
+            (next_preview.get("selected_candidate") or {}).get("library_id")
+            or ((next_preview.get("candidates") or [{}])[0] or {}).get("library_id")
+            or ""
+        ).strip() or None
+
+        rebuilt_preview = await self._build_common_preview(
+            source_rjcode=repaired_source_rjcode,
+            source_label=str(
+                next_preview.get("source_label")
+                or os.path.basename(str(next_preview.get("source_path") or "").rstrip("\\/"))
+                or next_preview.get("source_path")
+                or ""
+            ),
+            subtitle_count=int(next_preview.get("subtitle_count") or 0),
+            preferred_library_id=preferred_library_id,
+        )
+
+        rebuilt_preview.update({
+            "mode": next_preview.get("mode"),
+            "source_path": next_preview.get("source_path"),
+            "source_has_subtitles": next_preview.get("source_has_subtitles"),
+            "source_subtitle_dir": next_preview.get("source_subtitle_dir"),
+            "staged_subtitle_dir": next_preview.get("staged_subtitle_dir"),
+            "subtitle_entries": next_preview.get("subtitle_entries") or [],
+        })
+        return rebuilt_preview
 
     def _is_subtitle_entry(self, entry_name: str) -> bool:
         normalized = str(entry_name or "").replace("\\", "/").strip("/")
@@ -636,6 +709,8 @@ class LinkedSubtitleImportService:
             execute_reason = "来源内容中没有可导入的字幕文件"
         elif candidates and not ready_candidates:
             execute_reason = "原作目录已有字幕，按重复作品处理"
+        elif not candidates:
+            execute_reason = "目标作品仍缺字幕，但尚未定位到可用库存目录，可稍后重试或手动选择目标目录"
         elif len(ready_candidates) > 1:
             execute_reason = "命中多个可用目标目录，需要在字幕补配页手动选择"
 
@@ -1195,9 +1270,16 @@ class LinkedSubtitleImportService:
         subtitle_count: int,
         preferred_library_id: Optional[str],
     ) -> Dict[str, Any]:
+        source_rjcode = self._extract_rjcode(source_rjcode)
         translation_info = await self.dlsite_service.get_translation_info(source_rjcode) if source_rjcode else None
-        target_rjcode = await self._resolve_translation_target_rjcode(source_rjcode, translation_info)
-        is_translation_work = bool(source_rjcode and target_rjcode and target_rjcode != source_rjcode)
+        resolved_target_rjcode = await self._resolve_translation_target_rjcode(source_rjcode, translation_info)
+        is_translation_work = bool(source_rjcode and resolved_target_rjcode and resolved_target_rjcode != source_rjcode)
+        # Some manually made subtitle packs are placed directly into the original RJ folder.
+        # When the source is not a translation work but clearly contains subtitle files,
+        # we still treat it as a linked subtitle source and supplement the same RJ work.
+        is_manual_subtitle_source = bool(source_rjcode and subtitle_count > 0 and not is_translation_work)
+        target_rjcode = resolved_target_rjcode or (source_rjcode if is_manual_subtitle_source else "")
+        is_linked_subtitle_source = bool(is_translation_work or is_manual_subtitle_source)
 
         source_kikoeru_result = None
         source_exists_in_kikoeru = False
@@ -1240,27 +1322,42 @@ class LinkedSubtitleImportService:
             bool(source_rjcode)
             and (
                 not target_rjcode
-                or (not target_exists_in_kikoeru and not candidates)
+                or (
+                    candidate_search_status != "pending_remote"
+                    and not target_exists_in_kikoeru
+                    and not candidates
+                )
             )
         )
-        should_queue_pending = (
-            bool(source_rjcode)
-            and is_translation_work
-            and not source_exists_in_kikoeru
-            and target_needs_subtitle_in_kikoeru
-            and subtitle_count > 0
-        )
+        should_queue_pending = False
+        if is_translation_work:
+            should_queue_pending = (
+                bool(source_rjcode)
+                and not source_exists_in_kikoeru
+                and target_needs_subtitle_in_kikoeru
+                and subtitle_count > 0
+            )
+        elif is_manual_subtitle_source:
+            should_queue_pending = (
+                bool(source_rjcode)
+                and subtitle_count > 0
+                and (
+                    target_needs_subtitle_in_kikoeru
+                    or bool(candidates)
+                    or candidate_search_status == "pending_remote"
+                )
+            )
 
         stage_reason = ""
         if not source_rjcode:
             stage_reason = "无法识别来源作品 RJ 号"
         elif treat_as_new_work:
             stage_reason = "未命中任何关联作品，按新作直接解压入库"
-        elif not is_translation_work:
+        elif not is_linked_subtitle_source:
             stage_reason = "当前作品不是可补配到原作的翻译作品"
-        elif source_exists_in_kikoeru:
+        elif is_translation_work and source_exists_in_kikoeru:
             stage_reason = "来源作品已在 Kikoeru 命中，按重复作品处理"
-        elif not target_exists_in_kikoeru:
+        elif is_translation_work and not target_exists_in_kikoeru:
             stage_reason = "Kikoeru 未命中原作作品，按普通解压入库处理"
         elif target_has_subtitle_in_kikoeru:
             stage_reason = "Kikoeru 显示原作已有字幕，不需要触发字幕补配"
@@ -1274,7 +1371,7 @@ class LinkedSubtitleImportService:
         elif not subtitle_count:
             execute_reason = "来源内容中没有可导入的字幕文件"
         elif not candidates:
-            execute_reason = "Kikoeru 显示原作缺字幕，尚未定位到本地库存原作目录，可稍后重试或手动选择目标目录"
+            execute_reason = "目标作品仍缺字幕，但尚未定位到可用库存目录，可稍后重试或手动选择目标目录"
         elif len(ready_candidates) > 1:
             execute_reason = "命中多个可用目标目录，需要在字幕补配页手动选择"
 
@@ -1286,6 +1383,8 @@ class LinkedSubtitleImportService:
             "source_label": source_label,
             "target_rjcode": target_rjcode,
             "is_translation_work": is_translation_work,
+            "is_manual_subtitle_source": is_manual_subtitle_source,
+            "is_linked_subtitle_source": is_linked_subtitle_source,
             "subtitle_count": subtitle_count,
             "translation_info": {
                 "is_original": bool(getattr(translation_info, "is_original", False)) if translation_info else False,
@@ -1334,7 +1433,7 @@ class LinkedSubtitleImportService:
             raise ValueError("指定路径不是压缩包文件")
 
         archive_info = await self.extract_service.get_archive_info(archive_path)
-        source_rjcode = str(source_rjcode_hint or "").strip().upper() or self._extract_rjcode_from_paths(
+        source_rjcode = self._extract_rjcode(source_rjcode_hint) or self._extract_rjcode_from_paths(
             archive_path,
             getattr(archive_info, "inferred_rjcode", "") if archive_info else "",
         )
@@ -1790,7 +1889,7 @@ class LinkedSubtitleImportService:
         }
 
     def _should_create_pending_import(self, preview: Dict[str, Any]) -> bool:
-        return bool(preview.get("should_queue_pending"))
+        return bool(preview.get("can_stage_pending"))
 
     def _can_execute_pending_import(self, preview: Dict[str, Any]) -> bool:
         return bool(preview.get("can_execute"))
@@ -1800,9 +1899,9 @@ class LinkedSubtitleImportService:
             return False
         if not str(preview.get("target_rjcode") or "").strip():
             return False
-        if not bool(preview.get("is_translation_work")):
+        if not bool(preview.get("is_linked_subtitle_source") or preview.get("is_translation_work")):
             return False
-        if not bool(preview.get("kikoeru_has_work")):
+        if not bool(preview.get("kikoeru_has_work")) and str(preview.get("candidate_search_status") or "").strip().lower() != "pending_remote":
             return False
         if str(preview.get("stage_reason") or "").strip():
             return False
@@ -1873,10 +1972,12 @@ class LinkedSubtitleImportService:
 
     def _serialize_pending_record(self, conflict: ConflictWork) -> Dict[str, Any]:
         preview = dict((conflict.analysis_info or {}).get("preview") or {})
-        preview.setdefault("target_rjcode", (conflict.new_metadata or {}).get("target_rjcode") or "")
-        preview.setdefault("source_rjcode", (conflict.new_metadata or {}).get("source_rjcode") or "")
+        preview.setdefault("target_rjcode", self._extract_rjcode((conflict.new_metadata or {}).get("target_rjcode") or ""))
+        preview.setdefault("source_rjcode", self._extract_rjcode((conflict.new_metadata or {}).get("source_rjcode") or ""))
         preview.setdefault("source_label", (conflict.new_metadata or {}).get("source_label") or "")
         preview.setdefault("subtitle_count", (conflict.new_metadata or {}).get("subtitle_count") or 0)
+        preview["source_rjcode"] = self._extract_rjcode(preview.get("source_rjcode") or "")
+        preview["target_rjcode"] = self._extract_rjcode(preview.get("target_rjcode") or "")
         preview = self._refresh_preview_execution_state(preview)
         return {
             "id": conflict.id,
@@ -1890,13 +1991,13 @@ class LinkedSubtitleImportService:
         }
 
     async def queue_pending_archive_import(self, task: Task, rjcode: str) -> Dict[str, Any]:
-        hinted_rjcode = str(
+        hinted_rjcode = self._extract_rjcode(
             rjcode
             or getattr(task, "rjcode", "")
             or (task.task_metadata or {}).get("rjcode")
             or (task.task_metadata or {}).get("inferred_rjcode")
             or ""
-        ).strip().upper()
+        )
         preview = await self.preview_archive_import(
             task.source_path,
             source_rjcode_hint=hinted_rjcode,
@@ -1906,11 +2007,12 @@ class LinkedSubtitleImportService:
             preview = await self._stage_archive_subtitles_for_preview(task.source_path, preview)
             should_create_pending = self._should_create_pending_import(preview)
         logger.info(
-            "[字幕补配预检] source=%s source_rj=%s target_rj=%s is_translation_work=%s subtitle_count=%s candidate_count=%s ready_candidate_count=%s kikoeru_has_work=%s stage_reason=%s execute_reason=%s handled=%s can_execute=%s",
+            "[字幕补配预检] source=%s source_rj=%s target_rj=%s is_translation_work=%s is_manual_subtitle_source=%s subtitle_count=%s candidate_count=%s ready_candidate_count=%s kikoeru_has_work=%s stage_reason=%s execute_reason=%s handled=%s can_execute=%s",
             task.source_path,
             preview.get("source_rjcode", ""),
             preview.get("target_rjcode", ""),
             bool(preview.get("is_translation_work")),
+            bool(preview.get("is_manual_subtitle_source")),
             int(preview.get("subtitle_count") or 0),
             int(preview.get("candidate_count") or 0),
             int(preview.get("ready_candidate_count") or 0),
@@ -2015,9 +2117,22 @@ class LinkedSubtitleImportService:
             items: List[Dict[str, Any]] = []
             updated = False
             for row in rows:
-                preview = dict((row.analysis_info or {}).get("preview") or {})
+                original_preview = dict((row.analysis_info or {}).get("preview") or {})
+                preview = await self._repair_cached_preview_rj_fields(
+                    original_preview,
+                    source_path=str(row.new_path or ""),
+                )
                 refreshed_preview = await self._refresh_pending_preview_candidates(preview)
-                if refreshed_preview != preview:
+                if not self._should_create_pending_import(refreshed_preview):
+                    stage_dir = str(
+                        refreshed_preview.get("source_subtitle_dir") or refreshed_preview.get("staged_subtitle_dir") or ""
+                    ).strip()
+                    if stage_dir:
+                        self._cleanup_stage_dir(stage_dir)
+                    db.delete(row)
+                    updated = True
+                    continue
+                if refreshed_preview != original_preview:
                     row.analysis_info = {
                         **(row.analysis_info or {}),
                         "preview": refreshed_preview,
@@ -2028,6 +2143,60 @@ class LinkedSubtitleImportService:
             if updated:
                 db.commit()
             return items
+        finally:
+            db.close()
+
+    async def clear_pending_imports(
+        self,
+        *,
+        record_ids: Optional[List[str]] = None,
+        clear_all: bool = False,
+    ) -> Dict[str, Any]:
+        normalized_ids = [
+            str(record_id or "").strip()
+            for record_id in (record_ids or [])
+            if str(record_id or "").strip()
+        ]
+        if not clear_all and not normalized_ids:
+            raise ValueError("没有可清除的字幕补配预检单")
+
+        db = next(get_db())
+        try:
+            query = db.query(ConflictWork).filter(
+                ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
+                ConflictWork.status == "PENDING",
+            )
+            if not clear_all:
+                query = query.filter(ConflictWork.id.in_(normalized_ids))
+
+            rows = query.all()
+            if not rows:
+                raise ValueError("未找到可清除的字幕补配预检单")
+
+            cleared_ids: List[str] = []
+            cleared_stage_dirs = 0
+            for row in rows:
+                preview = dict((row.analysis_info or {}).get("preview") or {})
+                stage_dir = str(
+                    preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or ""
+                ).strip()
+                if stage_dir:
+                    self._cleanup_stage_dir(stage_dir)
+                    cleared_stage_dirs += 1
+                cleared_ids.append(str(row.id))
+                db.delete(row)
+
+            db.commit()
+            return {
+                "success": True,
+                "cleared_count": len(cleared_ids),
+                "cleared_ids": cleared_ids,
+                "cleared_stage_dirs": cleared_stage_dirs,
+                "clear_all": bool(clear_all),
+            }
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -2066,7 +2235,10 @@ class LinkedSubtitleImportService:
                 raise ValueError("字幕补配预检单不存在")
 
             record_preview = await self._refresh_pending_preview_candidates(
-                dict((record.analysis_info or {}).get("preview") or {})
+                await self._repair_cached_preview_rj_fields(
+                    dict((record.analysis_info or {}).get("preview") or {}),
+                    source_path=str(record.new_path or ""),
+                )
             )
             record.analysis_info = {
                 **(record.analysis_info or {}),

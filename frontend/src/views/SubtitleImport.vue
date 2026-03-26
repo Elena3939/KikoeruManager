@@ -28,7 +28,30 @@
 
               <el-empty v-if="!pendingItems.length && !pendingLoading" description="当前没有待处理的字幕补配预检单" />
 
-              <div v-else class="pending-list">
+              <div v-else>
+                <div class="pending-toolbar">
+                  <el-button
+                    size="small"
+                    type="danger"
+                    plain
+                    :disabled="!activePendingItem || pendingClearLoading"
+                    :loading="pendingClearLoading && pendingClearMode === 'single'"
+                    @click="clearPendingImports(false)"
+                  >
+                    清除当前
+                  </el-button>
+                  <el-button
+                    size="small"
+                    type="danger"
+                    :disabled="!pendingItems.length || pendingClearLoading"
+                    :loading="pendingClearLoading && pendingClearMode === 'all'"
+                    @click="clearPendingImports(true)"
+                  >
+                    清空预检单
+                  </el-button>
+                </div>
+
+                <div class="pending-list">
                 <button
                   v-for="item in pendingItems"
                   :key="item.id"
@@ -38,19 +61,20 @@
                   @click="activePendingId = item.id"
                 >
                   <div class="pending-item-head">
-                    <strong>{{ item.preview?.target_rjcode || item.preview?.source_rjcode || '未识别 RJ' }}</strong>
+                    <strong>{{ getDisplayRJCode(item.preview?.target_rjcode || item.preview?.source_rjcode) || '未识别 RJ' }}</strong>
                     <el-tag size="small" :type="item.can_execute ? 'success' : 'info'">
                       {{ item.can_execute ? '可执行' : '仅查看' }}
                     </el-tag>
                   </div>
                   <div class="pending-item-title">{{ item.preview?.source_label || getFileName(item.source_path) }}</div>
                   <div class="pending-item-meta">
-                    <span>来源 {{ item.preview?.source_rjcode || '-' }}</span>
-                    <span>目标 {{ item.preview?.target_rjcode || '-' }}</span>
+                    <span>来源 {{ getDisplayRJCode(item.preview?.source_rjcode) || '-' }}</span>
+                    <span>目标 {{ getDisplayRJCode(item.preview?.target_rjcode) || '-' }}</span>
                     <span>字幕 {{ item.preview?.subtitle_count ?? 0 }}</span>
                   </div>
                   <div class="pending-item-path">{{ item.source_path }}</div>
                 </button>
+              </div>
               </div>
             </el-card>
 
@@ -66,7 +90,7 @@
 
               <el-empty v-if="!activePendingItem" description="先从左侧选择一条自动检测到的预检单" />
 
-              <div v-else class="detail-shell">
+              <div v-else :key="activePendingItem.id" class="detail-shell">
                 <el-alert
                   :title="activePendingItem.can_execute ? '这条来源可以进入字幕补配' : '这条来源目前只能查看预检结果'"
                   :type="activePendingItem.can_execute ? 'success' : 'warning'"
@@ -89,10 +113,10 @@
                   </el-button>
                 </div>
 
-                <el-descriptions :column="2" border>
+                <el-descriptions :key="`archive-preview-${activePendingItem.id}`" :column="2" border>
                   <el-descriptions-item label="来源压缩包">{{ activePendingItem.preview?.source_label || '-' }}</el-descriptions-item>
-                  <el-descriptions-item label="来源 RJ">{{ activePendingItem.preview?.source_rjcode || '-' }}</el-descriptions-item>
-                  <el-descriptions-item label="目标原作 RJ">{{ activePendingItem.preview?.target_rjcode || '-' }}</el-descriptions-item>
+                  <el-descriptions-item label="来源 RJ"><span class="rj-code-value">{{ getDisplayRJCode(activePendingItem.preview?.source_rjcode) || '-' }}</span></el-descriptions-item>
+                  <el-descriptions-item label="目标原作 RJ"><span class="rj-code-value">{{ getDisplayRJCode(activePendingItem.preview?.target_rjcode) || '-' }}</span></el-descriptions-item>
                   <el-descriptions-item label="字幕候选数">{{ activePendingItem.preview?.subtitle_count ?? 0 }}</el-descriptions-item>
                   <el-descriptions-item label="Kikoeru 原作命中">
                     <el-tag :type="activePendingItem.preview?.kikoeru_has_work ? 'success' : 'info'">
@@ -216,7 +240,7 @@
 
               <el-empty v-if="!folderPreview && !folderPreviewLoading" description="输入字幕文件夹路径后做一次预检" />
 
-              <div v-else-if="folderPreview" class="detail-shell">
+              <div v-else-if="folderPreview" :key="`${folderPreview.source_path || folderPreview.source_label || 'folder-preview'}`" class="detail-shell">
                 <el-alert
                   :title="canExecuteFolderImport ? '可以执行字幕文件夹补配' : '这份字幕文件夹当前还不能直接补配'"
                   :type="canExecuteFolderImport ? 'success' : 'warning'"
@@ -239,9 +263,9 @@
                   </el-button>
                 </div>
 
-                <el-descriptions :column="2" border>
-                  <el-descriptions-item label="来源 RJ">{{ folderPreview.source_rjcode || '-' }}</el-descriptions-item>
-                  <el-descriptions-item label="目标原作 RJ">{{ folderPreview.target_rjcode || '-' }}</el-descriptions-item>
+                <el-descriptions :key="`folder-preview-${folderPreview.source_path || folderPreview.source_label || ''}`" :column="2" border>
+                  <el-descriptions-item label="来源 RJ"><span class="rj-code-value">{{ getDisplayRJCode(folderPreview.source_rjcode) || '-' }}</span></el-descriptions-item>
+                  <el-descriptions-item label="目标原作 RJ"><span class="rj-code-value">{{ getDisplayRJCode(folderPreview.target_rjcode) || '-' }}</span></el-descriptions-item>
                   <el-descriptions-item label="来源目录">{{ folderPreview.source_label || '-' }}</el-descriptions-item>
                   <el-descriptions-item label="字幕候选数">{{ folderPreview.subtitle_count ?? 0 }}</el-descriptions-item>
                 </el-descriptions>
@@ -311,6 +335,7 @@
       <SubtitleImportWorkbench
         v-if="workbenchDialogInitialized"
         :task-id="activeWorkbenchTaskId"
+        :visible="workbenchDialogVisible"
         @close="closeImportWorkbench"
         @select-task="openImportedTask"
       />
@@ -321,7 +346,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { rjSubtitleApi, subtitleImportApi } from '../api'
 import SubtitleImportWorkbench from '../components/subtitle-import/SubtitleImportWorkbench.vue'
 
@@ -382,6 +407,13 @@ function formatSubtitleEntryDisplay(entry = '') {
   return [...parts, cleanedFileName].filter(Boolean).join('/')
 }
 
+function getDisplayRJCode(value = '') {
+  const normalized = String(value || '').trim().toUpperCase()
+  if (!normalized) return ''
+  const match = normalized.match(/[RVB]J(?:\d{8}|\d{6})(?!\d)/)
+  return match ? match[0] : normalized
+}
+
 function getSubtitleWorkbenchFilterOptions() {
   const saved = loadJson(SUBTITLE_OPTIONS_KEY, {})
   return {
@@ -430,6 +462,8 @@ const pendingItems = ref([])
 const activePendingId = ref('')
 const executingPendingId = ref('')
 const retryingPendingId = ref('')
+const pendingClearLoading = ref(false)
+const pendingClearMode = ref('')
 const archiveCandidateSelection = reactive({})
 
 const folderPath = ref('')
@@ -624,6 +658,51 @@ async function loadPendingImports() {
     ElMessage.error('加载字幕补配预检单失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     pendingLoading.value = false
+  }
+}
+
+async function clearPendingImports(clearAll = false) {
+  const targetItem = activePendingItem.value
+  const targetIds = clearAll ? (pendingItems.value || []).map(item => String(item.id || '')).filter(Boolean) : [String(targetItem?.id || '')].filter(Boolean)
+  if (!targetIds.length) {
+    ElMessage.warning(clearAll ? '当前没有可清除的预检单' : '请先选择一条预检单')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      clearAll
+        ? `确定清空当前 ${targetIds.length} 条字幕补配预检单吗？清除后需要重新导入或重新等待自动检测。`
+        : '确定清除当前这条字幕补配预检单吗？清除后需要重新导入或重新等待自动检测。',
+      clearAll ? '清空预检单' : '清除当前预检单',
+      {
+        confirmButtonText: clearAll ? '清空' : '清除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch (_) {
+    return
+  }
+
+  pendingClearLoading.value = true
+  pendingClearMode.value = clearAll ? 'all' : 'single'
+  try {
+    const result = await subtitleImportApi.clearPending({
+      recordIds: targetIds,
+      clearAll
+    })
+    await loadPendingImports()
+    ElMessage.success(
+      clearAll
+        ? `已清空 ${Number(result.cleared_count || 0)} 条预检单`
+        : '当前预检单已清除'
+    )
+  } catch (error) {
+    ElMessage.error('清除字幕补配预检单失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    pendingClearLoading.value = false
+    pendingClearMode.value = ''
   }
 }
 
@@ -983,6 +1062,14 @@ function formatSize(size) {
   gap: 8px;
 }
 
+.pending-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
 .pending-list {
   max-height: 330px;
   overflow: auto;
@@ -1086,6 +1173,20 @@ function formatSize(size) {
 .detail-shell :deep(.el-descriptions__cell) {
   padding-top: 8px;
   padding-bottom: 8px;
+}
+
+.rj-code-value {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #31599b;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
 }
 
 .candidate-item :deep(.el-radio) {

@@ -4298,6 +4298,10 @@ class LinkedSubtitlePendingImportExecuteRequest(BaseModel):
     use_filter_rules: bool = False
     subtitle_filter_rules: List[dict] = []
 
+class LinkedSubtitlePendingClearRequest(BaseModel):
+    record_ids: List[str] = []
+    clear_all: bool = False
+
 
 @app.post("/api/rj-subtitle/scan")
 async def rj_subtitle_scan(request: RJSubtitleScanRequest):
@@ -4803,6 +4807,24 @@ async def execute_pending_linked_subtitle_import(record_id: str, request: Linked
     except Exception as e:
         logger.error(f"执行字幕补配预检单失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"执行补配失败: {str(e)}")
+
+
+@app.post("/api/subtitle-import/pending/clear")
+async def clear_pending_linked_subtitle_imports(request: LinkedSubtitlePendingClearRequest):
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+
+    try:
+        service = get_linked_subtitle_import_service()
+        result = await service.clear_pending_imports(
+            record_ids=request.record_ids,
+            clear_all=request.clear_all,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"清除字幕补配预检单失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"清除预检单失败: {str(e)}")
 
 
 @app.post("/api/subtitle-import/archive/preview")

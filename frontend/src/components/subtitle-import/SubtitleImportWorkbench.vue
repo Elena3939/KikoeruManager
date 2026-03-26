@@ -252,6 +252,10 @@ const props = defineProps({
   taskId: {
     type: String,
     default: ''
+  },
+  visible: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -369,6 +373,7 @@ watch(subtitleOptions, (value) => {
 
 watch(() => props.taskId, async (value) => {
   if (value) selectedTaskId.value = String(value || '')
+  if (!props.visible) return
   await refreshTaskStatus(false, { inspect: true, forceInspect: true })
 }, { immediate: true })
 
@@ -499,7 +504,7 @@ function selectWorkbenchTask(taskId, options = {}) {
   selectedTaskId.value = normalized
   const matchedTask = linkedTasks.value.find(task => task.id === normalized)
   if (matchedTask) activeTask.value = matchedTask
-  if (options.sync !== false && props.taskId !== normalized) {
+  if (props.visible && options.sync !== false && props.taskId !== normalized) {
     emit('select-task', normalized)
   }
 }
@@ -519,7 +524,7 @@ function ensureSelectedWorkbenchTask(tasks = []) {
   if (matchedIndex >= 0) {
     queuePage.value = Math.max(1, Math.floor(matchedIndex / queuePageSize) + 1)
   }
-  if (props.taskId !== matched.id) {
+  if (props.visible && props.taskId !== matched.id) {
     emit('select-task', matched.id)
   }
   return matched
@@ -1536,17 +1541,32 @@ const completedTaskCount = computed(() => linkedTasks.value.filter(task => isCom
 const failedTaskCount = computed(() => linkedTasks.value.filter(task => isFailedTask(task)).length)
 const clearableTaskCount = computed(() => linkedTasks.value.filter(task => canClearTask(task)).length)
 
-onMounted(() => {
-  taskStatusTimer = window.setInterval(() => {
-    refreshTaskStatus(false, { inspect: false })
-  }, TASK_STATUS_REFRESH_MS)
-})
-
-onUnmounted(() => {
+function stopTaskStatusPolling() {
   if (taskStatusTimer) {
     window.clearInterval(taskStatusTimer)
     taskStatusTimer = null
   }
+}
+
+function startTaskStatusPolling() {
+  if (taskStatusTimer || !props.visible) return
+  taskStatusTimer = window.setInterval(() => {
+    if (!props.visible) return
+    refreshTaskStatus(false, { inspect: false })
+  }, TASK_STATUS_REFRESH_MS)
+}
+
+watch(() => props.visible, async (visible) => {
+  if (!visible) {
+    stopTaskStatusPolling()
+    return
+  }
+  startTaskStatusPolling()
+  await refreshTaskStatus(false, { inspect: true, forceInspect: true })
+}, { immediate: true })
+
+onUnmounted(() => {
+  stopTaskStatusPolling()
 })
 
 const subtitleWorkbenchCtx = computed(() => ({

@@ -212,14 +212,14 @@ class TaskEngine:
             self._extract_rjcode(fallback_path or task.source_path),
         ]
         for candidate in candidates:
-            value = str(candidate or "").strip().upper()
+            value = self._extract_rjcode(str(candidate or "")) or str(candidate or "").strip().upper()
             if value and value != "未知":
                 return value
         return ""
 
     def _sync_task_rjcode(self, task: Task, rjcode: Optional[str], source: Optional[str] = None) -> str:
         """把有效 RJ 号同步回任务对象和元数据，供后续重命名、归档和分类统一使用。"""
-        normalized = str(rjcode or "").strip().upper()
+        normalized = self._extract_rjcode(str(rjcode or "")) or str(rjcode or "").strip().upper()
         if not normalized or normalized == "未知":
             return ""
 
@@ -313,7 +313,7 @@ class TaskEngine:
         from .rename_service import RenameService
         from .classifier import SmartClassifier
         
-        inferred_rjcode = str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
+        inferred_rjcode = self._extract_rjcode(str((task.task_metadata or {}).get('inferred_rjcode') or '')) or str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
         rjcode = self._extract_rjcode(task.source_path) or inferred_rjcode or "未知"
         self._sync_task_rjcode(task, rjcode if rjcode != "未知" else None, source="source_path")
         logger.info(f"[{rjcode}] ========== 开始处理任务 ==========")
