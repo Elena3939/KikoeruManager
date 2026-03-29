@@ -26,7 +26,7 @@
                 </div>
               </template>
 
-              <el-empty v-if="!pendingItems.length && !pendingLoading" description="当前没有待处理的字幕补配预检单" />
+              <el-empty v-if="pendingLoadedOnce && !pendingItems.length" description="当前没有待处理的字幕补配预检单" />
 
               <div v-else>
                 <div class="pending-toolbar">
@@ -344,7 +344,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { rjSubtitleApi, subtitleImportApi } from '../api'
@@ -352,10 +352,12 @@ import SubtitleImportWorkbench from '../components/subtitle-import/SubtitleImpor
 
 const route = useRoute()
 const router = useRouter()
-const SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
+const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
+const SUBTITLE_IMPORT_OPTIONS_KEY = 'kikoeru.ui.subtitleImport.workbenchOptions'
 const SUBTITLE_IMPORT_WORKBENCH_TASK_KEY = 'kikoeru.ui.subtitleImport.activeTaskId'
 const SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY = 'kikoeru.ui.subtitleImport.workbenchVisible'
 const AUTO_IMPORT_POLL_INTERVAL_MS = 2500
+const PENDING_REFRESH_INTERVAL_MS = 1500
 
 function loadJson(key, fallback) {
   try {
@@ -387,6 +389,18 @@ function sanitizeSubtitleFilterRules(rules = []) {
     }))
 }
 
+function loadSubtitleImportOptions() {
+  const saved = loadJson(SUBTITLE_IMPORT_OPTIONS_KEY, null)
+  if (saved && typeof saved === 'object') return saved
+  const legacy = loadJson(LEGACY_SUBTITLE_OPTIONS_KEY, {})
+  if (legacy && typeof legacy === 'object') {
+    try {
+      localStorage.setItem(SUBTITLE_IMPORT_OPTIONS_KEY, JSON.stringify(legacy))
+    } catch (_) {}
+  }
+  return legacy
+}
+
 function stripTrailingAudioExtension(value = '') {
   let current = String(value || '')
   while (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(current)) {
@@ -415,7 +429,7 @@ function getDisplayRJCode(value = '') {
 }
 
 function getSubtitleWorkbenchFilterOptions() {
-  const saved = loadJson(SUBTITLE_OPTIONS_KEY, {})
+  const saved = loadSubtitleImportOptions()
   return {
     useFilterRules: saved?.useFilterRules ?? false,
     subtitleFilterRules: sanitizeSubtitleFilterRules(saved?.subtitleFilterRules || [])
@@ -458,6 +472,8 @@ function isLinkedSubtitleWorkbenchTask(task = {}) {
 
 const activeTab = ref('archive')
 const pendingLoading = ref(false)
+const pendingRefreshing = ref(false)
+const pendingLoadedOnce = ref(false)
 const pendingItems = ref([])
 const activePendingId = ref('')
 const executingPendingId = ref('')
@@ -477,6 +493,7 @@ const workbenchDialogInitialized = ref(Boolean(route.query.taskId || readPersist
 const autoImportingPendingId = ref('')
 const autoImportBlockedIds = ref(new Set())
 let autoImportTimer = null
+let pendingRefreshTimer = null
 
 const activePendingItem = computed(() => {
   return pendingItems.value.find(item => item.id === activePendingId.value) || null
@@ -513,14 +530,14 @@ const canExecuteFolderImport = computed(() => {
 
 watch(activePendingItem, (item) => {
   if (!item) return
-  if (!archiveCandidateSelection[item.id]) {
-    const selected = item.preview?.selected_candidate
-    if (selected) {
-      archiveCandidateSelection[item.id] = candidateKey(selected)
-      return
-    }
-    const firstReady = (item.preview?.candidates || [])[0]
-    if (firstReady) archiveCandidateSelection[item.id] = candidateKey(firstReady)
+  const selected = item.preview?.selected_candidate
+  if (selected) {
+    archiveCandidateSelection[item.id] = candidateKey(selected)
+    return
+  }
+  const readyCandidates = (item.preview?.candidates || []).filter(candidate => candidate?.ready_for_import)
+  if (!archiveCandidateSelection[item.id] && readyCandidates.length === 1) {
+    archiveCandidateSelection[item.id] = candidateKey(readyCandidates[0])
   }
 }, { immediate: true })
 
@@ -534,17 +551,27 @@ watch(folderPreview, (preview) => {
     folderCandidateSelection.value = candidateKey(selected)
     return
   }
-  const firstReady = (preview.candidates || [])[0]
-  folderCandidateSelection.value = firstReady ? candidateKey(firstReady) : ''
+  const readyCandidates = (preview.candidates || []).filter(candidate => candidate?.ready_for_import)
+  folderCandidateSelection.value = readyCandidates.length === 1 ? candidateKey(readyCandidates[0]) : ''
 }, { immediate: true })
 
 onMounted(async () => {
-  await loadPendingImports()
-  await restoreActiveWorkbenchTask()
+  startPendingRefreshPolling()
+  await refreshSubtitleImportPage({ silent: false })
+})
+
+onActivated(async () => {
+  startPendingRefreshPolling()
+  await refreshSubtitleImportPage({ silent: true })
+})
+
+onDeactivated(() => {
+  stopPendingRefreshPolling()
 })
 
 onUnmounted(() => {
   stopAutoImportPolling()
+  stopPendingRefreshPolling()
 })
 
 watch(() => route.query.taskId, (value) => {
@@ -576,6 +603,7 @@ watch(workbenchDialogVisible, (visible) => {
   }
   workbenchDialogInitialized.value = true
   startAutoImportPolling()
+  queuePendingRefresh({ silent: true })
   queueAutoImportProcessing()
   if (activeWorkbenchTaskId.value && route.query.taskId !== activeWorkbenchTaskId.value) {
     router.replace({
@@ -611,7 +639,22 @@ watch(pendingItems, () => {
   }
 }, { deep: false })
 
-async function restoreActiveWorkbenchTask() {
+watch(() => route.path, (path) => {
+  if (path === '/subtitle-import') {
+    startPendingRefreshPolling()
+    queuePendingRefresh({ silent: true })
+    return
+  }
+  stopPendingRefreshPolling()
+}, { immediate: true })
+
+async function refreshSubtitleImportPage(options = {}) {
+  await loadPendingImports(options)
+  await restoreActiveWorkbenchTask(options)
+}
+
+async function restoreActiveWorkbenchTask(options = {}) {
+  const { silent = false } = options
   try {
     const requestedId = String(route.query.taskId || activeWorkbenchTaskId.value || readPersistedWorkbenchTaskId() || '')
     const data = await rjSubtitleApi.status()
@@ -642,22 +685,31 @@ async function restoreActiveWorkbenchTask() {
       })
     }
   } catch (error) {
-    ElMessage.error('恢复字幕补配工作台失败: ' + (error.response?.data?.detail || error.message))
+    if (!silent) {
+      ElMessage.error('恢复字幕补配工作台失败: ' + (error.response?.data?.detail || error.message))
+    }
   }
 }
 
-async function loadPendingImports() {
-  pendingLoading.value = true
+async function loadPendingImports(options = {}) {
+  const { silent = false } = options
+  if (pendingLoading.value || pendingRefreshing.value) return
+  if (silent) pendingRefreshing.value = true
+  else pendingLoading.value = true
   try {
     const data = await subtitleImportApi.listPending()
     pendingItems.value = data.items || []
+    pendingLoadedOnce.value = true
     if (!pendingItems.value.some(item => item.id === activePendingId.value)) {
       activePendingId.value = pendingItems.value[0]?.id || ''
     }
   } catch (error) {
-    ElMessage.error('加载字幕补配预检单失败: ' + (error.response?.data?.detail || error.message))
+    if (!silent) {
+      ElMessage.error('加载字幕补配预检单失败: ' + (error.response?.data?.detail || error.message))
+    }
   } finally {
-    pendingLoading.value = false
+    if (silent) pendingRefreshing.value = false
+    else pendingLoading.value = false
   }
 }
 
@@ -715,8 +767,8 @@ function getSelectedArchiveCandidateForItem(item) {
   }
   const selected = item.preview?.selected_candidate
   if (selected) return selected
-  const candidates = item.preview?.candidates || []
-  return candidates.length === 1 ? candidates[0] : null
+  const readyCandidates = (item.preview?.candidates || []).filter(candidate => candidate?.ready_for_import)
+  return readyCandidates.length === 1 ? readyCandidates[0] : null
 }
 
 function pruneAutoImportBlockedIds() {
@@ -741,6 +793,27 @@ function stopAutoImportPolling() {
   }
 }
 
+function stopPendingRefreshPolling() {
+  if (pendingRefreshTimer) {
+    clearInterval(pendingRefreshTimer)
+    pendingRefreshTimer = null
+  }
+}
+
+function startPendingRefreshPolling() {
+  if (pendingRefreshTimer) return
+  pendingRefreshTimer = setInterval(() => {
+    queuePendingRefresh({ silent: true })
+  }, PENDING_REFRESH_INTERVAL_MS)
+}
+
+function queuePendingRefresh(options = {}) {
+  if (route.path !== '/subtitle-import') return
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+  if (pendingLoading.value || pendingRefreshing.value || executingPendingId.value || pendingClearLoading.value) return
+  void loadPendingImports(options)
+}
+
 function startAutoImportPolling() {
   if (autoImportTimer) return
   autoImportTimer = setInterval(() => {
@@ -755,7 +828,7 @@ function queueAutoImportProcessing() {
 
 async function processAutoImportQueue() {
   if (!workbenchDialogVisible.value) return
-  if (pendingLoading.value || executingPendingId.value || autoImportingPendingId.value) return
+  if (pendingLoading.value || pendingRefreshing.value || executingPendingId.value || autoImportingPendingId.value) return
   const item = findNextAutoImportItem()
   if (!item) return
   const candidate = getSelectedArchiveCandidateForItem(item)
