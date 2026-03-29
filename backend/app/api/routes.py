@@ -28,6 +28,12 @@ from ..core.processed_archive_cleanup import get_processed_archive_cleanup_servi
 from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
 from ..core.library_manager import get_library_manager
+from ..core.password_utils import (
+    normalize_filename_value,
+    normalize_optional_text,
+    normalize_password_value,
+    normalize_rjcode_value,
+)
 from ..config.settings import get_config, save_config
 
 # 初始化FastAPI应用
@@ -757,45 +763,56 @@ async def get_passwords(
 async def create_password(entry: PasswordEntryCreate):
     """创建密码条目"""
     from ..models.database import PasswordEntry, get_db
+    from sqlalchemy import func
     import uuid
     
     db = next(get_db())
     try:
+        normalized_rjcode = normalize_rjcode_value(entry.rjcode)
+        normalized_filename = normalize_filename_value(entry.filename)
+        normalized_password = normalize_password_value(entry.password)
+        normalized_description = normalize_optional_text(entry.description)
+
         # 记录接收到的数据（用于调试）
-        logger.info(f"创建密码条目 - RJ={entry.rjcode}, File={entry.filename}, Password长度={len(entry.password) if entry.password else 0}")
+        logger.info(
+            f"创建密码条目 - RJ={normalized_rjcode}, File={normalized_filename}, "
+            f"Password长度={len(normalized_password) if normalized_password else 0}"
+        )
         
         # 确保密码不为空
-        if not entry.password:
+        if not normalized_password:
             raise HTTPException(status_code=400, detail="密码不能为空")
         
         # 检查是否已存在相同RJ号或文件名的密码
         existing = None
-        if entry.rjcode:
-            existing = db.query(PasswordEntry).filter(PasswordEntry.rjcode == entry.rjcode).first()
-        if not existing and entry.filename:
-            existing = db.query(PasswordEntry).filter(PasswordEntry.filename == entry.filename).first()
+        if normalized_rjcode:
+            existing = db.query(PasswordEntry).filter(func.upper(PasswordEntry.rjcode) == normalized_rjcode).first()
+        if not existing and normalized_filename:
+            existing = db.query(PasswordEntry).filter(PasswordEntry.filename == normalized_filename).first()
         
         if existing:
             # 更新现有密码
-            existing.password = entry.password
-            existing.description = entry.description or existing.description
+            existing.rjcode = normalized_rjcode
+            existing.filename = normalized_filename
+            existing.password = normalized_password
+            existing.description = normalized_description if entry.description is not None else existing.description
             existing.updated_at = datetime.now()
             db.commit()
-            logger.info(f"更新密码成功: RJ={entry.rjcode}, File={entry.filename}")
+            logger.info(f"更新密码成功: RJ={normalized_rjcode}, File={normalized_filename}")
             return PasswordEntryResponse(**existing.to_dict())
         
         # 创建新密码条目
         new_entry = PasswordEntry(
             id=str(uuid.uuid4()),
-            rjcode=entry.rjcode,
-            filename=entry.filename,
-            password=entry.password,
-            description=entry.description,
+            rjcode=normalized_rjcode,
+            filename=normalized_filename,
+            password=normalized_password,
+            description=normalized_description,
             source=entry.source
         )
         db.add(new_entry)
         db.commit()
-        logger.info(f"创建密码成功: RJ={entry.rjcode}, File={entry.filename}")
+        logger.info(f"创建密码成功: RJ={normalized_rjcode}, File={normalized_filename}")
         return PasswordEntryResponse(**new_entry.to_dict())
     except HTTPException:
         raise
@@ -810,6 +827,7 @@ async def create_password(entry: PasswordEntryCreate):
 async def batch_create_passwords(entries: List[PasswordEntryCreate]):
     """批量创建密码条目"""
     from ..models.database import PasswordEntry, get_db
+    from sqlalchemy import func
     import uuid
     
     db = next(get_db())
@@ -818,27 +836,37 @@ async def batch_create_passwords(entries: List[PasswordEntryCreate]):
     
     try:
         for entry in entries:
+            normalized_rjcode = normalize_rjcode_value(entry.rjcode)
+            normalized_filename = normalize_filename_value(entry.filename)
+            normalized_password = normalize_password_value(entry.password)
+            normalized_description = normalize_optional_text(entry.description)
+
+            if not normalized_password:
+                raise HTTPException(status_code=400, detail="密码不能为空")
+
             # 检查是否已存在
             existing = None
-            if entry.rjcode:
-                existing = db.query(PasswordEntry).filter(PasswordEntry.rjcode == entry.rjcode).first()
-            if not existing and entry.filename:
-                existing = db.query(PasswordEntry).filter(PasswordEntry.filename == entry.filename).first()
+            if normalized_rjcode:
+                existing = db.query(PasswordEntry).filter(func.upper(PasswordEntry.rjcode) == normalized_rjcode).first()
+            if not existing and normalized_filename:
+                existing = db.query(PasswordEntry).filter(PasswordEntry.filename == normalized_filename).first()
             
             if existing:
                 # 更新
-                existing.password = entry.password
-                existing.description = entry.description or existing.description
+                existing.rjcode = normalized_rjcode
+                existing.filename = normalized_filename
+                existing.password = normalized_password
+                existing.description = normalized_description if entry.description is not None else existing.description
                 existing.updated_at = datetime.now()
                 updated_count += 1
             else:
                 # 创建新条目
                 new_entry = PasswordEntry(
                     id=str(uuid.uuid4()),
-                    rjcode=entry.rjcode,
-                    filename=entry.filename,
-                    password=entry.password,
-                    description=entry.description,
+                    rjcode=normalized_rjcode,
+                    filename=normalized_filename,
+                    password=normalized_password,
+                    description=normalized_description,
                     source=entry.source
                 )
                 db.add(new_entry)
@@ -870,13 +898,16 @@ async def update_password(password_id: str, entry: PasswordEntryUpdate):
             raise HTTPException(status_code=404, detail="密码条目不存在")
         
         if entry.rjcode is not None:
-            password_entry.rjcode = entry.rjcode
+            password_entry.rjcode = normalize_rjcode_value(entry.rjcode)
         if entry.filename is not None:
-            password_entry.filename = entry.filename
+            password_entry.filename = normalize_filename_value(entry.filename)
         if entry.password is not None:
-            password_entry.password = entry.password
+            normalized_password = normalize_password_value(entry.password)
+            if not normalized_password:
+                raise HTTPException(status_code=400, detail="密码不能为空")
+            password_entry.password = normalized_password
         if entry.description is not None:
-            password_entry.description = entry.description
+            password_entry.description = normalize_optional_text(entry.description)
         
         password_entry.updated_at = datetime.now()
         db.commit()
@@ -923,7 +954,7 @@ async def find_password_for_archive(archive_path: str):
             if entry:
                 return {
                     "found": True,
-                    "password": entry.password,
+                    "password": normalize_password_value(entry.password),
                     "match_type": "rjcode",
                     "rjcode": rjcode,
                     "entry": entry.to_dict()
@@ -934,7 +965,7 @@ async def find_password_for_archive(archive_path: str):
         if entry:
             return {
                 "found": True,
-                "password": entry.password,
+                "password": normalize_password_value(entry.password),
                 "match_type": "filename",
                 "entry": entry.to_dict()
             }
@@ -964,7 +995,7 @@ async def import_passwords_from_text(request: Request):
     
     try:
         for line in lines:
-            password = line.strip()
+            password = normalize_password_value(line)
             if not password:
                 continue
             
@@ -1792,6 +1823,8 @@ async def browse_library_files(
     sort_by: str = "size",
     sort_order: str = "desc",
     force_refresh: bool = False,
+    search_exact: bool = False,
+    search_result_kind: str = "all",
 ):
     try:
         manager = get_library_manager()
@@ -1800,21 +1833,31 @@ async def browse_library_files(
         use_remote_global_search = (
             bool(keyword)
             and current_library.type == "synology_filestation"
-            and manager._is_rj_search_keyword(keyword)
         )
         if use_remote_global_search:
             data = await manager.global_search_files(
-                None,
+                current_library.id,
                 keyword,
+                page=page,
+                page_size=page_size,
                 sort_by=sort_by,
                 sort_order=sort_order,
                 force_refresh=force_refresh,
+                search_exact=search_exact,
+                search_result_kind=search_result_kind,
             )
-            files = list(data.get("files") or [])
-            if data.get("library_id") and data.get("library_id") != current_library.id:
-                if len(files) == 1 and bool(files[0].get("is_directory")) and files[0].get("path"):
-                    data["auto_locate_path"] = files[0].get("parent_path") or files[0].get("path")
-                    data["auto_locate_highlight_path"] = files[0].get("path")
+            browse_root_path = current_library.browse_root_path or current_library.root_path
+            display_current_path = current_path or browse_root_path
+            data["browse_root_path"] = browse_root_path
+            data["current_path"] = display_current_path
+            normalized_browse_root = str(PurePosixPath(browse_root_path or "/"))
+            normalized_current_path = str(PurePosixPath(display_current_path or normalized_browse_root))
+            if normalized_current_path in {"", "."}:
+                normalized_current_path = normalized_browse_root or "/"
+            if normalized_current_path == normalized_browse_root:
+                data["parent_path"] = None
+            else:
+                data["parent_path"] = str(PurePosixPath(normalized_current_path).parent)
         else:
             data = await manager.list_files(
                 library_id,
@@ -1825,6 +1868,8 @@ async def browse_library_files(
                 sort_by=sort_by,
                 sort_order=sort_order,
                 force_refresh=force_refresh,
+                search_exact=search_exact,
+                search_result_kind=search_result_kind,
             )
         data["libraries"] = manager.list_libraries()
         data["library_id"] = data.get("library_id") or current_library.id
@@ -4017,6 +4062,7 @@ class KikoeruServerConfig(BaseModel):
     token_expires: int = 0
     timeout: int = 10
     cache_ttl: int = 300
+    enable_fuzzy_rj_match: bool = False
 
 @app.get("/api/kikoeru-server/config")
 async def get_kikoeru_server_config():
@@ -4034,7 +4080,8 @@ async def get_kikoeru_server_config():
                 "api_token": kikoeru_config.api_token,
                 "token_expires": kikoeru_config.token_expires,
                 "timeout": kikoeru_config.timeout,
-                "cache_ttl": kikoeru_config.cache_ttl
+                "cache_ttl": kikoeru_config.cache_ttl,
+                "enable_fuzzy_rj_match": bool(getattr(kikoeru_config, 'enable_fuzzy_rj_match', False)),
             }
         else:
             return {
@@ -4045,7 +4092,8 @@ async def get_kikoeru_server_config():
                 "api_token": "",
                 "token_expires": 0,
                 "timeout": 10,
-                "cache_ttl": 300
+                "cache_ttl": 300,
+                "enable_fuzzy_rj_match": False,
             }
     except Exception as e:
         logger.error(f"获取 Kikoeru 服务器配置失败: {e}")
@@ -4066,7 +4114,8 @@ async def update_kikoeru_server_config(config: KikoeruServerConfig):
                 'api_token': config.api_token,
                 'token_expires': config.token_expires,
                 'timeout': config.timeout,
-                'cache_ttl': config.cache_ttl
+                'cache_ttl': config.cache_ttl,
+                'enable_fuzzy_rj_match': config.enable_fuzzy_rj_match,
             }
         }
         
@@ -4081,7 +4130,8 @@ async def update_kikoeru_server_config(config: KikoeruServerConfig):
                 "enabled": config.enabled,
                 "server_url": config.server_url,
                 "timeout": config.timeout,
-                "cache_ttl": config.cache_ttl
+                "cache_ttl": config.cache_ttl,
+                "enable_fuzzy_rj_match": config.enable_fuzzy_rj_match,
             }
         }
     except Exception as e:
@@ -4264,6 +4314,15 @@ class RJSubtitleAvailabilityRequest(BaseModel):
     rjcode: str
 
 
+class RJSubtitleFolderSubtitleStateRequest(BaseModel):
+    folder_path: str
+    library_id: Optional[str] = None
+
+
+class RJSubtitleKikoeruSubtitleStateRequest(BaseModel):
+    rjcode: str
+
+
 class LinkedSubtitleArchivePreviewRequest(BaseModel):
     archive_path: str
     preferred_library_id: Optional[str] = None
@@ -4272,6 +4331,7 @@ class LinkedSubtitleArchivePreviewRequest(BaseModel):
 class LinkedSubtitleFolderPreviewRequest(BaseModel):
     folder_path: str
     preferred_library_id: Optional[str] = None
+    source_rjcode_hint: Optional[str] = None
 
 
 class LinkedSubtitleArchiveImportRequest(BaseModel):
@@ -4288,6 +4348,7 @@ class LinkedSubtitleFolderImportRequest(BaseModel):
     preferred_library_id: Optional[str] = None
     target_library_id: Optional[str] = None
     target_folder_path: Optional[str] = None
+    source_rjcode_hint: Optional[str] = None
     use_filter_rules: bool = False
     subtitle_filter_rules: List[dict] = []
 
@@ -4491,26 +4552,65 @@ async def rj_subtitle_scan_stream(request: RJSubtitleScanRequest):
 async def rj_subtitle_start(request: RJSubtitleStartRequest):
     """开始 RJ 字幕抓取任务"""
     from ..core.task_engine import Task, TaskType, get_task_engine
+    from ..core.rj_subtitle_service import get_rj_subtitle_service
 
     try:
         if not request.items:
             raise HTTPException(status_code=400, detail="没有可执行的 RJ 文件夹")
 
         engine = get_task_engine()
+        rj_service = get_rj_subtitle_service()
         created_tasks = []
         skipped_existing = 0
         skipped_duplicate = 0
+        skipped_items = []
 
         for item in request.items:
-            folder_path = item.get("folder_path")
-            rjcode = item.get("rjcode")
-            folder_name = item.get("folder_name", "")
-            library_id = item.get("library_id")
+            folder_path = str(item.get("folder_path") or "").strip()
+            rjcode = str(item.get("rjcode") or "").strip().upper()
+            folder_name = str(item.get("folder_name") or "")
+            library_id = str(item.get("library_id") or "").strip() or None
             if not folder_path:
                 continue
-            if request.skip_if_existing_subtitles and int(item.get("existing_subtitle_count") or 0) > 0:
-                skipped_existing += 1
-                continue
+
+            resolved_existing_subtitle_count = int(item.get("existing_subtitle_count") or 0)
+            kikoeru_state = None
+
+            if request.skip_if_existing_subtitles and rjcode:
+                try:
+                    kikoeru_state = await rj_service.check_kikoeru_existing_subtitles(rjcode)
+                except Exception as exc:
+                    logger.warning(
+                        "[RJ字幕] 查询 Kikoeru 字幕状态失败，继续后续流程: rj=%s error=%s",
+                        rjcode,
+                        exc,
+                    )
+                    kikoeru_state = None
+
+                if kikoeru_state and bool(kikoeru_state.get("has_existing_subtitles")):
+                    skipped_existing += 1
+                    matched_rjcode = str(kikoeru_state.get("matched_rjcode") or rjcode).upper()
+                    subtitle_file_count = int(kikoeru_state.get("subtitle_file_count") or 0)
+                    queue_message = f"Kikoeru 已有字幕（{matched_rjcode}"
+                    if subtitle_file_count > 0:
+                        queue_message += f" / {subtitle_file_count} 个"
+                    queue_message += "），未加入抓取任务"
+                    skipped_items.append({
+                        "rjcode": rjcode,
+                        "folder_name": folder_name,
+                        "folder_path": folder_path,
+                        "library_id": library_id,
+                        "existing_subtitle_count": resolved_existing_subtitle_count,
+                        "queue_state": "skipped_kikoeru_existing",
+                        "queue_message": queue_message,
+                        "kikoeru_checked_rjcode": kikoeru_state.get("checked_rjcode", rjcode),
+                        "kikoeru_has_work": bool(kikoeru_state.get("has_work")),
+                        "kikoeru_has_existing_subtitles": True,
+                        "kikoeru_matched_rjcode": matched_rjcode,
+                        "kikoeru_subtitle_file_count": subtitle_file_count,
+                        "kikoeru_subtitle_check_source": kikoeru_state.get("subtitle_check_source", ""),
+                    })
+                    continue
 
             duplicate_task = next((
                 current_task for current_task in engine.get_all_tasks()
@@ -4520,6 +4620,16 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
             ), None)
             if duplicate_task:
                 skipped_duplicate += 1
+                skipped_items.append({
+                    "rjcode": rjcode,
+                    "folder_name": folder_name,
+                    "folder_path": folder_path,
+                    "library_id": library_id,
+                    "existing_subtitle_count": resolved_existing_subtitle_count,
+                    "task_id": duplicate_task.id,
+                    "queue_state": "existing_task",
+                    "queue_message": "任务已存在",
+                })
                 continue
 
             task = Task(
@@ -4534,9 +4644,16 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                     "overwrite": request.overwrite_existing,
                     "enable_metadata_match": request.enable_metadata_match,
                     "skip_if_existing_subtitles": request.skip_if_existing_subtitles,
+                    "existing_subtitle_count": resolved_existing_subtitle_count,
                     "naming_strategy": request.naming_strategy,
                     "use_filter_rules": request.use_filter_rules,
                     "subtitle_filter_rules": request.subtitle_filter_rules,
+                    "kikoeru_checked_rjcode": (kikoeru_state or {}).get("checked_rjcode", rjcode),
+                    "kikoeru_has_work": bool((kikoeru_state or {}).get("has_work")),
+                    "kikoeru_has_existing_subtitles": bool((kikoeru_state or {}).get("has_existing_subtitles")),
+                    "kikoeru_matched_rjcode": (kikoeru_state or {}).get("matched_rjcode", ""),
+                    "kikoeru_subtitle_file_count": int((kikoeru_state or {}).get("subtitle_file_count") or 0),
+                    "kikoeru_subtitle_check_source": (kikoeru_state or {}).get("subtitle_check_source", ""),
                 }
             )
 
@@ -4555,6 +4672,7 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
             "created_count": len(created_tasks),
             "skipped_existing": skipped_existing,
             "skipped_duplicate": skipped_duplicate,
+            "skipped_items": skipped_items,
             "tasks": created_tasks,
         }
     except HTTPException:
@@ -4562,6 +4680,61 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
     except Exception as e:
         logger.error(f"启动 RJ 字幕抓取失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"启动失败: {str(e)}")
+
+
+@app.post("/api/rj-subtitle/folder-subtitle-state")
+async def rj_subtitle_folder_subtitle_state(request: RJSubtitleFolderSubtitleStateRequest):
+    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+
+    try:
+        folder_path = str(request.folder_path or "").strip()
+        library_id = str(request.library_id or "").strip()
+        if not folder_path:
+            raise HTTPException(status_code=400, detail="目录路径不能为空")
+        if not library_id:
+            raise HTTPException(status_code=400, detail="库存 ID 不能为空")
+
+        summary = await get_linked_subtitle_import_service().summarize_target_folder(library_id, folder_path)
+        if not summary:
+            raise HTTPException(status_code=404, detail="未找到目录摘要")
+
+        return {
+            "success": True,
+            "folder_path": folder_path,
+            "library_id": library_id,
+            "has_existing_subtitles": bool(summary.get("has_existing_subtitles")),
+            "existing_subtitle_count": int(summary.get("existing_subtitle_count") or 0),
+            "subtitle_dir": str(summary.get("subtitle_dir") or ""),
+            "audio_count": int(summary.get("audio_count") or 0),
+            "ready_for_import": bool(summary.get("ready_for_import")),
+            "summary": summary,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取 RJ 目录字幕状态失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取失败: {str(e)}")
+
+
+@app.post("/api/rj-subtitle/kikoeru-subtitle-state")
+async def rj_subtitle_kikoeru_subtitle_state(request: RJSubtitleKikoeruSubtitleStateRequest):
+    from ..core.rj_subtitle_service import get_rj_subtitle_service
+
+    try:
+        rjcode = str(request.rjcode or "").strip().upper()
+        if not rjcode:
+            raise HTTPException(status_code=400, detail="RJ号不能为空")
+
+        state = await get_rj_subtitle_service().check_kikoeru_existing_subtitles(rjcode)
+        return {
+            "success": True,
+            **state,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取 Kikoeru 字幕状态失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取失败: {str(e)}")
 
 
 @app.post("/api/rj-subtitle/task/{task_id}/manual-complete")
@@ -4588,19 +4761,9 @@ async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCom
         task.task_metadata["manual_match_deleted_subtitles"] = deleted_subtitles
         task.task_metadata["naming_strategy"] = naming_strategy
 
-        summary = f"后处理完成，已应用 {applied_pairs} 组配对"
-        if deleted_subtitles:
-            summary += f"，删除 {deleted_subtitles} 个未选字幕"
-
-        summary = f"后处理完成，已应用 {applied_pairs} 组配对"
-        if deleted_subtitles:
-            summary += f"，删除 {deleted_subtitles} 个未选字幕"
-        if linked_finalize_result.get("applied"):
-            summary += f"，最终写入 {int(linked_finalize_result.get('final_file_count') or 0)} 个字幕"
-
         summary_parts = [f"后处理完成，已应用 {applied_pairs} 组配对"]
         if deleted_subtitles:
-            summary_parts.append(f"删除 {deleted_subtitles} 个未选字幕")
+            summary_parts.append(f"删除 {deleted_subtitles} 个未使用字幕")
         if linked_finalize_result.get("applied"):
             summary_parts.append(
                 f"已确认导入目标目录，共 {int(linked_finalize_result.get('final_file_count') or 0)} 个字幕"
@@ -4740,6 +4903,10 @@ async def rj_subtitle_status():
                     "import_reason": task.task_metadata.get("import_reason", ""),
                     "kikoeru_checked_rjcode": task.task_metadata.get("kikoeru_checked_rjcode", ""),
                     "kikoeru_has_work": task.task_metadata.get("kikoeru_has_work", False),
+                    "kikoeru_has_existing_subtitles": task.task_metadata.get("kikoeru_has_existing_subtitles", False),
+                    "kikoeru_matched_rjcode": task.task_metadata.get("kikoeru_matched_rjcode", ""),
+                    "kikoeru_subtitle_file_count": task.task_metadata.get("kikoeru_subtitle_file_count", 0),
+                    "kikoeru_subtitle_check_source": task.task_metadata.get("kikoeru_subtitle_check_source", ""),
                     "downloaded_count": task.task_metadata.get("downloaded_count", 0),
                     "existing_subtitle_count": task.task_metadata.get("existing_subtitle_count", 0),
                     "subtitle_dir": task.task_metadata.get("subtitle_dir", ""),
@@ -4880,6 +5047,7 @@ async def preview_linked_subtitle_folder_import(request: LinkedSubtitleFolderPre
         preview = await service.preview_subtitle_folder_import(
             request.folder_path,
             preferred_library_id=request.preferred_library_id,
+            source_rjcode_hint=request.source_rjcode_hint,
         )
         return {"success": True, "preview": preview}
     except FileNotFoundError as e:
@@ -4902,6 +5070,7 @@ async def execute_linked_subtitle_folder_import(request: LinkedSubtitleFolderImp
             preferred_library_id=request.preferred_library_id,
             target_library_id=request.target_library_id,
             target_folder_path=request.target_folder_path,
+            source_rjcode_hint=request.source_rjcode_hint,
             use_filter_rules=request.use_filter_rules,
             subtitle_filter_rules=request.subtitle_filter_rules,
         )

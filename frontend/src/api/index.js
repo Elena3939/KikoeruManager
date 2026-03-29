@@ -244,7 +244,18 @@ export const libraryApi = {
     return response.data
   },
 
-  browseFiles: async ({ libraryId = null, page = 1, pageSize = 200, search = '', currentPath = '', sortBy = 'size', sortOrder = 'desc', forceRefresh = false } = {}) => {
+  browseFiles: async ({
+    libraryId = null,
+    page = 1,
+    pageSize = 200,
+    search = '',
+    currentPath = '',
+    sortBy = 'size',
+    sortOrder = 'desc',
+    forceRefresh = false,
+    searchExact = false,
+    searchResultKind = 'all'
+  } = {}) => {
     const response = await apiClient.get('/library/browser/files', {
       params: {
         library_id: libraryId,
@@ -254,7 +265,9 @@ export const libraryApi = {
         current_path: currentPath || undefined,
         sort_by: sortBy,
         sort_order: sortOrder,
-        force_refresh: forceRefresh || undefined
+        force_refresh: forceRefresh || undefined,
+        search_exact: searchExact || undefined,
+        search_result_kind: searchResultKind || undefined
       }
     })
     return response.data
@@ -815,6 +828,21 @@ export const rjSubtitleApi = {
       rjcode
     })
     return response.data
+  },
+
+  checkKikoeruSubtitleState: async (rjcode) => {
+    const response = await apiClient.post('/rj-subtitle/kikoeru-subtitle-state', {
+      rjcode
+    })
+    return response.data
+  },
+
+  checkFolderSubtitleState: async (folderPath, options = {}) => {
+    const response = await apiClient.post('/rj-subtitle/folder-subtitle-state', {
+      folder_path: folderPath,
+      library_id: options.libraryId || undefined
+    })
+    return response.data
   }
 }
 
@@ -870,7 +898,8 @@ export const subtitleImportApi = {
   previewFolder: async (folderPath, options = {}) => {
     const response = await apiClient.post('/subtitle-import/folder/preview', {
       folder_path: folderPath,
-      preferred_library_id: options.preferredLibraryId || undefined
+      preferred_library_id: options.preferredLibraryId || undefined,
+      source_rjcode_hint: options.sourceRJCodeHint || undefined
     })
     return response.data
   },
@@ -881,6 +910,7 @@ export const subtitleImportApi = {
       preferred_library_id: options.preferredLibraryId || undefined,
       target_library_id: options.targetLibraryId || undefined,
       target_folder_path: options.targetFolderPath || undefined,
+      source_rjcode_hint: options.sourceRJCodeHint || undefined,
       use_filter_rules: options.useFilterRules ?? false,
       subtitle_filter_rules: options.subtitleFilterRules || []
     })

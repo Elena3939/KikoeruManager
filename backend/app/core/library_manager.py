@@ -14,9 +14,8 @@ from typing import Any, Optional
 from urllib.parse import quote, unquote
 
 import aiohttp
-import yaml
 
-from ..config.settings import get_config
+from ..config.settings import get_config, get_config_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +23,7 @@ LIBRARY_SEARCH_RESULT_LIMIT = 2000
 
 
 def _config_file_path() -> str:
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(current_dir, "..", "..", ".."))
-    return os.path.join(project_root, "config", "config.yaml")
+    return os.path.abspath(get_config_file_path())
 
 
 def _stats_cache_file_path() -> str:
@@ -140,14 +137,8 @@ class LibraryDefinition:
 
 
 def load_library_config() -> dict[str, Any]:
-    path = _config_file_path()
-    data: dict[str, Any] = {}
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as handle:
-            data = yaml.safe_load(handle) or {}
-
-    storage = data.get("storage") or {}
     runtime_config = get_config().storage
+    storage = runtime_config.model_dump()
 
     libraries: list[LibraryDefinition] = []
     for item in storage.get("libraries") or []:
@@ -812,7 +803,9 @@ class LibraryManager:
         sort_order: str,
         page: int,
         page_size: int,
-    ) -> tuple[str, str, str, str, str, int, int]:
+        search_exact: bool = False,
+        search_result_kind: str = "all",
+    ) -> tuple[str, str, str, str, str, int, int, bool, str]:
         return (
             library_id,
             self._normalize_remote_path(current_path or "/"),
@@ -821,11 +814,13 @@ class LibraryManager:
             sort_order,
             int(page),
             int(page_size),
+            bool(search_exact),
+            self._normalize_search_result_kind(search_result_kind),
         )
 
     def _get_cached_remote_search_result(
         self,
-        cache_key: tuple[str, str, str, str, str, int, int],
+        cache_key: tuple[str, str, str, str, str, int, int, bool, str],
         *,
         force_refresh: bool = False,
     ) -> Optional[dict[str, Any]]:
@@ -857,7 +852,7 @@ class LibraryManager:
 
     def _set_cached_remote_search_result(
         self,
-        cache_key: tuple[str, str, str, str, str, int, int],
+        cache_key: tuple[str, str, str, str, str, int, int, bool, str],
         data: dict[str, Any],
     ) -> dict[str, Any]:
         total = int(data.get("total", 0) or 0)
@@ -1078,6 +1073,8 @@ class LibraryManager:
         sort_by: str = "size",
         sort_order: str = "desc",
         force_refresh: bool = False,
+        search_exact: bool = False,
+        search_result_kind: str = "all",
     ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if str(search or "").strip():
@@ -1091,6 +1088,8 @@ class LibraryManager:
                     current_path,
                     sort_by,
                     sort_order,
+                    search_exact,
+                    search_result_kind,
                 )
             return await self._search_remote_files(
                 library,
@@ -1101,6 +1100,8 @@ class LibraryManager:
                 sort_by,
                 sort_order,
                 force_refresh=force_refresh,
+                search_exact=search_exact,
+                search_result_kind=search_result_kind,
             )
         if library.type == "local":
             return await asyncio.to_thread(self._list_local_files, library, page, page_size, search, current_path, sort_by, sort_order)
@@ -1111,75 +1112,144 @@ class LibraryManager:
         library_id: Optional[str],
         keyword: str,
         *,
+        page: int = 1,
+        page_size: int = 200,
         sort_by: str = "name",
         sort_order: str = "asc",
         force_refresh: bool = False,
+        search_exact: bool = False,
+        search_result_kind: str = "all",
     ) -> dict[str, Any]:
         normalized_keyword = str(keyword or "").strip()
-        if not library_id and self._is_rj_search_keyword(normalized_keyword):
-            remote_libraries = [
-                library
-                for library in self._active_libraries()
-                if library.type == "synology_filestation"
-            ]
-            if remote_libraries:
-                tasks: dict[asyncio.Task, LibraryDefinition] = {
-                    asyncio.create_task(
-                        self.list_files(
+        requested_library = self.get_library_definition(library_id) if library_id else None
+        remote_libraries = [
+            library
+            for library in self._active_libraries()
+            if library.type == "synology_filestation"
+        ]
+        if remote_libraries and (requested_library is None or requested_library.type == "synology_filestation"):
+            tasks: dict[asyncio.Task, LibraryDefinition] = {
+                asyncio.create_task(
+                    self.list_files(
+                        library.id,
+                        page=1,
+                        page_size=LIBRARY_SEARCH_RESULT_LIMIT,
+                        search=normalized_keyword,
+                        current_path=None,
+                        sort_by=sort_by,
+                        sort_order=sort_order,
+                        force_refresh=force_refresh,
+                        search_exact=search_exact,
+                        search_result_kind=search_result_kind,
+                    )
+                ): library
+                for library in remote_libraries
+            }
+            try:
+                combined_files: list[dict[str, Any]] = []
+                searched_library_count = 0
+                hit_library_count = 0
+                search_scope_count = 0
+                truncated = False
+                for task, library in tasks.items():
+                    try:
+                        result = await task
+                    except Exception:
+                        logger.warning(
+                            "远程全局搜索失败: keyword=%s library=%s",
+                            normalized_keyword,
                             library.id,
-                            page=1,
-                            page_size=LIBRARY_SEARCH_RESULT_LIMIT,
-                            search=normalized_keyword,
-                            current_path=None,
-                            sort_by=sort_by,
-                            sort_order=sort_order,
-                            force_refresh=force_refresh,
+                            exc_info=True,
                         )
-                    ): library
-                    for library in remote_libraries
-                }
-                try:
-                    pending = set(tasks.keys())
-                    while pending:
-                        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                        for task in done:
-                            result = await task
-                            files = list(result.get("files") or [])
-                            total = int(result.get("total") or len(files))
-                            if files or total:
-                                winner = tasks[task]
-                                logger.info(
-                                    "远程全局搜索命中: keyword=%s library=%s total=%s",
-                                    normalized_keyword,
-                                    winner.id,
-                                    total,
-                                )
-                                for pending_task in pending:
-                                    pending_task.cancel()
-                                result["library_id"] = winner.id
-                                return result
-                finally:
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
+                        continue
+                    searched_library_count += 1
+                    files = list(result.get("files") or [])
+                    total = int(result.get("total") or len(files))
+                    if files or total:
+                        hit_library_count += 1
+                        logger.info(
+                            "远程全局搜索命中: keyword=%s library=%s total=%s",
+                            normalized_keyword,
+                            library.id,
+                            total,
+                        )
+                    search_scope_count += int(result.get("search_scope_count") or 0)
+                    truncated = truncated or bool(result.get("search_truncated"))
+                    combined_files.extend(files)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+
+            combined_files = self._sort_remote_page_items(combined_files, sort_by, sort_order)
+            if len(combined_files) > LIBRARY_SEARCH_RESULT_LIMIT:
+                combined_files = combined_files[:LIBRARY_SEARCH_RESULT_LIMIT]
+                truncated = True
+            combined_total = len(combined_files)
+            start = max(0, (page - 1) * page_size)
+            end = start + page_size
+            page_items = combined_files[start:end]
+            for item in page_items:
+                item.pop("_mtime", None)
+            display_library = requested_library or remote_libraries[0]
+            return {
+                "files": page_items,
+                "page": page,
+                "page_size": page_size,
+                "total": combined_total,
+                "current_path": display_library.browse_root_path or display_library.root_path,
+                "browse_root_path": display_library.browse_root_path or display_library.root_path,
+                "parent_path": None,
+                "search_mode": True,
+                "search_root_path": "/",
+                "search_query": normalized_keyword,
+                "search_truncated": truncated,
+                "search_scope_count": search_scope_count,
+                "search_global_remote": True,
+                "searched_library_count": searched_library_count,
+                "hit_library_count": hit_library_count,
+                "search_exact": bool(search_exact),
+                "search_result_kind": self._normalize_search_result_kind(search_result_kind),
+                "library_id": display_library.id,
+            }
         return await self.list_files(
             library_id,
-            page=1,
-            page_size=LIBRARY_SEARCH_RESULT_LIMIT,
+            page=page,
+            page_size=page_size,
             search=keyword,
             current_path=None,
             sort_by=sort_by,
             sort_order=sort_order,
             force_refresh=force_refresh,
+            search_exact=search_exact,
+            search_result_kind=search_result_kind,
         )
 
-    def _search_match_text(self, keyword: str, *values: Any) -> bool:
+    def _normalize_search_result_kind(self, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"folder", "dir", "directory"}:
+            return "folder"
+        if normalized in {"file", "files"}:
+            return "file"
+        return "all"
+
+    def _matches_search_result_kind(self, is_directory: bool, search_result_kind: str) -> bool:
+        normalized_kind = self._normalize_search_result_kind(search_result_kind)
+        if normalized_kind == "folder":
+            return bool(is_directory)
+        if normalized_kind == "file":
+            return not bool(is_directory)
+        return True
+
+    def _search_match_text(self, keyword: str, *values: Any, exact: bool = False) -> bool:
         normalized_keyword = str(keyword or "").strip().lower()
         if not normalized_keyword:
             return False
         for value in values:
             text = str(value or "").lower()
-            if normalized_keyword in text:
+            if exact and text == normalized_keyword:
+                return True
+            if not exact and normalized_keyword in text:
                 return True
         return False
 
@@ -1263,6 +1333,8 @@ class LibraryManager:
         current_path: Optional[str],
         sort_by: str,
         sort_order: str,
+        search_exact: bool = False,
+        search_result_kind: str = "all",
     ) -> dict[str, Any]:
         browse_root = os.path.abspath(library.browse_root_path or library.root_path)
         search_root = os.path.abspath(current_path or browse_root)
@@ -1303,11 +1375,11 @@ class LibraryManager:
                 full_path = entry.path
                 relative_path = os.path.relpath(full_path, search_root).replace("\\", "/")
                 rjcode = self._extract_rjcode(relative_path) or self._extract_rjcode(name)
-                if self._search_match_text(keyword, name, relative_path, rjcode):
+                if self._search_match_text(keyword, name, relative_path, rjcode, exact=search_exact):
                     target_path = full_path
                     target_name = name
                     target_is_directory = is_directory
-                    if rj_only_search:
+                    if rj_only_search and self._normalize_search_result_kind(search_result_kind) != "file":
                         nearest_rj_dir = self._find_nearest_local_rj_directory(full_path, search_root)
                         if not nearest_rj_dir:
                             if is_directory:
@@ -1322,6 +1394,8 @@ class LibraryManager:
                         except OSError:
                             stat_result = None
                         if stat_result:
+                            if not self._matches_search_result_kind(target_is_directory, search_result_kind):
+                                continue
                             seen_paths.add(target_path)
                             matches.append(
                                 self._build_local_search_entry(
@@ -1365,6 +1439,8 @@ class LibraryManager:
             "search_query": keyword,
             "search_truncated": truncated,
             "scanned_directories": visited_dirs,
+            "search_exact": bool(search_exact),
+            "search_result_kind": self._normalize_search_result_kind(search_result_kind),
         }
 
     def _list_local_files(
@@ -1817,6 +1893,8 @@ class LibraryManager:
         sort_order: str,
         *,
         force_refresh: bool = False,
+        search_exact: bool = False,
+        search_result_kind: str = "all",
     ) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
@@ -1830,6 +1908,8 @@ class LibraryManager:
             sort_order=sort_order,
             page=page,
             page_size=page_size,
+            search_exact=search_exact,
+            search_result_kind=search_result_kind,
         )
         cached_result = self._get_cached_remote_search_result(cache_key, force_refresh=force_refresh)
         if cached_result is not None:
@@ -1923,7 +2003,7 @@ class LibraryManager:
             target_path = self._normalize_remote_path(item.get("path") or item.get("real_path") or item_name)
             if not self._remote_path_is_within_root(target_path, browse_root):
                 continue
-            if rj_only_search:
+            if rj_only_search and self._normalize_search_result_kind(search_result_kind) != "file":
                 nearest_rj_dir = self._find_nearest_remote_rj_directory(target_path, browse_root)
                 if not nearest_rj_dir:
                     continue
@@ -1946,15 +2026,24 @@ class LibraryManager:
             normalized_target_path = self._normalize_remote_path(target_path)
             if normalized_target_path in seen_paths:
                 continue
-            seen_paths.add(normalized_target_path)
-            files.append(
-                self._build_remote_search_entry(
-                    library,
-                    item_id=index,
-                    search_root=browse_root,
-                    item=target_item,
-                )
+            entry = self._build_remote_search_entry(
+                library,
+                item_id=index,
+                search_root=browse_root,
+                item=target_item,
             )
+            if not self._search_match_text(
+                keyword,
+                entry.get("name"),
+                entry.get("relative_path"),
+                entry.get("rjcode"),
+                exact=search_exact,
+            ):
+                continue
+            if not self._matches_search_result_kind(bool(entry.get("is_directory")), search_result_kind):
+                continue
+            seen_paths.add(normalized_target_path)
+            files.append(entry)
 
         files = self._sort_remote_page_items(files, normalized_sort_by, normalized_sort_order)
         deduped_total = len(files)
@@ -1976,6 +2065,8 @@ class LibraryManager:
             "search_query": keyword,
             "search_truncated": deduped_total >= LIBRARY_SEARCH_RESULT_LIMIT,
             "search_scope_count": search_scope_count,
+            "search_exact": bool(search_exact),
+            "search_result_kind": self._normalize_search_result_kind(search_result_kind),
         }
         return self._set_cached_remote_search_result(cache_key, result)
 
@@ -2009,7 +2100,7 @@ class LibraryManager:
                 )
             raise
         try:
-            await client.rename(target_path, new_name)
+            await self._retry_remote_rename(client, target_path, new_name)
         except Exception as exc:
             if client._is_error_code(exc, 119):
                 await self._raise_remote_code_119_context(
@@ -4236,9 +4327,21 @@ class LibraryManager:
             if matched_directories:
                 pending_directories += len(matched_directories)
                 publish(scanned_entries=scanned_entries, discovered_entries=discovered_entries, pending_directories=pending_directories)
-                folder_sizes = await asyncio.gather(*(collect_descendants(item[0]) for item in matched_directories))
-                for directory_item, folder_size in zip(matched_directories, folder_sizes):
+                folder_descendants = await asyncio.gather(
+                    *(
+                        self._collect_remote_filter_preview_descendants(
+                            client,
+                            target_path,
+                            item[0],
+                            item[0],
+                        )
+                        for item in matched_directories
+                    )
+                )
+                for directory_item, descendant_result in zip(matched_directories, folder_descendants):
                     child_path, relative_path, modified_time, matched_rules = directory_item
+                    descendants, folder_size = descendant_result
+                    folder_size_status = "partial" if any(str(item.get("size_status") or "") == "partial" for item in descendants) else "estimated"
                     preview_items.append(
                         self._build_preview_item(
                             path=child_path,
@@ -4247,9 +4350,10 @@ class LibraryManager:
                             size=folder_size,
                             modified_time=modified_time,
                             matched_rules=matched_rules,
-                            size_status="estimated",
+                            size_status=folder_size_status,
                         )
                     )
+                    preview_items.extend(descendants)
                     selected_count += 1
                     selected_size += folder_size
                     publish(

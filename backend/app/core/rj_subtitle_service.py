@@ -232,6 +232,78 @@ class RJSubtitleService:
                 count += 1
         return count
 
+    async def check_kikoeru_existing_subtitles(self, rjcode: str) -> Dict[str, Any]:
+        """检查 Kikoeru 中该作品或其关联作品是否已经存在可用字幕。"""
+        from .kikoeru_duplicate_service import get_kikoeru_service
+
+        normalized_rjcode = str(rjcode or '').strip().upper()
+        empty_state = {
+            'checked': False,
+            'checked_rjcode': normalized_rjcode,
+            'has_work': False,
+            'has_existing_subtitles': False,
+            'matched_rjcode': '',
+            'subtitle_file_count': 0,
+            'subtitle_check_source': '',
+            'title': '',
+            'matches': [],
+            'error': '',
+        }
+        if not normalized_rjcode:
+            return empty_state
+
+        service = get_kikoeru_service()
+        if not getattr(service.config, 'enabled', False):
+            return {
+                **empty_state,
+                'error': 'kikoeru_disabled',
+            }
+
+        try:
+            results = await service.check_duplicate_with_linkages(normalized_rjcode, use_cache=True)
+        except Exception as exc:
+            logger.warning('[RJ字幕] 查询 Kikoeru 字幕状态失败: rj=%s error=%s', normalized_rjcode, exc)
+            return {
+                **empty_state,
+                'error': str(exc),
+            }
+
+        matches: List[Dict[str, Any]] = []
+        has_work = False
+        for workno, result in (results or {}).items():
+            if not result or not getattr(result, 'is_found', False):
+                continue
+            has_work = True
+            subtitle_count = int(getattr(result, 'subtitle_file_count', 0) or 0)
+            subtitle_check_source = str(getattr(result, 'subtitle_check_source', '') or '').strip()
+            has_subtitles = bool(getattr(result, 'has_lyric_hint', False))
+            if not has_subtitles or not subtitle_check_source or subtitle_check_source == 'search_only':
+                continue
+            matches.append({
+                'rjcode': str(workno or getattr(result, 'rjcode', '') or '').upper(),
+                'subtitle_file_count': subtitle_count,
+                'subtitle_check_source': subtitle_check_source,
+                'title': str(getattr(result, 'title', '') or ''),
+                'match_type': str(getattr(result, 'match_type', '') or ''),
+            })
+
+        preferred_match = next((item for item in matches if item['rjcode'] == normalized_rjcode), None)
+        if preferred_match is None and matches:
+            preferred_match = matches[0]
+
+        return {
+            'checked': True,
+            'checked_rjcode': normalized_rjcode,
+            'has_work': has_work,
+            'has_existing_subtitles': bool(preferred_match),
+            'matched_rjcode': str(preferred_match.get('rjcode') or '') if preferred_match else '',
+            'subtitle_file_count': int(preferred_match.get('subtitle_file_count') or 0) if preferred_match else 0,
+            'subtitle_check_source': str(preferred_match.get('subtitle_check_source') or '') if preferred_match else '',
+            'title': str(preferred_match.get('title') or '') if preferred_match else '',
+            'matches': matches,
+            'error': '',
+        }
+
     async def _discover_remote_rj_folders(
         self,
         manager,

@@ -181,6 +181,57 @@
               <div v-if="subtitleCleanupSummary" class="import-cleanup-summary">
                 {{ subtitleCleanupSummary }}
               </div>
+
+              <div v-if="activeTaskSupportsRetarget" class="import-config-row import-config-row-wrap">
+                <div class="import-config-title-row">
+                  <div>
+                    <div class="import-config-title">切换目标目录</div>
+                    <div class="import-config-tip">从当前工作区里的原始字幕重新建一个新补配任务，不直接篡改旧任务。</div>
+                  </div>
+                  <div class="import-config-inline-actions">
+                    <el-button size="small" :loading="retargetPreviewLoading" @click="loadRetargetPreview(activeTask, { force: true, showMessage: true })">刷新候选</el-button>
+                    <el-button
+                      size="small"
+                      type="primary"
+                      :disabled="!canRetargetActiveTask"
+                      :loading="retargetingTaskId === activeTask?.id"
+                      @click="retargetActiveTask"
+                    >
+                      切换目标并重建
+                    </el-button>
+                  </div>
+                </div>
+
+                <div class="import-retarget-current">
+                  当前目标：{{ activeTask.folder_name || getFileName(activeTask.target_folder_path || activeTask.folder_path) || '-' }}
+                  <span v-if="activeTask.target_folder_path" class="import-retarget-path">{{ activeTask.target_folder_path }}</span>
+                </div>
+
+                <el-empty
+                  v-if="!retargetPreviewLoading && !retargetCandidates.length"
+                  description="当前没有可切换的目标目录候选"
+                />
+
+                <el-radio-group v-else v-model="retargetCandidateSelection" class="candidate-list">
+                  <label
+                    v-for="candidate in retargetCandidates"
+                    :key="candidateKey(candidate)"
+                    class="candidate-item"
+                  >
+                    <el-radio :label="candidateKey(candidate)">
+                      <span class="candidate-title">{{ candidate.folder_name || candidate.folder_path }}</span>
+                    </el-radio>
+                    <div class="candidate-meta">
+                      <span>{{ candidate.library_name }}</span>
+                      <span>{{ candidate.library_type === 'synology_filestation' ? '远程库' : '本地库' }}</span>
+                      <span>音频 {{ candidate.audio_count ?? 0 }}</span>
+                      <span>现有字幕 {{ candidate.existing_subtitle_count ?? 0 }}</span>
+                      <span>{{ formatFileSize(candidate.total_size || 0) }}</span>
+                    </div>
+                    <div class="candidate-path">{{ candidate.folder_path }}</div>
+                  </label>
+                </el-radio-group>
+              </div>
             </div>
           </el-card>
 
@@ -238,6 +289,16 @@
         <el-button type="primary" :loading="subtitleRenameLoading" @click="confirmSubtitleRename">确认重命名</el-button>
       </template>
     </el-dialog>
+
+    <FilterDeleteDialog
+      v-model="filterDeleteDialogVisible"
+      :library-id="filterDeleteDialogLibraryId"
+      :current-path="filterDeleteDialogPath"
+      :target-paths="filterDeleteDialogTargetPaths"
+      :scope-label="filterDeleteDialogScopeLabel"
+      :is-remote="filterDeleteDialogIsRemote"
+      @deleted="handleFilterDeleteDeleted"
+    />
   </div>
 </template>
 
@@ -246,6 +307,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Folder, FolderOpened, Document, Picture, VideoPlay, Headset, Tickets } from '@element-plus/icons-vue'
 import { libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
+import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
 import SubtitleInspectorWorkbench from '../library/SubtitleInspectorWorkbench.vue'
 
 const props = defineProps({
@@ -261,7 +323,8 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'select-task'])
 
-const SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
+const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
+const SUBTITLE_IMPORT_OPTIONS_KEY = 'kikoeru.ui.subtitleImport.workbenchOptions'
 const SUBTITLE_IMPORT_QUEUE_STATE_KEY = 'kikoeru.ui.subtitleImport.workbenchQueueState'
 
 function loadJson(key, fallback) {
@@ -300,8 +363,18 @@ function normalizeSubtitleFilterRule(rule = {}) {
   })
 }
 
+function loadSubtitleImportOptions() {
+  const saved = loadJson(SUBTITLE_IMPORT_OPTIONS_KEY, null)
+  if (saved && typeof saved === 'object') return saved
+  const legacy = loadJson(LEGACY_SUBTITLE_OPTIONS_KEY, {})
+  if (legacy && typeof legacy === 'object') {
+    saveJson(SUBTITLE_IMPORT_OPTIONS_KEY, legacy)
+  }
+  return legacy
+}
+
 function getSubtitleWorkbenchOptions() {
-  const saved = loadJson(SUBTITLE_OPTIONS_KEY, {})
+  const saved = loadSubtitleImportOptions()
   return {
     namingStrategy: saved?.namingStrategy === 'subtitle' ? 'subtitle' : 'audio',
     useFilterRules: saved?.useFilterRules ?? false,
@@ -322,8 +395,19 @@ const retryingTaskId = ref('')
 const subtitleRenameDialogVisible = ref(false)
 const subtitleRenameForm = ref({ currentName: '', newName: '', path: '' })
 const subtitleRenameLoading = ref(false)
+const filterDeleteDialogVisible = ref(false)
+const filterDeleteDialogLibraryId = ref('')
+const filterDeleteDialogPath = ref('')
+const filterDeleteDialogTargetPaths = ref([])
+const filterDeleteDialogScopeLabel = ref('')
+const filterDeleteDialogIsRemote = ref(false)
 const subtitleCleanupLoading = ref(false)
 const subtitleCleanupSummary = ref('')
+const retargetPreviewLoading = ref(false)
+const retargetPreview = ref(null)
+const retargetCandidateSelection = ref('')
+const retargetPreviewTaskId = ref('')
+const retargetingTaskId = ref('')
 
 const subtitleInspectorLoading = ref(false)
 const subtitleInspectorDeleting = ref(false)
@@ -364,7 +448,7 @@ watch(() => subtitleOptions.value.namingStrategy, () => {
 })
 
 watch(subtitleOptions, (value) => {
-  saveJson(SUBTITLE_OPTIONS_KEY, {
+  saveJson(SUBTITLE_IMPORT_OPTIONS_KEY, {
     namingStrategy: value.namingStrategy === 'subtitle' ? 'subtitle' : 'audio',
     useFilterRules: value.useFilterRules !== false,
     subtitleFilterRules: (value.subtitleFilterRules || []).map(rule => normalizeSubtitleFilterRule(rule))
@@ -399,6 +483,17 @@ function normalizeRJSubtitleTaskPayload(task) {
 function getFileName(path) {
   if (!path) return ''
   return String(path).split(/[\\/]/).pop()
+}
+
+function candidateKey(candidate) {
+  return `${candidate?.library_id || ''}::${candidate?.folder_path || ''}`
+}
+
+function getTaskTargetCandidateKey(task) {
+  return candidateKey({
+    library_id: task?.target_library_id || task?.library_id || '',
+    folder_path: task?.target_folder_path || task?.folder_path || ''
+  })
 }
 
 function getTaskDisplayRJCode(task) {
@@ -494,6 +589,14 @@ function canRetryTask(task) {
   return false
 }
 
+function canRetargetTask(task) {
+  if (!task) return false
+  if (task?.manual_match_completed) return false
+  if (!String(task?.subtitle_dir || '').trim()) return false
+  const sourceMode = String(task?.source_mode || '').trim().toLowerCase()
+  return ['linked_translation_archive_import', 'subtitle_folder_import'].includes(sourceMode)
+}
+
 function canClearTask(task) {
   return Boolean(task && (isFailedTask(task) || isCompletedTask(task)))
 }
@@ -507,6 +610,10 @@ function selectWorkbenchTask(taskId, options = {}) {
   if (props.visible && options.sync !== false && props.taskId !== normalized) {
     emit('select-task', normalized)
   }
+}
+
+function buildRetargetSourceRJCode(task) {
+  return String(task?.actual_rjcode || task?.rjcode || task?.target_rjcode || '').trim().toUpperCase()
 }
 
 function ensureSelectedWorkbenchTask(tasks = []) {
@@ -647,6 +754,81 @@ async function retryWorkbenchTask(task) {
     ElMessage.error('重试字幕补配任务失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     retryingTaskId.value = ''
+  }
+}
+
+async function loadRetargetPreview(task = activeTask.value, options = {}) {
+  const { force = false, showMessage = false } = options
+  if (!task || !canRetargetTask(task)) {
+    retargetPreview.value = null
+    retargetCandidateSelection.value = ''
+    retargetPreviewTaskId.value = ''
+    return
+  }
+
+  const taskId = String(task.id || '')
+  if (!force && retargetPreviewTaskId.value === taskId && retargetPreview.value) {
+    return
+  }
+
+  retargetPreviewLoading.value = true
+  try {
+    const previewResult = await subtitleImportApi.previewFolder(task.subtitle_dir, {
+      preferredLibraryId: task.target_library_id || task.library_id || undefined,
+      sourceRJCodeHint: buildRetargetSourceRJCode(task)
+    })
+    retargetPreview.value = previewResult?.preview || null
+    retargetPreviewTaskId.value = taskId
+
+    const currentTargetKey = getTaskTargetCandidateKey(task)
+    const candidates = previewResult?.preview?.candidates || []
+    const matchedCurrent = candidates.find(candidate => candidateKey(candidate) === currentTargetKey)
+    const selectedCandidate = matchedCurrent || previewResult?.preview?.selected_candidate || null
+    retargetCandidateSelection.value = selectedCandidate ? candidateKey(selectedCandidate) : ''
+
+    if (showMessage) {
+      ElMessage.success('已刷新可切换目标目录候选')
+    }
+  } catch (error) {
+    retargetPreview.value = null
+    retargetCandidateSelection.value = ''
+    retargetPreviewTaskId.value = ''
+    if (showMessage) {
+      ElMessage.error('加载目标目录候选失败: ' + (error.response?.data?.detail || error.message))
+    }
+  } finally {
+    retargetPreviewLoading.value = false
+  }
+}
+
+async function retargetActiveTask() {
+  const task = activeTask.value
+  const candidate = selectedRetargetCandidate.value
+  if (!task || !candidate || !canRetargetActiveTask.value) return
+
+  retargetingTaskId.value = String(task.id || '')
+  try {
+    const commonOptions = {
+      preferredLibraryId: candidate.library_id || task.target_library_id || task.library_id || undefined,
+      targetLibraryId: candidate.library_id,
+      targetFolderPath: candidate.folder_path,
+      sourceRJCodeHint: buildRetargetSourceRJCode(task),
+      useFilterRules: subtitleOptions.value.useFilterRules !== false,
+      subtitleFilterRules: (subtitleOptions.value.subtitleFilterRules || [])
+        .map(rule => normalizeSubtitleFilterRule(rule))
+        .filter(rule => String(rule.pattern || '').trim())
+    }
+
+    const result = await subtitleImportApi.importFolder(task.subtitle_dir, commonOptions)
+    await refreshTaskStatus(false, { inspect: true, forceInspect: true })
+    if (result?.task?.id) {
+      selectWorkbenchTask(result.task.id)
+    }
+    ElMessage.success('已切换目标目录并重建字幕补配任务')
+  } catch (error) {
+    ElMessage.error('切换目标目录失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    retargetingTaskId.value = ''
   }
 }
 
@@ -1330,6 +1512,11 @@ function joinPath(basePath, name) {
   return `${String(basePath || '').replace(/[\\/]+$/, '')}/${String(name || '').replace(/^[/\\]+/, '')}`
 }
 
+const canOpenSubtitleInspectorFilterDeleteDialog = computed(() => Boolean(
+  (subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId) &&
+  String(subtitleInspectorInfo.value.subtitleDir || '').trim()
+))
+
 async function applySubtitleCleanup() {
   const currentTaskId = activeTask.value?.id || props.taskId
   if (!currentTaskId) return
@@ -1356,9 +1543,10 @@ async function applySubtitleManualPairs() {
   const audioLibraryId = subtitleInspectorInfo.value.audioLibraryId || subtitleInspectorInfo.value.libraryId
   const subtitleLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || audioLibraryId
   const appliedPairCount = subtitleManualPairs.value.length
-  const sequenceCleanupRows = subtitleLastPairBuildMode.value === 'sequence'
-    ? subtitleInspectorSubtitleFiles.value.filter(item => !subtitleManualPairs.value.some(pair => pair.subtitle_path === item.path))
-    : []
+  const unusedSubtitleRows = subtitleInspectorSubtitleFiles.value.filter(
+    item => !subtitleManualPairs.value.some(pair => pair.subtitle_path === item.path)
+  )
+  const unusedSubtitlePathSet = new Set(unusedSubtitleRows.map(item => item.path).filter(Boolean))
 
   const audioConflicts = subtitleManualPairs.value.filter(pair => {
     const existing = subtitleInspectorAudioFiles.value.find(item => item.name === pair.target_audio_name)
@@ -1371,6 +1559,7 @@ async function applySubtitleManualPairs() {
 
   const subtitleConflicts = subtitleManualPairs.value.filter(pair => {
     const existing = subtitleInspectorSubtitleFiles.value.find(item => item.name === pair.target_subtitle_name)
+    if (existing?.path && unusedSubtitlePathSet.has(existing.path)) return false
     return existing && existing.path !== pair.subtitle_path
   })
   if (subtitleConflicts.length) {
@@ -1381,7 +1570,7 @@ async function applySubtitleManualPairs() {
   const namingStrategyLabel = subtitleOptions.value.namingStrategy === 'subtitle' ? '以字幕名为准' : '以音频名为准'
   try {
     await ElMessageBox.confirm(
-      `确定处理 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${sequenceCleanupRows.length ? `\n未纳入顺序配对的 ${sequenceCleanupRows.length} 个原始字幕会一并删除。` : ''}\n确认后会先在工作区完成重命名，再导入目标库存。`,
+      `确定处理 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${unusedSubtitleRows.length ? `\n当前未使用的 ${unusedSubtitleRows.length} 个原始字幕会一并删除。` : ''}\n确认后会先在工作区完成重命名，再导入目标库存。`,
       '应用配对确认',
       { confirmButtonText: '重命名并导入', cancelButtonText: '取消', type: 'warning' }
     )
@@ -1436,19 +1625,19 @@ async function applySubtitleManualPairs() {
       phaseTwoRenamed.push(pair)
     }
 
-    for (const subtitle of sequenceCleanupRows) {
+    for (const subtitle of unusedSubtitleRows) {
       await libraryApi.browserDelete(subtitleLibraryId, resolveSubtitleEntryPath(subtitle), true)
     }
 
     const currentTaskId = activeTask.value?.id || props.taskId
     await rjSubtitleApi.completeManual(currentTaskId, {
       appliedPairs: appliedPairCount,
-      deletedSubtitles: sequenceCleanupRows.length,
+      deletedSubtitles: unusedSubtitleRows.length,
       namingStrategy: subtitleOptions.value.namingStrategy || 'audio'
     })
 
     await refreshTaskStatus(false, { inspect: true, forceInspect: true })
-    ElMessage.success(`已重命名并导入 ${appliedPairCount} 组配对${sequenceCleanupRows.length ? `，并删除 ${sequenceCleanupRows.length} 个未选字幕` : ''}`)
+    ElMessage.success(`已重命名并导入 ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}`)
     clearSubtitleManualPairs()
   } catch (error) {
     const rollbackErrors = []
@@ -1482,6 +1671,22 @@ async function applySubtitleManualPairs() {
   } finally {
     subtitlePairApplying.value = false
   }
+}
+
+async function openSubtitleInspectorFilterDeleteDialog() {
+  const libraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId
+  const subtitleDir = String(subtitleInspectorInfo.value.subtitleDir || '').trim()
+  if (!libraryId || !subtitleDir) return
+  filterDeleteDialogLibraryId.value = libraryId
+  filterDeleteDialogPath.value = subtitleDir
+  filterDeleteDialogTargetPaths.value = [subtitleDir]
+  filterDeleteDialogScopeLabel.value = `${getTaskDisplayRJCode(activeTask.value) || getFileName(subtitleDir) || '当前任务'} 字幕工作区`
+  filterDeleteDialogIsRemote.value = false
+  filterDeleteDialogVisible.value = true
+}
+
+async function handleFilterDeleteDeleted() {
+  await reloadSubtitleInspector()
 }
 
 const subtitleInspectorRoot = computed(() => buildTree(subtitleInspectorItems.value))
@@ -1540,6 +1745,17 @@ const processingTaskCount = computed(() => linkedTasks.value.filter(task => isPr
 const completedTaskCount = computed(() => linkedTasks.value.filter(task => isCompletedTask(task)).length)
 const failedTaskCount = computed(() => linkedTasks.value.filter(task => isFailedTask(task)).length)
 const clearableTaskCount = computed(() => linkedTasks.value.filter(task => canClearTask(task)).length)
+const activeTaskSupportsRetarget = computed(() => canRetargetTask(activeTask.value))
+const retargetCandidates = computed(() => retargetPreview.value?.candidates || [])
+const selectedRetargetCandidate = computed(() => (
+  retargetCandidates.value.find(candidate => candidateKey(candidate) === retargetCandidateSelection.value) || null
+))
+const canRetargetActiveTask = computed(() => {
+  if (!activeTaskSupportsRetarget.value) return false
+  if (!selectedRetargetCandidate.value) return false
+  if (retargetPreviewLoading.value) return false
+  return candidateKey(selectedRetargetCandidate.value) !== getTaskTargetCandidateKey(activeTask.value)
+})
 
 function stopTaskStatusPolling() {
   if (taskStatusTimer) {
@@ -1563,6 +1779,16 @@ watch(() => props.visible, async (visible) => {
   }
   startTaskStatusPolling()
   await refreshTaskStatus(false, { inspect: true, forceInspect: true })
+}, { immediate: true })
+
+watch(activeTask, async (task) => {
+  if (!task || !props.visible || !canRetargetTask(task)) {
+    retargetPreview.value = null
+    retargetCandidateSelection.value = ''
+    retargetPreviewTaskId.value = ''
+    return
+  }
+  await loadRetargetPreview(task, { force: false, showMessage: false })
 }, { immediate: true })
 
 onUnmounted(() => {
@@ -1594,6 +1820,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   subtitlePairApplying: subtitlePairApplying.value,
   subtitleManualApplyLabel: '重命名并导入',
   isLinkedSubtitleImportWorkbench: true,
+  canOpenSubtitleInspectorFilterDeleteDialog: canOpenSubtitleInspectorFilterDeleteDialog.value,
   subtitleAudioFilterMode: subtitleAudioFilterMode.value,
   subtitleSubtitleFilterMode: subtitleSubtitleFilterMode.value,
   subtitleMatchSelection: subtitleMatchSelection.value,
@@ -1612,6 +1839,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   buildAutoSubtitlePairs,
   buildSequenceOrOrderedSubtitlePairs,
   applySubtitleManualPairs,
+  openSubtitleInspectorFilterDeleteDialog,
   setSubtitleSequenceMode: value => { subtitleSequenceMode.value = value },
   setSubtitleAudioFilterMode: value => { subtitleAudioFilterMode.value = value },
   setSubtitleSubtitleFilterMode: value => { subtitleSubtitleFilterMode.value = value },
@@ -2150,6 +2378,68 @@ const subtitleWorkbenchCtx = computed(() => ({
   color: #41603d;
   font-size: 12px;
   line-height: 1.7;
+}
+
+.import-retarget-current {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f6f9ff;
+  border: 1px solid #d9e4fb;
+  color: #30486f;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.import-retarget-path {
+  color: #667b9e;
+  word-break: break-all;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 8px;
+}
+
+.candidate-item {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e6edf6;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.candidate-item:hover {
+  border-color: #bfd4f6;
+  box-shadow: 0 8px 20px rgba(59, 88, 135, 0.08);
+  transform: translateY(-1px);
+}
+
+.candidate-title {
+  font-weight: 700;
+  color: #24364f;
+}
+
+.candidate-meta,
+.candidate-path {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #71839b;
+}
+
+.candidate-item :deep(.el-radio) {
+  align-items: flex-start;
+  white-space: normal;
 }
 
 .import-task-main > :deep(.el-alert) {

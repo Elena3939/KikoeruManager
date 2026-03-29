@@ -28,6 +28,7 @@ class KikoeruServerConfig:
     token_expires: int = 0  # Token 过期时间戳
     timeout: int = 10     # 请求超时(秒)
     cache_ttl: int = 300  # 缓存时间(秒)
+    enable_fuzzy_rj_match: bool = False  # 是否允许危险的 RJ ±1 宽容匹配
 
 
 @dataclass
@@ -47,6 +48,8 @@ class KikoeruCheckResult:
     tolerance: int = 0
     lyric_status: str = ""
     has_lyric_hint: bool = False
+    subtitle_file_count: int = 0
+    subtitle_check_source: str = ""
     
     def __post_init__(self):
         if self.checked_at is None:
@@ -81,7 +84,8 @@ class KikoeruDuplicateService:
                 api_token=kikoeru_config.api_token,
                 token_expires=kikoeru_config.token_expires,
                 timeout=kikoeru_config.timeout,
-                cache_ttl=kikoeru_config.cache_ttl
+                cache_ttl=kikoeru_config.cache_ttl,
+                enable_fuzzy_rj_match=bool(getattr(kikoeru_config, 'enable_fuzzy_rj_match', False)),
             )
         else:
             return KikoeruServerConfig()
@@ -206,6 +210,9 @@ class KikoeruDuplicateService:
             # 缓存过期
             del self._cache[rjcode]
             return None
+        if getattr(result, "is_found", False) and not str(getattr(result, "subtitle_check_source", "") or "").strip():
+            del self._cache[rjcode]
+            return None
         
         return result
     
@@ -217,6 +224,9 @@ class KikoeruDuplicateService:
         """构建搜索 URL"""
         # Kikoeru 标准搜索 API: /api/search?page=1&sort=desc&order=release&nsfw=0&keyword={rjcode}
         return f"{self.config.server_url}/api/search?page=1&sort=desc&order=release&nsfw=0&keyword={rjcode}"
+
+    def _build_tracks_url(self, work_id: int) -> str:
+        return f"{self.config.server_url}/api/tracks/{int(work_id)}"
     
     def _get_headers(self) -> Dict[str, str]:
         """获取请求头，包含 API Token"""
@@ -233,6 +243,91 @@ class KikoeruDuplicateService:
             logger.debug("[Kikoeru] 未配置 API Token，使用无认证请求")
         
         return headers
+
+    def _is_subtitle_track_file(self, item: Dict) -> bool:
+        if not isinstance(item, dict):
+            return False
+        if str(item.get('type') or '').strip().lower() != 'text':
+            return False
+
+        title = str(item.get('title') or '').strip()
+        if not title:
+            return False
+
+        ext = title.rsplit('.', 1)[-1].lower() if '.' in title else ''
+        if f'.{ext}' not in {'.lrc', '.vtt', '.srt', '.ass', '.ssa'}:
+            return False
+
+        has_real_file_field = any(
+            str(item.get(key) or '').strip()
+            for key in ('hash', 'mediaDownloadUrl', 'media_download_url', 'mediaStreamUrl', 'media_stream_url')
+        )
+        return has_real_file_field
+
+    def _count_subtitle_files_from_tracks(self, entries) -> int:
+        count = 0
+
+        def walk(nodes):
+            nonlocal count
+            if not isinstance(nodes, list):
+                return
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                if self._is_subtitle_track_file(node):
+                    count += 1
+                children = node.get('children')
+                if isinstance(children, list) and children:
+                    walk(children)
+
+        walk(entries)
+        return count
+
+    async def _fetch_track_subtitle_state(
+        self,
+        session: aiohttp.ClientSession,
+        headers: Dict[str, str],
+        work_id: int,
+    ) -> tuple[Optional[int], str]:
+        if not work_id:
+            return None, "work_id_empty"
+
+        url = self._build_tracks_url(work_id)
+        try:
+            async with session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self.config.timeout)
+            ) as response:
+                if response.status != 200:
+                    logger.warning("[Kikoeru] 获取作品文件树失败: work_id=%s status=%s", work_id, response.status)
+                    return None, f"tracks_http_{response.status}"
+                data = await response.json()
+                subtitle_count = self._count_subtitle_files_from_tracks(data)
+                logger.info("[Kikoeru] 作品文件树字幕统计: work_id=%s subtitle_count=%s", work_id, subtitle_count)
+                return subtitle_count, "tracks"
+        except Exception as exc:
+            logger.warning("[Kikoeru] 获取作品文件树异常: work_id=%s error=%s", work_id, exc)
+            return None, "tracks_error"
+
+    async def _hydrate_track_subtitle_state(
+        self,
+        result: KikoeruCheckResult,
+        session: aiohttp.ClientSession,
+        headers: Dict[str, str],
+    ) -> KikoeruCheckResult:
+        if not result.is_found or not result.work_id:
+            return result
+
+        subtitle_count, source = await self._fetch_track_subtitle_state(session, headers, result.work_id)
+        if subtitle_count is None:
+            result.subtitle_check_source = source
+            return result
+
+        result.subtitle_file_count = int(subtitle_count)
+        result.subtitle_check_source = source
+        result.has_lyric_hint = subtitle_count > 0
+        return result
     
     async def check_duplicate(
         self, 
@@ -305,6 +400,7 @@ class KikoeruDuplicateService:
                                 if retry_response.status == 200:
                                     data = await retry_response.json()
                                     result = self._parse_search_result(rjcode, data)
+                                    result = await self._hydrate_track_subtitle_state(result, session, headers)
                                     if use_cache:
                                         self._set_cache(rjcode, result)
                                     return result
@@ -331,13 +427,17 @@ class KikoeruDuplicateService:
                 logger.info(f"[Kikoeru] 响应数据: {data}")
                 
                 result = self._parse_search_result(rjcode, data)
+                result = await self._hydrate_track_subtitle_state(result, session, headers)
                 
                 if not result.is_found:
-                    logger.info(f"[Kikoeru] 精确匹配未找到，尝试宽容搜索（±1）")
-                    fuzzy_result = await self._check_fuzzy(rjcode, session, headers, use_cache)
-                    if fuzzy_result.is_found:
-                        logger.info(f"[Kikoeru] ✓ 宽容匹配成功: {rjcode} -> {fuzzy_result.matched_rjcode}")
-                        return fuzzy_result
+                    if self.config.enable_fuzzy_rj_match:
+                        logger.warning(f"[Kikoeru] 精确匹配未找到，已启用危险的宽容搜索（±1）: {rjcode}")
+                        fuzzy_result = await self._check_fuzzy(rjcode, session, headers, use_cache)
+                        if fuzzy_result.is_found:
+                            logger.warning(f"[Kikoeru] ✓ 宽容匹配成功: {rjcode} -> {fuzzy_result.matched_rjcode}")
+                            return fuzzy_result
+                    else:
+                        logger.info(f"[Kikoeru] 精确匹配未找到，已跳过 ±1 宽容搜索: {rjcode}")
                 
                 if use_cache:
                     self._set_cache(rjcode, result)
@@ -345,7 +445,10 @@ class KikoeruDuplicateService:
                 if result.is_found:
                     logger.info(f"[Kikoeru] ✓ 精确匹配成功: {rjcode} - {result.title}")
                 else:
-                    logger.info(f"[Kikoeru] ✗ 未找到: {rjcode}（包括±1宽容搜索）")
+                    if self.config.enable_fuzzy_rj_match:
+                        logger.info(f"[Kikoeru] ✗ 未找到: {rjcode}（包括±1宽容搜索）")
+                    else:
+                        logger.info(f"[Kikoeru] ✗ 未找到: {rjcode}（仅精确匹配）")
                 
                 return result
                 
@@ -473,7 +576,9 @@ class KikoeruDuplicateService:
                 result.work_id = work_id
                 result.title = work.get('title', '')
                 result.lyric_status = str(work.get('lyric_status', '') or '')
-                result.has_lyric_hint = bool(result.lyric_status.strip())
+                result.has_lyric_hint = False
+                result.subtitle_file_count = 0
+                result.subtitle_check_source = "search_only"
                 
                 # 获取社团名
                 circle = work.get('circle', {})

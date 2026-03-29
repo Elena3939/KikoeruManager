@@ -56,6 +56,12 @@
             <el-input v-model="searchQuery" clearable placeholder="搜索文件名或RJ号" style="width: 250px" @keyup.enter="handleSearch" @clear="handleSearch">
               <template #prefix><el-icon><Search /></el-icon></template>
             </el-input>
+            <el-select v-model="searchResultKind" style="width: 112px">
+              <el-option label="全部" value="all" />
+              <el-option label="文件夹" value="folder" />
+              <el-option label="文件" value="file" />
+            </el-select>
+            <el-switch v-model="searchExact" inline-prompt active-text="精确" inactive-text="模糊" />
             <el-button class="toolbar-action-btn" type="primary" plain @click="handleSearch">查询</el-button>
           </div>
         </div>
@@ -70,9 +76,9 @@
         style="margin-bottom: 14px"
       />
 
-      <div class="path-toolbar">
+        <div class="path-toolbar">
         <div class="path-toolbar-left">
-          <el-button size="small" :disabled="!canGoParent" @click="goToParent">返回上级</el-button>
+          <el-button size="small" :disabled="!canGoParent" @click="goToParent">{{ backButtonLabel }}</el-button>
           <span class="path-label">当前层级</span>
           <code class="path-code">{{ currentPathDisplay }}</code>
         </div>
@@ -128,10 +134,17 @@
         <el-table-column type="selection" width="55" :selectable="isLibraryRowSelectable" />
         <el-table-column prop="name" label="文件名" sortable="custom" show-overflow-tooltip>
           <template #default="{ row }">
-            <el-icon class="file-icon"><Folder v-if="row.is_directory" /><Files v-else /></el-icon>
-            <button v-if="isSearchResultRow(row)" type="button" class="file-link-btn" @click="locateLibrarySearchResult(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
-            <button v-else-if="row.is_directory" type="button" class="file-link-btn" @click="openFolder(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
-            <span v-else class="file-name" v-html="renderLibrarySearchHighlight(row.name)"></span>
+            <div class="file-cell">
+              <div class="file-main-line">
+                <el-icon class="file-icon"><Folder v-if="row.is_directory" /><Files v-else /></el-icon>
+                <button v-if="isSearchResultRow(row)" type="button" class="file-link-btn" @click="locateLibrarySearchResult(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
+                <button v-else-if="row.is_directory" type="button" class="file-link-btn" @click="openFolder(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
+                <span v-else class="file-name" v-html="renderLibrarySearchHighlight(row.name)"></span>
+              </div>
+              <div v-if="isSearchResultRow(row) && getSearchResultLibraryLabel(row)" class="search-result-library">
+                来源库：{{ getSearchResultLibraryLabel(row) }}
+              </div>
+            </div>
           </template>
         </el-table-column>
         <el-table-column prop="rjcode" label="RJ 号" width="120">
@@ -398,7 +411,7 @@
                     <transition-group v-else-if="!subtitleExecutableCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-selection-list">
                       <button
                         v-for="item in pagedSubtitleSelectionItems"
-                        :key="item.folder_path"
+                        :key="buildSubtitleSelectionKey(item)"
                         type="button"
                         class="subtitle-selection-item"
                         :class="{ active: isSubtitleSelectionActive(item) }"
@@ -407,6 +420,10 @@
                       >
                         <div class="subtitle-selection-body">
                           <div class="subtitle-selection-name">{{ item.folder_name }}</div>
+                          <div class="subtitle-selection-submeta">
+                            <span v-if="getLibraryLabelById(item.library_id)" class="subtitle-selection-library">来源库：{{ getLibraryLabelById(item.library_id) }}</span>
+                            <span class="subtitle-selection-path">{{ item.folder_path }}</span>
+                          </div>
                           <div class="subtitle-selection-stats">
                             <span class="subtitle-mini-chip" :class="getSubtitleSelectionQueueClass(item)">{{ getSubtitleSelectionQueueLabel(item) }}</span>
                             <span class="subtitle-mini-chip">{{ item.rjcode || '未识别 RJ' }}</span>
@@ -457,7 +474,7 @@
                     <transition-group v-if="!subtitleSkippedCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-selection-list subtitle-selection-list-skipped">
                       <button
                         v-for="item in filteredSubtitleSkippedSelectionItems"
-                        :key="`${item.folder_path}-skipped`"
+                        :key="`${buildSubtitleSelectionKey(item)}-skipped`"
                         type="button"
                         class="subtitle-selection-item skipped"
                         :class="{ active: isSubtitleSelectionActive(item) }"
@@ -466,6 +483,10 @@
                       >
                         <div class="subtitle-selection-body">
                           <div class="subtitle-selection-name">{{ item.folder_name }}</div>
+                          <div class="subtitle-selection-submeta">
+                            <span v-if="getLibraryLabelById(item.library_id)" class="subtitle-selection-library">来源库：{{ getLibraryLabelById(item.library_id) }}</span>
+                            <span class="subtitle-selection-path">{{ item.folder_path }}</span>
+                          </div>
                           <div class="subtitle-selection-stats">
                             <span class="subtitle-mini-chip" :class="getSubtitleSelectionQueueClass(item)">{{ getSubtitleSelectionQueueLabel(item) }}</span>
                             <span class="subtitle-mini-chip">{{ item.rjcode || '未识别 RJ' }}</span>
@@ -519,9 +540,13 @@
                   <span v-if="subtitleScanSummary.failed" class="subtitle-mini-chip">失败 {{ subtitleScanSummary.failed }}</span>
                 </div>
                 <transition-group v-if="!subtitleScanTargetsCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-scan-result-list">
-                  <div v-for="item in subtitleScanTargetResults" :key="item.path" class="subtitle-scan-result-row" :class="`status-${item.status}`">
+                  <div v-for="item in subtitleScanTargetResults" :key="buildSubtitleScanTargetResultKey(item)" class="subtitle-scan-result-row" :class="`status-${item.status}`">
                     <div class="subtitle-scan-result-main" :title="item.path">
                       <span class="subtitle-scan-result-name">{{ item.name }}</span>
+                      <div class="subtitle-scan-result-submeta">
+                        <span v-if="getLibraryLabelById(item.library_id)" class="subtitle-scan-result-library">{{ getLibraryLabelById(item.library_id) }}</span>
+                        <span class="subtitle-scan-result-path">{{ item.path }}</span>
+                      </div>
                     </div>
                     <div class="subtitle-scan-result-meta">
                       <span class="subtitle-scan-result-status" :class="`status-${item.status}`">{{ getSubtitleScanResultLabel(item.status) }}</span>
@@ -530,7 +555,7 @@
                         v-if="canRetrySubtitleScanResult(item)"
                         size="small"
                         plain
-                        :loading="subtitleScanRetryingPath === item.path"
+                        :loading="subtitleScanRetryingPath === buildSubtitleScanTargetResultKey(item)"
                         :disabled="Boolean(subtitleScanRetryingPath)"
                         @click="rescanSubtitleSelectionTarget(item)"
                       >
@@ -560,10 +585,13 @@
                   </div>
                 </div>
                 <transition-group name="subtitle-card-fade" tag="div" class="subtitle-scan-skip-list">
-                  <div v-for="item in filteredSubtitleSkippedScanResults" :key="`${item.path}-skipped`" class="subtitle-scan-result-row skipped" :class="`status-${item.status}`">
+                  <div v-for="item in filteredSubtitleSkippedScanResults" :key="`${buildSubtitleScanTargetResultKey(item)}-skipped`" class="subtitle-scan-result-row skipped" :class="`status-${item.status}`">
                     <div class="subtitle-scan-result-main">
                       <span class="subtitle-scan-result-name">{{ item.name }}</span>
-                      <span class="subtitle-scan-result-path">{{ item.path }}</span>
+                      <div class="subtitle-scan-result-submeta">
+                        <span v-if="getLibraryLabelById(item.library_id)" class="subtitle-scan-result-library">{{ getLibraryLabelById(item.library_id) }}</span>
+                        <span class="subtitle-scan-result-path">{{ item.path }}</span>
+                      </div>
                     </div>
                     <div class="subtitle-scan-result-meta">
                       <span class="subtitle-scan-result-status" :class="`status-${item.status}`">{{ getSubtitleScanResultLabel(item.status) }}</span>
@@ -572,7 +600,7 @@
                         v-if="canRetrySubtitleScanResult(item)"
                         size="small"
                         plain
-                        :loading="subtitleScanRetryingPath === item.path"
+                        :loading="subtitleScanRetryingPath === buildSubtitleScanTargetResultKey(item)"
                         :disabled="Boolean(subtitleScanRetryingPath)"
                         @click="rescanSubtitleSelectionTarget(item)"
                       >
@@ -631,7 +659,7 @@
                       <div v-if="getTaskSourceRJCode(activeSubtitleTask)" class="subtitle-task-source">来源字幕 {{ getTaskSourceRJCode(activeSubtitleTask) }}</div>
                     </div>
                     <div class="subtitle-task-meta">
-                      <el-tag :type="getRJSubtitleTaskStatusType(activeSubtitleTask)">{{ getRJSubtitleTaskStatusLabel(activeSubtitleTask) }}</el-tag>
+                      <el-tag :type="getRJSubtitleTaskBaseStatusType(activeSubtitleTask)">{{ getRJSubtitleTaskBaseStatusLabel(activeSubtitleTask) }}</el-tag>
                       <span v-if="activeSubtitleTask.source_lang" class="subtitle-task-lang">{{ getRJSubtitleLangLabel(activeSubtitleTask.source_lang) }}</span>
                       <el-button
                         v-if="canCancelRJSubtitleTask(activeSubtitleTask)"
@@ -678,7 +706,6 @@
                     <span class="subtitle-inline-chip">写入 {{ activeSubtitleTask.written_files?.length || 0 }}</span>
                     <span class="subtitle-inline-chip">跳过 {{ activeSubtitleTask.skipped_files?.length || 0 }}</span>
                     <span class="subtitle-inline-chip">未匹配 {{ activeSubtitleTask.match_result?.unmatched_audio?.length || 0 }}</span>
-                    <span v-if="getSubtitleTaskManualStateText(activeSubtitleTask)" class="subtitle-inline-chip">{{ getSubtitleTaskManualStateText(activeSubtitleTask) }}</span>
                     <span class="subtitle-inline-chip" v-if="activeSubtitleTask.subtitle_dir">字幕目录已生成</span>
                   </div>
                   <div v-if="activeSubtitleTask.error_message" class="subtitle-task-error">{{ activeSubtitleTask.error_message }}</div>
@@ -830,6 +857,18 @@
                     <div class="subtitle-task-box-title">任务队列</div>
                     <div class="subtitle-card-tip">包含正在处理中的任务和历史任务，当前查看项会高亮。</div>
                   </div>
+                  <div class="subtitle-task-queue-filters">
+                    <button
+                      v-for="item in subtitleTaskManualOverview"
+                      :key="`manual-${item.key}`"
+                      type="button"
+                      class="subtitle-mini-chip subtitle-chip-button"
+                      :class="{ active: subtitleTaskManualFilter === item.key }"
+                      @click="setSubtitleTaskManualFilter(item.key)"
+                    >
+                      {{ item.label }} {{ item.value }}
+                    </button>
+                  </div>
                 </div>
 
                 <div v-if="subtitleQueueTasks.length" class="subtitle-task-rail subtitle-task-queue-rail">
@@ -843,7 +882,7 @@
                   >
                     <div class="subtitle-task-compact-head">
                       <span class="subtitle-task-compact-rj">{{ getTaskDisplayRJCode(task) }}</span>
-                      <span class="subtitle-task-compact-status" :class="`status-${isRJSubtitleTaskCancelled(task) ? 'cancelled' : task.status}`">{{ getRJSubtitleTaskStatusLabel(task) }}</span>
+                      <span class="subtitle-task-compact-status" :class="`status-${getRJSubtitleTaskStatusClass(task)}`">{{ getRJSubtitleTaskStatusLabel(task) }}</span>
                     </div>
                     <div class="subtitle-task-compact-folder">{{ task.folder_name || getFileName(task.folder_path) }}</div>
                     <div v-if="getTaskSourceRJCode(task)" class="subtitle-task-compact-source">来源 {{ getTaskSourceRJCode(task) }}</div>
@@ -852,9 +891,8 @@
                       <span>下载 {{ task.downloaded_count || getSubtitleDownloadFiles(task).length }}</span>
                       <span>匹配组 {{ task.match_result?.matched_group_count || 0 }}</span>
                       <span>写入 {{ task.written_files?.length || 0 }}</span>
-                      <span v-if="task.manual_match_completed">已匹配完成 {{ task.manual_match_applied_pairs || 0 }}</span>
-                      <span v-else-if="task.awaiting_manual_match">待筛选匹配</span>
-                      <span v-else>未匹配 {{ task.match_result?.unmatched_audio?.length || 0 }}</span>
+                      <span v-if="task.manual_match_completed" class="subtitle-task-meta-chip is-success">已匹配完成 {{ task.manual_match_applied_pairs || 0 }}</span>
+                      <span v-else >未匹配 {{ task.match_result?.unmatched_audio?.length || 0 }}</span>
                     </div>
                     <div class="subtitle-task-compact-actions">
                       <el-button size="small" text :disabled="!task.subtitle_dir" @click.stop="inspectSubtitleTask(task)">{{ getSubtitleTaskInspectLabel(task) }}</el-button>
@@ -912,11 +950,11 @@
     <FilterDeleteDialog
       ref="filterDeleteDialogRef"
       v-model="filterDeleteDialogVisible"
-      :library-id="selectedLibraryId"
-      :current-path="currentPath"
-      :target-paths="toolbarFilterDeletePaths"
-      :scope-label="toolbarActionScopeLabel"
-      :is-remote="isRemoteCurrentLibrary"
+      :library-id="filterDeleteDialogLibraryId"
+      :current-path="filterDeleteDialogPath"
+      :target-paths="filterDeleteDialogTargetPaths"
+      :scope-label="filterDeleteDialogScopeLabel"
+      :is-remote="filterDeleteDialogIsRemote"
       @deleted="handleFilterDeleteDeleted"
     />
   </div>
@@ -935,6 +973,8 @@ import SubtitleInspectorWorkbench from '../components/library/SubtitleInspectorW
 const PAGE_SIZES = [10, 20, 50, 100]
 const PAGE_SIZE_KEY = 'kikoeru.ui.library.pageSize'
 const LIBRARY_ACTION_SCOPE_KEY = 'kikoeru.ui.library.toolbarActionScope'
+const SEARCH_RESULT_KIND_KEY = 'kikoeru.ui.library.searchResultKind'
+const SEARCH_EXACT_KEY = 'kikoeru.ui.library.searchExact'
 const SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const DEFAULT_SORT_BY = 'size'
 const DEFAULT_SORT_ORDER = 'desc'
@@ -949,6 +989,8 @@ const totalFiles = ref(0)
 const libraries = ref([])
 const selectedLibraryId = ref('')
 const searchQuery = ref('')
+const searchResultKind = ref(loadString(SEARCH_RESULT_KIND_KEY, 'all'))
+const searchExact = ref(loadString(SEARCH_EXACT_KEY, '0') === '1')
 const currentPage = ref(loadNumber('kikoeru.ui.library.page', 1))
 const pageSize = ref(loadNumber(PAGE_SIZE_KEY, 20))
 const toolbarActionScope = ref(loadString(LIBRARY_ACTION_SCOPE_KEY, 'page') === 'all' ? 'all' : 'page')
@@ -965,9 +1007,42 @@ const apiRenamingId = ref(null)
 const currentPath = ref('')
 const browseRootPath = ref('')
 const parentPath = ref('')
-const librarySearchState = ref({ active: false, query: '', rootPath: '', truncated: false, scannedDirectories: 0 })
+function createLibrarySearchState (overrides = {}) {
+  return {
+    active: false,
+    query: '',
+    rootPath: '',
+    truncated: false,
+    scannedDirectories: 0,
+    globalRemote: false,
+    searchedLibraries: 0,
+    hitLibraries: 0,
+    exactSearch: false,
+    resultKind: 'all',
+    ...overrides
+  }
+}
+function createSearchResultReturnState (overrides = {}) {
+  return {
+    active: false,
+    libraryId: '',
+    searchQuery: '',
+    currentPath: '',
+    browseRootPath: '',
+    page: 1,
+    sortBy: DEFAULT_SORT_BY,
+    sortOrder: DEFAULT_SORT_ORDER,
+    searchExact: false,
+    searchResultKind: 'all',
+    searchState: createLibrarySearchState(),
+    ...overrides
+  }
+}
+const librarySearchState = ref(createLibrarySearchState())
 const locatedLibraryPath = ref('')
 const pendingLibraryLocate = ref(null)
+const pendingLibrarySearchRestore = ref(null)
+const searchResultReturnState = ref(createSearchResultReturnState())
 const renameDialogVisible = ref(false)
 const renameForm = ref({ currentName: '', newName: '', path: '', libraryId: '' })
 const isRenaming = ref(false)
@@ -1009,6 +1084,11 @@ const folderDialogLibraryId = ref('')
 const folderDialogPath = ref('')
 const folderDialogName = ref('')
 const filterDeleteDialogVisible = ref(false)
+const filterDeleteDialogLibraryId = ref('')
+const filterDeleteDialogPath = ref('')
+const filterDeleteDialogTargetPaths = ref([])
+const filterDeleteDialogScopeLabel = ref('')
+const filterDeleteDialogIsRemote = ref(false)
 const subtitleDialogVisible = ref(false)
 const subtitleSubmitting = ref(false)
 const subtitleTasksLoading = ref(false)
@@ -1017,6 +1097,7 @@ const subtitleCancelingId = ref('')
 const subtitleTasks = ref([])
 const subtitleActiveTaskId = ref('')
 const subtitleTaskFilter = ref('all')
+const subtitleTaskManualFilter = ref('all')
 const subtitlePreferredSelectionKey = ref('')
 const subtitleSelectionLoading = ref(false)
 const subtitleSelectionScanDone = ref(0)
@@ -1143,7 +1224,11 @@ const aggregateDetail = computed(() => {
   const ts = aggregateLastCompletedAt.value
   return ts ? `\u6700\u8fd1\u7edf\u8ba1\u4e8e ${formatDate(ts * 1000)}` : ''
 })
-const canGoParent = computed(() => !!parentPath.value && currentPath.value && currentPath.value !== browseRootPath.value)
+const canGoParent = computed(() => {
+  if (searchResultReturnState.value.active) return true
+  return !!parentPath.value && currentPath.value && currentPath.value !== browseRootPath.value
+})
+const backButtonLabel = computed(() => (searchResultReturnState.value.active ? '返回搜索结果' : '返回上级'))
 const currentPathDisplay = computed(() => {
   const normalizedCurrent = (currentPath.value || '').replace(/\\/g, '/')
   const normalizedRoot = (browseRootPath.value || '').replace(/\\/g, '/')
@@ -1155,10 +1240,21 @@ const currentPathDisplay = computed(() => {
 })
 const librarySearchSummary = computed(() => {
   if (!librarySearchState.value.active) return ''
-  const scope = currentPathDisplay.value || '/'
   const query = librarySearchState.value.query || searchQuery.value.trim()
+  const exactText = librarySearchState.value.exactSearch ? '精确' : '模糊'
+  const kindText = librarySearchState.value.resultKind === 'folder'
+    ? '文件夹'
+    : librarySearchState.value.resultKind === 'file'
+      ? '文件'
+      : '全部'
   const suffix = librarySearchState.value.truncated ? '，结果已按上限截断' : ''
-  return `真实搜索：在 ${scope} 下搜索 “${query}”${suffix}`
+  if (librarySearchState.value.globalRemote) {
+    const searchedLibraries = Number(librarySearchState.value.searchedLibraries || 0)
+    const hitLibraries = Number(librarySearchState.value.hitLibraries || 0)
+    return `真实搜索：跨 ${searchedLibraries} 个远程库搜索 “${query}” (${exactText} / ${kindText}，命中 ${hitLibraries} 个库)${suffix}`
+  }
+  const scope = currentPathDisplay.value || '/'
+  return `真实搜索：在 ${scope} 下搜索 “${query}” (${exactText} / ${kindText})${suffix}`
 })
 
 const currentFolderRJCode = computed(() => extractRJCode(currentPath.value || ''))
@@ -1208,7 +1304,14 @@ function matchesSubtitleTaskFilter (task, filter = subtitleTaskFilter.value) {
   return true
 }
 
-const visibleSubtitleTasks = computed(() => subtitleTasks.value.filter(task => matchesSubtitleTaskFilter(task)))
+function matchesSubtitleTaskManualFilter (task, filter = subtitleTaskManualFilter.value) {
+  if (filter === 'all') return true
+  if (filter === 'awaiting_manual_match') return Boolean(task?.awaiting_manual_match)
+  if (filter === 'manual_match_completed') return Boolean(task?.manual_match_completed)
+  return true
+}
+
+const visibleSubtitleTasks = computed(() => subtitleTasks.value.filter(task => matchesSubtitleTaskFilter(task) && matchesSubtitleTaskManualFilter(task)))
 const subtitleTaskSummary = computed(() => ({
   total: visibleSubtitleTasks.value.length,
   pending: visibleSubtitleTasks.value.filter(task => task.status === 'pending').length,
@@ -1221,8 +1324,13 @@ const subtitleTaskOverview = computed(() => ([
   { key: 'processing', label: '执行中', value: subtitleTasks.value.filter(task => task.status === 'processing').length },
   { key: 'pending', label: '等待中', value: subtitleTasks.value.filter(task => task.status === 'pending').length },
   { key: 'completed', label: '已完成', value: subtitleTasks.value.filter(task => task.status === 'completed' && !task.manual_match_completed).length },
-  { key: 'matched', label: '已匹配', value: subtitleTasks.value.filter(task => task.manual_match_completed).length },
+  { key: 'matched', label: '已匹配完成', value: subtitleTasks.value.filter(task => task.manual_match_completed).length },
   { key: 'failed', label: '失败', value: subtitleTasks.value.filter(task => task.status === 'failed' || isRJSubtitleTaskCancelled(task)).length }
+]).filter(item => item.key === 'all' || item.value > 0))
+const subtitleTaskManualOverview = computed(() => ([
+  { key: 'all', label: '全部', value: subtitleTasks.value.length },
+  { key: 'awaiting_manual_match', label: '筛选并匹配', value: subtitleTasks.value.filter(task => task.awaiting_manual_match).length },
+  { key: 'manual_match_completed', label: '已匹配完成', value: subtitleTasks.value.filter(task => task.manual_match_completed).length }
 ]).filter(item => item.key === 'all' || item.value > 0))
 function subtitleTaskTimeValue (task, field = 'created_at') {
   const raw = task?.[field]
@@ -1448,6 +1556,10 @@ function normalizeSubtitleTaskSourceMode(value) {
 function isLinkedSubtitleImportSourceMode(value) {
   return linkedSubtitleImportSourceModes.has(normalizeSubtitleTaskSourceMode(value))
 }
+const canOpenSubtitleInspectorFilterDeleteDialog = computed(() => {
+  const libraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
+  return Boolean(libraryId && String(subtitleInspectorInfo.value.subtitleDir || '').trim())
+})
 const isLinkedSubtitleImportWorkbench = computed(() => isLinkedSubtitleImportSourceMode(activeSubtitleInspectTask.value?.source_mode || subtitleInspectorInfo.value.sourceMode || ''))
 const subtitleManualApplyLabel = computed(() => isLinkedSubtitleImportWorkbench.value ? '重命名并导入' : '一键应用同名')
 function matchesSubtitleExecutableFilter (item, filter = subtitleSelectionFilter.value) {
@@ -1601,6 +1713,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   subtitlePairApplying: subtitlePairApplying.value,
   subtitleManualApplyLabel: subtitleManualApplyLabel.value,
   isLinkedSubtitleImportWorkbench: isLinkedSubtitleImportWorkbench.value,
+  canOpenSubtitleInspectorFilterDeleteDialog: canOpenSubtitleInspectorFilterDeleteDialog.value,
   subtitleAudioFilterMode: subtitleAudioFilterMode.value,
   subtitleSubtitleFilterMode: subtitleSubtitleFilterMode.value,
   subtitleMatchSelection: subtitleMatchSelection.value,
@@ -1619,6 +1732,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   buildAutoSubtitlePairs,
   buildSequenceOrOrderedSubtitlePairs,
   applySubtitleManualPairs,
+  openSubtitleInspectorFilterDeleteDialog,
   setSubtitleSequenceMode: value => { subtitleSequenceMode.value = value },
   setSubtitleAudioFilterMode: value => { subtitleAudioFilterMode.value = value },
   setSubtitleSubtitleFilterMode: value => { subtitleSubtitleFilterMode.value = value },
@@ -1746,15 +1860,48 @@ watch(toolbarActionScope, value => {
   storeString(LIBRARY_ACTION_SCOPE_KEY, value)
 })
 
+watch(searchResultKind, value => {
+  storeString(SEARCH_RESULT_KIND_KEY, value || 'all')
+})
+
+watch(searchExact, value => {
+  storeString(SEARCH_EXACT_KEY, value ? '1' : '0')
+})
+
 watch(selectedLibraryId, async (newId, oldId) => {
   if (!newId) return
   if (oldId) saveLibraryState(oldId)
   restoreLibraryState(newId)
+  if (pendingLibrarySearchRestore.value?.libraryId === newId) {
+    const restoreState = pendingLibrarySearchRestore.value
+    searchQuery.value = restoreState.searchQuery || ''
+    searchExact.value = Boolean(restoreState.searchExact)
+    searchResultKind.value = restoreState.searchResultKind || 'all'
+    currentPath.value = restoreState.currentPath || ''
+    browseRootPath.value = restoreState.browseRootPath || ''
+    currentPage.value = Number(restoreState.page || 1)
+    sortBy.value = restoreState.sortBy || DEFAULT_SORT_BY
+    sortOrder.value = restoreState.sortOrder || DEFAULT_SORT_ORDER
+    librarySearchState.value = createLibrarySearchState({
+      active: true,
+      query: restoreState.searchState?.query || restoreState.searchQuery || '',
+      rootPath: restoreState.searchState?.rootPath || restoreState.currentPath || '',
+      truncated: Boolean(restoreState.searchState?.truncated),
+      scannedDirectories: Number(restoreState.searchState?.scannedDirectories || 0),
+      globalRemote: Boolean(restoreState.searchState?.globalRemote),
+      searchedLibraries: Number(restoreState.searchState?.searchedLibraries || 0),
+      hitLibraries: Number(restoreState.searchState?.hitLibraries || 0),
+      exactSearch: Boolean(restoreState.searchState?.exactSearch ?? restoreState.searchExact),
+      resultKind: restoreState.searchState?.resultKind || restoreState.searchResultKind || 'all'
+    })
+    locatedLibraryPath.value = ''
+    pendingLibrarySearchRestore.value = null
+  }
   if (pendingLibraryLocate.value?.libraryId === newId) {
     const targetPath = pendingLibraryLocate.value.path || ''
     const highlightPath = pendingLibraryLocate.value.highlightPath || targetPath
     searchQuery.value = ''
-    librarySearchState.value = { active: false, query: '', rootPath: '', truncated: false, scannedDirectories: 0 }
+    librarySearchState.value = createLibrarySearchState()
     currentPath.value = targetPath
     currentPage.value = 1
     locatedLibraryPath.value = highlightPath
@@ -1770,6 +1917,12 @@ watch(selectedLibraryId, async (newId, oldId) => {
 watch(subtitleTasks, () => {
   syncSubtitleTaskListState()
 })
+
+watch(visibleSubtitleTasks, tasks => {
+  if (!subtitleDialogVisible.value) return
+  if (tasks.length) return
+  clearSubtitleInspectorState()
+}, { deep: true })
 
 watch(activeSubtitleTask, task => {
   subtitleTaskDetailPanels.value = buildDefaultSubtitleTaskDetailPanels(task)
@@ -1872,6 +2025,8 @@ async function loadLibraries () {
 function saveLibraryState (libraryId) {
   libraryState.value[libraryId] = {
     searchQuery: searchQuery.value,
+    searchExact: searchExact.value,
+    searchResultKind: searchResultKind.value,
     currentPage: currentPage.value,
     currentPath: currentPath.value,
     browseRootPath: browseRootPath.value,
@@ -1883,6 +2038,8 @@ function saveLibraryState (libraryId) {
 function restoreLibraryState (libraryId) {
   const state = libraryState.value[libraryId] || {}
   searchQuery.value = state.searchQuery || ''
+  searchExact.value = Boolean(state.searchExact ?? (loadString(SEARCH_EXACT_KEY, '0') === '1'))
+  searchResultKind.value = state.searchResultKind || loadString(SEARCH_RESULT_KIND_KEY, 'all')
   currentPage.value = state.currentPage || 1
   currentPath.value = state.currentPath || ''
   browseRootPath.value = state.browseRootPath || ''
@@ -1988,6 +2145,8 @@ async function refreshLibrary (options = {}) {
       page: currentPage.value,
       pageSize: pageSize.value,
       search: searchQuery.value.trim(),
+      searchExact: searchExact.value,
+      searchResultKind: searchResultKind.value,
       currentPath: currentPath.value,
       sortBy: sortBy.value,
       sortOrder: sortOrder.value,
@@ -2010,13 +2169,18 @@ async function refreshLibrary (options = {}) {
     currentPath.value = data.current_path || currentPath.value || data.browse_root_path || ''
     browseRootPath.value = data.browse_root_path || browseRootPath.value || currentPath.value
     parentPath.value = data.parent_path || ''
-    librarySearchState.value = {
+    librarySearchState.value = createLibrarySearchState({
       active: Boolean(data.search_mode),
       query: data.search_query || searchQuery.value.trim(),
       rootPath: data.search_root_path || '',
       truncated: Boolean(data.search_truncated),
-      scannedDirectories: Number(data.scanned_directories || 0)
-    }
+      scannedDirectories: Number(data.scanned_directories || 0),
+      globalRemote: Boolean(data.search_global_remote),
+      searchedLibraries: Number(data.searched_library_count || 0),
+      hitLibraries: Number(data.hit_library_count || 0),
+      exactSearch: Boolean(data.search_exact ?? searchExact.value),
+      resultKind: data.search_result_kind || searchResultKind.value || 'all'
+    })
     scheduleListPoll(files.value)
     const maxPage = Math.max(1, Math.ceil(Math.max(totalFiles.value, 1) / pageSize.value))
     if (currentPage.value > maxPage) currentPage.value = maxPage
@@ -2040,6 +2204,8 @@ async function applyTableSortIndicator () {
 }
 
 async function handleSearch () {
+  searchResultReturnState.value = createSearchResultReturnState()
+  pendingLibrarySearchRestore.value = null
   locatedLibraryPath.value = ''
   const shouldRefreshNow = currentPage.value === 1
   forceLibraryRefreshOnce = true
@@ -2111,7 +2277,8 @@ function toRJSubtitleItem (row) {
     rjcode: row.rjcode || extractRJCode(row.path || row.name),
     folder_name: row.name || getFileName(row.path),
     folder_path: row.path,
-    library_id: row.library_id || selectedLibraryId.value
+    library_id: row.library_id || selectedLibraryId.value,
+    search_hit: Boolean(row.search_hit)
   }
 }
 
@@ -2135,6 +2302,39 @@ function uniqueSubtitleItems (items) {
     seen.add(dedupeKey)
     return true
   })
+}
+
+function buildSubtitleScanTargetInput (target) {
+  if (!target) return null
+  if (typeof target === 'string') {
+    return {
+      path: target,
+      library_id: selectedLibraryId.value,
+      name: getFileName(target)
+    }
+  }
+  const path = String(target.scan_target_path || target.folder_path || target.path || '').trim()
+  if (!path) return null
+  return {
+    path,
+    library_id: target.library_id || selectedLibraryId.value,
+    name: target.folder_name || target.name || getFileName(path)
+  }
+}
+
+function uniqueSubtitleScanTargets (items) {
+  const seen = new Set()
+  return (Array.isArray(items) ? items : []).map(buildSubtitleScanTargetInput).filter(item => {
+    if (!item?.path) return false
+    const key = `${item.library_id || ''}::${item.path}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function buildSubtitleScanTargetResultKey (item = {}) {
+  return `${item.library_id || ''}::${item.path || ''}`
 }
 
 function normalizeRJSubtitleScanDepth (value) {
@@ -2195,6 +2395,15 @@ function updateSubtitleSelectionFromScanned (directItems, scannedItems, { sync =
 
 function resetSubtitleScanSession () {
   subtitleScanSession.value = createSubtitleScanSessionState()
+}
+
+function resetSubtitleScanRunIndicators () {
+  subtitleSelectionScanDone.value = 0
+  subtitleSelectionScanTotal.value = 0
+  subtitleSelectionScanCurrent.value = ''
+  subtitleScanTargetResults.value = []
+  subtitleScanRetryingPath.value = ''
+  resetSubtitleScanSession()
 }
 
 function clearSubtitleScanWorkspace () {
@@ -2384,6 +2593,7 @@ function normalizeSubtitleScanTargetResult (result = {}) {
   const summary = buildSubtitleScanTargetSummary(result.summary || {})
   return {
     path,
+    library_id: result.library_id || '',
     name,
     status,
     summary,
@@ -2394,7 +2604,8 @@ function normalizeSubtitleScanTargetResult (result = {}) {
 function upsertSubtitleScanTargetResult (result = {}) {
   const normalized = normalizeSubtitleScanTargetResult(result)
   const next = [...subtitleScanTargetResults.value]
-  const index = next.findIndex(item => item.path === normalized.path)
+  const targetKey = buildSubtitleScanTargetResultKey(normalized)
+  const index = next.findIndex(item => buildSubtitleScanTargetResultKey(item) === targetKey)
   if (index >= 0) {
     const mergedSummary = mergeSubtitleScanTargetSummary(next[index].summary, normalized.summary)
     next[index] = {
@@ -2412,17 +2623,20 @@ function upsertSubtitleScanTargetResult (result = {}) {
   subtitleScanTargetResults.value = next
 }
 
-function incrementSubtitleScanTargetCounter (path, key, amount = 1, extras = {}) {
-  if (!path) return
-  const current = subtitleScanTargetResults.value.find(item => item.path === path)
+function incrementSubtitleScanTargetCounter (target, key, amount = 1, extras = {}) {
+  const targetInput = buildSubtitleScanTargetInput(target)
+  if (!targetInput?.path) return
+  const targetKey = buildSubtitleScanTargetResultKey(targetInput)
+  const current = subtitleScanTargetResults.value.find(item => buildSubtitleScanTargetResultKey(item) === targetKey)
   const currentSummary = buildSubtitleScanTargetSummary(current?.summary || {})
   const nextSummary = {
     ...currentSummary,
     [key]: Number(currentSummary[key] || 0) + amount
   }
   upsertSubtitleScanTargetResult({
-    path,
-    name: extras.name || current?.name || getFileName(path),
+    path: targetInput.path,
+    library_id: extras.library_id || targetInput.library_id || current?.library_id || '',
+    name: extras.name || current?.name || targetInput.name || getFileName(targetInput.path),
     status: extras.status || current?.status || 'pending',
     summary: nextSummary,
     message: buildSubtitleScanTargetMessage(extras.status || current?.status || 'pending', nextSummary, extras.message || current?.message || '')
@@ -2430,7 +2644,9 @@ function incrementSubtitleScanTargetCounter (path, key, amount = 1, extras = {})
 }
 
 function removeSubtitleScanTargetResult (path) {
-  subtitleScanTargetResults.value = subtitleScanTargetResults.value.filter(item => item.path !== path)
+  const target = buildSubtitleScanTargetInput(path)
+  const targetKey = buildSubtitleScanTargetResultKey(target || {})
+  subtitleScanTargetResults.value = subtitleScanTargetResults.value.filter(item => buildSubtitleScanTargetResultKey(item) !== targetKey)
 }
 
 function getSubtitleScanResultLabel (status) {
@@ -2465,6 +2681,8 @@ function getSubtitleSelectionQueueLabel (item) {
       return '任务已存在'
     case 'skipped_existing':
       return '已有字幕跳过'
+    case 'skipped_kikoeru_existing':
+      return 'Kikoeru字幕跳过'
     case 'skipped_no_subtitle':
       return '远程无字幕跳过'
     case 'create_failed':
@@ -2485,6 +2703,7 @@ function getSubtitleSelectionQueueClass (item) {
     case 'create_failed':
       return 'subtitle-mini-chip-danger'
     case 'skipped_existing':
+    case 'skipped_kikoeru_existing':
     case 'skipped_no_subtitle':
       return 'subtitle-mini-chip-muted'
     default:
@@ -2529,23 +2748,75 @@ async function ensureRJSubtitleAvailabilityForItem (item) {
   }
 }
 
+async function ensureRJSubtitleExistingStateForItem (item) {
+  const folderPath = String(item?.folder_path || '').trim()
+  const libraryId = String(item?.library_id || selectedLibraryId.value || '').trim()
+  if (!folderPath || !libraryId) {
+    return {
+      hasExistingSubtitles: Number(item?.existing_subtitle_count || 0) > 0,
+      existingSubtitleCount: Number(item?.existing_subtitle_count || 0),
+      subtitleDir: '',
+      message: ''
+    }
+  }
+
+  const data = await rjSubtitleApi.checkFolderSubtitleState(folderPath, {
+    libraryId
+  })
+  const existingSubtitleCount = Number(data?.existing_subtitle_count || 0)
+  return {
+    hasExistingSubtitles: Boolean(data?.has_existing_subtitles),
+    existingSubtitleCount,
+    subtitleDir: String(data?.subtitle_dir || ''),
+    message: existingSubtitleCount > 0 ? `现有字幕 ${existingSubtitleCount} 个` : ''
+  }
+}
+
+async function ensureRJSubtitleKikoeruStateForItem (item) {
+  const rjcode = String(item?.rjcode || '').trim().toUpperCase()
+  if (!rjcode) {
+    return {
+      hasExistingSubtitles: false,
+      matchedRjcode: '',
+      subtitleFileCount: 0,
+      message: '未识别到 RJ 号'
+    }
+  }
+
+  const data = await rjSubtitleApi.checkKikoeruSubtitleState(rjcode)
+  const subtitleFileCount = Number(data?.subtitle_file_count || 0)
+  const matchedRjcode = String(data?.matched_rjcode || rjcode).trim().toUpperCase()
+  return {
+    hasExistingSubtitles: Boolean(data?.has_existing_subtitles),
+    matchedRjcode,
+    subtitleFileCount,
+    message: Boolean(data?.has_existing_subtitles)
+      ? `Kikoeru 已有字幕（${matchedRjcode}${subtitleFileCount > 0 ? ` / ${subtitleFileCount} 个` : ''}）`
+      : ''
+  }
+}
+
 async function resolveRJSubtitleItems (paths, options = {}) {
   const { onChunk, onProgress, onTargetResult } = options
+  const scanTargets = uniqueSubtitleScanTargets(paths)
   const collected = []
-  const total = paths.length
+  const total = scanTargets.length
   let done = 0
-  for (const path of paths) {
-    onProgress?.({ done, total, currentPath: path })
+  for (const target of scanTargets) {
+    const path = target.path
+    const libraryId = target.library_id || selectedLibraryId.value
+    onProgress?.({ done, total, currentPath: path, libraryId })
     try {
       await rjSubtitleApi.scanStream(path, {
-        libraryId: selectedLibraryId.value,
+        libraryId,
         scanDepth: normalizeRJSubtitleScanDepth(subtitleOptions.value.scanDepth),
         onEvent: async event => {
           if (!event || typeof event !== 'object') return
           if (event.type === 'target_result') {
             const result = normalizeSubtitleScanTargetResult({
               path: event.path || path,
-              name: event.name || getFileName(path),
+              library_id: libraryId,
+              name: event.name || target.name || getFileName(path),
               status: event.status || 'pending',
               summary: event.summary || {},
               message: event.message || ''
@@ -2561,7 +2832,7 @@ async function resolveRJSubtitleItems (paths, options = {}) {
               rjcode: item.rjcode,
               folder_name: item.folder_name,
               folder_path: item.folder_path,
-              library_id: selectedLibraryId.value,
+              library_id: libraryId,
               scan_target_path: path,
               audio_count: item.audio_count,
               existing_subtitle_count: item.existing_subtitle_count,
@@ -2585,13 +2856,14 @@ async function resolveRJSubtitleItems (paths, options = {}) {
       console.error('扫描 RJ 字幕候选失败:', path, error)
       onTargetResult?.({
         path,
-        name: getFileName(path),
+        library_id: libraryId,
+        name: target.name || getFileName(path),
         status: 'failed',
         message: error.response?.data?.detail || error.message || '扫描失败'
       })
     } finally {
       done += 1
-      onProgress?.({ done, total, currentPath: path })
+      onProgress?.({ done, total, currentPath: path, libraryId })
     }
   }
   return uniqueSubtitleItems(collected)
@@ -2602,11 +2874,11 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
   if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
 
   incrementSubtitleScanSession('foundDirectories')
-  incrementSubtitleScanTargetCounter(item.scan_target_path, 'found', 1, { name: getFileName(item.scan_target_path) })
+  incrementSubtitleScanTargetCounter(item, 'found', 1, { name: getFileName(item.scan_target_path) })
   const existingTask = findSubtitleTaskBySelection(item)
   if (existingTask) {
     incrementSubtitleScanSession('existingTasks')
-    incrementSubtitleScanTargetCounter(item.scan_target_path, 'existingTask', 1)
+    incrementSubtitleScanTargetCounter(item, 'existingTask', 1)
     upsertSubtitleSelectionEntry(item, {
       task_id: existingTask.id,
       queue_state: 'existing_task',
@@ -2615,14 +2887,22 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
     return
   }
 
-  if (subtitleOptions.value.skipIfExistingSubtitles && (Number(item.existing_subtitle_count || 0) > 0 || item.status === 'existing')) {
-    incrementSubtitleScanSession('existingSubtitles')
-    incrementSubtitleScanTargetCounter(item.scan_target_path, 'skippedExisting', 1)
-    upsertSubtitleSelectionEntry(item, {
-      queue_state: 'skipped_existing',
-      queue_message: '已有字幕，未加入抓取任务'
-    })
-    return
+  if (subtitleOptions.value.skipIfExistingSubtitles) {
+    try {
+      const existingState = await ensureRJSubtitleKikoeruStateForItem(item)
+      if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
+      if (existingState.hasExistingSubtitles) {
+        incrementSubtitleScanSession('existingSubtitles')
+        incrementSubtitleScanTargetCounter(item, 'skippedExisting', 1)
+        upsertSubtitleSelectionEntry(item, {
+          queue_state: 'skipped_kikoeru_existing',
+          queue_message: existingState.message ? `${existingState.message}，未加入抓取任务` : 'Kikoeru 已有字幕，未加入抓取任务'
+        })
+        return
+      }
+    } catch (error) {
+      console.error('检查 Kikoeru 现有字幕失败，回退后端判断:', item?.rjcode, error)
+    }
   }
 
   upsertSubtitleSelectionEntry(item, {
@@ -2635,7 +2915,7 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
     if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
     if (!availability.hasSubtitle) {
       incrementSubtitleScanSession('noSubtitleTargets')
-      incrementSubtitleScanTargetCounter(item.scan_target_path, 'skippedNoSubtitle', 1)
+      incrementSubtitleScanTargetCounter(item, 'skippedNoSubtitle', 1)
       upsertSubtitleSelectionEntry(item, {
         queue_state: 'skipped_no_subtitle',
         queue_message: availability.message || '远程无字幕'
@@ -2649,10 +2929,53 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
     })
     const data = await submitRJSubtitleTasks([item], { silent: true, refresh: false })
     if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
+    const skippedItem = Array.isArray(data?.skipped_items)
+      ? data.skipped_items.find(entry => buildSubtitleSelectionKey(entry) === buildSubtitleSelectionKey(item))
+      : null
+    if (skippedItem?.queue_state === 'skipped_existing') {
+      incrementSubtitleScanSession('existingSubtitles')
+      incrementSubtitleScanTargetCounter(item, 'skippedExisting', 1)
+      upsertSubtitleSelectionEntry(item, {
+        existing_subtitle_count: skippedItem.existing_subtitle_count ?? item.existing_subtitle_count ?? 0,
+        status: 'existing',
+        queue_state: 'skipped_existing',
+        queue_message: skippedItem.queue_message || '已有字幕，未加入抓取任务'
+      })
+      return
+    }
+    if (skippedItem?.queue_state === 'skipped_kikoeru_existing') {
+      incrementSubtitleScanSession('existingSubtitles')
+      incrementSubtitleScanTargetCounter(item, 'skippedExisting', 1)
+      upsertSubtitleSelectionEntry(item, {
+        queue_state: 'skipped_kikoeru_existing',
+        queue_message: skippedItem.queue_message || 'Kikoeru 已有字幕，未加入抓取任务'
+      })
+      return
+    }
+    if (skippedItem?.queue_state === 'skipped_no_subtitle') {
+      incrementSubtitleScanSession('noSubtitleTargets')
+      incrementSubtitleScanTargetCounter(item, 'skippedNoSubtitle', 1)
+      upsertSubtitleSelectionEntry(item, {
+        queue_state: 'skipped_no_subtitle',
+        queue_message: skippedItem.queue_message || '远程无字幕'
+      })
+      return
+    }
+    if (skippedItem?.queue_state === 'existing_task') {
+      incrementSubtitleScanSession('existingTasks')
+      incrementSubtitleScanTargetCounter(item, 'existingTask', 1)
+      upsertSubtitleSelectionEntry(item, {
+        task_id: skippedItem.task_id || '',
+        queue_state: 'existing_task',
+        queue_message: skippedItem.queue_message || '任务已存在'
+      })
+      if (skippedItem.task_id && !subtitleActiveTaskId.value) subtitleActiveTaskId.value = skippedItem.task_id
+      return
+    }
     const createdTask = data?.tasks?.[0] || null
     if (!createdTask?.task_id) {
       incrementSubtitleScanSession('createFailed')
-      incrementSubtitleScanTargetCounter(item.scan_target_path, 'createFailed', 1)
+      incrementSubtitleScanTargetCounter(item, 'createFailed', 1)
       upsertSubtitleSelectionEntry(item, {
         queue_state: 'create_failed',
         queue_message: data?.message || '未创建任务'
@@ -2660,7 +2983,7 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
       return
     }
     incrementSubtitleScanSession('createdTasks')
-    incrementSubtitleScanTargetCounter(item.scan_target_path, 'queued', 1)
+    incrementSubtitleScanTargetCounter(item, 'queued', 1)
     upsertSubtitleTaskLocal(createOptimisticSubtitleTask(item, createdTask.task_id))
     upsertSubtitleSelectionEntry(item, {
       task_id: createdTask.task_id,
@@ -2671,7 +2994,7 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
   } catch (error) {
     if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
     incrementSubtitleScanSession('createFailed')
-    incrementSubtitleScanTargetCounter(item.scan_target_path, 'createFailed', 1)
+    incrementSubtitleScanTargetCounter(item, 'createFailed', 1)
     upsertSubtitleSelectionEntry(item, {
       queue_state: 'create_failed',
       queue_message: error.response?.data?.detail || error.message || '加入任务失败'
@@ -2749,7 +3072,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
   try {
     await refreshRJSubtitleStatus(false, { silent: true })
-    const scanTargets = [...new Set(directItems.map(item => item.folder_path).filter(Boolean))]
+    const scanTargets = uniqueSubtitleScanTargets(directItems)
     subtitleSelectionScanTotal.value = scanTargets.length || (shouldScanCurrentFolder ? 1 : 0)
     let scannedItems = []
     let incrementalScannedItems = []
@@ -2820,21 +3143,22 @@ async function startCurrentFolderRJSubtitle () {
 
 async function rescanSubtitleSelectionTarget (target) {
   if (!canRetrySubtitleScanResult(target) || subtitleScanRetryingPath.value) return
-  subtitleScanRetryingPath.value = target.path
+  subtitleScanRetryingPath.value = buildSubtitleScanTargetResultKey(target)
   subtitleSelectionScanTotal.value = 1
   subtitleSelectionScanDone.value = 0
   subtitleSelectionScanCurrent.value = target.path
   upsertSubtitleScanTargetResult({
     path: target.path,
+    library_id: target.library_id || selectedLibraryId.value,
     name: target.name,
     status: 'pending',
     message: '正在重新扫描...'
   })
   try {
-    const rescannedItems = await resolveRJSubtitleItems([target.path], {
+    const rescannedItems = await resolveRJSubtitleItems([target], {
       onChunk: chunkItem => {
         subtitleScannedSelectionItems.value = uniqueSubtitleItems([
-          ...subtitleScannedSelectionItems.value.filter(item => item.folder_path !== target.path),
+          ...subtitleScannedSelectionItems.value.filter(item => !(item.folder_path === target.path && (item.library_id || '') === (target.library_id || ''))),
           chunkItem
         ])
         updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, subtitleScannedSelectionItems.value, { sync: true })
@@ -2850,19 +3174,20 @@ async function rescanSubtitleSelectionTarget (target) {
     })
     if (rescannedItems.length) {
       subtitleScannedSelectionItems.value = uniqueSubtitleItems([
-        ...subtitleScannedSelectionItems.value.filter(item => item.folder_path !== target.path),
+        ...subtitleScannedSelectionItems.value.filter(item => !(item.folder_path === target.path && (item.library_id || '') === (target.library_id || ''))),
         ...rescannedItems
       ])
       for (const rescannedItem of rescannedItems) {
         await autoQueueScannedSubtitleItem(rescannedItem)
       }
-      removeSubtitleScanTargetResult(target.path)
+      removeSubtitleScanTargetResult(target)
       ElMessage.success('该目录已重新扫描并重新尝试加入任务')
       return
     }
   } catch (error) {
     upsertSubtitleScanTargetResult({
       path: target.path,
+      library_id: target.library_id || selectedLibraryId.value,
       name: target.name,
       status: 'failed',
       message: error.response?.data?.detail || error.message || '重新扫描失败'
@@ -2880,18 +3205,61 @@ async function submitRJSubtitleTasks (items, options = {}) {
     return null
   }
 
+  const effectiveSkipIfExistingSubtitles = typeof skipIfExistingSubtitlesOverride === 'boolean'
+    ? skipIfExistingSubtitlesOverride
+    : subtitleOptions.value.skipIfExistingSubtitles
+  const localSkippedItems = []
+  const executableItems = []
+
+  if (effectiveSkipIfExistingSubtitles) {
+    for (const item of items) {
+      try {
+        const existingState = await ensureRJSubtitleKikoeruStateForItem(item)
+        if (existingState.hasExistingSubtitles) {
+          const queueMessage = existingState.message ? `${existingState.message}，未加入抓取任务` : 'Kikoeru 已有字幕，未加入抓取任务'
+          localSkippedItems.push({
+            ...item,
+            queue_state: 'skipped_kikoeru_existing',
+            queue_message: queueMessage
+          })
+          upsertSubtitleSelectionEntry(item, {
+            queue_state: 'skipped_kikoeru_existing',
+            queue_message: queueMessage
+          })
+          continue
+        }
+      } catch (error) {
+        console.error('提交前检查 Kikoeru 现有字幕失败，回退后端判断:', item?.rjcode, error)
+      }
+      executableItems.push(item)
+    }
+  } else {
+    executableItems.push(...items)
+  }
+
+  if (!executableItems.length) {
+    const data = {
+      tasks: [],
+      skipped_items: localSkippedItems,
+      message: localSkippedItems[0]?.queue_message || 'Kikoeru 已有字幕，未加入抓取任务'
+    }
+    if (!silent) ElMessage.info(data.message)
+    return data
+  }
+
   subtitleSubmitting.value = true
   try {
-    const data = await rjSubtitleApi.start(items, {
+    const data = await rjSubtitleApi.start(executableItems, {
       overwriteExisting: subtitleOptions.value.overwriteExisting,
       enableMetadataMatch: subtitleOptions.value.enableMetadataMatch,
-      skipIfExistingSubtitles: typeof skipIfExistingSubtitlesOverride === 'boolean'
-        ? skipIfExistingSubtitlesOverride
-        : subtitleOptions.value.skipIfExistingSubtitles,
+      skipIfExistingSubtitles: effectiveSkipIfExistingSubtitles,
       namingStrategy: subtitleOptions.value.namingStrategy,
       useFilterRules: subtitleOptions.value.useFilterRules,
       subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules)
     })
+    if (localSkippedItems.length) {
+      data.skipped_items = [...localSkippedItems, ...(Array.isArray(data.skipped_items) ? data.skipped_items : [])]
+    }
     if (refresh) await refreshRJSubtitleStatus(false, { silent: true })
     const firstCreatedTaskId = data.tasks?.[0]?.task_id
     if (firstCreatedTaskId) {
@@ -2899,6 +3267,14 @@ async function submitRJSubtitleTasks (items, options = {}) {
     }
     if (!silent) {
       if (data.tasks?.length) ElMessage.success(data.message || '已创建字幕任务')
+      else if (Array.isArray(data.skipped_items) && data.skipped_items.length) {
+        const firstSkippedItem = data.skipped_items[0] || {}
+        if (String(firstSkippedItem.queue_state || '').startsWith('skipped_')) {
+          ElMessage.info(firstSkippedItem.queue_message || '该目录已跳过')
+        } else {
+          ElMessage.warning(firstSkippedItem.queue_message || '没有创建新任务')
+        }
+      }
       else ElMessage.warning('没有创建新任务，可能已存在字幕或当前目录不满足执行条件')
     }
     return data
@@ -2914,6 +3290,7 @@ async function startSingleRJSubtitle (item) {
   if (!item?.folder_path) return
   const requestToken = ++subtitleSelectionRequestToken.value
   subtitleDialogVisible.value = true
+  resetSubtitleScanRunIndicators()
   subtitleSelectionLoading.value = true
   subtitleSelectionScanDone.value = 0
   subtitleSelectionScanTotal.value = 1
@@ -2937,7 +3314,7 @@ async function startSingleRJSubtitle (item) {
       return
     }
 
-    const scannedItems = await resolveRJSubtitleItems([item.folder_path], {
+    const scannedItems = await resolveRJSubtitleItems([item], {
       onChunk: async chunkItem => {
         if (subtitleSelectionRequestToken.value !== requestToken) return
         subtitleScannedSelectionItems.value = uniqueSubtitleItems([...subtitleScannedSelectionItems.value, chunkItem])
@@ -2985,6 +3362,22 @@ function isRJSubtitleTaskCancelled (taskOrStatus) {
 
 function getRJSubtitleTaskStatusLabel (taskOrStatus) {
   if (isRJSubtitleTaskCancelled(taskOrStatus)) return '已取消'
+  if (typeof taskOrStatus === 'object') {
+    if (taskOrStatus.manual_match_completed) return '已匹配完成'
+    if (taskOrStatus.awaiting_manual_match) return '筛选并匹配'
+  }
+  const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
+  const labels = {
+    pending: '等待中',
+    processing: '处理中',
+    completed: '已完成',
+    failed: '失败'
+  }
+  return labels[status] || status
+}
+
+function getRJSubtitleTaskBaseStatusLabel (taskOrStatus) {
+  if (isRJSubtitleTaskCancelled(taskOrStatus)) return '已取消'
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const labels = {
     pending: '等待中',
@@ -2996,6 +3389,22 @@ function getRJSubtitleTaskStatusLabel (taskOrStatus) {
 }
 
 function getRJSubtitleTaskStatusType (taskOrStatus) {
+  if (isRJSubtitleTaskCancelled(taskOrStatus)) return 'info'
+  if (typeof taskOrStatus === 'object') {
+    if (taskOrStatus.manual_match_completed) return 'success'
+    if (taskOrStatus.awaiting_manual_match) return 'warning'
+  }
+  const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
+  const types = {
+    pending: 'info',
+    processing: 'warning',
+    completed: 'success',
+    failed: 'danger'
+  }
+  return types[status] || 'info'
+}
+
+function getRJSubtitleTaskBaseStatusType (taskOrStatus) {
   if (isRJSubtitleTaskCancelled(taskOrStatus)) return 'info'
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const types = {
@@ -3010,6 +3419,20 @@ function getRJSubtitleTaskStatusType (taskOrStatus) {
 function setSubtitleTaskFilter (filter) {
   subtitleTaskFilter.value = filter || 'all'
   syncSubtitleTaskListState()
+}
+
+function setSubtitleTaskManualFilter (filter) {
+  subtitleTaskManualFilter.value = filter || 'all'
+}
+
+function getRJSubtitleTaskStatusClass (taskOrStatus) {
+  if (isRJSubtitleTaskCancelled(taskOrStatus)) return 'cancelled'
+  if (typeof taskOrStatus === 'object') {
+    if (taskOrStatus.manual_match_completed) return 'manual_match_completed'
+    if (taskOrStatus.awaiting_manual_match) return 'awaiting_manual_match'
+    return taskOrStatus.status || 'pending'
+  }
+  return taskOrStatus || 'pending'
 }
 
 function getRJSubtitleProgressStatus (task) {
@@ -3050,7 +3473,14 @@ function getSubtitleTaskInspectLabel (task) {
 function getSubtitleTaskManualStateText (task) {
   if (!task) return ''
   if (task.manual_match_completed) return `已匹配完成 ${task.manual_match_applied_pairs || 0}`
-  if (task.awaiting_manual_match) return '等待筛选和匹配'
+  if (task.awaiting_manual_match) return '筛选并匹配'
+  return ''
+}
+
+function getSubtitleTaskManualStateChipClass (task) {
+  if (!task) return ''
+  if (task.manual_match_completed) return 'is-success'
+  if (task.awaiting_manual_match) return 'is-warning'
   return ''
 }
 
@@ -3441,6 +3871,31 @@ function joinPath (basePath, name) {
   return `${String(basePath || '').replace(/[\\/]+$/, '')}/${String(name || '').replace(/^[/\\]+/, '')}`
 }
 
+async function rollbackSubtitleManualRenamePairs (pairs, audioLibraryId, subtitleLibraryId) {
+  if (!Array.isArray(pairs) || !pairs.length) return { restored: 0, failed: [] }
+  const failed = []
+  let restored = 0
+
+  for (const pair of [...pairs].reverse()) {
+    const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
+    const rollbackSourcePath = pair.final_path || pair.temp_path
+    if (!rollbackSourcePath || !pair.current_name) continue
+    try {
+      await libraryApi.browserRename(operationLibraryId, rollbackSourcePath, pair.current_name)
+      restored += 1
+    } catch (error) {
+      failed.push({
+        kind: pair.kind,
+        source: rollbackSourcePath,
+        target: pair.current_name,
+        error: error.response?.data?.detail || error.message || '回滚失败'
+      })
+    }
+  }
+
+  return { restored, failed }
+}
+
 async function applySubtitleManualPairs () {
   if (!subtitleManualPairs.value.length) {
     ElMessage.warning('请先添加至少一组配对')
@@ -3452,9 +3907,10 @@ async function applySubtitleManualPairs () {
   const isLinkedImport = isLinkedSubtitleImportWorkbench.value
   const effectiveNamingStrategy = isLinkedImport ? (subtitleOptions.value.namingStrategy || 'audio') : subtitleOptions.value.namingStrategy
   const appliedPairCount = subtitleManualPairs.value.length
-  const sequenceCleanupRows = subtitleLastPairBuildMode.value === 'sequence'
-    ? subtitleInspectorSubtitleFiles.value.filter(item => !subtitleManualPairs.value.some(pair => pair.subtitle_path === item.path))
-    : []
+  const unusedSubtitleRows = subtitleInspectorSubtitleFiles.value.filter(
+    item => !subtitleManualPairs.value.some(pair => pair.subtitle_path === item.path)
+  )
+  const unusedSubtitlePathSet = new Set(unusedSubtitleRows.map(item => item.path).filter(Boolean))
   const audioConflicts = subtitleManualPairs.value.filter(pair => {
     const existing = subtitleInspectorAudioFiles.value.find(item => item.name === pair.target_audio_name)
     return existing && existing.path !== pair.audio_path
@@ -3465,6 +3921,7 @@ async function applySubtitleManualPairs () {
   }
   const subtitleConflicts = subtitleManualPairs.value.filter(pair => {
     const existing = subtitleInspectorSubtitleFiles.value.find(item => item.name === pair.target_subtitle_name)
+    if (existing?.path && unusedSubtitlePathSet.has(existing.path)) return false
     return existing && existing.path !== pair.subtitle_path
   })
   if (subtitleConflicts.length) {
@@ -3476,7 +3933,7 @@ async function applySubtitleManualPairs () {
   const applyActionLabel = isLinkedImport ? '重命名并导入' : '确定应用'
   try {
     await ElMessageBox.confirm(
-      `确定处理 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${sequenceCleanupRows.length ? `\n未纳入顺序配对的 ${sequenceCleanupRows.length} 个原始字幕会一并删除。` : ''}${isLinkedImport ? '\n确认后会先在本地工作区完成重命名，再导入目标库存。' : ''}`,
+      `确定处理 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${unusedSubtitleRows.length ? `\n当前未使用的 ${unusedSubtitleRows.length} 个原始字幕会一并删除。` : ''}${isLinkedImport ? '\n确认后会先在本地工作区完成重命名，再导入目标库存。' : ''}`,
       '应用配对确认',
       { confirmButtonText: applyActionLabel, cancelButtonText: '取消', type: 'warning' }
     )
@@ -3485,6 +3942,8 @@ async function applySubtitleManualPairs () {
   }
 
   subtitlePairApplying.value = true
+  const phaseOneCompleted = []
+  const phaseTwoCompleted = []
   try {
     const currentSubtitleFiles = [...subtitleInspectorSubtitleFiles.value]
     const resolveCurrentSubtitleSourcePath = (pair) => {
@@ -3531,15 +3990,17 @@ async function applySubtitleManualPairs () {
       const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
       const renameResult = await libraryApi.browserRename(operationLibraryId, pair.source_path, pair.temp_name)
       pair.temp_path = renameResult?.new_path || joinPath(String(pair.source_path || '').replace(/[\\/][^\\/]+$/, ''), pair.temp_name)
+      phaseOneCompleted.push(pair)
     }
 
     for (const pair of phaseOne) {
       const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
       const renameResult = await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name)
       pair.final_path = renameResult?.new_path || joinPath(String(pair.temp_path || '').replace(/[\\/][^\\/]+$/, ''), pair.target_name)
+      phaseTwoCompleted.push(pair)
     }
 
-    for (const subtitle of sequenceCleanupRows) {
+    for (const subtitle of unusedSubtitleRows) {
       await libraryApi.browserDelete(subtitleLibraryId, resolveSubtitleEntryPath(subtitle), true)
     }
 
@@ -3547,7 +4008,7 @@ async function applySubtitleManualPairs () {
     if (subtitleInspectorInfo.value.taskId) {
       await rjSubtitleApi.completeManual(subtitleInspectorInfo.value.taskId, {
         appliedPairs: appliedPairCount,
-        deletedSubtitles: sequenceCleanupRows.length,
+        deletedSubtitles: unusedSubtitleRows.length,
         namingStrategy: effectiveNamingStrategy
       })
 
@@ -3574,10 +4035,28 @@ async function applySubtitleManualPairs () {
       ])
     }
 
-    ElMessage.success(`${isLinkedImport ? '已重命名并导入' : '已应用'} ${appliedPairCount} 组配对${sequenceCleanupRows.length ? `，并删除 ${sequenceCleanupRows.length} 个未选字幕` : ''}`)
+    ElMessage.success(`${isLinkedImport ? '已重命名并导入' : '已应用'} ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}`)
     clearSubtitleManualPairs()
   } catch (error) {
-    ElMessage.error(`${isLinkedImport ? '重命名并导入' : '应用配对'}失败: ` + (error.response?.data?.detail || error.message))
+    const rollbackPairs = [
+      ...phaseTwoCompleted,
+      ...phaseOneCompleted.filter(pair => !phaseTwoCompleted.includes(pair))
+    ]
+    let rollbackSummary = ''
+    if (rollbackPairs.length) {
+      const rollbackResult = await rollbackSubtitleManualRenamePairs(rollbackPairs, audioLibraryId, subtitleLibraryId)
+      rollbackSummary = rollbackResult.failed.length
+        ? `；已回滚 ${rollbackResult.restored} 项，仍有 ${rollbackResult.failed.length} 项需要手动恢复`
+        : `；已自动回滚 ${rollbackResult.restored} 项`
+      if (!rollbackResult.failed.length) {
+        await Promise.all([
+          refreshLibrary({ silent: true }),
+          refreshRJSubtitleStatus(false, { silent: true }),
+          reloadSubtitleInspector()
+        ])
+      }
+    }
+    ElMessage.error(`${isLinkedImport ? '重命名并导入' : '应用配对'}失败: ${(error.response?.data?.detail || error.message)}${rollbackSummary}`)
   } finally {
     subtitlePairApplying.value = false
   }
@@ -3891,13 +4370,27 @@ async function forceCreateSubtitleTaskForSelection (item) {
   if (!item?.folder_path) return
   const forceKey = buildSubtitleSelectionKey(item)
   subtitleForceQueueKey.value = forceKey
+  resetSubtitleScanRunIndicators()
+  incrementSubtitleScanSession('foundDirectories')
   try {
+    const existingState = await ensureRJSubtitleKikoeruStateForItem(item)
+    if (existingState.hasExistingSubtitles) {
+      incrementSubtitleScanSession('existingSubtitles')
+      upsertSubtitleSelectionEntry(item, {
+        queue_state: 'skipped_kikoeru_existing',
+        queue_message: existingState.message ? `${existingState.message}，未加入抓取任务` : 'Kikoeru 已有字幕，未加入抓取任务'
+      })
+      ElMessage.info(existingState.message ? `${existingState.message}，已跳过` : 'Kikoeru 已有字幕，已跳过')
+      return
+    }
+
     upsertSubtitleSelectionEntry(item, {
       queue_state: 'checking_subtitle',
       queue_message: '正在检测远程字幕'
     })
     const availability = await ensureRJSubtitleAvailabilityForItem(item)
     if (!availability.hasSubtitle) {
+      incrementSubtitleScanSession('noSubtitleTargets')
       upsertSubtitleSelectionEntry(item, {
         queue_state: 'skipped_no_subtitle',
         queue_message: availability.message || 'asmr.one 没字幕'
@@ -3913,10 +4406,11 @@ async function forceCreateSubtitleTaskForSelection (item) {
     const data = await submitRJSubtitleTasks([item], {
       silent: false,
       refresh: true,
-      skipIfExistingSubtitlesOverride: false
+      skipIfExistingSubtitlesOverride: true
     })
     const createdTask = data?.tasks?.[0] || null
     if (createdTask?.task_id) {
+      incrementSubtitleScanSession('createdTasks')
       upsertSubtitleTaskLocal(createOptimisticSubtitleTask(item, createdTask.task_id))
       upsertSubtitleSelectionEntry(item, {
         task_id: createdTask.task_id,
@@ -3926,11 +4420,13 @@ async function forceCreateSubtitleTaskForSelection (item) {
       subtitleActiveTaskId.value = createdTask.task_id
       return
     }
+    incrementSubtitleScanSession('createFailed')
     upsertSubtitleSelectionEntry(item, {
       queue_state: 'create_failed',
       queue_message: data?.message || '未创建任务'
     })
   } catch (error) {
+    incrementSubtitleScanSession('createFailed')
     upsertSubtitleSelectionEntry(item, {
       queue_state: 'create_failed',
       queue_message: error.response?.data?.detail || error.message || '加入任务失败'
@@ -3989,6 +4485,9 @@ async function refreshRJSubtitleStatus (showMessage = false, options = {}) {
         preserveDetail: detailTaskIds.has(task.id)
       }))
     subtitleTasks.value = mergeSubtitleTasksWithOptimistic(remoteTasks)
+    if (!subtitleTasks.value.length) {
+      clearSubtitleInspectorState()
+    }
     syncSubtitleInspectorTaskState()
     syncSubtitleSelectionState()
     if (subtitleInspectorInfo.value.taskId && !subtitleTasks.value.some(task => task.id === subtitleInspectorInfo.value.taskId && task.subtitle_dir)) {
@@ -4150,6 +4649,39 @@ async function navigateToPath (path) {
 
 async function goToParent () {
   if (!canGoParent.value) return
+  if (searchResultReturnState.value.active) {
+    const restoreState = { ...searchResultReturnState.value }
+    searchResultReturnState.value = createSearchResultReturnState()
+    clearSelection()
+    locatedLibraryPath.value = ''
+    if (restoreState.libraryId && restoreState.libraryId !== selectedLibraryId.value) {
+      pendingLibrarySearchRestore.value = restoreState
+      selectedLibraryId.value = restoreState.libraryId
+      return
+    }
+    searchQuery.value = restoreState.searchQuery || ''
+    searchExact.value = Boolean(restoreState.searchExact)
+    searchResultKind.value = restoreState.searchResultKind || 'all'
+    currentPath.value = restoreState.currentPath || ''
+    browseRootPath.value = restoreState.browseRootPath || ''
+    currentPage.value = Number(restoreState.page || 1)
+    sortBy.value = restoreState.sortBy || DEFAULT_SORT_BY
+    sortOrder.value = restoreState.sortOrder || DEFAULT_SORT_ORDER
+    librarySearchState.value = createLibrarySearchState({
+      active: true,
+      query: restoreState.searchState?.query || restoreState.searchQuery || '',
+      rootPath: restoreState.searchState?.rootPath || restoreState.currentPath || '',
+      truncated: Boolean(restoreState.searchState?.truncated),
+      scannedDirectories: Number(restoreState.searchState?.scannedDirectories || 0),
+      globalRemote: Boolean(restoreState.searchState?.globalRemote),
+      searchedLibraries: Number(restoreState.searchState?.searchedLibraries || 0),
+      hitLibraries: Number(restoreState.searchState?.hitLibraries || 0),
+      exactSearch: Boolean(restoreState.searchState?.exactSearch ?? restoreState.searchExact),
+      resultKind: restoreState.searchState?.resultKind || restoreState.searchResultKind || 'all'
+    })
+    await refreshLibrary({ forceRefresh: true })
+    return
+  }
   await navigateToPath(parentPath.value)
 }
 
@@ -4157,15 +4689,57 @@ function isSearchResultRow (row) {
   return Boolean(librarySearchState.value.active && row?.search_hit)
 }
 
+function getSearchResultLibraryLabel (row) {
+  const directName = String(row?.library_name || '').trim()
+  if (directName) return directName
+  const libraryId = String(row?.library_id || '').trim()
+  if (!libraryId) return ''
+  return libraries.value.find(item => item.id === libraryId)?.name || libraryId
+}
+
+function getLibraryLabelById (libraryId) {
+  const normalized = String(libraryId || '').trim()
+  if (!normalized) return ''
+  return libraries.value.find(item => item.id === normalized)?.name || normalized
+}
+
 async function locateLibrarySearchResult (row) {
   if (!row?.path) return
+  if (librarySearchState.value.active) {
+    searchResultReturnState.value = createSearchResultReturnState({
+      active: true,
+      libraryId: selectedLibraryId.value,
+      searchQuery: searchQuery.value,
+      currentPath: currentPath.value,
+      browseRootPath: browseRootPath.value,
+      page: currentPage.value,
+      sortBy: sortBy.value,
+      sortOrder: sortOrder.value,
+      searchExact: searchExact.value,
+      searchResultKind: searchResultKind.value,
+      searchState: { ...librarySearchState.value }
+    })
+  }
+  const targetLibraryId = row.library_id || selectedLibraryId.value
+  const targetPath = row.is_directory ? row.path : (row.parent_path || row.path)
+  const highlightPath = row.path
   locatedLibraryPath.value = row.path
   searchQuery.value = ''
-  librarySearchState.value = { active: false, query: '', rootPath: '', truncated: false, scannedDirectories: 0 }
-  currentPath.value = row.parent_path || row.path
+  librarySearchState.value = createLibrarySearchState()
+  clearSelection()
+  if (targetLibraryId && targetLibraryId !== selectedLibraryId.value) {
+    pendingLibraryLocate.value = {
+      libraryId: targetLibraryId,
+      path: targetPath,
+      highlightPath
+    }
+    selectedLibraryId.value = targetLibraryId
+    return
+  }
+  currentPath.value = targetPath
+  locatedLibraryPath.value = highlightPath
   const shouldRefreshNow = currentPage.value === 1
   currentPage.value = 1
-  clearSelection()
   if (shouldRefreshNow) await refreshLibrary()
 }
 
@@ -4851,6 +5425,24 @@ function flattenTree (nodes, depth, openIds) {
 
 async function openFilterDeleteDialog () {
   if (!currentPath.value || !isWritableCurrentLibrary.value) return
+  filterDeleteDialogLibraryId.value = selectedLibraryId.value
+  filterDeleteDialogPath.value = currentPath.value
+  filterDeleteDialogTargetPaths.value = [...toolbarFilterDeletePaths.value]
+  filterDeleteDialogScopeLabel.value = toolbarActionScopeLabel.value
+  filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
+  filterDeleteDialogVisible.value = true
+}
+
+async function openSubtitleInspectorFilterDeleteDialog () {
+  const libraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
+  const subtitleDir = String(subtitleInspectorInfo.value.subtitleDir || '').trim()
+  if (!libraryId || !subtitleDir) return
+  const library = libraries.value.find(item => item.id === libraryId) || null
+  filterDeleteDialogLibraryId.value = libraryId
+  filterDeleteDialogPath.value = subtitleDir
+  filterDeleteDialogTargetPaths.value = [subtitleDir]
+  filterDeleteDialogScopeLabel.value = `${getTaskDisplayRJCode(activeSubtitleInspectTask.value) || getFileName(subtitleDir) || '当前任务'} 字幕目录`
+  filterDeleteDialogIsRemote.value = library?.type === 'synology_filestation'
   filterDeleteDialogVisible.value = true
 }
 
@@ -4858,10 +5450,13 @@ async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount
   await Promise.all([
     refreshLibrary({ silent: true }),
     folderDialogVisible.value && folderDialogRef.value?.reload ? folderDialogRef.value.reload() : Promise.resolve(),
+    subtitleDialogVisible.value && filterDeleteDialogPath.value && subtitleInspectorInfo.value.subtitleDir && filterDeleteDialogPath.value === subtitleInspectorInfo.value.subtitleDir
+      ? reloadSubtitleInspector()
+      : Promise.resolve(),
     refreshStatsAfterMutation({
       deletedBytes,
       deletedFolderCount,
-      libraryId: selectedLibraryId.value
+      libraryId: filterDeleteDialogLibraryId.value || selectedLibraryId.value
     })
   ])
 }
@@ -5075,10 +5670,13 @@ function statsStatusTextDisplay (stats) {
 .path-label { font-size: 13px; color: #909399; white-space: nowrap; }
 :deep(.el-table) { --el-table-header-bg-color: #f8f9fa; }
 :deep(.el-table th.el-table__cell) { font-weight: 600; }
+.file-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.file-main-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .file-icon { margin-right: 6px; color: #409eff; vertical-align: middle; }
 .file-name { vertical-align: middle; font-weight: 500; color: #303133; }
 .file-link-btn { padding: 0; border: none; background: transparent; color: #303133; font: inherit; font-weight: 500; cursor: pointer; }
 .file-link-btn:hover { color: #409eff; }
+.search-result-library { padding-left: 22px; font-size: 11px; line-height: 1.4; color: #7a8ba5; }
 :deep(.library-search-mark) { background: #fff1a8; color: #7a4b00; padding: 0 2px; border-radius: 4px; }
 :deep(.el-table .library-row-located > td.el-table__cell) { background: #eef7ff !important; }
 .empty-text { color: #c0c4cc; }
@@ -5142,12 +5740,14 @@ function statsStatusTextDisplay (stats) {
 .subtitle-mini-chip-danger { color: #c53030; background: #fff1f0; border-color: #ffc8c2; }
 .subtitle-mini-chip-muted { color: #66778f; background: #f4f6f9; border-color: #dfe6ef; }
 .subtitle-inline-chip { background: #eef4ff; color: #31599b; border: 1px solid #d6e4ff; }
+.subtitle-inline-chip.is-success { color: #2f855a; background: #ecfdf3; border-color: #bfe3ca; }
+.subtitle-inline-chip.is-warning { color: #b7791f; background: #fff7e6; border-color: #f4d58d; }
 .subtitle-panel-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .subtitle-layout { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 14px; align-items: start; }
-.subtitle-side-column, .subtitle-main-column { display: grid; gap: 14px; }
-.subtitle-config-card, .subtitle-selection-card, .subtitle-task-card, .subtitle-tree-card { border-radius: 16px; border: 1px solid #e7edf6; }
+.subtitle-side-column, .subtitle-main-column { display: grid; gap: 14px; min-width: 0; }
+.subtitle-config-card, .subtitle-selection-card, .subtitle-task-card, .subtitle-tree-card { border-radius: 16px; border: 1px solid #e7edf6; min-width: 0; }
 .subtitle-config-card-strong { background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%); }
-.subtitle-task-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+.subtitle-task-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; min-width: 0; }
 .subtitle-option-stack { display: grid; gap: 14px; min-width: 0; }
 .subtitle-switch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 14px; padding: 12px 0; border-bottom: 1px dashed #e9eef5; }
 .subtitle-switch-row-wrap { grid-template-columns: 1fr; }
@@ -5181,13 +5781,13 @@ function statsStatusTextDisplay (stats) {
 .subtitle-selection-subtitle { font-size: 13px; font-weight: 700; color: #2f3f56; }
 .subtitle-selection-loading { display: flex; align-items: center; gap: 8px; min-height: 64px; color: #6d7c91; font-size: 13px; }
 .subtitle-selection-list, .subtitle-task-list { display: grid; gap: 10px; }
-.subtitle-selection-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; width: 100%; }
-.subtitle-selection-header-main { display: grid; gap: 8px; min-width: 0; flex: 1; }
-.subtitle-selection-header-top { display: flex; align-items: center; gap: 10px; min-width: 0; justify-content: space-between; }
+.subtitle-selection-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; min-height: 32px; }
+.subtitle-selection-header-main { display: flex; align-items: center; min-width: 0; flex: 1; }
+.subtitle-selection-header-top { display: flex; align-items: center; gap: 10px; min-width: 0; justify-content: space-between; width: 100%; }
 .subtitle-selection-header-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; font-weight: 700; color: #263a57; }
-.subtitle-selection-count-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; padding: 3px 8px; border-radius: 999px; background: #edf4ff; color: #2458a6; border: 1px solid #d3e2ff; font-size: 11px; font-weight: 700; line-height: 1; }
-.subtitle-selection-progress { margin-left: auto; font-size: 12px; color: #7b8ba5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
-.subtitle-selection-pager { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #6c7d93; }
+.subtitle-selection-count-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 8px; border-radius: 999px; background: #edf4ff; color: #2458a6; border: 1px solid #d3e2ff; font-size: 11px; font-weight: 700; line-height: 1; }
+.subtitle-selection-progress { margin-left: auto; font-size: 12px; color: #7b8ba5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; display: inline-flex; align-items: center; min-height: 24px; }
+.subtitle-selection-pager { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-height: 24px; font-size: 12px; color: #6c7d93; white-space: nowrap; flex-shrink: 0; }
 .subtitle-selection-filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .subtitle-chip-button { cursor: pointer; transition: border-color .18s ease, background .18s ease, color .18s ease, box-shadow .18s ease; }
 .subtitle-chip-button.active { color: #2458a8; background: #eef5ff; border-color: #bfd4ff; box-shadow: 0 0 0 2px rgba(64, 158, 255, .08); }
@@ -5200,6 +5800,9 @@ function statsStatusTextDisplay (stats) {
 .subtitle-selection-item.skipped { border-style: dashed; background: #fcfdff; }
 .subtitle-selection-body { display: grid; gap: 6px; }
 .subtitle-selection-name { font-size: 13px; font-weight: 700; color: #24364f; line-height: 1.45; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.subtitle-selection-submeta { display: grid; gap: 2px; min-width: 0; }
+.subtitle-selection-library { font-size: 11px; font-weight: 600; color: #4d678b; }
+.subtitle-selection-path { font-size: 11px; color: #7a8ba3; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .subtitle-selection-stats { display: flex; gap: 6px; flex-wrap: wrap; }
 .subtitle-selection-note { font-size: 11px; color: #66788f; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
 .subtitle-selection-actions { display: flex; gap: 6px; flex-wrap: wrap; padding-top: 1px; }
@@ -5212,25 +5815,28 @@ function statsStatusTextDisplay (stats) {
 .subtitle-scan-result-list,
 .subtitle-scan-skip-list { display: grid; gap: 8px; max-height: 220px; overflow: auto; padding-right: 4px; }
 .subtitle-scan-skip-title { margin-bottom: 0; font-size: 13px; font-weight: 700; color: #516176; }
-.subtitle-scan-result-row { display: flex; justify-content: space-between; gap: 10px; padding: 9px 11px; border: 1px solid #e8edf5; border-radius: 12px; background: #fbfcfe; }
+.subtitle-scan-result-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 10px 11px; border: 1px solid #e8edf5; border-radius: 12px; background: #fbfcfe; }
 .subtitle-scan-result-row.skipped { background: #fffdf8; }
-.subtitle-scan-result-main { min-width: 0; display: flex; align-items: center; }
+.subtitle-scan-result-main { min-width: 0; display: grid; gap: 4px; align-content: start; }
 .subtitle-scan-result-name { font-size: 13px; font-weight: 700; color: #24364f; line-height: 1.45; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.subtitle-scan-result-meta { flex-shrink: 0; display: grid; gap: 4px; justify-items: end; align-content: start; max-width: 240px; }
+.subtitle-scan-result-submeta { display: grid; gap: 2px; min-width: 0; }
+.subtitle-scan-result-library { font-size: 11px; font-weight: 600; color: #4d678b; }
+.subtitle-scan-result-path { font-size: 11px; color: #7a8ba3; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.subtitle-scan-result-meta { flex-shrink: 0; display: grid; gap: 5px; justify-items: end; align-content: start; max-width: 260px; }
 .subtitle-scan-result-status { display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .subtitle-scan-result-status.status-pending { color: #5f7390; background: #eef2f7; }
 .subtitle-scan-result-status.status-success { color: #2f855a; background: #ecfdf3; }
 .subtitle-scan-result-status.status-no_audio { color: #b7791f; background: #fff7e6; }
 .subtitle-scan-result-status.status-no_match { color: #7b8797; background: #f5f7fa; }
 .subtitle-scan-result-status.status-failed { color: #c53030; background: #fff1f0; }
-.subtitle-scan-result-message { font-size: 11px; color: #6d7c91; text-align: right; line-height: 1.45; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.subtitle-scan-result-message { font-size: 11px; color: #6d7c91; text-align: right; line-height: 1.45; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 260px; }
 .subtitle-card-fade-enter-active,
 .subtitle-card-fade-leave-active { transition: opacity .22s ease, transform .22s ease; }
 .subtitle-card-fade-enter-from,
 .subtitle-card-fade-leave-to { opacity: 0; transform: translateY(10px); }
 .subtitle-section-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .subtitle-section-tip { font-size: 12px; color: #7c8ba1; line-height: 1.5; }
-.subtitle-task-detail { padding: 14px; border: 1px solid #e9eef5; border-radius: 16px; background: linear-gradient(180deg, #fbfcfe 0%, #ffffff 100%); transition: border-color .18s ease, box-shadow .18s ease; }
+.subtitle-task-detail { padding: 14px; border: 1px solid #e9eef5; border-radius: 16px; background: linear-gradient(180deg, #fbfcfe 0%, #ffffff 100%); transition: border-color .18s ease, box-shadow .18s ease; min-width: 0; overflow: hidden; }
 .subtitle-task-detail.active { border-color: #9fc4ff; box-shadow: 0 0 0 3px rgba(64, 158, 255, .08); }
 .subtitle-task-finish-alert { margin-top: 12px; }
 .subtitle-task-detail-collapse { margin-top: 12px; border-top: 1px solid #eef2f7; }
@@ -5238,7 +5844,8 @@ function statsStatusTextDisplay (stats) {
 .subtitle-task-detail-collapse :deep(.el-collapse-item__header) { padding: 2px 4px; font-weight: 600; color: #2d405e; background: transparent; border-bottom: 1px solid #eef2f7; }
 .subtitle-task-detail-collapse :deep(.el-collapse-item__content) { padding: 12px 0 4px; }
 .subtitle-collapse-title { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; padding-right: 10px; }
-.subtitle-task-queue-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 2px; }
+.subtitle-task-queue-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 2px; min-width: 0; }
+.subtitle-task-queue-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .subtitle-task-rail { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
 .subtitle-task-queue-rail { padding-top: 2px; }
 .subtitle-task-rail::-webkit-scrollbar { height: 8px; }
@@ -5254,21 +5861,27 @@ function statsStatusTextDisplay (stats) {
 .subtitle-task-compact-status.status-pending { color: #606266; background: #f2f3f5; }
 .subtitle-task-compact-status.status-processing { color: #b7791f; background: #fff7e6; }
 .subtitle-task-compact-status.status-completed { color: #2f855a; background: #ecfdf3; }
+.subtitle-task-compact-status.status-awaiting_manual_match { color: #b7791f; background: #fff7e6; }
+.subtitle-task-compact-status.status-manual_match_completed { color: #2f855a; background: #ecfdf3; }
 .subtitle-task-compact-status.status-failed { color: #c53030; background: #fff1f0; }
 .subtitle-task-compact-status.status-cancelled { color: #5e718c; background: #eef2f7; }
 .subtitle-task-compact-folder { margin-top: 8px; color: #42556d; font-weight: 600; line-height: 1.5; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .subtitle-task-compact-step { margin-top: 8px; font-size: 12px; color: #6d7c91; line-height: 1.5; min-height: 36px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .subtitle-task-compact-meta { margin-top: 10px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; font-size: 12px; color: #5e718c; }
+.subtitle-task-meta-chip { display: inline-flex; align-items: center; justify-content: center; width: fit-content; padding: 2px 8px; border-radius: 999px; font-weight: 700; }
+.subtitle-task-meta-chip.is-success { color: #2f855a; background: #ecfdf3; }
+.subtitle-task-meta-chip.is-warning { color: #b7791f; background: #fff7e6; }
 .subtitle-task-compact-actions { margin-top: 8px; display: flex; justify-content: flex-end; }
-.subtitle-task-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.subtitle-task-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; min-width: 0; }
+.subtitle-task-head > div:first-child { min-width: 0; flex: 1; }
 .subtitle-task-rj { font-size: 18px; font-weight: 700; color: #23406f; }
-.subtitle-task-folder { margin-top: 4px; color: #42556d; font-weight: 600; word-break: break-all; }
+.subtitle-task-folder { margin-top: 4px; color: #42556d; font-weight: 600; word-break: break-all; min-width: 0; }
 .subtitle-task-source,
-.subtitle-task-compact-source { margin-top: 4px; font-size: 12px; color: #7b8797; line-height: 1.5; word-break: break-all; }
-.subtitle-task-meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.subtitle-task-compact-source { margin-top: 4px; font-size: 12px; color: #7b8797; line-height: 1.5; word-break: break-all; min-width: 0; }
+.subtitle-task-meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; min-width: 0; flex-shrink: 1; }
 .subtitle-task-lang { font-size: 12px; color: #7b8797; }
-.subtitle-task-step { margin-top: 10px; color: #516176; font-size: 13px; }
-.subtitle-task-inline-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.subtitle-task-step { margin-top: 10px; color: #516176; font-size: 13px; min-width: 0; word-break: break-word; }
+.subtitle-task-inline-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; min-width: 0; }
 .subtitle-task-error { margin-top: 10px; padding: 8px 10px; border-radius: 10px; background: #fff1f0; border: 1px solid #ffd7d4; color: #ca4e4a; font-size: 13px; }
 .subtitle-task-grid { margin-top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
 .subtitle-task-box { padding: 10px 12px; border-radius: 12px; border: 1px solid #edf1f6; background: #fff; min-width: 0; }
@@ -5430,6 +6043,9 @@ function statsStatusTextDisplay (stats) {
   .subtitle-task-compact { min-width: 220px; }
   .subtitle-selection-header,
   .subtitle-match-panel-tools { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+  .subtitle-scan-result-row { grid-template-columns: 1fr; }
+  .subtitle-scan-result-meta { justify-items: start; max-width: none; }
+  .subtitle-scan-result-message { text-align: left; max-width: none; }
 }
 </style>
 

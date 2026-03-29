@@ -398,10 +398,44 @@ class TaskEngine:
                                 f"target={preview.get('target_rjcode', '')} record={record.get('id', '')}"
                             )
                             return
+
+                        preview = linked_result.get("preview") or {}
+                        existing_subtitle_problem = await linked_import_service.create_existing_subtitle_problem(
+                            source_path=task.source_path,
+                            preview=preview,
+                            task_id=task.id,
+                            queue_origin="auto_process",
+                        )
+                        if existing_subtitle_problem.get("handled"):
+                            task.task_metadata = {
+                                **(task.task_metadata or {}),
+                                "linked_subtitle_preview": preview,
+                                "linked_subtitle_problem": existing_subtitle_problem,
+                                "source_mode": "linked_translation_archive_existing_subtitle_conflict",
+                            }
+                            task.output_path = ""
+                            task.status = TaskStatus.COMPLETED
+                            task.update_progress(100, "原作目录已有字幕，已加入问题作品列表")
+                            task.completed_at = datetime.now()
+                            logger.info(
+                                f"[{rjcode}] 原作目录已有字幕，已转入问题作品列表: "
+                                f"target={preview.get('target_rjcode', '')} conflict={existing_subtitle_problem.get('conflict_id', '')}"
+                            )
+                            return
                     else:
                         logger.info(f"[{rjcode}] 字幕补配预检已禁用，跳过")
 
                     preview = linked_result.get("preview") or {}
+                    fatal_extract_error = str(preview.get("fatal_extract_error") or "").strip()
+                    if fatal_extract_error:
+                        task.fail(fatal_extract_error)
+                        self._record_problem_work_for_extract_failure(
+                            task,
+                            rjcode,
+                            fatal_extract_error,
+                        )
+                        logger.error(f"[{rjcode}] 字幕补配预检已确认解压失败，任务终止: {fatal_extract_error}")
+                        return
                     logger.info(
                         f"[{rjcode}] 未进入字幕补配预检分支: "
                         f"target={preview.get('target_rjcode', '')} "
@@ -1986,6 +2020,29 @@ class TaskEngine:
                 task.task_metadata['progress_log'] = logs[-30:]
 
             append_progress_log("准备扫描 RJ 文件夹", 5)
+
+            if bool(task.task_metadata.get('skip_if_existing_subtitles')) and rjcode != "未知":
+                kikoeru_state = await rj_service.check_kikoeru_existing_subtitles(rjcode)
+                task.task_metadata.update({
+                    'kikoeru_checked_rjcode': kikoeru_state.get('checked_rjcode', rjcode),
+                    'kikoeru_has_work': bool(kikoeru_state.get('has_work')),
+                    'kikoeru_has_existing_subtitles': bool(kikoeru_state.get('has_existing_subtitles')),
+                    'kikoeru_matched_rjcode': kikoeru_state.get('matched_rjcode', ''),
+                    'kikoeru_subtitle_file_count': int(kikoeru_state.get('subtitle_file_count') or 0),
+                    'kikoeru_subtitle_check_source': kikoeru_state.get('subtitle_check_source', ''),
+                })
+                if bool(kikoeru_state.get('has_existing_subtitles')):
+                    matched_rjcode = str(kikoeru_state.get('matched_rjcode') or rjcode).upper()
+                    subtitle_file_count = int(kikoeru_state.get('subtitle_file_count') or 0)
+                    skip_message = f"Kikoeru 已有字幕（{matched_rjcode}"
+                    if subtitle_file_count > 0:
+                        skip_message += f" / {subtitle_file_count} 个"
+                    skip_message += "），跳过抓取"
+                    task.update_progress(100, skip_message)
+                    append_progress_log(skip_message, 100)
+                    task.complete()
+                    logger.info(f"[{rjcode}] {skip_message}")
+                    return
 
             def progress_callback(progress: int, step: str):
                 task.update_progress(progress, step)

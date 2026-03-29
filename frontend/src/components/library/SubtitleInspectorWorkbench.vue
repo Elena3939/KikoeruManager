@@ -50,6 +50,15 @@
             </div>
           </div>
           <div class="subtitle-tree-actions">
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              :disabled="!view.canOpenSubtitleInspectorFilterDeleteDialog || view.subtitleInspectorBusy"
+              @click="view.openSubtitleInspectorFilterDeleteDialog"
+            >
+              删除预审
+            </el-button>
             <el-button size="small" @click="view.buildAutoSubtitlePairs">自动预配对</el-button>
             <el-button size="small" :type="view.subtitleSequenceMode ? 'primary' : 'default'" @click="view.setSubtitleSequenceMode(!view.subtitleSequenceMode)">
               {{ view.subtitleSequenceMode ? '退出顺序点选' : '顺序点选配对' }}

@@ -4,9 +4,38 @@ import logging
 import threading
 import time
 from typing import Optional, List, List, Callable
-from pydantic import BaseModel, root_validator
+from pydantic import BaseModel, Field
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
+
+class SynologyLibraryConfig(BaseModel):
+    """群晖库存配置"""
+    base_url: str = ""
+    username: str = ""
+    password: str = ""
+    root_path: str = "/"
+    session_name: str = "FileStation"
+    timeout: int = 30
+    verify_ssl: bool = True
+    otp_code: str = ""
+    device_name: str = ""
+    device_id: str = ""
+    enable_device_token: bool = True
+
+
+class LibraryConfigItem(BaseModel):
+    """库存定义"""
+    id: str = ""
+    name: str = ""
+    type: str = "local"
+    path: str = ""
+    browse_path: str = ""
+    enabled: bool = True
+    writable: bool = True
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    synology: Optional[SynologyLibraryConfig] = None
+
 
 class StorageConfig(BaseModel):
     """存储路径配置"""
@@ -16,6 +45,13 @@ class StorageConfig(BaseModel):
     processed_archives_path: str = "/processed"
     existing_folders_path: str = "/existing"  # 已存在文件夹目录（非软件解压的文件夹）
     asmr_subtitle_path: str = ""  # ASMR同步字幕文件夹路径
+    libraries: list[LibraryConfigItem] = Field(default_factory=list)
+    default_library_id: str = ""
+    default_extract_library_id: str = ""
+    health_warning_free_gb: float = 200.0
+    stats_cache_ttl_seconds: int = 300
+    remote_search_cache_ttl_seconds: int = 60
+    remote_search_timeout_seconds: int = 30
 
 class ClassificationRule(BaseModel):
     """分类规则"""
@@ -144,6 +180,7 @@ class KikoeruServerConfig(BaseModel):
     token_expires: int = 0 # Token 过期时间戳
     timeout: int = 10      # 请求超时(秒)
     cache_ttl: int = 300   # 缓存时间(秒)
+    enable_fuzzy_rj_match: bool = False  # 是否允许危险的 RJ ±1 宽容匹配
     http_proxy: Optional[str] = None  # HTTP 代理地址（已禁用，远程服务器连接使用直连模式）
     check_in_preextract: bool = True  # 是否在解压预检中启用远程查重
     retry_count: int = 3   # 网络请求重试次数
