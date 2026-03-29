@@ -13,6 +13,11 @@ from datetime import datetime
 
 from ..config.settings import get_config
 from ..core.task_engine import Task
+from ..core.password_utils import (
+    normalize_filename_value,
+    normalize_password_value,
+    normalize_rjcode_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +181,11 @@ class ExtractService:
             if not await self._wait_for_complete_set(volume_set, task):
                 raise Exception("分卷组不完整或等待超时")
             archive_path = volume_set.entry_path or volume_set.volumes[0]
+
+        # 3.5 如果密码库是按文件名匹配到的，且条目里带 RJ 号，则只注入 RJ 提示。
+        # 不改源文件名，避免监控链路还在等旧路径导致超时。
+        password_candidates = await self._get_password_candidates_for_archive(archive_path)
+        hinted_rjcode = self._apply_filename_password_rj_hint(archive_path, task, password_candidates)
         
         # 检查暂停和取消
         await task.wait_if_paused()
@@ -193,7 +203,7 @@ class ExtractService:
             task.update_progress(24, "压缩包预读失败，尝试直接解压")
         
         # 5. 确定输出路径
-        output_name = Path(archive_path).stem.strip()  # 去除首尾空格，避免Windows路径错误
+        output_name = str(hinted_rjcode or Path(archive_path).stem).strip()  # 去除首尾空格，避免Windows路径错误
         # 移除其他Windows不允许的字符
         output_name = re.sub(r'[<>:"|?*]', '', output_name)
         output_path = tempfile.mkdtemp(
@@ -203,7 +213,12 @@ class ExtractService:
         
         # 6. 尝试解压
         task.update_progress(30, "开始解压")
-        success, success_password = await self._try_extract(archive_info, output_path, task)
+        success, success_password = await self._try_extract(
+            archive_info,
+            output_path,
+            task,
+            password_candidates=password_candidates,
+        )
         
         if not success:
             # 更新任务状态为失败，并设置错误信息
@@ -249,6 +264,35 @@ class ExtractService:
             logger.debug("嵌套压缩包解压已禁用")
         
         return output_path
+
+    def _pick_filename_matched_rjcode(self, password_candidates: List[Dict[str, Optional[str]]]) -> Optional[str]:
+        for item in password_candidates or []:
+            if item.get("source") != "密码库-文件名":
+                continue
+            normalized_rjcode = normalize_rjcode_value(item.get("rjcode"))
+            if normalized_rjcode:
+                return normalized_rjcode
+        return None
+
+    def _apply_filename_password_rj_hint(
+        self,
+        archive_path: str,
+        task: Task,
+        password_candidates: List[Dict[str, Optional[str]]],
+    ) -> Optional[str]:
+        matched_rjcode = self._pick_filename_matched_rjcode(password_candidates)
+        if not matched_rjcode:
+            return None
+
+        if task.task_metadata is None:
+            task.task_metadata = {}
+        task.task_metadata.setdefault("inferred_rjcode", matched_rjcode)
+        task.task_metadata.setdefault("rjcode", matched_rjcode)
+        task.task_metadata["inferred_rjcode_source"] = "password_entry_filename_match"
+        if not getattr(task, "rjcode", None) or str(task.rjcode).strip() in {"", "未知"}:
+            task.rjcode = matched_rjcode
+        logger.info("[Extract] 密码库按文件名命中 RJ，仅注入任务上下文，不改源文件名: source=%s rj=%s", archive_path, matched_rjcode)
+        return matched_rjcode
 
     async def get_archive_info(self, archive_path: str) -> Optional[ArchiveInfo]:
         """Public wrapper for archive listing."""
@@ -1398,18 +1442,28 @@ class ExtractService:
         db = next(get_db())
         candidates: List[Dict[str, Optional[str]]] = []
         seen_passwords = set()
+        dirty_entry_count = 0
 
-        def add_entry(password: Optional[str], source: str, rjcode: Optional[str] = None, filename: Optional[str] = None):
-            normalized_password = str(password or "")
+        def add_entry(
+            password: Optional[str],
+            source: str,
+            rjcode: Optional[str] = None,
+            filename: Optional[str] = None,
+            entry_id: Optional[str] = None,
+        ):
+            normalized_password = normalize_password_value(password)
+            if not normalized_password:
+                return
             if normalized_password in seen_passwords:
                 return
             seen_passwords.add(normalized_password)
-            normalized_rjcode = str(rjcode or "").strip().upper() or None
+            normalized_rjcode = normalize_rjcode_value(rjcode)
             candidates.append({
+                "entry_id": entry_id,
                 "password": normalized_password,
                 "source": source,
                 "rjcode": normalized_rjcode,
-                "filename": filename,
+                "filename": normalize_filename_value(filename),
             })
 
         try:
@@ -1417,21 +1471,53 @@ class ExtractService:
                 from sqlalchemy import func
                 entries = db.query(PasswordEntry).filter(func.upper(PasswordEntry.rjcode).in_(rjcodes)).all()
                 for entry in entries:
-                    add_entry(entry.password, "密码库-RJ", entry.rjcode, entry.filename)
-                    logger.info(f"找到RJ号匹配的密码: {entry.rjcode}")
+                    normalized_password = normalize_password_value(entry.password)
+                    normalized_rjcode = normalize_rjcode_value(entry.rjcode)
+                    normalized_filename = normalize_filename_value(entry.filename)
+                    if (
+                        normalized_password != str(entry.password or "")
+                        or normalized_rjcode != entry.rjcode
+                        or normalized_filename != entry.filename
+                    ):
+                        entry.password = normalized_password
+                        entry.rjcode = normalized_rjcode
+                        entry.filename = normalized_filename
+                        dirty_entry_count += 1
+                    add_entry(normalized_password, "密码库-RJ", normalized_rjcode, normalized_filename, entry.id)
+                    logger.info(f"找到RJ号匹配的密码: {normalized_rjcode}")
 
             if filename_candidates:
                 entries = db.query(PasswordEntry).filter(PasswordEntry.filename.in_(filename_candidates)).all()
                 for entry in entries:
-                    add_entry(entry.password, "密码库-文件名", entry.rjcode, entry.filename)
-                    logger.info(f"找到文件名匹配的密码: {entry.filename}")
+                    normalized_password = normalize_password_value(entry.password)
+                    normalized_rjcode = normalize_rjcode_value(entry.rjcode)
+                    normalized_filename = normalize_filename_value(entry.filename)
+                    if (
+                        normalized_password != str(entry.password or "")
+                        or normalized_rjcode != entry.rjcode
+                        or normalized_filename != entry.filename
+                    ):
+                        entry.password = normalized_password
+                        entry.rjcode = normalized_rjcode
+                        entry.filename = normalized_filename
+                        dirty_entry_count += 1
+                    add_entry(normalized_password, "密码库-文件名", normalized_rjcode, normalized_filename, entry.id)
+                    logger.info(f"找到文件名匹配的密码: {normalized_filename}")
 
             generic_entries = db.query(PasswordEntry).filter(
                 PasswordEntry.rjcode.is_(None),
                 PasswordEntry.filename.is_(None)
             ).all()
             for entry in generic_entries:
-                add_entry(entry.password, "密码库-通用", entry.rjcode, entry.filename)
+                normalized_password = normalize_password_value(entry.password)
+                if normalized_password != str(entry.password or ""):
+                    entry.password = normalized_password
+                    dirty_entry_count += 1
+                add_entry(normalized_password, "密码库-通用", entry.rjcode, entry.filename, entry.id)
+
+            if dirty_entry_count:
+                db.commit()
+                logger.info("已自动清洗 %s 条密码库脏数据", dirty_entry_count)
 
             return candidates
         finally:
@@ -1781,14 +1867,19 @@ class ExtractService:
 
         return None
     
-    async def _record_password_usage(self, password: str, archive_path: str):
+    async def _record_password_usage(self, password: str, archive_path: str, entry_id: Optional[str] = None):
         """记录密码使用情况"""
         from ..models.database import PasswordEntry, get_db
         
         db = next(get_db())
         try:
             # 查找并更新使用记录
-            entry = db.query(PasswordEntry).filter(PasswordEntry.password == password).first()
+            entry = None
+            if entry_id:
+                entry = db.query(PasswordEntry).filter(PasswordEntry.id == entry_id).first()
+            if not entry:
+                normalized_password = normalize_password_value(password)
+                entry = db.query(PasswordEntry).filter(PasswordEntry.password == normalized_password).first()
             if entry:
                 # 使用 SQL 表达式更新，避免类型问题
                 from sqlalchemy import func
@@ -2048,10 +2139,22 @@ class ExtractService:
         flush_current()
         return files
     
-    async def _try_extract(self, archive_info: ArchiveInfo, output_path: str, task: Task) -> tuple[bool, Optional[str]]:
+    async def _try_extract(
+        self,
+        archive_info: ArchiveInfo,
+        output_path: str,
+        task: Task,
+        password_candidates: Optional[List[Dict[str, Optional[str]]]] = None,
+    ) -> tuple[bool, Optional[str]]:
         """尝试解压，返回 (是否成功, 成功使用的密码)"""
-        password_candidates = await self._get_password_candidates_for_archive(archive_info.path)
+        if password_candidates is None:
+            password_candidates = await self._get_password_candidates_for_archive(archive_info.path)
         vault_passwords = [item["password"] for item in password_candidates]
+        password_entry_id_map = {
+            item["password"]: item.get("entry_id")
+            for item in password_candidates
+            if item.get("entry_id")
+        }
         password_rjcode_map = {
             item["password"]: item.get("rjcode")
             for item in password_candidates
@@ -2155,7 +2258,11 @@ class ExtractService:
                 if result.returncode == 0:
                     # 记录成功使用的密码
                     if password and password in vault_passwords:
-                        await self._record_password_usage(password, archive_info.path)
+                        await self._record_password_usage(
+                            password,
+                            archive_info.path,
+                            entry_id=password_entry_id_map.get(password),
+                        )
                     # 更新 archive_info 中的密码，用于传递给嵌套压缩包
                     archive_info.password = password
                     inferred_rjcode = password_rjcode_map.get(password)

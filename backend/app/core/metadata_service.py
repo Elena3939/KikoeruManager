@@ -78,6 +78,17 @@ class MetadataService:
         从路径中提取 RJ 号并获取元数据。
         """
         rjcode = self._extract_rjcode(path)
+        if not rjcode and task is not None:
+            task_metadata = getattr(task, "task_metadata", {}) or {}
+            for candidate in (
+                task_metadata.get("rjcode"),
+                task_metadata.get("inferred_rjcode"),
+                getattr(task, "rjcode", None),
+            ):
+                rjcode = self._extract_rjcode(str(candidate or ""), search_subfolders=False) or str(candidate or "").strip().upper()
+                if rjcode:
+                    logger.info("元数据服务使用任务上下文中的 RJ 号回退: %s", rjcode)
+                    break
         if not rjcode:
             raise Exception(f"无法从路径中提取 RJ 号: {path}")
 
@@ -594,9 +605,16 @@ class MetadataService:
             product = data[0]
 
             translation_info = product.get('translation_info', {})
-            original_workno = translation_info.get('original_workno')
+            original_workno = (
+                translation_info.get('original_workno')
+                or translation_info.get('parent_workno')
+                or ''
+            )
+            is_original = translation_info.get('is_original', True)
 
-            if translation_info.get('is_child') and original_workno:
+            # 只要当前作品不是原作，就优先回溯到原作/父作品的日文元数据。
+            # 某些翻译版链路不会稳定带 is_child，但 original_workno / parent_workno 仍然可用。
+            if not is_original and original_workno:
                 logger.info(f"[{rjcode}] 检测到翻译作品，原始作品: {original_workno}，继续获取原始作品的日文元数据")
                 await asyncio.sleep(self.config.metadata.sleep_interval)
 

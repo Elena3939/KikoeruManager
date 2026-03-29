@@ -12,6 +12,7 @@ import time
 from typing import Optional, List, Dict, Callable, Tuple
 from pathlib import Path
 from datetime import datetime
+from yarl import URL
 
 from ..config.settings import get_config
 
@@ -130,6 +131,21 @@ class ASMRDownloadService:
         if referer:
             headers["Referer"] = referer
         return headers
+
+    def _download_headers(self) -> Dict[str, str]:
+        headers = self._browser_like_headers()
+        headers["Accept"] = "*/*"
+        return headers
+
+    def _build_download_request_url(self, url: str):
+        raw_url = str(url or "").strip()
+        if not raw_url:
+            return raw_url
+        try:
+            # 保留源站返回的原始百分号编码，避免 yarl/aiohttp 二次规范化后把路径字节改坏。
+            return URL(raw_url, encoded=True)
+        except Exception:
+            return raw_url
 
     async def _legacy_test_connectivity(self) -> Dict:
         """测试 ASMR API 与 DLsite 的基本连通性。"""
@@ -595,6 +611,9 @@ class ASMRDownloadService:
         """
         session = await self._get_session()
         request_kwargs = self._proxy_request_kwargs()
+        request_headers = self._download_headers()
+        request_url = self._build_download_request_url(url)
+        request_url_text = str(request_url)
 
         for attempt in range(max_retries):
             try:
@@ -612,7 +631,12 @@ class ASMRDownloadService:
                     # 文件已存在，检查大小是否完整
                     existing_size = os.path.getsize(dest_path)
                     # 先获取远程文件大小
-                    async with session.head(url, timeout=aiohttp.ClientTimeout(total=30), **request_kwargs) as head_response:
+                    async with session.head(
+                        request_url,
+                        headers=request_headers,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                        **request_kwargs,
+                    ) as head_response:
                         if head_response.status == 200:
                             remote_size = int(head_response.headers.get('content-length', 0))
                             if remote_size > 0 and existing_size >= remote_size:
@@ -625,11 +649,11 @@ class ASMRDownloadService:
                                 logger.info(f"[下载] 文件不完整({existing_size}/{remote_size})，续传: {os.path.basename(dest_path)}")
 
                 # 构建请求头（支持断点续传）
-                headers = {}
+                headers = dict(request_headers)
                 if resume_offset > 0:
                     headers['Range'] = f'bytes={resume_offset}-'
 
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout), **request_kwargs) as response:
+                async with session.get(request_url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout), **request_kwargs) as response:
                     # 处理响应状态
                     if resume_offset > 0 and response.status == 206:
                         # 服务器支持断点续传
@@ -646,7 +670,14 @@ class ASMRDownloadService:
                             os.remove(temp_path)
                         logger.info(f"[下载] 服务器不支持断点续传，重新下载")
                     elif response.status != 200:
-                        logger.error(f"下载失败: HTTP {response.status}, URL: {url}")
+                        logger.error(
+                            "[下载] 下载失败: HTTP %s, URL: %s, dest=%s, attempt=%s/%s",
+                            response.status,
+                            request_url_text,
+                            os.path.basename(dest_path),
+                            attempt + 1,
+                            max_retries,
+                        )
                         if attempt < max_retries - 1:
                             wait_time = min(5 * (attempt + 1), 30)  # 递增等待时间，最多30秒
                             logger.info(f"[下载] 等待 {wait_time} 秒后重试...")
