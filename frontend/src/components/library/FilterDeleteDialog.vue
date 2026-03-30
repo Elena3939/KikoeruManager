@@ -4,7 +4,7 @@
       <div class="fm-header">
         <div class="fm-title">
           <span>{{ text.title }}</span>
-          <span class="fm-badge">{{ filterDeletePreviewInfo.folderName || scopeLabel || getFileName(currentPath) || text.currentFolder }}</span>
+          <span class="fm-badge">{{ scopeLabel || getFileName(currentPath) || filterDeletePreviewInfo.folderName || text.currentFolder }}</span>
         </div>
         <div class="fm-count">{{ filterDeleteSelectedRoots.length }} / {{ filterDeletePreviewInfo.selectedCount }} {{ text.pendingDeleteSuffix }}</div>
       </div>
@@ -39,7 +39,7 @@
       <div v-if="filterDeletePreviewInfo.progressMessage || filterDeletePreviewInfo.currentPath" class="fd-progress">
         {{ filterDeletePreviewInfo.progressMessage || text.loadingPreview }}
         <span v-if="filterDeletePreviewInfo.discoveredEntries"> | {{ filterDeleteScanText }}</span>
-        <span v-if="filterDeletePreviewInfo.currentPath"> | {{ filterDeletePreviewInfo.currentPath }}</span>
+        <span v-if="filterDeletePreviewInfo.currentPath"> | {{ displayFilterDeletePath(filterDeletePreviewInfo.currentPath) }}</span>
         <span v-if="filterDeletePreviewInfo.deleteTotal">
           | {{ text.deleteProgress }} {{ filterDeletePreviewInfo.deleteDone }} / {{ filterDeletePreviewInfo.deleteTotal }} / {{ text.failedLabel }} {{ filterDeletePreviewInfo.deleteFailed || 0 }}
         </span>
@@ -210,6 +210,7 @@ const props = defineProps({
   libraryId: { type: String, default: '' },
   currentPath: { type: String, default: '' },
   targetPaths: { type: Array, default: () => [] },
+  rules: { type: Array, default: () => [] },
   scopeLabel: { type: String, default: '' },
   isRemote: { type: Boolean, default: false }
 })
@@ -430,8 +431,8 @@ function applyFilterDeletePreviewData (data, options = {}) {
   }
   filterDeletePreviewInfo.value = {
     ...filterDeletePreviewInfo.value,
-    folderName: data?.folder_name || filterDeletePreviewInfo.value.folderName || getFileName(props.currentPath),
-    folderPath: data?.folder_path || filterDeletePreviewInfo.value.folderPath || props.currentPath,
+    folderName: props.scopeLabel || getFileName(props.currentPath) || data?.folder_name || filterDeletePreviewInfo.value.folderName || text.currentFolder,
+    folderPath: props.currentPath || data?.folder_path || filterDeletePreviewInfo.value.folderPath || '',
     selectedCount: Number(data?.selected_count || 0),
     selectedSize: Number(data?.selected_size || 0),
     ruleCount: Array.isArray(data?.rules)
@@ -445,7 +446,7 @@ function applyFilterDeletePreviewData (data, options = {}) {
     scannedEntries: Number(data?.scanned_entries || 0),
     discoveredEntries: Number(data?.discovered_entries || 0),
     pendingDirectories: Number(data?.pending_directories || 0),
-    currentPath: data?.current_path || '',
+    currentPath: displayFilterDeletePath(data?.current_path || ''),
     progressMessage: data?.progress_message || '',
     warning: data?.warning || '',
     error: data?.error || '',
@@ -529,7 +530,7 @@ async function loadFilterDeletePreview () {
     scannedEntries: 0,
     discoveredEntries: 0,
     pendingDirectories: effectivePreviewTargetPaths.value.length,
-    currentPath: effectivePreviewTargetPaths.value[0] || props.currentPath,
+    currentPath: props.currentPath || effectivePreviewTargetPaths.value[0] || '',
     progressMessage: effectivePreviewTargetPaths.value.length > 1
       ? `正在创建当前页删除过滤预审任务（1 / ${effectivePreviewTargetPaths.value.length}）…`
       : '\u6b63\u5728\u521b\u5efa\u5220\u9664\u8fc7\u6ee4\u9884\u5ba1\u4efb\u52a1\u2026',
@@ -541,7 +542,9 @@ async function loadFilterDeletePreview () {
   }
   try {
     if (effectivePreviewTargetPaths.value.length === 1) {
-      const data = await libraryApi.startFilterDeletePreviewJob(props.libraryId, effectivePreviewTargetPaths.value[0])
+      const data = await libraryApi.startFilterDeletePreviewJob(props.libraryId, effectivePreviewTargetPaths.value[0], {
+        rules: props.rules
+      })
       filterDeleteJobId.value = data?.job_id || ''
       applyFilterDeletePreviewData(data)
       if (['pending', 'running'].includes(data?.status || 'pending')) await pollFilterDeletePreviewStatus(filterDeleteJobId.value)
@@ -564,11 +567,13 @@ async function loadFilterDeletePreview () {
       const targetPath = effectivePreviewTargetPaths.value[index]
       filterDeletePreviewInfo.value = {
         ...filterDeletePreviewInfo.value,
-        currentPath: targetPath,
+        currentPath: displayFilterDeletePath(targetPath),
         pendingDirectories: Math.max(0, effectivePreviewTargetPaths.value.length - index),
         progressMessage: `正在预审 ${index + 1} / ${effectivePreviewTargetPaths.value.length}: ${getFileName(targetPath) || targetPath}`
       }
-      const data = await libraryApi.startFilterDeletePreviewJob(props.libraryId, targetPath)
+      const data = await libraryApi.startFilterDeletePreviewJob(props.libraryId, targetPath, {
+        rules: props.rules
+      })
       let finalData = data
       if (['pending', 'running'].includes(data?.status || 'pending') && data?.job_id) {
         finalData = await waitForFilterDeletePreviewJob(data.job_id, targetPath, index, effectivePreviewTargetPaths.value.length)
@@ -616,7 +621,7 @@ async function waitForFilterDeletePreviewJob (jobId, targetPath, index, total) {
     filterDeleteJobId.value = jobId
     filterDeletePreviewInfo.value = {
       ...filterDeletePreviewInfo.value,
-      currentPath: data?.current_path || targetPath,
+      currentPath: displayFilterDeletePath(data?.current_path || targetPath),
       progressMessage: data?.progress_message || `正在预审 ${index + 1} / ${total}: ${getFileName(targetPath) || targetPath}`,
       scannedEntries: Number(data?.scanned_entries || 0),
       discoveredEntries: Number(data?.discovered_entries || 0),
@@ -640,6 +645,27 @@ function requestCancelFilterDeleteDeletion (silent = false) {
     progressMessage: '\u5df2\u8bf7\u6c42\u505c\u6b62\u5220\u9664\uff0c\u6b63\u5728\u7b49\u5f85\u5f53\u524d\u9879\u5b8c\u6210\u2026'
   }
   if (!silent) ElMessage.warning('\u5df2\u8bf7\u6c42\u505c\u6b62\u5220\u9664\uff0c\u5c06\u5728\u5f53\u524d\u9879\u5220\u9664\u5b8c\u6210\u540e\u505c\u6b62')
+}
+
+function displayFilterDeletePath (rawPath = '') {
+  const current = String(props.currentPath || '').trim()
+  const candidate = String(rawPath || '').trim()
+  if (!current) return candidate
+  if (!candidate) return current
+
+  const normalizedCurrent = current.replace(/\\/g, '/').replace(/\/+$/, '')
+  const normalizedCandidate = candidate.replace(/\\/g, '/').replace(/\/+$/, '')
+  const targetPaths = effectivePreviewTargetPaths.value
+    .map(item => String(item || '').trim().replace(/\\/g, '/').replace(/\/+$/, ''))
+    .filter(Boolean)
+
+  if (normalizedCandidate === normalizedCurrent) {
+    return current
+  }
+  if (targetPaths.some(target => normalizedCandidate === target || normalizedCandidate.startsWith(`${target}/`))) {
+    return current
+  }
+  return candidate
 }
 
 function toggleFilterDeleteExpand (row) {

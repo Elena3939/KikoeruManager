@@ -68,17 +68,17 @@ class RJSubtitleService:
             'status': self._get_scan_status(len(audio_files), existing_subtitle_count),
         }
 
-    def scan_iter(self, input_path: str, scan_depth: int = 3):
+    def scan_iter(self, input_path: str, scan_depth: int = 3, progress_callback: Optional[Callable[[str], None]] = None):
         path = Path(input_path)
         if not path.exists():
             raise ValueError("指定路径不存在")
         if not path.is_dir():
             raise ValueError("指定路径不是文件夹")
 
-        for folder in self._iter_discover_rj_folders(path, scan_depth=self._normalize_scan_depth(scan_depth)):
+        for folder in self._iter_discover_rj_folders(path, scan_depth=self._normalize_scan_depth(scan_depth), progress_callback=progress_callback):
             yield self._build_local_scan_result(folder)
 
-    def _iter_discover_rj_folders(self, path: Path, scan_depth: int = 3):
+    def _iter_discover_rj_folders(self, path: Path, scan_depth: int = 3, progress_callback: Optional[Callable[[str], None]] = None):
         if self.extract_rjcode(path.name):
             yield path
             return
@@ -88,6 +88,11 @@ class RJSubtitleService:
         def walk(folder: Path, depth_left: int):
             if depth_left <= 0:
                 return
+            if progress_callback:
+                try:
+                    progress_callback(str(folder))
+                except Exception:
+                    logger.debug('[RJ字幕] 本地扫描进度回调失败: %s', folder, exc_info=True)
             try:
                 children = sorted(folder.iterdir(), key=lambda item: item.name.lower())
             except (FileNotFoundError, PermissionError, OSError):
@@ -413,12 +418,18 @@ class RJSubtitleService:
         client,
         folder_path: str,
         scan_depth: int,
+        progress_callback: Optional[Callable[[str], None]] = None,
     ):
         seen: set[str] = set()
 
         async def walk(current_path: str, depth_left: int):
             if depth_left <= 0:
                 return
+            if progress_callback:
+                try:
+                    progress_callback(current_path)
+                except Exception:
+                    logger.debug('[RJ字幕] 远程扫描进度回调失败: %s', current_path, exc_info=True)
             children = await manager._list_remote_directory(client, current_path)
             for child in sorted(children, key=lambda item: str(item.get('name') or '').lower()):
                 name = child.get('name') or ''
@@ -478,7 +489,7 @@ class RJSubtitleService:
             'status': self._get_scan_status(len(audio_entries), existing_subtitle_count),
         }
 
-    async def scan_remote_iter(self, library_id: str, folder_path: str, scan_depth: int = 3):
+    async def scan_remote_iter(self, library_id: str, folder_path: str, scan_depth: int = 3, progress_callback: Optional[Callable[[str], None]] = None):
         from .library_manager import SynologyFileStationClient, get_library_manager
 
         manager = get_library_manager()
@@ -511,6 +522,7 @@ class RJSubtitleService:
             client,
             normalized_path,
             scan_depth=self._normalize_scan_depth(scan_depth),
+            progress_callback=progress_callback,
         ):
             result = await self._build_remote_scan_result(manager, library_id, candidate)
             if result:
@@ -1248,6 +1260,38 @@ class RJSubtitleService:
             ),
         )
         return deduped_files, deduped_records
+
+    def _prune_temp_subtitle_files(
+        self,
+        temp_dir: str,
+        retained_files: List[Dict],
+    ) -> None:
+        retained_paths = {
+            os.path.abspath(str(item.get('path') or ''))
+            for item in retained_files
+            if str(item.get('path') or '').strip()
+        }
+        if not retained_paths or not temp_dir or not os.path.isdir(temp_dir):
+            return
+
+        for root, _dirs, files in os.walk(temp_dir, topdown=False):
+            for file_name in files:
+                if os.path.splitext(file_name)[1].lower() not in self.SUBTITLE_EXTENSIONS:
+                    continue
+                file_path = os.path.abspath(os.path.join(root, file_name))
+                if file_path in retained_paths:
+                    continue
+                try:
+                    os.remove(file_path)
+                except FileNotFoundError:
+                    continue
+            if os.path.abspath(root) == os.path.abspath(temp_dir):
+                continue
+            try:
+                if not os.listdir(root):
+                    os.rmdir(root)
+            except OSError:
+                continue
 
     def match_subtitles_to_audio(
         self,
@@ -2229,14 +2273,11 @@ class RJSubtitleService:
                     'failed_files': failed_files,
                 }
 
-            if progress_callback:
-                progress_callback(68, '处理字幕内容')
-
             if should_cancel and should_cancel():
                 raise asyncio.CancelledError()
 
             if progress_callback:
-                progress_callback(68, '写入原始字幕目录，等待筛选')
+                progress_callback(68, '整理字幕内容并准备匹配')
 
             downloaded_files, content_deduped_files = self._dedupe_downloaded_subtitles_by_content(
                 downloaded_files,
@@ -2244,55 +2285,7 @@ class RJSubtitleService:
             )
             if content_deduped_files:
                 logger.info('[RJ字幕] 按内容去重后保留 %s 个字幕，合并 %s 个完全重复项', len(downloaded_files), len(content_deduped_files))
-
-            subtitle_dir, written_files, skipped_files, write_errors = await self._write_remote_downloaded_subtitles(
-                library_id=library_id,
-                folder_path=folder_path,
-                downloaded_files=downloaded_files,
-                overwrite=overwrite,
-                temp_dir=temp_dir,
-                progress_callback=progress_callback,
-                should_cancel=should_cancel,
-            )
-            has_output = len(written_files) > 0 or len(skipped_files) > 0
-            success = has_output
-            partial = has_output and (
-                len(skipped_files) > 0 or
-                len(write_errors) > 0 or
-                len(failed_files) > 0
-            )
-
-            return {
-                'success': success,
-                'partial': partial,
-                'awaiting_manual_match': success,
-                'rjcode': rjcode,
-                'actual_rjcode': source['rjcode'],
-                'source_lang': source['lang'],
-                'source_work_type': source['work_type'],
-                'source_title': source['title'],
-                'search_attempts': attempts,
-                'downloaded_count': len(downloaded_files),
-                'download_files': downloaded_files,
-                'content_deduped_count': len(content_deduped_files),
-                'content_deduped_files': content_deduped_files,
-                'failed_files': failed_files,
-                'lrc_clean_result': None,
-                'simplify_result': None,
-                'match_result': {
-                    'matches': [],
-                    'matched_group_count': 0,
-                    'matched_subtitle_count': 0,
-                    'unmatched_audio': [],
-                    'unmatched_subtitles': [],
-                },
-                'written_files': written_files,
-                'skipped_files': skipped_files,
-                'write_errors': write_errors,
-                'subtitle_dir': subtitle_dir,
-                'existing_subtitle_count': self._count_remote_existing_subtitles(remote_items),
-                'error': None if success else '未能抓取并写入任何原始字幕文件',
-            }
+            self._prune_temp_subtitle_files(temp_dir, downloaded_files)
 
             lrc_clean_result = None
             if getattr(config.asmr_sync, 'lrc_clean_enabled', False):
@@ -2532,14 +2525,11 @@ class RJSubtitleService:
                     'failed_files': failed_files,
                 }
 
-            if progress_callback:
-                progress_callback(68, "处理字幕内容")
-
             if should_cancel and should_cancel():
                 raise asyncio.CancelledError()
 
             if progress_callback:
-                progress_callback(68, '写入原始字幕目录，等待筛选')
+                progress_callback(68, '整理字幕内容并准备匹配')
 
             downloaded_files, content_deduped_files = self._dedupe_downloaded_subtitles_by_content(
                 downloaded_files,
@@ -2547,52 +2537,7 @@ class RJSubtitleService:
             )
             if content_deduped_files:
                 logger.info('[RJ字幕] 按内容去重后保留 %s 个字幕，合并 %s 个完全重复项', len(downloaded_files), len(content_deduped_files))
-
-            subtitle_dir, written_files, skipped_files, write_errors = self._write_local_downloaded_subtitles(
-                folder=folder,
-                downloaded_files=downloaded_files,
-                overwrite=overwrite,
-                progress_callback=progress_callback,
-                should_cancel=should_cancel,
-            )
-            has_output = len(written_files) > 0 or len(skipped_files) > 0
-            success = has_output
-            partial = has_output and (
-                len(skipped_files) > 0 or
-                len(write_errors) > 0 or
-                len(failed_files) > 0
-            )
-
-            return {
-                'success': success,
-                'partial': partial,
-                'awaiting_manual_match': success,
-                'rjcode': rjcode,
-                'actual_rjcode': source['rjcode'],
-                'source_lang': source['lang'],
-                'source_work_type': source['work_type'],
-                'source_title': source['title'],
-                'search_attempts': attempts,
-                'downloaded_count': len(downloaded_files),
-                'download_files': downloaded_files,
-                'content_deduped_count': len(content_deduped_files),
-                'content_deduped_files': content_deduped_files,
-                'failed_files': failed_files,
-                'lrc_clean_result': None,
-                'simplify_result': None,
-                'match_result': {
-                    'matches': [],
-                    'matched_group_count': 0,
-                    'matched_subtitle_count': 0,
-                    'unmatched_audio': [],
-                    'unmatched_subtitles': [],
-                },
-                'written_files': written_files,
-                'skipped_files': skipped_files,
-                'write_errors': write_errors,
-                'subtitle_dir': str(subtitle_dir),
-                'error': None if success else '未能抓取并写入任何原始字幕文件',
-            }
+            self._prune_temp_subtitle_files(temp_dir, downloaded_files)
 
             lrc_clean_result = None
             if getattr(config.asmr_sync, 'lrc_clean_enabled', False):

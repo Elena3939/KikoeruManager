@@ -317,7 +317,8 @@ export const libraryApi = {
     const response = await apiClient.post('/library/browser/filter-delete-preview', {
       library_id: libraryId,
       path,
-      request_id: options.requestId || undefined
+      request_id: options.requestId || undefined,
+      rules: options.rules || undefined
     }, {
       timeout: options.timeout || FILTER_DELETE_PREVIEW_TIMEOUT,
       signal: options.signal
@@ -325,10 +326,11 @@ export const libraryApi = {
     return response.data
   },
 
-  startFilterDeletePreviewJob: async (libraryId, path) => {
+  startFilterDeletePreviewJob: async (libraryId, path, options = {}) => {
     const response = await apiClient.post('/library/browser/filter-delete-preview/start', {
       library_id: libraryId,
-      path
+      path,
+      rules: options.rules || undefined
     }, {
       timeout: FILTER_DELETE_PREVIEW_TIMEOUT
     })

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -1945,11 +1946,12 @@ async def get_library_browser_filter_delete_preview(request: Request):
         library_id = data.get("library_id")
         folder_path = data.get("path")
         request_id = data.get("request_id")
+        rules = data.get("rules")
         if not folder_path:
             raise HTTPException(status_code=400, detail="缺少目标目录路径")
         manager = get_library_manager()
         try:
-            return await manager.filter_delete_preview(library_id, folder_path, request_id=request_id)
+            return await manager.filter_delete_preview(library_id, folder_path, rules=rules, request_id=request_id)
         finally:
             manager._finish_filter_preview_request(request_id)
     except HTTPException:
@@ -1969,10 +1971,11 @@ async def start_library_browser_filter_delete_preview(request: Request):
         data = await request.json()
         library_id = data.get("library_id")
         folder_path = data.get("path")
+        rules = data.get("rules")
         if not folder_path:
             raise HTTPException(status_code=400, detail="缺少目标目录路径")
         manager = get_library_manager()
-        return await manager.start_filter_delete_preview_job(library_id, folder_path)
+        return await manager.start_filter_delete_preview_job(library_id, folder_path, rules=rules)
     except HTTPException:
         raise
     except PermissionError as e:
@@ -4431,12 +4434,19 @@ async def rj_subtitle_scan_stream(request: RJSubtitleScanRequest):
         ready_count = 0
         existing_count = 0
         no_audio_count = 0
+        event_queue: asyncio.Queue = asyncio.Queue()
 
         def dump(payload):
             return json.dumps(payload, ensure_ascii=False) + "\n"
 
+        def enqueue(payload):
+            try:
+                event_queue.put_nowait(payload)
+            except Exception:
+                logger.debug("RJ 字幕扫描流事件入队失败: %s", payload, exc_info=True)
+
         display_name = PurePosixPath(folder_path).name or os.path.basename(folder_path) or folder_path
-        yield dump({
+        enqueue({
             "type": "target_result",
             "path": folder_path,
             "name": display_name,
@@ -4444,99 +4454,130 @@ async def rj_subtitle_scan_stream(request: RJSubtitleScanRequest):
             "message": "正在扫描..."
         })
 
+        def emit_progress(current_scan_path: str):
+            current_display = PurePosixPath(current_scan_path).name or os.path.basename(current_scan_path) or current_scan_path
+            enqueue({
+                "type": "progress",
+                "path": folder_path,
+                "current_path": current_scan_path,
+                "message": f"正在扫描 {current_display}..."
+            })
+
+        async def produce():
+            nonlocal total_found, ready_count, existing_count, no_audio_count
+            try:
+                if request.library_id:
+                    manager = get_library_manager()
+                    library = manager.get_library_definition(request.library_id)
+                    if library.type == "synology_filestation":
+                        async for item in service.scan_remote_iter(
+                            request.library_id,
+                            folder_path,
+                            scan_depth=scan_depth,
+                            progress_callback=emit_progress,
+                        ):
+                            total_found += 1
+                            if item.get("status") == "ready":
+                                ready_count += 1
+                            elif item.get("status") == "existing":
+                                existing_count += 1
+                            elif item.get("status") == "no_audio":
+                                no_audio_count += 1
+                            enqueue({"type": "item", "item": item})
+                        enqueue({
+                            "type": "target_result",
+                            "path": folder_path,
+                            "name": display_name,
+                            "status": "success" if total_found else "no_match",
+                            "message": f"识别到 {total_found} 个 RJ 目录，可执行 {ready_count} 个" if total_found else "未识别到可执行 RJ 文件夹",
+                            "summary": {
+                                "found": total_found,
+                                "ready": ready_count,
+                                "existing": existing_count,
+                                "no_audio": no_audio_count,
+                            }
+                        })
+                        enqueue({
+                            "type": "complete",
+                            "folder_path": folder_path,
+                            "total_found": total_found,
+                            "ready_count": ready_count,
+                            "existing_count": existing_count,
+                            "no_audio_count": no_audio_count,
+                        })
+                        return
+
+                if not os.path.exists(folder_path):
+                    raise HTTPException(status_code=400, detail="指定的文件夹不存在")
+                if not os.path.isdir(folder_path):
+                    raise HTTPException(status_code=400, detail="指定的路径不是文件夹")
+
+                for item in service.scan_iter(folder_path, scan_depth=scan_depth, progress_callback=emit_progress):
+                    total_found += 1
+                    if item.get("status") == "ready":
+                        ready_count += 1
+                    elif item.get("status") == "existing":
+                        existing_count += 1
+                    elif item.get("status") == "no_audio":
+                        no_audio_count += 1
+                    enqueue({"type": "item", "item": item})
+
+                enqueue({
+                    "type": "target_result",
+                    "path": folder_path,
+                    "name": display_name,
+                    "status": "success" if total_found else "no_match",
+                    "message": f"识别到 {total_found} 个 RJ 目录，可执行 {ready_count} 个" if total_found else "未识别到可执行 RJ 文件夹",
+                    "summary": {
+                        "found": total_found,
+                        "ready": ready_count,
+                        "existing": existing_count,
+                        "no_audio": no_audio_count,
+                    }
+                })
+                enqueue({
+                    "type": "complete",
+                    "folder_path": folder_path,
+                    "total_found": total_found,
+                    "ready_count": ready_count,
+                    "existing_count": existing_count,
+                    "no_audio_count": no_audio_count,
+                })
+            except HTTPException as exc:
+                enqueue({
+                    "type": "target_result",
+                    "path": folder_path,
+                    "name": display_name,
+                    "status": "failed",
+                    "message": exc.detail,
+                })
+                enqueue({"type": "error", "error": exc.detail})
+            except Exception as exc:
+                logger.error(f"流式扫描 RJ 字幕目录失败: {exc}", exc_info=True)
+                message = f"扫描失败: {str(exc)}"
+                enqueue({
+                    "type": "target_result",
+                    "path": folder_path,
+                    "name": display_name,
+                    "status": "failed",
+                    "message": message,
+                })
+                enqueue({"type": "error", "error": message})
+            finally:
+                enqueue({"type": "stream_end"})
+
+        producer = asyncio.create_task(produce())
         try:
-            if request.library_id:
-                manager = get_library_manager()
-                library = manager.get_library_definition(request.library_id)
-                if library.type == "synology_filestation":
-                    async for item in service.scan_remote_iter(request.library_id, folder_path, scan_depth=scan_depth):
-                        total_found += 1
-                        if item.get("status") == "ready":
-                            ready_count += 1
-                        elif item.get("status") == "existing":
-                            existing_count += 1
-                        elif item.get("status") == "no_audio":
-                            no_audio_count += 1
-                        yield dump({"type": "item", "item": item})
-                    yield dump({
-                        "type": "target_result",
-                        "path": folder_path,
-                        "name": display_name,
-                        "status": "success" if total_found else "no_match",
-                        "message": f"识别到 {total_found} 个 RJ 目录，可执行 {ready_count} 个" if total_found else "未识别到可执行 RJ 文件夹",
-                        "summary": {
-                            "found": total_found,
-                            "ready": ready_count,
-                            "existing": existing_count,
-                            "no_audio": no_audio_count,
-                        }
-                    })
-                    yield dump({
-                        "type": "complete",
-                        "folder_path": folder_path,
-                        "total_found": total_found,
-                        "ready_count": ready_count,
-                        "existing_count": existing_count,
-                        "no_audio_count": no_audio_count,
-                    })
-                    return
-
-            if not os.path.exists(folder_path):
-                raise HTTPException(status_code=400, detail="指定的文件夹不存在")
-            if not os.path.isdir(folder_path):
-                raise HTTPException(status_code=400, detail="指定的路径不是文件夹")
-
-            for item in service.scan_iter(folder_path, scan_depth=scan_depth):
-                total_found += 1
-                if item.get("status") == "ready":
-                    ready_count += 1
-                elif item.get("status") == "existing":
-                    existing_count += 1
-                elif item.get("status") == "no_audio":
-                    no_audio_count += 1
-                yield dump({"type": "item", "item": item})
-
-            yield dump({
-                "type": "target_result",
-                "path": folder_path,
-                "name": display_name,
-                "status": "success" if total_found else "no_match",
-                "message": f"识别到 {total_found} 个 RJ 目录，可执行 {ready_count} 个" if total_found else "未识别到可执行 RJ 文件夹",
-                "summary": {
-                    "found": total_found,
-                    "ready": ready_count,
-                    "existing": existing_count,
-                    "no_audio": no_audio_count,
-                }
-            })
-            yield dump({
-                "type": "complete",
-                "folder_path": folder_path,
-                "total_found": total_found,
-                "ready_count": ready_count,
-                "existing_count": existing_count,
-                "no_audio_count": no_audio_count,
-            })
-        except HTTPException as exc:
-            yield dump({
-                "type": "target_result",
-                "path": folder_path,
-                "name": display_name,
-                "status": "failed",
-                "message": exc.detail,
-            })
-            yield dump({"type": "error", "error": exc.detail})
-        except Exception as exc:
-            logger.error(f"流式扫描 RJ 字幕目录失败: {exc}", exc_info=True)
-            message = f"扫描失败: {str(exc)}"
-            yield dump({
-                "type": "target_result",
-                "path": folder_path,
-                "name": display_name,
-                "status": "failed",
-                "message": message,
-            })
-            yield dump({"type": "error", "error": message})
+            while True:
+                payload = await event_queue.get()
+                if payload.get("type") == "stream_end":
+                    break
+                yield dump(payload)
+        finally:
+            if not producer.done():
+                producer.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await producer
 
     return StreamingResponse(
         generate(),

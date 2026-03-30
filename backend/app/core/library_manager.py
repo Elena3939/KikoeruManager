@@ -3348,22 +3348,51 @@ class LibraryManager:
                 pattern = str(getattr(rule, "pattern", "") or "").strip()
                 target = str(getattr(rule, "target", "file") or "file").lower()
                 enabled = bool(getattr(rule, "enabled", True))
-            if not enabled or not pattern or target not in {"file", "folder", "all"}:
+            target_alias = {
+                "name": "file",
+                "filename": "file",
+                "file": "file",
+                "folder": "folder",
+                "dir": "folder",
+                "directory": "folder",
+                "path": "path",
+                "filepath": "path",
+                "all": "all",
+            }
+            normalized_target = target_alias.get(target, target)
+            if not enabled or not pattern or normalized_target not in {"file", "folder", "path", "all"}:
                 continue
             normalized_rules.append({
                 "name": name,
                 "pattern": pattern,
-                "target": target,
+                "target": normalized_target,
             })
         return normalized_rules
 
-    def _match_filter_rule_names(self, name: str, target_type: str, rules: list[dict[str, str]]) -> list[str]:
+    def _match_filter_rule_names(
+        self,
+        name: str,
+        target_type: str,
+        rules: list[dict[str, str]],
+        *,
+        relative_path: str = "",
+        full_path: str = "",
+    ) -> list[str]:
         matched: list[str] = []
+        normalized_relative_path = str(relative_path or "").replace("\\", "/")
+        normalized_full_path = str(full_path or "").replace("\\", "/")
         for rule in rules:
-            if rule["target"] not in {target_type, "all"}:
+            target = rule["target"]
+            if target not in {target_type, "all", "path"}:
                 continue
             try:
-                if re.search(rule["pattern"], name, re.IGNORECASE):
+                candidates = [str(name or "")]
+                if target in {"path", "all"}:
+                    candidates.extend([
+                        normalized_relative_path,
+                        normalized_full_path,
+                    ])
+                if any(candidate and re.search(rule["pattern"], candidate, re.IGNORECASE) for candidate in candidates):
                     matched.append(rule["name"])
             except re.error as exc:
                 logger.warning("过滤规则正则无效，已跳过: %s (%s)", rule["pattern"], exc)
@@ -3716,7 +3745,13 @@ class LibraryManager:
                 if self._should_skip_filter_preview_name(directory):
                     continue
                 folder_path = os.path.join(root, directory)
-                matched_rules = self._match_filter_rule_names(directory, "folder", active_rules)
+                matched_rules = self._match_filter_rule_names(
+                    directory,
+                    "folder",
+                    active_rules,
+                    relative_path=os.path.relpath(folder_path, target_path).replace("\\", "/"),
+                    full_path=folder_path,
+                )
                 if matched_rules:
                     stat = os.stat(folder_path)
                     folder_size = self._path_size(folder_path)
@@ -3740,7 +3775,13 @@ class LibraryManager:
             for filename in files:
                 if self._should_skip_filter_preview_name(filename):
                     continue
-                matched_rules = self._match_filter_rule_names(filename, "file", active_rules)
+                matched_rules = self._match_filter_rule_names(
+                    filename,
+                    "file",
+                    active_rules,
+                    relative_path=os.path.relpath(file_path, target_path).replace("\\", "/"),
+                    full_path=file_path,
+                )
                 if not matched_rules:
                     continue
                 file_path = os.path.join(root, filename)
@@ -3897,15 +3938,21 @@ class LibraryManager:
                 if child.get("isdir", False):
                     remaining_directories.append(child)
                     continue
-                matched_rules = self._match_filter_rule_names(name, "file", active_rules)
-                if not matched_rules:
-                    continue
                 raw_child_path = child.get("path") or child.get("real_path") or ""
                 child_path = self._normalize_remote_path(raw_child_path or str(PurePosixPath(current_path) / name))
+                relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
+                matched_rules = self._match_filter_rule_names(
+                    name,
+                    "file",
+                    active_rules,
+                    relative_path=relative_path,
+                    full_path=child_path,
+                )
+                if not matched_rules:
+                    continue
                 additional = child.get("additional", {}) or {}
                 timestamp = additional.get("time", {}).get("mtime")
                 modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None
-                relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
                 size = int(additional.get("size") or 0)
                 preview_items.append(
                     self._build_preview_item(
@@ -3929,7 +3976,13 @@ class LibraryManager:
                 timestamp = additional.get("time", {}).get("mtime")
                 modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None
                 relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
-                matched_rules = self._match_filter_rule_names(name, "folder", active_rules)
+                matched_rules = self._match_filter_rule_names(
+                    name,
+                    "folder",
+                    active_rules,
+                    relative_path=relative_path,
+                    full_path=child_path,
+                )
                 if matched_rules:
                     descendants, folder_size = await self._collect_remote_filter_preview_descendants(
                         client,
@@ -4287,17 +4340,30 @@ class LibraryManager:
                     timestamp = additional.get("time", {}).get("mtime")
                     modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None
                     relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
-                    matched_rules = self._match_filter_rule_names(name, "folder", active_rules)
+                    matched_rules = self._match_filter_rule_names(
+                        name,
+                        "folder",
+                        active_rules,
+                        relative_path=relative_path,
+                        full_path=child_path,
+                    )
                     if matched_rules:
                         matched_directories.append((child_path, relative_path, modified_time, matched_rules))
                     else:
                         unmatched_directory_paths.append(child_path)
                     continue
-                matched_rules = self._match_filter_rule_names(name, "file", active_rules)
-                if not matched_rules:
-                    continue
                 raw_child_path = child.get("path") or child.get("real_path") or ""
                 child_path = self._normalize_remote_path(raw_child_path or str(PurePosixPath(current_path) / name))
+                relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
+                matched_rules = self._match_filter_rule_names(
+                    name,
+                    "file",
+                    active_rules,
+                    relative_path=relative_path,
+                    full_path=child_path,
+                )
+                if not matched_rules:
+                    continue
                 additional = child.get("additional", {}) or {}
                 timestamp = additional.get("time", {}).get("mtime")
                 modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None

@@ -459,8 +459,8 @@
                             :key="item.key"
                             type="button"
                             class="subtitle-mini-chip subtitle-chip-button"
-                            :class="{ active: subtitleSkippedSelectionFilter === item.key }"
-                            @click="subtitleSkippedSelectionFilter = item.key"
+                            :class="{ active: isSubtitleSkippedSelectionFilterActive(item.key) }"
+                            @click="toggleSubtitleSkippedSelectionFilter(item.key)"
                           >
                             {{ item.label }} {{ item.value }}
                           </button>
@@ -953,6 +953,7 @@
       :library-id="filterDeleteDialogLibraryId"
       :current-path="filterDeleteDialogPath"
       :target-paths="filterDeleteDialogTargetPaths"
+      :rules="filterDeleteDialogRules"
       :scope-label="filterDeleteDialogScopeLabel"
       :is-remote="filterDeleteDialogIsRemote"
       @deleted="handleFilterDeleteDeleted"
@@ -965,7 +966,7 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMoun
 import { useRoute, useRouter } from 'vue-router'
 import { Refresh, Search, Folder, FolderOpened, Delete, Edit, Files, Document, Picture, VideoPlay, Headset, Tickets, ArrowDown, Loading } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { libraryApi, rjSubtitleApi } from '../api'
+import { configApi, libraryApi, rjSubtitleApi } from '../api'
 import FilterDeleteDialog from '../components/library/FilterDeleteDialog.vue'
 import FolderContentsDialog from '../components/library/FolderContentsDialog.vue'
 import SubtitleInspectorWorkbench from '../components/library/SubtitleInspectorWorkbench.vue'
@@ -976,6 +977,7 @@ const LIBRARY_ACTION_SCOPE_KEY = 'kikoeru.ui.library.toolbarActionScope'
 const SEARCH_RESULT_KIND_KEY = 'kikoeru.ui.library.searchResultKind'
 const SEARCH_EXACT_KEY = 'kikoeru.ui.library.searchExact'
 const SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
+const SUBTITLE_SCAN_WORKSPACE_KEY = 'kikoeru.ui.library.rjSubtitleScanWorkspace'
 const DEFAULT_SORT_BY = 'size'
 const DEFAULT_SORT_ORDER = 'desc'
 const route = useRoute()
@@ -1087,6 +1089,7 @@ const filterDeleteDialogVisible = ref(false)
 const filterDeleteDialogLibraryId = ref('')
 const filterDeleteDialogPath = ref('')
 const filterDeleteDialogTargetPaths = ref([])
+const filterDeleteDialogRules = ref([])
 const filterDeleteDialogScopeLabel = ref('')
 const filterDeleteDialogIsRemote = ref(false)
 const subtitleDialogVisible = ref(false)
@@ -1133,6 +1136,10 @@ const subtitleInspectorInfo = ref({
   folderPath: '',
   subtitleDir: '',
   sourceMode: '',
+  manualMatchCompleted: false,
+  manualMatchAppliedPairs: 0,
+  manualMatchDeletedSubtitles: 0,
+  manualMatchMessage: '',
   totalFiles: 0,
   totalSize: 0
 })
@@ -1167,7 +1174,7 @@ const subtitleSelectionPage = ref(1)
 const subtitleSelectionPageSize = 6
 const subtitleSelectionFilter = ref('all')
 const subtitleScanSkipFilter = ref('all')
-const subtitleSkippedSelectionFilter = ref('all')
+const subtitleSkippedSelectionFilter = ref([])
 const subtitleForceQueueKey = ref('')
 const subtitleTaskRerunId = ref('')
 const subtitleAudioFilterMode = ref('all')
@@ -1428,7 +1435,13 @@ function buildSubtitleTaskSelectionKey (task) {
   return `${task.library_id || selectedLibraryId.value || ''}::${String(task.folder_path).replace(/\\/g, '/')}`
 }
 function getTaskDisplayRJCode (task) {
-  return task?.rjcode || task?.actual_rjcode || '未知RJ'
+  return (
+    task?.rjcode ||
+    task?.actual_rjcode ||
+    extractRJCode(task?.folder_path || '') ||
+    extractRJCode(task?.folder_name || '') ||
+    '未知RJ'
+  )
 }
 function getTaskSourceRJCode (task) {
   const sourceRJ = String(task?.actual_rjcode || '').trim()
@@ -1453,6 +1466,10 @@ function clearSubtitleInspectorState () {
     folderPath: '',
     subtitleDir: '',
     sourceMode: '',
+    manualMatchCompleted: false,
+    manualMatchAppliedPairs: 0,
+    manualMatchDeletedSubtitles: 0,
+    manualMatchMessage: '',
     totalFiles: 0,
     totalSize: 0
   }
@@ -1495,11 +1512,18 @@ function syncSubtitleSelectionState () {
       return {
         ...item,
         task_id: task.id,
-        queue_state: item.queue_state === 'create_failed' ? item.queue_state : 'queued',
-        queue_message: item.queue_state === 'create_failed' ? item.queue_message : getRJSubtitleTaskStatusLabel(task),
+        queue_state: item.queue_state === 'create_failed'
+          ? item.queue_state
+          : (task.manual_match_completed ? 'manual_match_completed' : 'queued'),
+        queue_message: item.queue_state === 'create_failed'
+          ? item.queue_message
+          : (task.current_step || getRJSubtitleTaskStatusLabel(task)),
         rjcode: task.rjcode || item.rjcode,
         audio_count: nextAudioCount,
         existing_subtitle_count: nextExistingCount,
+        manual_match_completed: Boolean(task.manual_match_completed),
+        manual_match_applied_pairs: Number(task.manual_match_applied_pairs || 0),
+        manual_match_deleted_subtitles: Number(task.manual_match_deleted_subtitles || 0),
         status: nextExistingCount > 0 ? 'existing' : (item.status || '')
       }
     })
@@ -1558,7 +1582,7 @@ function isLinkedSubtitleImportSourceMode(value) {
 }
 const canOpenSubtitleInspectorFilterDeleteDialog = computed(() => {
   const libraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
-  return Boolean(libraryId && String(subtitleInspectorInfo.value.subtitleDir || '').trim())
+  return Boolean(libraryId && String(subtitleInspectorInfo.value.folderPath || subtitleInspectorInfo.value.subtitleDir || '').trim())
 })
 const isLinkedSubtitleImportWorkbench = computed(() => isLinkedSubtitleImportSourceMode(activeSubtitleInspectTask.value?.source_mode || subtitleInspectorInfo.value.sourceMode || ''))
 const subtitleManualApplyLabel = computed(() => isLinkedSubtitleImportWorkbench.value ? '重命名并导入' : '一键应用同名')
@@ -1571,11 +1595,24 @@ function matchesSubtitleExecutableFilter (item, filter = subtitleSelectionFilter
   if (filter === 'create_failed') return item?.queue_state === 'create_failed'
   return true
 }
+function isSubtitleSkippedSelectionFilterActive (key) {
+  return Array.isArray(subtitleSkippedSelectionFilter.value) && subtitleSkippedSelectionFilter.value.includes(key)
+}
+function toggleSubtitleSkippedSelectionFilter (key) {
+  const current = Array.isArray(subtitleSkippedSelectionFilter.value) ? [...subtitleSkippedSelectionFilter.value] : []
+  if (current.includes(key)) {
+    subtitleSkippedSelectionFilter.value = current.filter(item => item !== key)
+    return
+  }
+  subtitleSkippedSelectionFilter.value = [...current, key]
+}
 function matchesSubtitleSkippedSelectionFilter (item, filter = subtitleSkippedSelectionFilter.value) {
-  if (filter === 'all') return true
-  if (filter === 'skipped_existing') return item?.queue_state === 'skipped_existing'
-  if (filter === 'skipped_no_subtitle') return item?.queue_state === 'skipped_no_subtitle'
-  return true
+  const activeFilters = Array.isArray(filter) ? filter : []
+  if (!activeFilters.length) return true
+  if (activeFilters.includes('skipped_existing') && ['skipped_existing', 'skipped_kikoeru_existing'].includes(item?.queue_state || '')) {
+    return true
+  }
+  return activeFilters.includes(item?.queue_state || '')
 }
 const subtitleSelectionDisplayItems = computed(() => subtitleDialogSelection.value)
 const subtitleExecutableSelectionItems = computed(() => subtitleDialogSelection.value.filter(item => !String(item?.queue_state || '').startsWith('skipped_')))
@@ -1589,10 +1626,9 @@ const subtitleSelectionFilterOptions = computed(() => ([
 const subtitleExecutableDisplayItems = computed(() => subtitleExecutableSelectionItems.value.filter(item => matchesSubtitleExecutableFilter(item)))
 const subtitleSkippedSelectionItems = computed(() => subtitleDialogSelection.value.filter(item => String(item?.queue_state || '').startsWith('skipped_')))
 const subtitleSkippedSelectionFilterOptions = computed(() => ([
-  { key: 'all', label: '全部', value: subtitleSkippedSelectionItems.value.length },
-  { key: 'skipped_existing', label: '已有字幕', value: subtitleSkippedSelectionItems.value.filter(item => item?.queue_state === 'skipped_existing').length },
+  { key: 'skipped_existing', label: '已有字幕跳过', value: subtitleSkippedSelectionItems.value.filter(item => ['skipped_existing', 'skipped_kikoeru_existing'].includes(item?.queue_state)).length },
   { key: 'skipped_no_subtitle', label: '远程无字幕', value: subtitleSkippedSelectionItems.value.filter(item => item?.queue_state === 'skipped_no_subtitle').length }
-]).filter(item => item.key === 'all' || item.value > 0))
+]).filter(item => item.value > 0))
 const filteredSubtitleSkippedSelectionItems = computed(() => subtitleSkippedSelectionItems.value.filter(item => matchesSubtitleSkippedSelectionFilter(item)))
 const subtitleSelectionTotalPages = computed(() => Math.max(1, Math.ceil(Math.max(subtitleExecutableDisplayItems.value.length, 1) / subtitleSelectionPageSize)))
 const subtitleSelectionProgressText = computed(() => {
@@ -1801,6 +1837,7 @@ async function initializeLibraryPage () {
   if (libraryInitialized) return
   await loadLibraries()
   loadRJSubtitlePreferences()
+  restoreSubtitleScanWorkspace()
   if (selectedLibraryId.value) {
     await refreshStats(false, { silent: true })
   }
@@ -1946,6 +1983,30 @@ watch(subtitleExecutableDisplayItems, items => {
 
 watch(subtitleOptions, value => {
   storeJson(SUBTITLE_OPTIONS_KEY, value)
+}, { deep: true })
+
+watch([
+  subtitleDialogVisible,
+  subtitleSelectionLoading,
+  subtitleSelectionScanDone,
+  subtitleSelectionScanTotal,
+  subtitleSelectionScanCurrent,
+  subtitleSelectionSourceItems,
+  subtitleScannedSelectionItems,
+  subtitleScanTargetResults,
+  subtitleScanRetryingPath,
+  subtitleScanSession,
+  subtitleDialogSelection,
+  subtitlePreferredSelectionKey,
+  subtitleSelectionPage,
+  subtitleSelectionFilter,
+  subtitleScanSkipFilter,
+  subtitleSkippedSelectionFilter,
+  subtitleExecutableCollapsed,
+  subtitleSkippedCollapsed,
+  subtitleScanTargetsCollapsed
+], () => {
+  persistSubtitleScanWorkspace()
 }, { deep: true })
 
 watch(() => subtitleOptions.value.namingStrategy, () => {
@@ -2360,6 +2421,87 @@ function loadRJSubtitlePreferences () {
   }
 }
 
+function normalizeStoredSubtitleScanSession (value = {}) {
+  const base = createSubtitleScanSessionState()
+  return Object.keys(base).reduce((acc, key) => {
+    acc[key] = Math.max(0, Number(value?.[key] || 0))
+    return acc
+  }, {})
+}
+
+function normalizeStoredSubtitleSkippedSelectionFilter (value = []) {
+  const allowed = new Set(['skipped_existing', 'skipped_no_subtitle'])
+  return Array.isArray(value) ? value.filter(item => allowed.has(String(item || ''))) : []
+}
+
+function buildSubtitleScanWorkspaceSnapshot () {
+  return {
+    dialogVisible: Boolean(subtitleDialogVisible.value),
+    subtitleSelectionLoading: Boolean(subtitleSelectionLoading.value),
+    subtitleSelectionScanDone: Math.max(0, Number(subtitleSelectionScanDone.value || 0)),
+    subtitleSelectionScanTotal: Math.max(0, Number(subtitleSelectionScanTotal.value || 0)),
+    subtitleSelectionScanCurrent: String(subtitleSelectionScanCurrent.value || ''),
+    subtitleSelectionSourceItems: uniqueSubtitleItems(subtitleSelectionSourceItems.value || []),
+    subtitleScannedSelectionItems: uniqueSubtitleItems(subtitleScannedSelectionItems.value || []),
+    subtitleScanTargetResults: (subtitleScanTargetResults.value || []).map(item => normalizeSubtitleScanTargetResult(item)),
+    subtitleScanRetryingPath: String(subtitleScanRetryingPath.value || ''),
+    subtitleScanSession: normalizeStoredSubtitleScanSession(subtitleScanSession.value),
+    subtitleDialogSelection: uniqueSubtitleItems(subtitleDialogSelection.value || []),
+    subtitlePreferredSelectionKey: String(subtitlePreferredSelectionKey.value || ''),
+    subtitleSelectionPage: Math.max(1, Number(subtitleSelectionPage.value || 1)),
+    subtitleSelectionFilter: String(subtitleSelectionFilter.value || 'all'),
+    subtitleScanSkipFilter: String(subtitleScanSkipFilter.value || 'all'),
+    subtitleSkippedSelectionFilter: normalizeStoredSubtitleSkippedSelectionFilter(subtitleSkippedSelectionFilter.value),
+    subtitleExecutableCollapsed: Boolean(subtitleExecutableCollapsed.value),
+    subtitleSkippedCollapsed: Boolean(subtitleSkippedCollapsed.value),
+    subtitleScanTargetsCollapsed: Boolean(subtitleScanTargetsCollapsed.value)
+  }
+}
+
+function persistSubtitleScanWorkspace () {
+  storeJson(SUBTITLE_SCAN_WORKSPACE_KEY, buildSubtitleScanWorkspaceSnapshot())
+}
+
+function restoreSubtitleScanWorkspace () {
+  const saved = loadJson(SUBTITLE_SCAN_WORKSPACE_KEY, null)
+  if (!saved || typeof saved !== 'object') return
+
+  subtitleSelectionLoading.value = Boolean(saved.subtitleSelectionLoading)
+  subtitleSelectionScanDone.value = Math.max(0, Number(saved.subtitleSelectionScanDone || 0))
+  subtitleSelectionScanTotal.value = Math.max(0, Number(saved.subtitleSelectionScanTotal || 0))
+  subtitleSelectionScanCurrent.value = String(saved.subtitleSelectionScanCurrent || '')
+  subtitleSelectionSourceItems.value = uniqueSubtitleItems(saved.subtitleSelectionSourceItems || [])
+  subtitleScannedSelectionItems.value = uniqueSubtitleItems(saved.subtitleScannedSelectionItems || [])
+  subtitleScanTargetResults.value = Array.isArray(saved.subtitleScanTargetResults)
+    ? saved.subtitleScanTargetResults.map(item => normalizeSubtitleScanTargetResult(item))
+    : []
+  subtitleScanRetryingPath.value = String(saved.subtitleScanRetryingPath || '')
+  subtitleScanSession.value = normalizeStoredSubtitleScanSession(saved.subtitleScanSession)
+  subtitleDialogSelection.value = uniqueSubtitleItems(saved.subtitleDialogSelection || [])
+  subtitlePreferredSelectionKey.value = String(saved.subtitlePreferredSelectionKey || '')
+  subtitleSelectionPage.value = Math.max(1, Number(saved.subtitleSelectionPage || 1))
+  subtitleSelectionFilter.value = String(saved.subtitleSelectionFilter || 'all')
+  subtitleScanSkipFilter.value = String(saved.subtitleScanSkipFilter || 'all')
+  subtitleSkippedSelectionFilter.value = normalizeStoredSubtitleSkippedSelectionFilter(saved.subtitleSkippedSelectionFilter)
+  subtitleExecutableCollapsed.value = Boolean(saved.subtitleExecutableCollapsed)
+  subtitleSkippedCollapsed.value = Boolean(saved.subtitleSkippedCollapsed)
+  subtitleScanTargetsCollapsed.value = Boolean(saved.subtitleScanTargetsCollapsed)
+  subtitleDialogVisible.value = Boolean(saved.dialogVisible)
+  syncSubtitleSelectionState()
+}
+
+async function loadConfiguredFilterRules () {
+  try {
+    const data = await configApi.get()
+    return Array.isArray(data?.filter?.rules)
+      ? data.filter.rules.filter(rule => rule?.enabled !== false && String(rule?.pattern || '').trim())
+      : []
+  } catch (error) {
+    console.error('加载过滤规则失败:', error)
+    return []
+  }
+}
+
 function buildMergedSubtitleSelection (directItems, scannedItems) {
   const scannedByKey = new Map(scannedItems.map(item => [buildSubtitleSelectionKey(item), item]))
   const mergedDirectItems = directItems.map(item => {
@@ -2419,7 +2561,7 @@ function clearSubtitleScanWorkspace () {
   subtitleSelectionPage.value = 1
   subtitleSelectionFilter.value = 'all'
   subtitleScanSkipFilter.value = 'all'
-  subtitleSkippedSelectionFilter.value = 'all'
+  subtitleSkippedSelectionFilter.value = []
   subtitleForceQueueKey.value = ''
   subtitleDialogSelection.value = []
   subtitlePreferredSelectionKey.value = ''
@@ -2453,6 +2595,9 @@ function upsertSubtitleSelectionEntry (item = {}, patch = {}) {
     queue_state: '',
     queue_message: '',
     task_id: '',
+    manual_match_completed: false,
+    manual_match_applied_pairs: 0,
+    manual_match_deleted_subtitles: 0,
     ...item,
     ...patch
   }
@@ -2671,6 +2816,8 @@ function getSubtitleSelectionStatusLabel (status) {
 
 function getSubtitleSelectionQueueLabel (item) {
   switch (item?.queue_state) {
+    case 'manual_match_completed':
+      return '已匹配完成'
     case 'checking_subtitle':
       return '检测远程字幕中'
     case 'creating':
@@ -2694,6 +2841,8 @@ function getSubtitleSelectionQueueLabel (item) {
 
 function getSubtitleSelectionQueueClass (item) {
   switch (item?.queue_state) {
+    case 'manual_match_completed':
+      return 'subtitle-mini-chip-success'
     case 'queued':
     case 'existing_task':
       return 'subtitle-mini-chip-primary'
@@ -2812,6 +2961,22 @@ async function resolveRJSubtitleItems (paths, options = {}) {
         scanDepth: normalizeRJSubtitleScanDepth(subtitleOptions.value.scanDepth),
         onEvent: async event => {
           if (!event || typeof event !== 'object') return
+          if (event.type === 'progress') {
+            onProgress?.({
+              done,
+              total,
+              currentPath: event.current_path || event.path || path,
+              libraryId
+            })
+            onTargetResult?.({
+              path: event.path || path,
+              library_id: libraryId,
+              name: target.name || getFileName(path),
+              status: 'pending',
+              message: event.message || '正在扫描...'
+            })
+            return
+          }
           if (event.type === 'target_result') {
             const result = normalizeSubtitleScanTargetResult({
               path: event.path || path,
@@ -3082,7 +3247,10 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
           if (subtitleSelectionRequestToken.value !== requestToken) return
           incrementalScannedItems = uniqueSubtitleItems([...incrementalScannedItems, chunkItem])
           subtitleScannedSelectionItems.value = incrementalScannedItems
-          await autoQueueScannedSubtitleItem(chunkItem, { requestToken })
+          updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, incrementalScannedItems, { sync: true })
+          Promise.resolve(autoQueueScannedSubtitleItem(chunkItem, { requestToken })).catch(error => {
+            console.error('扫描命中目录自动入任务失败:', chunkItem?.folder_path, error)
+          })
         },
         onTargetResult: result => {
           if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -3103,7 +3271,10 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
         onChunk: async chunkItem => {
           if (subtitleSelectionRequestToken.value !== requestToken) return
           subtitleScannedSelectionItems.value = uniqueSubtitleItems([...subtitleScannedSelectionItems.value, chunkItem])
-          await autoQueueScannedSubtitleItem(chunkItem, { requestToken })
+          updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, subtitleScannedSelectionItems.value, { sync: true })
+          Promise.resolve(autoQueueScannedSubtitleItem(chunkItem, { requestToken })).catch(error => {
+            console.error('当前目录扫描命中后自动入任务失败:', chunkItem?.folder_path, error)
+          })
         },
         onTargetResult: result => {
           if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -3319,7 +3490,9 @@ async function startSingleRJSubtitle (item) {
         if (subtitleSelectionRequestToken.value !== requestToken) return
         subtitleScannedSelectionItems.value = uniqueSubtitleItems([...subtitleScannedSelectionItems.value, chunkItem])
         updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, subtitleScannedSelectionItems.value, { sync: true })
-        await autoQueueScannedSubtitleItem(chunkItem, { requestToken })
+        Promise.resolve(autoQueueScannedSubtitleItem(chunkItem, { requestToken })).catch(error => {
+          console.error('单项扫描命中后自动入任务失败:', chunkItem?.folder_path, error)
+        })
       },
       onTargetResult: result => {
         if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -4011,6 +4184,12 @@ async function applySubtitleManualPairs () {
         deletedSubtitles: unusedSubtitleRows.length,
         namingStrategy: effectiveNamingStrategy
       })
+      markSubtitleTaskManualMatchCompleted(subtitleInspectorInfo.value.taskId, {
+        appliedPairs: appliedPairCount,
+        deletedSubtitles: unusedSubtitleRows.length,
+        namingStrategy: effectiveNamingStrategy,
+        currentStep: `${buildSubtitleManualMatchSummary({ appliedPairs: appliedPairCount, deletedSubtitles: unusedSubtitleRows.length })}，可继续重新筛选后再次应用`
+      })
 
       await Promise.all([
         refreshLibrary({ silent: true }),
@@ -4028,6 +4207,23 @@ async function applySubtitleManualPairs () {
         await reloadSubtitleInspector()
       }
     } else {
+      const matchedSelectionItem = subtitleDialogSelection.value.find(item => buildSubtitleSelectionKey(item) === subtitlePreferredSelectionKey.value) || {
+        library_id: subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
+        folder_path: subtitleInspectorInfo.value.folderPath,
+        folder_name: getFileName(subtitleInspectorInfo.value.folderPath),
+        rjcode: extractRJCode(subtitleInspectorInfo.value.folderPath || '') || ''
+      }
+      markSubtitleSelectionManualMatchCompleted(matchedSelectionItem, {
+        appliedPairs: appliedPairCount,
+        deletedSubtitles: unusedSubtitleRows.length
+      })
+      subtitleInspectorInfo.value = {
+        ...subtitleInspectorInfo.value,
+        manualMatchCompleted: true,
+        manualMatchAppliedPairs: appliedPairCount,
+        manualMatchDeletedSubtitles: unusedSubtitleRows.length,
+        manualMatchMessage: `${buildSubtitleManualMatchSummary({ appliedPairs: appliedPairCount, deletedSubtitles: unusedSubtitleRows.length })}，可继续重新筛选后再次应用`
+      }
       await reloadSubtitleInspector()
       await Promise.all([
         refreshLibrary({ silent: true }),
@@ -4035,7 +4231,7 @@ async function applySubtitleManualPairs () {
       ])
     }
 
-    ElMessage.success(`${isLinkedImport ? '已重命名并导入' : '已应用'} ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}`)
+    ElMessage.success(`${isLinkedImport ? '已重命名并导入' : '已应用'} ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}。当前目录已标记为已执行过配对，可继续调整后再次应用。`)
     clearSubtitleManualPairs()
   } catch (error) {
     const rollbackPairs = [
@@ -4332,6 +4528,29 @@ function markSubtitleTaskManualMatchCompleted (taskId, payload = {}) {
       naming_strategy: payload.namingStrategy || task.naming_strategy || 'audio',
       current_step: payload.currentStep || task.current_step
     }
+  })
+}
+
+function buildSubtitleManualMatchSummary (payload = {}) {
+  const appliedPairs = Math.max(0, Number(payload.appliedPairs || 0))
+  const deletedSubtitles = Math.max(0, Number(payload.deletedSubtitles || 0))
+  let summary = `已应用 ${appliedPairs} 组配对`
+  if (deletedSubtitles > 0) {
+    summary += `，并删除 ${deletedSubtitles} 个未使用字幕`
+  }
+  return summary
+}
+
+function markSubtitleSelectionManualMatchCompleted (item, payload = {}) {
+  if (!item?.folder_path) return
+  const summary = `${buildSubtitleManualMatchSummary(payload)}。可继续重新筛选后再次应用。`
+  upsertSubtitleSelectionEntry(item, {
+    queue_state: 'manual_match_completed',
+    queue_message: summary,
+    manual_match_completed: true,
+    manual_match_applied_pairs: Math.max(0, Number(payload.appliedPairs || 0)),
+    manual_match_deleted_subtitles: Math.max(0, Number(payload.deletedSubtitles || 0)),
+    status: 'existing'
   })
 }
 
@@ -4828,7 +5047,11 @@ function syncSubtitleInspectorTaskState () {
     subtitleLibraryId: task.subtitle_library_id || subtitleInspectorInfo.value.subtitleLibraryId || task.library_id || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
     folderPath: task.folder_path,
     subtitleDir: task.subtitle_dir,
-    sourceMode: task.source_mode || subtitleInspectorInfo.value.sourceMode || ''
+    sourceMode: task.source_mode || subtitleInspectorInfo.value.sourceMode || '',
+    manualMatchCompleted: Boolean(task.manual_match_completed),
+    manualMatchAppliedPairs: Number(task.manual_match_applied_pairs || 0),
+    manualMatchDeletedSubtitles: Number(task.manual_match_deleted_subtitles || 0),
+    manualMatchMessage: task.current_step || ''
   }
 }
 
@@ -4884,6 +5107,10 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
       folderPath: item.folder_path || '',
       subtitleDir: subtitleData.folder_path || subtitleDir,
       sourceMode: '',
+      manualMatchCompleted: Boolean(item.manual_match_completed),
+      manualMatchAppliedPairs: Number(item.manual_match_applied_pairs || 0),
+      manualMatchDeletedSubtitles: Number(item.manual_match_deleted_subtitles || 0),
+      manualMatchMessage: String(item.queue_message || ''),
       totalFiles: subtitleData.total_files || 0,
       totalSize: (subtitleData.items || []).reduce((sum, child) => sum + (child.size || 0), 0)
     }
@@ -4939,6 +5166,10 @@ async function inspectSubtitleTask (task, options = {}) {
       folderPath: task.folder_path || '',
       subtitleDir: subtitleData.folder_path || task.subtitle_dir,
       sourceMode: task.source_mode || '',
+      manualMatchCompleted: Boolean(task.manual_match_completed),
+      manualMatchAppliedPairs: Number(task.manual_match_applied_pairs || 0),
+      manualMatchDeletedSubtitles: Number(task.manual_match_deleted_subtitles || 0),
+      manualMatchMessage: task.current_step || '',
       totalFiles: subtitleData.total_files || 0,
       totalSize: (subtitleData.items || []).reduce((sum, item) => sum + (item.size || 0), 0)
     }
@@ -4963,10 +5194,16 @@ async function reloadSubtitleInspector () {
     return
   }
   if (subtitleInspectorInfo.value.subtitleDir && subtitleInspectorInfo.value.folderPath) {
+    const matchedItem = subtitleDialogSelection.value.find(item => buildSubtitleSelectionKey(item) === subtitlePreferredSelectionKey.value)
     await inspectSubtitleSelectionFolder({
-      library_id: subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
-      folder_path: subtitleInspectorInfo.value.folderPath,
-      folder_name: getFileName(subtitleInspectorInfo.value.folderPath)
+      library_id: matchedItem?.library_id || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
+      folder_path: matchedItem?.folder_path || subtitleInspectorInfo.value.folderPath,
+      folder_name: matchedItem?.folder_name || getFileName(subtitleInspectorInfo.value.folderPath),
+      rjcode: matchedItem?.rjcode || extractRJCode(subtitleInspectorInfo.value.folderPath || '') || '',
+      manual_match_completed: matchedItem?.manual_match_completed || subtitleInspectorInfo.value.manualMatchCompleted,
+      manual_match_applied_pairs: matchedItem?.manual_match_applied_pairs || subtitleInspectorInfo.value.manualMatchAppliedPairs,
+      manual_match_deleted_subtitles: matchedItem?.manual_match_deleted_subtitles || subtitleInspectorInfo.value.manualMatchDeletedSubtitles,
+      queue_message: matchedItem?.queue_message || subtitleInspectorInfo.value.manualMatchMessage
     }, { force: true })
   }
 }
@@ -5428,6 +5665,7 @@ async function openFilterDeleteDialog () {
   filterDeleteDialogLibraryId.value = selectedLibraryId.value
   filterDeleteDialogPath.value = currentPath.value
   filterDeleteDialogTargetPaths.value = [...toolbarFilterDeletePaths.value]
+  filterDeleteDialogRules.value = await loadConfiguredFilterRules()
   filterDeleteDialogScopeLabel.value = toolbarActionScopeLabel.value
   filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
   filterDeleteDialogVisible.value = true
@@ -5435,13 +5673,16 @@ async function openFilterDeleteDialog () {
 
 async function openSubtitleInspectorFilterDeleteDialog () {
   const libraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
+  const folderPath = String(subtitleInspectorInfo.value.folderPath || '').trim()
   const subtitleDir = String(subtitleInspectorInfo.value.subtitleDir || '').trim()
-  if (!libraryId || !subtitleDir) return
+  const targetPath = folderPath || subtitleDir
+  if (!libraryId || !targetPath) return
   const library = libraries.value.find(item => item.id === libraryId) || null
   filterDeleteDialogLibraryId.value = libraryId
-  filterDeleteDialogPath.value = subtitleDir
-  filterDeleteDialogTargetPaths.value = [subtitleDir]
-  filterDeleteDialogScopeLabel.value = `${getTaskDisplayRJCode(activeSubtitleInspectTask.value) || getFileName(subtitleDir) || '当前任务'} 字幕目录`
+  filterDeleteDialogPath.value = targetPath
+  filterDeleteDialogTargetPaths.value = [targetPath]
+  filterDeleteDialogRules.value = subtitleOptions.value.useFilterRules ? sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules || []) : []
+  filterDeleteDialogScopeLabel.value = `${getTaskDisplayRJCode(activeSubtitleInspectTask.value) || getFileName(targetPath) || '当前任务'} RJ 目录`
   filterDeleteDialogIsRemote.value = library?.type === 'synology_filestation'
   filterDeleteDialogVisible.value = true
 }
@@ -5450,7 +5691,9 @@ async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount
   await Promise.all([
     refreshLibrary({ silent: true }),
     folderDialogVisible.value && folderDialogRef.value?.reload ? folderDialogRef.value.reload() : Promise.resolve(),
-    subtitleDialogVisible.value && filterDeleteDialogPath.value && subtitleInspectorInfo.value.subtitleDir && filterDeleteDialogPath.value === subtitleInspectorInfo.value.subtitleDir
+    subtitleDialogVisible.value &&
+    String(subtitleInspectorInfo.value.folderPath || subtitleInspectorInfo.value.subtitleDir || '').trim() &&
+    filterDeleteDialogTargetPaths.value.includes(String(subtitleInspectorInfo.value.folderPath || subtitleInspectorInfo.value.subtitleDir || '').trim())
       ? reloadSubtitleInspector()
       : Promise.resolve(),
     refreshStatsAfterMutation({

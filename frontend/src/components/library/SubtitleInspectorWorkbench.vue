@@ -29,7 +29,7 @@
     <div v-else class="subtitle-tree-shell" v-loading="view.subtitleInspectorBusy" element-loading-text="正在处理字幕目录...">
       <div class="subtitle-tree-info">
         <div class="subtitle-tree-title">{{ view.activeSubtitleInspectTask?.folder_name || view.getFileName(view.subtitleInspectorInfo.folderPath) }}</div>
-        <div class="subtitle-tree-path">{{ view.subtitleInspectorInfo.subtitleDir }}</div>
+        <div class="subtitle-tree-path">{{ view.subtitleInspectorInfo.folderPath || view.subtitleInspectorInfo.subtitleDir }}</div>
         <div class="subtitle-tree-meta">
           <span class="subtitle-mini-chip">{{ view.getTaskDisplayRJCode(view.activeSubtitleInspectTask) }}</span>
           <span v-if="view.getTaskSourceRJCode(view.activeSubtitleInspectTask)" class="subtitle-mini-chip">来源 {{ view.getTaskSourceRJCode(view.activeSubtitleInspectTask) }}</span>
@@ -77,12 +77,12 @@
         </div>
 
         <el-alert
-          v-if="view.activeSubtitleInspectTask?.manual_match_completed"
+          v-if="view.activeSubtitleInspectTask?.manual_match_completed || view.subtitleInspectorInfo.manualMatchCompleted"
           type="success"
           :closable="false"
           show-icon
           class="subtitle-match-done-alert"
-          :title="`已匹配完成，已应用 ${view.activeSubtitleInspectTask?.manual_match_applied_pairs || 0} 组配对。若还要调整，可以继续重新筛选。`"
+          :title="`已匹配完成，已应用 ${view.activeSubtitleInspectTask?.manual_match_applied_pairs || view.subtitleInspectorInfo.manualMatchAppliedPairs || 0} 组配对。若还要调整，可以继续重新筛选后再次应用。`"
         />
 
         <div class="subtitle-match-layout">
