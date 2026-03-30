@@ -3,12 +3,11 @@
     <div class="page-header">
       <div>
         <h1>问题作品</h1>
-        <p>
-          重复作品以及解压失败作品处理
-        </p>
+        <p>重复作品以及解压失败作品处理</p>
       </div>
       <div class="header-actions">
-        <el-button :loading="loading" @click="fetchConflicts">刷新列表</el-button>
+        <span v-if="batchRunning" class="batch-status">批量处理中: {{ batchActionLabel }}</span>
+        <el-button :loading="loading" :disabled="batchRunning" @click="fetchConflicts">刷新列表</el-button>
       </div>
     </div>
 
@@ -29,32 +28,49 @@
     />
 
     <div v-else class="page-body">
-      <aside class="conflict-list">
-        <button
-          v-for="conflict in conflicts"
-          :key="conflict.id"
-          type="button"
-          class="conflict-card"
-          :class="{ active: conflict.id === activeConflictId }"
-          @click="activeConflictId = conflict.id"
-        >
-          <div class="card-head">
-            <strong>{{ conflict.rjcode || '未识别 RJ' }}</strong>
-            <el-tag :type="conflict.context?.existing?.is_remote ? 'warning' : 'primary'" effect="plain">
-              {{ conflict.context?.existing?.is_remote ? '远程库存' : '本地库存' }}
-            </el-tag>
+      <aside class="conflict-list-shell">
+        <div class="list-toolbar">
+          <div>
+            <h3>待处理列表</h3>
+            <p>已选 {{ selectedCount }} / {{ conflicts.length }}</p>
+            <span class="list-hint">单击聚焦，`Ctrl/Command` 多选，`Shift` 连续选择</span>
           </div>
-          <div class="card-body">
-            <p>{{ getConflictTypeLabel(conflict.conflict_type) }}</p>
-            <span>{{ formatDate(conflict.created_at) }}</span>
-          </div>
-        </button>
+        </div>
+
+        <div class="conflict-list">
+          <article
+            v-for="conflict in conflicts"
+            :key="conflict.id"
+            class="conflict-card"
+            :class="{
+              active: conflict.id === activeConflictId,
+              selected: isConflictSelected(conflict.id),
+            }"
+            @click="handleConflictCardClick(conflict, $event)"
+          >
+            <div class="card-head">
+              <div class="card-title">
+                <strong>{{ conflict.rjcode || '未识别 RJ' }}</strong>
+              </div>
+              <el-tag :type="conflict.context?.existing?.is_remote ? 'warning' : 'primary'" effect="plain">
+                {{ conflict.context?.existing?.is_remote ? '远程库存' : '本地库存' }}
+              </el-tag>
+            </div>
+            <div class="card-body">
+              <p>{{ getConflictTypeLabel(conflict.conflict_type) }}</p>
+              <span>{{ formatDate(conflict.created_at) }}</span>
+            </div>
+          </article>
+        </div>
       </aside>
 
       <section class="conflict-detail" v-if="activeConflict">
         <div class="detail-head">
           <div>
-            <h2>{{ activeConflict.rjcode || '未识别 RJ' }}</h2>
+            <div class="detail-title-row">
+              <h2>{{ activeConflict.rjcode || '未识别 RJ' }}</h2>
+              <el-tag v-if="isConflictSelected(activeConflict.id)" type="primary" effect="plain">已加入批量</el-tag>
+            </div>
             <p>{{ getConflictTypeLabel(activeConflict.conflict_type) }}</p>
           </div>
           <div class="action-row">
@@ -62,16 +78,16 @@
               v-if="canUseAction(activeConflict, 'KEEP_NEW')"
               type="primary"
               :loading="isActionLoading(activeConflict.id, 'KEEP_NEW')"
-              :disabled="isConflictBusy(activeConflict.id)"
+              :disabled="batchRunning || isConflictBusy(activeConflict.id)"
               @click="handleKeepNew(activeConflict)"
             >
               保留新版
             </el-button>
             <el-button
               v-if="canUseAction(activeConflict, 'RETRY')"
-              type="primary"
+              type="success"
               :loading="isActionLoading(activeConflict.id, 'RETRY')"
-              :disabled="isConflictBusy(activeConflict.id)"
+              :disabled="batchRunning || isConflictBusy(activeConflict.id)"
               @click="handleRetry(activeConflict)"
             >
               重试
@@ -80,7 +96,7 @@
               v-if="canUseAction(activeConflict, 'SKIP')"
               type="info"
               :loading="isActionLoading(activeConflict.id, 'SKIP')"
-              :disabled="isConflictBusy(activeConflict.id)"
+              :disabled="batchRunning || isConflictBusy(activeConflict.id)"
               @click="handleSkip(activeConflict)"
             >
               跳过
@@ -89,7 +105,7 @@
               v-if="canUseAction(activeConflict, 'MERGE')"
               type="warning"
               :loading="mergeLoading && mergeConflictId === activeConflict.id"
-              :disabled="isConflictBusy(activeConflict.id)"
+              :disabled="batchRunning || isConflictBusy(activeConflict.id)"
               @click="openMergeWorkbench(activeConflict)"
             >
               合并
@@ -115,7 +131,7 @@
             <template #header>{{ isExtractFailed(activeConflict) ? '失败来源' : '当前新内容' }}</template>
             <div class="meta-block">
               <label>来源路径</label>
-              <pre>{{ activeConflict.new_path || '-' }}</pre>
+              <pre>{{ getConflictSourcePath(activeConflict) }}</pre>
             </div>
             <div class="meta-block">
               <label>来源类型</label>
@@ -145,7 +161,7 @@
             <template #header>{{ isExtractFailed(activeConflict) ? '处理建议' : '已存在目录' }}</template>
             <div class="meta-block">
               <label>{{ isExtractFailed(activeConflict) ? '建议动作' : '目标路径' }}</label>
-              <pre v-if="!isExtractFailed(activeConflict)">{{ activeConflict.existing_path || '-' }}</pre>
+              <pre v-if="!isExtractFailed(activeConflict)">{{ getExistingConflictPath(activeConflict) }}</pre>
               <span v-else>可直接跳过并删除当前失败来源；如果你已经补充了正确密码或完整分卷，建议回到任务列表重新处理。</span>
             </div>
             <div class="meta-block" v-if="!isExtractFailed(activeConflict)">
@@ -210,7 +226,12 @@ const conflicts = ref([])
 const loading = ref(false)
 const errorMessage = ref('')
 const activeConflictId = ref(localStorage.getItem(ACTIVE_CONFLICT_STORAGE_KEY) || '')
+const selectedConflictIds = ref([])
+const selectionAnchorId = ref('')
 const actionState = reactive({})
+
+const batchRunning = ref(false)
+const batchActionLabel = ref('')
 
 const mergeDialogVisible = ref(false)
 const mergeLoading = ref(false)
@@ -223,6 +244,10 @@ const mergeDecisionCache = reactive({})
 
 const activeConflict = computed(() => conflicts.value.find(conflict => conflict.id === activeConflictId.value) || null)
 const mergeConflict = computed(() => conflicts.value.find(conflict => conflict.id === mergeConflictId.value) || null)
+const selectedConflicts = computed(() => conflicts.value.filter(conflict => selectedConflictIds.value.includes(conflict.id)))
+const selectedCount = computed(() => selectedConflicts.value.length)
+const hasSelection = computed(() => selectedCount.value > 0)
+const isAllSelected = computed(() => conflicts.value.length > 0 && selectedCount.value === conflicts.value.length)
 
 watch(activeConflictId, value => {
   if (value) {
@@ -242,10 +267,11 @@ async function fetchConflicts() {
   try {
     const data = await conflictApi.list()
     conflicts.value = data.conflicts || []
+    syncSelectedConflicts()
     syncActiveConflict()
   } catch (error) {
     console.error('获取问题作品失败:', error)
-    errorMessage.value = error.response?.data?.detail || error.message || '获取问题作品失败'
+    errorMessage.value = resolveErrorMessage(error, '获取问题作品失败')
   } finally {
     loading.value = false
   }
@@ -259,6 +285,11 @@ function syncActiveConflict() {
   if (!conflicts.value.some(conflict => conflict.id === activeConflictId.value)) {
     activeConflictId.value = conflicts.value[0].id
   }
+}
+
+function syncSelectedConflicts() {
+  const existingIds = new Set(conflicts.value.map(conflict => conflict.id))
+  selectedConflictIds.value = selectedConflictIds.value.filter(id => existingIds.has(id))
 }
 
 function markAction(conflictId, action, value) {
@@ -287,6 +318,110 @@ function isExtractFailed(conflict) {
   return conflict?.conflict_type === 'EXTRACT_FAILED'
 }
 
+function isConflictSelected(conflictId) {
+  return selectedConflictIds.value.includes(conflictId)
+}
+
+function setConflictSelected(conflictId, selected) {
+  if (selected && !selectedConflictIds.value.includes(conflictId)) {
+    selectedConflictIds.value = [...selectedConflictIds.value, conflictId]
+    selectionAnchorId.value = conflictId
+    return
+  }
+  if (!selected) {
+    selectedConflictIds.value = selectedConflictIds.value.filter(id => id !== conflictId)
+  }
+}
+
+function handleConflictCardClick(conflict, event) {
+  if (!conflict?.id || batchRunning.value) {
+    return
+  }
+
+  const conflictId = conflict.id
+  const useRange = Boolean(event?.shiftKey) && selectionAnchorId.value
+  const toggleMode = Boolean(event?.ctrlKey || event?.metaKey)
+
+  if (useRange) {
+    const ids = conflicts.value.map(item => item.id)
+    const startIndex = ids.indexOf(selectionAnchorId.value)
+    const endIndex = ids.indexOf(conflictId)
+    if (startIndex !== -1 && endIndex !== -1) {
+      const [from, to] = startIndex < endIndex ? [startIndex, endIndex] : [endIndex, startIndex]
+      selectedConflictIds.value = ids.slice(from, to + 1)
+    } else {
+      selectedConflictIds.value = [conflictId]
+    }
+  } else if (toggleMode) {
+    if (isConflictSelected(conflictId)) {
+      selectedConflictIds.value = selectedConflictIds.value.filter(id => id !== conflictId)
+    } else {
+      selectedConflictIds.value = [...selectedConflictIds.value, conflictId]
+    }
+  } else {
+    selectedConflictIds.value = [conflictId]
+  }
+
+  activeConflictId.value = conflictId
+  selectionAnchorId.value = conflictId
+}
+
+function toggleSelectAll() {
+  if (isAllSelected.value) {
+    clearSelection()
+    return
+  }
+  selectedConflictIds.value = conflicts.value.map(conflict => conflict.id)
+  selectionAnchorId.value = selectedConflictIds.value[selectedConflictIds.value.length - 1] || ''
+}
+
+function clearSelection() {
+  selectedConflictIds.value = []
+  selectionAnchorId.value = ''
+}
+
+function selectedActionCount(action) {
+  return selectedConflicts.value.filter(conflict => canUseAction(conflict, action)).length
+}
+
+function getSelectedConflictsForAction(action) {
+  return selectedConflicts.value.filter(conflict => canUseAction(conflict, action))
+}
+
+function batchButtonLabel(action, label) {
+  const count = selectedActionCount(action)
+  return count ? `${label} (${count})` : label
+}
+
+function resolveErrorMessage(error, fallback) {
+  return error?.response?.data?.detail || error?.message || fallback
+}
+
+function formatConflictLabel(conflict) {
+  return conflict?.rjcode || conflict?.new_metadata?.work_name || conflict?.new_path || '未识别问题项'
+}
+
+function getConflictSourcePath(conflict) {
+  return conflict?.context?.source?.resolved_path || conflict?.context?.source?.path || conflict?.new_path || '-'
+}
+
+function getExistingConflictPath(conflict) {
+  return conflict?.context?.existing?.path || conflict?.existing_path || '-'
+}
+
+function setBatchState(label, value) {
+  batchRunning.value = value
+  batchActionLabel.value = value ? label : ''
+}
+
+function buildPathPreview(paths) {
+  const lines = paths.slice(0, 5)
+  if (paths.length > lines.length) {
+    lines.push(`以及另外 ${paths.length - lines.length} 项`)
+  }
+  return lines.join('\n')
+}
+
 async function waitForRetryTask(taskId) {
   const deadline = Date.now() + 10 * 60 * 1000
 
@@ -304,11 +439,96 @@ async function waitForRetryTask(taskId) {
   throw new Error('重试超时，请到任务列表查看进度')
 }
 
+async function loadKeepNewPreview(conflict) {
+  const response = await conflictApi.preview(conflict.id, 'KEEP_NEW')
+  return response.preview || {}
+}
+
+function buildKeepNewSummary(conflict, preview) {
+  return [
+    `将删除目标目录：${preview.path || conflict.existing_path || '-'}`,
+    `文件夹数：${preview.folder_count ?? 0}`,
+    `文件数：${preview.file_count ?? 0}`,
+    `大小：${formatFileSize(preview.size)}`
+  ].join('\n')
+}
+
+async function resolveKeepNew(conflict, preview = null) {
+  const effectivePreview = preview || await loadKeepNewPreview(conflict)
+  await conflictApi.resolve(conflict.id, {
+    action: 'KEEP_NEW',
+    confirmed: true
+  })
+  removeConflict(conflict.id)
+  return effectivePreview
+}
+
+async function resolveSkip(conflict) {
+  await conflictApi.resolve(conflict.id, {
+    action: 'SKIP'
+  })
+  removeConflict(conflict.id)
+}
+
+async function startRetry(conflict) {
+  return conflictApi.retry(conflict.id)
+}
+
+async function getMergePreview(conflict, forceRefresh = false) {
+  let preview = mergePreviewCache[conflict.id]
+  if (!preview || forceRefresh) {
+    preview = await conflictApi.preview(conflict.id, 'MERGE')
+    mergePreviewCache[conflict.id] = preview
+  }
+  return preview
+}
+
+async function resolveMerge(conflict, preview = null, decisions = null) {
+  const effectivePreview = preview || await getMergePreview(conflict)
+  const effectiveDecisions = decisions || mergeDecisionCache[conflict.id] || effectivePreview.default_decisions || {}
+  await conflictApi.resolve(conflict.id, {
+    action: 'MERGE',
+    merge_session_id: effectivePreview.session_id,
+    merge_decisions: effectiveDecisions
+  })
+  removeConflict(conflict.id)
+  return effectivePreview
+}
+
+async function presentBatchResult(actionLabel, successes, failures, extraMessage = '') {
+  const summary = `${actionLabel}完成：成功 ${successes.length} 项${failures.length ? `，失败 ${failures.length} 项` : ''}`
+
+  if (!successes.length && failures.length) {
+    ElMessage.error(summary)
+  } else if (failures.length) {
+    ElMessage.warning(summary)
+  } else {
+    ElMessage.success(summary)
+  }
+
+  if (!failures.length) {
+    return
+  }
+
+  const detailLines = failures.slice(0, 8).map(item => `${formatConflictLabel(item.conflict)}：${item.message}`)
+  if (failures.length > detailLines.length) {
+    detailLines.push(`另有 ${failures.length - detailLines.length} 项失败`)
+  }
+  if (extraMessage) {
+    detailLines.unshift(extraMessage)
+  }
+
+  await ElMessageBox.alert(detailLines.join('\n'), `${actionLabel}详情`, {
+    type: 'warning',
+    confirmButtonText: '知道了'
+  })
+}
+
 async function handleRetry(conflict) {
   markAction(conflict.id, 'RETRY', true)
   try {
-    const result = await conflictApi.retry(conflict.id)
-    ElMessage.success(result.already_running ? '已存在重试任务，正在跟踪结果' : '已开始重试')
+    const result = await startRetry(conflict)
+    ElMessage.success(result.already_running ? '已存在重试任务，正在继续跟踪结果' : '已开始重试')
     await waitForRetryTask(result.task_id)
     await fetchConflicts()
     if (conflicts.value.some(item => item.id === conflict.id)) {
@@ -319,7 +539,7 @@ async function handleRetry(conflict) {
   } catch (error) {
     console.error('重试问题作品失败:', error)
     await fetchConflicts()
-    ElMessage.error(error.response?.data?.detail || error.message || '重试失败')
+    ElMessage.error(resolveErrorMessage(error, '重试失败'))
   } finally {
     markAction(conflict.id, 'RETRY', false)
   }
@@ -328,31 +548,19 @@ async function handleRetry(conflict) {
 async function handleKeepNew(conflict) {
   markAction(conflict.id, 'KEEP_NEW', true)
   try {
-    const previewResponse = await conflictApi.preview(conflict.id, 'KEEP_NEW')
-    const preview = previewResponse.preview || {}
-    const summary = [
-      `将删除目标目录：${preview.path || conflict.existing_path || '-'}`,
-      `文件夹数：${preview.folder_count ?? 0}`,
-      `文件数：${preview.file_count ?? 0}`,
-      `大小：${formatFileSize(preview.size)}`
-    ].join('\n')
-
-    await ElMessageBox.confirm(summary, '删除审查确认', {
-      confirmButtonText: '确认删除并写入新版',
+    const preview = await loadKeepNewPreview(conflict)
+    await ElMessageBox.confirm(buildKeepNewSummary(conflict, preview), '删除审查确认', {
+      confirmButtonText: '确认删除并写入新内容',
       cancelButtonText: '取消',
       type: 'warning'
     })
 
-    await conflictApi.resolve(conflict.id, {
-      action: 'KEEP_NEW',
-      confirmed: true
-    })
+    await resolveKeepNew(conflict, preview)
     ElMessage.success('已完成保留新版')
-    removeConflict(conflict.id)
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
       console.error('保留新版失败:', error)
-      ElMessage.error(error.response?.data?.detail || error.message || '保留新版失败')
+      ElMessage.error(resolveErrorMessage(error, '保留新版失败'))
     }
   } finally {
     markAction(conflict.id, 'KEEP_NEW', false)
@@ -363,7 +571,7 @@ async function handleSkip(conflict) {
   markAction(conflict.id, 'SKIP', true)
   try {
     await ElMessageBox.confirm(
-      `将直接删除待处理来源：${conflict.new_path || '-'}`,
+      `将直接删除待处理来源：${getConflictSourcePath(conflict)}`,
       '跳过当前压缩包',
       {
         confirmButtonText: '确认跳过',
@@ -372,18 +580,207 @@ async function handleSkip(conflict) {
       }
     )
 
-    await conflictApi.resolve(conflict.id, {
-      action: 'SKIP'
-    })
+    await resolveSkip(conflict)
     ElMessage.success('已跳过当前包')
-    removeConflict(conflict.id)
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
       console.error('跳过失败:', error)
-      ElMessage.error(error.response?.data?.detail || error.message || '跳过失败')
+      ElMessage.error(resolveErrorMessage(error, '跳过失败'))
     }
   } finally {
     markAction(conflict.id, 'SKIP', false)
+  }
+}
+
+async function handleBatchKeepNew() {
+  const targets = getSelectedConflictsForAction('KEEP_NEW')
+  if (!targets.length) {
+    ElMessage.warning('请先勾选可执行“保留新版”的问题项')
+    return
+  }
+
+  setBatchState('保留新版', true)
+  try {
+    const previewEntries = []
+    const failures = []
+
+    for (const conflict of targets) {
+      try {
+        const preview = await loadKeepNewPreview(conflict)
+        previewEntries.push({ conflict, preview })
+      } catch (error) {
+        failures.push({ conflict, message: resolveErrorMessage(error, '生成删除审查失败') })
+      }
+    }
+
+    if (!previewEntries.length) {
+      await presentBatchResult('批量保留新版', [], failures)
+      return
+    }
+
+    const totalFiles = previewEntries.reduce((sum, entry) => sum + Number(entry.preview.file_count || 0), 0)
+    const totalFolders = previewEntries.reduce((sum, entry) => sum + Number(entry.preview.folder_count || 0), 0)
+    const totalSize = previewEntries.reduce((sum, entry) => sum + Number(entry.preview.size || 0), 0)
+    const previewPaths = previewEntries.map(entry => entry.preview.path || entry.conflict.existing_path || '-')
+
+    await ElMessageBox.confirm(
+      [
+        `将批量保留新版 ${previewEntries.length} 项`,
+        `待删除文件夹数：${totalFolders}`,
+        `待删除文件数：${totalFiles}`,
+        `待删除总大小：${formatFileSize(totalSize)}`,
+        '',
+        buildPathPreview(previewPaths)
+      ].join('\n'),
+      '批量删除审查确认',
+      {
+        confirmButtonText: '确认批量执行',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    const successes = []
+    for (const entry of previewEntries) {
+      try {
+        await resolveKeepNew(entry.conflict, entry.preview)
+        successes.push(entry.conflict)
+      } catch (error) {
+        failures.push({ conflict: entry.conflict, message: resolveErrorMessage(error, '保留新版失败') })
+      }
+    }
+
+    await presentBatchResult('批量保留新版', successes, failures)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('批量保留新版失败:', error)
+      ElMessage.error(resolveErrorMessage(error, '批量保留新版失败'))
+    }
+  } finally {
+    setBatchState('', false)
+  }
+}
+
+async function handleBatchSkip() {
+  const targets = getSelectedConflictsForAction('SKIP')
+  if (!targets.length) {
+    ElMessage.warning('请先勾选可执行“跳过”的问题项')
+    return
+  }
+
+  setBatchState('跳过', true)
+  try {
+    await ElMessageBox.confirm(
+      [
+        `将批量跳过 ${targets.length} 项，并删除它们的待处理来源。`,
+        '',
+        buildPathPreview(targets.map(conflict => getConflictSourcePath(conflict)))
+      ].join('\n'),
+      '批量跳过确认',
+      {
+        confirmButtonText: '确认批量跳过',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    const successes = []
+    const failures = []
+    for (const conflict of targets) {
+      try {
+        await resolveSkip(conflict)
+        successes.push(conflict)
+      } catch (error) {
+        failures.push({ conflict, message: resolveErrorMessage(error, '跳过失败') })
+      }
+    }
+
+    await presentBatchResult('批量跳过', successes, failures)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('批量跳过失败:', error)
+      ElMessage.error(resolveErrorMessage(error, '批量跳过失败'))
+    }
+  } finally {
+    setBatchState('', false)
+  }
+}
+
+async function handleBatchMerge() {
+  const targets = getSelectedConflictsForAction('MERGE')
+  if (!targets.length) {
+    ElMessage.warning('请先勾选可执行“合并”的问题项')
+    return
+  }
+
+  setBatchState('合并', true)
+  try {
+    await ElMessageBox.confirm(
+      [
+        `将批量合并 ${targets.length} 项。`,
+        '未单独打开工作台的项目会按默认合并决策直接执行。',
+        '如果某项已经在工作台调整过决策，将优先沿用已保存的决策。'
+      ].join('\n'),
+      '批量合并确认',
+      {
+        confirmButtonText: '确认批量合并',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    const successes = []
+    const failures = []
+    for (const conflict of targets) {
+      try {
+        const preview = await getMergePreview(conflict)
+        const decisions = mergeDecisionCache[conflict.id] || preview.default_decisions || {}
+        await resolveMerge(conflict, preview, decisions)
+        successes.push(conflict)
+      } catch (error) {
+        failures.push({ conflict, message: resolveErrorMessage(error, '合并失败') })
+      }
+    }
+
+    await presentBatchResult('批量合并', successes, failures)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('批量合并失败:', error)
+      ElMessage.error(resolveErrorMessage(error, '批量合并失败'))
+    }
+  } finally {
+    setBatchState('', false)
+  }
+}
+
+async function handleBatchRetry() {
+  const targets = getSelectedConflictsForAction('RETRY')
+  if (!targets.length) {
+    ElMessage.warning('请先勾选可执行“重试”的问题项')
+    return
+  }
+
+  setBatchState('重试', true)
+  try {
+    const successes = []
+    const failures = []
+
+    for (const conflict of targets) {
+      try {
+        await startRetry(conflict)
+        successes.push(conflict)
+      } catch (error) {
+        failures.push({ conflict, message: resolveErrorMessage(error, '提交重试失败') })
+      }
+    }
+
+    await fetchConflicts()
+    await presentBatchResult('批量重试', successes, failures, '重试任务已提交，请到任务列表跟踪执行结果。')
+  } catch (error) {
+    console.error('批量重试失败:', error)
+    ElMessage.error(resolveErrorMessage(error, '批量重试失败'))
+  } finally {
+    setBatchState('', false)
   }
 }
 
@@ -392,18 +789,14 @@ async function openMergeWorkbench(conflict, forceRefresh = false) {
   mergeDialogVisible.value = true
   mergeLoading.value = true
   try {
-    let preview = mergePreviewCache[conflict.id]
-    if (!preview || forceRefresh) {
-      preview = await conflictApi.preview(conflict.id, 'MERGE')
-      mergePreviewCache[conflict.id] = preview
-    }
+    const preview = await getMergePreview(conflict, forceRefresh)
     mergePreview.value = preview
     mergeDecisions.value = {
       ...(mergeDecisionCache[conflict.id] || preview.default_decisions || {})
     }
   } catch (error) {
     console.error('生成合并预览失败:', error)
-    ElMessage.error(error.response?.data?.detail || error.message || '生成合并预览失败')
+    ElMessage.error(resolveErrorMessage(error, '生成合并预览失败'))
     mergeDialogVisible.value = false
   } finally {
     mergeLoading.value = false
@@ -428,22 +821,18 @@ async function submitMerge() {
   if (!mergeConflict.value || !mergePreview.value) {
     return
   }
+
   mergeSubmitting.value = true
   try {
-    await conflictApi.resolve(mergeConflict.value.id, {
-      action: 'MERGE',
-      merge_session_id: mergePreview.value.session_id,
-      merge_decisions: mergeDecisions.value
-    })
+    await resolveMerge(mergeConflict.value, mergePreview.value, mergeDecisions.value)
     ElMessage.success('合并结果已提交')
-    const resolvedId = mergeConflict.value.id
     mergeDialogVisible.value = false
     mergePreview.value = null
     mergeConflictId.value = ''
-    removeConflict(resolvedId)
+    mergeDecisions.value = {}
   } catch (error) {
     console.error('提交合并失败:', error)
-    ElMessage.error(error.response?.data?.detail || error.message || '提交合并失败')
+    ElMessage.error(resolveErrorMessage(error, '提交合并失败'))
   } finally {
     mergeSubmitting.value = false
   }
@@ -451,6 +840,7 @@ async function submitMerge() {
 
 function removeConflict(conflictId) {
   conflicts.value = conflicts.value.filter(conflict => conflict.id !== conflictId)
+  selectedConflictIds.value = selectedConflictIds.value.filter(id => id !== conflictId)
   delete mergePreviewCache[conflictId]
   delete mergeDecisionCache[conflictId]
   if (mergeConflictId.value === conflictId) {
@@ -541,7 +931,14 @@ function formatFileSize(size) {
 
 .header-actions {
   display: flex;
+  align-items: center;
   gap: 12px;
+}
+
+.batch-status {
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .page-alert {
@@ -560,9 +957,55 @@ function formatFileSize(size) {
 
 .page-body {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 320px minmax(0, 1fr);
   gap: 18px;
   min-height: 620px;
+}
+
+.conflict-list-shell {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.list-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.list-toolbar h3 {
+  margin: 0 0 6px;
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.list-toolbar p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.list-hint {
+  display: inline-block;
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.list-toolbar-actions,
+.batch-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-toolbar {
+  padding: 14px;
+  border: 1px solid #dbe4f0;
+  border-radius: 16px;
+  background: #f8fbff;
 }
 
 .conflict-list {
@@ -572,11 +1015,11 @@ function formatFileSize(size) {
 }
 
 .conflict-card {
-  width: 100%;
-  text-align: left;
   border: 1px solid #dbe4f0;
   border-radius: 16px;
-  background: #fff;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 255, 0.98)),
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 42%);
   padding: 14px 16px;
   cursor: pointer;
   transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
@@ -589,6 +1032,13 @@ function formatFileSize(size) {
   transform: translateY(-1px);
 }
 
+.conflict-card.selected {
+  border-color: #3b82f6;
+  box-shadow:
+    0 14px 34px rgba(37, 99, 235, 0.18),
+    inset 0 0 0 1px rgba(59, 130, 246, 0.35);
+}
+
 .card-head,
 .card-body {
   display: flex;
@@ -597,9 +1047,17 @@ function formatFileSize(size) {
   align-items: center;
 }
 
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .card-head strong {
   color: #0f172a;
   font-size: 16px;
+  word-break: break-all;
 }
 
 .card-body {
@@ -630,8 +1088,16 @@ function formatFileSize(size) {
   border: 1px solid #dbe4f0;
 }
 
+.detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
 .detail-head h2 {
-  margin: 0 0 8px;
+  margin: 0;
   color: #172554;
 }
 
@@ -694,7 +1160,7 @@ function formatFileSize(size) {
   line-height: 1.8;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1180px) {
   .page-body,
   .detail-grid {
     grid-template-columns: 1fr;
@@ -703,17 +1169,22 @@ function formatFileSize(size) {
 
 @media (max-width: 768px) {
   .page-header,
-  .detail-head {
+  .detail-head,
+  .list-toolbar {
     flex-direction: column;
   }
 
   .action-row,
-  .header-actions {
+  .header-actions,
+  .list-toolbar-actions,
+  .batch-toolbar {
     width: 100%;
   }
 
   .action-row :deep(.el-button),
-  .header-actions :deep(.el-button) {
+  .header-actions :deep(.el-button),
+  .list-toolbar-actions :deep(.el-button),
+  .batch-toolbar :deep(.el-button) {
     flex: 1;
   }
 }
