@@ -125,6 +125,106 @@
               style="margin-bottom: 16px;"
             />
 
+            <el-divider>群晖连接模板</el-divider>
+
+            <el-alert
+              title="同一台群晖的公共连接参数放这里，远程库存只需要选模板再填各自目录。"
+              type="info"
+              :closable="false"
+              style="margin-bottom: 16px;"
+            />
+
+            <div v-if="!(config.storage.synology_profiles || []).length" class="form-tip" style="margin-bottom: 16px;">
+              还没有群晖连接模板。你可以先手动添加一个，或者在下面某个远程库存里点“提取为模板”。
+            </div>
+
+            <div v-for="(profile, profileIndex) in config.storage.synology_profiles" :key="`${profile.id}-${profileIndex}`" class="rule-item">
+              <el-card shadow="never">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                  <strong>{{ profile.name || `群晖连接模板 ${profileIndex + 1}` }}</strong>
+                  <el-button type="danger" link size="small" @click="removeSynologyProfile(profileIndex)">
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </div>
+
+                <el-row :gutter="12">
+                  <el-col :span="8">
+                    <el-form-item label="模板 ID">
+                      <el-input v-model="profile.id" placeholder="例如 synology-main" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-form-item label="模板名称">
+                      <el-input v-model="profile.name" placeholder="例如 主群晖连接" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-form-item label="会话名">
+                      <el-input v-model="profile.session_name" placeholder="FileStation" />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+
+                <el-row :gutter="12">
+                  <el-col :span="12">
+                    <el-form-item label="群晖地址">
+                      <el-input v-model="profile.base_url" placeholder="例如 https://nas.example.com:5001" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="12">
+                    <el-form-item label="设备名称">
+                      <el-input v-model="profile.device_name" placeholder="例如 Prekikoeru" />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+
+                <el-row :gutter="12">
+                  <el-col :span="8">
+                    <el-form-item label="用户名">
+                      <el-input v-model="profile.username" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-form-item label="密码">
+                      <el-input v-model="profile.password" type="password" show-password />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-form-item label="OTP 动态码">
+                      <el-input v-model="profile.otp_code" placeholder="首次验证时填写" />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+
+                <el-row :gutter="12">
+                  <el-col :span="8">
+                    <el-form-item label="设备令牌 ID">
+                      <el-input v-model="profile.device_id" placeholder="测试连接成功后会自动回填" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-form-item label="超时（秒）">
+                      <el-input-number v-model="profile.timeout" :min="5" :step="5" style="width: 100%;" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-form-item label="记住设备">
+                      <el-switch v-model="profile.enable_device_token" />
+                    </el-form-item>
+                    <el-form-item label="校验证书">
+                      <el-switch v-model="profile.verify_ssl" />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+              </el-card>
+            </div>
+
+            <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+              <el-button type="success" size="small" @click="addSynologyProfile()">
+                <el-icon><Plus /></el-icon> 添加群晖连接模板
+              </el-button>
+            </div>
+
             <el-row :gutter="20">
               <el-col :span="12">
                 <el-form-item label="默认浏览库存">
@@ -236,67 +336,106 @@
                   <el-divider>群晖连接参数</el-divider>
                   <el-row :gutter="12">
                     <el-col :span="12">
-                      <el-form-item label="群晖地址">
-                        <el-input v-model="library.synology.base_url" placeholder="例如 https://nas.example.com:5001" />
+                      <el-form-item label="连接模板">
+                        <el-select
+                          v-model="library.synology_profile_id"
+                          clearable
+                          filterable
+                          placeholder="留空则当前库存单独维护连接参数"
+                          style="width: 100%;"
+                          @change="handleLibraryProfileChange(library)"
+                        >
+                          <el-option
+                            v-for="profile in config.storage.synology_profiles || []"
+                            :key="profile.id"
+                            :label="`${profile.name || profile.id} (${profile.id})`"
+                            :value="profile.id"
+                          />
+                        </el-select>
                       </el-form-item>
                     </el-col>
+                    <el-col :span="12">
+                      <el-form-item label="群晖地址">
+                        <el-input
+                          :model-value="getEffectiveSynologyConfig(library).base_url"
+                          :disabled="Boolean(library.synology_profile_id)"
+                          placeholder="例如 https://nas.example.com:5001"
+                          @update:model-value="value => { library.synology.base_url = value }"
+                        />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <div v-if="library.synology_profile_id" class="form-tip" style="margin-bottom: 12px;">
+                    当前库存复用模板“{{ getSynologyProfileName(library.synology_profile_id) || library.synology_profile_id }}”，公共连接参数请去上面的模板统一维护。
+                  </div>
+                  <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                    <el-button size="small" @click="extractSynologyProfileFromLibrary(library)">提取为模板</el-button>
+                  </div>
+                  <el-row :gutter="12">
                     <el-col :span="12">
                       <el-form-item label="远程根目录">
                         <el-input v-model="library.synology.root_path" placeholder="/music/asmr" @input="syncRemoteLibraryPath(library)" />
                       </el-form-item>
                     </el-col>
-                  </el-row>
-                  <el-row :gutter="12">
-                    <el-col :span="8">
-                      <el-form-item label="用户名">
-                        <el-input v-model="library.synology.username" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
-                      <el-form-item label="密码">
-                        <el-input v-model="library.synology.password" type="password" show-password />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
+                    <el-col :span="12">
                       <el-form-item label="会话名">
-                        <el-input v-model="library.synology.session_name" placeholder="FileStation" />
+                        <el-input
+                          :model-value="getEffectiveSynologyConfig(library).session_name"
+                          :disabled="Boolean(library.synology_profile_id)"
+                          placeholder="FileStation"
+                          @update:model-value="value => { library.synology.session_name = value }"
+                        />
                       </el-form-item>
                     </el-col>
                   </el-row>
-                  <el-row :gutter="12">
-                    <el-col :span="8">
-                      <el-form-item label="OTP 动态码">
-                        <el-input v-model="library.synology.otp_code" placeholder="首次验证时填写" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
-                      <el-form-item label="设备名称">
-                        <el-input v-model="library.synology.device_name" :placeholder="library.name || library.id || 'Codex'" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
-                      <el-form-item label="设备令牌 ID">
-                        <el-input v-model="library.synology.device_id" placeholder="测试连接成功后会自动回填" />
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <el-row :gutter="12">
-                    <el-col :span="8">
-                      <el-form-item label="超时（秒）">
-                        <el-input-number v-model="library.synology.timeout" :min="5" :step="5" style="width: 100%;" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
-                      <el-form-item label="记住设备">
-                        <el-switch v-model="library.synology.enable_device_token" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
-                      <el-form-item label="校验证书">
-                        <el-switch v-model="library.synology.verify_ssl" />
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
+                  <template v-if="!library.synology_profile_id">
+                    <el-row :gutter="12">
+                      <el-col :span="8">
+                        <el-form-item label="用户名">
+                          <el-input v-model="library.synology.username" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="密码">
+                          <el-input v-model="library.synology.password" type="password" show-password />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="OTP 动态码">
+                          <el-input v-model="library.synology.otp_code" placeholder="首次验证时填写" />
+                        </el-form-item>
+                      </el-col>
+                    </el-row>
+                    <el-row :gutter="12">
+                      <el-col :span="8">
+                        <el-form-item label="设备名称">
+                          <el-input v-model="library.synology.device_name" :placeholder="library.name || library.id || 'Codex'" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="设备令牌 ID">
+                          <el-input v-model="library.synology.device_id" placeholder="测试连接成功后会自动回填" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="超时（秒）">
+                          <el-input-number v-model="library.synology.timeout" :min="5" :step="5" style="width: 100%;" />
+                        </el-form-item>
+                      </el-col>
+                    </el-row>
+                    <el-row :gutter="12">
+                      <el-col :span="8">
+                        <el-form-item label="记住设备">
+                          <el-switch v-model="library.synology.enable_device_token" />
+                        </el-form-item>
+                      </el-col>
+                      <el-col :span="8">
+                        <el-form-item label="校验证书">
+                          <el-switch v-model="library.synology.verify_ssl" />
+                        </el-form-item>
+                      </el-col>
+                    </el-row>
+                  </template>
                   <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
                     <el-button size="small" type="primary" :loading="testingLibraryId === library.id" @click="testStorageLibrary(library)">测试连接</el-button>
                     <el-link v-if="buildSynologyWebUrl(library)" :href="buildSynologyWebUrl(library)" target="_blank" type="primary">打开群晖目录</el-link>
@@ -1594,6 +1733,42 @@ import { configApi, kikoeruApi, pathMappingApi, cleanupApi, libraryApi } from '.
 const configStore = useConfigStore()
 const loading = ref(false)
 const testingLibraryId = ref('')
+const SYNOLOGY_PROFILE_FIELDS = [
+  'base_url',
+  'username',
+  'password',
+  'otp_code',
+  'device_name',
+  'device_id',
+  'enable_device_token',
+  'session_name',
+  'timeout',
+  'verify_ssl'
+]
+
+function createDefaultSynologyProfile(index = 1) {
+  return {
+    id: `synology-profile-${index}`,
+    name: `群晖连接 ${index}`,
+    base_url: '',
+    username: '',
+    password: '',
+    otp_code: '',
+    device_name: '',
+    device_id: '',
+    enable_device_token: true,
+    session_name: 'FileStation',
+    timeout: 30,
+    verify_ssl: true
+  }
+}
+
+function normalizeSynologyProfile(profile, index = 1) {
+  return {
+    ...createDefaultSynologyProfile(index),
+    ...(profile || {})
+  }
+}
 
 function createDefaultLibrary(type = 'local', index = 1) {
   return {
@@ -1606,6 +1781,7 @@ function createDefaultLibrary(type = 'local', index = 1) {
     writable: true,
     description: '',
     tags: [],
+    synology_profile_id: '',
     synology: {
       base_url: '',
       username: '',
@@ -1635,7 +1811,9 @@ function normalizeLibraryConfig(library, index = 1) {
   if (normalized.type === 'synology_filestation') {
     normalized.synology.root_path = normalized.synology.root_path || normalized.path || '/'
     normalized.path = normalized.synology.root_path
-    normalized.synology.device_name = normalized.synology.device_name || normalized.name || normalized.id
+    if (!normalized.synology_profile_id) {
+      normalized.synology.device_name = normalized.synology.device_name || normalized.name || normalized.id
+    }
   }
   return normalized
 }
@@ -1648,6 +1826,7 @@ const defaultConfig = {
     processed_archives_path: '/processed',
     existing_folders_path: '/existing',
     asmr_subtitle_path: '',
+    synology_profiles: [],
     libraries: [],
     default_library_id: '',
     default_extract_library_id: '',
@@ -1865,6 +2044,7 @@ async function loadConfig() {
       storage: {
         ...defaultConfig.storage,
         ...(data?.storage || {}),
+        synology_profiles: (data?.storage?.synology_profiles || defaultConfig.storage.synology_profiles).map((profile, index) => normalizeSynologyProfile(profile, index + 1)),
         libraries: (data?.storage?.libraries || defaultConfig.storage.libraries).map((library, index) => normalizeLibraryConfig(library, index + 1)),
         default_library_id: data?.storage?.default_library_id || '',
         default_extract_library_id: data?.storage?.default_extract_library_id || '',
@@ -2039,6 +2219,23 @@ async function saveConfig() {
         processed_archives_path: config.value.storage.processed_archives_path || '',
         existing_folders_path: config.value.storage.existing_folders_path || '',
         asmr_subtitle_path: config.value.storage.asmr_subtitle_path || '',
+        synology_profiles: (config.value.storage.synology_profiles || []).map((profile, index) => {
+          const normalized = normalizeSynologyProfile(profile, index + 1)
+          return {
+            id: normalized.id,
+            name: normalized.name,
+            base_url: normalized.base_url || '',
+            username: normalized.username || '',
+            password: normalized.password || '',
+            otp_code: normalized.otp_code || '',
+            device_name: normalized.device_name || '',
+            device_id: normalized.device_id || '',
+            enable_device_token: normalized.enable_device_token ?? true,
+            session_name: normalized.session_name || 'FileStation',
+            timeout: normalized.timeout ?? 30,
+            verify_ssl: normalized.verify_ssl ?? true
+          }
+        }),
         libraries: (config.value.storage.libraries || []).map((library, index) => {
           const normalized = normalizeLibraryConfig(library, index + 1)
           syncRemoteLibraryPath(normalized)
@@ -2052,20 +2249,25 @@ async function saveConfig() {
             writable: normalized.writable,
             description: normalized.description || '',
             tags: normalized.tags || [],
+            synology_profile_id: normalized.synology_profile_id || '',
             synology: normalized.type === 'synology_filestation'
-              ? {
-                  base_url: normalized.synology.base_url || '',
-                  username: normalized.synology.username || '',
-                  password: normalized.synology.password || '',
-                  root_path: normalized.synology.root_path || '/',
-                  otp_code: normalized.synology.otp_code || '',
-                  device_name: normalized.synology.device_name || normalized.name || normalized.id,
-                  device_id: normalized.synology.device_id || '',
-                  enable_device_token: normalized.synology.enable_device_token ?? true,
-                  session_name: normalized.synology.session_name || 'FileStation',
-                  timeout: normalized.synology.timeout ?? 30,
-                  verify_ssl: normalized.synology.verify_ssl ?? true
-                }
+              ? (normalized.synology_profile_id
+                  ? {
+                      root_path: normalized.synology.root_path || '/'
+                    }
+                  : {
+                      base_url: normalized.synology.base_url || '',
+                      username: normalized.synology.username || '',
+                      password: normalized.synology.password || '',
+                      root_path: normalized.synology.root_path || '/',
+                      otp_code: normalized.synology.otp_code || '',
+                      device_name: normalized.synology.device_name || normalized.name || normalized.id,
+                      device_id: normalized.synology.device_id || '',
+                      enable_device_token: normalized.synology.enable_device_token ?? true,
+                      session_name: normalized.synology.session_name || 'FileStation',
+                      timeout: normalized.synology.timeout ?? 30,
+                      verify_ssl: normalized.synology.verify_ssl ?? true
+                    })
               : null
           }
         }),
@@ -2192,6 +2394,139 @@ function resetConfig() {
   }).catch(() => {})
 }
 
+function getSynologyProfiles() {
+  return config.value.storage.synology_profiles || []
+}
+
+function getSynologyProfileById(profileId) {
+  const normalizedId = String(profileId || '').trim()
+  if (!normalizedId) return null
+  const index = getSynologyProfiles().findIndex(item => item.id === normalizedId)
+  if (index === -1) return null
+  return normalizeSynologyProfile(getSynologyProfiles()[index], index + 1)
+}
+
+function getSynologyProfileName(profileId) {
+  return getSynologyProfileById(profileId)?.name || ''
+}
+
+function pickSynologyProfileFields(source = {}) {
+  return SYNOLOGY_PROFILE_FIELDS.reduce((result, key) => {
+    result[key] = source?.[key]
+    return result
+  }, {})
+}
+
+function getEffectiveSynologyConfig(library) {
+  const normalized = normalizeLibraryConfig(library)
+  const profile = normalized.synology_profile_id ? getSynologyProfileById(normalized.synology_profile_id) : null
+  const merged = {
+    ...createDefaultLibrary('synology_filestation', 1).synology,
+    ...(profile ? pickSynologyProfileFields(profile) : {}),
+    ...(normalized.synology || {})
+  }
+  merged.root_path = normalized.synology?.root_path || normalized.path || '/'
+  if (!merged.device_name) merged.device_name = normalized.name || normalized.id || 'Prekikoeru'
+  return merged
+}
+
+function buildEffectiveLibraryConfig(library) {
+  const normalized = normalizeLibraryConfig(library)
+  if (normalized.type !== 'synology_filestation') return normalized
+  const synology = getEffectiveSynologyConfig(normalized)
+  return {
+    ...normalized,
+    path: synology.root_path,
+    synology
+  }
+}
+
+function addSynologyProfile(seed = {}) {
+  const nextIndex = (config.value.storage.synology_profiles?.length || 0) + 1
+  const nextProfile = normalizeSynologyProfile({
+    ...createDefaultSynologyProfile(nextIndex),
+    ...seed
+  }, nextIndex)
+  config.value.storage.synology_profiles = [...(config.value.storage.synology_profiles || []), nextProfile]
+  return nextProfile
+}
+
+function removeSynologyProfile(index) {
+  const profiles = [...(config.value.storage.synology_profiles || [])]
+  const removed = profiles[index]
+  const removedProfile = removed ? normalizeSynologyProfile(removed, index + 1) : null
+  profiles.splice(index, 1)
+  config.value.storage.synology_profiles = profiles
+  if (!removed?.id) return
+  for (const library of config.value.storage.libraries || []) {
+    if (library?.synology_profile_id === removed.id) {
+      const effective = {
+        ...createDefaultLibrary('synology_filestation', 1).synology,
+        ...(removedProfile ? pickSynologyProfileFields(removedProfile) : {}),
+        ...(library.synology || {})
+      }
+      effective.root_path = library.synology?.root_path || library.path || '/'
+      if (!effective.device_name) effective.device_name = library.name || library.id || 'Prekikoeru'
+      library.synology_profile_id = ''
+      library.synology = {
+        ...library.synology,
+        ...effective,
+        root_path: effective.root_path || library.synology?.root_path || library.path || '/'
+      }
+      library.path = library.synology.root_path
+    }
+  }
+}
+
+function sameSynologyProfileFields(left = {}, right = {}) {
+  return SYNOLOGY_PROFILE_FIELDS.every(key => {
+    const leftValue = left?.[key]
+    const rightValue = right?.[key]
+    if (typeof leftValue === 'boolean' || typeof rightValue === 'boolean') {
+      return Boolean(leftValue) === Boolean(rightValue)
+    }
+    return String(leftValue ?? '') === String(rightValue ?? '')
+  })
+}
+
+function assignSynologyProfileToMatchingLibraries(profileId, effectiveSynology) {
+  let affected = 0
+  for (const library of config.value.storage.libraries || []) {
+    if (library?.type !== 'synology_filestation') continue
+    const currentEffective = getEffectiveSynologyConfig(library)
+    if (!sameSynologyProfileFields(currentEffective, effectiveSynology)) continue
+    library.synology_profile_id = profileId
+    library.synology = {
+      root_path: currentEffective.root_path || library.synology?.root_path || library.path || '/'
+    }
+    library.path = library.synology.root_path
+    affected += 1
+  }
+  return affected
+}
+
+function extractSynologyProfileFromLibrary(library) {
+  if (library?.type !== 'synology_filestation') return
+  syncRemoteLibraryPath(library)
+  const effective = getEffectiveSynologyConfig(library)
+  const nextProfile = addSynologyProfile({
+    name: library.name ? `${library.name} 连接模板` : undefined,
+    ...pickSynologyProfileFields(effective)
+  })
+  const affected = assignSynologyProfileToMatchingLibraries(nextProfile.id, effective)
+  ElMessage.success(`已提取群晖连接模板，复用到 ${affected} 个远程库存`)
+}
+
+function handleLibraryProfileChange(library) {
+  syncRemoteLibraryPath(library)
+  if (!library?.synology_profile_id) return
+  const effective = getEffectiveSynologyConfig(library)
+  library.synology = {
+    root_path: effective.root_path || library.synology?.root_path || library.path || '/'
+  }
+  library.path = library.synology.root_path
+}
+
 function addStorageLibrary(type = 'local') {
   const nextIndex = (config.value.storage.libraries?.length || 0) + 1
   const nextLibrary = createDefaultLibrary(type, nextIndex)
@@ -2199,7 +2534,8 @@ function addStorageLibrary(type = 'local') {
     nextLibrary.path = config.value.storage.library_path || ''
   }
   if (type === 'synology_filestation') {
-    nextLibrary.synology.device_name = nextLibrary.name
+    const firstProfile = getSynologyProfiles()[0]
+    if (firstProfile?.id) nextLibrary.synology_profile_id = firstProfile.id
     nextLibrary.path = nextLibrary.synology.root_path
   }
   config.value.storage.libraries = [...(config.value.storage.libraries || []), nextLibrary]
@@ -2231,14 +2567,17 @@ function syncRemoteLibraryPath(library) {
       ...(library.synology || {})
     }
     library.synology.root_path = library.synology.root_path || library.path || '/'
-    library.synology.device_name = library.synology.device_name || library.name || library.id
+    if (!library.synology_profile_id) {
+      library.synology.device_name = library.synology.device_name || library.name || library.id
+    }
     library.path = library.synology.root_path
   }
 }
 
 function buildSynologyWebUrl(library) {
-  const baseUrl = library?.synology?.base_url?.replace(/\/+$/, '') || ''
-  const rootPath = library?.synology?.root_path || library?.path || '/'
+  const effective = buildEffectiveLibraryConfig(library)
+  const baseUrl = effective?.synology?.base_url?.replace(/\/+$/, '') || ''
+  const rootPath = effective?.synology?.root_path || effective?.path || '/'
   if (!baseUrl || !rootPath) return ''
   const normalizedPath = rootPath.startsWith('/') ? rootPath : `/${rootPath}`
   return `${baseUrl}//file/?launchApp=SYNO.SDS.App.FileStation3.Instance&launchParam=${encodeURIComponent(`path=${normalizedPath}`)}`
@@ -2248,9 +2587,16 @@ async function testStorageLibrary(library) {
   try {
     syncRemoteLibraryPath(library)
     testingLibraryId.value = library.id || `library-${Date.now()}`
-    const response = await libraryApi.testConnection(normalizeLibraryConfig(library))
+    const response = await libraryApi.testConnection(buildEffectiveLibraryConfig(library))
     if (response.device_id) {
-      library.synology.device_id = response.device_id
+      if (library.synology_profile_id) {
+        const profile = getSynologyProfileById(library.synology_profile_id)
+        if (profile) profile.device_id = response.device_id
+        const profileIndex = (config.value.storage.synology_profiles || []).findIndex(item => item.id === library.synology_profile_id)
+        if (profileIndex !== -1 && profile) config.value.storage.synology_profiles.splice(profileIndex, 1, profile)
+      } else {
+        library.synology.device_id = response.device_id
+      }
     }
     ElMessage.success(response.message || '连接成功')
   } catch (error) {

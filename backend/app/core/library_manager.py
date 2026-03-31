@@ -120,6 +120,7 @@ class LibraryDefinition:
     writable: bool = True
     description: str = ""
     tags: list[str] = field(default_factory=list)
+    synology_profile_id: str = ""
     synology: Optional[SynologyConfig] = None
 
     @property
@@ -139,10 +140,28 @@ class LibraryDefinition:
 def load_library_config() -> dict[str, Any]:
     runtime_config = get_config().storage
     storage = runtime_config.model_dump()
+    profile_map = {
+        str(item.get("id") or "").strip(): copy.deepcopy(item)
+        for item in storage.get("synology_profiles") or []
+        if str(item.get("id") or "").strip()
+    }
 
     libraries: list[LibraryDefinition] = []
     for item in storage.get("libraries") or []:
-        synology_raw = item.get("synology") or None
+        synology_profile_id = str(item.get("synology_profile_id") or "").strip()
+        profile_raw = copy.deepcopy(profile_map.get(synology_profile_id) or {})
+        profile_raw.pop("id", None)
+        profile_raw.pop("name", None)
+        synology_raw = copy.deepcopy(item.get("synology") or {})
+        if (item.get("type") or "local").lower() == "synology_filestation":
+            root_path = synology_raw.get("root_path") or item.get("path") or "/"
+            synology_raw = {
+                **profile_raw,
+                **synology_raw,
+                "root_path": root_path,
+            }
+        else:
+            synology_raw = None
         synology = SynologyConfig(**synology_raw) if synology_raw else None
         libraries.append(
             LibraryDefinition(
@@ -155,6 +174,7 @@ def load_library_config() -> dict[str, Any]:
                 writable=item.get("writable", True),
                 description=item.get("description") or "",
                 tags=item.get("tags") or [],
+                synology_profile_id=synology_profile_id,
                 synology=synology,
             )
         )
@@ -958,6 +978,7 @@ class LibraryManager:
                     "path": library.browse_root_path,
                     "root_path": library.root_path,
                     "browse_path": library.browse_path or "",
+                    "synology_profile_id": library.synology_profile_id or "",
                     "browse_root_path": library.browse_root_path,
                     "web_url": build_synology_web_url(library.synology.base_url, library.root_path) if library.type == "synology_filestation" and library.synology else None,
                     "description": library.description,
@@ -977,7 +998,22 @@ class LibraryManager:
 
     def _library_from_payload(self, payload: dict[str, Any]) -> LibraryDefinition:
         library_type = (payload.get("type") or "local").lower()
-        synology_payload = payload.get("synology") or {}
+        synology_payload = copy.deepcopy(payload.get("synology") or {})
+        synology_profile_id = str(payload.get("synology_profile_id") or "").strip()
+        if library_type == "synology_filestation" and synology_profile_id:
+            storage = get_config().storage.model_dump()
+            profile_map = {
+                str(item.get("id") or "").strip(): copy.deepcopy(item)
+                for item in storage.get("synology_profiles") or []
+                if str(item.get("id") or "").strip()
+            }
+            profile_payload = profile_map.get(synology_profile_id) or {}
+            profile_payload.pop("id", None)
+            profile_payload.pop("name", None)
+            synology_payload = {
+                **profile_payload,
+                **synology_payload,
+            }
         if library_type == "synology_filestation":
             root_path = synology_payload.get("root_path") or payload.get("path") or "/"
             synology_payload = {
@@ -995,6 +1031,7 @@ class LibraryManager:
             writable=payload.get("writable", True),
             description=payload.get("description") or "",
             tags=payload.get("tags") or [],
+            synology_profile_id=synology_profile_id,
             synology=synology,
         )
 

@@ -363,21 +363,6 @@ async def get_configuration():
     config = get_config()
     storage_data = config.storage.model_dump()
     library_cfg = get_library_manager().load_config()
-    storage_data["libraries"] = [
-        {
-            "id": library.id,
-            "name": library.name,
-            "type": library.type,
-            "path": library.path,
-            "browse_path": library.browse_path,
-            "enabled": library.enabled,
-            "writable": library.writable,
-            "description": library.description,
-            "tags": library.tags,
-            "synology": library.synology.__dict__ if library.synology else None,
-        }
-        for library in library_cfg["libraries"]
-    ]
     storage_data["default_library_id"] = library_cfg["default_library_id"]
     storage_data["default_extract_library_id"] = library_cfg["default_extract_library_id"]
     storage_data["health_warning_free_gb"] = library_cfg["health_warning_free_gb"]

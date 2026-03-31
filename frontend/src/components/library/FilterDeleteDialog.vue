@@ -1,12 +1,15 @@
 <template>
-  <el-dialog v-model="visible" width="1240px" class="fm-dialog filter-delete-dialog" destroy-on-close>
+  <el-dialog v-model="visible" width="1240px" class="fm-dialog filter-delete-dialog">
     <template #header>
       <div class="fm-header">
         <div class="fm-title">
           <span>{{ text.title }}</span>
           <span class="fm-badge">{{ scopeLabel || getFileName(currentPath) || filterDeletePreviewInfo.folderName || text.currentFolder }}</span>
         </div>
-        <div class="fm-count">{{ filterDeleteSelectedRoots.length }} / {{ filterDeletePreviewInfo.selectedCount }} {{ text.pendingDeleteSuffix }}</div>
+        <div class="fd-header-actions">
+          <button v-if="filterDeleteBusy" type="button" class="fm-btn fm-btn-primary" @click="visible = false">{{ text.hideBackground }}</button>
+          <div class="fm-count">{{ filterDeleteSelectedRoots.length }} / {{ filterDeletePreviewInfo.selectedCount }} {{ text.pendingDeleteSuffix }}</div>
+        </div>
       </div>
     </template>
 
@@ -44,12 +47,18 @@
           | {{ text.deleteProgress }} {{ filterDeletePreviewInfo.deleteDone }} / {{ filterDeletePreviewInfo.deleteTotal }} / {{ text.failedLabel }} {{ filterDeletePreviewInfo.deleteFailed || 0 }}
         </span>
       </div>
+      <div v-if="showFilterDeleteProgressBar" class="fd-progress-bar">
+        <el-progress :percentage="filterDeleteProgressPercent" :status="filterDeleteProgressStatus" :stroke-width="8" :show-text="false" />
+      </div>
+      <div v-if="filterDeleteBusy" class="fd-background-tip">
+        {{ text.backgroundHint }}
+      </div>
 
       <div class="fm-toolbar">
         <div class="fm-toolbar-left">
           <button class="fm-btn fm-btn-danger" :disabled="!canConfirmFilterDelete" @click="confirmFilterDeleteSelection">{{ text.confirmDelete }}</button>
           <button v-if="filterDeleteLoading" class="fm-btn fm-btn-ghost" @click="cancelFilterDeletePreview()">{{ text.cancelPreview }}</button>
-          <button v-if="filterDeleteDeleting && isRemote" class="fm-btn fm-btn-ghost" @click="requestCancelFilterDeleteDeletion()">{{ text.stopDelete }}</button>
+          <button v-if="filterDeleteDeleting" class="fm-btn fm-btn-ghost" @click="requestCancelFilterDeleteDeletion()">{{ text.stopDelete }}</button>
           <button class="fm-btn fm-btn-ghost" :disabled="!filterDeleteTreeHasDirectories || filterDeleteBusy" @click="expandFilterDeleteTree">{{ text.expandAll }}</button>
           <button class="fm-btn fm-btn-ghost" :disabled="!filterDeleteTreeHasDirectories || filterDeleteBusy" @click="collapseFilterDeleteTree">{{ text.collapseAll }}</button>
           <button class="fm-btn fm-btn-ghost" :disabled="filterDeleteBusy || !filterDeleteSelectedRoots.length" @click="clearFilterDeleteSelection">{{ text.clearSelection }}</button>
@@ -149,15 +158,16 @@
 
     <template #footer>
       <el-button v-if="filterDeleteLoading" @click="cancelFilterDeletePreview()">{{ text.cancelPreview }}</el-button>
-      <el-button v-if="filterDeleteDeleting && isRemote" @click="requestCancelFilterDeleteDeletion()">{{ text.stopDelete }}</el-button>
-      <el-button :disabled="filterDeleteDeleting" @click="visible = false">{{ text.close }}</el-button>
+      <el-button v-if="filterDeleteDeleting" @click="requestCancelFilterDeleteDeletion()">{{ text.stopDelete }}</el-button>
+      <el-button v-if="filterDeleteBusy" type="primary" plain @click="visible = false">{{ text.hideBackground }}</el-button>
+      <el-button v-else @click="visible = false">{{ text.close }}</el-button>
       <el-button type="danger" :disabled="!canConfirmFilterDelete" :loading="filterDeleteDeleting" @click="confirmFilterDeleteSelection">{{ text.confirmDelete }}</el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, Folder, FolderOpened, Headset, Picture, Tickets, VideoPlay } from '@element-plus/icons-vue'
 import { libraryApi } from '../../api'
@@ -183,6 +193,7 @@ const text = {
   failedLabel: '\u5931\u8d25',
   tipReview: '\u5148\u5ba1\u9605\u547d\u4e2d\u8fc7\u6ee4\u89c4\u5219\u7684\u6587\u4ef6\u548c\u76ee\u5f55\uff0c\u53d6\u6d88\u52fe\u9009\u53ef\u4fdd\u7559\u8bef\u5224\u9879\u3002\u6587\u4ef6\u5939\u9879\u4f1a\u8fde\u540c\u5176\u5185\u90e8\u5185\u5bb9\u4e00\u8d77\u5220\u9664\u3002',
   tipTruncated: '\u8fdc\u7a0b\u76ee\u5f55\u8fc7\u5927\uff0c\u5f53\u524d\u4ec5\u5c55\u793a\u90e8\u5206\u9884\u5ba1\u7ed3\u679c\u3002',
+  backgroundHint: '\u53ef\u4ee5\u5148\u5173\u95ed\u8fd9\u4e2a\u7a97\u53e3\uff0c\u9884\u5ba1\u6216\u5220\u9664\u4f1a\u5728\u5f53\u524d\u9875\u9762\u540e\u53f0\u7ee7\u7eed\u6267\u884c\u3002',
   confirmDelete: '\u786e\u8ba4\u5220\u9664\u9009\u4e2d',
   cancelPreview: '\u53d6\u6d88\u9884\u5ba1',
   stopDelete: '\u505c\u6b62\u5220\u9664',
@@ -202,6 +213,7 @@ const text = {
   coveredByPrefix: '\u968f\u7236\u76ee\u5f55\u5220\u9664\uff1a',
   waitConfirm: '\u5f85\u786e\u8ba4',
   coveredItem: '\u76ee\u5f55\u5185\u9879',
+  hideBackground: '\u9690\u85cf\u5230\u540e\u53f0',
   close: '\u5173\u95ed'
 }
 
@@ -215,7 +227,7 @@ const props = defineProps({
   isRemote: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['update:modelValue', 'deleted'])
+const emit = defineEmits(['update:modelValue', 'deleted', 'state-change'])
 
 const visible = computed({
   get: () => props.modelValue,
@@ -260,6 +272,10 @@ const filterDeletePreviewInfo = ref({
 })
 const filterDeleteJobId = ref('')
 const filterDeleteDeleteCancelRequested = ref(false)
+const filterDeleteLoadedSessionKey = ref('')
+const filterDeleteStartedAt = ref(0)
+const filterDeletePreviewTargetIndex = ref(0)
+const filterDeletePreviewTargetTotal = ref(0)
 
 const FILTER_DELETE_ROW_HEIGHT = 36
 const FILTER_DELETE_OVERSCAN = 12
@@ -296,6 +312,52 @@ const filterDeleteSelectedSize = computed(() => filterDeleteSelectedRoots.value.
 const filterDeleteBasicTreeOnly = computed(() => props.isRemote && filterDeletePreviewInfo.value.sizeDisabled)
 const filterDeleteBusy = computed(() => filterDeleteLoading.value || filterDeleteDeleting.value)
 const canConfirmFilterDelete = computed(() => filterDeletePreviewInfo.value.status === 'completed' && filterDeleteSelectedRoots.value.length > 0 && !filterDeleteBusy.value)
+const filterDeleteSessionKey = computed(() => JSON.stringify({
+  libraryId: props.libraryId || '',
+  currentPath: props.currentPath || '',
+  targetPaths: effectivePreviewTargetPaths.value,
+  rules: props.rules || [],
+  isRemote: !!props.isRemote
+}))
+const showFilterDeleteProgressBar = computed(() => {
+  if (filterDeleteDeleting.value) return Number(filterDeletePreviewInfo.value.deleteTotal || 0) > 0
+  return ['pending', 'running', 'completed', 'canceled', 'error'].includes(filterDeletePreviewInfo.value.status || 'idle')
+})
+const filterDeleteProgressPercent = computed(() => {
+  if (filterDeleteDeleting.value) {
+    const total = Math.max(0, Number(filterDeletePreviewInfo.value.deleteTotal || 0))
+    const done = Math.max(0, Number(filterDeletePreviewInfo.value.deleteDone || 0) + Number(filterDeletePreviewInfo.value.deleteFailed || 0))
+    if (!total) return 0
+    return Math.max(0, Math.min(100, Math.round((done / total) * 100)))
+  }
+  const status = String(filterDeletePreviewInfo.value.status || 'idle')
+  if (status === 'completed') return 100
+  const scanned = Math.max(0, Number(filterDeletePreviewInfo.value.scannedEntries || 0))
+  const discovered = Math.max(0, Number(filterDeletePreviewInfo.value.discoveredEntries || 0))
+  const pendingDirectories = Math.max(0, Number(filterDeletePreviewInfo.value.pendingDirectories || 0))
+  if (status === 'running' || status === 'pending') {
+    const estimatedTotal = Math.max(
+      discovered,
+      scanned + pendingDirectories,
+      scanned > 0 ? scanned + 1 : 0,
+      1
+    )
+    const percent = Math.round((scanned / estimatedTotal) * 100)
+    return Math.min(95, Math.max(scanned > 0 ? 3 : 1, percent))
+  }
+  if (discovered > 0) {
+    const percent = Math.round((scanned / Math.max(discovered, 1)) * 100)
+    return Math.max(0, Math.min(100, percent))
+  }
+  if (status === 'canceled' || status === 'error') return 100
+  return 0
+})
+const filterDeleteProgressStatus = computed(() => {
+  if (filterDeletePreviewInfo.value.status === 'error') return 'exception'
+  if (filterDeletePreviewInfo.value.status === 'canceled') return 'warning'
+  if (!filterDeleteBusy.value && filterDeletePreviewInfo.value.status === 'completed') return 'success'
+  return undefined
+})
 const filterDeleteScanText = computed(() => {
   const scanned = Number(filterDeletePreviewInfo.value.scannedEntries || 0)
   const discovered = Number(filterDeletePreviewInfo.value.discoveredEntries || 0)
@@ -317,14 +379,44 @@ watch(visible, async open => {
     window.addEventListener('keydown', handleDialogKeydown)
     await nextTick()
     setupFilterDeleteScrollObserver()
-    await loadFilterDeletePreview()
+    const hasReviewState = ['completed', 'canceled', 'error'].includes(filterDeletePreviewInfo.value.status || 'idle')
+    const shouldResumeExisting = (
+      filterDeleteLoadedSessionKey.value === filterDeleteSessionKey.value
+      && (filterDeleteBusy.value || hasReviewState)
+    )
+    if (!shouldResumeExisting) await loadFilterDeletePreview()
     return
   }
   window.removeEventListener('keydown', handleDialogKeydown)
-  clearFilterDeletePoll()
   teardownFilterDeleteScrollObserver()
-  if (filterDeleteLoading.value) await cancelFilterDeletePreview({ silent: true })
-  if (filterDeleteDeleting.value) requestCancelFilterDeleteDeletion(true)
+})
+
+watchEffect(() => {
+  emit('state-change', {
+    active: filterDeleteBusy.value,
+    mode: filterDeleteDeleting.value ? 'delete' : 'preview',
+    status: filterDeletePreviewInfo.value.status || 'idle',
+    scopeLabel: props.scopeLabel || getFileName(props.currentPath) || filterDeletePreviewInfo.value.folderName || text.currentFolder,
+    progressMessage: filterDeletePreviewInfo.value.progressMessage || '',
+    currentPath: displayFilterDeletePath(filterDeletePreviewInfo.value.currentPath || props.currentPath || ''),
+    percentage: filterDeleteProgressPercent.value,
+    progressStatus: filterDeleteProgressStatus.value || '',
+    startedAt: Number(filterDeleteStartedAt.value || 0),
+    previewTargetIndex: Number(filterDeletePreviewTargetIndex.value || 0),
+    previewTargetTotal: Number(filterDeletePreviewTargetTotal.value || 0),
+    selectedCount: Number(filterDeletePreviewInfo.value.selectedCount || 0),
+    selectedSize: Number(filterDeletePreviewInfo.value.selectedSize || 0),
+    scannedEntries: Number(filterDeletePreviewInfo.value.scannedEntries || 0),
+    discoveredEntries: Number(filterDeletePreviewInfo.value.discoveredEntries || 0),
+    pendingDirectories: Number(filterDeletePreviewInfo.value.pendingDirectories || 0),
+    ruleCount: Number(filterDeletePreviewInfo.value.ruleCount || 0),
+    reviewable: filterDeletePreviewInfo.value.status === 'completed',
+    deleteDone: Number(filterDeletePreviewInfo.value.deleteDone || 0),
+    deleteTotal: Number(filterDeletePreviewInfo.value.deleteTotal || 0),
+    deleteFailed: Number(filterDeletePreviewInfo.value.deleteFailed || 0),
+    canCancelPreview: filterDeleteLoading.value,
+    canStopDelete: filterDeleteDeleting.value
+  })
 })
 
 watch(() => filterDeleteFlatTree.value.length, () => {
@@ -457,7 +549,7 @@ function applyFilterDeletePreviewData (data, options = {}) {
 }
 
 async function pollFilterDeletePreviewStatus (jobId) {
-  if (!jobId || !visible.value) return
+  if (!jobId) return
   try {
     const data = await libraryApi.getFilterDeletePreviewStatus(jobId)
     if (filterDeleteJobId.value !== jobId) return
@@ -473,7 +565,7 @@ async function pollFilterDeletePreviewStatus (jobId) {
     filterDeleteLoading.value = false
     clearFilterDeletePoll()
   } catch (error) {
-    if (!visible.value || filterDeleteJobId.value !== jobId) return
+    if (filterDeleteJobId.value !== jobId) return
     filterDeleteLoading.value = false
     clearFilterDeletePoll()
     filterDeletePreviewInfo.value = {
@@ -509,6 +601,10 @@ async function cancelFilterDeletePreview (options = {}) {
 async function loadFilterDeletePreview () {
   if (!effectivePreviewTargetPaths.value.length || !props.libraryId) return
   clearFilterDeletePoll()
+  filterDeleteLoadedSessionKey.value = filterDeleteSessionKey.value
+  filterDeleteStartedAt.value = Date.now()
+  filterDeletePreviewTargetIndex.value = effectivePreviewTargetPaths.value.length ? 1 : 0
+  filterDeletePreviewTargetTotal.value = effectivePreviewTargetPaths.value.length
   resetFilterDeleteScroll()
   filterDeleteJobId.value = ''
   filterDeleteDeleteCancelRequested.value = false
@@ -565,6 +661,8 @@ async function loadFilterDeletePreview () {
 
     for (let index = 0; index < effectivePreviewTargetPaths.value.length; index += 1) {
       const targetPath = effectivePreviewTargetPaths.value[index]
+      filterDeletePreviewTargetIndex.value = index + 1
+      filterDeletePreviewTargetTotal.value = effectivePreviewTargetPaths.value.length
       filterDeletePreviewInfo.value = {
         ...filterDeletePreviewInfo.value,
         currentPath: displayFilterDeletePath(targetPath),
@@ -616,7 +714,7 @@ async function loadFilterDeletePreview () {
 }
 
 async function waitForFilterDeletePreviewJob (jobId, targetPath, index, total) {
-  while (visible.value && jobId) {
+  while (jobId) {
     const data = await libraryApi.getFilterDeletePreviewStatus(jobId)
     filterDeleteJobId.value = jobId
     filterDeletePreviewInfo.value = {
@@ -827,85 +925,73 @@ async function confirmFilterDeleteSelection () {
   }
 
   filterDeleteDeleting.value = true
+  filterDeleteLoadedSessionKey.value = filterDeleteSessionKey.value
   filterDeleteDeleteCancelRequested.value = false
   try {
     const paths = filterDeleteSelectedRoots.value.map(item => item.delete_path || item.path)
-    if (props.isRemote) {
-      const sizeByPath = new Map(filterDeleteSelectedRoots.value.map(item => [item.delete_path || item.path, Number(item.size || 0)]))
-      const directoryPaths = new Set(filterDeleteSelectedRoots.value.filter(item => item.type === 'dir').map(item => item.delete_path || item.path))
-      let successCount = 0
-      let failedCount = 0
-      let deletedBytes = 0
-      let deletedFolderCount = 0
-      const succeededPaths = []
-      for (let index = 0; index < paths.length; index += 1) {
-        if (filterDeleteDeleteCancelRequested.value) break
-        const path = paths[index]
-        filterDeletePreviewInfo.value = {
-          ...filterDeletePreviewInfo.value,
-          deleteDone: successCount,
-          deleteTotal: paths.length,
-          deleteFailed: failedCount,
-          progressMessage: `\u6b63\u5728\u5220\u9664 ${index + 1} / ${paths.length}: ${getFileName(path) || path}`
-        }
-        try {
-          await libraryApi.browserDelete(props.libraryId, path, true)
-          successCount += 1
-          succeededPaths.push(path)
-          deletedBytes += Number(sizeByPath.get(path) || 0)
-          if (directoryPaths.has(path)) deletedFolderCount += 1
-        } catch (_) {
-          failedCount += 1
-        }
-      }
+    const sizeByPath = new Map(filterDeleteSelectedRoots.value.map(item => [item.delete_path || item.path, Number(item.size || 0)]))
+    const normalizedItemMeta = filterDeleteItems.value.map(item => ({
+      path: normalizeFilterDeleteComparePath(item.delete_path || item.path),
+      type: item.type
+    }))
+    const folderCountByPath = new Map(filterDeleteSelectedRoots.value.map(item => {
+      const rawPath = item.delete_path || item.path
+      const normalizedPath = normalizeFilterDeleteComparePath(rawPath)
+      if (item.type !== 'dir') return [rawPath, 0]
+      const folderCount = normalizedItemMeta.filter(candidate => (
+        candidate.type === 'dir'
+        && (candidate.path === normalizedPath || candidate.path.startsWith(`${normalizedPath}/`))
+      )).length
+      return [rawPath, folderCount]
+    }))
+    let successCount = 0
+    let failedCount = 0
+    let deletedBytes = 0
+    let deletedFolderCount = 0
+    const succeededPaths = []
+    for (let index = 0; index < paths.length; index += 1) {
+      if (filterDeleteDeleteCancelRequested.value) break
+      const path = paths[index]
       filterDeletePreviewInfo.value = {
         ...filterDeletePreviewInfo.value,
         deleteDone: successCount,
         deleteTotal: paths.length,
         deleteFailed: failedCount,
-          progressMessage: filterDeleteDeleteCancelRequested.value
+        progressMessage: `\u6b63\u5728\u5220\u9664 ${index + 1} / ${paths.length}: ${getFileName(path) || path}`
+      }
+      try {
+        await libraryApi.browserDelete(props.libraryId, path, true)
+        successCount += 1
+        succeededPaths.push(path)
+        deletedBytes += Number(sizeByPath.get(path) || 0)
+        deletedFolderCount += Number(folderCountByPath.get(path) || 0)
+      } catch (_) {
+        failedCount += 1
+      }
+    }
+    filterDeletePreviewInfo.value = {
+      ...filterDeletePreviewInfo.value,
+      deleteDone: successCount,
+      deleteTotal: paths.length,
+      deleteFailed: failedCount,
+      progressMessage: filterDeleteDeleteCancelRequested.value
+        ? `\u5220\u9664\u5df2\u505c\u6b62\uff0c\u5df2\u5b8c\u6210 ${successCount} / ${paths.length}`
+        : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${paths.length}`
+    }
+    if (successCount > 0) {
+      applyFilterDeletePostDelete(succeededPaths, {
+        deletedBytes,
+        deletedFolderCount,
+        successCount,
+        failedCount,
+        progressMessage: filterDeleteDeleteCancelRequested.value
           ? `\u5220\u9664\u5df2\u505c\u6b62\uff0c\u5df2\u5b8c\u6210 ${successCount} / ${paths.length}`
           : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${paths.length}`
-      }
-      if (successCount > 0) {
-        applyFilterDeletePostDelete(succeededPaths, {
-          deletedBytes,
-          deletedFolderCount,
-          successCount,
-          failedCount,
-          progressMessage: filterDeleteDeleteCancelRequested.value
-            ? `\u5220\u9664\u5df2\u505c\u6b62\uff0c\u5df2\u5b8c\u6210 ${successCount} / ${paths.length}`
-            : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${paths.length}`
-        })
-      }
-      if (filterDeleteDeleteCancelRequested.value) ElMessage.warning(`\u8fc7\u6ee4\u5220\u9664\u5df2\u505c\u6b62\uff1a\u6210\u529f ${successCount} \u9879\uff0c\u5931\u8d25 ${failedCount} \u9879`)
-      else if (failedCount > 0) ElMessage.warning(`\u8fc7\u6ee4\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f ${successCount} \u9879\uff0c\u5931\u8d25 ${failedCount} \u9879`)
-      else ElMessage.success(`\u8fc7\u6ee4\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f ${successCount} \u9879`)
-      return
-    }
-
-    const preview = await libraryApi.browserBatchDelete(props.libraryId, paths, false)
-    const result = await libraryApi.browserBatchDelete(props.libraryId, paths, true)
-    const failedPathSet = new Set((result?.failed_paths || []).map(item => item?.path).filter(Boolean))
-    const succeededPaths = paths.filter(path => !failedPathSet.has(path))
-    if (succeededPaths.length) {
-      applyFilterDeletePostDelete(succeededPaths, {
-        deletedBytes: Number(preview?.total_size || 0),
-        deletedFolderCount: Number(preview?.total_folder_count || 0),
-        successCount: Number(result?.success_count || 0),
-        failedCount: failedPathSet.size,
-        progressMessage: `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${result?.success_count || 0} / ${paths.length}`
       })
-    } else {
-      filterDeletePreviewInfo.value = {
-        ...filterDeletePreviewInfo.value,
-        deleteDone: Number(result?.success_count || 0),
-        deleteTotal: paths.length,
-        deleteFailed: failedPathSet.size,
-        progressMessage: `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${result?.success_count || 0} / ${paths.length}`
-      }
     }
-    ElMessage.success(`\u8fc7\u6ee4\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f ${result.success_count || 0} \u9879`)
+    if (filterDeleteDeleteCancelRequested.value) ElMessage.warning(`\u8fc7\u6ee4\u5220\u9664\u5df2\u505c\u6b62\uff1a\u6210\u529f ${successCount} \u9879\uff0c\u5931\u8d25 ${failedCount} \u9879`)
+    else if (failedCount > 0) ElMessage.warning(`\u8fc7\u6ee4\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f ${successCount} \u9879\uff0c\u5931\u8d25 ${failedCount} \u9879`)
+    else ElMessage.success(`\u8fc7\u6ee4\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f ${successCount} \u9879`)
   } catch (error) {
     ElMessage.error('\u8fc7\u6ee4\u5220\u9664\u5931\u8d25: ' + (error.response?.data?.detail || error.message))
   } finally {
@@ -997,10 +1083,18 @@ function isTextInputElement (target) {
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName) || Boolean(target.isContentEditable)
 }
 
-defineExpose({ reload: loadFilterDeletePreview })
+defineExpose({
+  reload: loadFilterDeletePreview,
+  cancelPreviewTask: cancelFilterDeletePreview,
+  requestStopDeletion: requestCancelFilterDeleteDeletion
+})
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleDialogKeydown)
+  if (filterDeleteLoading.value && filterDeleteJobId.value) {
+    libraryApi.cancelFilterDeletePreview({ jobId: filterDeleteJobId.value }).catch(() => {})
+  }
+  if (filterDeleteDeleting.value) requestCancelFilterDeleteDeletion(true)
   clearFilterDeletePoll()
   teardownFilterDeleteScrollObserver()
 })
@@ -1020,10 +1114,15 @@ onBeforeUnmount(() => {
 .filter-delete-summary { display: flex; gap: 8px; flex-wrap: wrap; }
 .fd-chip { display: inline-flex; align-items: center; padding: 7px 11px; border-radius: 999px; border: 1px solid #e6ebf2; background: #f4f6f9; font-size: 12px; font-weight: 600; color: #59697f; }
 .fd-progress { margin: 0 16px 12px; font-size: 12px; line-height: 1.5; color: #7c8ba1; }
+.fd-header-actions { display: flex; align-items: center; gap: 10px; }
+.fd-progress-bar { margin: 0 16px 12px; }
+.fd-background-tip { margin: 0 16px 12px; padding: 9px 12px; border: 1px dashed #cfe0ff; border-radius: 10px; background: #f5f9ff; font-size: 12px; color: #4c6791; }
 .fm-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 9px 16px; background: #f8f9fa; border-top: 1px solid #f3f4f6; border-bottom: 1px solid #e4e7ed; }
 .fm-toolbar-left { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .fm-btn { padding: 4px 11px; border: 1px solid #dcdfe6; border-radius: 5px; background: #fff; font-size: 12px; cursor: pointer; }
 .fm-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+.fm-btn-primary { color: #2458a6; border-color: #bcd3fb; background: #eef5ff; }
+.fm-btn-primary:hover:not(:disabled) { color: #17478f; border-color: #8ab4f8; background: #e0ecff; }
 .fm-btn-danger { color: #f56c6c; background: #fff0f0; border-color: #fbc4c4; }
 .fm-btn-ghost:hover:not(:disabled) { color: #409eff; border-color: #a0cfff; background: #ecf5ff; }
 .fm-search-input { width: 260px; height: 30px; padding: 0 10px; border: 1px solid #dcdfe6; border-radius: 5px; font-size: 12px; outline: none; }

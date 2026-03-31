@@ -23,6 +23,22 @@ class SynologyLibraryConfig(BaseModel):
     enable_device_token: bool = True
 
 
+class SynologyConnectionProfile(BaseModel):
+    """群晖连接模板"""
+    id: str = ""
+    name: str = ""
+    base_url: str = ""
+    username: str = ""
+    password: str = ""
+    session_name: str = "FileStation"
+    timeout: int = 30
+    verify_ssl: bool = True
+    otp_code: str = ""
+    device_name: str = ""
+    device_id: str = ""
+    enable_device_token: bool = True
+
+
 class LibraryConfigItem(BaseModel):
     """库存定义"""
     id: str = ""
@@ -34,6 +50,7 @@ class LibraryConfigItem(BaseModel):
     writable: bool = True
     description: str = ""
     tags: list[str] = Field(default_factory=list)
+    synology_profile_id: str = ""
     synology: Optional[SynologyLibraryConfig] = None
 
 
@@ -45,6 +62,7 @@ class StorageConfig(BaseModel):
     processed_archives_path: str = "/processed"
     existing_folders_path: str = "/existing"  # 已存在文件夹目录（非软件解压的文件夹）
     asmr_subtitle_path: str = ""  # ASMR同步字幕文件夹路径
+    synology_profiles: list[SynologyConnectionProfile] = Field(default_factory=list)
     libraries: list[LibraryConfigItem] = Field(default_factory=list)
     default_library_id: str = ""
     default_extract_library_id: str = ""

@@ -216,6 +216,15 @@
           >
             <el-icon><Tickets /></el-icon>批量抓字幕
           </el-button>
+          <el-button
+            size="small"
+            type="danger"
+            plain
+            :disabled="!selectedFilterDeleteRows.length || !isWritableCurrentLibrary"
+            @click="openSelectedFilterDeleteDialog"
+          >
+            <el-icon><Delete /></el-icon>批量删过滤预审
+          </el-button>
           <el-button size="small" type="danger" plain :disabled="!isWritableCurrentLibrary" :loading="batchDeleting" @click="handleBatchDelete"><el-icon><Delete /></el-icon>批量删除</el-button>
           <el-button size="small" type="warning" plain :disabled="!selectedApiRenameRows.length || apiRenameBusy" :loading="batchRenaming" @click="handleBatchApiRename"><el-icon><Edit /></el-icon>批量 API重命名</el-button>
           <el-button size="small" @click="clearSelection">取消选择</el-button>
@@ -957,7 +966,59 @@
       :scope-label="filterDeleteDialogScopeLabel"
       :is-remote="filterDeleteDialogIsRemote"
       @deleted="handleFilterDeleteDeleted"
+      @state-change="handleFilterDeleteDialogStateChange"
     />
+
+    <div v-if="showFilterDeleteBackgroundCard" class="filter-delete-floating-card">
+      <div class="filter-delete-floating-head">
+        <div>
+          <div class="filter-delete-floating-title">{{ filterDeleteBackgroundState.scopeLabel || '删除过滤任务' }}</div>
+          <div class="filter-delete-floating-mode">{{ filterDeleteBackgroundState.mode === 'delete' ? '后台删除中' : '后台预审中' }}</div>
+        </div>
+        <div class="filter-delete-floating-percent">{{ filterDeleteBackgroundState.percentage }}%</div>
+      </div>
+      <el-progress
+        :percentage="filterDeleteBackgroundState.percentage"
+        :status="filterDeleteBackgroundState.progressStatus || undefined"
+        :stroke-width="8"
+        :show-text="false"
+      />
+      <div class="filter-delete-floating-text">
+        {{ filterDeleteBackgroundPrimaryText }}
+      </div>
+      <div class="filter-delete-floating-chip-row">
+        <span class="filter-delete-floating-chip">状态 {{ filterDeleteBackgroundState.statusLabel }}</span>
+        <span v-if="filterDeleteBackgroundState.mode === 'preview'" class="filter-delete-floating-chip">命中 {{ filterDeleteBackgroundState.selectedCount }}</span>
+        <span v-if="filterDeleteBackgroundState.mode === 'preview'" class="filter-delete-floating-chip">规则 {{ filterDeleteBackgroundState.ruleCount }}</span>
+        <span v-if="filterDeleteBackgroundState.mode === 'preview' && filterDeleteBackgroundState.previewTargetTotal > 0" class="filter-delete-floating-chip">
+          目录 {{ filterDeleteBackgroundState.previewTargetIndex }} / {{ filterDeleteBackgroundState.previewTargetTotal }}
+        </span>
+        <span v-if="filterDeleteBackgroundState.mode === 'delete' && filterDeleteBackgroundState.deleteTotal" class="filter-delete-floating-chip">
+          已删 {{ filterDeleteBackgroundState.deleteDone }} / {{ filterDeleteBackgroundState.deleteTotal }}
+        </span>
+      </div>
+      <div v-if="filterDeleteBackgroundState.currentPath" class="filter-delete-floating-path">
+        {{ filterDeleteBackgroundState.currentPath }}
+      </div>
+      <div v-if="filterDeleteBackgroundState.mode === 'preview'" class="filter-delete-floating-stats">
+        已扫描 {{ filterDeleteBackgroundState.scannedEntries }}
+        <span v-if="filterDeleteBackgroundState.discoveredEntries"> / 已发现 {{ filterDeleteBackgroundState.discoveredEntries }}</span>
+        <span v-if="filterDeleteBackgroundState.pendingDirectories"> / 待扫目录 {{ filterDeleteBackgroundState.pendingDirectories }}</span>
+        <span v-if="filterDeleteBackgroundState.selectedSizeText"> / 预计 {{ filterDeleteBackgroundState.selectedSizeText }}</span>
+      </div>
+      <div v-if="filterDeleteBackgroundState.startedAt" class="filter-delete-floating-stats">
+        开始 {{ filterDeleteBackgroundState.startedAtText }} / 已运行 {{ filterDeleteBackgroundElapsedText }}
+      </div>
+      <div v-if="filterDeleteBackgroundState.mode === 'delete' && filterDeleteBackgroundState.deleteTotal" class="filter-delete-floating-stats">
+        成功 {{ filterDeleteBackgroundState.deleteDone }} / {{ filterDeleteBackgroundState.deleteTotal }}，失败 {{ filterDeleteBackgroundState.deleteFailed || 0 }}
+      </div>
+      <div class="filter-delete-floating-actions">
+        <el-button size="small" type="primary" @click="resumeFilterDeleteDialog">{{ filterDeleteBackgroundState.reviewable ? '打开预审结果' : '打开' }}</el-button>
+        <el-button v-if="filterDeleteBackgroundState.canCancelPreview" size="small" @click="cancelBackgroundFilterDeletePreview">取消预审</el-button>
+        <el-button v-if="filterDeleteBackgroundState.canStopDelete" size="small" @click="stopBackgroundFilterDelete">停止删除</el-button>
+        <el-button v-if="!filterDeleteBackgroundState.active && filterDeleteBackgroundState.reviewable" size="small" @click="dismissFilterDeleteBackgroundCard">收起</el-button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -1092,6 +1153,61 @@ const filterDeleteDialogTargetPaths = ref([])
 const filterDeleteDialogRules = ref([])
 const filterDeleteDialogScopeLabel = ref('')
 const filterDeleteDialogIsRemote = ref(false)
+const filterDeleteBackgroundState = ref({
+  active: false,
+  mode: 'preview',
+  status: 'idle',
+  statusLabel: '等待中',
+  scopeLabel: '',
+  progressMessage: '',
+  currentPath: '',
+  percentage: 0,
+  progressStatus: '',
+  startedAt: 0,
+  startedAtText: '',
+  previewTargetIndex: 0,
+  previewTargetTotal: 0,
+  reviewable: false,
+  selectedCount: 0,
+  selectedSize: 0,
+  selectedSizeText: '',
+  scannedEntries: 0,
+  discoveredEntries: 0,
+  pendingDirectories: 0,
+  ruleCount: 0,
+  deleteDone: 0,
+  deleteTotal: 0,
+  deleteFailed: 0,
+  canCancelPreview: false,
+  canStopDelete: false
+})
+const filterDeleteBackgroundNow = ref(Date.now())
+let filterDeleteBackgroundTimer = null
+const filterDeleteBackgroundDismissed = ref(false)
+const showFilterDeleteBackgroundCard = computed(() => (
+  !filterDeleteDialogVisible.value
+  && !filterDeleteBackgroundDismissed.value
+  && (filterDeleteBackgroundState.value.active || filterDeleteBackgroundState.value.reviewable)
+))
+const filterDeleteBackgroundElapsedText = computed(() => {
+  const startedAt = Number(filterDeleteBackgroundState.value.startedAt || 0)
+  if (!startedAt) return '00:00'
+  const diffSeconds = Math.max(0, Math.floor((filterDeleteBackgroundNow.value - startedAt) / 1000))
+  const hours = Math.floor(diffSeconds / 3600)
+  const minutes = Math.floor((diffSeconds % 3600) / 60)
+  const seconds = diffSeconds % 60
+  if (hours > 0) return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+})
+const filterDeleteBackgroundPrimaryText = computed(() => {
+  if (filterDeleteBackgroundState.value.reviewable && !filterDeleteBackgroundState.value.active) {
+    if (filterDeleteBackgroundState.value.selectedCount > 0) {
+      return `预审完成，命中 ${filterDeleteBackgroundState.value.selectedCount} 项，点“继续确认”继续删除。`
+    }
+    return '预审完成，没有需要删除的命中项。'
+  }
+  return filterDeleteBackgroundState.value.progressMessage || (filterDeleteBackgroundState.value.mode === 'delete' ? '正在后台删除…' : '正在后台预审…')
+})
 const subtitleDialogVisible = ref(false)
 const subtitleSubmitting = ref(false)
 const subtitleTasksLoading = ref(false)
@@ -1287,6 +1403,7 @@ const canProcessCurrentFolder = computed(() => {
   if (toolbarActionScope.value === 'page') return toolbarSubtitleScopeRows.value.length > 0
   return !!currentPath.value
 })
+const selectedFilterDeleteRows = computed(() => selectedRows.value.filter(row => row?.is_directory))
 const canFilterDeleteCurrentFolder = computed(() => {
   if (!isWritableCurrentLibrary.value) return false
   if (toolbarActionScope.value === 'page') return toolbarFilterDeletePaths.value.length > 0
@@ -1871,12 +1988,20 @@ onDeactivated(() => {
   libraryViewActive = false
   stopLibraryPolling()
   unbindLibraryKeydown()
+  if (filterDeleteBackgroundTimer) {
+    clearInterval(filterDeleteBackgroundTimer)
+    filterDeleteBackgroundTimer = null
+  }
 })
 
 onBeforeUnmount(() => {
   libraryViewActive = false
   stopLibraryPolling()
   unbindLibraryKeydown()
+  if (filterDeleteBackgroundTimer) {
+    clearInterval(filterDeleteBackgroundTimer)
+    filterDeleteBackgroundTimer = null
+  }
 })
 
 watch(pageSize, async value => {
@@ -5661,6 +5786,10 @@ function flattenTree (nodes, depth, openIds) {
 }
 
 async function openFilterDeleteDialog () {
+  if (filterDeleteBackgroundState.value.active) {
+    filterDeleteDialogVisible.value = true
+    return
+  }
   if (!currentPath.value || !isWritableCurrentLibrary.value) return
   filterDeleteDialogLibraryId.value = selectedLibraryId.value
   filterDeleteDialogPath.value = currentPath.value
@@ -5671,7 +5800,31 @@ async function openFilterDeleteDialog () {
   filterDeleteDialogVisible.value = true
 }
 
+async function openSelectedFilterDeleteDialog () {
+  if (filterDeleteBackgroundState.value.active) {
+    filterDeleteDialogVisible.value = true
+    return
+  }
+  const targetRows = selectedFilterDeleteRows.value
+  if (!targetRows.length || !selectedLibraryId.value) return
+  const skippedCount = selectedRows.value.length - targetRows.length
+  if (skippedCount > 0) {
+    ElMessage.warning(`已跳过 ${skippedCount} 个非目录项，删除过滤预审只支持目录`)
+  }
+  filterDeleteDialogLibraryId.value = selectedLibraryId.value
+  filterDeleteDialogPath.value = currentPath.value
+  filterDeleteDialogTargetPaths.value = [...new Set(targetRows.map(row => row.path).filter(Boolean))]
+  filterDeleteDialogRules.value = await loadConfiguredFilterRules()
+  filterDeleteDialogScopeLabel.value = `已选目录（${filterDeleteDialogTargetPaths.value.length} 项）`
+  filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
+  filterDeleteDialogVisible.value = true
+}
+
 async function openSubtitleInspectorFilterDeleteDialog () {
+  if (filterDeleteBackgroundState.value.active) {
+    filterDeleteDialogVisible.value = true
+    return
+  }
   const libraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
   const folderPath = String(subtitleInspectorInfo.value.folderPath || '').trim()
   const subtitleDir = String(subtitleInspectorInfo.value.subtitleDir || '').trim()
@@ -5702,6 +5855,79 @@ async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount
       libraryId: filterDeleteDialogLibraryId.value || selectedLibraryId.value
     })
   ])
+}
+
+function handleFilterDeleteDialogStateChange (state = {}) {
+  const status = state.status || 'idle'
+  const startedAt = Number(state.startedAt || 0)
+  if (Boolean(state.active) || Boolean(state.reviewable)) {
+    filterDeleteBackgroundDismissed.value = false
+  }
+  filterDeleteBackgroundState.value = {
+    active: Boolean(state.active),
+    mode: state.mode || 'preview',
+    status,
+    statusLabel: (
+      status === 'pending' ? '等待中'
+        : status === 'running' ? '执行中'
+          : status === 'completed' ? '已完成'
+            : status === 'canceled' ? '已取消'
+              : status === 'error' ? '失败'
+                : '空闲'
+    ),
+    scopeLabel: state.scopeLabel || '',
+    progressMessage: state.progressMessage || '',
+    currentPath: state.currentPath || '',
+    percentage: Number(state.percentage || 0),
+    progressStatus: state.progressStatus || '',
+    startedAt,
+    startedAtText: startedAt ? formatDate(startedAt) : '',
+    previewTargetIndex: Number(state.previewTargetIndex || 0),
+    previewTargetTotal: Number(state.previewTargetTotal || 0),
+    reviewable: Boolean(state.reviewable),
+    selectedCount: Number(state.selectedCount || 0),
+    selectedSize: Number(state.selectedSize || 0),
+    selectedSizeText: formatFileSize(Number(state.selectedSize || 0)),
+    scannedEntries: Number(state.scannedEntries || 0),
+    discoveredEntries: Number(state.discoveredEntries || 0),
+    pendingDirectories: Number(state.pendingDirectories || 0),
+    ruleCount: Number(state.ruleCount || 0),
+    deleteDone: Number(state.deleteDone || 0),
+    deleteTotal: Number(state.deleteTotal || 0),
+    deleteFailed: Number(state.deleteFailed || 0),
+    canCancelPreview: Boolean(state.canCancelPreview),
+    canStopDelete: Boolean(state.canStopDelete)
+  }
+  if (filterDeleteBackgroundState.value.active) {
+    filterDeleteBackgroundNow.value = Date.now()
+    if (!filterDeleteBackgroundTimer) {
+      filterDeleteBackgroundTimer = window.setInterval(() => {
+        filterDeleteBackgroundNow.value = Date.now()
+      }, 1000)
+    }
+  } else if (filterDeleteBackgroundTimer) {
+    clearInterval(filterDeleteBackgroundTimer)
+    filterDeleteBackgroundTimer = null
+  }
+}
+
+function resumeFilterDeleteDialog () {
+  filterDeleteBackgroundDismissed.value = false
+  filterDeleteDialogVisible.value = true
+}
+
+function dismissFilterDeleteBackgroundCard () {
+  filterDeleteBackgroundDismissed.value = true
+}
+
+async function cancelBackgroundFilterDeletePreview () {
+  try {
+    await filterDeleteDialogRef.value?.cancelPreviewTask?.()
+  } catch (_) {}
+}
+
+function stopBackgroundFilterDelete () {
+  filterDeleteDialogRef.value?.requestStopDeletion?.()
 }
 
 function fileIcon (name = '') {
@@ -5965,6 +6191,49 @@ function statsStatusTextDisplay (stats) {
 .batch-actions { display: flex; align-items: center; gap: 8px; }
 .selected-count { font-weight: 600; color: #409eff; font-size: 13px; background: #ecf5ff; padding: 3px 10px; border-radius: 10px; }
 .pagination-wrap { margin-top: 20px; display: flex; justify-content: flex-end; }
+.filter-delete-floating-card {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 2100;
+  width: 360px;
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid #d7e6ff;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .98);
+  box-shadow: 0 18px 42px rgba(38, 68, 110, .18);
+  backdrop-filter: blur(8px);
+}
+.filter-delete-floating-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.filter-delete-floating-title { font-size: 14px; font-weight: 700; color: #23426c; }
+.filter-delete-floating-mode { margin-top: 2px; font-size: 12px; color: #71839d; }
+.filter-delete-floating-percent { font-size: 20px; font-weight: 700; color: #2458a6; line-height: 1; }
+.filter-delete-floating-text { font-size: 12px; line-height: 1.5; color: #51657f; }
+.filter-delete-floating-chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.filter-delete-floating-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid #d8e5f8;
+  background: #f5f9ff;
+  font-size: 11px;
+  font-weight: 600;
+  color: #4f6787;
+}
+.filter-delete-floating-path {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #8090a6;
+  word-break: break-all;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f6f9fe;
+}
+.filter-delete-floating-stats { font-size: 12px; font-weight: 600; color: #466182; }
+.filter-delete-floating-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .name-preview, .path-code { font-family: monospace; font-size: 13px; word-break: break-all; }
 .name-preview { padding: 8px 12px; background: #f8f9fa; border: 1px solid #e4e7ed; border-radius: 4px; color: #606266; }
 .subtitle-workbench { display: grid; gap: 14px; }
@@ -6289,6 +6558,7 @@ function statsStatusTextDisplay (stats) {
   .subtitle-scan-result-row { grid-template-columns: 1fr; }
   .subtitle-scan-result-meta { justify-items: start; max-width: none; }
   .subtitle-scan-result-message { text-align: left; max-width: none; }
+  .filter-delete-floating-card { left: 12px; right: 12px; bottom: 12px; width: auto; }
 }
 </style>
 
