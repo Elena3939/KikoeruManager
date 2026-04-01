@@ -440,14 +440,25 @@
                             <span class="subtitle-mini-chip">现有字幕 {{ item.existing_subtitle_count ?? 0 }}</span>
                           </div>
                           <div v-if="item.queue_message" class="subtitle-selection-note">{{ item.queue_message }}</div>
-                          <div v-if="item.queue_state === 'existing_task'" class="subtitle-selection-actions">
+                          <div v-if="item.queue_state === 'existing_task' || canInspectSubtitleSelectionFolder(item)" class="subtitle-selection-actions">
                             <el-button
                               size="small"
                               text
                               type="primary"
                               @click.stop="focusSubtitleSelectionItem(item)"
                             >
-                              打开现有任务
+                              {{ item.queue_state === 'existing_task' ? '打开现有任务' : '检查字幕树' }}
+                            </el-button>
+                            <el-button
+                              v-if="canForceCreateSubtitleTaskForSelection(item)"
+                              size="small"
+                              text
+                              type="success"
+                              :loading="subtitleForceQueueKey === buildSubtitleSelectionKey(item)"
+                              :disabled="Boolean(subtitleForceQueueKey)"
+                              @click.stop="forceCreateSubtitleTaskForSelection(item)"
+                            >
+                              创建一次任务
                             </el-button>
                           </div>
                         </div>
@@ -505,15 +516,15 @@
                           <div v-if="item.queue_message" class="subtitle-selection-note">{{ item.queue_message }}</div>
                           <div class="subtitle-selection-actions">
                             <el-button
-                              v-if="Number(item.existing_subtitle_count || 0) > 0 && !item.task_id"
+                              v-if="canInspectSubtitleSelectionFolder(item)"
                               size="small"
                               text
                               @click.stop="inspectSubtitleSelectionFolder(item)"
                             >
-                              检查现有字幕
+                              检查字幕树
                             </el-button>
                             <el-button
-                              v-if="Number(item.existing_subtitle_count || 0) > 0 && !item.task_id"
+                              v-if="canForceCreateSubtitleTaskForSelection(item)"
                               size="small"
                               text
                               type="success"
@@ -2648,16 +2659,41 @@ function buildMergedSubtitleSelection (directItems, scannedItems) {
   return uniqueSubtitleItems([...mergedDirectItems, ...additionalScannedItems])
 }
 
+function mergeSubtitleSelectionRuntimeState (items, previousItems = subtitleDialogSelection.value) {
+  const previousByKey = new Map((Array.isArray(previousItems) ? previousItems : []).map(item => [buildSubtitleSelectionKey(item), item]))
+  return uniqueSubtitleItems((Array.isArray(items) ? items : []).map(item => {
+    const previous = previousByKey.get(buildSubtitleSelectionKey(item))
+    if (!previous) return item
+    return {
+      ...previous,
+      ...item,
+      rjcode: item.rjcode || previous.rjcode || '',
+      folder_name: item.folder_name || previous.folder_name || getFileName(item.folder_path),
+      folder_path: item.folder_path || previous.folder_path || '',
+      library_id: item.library_id || previous.library_id || selectedLibraryId.value,
+      audio_count: item.audio_count ?? previous.audio_count ?? null,
+      existing_subtitle_count: Math.max(Number(item.existing_subtitle_count || 0), Number(previous.existing_subtitle_count || 0)),
+      status: item.status || previous.status || '',
+      queue_state: item.queue_state || previous.queue_state || '',
+      queue_message: item.queue_message || previous.queue_message || '',
+      task_id: item.task_id || previous.task_id || '',
+      manual_match_completed: Boolean(item.manual_match_completed ?? previous.manual_match_completed),
+      manual_match_applied_pairs: Math.max(0, Number(item.manual_match_applied_pairs ?? (previous.manual_match_applied_pairs || 0))),
+      manual_match_deleted_subtitles: Math.max(0, Number(item.manual_match_deleted_subtitles ?? (previous.manual_match_deleted_subtitles || 0)))
+    }
+  }))
+}
+
 function updateSubtitleSelectionFromScanned (directItems, scannedItems, { sync = true } = {}) {
   const nextSelection = directItems.length
     ? buildMergedSubtitleSelection(directItems, scannedItems)
     : uniqueSubtitleItems(scannedItems)
-  subtitleDialogSelection.value = nextSelection
+  subtitleDialogSelection.value = mergeSubtitleSelectionRuntimeState(nextSelection)
   if (!subtitlePreferredSelectionKey.value) {
-    subtitlePreferredSelectionKey.value = buildSubtitleSelectionKey(nextSelection[0]) || ''
+    subtitlePreferredSelectionKey.value = buildSubtitleSelectionKey(subtitleDialogSelection.value[0]) || ''
   }
   if (sync) syncSubtitleSelectionState()
-  return nextSelection
+  return subtitleDialogSelection.value
 }
 
 function resetSubtitleScanSession () {
@@ -2989,6 +3025,17 @@ function canRetrySubtitleScanResult (item) {
   return Boolean(item?.path) && ['no_audio', 'no_match', 'failed'].includes(item?.status)
 }
 
+function canInspectSubtitleSelectionFolder(item) {
+  if (!item?.folder_path || item?.task_id) return false
+  if (item?.status === 'existing') return true
+  if (Number(item?.existing_subtitle_count || 0) > 0) return true
+  return ['skipped_existing', 'manual_match_completed'].includes(String(item?.queue_state || ''))
+}
+
+function canForceCreateSubtitleTaskForSelection(item) {
+  return canInspectSubtitleSelectionFolder(item)
+}
+
 async function ensureRJSubtitleAvailabilityForItem (item) {
   const rjcode = String(item?.rjcode || '').trim().toUpperCase()
   if (!rjcode) {
@@ -3292,6 +3339,14 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
   }
 }
 
+function startAutoQueueScannedSubtitleItem (item, pendingJobs, options = {}, logLabel = '扫描命中目录自动入任务失败') {
+  const job = Promise.resolve(autoQueueScannedSubtitleItem(item, options)).catch(error => {
+    console.error(`${logLabel}:`, item?.folder_path, error)
+  })
+  if (Array.isArray(pendingJobs)) pendingJobs.push(job)
+  return job
+}
+
 async function openSubtitleTaskPanel () {
   subtitleSelectionRequestToken.value += 1
   subtitleDialogVisible.value = true
@@ -3348,6 +3403,7 @@ async function consumeSubtitleRouteFocus () {
 async function openRJSubtitleDialog (rows = [], options = {}) {
   const { scanCurrentFolder = false } = options
   const requestToken = ++subtitleSelectionRequestToken.value
+  const pendingAutoQueueJobs = []
   const sourceRows = Array.isArray(rows) ? rows : []
   const directItems = sourceRows
     .map(item => item?.folder_path ? item : toRJSubtitleItem(item))
@@ -3373,9 +3429,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
           incrementalScannedItems = uniqueSubtitleItems([...incrementalScannedItems, chunkItem])
           subtitleScannedSelectionItems.value = incrementalScannedItems
           updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, incrementalScannedItems, { sync: true })
-          Promise.resolve(autoQueueScannedSubtitleItem(chunkItem, { requestToken })).catch(error => {
-            console.error('扫描命中目录自动入任务失败:', chunkItem?.folder_path, error)
-          })
+          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken })
         },
         onTargetResult: result => {
           if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -3397,9 +3451,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
           if (subtitleSelectionRequestToken.value !== requestToken) return
           subtitleScannedSelectionItems.value = uniqueSubtitleItems([...subtitleScannedSelectionItems.value, chunkItem])
           updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, subtitleScannedSelectionItems.value, { sync: true })
-          Promise.resolve(autoQueueScannedSubtitleItem(chunkItem, { requestToken })).catch(error => {
-            console.error('当前目录扫描命中后自动入任务失败:', chunkItem?.folder_path, error)
-          })
+          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken }, '当前目录扫描命中后自动入任务失败')
         },
         onTargetResult: result => {
           if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -3415,6 +3467,10 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
       })
     }
 
+    if (subtitleSelectionRequestToken.value !== requestToken) return
+    if (pendingAutoQueueJobs.length) {
+      await Promise.allSettled(pendingAutoQueueJobs)
+    }
     if (subtitleSelectionRequestToken.value !== requestToken) return
     subtitleScannedSelectionItems.value = uniqueSubtitleItems(scannedItems)
     syncSubtitleSelectionState()
@@ -3585,6 +3641,7 @@ async function submitRJSubtitleTasks (items, options = {}) {
 async function startSingleRJSubtitle (item) {
   if (!item?.folder_path) return
   const requestToken = ++subtitleSelectionRequestToken.value
+  const pendingAutoQueueJobs = []
   subtitleDialogVisible.value = true
   resetSubtitleScanRunIndicators()
   subtitleSelectionLoading.value = true
@@ -3615,9 +3672,7 @@ async function startSingleRJSubtitle (item) {
         if (subtitleSelectionRequestToken.value !== requestToken) return
         subtitleScannedSelectionItems.value = uniqueSubtitleItems([...subtitleScannedSelectionItems.value, chunkItem])
         updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, subtitleScannedSelectionItems.value, { sync: true })
-        Promise.resolve(autoQueueScannedSubtitleItem(chunkItem, { requestToken })).catch(error => {
-          console.error('单项扫描命中后自动入任务失败:', chunkItem?.folder_path, error)
-        })
+        startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken }, '单项扫描命中后自动入任务失败')
       },
       onTargetResult: result => {
         if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -3630,7 +3685,13 @@ async function startSingleRJSubtitle (item) {
         subtitleSelectionScanCurrent.value = progress?.currentPath || item.folder_path
       }
     })
+    if (pendingAutoQueueJobs.length) {
+      await Promise.allSettled(pendingAutoQueueJobs)
+    }
+    if (subtitleSelectionRequestToken.value !== requestToken) return
     subtitleScannedSelectionItems.value = uniqueSubtitleItems(scannedItems)
+    syncSubtitleSelectionState()
+    await refreshRJSubtitleStatus(false, { silent: true })
     const resolvedItem = scannedItems.find(candidate => buildSubtitleSelectionKey(candidate) === buildSubtitleSelectionKey(item)) || null
     if (!resolvedItem) {
       if (subtitleScanSession.value.foundDirectories || subtitleScanSession.value.existingSubtitles || subtitleScanSession.value.noSubtitleTargets || subtitleScanSession.value.noAudioTargets || subtitleScanSession.value.noMatchTargets || subtitleScanSession.value.failedTargets) {
@@ -4701,7 +4762,7 @@ async function focusSubtitleSelectionItem (item) {
     await inspectSubtitleTask(matchedTask)
     return
   }
-  if (Number(item.existing_subtitle_count || 0) > 0 || item.queue_state === 'skipped_existing') {
+  if (canInspectSubtitleSelectionFolder(item)) {
     await inspectSubtitleSelectionFolder(item)
     return
   }
@@ -5201,7 +5262,7 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
   if (!item?.folder_path) return
 
   const inspectorLibraryId = item.library_id || selectedLibraryId.value
-  const subtitleDir = joinFolderPath(item.folder_path, 'subtitles')
+  let subtitleDir = joinFolderPath(item.folder_path, 'subtitles')
   subtitlePreferredSelectionKey.value = buildSubtitleSelectionKey(item)
 
   if (
@@ -5216,6 +5277,21 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
   subtitleInspectorLoading.value = true
   try {
+    const existingState = await ensureRJSubtitleExistingStateForItem(item)
+    if (existingState?.subtitleDir) {
+      subtitleDir = existingState.subtitleDir
+    }
+    if (!existingState?.hasExistingSubtitles && !Number(item.existing_subtitle_count || 0) && item.status !== 'existing') {
+      ElMessage.info('当前目录还没有本地字幕，暂时无法打开字幕树工作台')
+      return
+    }
+    upsertSubtitleSelectionEntry(item, {
+      status: existingState?.hasExistingSubtitles ? 'existing' : (item.status || ''),
+      existing_subtitle_count: Math.max(
+        Number(item.existing_subtitle_count || 0),
+        Number(existingState?.existingSubtitleCount || 0)
+      )
+    })
     const [subtitleData, audioData] = await Promise.all([
       libraryApi.browserFolderContents(inspectorLibraryId, subtitleDir),
       libraryApi.browserFolderContents(inspectorLibraryId, item.folder_path)
