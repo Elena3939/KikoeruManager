@@ -336,10 +336,34 @@
         v-if="workbenchDialogInitialized"
         :task-id="activeWorkbenchTaskId"
         :visible="workbenchDialogVisible"
+        :background-active="workbenchBackgroundActive"
         @close="closeImportWorkbench"
+        @hide-background="hideImportWorkbenchToBackground"
         @select-task="openImportedTask"
+        @state-change="handleWorkbenchStateChange"
       />
     </el-dialog>
+
+    <div v-if="workbenchBackgroundActive && !workbenchDialogVisible" class="workbench-background-dock">
+      <div class="workbench-background-card">
+        <div class="workbench-background-main">
+          <div class="workbench-background-title">字幕补配工作台正在后台运行</div>
+          <div class="workbench-background-meta">
+            <span>全部 {{ workbenchBackgroundSummary.total || 0 }}</span>
+            <span>进行中 {{ workbenchBackgroundSummary.processing || 0 }}</span>
+            <span>已完成 {{ workbenchBackgroundSummary.completed || 0 }}</span>
+            <span>失败 {{ workbenchBackgroundSummary.failed || 0 }}</span>
+          </div>
+          <div v-if="workbenchBackgroundSummary.activeTask" class="workbench-background-active">
+            {{ workbenchBackgroundSummary.activeTask.rjcode || '当前任务' }} · {{ workbenchBackgroundSummary.activeTask.title || '-' }} · {{ workbenchBackgroundSummary.activeTask.progressText || workbenchBackgroundSummary.activeTask.statusLabel || '-' }}
+          </div>
+        </div>
+        <div class="workbench-background-actions">
+          <el-button size="small" type="primary" @click="restoreImportWorkbench">恢复工作台</el-button>
+          <el-button size="small" @click="closeImportWorkbench">关闭</el-button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -356,6 +380,9 @@ const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const SUBTITLE_IMPORT_OPTIONS_KEY = 'kikoeru.ui.subtitleImport.workbenchOptions'
 const SUBTITLE_IMPORT_WORKBENCH_TASK_KEY = 'kikoeru.ui.subtitleImport.activeTaskId'
 const SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY = 'kikoeru.ui.subtitleImport.workbenchVisible'
+const SUBTITLE_IMPORT_WORKBENCH_BACKGROUND_KEY = 'kikoeru.ui.subtitleImport.workbenchBackground'
+const SUBTITLE_IMPORT_QUEUE_STATE_KEY = 'kikoeru.ui.subtitleImport.workbenchQueueState'
+const SUBTITLE_IMPORT_TASK_DRAFTS_KEY = 'kikoeru.ui.subtitleImport.taskDrafts'
 const AUTO_IMPORT_POLL_INTERVAL_MS = 2500
 const PENDING_REFRESH_INTERVAL_MS = 1500
 
@@ -465,6 +492,30 @@ function readPersistedWorkbenchDialogVisible() {
   }
 }
 
+function persistWorkbenchBackgroundActive(active) {
+  try {
+    localStorage.setItem(SUBTITLE_IMPORT_WORKBENCH_BACKGROUND_KEY, active ? '1' : '0')
+  } catch (_) {}
+}
+
+function readPersistedWorkbenchBackgroundActive() {
+  try {
+    return localStorage.getItem(SUBTITLE_IMPORT_WORKBENCH_BACKGROUND_KEY) === '1'
+  } catch (_) {
+    return false
+  }
+}
+
+function clearPersistedWorkbenchSession() {
+  try {
+    localStorage.removeItem(SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY)
+    localStorage.removeItem(SUBTITLE_IMPORT_WORKBENCH_BACKGROUND_KEY)
+    localStorage.removeItem(SUBTITLE_IMPORT_WORKBENCH_TASK_KEY)
+    localStorage.removeItem(SUBTITLE_IMPORT_QUEUE_STATE_KEY)
+    localStorage.removeItem(SUBTITLE_IMPORT_TASK_DRAFTS_KEY)
+  } catch (_) {}
+}
+
 function isLinkedSubtitleWorkbenchTask(task = {}) {
   const sourceMode = String(task?.source_mode || '').trim().toLowerCase()
   return ['linked_translation_archive_import', 'subtitle_folder_import'].includes(sourceMode)
@@ -489,7 +540,17 @@ const folderPreview = ref(null)
 const folderCandidateSelection = ref('')
 const activeWorkbenchTaskId = ref(String(route.query.taskId || ''))
 const workbenchDialogVisible = ref(Boolean(route.query.taskId || readPersistedWorkbenchDialogVisible()))
-const workbenchDialogInitialized = ref(Boolean(route.query.taskId || readPersistedWorkbenchTaskId() || readPersistedWorkbenchDialogVisible()))
+const workbenchBackgroundActive = ref(Boolean(!route.query.taskId && readPersistedWorkbenchBackgroundActive()))
+const workbenchDialogInitialized = ref(Boolean(route.query.taskId || readPersistedWorkbenchTaskId() || readPersistedWorkbenchDialogVisible() || readPersistedWorkbenchBackgroundActive()))
+const workbenchBackgroundSummary = ref({
+  total: 0,
+  processing: 0,
+  completed: 0,
+  failed: 0,
+  clearable: 0,
+  selectedTaskId: '',
+  activeTask: null
+})
 const autoImportingPendingId = ref('')
 const autoImportBlockedIds = ref(new Set())
 let autoImportTimer = null
@@ -579,17 +640,25 @@ watch(() => route.query.taskId, (value) => {
     activeWorkbenchTaskId.value = String(value || '')
     persistWorkbenchTaskId(activeWorkbenchTaskId.value)
     workbenchDialogInitialized.value = true
+    workbenchBackgroundActive.value = false
     workbenchDialogVisible.value = true
     return
   }
-  if (!workbenchDialogVisible.value) {
+  if (!workbenchDialogVisible.value && !workbenchBackgroundActive.value) {
     activeWorkbenchTaskId.value = ''
   }
 }, { immediate: true })
 
 watch(workbenchDialogVisible, (visible) => {
   persistWorkbenchDialogVisible(visible)
-  if (!visible) {
+})
+
+watch(workbenchBackgroundActive, (active) => {
+  persistWorkbenchBackgroundActive(active)
+})
+
+watch(() => [workbenchDialogVisible.value, workbenchBackgroundActive.value], ([visible, backgroundActive]) => {
+  if (!visible && !backgroundActive) {
     stopAutoImportPolling()
     const nextQuery = { ...route.query }
     delete nextQuery.taskId
@@ -605,13 +674,22 @@ watch(workbenchDialogVisible, (visible) => {
   startAutoImportPolling()
   queuePendingRefresh({ silent: true })
   queueAutoImportProcessing()
-  if (activeWorkbenchTaskId.value && route.query.taskId !== activeWorkbenchTaskId.value) {
+  if (visible && activeWorkbenchTaskId.value && route.query.taskId !== activeWorkbenchTaskId.value) {
     router.replace({
       path: '/subtitle-import',
       query: {
         ...route.query,
         taskId: activeWorkbenchTaskId.value
       }
+    })
+    return
+  }
+  if (!visible && route.query.taskId) {
+    const nextQuery = { ...route.query }
+    delete nextQuery.taskId
+    router.replace({
+      path: '/subtitle-import',
+      query: nextQuery
     })
   }
 })
@@ -634,7 +712,7 @@ watch(activeWorkbenchTaskId, (taskId) => {
 
 watch(pendingItems, () => {
   pruneAutoImportBlockedIds()
-  if (workbenchDialogVisible.value) {
+  if (workbenchDialogVisible.value || workbenchBackgroundActive.value) {
     queueAutoImportProcessing()
   }
 }, { deep: false })
@@ -675,7 +753,7 @@ async function restoreActiveWorkbenchTask(options = {}) {
     }
     activeWorkbenchTaskId.value = String(matchedTask.id || '')
     persistWorkbenchTaskId(activeWorkbenchTaskId.value)
-    if (route.query.taskId !== activeWorkbenchTaskId.value) {
+    if (workbenchDialogVisible.value && route.query.taskId !== activeWorkbenchTaskId.value) {
       router.replace({
         path: '/subtitle-import',
         query: {
@@ -822,12 +900,12 @@ function startAutoImportPolling() {
 }
 
 function queueAutoImportProcessing() {
-  if (!workbenchDialogVisible.value) return
+  if (!workbenchDialogVisible.value && !workbenchBackgroundActive.value) return
   void processAutoImportQueue()
 }
 
 async function processAutoImportQueue() {
-  if (!workbenchDialogVisible.value) return
+  if (!workbenchDialogVisible.value && !workbenchBackgroundActive.value) return
   if (pendingLoading.value || pendingRefreshing.value || executingPendingId.value || autoImportingPendingId.value) return
   const item = findNextAutoImportItem()
   if (!item) return
@@ -948,6 +1026,7 @@ async function executeFolderImport() {
 function openImportedTask(taskId) {
   const nextTaskId = String(taskId || '')
   workbenchDialogInitialized.value = true
+  workbenchBackgroundActive.value = false
   workbenchDialogVisible.value = true
   if (!nextTaskId) return
   if (activeWorkbenchTaskId.value === nextTaskId && route.query.taskId === nextTaskId) return
@@ -957,13 +1036,48 @@ function openImportedTask(taskId) {
 
 function openImportWorkbench() {
   workbenchDialogInitialized.value = true
+  workbenchBackgroundActive.value = false
   workbenchDialogVisible.value = true
+}
+
+function restoreImportWorkbench() {
+  workbenchDialogInitialized.value = true
+  workbenchBackgroundActive.value = false
+  workbenchDialogVisible.value = true
+}
+
+function hideImportWorkbenchToBackground() {
+  workbenchDialogInitialized.value = true
+  workbenchBackgroundActive.value = true
+  workbenchDialogVisible.value = false
 }
 
 function closeImportWorkbench() {
   workbenchDialogVisible.value = false
-  if (!activeWorkbenchTaskId.value) {
-    persistWorkbenchTaskId('')
+  workbenchBackgroundActive.value = false
+  workbenchDialogInitialized.value = false
+  activeWorkbenchTaskId.value = ''
+  workbenchBackgroundSummary.value = {
+    total: 0,
+    processing: 0,
+    completed: 0,
+    failed: 0,
+    clearable: 0,
+    selectedTaskId: '',
+    activeTask: null
+  }
+  clearPersistedWorkbenchSession()
+}
+
+function handleWorkbenchStateChange(payload) {
+  workbenchBackgroundSummary.value = {
+    total: Number(payload?.total || 0),
+    processing: Number(payload?.processing || 0),
+    completed: Number(payload?.completed || 0),
+    failed: Number(payload?.failed || 0),
+    clearable: Number(payload?.clearable || 0),
+    selectedTaskId: String(payload?.selectedTaskId || ''),
+    activeTask: payload?.activeTask || null
   }
 }
 
@@ -1339,5 +1453,62 @@ function formatSize(size) {
   padding: 0;
   max-height: calc(100vh - 18px);
   overflow: auto;
+}
+
+.workbench-background-dock {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2200;
+}
+
+.workbench-background-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 360px;
+  max-width: min(92vw, 560px);
+  padding: 14px 16px;
+  border: 1px solid rgba(121, 160, 255, 0.28);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(111, 155, 255, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(247, 250, 255, 0.98) 100%);
+  box-shadow: 0 18px 42px rgba(29, 47, 84, 0.18);
+}
+
+.workbench-background-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.workbench-background-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #203252;
+}
+
+.workbench-background-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 12px;
+  color: #5c6c87;
+}
+
+.workbench-background-active {
+  font-size: 12px;
+  color: #30476d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workbench-background-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>

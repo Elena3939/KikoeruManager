@@ -2466,16 +2466,20 @@ class LibraryManager:
         backup_name = f"{target_name}.__prekikoeru_backup__.{uuid.uuid4().hex[:8]}"
         stage_path = str(PurePosixPath(parent) / stage_name)
         backup_path = str(PurePosixPath(parent) / backup_name)
+        target_exists = await self._remote_path_exists(client, target)
 
         await self._upload_directory_to_synology(client, source_dir, stage_path)
         try:
-            await self._retry_remote_rename(client, target, backup_name)
+            if target_exists:
+                await self._retry_remote_rename(client, target, backup_name)
             try:
                 await self._retry_remote_rename(client, stage_path, target_name)
             except Exception:
-                await self._retry_remote_rename(client, backup_path, target_name)
+                if target_exists:
+                    await self._retry_remote_rename(client, backup_path, target_name)
                 raise
-            await self._retry_remote_delete(client, backup_path)
+            if target_exists:
+                await self._retry_remote_delete(client, backup_path)
             return target
         except Exception:
             try:

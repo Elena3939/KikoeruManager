@@ -248,7 +248,25 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="subtitleDialogVisible" title="RJ 字幕抓取" width="1560px" class="subtitle-task-dialog" destroy-on-close>
+    <el-dialog
+      v-model="subtitleDialogVisible"
+      width="1560px"
+      class="subtitle-task-dialog"
+      :destroy-on-close="false"
+      :close-on-click-modal="true"
+      :close-on-press-escape="false"
+      :show-close="false"
+      :before-close="handleSubtitleDialogBeforeClose"
+    >
+      <template #header>
+        <div class="subtitle-dialog-header">
+          <div class="subtitle-dialog-title">RJ 字幕抓取</div>
+          <div class="subtitle-dialog-header-actions">
+            <el-button size="small" @click="hideSubtitleTaskPanelToBackground">隐藏到后台</el-button>
+            <el-button size="small" @click="closeSubtitleTaskPanel">关闭</el-button>
+          </div>
+        </div>
+      </template>
       <div class="subtitle-workbench">
         <section class="subtitle-hero">
           <div>
@@ -981,6 +999,31 @@
       @state-change="handleFilterDeleteDialogStateChange"
     />
 
+    <div v-if="showSubtitleBackgroundCard" class="subtitle-floating-card">
+      <div class="subtitle-floating-head">
+        <div>
+          <div class="subtitle-floating-title">RJ 字幕工作台正在后台运行</div>
+          <div class="subtitle-floating-mode">
+            {{ subtitleBackgroundActiveTask ? `${getTaskDisplayRJCode(subtitleBackgroundActiveTask)} · ${subtitleBackgroundActiveTask.folder_name || getFileName(subtitleBackgroundActiveTask.folder_path) || '-'}` : '保留当前扫描与任务状态' }}
+          </div>
+        </div>
+        <div class="subtitle-floating-count">{{ subtitleTasks.length }}</div>
+      </div>
+      <div class="subtitle-floating-chip-row">
+        <span class="subtitle-floating-chip">任务 {{ subtitleTasks.length }}</span>
+        <span class="subtitle-floating-chip">执行中 {{ subtitleTasks.filter(task => task.status === 'processing').length }}</span>
+        <span class="subtitle-floating-chip">等待中 {{ subtitleTasks.filter(task => task.status === 'pending').length }}</span>
+        <span class="subtitle-floating-chip">扫描命中 {{ subtitleDialogSelection.length }}</span>
+      </div>
+      <div class="subtitle-floating-text">
+        {{ subtitleBackgroundActiveTask?.current_step || subtitleSelectionProgressText || '隐藏后继续保留任务队列和当前焦点。' }}
+      </div>
+      <div class="subtitle-floating-actions">
+        <el-button size="small" type="primary" @click="resumeSubtitleTaskPanelFromBackground">恢复工作台</el-button>
+        <el-button size="small" @click="closeSubtitleTaskPanel">关闭</el-button>
+      </div>
+    </div>
+
     <div v-if="showFilterDeleteBackgroundCard" class="filter-delete-floating-card">
       <div class="filter-delete-floating-head">
         <div>
@@ -1222,6 +1265,7 @@ const filterDeleteBackgroundPrimaryText = computed(() => {
   return filterDeleteBackgroundState.value.progressMessage || (filterDeleteBackgroundState.value.mode === 'delete' ? '正在后台删除…' : '正在后台预审…')
 })
 const subtitleDialogVisible = ref(false)
+const subtitleDialogBackgroundActive = ref(false)
 const subtitleSubmitting = ref(false)
 const subtitleTasksLoading = ref(false)
 const subtitleConnectivityLoading = ref(false)
@@ -1469,6 +1513,14 @@ const subtitleTaskManualOverview = computed(() => ([
   { key: 'awaiting_manual_match', label: '筛选并匹配', value: subtitleTasks.value.filter(task => task.awaiting_manual_match).length },
   { key: 'manual_match_completed', label: '已匹配完成', value: subtitleTasks.value.filter(task => task.manual_match_completed).length }
 ]).filter(item => item.key === 'all' || item.value > 0))
+const subtitleDialogSessionActive = computed(() => subtitleDialogVisible.value || subtitleDialogBackgroundActive.value)
+const showSubtitleBackgroundCard = computed(() => subtitleDialogBackgroundActive.value && !subtitleDialogVisible.value)
+const subtitleBackgroundActiveTask = computed(() => (
+  activeSubtitleTask.value
+  || sortSubtitleTasksForWorkbench(subtitleTasks.value).find(task => ['processing', 'pending'].includes(task?.status))
+  || sortSubtitleTasksForWorkbench(subtitleTasks.value)[0]
+  || null
+))
 function subtitleTaskTimeValue (task, field = 'created_at') {
   const raw = task?.[field]
   const value = raw ? Date.parse(raw) : NaN
@@ -1978,7 +2030,7 @@ async function resumeLibraryPage () {
   bindLibraryKeydown()
   await refreshLibrary({ silent: true })
   await refreshStats(false, { silent: true })
-  if (subtitleDialogVisible.value) {
+  if (subtitleDialogSessionActive.value) {
     await refreshRJSubtitleStatus(false, { silent: true })
   }
 }
@@ -2125,6 +2177,7 @@ watch(subtitleOptions, value => {
 
 watch([
   subtitleDialogVisible,
+  subtitleDialogBackgroundActive,
   subtitleSelectionLoading,
   subtitleSelectionScanDone,
   subtitleSelectionScanTotal,
@@ -2151,15 +2204,15 @@ watch(() => subtitleOptions.value.namingStrategy, () => {
   syncSubtitlePairTargetNames()
 })
 
-watch(subtitleDialogVisible, async visible => {
-  if (!visible) {
+watch([subtitleDialogVisible, subtitleDialogBackgroundActive], async ([visible, backgroundActive]) => {
+  if (!visible && !backgroundActive) {
     clearSubtitleStatusPoll()
     subtitleActiveTaskId.value = ''
     subtitleScanRetryingPath.value = ''
     subtitleSelectionScanCurrent.value = ''
     return
   }
-  subtitleActiveTaskId.value = ''
+  if (visible) subtitleActiveTaskId.value = ''
   await refreshRJSubtitleStatus(false, { silent: true })
 })
 
@@ -2284,7 +2337,7 @@ function clearSubtitleStatusPoll () {
 
 function scheduleSubtitleStatusPoll (items) {
   clearSubtitleStatusPoll()
-  if (!subtitleDialogVisible.value) return
+  if (!subtitleDialogSessionActive.value) return
   if ((items || []).some(item => ['pending', 'processing'].includes(item?.status))) {
     subtitleStatusPollTimer = setTimeout(() => refreshRJSubtitleStatus(false, { silent: true }), 3000)
   }
@@ -2594,6 +2647,7 @@ function normalizeStoredSubtitleSkippedSelectionFilter (value = []) {
 function buildSubtitleScanWorkspaceSnapshot () {
   return {
     dialogVisible: Boolean(subtitleDialogVisible.value),
+    backgroundActive: Boolean(subtitleDialogBackgroundActive.value),
     subtitleSelectionLoading: Boolean(subtitleSelectionLoading.value),
     subtitleSelectionScanDone: Math.max(0, Number(subtitleSelectionScanDone.value || 0)),
     subtitleSelectionScanTotal: Math.max(0, Number(subtitleSelectionScanTotal.value || 0)),
@@ -2643,6 +2697,7 @@ function restoreSubtitleScanWorkspace () {
   subtitleExecutableCollapsed.value = Boolean(saved.subtitleExecutableCollapsed)
   subtitleSkippedCollapsed.value = Boolean(saved.subtitleSkippedCollapsed)
   subtitleScanTargetsCollapsed.value = Boolean(saved.subtitleScanTargetsCollapsed)
+  subtitleDialogBackgroundActive.value = Boolean(saved.backgroundActive)
   subtitleDialogVisible.value = Boolean(saved.dialogVisible)
   syncSubtitleSelectionState()
 }
@@ -3368,8 +3423,35 @@ function startAutoQueueScannedSubtitleItem (item, pendingJobs, options = {}, log
   return job
 }
 
+function resumeSubtitleTaskPanelFromBackground () {
+  subtitleDialogBackgroundActive.value = false
+  subtitleDialogVisible.value = true
+}
+
+function hideSubtitleTaskPanelToBackground () {
+  subtitleDialogBackgroundActive.value = true
+  subtitleDialogVisible.value = false
+}
+
+function handleSubtitleDialogBeforeClose () {
+  hideSubtitleTaskPanelToBackground()
+}
+
+function closeSubtitleTaskPanel () {
+  subtitleDialogBackgroundActive.value = false
+  subtitleDialogVisible.value = false
+  clearSubtitleStatusPoll()
+  subtitleActiveTaskId.value = ''
+  subtitleScanRetryingPath.value = ''
+  subtitleSelectionScanCurrent.value = ''
+  clearSubtitleScanWorkspace()
+  clearSubtitleInspectorState()
+  persistSubtitleScanWorkspace()
+}
+
 async function openSubtitleTaskPanel () {
   subtitleSelectionRequestToken.value += 1
+  subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
   clearSubtitleScanWorkspace()
   await nextTick()
@@ -3405,6 +3487,7 @@ async function consumeSubtitleRouteFocus () {
   if (subtitleRouteFocusKey.value === focusKey && subtitleDialogVisible.value) return
 
   subtitleRouteFocusKey.value = focusKey
+  subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
   await nextTick()
   await refreshRJSubtitleStatus(false, { silent: true })
@@ -3430,6 +3513,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
     .map(item => item?.folder_path ? item : toRJSubtitleItem(item))
     .filter(Boolean)
   const shouldScanCurrentFolder = scanCurrentFolder && directItems.length === 0 && Boolean(currentPath.value)
+  subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
   clearSubtitleScanWorkspace()
   subtitleSelectionLoading.value = true
@@ -3666,6 +3750,7 @@ async function startSingleRJSubtitle (item) {
   if (!item?.folder_path) return
   const requestToken = ++subtitleSelectionRequestToken.value
   const pendingAutoQueueJobs = []
+  subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
   resetSubtitleScanRunIndicators()
   subtitleSelectionLoading.value = true
@@ -4980,7 +5065,7 @@ async function refreshCurrentView () {
     if (filterDeleteDialogVisible.value && filterDeleteDialogRef.value?.reload) {
       jobs.push(filterDeleteDialogRef.value.reload())
     }
-    if (subtitleDialogVisible.value) {
+    if (subtitleDialogSessionActive.value) {
       jobs.push(refreshRJSubtitleStatus(false, { silent: true }))
       if (subtitleInspectorInfo.value.subtitleDir && activeSubtitleInspectTask.value) {
         jobs.push(inspectSubtitleTask(activeSubtitleInspectTask.value, { force: true }))
@@ -6391,6 +6476,32 @@ function statsStatusTextDisplay (stats) {
 .filter-delete-floating-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .name-preview, .path-code { font-family: monospace; font-size: 13px; word-break: break-all; }
 .name-preview { padding: 8px 12px; background: #f8f9fa; border: 1px solid #e4e7ed; border-radius: 4px; color: #606266; }
+.subtitle-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.subtitle-dialog-title { font-size: 18px; font-weight: 700; color: #1f2d3d; }
+.subtitle-dialog-header-actions { display: flex; align-items: center; gap: 8px; }
+.subtitle-floating-card {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 2100;
+  width: min(92vw, 420px);
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgba(121, 160, 255, .28);
+  border-radius: 18px;
+  background: radial-gradient(circle at top right, rgba(111, 155, 255, .16), transparent 34%), linear-gradient(180deg, rgba(255, 255, 255, .98) 0%, rgba(247, 250, 255, .98) 100%);
+  box-shadow: 0 18px 42px rgba(29, 47, 84, .18);
+  backdrop-filter: blur(8px);
+}
+.subtitle-floating-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.subtitle-floating-title { font-size: 14px; font-weight: 700; color: #23426c; }
+.subtitle-floating-mode { margin-top: 2px; font-size: 12px; color: #71839d; line-height: 1.45; word-break: break-all; }
+.subtitle-floating-count { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 10px; border-radius: 999px; background: #edf4ff; color: #2458a6; border: 1px solid #d3e2ff; font-size: 13px; font-weight: 700; }
+.subtitle-floating-chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.subtitle-floating-chip { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 999px; border: 1px solid #d8e5f8; background: #f5f9ff; font-size: 11px; font-weight: 600; color: #4f6787; }
+.subtitle-floating-text { font-size: 12px; line-height: 1.5; color: #51657f; word-break: break-all; }
+.subtitle-floating-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .subtitle-workbench { display: grid; gap: 14px; }
 .subtitle-hero { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 18px 20px; border: 1px solid #e4ecf7; border-radius: 18px; background: linear-gradient(135deg, #f8fbff 0%, #f3f8ff 100%); }
 .subtitle-panel-title { font-size: 20px; font-weight: 700; color: #1f2e43; }

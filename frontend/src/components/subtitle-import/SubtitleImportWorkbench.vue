@@ -8,6 +8,7 @@
       <div class="import-workbench-actions">
         <el-button size="small" :loading="taskLoading" @click="refreshTaskStatus(true, { inspect: true, forceInspect: true })">刷新状态</el-button>
         <el-button size="small" :disabled="!clearableTaskCount" :loading="queueClearing" @click="clearFinishedTasks">清空队列</el-button>
+        <el-button size="small" @click="emit('hide-background')">隐藏到后台</el-button>
         <el-button size="small" @click="emit('close')">关闭工作台</el-button>
       </div>
     </div>
@@ -295,6 +296,7 @@
       :library-id="filterDeleteDialogLibraryId"
       :current-path="filterDeleteDialogPath"
       :target-paths="filterDeleteDialogTargetPaths"
+      :rules="subtitleInspectorFilterDeleteRules"
       :scope-label="filterDeleteDialogScopeLabel"
       :is-remote="filterDeleteDialogIsRemote"
       @deleted="handleFilterDeleteDeleted"
@@ -318,14 +320,19 @@ const props = defineProps({
   visible: {
     type: Boolean,
     default: false
+  },
+  backgroundActive: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['close', 'select-task'])
+const emit = defineEmits(['close', 'hide-background', 'select-task', 'state-change'])
 
 const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const SUBTITLE_IMPORT_OPTIONS_KEY = 'kikoeru.ui.subtitleImport.workbenchOptions'
 const SUBTITLE_IMPORT_QUEUE_STATE_KEY = 'kikoeru.ui.subtitleImport.workbenchQueueState'
+const SUBTITLE_IMPORT_TASK_DRAFTS_KEY = 'kikoeru.ui.subtitleImport.taskDrafts'
 
 function loadJson(key, fallback) {
   try {
@@ -363,6 +370,18 @@ function normalizeSubtitleFilterRule(rule = {}) {
   })
 }
 
+function sanitizeSubtitleFilterRules(rules = []) {
+  return (rules || [])
+    .map(rule => normalizeSubtitleFilterRule(rule))
+    .filter(rule => rule.pattern.trim())
+    .map(rule => ({
+      target: rule.target,
+      name: rule.name.trim(),
+      pattern: rule.pattern.trim(),
+      enabled: rule.enabled !== false
+    }))
+}
+
 function loadSubtitleImportOptions() {
   const saved = loadJson(SUBTITLE_IMPORT_OPTIONS_KEY, null)
   if (saved && typeof saved === 'object') return saved
@@ -386,9 +405,9 @@ const subtitleOptions = ref(getSubtitleWorkbenchOptions())
 const taskLoading = ref(false)
 const linkedTasks = ref([])
 const activeTask = ref(null)
-const selectedTaskId = ref('')
-const queuePageSize = 8
 const queueState = loadJson(SUBTITLE_IMPORT_QUEUE_STATE_KEY, {})
+const selectedTaskId = ref(String(queueState.selectedTaskId || ''))
+const queuePageSize = 8
 const queuePage = ref(Math.max(1, Number(queueState.page || 1)))
 const queueClearing = ref(false)
 const retryingTaskId = ref('')
@@ -442,6 +461,142 @@ const subtitleAudioFilterMode = ref('all')
 const subtitleSubtitleFilterMode = ref('all')
 const TASK_STATUS_REFRESH_MS = 4000
 let taskStatusTimer = null
+let skipTaskDraftPersistence = false
+
+function loadTaskDraftMap() {
+  const saved = loadJson(SUBTITLE_IMPORT_TASK_DRAFTS_KEY, {})
+  return saved && typeof saved === 'object' ? saved : {}
+}
+
+function saveTaskDraftMap(value) {
+  saveJson(SUBTITLE_IMPORT_TASK_DRAFTS_KEY, value)
+}
+
+function normalizeDraftPair(pair = {}) {
+  const audioPath = String(pair.audio_path || '').trim()
+  const subtitlePath = String(pair.subtitle_path || '').trim()
+  if (!audioPath || !subtitlePath) return null
+  return {
+    id: String(pair.id || `${audioPath}::${subtitlePath}`),
+    audio_path: audioPath,
+    audio_name: String(pair.audio_name || ''),
+    audio_relative_path: String(pair.audio_relative_path || pair.audio_name || ''),
+    subtitle_path: subtitlePath,
+    subtitle_name: String(pair.subtitle_name || ''),
+    subtitle_relative_path: String(pair.subtitle_relative_path || pair.subtitle_name || ''),
+    confidenceLevel: ['high', 'medium', 'low'].includes(pair.confidenceLevel) ? pair.confidenceLevel : 'medium',
+    matchReason: String(pair.matchReason || '手动配对')
+  }
+}
+
+function buildTaskDraftState() {
+  return {
+    selectedTaskId: String(selectedTaskId.value || ''),
+    audioSearch: String(subtitleInspectorAudioSearch.value || ''),
+    subtitleSearch: String(subtitleInspectorSubtitleSearch.value || ''),
+    audioFilterMode: String(subtitleAudioFilterMode.value || 'all'),
+    subtitleFilterMode: String(subtitleSubtitleFilterMode.value || 'all'),
+    matchSelection: {
+      audioPath: String(subtitleMatchSelection.value.audioPath || ''),
+      subtitlePath: String(subtitleMatchSelection.value.subtitlePath || '')
+    },
+    sequenceMode: Boolean(subtitleSequenceMode.value),
+    sequenceSelection: {
+      audioPaths: [...(subtitleSequenceSelection.value.audioPaths || [])].map(path => String(path || '')).filter(Boolean),
+      subtitlePaths: [...(subtitleSequenceSelection.value.subtitlePaths || [])].map(path => String(path || '')).filter(Boolean)
+    },
+    lastPairBuildMode: String(subtitleLastPairBuildMode.value || ''),
+    selectedManualPairId: String(subtitleSelectedManualPairId.value || ''),
+    manualPairs: (subtitleManualPairs.value || []).map(pair => normalizeDraftPair(pair)).filter(Boolean)
+  }
+}
+
+function persistQueueState() {
+  saveJson(SUBTITLE_IMPORT_QUEUE_STATE_KEY, {
+    page: queuePage.value,
+    selectedTaskId: String(selectedTaskId.value || '')
+  })
+}
+
+function persistSubtitleTaskDraft(taskId = '') {
+  if (skipTaskDraftPersistence) return
+  const normalizedTaskId = String(taskId || subtitleInspectorInfo.value.taskId || activeTask.value?.id || '').trim()
+  if (!normalizedTaskId) return
+  const draftMap = loadTaskDraftMap()
+  draftMap[normalizedTaskId] = buildTaskDraftState()
+  saveTaskDraftMap(draftMap)
+}
+
+function clearSubtitleTaskDraft(taskId = '') {
+  const normalizedTaskId = String(taskId || '').trim()
+  if (!normalizedTaskId) return
+  const draftMap = loadTaskDraftMap()
+  if (!(normalizedTaskId in draftMap)) return
+  delete draftMap[normalizedTaskId]
+  saveTaskDraftMap(draftMap)
+}
+
+function findDraftItem(items, pair, kind) {
+  const targetPath = String(kind === 'audio' ? pair.audio_path : pair.subtitle_path || '').trim()
+  const targetRelativePath = String(kind === 'audio' ? pair.audio_relative_path : pair.subtitle_relative_path || '').trim()
+  const targetName = String(kind === 'audio' ? pair.audio_name : pair.subtitle_name || '').trim()
+  return items.find(item => item.path === targetPath)
+    || items.find(item => String(item.relative_path || item.name || '').trim() === targetRelativePath)
+    || items.find(item => String(item.name || '').trim() === targetName)
+    || null
+}
+
+function restoreSubtitleTaskDraft(taskId = '') {
+  const normalizedTaskId = String(taskId || '').trim()
+  if (!normalizedTaskId) return false
+  const draft = loadTaskDraftMap()[normalizedTaskId]
+  if (!draft || typeof draft !== 'object') return false
+
+  const restoredPairs = (draft.manualPairs || [])
+    .map(pair => normalizeDraftPair(pair))
+    .filter(Boolean)
+    .map(pair => {
+      const audio = findDraftItem(subtitleInspectorAudioFiles.value, pair, 'audio')
+      const subtitle = findDraftItem(subtitleInspectorSubtitleFiles.value, pair, 'subtitle')
+      if (!audio || !subtitle) return null
+      return createSubtitlePair(audio, subtitle, {
+        confidenceLevel: pair.confidenceLevel,
+        matchReason: pair.matchReason
+      })
+    })
+    .filter(Boolean)
+
+  const audioPathSet = new Set(subtitleInspectorAudioFiles.value.map(item => item.path))
+  const subtitlePathSet = new Set(subtitleInspectorSubtitleFiles.value.map(item => item.path))
+
+  subtitleInspectorAudioSearch.value = String(draft.audioSearch || '')
+  subtitleInspectorSubtitleSearch.value = String(draft.subtitleSearch || '')
+  subtitleAudioFilterMode.value = ['all', 'paired', 'unpaired'].includes(draft.audioFilterMode) ? draft.audioFilterMode : 'all'
+  subtitleSubtitleFilterMode.value = ['all', 'paired', 'unpaired'].includes(draft.subtitleFilterMode) ? draft.subtitleFilterMode : 'all'
+  subtitleMatchSelection.value = {
+    audioPath: audioPathSet.has(String(draft.matchSelection?.audioPath || '')) ? String(draft.matchSelection.audioPath || '') : '',
+    subtitlePath: subtitlePathSet.has(String(draft.matchSelection?.subtitlePath || '')) ? String(draft.matchSelection.subtitlePath || '') : ''
+  }
+  subtitleSequenceMode.value = Boolean(draft.sequenceMode)
+  subtitleSequenceSelection.value = {
+    audioPaths: [...(draft.sequenceSelection?.audioPaths || [])].map(path => String(path || '')).filter(path => audioPathSet.has(path)),
+    subtitlePaths: [...(draft.sequenceSelection?.subtitlePaths || [])].map(path => String(path || '')).filter(path => subtitlePathSet.has(path))
+  }
+  subtitleLastPairBuildMode.value = String(draft.lastPairBuildMode || '')
+  subtitleManualPairs.value = restoredPairs
+  subtitleSelectedManualPairId.value = restoredPairs.some(pair => pair.id === draft.selectedManualPairId)
+    ? String(draft.selectedManualPairId || '')
+    : (restoredPairs[0]?.id || '')
+  return Boolean(
+    restoredPairs.length
+    || subtitleSequenceSelection.value.audioPaths.length
+    || subtitleSequenceSelection.value.subtitlePaths.length
+    || subtitleMatchSelection.value.audioPath
+    || subtitleMatchSelection.value.subtitlePath
+    || subtitleInspectorAudioSearch.value
+    || subtitleInspectorSubtitleSearch.value
+  )
+}
 
 watch(() => subtitleOptions.value.namingStrategy, () => {
   syncSubtitlePairTargetNames()
@@ -457,18 +612,38 @@ watch(subtitleOptions, (value) => {
 
 watch(() => props.taskId, async (value) => {
   if (value) selectedTaskId.value = String(value || '')
-  if (!props.visible) return
+  if (!props.visible && !props.backgroundActive) return
   await refreshTaskStatus(false, { inspect: true, forceInspect: true })
 }, { immediate: true })
 
 watch(queuePage, (value) => {
-  saveJson(SUBTITLE_IMPORT_QUEUE_STATE_KEY, { page: value })
+  persistQueueState()
+})
+
+watch(selectedTaskId, () => {
+  persistQueueState()
 })
 
 watch(linkedTasks, (tasks) => {
   const maxPage = Math.max(1, Math.ceil(tasks.length / queuePageSize))
   if (queuePage.value > maxPage) queuePage.value = maxPage
 }, { deep: false })
+
+watch([
+  () => subtitleInspectorInfo.value.taskId,
+  () => subtitleInspectorAudioSearch.value,
+  () => subtitleInspectorSubtitleSearch.value,
+  () => subtitleAudioFilterMode.value,
+  () => subtitleSubtitleFilterMode.value,
+  () => subtitleMatchSelection.value,
+  () => subtitleSequenceMode.value,
+  () => subtitleSequenceSelection.value,
+  () => subtitleLastPairBuildMode.value,
+  () => subtitleManualPairs.value,
+  () => subtitleSelectedManualPairId.value
+], () => {
+  persistSubtitleTaskDraft()
+}, { deep: true })
 
 function normalizeRJSubtitleTaskPayload(task) {
   const trimTail = (items, limit) => Array.isArray(items) ? items.slice(-limit) : []
@@ -942,6 +1117,8 @@ function formatDate(value) {
 }
 
 function clearSubtitleInspectorState() {
+  persistSubtitleTaskDraft()
+  skipTaskDraftPersistence = true
   subtitleInspectorInfo.value = {
     taskId: '',
     libraryId: '',
@@ -959,6 +1136,7 @@ function clearSubtitleInspectorState() {
   subtitleInspectorSelectedIds.value = new Set()
   subtitleInspectorLastSelectedId.value = ''
   resetSubtitleManualMatchState()
+  skipTaskDraftPersistence = false
 }
 
 async function inspectSubtitleTask(task, options = {}) {
@@ -978,12 +1156,14 @@ async function inspectSubtitleTask(task, options = {}) {
 
   subtitleInspectorLoading.value = true
   try {
+    persistSubtitleTaskDraft()
     const audioLibraryId = task.library_id || ''
     const subtitleLibraryId = task.subtitle_library_id || audioLibraryId
     const [subtitleData, audioData] = await Promise.all([
       libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir),
       libraryApi.browserFolderContents(audioLibraryId, task.folder_path)
     ])
+    skipTaskDraftPersistence = true
     subtitleInspectorSearch.value = ''
     subtitleInspectorItems.value = subtitleData.items || []
     subtitleInspectorAudioItems.value = audioData.items || []
@@ -1005,10 +1185,14 @@ async function inspectSubtitleTask(task, options = {}) {
     subtitleInspectorSelectedIds.value = new Set()
     subtitleInspectorLastSelectedId.value = ''
     await nextTick()
-    buildAutoSubtitlePairs()
+    const restored = restoreSubtitleTaskDraft(task.id)
+    if (!restored) buildAutoSubtitlePairs()
+    skipTaskDraftPersistence = false
+    persistSubtitleTaskDraft(task.id)
   } catch (error) {
     ElMessage.error('加载字幕目录失败: ' + decodePossibleMojibake(error.response?.data?.detail || error.message))
   } finally {
+    skipTaskDraftPersistence = false
     subtitleInspectorLoading.value = false
   }
 }
@@ -1514,7 +1698,7 @@ function joinPath(basePath, name) {
 
 const canOpenSubtitleInspectorFilterDeleteDialog = computed(() => Boolean(
   (subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId) &&
-  String(subtitleInspectorInfo.value.subtitleDir || '').trim()
+  String(subtitleInspectorInfo.value.folderPath || subtitleInspectorInfo.value.subtitleDir || '').trim()
 ))
 
 async function applySubtitleCleanup() {
@@ -1636,6 +1820,7 @@ async function applySubtitleManualPairs() {
       namingStrategy: subtitleOptions.value.namingStrategy || 'audio'
     })
 
+    clearSubtitleTaskDraft(currentTaskId)
     await refreshTaskStatus(false, { inspect: true, forceInspect: true })
     ElMessage.success(`已重命名并导入 ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}`)
     clearSubtitleManualPairs()
@@ -1674,14 +1859,19 @@ async function applySubtitleManualPairs() {
 }
 
 async function openSubtitleInspectorFilterDeleteDialog() {
-  const libraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId
+  const folderPath = String(subtitleInspectorInfo.value.folderPath || '').trim()
   const subtitleDir = String(subtitleInspectorInfo.value.subtitleDir || '').trim()
-  if (!libraryId || !subtitleDir) return
+  const useFolderPath = Boolean(folderPath)
+  const libraryId = useFolderPath
+    ? (subtitleInspectorInfo.value.audioLibraryId || subtitleInspectorInfo.value.libraryId)
+    : (subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId)
+  const targetPath = useFolderPath ? folderPath : subtitleDir
+  if (!libraryId || !targetPath) return
   filterDeleteDialogLibraryId.value = libraryId
-  filterDeleteDialogPath.value = subtitleDir
-  filterDeleteDialogTargetPaths.value = [subtitleDir]
-  filterDeleteDialogScopeLabel.value = `${getTaskDisplayRJCode(activeTask.value) || getFileName(subtitleDir) || '当前任务'} 字幕工作区`
-  filterDeleteDialogIsRemote.value = false
+  filterDeleteDialogPath.value = targetPath
+  filterDeleteDialogTargetPaths.value = [targetPath]
+  filterDeleteDialogScopeLabel.value = `${getTaskDisplayRJCode(activeTask.value) || getFileName(targetPath) || '当前任务'} RJ 目录`
+  filterDeleteDialogIsRemote.value = targetPath.startsWith('/')
   filterDeleteDialogVisible.value = true
 }
 
@@ -1735,6 +1925,11 @@ const subtitleInspectorSelectableRows = computed(() => subtitleInspectorFlatTree
 const subtitleInspectorAllSelected = computed(() => subtitleInspectorSelectableRows.value.length > 0 && subtitleInspectorSelectableRows.value.every(row => subtitleInspectorSelectedIds.value.has(row.id)))
 const subtitleInspectorSomeSelected = computed(() => !subtitleInspectorAllSelected.value && subtitleInspectorSelectableRows.value.some(row => subtitleInspectorSelectedIds.value.has(row.id)))
 const subtitleInspectorSelectedRows = computed(() => subtitleInspectorFlatTree.value.filter(row => subtitleInspectorSelectedIds.value.has(row.id)))
+const subtitleInspectorFilterDeleteRules = computed(() => (
+  subtitleOptions.value.useFilterRules !== false
+    ? sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules || [])
+    : []
+))
 const totalQueuePages = computed(() => Math.max(1, Math.ceil(linkedTasks.value.length / queuePageSize)))
 const pagedLinkedTasks = computed(() => {
   const currentPage = Math.min(Math.max(1, queuePage.value), totalQueuePages.value)
@@ -1765,20 +1960,20 @@ function stopTaskStatusPolling() {
 }
 
 function startTaskStatusPolling() {
-  if (taskStatusTimer || !props.visible) return
+  if (taskStatusTimer || (!props.visible && !props.backgroundActive)) return
   taskStatusTimer = window.setInterval(() => {
-    if (!props.visible) return
+    if (!props.visible && !props.backgroundActive) return
     refreshTaskStatus(false, { inspect: false })
   }, TASK_STATUS_REFRESH_MS)
 }
 
-watch(() => props.visible, async (visible) => {
-  if (!visible) {
+watch(() => [props.visible, props.backgroundActive], async ([visible, backgroundActive]) => {
+  if (!visible && !backgroundActive) {
     stopTaskStatusPolling()
     return
   }
   startTaskStatusPolling()
-  await refreshTaskStatus(false, { inspect: true, forceInspect: true })
+  await refreshTaskStatus(false, { inspect: visible, forceInspect: visible })
 }, { immediate: true })
 
 watch(activeTask, async (task) => {
@@ -1794,6 +1989,30 @@ watch(activeTask, async (task) => {
 onUnmounted(() => {
   stopTaskStatusPolling()
 })
+
+const workbenchStatePayload = computed(() => ({
+  total: linkedTasks.value.length,
+  processing: processingTaskCount.value,
+  completed: completedTaskCount.value,
+  failed: failedTaskCount.value,
+  clearable: clearableTaskCount.value,
+  selectedTaskId: String(selectedTaskId.value || ''),
+  activeTask: activeTask.value ? {
+    id: activeTask.value.id,
+    rjcode: getTaskDisplayRJCode(activeTask.value),
+    title: activeTask.value.folder_name || getFileName(activeTask.value.folder_path),
+    statusLabel: getTaskStatusLabel(activeTask.value),
+    progressText: getTaskProgressText(activeTask.value),
+    currentStep: String(activeTask.value.current_step || ''),
+    downloadedCount: Number(activeTask.value.downloaded_count || 0),
+    manualMatchCompleted: Boolean(activeTask.value.manual_match_completed),
+    awaitingManualMatch: Boolean(activeTask.value.awaiting_manual_match)
+  } : null
+}))
+
+watch(workbenchStatePayload, (value) => {
+  emit('state-change', value)
+}, { deep: true, immediate: true })
 
 const subtitleWorkbenchCtx = computed(() => ({
   subtitleInspectorInfo: subtitleInspectorInfo.value,

@@ -589,45 +589,48 @@ class LinkedSubtitleImportService:
         if not normalized_target_folder:
             raise ValueError("缺少目标目录，无法应用字幕补配结果")
 
+        workbench_subtitle_dir = os.path.abspath(subtitle_dir)
+        if not os.path.isdir(workbench_subtitle_dir):
+            raise FileNotFoundError(f"字幕工作台目录不存在: {workbench_subtitle_dir}")
+
         if library.type == "synology_filestation":
             target_subtitle_dir = f"{normalized_target_folder.rstrip('/')}/subtitles"
-            workbench_subtitle_dir = os.path.abspath(subtitle_dir)
-            if not os.path.isdir(workbench_subtitle_dir):
-                raise FileNotFoundError(f"字幕工作台目录不存在: {workbench_subtitle_dir}")
             client = SynologyFileStationClient(library.synology)
             await self.library_manager._ensure_remote_directory(client, normalized_target_folder)
-            await self.library_manager._ensure_remote_directory(client, target_subtitle_dir)
-            for root, _, files in os.walk(workbench_subtitle_dir):
-                relative_root = os.path.relpath(root, workbench_subtitle_dir)
-                remote_dir = target_subtitle_dir if relative_root == "." else str(PurePosixPath(target_subtitle_dir) / relative_root.replace(os.sep, "/"))
-                await self.library_manager._ensure_remote_directory(client, remote_dir)
-                for filename in files:
-                    staged_file = os.path.join(root, filename)
-                    await client.upload_file(remote_dir, staged_file, overwrite=True, remote_name=filename)
+            await self.library_manager.replace_remote_directory_with_local(
+                library_id=library_id,
+                source_dir=workbench_subtitle_dir,
+                target_path=target_subtitle_dir,
+            )
             shutil.rmtree(workbench_root_dir, ignore_errors=True)
             self._cleanup_empty_workbench_shell(workbench_root_dir)
             return target_subtitle_dir
 
-        workbench_subtitle_dir = os.path.abspath(subtitle_dir)
         target_folder = os.path.abspath(normalized_target_folder)
         target_subtitle_dir = os.path.join(target_folder, "subtitles")
-        if not os.path.isdir(workbench_subtitle_dir):
-            raise FileNotFoundError(f"字幕工作台目录不存在: {workbench_subtitle_dir}")
-        os.makedirs(target_subtitle_dir, exist_ok=True)
-        for root, dirs, files in os.walk(workbench_subtitle_dir):
-            relative_root = os.path.relpath(root, workbench_subtitle_dir)
-            destination_root = target_subtitle_dir if relative_root == "." else os.path.join(target_subtitle_dir, relative_root)
-            os.makedirs(destination_root, exist_ok=True)
-            for directory in dirs:
-                os.makedirs(os.path.join(destination_root, directory), exist_ok=True)
-            for filename in files:
-                source_file = os.path.join(root, filename)
-                destination_file = os.path.join(destination_root, filename)
-                if os.path.isdir(destination_file):
-                    shutil.rmtree(destination_file, ignore_errors=True)
-                elif os.path.exists(destination_file):
-                    os.remove(destination_file)
-                shutil.move(source_file, destination_file)
+        target_parent_dir = os.path.dirname(target_subtitle_dir)
+        target_name = os.path.basename(target_subtitle_dir.rstrip("\\/")) or "subtitles"
+        stage_dir = os.path.join(target_parent_dir, f"{target_name}.__prekikoeru_stage__.{uuid.uuid4().hex[:8]}")
+        backup_dir = os.path.join(target_parent_dir, f"{target_name}.__prekikoeru_backup__.{uuid.uuid4().hex[:8]}")
+        os.makedirs(target_parent_dir, exist_ok=True)
+
+        try:
+            shutil.copytree(workbench_subtitle_dir, stage_dir)
+            if os.path.exists(target_subtitle_dir):
+                os.replace(target_subtitle_dir, backup_dir)
+            os.replace(stage_dir, target_subtitle_dir)
+            if os.path.exists(backup_dir):
+                shutil.rmtree(backup_dir, ignore_errors=True)
+        except Exception:
+            if os.path.exists(stage_dir):
+                shutil.rmtree(stage_dir, ignore_errors=True)
+            if os.path.exists(backup_dir) and not os.path.exists(target_subtitle_dir):
+                try:
+                    os.replace(backup_dir, target_subtitle_dir)
+                except Exception:
+                    logger.warning("[字幕补配] 恢复本地字幕目录失败: %s -> %s", backup_dir, target_subtitle_dir, exc_info=True)
+            raise
+
         try:
             shutil.rmtree(workbench_root_dir, ignore_errors=True)
             self._cleanup_empty_workbench_shell(workbench_root_dir)
@@ -745,13 +748,55 @@ class LinkedSubtitleImportService:
         if not selected_candidate and len(ready_candidates) == 1:
             selected_candidate = ready_candidates[0]
 
+        source_rjcode = str(preview.get("source_rjcode") or "").strip()
+        is_translation_work = bool(preview.get("is_translation_work"))
+        is_manual_subtitle_source = bool(preview.get("is_manual_subtitle_source"))
+        subtitle_count = int(preview.get("subtitle_count") or 0)
+        source_exists_in_kikoeru = bool(preview.get("kikoeru_source_found"))
+        target_exists_in_kikoeru = bool(preview.get("kikoeru_has_work"))
+        target_needs_subtitle_in_kikoeru = bool(preview.get("kikoeru_needs_subtitle"))
+        kikoeru_route_confident = bool(preview.get("kikoeru_route_confident", True))
+
         stage_reason = str(preview.get("stage_reason") or "")
         source_subtitle_probe_status = str(preview.get("source_subtitle_probe_status") or "").strip().lower()
         source_subtitle_probe_reason = str(preview.get("source_subtitle_probe_reason") or "").strip()
         candidate_search_status = str(preview.get("candidate_search_status") or "")
         candidate_search_reason = str(preview.get("candidate_search_reason") or "")
-        subtitle_count = int(preview.get("subtitle_count") or 0)
-        can_stage_pending = bool(preview.get("should_queue_pending")) and (
+
+        should_queue_pending = False
+        if is_translation_work:
+            should_queue_pending = (
+                bool(source_rjcode)
+                and not source_exists_in_kikoeru
+                and (
+                    target_needs_subtitle_in_kikoeru
+                    or not kikoeru_route_confident
+                )
+                and subtitle_count > 0
+            )
+        elif is_manual_subtitle_source:
+            should_queue_pending = (
+                bool(source_rjcode)
+                and subtitle_count > 0
+                and (
+                    target_needs_subtitle_in_kikoeru
+                    or not kikoeru_route_confident
+                )
+            )
+
+        treat_as_new_work = bool(preview.get("treat_as_new_work"))
+        if (
+            is_manual_subtitle_source
+            and bool(source_rjcode)
+            and kikoeru_route_confident
+            and not target_exists_in_kikoeru
+            and not candidates
+            and candidate_search_status != "pending_remote"
+        ):
+            treat_as_new_work = True
+            stage_reason = "未命中任何关联作品，按新作直接解压入库"
+
+        can_stage_pending = should_queue_pending and (
             not stage_reason or candidate_search_status == "pending_remote"
         )
         can_execute = can_stage_pending and subtitle_count > 0 and len(ready_candidates) > 0
@@ -775,6 +820,9 @@ class LinkedSubtitleImportService:
         preview.update({
             "selected_candidate": selected_candidate,
             "ready_candidate_count": len(ready_candidates),
+            "treat_as_new_work": treat_as_new_work,
+            "should_queue_pending": should_queue_pending,
+            "stage_reason": stage_reason,
             "can_stage_pending": can_stage_pending,
             "can_execute": can_execute,
             "can_auto_import": bool(selected_candidate and can_execute),
@@ -1136,10 +1184,10 @@ class LinkedSubtitleImportService:
                 seen_paths.add(dedupe_key)
                 candidates.append(summary)
 
-        async def collect_library_candidates(library: Dict[str, Any]) -> List[Dict[str, Any]]:
+        async def collect_library_candidates(library: Dict[str, Any]) -> Dict[str, Any]:
             library_id = str(library.get("id") or "").strip()
             if not library_id:
-                return []
+                return {"summaries": [], "uncertain": False}
 
             logger.info(
                 "[字幕补配] 开始搜索目标目录: library=%s type=%s rj=%s",
@@ -1149,12 +1197,12 @@ class LinkedSubtitleImportService:
             )
             direct_summary = await self._locate_direct_rj_candidate(library_id, target_rjcode)
             if direct_summary:
-                return [direct_summary]
+                return {"summaries": [direct_summary], "uncertain": False}
             try:
                 search_items = await self._search_library_browser_candidates(library_id, target_rjcode)
             except Exception as exc:
                 logger.warning("[字幕补配] 搜索目标目录失败: library=%s rj=%s error=%s", library_id, target_rjcode, exc)
-                return []
+                return {"summaries": [], "uncertain": True}
 
             logger.info(
                 "[字幕补配] 目标目录搜索完成: library=%s type=%s total=%s",
@@ -1179,7 +1227,7 @@ class LinkedSubtitleImportService:
 
                 if summary:
                     results.append(summary)
-            return results
+            return {"summaries": results, "uncertain": False}
 
         local_libraries = [item for item in ordered_libraries if item.get("type") != "synology_filestation"]
         remote_libraries = [item for item in ordered_libraries if item.get("type") == "synology_filestation"]
@@ -1192,7 +1240,7 @@ class LinkedSubtitleImportService:
             if isinstance(result, Exception):
                 logger.warning("[字幕补配] 本地目标目录搜索失败: %s", result)
                 continue
-            for summary in result:
+            for summary in list((result or {}).get("summaries") or []):
                 library_id = str(summary.get("library_id") or "").strip()
                 folder_path = str(summary.get("folder_path") or "").strip()
                 dedupe_key = (library_id, folder_path)
@@ -1210,6 +1258,7 @@ class LinkedSubtitleImportService:
             try:
                 pending_remote_tasks = set(remote_tasks.keys())
                 remote_match_found = False
+                remote_search_uncertain = False
                 while pending_remote_tasks:
                     done, pending_remote_tasks = await asyncio.wait(
                         pending_remote_tasks,
@@ -1225,10 +1274,13 @@ class LinkedSubtitleImportService:
                                 library.get("id") or "",
                                 exc,
                             )
+                            remote_search_uncertain = True
                             continue
 
+                        result_summaries = list((result or {}).get("summaries") or [])
+                        remote_search_uncertain = remote_search_uncertain or bool((result or {}).get("uncertain"))
                         appended_count = 0
-                        for summary in result:
+                        for summary in result_summaries:
                             library_id = str(summary.get("library_id") or "").strip()
                             folder_path = str(summary.get("folder_path") or "").strip()
                             dedupe_key = (library_id, folder_path)
@@ -1251,7 +1303,7 @@ class LinkedSubtitleImportService:
                             pending_remote_tasks.clear()
                             break
 
-                if not remote_match_found:
+                if not remote_match_found and remote_search_uncertain:
                     remote_search_pending = True
                     logger.info("[字幕补配] 远程目标目录暂未检出: rj=%s", target_rjcode)
             finally:
@@ -1427,14 +1479,14 @@ class LinkedSubtitleImportService:
                 and subtitle_count > 0
             )
         elif is_manual_subtitle_source:
+            # 手动字幕包如果 Kikoeru 明确未命中原作，就按新作品处理；
+            # 只有“原作存在但缺字幕”时才进入字幕补配工作台。
             should_queue_pending = (
                 bool(source_rjcode)
                 and subtitle_count > 0
                 and (
                     target_needs_subtitle_in_kikoeru
                     or not kikoeru_route_confident
-                    or bool(candidates)
-                    or candidate_search_status == "pending_remote"
                 )
             )
 
