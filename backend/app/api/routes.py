@@ -4287,6 +4287,7 @@ class RJSubtitleStartRequest(BaseModel):
     overwrite_existing: bool = False
     enable_metadata_match: bool = True
     skip_if_existing_subtitles: bool = False
+    force_rerun: bool = False
     naming_strategy: str = "audio"
     use_filter_rules: bool = False
     subtitle_filter_rules: List[dict] = []
@@ -4669,7 +4670,8 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                     "library_id": library_id,
                     "overwrite": request.overwrite_existing,
                     "enable_metadata_match": request.enable_metadata_match,
-                    "skip_if_existing_subtitles": request.skip_if_existing_subtitles,
+                    "skip_if_existing_subtitles": False if request.force_rerun else request.skip_if_existing_subtitles,
+                    "force_rerun": request.force_rerun,
                     "existing_subtitle_count": resolved_existing_subtitle_count,
                     "naming_strategy": request.naming_strategy,
                     "use_filter_rules": request.use_filter_rules,

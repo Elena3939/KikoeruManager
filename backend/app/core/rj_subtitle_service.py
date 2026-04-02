@@ -1232,7 +1232,11 @@ class RJSubtitleService:
                 retained[(normalized.get('ext') or '', unique_key)] = normalized
                 continue
 
-            dedupe_key = (normalized.get('ext') or '', fingerprint)
+            # Only collapse exact same-content subtitles when their normalized file names
+            # are also the same. Different names may represent different track groups
+            # that happen to share identical subtitle text and should be preserved.
+            subtitle_name_key = str(normalized.get('name') or '').strip().lower()
+            dedupe_key = (normalized.get('ext') or '', fingerprint, subtitle_name_key)
             existing = retained.get(dedupe_key)
             if existing is None:
                 retained[dedupe_key] = normalized
@@ -1597,6 +1601,50 @@ class RJSubtitleService:
             logger.warning('[RJ字幕] 获取远程已有字幕列表异常，按空结果继续: %s', exc)
             return names
         return names
+
+    async def clear_existing_subtitles_for_folder(
+        self,
+        folder_path: str,
+        library_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        subtitle_dir = ''
+        deleted_subtitles = 0
+
+        if library_id:
+            from .library_manager import SynologyFileStationClient, get_library_manager
+
+            manager = get_library_manager()
+            library = manager.get_library_definition(library_id)
+            if library.type == 'synology_filestation':
+                if not library.synology:
+                    raise RuntimeError('远程库存未配置群晖连接参数')
+                folder_info = await manager.folder_contents(library_id, folder_path)
+                remote_items = folder_info.get('items') or []
+                deleted_subtitles = self._count_remote_existing_subtitles(remote_items)
+                subtitle_dir = manager._normalize_remote_path(str(PurePosixPath(folder_path) / 'subtitles'))
+                client = SynologyFileStationClient(library.synology)
+                try:
+                    await client.delete(subtitle_dir)
+                except Exception as exc:
+                    if not self._is_synology_error_codes(exc, 118, 119, 408):
+                        raise
+                return {
+                    'subtitle_dir': subtitle_dir,
+                    'deleted_subtitles': deleted_subtitles,
+                    'deleted': deleted_subtitles > 0,
+                }
+
+        folder = Path(folder_path)
+        subtitle_path = folder / 'subtitles'
+        subtitle_dir = str(subtitle_path)
+        deleted_subtitles = self._count_existing_subtitles(folder)
+        if subtitle_path.exists():
+            shutil.rmtree(subtitle_path)
+        return {
+            'subtitle_dir': subtitle_dir,
+            'deleted_subtitles': deleted_subtitles,
+            'deleted': deleted_subtitles > 0,
+        }
 
     def _build_written_subtitle_record(self, item: Dict, output_name: str, match_type: str = '原始抓取') -> Dict:
         return {

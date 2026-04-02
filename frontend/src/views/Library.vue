@@ -977,6 +977,7 @@
       :scope-label="filterDeleteDialogScopeLabel"
       :is-remote="filterDeleteDialogIsRemote"
       @deleted="handleFilterDeleteDeleted"
+      @dismiss-background="handleFilterDeleteDialogDismissBackground"
       @state-change="handleFilterDeleteDialogStateChange"
     />
 
@@ -1195,6 +1196,7 @@ const filterDeleteBackgroundState = ref({
 const filterDeleteBackgroundNow = ref(Date.now())
 let filterDeleteBackgroundTimer = null
 const filterDeleteBackgroundDismissed = ref(false)
+const filterDeleteBackgroundSessionKey = ref('')
 const showFilterDeleteBackgroundCard = computed(() => (
   !filterDeleteDialogVisible.value
   && !filterDeleteBackgroundDismissed.value
@@ -2436,6 +2438,25 @@ function getFileName (path) {
   return String(path).split(/[\\/]/).pop()
 }
 
+function getParentPath (path) {
+  const normalized = String(path || '').replace(/[\\/]+$/, '')
+  if (!normalized) return ''
+  const index = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+  return index >= 0 ? normalized.slice(0, index) : ''
+}
+
+function normalizeConflictPathKey (path) {
+  return String(path || '')
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/\/$/, '')
+    .toLowerCase()
+}
+
+function buildRenameConflictKey (path, targetName) {
+  return `${normalizeConflictPathKey(getParentPath(path))}::${String(targetName || '').trim().toLowerCase()}`
+}
+
 function escapeLibrarySearchHtml (value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -3551,15 +3572,17 @@ async function rescanSubtitleSelectionTarget (target) {
 }
 
 async function submitRJSubtitleTasks (items, options = {}) {
-  const { silent = false, refresh = true, skipIfExistingSubtitlesOverride = null } = options
+  const { silent = false, refresh = true, skipIfExistingSubtitlesOverride = null, forceRerun = false } = options
   if (!Array.isArray(items) || !items.length) {
     if (!silent) ElMessage.warning('没有可执行的 RJ 文件夹')
     return null
   }
 
-  const effectiveSkipIfExistingSubtitles = typeof skipIfExistingSubtitlesOverride === 'boolean'
-    ? skipIfExistingSubtitlesOverride
-    : subtitleOptions.value.skipIfExistingSubtitles
+  const effectiveSkipIfExistingSubtitles = forceRerun
+    ? false
+    : typeof skipIfExistingSubtitlesOverride === 'boolean'
+      ? skipIfExistingSubtitlesOverride
+      : subtitleOptions.value.skipIfExistingSubtitles
   const localSkippedItems = []
   const executableItems = []
 
@@ -3605,6 +3628,7 @@ async function submitRJSubtitleTasks (items, options = {}) {
       overwriteExisting: subtitleOptions.value.overwriteExisting,
       enableMetadataMatch: subtitleOptions.value.enableMetadataMatch,
       skipIfExistingSubtitles: effectiveSkipIfExistingSubtitles,
+      forceRerun,
       namingStrategy: subtitleOptions.value.namingStrategy,
       useFilterRules: subtitleOptions.value.useFilterRules,
       subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules)
@@ -4270,8 +4294,23 @@ async function applySubtitleManualPairs () {
     item => !subtitleManualPairs.value.some(pair => pair.subtitle_path === item.path)
   )
   const unusedSubtitlePathSet = new Set(unusedSubtitleRows.map(item => item.path).filter(Boolean))
+  const audioPairConflictMap = new Map()
+  const subtitlePairConflictMap = new Map()
+
+  subtitleManualPairs.value.forEach(pair => {
+    const audioKey = buildRenameConflictKey(pair.audio_path, pair.target_audio_name)
+    const subtitleKey = buildRenameConflictKey(pair.subtitle_path, pair.target_subtitle_name)
+    audioPairConflictMap.set(audioKey, (audioPairConflictMap.get(audioKey) || 0) + 1)
+    subtitlePairConflictMap.set(subtitleKey, (subtitlePairConflictMap.get(subtitleKey) || 0) + 1)
+  })
+
   const audioConflicts = subtitleManualPairs.value.filter(pair => {
-    const existing = subtitleInspectorAudioFiles.value.find(item => item.name === pair.target_audio_name)
+    const targetKey = buildRenameConflictKey(pair.audio_path, pair.target_audio_name)
+    if ((audioPairConflictMap.get(targetKey) || 0) > 1) return true
+    const existing = subtitleInspectorAudioFiles.value.find(item => (
+      item.name === pair.target_audio_name &&
+      buildRenameConflictKey(item.path, item.name) === targetKey
+    ))
     return existing && existing.path !== pair.audio_path
   })
   if (audioConflicts.length) {
@@ -4279,7 +4318,12 @@ async function applySubtitleManualPairs () {
     return
   }
   const subtitleConflicts = subtitleManualPairs.value.filter(pair => {
-    const existing = subtitleInspectorSubtitleFiles.value.find(item => item.name === pair.target_subtitle_name)
+    const targetKey = buildRenameConflictKey(pair.subtitle_path, pair.target_subtitle_name)
+    if ((subtitlePairConflictMap.get(targetKey) || 0) > 1) return true
+    const existing = subtitleInspectorSubtitleFiles.value.find(item => (
+      item.name === pair.target_subtitle_name &&
+      buildRenameConflictKey(item.path, item.name) === targetKey
+    ))
     if (existing?.path && unusedSubtitlePathSet.has(existing.path)) return false
     return existing && existing.path !== pair.subtitle_path
   })
@@ -4853,7 +4897,22 @@ async function rerunSubtitleTask (task) {
   subtitleTaskRerunId.value = task.id
   subtitlePreferredSelectionKey.value = buildSubtitleSelectionKey(selectionItem)
   try {
-    await forceCreateSubtitleTaskForSelection(selectionItem)
+    const data = await submitRJSubtitleTasks([selectionItem], {
+      silent: false,
+      refresh: true,
+      skipIfExistingSubtitlesOverride: false,
+      forceRerun: true
+    })
+    const createdTask = data?.tasks?.[0] || null
+    if (createdTask?.task_id) {
+      upsertSubtitleTaskLocal(createOptimisticSubtitleTask(selectionItem, createdTask.task_id))
+      upsertSubtitleSelectionEntry(selectionItem, {
+        task_id: createdTask.task_id,
+        queue_state: 'queued',
+        queue_message: '已强制清理旧字幕并重新加入任务'
+      })
+      subtitleActiveTaskId.value = createdTask.task_id
+    }
   } finally {
     if (subtitleTaskRerunId.value === task.id) subtitleTaskRerunId.value = ''
   }
@@ -5936,8 +5995,24 @@ async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount
 function handleFilterDeleteDialogStateChange (state = {}) {
   const status = state.status || 'idle'
   const startedAt = Number(state.startedAt || 0)
-  if (Boolean(state.active) || Boolean(state.reviewable)) {
-    filterDeleteBackgroundDismissed.value = false
+  const nextHasBackground = Boolean(state.active) || Boolean(state.reviewable)
+  const prevHasBackground = Boolean(filterDeleteBackgroundState.value.active) || Boolean(filterDeleteBackgroundState.value.reviewable)
+  const nextSessionKey = nextHasBackground
+    ? [
+        state.mode || 'preview',
+        startedAt,
+        state.scopeLabel || '',
+        filterDeleteDialogLibraryId.value || '',
+        filterDeleteDialogPath.value || ''
+      ].join('::')
+    : ''
+  if (nextHasBackground) {
+    if (!prevHasBackground || nextSessionKey !== filterDeleteBackgroundSessionKey.value) {
+      filterDeleteBackgroundDismissed.value = false
+    }
+    filterDeleteBackgroundSessionKey.value = nextSessionKey
+  } else {
+    filterDeleteBackgroundSessionKey.value = ''
   }
   filterDeleteBackgroundState.value = {
     active: Boolean(state.active),
@@ -5990,6 +6065,10 @@ function handleFilterDeleteDialogStateChange (state = {}) {
 function resumeFilterDeleteDialog () {
   filterDeleteBackgroundDismissed.value = false
   filterDeleteDialogVisible.value = true
+}
+
+function handleFilterDeleteDialogDismissBackground () {
+  filterDeleteBackgroundDismissed.value = true
 }
 
 function dismissFilterDeleteBackgroundCard () {

@@ -1990,6 +1990,7 @@ class TaskEngine:
         library_id = task.task_metadata.get('library_id') or None
         overwrite = bool(task.task_metadata.get('overwrite', False))
         enable_metadata_match = bool(task.task_metadata.get('enable_metadata_match', True))
+        force_rerun = bool(task.task_metadata.get('force_rerun', False))
         naming_strategy = str(task.task_metadata.get('naming_strategy') or 'audio').lower()
         use_filter_rules = bool(task.task_metadata.get('use_filter_rules', False))
         subtitle_filter_rules = task.task_metadata.get('subtitle_filter_rules') or []
@@ -2020,6 +2021,31 @@ class TaskEngine:
                 task.task_metadata['progress_log'] = logs[-30:]
 
             append_progress_log("准备扫描 RJ 文件夹", 5)
+
+            if force_rerun:
+                task.update_progress(6, "强制清理旧字幕目录")
+                append_progress_log("强制清理旧字幕目录", 6, 'warning')
+                cleanup_result = await rj_service.clear_existing_subtitles_for_folder(
+                    folder_path=folder_path,
+                    library_id=library_id,
+                )
+                deleted_subtitles = int(cleanup_result.get('deleted_subtitles') or 0)
+                task.task_metadata.update({
+                    'force_rerun_deleted_subtitles': deleted_subtitles,
+                    'force_rerun_cleared_subtitle_dir': cleanup_result.get('subtitle_dir', ''),
+                    'existing_subtitle_count': 0,
+                    'subtitle_dir': '',
+                    'written_files': [],
+                    'skipped_files': [],
+                    'write_errors': [],
+                    'failed_files': [],
+                    'match_result': {},
+                    'downloaded_count': 0,
+                })
+                if deleted_subtitles > 0:
+                    append_progress_log(f"已清理旧字幕 {deleted_subtitles} 个，开始重新抓取", 6, 'warning')
+                else:
+                    append_progress_log("未发现旧字幕，按强制模式重新抓取", 6, 'warning')
 
             if bool(task.task_metadata.get('skip_if_existing_subtitles')) and rjcode != "未知":
                 kikoeru_state = await rj_service.check_kikoeru_existing_subtitles(rjcode)

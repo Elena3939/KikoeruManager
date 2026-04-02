@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" width="1240px" class="fm-dialog filter-delete-dialog">
+  <el-dialog v-model="visible" width="1240px" class="fm-dialog filter-delete-dialog" :show-close="false">
     <template #header>
       <div class="fm-header">
         <div class="fm-title">
@@ -7,8 +7,9 @@
           <span class="fm-badge">{{ scopeLabel || getFileName(currentPath) || filterDeletePreviewInfo.folderName || text.currentFolder }}</span>
         </div>
         <div class="fd-header-actions">
-          <button v-if="filterDeleteBusy" type="button" class="fm-btn fm-btn-primary" @click="visible = false">{{ text.hideBackground }}</button>
+          <button v-if="filterDeleteBusy" type="button" class="fm-btn fm-btn-primary" @click="hideFilterDeleteToBackground">{{ text.hideBackground }}</button>
           <div class="fm-count">{{ filterDeleteSelectedRoots.length }} / {{ filterDeletePreviewInfo.selectedCount }} {{ text.pendingDeleteSuffix }}</div>
+          <button type="button" class="fd-close-btn" :aria-label="text.close" @click="closeFilterDeleteDialog">×</button>
         </div>
       </div>
     </template>
@@ -159,8 +160,8 @@
     <template #footer>
       <el-button v-if="filterDeleteLoading" @click="cancelFilterDeletePreview()">{{ text.cancelPreview }}</el-button>
       <el-button v-if="filterDeleteDeleting" @click="requestCancelFilterDeleteDeletion()">{{ text.stopDelete }}</el-button>
-      <el-button v-if="filterDeleteBusy" type="primary" plain @click="visible = false">{{ text.hideBackground }}</el-button>
-      <el-button v-else @click="visible = false">{{ text.close }}</el-button>
+      <el-button v-if="filterDeleteBusy" type="primary" plain @click="hideFilterDeleteToBackground">{{ text.hideBackground }}</el-button>
+      <el-button v-else @click="closeFilterDeleteDialog">{{ text.close }}</el-button>
       <el-button type="danger" :disabled="!canConfirmFilterDelete" :loading="filterDeleteDeleting" @click="confirmFilterDeleteSelection">{{ text.confirmDelete }}</el-button>
     </template>
   </el-dialog>
@@ -227,7 +228,7 @@ const props = defineProps({
   isRemote: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['update:modelValue', 'deleted', 'state-change'])
+const emit = defineEmits(['update:modelValue', 'deleted', 'state-change', 'dismiss-background'])
 
 const visible = computed({
   get: () => props.modelValue,
@@ -433,6 +434,15 @@ function handleDialogKeydown (event) {
     filterDeleteSelectedIds.value = new Set(getFilterDeleteSelectableIds())
     filterDeleteLastSelectedId.value = filterDeleteSelectableRows.value.at(-1)?.id || ''
   }
+}
+
+function hideFilterDeleteToBackground () {
+  visible.value = false
+}
+
+function closeFilterDeleteDialog () {
+  emit('dismiss-background')
+  visible.value = false
 }
 
 function clearFilterDeletePoll () {
@@ -1115,6 +1125,23 @@ onBeforeUnmount(() => {
 .fd-chip { display: inline-flex; align-items: center; padding: 7px 11px; border-radius: 999px; border: 1px solid #e6ebf2; background: #f4f6f9; font-size: 12px; font-weight: 600; color: #59697f; }
 .fd-progress { margin: 0 16px 12px; font-size: 12px; line-height: 1.5; color: #7c8ba1; }
 .fd-header-actions { display: flex; align-items: center; gap: 10px; }
+.fd-close-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  color: #7c8ba1;
+  cursor: pointer;
+  transition: background 0.16s, color 0.16s;
+}
+.fd-close-btn:hover {
+  background: #f4f6f9;
+  color: #2f3d4f;
+}
 .fd-progress-bar { margin: 0 16px 12px; }
 .fd-background-tip { margin: 0 16px 12px; padding: 9px 12px; border: 1px dashed #cfe0ff; border-radius: 10px; background: #f5f9ff; font-size: 12px; color: #4c6791; }
 .fm-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 9px 16px; background: #f8f9fa; border-top: 1px solid #f3f4f6; border-bottom: 1px solid #e4e7ed; }

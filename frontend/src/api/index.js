@@ -794,6 +794,7 @@ export const rjSubtitleApi = {
       overwrite_existing: options.overwriteExisting ?? false,
       enable_metadata_match: options.enableMetadataMatch ?? true,
       skip_if_existing_subtitles: options.skipIfExistingSubtitles ?? false,
+      force_rerun: options.forceRerun ?? false,
       naming_strategy: options.namingStrategy ?? 'audio',
       use_filter_rules: options.useFilterRules ?? false,
       subtitle_filter_rules: options.subtitleFilterRules || []
