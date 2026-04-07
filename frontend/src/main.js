@@ -17,4 +17,6 @@ app.use(pinia)
 app.use(router)
 app.use(ElementPlus)
 
-app.mount('#app')
+router.isReady().finally(() => {
+  app.mount('#app')
+})

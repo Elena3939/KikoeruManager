@@ -133,6 +133,12 @@ class TaskCenterService:
         domain = self._infer_domain(task)
         source_path = self._safe_text(task.source_path)
         output_path = self._safe_text(task.output_path)
+        resolved_target_path = (
+            output_path
+            or self._safe_text(metadata.get("subtitle_dir"))
+            or self._safe_text(metadata.get("target_folder_path"))
+            or self._safe_text(metadata.get("folder_path"))
+        )
         route_hint = self.DOMAIN_ROUTE_HINT.get(domain, "/tasks")
         rjcode = (
             self._safe_text(getattr(task, "rjcode", ""))
@@ -189,6 +195,18 @@ class TaskCenterService:
             self._append_metric(metrics, "类型", task.type.value)
             self._append_metric(metrics, "RJ", rjcode)
 
+        recovered_notice = self._safe_text(metadata.get("recovered_notice"))
+        recovered_failure_count = int(metadata.get("recovered_failure_count") or 0)
+        recovered_conflict_count = int(metadata.get("recovered_conflict_count") or 0)
+        if recovered_failure_count > 0:
+            self._append_metric(metrics, "此前失败", f"{recovered_failure_count} 次")
+        if recovered_conflict_count > 0:
+            self._append_metric(metrics, "问题作品", f"已移除 {recovered_conflict_count} 项")
+
+        current_step = self._safe_text(task.current_step) or "等待中"
+        if task.status == TaskStatus.COMPLETED and recovered_notice:
+            current_step = recovered_notice
+
         return {
             "id": f"engine:{task.id}",
             "entity_id": task.id,
@@ -206,10 +224,10 @@ class TaskCenterService:
             "status": task.status.value,
             "status_label": self.STATUS_LABELS.get(task.status.value, task.status.value),
             "progress": int(task.progress or 0),
-            "current_step": self._safe_text(task.current_step) or "等待中",
+            "current_step": current_step,
             "error_message": self._safe_text(task.error_message),
             "source_path": source_path,
-            "target_path": output_path,
+            "target_path": resolved_target_path,
             "rjcode": rjcode,
             "created_at": self._safe_iso(task.created_at),
             "started_at": self._safe_iso(task.started_at),
@@ -221,6 +239,13 @@ class TaskCenterService:
                 "metadata": self._json_safe(metadata),
             },
         }
+
+    def _is_superseded_failed_item(self, item: Dict[str, Any]) -> bool:
+        if self._safe_text(item.get("status")) != TaskStatus.FAILED.value:
+            return False
+        details = dict(item.get("details") or {})
+        metadata = dict(details.get("metadata") or {})
+        return bool(self._safe_text(metadata.get("superseded_by_task_id")))
 
     def _serialize_pending_subtitle_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         preview = dict(item.get("preview") or {})
@@ -371,13 +396,15 @@ class TaskCenterService:
         items = [self._serialize_engine_task(task) for task in engine.get_all_tasks()]
 
         subtitle_import_service = get_linked_subtitle_import_service()
-        pending_items = await subtitle_import_service.list_pending_imports()
+        pending_items = await subtitle_import_service.list_pending_imports(refresh_candidates=False)
         items.extend(self._serialize_pending_subtitle_item(item) for item in pending_items)
 
         waiting_retry_items = engine.get_waiting_retry_tasks_from_db()
         items.extend(self._serialize_waiting_retry_item(item) for item in waiting_retry_items)
 
-        return self._sort_items(self._dedupe_items(items))
+        items = self._dedupe_items(items)
+        items = [item for item in items if not self._is_superseded_failed_item(item)]
+        return self._sort_items(items)
 
     async def list_items(
         self,

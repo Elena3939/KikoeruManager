@@ -306,23 +306,84 @@ class TaskEngine:
             status="PENDING",
         )
 
+    def _infer_failure_stage(self, task: Task, reason: str) -> str:
+        metadata = dict(task.task_metadata or {})
+        explicit_stage = str(metadata.get("failure_stage") or "").strip().lower()
+        if explicit_stage:
+            return explicit_stage
+
+        current_step = str(task.current_step or "").strip()
+        combined_text = f"{current_step} {reason}".lower()
+        stage_map = [
+            ("extract", ["解压", "密码", "压缩包"]),
+            ("metadata", ["元数据", "metadata"]),
+            ("rename", ["重命名", "rename"]),
+            ("filter", ["过滤", "filter"]),
+            ("classify", ["分类", "库存", "移动到库存"]),
+            ("archive", ["归档", "archive"]),
+        ]
+        for stage, keywords in stage_map:
+            if any(keyword.lower() in combined_text for keyword in keywords):
+                return stage
+        return "process"
+
+    def _record_problem_work_for_task_failure(self, task: Task, rjcode: Optional[str], reason: str):
+        """把导入流程中的失败统一写入问题作品，避免任务中心失败但问题作品页为空。"""
+        from .classifier import SmartClassifier
+
+        source_path = str(task.source_path or "").strip()
+        if not source_path or not os.path.exists(source_path):
+            return
+
+        normalized_rjcode = (rjcode or "").strip()
+        if normalized_rjcode == "未知":
+            normalized_rjcode = ""
+        if not normalized_rjcode:
+            normalized_rjcode = self._extract_rjcode(source_path) or ""
+
+        failure_stage = self._infer_failure_stage(task, reason)
+        conflict_type = "EXTRACT_FAILED" if failure_stage == "extract" else "PROCESS_FAILED"
+        metadata = dict(task.task_metadata or {})
+        metadata.update({
+            "failure_stage": failure_stage,
+            "error_message": reason,
+            "available_actions": ["RETRY", "SKIP"],
+            "source_task_type": task.type.value,
+            "failed_task_id": task.id,
+            "failed_step": str(task.current_step or "").strip(),
+            "failed_progress": int(task.progress or 0),
+        })
+
+        classifier = SmartClassifier()
+        classifier._add_to_conflict_works(
+            task.id,
+            normalized_rjcode or None,
+            conflict_type,
+            "",
+            source_path,
+            metadata,
+            status="PENDING",
+        )
+
     def _resolve_retry_extract_conflict(self, task: Task):
-        """当问题作品中的解压失败项重试成功后，将原记录标记为已处理。"""
+        """当问题作品中的失败项重试成功后，将原记录和旧失败任务标记为已恢复。"""
         if task.status != TaskStatus.COMPLETED:
             return
 
         metadata = dict(task.task_metadata or {})
         conflict_id = str(metadata.get("retry_conflict_id") or "").strip()
         source_path = str(metadata.get("retry_conflict_source_path") or task.source_path or "").strip()
+        failed_task_id = str(metadata.get("retry_failed_task_id") or "").strip()
         if not conflict_id and not source_path:
-            return
+            if not failed_task_id:
+                return
 
         from ..models.database import ConflictWork, get_db
 
         db = next(get_db())
         try:
             query = db.query(ConflictWork).filter(
-                ConflictWork.conflict_type == "EXTRACT_FAILED",
+                ConflictWork.conflict_type.in_(["EXTRACT_FAILED", "PROCESS_FAILED"]),
                 ConflictWork.status == "PENDING",
             )
             conflict = None
@@ -330,23 +391,154 @@ class TaskEngine:
                 conflict = query.filter(ConflictWork.id == conflict_id).first()
             if not conflict and source_path:
                 conflict = query.filter(ConflictWork.new_path == source_path).first()
-            if not conflict:
-                return
 
-            next_metadata = dict(conflict.new_metadata or {})
-            next_metadata["retry_result"] = "completed"
-            next_metadata["retry_completed_at"] = datetime.now().isoformat()
-            next_metadata["retry_task_id"] = task.id
-            if task.output_path:
-                next_metadata["retry_output_path"] = task.output_path
+            if conflict:
+                next_metadata = dict(conflict.new_metadata or {})
+                next_metadata["retry_result"] = "completed"
+                next_metadata["retry_completed_at"] = datetime.now().isoformat()
+                next_metadata["retry_task_id"] = task.id
+                if task.output_path:
+                    next_metadata["retry_output_path"] = task.output_path
 
-            conflict.new_metadata = next_metadata
-            conflict.status = "RETRIED"
+                conflict.new_metadata = next_metadata
+                conflict.status = "RETRIED"
+
+            if failed_task_id:
+                failed_task = self.get_task(failed_task_id)
+                if failed_task and failed_task.id != task.id and failed_task.status == TaskStatus.FAILED:
+                    failed_task.status = TaskStatus.COMPLETED
+                    failed_task.completed_at = datetime.now()
+                    failed_task.error_message = None
+                    failed_task.current_step = f"已由重试任务恢复: {task.id}"
+                    if task.output_path and not failed_task.output_path:
+                        failed_task.output_path = task.output_path
+
             db.commit()
-            logger.info("解压失败问题项重试成功，已移出问题作品: conflict_id=%s task_id=%s", conflict.id, task.id)
+            if conflict:
+                logger.info("失败问题项重试成功，已移出问题作品: conflict_id=%s task_id=%s", conflict.id, task.id)
         except Exception as exc:
             db.rollback()
             logger.error("更新解压失败问题项状态失败: %s", exc, exc_info=True)
+        finally:
+            db.close()
+
+    def _task_matches_recovered_success(self, candidate: Task, source_path: str, rjcode: str, recovered_task_id: str) -> bool:
+        if not candidate or candidate.id == recovered_task_id or candidate.status != TaskStatus.FAILED:
+            return False
+
+        candidate_rjcode = self._extract_rjcode(
+            getattr(candidate, "rjcode", "")
+            or (candidate.task_metadata or {}).get("actual_rjcode")
+            or (candidate.task_metadata or {}).get("target_rjcode")
+            or (candidate.task_metadata or {}).get("rjcode")
+            or (candidate.task_metadata or {}).get("inferred_rjcode")
+        )
+        if rjcode and candidate_rjcode and candidate_rjcode == rjcode:
+            return True
+
+        candidate_source_path = str(candidate.source_path or "").strip()
+        if source_path and candidate_source_path and os.path.abspath(candidate_source_path) == os.path.abspath(source_path):
+            return True
+
+        return False
+
+    def _resolve_completed_failure_followups(self, task: Task):
+        """普通任务后续成功时，自动移除同源/同 RJ 的失败问题项，并标记旧失败已恢复。"""
+        if task.status != TaskStatus.COMPLETED:
+            return
+
+        metadata = dict(task.task_metadata or {})
+        source_path = str(task.source_path or "").strip()
+        rjcode = self._extract_rjcode(
+            getattr(task, "rjcode", "")
+            or metadata.get("actual_rjcode")
+            or metadata.get("target_rjcode")
+            or metadata.get("rjcode")
+            or metadata.get("inferred_rjcode")
+        )
+
+        recovered_conflict_ids: list[str] = []
+        recovered_failed_task_ids: list[str] = []
+
+        from ..models.database import ConflictWork, get_db
+
+        db = next(get_db())
+        try:
+            query = db.query(ConflictWork).filter(
+                ConflictWork.conflict_type.in_(["EXTRACT_FAILED", "PROCESS_FAILED"]),
+                ConflictWork.status == "PENDING",
+            )
+
+            if source_path and rjcode:
+                conflicts = query.filter(
+                    (ConflictWork.new_path == source_path) | (ConflictWork.rjcode == rjcode)
+                ).all()
+            elif source_path:
+                conflicts = query.filter(ConflictWork.new_path == source_path).all()
+            elif rjcode:
+                conflicts = query.filter(ConflictWork.rjcode == rjcode).all()
+            else:
+                conflicts = []
+
+            for conflict in conflicts:
+                next_metadata = dict(conflict.new_metadata or {})
+                next_metadata["retry_result"] = "completed"
+                next_metadata["retry_completed_at"] = datetime.now().isoformat()
+                next_metadata["retry_task_id"] = task.id
+                next_metadata["retry_auto_resolved"] = True
+                if task.output_path:
+                    next_metadata["retry_output_path"] = task.output_path
+                conflict.new_metadata = next_metadata
+                conflict.status = "RETRIED"
+                recovered_conflict_ids.append(str(conflict.id))
+
+                failed_task_id = str(conflict.task_id or "").strip()
+                if failed_task_id:
+                    failed_task = self.get_task(failed_task_id)
+                    if failed_task and self._task_matches_recovered_success(failed_task, source_path, rjcode, task.id):
+                        failed_metadata = dict(failed_task.task_metadata or {})
+                        failed_metadata["superseded_by_task_id"] = task.id
+                        failed_metadata["superseded_at"] = datetime.now().isoformat()
+                        failed_metadata["superseded_reason"] = "later_completed"
+                        if task.output_path:
+                            failed_metadata["superseded_output_path"] = task.output_path
+                        failed_task.task_metadata = failed_metadata
+                        recovered_failed_task_ids.append(failed_task.id)
+
+            for candidate in self.tasks.values():
+                if not self._task_matches_recovered_success(candidate, source_path, rjcode, task.id):
+                    continue
+                candidate_metadata = dict(candidate.task_metadata or {})
+                if str(candidate_metadata.get("superseded_by_task_id") or "").strip() == task.id:
+                    continue
+                candidate_metadata["superseded_by_task_id"] = task.id
+                candidate_metadata["superseded_at"] = datetime.now().isoformat()
+                candidate_metadata["superseded_reason"] = "later_completed"
+                if task.output_path:
+                    candidate_metadata["superseded_output_path"] = task.output_path
+                candidate.task_metadata = candidate_metadata
+                recovered_failed_task_ids.append(candidate.id)
+
+            recovered_failed_task_ids = list(dict.fromkeys(recovered_failed_task_ids))
+            recovered_conflict_ids = list(dict.fromkeys(recovered_conflict_ids))
+
+            if recovered_failed_task_ids or recovered_conflict_ids:
+                metadata["recovered_failure_count"] = len(recovered_failed_task_ids)
+                metadata["recovered_failure_ids"] = recovered_failed_task_ids
+                metadata["recovered_conflict_count"] = len(recovered_conflict_ids)
+                metadata["recovered_conflict_ids"] = recovered_conflict_ids
+                notice_parts = []
+                if recovered_failed_task_ids:
+                    notice_parts.append(f"此前 {len(recovered_failed_task_ids)} 条失败已由本次成功覆盖")
+                if recovered_conflict_ids:
+                    notice_parts.append(f"问题作品已自动移除 {len(recovered_conflict_ids)} 项")
+                metadata["recovered_notice"] = "，".join(notice_parts)
+                task.task_metadata = metadata
+
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.error("自动收敛已恢复失败任务失败: %s", exc, exc_info=True)
         finally:
             db.close()
     
@@ -911,11 +1103,14 @@ class TaskEngine:
                 task.cancel()
         except Exception as e:
             logger.error(f"[{rjcode}] 任务失败: {e}", exc_info=True)
+            if task.type in {TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
+                self._record_problem_work_for_task_failure(task, rjcode, str(e))
             task.fail(str(e))
             logger.info(f"[{rjcode}] ========== 任务失败 ==========")
         finally:
             # 清理任务产生的临时文件（无论成功还是失败）
             self._resolve_retry_extract_conflict(task)
+            self._resolve_completed_failure_followups(task)
             await self._cleanup_failed_task(task)
             self.processing.discard(task.id)
             # 清除RJ号处理标记

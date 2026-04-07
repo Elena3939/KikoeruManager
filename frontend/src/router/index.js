@@ -20,7 +20,7 @@ const routes = [
       title: '概览',
       icon: 'HomeFilled',
       closable: false,
-      cache: false
+      cache: true
     }
   },
   {

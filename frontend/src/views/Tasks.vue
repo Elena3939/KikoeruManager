@@ -113,6 +113,21 @@
               <span>{{ item.current_step }}</span>
             </div>
 
+            <div v-if="getRecoveredNotice(item)" class="recovered-banner">
+              <div class="recovered-banner-icon">
+                <el-icon><CircleCheckFilled /></el-icon>
+              </div>
+              <div class="recovered-banner-content">
+                <div class="recovered-banner-title">已恢复</div>
+                <div class="recovered-banner-text">{{ getRecoveredNotice(item) }}</div>
+              </div>
+            </div>
+
+            <div v-if="getOutputPath(item)" class="task-output-row">
+              <span class="task-output-label">输出路径</span>
+              <code class="task-output-value">{{ getOutputPath(item) }}</code>
+            </div>
+
             <div v-if="showProgress(item)" class="task-progress-row">
               <el-progress :percentage="item.progress" :show-text="false" :stroke-width="8" />
               <span class="task-progress-value">{{ item.progress }}%</span>
@@ -172,6 +187,15 @@
 
           <div class="detail-section">
             <span class="detail-section-label">当前状态</span>
+            <div v-if="getRecoveredNotice(selectedItem)" class="detail-recovered-banner">
+              <div class="recovered-banner-icon">
+                <el-icon><CircleCheckFilled /></el-icon>
+              </div>
+              <div class="recovered-banner-content">
+                <div class="recovered-banner-title">已恢复</div>
+                <div class="recovered-banner-text">{{ getRecoveredNotice(selectedItem) }}</div>
+              </div>
+            </div>
             <div class="detail-step">{{ selectedItem.current_step }}</div>
             <div v-if="showProgress(selectedItem)" class="detail-progress">
               <el-progress :percentage="selectedItem.progress" :show-text="false" :stroke-width="10" />
@@ -197,8 +221,8 @@
               <code class="detail-path-value">{{ selectedItem.source_path || '-' }}</code>
             </div>
             <div class="detail-path-row">
-              <span class="detail-path-label">目标路径</span>
-              <code class="detail-path-value">{{ selectedItem.target_path || '-' }}</code>
+              <span class="detail-path-label">输出路径</span>
+              <code class="detail-path-value">{{ getOutputPath(selectedItem) || '-' }}</code>
             </div>
           </div>
 
@@ -225,12 +249,13 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Refresh, Search } from '@element-plus/icons-vue'
+import { CircleCheckFilled, Refresh, Search } from '@element-plus/icons-vue'
 import { taskCenterApi } from '../api'
 
 const router = useRouter()
 
 const loading = ref(false)
+const refreshing = ref(false)
 const overview = ref({
   highlight_counts: {},
   counts_by_domain: {},
@@ -307,9 +332,9 @@ watch(filteredItems, (nextItems) => {
 }, { immediate: true })
 
 onMounted(async () => {
-  await refreshTaskCenter()
+  await refreshTaskCenter(false, { silent: false })
   intervalId = setInterval(() => {
-    refreshTaskCenter(false).catch((error) => {
+    refreshTaskCenter(false, { silent: true }).catch((error) => {
       console.error('任务中心轮询失败:', error)
     })
   }, 5000)
@@ -322,9 +347,16 @@ onUnmounted(() => {
   }
 })
 
-async function refreshTaskCenter(showMessage = false) {
+async function refreshTaskCenter(showMessage = false, options = {}) {
+  const { silent = false } = options
+  if (refreshing.value) {
+    return
+  }
   try {
-    loading.value = true
+    refreshing.value = true
+    if (!silent) {
+      loading.value = true
+    }
     const [overviewData, listData] = await Promise.all([
       taskCenterApi.overview(),
       taskCenterApi.list({ limit: 300 })
@@ -338,7 +370,10 @@ async function refreshTaskCenter(showMessage = false) {
     console.error('获取任务中心失败:', error)
     ElMessage.error('获取任务中心失败: ' + (error.response?.data?.detail || error.message))
   } finally {
-    loading.value = false
+    refreshing.value = false
+    if (!silent) {
+      loading.value = false
+    }
   }
 }
 
@@ -358,6 +393,47 @@ function pickMetricValue(item, label) {
   return metrics.find(metric => metric?.label === label)?.value || ''
 }
 
+function containsRJ(value) {
+  return /[RVB]J(?:\d{8}|\d{6})(?!\d)/i.test(String(value || ''))
+}
+
+function getImportFailureStageLabel(item) {
+  const details = item?.details || {}
+  const metadata = details.metadata || {}
+  const stage = String(metadata.failure_stage || '').trim().toLowerCase()
+  const stageMap = {
+    extract: '解压失败',
+    metadata: '元数据失败',
+    rename: '重命名失败',
+    filter: '过滤失败',
+    classify: '分类失败',
+    archive: '归档失败',
+    process: '处理失败'
+  }
+  if (stageMap[stage]) {
+    return stageMap[stage]
+  }
+  if (String(item?.status || '') === 'failed') {
+    return '处理失败'
+  }
+  return ''
+}
+
+function getOutputPath(item) {
+  if (!item) {
+    return ''
+  }
+  const details = item.details || {}
+  const metadata = details.metadata || {}
+  const preview = details.preview || {}
+  return item.target_path ||
+    metadata.subtitle_dir ||
+    metadata.target_folder_path ||
+    metadata.folder_path ||
+    preview.selected_candidate?.folder_path ||
+    ''
+}
+
 function getTaskSummary(item) {
   if (!item) {
     return []
@@ -367,8 +443,18 @@ function getTaskSummary(item) {
   const metadata = details.metadata || {}
   const preview = details.preview || {}
   const pieces = []
+  const recoveredFailureCount = pickMetricValue(item, '此前失败')
+  const recoveredConflictCount = pickMetricValue(item, '问题作品')
 
-  if (item.domain === 'rj_subtitle') {
+  if (item.domain === 'import') {
+    const targetLibrary = pickMetricValue(item, '目标库')
+    const failureStage = getImportFailureStageLabel(item)
+    if (failureStage) pieces.push(failureStage)
+    if (targetLibrary) pieces.push(`目标库 ${targetLibrary}`)
+    if (!pieces.length && item.rjcode && !containsRJ(item.title) && !containsRJ(item.subtitle)) {
+      pieces.push(item.rjcode)
+    }
+  } else if (item.domain === 'rj_subtitle') {
     const downloadCount = pickMetricValue(item, '下载')
     const writtenCount = pickMetricValue(item, '写入')
     const subtitleDir = item.target_path || metadata.subtitle_dir || ''
@@ -399,11 +485,20 @@ function getTaskSummary(item) {
     if (targetLibrary) pieces.push(`目标库 ${targetLibrary}`)
   }
 
+  if (recoveredFailureCount) pieces.push(`已恢复 ${recoveredFailureCount}`)
+  if (recoveredConflictCount) pieces.push(recoveredConflictCount)
+
   if (!pieces.length && item.current_step) {
     pieces.push(item.current_step)
   }
 
   return pieces.slice(0, 4)
+}
+
+function getRecoveredNotice(item) {
+  const details = item?.details || {}
+  const metadata = details.metadata || {}
+  return String(metadata.recovered_notice || '').trim()
 }
 
 function getStatusTagType(status) {
@@ -717,11 +812,86 @@ function formatDateTime(value) {
   color: rgba(29, 29, 31, 0.54);
 }
 
+.recovered-banner,
+.detail-recovered-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.14), rgba(187, 247, 208, 0.22));
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.16);
+  color: #166534;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.recovered-banner-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #16a34a;
+  flex-shrink: 0;
+}
+
+.recovered-banner-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.recovered-banner-title {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.recovered-banner-text {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.detail-recovered-banner {
+  margin-bottom: 12px;
+}
+
 .task-progress-row {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-top: 12px;
+}
+
+.task-output-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.task-output-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(29, 29, 31, 0.48);
+}
+
+.task-output-value {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #1d1d1f;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
 }
 
 .task-progress-row :deep(.el-progress) {
@@ -738,15 +908,20 @@ function formatDateTime(value) {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+  align-items: center;
 }
 
 .metric-pill {
   display: inline-flex;
-  padding: 5px 10px;
+  align-items: center;
+  min-height: 30px;
+  max-width: 100%;
+  padding: 6px 12px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.92);
   color: rgba(29, 29, 31, 0.72);
   font-size: 12px;
+  line-height: 1.4;
 }
 
 .detail-hero {

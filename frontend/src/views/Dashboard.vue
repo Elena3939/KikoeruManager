@@ -125,6 +125,15 @@
             <div class="source-file-cell">
               <span class="filename">{{ row.title }}</span>
               <span v-if="row.subtitle" class="task-subline">{{ row.subtitle }}</span>
+              <div v-if="getRecoveredNotice(row)" class="recovered-banner">
+                <div class="recovered-banner-icon">
+                  <el-icon><CircleCheckFilled /></el-icon>
+                </div>
+                <div class="recovered-banner-content">
+                  <div class="recovered-banner-title">已恢复</div>
+                  <div class="recovered-banner-text">{{ getRecoveredNotice(row) }}</div>
+                </div>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -328,9 +337,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onActivated, onDeactivated, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { Document, Loading, CircleCheck, Warning, Search, VideoPlay, VideoPause, Refresh, SortDown, SortUp } from '@element-plus/icons-vue'
+import { Document, Loading, CircleCheck, CircleCheckFilled, Warning, Search, VideoPlay, VideoPause, Refresh, SortDown, SortUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { conflictApi, scanApi, watcherApi, processedArchiveApi, taskCenterApi } from '../api'
 import FileUploader from '../components/FileUploader.vue'
@@ -358,6 +367,7 @@ const domainCounts = computed(() => ({
   subtitle_import: Number(taskCenterOverview.value?.counts_by_domain?.subtitle_import || 0),
   asmr_sync: Number(taskCenterOverview.value?.counts_by_domain?.asmr_sync || 0)
 }))
+const dashboardActiveStatuses = new Set(['processing', 'pending', 'paused', 'waiting_manual', 'waiting_retry'])
 
 // 已处理压缩包相关
 const archives = ref([])
@@ -452,30 +462,94 @@ const displayedArchives = computed(() => {
 })
 
 let intervalId
+let dashboardInitialized = false
+let dashboardViewActive = false
+let refreshRunning = false
+let refreshPending = false
+let refreshRequestId = 0
 
 onMounted(async () => {
-  await refreshData()
-  await fetchWatcherStatus()
-  await fetchProcessedArchivesSilently()
-  intervalId = setInterval(refreshData, 3000)
+  await initializeDashboardPage()
+  dashboardViewActive = true
+  startDashboardPolling()
+})
+
+onActivated(async () => {
+  if (dashboardViewActive) return
+  dashboardViewActive = true
+  await refreshDashboardOnResume()
+  startDashboardPolling()
+})
+
+onDeactivated(() => {
+  dashboardViewActive = false
+  stopDashboardPolling()
 })
 
 onUnmounted(() => {
-  if (intervalId) clearInterval(intervalId)
+  dashboardViewActive = false
+  stopDashboardPolling()
+  if (archiveSearchTimeout) {
+    clearTimeout(archiveSearchTimeout)
+    archiveSearchTimeout = null
+  }
 })
 
 let previousCompletedCount = 0
 let lastRefreshTime = 0
 
-async function refreshData() {
-  loading.value = true
+function stopDashboardPolling() {
+  if (intervalId) {
+    clearInterval(intervalId)
+    intervalId = null
+  }
+}
+
+function startDashboardPolling() {
+  stopDashboardPolling()
+  intervalId = setInterval(() => {
+    refreshData({ silent: true })
+  }, 3000)
+}
+
+async function initializeDashboardPage() {
+  if (dashboardInitialized) return
+  await refreshDashboardOnResume(false)
+  dashboardInitialized = true
+}
+
+async function refreshDashboardOnResume(silent = true) {
+  await refreshData({ silent })
+  await fetchWatcherStatus()
+  await fetchProcessedArchivesSilently()
+}
+
+async function refreshData(options = {}) {
+  const { silent = false } = options
+  if (refreshRunning) {
+    refreshPending = true
+    return
+  }
+
+  refreshRunning = true
+  const currentRequestId = ++refreshRequestId
+  if (!silent) {
+    loading.value = true
+  }
 
   try {
-    const overviewData = await taskCenterApi.overview()
+    const [overviewData, listData] = await Promise.all([
+      taskCenterApi.overview(),
+      taskCenterApi.list({ limit: 20 })
+    ])
+    if (currentRequestId !== refreshRequestId) {
+      return
+    }
     taskCenterOverview.value = overviewData || {}
-    const activeItems = Array.isArray(overviewData?.active_items) ? overviewData.active_items : []
-    const recentItems = Array.isArray(overviewData?.recent_items) ? overviewData.recent_items : []
-    recentTasks.value = activeItems.length ? activeItems : recentItems
+    const orderedItems = Array.isArray(listData) ? listData : []
+    const activeItems = orderedItems.filter(item => dashboardActiveStatuses.has(String(item?.status || '')))
+    const recentItems = Array.isArray(overviewData?.recent_items) ? overviewData.recent_items : orderedItems
+    recentTasks.value = activeItems.length ? activeItems.slice(0, 6) : recentItems.slice(0, 5)
 
     // 获取当前完成的任务数
     const currentCompletedCount = Number(overviewData?.counts_by_status?.completed || 0)
@@ -512,7 +586,14 @@ async function refreshData() {
   } catch (error) {
     console.error('获取任务中心概览失败:', error)
   } finally {
-    loading.value = false
+    refreshRunning = false
+    if (!silent) {
+      loading.value = false
+    }
+    if (refreshPending) {
+      refreshPending = false
+      refreshData({ silent: true })
+    }
   }
 }
 
@@ -564,6 +645,8 @@ function getDashboardSummary(row) {
   const preview = details.preview || {}
   const domain = row.domain
   const pieces = []
+  const recoveredFailureCount = pickMetricValue(row, '此前失败')
+  const recoveredConflictCount = pickMetricValue(row, '问题作品')
 
   if (domain === 'rj_subtitle') {
     const downloadCount = pickMetricValue(row, '下载')
@@ -596,11 +679,20 @@ function getDashboardSummary(row) {
     if (targetLibrary) pieces.push(`目标库 ${targetLibrary}`)
   }
 
+  if (recoveredFailureCount) pieces.push(`已恢复 ${recoveredFailureCount}`)
+  if (recoveredConflictCount) pieces.push(recoveredConflictCount)
+
   if (!pieces.length && row.current_step) {
     pieces.push(row.current_step)
   }
 
   return pieces.slice(0, 4)
+}
+
+function getRecoveredNotice(row) {
+  const details = row?.details || {}
+  const metadata = details.metadata || {}
+  return String(metadata.recovered_notice || '').trim()
 }
 
 function getProgressStatus(status) {
@@ -755,7 +847,6 @@ function toggleArchiveSortOrder() {
 
 // 重新处理压缩包
 async function fetchProcessedArchivesSilently() {
-  archivesLoading.value = true
   try {
     await processedArchiveApi.scan()
     const params = {
@@ -769,8 +860,6 @@ async function fetchProcessedArchivesSilently() {
     archives.value = data.archives || []
   } catch (error) {
     console.error('Silent refresh of processed archives failed:', error)
-  } finally {
-    archivesLoading.value = false
   }
 }
 
@@ -1065,6 +1154,51 @@ function formatDate(dateString) {
   align-items: flex-start;
   gap: 4px;
   overflow: hidden;
+}
+
+.recovered-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.16), rgba(134, 239, 172, 0.22));
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.18);
+  color: #166534;
+}
+
+.recovered-banner-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #16a34a;
+  flex-shrink: 0;
+}
+
+.recovered-banner-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.recovered-banner-title {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.recovered-banner-text {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: normal;
 }
 
 .filename {

@@ -106,20 +106,12 @@
     <el-container class="main-frame">
       <el-main class="main-content main-shell">
         <div class="content-shell">
-          <router-view v-slot="{ Component, route: viewRoute }">
-            <keep-alive :include="cachedViews">
-              <component
-                :is="Component"
-                v-if="viewRoute.meta?.cache"
-                :key="viewRoute.name || viewRoute.path"
-              />
-            </keep-alive>
+          <keep-alive :include="cachedViews">
             <component
-              :is="Component"
-              v-if="!viewRoute.meta?.cache"
-              :key="viewRoute.fullPath"
+              :is="currentViewComponent"
+              :key="currentViewKey"
             />
-          </router-view>
+          </keep-alive>
         </div>
       </el-main>
     </el-container>
@@ -142,21 +134,52 @@ import {
   Tickets,
   WarningFilled
 } from '@element-plus/icons-vue'
-import router from './router'
 import { useWatcherStore } from './stores'
+import Dashboard from './views/Dashboard.vue'
+import Tasks from './views/Tasks.vue'
+import Conflicts from './views/Conflicts.vue'
+import Settings from './views/Settings.vue'
+import Logs from './views/Logs.vue'
+import Library from './views/Library.vue'
+import PasswordVault from './views/PasswordVault.vue'
+import ExistingFolders from './views/ExistingFolders.vue'
+import ASMRSync from './views/ASMRSync.vue'
+import LibraryBackup from './views/LibraryBackup.vue'
+import SubtitleImport from './views/SubtitleImport.vue'
+import router from './router'
 
 const appVersion = '1.0.2'
 const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
 const watcherStatus = ref({ is_running: false, watch_path: '', pending_files: [] })
+const routeComponentMap = {
+  Dashboard,
+  Tasks,
+  Conflicts,
+  Settings,
+  Logs,
+  Library,
+  PasswordVault,
+  ExistingFolders,
+  ASMRSync,
+  LibraryBackup,
+  SubtitleImport
+}
+const currentViewComponent = computed(() => routeComponentMap[route.name] || Dashboard)
 const cachedViews = computed(() =>
   router
     .getRoutes()
     .filter((item) => item.meta?.cache && item.name)
-    .map((item) => item.name)
+    .map((item) => String(item.name))
 )
-
+const currentViewKey = computed(() => {
+  const routeName = String(route.name || '')
+  if (cachedViews.value.includes(routeName)) {
+    return routeName || String(route.path || '')
+  }
+  return String(route.fullPath || route.path || '')
+})
 let intervalId = null
 
 onMounted(async () => {
@@ -435,14 +458,6 @@ async function toggleWatcher() {
   .main-content {
     min-height: 0;
   }
-}
-
-:deep(.el-card) {
-  overflow: visible;
-}
-
-:deep(.el-card__body) {
-  overflow-x: auto;
 }
 </style>
 
