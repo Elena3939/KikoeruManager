@@ -8,7 +8,7 @@
         </div>
         <div class="fd-header-actions">
           <button v-if="filterDeleteBusy" type="button" class="fm-btn fm-btn-primary" @click="hideFilterDeleteToBackground">{{ text.hideBackground }}</button>
-          <div class="fm-count">{{ filterDeleteSelectedRoots.length }} / {{ filterDeletePreviewInfo.selectedCount }} {{ text.pendingDeleteSuffix }}</div>
+          <div class="fm-count">{{ filterDeleteSelectedRoots.length }} / {{ filterDeleteSelectableCount }} {{ text.pendingDeleteSuffix }}</div>
           <button type="button" class="fd-close-btn" :aria-label="text.close" @click="closeFilterDeleteDialog">×</button>
         </div>
       </div>
@@ -84,9 +84,24 @@
         <div class="fm-col-check">
           <input type="checkbox" class="fm-check" :checked="filterDeleteAllSelected" :indeterminate.prop="filterDeleteSomeSelected" :disabled="filterDeleteBusy" @click="toggleAllFilterDeleteRows" />
         </div>
-        <div class="fm-col-name">{{ text.fileName }}</div>
-        <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-size">{{ text.size }}</div>
-        <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-time">{{ text.timeAndRule }}</div>
+        <div class="fm-col-name">
+          <button type="button" class="fd-sort-btn" :class="{ active: filterDeleteSortBy === 'name' }" @click="toggleFilterDeleteSort('name')">
+            <span>{{ text.fileName }}</span>
+            <span class="fd-sort-mark">{{ getFilterDeleteSortMark('name') }}</span>
+          </button>
+        </div>
+        <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-size">
+          <button type="button" class="fd-sort-btn fd-sort-btn-end" :class="{ active: filterDeleteSortBy === 'size' }" @click="toggleFilterDeleteSort('size')">
+            <span>{{ text.size }}</span>
+            <span class="fd-sort-mark">{{ getFilterDeleteSortMark('size') }}</span>
+          </button>
+        </div>
+        <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-time">
+          <button type="button" class="fd-sort-btn" :class="{ active: filterDeleteSortBy === 'modified_time' }" @click="toggleFilterDeleteSort('modified_time')">
+            <span>{{ text.timeAndRule }}</span>
+            <span class="fd-sort-mark">{{ getFilterDeleteSortMark('modified_time') }}</span>
+          </button>
+        </div>
         <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-action">{{ text.state }}</div>
       </div>
 
@@ -103,23 +118,24 @@
           :class="{
             'fm-row-dir': row.type === 'dir',
             'fm-row-selected': filterDeleteSelectedIds.has(row.id),
-            'fm-row-disabled': !row.selectable,
+            'fm-row-disabled': !canFilterDeleteSelectRow(row),
             'fd-row-basic': filterDeleteBasicTreeOnly
           }"
           @click="handleFilterDeleteRowClick(row, $event)"
         >
-          <div class="fm-col-check" @click.stop>
+          <div class="fm-col-check" :style="getFilterDeleteCheckCellStyle(row)" @click.stop>
             <input
-              v-if="row.selectable"
+              v-if="canFilterDeleteSelectRow(row)"
               type="checkbox"
               class="fm-check"
-              :checked="filterDeleteSelectedIds.has(row.id)"
+              :checked="isFilterDeleteRowFullySelected(row)"
+              :indeterminate.prop="isFilterDeleteRowPartiallySelected(row)"
               :disabled="filterDeleteBusy"
               @click.stop="toggleFilterDeleteSelect(row, $event)"
             />
           </div>
           <div class="fm-col-name">
-            <div class="fm-name-cell" :style="{ paddingLeft: `${row.depth * 18 + 4}px` }">
+            <div class="fm-name-cell" :style="getFilterDeleteNameCellStyle(row)">
               <button
                 v-if="row.type === 'dir'"
                 type="button"
@@ -149,8 +165,9 @@
             </div>
           </div>
           <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-action">
-            <span v-if="row.selectable" class="fd-status delete-root">{{ text.waitConfirm }}</span>
-            <span v-else class="fd-status delete-covered">{{ text.coveredItem }}</span>
+            <span v-if="hasFilterDeleteSelectedAncestor(row)" class="fd-status delete-covered">{{ text.coveredBySelected }}</span>
+            <span v-else-if="isFilterDeleteRowFullySelected(row)" class="fd-status delete-root">{{ text.waitConfirm }}</span>
+            <span v-else class="fd-status delete-optional">{{ text.individualSelectable }}</span>
           </div>
         </div>
         <div v-if="filterDeleteVirtualBottomPadding" class="fm-virtual-spacer" :style="{ height: `${filterDeleteVirtualBottomPadding}px` }"></div>
@@ -212,8 +229,10 @@ const text = {
   noMatchedItems: '\u65e0\u5339\u914d\u5f85\u5220\u9664\u9879',
   noFilterHits: '\u5f53\u524d\u76ee\u5f55\u672a\u547d\u4e2d\u8fc7\u6ee4\u89c4\u5219',
   coveredByPrefix: '\u968f\u7236\u76ee\u5f55\u5220\u9664\uff1a',
+  coveredBySelected: '\u968f\u76ee\u5f55\u5220\u9664',
   waitConfirm: '\u5f85\u786e\u8ba4',
   coveredItem: '\u76ee\u5f55\u5185\u9879',
+  individualSelectable: '\u53ef\u5355\u72ec\u9009',
   hideBackground: '\u9690\u85cf\u5230\u540e\u53f0',
   close: '\u5173\u95ed'
 }
@@ -281,13 +300,29 @@ const filterDeletePreviewTargetTotal = ref(0)
 const FILTER_DELETE_ROW_HEIGHT = 36
 const FILTER_DELETE_OVERSCAN = 12
 const FILTER_DELETE_VIRTUAL_THRESHOLD = 180
+const FILTER_DELETE_DEFAULT_SORT_BY = 'name'
+const FILTER_DELETE_DEFAULT_SORT_ORDER = 'asc'
 
+const filterDeleteSortBy = ref(FILTER_DELETE_DEFAULT_SORT_BY)
+const filterDeleteSortOrder = ref(FILTER_DELETE_DEFAULT_SORT_ORDER)
 const filterDeleteTreeRoot = computed(() => buildExplicitTree(filterDeleteItems.value))
+const filterDeleteNodeById = computed(() => {
+  const map = new Map()
+  const walk = nodes => {
+    for (const node of nodes || []) {
+      map.set(node.id, node)
+      if (node.children?.length) walk(node.children)
+    }
+  }
+  walk(filterDeleteTreeRoot.value)
+  return map
+})
 const filterDeleteFilteredRoot = computed(() => {
   const keyword = filterDeleteSearch.value.trim().toLowerCase()
   return keyword ? filterExplicitTree(filterDeleteTreeRoot.value, keyword) : filterDeleteTreeRoot.value
 })
-const filterDeleteFlatTree = computed(() => flattenTree(filterDeleteFilteredRoot.value, 0, filterDeleteExpandedIds.value))
+const filterDeleteSortedRoot = computed(() => sortFilterDeleteTree(filterDeleteFilteredRoot.value, filterDeleteSortBy.value, filterDeleteSortOrder.value))
+const filterDeleteFlatTree = computed(() => flattenTree(filterDeleteSortedRoot.value, 0, filterDeleteExpandedIds.value))
 const filterDeleteUseVirtual = computed(() => filterDeleteFlatTree.value.length > FILTER_DELETE_VIRTUAL_THRESHOLD)
 const filterDeleteVirtualRange = computed(() => {
   const total = filterDeleteFlatTree.value.length
@@ -305,10 +340,13 @@ const filterDeleteVisibleRows = computed(() => {
 const filterDeleteVirtualTopPadding = computed(() => filterDeleteUseVirtual.value ? filterDeleteVirtualRange.value.start * FILTER_DELETE_ROW_HEIGHT : 0)
 const filterDeleteVirtualBottomPadding = computed(() => filterDeleteUseVirtual.value ? Math.max(0, (filterDeleteFlatTree.value.length - filterDeleteVirtualRange.value.end) * FILTER_DELETE_ROW_HEIGHT) : 0)
 const filterDeleteTreeHasDirectories = computed(() => filterDeleteItems.value.some(item => item?.type === 'dir'))
-const filterDeleteSelectableRows = computed(() => filterDeleteFlatTree.value.filter(row => row?.selectable))
-const filterDeleteAllSelected = computed(() => filterDeleteSelectableRows.value.length > 0 && filterDeleteSelectableRows.value.every(row => filterDeleteSelectedIds.value.has(row.id)))
-const filterDeleteSomeSelected = computed(() => !filterDeleteAllSelected.value && filterDeleteSelectableRows.value.some(row => row.id && filterDeleteSelectedIds.value.has(row.id)))
-const filterDeleteSelectedRoots = computed(() => filterDeleteItems.value.filter(item => item?.selectable && filterDeleteSelectedIds.value.has(item.id)))
+const filterDeleteSelectableRows = computed(() => filterDeleteFlatTree.value.filter(row => canFilterDeleteSelectRow(row)))
+const filterDeleteBulkSelectableRows = computed(() => buildFilterDeleteBulkRows(filterDeleteSelectableRows.value))
+const filterDeleteAllSelected = computed(() => filterDeleteBulkSelectableRows.value.length > 0 && filterDeleteBulkSelectableRows.value.every(row => isFilterDeleteRowFullySelected(row)))
+const filterDeleteSomeSelected = computed(() => !filterDeleteAllSelected.value && filterDeleteBulkSelectableRows.value.some(row => isFilterDeleteRowFullySelected(row) || isFilterDeleteRowPartiallySelected(row)))
+const filterDeleteSelectableCount = computed(() => filterDeleteItems.value.filter(item => canFilterDeleteSelectRow(item)).length)
+const filterDeleteSelectedRows = computed(() => [...filterDeleteSelectedIds.value].map(id => filterDeleteNodeById.value.get(id)).filter(Boolean))
+const filterDeleteSelectedRoots = computed(() => collectFilterDeleteSelectedRoots(filterDeleteTreeRoot.value))
 const filterDeleteSelectedSize = computed(() => filterDeleteSelectedRoots.value.reduce((sum, item) => sum + Number(item?.size || 0), 0))
 const filterDeleteBasicTreeOnly = computed(() => props.isRemote && filterDeletePreviewInfo.value.sizeDisabled)
 const filterDeleteBusy = computed(() => filterDeleteLoading.value || filterDeleteDeleting.value)
@@ -431,8 +469,8 @@ function handleDialogKeydown (event) {
   const key = String(event.key || '').toLowerCase()
   if ((event.ctrlKey || event.metaKey) && key === 'a') {
     event.preventDefault()
-    filterDeleteSelectedIds.value = new Set(getFilterDeleteSelectableIds())
-    filterDeleteLastSelectedId.value = filterDeleteSelectableRows.value.at(-1)?.id || ''
+    filterDeleteSelectedIds.value = new Set(filterDeleteBulkSelectableRows.value.map(row => row.id))
+    filterDeleteLastSelectedId.value = filterDeleteBulkSelectableRows.value.at(-1)?.id || ''
   }
 }
 
@@ -513,7 +551,7 @@ function restoreFilterDeleteSelectionState (items, options = {}) {
   const allItemIds = new Set(nextItems.map(item => item.id))
   filterDeleteExpandedIds.value = preserveSelection ? new Set([...filterDeleteExpandedIds.value].filter(id => allItemIds.has(id))) : new Set()
   if (preserveSelection) {
-    const nextSelected = new Set([...filterDeleteSelectedIds.value].filter(id => selectableIds.has(id)))
+    const nextSelected = new Set([...filterDeleteSelectedIds.value].filter(id => allItemIds.has(id)))
     filterDeleteSelectedIds.value = nextSelected.size ? nextSelected : new Set(selectableIds)
   } else {
     filterDeleteSelectedIds.value = new Set(selectableIds)
@@ -818,32 +856,49 @@ function selectFilterDeleteRange (targetId, preserveExisting = true) {
   const anchorIndex = rowIds.indexOf(anchorId)
   const [start, end] = [anchorIndex, targetIndex].sort((left, right) => left - right)
   const next = preserveExisting ? new Set(filterDeleteSelectedIds.value) : new Set()
-  rowIds.slice(start, end + 1).forEach(id => next.add(id))
+  rowIds.slice(start, end + 1).forEach(id => {
+    const row = filterDeleteNodeById.value.get(id)
+    if (!row) return
+    getFilterDeleteSelectableSubtreeIds(row).forEach(childId => next.add(childId))
+  })
   filterDeleteSelectedIds.value = next
   filterDeleteLastSelectedId.value = targetId
 }
 
 function toggleFilterDeleteSelect (row, event = null) {
-  if (filterDeleteBusy.value || !row?.selectable) return
+  if (filterDeleteBusy.value || !canFilterDeleteSelectRow(row)) return
   if (event?.shiftKey) {
     selectFilterDeleteRange(row.id, true)
     return
   }
   const next = new Set(filterDeleteSelectedIds.value)
-  next.has(row.id) ? next.delete(row.id) : next.add(row.id)
+  const subtreeIds = getFilterDeleteSelectableSubtreeIds(row)
+  if (next.has(row.id)) {
+    subtreeIds.forEach(id => next.delete(id))
+  } else {
+    subtreeIds.forEach(id => next.add(id))
+  }
   filterDeleteSelectedIds.value = next
   filterDeleteLastSelectedId.value = row.id
 }
 
 function toggleAllFilterDeleteRows () {
   if (filterDeleteBusy.value) return
-  filterDeleteSelectedIds.value = filterDeleteAllSelected.value ? new Set() : new Set(filterDeleteSelectableRows.value.map(row => row.id))
-  filterDeleteLastSelectedId.value = filterDeleteSelectableRows.value.at(-1)?.id || ''
+  if (filterDeleteAllSelected.value) {
+    filterDeleteSelectedIds.value = new Set()
+  } else {
+    const next = new Set()
+    filterDeleteBulkSelectableRows.value.forEach(row => {
+      getFilterDeleteSelectableSubtreeIds(row).forEach(id => next.add(id))
+    })
+    filterDeleteSelectedIds.value = next
+  }
+  filterDeleteLastSelectedId.value = filterDeleteBulkSelectableRows.value.at(-1)?.id || ''
 }
 
 function handleFilterDeleteRowClick (row, event) {
   if (filterDeleteBusy.value || !row?.id) return
-  if (row.selectable) {
+  if (canFilterDeleteSelectRow(row)) {
     toggleFilterDeleteSelect(row, event)
     return
   }
@@ -884,7 +939,7 @@ function applyFilterDeletePostDelete (deletedPaths, options = {}) {
   const normalizedDeletedPaths = [...new Set((deletedPaths || []).map(normalizeFilterDeleteComparePath).filter(Boolean))]
   if (!normalizedDeletedPaths.length) return
 
-  const nextItems = filterDeleteItems.value.filter(item => !isFilterDeletePathRemoved(item.delete_path || item.path, normalizedDeletedPaths))
+  const nextItems = filterDeleteItems.value.filter(item => !isFilterDeletePathRemoved(resolveFilterDeleteDeleteTarget(item), normalizedDeletedPaths))
   const nextItemIds = new Set(nextItems.map(item => item.id))
   filterDeleteItems.value = nextItems
   filterDeleteSelectedIds.value = new Set()
@@ -938,14 +993,14 @@ async function confirmFilterDeleteSelection () {
   filterDeleteLoadedSessionKey.value = filterDeleteSessionKey.value
   filterDeleteDeleteCancelRequested.value = false
   try {
-    const paths = filterDeleteSelectedRoots.value.map(item => item.delete_path || item.path)
-    const sizeByPath = new Map(filterDeleteSelectedRoots.value.map(item => [item.delete_path || item.path, Number(item.size || 0)]))
+    const paths = filterDeleteSelectedRoots.value.map(item => resolveFilterDeleteDeleteTarget(item))
+    const sizeByPath = new Map(filterDeleteSelectedRoots.value.map(item => [resolveFilterDeleteDeleteTarget(item), Number(item.size || 0)]))
     const normalizedItemMeta = filterDeleteItems.value.map(item => ({
-      path: normalizeFilterDeleteComparePath(item.delete_path || item.path),
+      path: normalizeFilterDeleteComparePath(item.path || item.delete_path),
       type: item.type
     }))
     const folderCountByPath = new Map(filterDeleteSelectedRoots.value.map(item => {
-      const rawPath = item.delete_path || item.path
+      const rawPath = resolveFilterDeleteDeleteTarget(item)
       const normalizedPath = normalizeFilterDeleteComparePath(rawPath)
       if (item.type !== 'dir') return [rawPath, 0]
       const folderCount = normalizedItemMeta.filter(candidate => (
@@ -1013,6 +1068,190 @@ async function confirmFilterDeleteSelection () {
 function getFileName (path) {
   if (!path) return ''
   return String(path).split(/[\\/]/).pop()
+}
+
+function canFilterDeleteSelectRow (row) {
+  return Boolean(row?.id && (row?.path || row?.delete_path))
+}
+
+function resolveFilterDeleteDeleteTarget (row) {
+  if (!row) return ''
+  if (row.selectable === false && row.path) return row.path
+  return row.delete_path || row.path || ''
+}
+
+function getFilterDeleteRowPath (row) {
+  return normalizeFilterDeleteComparePath(row?.path || row?.delete_path || '')
+}
+
+function isFilterDeleteAncestorPath(candidatePath, parentPath) {
+  if (!candidatePath || !parentPath) return false
+  return candidatePath === parentPath || candidatePath.startsWith(`${parentPath}/`)
+}
+
+function isFilterDeleteRowConflict(left, right) {
+  const leftPath = getFilterDeleteRowPath(left)
+  const rightPath = getFilterDeleteRowPath(right)
+  if (!leftPath || !rightPath) return false
+  return isFilterDeleteAncestorPath(leftPath, rightPath) || isFilterDeleteAncestorPath(rightPath, leftPath)
+}
+
+function getFilterDeleteRowDepth(row) {
+  return getFilterDeleteRowPath(row).split('/').filter(Boolean).length
+}
+
+function compareFilterDeleteText(left, right) {
+  return String(left || '').localeCompare(String(right || ''), 'zh-Hans-CN-u-kn-true', { sensitivity: 'base', numeric: true })
+}
+
+function reduceFilterDeleteRows(rows) {
+  const sorted = [...rows].sort((left, right) => {
+    const depthDiff = getFilterDeleteRowDepth(left) - getFilterDeleteRowDepth(right)
+    if (depthDiff !== 0) return depthDiff
+    return compareFilterDeleteText(left?.relative_path || left?.name || '', right?.relative_path || right?.name || '')
+  })
+  const result = []
+  for (const row of sorted) {
+    const rowPath = getFilterDeleteRowPath(row)
+    if (!rowPath) continue
+    if (result.some(existing => isFilterDeleteAncestorPath(rowPath, getFilterDeleteRowPath(existing)))) continue
+    result.push(row)
+  }
+  return result
+}
+
+function mergeFilterDeleteSelectionRows(rows, row) {
+  const nextRows = rows.filter(candidate => !isFilterDeleteRowConflict(candidate, row))
+  nextRows.push(row)
+  return reduceFilterDeleteRows(nextRows)
+}
+
+function buildFilterDeleteBulkRows(rows) {
+  const result = []
+  for (const row of rows) {
+    if (!result.some(existing => isFilterDeleteAncestorPath(getFilterDeleteRowPath(row), getFilterDeleteRowPath(existing)))) {
+      result.push(row)
+    }
+  }
+  return result
+}
+
+function hasFilterDeleteSelectedAncestor(row) {
+  const rowPath = getFilterDeleteRowPath(row)
+  if (!rowPath) return false
+  return filterDeleteSelectedRoots.value.some(selectedRow => {
+    if (selectedRow.id === row.id) return false
+    return isFilterDeleteAncestorPath(rowPath, getFilterDeleteRowPath(selectedRow))
+  })
+}
+
+function getFilterDeleteTimeValue(value) {
+  if (!value) return 0
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime()
+}
+
+function compareFilterDeleteRows(left, right, sortBy, sortOrder) {
+  if (left?.type !== right?.type) return left?.type === 'dir' ? -1 : 1
+
+  let diff = 0
+  if (sortBy === 'size') {
+    diff = Number(left?.size || 0) - Number(right?.size || 0)
+  } else if (sortBy === 'modified_time') {
+    diff = getFilterDeleteTimeValue(left?.modified_time) - getFilterDeleteTimeValue(right?.modified_time)
+  } else {
+    diff = compareFilterDeleteText(left?.name || left?.relative_path || '', right?.name || right?.relative_path || '')
+  }
+
+  if (diff === 0) {
+    diff = compareFilterDeleteText(left?.name || left?.relative_path || '', right?.name || right?.relative_path || '')
+  }
+  return sortOrder === 'desc' ? -diff : diff
+}
+
+function sortFilterDeleteTree(nodes, sortBy, sortOrder) {
+  return [...(nodes || [])]
+    .map(node => ({
+      ...node,
+      children: node.children?.length ? sortFilterDeleteTree(node.children, sortBy, sortOrder) : []
+    }))
+    .sort((left, right) => compareFilterDeleteRows(left, right, sortBy, sortOrder))
+}
+
+function toggleFilterDeleteSort(sortBy) {
+  if (!sortBy) return
+  if (filterDeleteSortBy.value === sortBy) {
+    filterDeleteSortOrder.value = filterDeleteSortOrder.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    filterDeleteSortBy.value = sortBy
+    filterDeleteSortOrder.value = sortBy === 'name' ? 'asc' : 'desc'
+  }
+  resetFilterDeleteScroll()
+}
+
+function getFilterDeleteSortMark(sortBy) {
+  if (filterDeleteSortBy.value !== sortBy) return '↕'
+  return filterDeleteSortOrder.value === 'asc' ? '↑' : '↓'
+}
+
+function getFilterDeleteSelectableSubtreeIds (row) {
+  const ids = []
+  const walk = node => {
+    if (!node) return
+    if (canFilterDeleteSelectRow(node)) ids.push(node.id)
+    for (const child of node.children || []) {
+      walk(child)
+    }
+  }
+  walk(row)
+  return ids
+}
+
+function isFilterDeleteRowFullySelected (row) {
+  const ids = getFilterDeleteSelectableSubtreeIds(row)
+  return ids.length > 0 && ids.every(id => filterDeleteSelectedIds.value.has(id))
+}
+
+function isFilterDeleteRowPartiallySelected (row) {
+  const ids = getFilterDeleteSelectableSubtreeIds(row)
+  if (!ids.length) return false
+  const selectedCount = ids.filter(id => filterDeleteSelectedIds.value.has(id)).length
+  return selectedCount > 0 && selectedCount < ids.length
+}
+
+function collectFilterDeleteSelectedRoots (nodes = []) {
+  const roots = []
+  const walk = node => {
+    if (!node || !canFilterDeleteSelectRow(node)) return
+    if (isFilterDeleteRowFullySelected(node)) {
+      roots.push(node)
+      return
+    }
+    if (!isFilterDeleteRowPartiallySelected(node)) return
+    for (const child of node.children || []) {
+      walk(child)
+    }
+  }
+  for (const node of nodes || []) {
+    walk(node)
+  }
+  return roots
+}
+
+function getFilterDeleteCheckCellStyle (row) {
+  const depth = Math.max(0, Number(row?.depth || 0))
+  const indent = Math.min(depth * 18, 72)
+  return {
+    paddingLeft: `${indent}px`
+  }
+}
+
+function getFilterDeleteNameCellStyle (row) {
+  const depth = Math.max(0, Number(row?.depth || 0))
+  const indent = depth * 8 + 2
+  return {
+    paddingLeft: `${indent}px`
+  }
 }
 
 function buildExplicitTree (items) {
@@ -1156,9 +1395,25 @@ onBeforeUnmount(() => {
 .fd-selection-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #f2d6d2; border-radius: 12px; background: #fff8f7; }
 .fd-selection-count { font-size: 13px; font-weight: 700; color: #a24a43; }
 .fd-selection-tip { font-size: 12px; color: #8a97aa; }
-.fm-head, .fm-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) 120px 190px 90px; align-items: center; padding: 0 16px; }
+.fm-head, .fm-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) 120px 190px 90px; align-items: center; padding: 0 16px; }
 .fm-head { height: 36px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; font-size: 12px; font-weight: 600; color: #606266; }
-.fd-head-basic, .fd-row-basic { grid-template-columns: 42px minmax(0, 1fr); }
+.fd-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.fd-sort-btn-end { margin-left: auto; }
+.fd-sort-btn.active { color: #1f5fa9; }
+.fd-sort-mark { font-size: 11px; color: #95a1b3; }
+.fd-sort-btn.active .fd-sort-mark { color: #1f5fa9; }
+.fd-head-basic, .fd-row-basic { grid-template-columns: 52px minmax(0, 1fr); }
 .fm-scroll { flex: 1; overflow: auto; contain: strict; }
 .fm-virtual-spacer { width: 100%; pointer-events: none; }
 .fm-row { min-height: 36px; border-bottom: 1px solid #ebeef5; font-size: 13px; contain: layout paint style; }
@@ -1166,7 +1421,8 @@ onBeforeUnmount(() => {
 .fm-row-selected { background: #ecf5ff !important; }
 .fm-row-disabled { background: #fbfbfc; color: #a5afbc; }
 .fm-empty { display: flex; align-items: center; justify-content: center; height: 180px; color: #c0c4cc; font-size: 13px; }
-.fm-name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fm-name-cell { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.fm-col-check { display: flex; align-items: center; justify-content: center; min-width: 0; transition: padding-left 0.16s ease; }
 .fm-arrow { width: 14px; display: inline-flex; align-items: center; justify-content: center; color: #909399; white-space: nowrap; transition: transform 0.16s; }
 .fm-arrow.open { transform: rotate(90deg); color: #409eff; }
 .fm-arrow-toggle { padding: 0; border: 0; background: transparent; cursor: pointer; }
@@ -1176,9 +1432,10 @@ onBeforeUnmount(() => {
 .fm-check { width: 14px; height: 14px; cursor: pointer; accent-color: #409eff; }
 .fd-name-block, .fd-meta-block { display: flex; flex-direction: column; min-width: 0; }
 .fd-subtext, .fd-rules { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 1.45; color: #8b96a8; }
-.fd-status { display: inline-flex; align-items: center; justify-content: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.fd-status { display: inline-flex; align-items: center; justify-content: center; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.2; }
 .fd-status.delete-root { border: 1px solid #ffd9b8; background: #fff2e8; color: #b86a12; }
-.fd-status.delete-covered { border: 1px solid #e3e8ef; background: #f4f6f9; color: #79869a; }
+.fd-status.delete-covered { padding: 0; border: 0; background: transparent; color: #8d99ab; font-weight: 500; }
+.fd-status.delete-optional { border: 1px solid #d7e5fb; background: #f7fbff; color: #5b789f; }
 @media (max-width: 1280px) {
   .filter-delete-summary, .fd-selection-bar { flex-direction: column; align-items: flex-start; }
   .fm-toolbar { flex-direction: column; align-items: flex-start; gap: 10px; }

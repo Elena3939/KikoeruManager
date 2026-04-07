@@ -218,7 +218,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
-import { conflictApi, taskApi } from '../api'
+import { conflictApi, taskCenterApi } from '../api'
 
 const ACTIVE_CONFLICT_STORAGE_KEY = 'prekikoeru-conflicts-active-id'
 
@@ -427,7 +427,10 @@ async function waitForRetryTask(taskId) {
 
   while (Date.now() < deadline) {
     await new Promise(resolve => window.setTimeout(resolve, 1500))
-    const task = await taskApi.get(taskId)
+    const task = await taskCenterApi.getItem({ engine_task_id: taskId })
+    if (!task) {
+      continue
+    }
     if (task.status === 'completed') {
       return task
     }

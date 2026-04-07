@@ -61,7 +61,9 @@ class Task:
         self._pause_event = asyncio.Event()
         self._pause_event.set()
         self.rjcode = rjcode  # 作品的RJ号，用于重复检测
-    
+        self.session_id = None
+        self.business_key = None
+
     def start(self):
         """开始任务"""
         self.status = TaskStatus.PROCESSING
@@ -134,6 +136,24 @@ class Task:
         self.current_step = step
         logger.info(f"任务 {self.id}: {step} ({progress}%)")
 
+    def ensure_business_context(self, domain: str, defaults: Optional[dict] = None):
+        """为任务补齐业务上下文，供任务中心统一展示。"""
+        defaults = dict(defaults or {})
+        metadata = dict(self.task_metadata or {})
+        metadata.setdefault("task_domain", domain)
+        metadata.setdefault("task_kind", self.type.value)
+        metadata.setdefault("session_id", defaults.get("session_id") or self.id)
+        metadata.setdefault("source_page", defaults.get("source_page") or "tasks")
+        metadata.setdefault("source_action", defaults.get("source_action") or self.type.value)
+        metadata.setdefault(
+            "source_label",
+            defaults.get("source_label") or os.path.basename(str(self.source_path or "").rstrip("\\/")) or self.type.value
+        )
+        metadata.setdefault("business_key", defaults.get("business_key") or self.id)
+        self.session_id = metadata.get("session_id")
+        self.business_key = metadata.get("business_key")
+        self.task_metadata = metadata
+
 def get_conflict_type_name(conflict_type: str) -> str:
     """获取冲突类型的中文名称"""
     names = {
@@ -197,11 +217,36 @@ class TaskEngine:
     
     async def submit(self, task: Task) -> str:
         """提交任务"""
+        self._ensure_task_context(task)
         self.tasks[task.id] = task
         await self.queue.put(task)
         rjcode = self._extract_rjcode(task.source_path) or "未知"
         logger.info(f"[{rjcode}] 任务提交 - ID: {task.id[:8]}..., 源文件: {os.path.basename(task.source_path)}")
         return task.id
+
+    def _infer_task_domain(self, task: Task) -> str:
+        if task.type in {TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
+            return "import"
+        if task.type == TaskType.RJ_SUBTITLE_FETCH:
+            return "rj_subtitle"
+        if task.type == TaskType.ASMR_SYNC_DOWNLOAD:
+            return "asmr_sync"
+        return "system"
+
+    def _ensure_task_context(self, task: Task):
+        """给历史任务和新任务补齐统一上下文。"""
+        domain = self._infer_task_domain(task)
+        metadata = dict(task.task_metadata or {})
+        fallback_label = os.path.basename(str(task.source_path or "").rstrip("\\/")) or task.type.value
+        task.ensure_business_context(
+            domain,
+            defaults={
+                "source_page": metadata.get("source_page") or ("library" if domain in {"import", "rj_subtitle"} else "tasks"),
+                "source_action": metadata.get("source_action") or task.type.value,
+                "source_label": metadata.get("source_label") or fallback_label,
+                "business_key": metadata.get("business_key") or metadata.get("rjcode") or task.id,
+            }
+        )
 
     def _get_effective_rjcode(self, task: Task, fallback_path: Optional[str] = None) -> str:
         """统一获取当前任务可用的 RJ 号，优先复用已推断结果。"""
@@ -1071,6 +1116,8 @@ class TaskEngine:
     
     def get_all_tasks(self) -> list[Task]:
         """获取所有任务，按创建时间倒序排列"""
+        for task in self.tasks.values():
+            self._ensure_task_context(task)
         return sorted(self.tasks.values(), key=lambda t: t.created_at, reverse=True)
     
     def get_pending_tasks(self) -> list[Task]:

@@ -1,95 +1,113 @@
 <template>
   <div class="dashboard">
-    <h1 class="page-title">概览</h1>
-
-    <!-- 统计卡片 -->
-    <el-row :gutter="20" class="stats-row">
-      <el-col :span="6">
-        <el-card class="stat-card" shadow="hover">
-          <div class="stat-icon" style="background-color: #3b82f6;">
-            <el-icon :size="28"><Document /></el-icon>
+    <section class="overview-top">
+      <el-card class="action-card compact-top-card">
+        <template #header>
+          <div class="card-header">
+            <span>快捷操作</span>
           </div>
-          <div class="stat-info">
-            <div class="stat-value">{{ stats.pending }}</div>
-            <div class="stat-label">待处理</div>
-          </div>
-        </el-card>
-      </el-col>
-
-      <el-col :span="6">
-        <el-card class="stat-card" shadow="hover">
-          <div class="stat-icon" style="background-color: #f59e0b;">
-            <el-icon :size="28"><Loading /></el-icon>
-          </div>
-          <div class="stat-info">
-            <div class="stat-value">{{ stats.processing }}</div>
-            <div class="stat-label">处理中</div>
-          </div>
-        </el-card>
-      </el-col>
-
-      <el-col :span="6">
-        <el-card class="stat-card clickable" shadow="hover" @click="$router.push('/library')">
-          <div class="stat-icon" style="background-color: #10b981;">
-            <el-icon :size="28"><CircleCheck /></el-icon>
-          </div>
-          <div class="stat-info">
-            <div class="stat-value">{{ stats.completed }}</div>
-            <div class="stat-label">已完成（击查看库文点件）</div>
-          </div>
-        </el-card>
-      </el-col>
-
-      <el-col :span="6">
-        <el-card class="stat-card" shadow="hover">
-          <div class="stat-icon" style="background-color: #ef4444;">
-            <el-icon :size="28"><Warning /></el-icon>
-          </div>
-          <div class="stat-info">
-            <div class="stat-value">{{ stats.conflicts }}</div>
-            <div class="stat-label">问题作品</div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
-
-    <!-- 快捷操作栏 -->
-    <el-card class="action-card">
-      <template #header>
-        <div class="card-header">
-          <span>快捷操作</span>
+        </template>
+        <div class="action-buttons">
+          <el-button
+            class="action-button action-button-primary"
+            size="large"
+            @click="handleManualScan"
+            :loading="scanning"
+          >
+            <el-icon><Search /></el-icon>
+            扫描处理
+          </el-button>
+          <el-button
+            class="action-button"
+            size="large"
+            @click="handleWatcherToggle"
+          >
+            <el-icon><VideoPlay v-if="!watcherRunning" /><VideoPause v-else /></el-icon>
+            {{ watcherRunning ? '停止监视' : '启动监视' }}
+          </el-button>
+          <el-button
+            class="action-button"
+            size="large"
+            @click="$router.push('/conflicts')"
+          >
+            <el-icon><Warning /></el-icon>
+            问题作品
+          </el-button>
         </div>
-      </template>
-      <div class="action-buttons">
-        <el-button
-          type="primary"
-          size="large"
-          @click="handleManualScan"
-          :loading="scanning"
-        >
-          <el-icon><Search /></el-icon>
-          扫描并处理文件夹
-        </el-button>
-        <el-button
-          type="success"
-          size="large"
-          @click="handleWatcherToggle"
-        >
-          <el-icon><VideoPlay v-if="!watcherRunning" /><VideoPause v-else /></el-icon>
-          {{ watcherRunning ? '停止监视器' : '启动监视器' }}
-        </el-button>
-        <el-button
-          type="info"
-          size="large"
-          @click="$router.push('/conflicts')"
-        >
-          <el-icon><Warning /></el-icon>
-          问题作品 ({{ stats.conflicts }})
-        </el-button>
-      </div>
-      <el-divider />
-      <FileUploader @upload-success="handleUploadSuccess" />
-    </el-card>
+        <el-divider />
+        <FileUploader @upload-success="handleUploadSuccess" />
+      </el-card>
+
+      <el-card class="stats-panel" shadow="never">
+        <div class="stats-panel-header">
+          <span class="stats-panel-title">处理概况</span>
+          <span class="stats-panel-subtitle">当前队列与结果摘要</span>
+        </div>
+
+        <div class="stats-strip">
+          <button type="button" class="stat-chip" @click.stop>
+            <span class="stat-chip-icon stat-icon stat-icon-import">
+              <el-icon :size="18"><Document /></el-icon>
+            </span>
+            <span class="stat-chip-body">
+              <span class="stat-chip-label">导入处理</span>
+              <span class="stat-chip-value">{{ domainCounts.import }}</span>
+            </span>
+          </button>
+
+          <button type="button" class="stat-chip stat-chip-clickable" @click="$router.push('/library')">
+            <span class="stat-chip-icon stat-icon stat-icon-rj-subtitle">
+              <el-icon :size="18"><Loading /></el-icon>
+            </span>
+            <span class="stat-chip-body">
+              <span class="stat-chip-label">RJ 字幕</span>
+              <span class="stat-chip-value">{{ domainCounts.rj_subtitle }}</span>
+            </span>
+          </button>
+
+          <button type="button" class="stat-chip stat-chip-clickable" @click="$router.push('/subtitle-import')">
+            <span class="stat-chip-icon stat-icon stat-icon-subtitle-import">
+              <el-icon :size="18"><CircleCheck /></el-icon>
+            </span>
+            <span class="stat-chip-body">
+              <span class="stat-chip-label">字幕补配</span>
+              <span class="stat-chip-value">{{ domainCounts.subtitle_import }}</span>
+            </span>
+          </button>
+
+          <button type="button" class="stat-chip stat-chip-clickable" @click="$router.push('/asmr-sync')">
+            <span class="stat-chip-icon stat-icon stat-icon-asmr-sync">
+              <el-icon :size="18"><Warning /></el-icon>
+            </span>
+            <span class="stat-chip-body">
+              <span class="stat-chip-label">ASMR 同步</span>
+              <span class="stat-chip-value">{{ domainCounts.asmr_sync }}</span>
+            </span>
+          </button>
+        </div>
+
+        <div class="stats-summary">
+          <div class="summary-card">
+            <span class="summary-label">监视器状态</span>
+            <span class="summary-value">{{ watcherRunning ? '运行中' : '已停止' }}</span>
+            <span class="summary-meta">
+              {{ watcherRunning ? '正在自动监听并处理新进入队列的文件。' : '当前需要你手动触发扫描和处理。' }}
+            </span>
+          </div>
+
+          <div class="summary-card">
+            <span class="summary-label">任务总数</span>
+            <span class="summary-value">{{ taskCenterOverview.total || 0 }}</span>
+            <span class="summary-meta">任务中心当前聚合到的全部任务项总数。</span>
+          </div>
+        </div>
+
+        <div class="stats-summary-actions">
+          <el-button link @click="$router.push('/tasks')">查看任务队列</el-button>
+          <el-button link @click="$router.push('/library')">打开库存管理</el-button>
+        </div>
+      </el-card>
+    </section>
 
     <!-- 当前任务 -->
     <el-card class="tasks-card">
@@ -102,29 +120,44 @@
 
       <el-table :data="recentTasks" v-loading="loading" style="width: 100%" row-key="id">
 
-        <el-table-column prop="source_path" label="源文件" show-overflow-tooltip min-width="250">
+        <el-table-column prop="title" label="任务" show-overflow-tooltip min-width="260">
           <template #default="{ row }">
             <div class="source-file-cell">
-              <span class="filename">{{ getFileName(row.source_path) }}</span>
+              <span class="filename">{{ row.title }}</span>
+              <span v-if="row.subtitle" class="task-subline">{{ row.subtitle }}</span>
             </div>
           </template>
         </el-table-column>
 
-        <el-table-column prop="type" label="类型" width="200">
+        <el-table-column prop="domain_label" label="类型" width="140">
           <template #default="{ row }">
-            <el-tag size="small">{{ getTaskTypeLabel(row.type) }}</el-tag>
+            <el-tag size="small" effect="plain">{{ row.domain_label }}</el-tag>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="关键信息" min-width="260">
+          <template #default="{ row }">
+            <div class="task-summary-cell">
+              <span
+                v-for="(piece, index) in getDashboardSummary(row)"
+                :key="`${row.id}-summary-${index}`"
+                class="task-summary-pill"
+              >
+                {{ piece }}
+              </span>
+            </div>
           </template>
         </el-table-column>
 
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="getStatusType(row.status)" size="small">
-              {{ getStatusLabel(row.status) }}
+              {{ row.status_label || getStatusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
 
-        <el-table-column prop="progress" label="进度" width="400">
+        <el-table-column prop="progress" label="进度" width="320">
           <template #default="{ row }">
             <div class="progress-cell">
               <el-progress
@@ -140,17 +173,23 @@
 
         <el-table-column label="操作" width="180" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button-group v-if="row.status === 'processing'">
-              <el-button size="small" @click="pauseTask(row.id)">暂停</el-button>
-              <el-button size="small" type="danger" @click="cancelTask(row.id)">取消</el-button>
-            </el-button-group>
             <el-button
-              v-else-if="row.status === 'paused'"
+              v-for="action in row.actions || []"
+              :key="`${row.id}-${action}`"
               size="small"
-              type="primary"
-              @click="resumeTask(row.id)"
+              :type="getDashboardActionType(action)"
+              :plain="action !== 'cancel'"
+              @click="handleTaskCenterAction(row, action)"
             >
-              恢复
+              {{ getActionLabel(action) }}
+            </el-button>
+            <el-button
+              v-if="!row.actions?.length && row.route_hint"
+              size="small"
+              plain
+              @click="$router.push(row.route_hint)"
+            >
+              查看
             </el-button>
           </template>
         </el-table-column>
@@ -290,23 +329,35 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { Document, Loading, CircleCheck, Warning, Search, VideoPlay, VideoPause, Refresh, SortDown, SortUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { useTaskStore } from '../stores'
-import { conflictApi, scanApi, watcherApi, processedArchiveApi } from '../api'
+import { conflictApi, scanApi, watcherApi, processedArchiveApi, taskCenterApi } from '../api'
 import FileUploader from '../components/FileUploader.vue'
 
-const taskStore = useTaskStore()
+const router = useRouter()
 const loading = ref(false)
 const scanning = ref(false)
 const watcherRunning = ref(false)
 const recentTasks = ref([])
+const taskCenterOverview = ref({
+  recent_items: [],
+  active_items: [],
+  counts_by_status: {},
+  highlight_counts: {}
+})
 const stats = ref({
   pending: 0,
   processing: 0,
   completed: 0,
   conflicts: 0
 })
+const domainCounts = computed(() => ({
+  import: Number(taskCenterOverview.value?.counts_by_domain?.import || 0),
+  rj_subtitle: Number(taskCenterOverview.value?.counts_by_domain?.rj_subtitle || 0),
+  subtitle_import: Number(taskCenterOverview.value?.counts_by_domain?.subtitle_import || 0),
+  asmr_sync: Number(taskCenterOverview.value?.counts_by_domain?.asmr_sync || 0)
+}))
 
 // 已处理压缩包相关
 const archives = ref([])
@@ -417,48 +468,52 @@ let previousCompletedCount = 0
 let lastRefreshTime = 0
 
 async function refreshData() {
-  await taskStore.fetchTasks()
-  recentTasks.value = taskStore.tasks.slice(0, 5)
+  loading.value = true
 
-  // 获取当前完成的任务数
-  const currentCompletedCount = recentTasks.value.filter(task =>
-    task.status === 'completed' || task.status === 'COMPLETED'
-  ).length
-
-  // 如果完成的任务数增加了，或者距离上次刷新已处理压缩包已超过30秒，则刷新
-  const now = Date.now()
-  const shouldRefreshArchives =
-    currentCompletedCount > previousCompletedCount ||
-    (now - lastRefreshTime > 30000 && recentTasks.value.length > 0)
-
-  if (shouldRefreshArchives) {
-    console.log('检测到任务状态变化，刷新已处理压缩包列表')
-    await fetchProcessedArchivesSilently()
-    lastRefreshTime = now
-  }
-
-  previousCompletedCount = currentCompletedCount
-
-  // 获取问题作品数量
-  let conflictCount = 0
   try {
-    const data = await conflictApi.list()
-    conflictCount = data.conflicts?.length || 0
+    const overviewData = await taskCenterApi.overview()
+    taskCenterOverview.value = overviewData || {}
+    const activeItems = Array.isArray(overviewData?.active_items) ? overviewData.active_items : []
+    const recentItems = Array.isArray(overviewData?.recent_items) ? overviewData.recent_items : []
+    recentTasks.value = activeItems.length ? activeItems : recentItems
+
+    // 获取当前完成的任务数
+    const currentCompletedCount = Number(overviewData?.counts_by_status?.completed || 0)
+
+    // 如果完成的任务数增加了，或者距离上次刷新已处理压缩包已超过30秒，则刷新
+    const now = Date.now()
+    const shouldRefreshArchives =
+      currentCompletedCount > previousCompletedCount ||
+      (now - lastRefreshTime > 30000 && recentTasks.value.length > 0)
+
+    if (shouldRefreshArchives) {
+      console.log('检测到任务状态变化，刷新已处理压缩包列表')
+      await fetchProcessedArchivesSilently()
+      lastRefreshTime = now
+    }
+
+    previousCompletedCount = currentCompletedCount
+
+    // 获取问题作品数量
+    let conflictCount = 0
+    try {
+      const data = await conflictApi.list()
+      conflictCount = data.conflicts?.length || 0
+    } catch (error) {
+      console.error('获取问题作品数量失败:', error)
+    }
+
+    stats.value = {
+      pending: Number(overviewData?.counts_by_status?.pending || 0),
+      processing: Number(overviewData?.counts_by_status?.processing || 0),
+      completed: Number(overviewData?.counts_by_status?.completed || 0),
+      conflicts: conflictCount
+    }
   } catch (error) {
-    console.error('获取问题作品数量失败:', error)
+    console.error('获取任务中心概览失败:', error)
+  } finally {
+    loading.value = false
   }
-
-  stats.value = {
-    pending: taskStore.pendingTasks.length,
-    processing: taskStore.processingTasks.length,
-    completed: taskStore.completedTasks.length,
-    conflicts: conflictCount
-  }
-}
-
-function getFileName(path) {
-  if (!path) return ''
-  return path.split(/[\\/]/).pop()
 }
 
 function getTaskTypeLabel(type) {
@@ -496,6 +551,58 @@ function getStatusType(status) {
   return types[status] || ''
 }
 
+function pickMetricValue(row, label) {
+  const metrics = Array.isArray(row?.metrics) ? row.metrics : []
+  return metrics.find(metric => metric?.label === label)?.value || ''
+}
+
+function getDashboardSummary(row) {
+  if (!row) return []
+
+  const details = row.details || {}
+  const metadata = details.metadata || {}
+  const preview = details.preview || {}
+  const domain = row.domain
+  const pieces = []
+
+  if (domain === 'rj_subtitle') {
+    const downloadCount = pickMetricValue(row, '下载')
+    const writtenCount = pickMetricValue(row, '写入')
+    const subtitleDir = row.target_path || metadata.subtitle_dir || ''
+    if (row.rjcode) pieces.push(`RJ ${row.rjcode}`)
+    if (downloadCount) pieces.push(`下载 ${downloadCount}`)
+    if (writtenCount) pieces.push(`写入 ${writtenCount}`)
+    if (subtitleDir) pieces.push(`目录 ${getFileName(subtitleDir)}`)
+  } else if (domain === 'subtitle_import') {
+    const subtitleCount = pickMetricValue(row, '来源字幕') || preview.subtitle_count
+    const candidateCount = pickMetricValue(row, '可执行候选') || pickMetricValue(row, '候选目录')
+    const targetFolder = row.target_path || preview.selected_candidate?.folder_path || ''
+    if (row.rjcode) pieces.push(`目标 ${row.rjcode}`)
+    if (subtitleCount) pieces.push(`候选字幕 ${subtitleCount}`)
+    if (candidateCount) pieces.push(`候选目录 ${candidateCount}`)
+    if (targetFolder) pieces.push(`目标目录 ${getFileName(targetFolder)}`)
+  } else if (domain === 'asmr_sync') {
+    const downloadFiles = pickMetricValue(row, '下载文件')
+    const failedFiles = pickMetricValue(row, '失败文件')
+    if (row.rjcode) pieces.push(`RJ ${row.rjcode}`)
+    if (downloadFiles) pieces.push(`文件 ${downloadFiles}`)
+    if (failedFiles) pieces.push(`失败 ${failedFiles}`)
+    if (row.subtitle) pieces.push(`来源 ${getFileName(row.subtitle)}`)
+  } else {
+    const outputName = pickMetricValue(row, '输出') || row.target_path
+    const targetLibrary = pickMetricValue(row, '目标库')
+    if (row.rjcode) pieces.push(`RJ ${row.rjcode}`)
+    if (outputName) pieces.push(`输出 ${getFileName(outputName)}`)
+    if (targetLibrary) pieces.push(`目标库 ${targetLibrary}`)
+  }
+
+  if (!pieces.length && row.current_step) {
+    pieces.push(row.current_step)
+  }
+
+  return pieces.slice(0, 4)
+}
+
 function getProgressStatus(status) {
   if (status === 'failed') return 'exception'
   if (status === 'completed') return 'success'
@@ -503,15 +610,15 @@ function getProgressStatus(status) {
 }
 
 async function pauseTask(taskId) {
-  await taskStore.pauseTask(taskId)
+  await taskCenterApi.action(taskId, 'pause')
 }
 
 async function resumeTask(taskId) {
-  await taskStore.resumeTask(taskId)
+  await taskCenterApi.action(taskId, 'resume')
 }
 
 async function cancelTask(taskId) {
-  await taskStore.cancelTask(taskId)
+  await taskCenterApi.action(taskId, 'cancel')
 }
 
 function handleUploadSuccess() {
@@ -546,6 +653,44 @@ async function handleWatcherToggle() {
     }
   } catch (error) {
     console.error('操作失败:', error)
+    ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
+function getActionLabel(action) {
+  const labels = {
+    pause: '暂停',
+    resume: '恢复',
+    cancel: '取消',
+    retry_waiting: '重试',
+    delete_waiting_retry: '移除',
+    open_subtitle_import: '前往处理'
+  }
+  return labels[action] || action
+}
+
+function getDashboardActionType(action) {
+  const types = {
+    pause: 'warning',
+    resume: 'primary',
+    cancel: 'danger',
+    retry_waiting: 'primary',
+    delete_waiting_retry: 'danger',
+    open_subtitle_import: 'primary'
+  }
+  return types[action] || 'info'
+}
+
+async function handleTaskCenterAction(row, action) {
+  try {
+    const result = await taskCenterApi.action(row.id, action)
+    if (result?.route_hint) {
+      await router.push(result.route_hint)
+    }
+    ElMessage.success(result?.message || '操作成功')
+    await refreshData()
+  } catch (error) {
+    console.error('执行任务中心动作失败:', error)
     ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
   }
 }
@@ -682,67 +827,193 @@ function formatDate(dateString) {
 
 <style scoped>
 .dashboard {
-  max-width: 1400px;
+  --apple-blue: #0071e3;
+  --apple-link-blue: #0066cc;
+  --apple-bg: #f5f5f7;
+  --apple-surface: #ffffff;
+  --apple-text: #1d1d1f;
+  --apple-muted: rgba(29, 29, 31, 0.68);
+  --apple-subtle: rgba(29, 29, 31, 0.4);
+  --apple-line: rgba(29, 29, 31, 0.08);
+  --apple-shadow: 0 18px 44px rgba(0, 0, 0, 0.08);
+  max-width: 1440px;
   margin: 0 auto;
+  padding: 8px 8px 28px;
+  color: var(--apple-text);
 }
 
-.page-title {
-  margin-bottom: 24px;
-  font-size: 28px;
-  font-weight: 600;
-  color: #1e293b;
-}
-
-.stats-row {
+.overview-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
+  gap: 20px;
   margin-bottom: 24px;
 }
 
-.stat-card {
-  padding: 24px;
-  transition: all 0.2s ease;
+.stats-grid {
+  display: block;
 }
 
-.stat-card :deep(.el-card__body) {
-  display: flex;
-  align-items: center;
-  padding: 0;
+.stats-panel {
+  border: none;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: var(--apple-shadow);
+  backdrop-filter: blur(18px);
 }
 
-.stat-icon {
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  margin-right: 16px;
-  flex-shrink: 0;
-}
-
-.stat-info {
-  flex: 1;
+.stats-panel :deep(.el-card__body) {
+  padding: 18px 20px 20px;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  height: 100%;
+}
+
+.stats-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stats-panel-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--apple-text);
+}
+
+.stats-panel-subtitle {
+  font-size: 12px;
+  color: var(--apple-muted);
+}
+
+.stats-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.stats-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.summary-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 92px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #fcfcfd 0%, #f4f4f7 100%);
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
+}
+
+.summary-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(29, 29, 31, 0.46);
+}
+
+.summary-value {
+  margin-top: 8px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--apple-text);
+}
+
+.summary-meta {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--apple-muted);
+}
+
+.stats-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: auto;
+  padding-top: 14px;
+}
+
+.stat-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 82px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 18px;
+  background: #f7f7fa;
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
+  text-align: left;
+}
+
+.stat-chip-clickable {
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.stat-chip-clickable:hover {
+  transform: translateY(-1px);
+  background: #f0f6ff;
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.08);
+}
+
+.stat-chip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
 }
 
-.stat-value {
-  font-size: 32px;
-  font-weight: 700;
-  color: #1e293b;
-  line-height: 1;
-  margin-bottom: 6px;
+.stat-chip-label {
+  font-size: 13px;
+  color: var(--apple-muted);
 }
 
-.stat-label {
-  font-size: 14px;
-  color: #64748b;
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.stat-chip-value {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--apple-text);
+}
+
+.stat-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--apple-text);
+  flex-shrink: 0;
+  background: #f2f2f4;
+}
+
+.stat-icon-import {
+  background: #f2f6ff;
+  color: var(--apple-link-blue);
+}
+
+.stat-icon-rj-subtitle {
+  background: #eef7ff;
+  color: #0c76c5;
+}
+
+.stat-icon-subtitle-import {
+  background: #f4f0ff;
+  color: #6952d6;
+}
+
+.stat-icon-asmr-sync {
+  background: #fff3ec;
+  color: #c7651a;
 }
 
 .upload-card {
@@ -753,11 +1024,19 @@ function formatDate(dateString) {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  min-height: 28px;
+}
+
+.card-header > span {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.18px;
+  color: var(--apple-text);
 }
 
 .task-id {
   font-family: monospace;
-  color: #64748b;
+  color: var(--apple-muted);
 }
 
 .progress-cell {
@@ -775,46 +1054,123 @@ function formatDate(dateString) {
 
 .progress-label {
   font-size: 13px;
-  color: #64748b;
+  color: var(--apple-muted);
   white-space: nowrap;
   min-width: 40px;
 }
 
 .source-file-cell {
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   overflow: hidden;
 }
 
 .filename {
-  color: #334155;
+  color: var(--apple-text);
   font-size: 14px;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.task-id {
-  font-family: monospace;
-  color: #64748b;
+.task-subline {
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--apple-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.action-card {
+.task-summary-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.task-summary-pill {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #f4f4f7;
+  color: rgba(29, 29, 31, 0.72);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.task-id {
+  font-family: monospace;
+  color: var(--apple-muted);
+  white-space: nowrap;
+}
+
+.action-card,
+.tasks-card,
+.archives-card {
   margin-bottom: 24px;
+  border: none;
+  border-radius: 28px;
+  background: var(--apple-surface);
+  box-shadow: var(--apple-shadow);
+}
+
+.compact-top-card {
+  height: 100%;
+}
+
+.action-card :deep(.el-card__header),
+.tasks-card :deep(.el-card__header),
+.archives-card :deep(.el-card__header) {
+  padding: 24px 28px 0;
+  border-bottom: none;
+}
+
+.action-card :deep(.el-card__body),
+.tasks-card :deep(.el-card__body),
+.archives-card :deep(.el-card__body) {
+  padding: 20px 28px 28px;
 }
 
 .action-buttons {
   display: flex;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
-.action-buttons .el-button {
-  min-width: 160px;
+.action-button {
+  min-width: 132px;
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--apple-line);
+  border-radius: 999px;
+  background: #fafafc;
+  color: var(--apple-text);
+  font-size: 14px;
+  box-shadow: none;
+}
+
+.action-button:hover,
+.action-button:focus {
+  color: var(--apple-text);
+  border-color: rgba(29, 29, 31, 0.12);
+  background: #f1f1f3;
+}
+
+.action-button-primary {
+  border-color: transparent;
+  background: var(--apple-blue);
+  color: #fff;
+}
+
+.action-button-primary:hover,
+.action-button-primary:focus {
+  color: #fff;
+  background: #0077ed;
 }
 
 .action-buttons .el-icon {
@@ -834,7 +1190,7 @@ function formatDate(dateString) {
 .archives-header-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
 }
 
 .archives-card .el-button-group {
@@ -842,21 +1198,7 @@ function formatDate(dateString) {
 }
 
 .text-gray {
-  color: #94a3b8;
-}
-
-.stat-card.clickable {
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.stat-card.clickable:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.12);
-}
-
-.stat-card.clickable:active {
-  transform: translateY(-2px);
+  color: var(--apple-subtle);
 }
 
 .volume-tag {
@@ -864,22 +1206,22 @@ function formatDate(dateString) {
 }
 
 .volume-list {
-  padding: 12px 24px;
-  background-color: #f8f9fa;
-  border-radius: 4px;
+  padding: 16px 20px;
+  background-color: var(--apple-bg);
+  border-radius: 18px;
   margin: 8px 0;
 }
 
 .volume-list-title {
   font-weight: 600;
-  color: #606266;
+  color: var(--apple-text);
   margin-bottom: 8px;
   font-size: 13px;
 }
 
 .time-text {
   font-size: 12px;
-  color: #909399;
+  color: var(--apple-muted);
   font-family: 'Consolas', 'Monaco', monospace;
 }
 
@@ -889,21 +1231,118 @@ function formatDate(dateString) {
   padding: 6px 12px;
   margin: 4px 0;
   background-color: white;
-  border-radius: 4px;
+  border-radius: 12px;
   font-size: 13px;
 }
 
 .volume-name {
-  color: #303133;
+  color: var(--apple-text);
   font-family: 'Consolas', 'Monaco', monospace;
 }
 
 .volume-size {
-  color: #909399;
+  color: var(--apple-muted);
   font-size: 12px;
 }
 
 :deep(.el-table__expand-icon) {
-  color: #409eff;
+  color: var(--apple-link-blue);
+}
+
+:deep(.el-divider) {
+  margin: 0 0 18px;
+  border-color: var(--apple-line);
+}
+
+:deep(.el-table) {
+  --el-table-border-color: transparent;
+  --el-table-header-bg-color: #fbfbfd;
+  --el-table-row-hover-bg-color: #f7f7f9;
+  --el-table-text-color: var(--apple-text);
+  --el-table-header-text-color: rgba(29, 29, 31, 0.76);
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+:deep(.el-table th.el-table__cell) {
+  font-weight: 600;
+}
+
+:deep(.el-table td.el-table__cell),
+:deep(.el-table th.el-table__cell) {
+  padding-top: 15px;
+  padding-bottom: 15px;
+}
+
+:deep(.el-progress-bar__outer) {
+  background: #e9e9ed;
+}
+
+:deep(.el-progress-bar__inner) {
+  background: linear-gradient(90deg, #0071e3 0%, #2a8cff 100%);
+}
+
+:deep(.el-button.is-link) {
+  color: var(--apple-link-blue);
+  font-weight: 500;
+}
+
+:deep(.el-button.is-link:hover) {
+  color: var(--apple-blue);
+}
+
+:deep(.el-input__wrapper),
+:deep(.el-select__wrapper) {
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px rgba(29, 29, 31, 0.08) inset;
+}
+
+:deep(.el-tag) {
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+@media (max-width: 1200px) {
+  .overview-top {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .dashboard {
+    padding: 0 0 20px;
+  }
+
+  .stats-grid {
+    width: 100%;
+  }
+
+  .stats-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .card-header,
+  .archives-card .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .archives-header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .action-buttons {
+    gap: 12px;
+  }
+
+  .action-button {
+    width: 100%;
+  }
 }
 </style>

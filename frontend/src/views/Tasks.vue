@@ -1,322 +1,973 @@
 <template>
-  <div class="tasks">
-    <div class="page-header">
-      <h1 class="page-title">任务队列</h1>
-      <el-radio-group v-model="currentStatus" @change="handleStatusChange">
-        <el-radio-button label="">全部</el-radio-button>
-        <el-radio-button label="pending">待处理</el-radio-button>
-        <el-radio-button label="processing">处理中</el-radio-button>
-        <el-radio-button label="completed">已完成</el-radio-button>
-      </el-radio-group>
-    </div>
-    
-    <el-card v-loading="initialLoading" element-loading-text="加载中...">
-      <el-table 
-        :data="taskStore.tasks"
-        style="width: 100%"
-        row-key="id"
-      >
-        <el-table-column type="expand">
-          <template #default="{ row }">
-            <div class="task-detail">
-              <p><strong>完整ID:</strong> {{ row.id }}</p>
-              <p><strong>源路径:</strong> {{ row.source_path }}</p>
-              <p v-if="row.output_path"><strong>输出路径:</strong> {{ row.output_path }}</p>
-              <p v-if="row.error_message"><strong>错误信息:</strong> <span class="error-text">{{ row.error_message }}</span></p>
-              <div v-if="row.metadata" class="metadata-section">
-                <h4>元数据</h4>
-                <el-descriptions :column="2" border>
-                  <el-descriptions-item label="RJ号">{{ row.metadata.rjcode }}</el-descriptions-item>
-                  <el-descriptions-item label="作品名">{{ row.metadata.work_name }}</el-descriptions-item>
-                  <el-descriptions-item label="社团">{{ row.metadata.maker_name }}</el-descriptions-item>
-                  <el-descriptions-item label="发售日期">{{ row.metadata.release_date }}</el-descriptions-item>
-                  <el-descriptions-item label="声优">{{ row.metadata.cvs?.join(', ') }}</el-descriptions-item>
-                  <el-descriptions-item label="标签">{{ row.metadata.tags?.join(', ') }}</el-descriptions-item>
-                </el-descriptions>
+  <div class="task-center-page">
+    <section class="task-center-hero">
+      <div>
+        <span class="hero-eyebrow">Task Center</span>
+        <h1 class="hero-title">任务中心</h1>
+        <p class="hero-description">把导入处理、RJ 字幕、字幕补配、ASMR 同步和系统任务放到同一个视图里看。</p>
+      </div>
+
+      <el-button class="refresh-button" :loading="loading" @click="refreshTaskCenter">
+        <el-icon><Refresh /></el-icon>
+        刷新
+      </el-button>
+    </section>
+
+    <section class="summary-strip">
+      <div class="summary-tile">
+        <span class="summary-label">处理中</span>
+        <span class="summary-value">{{ overview.highlight_counts?.processing || 0 }}</span>
+      </div>
+      <div class="summary-tile">
+        <span class="summary-label">等待人工</span>
+        <span class="summary-value">{{ overview.highlight_counts?.waiting_manual || 0 }}</span>
+      </div>
+      <div class="summary-tile">
+        <span class="summary-label">等待重试</span>
+        <span class="summary-value">{{ overview.highlight_counts?.waiting_retry || 0 }}</span>
+      </div>
+      <div class="summary-tile">
+        <span class="summary-label">失败</span>
+        <span class="summary-value">{{ overview.highlight_counts?.failed || 0 }}</span>
+      </div>
+    </section>
+
+    <el-card class="filters-card" shadow="never">
+      <div class="filters-row">
+        <div class="filter-group">
+          <span class="filter-label">任务类型</span>
+          <div class="filter-chips">
+            <button
+              v-for="option in domainOptions"
+              :key="option.value"
+              type="button"
+              class="filter-chip"
+              :class="{ active: currentDomain === option.value }"
+              @click="currentDomain = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-group">
+          <span class="filter-label">任务状态</span>
+          <div class="filter-chips">
+            <button
+              v-for="option in statusOptions"
+              :key="option.value"
+              type="button"
+              class="filter-chip"
+              :class="{ active: currentStatus === option.value }"
+              @click="currentStatus = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <el-input
+          v-model="searchQuery"
+          class="task-search"
+          placeholder="搜索标题、RJ、路径、当前步骤"
+          clearable
+        >
+          <template #prefix>
+            <el-icon><Search /></el-icon>
+          </template>
+        </el-input>
+      </div>
+    </el-card>
+
+    <div class="task-center-layout">
+      <el-card class="task-list-card" shadow="never">
+        <template #header>
+          <div class="list-header">
+            <span>任务列表</span>
+            <span class="list-count">{{ filteredItems.length }} 项</span>
+          </div>
+        </template>
+
+        <div v-if="filteredItems.length" class="task-list">
+          <button
+            v-for="item in filteredItems"
+            :key="item.id"
+            type="button"
+            class="task-list-item"
+            :class="{ active: selectedItem?.id === item.id }"
+            @click="selectedItemId = item.id"
+          >
+            <div class="task-list-item-head">
+              <div class="task-list-main">
+                <span class="task-title">{{ item.title }}</span>
+                <span v-if="item.subtitle" class="task-subtitle">{{ item.subtitle }}</span>
+              </div>
+              <div class="task-list-badges">
+                <el-tag size="small" effect="plain">{{ item.domain_label }}</el-tag>
+                <el-tag size="small" :type="getStatusTagType(item.status)">{{ item.status_label }}</el-tag>
               </div>
             </div>
-          </template>
-        </el-table-column>
-        
 
-        
-        <el-table-column prop="source_path" label="源文件" show-overflow-tooltip min-width="300">
-          <template #default="{ row }">
-            <div class="source-file-cell">
-              <span class="filename">{{ getFileName(row.source_path) }}</span>
-              <span v-if="shouldMarkTargetFolder(row)" class="source-path-hint">????</span>
+            <div class="task-list-meta">
+              <span>{{ item.source_label }}</span>
+              <span>{{ item.current_step }}</span>
             </div>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="type" label="类型" width="200">
-          <template #default="{ row }">
-            <el-tag size="small" effect="plain">
-              {{ getTaskTypeLabel(row.type) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="status" label="状态" width="120">
-          <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)" size="small">
-              {{ getStatusLabel(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="progress" label="进度" width="450">
-          <template #default="{ row }">
-            <div class="progress-cell">
-              <el-progress 
-                :percentage="row.progress" 
-                :status="getProgressStatus(row.status)"
-                :stroke-width="12"
-                :show-text="false"
-              />
-              <span class="progress-label">{{ row.current_step }}</span>
+
+            <div v-if="showProgress(item)" class="task-progress-row">
+              <el-progress :percentage="item.progress" :show-text="false" :stroke-width="8" />
+              <span class="task-progress-value">{{ item.progress }}%</span>
             </div>
-          </template>
-        </el-table-column>
-        
-        <el-table-column label="操作" width="140" fixed="right" align="center">
-          <template #default="{ row }">
-            <el-button-group v-if="row.status === 'processing'">
-              <el-button size="small" @click="taskStore.pauseTask(row.id)">
-                <el-icon><VideoPause /></el-icon>
-              </el-button>
-              <el-button size="small" type="danger" @click="taskStore.cancelTask(row.id)">
-                <el-icon><CircleClose /></el-icon>
-              </el-button>
-            </el-button-group>
-            
-            <el-button 
-              v-else-if="row.status === 'paused'" 
-              size="small" 
-              type="primary"
-              @click="taskStore.resumeTask(row.id)"
-            >
-              <el-icon><VideoPlay /></el-icon> 恢复
+
+            <div v-if="getTaskSummary(item).length" class="task-metrics">
+              <span v-for="(piece, index) in getTaskSummary(item)" :key="`${item.id}-summary-${index}`" class="metric-pill">
+                {{ piece }}
+              </span>
+            </div>
+          </button>
+        </div>
+
+        <el-empty v-else description="当前筛选条件下没有任务" />
+      </el-card>
+
+      <el-card class="task-detail-card" shadow="never">
+        <template #header>
+          <div class="detail-header">
+            <span>任务详情</span>
+            <el-button v-if="selectedItem?.route_hint" link @click="openTaskRoute(selectedItem)">
+              打开关联页面
             </el-button>
-            
+          </div>
+        </template>
+
+        <template v-if="selectedItem">
+          <div class="detail-hero">
+            <div class="detail-title-wrap">
+              <h2 class="detail-title">{{ selectedItem.title }}</h2>
+              <p v-if="selectedItem.subtitle" class="detail-subtitle">{{ selectedItem.subtitle }}</p>
+            </div>
+            <div class="detail-tags">
+              <el-tag effect="plain">{{ selectedItem.domain_label }}</el-tag>
+              <el-tag :type="getStatusTagType(selectedItem.status)">{{ selectedItem.status_label }}</el-tag>
+            </div>
+          </div>
+
+          <div class="detail-grid">
+            <div class="detail-block">
+              <span class="detail-block-label">来源</span>
+              <span class="detail-block-value">{{ selectedItem.source_label || '-' }}</span>
+            </div>
+            <div class="detail-block">
+              <span class="detail-block-label">RJ</span>
+              <span class="detail-block-value">{{ selectedItem.rjcode || '-' }}</span>
+            </div>
+            <div class="detail-block">
+              <span class="detail-block-label">创建时间</span>
+              <span class="detail-block-value">{{ formatDateTime(selectedItem.created_at) }}</span>
+            </div>
+            <div class="detail-block">
+              <span class="detail-block-label">完成时间</span>
+              <span class="detail-block-value">{{ formatDateTime(selectedItem.completed_at) }}</span>
+            </div>
+          </div>
+
+          <div class="detail-section">
+            <span class="detail-section-label">当前状态</span>
+            <div class="detail-step">{{ selectedItem.current_step }}</div>
+            <div v-if="showProgress(selectedItem)" class="detail-progress">
+              <el-progress :percentage="selectedItem.progress" :show-text="false" :stroke-width="10" />
+              <span class="detail-progress-text">{{ selectedItem.progress }}%</span>
+            </div>
+            <div v-if="selectedItem.error_message" class="detail-error">{{ selectedItem.error_message }}</div>
+          </div>
+
+          <div v-if="selectedItem.metrics?.length" class="detail-section">
+            <span class="detail-section-label">关键指标</span>
+            <div class="detail-metrics-grid">
+              <div v-for="metric in selectedItem.metrics" :key="`${selectedItem.id}-${metric.label}`" class="detail-metric-card">
+                <span class="detail-metric-label">{{ metric.label }}</span>
+                <span class="detail-metric-value">{{ metric.value }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="detail-section">
+            <span class="detail-section-label">路径信息</span>
+            <div class="detail-path-row">
+              <span class="detail-path-label">源路径</span>
+              <code class="detail-path-value">{{ selectedItem.source_path || '-' }}</code>
+            </div>
+            <div class="detail-path-row">
+              <span class="detail-path-label">目标路径</span>
+              <code class="detail-path-value">{{ selectedItem.target_path || '-' }}</code>
+            </div>
+          </div>
+
+          <div class="detail-actions">
             <el-button
-              v-if="row.status === 'failed'"
-              size="small"
-              type="warning"
-              @click="retryTask(row)"
+              v-for="action in selectedItem.actions"
+              :key="`${selectedItem.id}-${action}`"
+              :type="getActionButtonType(action)"
+              :plain="action !== 'cancel'"
+              @click="handleTaskAction(selectedItem, action)"
             >
-              <el-icon><Refresh /></el-icon> 重试
+              {{ getActionLabel(action) }}
             </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      
-      <el-empty v-if="taskStore.tasks.length === 0" description="暂无任务" />
-    </el-card>
+          </div>
+        </template>
+
+        <el-empty v-else description="选择左侧任务查看详情" />
+      </el-card>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
-import { VideoPause, VideoPlay, CircleClose, Refresh } from '@element-plus/icons-vue'
-import { useTaskStore } from '../stores'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { Refresh, Search } from '@element-plus/icons-vue'
+import { taskCenterApi } from '../api'
 
-const taskStore = useTaskStore()
-const currentStatus = ref('')
-const initialLoading = ref(true)
+const router = useRouter()
 
-let intervalId
+const loading = ref(false)
+const overview = ref({
+  highlight_counts: {},
+  counts_by_domain: {},
+  counts_by_status: {}
+})
+const items = ref([])
+const selectedItemId = ref('')
+const currentDomain = ref('all')
+const currentStatus = ref('all')
+const searchQuery = ref('')
+
+let intervalId = null
+
+const domainOptions = [
+  { value: 'all', label: '全部' },
+  { value: 'import', label: '导入处理' },
+  { value: 'rj_subtitle', label: 'RJ 字幕' },
+  { value: 'subtitle_import', label: '字幕补配' },
+  { value: 'asmr_sync', label: 'ASMR 同步' },
+  { value: 'system', label: '系统任务' }
+]
+
+const statusOptions = [
+  { value: 'all', label: '全部状态' },
+  { value: 'processing', label: '处理中' },
+  { value: 'waiting_manual', label: '等待人工' },
+  { value: 'waiting_retry', label: '等待重试' },
+  { value: 'pending', label: '待处理' },
+  { value: 'paused', label: '已暂停' },
+  { value: 'failed', label: '失败' },
+  { value: 'completed', label: '已完成' }
+]
+
+const filteredItems = computed(() => {
+  const query = String(searchQuery.value || '').trim().toLowerCase()
+  return items.value.filter((item) => {
+    if (currentDomain.value !== 'all' && item.domain !== currentDomain.value) {
+      return false
+    }
+    if (currentStatus.value !== 'all' && item.status !== currentStatus.value) {
+      return false
+    }
+    if (!query) {
+      return true
+    }
+    const haystack = [
+      item.title,
+      item.subtitle,
+      item.source_path,
+      item.target_path,
+      item.rjcode,
+      item.current_step,
+      item.source_label
+    ].join(' ').toLowerCase()
+    return haystack.includes(query)
+  })
+})
+
+const selectedItem = computed(() => {
+  if (!filteredItems.value.length) {
+    return null
+  }
+  return filteredItems.value.find((item) => item.id === selectedItemId.value) || filteredItems.value[0]
+})
+
+watch(filteredItems, (nextItems) => {
+  if (!nextItems.length) {
+    selectedItemId.value = ''
+    return
+  }
+  if (!nextItems.some((item) => item.id === selectedItemId.value)) {
+    selectedItemId.value = nextItems[0].id
+  }
+}, { immediate: true })
 
 onMounted(async () => {
-  try {
-    await taskStore.fetchTasks()
-  } finally {
-    initialLoading.value = false
-  }
-  // 轮询时不显示全局 loading
-  intervalId = setInterval(async () => {
-    try {
-      await taskStore.fetchTasks(currentStatus.value, false) // false = 不显示 loading
-    } catch (e) {
-      console.error('轮询任务失败:', e)
-    }
-  }, 3000)
+  await refreshTaskCenter()
+  intervalId = setInterval(() => {
+    refreshTaskCenter(false).catch((error) => {
+      console.error('任务中心轮询失败:', error)
+    })
+  }, 5000)
 })
 
 onUnmounted(() => {
-  if (intervalId) clearInterval(intervalId)
+  if (intervalId) {
+    clearInterval(intervalId)
+    intervalId = null
+  }
 })
 
-async function handleStatusChange() {
-  initialLoading.value = true
+async function refreshTaskCenter(showMessage = false) {
   try {
-    await taskStore.fetchTasks(currentStatus.value)
+    loading.value = true
+    const [overviewData, listData] = await Promise.all([
+      taskCenterApi.overview(),
+      taskCenterApi.list({ limit: 300 })
+    ])
+    overview.value = overviewData || {}
+    items.value = Array.isArray(listData) ? listData : []
+    if (showMessage) {
+      ElMessage.success('任务中心已刷新')
+    }
+  } catch (error) {
+    console.error('获取任务中心失败:', error)
+    ElMessage.error('获取任务中心失败: ' + (error.response?.data?.detail || error.message))
   } finally {
-    initialLoading.value = false
+    loading.value = false
   }
+}
+
+function showProgress(item) {
+  return ['processing', 'pending', 'paused', 'waiting_retry'].includes(item?.status)
 }
 
 function getFileName(path) {
-  if (!path) return ''
-  return path.split(/[\\/]/).pop()
-}
-
-function getTaskTypeLabel(type) {
-  const labels = {
-    'auto_process': '自动处理',
-    'extract': '解压',
-    'filter': '过滤',
-    'metadata': '元数据',
-    'rename': '重命名'
+  if (!path) {
+    return ''
   }
-  labels['rj_subtitle_fetch'] = '????'
-  return labels[type] || type
+  return String(path).split(/[\\/]/).pop()
 }
 
-function shouldMarkTargetFolder(row) {
-  if (!row || row.type !== 'rj_subtitle_fetch') return false
-  const sourceMode = String(row.source_mode || row.metadata?.source_mode || '').toLowerCase()
-  return sourceMode === 'linked_translation_archive_import' || sourceMode === 'subtitle_folder_import'
+function pickMetricValue(item, label) {
+  const metrics = Array.isArray(item?.metrics) ? item.metrics : []
+  return metrics.find(metric => metric?.label === label)?.value || ''
 }
 
-function getStatusLabel(status) {
-  const labels = {
-    'pending': '等待中',
-    'processing': '处理中',
-    'paused': '已暂停',
-    'waiting_manual': '等待手动处理',
-    'completed': '已完成',
-    'failed': '失败',
-    'cancelled': '已取消'
+function getTaskSummary(item) {
+  if (!item) {
+    return []
   }
-  return labels[status] || status
+
+  const details = item.details || {}
+  const metadata = details.metadata || {}
+  const preview = details.preview || {}
+  const pieces = []
+
+  if (item.domain === 'rj_subtitle') {
+    const downloadCount = pickMetricValue(item, '下载')
+    const writtenCount = pickMetricValue(item, '写入')
+    const subtitleDir = item.target_path || metadata.subtitle_dir || ''
+    if (item.rjcode) pieces.push(`RJ ${item.rjcode}`)
+    if (downloadCount) pieces.push(`下载 ${downloadCount}`)
+    if (writtenCount) pieces.push(`写入 ${writtenCount}`)
+    if (subtitleDir) pieces.push(`目录 ${getFileName(subtitleDir)}`)
+  } else if (item.domain === 'subtitle_import') {
+    const subtitleCount = pickMetricValue(item, '来源字幕') || preview.subtitle_count
+    const candidateCount = pickMetricValue(item, '可执行候选') || pickMetricValue(item, '候选目录')
+    const targetFolder = item.target_path || preview.selected_candidate?.folder_path || ''
+    if (item.rjcode) pieces.push(`目标 ${item.rjcode}`)
+    if (subtitleCount) pieces.push(`候选字幕 ${subtitleCount}`)
+    if (candidateCount) pieces.push(`候选目录 ${candidateCount}`)
+    if (targetFolder) pieces.push(`目标目录 ${getFileName(targetFolder)}`)
+  } else if (item.domain === 'asmr_sync') {
+    const downloadFiles = pickMetricValue(item, '下载文件')
+    const failedFiles = pickMetricValue(item, '失败文件')
+    if (item.rjcode) pieces.push(`RJ ${item.rjcode}`)
+    if (downloadFiles) pieces.push(`文件 ${downloadFiles}`)
+    if (failedFiles) pieces.push(`失败 ${failedFiles}`)
+    if (item.subtitle) pieces.push(`来源 ${getFileName(item.subtitle)}`)
+  } else {
+    const outputName = pickMetricValue(item, '输出') || item.target_path
+    const targetLibrary = pickMetricValue(item, '目标库')
+    if (item.rjcode) pieces.push(`RJ ${item.rjcode}`)
+    if (outputName) pieces.push(`输出 ${getFileName(outputName)}`)
+    if (targetLibrary) pieces.push(`目标库 ${targetLibrary}`)
+  }
+
+  if (!pieces.length && item.current_step) {
+    pieces.push(item.current_step)
+  }
+
+  return pieces.slice(0, 4)
 }
 
-function getStatusType(status) {
+function getStatusTagType(status) {
   const types = {
-    'pending': 'info',
-    'processing': 'warning',
-    'paused': 'info',
-    'waiting_manual': 'warning',
-    'completed': 'success',
-    'failed': 'danger',
-    'cancelled': 'danger'
+    pending: 'info',
+    processing: 'warning',
+    paused: 'info',
+    waiting_manual: 'warning',
+    waiting_retry: 'danger',
+    completed: 'success',
+    failed: 'danger'
   }
-  return types[status] || ''
+  return types[status] || 'info'
 }
 
-function getProgressStatus(status) {
-  if (status === 'failed') return 'exception'
-  if (status === 'completed') return 'success'
-  return ''
+function getActionLabel(action) {
+  const labels = {
+    pause: '暂停',
+    resume: '恢复',
+    cancel: '取消',
+    retry_waiting: '立即重试',
+    delete_waiting_retry: '移除等待重试',
+    open_subtitle_import: '前往字幕补配'
+  }
+  return labels[action] || action
 }
 
-async function retryTask(task) {
-  await taskStore.createTask(task.source_path, task.type, true)
+function getActionButtonType(action) {
+  const types = {
+    pause: 'warning',
+    resume: 'primary',
+    cancel: 'danger',
+    retry_waiting: 'primary',
+    delete_waiting_retry: 'danger',
+    open_subtitle_import: 'primary'
+  }
+  return types[action] || 'info'
+}
+
+async function handleTaskAction(item, action) {
+  try {
+    const result = await taskCenterApi.action(item.id, action)
+    if (result?.route_hint) {
+      await router.push(result.route_hint)
+    }
+    ElMessage.success(result?.message || '操作成功')
+    await refreshTaskCenter()
+  } catch (error) {
+    console.error('执行任务动作失败:', error)
+    ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
+function openTaskRoute(item) {
+  if (!item?.route_hint) {
+    return
+  }
+  router.push(item.route_hint)
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return '-'
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  })
 }
 </script>
 
 <style scoped>
-.tasks {
-  max-width: 1400px;
+.task-center-page {
+  max-width: 1480px;
   margin: 0 auto;
+  color: #1d1d1f;
 }
 
-.page-header {
+.task-center-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.hero-eyebrow {
+  display: inline-block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #0066cc;
+}
+
+.hero-title {
+  margin: 0;
+  font-size: 38px;
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.28px;
+}
+
+.hero-description {
+  max-width: 760px;
+  margin: 10px 0 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: rgba(29, 29, 31, 0.62);
+}
+
+.refresh-button {
+  min-width: 112px;
+  height: 40px;
+  border-radius: 999px;
+}
+
+.summary-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.summary-tile {
+  padding: 18px 20px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.06);
+}
+
+.summary-label {
+  display: block;
+  font-size: 13px;
+  color: rgba(29, 29, 31, 0.56);
+}
+
+.summary-value {
+  display: block;
+  margin-top: 10px;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.filters-card,
+.task-list-card,
+.task-detail-card {
+  border: none;
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.06);
+}
+
+.filters-card {
+  margin-bottom: 20px;
+}
+
+.filters-card :deep(.el-card__body),
+.task-list-card :deep(.el-card__body),
+.task-detail-card :deep(.el-card__body) {
+  padding: 22px 24px 24px;
+}
+
+.filters-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.filter-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(29, 29, 31, 0.44);
+}
+
+.filter-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: #f3f3f6;
+  color: rgba(29, 29, 31, 0.72);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.filter-chip.active {
+  background: #eaf3ff;
+  color: #0066cc;
+  font-weight: 600;
+}
+
+.task-search {
+  width: 280px;
+  margin-left: auto;
+}
+
+.task-center-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
+  gap: 20px;
+}
+
+.list-header,
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.list-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(29, 29, 31, 0.5);
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.task-list-item {
+  width: 100%;
+  padding: 16px 18px;
+  border: 0;
+  border-radius: 22px;
+  background: #f7f7fa;
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.task-list-item:hover {
+  transform: translateY(-1px);
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.08);
+}
+
+.task-list-item.active {
+  background: #eef5ff;
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.14);
+}
+
+.task-list-item-head {
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.task-list-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.task-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: #1d1d1f;
+}
+
+.task-subtitle {
+  font-size: 13px;
+  color: rgba(29, 29, 31, 0.62);
+}
+
+.task-list-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.task-list-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.54);
+}
+
+.task-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.task-progress-row :deep(.el-progress) {
+  flex: 1;
+}
+
+.task-progress-value {
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.5);
+}
+
+.task-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.metric-pill {
+  display: inline-flex;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: rgba(29, 29, 31, 0.72);
+  font-size: 12px;
+}
+
+.detail-hero {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
+  gap: 16px;
+  margin-bottom: 20px;
 }
 
-.page-title {
+.detail-title {
+  margin: 0;
   font-size: 28px;
   font-weight: 600;
-  color: #1e293b;
-  margin: 0;
+  line-height: 1.12;
+  letter-spacing: -0.24px;
 }
 
-.task-id {
-  font-family: monospace;
-  font-size: 12px;
-  color: #64748b;
-  white-space: nowrap;
-}
-
-.progress-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-
-.progress-cell :deep(.el-progress) {
-  flex: 1;
-  margin-bottom: 0;
-  max-width: 100px;
-}
-
-.progress-label {
-  font-size: 13px;
-  color: #64748b;
-  white-space: nowrap;
-  min-width: 40px;
-}
-
-.task-detail {
-  padding: 20px;
-  background-color: #f8fafc;
-  border-radius: 8px;
-}
-
-.task-detail p {
-  margin: 8px 0;
+.detail-subtitle {
+  margin: 8px 0 0;
   font-size: 14px;
+  line-height: 1.5;
+  color: rgba(29, 29, 31, 0.62);
 }
 
-.error-text {
-  color: #ef4444;
-}
-
-.metadata-section {
-  margin-top: 16px;
-}
-
-.metadata-section h4 {
-  margin: 0 0 12px;
-  font-size: 16px;
-  color: #334155;
-}
-
-.source-file-cell {
+.detail-tags {
   display: flex;
-  flex-direction: row;
-  align-items: center;
   gap: 8px;
-  overflow: hidden;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.filename {
-  color: #334155;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.source-path-hint {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: #fff4e5;
-  color: #b45309;
+.detail-block {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: #f7f7fa;
+}
+
+.detail-block-label {
+  display: block;
   font-size: 12px;
-  line-height: 1.4;
-  white-space: nowrap;
+  color: rgba(29, 29, 31, 0.48);
 }
 
-.task-id {
-  font-family: monospace;
-  color: #64748b;
-  white-space: nowrap;
+.detail-block-value {
+  display: block;
+  margin-top: 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.detail-section {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(29, 29, 31, 0.08);
+}
+
+.detail-section-label {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(29, 29, 31, 0.56);
+}
+
+.detail-step {
+  font-size: 15px;
+  line-height: 1.5;
+  color: #1d1d1f;
+}
+
+.detail-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.detail-progress :deep(.el-progress) {
+  flex: 1;
+}
+
+.detail-progress-text {
+  font-size: 13px;
+  color: rgba(29, 29, 31, 0.5);
+}
+
+.detail-error {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #fff1f0;
+  color: #c03d2e;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.detail-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.detail-metric-card {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: #f7f7fa;
+}
+
+.detail-metric-label {
+  display: block;
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.48);
+}
+
+.detail-metric-value {
+  display: block;
+  margin-top: 8px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.detail-path-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.detail-path-label {
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.48);
+}
+
+.detail-path-value {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: #f7f7fa;
+  color: #1d1d1f;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+:deep(.el-card__header) {
+  padding: 22px 24px 0;
+  border-bottom: none;
+}
+
+:deep(.el-input__wrapper) {
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px rgba(29, 29, 31, 0.08) inset;
+}
+
+:deep(.el-tag) {
+  border-radius: 999px;
+}
+
+:deep(.el-progress-bar__outer) {
+  background: #e9e9ed;
+}
+
+:deep(.el-progress-bar__inner) {
+  background: linear-gradient(90deg, #0071e3 0%, #2a8cff 100%);
+}
+
+@media (max-width: 1280px) {
+  .task-center-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail-grid,
+  .detail-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .task-center-hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .hero-title {
+    font-size: 32px;
+  }
+
+  .summary-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .filters-row {
+    flex-direction: column;
+  }
+
+  .task-search {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .task-list-item-head,
+  .detail-hero {
+    flex-direction: column;
+  }
 }
 </style>

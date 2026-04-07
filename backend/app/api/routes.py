@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 import asyncio
 import contextlib
@@ -137,6 +137,51 @@ class TaskResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+class TaskCenterOverviewResponse(BaseModel):
+    generated_at: str
+    total: int
+    counts_by_domain: Dict[str, int]
+    counts_by_status: Dict[str, int]
+    highlight_counts: Dict[str, int]
+    recent_items: List[Dict[str, Any]]
+    active_items: List[Dict[str, Any]]
+
+
+class TaskCenterItemResponse(BaseModel):
+    id: str
+    entity_id: str
+    engine_task_id: Optional[str] = None
+    record_id: Optional[str] = None
+    domain: str
+    domain_label: str
+    kind: str
+    kind_label: str
+    title: str
+    subtitle: str
+    source_label: str
+    source_page: str
+    source_action: str
+    route_hint: str
+    status: str
+    status_label: str
+    progress: int
+    current_step: str
+    error_message: str
+    source_path: str
+    target_path: str
+    rjcode: str
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    metrics: List[Dict[str, str]]
+    actions: List[str]
+    details: Dict[str, Any]
+
+
+class TaskCenterActionRequest(BaseModel):
+    action: str
+
 class ConfigResponse(BaseModel):
     storage: dict
     processing: dict
@@ -158,9 +203,10 @@ class ConfigResponse(BaseModel):
     backup_zip: Optional[dict] = None
 
 # API路由
-@app.post("/api/tasks", response_model=TaskResponse)
+# 兼容层：旧任务接口仅保留给少数历史入口使用，新功能统一走 /api/task-center/*
+@app.post("/api/tasks", response_model=TaskResponse, deprecated=True, summary="兼容层：创建原始引擎任务")
 async def create_task(task_create: TaskCreate):
-    """创建新任务（使用 FileProcessor 统一处理流程）"""
+    """兼容层：创建原始引擎任务，新功能请改用任务中心聚合接口。"""
     from ..core.file_processor import get_file_processor
 
     file_processor = get_file_processor()
@@ -286,9 +332,9 @@ async def get_backup_history():
     finally:
         db.close()
 
-@app.get("/api/tasks", response_model=List[TaskResponse])
+@app.get("/api/tasks", response_model=List[TaskResponse], deprecated=True, summary="兼容层：获取原始引擎任务列表")
 async def get_tasks(status: Optional[str] = None):
-    """获取任务列表"""
+    """兼容层：获取原始引擎任务列表，新功能请改用 /api/task-center/list。"""
     engine = get_task_engine()
     
     if status == "pending":
@@ -315,9 +361,56 @@ async def get_tasks(status: Optional[str] = None):
         for task in tasks
     ]
 
-@app.get("/api/tasks/{task_id}", response_model=TaskResponse)
+
+@app.get("/api/task-center/overview", response_model=TaskCenterOverviewResponse)
+async def get_task_center_overview():
+    """获取任务中心总览摘要。"""
+    from ..core.task_center_service import get_task_center_service
+
+    service = get_task_center_service()
+    return await service.get_overview()
+
+
+@app.get("/api/task-center/list", response_model=List[TaskCenterItemResponse])
+async def get_task_center_list(
+    domain: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 200,
+):
+    """获取任务中心统一任务列表。"""
+    from ..core.task_center_service import get_task_center_service
+
+    service = get_task_center_service()
+    return await service.list_items(domain=domain, status=status, search=search, limit=limit)
+
+
+@app.get("/api/task-center/item", response_model=Optional[TaskCenterItemResponse])
+async def get_task_center_item(item_id: Optional[str] = None, engine_task_id: Optional[str] = None):
+    """按任务中心 ID 或引擎任务 ID 获取单项。"""
+    from ..core.task_center_service import get_task_center_service
+
+    service = get_task_center_service()
+    try:
+        return await service.get_item(item_id=item_id, engine_task_id=engine_task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/task-center/{item_id}/action")
+async def execute_task_center_action(item_id: str, payload: TaskCenterActionRequest):
+    """执行任务中心统一动作。"""
+    from ..core.task_center_service import get_task_center_service
+
+    service = get_task_center_service()
+    try:
+        return await service.execute_action(item_id, payload.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.get("/api/tasks/{task_id}", response_model=TaskResponse, deprecated=True, summary="兼容层：获取原始引擎任务")
 async def get_task(task_id: str):
-    """获取单个任务"""
+    """兼容层：获取原始引擎任务详情，新功能请改用 /api/task-center/item。"""
     engine = get_task_engine()
     task = engine.get_task(task_id)
     
@@ -336,23 +429,23 @@ async def get_task(task_id: str):
         rjcode=task.rjcode
     )
 
-@app.post("/api/tasks/{task_id}/pause")
+@app.post("/api/tasks/{task_id}/pause", deprecated=True, summary="兼容层：暂停原始引擎任务")
 async def pause_task(task_id: str):
-    """暂停任务"""
+    """兼容层：暂停原始引擎任务，新动作请改用 /api/task-center/{id}/action。"""
     engine = get_task_engine()
     engine.pause_task(task_id)
     return {"message": "任务已暂停"}
 
-@app.post("/api/tasks/{task_id}/resume")
+@app.post("/api/tasks/{task_id}/resume", deprecated=True, summary="兼容层：恢复原始引擎任务")
 async def resume_task(task_id: str):
-    """恢复任务"""
+    """兼容层：恢复原始引擎任务，新动作请改用 /api/task-center/{id}/action。"""
     engine = get_task_engine()
     engine.resume_task(task_id)
     return {"message": "任务已恢复"}
 
-@app.post("/api/tasks/{task_id}/cancel")
+@app.post("/api/tasks/{task_id}/cancel", deprecated=True, summary="兼容层：取消原始引擎任务")
 async def cancel_task(task_id: str):
-    """取消任务"""
+    """兼容层：取消原始引擎任务，新动作请改用 /api/task-center/{id}/action。"""
     engine = get_task_engine()
     engine.cancel_task(task_id)
     return {"message": "任务已取消"}

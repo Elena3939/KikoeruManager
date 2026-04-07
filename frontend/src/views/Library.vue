@@ -50,7 +50,17 @@
                 </div>
               </el-option>
             </el-select>
-            <el-button class="toolbar-action-btn" :loading="isRefreshingCurrentView" @click="refreshCurrentView"><el-icon><Refresh /></el-icon>刷新</el-button>
+            <el-button
+              class="toolbar-action-btn toolbar-refresh-btn"
+              :class="{ 'is-refreshing': isRefreshingCurrentView }"
+              :disabled="isRefreshingCurrentView"
+              @click="refreshCurrentView"
+            >
+              <span class="toolbar-refresh-content">
+                <el-icon class="toolbar-refresh-icon"><Refresh /></el-icon>
+                <span class="toolbar-refresh-label">{{ isRefreshingCurrentView ? '刷新中' : '刷新' }}</span>
+              </span>
+            </el-button>
             <el-button class="toolbar-tight-btn" :loading="statsLoading" @click="handleStatsAction">{{ canCancelStats ? '取消统计' : '刷新统计' }}</el-button>
             <el-button class="toolbar-tight-btn" @click="toggleAllSelection">{{ isAllSelected ? '取消全选' : '全选' }}</el-button>
             <el-input v-model="searchQuery" clearable placeholder="搜索文件名或RJ号" style="width: 250px" @keyup.enter="handleSearch" @clear="handleSearch">
@@ -83,11 +93,28 @@
           <code class="path-code">{{ currentPathDisplay }}</code>
         </div>
         <div class="path-toolbar-right">
-          <el-radio-group v-model="toolbarActionScope" size="small" class="toolbar-scope-switch">
-            <el-radio-button label="page">当前页</el-radio-button>
-            <el-radio-button label="all">当前目录</el-radio-button>
-          </el-radio-group>
+          <div class="toolbar-scope-toggle" role="tablist" aria-label="工具栏作用范围">
+            <button
+              type="button"
+              class="toolbar-scope-option"
+              :class="{ 'is-active': toolbarActionScope === 'page' }"
+              :aria-pressed="toolbarActionScope === 'page'"
+              @click="toolbarActionScope = 'page'"
+            >
+              当前页
+            </button>
+            <button
+              type="button"
+              class="toolbar-scope-option"
+              :class="{ 'is-active': toolbarActionScope === 'all' }"
+              :aria-pressed="toolbarActionScope === 'all'"
+              @click="toolbarActionScope = 'all'"
+            >
+              当前目录
+            </button>
+          </div>
           <el-button
+            class="toolbar-utility-btn toolbar-utility-btn-danger"
             size="small"
             type="danger"
             plain
@@ -97,6 +124,7 @@
             {{ toolbarActionScope === 'page' ? '当前页删过滤' : '删除过滤文件' }}
           </el-button>
           <el-button
+            class="toolbar-utility-btn toolbar-utility-btn-primary"
             size="small"
             type="success"
             plain
@@ -105,7 +133,7 @@
           >
             {{ toolbarActionScope === 'page' ? '当前页抓字幕' : '当前目录抓字幕' }}
           </el-button>
-          <el-button size="small" plain @click="openSubtitleTaskPanel">
+          <el-button class="toolbar-utility-btn toolbar-utility-btn-neutral" size="small" plain @click="openSubtitleTaskPanel">
             字幕任务面板
           </el-button>
         </div>
@@ -169,12 +197,32 @@
                 </template>
                 <template v-else>
                   <el-button size="small" plain class="action-btn action-btn-rename" :disabled="!isWritableCurrentLibrary || apiRenameBusy" @click="renameItem(row)">重命名</el-button>
-                  <el-button size="small" plain class="action-btn action-btn-api" :disabled="!row.is_directory || apiRenameBusy" :loading="apiRenamingId === row.id" @click="apiRenameItem(row)">API 重命名</el-button>
+                  <el-button
+                    size="small"
+                    plain
+                    class="action-btn action-btn-api"
+                    :class="{ 'is-batch-target': isBatchApiRenameTarget(row) }"
+                    :disabled="!row.is_directory || apiRenameBusy"
+                    :loading="apiRenamingId === row.id"
+                    @click="apiRenameItem(row)"
+                  >
+                    API 重命名
+                  </el-button>
                 </template>
               </div>
               <div class="action-row" v-if="!isRemoteCurrentLibrary">
                 <el-button size="small" plain class="action-btn action-btn-rename" :disabled="!isWritableCurrentLibrary || apiRenameBusy" @click="renameItem(row)">重命名</el-button>
-                <el-button size="small" plain class="action-btn action-btn-api" :disabled="!row.is_directory || apiRenameBusy" :loading="apiRenamingId === row.id" @click="apiRenameItem(row)">API 重命名</el-button>
+                <el-button
+                  size="small"
+                  plain
+                  class="action-btn action-btn-api"
+                  :class="{ 'is-batch-target': isBatchApiRenameTarget(row) }"
+                  :disabled="!row.is_directory || apiRenameBusy"
+                  :loading="apiRenamingId === row.id"
+                  @click="apiRenameItem(row)"
+                >
+                  API 重命名
+                </el-button>
               </div>
               <div class="action-row">
                 <el-button
@@ -207,6 +255,7 @@
         <span class="selected-count">已选择 {{ selectedRows.length }} 项</span>
         <div class="batch-actions">
           <el-button
+            class="batch-action-btn batch-action-btn-primary"
             size="small"
             type="success"
             plain
@@ -217,6 +266,7 @@
             <el-icon><Tickets /></el-icon>批量抓字幕
           </el-button>
           <el-button
+            class="batch-action-btn batch-action-btn-danger"
             size="small"
             type="danger"
             plain
@@ -225,9 +275,9 @@
           >
             <el-icon><Delete /></el-icon>批量删过滤预审
           </el-button>
-          <el-button size="small" type="danger" plain :disabled="!isWritableCurrentLibrary" :loading="batchDeleting" @click="handleBatchDelete"><el-icon><Delete /></el-icon>批量删除</el-button>
-          <el-button size="small" type="warning" plain :disabled="!selectedApiRenameRows.length || apiRenameBusy" :loading="batchRenaming" @click="handleBatchApiRename"><el-icon><Edit /></el-icon>批量 API重命名</el-button>
-          <el-button size="small" @click="clearSelection">取消选择</el-button>
+          <el-button class="batch-action-btn batch-action-btn-danger" size="small" type="danger" plain :disabled="!isWritableCurrentLibrary" :loading="batchDeleting" @click="handleBatchDelete"><el-icon><Delete /></el-icon>批量删除</el-button>
+          <el-button class="batch-action-btn batch-action-btn-neutral" size="small" type="warning" plain :disabled="!selectedApiRenameRows.length || apiRenameBusy" :loading="batchRenaming" @click="handleBatchApiRename"><el-icon><Edit /></el-icon>批量 API重命名</el-button>
+          <el-button class="batch-action-btn batch-action-btn-neutral" size="small" @click="clearSelection">取消选择</el-button>
         </div>
       </div>
 
@@ -1286,6 +1336,7 @@ const subtitleScanTargetResults = ref([])
 const subtitleScanRetryingPath = ref('')
 const subtitleScanSession = ref(createSubtitleScanSessionState())
 const isRefreshingCurrentView = ref(false)
+const batchApiRenameTargetIds = ref(new Set())
 const subtitleDownloadExpandedMap = ref({})
 const subtitleIssueExpandedMap = ref({})
 const subtitleDialogSelection = ref([])
@@ -1996,6 +2047,10 @@ const currentFolderSubtitleItem = computed(() => {
 const selectedSubtitleCandidates = computed(() => selectedRows.value.filter(row => canFetchRJSubtitle(row)))
 const selectedApiRenameRows = computed(() => selectedRows.value.filter(row => row?.is_directory))
 const apiRenameBusy = computed(() => Boolean(apiRenamingId.value) || batchRenaming.value)
+
+function isBatchApiRenameTarget (row) {
+  return batchRenaming.value && batchApiRenameTargetIds.value.has(row?.id)
+}
 
 function bindLibraryKeydown () {
   if (libraryKeydownBound) return
@@ -5887,6 +5942,7 @@ async function handleBatchApiRename () {
     return
   }
   batchRenaming.value = true
+  batchApiRenameTargetIds.value = new Set(targetRows.map(row => row.id))
   try {
     const results = []
     for (const row of targetRows) {
@@ -5914,6 +5970,7 @@ async function handleBatchApiRename () {
   } catch (error) {
     ElMessage.error('批量 API重命名失败: ' + (error.response?.data?.detail || error.message))
   } finally {
+    batchApiRenameTargetIds.value = new Set()
     apiRenamingId.value = null
     batchRenaming.value = false
   }
@@ -6338,28 +6395,134 @@ function statsStatusTextDisplay (stats) {
 </script>
 
 <style scoped>
-.library { max-width: 1480px; margin: 0 auto; padding: 16px; }
-.page-title { margin: 0 0 20px; font-size: 24px; font-weight: 600; color: #303133; }
-.summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
-.summary-card { min-height: 160px; }
-.summary-value { font-size: 26px; font-weight: 700; color: #303133; line-height: 1.3; }
-.summary-meta, .summary-caption { margin-top: 8px; color: #606266; font-size: 14px; }
-.summary-caption { color: #909399; font-size: 13px; line-height: 1.6; }
+.library {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 16px;
+  color: #1d1d1f;
+  font-family: "SF Pro Text", "SF Pro Display", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+}
+
+.page-title {
+  margin: 0 0 18px;
+  font-size: 29px;
+  font-weight: 600;
+  line-height: 1.12;
+  letter-spacing: -0.2px;
+  color: #1d1d1f;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.summary-card {
+  min-height: 160px;
+  border: none;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .05);
+}
+
+.summary-card :deep(.el-card__header) {
+  padding: 18px 18px 0;
+  border-bottom: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(29, 29, 31, .52);
+}
+
+.summary-card :deep(.el-card__body) {
+  padding: 14px 18px 18px;
+}
+
+.summary-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.18;
+  letter-spacing: -0.16px;
+  color: #1d1d1f;
+}
+
+.summary-meta,
+.summary-caption {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.summary-meta {
+  color: rgba(29, 29, 31, .66);
+}
+
+.summary-caption {
+  color: rgba(29, 29, 31, .5);
+  line-height: 1.58;
+}
+
 .summary-progress { margin-top: 10px; }
 
 .path-text { word-break: break-all; }
 .summary-tags { display: flex; gap: 8px; margin-top: 12px; }
-.main-card { border-radius: 8px; border: 1px solid #e4e7ed; box-shadow: 0 2px 12px rgba(0,0,0,.02) !important; }
+.main-card {
+  border: none;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .05) !important;
+}
+
+.main-card :deep(.el-card__header) {
+  padding: 18px 18px 0;
+  border-bottom: none;
+}
+
+.main-card :deep(.el-card__body) {
+  padding: 12px 18px 18px;
+}
+
 .card-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-.header-title { font-size: 16px; font-weight: 600; color: #303133; white-space: nowrap; }
+.header-title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.08px;
+  color: #1d1d1f;
+  white-space: nowrap;
+}
 .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
 .toolbar-action-btn,
 .toolbar-tight-btn { width: 88px; }
+
+:deep(.el-input__wrapper),
+:deep(.el-select__wrapper) {
+  min-height: 34px;
+  border-radius: 12px;
+  background: #f5f5f7;
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, .06);
+}
+
+:deep(.el-input__inner),
+:deep(.el-select__selected-item),
+:deep(.el-select__placeholder) {
+  font-size: 12px;
+  color: #1d1d1f;
+}
+
 :deep(.toolbar-action-btn.el-button),
 :deep(.toolbar-tight-btn.el-button) {
+  min-height: 34px;
   padding: 0 !important;
+  border-radius: 999px;
+  border-color: rgba(29, 29, 31, .08);
+  background: #f5f5f7;
+  color: #1d1d1f;
+  box-shadow: none;
   --el-button-padding-horizontal: 0 !important;
   --el-button-padding-vertical: 0 !important;
+  font-size: 12px;
+  font-weight: 500;
 }
 :deep(.toolbar-action-btn.el-button > span),
 :deep(.toolbar-tight-btn.el-button > span) {
@@ -6370,33 +6533,313 @@ function statsStatusTextDisplay (stats) {
   height: 100%;
   padding: 0 !important;
 }
+
+.toolbar-refresh-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.toolbar-refresh-icon,
+.toolbar-refresh-label {
+  transition: color .22s ease, opacity .22s ease, transform .22s ease;
+}
+
+.toolbar-refresh-icon {
+  font-size: 13px;
+  color: rgba(29, 29, 31, .56);
+}
+
+.toolbar-refresh-label {
+  min-width: 36px;
+  letter-spacing: .02em;
+}
+
+:deep(.toolbar-refresh-btn.el-button:hover .toolbar-refresh-icon) {
+  color: #0071e3;
+  transform: rotate(-18deg);
+}
+
+:deep(.toolbar-refresh-btn.el-button.is-refreshing),
+:deep(.toolbar-refresh-btn.el-button.is-disabled.is-refreshing) {
+  opacity: 1;
+  cursor: default;
+  color: #0b63ce;
+  border-color: rgba(0, 113, 227, .16);
+  background: linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
+}
+
+:deep(.toolbar-refresh-btn.el-button.is-refreshing > span),
+:deep(.toolbar-refresh-btn.el-button.is-disabled.is-refreshing > span) {
+  opacity: 1;
+}
+
+:deep(.toolbar-refresh-btn.el-button.is-refreshing .toolbar-refresh-icon) {
+  color: #0b63ce;
+  animation: library-refresh-spin .95s cubic-bezier(.55, .08, .38, .96) infinite;
+}
+
+:deep(.toolbar-action-btn.el-button--primary) {
+  background: #0071e3;
+  border-color: #0071e3;
+  color: #fff;
+}
+
+@keyframes library-refresh-spin {
+  0% { transform: rotate(0deg); }
+  42% { transform: rotate(160deg); }
+  58% { transform: rotate(210deg); }
+  100% { transform: rotate(360deg); }
+}
+
+:deep(.el-switch__core) {
+  border-color: rgba(29, 29, 31, .08);
+  background: #e9e9ed;
+}
+
+:deep(.el-switch.is-checked .el-switch__core) {
+  background: #0071e3;
+  border-color: #0071e3;
+}
+
 .library-option { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.path-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; padding: 10px 12px; background: #f8f9fa; border: 1px solid #ebeef5; border-radius: 6px; }
+.path-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: #f5f5f7;
+  border: none;
+  border-radius: 16px;
+}
 .path-toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .path-toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.toolbar-scope-switch { margin-right: 4px; }
-:deep(.toolbar-scope-switch .el-radio-button__inner) { min-width: 78px; text-align: center; }
-.path-label { font-size: 13px; color: #909399; white-space: nowrap; }
-:deep(.el-table) { --el-table-header-bg-color: #f8f9fa; }
-:deep(.el-table th.el-table__cell) { font-weight: 600; }
+.toolbar-scope-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  background: #f5f5f7;
+  box-shadow:
+    inset 0 0 0 1px rgba(29, 29, 31, .08),
+    0 1px 2px rgba(0, 0, 0, .04);
+}
+
+.toolbar-scope-option {
+  min-width: 72px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(29, 29, 31, .72);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.12px;
+  cursor: pointer;
+  -webkit-font-smoothing: antialiased;
+  transition: background .18s ease, color .18s ease, box-shadow .18s ease, transform .18s ease, opacity .18s ease;
+}
+
+.toolbar-scope-option:hover {
+  color: #1d1d1f;
+  background: rgba(255, 255, 255, .78);
+}
+
+.toolbar-scope-option:focus-visible {
+  outline: 2px solid #0071e3;
+  outline-offset: 2px;
+}
+
+.toolbar-scope-option.is-active {
+  background: #0071e3;
+  color: #fff;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, .08),
+    0 1px 3px rgba(0, 0, 0, .12);
+}
+
+.toolbar-scope-option.is-active:hover {
+  background: #0077ed;
+  color: #fff;
+}
+
+.toolbar-utility-btn,
+.batch-action-btn {
+  --apple-btn-bg: #fafafc;
+  --apple-btn-bg-hover: #ffffff;
+  --apple-btn-text: rgba(0, 0, 0, .8);
+  --apple-btn-border: rgba(0, 0, 0, .06);
+  --apple-btn-border-hover: rgba(0, 0, 0, .1);
+  --apple-btn-shadow: rgba(0, 0, 0, .08) 0 1px 3px;
+}
+
+:deep(.toolbar-utility-btn.el-button),
+:deep(.batch-action-btn.el-button) {
+  min-height: 30px;
+  padding: 0 14px !important;
+  border-radius: 999px;
+  border-color: transparent !important;
+  background: var(--apple-btn-bg) !important;
+  color: var(--apple-btn-text) !important;
+  box-shadow:
+    inset 0 0 0 1px var(--apple-btn-border),
+    0 1px 2px rgba(0, 0, 0, .04);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.12px;
+  transition: background .18s ease, color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+:deep(.toolbar-utility-btn.el-button:hover),
+:deep(.batch-action-btn.el-button:hover) {
+  background: var(--apple-btn-bg-hover) !important;
+  color: var(--apple-btn-text) !important;
+  box-shadow:
+    inset 0 0 0 1px var(--apple-btn-border-hover),
+    var(--apple-btn-shadow);
+  transform: translateY(-1px);
+}
+
+:deep(.toolbar-utility-btn.el-button > span),
+:deep(.batch-action-btn.el-button > span) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+:deep(.toolbar-utility-btn.el-button .el-icon),
+:deep(.batch-action-btn.el-button .el-icon) {
+  font-size: 12px;
+}
+
+:deep(.toolbar-utility-btn.el-button.is-disabled),
+:deep(.toolbar-utility-btn.el-button.is-disabled:hover),
+:deep(.batch-action-btn.el-button.is-disabled),
+:deep(.batch-action-btn.el-button.is-disabled:hover),
+:deep(.batch-action-btn.el-button.is-loading),
+:deep(.batch-action-btn.el-button.is-loading:hover) {
+  transform: none;
+  opacity: .64;
+  box-shadow:
+    inset 0 0 0 1px var(--apple-btn-border),
+    0 1px 2px rgba(0, 0, 0, .03);
+}
+
+.toolbar-utility-btn-primary,
+.batch-action-btn-primary {
+  --apple-btn-bg: #0071e3;
+  --apple-btn-bg-hover: #0077ed;
+  --apple-btn-text: #fff;
+  --apple-btn-border: rgba(255, 255, 255, .08);
+  --apple-btn-border-hover: rgba(255, 255, 255, .12);
+  --apple-btn-shadow: rgba(0, 113, 227, .24) 0 6px 16px;
+}
+
+.toolbar-utility-btn-danger,
+.batch-action-btn-danger {
+  --apple-btn-bg: #fff5f5;
+  --apple-btn-bg-hover: #fff;
+  --apple-btn-text: #d70015;
+  --apple-btn-border: rgba(215, 0, 21, .2);
+  --apple-btn-border-hover: rgba(215, 0, 21, .28);
+  --apple-btn-shadow: rgba(215, 0, 21, .12) 0 6px 16px;
+}
+
+.toolbar-utility-btn-neutral,
+.batch-action-btn-neutral {
+  --apple-btn-bg: #fafafc;
+  --apple-btn-bg-hover: #ffffff;
+  --apple-btn-text: rgba(0, 0, 0, .8);
+  --apple-btn-border: rgba(0, 0, 0, .06);
+  --apple-btn-border-hover: rgba(0, 0, 0, .1);
+  --apple-btn-shadow: rgba(0, 0, 0, .08) 0 6px 16px;
+}
+
+.path-label { font-size: 12px; color: rgba(29, 29, 31, .48); white-space: nowrap; }
+.path-code {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .92);
+  color: rgba(29, 29, 31, .7);
+  font-size: 11px;
+}
+
+:deep(.path-toolbar .el-button--small) {
+  min-height: 30px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+:deep(.el-table) {
+  --el-table-header-bg-color: #f5f5f7;
+  --el-table-row-hover-bg-color: #fafafc;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+:deep(.el-table th.el-table__cell) {
+  font-weight: 600;
+  font-size: 12px;
+  color: rgba(29, 29, 31, .54);
+}
+
+:deep(.el-table td.el-table__cell) {
+  border-bottom-color: rgba(29, 29, 31, .06);
+}
+
 .file-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .file-main-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.file-icon { margin-right: 6px; color: #409eff; vertical-align: middle; }
-.file-name { vertical-align: middle; font-weight: 500; color: #303133; }
-.file-link-btn { padding: 0; border: none; background: transparent; color: #303133; font: inherit; font-weight: 500; cursor: pointer; }
-.file-link-btn:hover { color: #409eff; }
+.file-icon { margin-right: 6px; color: #0071e3; vertical-align: middle; }
+.file-name { vertical-align: middle; font-weight: 500; color: #1d1d1f; }
+.file-link-btn { padding: 0; border: none; background: transparent; color: #1d1d1f; font: inherit; font-weight: 500; cursor: pointer; }
+.file-link-btn:hover { color: #0066cc; }
 .search-result-library { padding-left: 22px; font-size: 11px; line-height: 1.4; color: #7a8ba5; }
 :deep(.library-search-mark) { background: #fff1a8; color: #7a4b00; padding: 0 2px; border-radius: 4px; }
 :deep(.el-table .library-row-located > td.el-table__cell) { background: #eef7ff !important; }
 .empty-text { color: #c0c4cc; }
-.action-grid { display: inline-flex; flex-direction: column; gap: 4px; align-items: center; width: 100%; }
-.action-row { display: flex; gap: 4px; width: 228px; }
-.action-btn { flex: 1; margin: 0 !important; border-radius: 5px; font-size: 12px; font-weight: 500; padding: 5px 0; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease, color .18s ease; }
-.action-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(31, 45, 61, .08); }
+.action-grid { display: inline-flex; flex-direction: column; gap: 4px; align-items: center; width: 100%; min-width: 0; }
+.action-row { display: flex; gap: 4px; width: 100%; max-width: 228px; min-width: 0; }
+.action-btn {
+  --action-btn-bg: #fafafc;
+  --action-btn-bg-hover: #ffffff;
+  --action-btn-text: rgba(0, 0, 0, .8);
+  --action-btn-border: rgba(0, 0, 0, .06);
+  --action-btn-border-hover: rgba(0, 0, 0, .1);
+  --action-btn-hover-shadow: rgba(0, 0, 0, .08) 0 6px 16px;
+  flex: 1 1 0;
+  margin: 0 !important;
+  min-width: 0;
+  border-radius: 999px;
+  border-color: transparent !important;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 0;
+  background: var(--action-btn-bg) !important;
+  color: var(--action-btn-text) !important;
+  letter-spacing: -0.12px;
+  box-shadow: inset 0 0 0 1px var(--action-btn-border);
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease, color .18s ease;
+}
+
+.action-btn:hover {
+  transform: translateY(-1px);
+  background: var(--action-btn-bg-hover) !important;
+  color: var(--action-btn-text) !important;
+  box-shadow:
+    inset 0 0 0 1px var(--action-btn-border-hover),
+    var(--action-btn-hover-shadow);
+}
 .action-btn.is-loading,
 .action-btn.is-loading:hover {
   transform: none;
-  box-shadow: none;
+  box-shadow: inset 0 0 0 1px var(--action-btn-border);
   cursor: wait;
 }
 .action-btn.is-loading :deep(.el-icon),
@@ -6405,32 +6848,121 @@ function statsStatusTextDisplay (stats) {
 }
 :deep(.action-btn.el-button.is-loading),
 :deep(.action-btn.el-button.is-disabled) {
-  opacity: .72;
+  opacity: .66;
 }
 :deep(.action-btn.el-button.is-loading > span),
 :deep(.action-btn.el-button.is-disabled > span) {
   opacity: .95;
 }
-.action-btn-open { color: #2f6ed6 !important; border-color: #9fc4ff !important; background: #eef5ff !important; }
-.action-btn-open:hover { color: #144fba !important; border-color: #6ea6ff !important; background: #dceaff !important; }
-.action-btn-direct { color: #4b63d1 !important; border-color: #b8c6ff !important; background: #f1f3ff !important; }
-.action-btn-direct:hover { color: #2f47b5 !important; border-color: #8ea3ff !important; background: #e2e8ff !important; }
-.action-btn-rename { color: #b97516 !important; border-color: #f0c27b !important; background: #fff6e8 !important; }
-.action-btn-rename:hover { color: #92580b !important; border-color: #e3a94a !important; background: #ffe8c2 !important; }
-.action-btn-api { color: #be6a20 !important; border-color: #efbf8d !important; background: #fff4ea !important; }
-.action-btn-api:hover { color: #964c0f !important; border-color: #e49f59 !important; background: #ffe3c4 !important; }
-:deep(.action-btn-api.el-button.is-loading),
-:deep(.action-btn-api.el-button.is-disabled) { color: #a75b18 !important; border-color: #e3b17e !important; background: #ffecd7 !important; }
-.action-btn-subtitle { color: #579a17 !important; border-color: #b9de87 !important; background: #f4fde8 !important; }
-.action-btn-subtitle:hover { color: #3f7c08 !important; border-color: #96cb4f !important; background: #e7f8cb !important; }
-.action-btn-manage { color: #1d6b63 !important; border-color: #8fd1c7 !important; background: #f2fbf9 !important; }
-.action-btn-manage:hover { color: #0f554e !important; border-color: #58b6a7 !important; background: #dff5f1 !important; }
-.action-btn-delete { color: #db4d5d !important; border-color: #f3a6b0 !important; background: #fff1f3 !important; }
-.action-btn-delete:hover { color: #b92c3f !important; border-color: #ea6b7b !important; background: #ffdce2 !important; }
-.batch-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding: 10px 16px; background: #f8f9fa; border: 1px solid #ebeef5; border-radius: 6px; }
+.action-btn-open,
+.action-btn-direct,
+.action-btn-rename,
+.action-btn-api,
+.action-btn-manage {
+  --action-btn-bg: #fafafc;
+  --action-btn-bg-hover: #ffffff;
+  --action-btn-text: rgba(0, 0, 0, .8);
+  --action-btn-border: rgba(0, 0, 0, .06);
+  --action-btn-border-hover: rgba(0, 0, 0, .1);
+  --action-btn-hover-shadow: rgba(0, 0, 0, .08) 0 6px 16px;
+}
+
+.action-btn-subtitle {
+  --action-btn-bg: #0071e3;
+  --action-btn-bg-hover: #0077ed;
+  --action-btn-text: #fff;
+  --action-btn-border: rgba(255, 255, 255, .08);
+  --action-btn-border-hover: rgba(255, 255, 255, .12);
+  --action-btn-hover-shadow: rgba(0, 113, 227, .24) 0 6px 16px;
+}
+
+.action-btn-delete {
+  --action-btn-bg: #fff5f5;
+  --action-btn-bg-hover: #ffffff;
+  --action-btn-text: #d70015;
+  --action-btn-border: rgba(215, 0, 21, .2);
+  --action-btn-border-hover: rgba(215, 0, 21, .28);
+  --action-btn-hover-shadow: rgba(215, 0, 21, .12) 0 6px 16px;
+}
+
+:deep(.action-btn-api.el-button.is-batch-target),
+:deep(.action-btn-api.el-button.is-batch-target:hover) {
+  transform: none;
+  opacity: .92;
+  background: #f2f5f9 !important;
+  color: rgba(29, 29, 31, .46) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(29, 29, 31, .08),
+    0 1px 2px rgba(0, 0, 0, .03);
+}
+
+:deep(.action-btn-api.el-button.is-batch-target > span) {
+  position: relative;
+}
+
+:deep(.action-btn-api.el-button.is-batch-target:not(.is-loading) > span::before) {
+  content: '';
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(29, 29, 31, .12);
+  border-top-color: rgba(29, 29, 31, .34);
+  display: inline-block;
+  vertical-align: middle;
+}
+.batch-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+  padding: 10px 16px;
+  background: #f5f5f7;
+  border: none;
+  border-radius: 14px;
+}
 .batch-actions { display: flex; align-items: center; gap: 8px; }
-.selected-count { font-weight: 600; color: #409eff; font-size: 13px; background: #ecf5ff; padding: 3px 10px; border-radius: 10px; }
-.pagination-wrap { margin-top: 20px; display: flex; justify-content: flex-end; }
+.selected-count {
+  font-weight: 600;
+  color: #0066cc;
+  font-size: 12px;
+  background: rgba(255, 255, 255, .92);
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+
+.pagination-wrap { margin-top: 18px; display: flex; justify-content: flex-end; }
+
+:deep(.el-pagination) {
+  gap: 6px;
+  font-size: 12px;
+}
+
+:deep(.el-pagination .btn-prev),
+:deep(.el-pagination .btn-next),
+:deep(.el-pagination .el-pager li) {
+  min-width: 30px;
+  height: 30px;
+  line-height: 30px;
+  border-radius: 10px;
+  background: #f5f5f7;
+}
+
+:deep(.el-pagination .el-pager li.is-active) {
+  background: #0071e3;
+  color: #fff;
+}
+
+:deep(.el-pagination .el-pagination__sizes .el-select__wrapper),
+:deep(.el-pagination .el-pagination__jump .el-input__wrapper) {
+  min-height: 30px;
+  border-radius: 10px;
+  background: #f5f5f7;
+}
+
+:deep(.el-tag) {
+  border-radius: 999px;
+}
 .filter-delete-floating-card {
   position: fixed;
   right: 22px;

@@ -1,111 +1,128 @@
 <template>
   <el-container class="app-container">
-    <el-aside width="220px" class="sidebar">
-      <div class="logo">
-        <el-icon :size="32"><Box /></el-icon>
-        <span class="logo-text">Prekikoeru</span>
-      </div>
-
-      <el-menu
-        :default-active="route.path"
-        router
-        class="sidebar-menu"
-        background-color="#1e293b"
-        text-color="#94a3b8"
-        active-text-color="#ffffff"
-      >
-        <el-menu-item index="/">
-          <el-icon><HomeFilled /></el-icon>
-          <span>概览</span>
-        </el-menu-item>
-
-        <el-menu-item index="/tasks">
-          <el-icon><List /></el-icon>
-          <span>任务队列</span>
-        </el-menu-item>
-
-        <el-menu-item index="/conflicts">
-          <el-icon><WarningFilled /></el-icon>
-          <span>问题作品</span>
-          <el-badge v-if="conflictCount > 0" :value="conflictCount" class="conflict-badge" />
-        </el-menu-item>
-
-        <el-menu-item index="/library">
-          <el-icon><Box /></el-icon>
-          <span>库存管理</span>
-        </el-menu-item>
-
-        <el-menu-item index="/subtitle-import">
-          <el-icon><Tickets /></el-icon>
-          <span>字幕补配</span>
-        </el-menu-item>
-
-        <el-menu-item index="/passwords">
-          <el-icon><Lock /></el-icon>
-          <span>密码库</span>
-        </el-menu-item>
-
-        <el-menu-item index="/existing-folders">
-          <el-icon><Folder /></el-icon>
-          <span>已有文件夹</span>
-        </el-menu-item>
-
-        <el-menu-item index="/asmr-sync">
-          <el-icon><Download /></el-icon>
-          <span>ASMR 同步下载</span>
-        </el-menu-item>
-
-        <el-menu-item index="/library-backup">
-          <el-icon><FolderOpened /></el-icon>
-          <span>库存打包</span>
-        </el-menu-item>
-
-        <el-menu-item index="/settings">
-          <el-icon><Setting /></el-icon>
-          <span>设置</span>
-        </el-menu-item>
-
-        <el-menu-item index="/logs">
-          <el-icon><Document /></el-icon>
-          <span>日志</span>
-        </el-menu-item>
-      </el-menu>
-
-      <div class="sidebar-footer">
-        <div class="watcher-status">
-          <el-tag :type="watcherStatus.is_running ? 'success' : 'info'" size="small">
-            {{ watcherStatus.is_running ? '监视中' : '已停止' }}
-          </el-tag>
-          <el-button
-            :type="watcherStatus.is_running ? 'danger' : 'primary'"
-            size="small"
-            @click="toggleWatcher"
-          >
-            {{ watcherStatus.is_running ? '停止' : '启动' }}
-          </el-button>
+    <el-aside width="248px" class="sidebar">
+      <div class="sidebar-shell">
+        <div class="logo">
+          <div class="logo-mark">
+            <el-icon :size="22"><Box /></el-icon>
+          </div>
+        <div class="logo-copy">
+          <span class="logo-text">Prekikoeru</span>
+          <span class="logo-subtitle">v{{ appVersion }}</span>
         </div>
-        <div class="version-info">
-          <span class="version-text">版本: v{{ appVersion }}</span>
+        </div>
+
+        <div class="sidebar-section-label">导航</div>
+
+        <el-menu
+          :default-active="route.path"
+          router
+          class="sidebar-menu"
+        >
+          <el-menu-item index="/">
+            <el-icon><HomeFilled /></el-icon>
+            <span>概览</span>
+          </el-menu-item>
+
+          <el-menu-item index="/tasks">
+            <el-icon><List /></el-icon>
+            <span>任务队列</span>
+          </el-menu-item>
+
+          <el-menu-item index="/conflicts">
+            <el-icon><WarningFilled /></el-icon>
+            <span>问题作品</span>
+            <el-badge v-if="conflictCount > 0" :value="conflictCount" class="conflict-badge" />
+          </el-menu-item>
+
+          <el-menu-item index="/library">
+            <el-icon><Box /></el-icon>
+            <span>库存管理</span>
+          </el-menu-item>
+
+          <el-menu-item index="/subtitle-import">
+            <el-icon><Tickets /></el-icon>
+            <span>字幕补配</span>
+          </el-menu-item>
+
+          <el-menu-item index="/passwords">
+            <el-icon><Lock /></el-icon>
+            <span>密码库</span>
+          </el-menu-item>
+
+          <el-menu-item index="/existing-folders">
+            <el-icon><Folder /></el-icon>
+            <span>已有文件夹</span>
+          </el-menu-item>
+
+          <el-menu-item index="/asmr-sync">
+            <el-icon><Download /></el-icon>
+            <span>ASMR 同步下载</span>
+          </el-menu-item>
+
+          <el-menu-item index="/library-backup">
+            <el-icon><FolderOpened /></el-icon>
+            <span>库存打包</span>
+          </el-menu-item>
+
+          <el-menu-item index="/settings">
+            <el-icon><Setting /></el-icon>
+            <span>设置</span>
+          </el-menu-item>
+
+          <el-menu-item index="/logs">
+            <el-icon><Document /></el-icon>
+            <span>日志</span>
+          </el-menu-item>
+        </el-menu>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-status-card">
+            <div class="sidebar-status-header">
+              <span class="sidebar-status-title">监视器</span>
+              <el-tag :type="watcherStatus.is_running ? 'success' : 'info'" size="small" effect="plain">
+                {{ watcherStatus.is_running ? '运行中' : '已停止' }}
+              </el-tag>
+            </div>
+            <div class="sidebar-status-text">
+              {{ watcherStatus.is_running ? '正在监听新文件进入队列。' : '当前没有自动监听任务。' }}
+            </div>
+            <el-button
+              class="watcher-button"
+              size="small"
+              @click="toggleWatcher"
+            >
+              {{ watcherStatus.is_running ? '停止监视器' : '启动监视器' }}
+            </el-button>
+          </div>
+
+          <div class="version-info">
+            <span class="version-text">Prekikoeru</span>
+          </div>
         </div>
       </div>
     </el-aside>
 
-    <el-main class="main-content main-shell">
-      <router-view v-slot="{ Component, route: viewRoute }">
-        <keep-alive :include="cachedViews">
-          <component
-            :is="Component"
-            v-if="viewRoute.meta?.cache"
-            :key="viewRoute.name || viewRoute.path"
-          />
-        </keep-alive>
-        <component
-          :is="Component"
-          v-if="!viewRoute.meta?.cache"
-          :key="viewRoute.fullPath"
-        />
-      </router-view>
-    </el-main>
+    <el-container class="main-frame">
+      <el-main class="main-content main-shell">
+        <div class="content-shell">
+          <router-view v-slot="{ Component, route: viewRoute }">
+            <keep-alive :include="cachedViews">
+              <component
+                :is="Component"
+                v-if="viewRoute.meta?.cache"
+                :key="viewRoute.name || viewRoute.path"
+              />
+            </keep-alive>
+            <component
+              :is="Component"
+              v-if="!viewRoute.meta?.cache"
+              :key="viewRoute.fullPath"
+            />
+          </router-view>
+        </div>
+      </el-main>
+    </el-container>
   </el-container>
 </template>
 
@@ -172,49 +189,130 @@ async function toggleWatcher() {
 <style scoped>
 .app-container {
   height: 100vh;
+  padding: 16px;
+  gap: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(0, 113, 227, 0.08) 0%, rgba(245, 245, 247, 0) 26%),
+    linear-gradient(180deg, #fbfbfd 0%, #f2f2f5 100%);
 }
 
 .sidebar {
+  width: 248px !important;
+  border-radius: 30px;
+  overflow: hidden;
+}
+
+.sidebar-shell {
   display: flex;
   flex-direction: column;
-  background:
-    linear-gradient(180deg, #1e293b 0%, #182433 100%);
-  box-shadow: 10px 0 30px rgba(15, 23, 42, 0.16);
+  height: 100%;
+  padding: 20px 16px 16px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(29, 29, 31, 0.06);
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(20px);
 }
 
 .logo {
   display: flex;
   align-items: center;
+  gap: 12px;
+  padding: 6px 8px 18px;
+}
+
+.logo-mark {
+  display: flex;
+  align-items: center;
   justify-content: center;
-  height: 64px;
-  padding: 0 20px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-  color: #ffffff;
-  background: linear-gradient(90deg, rgba(59, 130, 246, 0.18) 0%, rgba(30, 41, 59, 0) 100%);
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: #f3f7ff;
+  color: #0071e3;
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.08);
+}
+
+.logo-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .logo-text {
-  margin-left: 12px;
   font-size: 20px;
   font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.18px;
+  color: #1d1d1f;
+}
+
+.logo-subtitle {
+  margin-top: 3px;
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.54);
+}
+
+.sidebar-section-label {
+  margin: 0 10px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(29, 29, 31, 0.42);
+  text-transform: uppercase;
 }
 
 .sidebar-menu {
   flex: 1;
   border-right: none;
+  background: transparent;
 }
 
 .sidebar-footer {
-  padding: 16px;
-  border-top: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(15, 23, 42, 0.22);
+  padding: 16px 8px 0;
 }
 
-.watcher-status {
+.sidebar-status-card {
+  padding: 14px;
+  border-radius: 22px;
+  background: #f7f7fa;
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
+}
+
+.sidebar-status-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sidebar-status-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1d1d1f;
+}
+
+.sidebar-status-text {
+  margin-bottom: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(29, 29, 31, 0.62);
+}
+
+.watcher-button {
+  width: 100%;
+  height: 38px;
+  border: 1px solid rgba(29, 29, 31, 0.08);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1d1d1f;
+}
+
+.watcher-button:hover,
+.watcher-button:focus {
+  color: #1d1d1f;
+  border-color: rgba(29, 29, 31, 0.14);
+  background: #f1f1f4;
 }
 
 .conflict-badge {
@@ -222,47 +320,120 @@ async function toggleWatcher() {
 }
 
 .version-info {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(148, 163, 184, 0.16);
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 14px;
+  padding: 0 6px;
 }
 
 .version-text {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background-color: #0f172a;
-  color: #94a3b8;
   font-size: 12px;
+  color: rgba(29, 29, 31, 0.46);
+}
+
+.version-text {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #1d1d1f;
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.06);
+}
+
+.main-frame {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .main-content {
   min-width: 0;
-  padding: 20px;
-  overflow-y: auto;
+  padding: 0;
+  overflow: hidden;
 }
 
 .main-shell {
-  background:
-    radial-gradient(circle at top right, rgba(96, 165, 250, 0.12) 0%, rgba(241, 245, 249, 0) 28%),
-    linear-gradient(180deg, #f6f9fc 0%, #eef4f9 100%);
+  background: transparent;
+}
+
+.content-shell {
+  height: 100%;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+:deep(.sidebar-menu .el-menu) {
+  border-right: none;
+}
+
+:deep(.sidebar-menu .el-menu-item) {
+  height: 46px;
+  margin: 4px 0;
+  border-radius: 16px;
+  color: rgba(29, 29, 31, 0.72);
+  font-size: 14px;
+}
+
+:deep(.sidebar-menu .el-menu-item .el-icon) {
+  color: rgba(29, 29, 31, 0.56);
+}
+
+:deep(.sidebar-menu .el-menu-item:hover) {
+  background: #f3f3f6;
+  color: #1d1d1f;
+}
+
+:deep(.sidebar-menu .el-menu-item:hover .el-icon) {
+  color: #1d1d1f;
+}
+
+:deep(.sidebar-menu .el-menu-item.is-active) {
+  background: #f0f6ff;
+  color: #0066cc;
+  font-weight: 600;
+}
+
+:deep(.sidebar-menu .el-menu-item.is-active .el-icon) {
+  color: #0071e3;
+}
+
+:deep(.el-card) {
+  overflow: visible;
+}
+
+:deep(.el-card__body) {
+  overflow-x: auto;
+}
+
+:deep(.el-tag.el-tag--info.el-tag--plain) {
+  color: rgba(29, 29, 31, 0.72);
+  border-color: rgba(29, 29, 31, 0.08);
+  background: rgba(255, 255, 255, 0.85);
+}
+
+:deep(.el-tag.el-tag--success.el-tag--plain) {
+  color: #1f8f4e;
+  border-color: rgba(31, 143, 78, 0.14);
+  background: rgba(238, 248, 240, 0.9);
 }
 
 @media screen and (max-width: 768px) {
   .app-container {
     flex-direction: column;
+    padding: 10px;
   }
 
   .sidebar {
     width: 100% !important;
     height: auto;
-    max-height: 60px;
-    overflow: hidden;
+  }
+
+  .sidebar-shell {
+    height: auto;
   }
 
   .main-content {
-    padding: 10px;
+    min-height: 0;
   }
 }
 

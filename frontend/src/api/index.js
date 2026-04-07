@@ -22,6 +22,9 @@ apiClient.interceptors.response.use(
 )
 
 export const taskApi = {
+  // 兼容层：
+  // 这组接口只保留给少数历史链路使用，对应后端旧 /api/tasks/*。
+  // 新页面、新组件、新任务交互统一使用 taskCenterApi，不要再新增对 taskApi 的依赖。
   list: async (status = null) => {
     const params = status ? { status } : {}
     const response = await apiClient.get('/tasks', { params })
@@ -55,6 +58,28 @@ export const taskApi = {
 
   cancel: async (taskId) => {
     const response = await apiClient.post(`/tasks/${taskId}/cancel`)
+    return response.data
+  }
+}
+
+export const taskCenterApi = {
+  overview: async () => {
+    const response = await apiClient.get('/task-center/overview')
+    return response.data
+  },
+
+  list: async (params = {}) => {
+    const response = await apiClient.get('/task-center/list', { params })
+    return response.data
+  },
+
+  getItem: async (params = {}) => {
+    const response = await apiClient.get('/task-center/item', { params })
+    return response.data
+  },
+
+  action: async (itemId, action) => {
+    const response = await apiClient.post(`/task-center/${encodeURIComponent(itemId)}/action`, { action })
     return response.data
   }
 }
