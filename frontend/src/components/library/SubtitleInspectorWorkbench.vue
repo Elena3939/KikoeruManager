@@ -355,7 +355,7 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-match-item.queued { border-color: #7bb4ff; background: #f4f9ff; }
 .subtitle-match-name { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-weight: 700; color: #223754; }
 .subtitle-match-meta { margin-top: 6px; font-size: 12px; line-height: 1.55; color: #7a8aa0; word-break: break-all; }
-.subtitle-match-badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+.subtitle-match-badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 700; }
 .badge-paired { background: #e9f7ef; color: #2f9158; }
 .badge-low { background: #fff4de; color: #b97714; }
 .badge-seq { background: #edf4ff; color: #2d6cdf; }

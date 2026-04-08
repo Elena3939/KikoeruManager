@@ -851,8 +851,14 @@ export const rjSubtitleApi = {
     return response.data
   },
 
-  rerunTask: async (taskId) => {
-    const response = await apiClient.post(`/rj-subtitle/task/${taskId}/rerun`)
+  rerunTask: async (taskId, options = {}) => {
+    const response = await apiClient.post(`/rj-subtitle/task/${taskId}/rerun`, {
+      overwrite_existing: options.overwriteExisting ?? false,
+      enable_metadata_match: options.enableMetadataMatch ?? true,
+      naming_strategy: options.namingStrategy ?? 'audio',
+      use_filter_rules: options.useFilterRules ?? false,
+      subtitle_filter_rules: options.subtitleFilterRules || []
+    })
     return response.data
   },
 

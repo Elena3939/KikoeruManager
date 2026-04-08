@@ -203,7 +203,7 @@
                     class="action-btn action-btn-api"
                     :class="{ 'is-batch-target': isBatchApiRenameTarget(row) }"
                     :disabled="!row.is_directory || apiRenameBusy"
-                    :loading="apiRenamingId === row.id"
+                    :loading="apiRenamingId === row.id || isBatchApiRenameRunning(row)"
                     @click="apiRenameItem(row)"
                   >
                     API 重命名
@@ -218,7 +218,7 @@
                   class="action-btn action-btn-api"
                   :class="{ 'is-batch-target': isBatchApiRenameTarget(row) }"
                   :disabled="!row.is_directory || apiRenameBusy"
-                  :loading="apiRenamingId === row.id"
+                  :loading="apiRenamingId === row.id || isBatchApiRenameRunning(row)"
                   @click="apiRenameItem(row)"
                 >
                   API 重命名
@@ -505,7 +505,13 @@
                             <span class="subtitle-mini-chip" :class="getSubtitleSelectionQueueClass(item)">{{ getSubtitleSelectionQueueLabel(item) }}</span>
                             <span class="subtitle-mini-chip">{{ item.rjcode || '未识别 RJ' }}</span>
                             <span class="subtitle-mini-chip">音频 {{ item.audio_count ?? '-' }}</span>
-                            <span class="subtitle-mini-chip">现有字幕 {{ item.existing_subtitle_count ?? 0 }}</span>
+                            <span
+                              v-for="chip in getSubtitleSelectionExistingChips(item)"
+                              :key="`${buildSubtitleSelectionKey(item)}-${chip.key}`"
+                              class="subtitle-mini-chip"
+                            >
+                              {{ chip.label }}
+                            </span>
                           </div>
                           <div v-if="item.queue_message" class="subtitle-selection-note">{{ item.queue_message }}</div>
                           <div v-if="item.queue_state === 'existing_task' || canInspectSubtitleSelectionFolder(item)" class="subtitle-selection-actions">
@@ -579,7 +585,13 @@
                             <span class="subtitle-mini-chip" :class="getSubtitleSelectionQueueClass(item)">{{ getSubtitleSelectionQueueLabel(item) }}</span>
                             <span class="subtitle-mini-chip">{{ item.rjcode || '未识别 RJ' }}</span>
                             <span class="subtitle-mini-chip">音频 {{ item.audio_count ?? '-' }}</span>
-                            <span class="subtitle-mini-chip">现有字幕 {{ item.existing_subtitle_count ?? 0 }}</span>
+                            <span
+                              v-for="chip in getSubtitleSelectionExistingChips(item)"
+                              :key="`${buildSubtitleSelectionKey(item)}-${chip.key}`"
+                              class="subtitle-mini-chip"
+                            >
+                              {{ chip.label }}
+                            </span>
                           </div>
                           <div v-if="item.queue_message" class="subtitle-selection-note">{{ item.queue_message }}</div>
                           <div class="subtitle-selection-actions">
@@ -1172,6 +1184,7 @@ const filterDeleteDialogRef = ref(null)
 const folderDialogRef = ref(null)
 const suppressSortChange = ref(false)
 const apiRenamingId = ref(null)
+const batchApiRenameRunningIds = ref(new Set())
 const currentPath = ref('')
 const browseRootPath = ref('')
 const parentPath = ref('')
@@ -1712,6 +1725,16 @@ function getTaskSourceRJCode (task) {
   const folderRJ = String(task?.rjcode || '').trim()
   return sourceRJ && sourceRJ !== folderRJ ? sourceRJ : ''
 }
+
+function getSubtitleSelectionExistingChips (item) {
+  const localExistingCount = Math.max(0, Number(item?.existing_subtitle_count || 0))
+  const chips = [{ key: 'local-existing', label: `本地字幕 ${localExistingCount}` }]
+  if (item?.kikoeru_has_existing_subtitles) {
+    chips.push({ key: 'kikoeru-flag', label: 'Kikoeru 命中' })
+  }
+  return chips
+}
+
 function findSubtitleTaskBySelection (item, tasks = subtitleTasks.value) {
   const selectionKey = buildSubtitleSelectionKey(item)
   if (!selectionKey) return null
@@ -2081,6 +2104,10 @@ const apiRenameBusy = computed(() => Boolean(apiRenamingId.value) || batchRenami
 
 function isBatchApiRenameTarget (row) {
   return batchRenaming.value && batchApiRenameTargetIds.value.has(row?.id)
+}
+
+function isBatchApiRenameRunning (row) {
+  return batchApiRenameRunningIds.value.has(row?.id)
 }
 
 function bindLibraryKeydown () {
@@ -5130,7 +5157,13 @@ async function rerunSubtitleTask (task) {
   subtitleTaskRerunId.value = task.id
   subtitlePreferredSelectionKey.value = buildSubtitleTaskSelectionKey(task)
   try {
-    const data = await rjSubtitleApi.rerunTask(task.id)
+    const data = await rjSubtitleApi.rerunTask(task.id, {
+      overwriteExisting: subtitleOptions.value.overwriteExisting,
+      enableMetadataMatch: subtitleOptions.value.enableMetadataMatch,
+      namingStrategy: subtitleOptions.value.namingStrategy,
+      useFilterRules: subtitleOptions.value.useFilterRules,
+      subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules)
+    })
     if (data?.task_id) {
       subtitleActiveTaskId.value = data.task_id
       upsertSubtitleTaskLocal({
@@ -6058,17 +6091,30 @@ async function handleBatchApiRename () {
   }
   batchRenaming.value = true
   batchApiRenameTargetIds.value = new Set(targetRows.map(row => row.id))
+  batchApiRenameRunningIds.value = new Set()
   try {
+    const concurrency = Math.min(4, Math.max(1, targetRows.length))
     const results = []
-    for (const row of targetRows) {
-      apiRenamingId.value = row.id
-      try {
-        const data = await libraryApi.apiRename(row.path, selectedLibraryId.value)
-        results.push({ path: row.path, success: true, message: data.message || 'API 重命名成功' })
-      } catch (error) {
-        results.push({ path: row.path, success: false, error: error.response?.data?.detail || error.message })
+    let cursor = 0
+    const runNext = async () => {
+      while (cursor < targetRows.length) {
+        const currentIndex = cursor
+        cursor += 1
+        const row = targetRows[currentIndex]
+        batchApiRenameRunningIds.value = new Set([...batchApiRenameRunningIds.value, row.id])
+        try {
+          const data = await libraryApi.apiRename(row.path, selectedLibraryId.value)
+          results.push({ path: row.path, success: true, message: data.message || 'API 重命名成功' })
+        } catch (error) {
+          results.push({ path: row.path, success: false, error: error.response?.data?.detail || error.message })
+        } finally {
+          const nextRunning = new Set(batchApiRenameRunningIds.value)
+          nextRunning.delete(row.id)
+          batchApiRenameRunningIds.value = nextRunning
+        }
       }
     }
+    await Promise.all(Array.from({ length: concurrency }, () => runNext()))
     const successCount = results.filter(item => item.success).length
     const failed = results.filter(item => !item.success)
     clearSelection()
@@ -6086,6 +6132,7 @@ async function handleBatchApiRename () {
     ElMessage.error('批量 API重命名失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     batchApiRenameTargetIds.value = new Set()
+    batchApiRenameRunningIds.value = new Set()
     apiRenamingId.value = null
     batchRenaming.value = false
   }

@@ -4392,6 +4392,14 @@ class RJSubtitleManualCompleteRequest(BaseModel):
     naming_strategy: str = "audio"
 
 
+class RJSubtitleRerunRequest(BaseModel):
+    overwrite_existing: bool = False
+    enable_metadata_match: bool = True
+    naming_strategy: str = "audio"
+    use_filter_rules: bool = False
+    subtitle_filter_rules: List[dict] = []
+
+
 class RJSubtitleAvailabilityRequest(BaseModel):
     rjcode: str
 
@@ -4914,11 +4922,17 @@ async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCom
 
 
 @app.post("/api/rj-subtitle/task/{task_id}/rerun")
-async def rj_subtitle_rerun_task(task_id: str):
+async def rj_subtitle_rerun_task(task_id: str, request: RJSubtitleRerunRequest):
     from ..core.task_engine import get_task_engine
 
     try:
-        task = await get_task_engine().rerun_rj_subtitle_task(task_id)
+        task = await get_task_engine().rerun_rj_subtitle_task(task_id, {
+            "overwrite": request.overwrite_existing,
+            "enable_metadata_match": request.enable_metadata_match,
+            "naming_strategy": request.naming_strategy,
+            "use_filter_rules": request.use_filter_rules,
+            "subtitle_filter_rules": request.subtitle_filter_rules,
+        })
         return {
             "success": True,
             "task_id": task.id,

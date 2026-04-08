@@ -1273,7 +1273,7 @@ class TaskEngine:
                 db.close()
         return False
 
-    async def rerun_rj_subtitle_task(self, task_id: str) -> Task:
+    async def rerun_rj_subtitle_task(self, task_id: str, overrides: Optional[dict] = None) -> Task:
         """复用已有 RJ 字幕任务并重新入队，不创建新任务。"""
         task = self.tasks.get(task_id)
         if not task:
@@ -1284,6 +1284,7 @@ class TaskEngine:
             raise ValueError("任务正在执行中，不能重新提交")
 
         metadata = dict(task.task_metadata or {})
+        overrides = dict(overrides or {})
         metadata.update({
             'force_rerun': True,
             'skip_if_existing_subtitles': False,
@@ -1302,6 +1303,16 @@ class TaskEngine:
             'downloaded_count': 0,
             'progress_log': [],
         })
+        if 'overwrite' in overrides:
+            metadata['overwrite'] = bool(overrides.get('overwrite'))
+        if 'enable_metadata_match' in overrides:
+            metadata['enable_metadata_match'] = bool(overrides.get('enable_metadata_match'))
+        if 'naming_strategy' in overrides:
+            metadata['naming_strategy'] = str(overrides.get('naming_strategy') or metadata.get('naming_strategy') or 'audio').lower()
+        if 'use_filter_rules' in overrides:
+            metadata['use_filter_rules'] = bool(overrides.get('use_filter_rules'))
+        if 'subtitle_filter_rules' in overrides:
+            metadata['subtitle_filter_rules'] = overrides.get('subtitle_filter_rules') or []
         task.task_metadata = metadata
         self.processing.discard(task.id)
         if task.rjcode:

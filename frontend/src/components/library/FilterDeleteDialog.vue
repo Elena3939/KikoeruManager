@@ -64,6 +64,22 @@
           <button class="fm-btn fm-btn-ghost" :disabled="!filterDeleteTreeHasDirectories || filterDeleteBusy" @click="collapseFilterDeleteTree">{{ text.collapseAll }}</button>
           <button class="fm-btn fm-btn-ghost" :disabled="filterDeleteBusy || !filterDeleteSelectedRoots.length" @click="clearFilterDeleteSelection">{{ text.clearSelection }}</button>
         </div>
+        <div v-if="filterDeleteTypeOptions.length" class="fd-type-filter-bar">
+          <span class="fd-type-filter-label">{{ text.fileTypeLabel }}</span>
+          <button
+            v-for="option in filterDeleteTypeOptions"
+            :key="option.key"
+            type="button"
+            class="fd-type-chip"
+            :class="{ active: isFilterDeleteTypeFullySelected(option.key), partial: isFilterDeleteTypePartiallySelected(option.key) }"
+            :disabled="filterDeleteBusy"
+            @click="toggleFilterDeleteType(option.key)"
+          >
+            <span v-if="isFilterDeleteTypePartiallySelected(option.key)" class="fd-type-chip-indicator" aria-hidden="true">-</span>
+            <span>{{ option.label }}</span>
+            <span class="fd-type-chip-count">{{ option.count }}</span>
+          </button>
+        </div>
         <div class="fm-search">
           <input
             v-model="filterDeleteSearch"
@@ -218,6 +234,7 @@ const text = {
   expandAll: '\u5c55\u5f00\u5168\u90e8',
   collapseAll: '\u6298\u53e0\u5168\u90e8',
   clearSelection: '\u53d6\u6d88\u9009\u62e9',
+  fileTypeLabel: '\u6587\u4ef6\u7c7b\u578b',
   searchBasic: '\u641c\u7d22\u5f85\u5220\u9664\u6587\u4ef6\u540d\u6216\u8def\u5f84\u2026',
   searchFull: '\u641c\u7d22\u5f85\u5220\u9664\u6587\u4ef6\u540d\u3001\u8def\u5f84\u6216\u89c4\u5219\u2026',
   selectedLabel: '\u5df2\u9009',
@@ -233,6 +250,7 @@ const text = {
   waitConfirm: '\u5f85\u786e\u8ba4',
   coveredItem: '\u76ee\u5f55\u5185\u9879',
   individualSelectable: '\u53ef\u5355\u72ec\u9009',
+  noExtension: '\u65e0\u540e\u7f00',
   hideBackground: '\u9690\u85cf\u5230\u540e\u53f0',
   close: '\u5173\u95ed'
 }
@@ -302,6 +320,7 @@ const FILTER_DELETE_OVERSCAN = 12
 const FILTER_DELETE_VIRTUAL_THRESHOLD = 180
 const FILTER_DELETE_DEFAULT_SORT_BY = 'name'
 const FILTER_DELETE_DEFAULT_SORT_ORDER = 'asc'
+const FILTER_DELETE_NO_EXTENSION_KEY = '__NO_EXTENSION__'
 
 const filterDeleteSortBy = ref(FILTER_DELETE_DEFAULT_SORT_BY)
 const filterDeleteSortOrder = ref(FILTER_DELETE_DEFAULT_SORT_ORDER)
@@ -317,9 +336,37 @@ const filterDeleteNodeById = computed(() => {
   walk(filterDeleteTreeRoot.value)
   return map
 })
+const filterDeleteTypeOptions = computed(() => {
+  const counts = new Map()
+  for (const item of filterDeleteItems.value || []) {
+    if (!item || item.type === 'dir') continue
+    const extension = getFilterDeleteFileType(item)
+    counts.set(extension, (counts.get(extension) || 0) + 1)
+  }
+  return [...counts.entries()]
+    .sort((left, right) => {
+      if (right[1] !== left[1]) return right[1] - left[1]
+      return String(left[0]).localeCompare(String(right[0]), 'zh-Hans-CN-u-kn-true')
+    })
+    .map(([key, count]) => ({
+      key,
+      label: key === FILTER_DELETE_NO_EXTENSION_KEY ? text.noExtension : key.toUpperCase(),
+      count
+    }))
+})
+const filterDeleteTypeRowIds = computed(() => {
+  const map = new Map()
+  for (const item of filterDeleteItems.value || []) {
+    if (!canFilterDeleteSelectRow(item) || item.type === 'dir') continue
+    const typeKey = getFilterDeleteFileType(item)
+    if (!map.has(typeKey)) map.set(typeKey, [])
+    map.get(typeKey).push(item.id)
+  }
+  return map
+})
 const filterDeleteFilteredRoot = computed(() => {
   const keyword = filterDeleteSearch.value.trim().toLowerCase()
-  return keyword ? filterExplicitTree(filterDeleteTreeRoot.value, keyword) : filterDeleteTreeRoot.value
+  return filterExplicitTree(filterDeleteTreeRoot.value, { keyword })
 })
 const filterDeleteSortedRoot = computed(() => sortFilterDeleteTree(filterDeleteFilteredRoot.value, filterDeleteSortBy.value, filterDeleteSortOrder.value))
 const filterDeleteFlatTree = computed(() => flattenTree(filterDeleteSortedRoot.value, 0, filterDeleteExpandedIds.value))
@@ -344,7 +391,7 @@ const filterDeleteSelectableRows = computed(() => filterDeleteFlatTree.value.fil
 const filterDeleteBulkSelectableRows = computed(() => buildFilterDeleteBulkRows(filterDeleteSelectableRows.value))
 const filterDeleteAllSelected = computed(() => filterDeleteBulkSelectableRows.value.length > 0 && filterDeleteBulkSelectableRows.value.every(row => isFilterDeleteRowFullySelected(row)))
 const filterDeleteSomeSelected = computed(() => !filterDeleteAllSelected.value && filterDeleteBulkSelectableRows.value.some(row => isFilterDeleteRowFullySelected(row) || isFilterDeleteRowPartiallySelected(row)))
-const filterDeleteSelectableCount = computed(() => filterDeleteItems.value.filter(item => canFilterDeleteSelectRow(item)).length)
+const filterDeleteSelectableCount = computed(() => filterDeleteBulkSelectableRows.value.length)
 const filterDeleteSelectedRows = computed(() => [...filterDeleteSelectedIds.value].map(id => filterDeleteNodeById.value.get(id)).filter(Boolean))
 const filterDeleteSelectedRoots = computed(() => collectFilterDeleteSelectedRoots(filterDeleteTreeRoot.value))
 const filterDeleteSelectedSize = computed(() => filterDeleteSelectedRoots.value.reduce((sum, item) => sum + Number(item?.size || 0), 0))
@@ -910,6 +957,38 @@ function onFilterDeleteSearchInput () {
   if (filterDeleteSearch.value.trim()) expandFilterDeleteTree()
 }
 
+function getFilterDeleteFileType(row) {
+  const sourceName = String(row?.name || row?.relative_path || row?.path || '')
+  const extension = sourceName.match(/\.([^.\\/]+)$/)?.[1] || ''
+  return extension ? `.${extension.toLowerCase()}` : FILTER_DELETE_NO_EXTENSION_KEY
+}
+
+async function toggleFilterDeleteType(typeKey) {
+  if (!typeKey || filterDeleteBusy.value) return
+  const ids = filterDeleteTypeRowIds.value.get(typeKey) || []
+  if (!ids.length) return
+  const next = new Set(filterDeleteSelectedIds.value)
+  const shouldSelect = !ids.every(id => next.has(id))
+  ids.forEach(id => {
+    if (shouldSelect) next.add(id)
+    else next.delete(id)
+  })
+  filterDeleteSelectedIds.value = next
+  filterDeleteLastSelectedId.value = ids.at(-1) || ''
+}
+
+function isFilterDeleteTypeFullySelected(typeKey) {
+  const ids = filterDeleteTypeRowIds.value.get(typeKey) || []
+  return ids.length > 0 && ids.every(id => filterDeleteSelectedIds.value.has(id))
+}
+
+function isFilterDeleteTypePartiallySelected(typeKey) {
+  const ids = filterDeleteTypeRowIds.value.get(typeKey) || []
+  if (!ids.length) return false
+  const selectedCount = ids.filter(id => filterDeleteSelectedIds.value.has(id)).length
+  return selectedCount > 0 && selectedCount < ids.length
+}
+
 function resolveFilterDeleteTreeIcon (row) {
   if (row?.type === 'dir') return filterDeleteExpandedIds.value.has(row.id) ? FolderOpened : Folder
   return fileIcon(row?.name || '')
@@ -1280,16 +1359,19 @@ function buildExplicitTree (items) {
   return root
 }
 
-function filterExplicitTree (nodes, keyword) {
+function filterExplicitTree (nodes, options = {}) {
+  const keyword = String(options?.keyword || '').trim().toLowerCase()
   const result = []
   for (const node of nodes) {
-    const matched = [node.name, node.relative_path, ...(node.matched_rules || [])].some(value => String(value || '').toLowerCase().includes(keyword))
-    if (matched) {
-      result.push(node)
+    const children = filterExplicitTree(node.children || [], options)
+    const textMatched = !keyword || [node.name, node.relative_path, ...(node.matched_rules || [])].some(value => String(value || '').toLowerCase().includes(keyword))
+    if (node.type === 'dir') {
+      if (textMatched || children.length) {
+        result.push({ ...node, children })
+      }
       continue
     }
-    const children = filterExplicitTree(node.children || [], keyword)
-    if (children.length) result.push({ ...node, children })
+    if (textMatched) result.push({ ...node, children: [] })
   }
   return result
 }
@@ -1385,6 +1467,18 @@ onBeforeUnmount(() => {
 .fd-background-tip { margin: 0 16px 12px; padding: 9px 12px; border: 1px dashed #cfe0ff; border-radius: 10px; background: #f5f9ff; font-size: 12px; color: #4c6791; }
 .fm-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 9px 16px; background: #f8f9fa; border-top: 1px solid #f3f4f6; border-bottom: 1px solid #e4e7ed; }
 .fm-toolbar-left { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fd-type-filter-bar { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; padding: 0 12px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; }
+.fd-type-filter-bar::-webkit-scrollbar { display: none; }
+.fd-type-filter-label { flex: 0 0 auto; font-size: 12px; font-weight: 600; color: rgba(29, 29, 31, 0.62); letter-spacing: -0.12px; }
+.fd-type-chip { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 4px 10px; border: 1px solid rgba(0, 0, 0, 0.06); border-radius: 999px; background: #fafafc; color: #1d1d1f; font-size: 11px; font-weight: 600; letter-spacing: -0.12px; line-height: 1; cursor: pointer; transition: border-color .16s ease, background-color .16s ease, color .16s ease, box-shadow .16s ease; }
+.fd-type-chip:hover:not(:disabled) { border-color: rgba(0, 113, 227, 0.28); color: #0066cc; }
+.fd-type-chip.active { background: #0071e3; border-color: #0071e3; color: #fff; box-shadow: 0 8px 20px rgba(0, 113, 227, 0.18); }
+.fd-type-chip.partial { border-color: rgba(0, 113, 227, 0.34); background: #eef5ff; color: #0a5fc2; }
+.fd-type-chip:disabled { opacity: 0.56; cursor: not-allowed; }
+.fd-type-chip-indicator { display: inline-flex; align-items: center; justify-content: center; width: 10px; color: currentColor; font-size: 11px; font-weight: 900; line-height: 1; }
+.fd-type-chip-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: rgba(29, 29, 31, 0.08); font-size: 10px; font-weight: 700; line-height: 1; }
+.fd-type-chip.active .fd-type-chip-count { background: rgba(255, 255, 255, 0.22); }
+.fd-type-chip.partial .fd-type-chip-count { background: rgba(0, 113, 227, 0.12); }
 .fm-btn { padding: 4px 11px; border: 1px solid #dcdfe6; border-radius: 5px; background: #fff; font-size: 12px; cursor: pointer; }
 .fm-btn:disabled { cursor: not-allowed; opacity: 0.6; }
 .fm-btn-primary { color: #2458a6; border-color: #bcd3fb; background: #eef5ff; }
