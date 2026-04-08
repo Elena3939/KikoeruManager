@@ -1220,6 +1220,37 @@ const tampermonkeyLoaded = ref(false)
 const statsMap = ref({})
 const aggregateStats = ref({ folder_count: 0, total_size_gb: 0, total_size_bytes: 0 })
 const libraryState = ref({})
+
+function normalizeLibraryPathKey (path) {
+  return String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function getLibraryPageStateKey (path = currentPath.value, rootPath = browseRootPath.value) {
+  const normalizedPath = normalizeLibraryPathKey(path)
+  const normalizedRootPath = normalizeLibraryPathKey(rootPath)
+  return normalizedPath || normalizedRootPath || '__root__'
+}
+
+function rememberCurrentDirectoryPage () {
+  const libraryId = selectedLibraryId.value
+  if (!libraryId) return
+  const state = libraryState.value[libraryId] || {}
+  const pageByPath = { ...(state.pageByPath || {}) }
+  pageByPath[getLibraryPageStateKey()] = currentPage.value
+  libraryState.value[libraryId] = {
+    ...state,
+    pageByPath
+  }
+}
+
+function getRememberedDirectoryPage (path, fallback = 1, rootPath = browseRootPath.value) {
+  const libraryId = selectedLibraryId.value
+  if (!libraryId) return fallback
+  const state = libraryState.value[libraryId] || {}
+  const pageByPath = state.pageByPath || {}
+  const remembered = Number(pageByPath[getLibraryPageStateKey(path, rootPath)] || 0)
+  return remembered > 0 ? remembered : fallback
+}
 const labels = {
   pageTitle: '\u5e93\u5b58\u6587\u4ef6\u7ba1\u7406',
   currentLibrary: '\u5f53\u524d\u5e93',
@@ -2330,7 +2361,11 @@ async function loadLibraries () {
 }
 
 function saveLibraryState (libraryId) {
+  const existingState = libraryState.value[libraryId] || {}
+  const pageByPath = { ...(existingState.pageByPath || {}) }
+  pageByPath[getLibraryPageStateKey()] = currentPage.value
   libraryState.value[libraryId] = {
+    ...existingState,
     searchQuery: searchQuery.value,
     searchExact: searchExact.value,
     searchResultKind: searchResultKind.value,
@@ -2338,7 +2373,8 @@ function saveLibraryState (libraryId) {
     currentPath: currentPath.value,
     browseRootPath: browseRootPath.value,
     sortBy: sortBy.value,
-    sortOrder: sortOrder.value
+    sortOrder: sortOrder.value,
+    pageByPath
   }
 }
 
@@ -2347,9 +2383,9 @@ function restoreLibraryState (libraryId) {
   searchQuery.value = state.searchQuery || ''
   searchExact.value = Boolean(state.searchExact ?? (loadString(SEARCH_EXACT_KEY, '0') === '1'))
   searchResultKind.value = state.searchResultKind || loadString(SEARCH_RESULT_KIND_KEY, 'all')
-  currentPage.value = state.currentPage || 1
   currentPath.value = state.currentPath || ''
   browseRootPath.value = state.browseRootPath || ''
+  currentPage.value = getRememberedDirectoryPage(currentPath.value, state.currentPage || 1, browseRootPath.value)
   sortBy.value = state.sortBy || loadString('kikoeru.ui.library.sortBy', DEFAULT_SORT_BY)
   sortOrder.value = state.sortOrder || loadString('kikoeru.ui.library.sortOrder', DEFAULT_SORT_ORDER)
 }
@@ -3888,10 +3924,11 @@ function getRJSubtitleTaskStatusLabel (taskOrStatus) {
   if (typeof taskOrStatus === 'object') {
     if (taskOrStatus.manual_match_completed) return '已匹配完成'
     if (taskOrStatus.awaiting_manual_match) return '筛选并匹配'
+    if (taskOrStatus.status === 'completed') return '待处理'
   }
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const labels = {
-    pending: '等待中',
+    pending: '待处理',
     processing: '处理中',
     completed: '已完成',
     failed: '失败'
@@ -3901,9 +3938,14 @@ function getRJSubtitleTaskStatusLabel (taskOrStatus) {
 
 function getRJSubtitleTaskBaseStatusLabel (taskOrStatus) {
   if (isRJSubtitleTaskCancelled(taskOrStatus)) return '已取消'
+  if (typeof taskOrStatus === 'object') {
+    if (taskOrStatus.manual_match_completed) return '已完成'
+    if (taskOrStatus.awaiting_manual_match) return '待处理'
+    if (taskOrStatus.status === 'completed') return '待处理'
+  }
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const labels = {
-    pending: '等待中',
+    pending: '待处理',
     processing: '处理中',
     completed: '已完成',
     failed: '失败'
@@ -3916,6 +3958,7 @@ function getRJSubtitleTaskStatusType (taskOrStatus) {
   if (typeof taskOrStatus === 'object') {
     if (taskOrStatus.manual_match_completed) return 'success'
     if (taskOrStatus.awaiting_manual_match) return 'warning'
+    if (taskOrStatus.status === 'completed') return 'warning'
   }
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const types = {
@@ -3929,6 +3972,11 @@ function getRJSubtitleTaskStatusType (taskOrStatus) {
 
 function getRJSubtitleTaskBaseStatusType (taskOrStatus) {
   if (isRJSubtitleTaskCancelled(taskOrStatus)) return 'info'
+  if (typeof taskOrStatus === 'object') {
+    if (taskOrStatus.manual_match_completed) return 'success'
+    if (taskOrStatus.awaiting_manual_match) return 'warning'
+    if (taskOrStatus.status === 'completed') return 'warning'
+  }
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const types = {
     pending: 'info',
@@ -3953,6 +4001,7 @@ function getRJSubtitleTaskStatusClass (taskOrStatus) {
   if (typeof taskOrStatus === 'object') {
     if (taskOrStatus.manual_match_completed) return 'manual_match_completed'
     if (taskOrStatus.awaiting_manual_match) return 'awaiting_manual_match'
+    if (taskOrStatus.status === 'completed') return 'awaiting_manual_match'
     return taskOrStatus.status || 'pending'
   }
   return taskOrStatus || 'pending'
@@ -3962,7 +4011,8 @@ function getRJSubtitleProgressStatus (task) {
   if (!task) return ''
   if (isRJSubtitleTaskCancelled(task)) return undefined
   if (task.status === 'failed') return 'exception'
-  if (task.status === 'completed') return 'success'
+  if (task.manual_match_completed) return 'success'
+  if (task.awaiting_manual_match || task.status === 'completed') return 'warning'
   return ''
 }
 
@@ -4217,6 +4267,48 @@ function syncSubtitlePairTargetNames () {
       { name: pair.subtitle_name, path: pair.subtitle_path, relative_path: pair.subtitle_relative_path }
     )
   }))
+}
+
+function cloneSubtitleManualPairsSnapshot() {
+  return subtitleManualPairs.value.map(pair => ({ ...pair }))
+}
+
+function createSubtitleManualMatchSnapshot() {
+  return {
+    audioSearch: subtitleInspectorAudioSearch.value,
+    subtitleSearch: subtitleInspectorSubtitleSearch.value,
+    audioFilterMode: subtitleAudioFilterMode.value,
+    subtitleFilterMode: subtitleSubtitleFilterMode.value,
+    matchSelection: { ...subtitleMatchSelection.value },
+    sequenceMode: Boolean(subtitleSequenceMode.value),
+    sequenceSelection: {
+      audioPaths: [...subtitleSequenceSelection.value.audioPaths],
+      subtitlePaths: [...subtitleSequenceSelection.value.subtitlePaths]
+    },
+    lastPairBuildMode: subtitleLastPairBuildMode.value,
+    manualPairs: cloneSubtitleManualPairsSnapshot(),
+    selectedManualPairId: subtitleSelectedManualPairId.value
+  }
+}
+
+function restoreSubtitleManualMatchSnapshot(snapshot) {
+  if (!snapshot) return
+  subtitleInspectorAudioSearch.value = snapshot.audioSearch || ''
+  subtitleInspectorSubtitleSearch.value = snapshot.subtitleSearch || ''
+  subtitleAudioFilterMode.value = snapshot.audioFilterMode || 'all'
+  subtitleSubtitleFilterMode.value = snapshot.subtitleFilterMode || 'all'
+  subtitleMatchSelection.value = {
+    audioPath: snapshot.matchSelection?.audioPath || '',
+    subtitlePath: snapshot.matchSelection?.subtitlePath || ''
+  }
+  subtitleSequenceMode.value = Boolean(snapshot.sequenceMode)
+  subtitleSequenceSelection.value = {
+    audioPaths: [...(snapshot.sequenceSelection?.audioPaths || [])],
+    subtitlePaths: [...(snapshot.sequenceSelection?.subtitlePaths || [])]
+  }
+  subtitleLastPairBuildMode.value = snapshot.lastPairBuildMode || ''
+  subtitleManualPairs.value = Array.isArray(snapshot.manualPairs) ? snapshot.manualPairs.map(pair => ({ ...pair })) : []
+  subtitleSelectedManualPairId.value = snapshot.selectedManualPairId || subtitleManualPairs.value[0]?.id || ''
 }
 
 function resetSubtitleManualMatchState () {
@@ -4487,6 +4579,7 @@ async function applySubtitleManualPairs () {
   subtitlePairApplying.value = true
   const phaseOneCompleted = []
   const phaseTwoCompleted = []
+  const preApplySnapshot = createSubtitleManualMatchSnapshot()
   try {
     const currentSubtitleFiles = [...subtitleInspectorSubtitleFiles.value]
     const resolveCurrentSubtitleSourcePath = (pair) => {
@@ -4620,6 +4713,7 @@ async function applySubtitleManualPairs () {
           refreshRJSubtitleStatus(false, { silent: true }),
           reloadSubtitleInspector()
         ])
+        restoreSubtitleManualMatchSnapshot(preApplySnapshot)
       }
     }
     ElMessage.error(`${isLinkedImport ? '重命名并导入' : '应用配对'}失败: ${(error.response?.data?.detail || error.message)}${rollbackSummary}`)
@@ -5033,25 +5127,43 @@ function canRerunSubtitleTask (task) {
 
 async function rerunSubtitleTask (task) {
   if (!canRerunSubtitleTask(task)) return
-  const selectionItem = buildSubtitleSelectionItemFromTask(task)
   subtitleTaskRerunId.value = task.id
-  subtitlePreferredSelectionKey.value = buildSubtitleSelectionKey(selectionItem)
+  subtitlePreferredSelectionKey.value = buildSubtitleTaskSelectionKey(task)
   try {
-    const data = await submitRJSubtitleTasks([selectionItem], {
-      silent: false,
-      refresh: true,
-      skipIfExistingSubtitlesOverride: false,
-      forceRerun: true
-    })
-    const createdTask = data?.tasks?.[0] || null
-    if (createdTask?.task_id) {
-      upsertSubtitleTaskLocal(createOptimisticSubtitleTask(selectionItem, createdTask.task_id))
-      upsertSubtitleSelectionEntry(selectionItem, {
-        task_id: createdTask.task_id,
-        queue_state: 'queued',
-        queue_message: '已强制清理旧字幕并重新加入任务'
+    const data = await rjSubtitleApi.rerunTask(task.id)
+    if (data?.task_id) {
+      subtitleActiveTaskId.value = data.task_id
+      upsertSubtitleTaskLocal({
+        ...task,
+        status: 'pending',
+        progress: 0,
+        current_step: data.message || '等待重新抓取字幕',
+        error_message: '',
+        subtitle_dir: '',
+        awaiting_manual_match: false,
+        manual_match_completed: false,
+        manual_match_applied_pairs: 0,
+        manual_match_deleted_subtitles: 0,
+        written_files: [],
+        skipped_files: [],
+        failed_files: [],
+        write_errors: [],
+        match_result: {},
+        download_files: [],
+        downloaded_count: 0,
+        force_rerun: true
       })
-      subtitleActiveTaskId.value = createdTask.task_id
+      await refreshRJSubtitleStatus(false, { silent: true })
+      ElMessage.success(data.message || '任务已重新加入抓取队列')
+      if (subtitleInspectorInfo.value.taskId === task.id) {
+        clearSubtitleInspectorState()
+      }
+      const selectionItem = buildSubtitleSelectionItemFromTask(task)
+      upsertSubtitleSelectionEntry(selectionItem, {
+        task_id: task.id,
+        queue_state: 'queued',
+        queue_message: data.message || '已重置当前任务并重新抓取'
+      })
     }
   } finally {
     if (subtitleTaskRerunId.value === task.id) subtitleTaskRerunId.value = ''
@@ -5243,10 +5355,13 @@ async function cancelRJSubtitleTask (task) {
 }
 
 async function navigateToPath (path) {
-  const shouldRefreshNow = currentPage.value === 1
+  const targetPath = path || browseRootPath.value || currentPath.value
+  const targetPage = getRememberedDirectoryPage(targetPath, 1)
+  const shouldRefreshNow = currentPage.value === targetPage
+  rememberCurrentDirectoryPage()
   locatedLibraryPath.value = ''
-  currentPath.value = path || browseRootPath.value || currentPath.value
-  currentPage.value = 1
+  currentPath.value = targetPath
+  currentPage.value = targetPage
   clearSelection()
   if (shouldRefreshNow) await refreshLibrary()
 }

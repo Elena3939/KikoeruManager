@@ -128,6 +128,14 @@ class TaskCenterService:
             actions.extend(["retry_waiting", "delete_waiting_retry"])
         return actions
 
+    def _resolve_display_status(self, task: Task, domain: str, metadata: Dict[str, Any]) -> str:
+        if domain == "rj_subtitle":
+            if bool(metadata.get("manual_match_completed")):
+                return TaskStatus.COMPLETED.value
+            if task.status == TaskStatus.COMPLETED:
+                return TaskStatus.PENDING.value
+        return task.status.value
+
     def _serialize_engine_task(self, task: Task) -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
         domain = self._infer_domain(task)
@@ -198,6 +206,7 @@ class TaskCenterService:
         recovered_notice = self._safe_text(metadata.get("recovered_notice"))
         recovered_failure_count = int(metadata.get("recovered_failure_count") or 0)
         recovered_conflict_count = int(metadata.get("recovered_conflict_count") or 0)
+        display_status = self._resolve_display_status(task, domain, metadata)
         if recovered_failure_count > 0:
             self._append_metric(metrics, "此前失败", f"{recovered_failure_count} 次")
         if recovered_conflict_count > 0:
@@ -221,8 +230,8 @@ class TaskCenterService:
             "source_page": source_page,
             "source_action": source_action,
             "route_hint": route_hint,
-            "status": task.status.value,
-            "status_label": self.STATUS_LABELS.get(task.status.value, task.status.value),
+            "status": display_status,
+            "status_label": self.STATUS_LABELS.get(display_status, display_status),
             "progress": int(task.progress or 0),
             "current_step": current_step,
             "error_message": self._safe_text(task.error_message),
@@ -396,7 +405,7 @@ class TaskCenterService:
         items = [self._serialize_engine_task(task) for task in engine.get_all_tasks()]
 
         subtitle_import_service = get_linked_subtitle_import_service()
-        pending_items = await subtitle_import_service.list_pending_imports(refresh_candidates=False)
+        pending_items = await subtitle_import_service.list_pending_imports()
         items.extend(self._serialize_pending_subtitle_item(item) for item in pending_items)
 
         waiting_retry_items = engine.get_waiting_retry_tasks_from_db()

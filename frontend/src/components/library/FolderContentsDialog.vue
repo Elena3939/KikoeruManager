@@ -41,17 +41,19 @@
       </div>
 
       <div class="fm-head">
-        <div class="fm-col-check">
-          <input
-            type="checkbox"
-            class="fm-check"
-            :checked="allFilesSelected"
-            :indeterminate.prop="someFilesSelected"
-            :disabled="folderLoading || folderDeleting"
-            @click="toggleAllFiles"
-          >
+        <div class="fm-col-name fm-col-name-head">
+          <div class="fm-name-cell fm-name-cell-head">
+            <input
+              type="checkbox"
+              class="fm-check"
+              :checked="allFilesSelected"
+              :indeterminate.prop="someFilesSelected"
+              :disabled="folderLoading || folderDeleting"
+              @click="toggleAllFiles"
+            >
+            <span>文件名</span>
+          </div>
         </div>
-        <div class="fm-col-name">文件名</div>
         <div class="fm-col-size">大小</div>
         <div class="fm-col-time">修改时间</div>
         <div class="fm-col-action">操作</div>
@@ -69,15 +71,6 @@
           :class="{ 'fm-row-dir': row.type === 'dir', 'fm-row-selected': selectedFileIds.has(row.id) }"
           @click="handleFolderRowClick(row, $event)"
         >
-          <div class="fm-col-check" @click.stop>
-            <input
-              type="checkbox"
-              class="fm-check"
-              :checked="selectedFileIds.has(row.id)"
-              :disabled="folderDeleting"
-              @click.stop="toggleFileSelect(row, $event)"
-            >
-          </div>
           <div class="fm-col-name">
             <div class="fm-name-cell" :style="{ paddingLeft: `${row.depth * 18 + 4}px` }">
               <button
@@ -90,6 +83,14 @@
                 &gt;
               </button>
               <span v-else class="fm-arrow-placeholder"></span>
+              <input
+                type="checkbox"
+                class="fm-check"
+                :checked="isRowChecked(row)"
+                :indeterminate.prop="isRowIndeterminate(row)"
+                :disabled="folderDeleting"
+                @click.stop="toggleFileSelect(row, $event)"
+              >
               <span class="fm-file-icon">
                 <el-icon><component :is="resolveTreeIcon(row)" /></el-icon>
               </span>
@@ -159,7 +160,7 @@ const filteredRoot = computed(() => {
 })
 const flatTree = computed(() => flattenTree(filteredRoot.value, 0, expandedIds.value))
 const visibleFileCount = computed(() => flatTree.value.filter(item => item.type === 'file').length)
-const allSelectableIds = computed(() => flatTree.value.map(item => item.id))
+const allSelectableIds = computed(() => collectNodeIds(filteredRoot.value))
 const allFilesSelected = computed(() => allSelectableIds.value.length > 0 && allSelectableIds.value.every(id => selectedFileIds.value.has(id)))
 const someFilesSelected = computed(() => !allFilesSelected.value && allSelectableIds.value.some(id => selectedFileIds.value.has(id)))
 const folderSelectedRows = computed(() => [...selectedFileIds.value].map(id => folderNodeById.value.get(id)).filter(Boolean))
@@ -430,6 +431,24 @@ function getFolderSelectableIds () {
   return flatTree.value.map(row => row.id)
 }
 
+function collectNodeIds (nodes = []) {
+  const ids = []
+  const walk = list => {
+    for (const node of list || []) {
+      ids.push(node.id)
+      if (node.children?.length) walk(node.children)
+    }
+  }
+  walk(nodes)
+  return ids
+}
+
+function getSelectableSubtreeIds (row) {
+  if (!row?.id) return []
+  const sourceNode = folderNodeById.value.get(row.id) || row
+  return collectNodeIds([sourceNode])
+}
+
 function selectFolderRange (targetId, preserveExisting = true) {
   const rowIds = getFolderSelectableIds()
   const targetIndex = rowIds.indexOf(targetId)
@@ -450,8 +469,13 @@ function toggleFileSelect (row, event = null) {
     return
   }
   const next = new Set(selectedFileIds.value)
-  if (next.has(row.id)) next.delete(row.id)
-  else next.add(row.id)
+  const subtreeIds = getSelectableSubtreeIds(row)
+  const isChecked = subtreeIds.every(id => next.has(id))
+  if (isChecked) {
+    subtreeIds.forEach(id => next.delete(id))
+  } else {
+    subtreeIds.forEach(id => next.add(id))
+  }
   selectedFileIds.value = next
   folderLastSelectedId.value = row.id
 }
@@ -473,6 +497,20 @@ function handleFolderRowClick (row, event) {
 
 function resolveNodePath (row) {
   return row?.resolved_path || row?.path || ''
+}
+
+function isRowChecked (row) {
+  if (!row?.id) return false
+  const subtreeIds = getSelectableSubtreeIds(row)
+  return subtreeIds.length > 0 && subtreeIds.every(id => selectedFileIds.value.has(id))
+}
+
+function isRowIndeterminate (row) {
+  if (!row?.id || row.type !== 'dir') return false
+  const subtreeIds = getSelectableSubtreeIds(row)
+  if (!subtreeIds.length) return false
+  const checkedCount = subtreeIds.filter(id => selectedFileIds.value.has(id)).length
+  return checkedCount > 0 && checkedCount < subtreeIds.length
 }
 
 function normalizeAnyPath (value) {
@@ -625,7 +663,7 @@ onBeforeUnmount(() => {
 .fm-btn-ghost:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
 .fm-search-input { width: 260px; height: 30px; padding: 0 10px; font-size: 12px; border: 1px solid #dcdfe6; border-radius: 5px; outline: none; }
 .fm-selection-bar { display: flex; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid #f1d4d0; background: #fff7f6; font-size: 12px; color: #a14d47; }
-.fm-head, .fm-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) 120px 190px 90px; align-items: center; padding: 0 16px; }
+.fm-head, .fm-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 190px 90px; align-items: center; padding: 0 16px; }
 .fm-head { height: 36px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; font-size: 12px; font-weight: 600; color: #606266; }
 .fm-scroll { flex: 1; overflow: auto; contain: strict; }
 .fm-row { min-height: 36px; border-bottom: 1px solid #ebeef5; font-size: 13px; contain: layout paint style; }
@@ -633,6 +671,7 @@ onBeforeUnmount(() => {
 .fm-row-selected { background: #ecf5ff !important; }
 .fm-empty { display: flex; align-items: center; justify-content: center; height: 180px; color: #c0c4cc; font-size: 13px; }
 .fm-name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fm-name-cell-head { padding-left: 4px; }
 .fm-arrow-btn { width: 16px; height: 16px; border: none; background: transparent; color: #909399; cursor: pointer; padding: 0; transition: transform .16s; }
 .fm-arrow-btn.open { transform: rotate(90deg); color: #409eff; }
 .fm-arrow-placeholder { width: 16px; flex: 0 0 16px; }

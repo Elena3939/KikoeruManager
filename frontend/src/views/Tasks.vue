@@ -798,9 +798,11 @@ function formatDateTime(value) {
 
 .task-list-badges {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 6px;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  align-items: flex-end;
 }
 
 .task-list-meta {
@@ -948,9 +950,11 @@ function formatDateTime(value) {
 
 .detail-tags {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 6px;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  align-items: flex-end;
 }
 
 .detail-grid {

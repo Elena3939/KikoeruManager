@@ -851,6 +851,11 @@ export const rjSubtitleApi = {
     return response.data
   },
 
+  rerunTask: async (taskId) => {
+    const response = await apiClient.post(`/rj-subtitle/task/${taskId}/rerun`)
+    return response.data
+  },
+
   checkSubtitleAvailability: async (rjcode) => {
     const response = await apiClient.post('/rj-subtitle/subtitle-availability', {
       rjcode

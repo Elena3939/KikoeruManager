@@ -4913,6 +4913,24 @@ async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCom
         raise HTTPException(status_code=500, detail=f"标记失败: {str(e)}")
 
 
+@app.post("/api/rj-subtitle/task/{task_id}/rerun")
+async def rj_subtitle_rerun_task(task_id: str):
+    from ..core.task_engine import get_task_engine
+
+    try:
+        task = await get_task_engine().rerun_rj_subtitle_task(task_id)
+        return {
+            "success": True,
+            "task_id": task.id,
+            "message": "任务已重置并重新加入抓取队列"
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as e:
+        logger.error(f"重跑 RJ 字幕任务失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"重跑失败: {str(e)}")
+
+
 @app.post("/api/rj-subtitle/task/{task_id}/clear")
 async def rj_subtitle_clear_task(task_id: str):
     from ..core.task_engine import TaskType, get_task_engine

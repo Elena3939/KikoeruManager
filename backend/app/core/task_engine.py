@@ -136,6 +136,17 @@ class Task:
         self.current_step = step
         logger.info(f"任务 {self.id}: {step} ({progress}%)")
 
+    def reset_for_rerun(self, step: str = "等待重新执行"):
+        """重置任务运行态，保留任务 ID 原地重跑。"""
+        self.status = TaskStatus.PENDING
+        self.progress = 0
+        self.current_step = step
+        self.error_message = None
+        self.started_at = None
+        self.completed_at = None
+        self._cancelled = False
+        self._pause_event.set()
+
     def ensure_business_context(self, domain: str, defaults: Optional[dict] = None):
         """为任务补齐业务上下文，供任务中心统一展示。"""
         defaults = dict(defaults or {})
@@ -1261,6 +1272,45 @@ class TaskEngine:
             finally:
                 db.close()
         return False
+
+    async def rerun_rj_subtitle_task(self, task_id: str) -> Task:
+        """复用已有 RJ 字幕任务并重新入队，不创建新任务。"""
+        task = self.tasks.get(task_id)
+        if not task:
+            raise ValueError("任务不存在")
+        if task.type != TaskType.RJ_SUBTITLE_FETCH:
+            raise ValueError("仅支持重跑 RJ 字幕任务")
+        if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
+            raise ValueError("任务正在执行中，不能重新提交")
+
+        metadata = dict(task.task_metadata or {})
+        metadata.update({
+            'force_rerun': True,
+            'skip_if_existing_subtitles': False,
+            'awaiting_manual_match': False,
+            'manual_match_completed': False,
+            'manual_match_applied_pairs': 0,
+            'manual_match_deleted_subtitles': 0,
+            'manual_match_completed_at': None,
+            'subtitle_dir': '',
+            'written_files': [],
+            'skipped_files': [],
+            'write_errors': [],
+            'failed_files': [],
+            'match_result': {},
+            'download_files': [],
+            'downloaded_count': 0,
+            'progress_log': [],
+        })
+        task.task_metadata = metadata
+        self.processing.discard(task.id)
+        if task.rjcode:
+            self.unmark_rjcode_processing(task.rjcode)
+        task.reset_for_rerun("等待重新抓取字幕")
+        self._ensure_task_context(task)
+        await self.queue.put(task)
+        logger.info("RJ 字幕任务已重新入队: %s", task.id)
+        return task
 
     def pause_task(self, task_id: str):
         """暂停任务"""
