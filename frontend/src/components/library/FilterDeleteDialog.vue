@@ -183,6 +183,7 @@
           <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-action">
             <span v-if="hasFilterDeleteSelectedAncestor(row)" class="fd-status delete-covered">{{ text.coveredBySelected }}</span>
             <span v-else-if="isFilterDeleteRowFullySelected(row)" class="fd-status delete-root">{{ text.waitConfirm }}</span>
+            <span v-else-if="isFilterDeleteRowPartiallySelected(row)" class="fd-status delete-partial">部分已选</span>
             <span v-else class="fd-status delete-optional">{{ text.individualSelectable }}</span>
           </div>
         </div>
@@ -204,7 +205,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, Folder, FolderOpened, Headset, Picture, Tickets, VideoPlay } from '@element-plus/icons-vue'
-import { libraryApi } from '../../api'
+import { activityLogApi, libraryApi } from '../../api'
 
 const text = {
   title: '\u5220\u9664\u8fc7\u6ee4\u6587\u4ef6\u9884\u5ba1',
@@ -314,6 +315,8 @@ const filterDeleteLoadedSessionKey = ref('')
 const filterDeleteStartedAt = ref(0)
 const filterDeletePreviewTargetIndex = ref(0)
 const filterDeletePreviewTargetTotal = ref(0)
+const filterDeletePreviewLoggedSessionKey = ref('')
+const filterDeleteApplyLoggedExecutionKey = ref('')
 
 const FILTER_DELETE_ROW_HEIGHT = 36
 const FILTER_DELETE_OVERSCAN = 12
@@ -525,8 +528,55 @@ function hideFilterDeleteToBackground () {
   visible.value = false
 }
 
-function closeFilterDeleteDialog () {
+async function resetFilterDeleteDialogState () {
+  clearFilterDeletePoll()
+  filterDeleteLoading.value = false
+  filterDeleteDeleting.value = false
+  filterDeleteJobId.value = ''
+  filterDeleteDeleteCancelRequested.value = false
+  filterDeleteLoadedSessionKey.value = ''
+  filterDeleteStartedAt.value = 0
+  filterDeletePreviewTargetIndex.value = 0
+  filterDeletePreviewTargetTotal.value = 0
+  filterDeletePreviewLoggedSessionKey.value = ''
+  filterDeleteApplyLoggedExecutionKey.value = ''
+  filterDeleteSearch.value = ''
+  filterDeleteItems.value = []
+  filterDeleteExpandedIds.value = new Set()
+  filterDeleteSelectedIds.value = new Set()
+  filterDeleteLastSelectedId.value = ''
+  filterDeleteScrollTop.value = 0
+  filterDeletePreviewInfo.value = {
+    folderName: '',
+    folderPath: '',
+    selectedCount: 0,
+    selectedSize: 0,
+    ruleCount: 0,
+    selectedSizeExact: true,
+    truncated: false,
+    truncatedReason: '',
+    sizeDisabled: false,
+    status: 'idle',
+    scannedEntries: 0,
+    discoveredEntries: 0,
+    pendingDirectories: 0,
+    currentPath: '',
+    progressMessage: '',
+    warning: '',
+    error: '',
+    deleteDone: 0,
+    deleteTotal: 0,
+    deleteFailed: 0
+  }
+}
+
+async function closeFilterDeleteDialog () {
+  if (filterDeleteBusy.value) {
+    hideFilterDeleteToBackground()
+    return
+  }
   emit('dismiss-background')
+  await resetFilterDeleteDialogState()
   visible.value = false
 }
 
@@ -669,6 +719,7 @@ async function pollFilterDeletePreviewStatus (jobId) {
       error: error.response?.data?.detail || error.message || '\u83b7\u53d6\u9884\u5ba1\u8fdb\u5ea6\u5931\u8d25',
       warning: '\u9884\u5ba1\u672a\u5b8c\u6574\u5b8c\u6210\uff0c\u5f53\u524d\u7ed3\u679c\u4e0d\u53ef\u76f4\u63a5\u7528\u4e8e\u5220\u9664'
     }
+    await writeFilterDeletePreviewActivityLog('error')
   }
 }
 
@@ -687,6 +738,7 @@ async function cancelFilterDeletePreview (options = {}) {
       progressMessage: '\u5220\u9664\u8fc7\u6ee4\u9884\u5ba1\u5df2\u53d6\u6d88',
       warning: '\u5220\u9664\u8fc7\u6ee4\u9884\u5ba1\u5df2\u53d6\u6d88\uff0c\u8bf7\u91cd\u65b0\u626b\u63cf\u540e\u518d\u6267\u884c\u5220\u9664'
     }
+    await writeFilterDeletePreviewActivityLog('canceled')
     if (!silent) ElMessage.success('\u5df2\u53d6\u6d88\u5220\u9664\u8fc7\u6ee4\u9884\u5ba1')
   } catch (_) {
     if (!silent) ElMessage.warning('\u53d6\u6d88\u9884\u5ba1\u8bf7\u6c42\u5df2\u53d1\u9001\uff0c\u540e\u53f0\u53ef\u80fd\u8fd8\u5728\u7ed3\u675f\u5f53\u524d\u76ee\u5f55\u626b\u63cf')
@@ -698,6 +750,7 @@ async function loadFilterDeletePreview () {
   clearFilterDeletePoll()
   filterDeleteLoadedSessionKey.value = filterDeleteSessionKey.value
   filterDeleteStartedAt.value = Date.now()
+  filterDeletePreviewLoggedSessionKey.value = ''
   filterDeletePreviewTargetIndex.value = effectivePreviewTargetPaths.value.length ? 1 : 0
   filterDeletePreviewTargetTotal.value = effectivePreviewTargetPaths.value.length
   resetFilterDeleteScroll()
@@ -740,6 +793,7 @@ async function loadFilterDeletePreview () {
       applyFilterDeletePreviewData(data)
       if (['pending', 'running'].includes(data?.status || 'pending')) await pollFilterDeletePreviewStatus(filterDeleteJobId.value)
       else filterDeleteLoading.value = false
+      await writeFilterDeletePreviewActivityLog()
       return
     }
 
@@ -752,7 +806,10 @@ async function loadFilterDeletePreview () {
     let hasPartialSize = false
     let hasBasicTreeOnly = false
     let hasTruncated = false
+    let hasError = false
+    let hasCancelled = false
     const warnings = []
+    const errors = []
 
     for (let index = 0; index < effectivePreviewTargetPaths.value.length; index += 1) {
       const targetPath = effectivePreviewTargetPaths.value[index]
@@ -780,7 +837,10 @@ async function loadFilterDeletePreview () {
       hasPartialSize = hasPartialSize || finalData?.selected_size_exact === false
       hasBasicTreeOnly = hasBasicTreeOnly || finalData?.size_disabled === true
       hasTruncated = hasTruncated || !!finalData?.truncated
+      hasError = hasError || finalData?.status === 'error'
+      hasCancelled = hasCancelled || finalData?.status === 'canceled'
       if (finalData?.warning) warnings.push(finalData.warning)
+      if (finalData?.error) errors.push(finalData.error)
     }
 
     applyFilterDeletePreviewData({
@@ -797,13 +857,25 @@ async function loadFilterDeletePreview () {
       discovered_entries: mergedDiscoveredEntries,
       pending_directories: 0,
       current_path: '',
-      progress_message: `预审完成，共处理 ${effectivePreviewTargetPaths.value.length} 个目录`,
+      progress_message: hasError
+        ? `预审结束，但有 ${errors.length || 1} 个目录预审失败`
+        : hasCancelled
+          ? `预审已取消，已处理 ${effectivePreviewTargetPaths.value.length} 个目录中的一部分`
+          : `预审完成，共处理 ${effectivePreviewTargetPaths.value.length} 个目录`,
       warning: warnings.filter(Boolean).join('；'),
-      status: 'completed'
+      error: errors.filter(Boolean).join('；'),
+      status: hasError ? 'error' : (hasCancelled ? 'canceled' : 'completed')
     })
     filterDeleteLoading.value = false
+    await writeFilterDeletePreviewActivityLog()
   } catch (error) {
     visible.value = false
+    filterDeletePreviewInfo.value = {
+      ...filterDeletePreviewInfo.value,
+      status: 'error',
+      error: error.response?.data?.detail || error.message || '加载删除过滤预审失败'
+    }
+    await writeFilterDeletePreviewActivityLog('error')
     ElMessage.error('\u52a0\u8f7d\u8fc7\u6ee4\u5220\u9664\u9884\u89c8\u5931\u8d25: ' + (error.response?.data?.detail || error.message))
   }
 }
@@ -906,7 +978,7 @@ function selectFilterDeleteRange (targetId, preserveExisting = true) {
   rowIds.slice(start, end + 1).forEach(id => {
     const row = filterDeleteNodeById.value.get(id)
     if (!row) return
-    getFilterDeleteSelectableSubtreeIds(row).forEach(childId => next.add(childId))
+    getFilterDeleteSubtreeIds(row).forEach(childId => next.add(childId))
   })
   filterDeleteSelectedIds.value = next
   filterDeleteLastSelectedId.value = targetId
@@ -919,7 +991,7 @@ function toggleFilterDeleteSelect (row, event = null) {
     return
   }
   const next = new Set(filterDeleteSelectedIds.value)
-  const subtreeIds = getFilterDeleteSelectableSubtreeIds(row)
+  const subtreeIds = getFilterDeleteSubtreeIds(row)
   if (next.has(row.id)) {
     subtreeIds.forEach(id => next.delete(id))
   } else {
@@ -936,7 +1008,7 @@ function toggleAllFilterDeleteRows () {
   } else {
     const next = new Set()
     filterDeleteBulkSelectableRows.value.forEach(row => {
-      getFilterDeleteSelectableSubtreeIds(row).forEach(id => next.add(id))
+      getFilterDeleteSubtreeIds(row).forEach(id => next.add(id))
     })
     filterDeleteSelectedIds.value = next
   }
@@ -1071,13 +1143,18 @@ async function confirmFilterDeleteSelection () {
   filterDeleteDeleting.value = true
   filterDeleteLoadedSessionKey.value = filterDeleteSessionKey.value
   filterDeleteDeleteCancelRequested.value = false
+  filterDeleteApplyLoggedExecutionKey.value = ''
   try {
+    const deleteStartedAt = Date.now()
     const paths = filterDeleteSelectedRoots.value.map(item => resolveFilterDeleteDeleteTarget(item))
+    const executionKey = `${filterDeleteSessionKey.value}::${deleteStartedAt}::${paths.length}`
     const sizeByPath = new Map(filterDeleteSelectedRoots.value.map(item => [resolveFilterDeleteDeleteTarget(item), Number(item.size || 0)]))
     const normalizedItemMeta = filterDeleteItems.value.map(item => ({
       path: normalizeFilterDeleteComparePath(item.path || item.delete_path),
       type: item.type
     }))
+    const attemptedItems = buildFilterDeleteLogItemsByTargets(filterDeleteItems.value, paths)
+    const selectedRootItems = filterDeleteSelectedRoots.value.map(buildFilterDeleteLogItem).filter(Boolean)
     const folderCountByPath = new Map(filterDeleteSelectedRoots.value.map(item => {
       const rawPath = resolveFilterDeleteDeleteTarget(item)
       const normalizedPath = normalizeFilterDeleteComparePath(rawPath)
@@ -1093,6 +1170,7 @@ async function confirmFilterDeleteSelection () {
     let deletedBytes = 0
     let deletedFolderCount = 0
     const succeededPaths = []
+    const failedItems = []
     for (let index = 0; index < paths.length; index += 1) {
       if (filterDeleteDeleteCancelRequested.value) break
       const path = paths[index]
@@ -1109,8 +1187,16 @@ async function confirmFilterDeleteSelection () {
         succeededPaths.push(path)
         deletedBytes += Number(sizeByPath.get(path) || 0)
         deletedFolderCount += Number(folderCountByPath.get(path) || 0)
-      } catch (_) {
+      } catch (error) {
         failedCount += 1
+        failedItems.push({
+          path,
+          name: getFileName(path),
+          type: 'dir',
+          size: Number(sizeByPath.get(path) || 0),
+          status: 'failed',
+          error: error?.response?.data?.detail || error?.message || '删除失败'
+        })
       }
     }
     filterDeletePreviewInfo.value = {
@@ -1133,10 +1219,52 @@ async function confirmFilterDeleteSelection () {
           : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${paths.length}`
       })
     }
+    const succeededItems = buildFilterDeleteLogItemsByTargets(attemptedItems, succeededPaths)
+    await writeFilterDeleteApplyActivityLog({
+      execution_key: executionKey,
+      status: filterDeleteDeleteCancelRequested.value
+        ? 'cancelled'
+        : (successCount > 0 && failedCount > 0 ? 'partial_success' : (failedCount > 0 ? 'failed' : 'success')),
+      scope_label: props.scopeLabel || getFileName(props.currentPath) || text.currentFolder,
+      folder_name: filterDeletePreviewInfo.value.folderName || '',
+      folder_path: props.currentPath || filterDeletePreviewInfo.value.folderPath || '',
+      duration_ms: Math.max(0, Date.now() - deleteStartedAt),
+      selected_count: selectedRootItems.length,
+      success_count: successCount,
+      failed_count: failedCount,
+      deleted_bytes: deletedBytes,
+      deleted_folder_count: deletedFolderCount,
+      attempted_items: attemptedItems,
+      succeeded_items: succeededItems,
+      failed_items: failedItems
+    })
     if (filterDeleteDeleteCancelRequested.value) ElMessage.warning(`\u8fc7\u6ee4\u5220\u9664\u5df2\u505c\u6b62\uff1a\u6210\u529f ${successCount} \u9879\uff0c\u5931\u8d25 ${failedCount} \u9879`)
     else if (failedCount > 0) ElMessage.warning(`\u8fc7\u6ee4\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f ${successCount} \u9879\uff0c\u5931\u8d25 ${failedCount} \u9879`)
     else ElMessage.success(`\u8fc7\u6ee4\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f ${successCount} \u9879`)
   } catch (error) {
+    await writeFilterDeleteApplyActivityLog({
+      execution_key: `${filterDeleteSessionKey.value}::fatal::${Date.now()}`,
+      status: 'failed',
+      scope_label: props.scopeLabel || getFileName(props.currentPath) || text.currentFolder,
+      folder_name: filterDeletePreviewInfo.value.folderName || '',
+      folder_path: props.currentPath || filterDeletePreviewInfo.value.folderPath || '',
+      duration_ms: 0,
+      selected_count: filterDeleteSelectedRoots.value.length,
+      success_count: 0,
+      failed_count: filterDeleteSelectedRoots.value.length,
+      deleted_bytes: 0,
+      deleted_folder_count: 0,
+      attempted_items: buildFilterDeleteLogItemsByTargets(filterDeleteItems.value, filterDeleteSelectedRoots.value.map(item => resolveFilterDeleteDeleteTarget(item))),
+      failed_items: [{
+        path: props.currentPath || '',
+        name: getFileName(props.currentPath || ''),
+        type: 'dir',
+        size: 0,
+        status: 'failed',
+        error: error.response?.data?.detail || error.message || '过滤删除失败'
+      }],
+      error: error.response?.data?.detail || error.message || '过滤删除失败'
+    })
     ElMessage.error('\u8fc7\u6ee4\u5220\u9664\u5931\u8d25: ' + (error.response?.data?.detail || error.message))
   } finally {
     filterDeleteDeleting.value = false
@@ -1273,11 +1401,11 @@ function getFilterDeleteSortMark(sortBy) {
   return filterDeleteSortOrder.value === 'asc' ? '↑' : '↓'
 }
 
-function getFilterDeleteSelectableSubtreeIds (row) {
+function getFilterDeleteSubtreeIds (row) {
   const ids = []
   const walk = node => {
     if (!node) return
-    if (canFilterDeleteSelectRow(node)) ids.push(node.id)
+    if (node.id) ids.push(node.id)
     for (const child of node.children || []) {
       walk(child)
     }
@@ -1287,12 +1415,12 @@ function getFilterDeleteSelectableSubtreeIds (row) {
 }
 
 function isFilterDeleteRowFullySelected (row) {
-  const ids = getFilterDeleteSelectableSubtreeIds(row)
+  const ids = getFilterDeleteSubtreeIds(row)
   return ids.length > 0 && ids.every(id => filterDeleteSelectedIds.value.has(id))
 }
 
 function isFilterDeleteRowPartiallySelected (row) {
-  const ids = getFilterDeleteSelectableSubtreeIds(row)
+  const ids = getFilterDeleteSubtreeIds(row)
   if (!ids.length) return false
   const selectedCount = ids.filter(id => filterDeleteSelectedIds.value.has(id)).length
   return selectedCount > 0 && selectedCount < ids.length
@@ -1319,15 +1447,83 @@ function collectFilterDeleteSelectedRoots (nodes = []) {
 
 function getFilterDeleteCheckCellStyle (row) {
   const depth = Math.max(0, Number(row?.depth || 0))
-  const indent = Math.min(depth * 18, 72)
+  const indent = Math.min(depth * 6, 18)
   return {
     paddingLeft: `${indent}px`
   }
 }
 
+function buildFilterDeleteLogItem (item) {
+  if (!item) return null
+  return {
+    path: item.path || item.delete_path || '',
+    relative_path: item.relative_path || '',
+    name: item.name || getFileName(item.path || item.delete_path || ''),
+    type: item.type || 'file',
+    size: Number(item.size || 0),
+    matched_rules: Array.isArray(item.matched_rules) ? item.matched_rules : [],
+    covered_by: item.covered_by || '',
+    delete_path: item.delete_path || item.path || ''
+  }
+}
+
+function buildFilterDeleteLogItemsByTargets (items, targetPaths = []) {
+  const normalizedTargets = [...new Set((targetPaths || []).map(normalizeFilterDeleteComparePath).filter(Boolean))]
+  return (items || [])
+    .filter(item => {
+      if (!normalizedTargets.length) return true
+      return isFilterDeletePathRemoved(resolveFilterDeleteDeleteTarget(item), normalizedTargets)
+    })
+    .map(buildFilterDeleteLogItem)
+    .filter(Boolean)
+}
+
+async function writeFilterDeletePreviewActivityLog (statusOverride = '') {
+  const sessionKey = filterDeleteSessionKey.value
+  if (!sessionKey || filterDeletePreviewLoggedSessionKey.value === sessionKey) return
+  const status = String(statusOverride || filterDeletePreviewInfo.value.status || 'idle')
+  if (!['completed', 'canceled', 'error'].includes(status)) return
+  filterDeletePreviewLoggedSessionKey.value = sessionKey
+  try {
+    await activityLogApi.logFilterDelete({
+      mode: 'preview',
+      status: status === 'completed' ? 'success' : (status === 'canceled' ? 'cancelled' : 'failed'),
+      scope_label: props.scopeLabel || getFileName(props.currentPath) || text.currentFolder,
+      folder_name: filterDeletePreviewInfo.value.folderName || '',
+      folder_path: props.currentPath || filterDeletePreviewInfo.value.folderPath || '',
+      duration_ms: Math.max(0, Date.now() - Number(filterDeleteStartedAt.value || Date.now())),
+      selected_count: Number(filterDeletePreviewInfo.value.selectedCount || 0),
+      selected_size: Number(filterDeletePreviewInfo.value.selectedSize || 0),
+      selected_size_exact: filterDeletePreviewInfo.value.selectedSizeExact !== false,
+      scanned_entries: Number(filterDeletePreviewInfo.value.scannedEntries || 0),
+      discovered_entries: Number(filterDeletePreviewInfo.value.discoveredEntries || 0),
+      pending_directories: Number(filterDeletePreviewInfo.value.pendingDirectories || 0),
+      preview_target_total: Number(filterDeletePreviewTargetTotal.value || 0),
+      rule_count: Number(filterDeletePreviewInfo.value.ruleCount || 0),
+      truncated: !!filterDeletePreviewInfo.value.truncated,
+      truncated_reason: filterDeletePreviewInfo.value.truncatedReason || '',
+      warning: filterDeletePreviewInfo.value.warning || '',
+      error: filterDeletePreviewInfo.value.error || '',
+      items: buildFilterDeleteLogItemsByTargets(filterDeleteItems.value)
+    })
+  } catch (_) {}
+}
+
+async function writeFilterDeleteApplyActivityLog (payload = {}) {
+  const executionKey = String(payload.execution_key || '')
+  if (!executionKey || filterDeleteApplyLoggedExecutionKey.value === executionKey) return
+  filterDeleteApplyLoggedExecutionKey.value = executionKey
+  try {
+    await activityLogApi.logFilterDelete({
+      mode: 'apply',
+      ...payload
+    })
+  } catch (_) {}
+}
+
 function getFilterDeleteNameCellStyle (row) {
   const depth = Math.max(0, Number(row?.depth || 0))
-  const indent = depth * 8 + 2
+  const indent = Math.max(0, depth * 2 - 2)
   return {
     paddingLeft: `${indent}px`
   }
@@ -1432,65 +1628,515 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.filter-delete-dialog :deep(.el-dialog) { border-radius: 8px; overflow: hidden; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18); }
-.filter-delete-dialog :deep(.el-dialog__header) { padding: 0; margin: 0; }
-.filter-delete-dialog :deep(.el-dialog__body) { padding: 0; }
-.fm-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px 12px 20px; border-bottom: 1px solid #e4e7ed; }
-.fm-title { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 13px; font-weight: 600; color: #303133; }
-.fm-badge { padding: 2px 8px; border: 1px solid #e4e7ed; border-radius: 10px; background: #f5f7fa; font-size: 12px; color: #909399; }
-.fm-count { padding: 2px 10px; border: 1px solid #c6e2ff; border-radius: 12px; background: #f0f7ff; font-size: 12px; color: #606266; }
-.fm-body { display: flex; flex-direction: column; height: 540px; background: #fff; }
-.filter-delete-alert, .filter-delete-summary, .fd-selection-bar { margin: 0 16px 12px; }
-.filter-delete-alert:first-child { margin-top: 14px; }
-.filter-delete-summary { display: flex; gap: 8px; flex-wrap: wrap; }
-.fd-chip { display: inline-flex; align-items: center; padding: 7px 11px; border-radius: 999px; border: 1px solid #e6ebf2; background: #f4f6f9; font-size: 12px; font-weight: 600; color: #59697f; }
-.fd-progress { margin: 0 16px 12px; font-size: 12px; line-height: 1.5; color: #7c8ba1; }
-.fd-header-actions { display: flex; align-items: center; gap: 10px; }
+:global(:root) {
+  --fd-apple-bg: #f5f5f7;
+  --fd-apple-surface: rgba(255, 255, 255, 0.96);
+  --fd-apple-surface-strong: #ffffff;
+  --fd-apple-border: rgba(0, 0, 0, 0.08);
+  --fd-apple-border-soft: rgba(0, 0, 0, 0.05);
+  --fd-apple-text: #1d1d1f;
+  --fd-apple-text-soft: rgba(29, 29, 31, 0.72);
+  --fd-apple-text-muted: rgba(29, 29, 31, 0.52);
+  --fd-apple-blue: #0071e3;
+  --fd-apple-blue-soft: rgba(0, 113, 227, 0.1);
+  --fd-apple-red: #d92d20;
+  --fd-apple-red-soft: rgba(217, 45, 32, 0.08);
+  --fd-apple-orange: #b86a12;
+  --fd-apple-orange-soft: #fff3e8;
+  --fd-apple-shadow: 0 24px 60px rgba(15, 23, 42, 0.14);
+  --fd-apple-card-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+}
+
+.filter-delete-dialog :deep(.el-dialog) {
+  border-radius: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background: var(--fd-apple-bg);
+  box-shadow: var(--fd-apple-shadow);
+}
+
+.filter-delete-dialog :deep(.el-dialog__header) {
+  padding: 0;
+  margin: 0;
+}
+
+.filter-delete-dialog :deep(.el-dialog__body) {
+  padding: 0;
+}
+
+.filter-delete-dialog :deep(.el-dialog__footer) {
+  padding: 12px 18px 18px;
+  background: linear-gradient(180deg, rgba(245, 245, 247, 0.2), rgba(245, 245, 247, 0.92));
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.filter-delete-dialog :deep(.el-dialog__footer .el-button) {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.12px;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.filter-delete-dialog :deep(.el-dialog__footer .el-button:hover) {
+  transform: translateY(-1px);
+}
+
+.filter-delete-dialog :deep(.el-dialog__footer .el-button--default) {
+  border-color: var(--fd-apple-border);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--fd-apple-text);
+}
+
+.filter-delete-dialog :deep(.el-dialog__footer .el-button--default:hover) {
+  border-color: rgba(0, 113, 227, 0.24);
+  color: var(--fd-apple-blue);
+  background: #ffffff;
+}
+
+.filter-delete-dialog :deep(.el-dialog__footer .el-button--primary.is-plain) {
+  border-color: rgba(0, 113, 227, 0.18);
+  background: var(--fd-apple-blue-soft);
+  color: var(--fd-apple-blue);
+}
+
+.filter-delete-dialog :deep(.el-dialog__footer .el-button--primary.is-plain:hover) {
+  border-color: rgba(0, 113, 227, 0.3);
+  background: rgba(0, 113, 227, 0.16);
+}
+
+.filter-delete-dialog :deep(.el-dialog__footer .el-button--danger) {
+  border-color: transparent;
+  background: var(--fd-apple-red);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(217, 45, 32, 0.2);
+}
+
+.filter-delete-dialog :deep(.el-dialog__footer .el-button--danger:hover) {
+  background: #bf261b;
+  box-shadow: 0 14px 28px rgba(217, 45, 32, 0.24);
+}
+
+.filter-delete-dialog :deep(.el-alert) {
+  border-radius: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.filter-delete-dialog :deep(.el-alert--warning) {
+  background: #fff8e8;
+}
+
+.filter-delete-dialog :deep(.el-alert--error) {
+  background: #fff2f1;
+}
+
+.filter-delete-dialog :deep(.el-progress-bar__outer) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.filter-delete-dialog :deep(.el-progress-bar__inner) {
+  background: linear-gradient(90deg, #0071e3, #4a9dff);
+}
+
+.fm-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 18px 10px 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.78)),
+    linear-gradient(135deg, rgba(0, 113, 227, 0.08), rgba(255, 255, 255, 0) 48%);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(18px) saturate(180%);
+}
+
+.fm-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.16px;
+  color: var(--fd-apple-text);
+}
+
+.fm-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fm-badge {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 4px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 999px;
+  background: rgba(250, 250, 252, 0.92);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--fd-apple-text-soft);
+}
+
+.fm-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border: 1px solid rgba(0, 113, 227, 0.14);
+  border-radius: 999px;
+  background: var(--fd-apple-blue-soft);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fd-apple-blue);
+}
+
+.fm-body {
+  display: flex;
+  flex-direction: column;
+  height: 540px;
+  background:
+    radial-gradient(circle at top left, rgba(0, 113, 227, 0.05), transparent 30%),
+    var(--fd-apple-bg);
+}
+
+.filter-delete-alert,
+.filter-delete-summary,
+.fd-selection-bar {
+  margin: 0 14px 8px;
+}
+
+.filter-delete-alert:first-child {
+  margin-top: 10px;
+}
+
+.filter-delete-summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fd-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fd-apple-text-soft);
+}
+
+.fd-progress {
+  margin: 0 14px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fd-apple-text-soft);
+}
+
+.fd-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
 .fd-close-btn {
   width: 28px;
   height: 28px;
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: transparent;
+  background: rgba(0, 0, 0, 0.04);
   font-size: 18px;
   line-height: 1;
-  color: #7c8ba1;
+  color: var(--fd-apple-text-soft);
   cursor: pointer;
-  transition: background 0.16s, color 0.16s;
+  transition: transform 0.16s ease, background-color 0.16s ease, color 0.16s ease;
 }
+
 .fd-close-btn:hover {
-  background: #f4f6f9;
-  color: #2f3d4f;
+  transform: translateY(-1px);
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--fd-apple-text);
 }
-.fd-progress-bar { margin: 0 16px 12px; }
-.fd-background-tip { margin: 0 16px 12px; padding: 9px 12px; border: 1px dashed #cfe0ff; border-radius: 10px; background: #f5f9ff; font-size: 12px; color: #4c6791; }
-.fm-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 9px 16px; background: #f8f9fa; border-top: 1px solid #f3f4f6; border-bottom: 1px solid #e4e7ed; }
-.fm-toolbar-left { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.fd-type-filter-bar { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; padding: 0 12px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; }
-.fd-type-filter-bar::-webkit-scrollbar { display: none; }
-.fd-type-filter-label { flex: 0 0 auto; font-size: 12px; font-weight: 600; color: rgba(29, 29, 31, 0.62); letter-spacing: -0.12px; }
-.fd-type-chip { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 4px 10px; border: 1px solid rgba(0, 0, 0, 0.06); border-radius: 999px; background: #fafafc; color: #1d1d1f; font-size: 11px; font-weight: 600; letter-spacing: -0.12px; line-height: 1; cursor: pointer; transition: border-color .16s ease, background-color .16s ease, color .16s ease, box-shadow .16s ease; }
-.fd-type-chip:hover:not(:disabled) { border-color: rgba(0, 113, 227, 0.28); color: #0066cc; }
-.fd-type-chip.active { background: #0071e3; border-color: #0071e3; color: #fff; box-shadow: 0 8px 20px rgba(0, 113, 227, 0.18); }
-.fd-type-chip.partial { border-color: rgba(0, 113, 227, 0.34); background: #eef5ff; color: #0a5fc2; }
-.fd-type-chip:disabled { opacity: 0.56; cursor: not-allowed; }
-.fd-type-chip-indicator { display: inline-flex; align-items: center; justify-content: center; width: 10px; color: currentColor; font-size: 11px; font-weight: 900; line-height: 1; }
-.fd-type-chip-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: rgba(29, 29, 31, 0.08); font-size: 10px; font-weight: 700; line-height: 1; }
-.fd-type-chip.active .fd-type-chip-count { background: rgba(255, 255, 255, 0.22); }
-.fd-type-chip.partial .fd-type-chip-count { background: rgba(0, 113, 227, 0.12); }
-.fm-btn { padding: 4px 11px; border: 1px solid #dcdfe6; border-radius: 5px; background: #fff; font-size: 12px; cursor: pointer; }
-.fm-btn:disabled { cursor: not-allowed; opacity: 0.6; }
-.fm-btn-primary { color: #2458a6; border-color: #bcd3fb; background: #eef5ff; }
-.fm-btn-primary:hover:not(:disabled) { color: #17478f; border-color: #8ab4f8; background: #e0ecff; }
-.fm-btn-danger { color: #f56c6c; background: #fff0f0; border-color: #fbc4c4; }
-.fm-btn-ghost:hover:not(:disabled) { color: #409eff; border-color: #a0cfff; background: #ecf5ff; }
-.fm-search-input { width: 260px; height: 30px; padding: 0 10px; border: 1px solid #dcdfe6; border-radius: 5px; font-size: 12px; outline: none; }
-.fd-selection-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #f2d6d2; border-radius: 12px; background: #fff8f7; }
-.fd-selection-count { font-size: 13px; font-weight: 700; color: #a24a43; }
-.fd-selection-tip { font-size: 12px; color: #8a97aa; }
-.fm-head, .fm-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) 120px 190px 90px; align-items: center; padding: 0 16px; }
-.fm-head { height: 36px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; font-size: 12px; font-weight: 600; color: #606266; }
+
+.fd-progress-bar {
+  margin: 0 14px 8px;
+}
+
+.fd-background-tip {
+  margin: 0 14px 8px;
+  padding: 8px 12px;
+  border: 1px dashed rgba(0, 113, 227, 0.22);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 11px;
+  color: #325f99;
+}
+
+.fm-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin: 0 14px 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--fd-apple-card-shadow);
+}
+
+.fm-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fd-type-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.fd-type-filter-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.fd-type-filter-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fd-apple-text-muted);
+  letter-spacing: -0.12px;
+}
+
+.fd-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 999px;
+  background: #fafafc;
+  color: var(--fd-apple-text);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: -0.12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.fd-type-chip:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(0, 113, 227, 0.22);
+  color: var(--fd-apple-blue);
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
+}
+
+.fd-type-chip.active {
+  background: var(--fd-apple-blue);
+  border-color: var(--fd-apple-blue);
+  color: #ffffff;
+  box-shadow: 0 10px 22px rgba(0, 113, 227, 0.2);
+}
+
+.fd-type-chip.partial {
+  border-color: rgba(0, 113, 227, 0.22);
+  background: rgba(0, 113, 227, 0.08);
+  color: var(--fd-apple-blue);
+}
+
+.fd-type-chip:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.fd-type-chip-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  color: currentColor;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.fd-type-chip-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(29, 29, 31, 0.08);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.fd-type-chip.active .fd-type-chip-count {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.fd-type-chip.partial .fd-type-chip-count {
+  background: rgba(0, 113, 227, 0.1);
+}
+
+.fm-btn {
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--fd-apple-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fd-apple-text);
+  letter-spacing: -0.12px;
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.fm-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(0, 113, 227, 0.18);
+  color: var(--fd-apple-blue);
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
+}
+
+.fm-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+  box-shadow: none;
+}
+
+.fm-btn-primary {
+  color: var(--fd-apple-blue);
+  border-color: rgba(0, 113, 227, 0.14);
+  background: var(--fd-apple-blue-soft);
+}
+
+.fm-btn-primary:hover:not(:disabled) {
+  color: #ffffff;
+  border-color: var(--fd-apple-blue);
+  background: var(--fd-apple-blue);
+}
+
+.fm-btn-danger {
+  color: var(--fd-apple-red);
+  border-color: rgba(217, 45, 32, 0.16);
+  background: var(--fd-apple-red-soft);
+}
+
+.fm-btn-danger:hover:not(:disabled) {
+  color: #ffffff;
+  border-color: var(--fd-apple-red);
+  background: var(--fd-apple-red);
+  box-shadow: 0 10px 20px rgba(217, 45, 32, 0.18);
+}
+
+.fm-btn-ghost:hover:not(:disabled) {
+  color: var(--fd-apple-blue);
+  border-color: rgba(0, 113, 227, 0.2);
+  background: rgba(0, 113, 227, 0.06);
+}
+
+.fm-search {
+  flex: 0 0 auto;
+}
+
+.fm-search-input {
+  width: 280px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 999px;
+  background: rgba(250, 250, 252, 0.96);
+  font-size: 11px;
+  color: var(--fd-apple-text);
+  outline: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+.fm-search-input:focus {
+  border-color: rgba(0, 113, 227, 0.3);
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+}
+
+.fm-search-input::placeholder {
+  color: var(--fd-apple-text-muted);
+}
+
+.fd-selection-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid rgba(217, 45, 32, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--fd-apple-card-shadow);
+}
+
+.fd-selection-count {
+  font-size: 12px;
+  font-weight: 700;
+  color: #b3473d;
+}
+
+.fd-selection-tip {
+  font-size: 11px;
+  color: var(--fd-apple-text-muted);
+}
+
+.fm-head,
+.fm-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 120px 190px 90px;
+  align-items: center;
+  padding: 0 16px;
+}
+
+.fm-head {
+  height: 36px;
+  margin: 0 14px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  background: rgba(255, 255, 255, 0.88);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fd-apple-text-soft);
+}
+
 .fd-sort-btn {
   display: inline-flex;
   align-items: center;
@@ -1502,37 +2148,215 @@ onBeforeUnmount(() => {
   color: inherit;
   font: inherit;
   cursor: pointer;
+  transition: color 0.16s ease;
 }
-.fd-sort-btn-end { margin-left: auto; }
-.fd-sort-btn.active { color: #1f5fa9; }
-.fd-sort-mark { font-size: 11px; color: #95a1b3; }
-.fd-sort-btn.active .fd-sort-mark { color: #1f5fa9; }
-.fd-head-basic, .fd-row-basic { grid-template-columns: 52px minmax(0, 1fr); }
-.fm-scroll { flex: 1; overflow: auto; contain: strict; }
-.fm-virtual-spacer { width: 100%; pointer-events: none; }
-.fm-row { min-height: 36px; border-bottom: 1px solid #ebeef5; font-size: 13px; contain: layout paint style; }
-.fm-row-dir { background: #fafbfc; cursor: pointer; }
-.fm-row-selected { background: #ecf5ff !important; }
-.fm-row-disabled { background: #fbfbfc; color: #a5afbc; }
-.fm-empty { display: flex; align-items: center; justify-content: center; height: 180px; color: #c0c4cc; font-size: 13px; }
-.fm-name-cell { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.fm-col-check { display: flex; align-items: center; justify-content: center; min-width: 0; transition: padding-left 0.16s ease; }
-.fm-arrow { width: 14px; display: inline-flex; align-items: center; justify-content: center; color: #909399; white-space: nowrap; transition: transform 0.16s; }
-.fm-arrow.open { transform: rotate(90deg); color: #409eff; }
-.fm-arrow-toggle { padding: 0; border: 0; background: transparent; cursor: pointer; }
-.fm-arrow-placeholder { width: 14px; flex: 0 0 14px; }
-.fm-file-icon { width: 22px; flex: 0 0 22px; display: inline-flex; align-items: center; justify-content: center; color: #409eff; }
-.fm-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fm-check { width: 14px; height: 14px; cursor: pointer; accent-color: #409eff; }
-.fd-name-block, .fd-meta-block { display: flex; flex-direction: column; min-width: 0; }
-.fd-subtext, .fd-rules { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 1.45; color: #8b96a8; }
-.fd-status { display: inline-flex; align-items: center; justify-content: center; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.2; }
-.fd-status.delete-root { border: 1px solid #ffd9b8; background: #fff2e8; color: #b86a12; }
-.fd-status.delete-covered { padding: 0; border: 0; background: transparent; color: #8d99ab; font-weight: 500; }
-.fd-status.delete-optional { border: 1px solid #d7e5fb; background: #f7fbff; color: #5b789f; }
+
+.fd-sort-btn:hover {
+  color: var(--fd-apple-blue);
+}
+
+.fd-sort-btn-end {
+  margin-left: auto;
+}
+
+.fd-sort-btn.active {
+  color: var(--fd-apple-blue);
+}
+
+.fd-sort-mark {
+  font-size: 11px;
+  color: rgba(29, 29, 31, 0.34);
+}
+
+.fd-sort-btn.active .fd-sort-mark {
+  color: var(--fd-apple-blue);
+}
+
+.fd-head-basic,
+.fd-row-basic {
+  grid-template-columns: 38px minmax(0, 1fr);
+}
+
+.fm-scroll {
+  flex: 1;
+  margin: 0 14px 0;
+  overflow: auto;
+  contain: strict;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  border-top: 0;
+  border-radius: 0 0 18px 18px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: var(--fd-apple-card-shadow);
+}
+
+.fm-virtual-spacer {
+  width: 100%;
+  pointer-events: none;
+}
+
+.fm-row {
+  min-height: 44px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  font-size: 13px;
+  color: var(--fd-apple-text);
+  contain: layout paint style;
+  transition: background-color 0.16s ease;
+}
+
+.fm-row:hover {
+  background: rgba(0, 113, 227, 0.04);
+}
+
+.fm-row-dir {
+  background: rgba(245, 245, 247, 0.92);
+  cursor: pointer;
+}
+
+.fm-row-selected {
+  background: rgba(0, 113, 227, 0.08) !important;
+}
+
+.fm-row-disabled {
+  background: rgba(250, 250, 252, 0.88);
+  color: rgba(29, 29, 31, 0.34);
+}
+
+.fm-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 220px;
+  color: var(--fd-apple-text-muted);
+  font-size: 13px;
+}
+
+.fm-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.fm-col-check {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  transition: padding-left 0.16s ease;
+}
+
+.fm-arrow {
+  width: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(29, 29, 31, 0.46);
+  white-space: nowrap;
+  transition: transform 0.16s ease, color 0.16s ease;
+}
+
+.fm-arrow.open {
+  transform: rotate(90deg);
+  color: var(--fd-apple-blue);
+}
+
+.fm-arrow-toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.fm-arrow-placeholder {
+  width: 12px;
+  flex: 0 0 12px;
+}
+
+.fm-file-icon {
+  width: 18px;
+  flex: 0 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fd-apple-blue);
+}
+
+.fm-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.fm-check {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: var(--fd-apple-blue);
+}
+
+.fd-name-block,
+.fd-meta-block {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fd-subtext,
+.fd-rules {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fd-apple-text-muted);
+}
+
+.fd-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.fd-status.delete-root {
+  border: 1px solid rgba(184, 106, 18, 0.14);
+  background: var(--fd-apple-orange-soft);
+  color: var(--fd-apple-orange);
+}
+
+.fd-status.delete-covered {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fd-apple-text-muted);
+  font-weight: 500;
+}
+
+.fd-status.delete-optional {
+  border: 1px solid rgba(0, 113, 227, 0.14);
+  background: rgba(0, 113, 227, 0.08);
+  color: #0f5fc5;
+}
 @media (max-width: 1280px) {
-  .filter-delete-summary, .fd-selection-bar { flex-direction: column; align-items: flex-start; }
-  .fm-toolbar { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .filter-delete-summary,
+  .fd-selection-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .fm-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
   .fm-search { width: 100%; }
   .fm-search-input { width: 100%; }
 }

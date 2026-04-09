@@ -1,12 +1,12 @@
 <template>
-  <div class="import-workbench-modal" v-loading="taskLoading">
+  <div class="import-workbench-modal" v-loading="workbenchLoading">
     <div class="import-workbench-head">
       <div>
         <div class="import-workbench-title">字幕补配工作台</div>
         <div class="import-workbench-desc">工作台会保留补配历史，不会因为完成、失败或临时关闭而自动清空。你可以随时回来继续处理或回看结果。</div>
       </div>
       <div class="import-workbench-actions">
-        <el-button size="small" :loading="taskLoading" @click="refreshTaskStatus(true, { inspect: true, forceInspect: true })">刷新状态</el-button>
+        <el-button size="small" :loading="manualRefreshing" @click="refreshTaskStatus(true, { inspect: true, forceInspect: true, showOverlay: false })">刷新状态</el-button>
         <el-button size="small" :disabled="!clearableTaskCount" :loading="queueClearing" @click="clearFinishedTasks">清空队列</el-button>
         <el-button size="small" @click="emit('hide-background')">隐藏到后台</el-button>
         <el-button size="small" @click="emit('close')">关闭工作台</el-button>
@@ -32,7 +32,7 @@
           <el-tag size="small" type="info">分页 {{ queuePage }} / {{ totalQueuePages }}</el-tag>
         </div>
 
-        <el-empty v-if="!linkedTasks.length && !taskLoading" description="当前没有字幕补配任务，打开工作台后新任务会继续留在这里。" />
+        <el-empty v-if="!linkedTasks.length && !workbenchLoading" description="当前没有字幕补配任务，打开工作台后新任务会继续留在这里。" />
 
         <div v-else class="import-task-list-body">
           <button
@@ -116,7 +116,7 @@
       </section>
 
       <section class="import-task-detail">
-        <el-empty v-if="!taskLoading && !linkedTasks.length" description="当前工作台没有可展示的字幕补配任务。" />
+        <el-empty v-if="!workbenchLoading && !linkedTasks.length" description="当前工作台没有可展示的字幕补配任务。" />
 
         <template v-else-if="activeTask">
           <el-card shadow="never" class="import-config-card">
@@ -403,6 +403,8 @@ function getSubtitleWorkbenchOptions() {
 
 const subtitleOptions = ref(getSubtitleWorkbenchOptions())
 const taskLoading = ref(false)
+const manualRefreshing = ref(false)
+const taskLoadedOnce = ref(false)
 const linkedTasks = ref([])
 const activeTask = ref(null)
 const queueState = loadJson(SUBTITLE_IMPORT_QUEUE_STATE_KEY, {})
@@ -462,6 +464,10 @@ const subtitleSubtitleFilterMode = ref('all')
 const TASK_STATUS_REFRESH_MS = 4000
 let taskStatusTimer = null
 let skipTaskDraftPersistence = false
+
+const workbenchLoading = computed(() => {
+  return taskLoading.value && !taskLoadedOnce.value
+})
 
 function loadTaskDraftMap() {
   const saved = loadJson(SUBTITLE_IMPORT_TASK_DRAFTS_KEY, {})
@@ -830,9 +836,15 @@ function buildCleanupSummary(result = {}) {
 }
 
 async function refreshTaskStatus(showMessage = false, options = {}) {
-  const { inspect = true, forceInspect = false } = options
+  const { inspect = true, forceInspect = false, showOverlay } = options
+  const shouldShowOverlay = typeof showOverlay === 'boolean'
+    ? showOverlay
+    : (!taskLoadedOnce.value && !taskLoading.value)
 
-  taskLoading.value = true
+  manualRefreshing.value = showMessage
+  if (shouldShowOverlay) {
+    taskLoading.value = true
+  }
   try {
     const data = await rjSubtitleApi.status()
     linkedTasks.value = sortLinkedTasks(
@@ -840,6 +852,7 @@ async function refreshTaskStatus(showMessage = false, options = {}) {
         .filter(task => isLinkedSubtitleWorkbenchTask(task))
         .map(task => normalizeRJSubtitleTaskPayload(task))
     )
+    taskLoadedOnce.value = true
 
     const found = ensureSelectedWorkbenchTask(linkedTasks.value)
     if (!found) {
@@ -863,7 +876,10 @@ async function refreshTaskStatus(showMessage = false, options = {}) {
   } catch (error) {
     ElMessage.error('获取字幕补配任务状态失败: ' + (error.response?.data?.detail || error.message))
   } finally {
-    taskLoading.value = false
+    manualRefreshing.value = false
+    if (shouldShowOverlay) {
+      taskLoading.value = false
+    }
   }
 }
 
@@ -2754,5 +2770,250 @@ const subtitleWorkbenchCtx = computed(() => ({
   .import-task-main {
     grid-column: 1;
   }
+}
+
+.import-workbench-modal {
+  --apple-bg: #f5f5f7;
+  --apple-surface: rgba(255, 255, 255, 0.94);
+  --apple-surface-soft: rgba(255, 255, 255, 0.82);
+  --apple-border: rgba(0, 0, 0, 0.06);
+  --apple-text: #1d1d1f;
+  --apple-text-soft: rgba(29, 29, 31, 0.72);
+  --apple-text-muted: rgba(29, 29, 31, 0.52);
+  --apple-blue: #0071e3;
+  --apple-blue-soft: rgba(0, 113, 227, 0.08);
+  --apple-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
+  padding: 18px;
+  gap: 14px;
+  background:
+    radial-gradient(circle at top left, rgba(0, 113, 227, 0.06), transparent 26%),
+    linear-gradient(180deg, #fafafc 0%, #f5f5f7 100%);
+}
+
+.import-workbench-head {
+  padding: 18px 20px;
+  border: 1px solid var(--apple-border);
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.84)),
+    var(--apple-bg);
+  box-shadow: var(--apple-shadow);
+}
+
+.import-workbench-title {
+  font-size: 28px;
+  line-height: 1.08;
+  letter-spacing: -0.36px;
+  color: var(--apple-text);
+}
+
+.import-workbench-desc,
+.import-toolbar-tip,
+.import-section-tip,
+.import-task-row-meta,
+.import-task-row-progress,
+.import-config-tip,
+.candidate-meta,
+.candidate-path,
+.import-task-placeholder-text {
+  color: var(--apple-text-soft);
+}
+
+.import-workbench-actions :deep(.el-button),
+.import-task-row-actions :deep(.el-button),
+.import-config-inline-actions :deep(.el-button),
+.import-filter-actions :deep(.el-button) {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.import-workbench-actions :deep(.el-button:hover),
+.import-task-row-actions :deep(.el-button:hover),
+.import-config-inline-actions :deep(.el-button:hover),
+.import-filter-actions :deep(.el-button:hover) {
+  transform: translateY(-1px);
+}
+
+.import-workbench-modal :deep(.el-button--default) {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--apple-text);
+}
+
+.import-workbench-modal :deep(.el-button--default:hover) {
+  border-color: rgba(0, 113, 227, 0.24);
+  background: #ffffff;
+  color: var(--apple-blue);
+}
+
+.import-workbench-modal :deep(.el-button--primary) {
+  border-color: transparent;
+  background: var(--apple-blue);
+  box-shadow: 0 10px 20px rgba(0, 113, 227, 0.18);
+}
+
+.import-workbench-modal :deep(.el-button--primary:hover) {
+  background: #0066cc;
+}
+
+.import-workbench-toolbar,
+.import-task-list-card,
+.import-task-detail,
+.import-config-card {
+  border: 1px solid var(--apple-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.88)),
+    var(--apple-bg);
+  box-shadow: var(--apple-shadow);
+}
+
+.import-workbench-toolbar {
+  padding: 10px 14px;
+  border-radius: 20px;
+}
+
+.toolbar-pill {
+  border-color: rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--apple-text-soft);
+}
+
+.toolbar-pill-primary {
+  border-color: rgba(0, 113, 227, 0.12);
+  background: rgba(0, 113, 227, 0.08);
+  color: var(--apple-blue);
+}
+
+.import-task-list-card,
+.import-task-detail {
+  border-radius: 24px;
+}
+
+.import-task-list-head,
+.import-config-card :deep(.el-card__header) {
+  border-bottom-color: rgba(0, 0, 0, 0.04);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.import-section-title,
+.import-config-head,
+.import-config-title,
+.import-task-row-title,
+.candidate-title,
+.import-task-placeholder-title {
+  color: var(--apple-text);
+}
+
+.import-task-row {
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.import-task-row:hover {
+  border-color: rgba(0, 113, 227, 0.18);
+  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.08);
+}
+
+.import-task-row.active {
+  border-color: rgba(0, 113, 227, 0.22);
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.1);
+}
+
+.import-task-row-rj,
+.import-chip,
+.import-chip-primary {
+  border-radius: 999px;
+}
+
+.import-task-row-rj,
+.import-chip-primary {
+  background: rgba(0, 113, 227, 0.08);
+  color: var(--apple-blue);
+}
+
+.task-status-pill {
+  border-color: rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.import-config-card {
+  border-radius: 24px;
+  position: sticky;
+  top: 8px;
+}
+
+.import-config-card :deep(.el-card__body) {
+  padding: 12px 14px 14px;
+}
+
+.import-config-row {
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.import-config-row:last-child {
+  border-bottom: 0;
+}
+
+.import-filter-editor,
+.candidate-item,
+.import-retarget-current,
+.import-cleanup-summary,
+.import-task-placeholder {
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+}
+
+.import-filter-editor {
+  padding: 10px;
+}
+
+.candidate-item {
+  padding: 12px 14px;
+}
+
+.candidate-item:hover {
+  border-color: rgba(0, 113, 227, 0.18);
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
+}
+
+.candidate-item :deep(.el-radio__input.is-checked .el-radio__inner) {
+  background: var(--apple-blue);
+  border-color: var(--apple-blue);
+}
+
+.import-workbench-modal :deep(.el-input__wrapper),
+.import-workbench-modal :deep(.el-select__wrapper) {
+  border-radius: 16px;
+  background: rgba(250, 250, 252, 0.94);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06) inset;
+}
+
+.import-workbench-modal :deep(.el-input__wrapper.is-focus),
+.import-workbench-modal :deep(.el-select__wrapper.is-focused) {
+  box-shadow: 0 0 0 1px rgba(0, 113, 227, 0.24) inset, 0 0 0 4px rgba(0, 113, 227, 0.08);
+}
+
+.import-workbench-modal :deep(.el-radio-button__inner) {
+  border-radius: 999px;
+}
+
+.import-workbench-modal :deep(.el-alert) {
+  border-radius: 18px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.import-task-main > :deep(.subtitle-inspector-workbench),
+.import-task-main > :deep(.el-card) {
+  border-radius: 24px;
+  overflow: hidden;
 }
 </style>

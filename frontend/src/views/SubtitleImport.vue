@@ -1,27 +1,62 @@
 <template>
   <div class="subtitle-import-page">
     <el-card shadow="never" class="hero-card">
-      <div class="hero-head">
-        <div>
+      <div class="hero-shell">
+        <div class="hero-main">
+          <div class="hero-eyebrow">Subtitle Import</div>
           <h1 class="page-title">字幕补配</h1>
           <div class="hero-desc">
-            正常解压检测到的“关联字幕补配”来源会先出现在这里作为预检单；手头如果只有字幕文件夹，也可以直接在这里补进库存并进入现有 RJ 字幕工作台。
+            自动检测到的压缩包来源会先进入预检单，手动拿到的字幕目录也可以在这里补进库存。确认目标原作后，直接进入现有 RJ 字幕工作台继续筛选、配对和应用。
+          </div>
+          <div class="hero-actions">
+            <el-button type="primary" @click="openImportWorkbench()">打开工作台</el-button>
+            <el-button :loading="pendingLoading" @click="loadPendingImports">刷新预检单</el-button>
           </div>
         </div>
-        <div class="hero-actions">
-          <el-button @click="openImportWorkbench()">打开工作台</el-button>
-          <el-button :loading="pendingLoading" @click="loadPendingImports">刷新预检单</el-button>
+        <div class="hero-side">
+          <div class="hero-side-title">当前概览</div>
+          <div class="hero-metrics">
+            <div class="hero-metric-card">
+              <span class="hero-metric-label">待处理预检单</span>
+              <strong class="hero-metric-value">{{ pendingItems.length }}</strong>
+              <span class="hero-metric-note">自动检测来源</span>
+            </div>
+            <div class="hero-metric-card">
+              <span class="hero-metric-label">后台工作台</span>
+              <strong class="hero-metric-value">{{ workbenchBackgroundSummary.total || 0 }}</strong>
+              <span class="hero-metric-note">累计任务</span>
+            </div>
+            <div class="hero-metric-card">
+              <span class="hero-metric-label">进行中</span>
+              <strong class="hero-metric-value">{{ workbenchBackgroundSummary.processing || 0 }}</strong>
+              <span class="hero-metric-note">补配任务</span>
+            </div>
+            <div class="hero-metric-card">
+              <span class="hero-metric-label">手动目录预检</span>
+              <strong class="hero-metric-value">{{ folderPreview?.candidate_count ?? 0 }}</strong>
+              <span class="hero-metric-note">目标候选</span>
+            </div>
+          </div>
         </div>
       </div>
     </el-card>
 
     <el-tabs v-show="!workbenchDialogVisible" v-model="activeTab" class="page-tabs">
       <el-tab-pane label="压缩包补配" name="archive">
+        <div class="tab-intro">
+          <div>
+            <div class="tab-intro-title">自动检测到的字幕来源</div>
+            <div class="tab-intro-desc">左侧管理待处理预检单，右侧查看命中结果并选择目标目录。确认后即可一键送入补配工作台。</div>
+          </div>
+        </div>
         <div class="top-panel-grid archive-panel-grid">
           <el-card shadow="never" class="panel-card source-panel-card">
               <template #header>
                 <div class="panel-header">
-                  <span>自动检测来源</span>
+                  <div>
+                    <div class="panel-title">自动检测来源</div>
+                    <div class="panel-subtitle">来自正常解压主链路</div>
+                  </div>
                   <el-tag size="small" type="info">来自正常解压主链路</el-tag>
                 </div>
               </template>
@@ -81,7 +116,10 @@
             <el-card shadow="never" class="panel-card preview-panel-card">
               <template #header>
                 <div class="panel-header">
-                  <span>预检结果</span>
+                  <div>
+                    <div class="panel-title">预检结果</div>
+                    <div class="panel-subtitle">查看来源、候选字幕和目标目录命中情况</div>
+                  </div>
                   <el-tag v-if="activePendingItem" size="small" :type="activePendingItem.can_execute ? 'success' : 'warning'">
                     {{ activePendingItem.can_execute ? '可以补配' : '当前不可执行' }}
                   </el-tag>
@@ -189,11 +227,20 @@
       </el-tab-pane>
 
       <el-tab-pane label="字幕文件夹补配" name="folder">
+        <div class="tab-intro">
+          <div>
+            <div class="tab-intro-title">手动补进字幕目录</div>
+            <div class="tab-intro-desc">适合单独拿到字幕文件夹的场景。先输入路径做预检，再选择目标原作并送入工作台继续处理。</div>
+          </div>
+        </div>
         <div class="top-panel-grid folder-panel-grid">
           <el-card shadow="never" class="panel-card source-panel-card">
               <template #header>
                 <div class="panel-header">
-                  <span>手动字幕来源</span>
+                  <div>
+                    <div class="panel-title">手动字幕来源</div>
+                    <div class="panel-subtitle">保留手动补配入口</div>
+                  </div>
                   <el-tag size="small" type="warning">保留手动补配入口</el-tag>
                 </div>
               </template>
@@ -231,7 +278,10 @@
             <el-card shadow="never" class="panel-card preview-panel-card">
               <template #header>
                 <div class="panel-header">
-                  <span>文件夹预检结果</span>
+                  <div>
+                    <div class="panel-title">文件夹预检结果</div>
+                    <div class="panel-subtitle">查看来源字幕、目标目录候选和可执行状态</div>
+                  </div>
                   <el-tag v-if="folderPreview" size="small" :type="canExecuteFolderImport ? 'success' : 'warning'">
                     {{ canExecuteFolderImport ? '可以补配' : '当前不可执行' }}
                   </el-tag>
@@ -1510,5 +1560,445 @@ function formatSize(size) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.subtitle-import-page {
+  --apple-bg: #f5f5f7;
+  --apple-surface: rgba(255, 255, 255, 0.96);
+  --apple-surface-soft: rgba(255, 255, 255, 0.82);
+  --apple-border: rgba(0, 0, 0, 0.06);
+  --apple-text: #1d1d1f;
+  --apple-text-soft: rgba(29, 29, 31, 0.72);
+  --apple-text-muted: rgba(29, 29, 31, 0.52);
+  --apple-blue: #0071e3;
+  --apple-blue-soft: rgba(0, 113, 227, 0.08);
+  --apple-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
+  background:
+    radial-gradient(circle at top left, rgba(0, 113, 227, 0.06), transparent 26%),
+    linear-gradient(180deg, #fafafc 0%, #f5f5f7 100%);
+}
+
+.hero-card,
+.panel-card {
+  border: 1px solid var(--apple-border);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.9)),
+    var(--apple-bg);
+  box-shadow: var(--apple-shadow);
+}
+
+.hero-card :deep(.el-card__body) {
+  padding: 20px 22px;
+}
+
+.panel-card :deep(.el-card__header) {
+  padding: 14px 16px 12px;
+  border-bottom-color: rgba(0, 0, 0, 0.04);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.panel-card :deep(.el-card__body) {
+  padding: 14px 16px 16px;
+}
+
+.page-tabs :deep(.el-tabs__nav) {
+  gap: 8px;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.page-tabs :deep(.el-tabs__item) {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
+  color: var(--apple-text-soft);
+  font-weight: 600;
+}
+
+.page-tabs :deep(.el-tabs__item.is-active) {
+  color: #ffffff;
+  background: var(--apple-blue);
+  box-shadow: 0 10px 20px rgba(0, 113, 227, 0.18);
+}
+
+.page-tabs :deep(.el-tabs__active-bar) {
+  display: none;
+}
+
+.page-title {
+  font-size: 32px;
+  line-height: 1.08;
+  letter-spacing: -0.4px;
+  color: var(--apple-text);
+}
+
+.hero-desc {
+  margin-top: 8px;
+  max-width: 760px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--apple-text-soft);
+}
+
+.hero-actions :deep(.el-button),
+.pending-toolbar :deep(.el-button),
+.action-row :deep(.el-button),
+.alert-actions :deep(.el-button) {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.12px;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.hero-actions :deep(.el-button:hover),
+.pending-toolbar :deep(.el-button:hover),
+.action-row :deep(.el-button:hover),
+.alert-actions :deep(.el-button:hover) {
+  transform: translateY(-1px);
+}
+
+.subtitle-import-page :deep(.el-button--default) {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--apple-text);
+}
+
+.subtitle-import-page :deep(.el-button--default:hover) {
+  border-color: rgba(0, 113, 227, 0.24);
+  color: var(--apple-blue);
+  background: #ffffff;
+}
+
+.subtitle-import-page :deep(.el-button--primary) {
+  border-color: transparent;
+  background: var(--apple-blue);
+  box-shadow: 0 10px 20px rgba(0, 113, 227, 0.18);
+}
+
+.subtitle-import-page :deep(.el-button--primary:hover) {
+  background: #0066cc;
+}
+
+.subtitle-import-page :deep(.el-button--danger) {
+  box-shadow: none;
+}
+
+.panel-header,
+.section-head {
+  align-items: center;
+}
+
+.pending-item,
+.candidate-item,
+.block-box,
+.scene-tip-card {
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.pending-item:hover,
+.candidate-item:hover {
+  border-color: rgba(0, 113, 227, 0.18);
+  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.08);
+}
+
+.pending-item.active {
+  border-color: rgba(0, 113, 227, 0.24);
+  background: linear-gradient(180deg, rgba(0, 113, 227, 0.08), rgba(255, 255, 255, 0.96));
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.1);
+}
+
+.pending-item.active::before {
+  left: 8px;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  background: var(--apple-blue);
+}
+
+.pending-item-title,
+.candidate-title,
+.section-title,
+.scene-tip-title {
+  color: var(--apple-text);
+}
+
+.pending-item-meta,
+.pending-item-path,
+.candidate-meta,
+.candidate-path,
+.section-tip,
+.scene-tip-text {
+  color: var(--apple-text-soft);
+}
+
+.entry-chip,
+.rj-code-value {
+  background: rgba(0, 113, 227, 0.08);
+  color: var(--apple-blue);
+  border: 1px solid rgba(0, 113, 227, 0.1);
+}
+
+.detail-shell :deep(.el-alert) {
+  border-radius: 18px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.detail-shell :deep(.el-descriptions) {
+  overflow: hidden;
+  border-radius: 18px;
+}
+
+.detail-shell :deep(.el-descriptions__table) {
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.detail-shell :deep(.el-descriptions__label),
+.detail-shell :deep(.el-descriptions__content) {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(0, 0, 0, 0.05);
+}
+
+.manual-source-form :deep(.el-input__wrapper),
+.candidate-item :deep(.el-radio__label) {
+  font-size: 13px;
+}
+
+.manual-source-form :deep(.el-input__wrapper) {
+  border-radius: 16px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06) inset;
+  background: rgba(250, 250, 252, 0.94);
+}
+
+.manual-source-form :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px rgba(0, 113, 227, 0.24) inset, 0 0 0 4px rgba(0, 113, 227, 0.08);
+}
+
+.candidate-item :deep(.el-radio__input.is-checked .el-radio__inner) {
+  background: var(--apple-blue);
+  border-color: var(--apple-blue);
+}
+
+.subtitle-import-page :deep(.subtitle-import-workbench-dialog .el-dialog) {
+  background: linear-gradient(180deg, #fafafc 0%, #f5f5f7 100%);
+  box-shadow: 0 32px 90px rgba(15, 23, 42, 0.24);
+}
+
+.workbench-background-card {
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.88)),
+    var(--apple-bg);
+  box-shadow: 0 22px 50px rgba(15, 23, 42, 0.16);
+}
+
+.workbench-background-title {
+  color: var(--apple-text);
+}
+
+.workbench-background-meta,
+.workbench-background-active {
+  color: var(--apple-text-soft);
+}
+
+.hero-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.92fr);
+  gap: 22px;
+  align-items: stretch;
+}
+
+.hero-main {
+  display: grid;
+  align-content: center;
+  gap: 12px;
+  min-height: 240px;
+}
+
+.hero-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--apple-blue);
+}
+
+.hero-side {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(250, 250, 252, 0.94));
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.hero-side-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--apple-text);
+}
+
+.hero-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.hero-metric-card {
+  display: grid;
+  gap: 4px;
+  padding: 14px 14px 12px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+}
+
+.hero-metric-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--apple-text-muted);
+}
+
+.hero-metric-value {
+  font-size: 28px;
+  line-height: 1.05;
+  letter-spacing: -0.3px;
+  color: var(--apple-text);
+}
+
+.hero-metric-note {
+  font-size: 11px;
+  color: var(--apple-text-soft);
+}
+
+.tab-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 2px 14px;
+}
+
+.tab-intro-title {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.22px;
+  color: var(--apple-text);
+}
+
+.tab-intro-desc {
+  margin-top: 6px;
+  max-width: 760px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--apple-text-soft);
+}
+
+.top-panel-grid {
+  align-items: stretch;
+}
+
+.archive-panel-grid {
+  grid-template-columns: minmax(320px, 0.82fr) minmax(520px, 1.48fr);
+}
+
+.folder-panel-grid {
+  grid-template-columns: minmax(360px, 0.88fr) minmax(520px, 1.32fr);
+}
+
+.source-panel-card,
+.preview-panel-card {
+  min-height: 100%;
+}
+
+.panel-header {
+  align-items: center;
+}
+
+.panel-title {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.18px;
+  color: var(--apple-text);
+}
+
+.panel-subtitle {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--apple-text-muted);
+}
+
+.source-panel-card :deep(.el-card__body),
+.preview-panel-card :deep(.el-card__body) {
+  min-height: 420px;
+}
+
+.pending-list {
+  max-height: 540px;
+}
+
+.detail-shell {
+  gap: 12px;
+}
+
+.block-box {
+  padding: 14px 16px;
+}
+
+.candidate-list {
+  gap: 10px;
+}
+
+.candidate-item,
+.pending-item {
+  padding: 12px 14px;
+}
+
+@media (max-width: 1120px) {
+  .hero-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-main {
+    min-height: auto;
+  }
+
+  .hero-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .archive-panel-grid,
+  .folder-panel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .source-panel-card :deep(.el-card__body),
+  .preview-panel-card :deep(.el-card__body) {
+    min-height: auto;
+  }
+
+  .pending-list {
+    max-height: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .hero-metrics {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="library">
             <h1 class="page-title">{{ labels.pageTitle }}</h1>
 
@@ -514,14 +514,26 @@
                             </span>
                           </div>
                           <div v-if="item.queue_message" class="subtitle-selection-note">{{ item.queue_message }}</div>
-                          <div v-if="item.queue_state === 'existing_task' || canInspectSubtitleSelectionFolder(item)" class="subtitle-selection-actions">
+                          <div v-if="item.queue_state === 'existing_task' || canInspectSubtitleSelectionFolder(item) || canRetryCreateSubtitleTaskForSelection(item)" class="subtitle-selection-actions">
                             <el-button
                               size="small"
                               text
                               type="primary"
+                              v-if="item.queue_state === 'existing_task' || canInspectSubtitleSelectionFolder(item)"
                               @click.stop="focusSubtitleSelectionItem(item)"
                             >
                               {{ item.queue_state === 'existing_task' ? '打开现有任务' : '检查字幕树' }}
+                            </el-button>
+                            <el-button
+                              v-if="canRetryCreateSubtitleTaskForSelection(item)"
+                              size="small"
+                              text
+                              type="danger"
+                              :loading="subtitleForceQueueKey === buildSubtitleSelectionKey(item)"
+                              :disabled="Boolean(subtitleForceQueueKey)"
+                              @click.stop="forceCreateSubtitleTaskForSelection(item)"
+                            >
+                              重试加入
                             </el-button>
                             <el-button
                               v-if="canForceCreateSubtitleTaskForSelection(item)"
@@ -656,7 +668,7 @@
                         size="small"
                         plain
                         :loading="subtitleScanRetryingPath === buildSubtitleScanTargetResultKey(item)"
-                        :disabled="Boolean(subtitleScanRetryingPath)"
+                        :disabled="Boolean(subtitleScanRetryingPath) && subtitleScanRetryingPath !== buildSubtitleScanTargetResultKey(item)"
                         @click="rescanSubtitleSelectionTarget(item)"
                       >
                         重新扫描此项
@@ -701,7 +713,7 @@
                         size="small"
                         plain
                         :loading="subtitleScanRetryingPath === buildSubtitleScanTargetResultKey(item)"
-                        :disabled="Boolean(subtitleScanRetryingPath)"
+                        :disabled="Boolean(subtitleScanRetryingPath) && subtitleScanRetryingPath !== buildSubtitleScanTargetResultKey(item)"
                         @click="rescanSubtitleSelectionTarget(item)"
                       >
                         重新扫描此项
@@ -1584,7 +1596,50 @@ function matchesSubtitleTaskManualFilter (task, filter = subtitleTaskManualFilte
   if (filter === 'all') return true
   if (filter === 'awaiting_manual_match') return Boolean(task?.awaiting_manual_match)
   if (filter === 'manual_match_completed') return Boolean(task?.manual_match_completed)
+  if (filter === 'processing') return task?.status === 'processing'
+  if (filter === 'pending') return task?.status === 'pending'
+  if (filter === 'failed') return task?.status === 'failed' || isRJSubtitleTaskCancelled(task)
   return true
+}
+
+function getSubtitleTaskFilterResultCount(taskFilter = subtitleTaskFilter.value, manualFilter = subtitleTaskManualFilter.value) {
+  return subtitleTasks.value.filter(task => (
+    matchesSubtitleTaskFilter(task, taskFilter)
+    && matchesSubtitleTaskManualFilter(task, manualFilter)
+  )).length
+}
+
+function normalizeSubtitleTaskFilterSelection(nextTaskFilter, nextManualFilter) {
+  const taskFilter = nextTaskFilter || 'all'
+  const manualFilter = nextManualFilter || 'all'
+  if (!subtitleTasks.value.length) {
+    return {
+      taskFilter: 'all',
+      manualFilter: 'all'
+    }
+  }
+  if (getSubtitleTaskFilterResultCount(taskFilter, manualFilter) > 0) {
+    return {
+      taskFilter,
+      manualFilter
+    }
+  }
+  if (manualFilter !== 'all' && getSubtitleTaskFilterResultCount(taskFilter, 'all') > 0) {
+    return {
+      taskFilter,
+      manualFilter: 'all'
+    }
+  }
+  if (taskFilter !== 'all' && getSubtitleTaskFilterResultCount('all', manualFilter) > 0) {
+    return {
+      taskFilter: 'all',
+      manualFilter
+    }
+  }
+  return {
+    taskFilter: 'all',
+    manualFilter: 'all'
+  }
 }
 
 const visibleSubtitleTasks = computed(() => subtitleTasks.value.filter(task => matchesSubtitleTaskFilter(task) && matchesSubtitleTaskManualFilter(task)))
@@ -1605,9 +1660,12 @@ const subtitleTaskOverview = computed(() => ([
 ]).filter(item => item.key === 'all' || item.value > 0))
 const subtitleTaskManualOverview = computed(() => ([
   { key: 'all', label: '全部', value: subtitleTasks.value.length },
-  { key: 'awaiting_manual_match', label: '筛选并匹配', value: subtitleTasks.value.filter(task => task.awaiting_manual_match).length },
-  { key: 'manual_match_completed', label: '已匹配完成', value: subtitleTasks.value.filter(task => task.manual_match_completed).length }
-]).filter(item => item.key === 'all' || item.value > 0))
+  { key: 'awaiting_manual_match', label: '待处理', value: subtitleTasks.value.filter(task => task.awaiting_manual_match).length },
+  { key: 'processing', label: '执行中', value: subtitleTasks.value.filter(task => task.status === 'processing').length },
+  { key: 'pending', label: '等待中', value: subtitleTasks.value.filter(task => task.status === 'pending').length },
+  { key: 'manual_match_completed', label: '已匹配完成', value: subtitleTasks.value.filter(task => task.manual_match_completed).length },
+  { key: 'failed', label: '失败', value: subtitleTasks.value.filter(task => task.status === 'failed' || isRJSubtitleTaskCancelled(task)).length }
+]))
 const subtitleDialogSessionActive = computed(() => subtitleDialogVisible.value || subtitleDialogBackgroundActive.value)
 const showSubtitleBackgroundCard = computed(() => subtitleDialogBackgroundActive.value && !subtitleDialogVisible.value)
 const subtitleBackgroundActiveTask = computed(() => (
@@ -1875,6 +1933,8 @@ const isLinkedSubtitleImportWorkbench = computed(() => isLinkedSubtitleImportSou
 const subtitleManualApplyLabel = computed(() => isLinkedSubtitleImportWorkbench.value ? '重命名并导入' : '一键应用同名')
 function matchesSubtitleExecutableFilter (item, filter = subtitleSelectionFilter.value) {
   if (filter === 'all') return true
+  if (filter === 'ready') return !item?.queue_state || ['ready', 'checking_subtitle'].includes(item?.queue_state)
+  if (filter === 'checking_subtitle') return item?.queue_state === 'checking_subtitle'
   if (filter === 'queued') return item?.queue_state === 'queued'
   if (filter === 'creating') return item?.queue_state === 'creating'
   if (filter === 'skipped_existing') return item?.queue_state === 'skipped_existing'
@@ -1905,6 +1965,8 @@ const subtitleSelectionDisplayItems = computed(() => subtitleDialogSelection.val
 const subtitleExecutableSelectionItems = computed(() => subtitleDialogSelection.value.filter(item => !String(item?.queue_state || '').startsWith('skipped_')))
 const subtitleSelectionFilterOptions = computed(() => ([
   { key: 'all', label: '全部', value: subtitleExecutableSelectionItems.value.length },
+  { key: 'ready', label: '待处理', value: subtitleExecutableSelectionItems.value.filter(item => !item?.queue_state || item?.queue_state === 'ready' || item?.queue_state === 'checking_subtitle').length },
+  { key: 'checking_subtitle', label: '检测中', value: subtitleExecutableSelectionItems.value.filter(item => item?.queue_state === 'checking_subtitle').length },
   { key: 'queued', label: '已入任务', value: subtitleExecutableSelectionItems.value.filter(item => item?.queue_state === 'queued').length },
   { key: 'creating', label: '加入中', value: subtitleExecutableSelectionItems.value.filter(item => item?.queue_state === 'creating').length },
   { key: 'existing_task', label: '任务已存在', value: subtitleExecutableSelectionItems.value.filter(item => item?.queue_state === 'existing_task').length },
@@ -3216,7 +3278,7 @@ function getSubtitleSelectionQueueClass (item) {
 }
 
 function canRetrySubtitleScanResult (item) {
-  return Boolean(item?.path) && ['no_audio', 'no_match', 'failed'].includes(item?.status)
+  return Boolean(item?.path) && ['no_audio', 'no_match', 'failed', 'error'].includes(String(item?.status || ''))
 }
 
 function canInspectSubtitleSelectionFolder(item) {
@@ -3228,6 +3290,10 @@ function canInspectSubtitleSelectionFolder(item) {
 
 function canForceCreateSubtitleTaskForSelection(item) {
   return canInspectSubtitleSelectionFolder(item)
+}
+
+function canRetryCreateSubtitleTaskForSelection(item) {
+  return Boolean(item?.folder_path) && String(item?.queue_state || '') === 'create_failed'
 }
 
 async function ensureRJSubtitleAvailabilityForItem (item) {
@@ -3284,30 +3350,6 @@ async function ensureRJSubtitleExistingStateForItem (item) {
     existingSubtitleCount,
     subtitleDir: String(data?.subtitle_dir || ''),
     message: existingSubtitleCount > 0 ? `现有字幕 ${existingSubtitleCount} 个` : ''
-  }
-}
-
-async function ensureRJSubtitleKikoeruStateForItem (item) {
-  const rjcode = String(item?.rjcode || '').trim().toUpperCase()
-  if (!rjcode) {
-    return {
-      hasExistingSubtitles: false,
-      matchedRjcode: '',
-      subtitleFileCount: 0,
-      message: '未识别到 RJ 号'
-    }
-  }
-
-  const data = await rjSubtitleApi.checkKikoeruSubtitleState(rjcode)
-  const subtitleFileCount = Number(data?.subtitle_file_count || 0)
-  const matchedRjcode = String(data?.matched_rjcode || rjcode).trim().toUpperCase()
-  return {
-    hasExistingSubtitles: Boolean(data?.has_existing_subtitles),
-    matchedRjcode,
-    subtitleFileCount,
-    message: Boolean(data?.has_existing_subtitles)
-      ? `Kikoeru 已有字幕（${matchedRjcode}${subtitleFileCount > 0 ? ` / ${subtitleFileCount} 个` : ''}）`
-      : ''
   }
 }
 
@@ -3416,24 +3458,6 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
       queue_message: '任务已存在'
     })
     return
-  }
-
-  if (subtitleOptions.value.skipIfExistingSubtitles) {
-    try {
-      const existingState = await ensureRJSubtitleKikoeruStateForItem(item)
-      if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
-      if (existingState.hasExistingSubtitles) {
-        incrementSubtitleScanSession('existingSubtitles')
-        incrementSubtitleScanTargetCounter(item, 'skippedExisting', 1)
-        upsertSubtitleSelectionEntry(item, {
-          queue_state: 'skipped_kikoeru_existing',
-          queue_message: existingState.message ? `${existingState.message}，未加入抓取任务` : 'Kikoeru 已有字幕，未加入抓取任务'
-        })
-        return
-      }
-    } catch (error) {
-      console.error('检查 Kikoeru 现有字幕失败，回退后端判断:', item?.rjcode, error)
-    }
   }
 
   upsertSubtitleSelectionEntry(item, {
@@ -3552,7 +3576,7 @@ function hideSubtitleTaskPanelToBackground () {
 }
 
 function handleSubtitleDialogBeforeClose () {
-  hideSubtitleTaskPanelToBackground()
+  closeSubtitleTaskPanel()
 }
 
 function closeSubtitleTaskPanel () {
@@ -3785,44 +3809,7 @@ async function submitRJSubtitleTasks (items, options = {}) {
     : typeof skipIfExistingSubtitlesOverride === 'boolean'
       ? skipIfExistingSubtitlesOverride
       : subtitleOptions.value.skipIfExistingSubtitles
-  const localSkippedItems = []
-  const executableItems = []
-
-  if (effectiveSkipIfExistingSubtitles) {
-    for (const item of items) {
-      try {
-        const existingState = await ensureRJSubtitleKikoeruStateForItem(item)
-        if (existingState.hasExistingSubtitles) {
-          const queueMessage = existingState.message ? `${existingState.message}，未加入抓取任务` : 'Kikoeru 已有字幕，未加入抓取任务'
-          localSkippedItems.push({
-            ...item,
-            queue_state: 'skipped_kikoeru_existing',
-            queue_message: queueMessage
-          })
-          upsertSubtitleSelectionEntry(item, {
-            queue_state: 'skipped_kikoeru_existing',
-            queue_message: queueMessage
-          })
-          continue
-        }
-      } catch (error) {
-        console.error('提交前检查 Kikoeru 现有字幕失败，回退后端判断:', item?.rjcode, error)
-      }
-      executableItems.push(item)
-    }
-  } else {
-    executableItems.push(...items)
-  }
-
-  if (!executableItems.length) {
-    const data = {
-      tasks: [],
-      skipped_items: localSkippedItems,
-      message: localSkippedItems[0]?.queue_message || 'Kikoeru 已有字幕，未加入抓取任务'
-    }
-    if (!silent) ElMessage.info(data.message)
-    return data
-  }
+  const executableItems = [...items]
 
   subtitleSubmitting.value = true
   try {
@@ -3835,9 +3822,6 @@ async function submitRJSubtitleTasks (items, options = {}) {
       useFilterRules: subtitleOptions.value.useFilterRules,
       subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules)
     })
-    if (localSkippedItems.length) {
-      data.skipped_items = [...localSkippedItems, ...(Array.isArray(data.skipped_items) ? data.skipped_items : [])]
-    }
     if (refresh) await refreshRJSubtitleStatus(false, { silent: true })
     const firstCreatedTaskId = data.tasks?.[0]?.task_id
     if (firstCreatedTaskId) {
@@ -4015,12 +3999,17 @@ function getRJSubtitleTaskBaseStatusType (taskOrStatus) {
 }
 
 function setSubtitleTaskFilter (filter) {
-  subtitleTaskFilter.value = filter || 'all'
+  const normalized = normalizeSubtitleTaskFilterSelection(filter || 'all', subtitleTaskManualFilter.value)
+  subtitleTaskFilter.value = normalized.taskFilter
+  subtitleTaskManualFilter.value = normalized.manualFilter
   syncSubtitleTaskListState()
 }
 
 function setSubtitleTaskManualFilter (filter) {
-  subtitleTaskManualFilter.value = filter || 'all'
+  const normalized = normalizeSubtitleTaskFilterSelection(subtitleTaskFilter.value, filter || 'all')
+  subtitleTaskFilter.value = normalized.taskFilter
+  subtitleTaskManualFilter.value = normalized.manualFilter
+  syncSubtitleTaskListState()
 }
 
 function getRJSubtitleTaskStatusClass (taskOrStatus) {
@@ -5083,17 +5072,6 @@ async function forceCreateSubtitleTaskForSelection (item) {
   resetSubtitleScanRunIndicators()
   incrementSubtitleScanSession('foundDirectories')
   try {
-    const existingState = await ensureRJSubtitleKikoeruStateForItem(item)
-    if (existingState.hasExistingSubtitles) {
-      incrementSubtitleScanSession('existingSubtitles')
-      upsertSubtitleSelectionEntry(item, {
-        queue_state: 'skipped_kikoeru_existing',
-        queue_message: existingState.message ? `${existingState.message}，未加入抓取任务` : 'Kikoeru 已有字幕，未加入抓取任务'
-      })
-      ElMessage.info(existingState.message ? `${existingState.message}，已跳过` : 'Kikoeru 已有字幕，已跳过')
-      return
-    }
-
     upsertSubtitleSelectionEntry(item, {
       queue_state: 'checking_subtitle',
       queue_message: '正在检测远程字幕'
@@ -5118,6 +5096,38 @@ async function forceCreateSubtitleTaskForSelection (item) {
       refresh: true,
       skipIfExistingSubtitlesOverride: true
     })
+    const skippedItem = Array.isArray(data?.skipped_items)
+      ? data.skipped_items.find(entry => buildSubtitleSelectionKey(entry) === buildSubtitleSelectionKey(item))
+      : null
+    if (skippedItem?.queue_state === 'skipped_kikoeru_existing') {
+      incrementSubtitleScanSession('existingSubtitles')
+      upsertSubtitleSelectionEntry(item, {
+        queue_state: 'skipped_kikoeru_existing',
+        queue_message: skippedItem.queue_message || 'Kikoeru 已有字幕，未加入抓取任务'
+      })
+      ElMessage.info(skippedItem.queue_message || 'Kikoeru 已有字幕，已跳过')
+      return
+    }
+    if (skippedItem?.queue_state === 'existing_task') {
+      incrementSubtitleScanSession('existingTasks')
+      upsertSubtitleSelectionEntry(item, {
+        task_id: skippedItem.task_id || '',
+        queue_state: 'existing_task',
+        queue_message: skippedItem.queue_message || '任务已存在'
+      })
+      if (skippedItem.task_id) subtitleActiveTaskId.value = skippedItem.task_id
+      ElMessage.info(skippedItem.queue_message || '任务已存在')
+      return
+    }
+    if (skippedItem?.queue_state === 'skipped_no_subtitle') {
+      incrementSubtitleScanSession('noSubtitleTargets')
+      upsertSubtitleSelectionEntry(item, {
+        queue_state: 'skipped_no_subtitle',
+        queue_message: skippedItem.queue_message || '远程无字幕'
+      })
+      ElMessage.warning(skippedItem.queue_message || '远程无字幕，无法创建任务')
+      return
+    }
     const createdTask = data?.tasks?.[0] || null
     if (createdTask?.task_id) {
       incrementSubtitleScanSession('createdTasks')
@@ -6685,6 +6695,8 @@ function statsStatusTextDisplay (stats) {
   --el-button-padding-vertical: 0 !important;
   font-size: 12px;
   font-weight: 500;
+  cursor: pointer;
+  transition: background .18s ease, color .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease, opacity .18s ease;
 }
 :deep(.toolbar-action-btn.el-button > span),
 :deep(.toolbar-tight-btn.el-button > span) {
@@ -6741,6 +6753,17 @@ function statsStatusTextDisplay (stats) {
 :deep(.toolbar-refresh-btn.el-button.is-refreshing .toolbar-refresh-icon) {
   color: #0b63ce;
   animation: library-refresh-spin .95s cubic-bezier(.55, .08, .38, .96) infinite;
+}
+
+:deep(.toolbar-action-btn.el-button--primary:hover) {
+  background: #0077ed;
+  border-color: #0077ed;
+  color: #fff;
+}
+
+:deep(.toolbar-action-btn.el-button--primary:active) {
+  background: #0068d1;
+  border-color: #0068d1;
 }
 
 :deep(.toolbar-action-btn.el-button--primary) {
@@ -6867,6 +6890,20 @@ function statsStatusTextDisplay (stats) {
     inset 0 0 0 1px var(--apple-btn-border-hover),
     var(--apple-btn-shadow);
   transform: translateY(-1px);
+}
+
+:deep(.toolbar-utility-btn.el-button:active),
+:deep(.batch-action-btn.el-button:active) {
+  transform: translateY(0);
+  box-shadow:
+    inset 0 0 0 1px var(--apple-btn-border-hover),
+    0 1px 2px rgba(0, 0, 0, .04);
+}
+
+:deep(.toolbar-utility-btn.el-button:focus-visible),
+:deep(.batch-action-btn.el-button:focus-visible) {
+  outline: 2px solid #0071e3;
+  outline-offset: 2px;
 }
 
 :deep(.toolbar-utility-btn.el-button > span),
@@ -7196,18 +7233,70 @@ function statsStatusTextDisplay (stats) {
 .subtitle-floating-chip { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 999px; border: 1px solid #d8e5f8; background: #f5f9ff; font-size: 11px; font-weight: 600; color: #4f6787; }
 .subtitle-floating-text { font-size: 12px; line-height: 1.5; color: #51657f; word-break: break-all; }
 .subtitle-floating-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.subtitle-workbench { display: grid; gap: 14px; }
-.subtitle-hero { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 18px 20px; border: 1px solid #e4ecf7; border-radius: 18px; background: linear-gradient(135deg, #f8fbff 0%, #f3f8ff 100%); }
-.subtitle-panel-title { font-size: 20px; font-weight: 700; color: #1f2e43; }
-.subtitle-panel-desc { margin-top: 6px; color: #62748a; line-height: 1.7; max-width: 820px; }
-.subtitle-hero-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.subtitle-hero-chip, .subtitle-mini-chip, .subtitle-inline-chip { display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1; }
-.subtitle-hero-chip { background: #ffffff; color: #33527e; border: 1px solid #d8e4f5; }
+.subtitle-workbench {
+  --apple-bg: #f5f5f7;
+  --apple-surface: #ffffff;
+  --apple-surface-soft: #fafafc;
+  --apple-text: #1d1d1f;
+  --apple-text-soft: rgba(29, 29, 31, .78);
+  --apple-text-faint: rgba(29, 29, 31, .5);
+  --apple-blue: #0071e3;
+  --apple-blue-hover: #0077ed;
+  --apple-blue-soft: rgba(0, 113, 227, .08);
+  --apple-border: rgba(29, 29, 31, .08);
+  --apple-border-strong: rgba(29, 29, 31, .14);
+  --apple-shadow: 0 18px 44px rgba(0, 0, 0, .08);
+  display: grid;
+  gap: 16px;
+}
+.subtitle-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 22px 24px;
+  border: 1px solid rgba(255, 255, 255, .78);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(0, 113, 227, .09), transparent 28%),
+    linear-gradient(180deg, #fbfbfd 0%, var(--apple-bg) 100%);
+  box-shadow: var(--apple-shadow);
+}
+.subtitle-panel-title {
+  font-family: 'SF Pro Display', 'Helvetica Neue', 'PingFang SC', sans-serif;
+  font-size: 32px;
+  font-weight: 600;
+  color: var(--apple-text);
+  line-height: 1.08;
+  letter-spacing: -0.28px;
+}
+.subtitle-panel-desc {
+  margin-top: 8px;
+  color: var(--apple-text-soft);
+  line-height: 1.7;
+  max-width: 820px;
+  font-family: 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: -0.224px;
+}
+.subtitle-hero-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.subtitle-hero-chip, .subtitle-mini-chip, .subtitle-inline-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 11px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.12px;
+}
+.subtitle-hero-chip { background: rgba(255, 255, 255, .92); color: var(--apple-text-soft); border: 1px solid rgba(255, 255, 255, .88); box-shadow: inset 0 0 0 1px rgba(29, 29, 31, .04); }
 .subtitle-hero-chip-button { cursor: pointer; transition: all .18s ease; }
-.subtitle-hero-chip-button:hover { border-color: #9fc4ff; background: #f5f9ff; color: #2458a6; }
-.subtitle-hero-chip-button.active { border-color: #78aef8; background: #eaf3ff; color: #1e529e; box-shadow: 0 0 0 2px rgba(64, 158, 255, .08); }
+.subtitle-hero-chip-button:hover { border-color: rgba(0, 113, 227, .18); background: #f4f8ff; color: var(--apple-blue); transform: translateY(-1px); }
+.subtitle-hero-chip-button.active { border-color: rgba(0, 113, 227, .18); background: var(--apple-blue); color: #ffffff; box-shadow: 0 10px 22px rgba(0, 113, 227, .18); }
 .subtitle-mini-chip { background: #f4f6f9; color: #59697f; border: 1px solid #e6ebf2; }
-.subtitle-mini-chip-primary { color: #2458a6; background: #edf4ff; border-color: #cfe0ff; }
+.subtitle-mini-chip-primary { color: var(--apple-blue); background: #edf4ff; border-color: #cfe0ff; }
 .subtitle-mini-chip-warning { color: #a76518; background: #fff7e6; border-color: #f5d3a2; }
 .subtitle-mini-chip-danger { color: #c53030; background: #fff1f0; border-color: #ffc8c2; }
 .subtitle-mini-chip-muted { color: #66778f; background: #f4f6f9; border-color: #dfe6ef; }
@@ -7217,8 +7306,92 @@ function statsStatusTextDisplay (stats) {
 .subtitle-panel-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .subtitle-layout { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 14px; align-items: start; }
 .subtitle-side-column, .subtitle-main-column { display: grid; gap: 14px; min-width: 0; }
-.subtitle-config-card, .subtitle-selection-card, .subtitle-task-card, .subtitle-tree-card { border-radius: 16px; border: 1px solid #e7edf6; min-width: 0; }
+.subtitle-config-card, .subtitle-selection-card, .subtitle-task-card, .subtitle-tree-card {
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, .78);
+  min-width: 0;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfbfd 100%);
+  box-shadow: var(--apple-shadow) !important;
+}
 .subtitle-config-card-strong { background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%); }
+.subtitle-workbench :deep(.el-card__header) { border-bottom: 1px solid rgba(29, 29, 31, .06); }
+.subtitle-workbench :deep(.el-card__body) { background: transparent; }
+.subtitle-workbench :deep(.el-button) {
+  border-radius: 999px;
+  font-family: 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', sans-serif;
+  font-weight: 500;
+  letter-spacing: -0.224px;
+}
+.subtitle-workbench :deep(.el-button--default) {
+  border-color: rgba(29, 29, 31, .08);
+  background: var(--apple-surface-soft);
+  color: var(--apple-text);
+}
+.subtitle-workbench :deep(.el-button--default:hover) {
+  border-color: rgba(0, 113, 227, .18);
+  background: #f4f8ff;
+  color: var(--apple-blue);
+}
+.subtitle-workbench :deep(.el-button--primary) {
+  border-color: var(--apple-blue);
+  background: var(--apple-blue);
+  color: #ffffff;
+}
+.subtitle-workbench :deep(.el-button--primary:hover) {
+  border-color: var(--apple-blue-hover);
+  background: var(--apple-blue-hover);
+  color: #ffffff;
+}
+.subtitle-workbench :deep(.el-button--success),
+.subtitle-workbench :deep(.el-button--warning),
+.subtitle-workbench :deep(.el-button--danger),
+.subtitle-workbench :deep(.el-button.is-plain) {
+  border-color: rgba(29, 29, 31, .08);
+  background: var(--apple-surface-soft);
+  color: var(--apple-text);
+}
+.subtitle-workbench :deep(.el-button--success:hover),
+.subtitle-workbench :deep(.el-button--warning:hover),
+.subtitle-workbench :deep(.el-button.is-plain:hover) {
+  border-color: rgba(0, 113, 227, .18);
+  background: #f4f8ff;
+  color: var(--apple-blue);
+}
+.subtitle-workbench :deep(.el-button--danger),
+.subtitle-workbench :deep(.el-button--danger.is-plain) {
+  border-color: rgba(215, 0, 21, .18);
+  background: #fff5f5;
+  color: #d70015;
+}
+.subtitle-workbench :deep(.el-button--danger:hover),
+.subtitle-workbench :deep(.el-button--danger.is-plain:hover) {
+  border-color: rgba(215, 0, 21, .28);
+  background: #fff0f0;
+  color: #c40017;
+}
+.subtitle-workbench :deep(.el-input__wrapper),
+.subtitle-workbench :deep(.el-select__wrapper),
+.subtitle-workbench :deep(.el-textarea__inner),
+.subtitle-workbench :deep(.el-input-number) {
+  border-radius: 12px;
+  background: var(--apple-surface-soft);
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, .06);
+}
+.subtitle-workbench :deep(.el-switch__core) {
+  border-color: rgba(29, 29, 31, .08);
+  background: #e9e9ed;
+}
+.subtitle-workbench :deep(.el-switch.is-checked .el-switch__core) {
+  background: var(--apple-blue);
+  border-color: var(--apple-blue);
+}
+.subtitle-workbench :deep(.el-button:focus-visible),
+.subtitle-workbench :deep(.el-select__wrapper.is-focused),
+.subtitle-workbench :deep(.el-input__wrapper.is-focus),
+.subtitle-workbench :deep(.el-textarea__inner:focus) {
+  outline: 2px solid var(--apple-blue);
+  outline-offset: 2px;
+}
 .subtitle-task-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; min-width: 0; }
 .subtitle-option-stack { display: grid; gap: 14px; min-width: 0; }
 .subtitle-switch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 14px; padding: 12px 0; border-bottom: 1px dashed #e9eef5; }
@@ -7227,7 +7400,7 @@ function statsStatusTextDisplay (stats) {
 .subtitle-switch-row > div:first-child { min-width: 0; }
 .subtitle-switch-row :deep(.el-input-number) { width: 96px; }
 .subtitle-switch-row :deep(.el-radio-group) { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
-.subtitle-option-title { font-size: 14px; font-weight: 700; color: #223754; }
+.subtitle-option-title { font-size: 14px; font-weight: 700; color: var(--apple-text); letter-spacing: -0.224px; }
 .subtitle-filter-editor { display: grid; gap: 10px; margin-top: 4px; padding: 12px; border-radius: 12px; background: #f8fbff; border: 1px solid #e2ebfb; }
 .subtitle-filter-editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .subtitle-filter-empty { padding: 10px 12px; border-radius: 10px; border: 1px dashed #cfdcf2; color: #6a7d97; font-size: 12px; background: #fff; }
@@ -7239,10 +7412,10 @@ function statsStatusTextDisplay (stats) {
 .subtitle-filter-target { width: 100%; }
 .subtitle-filter-name { min-width: 0; }
 .subtitle-filter-pattern { min-width: 0; }
-.subtitle-divider-label { margin: 16px 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .08em; color: #7f8da3; text-transform: uppercase; }
+.subtitle-divider-label { margin: 16px 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .04em; color: #7f8da3; text-transform: uppercase; }
 .subtitle-pill-grid { display: flex; gap: 8px; flex-wrap: wrap; }
-.subtitle-toggle-pill { padding: 8px 12px; border-radius: 999px; border: 1px solid #dce6f4; background: #fff; color: #5d6f89; cursor: pointer; font-size: 12px; font-weight: 600; transition: all .18s ease; }
-.subtitle-toggle-pill.active { background: #edf4ff; border-color: #9fc4ff; color: #2458a6; box-shadow: inset 0 0 0 1px rgba(64, 158, 255, .08); }
+.subtitle-toggle-pill { padding: 8px 12px; border-radius: 999px; border: 1px solid rgba(29, 29, 31, .08); background: #fff; color: rgba(29, 29, 31, .72); cursor: pointer; font-size: 12px; font-weight: 600; transition: all .18s ease; }
+.subtitle-toggle-pill.active { background: var(--apple-blue); border-color: var(--apple-blue); color: #ffffff; box-shadow: 0 8px 20px rgba(0, 113, 227, .16); }
 .subtitle-card-tip { font-size: 12px; color: #7b8797; line-height: 1.6; }
 .subtitle-selection-live { display: grid; gap: 8px; min-height: 120px; }
 .subtitle-selection-section { display: grid; gap: 8px; }
@@ -7262,6 +7435,11 @@ function statsStatusTextDisplay (stats) {
 .subtitle-selection-pager { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-height: 24px; font-size: 12px; color: #6c7d93; white-space: nowrap; flex-shrink: 0; }
 .subtitle-selection-filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .subtitle-chip-button { cursor: pointer; transition: border-color .18s ease, background .18s ease, color .18s ease, box-shadow .18s ease; }
+.subtitle-chip-button:hover {
+  border-color: rgba(0, 113, 227, .18);
+  background: #f4f8ff;
+  color: var(--apple-blue);
+}
 .subtitle-chip-button.active { color: #2458a8; background: #eef5ff; border-color: #bfd4ff; box-shadow: 0 0 0 2px rgba(64, 158, 255, .08); }
 .subtitle-section-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: none; background: transparent; color: #6a7d97; font-size: 12px; font-weight: 600; cursor: pointer; }
 .subtitle-section-toggle .el-icon { transition: transform .18s ease; }
@@ -7316,9 +7494,40 @@ function statsStatusTextDisplay (stats) {
 .subtitle-task-detail-collapse :deep(.el-collapse-item__header) { padding: 2px 4px; font-weight: 600; color: #2d405e; background: transparent; border-bottom: 1px solid #eef2f7; }
 .subtitle-task-detail-collapse :deep(.el-collapse-item__content) { padding: 12px 0 4px; }
 .subtitle-collapse-title { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; padding-right: 10px; }
-.subtitle-task-queue-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 2px; min-width: 0; }
-.subtitle-task-queue-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.subtitle-task-rail { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+.subtitle-task-queue-head {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 2px;
+  min-width: 0;
+}
+.subtitle-task-queue-filters {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  pointer-events: auto;
+}
+.subtitle-task-queue-filters > * {
+  position: relative;
+  z-index: 5;
+  pointer-events: auto;
+}
+.subtitle-task-rail {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
 .subtitle-task-queue-rail { padding-top: 2px; }
 .subtitle-task-rail::-webkit-scrollbar { height: 8px; }
 .subtitle-task-rail::-webkit-scrollbar-thumb { background: #d8e2f0; border-radius: 999px; }
@@ -7521,6 +7730,7 @@ function statsStatusTextDisplay (stats) {
   .filter-delete-floating-card { left: 12px; right: 12px; bottom: 12px; width: auto; }
 }
 </style>
+
 
 
 
