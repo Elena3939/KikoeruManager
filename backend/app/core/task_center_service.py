@@ -111,6 +111,123 @@ class TaskCenterService:
             return [self._json_safe(current) for current in value]
         return str(value)
 
+    def _item_metadata(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        details = dict(item.get("details") or {})
+        metadata = details.get("metadata") or {}
+        return dict(metadata) if isinstance(metadata, dict) else {}
+
+    def _merge_metric_items(self, base: List[Dict[str, str]], extra: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        merged: List[Dict[str, str]] = []
+        seen_labels: set[str] = set()
+        for collection in (base or [], extra or []):
+            for item in collection:
+                if not isinstance(item, dict):
+                    continue
+                label = self._safe_text(item.get("label"))
+                value = self._safe_text(item.get("value"))
+                if not label or not value or label in seen_labels:
+                    continue
+                seen_labels.add(label)
+                merged.append({"label": label, "value": value})
+        return merged
+
+    def _compose_import_step(self, parent: Dict[str, Any], linked_item: Dict[str, Any]) -> str:
+        parent_step = self._safe_text(parent.get("current_step"))
+        linked_step = self._safe_text(linked_item.get("current_step"))
+        if linked_step:
+            return linked_step
+        return parent_step or "等待中"
+
+    def _merge_linked_subtitle_pipeline_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        parent_by_engine_id: Dict[str, Dict[str, Any]] = {}
+        parent_by_source_path: Dict[str, Dict[str, Any]] = {}
+        merged_item_ids: set[str] = set()
+
+        for item in items:
+            if not self._safe_text(item.get("id")).startswith("engine:"):
+                continue
+            if self._safe_text(item.get("domain")) != "import":
+                continue
+            metadata = self._item_metadata(item)
+            source_mode = self._safe_text(metadata.get("source_mode"))
+            if source_mode != "linked_translation_archive_pending":
+                continue
+            engine_task_id = self._safe_text(item.get("engine_task_id")) or self._safe_text(item.get("entity_id"))
+            if engine_task_id:
+                parent_by_engine_id[engine_task_id] = item
+            source_path = self._safe_text(item.get("source_path"))
+            if source_path:
+                parent_by_source_path[os.path.abspath(source_path)] = item
+
+        for item in items:
+            item_id = self._safe_text(item.get("id"))
+            if item_id.startswith("subtitle-pending:"):
+                engine_task_id = self._safe_text(item.get("engine_task_id"))
+                parent = parent_by_engine_id.get(engine_task_id)
+                if not parent:
+                    continue
+                parent["status"] = TaskStatus.WAITING_MANUAL.value
+                parent["status_label"] = self.STATUS_LABELS[TaskStatus.WAITING_MANUAL.value]
+                parent["current_step"] = self._compose_import_step(parent, item)
+                parent["route_hint"] = self.DOMAIN_ROUTE_HINT["subtitle_import"]
+                parent["actions"] = ["open_subtitle_import"]
+                parent["progress"] = max(int(parent.get("progress") or 0), 100)
+                parent["metrics"] = self._merge_metric_items(parent.get("metrics") or [], item.get("metrics") or [])
+                parent_details = dict(parent.get("details") or {})
+                parent_metadata = self._item_metadata(parent)
+                parent_metadata["merged_subtitle_pending"] = True
+                parent_details["metadata"] = self._json_safe(parent_metadata)
+                parent_details["pending_preview"] = self._json_safe((item.get("details") or {}).get("preview") or {})
+                parent["details"] = parent_details
+                merged_item_ids.add(item_id)
+                continue
+
+            if not item_id.startswith("engine:"):
+                continue
+            metadata = self._item_metadata(item)
+            source_mode = self._safe_text(metadata.get("source_mode"))
+            if source_mode != "linked_translation_archive_import":
+                continue
+            source_archive_path = self._safe_text(metadata.get("source_archive_path"))
+            parent = None
+            if source_archive_path:
+                try:
+                    parent = parent_by_source_path.get(os.path.abspath(source_archive_path))
+                except Exception:
+                    parent = None
+            if not parent:
+                continue
+
+            parent["status"] = self._safe_text(item.get("status")) or parent.get("status")
+            parent["status_label"] = self._safe_text(item.get("status_label")) or parent.get("status_label")
+            parent["current_step"] = self._compose_import_step(parent, item)
+            parent["target_path"] = self._safe_text(item.get("target_path")) or self._safe_text(parent.get("target_path"))
+            parent["completed_at"] = item.get("completed_at") or parent.get("completed_at")
+            parent["started_at"] = item.get("started_at") or parent.get("started_at")
+            parent["progress"] = max(int(parent.get("progress") or 0), int(item.get("progress") or 0))
+            parent["metrics"] = self._merge_metric_items(parent.get("metrics") or [], item.get("metrics") or [])
+
+            child_metadata = metadata
+            if bool(child_metadata.get("manual_match_completed")) or bool(child_metadata.get("linked_workbench_applied")):
+                parent["route_hint"] = self.DOMAIN_ROUTE_HINT["library"]
+                parent["actions"] = []
+            else:
+                parent["status"] = TaskStatus.WAITING_MANUAL.value
+                parent["status_label"] = self.STATUS_LABELS[TaskStatus.WAITING_MANUAL.value]
+                parent["route_hint"] = self.DOMAIN_ROUTE_HINT["subtitle_import"]
+                parent["actions"] = ["open_subtitle_import"]
+
+            parent_details = dict(parent.get("details") or {})
+            parent_metadata = self._item_metadata(parent)
+            parent_metadata["merged_subtitle_task_id"] = self._safe_text(item.get("engine_task_id"))
+            parent_metadata["merged_subtitle_source_mode"] = source_mode
+            parent_details["metadata"] = self._json_safe(parent_metadata)
+            parent_details["merged_subtitle_task"] = self._json_safe(item)
+            parent["details"] = parent_details
+            merged_item_ids.add(item_id)
+
+        return [item for item in items if self._safe_text(item.get("id")) not in merged_item_ids]
+
     def _infer_domain(self, task: Task) -> str:
         metadata = dict(task.task_metadata or {})
         explicit = self._safe_text(metadata.get("task_domain"))
@@ -470,6 +587,7 @@ class TaskCenterService:
         waiting_retry_items = engine.get_waiting_retry_tasks_from_db()
         items.extend(self._serialize_waiting_retry_item(item) for item in waiting_retry_items)
 
+        items = self._merge_linked_subtitle_pipeline_items(items)
         items = self._dedupe_items(items)
         items = [item for item in items if not self._is_superseded_failed_item(item)]
         return self._sort_items(items)
@@ -563,6 +681,12 @@ class TaskCenterService:
             if not task:
                 raise ValueError("任务不存在")
 
+            if normalized_action == "open_subtitle_import":
+                return {
+                    "success": True,
+                    "message": "请前往字幕补配页继续处理",
+                    "route_hint": self.DOMAIN_ROUTE_HINT["subtitle_import"],
+                }
             if normalized_action == "pause":
                 engine.pause_task(engine_task_id)
                 return {"success": True, "message": "任务已暂停"}

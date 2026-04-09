@@ -1221,6 +1221,7 @@ async function confirmFilterDeleteSelection () {
     }
     const succeededItems = buildFilterDeleteLogItemsByTargets(attemptedItems, succeededPaths)
     await writeFilterDeleteApplyActivityLog({
+      session_key: filterDeleteSessionKey.value,
       execution_key: executionKey,
       status: filterDeleteDeleteCancelRequested.value
         ? 'cancelled'
@@ -1243,6 +1244,7 @@ async function confirmFilterDeleteSelection () {
     else ElMessage.success(`\u8fc7\u6ee4\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f ${successCount} \u9879`)
   } catch (error) {
     await writeFilterDeleteApplyActivityLog({
+      session_key: filterDeleteSessionKey.value,
       execution_key: `${filterDeleteSessionKey.value}::fatal::${Date.now()}`,
       status: 'failed',
       scope_label: props.scopeLabel || getFileName(props.currentPath) || text.currentFolder,
@@ -1487,6 +1489,7 @@ async function writeFilterDeletePreviewActivityLog (statusOverride = '') {
   try {
     await activityLogApi.logFilterDelete({
       mode: 'preview',
+      session_key: sessionKey,
       status: status === 'completed' ? 'success' : (status === 'canceled' ? 'cancelled' : 'failed'),
       scope_label: props.scopeLabel || getFileName(props.currentPath) || text.currentFolder,
       folder_name: filterDeletePreviewInfo.value.folderName || '',

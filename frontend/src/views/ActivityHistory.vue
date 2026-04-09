@@ -170,126 +170,29 @@
         size="small"
         empty-text="暂无记录"
         :row-class-name="rowClassName"
+        table-layout="fixed"
+        row-key="id"
+        highlight-current-row
+        @row-click="openDetail"
       >
-        <el-table-column type="expand" width="44">
-          <template #default="{ row }">
-            <div class="expand-shell">
-              <div class="expand-grid">
-                <div class="expand-item">
-                  <div class="ek">动作</div>
-                  <div class="ev">{{ humanAction(row) }}</div>
-                </div>
-                <div class="expand-item">
-                  <div class="ek">分类</div>
-                  <div class="ev">{{ row.category_label }}（{{ row.category }}）</div>
-                </div>
-                <div class="expand-item">
-                  <div class="ek">状态</div>
-                  <div class="ev">
-                    <span :class="['status-tag', statusClass(row.status)]">{{ statusLabel(row.status) }}</span>
-                    <span v-if="isRecoveredFailure(row)" class="status-fixed-pill">已修复</span>
-                  </div>
-                </div>
-                <div class="expand-item">
-                  <div class="ek">RJ</div>
-                  <div class="ev mono">{{ row.rjcode || '—' }}</div>
-                </div>
-                <div class="expand-item span-2">
-                  <div class="ek">摘要</div>
-                  <div class="ev">{{ row.summary }}</div>
-                </div>
-                <div v-if="row.detail?.pair_summary" class="expand-item span-2">
-                  <div class="ek">配对结果</div>
-                  <div class="ev">{{ row.detail.pair_summary }}</div>
-                </div>
-                <div class="expand-item span-2">
-                  <div class="ek">源路径</div>
-                  <div class="ev mono break">{{ row.source_path || '—' }}</div>
-                </div>
-                <div class="expand-item span-2">
-                  <div class="ek">任务 ID</div>
-                  <div class="ev mono break">{{ row.task_id || '—' }}</div>
-                </div>
-
-                <div v-if="detailHighlights(row).length" class="expand-item span-2">
-                  <div class="ek">关键字段</div>
-                  <div class="kv-wrap">
-                    <div
-                      v-for="item in detailHighlights(row)"
-                      :key="item.k"
-                      class="kv-pill"
-                    >
-                      <span class="kv-k">{{ item.k }}</span>
-                      <span class="kv-v mono">{{ item.v }}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div v-if="filterDeleteMetricCards(row).length" class="expand-item span-2">
-                  <div class="ek">删除概览</div>
-                  <div class="metric-grid">
-                    <div
-                      v-for="item in filterDeleteMetricCards(row)"
-                      :key="item.k"
-                      class="metric-card"
-                    >
-                      <div class="metric-k">{{ item.k }}</div>
-                      <div class="metric-v">{{ item.v }}</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div v-if="filterDeleteEntrySections(row).length" class="expand-item span-2">
-                  <div class="ek">删除清单</div>
-                  <div class="entry-section-list">
-                    <div
-                      v-for="section in filterDeleteEntrySections(row)"
-                      :key="section.key"
-                      class="entry-section"
-                    >
-                      <div class="entry-section-title">{{ section.title }}</div>
-                      <div class="entry-tree-box">
-                        <div
-                          v-for="item in section.rows"
-                          :key="`${section.key}-${item.key}`"
-                          class="tree-row"
-                          :style="{ paddingLeft: `${12 + item.depth * 18}px` }"
-                        >
-                          <div class="tree-main">
-                            <span class="tree-branch" aria-hidden="true">{{ item.depth ? '└' : '•' }}</span>
-                            <span :class="['entry-icon', `is-${item.type || 'file'}`]">
-                              <el-icon><component :is="item.type === 'dir' ? Folder : Document" /></el-icon>
-                            </span>
-                            <span class="entry-name">{{ item.label }}</span>
-                          </div>
-                          <span v-if="item.sizeText" class="entry-size">{{ item.sizeText }}</span>
-                          <span v-if="item.error" class="entry-error">{{ item.error }}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <pre v-if="prettyDetail(row)" class="expand-json">{{ prettyDetail(row) }}</pre>
-            </div>
-          </template>
-        </el-table-column>
-
         <el-table-column prop="created_at" label="时间" width="168">
           <template #default="{ row }">
             <span class="cell-time">{{ formatDateTime(row.created_at) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="category_label" label="分类" width="120">
+        <el-table-column prop="category_label" label="分类" width="212">
           <template #default="{ row }">
-            <span :class="['cell-pill', categoryClass(row.category)]">{{ row.category_label }}</span>
+            <span class="category-cell-wrap">
+              <span :class="['cell-pill', categoryClass(row.category)]">{{ row.category_label }}</span>
+              <span v-for="tag in mergedCategoryTags(row)" :key="`${row.id}-${tag}`" class="action-pill">{{ tag }}</span>
+            </span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="140">
+        <el-table-column prop="status" label="状态" width="126">
           <template #default="{ row }">
             <div class="status-cell">
               <span :class="['status-tag', statusClass(row.status)]">{{ statusLabel(row.status) }}</span>
+              <span v-if="isRerunRow(row)" class="status-fixed-pill is-rerun">重新爬取</span>
               <span v-if="isRecoveredFailure(row)" class="status-fixed-pill">已修复</span>
             </div>
           </template>
@@ -299,16 +202,15 @@
             <span class="mono">{{ row.rjcode || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="summary" label="摘要" min-width="320" show-overflow-tooltip />
-        <el-table-column prop="action" label="动作" width="220" show-overflow-tooltip>
+        <el-table-column prop="summary" label="摘要" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="action" label="动作" width="170" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="action-wrap">
               <span :class="['action-text', actionClass(row)]">{{ humanAction(row) }}</span>
-              <span v-if="hasMergedPair(row)" class="action-pill">已配对</span>
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="source_path" label="源路径" min-width="260" show-overflow-tooltip>
+        <el-table-column prop="source_path" label="源路径" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="mono truncate">{{ compactPath(row.source_path) }}</span>
           </template>
@@ -321,7 +223,7 @@
           v-model:page-size="limit"
           layout="total, sizes, prev, pager, next, jumper"
           :total="total"
-          :page-sizes="[20, 50, 100]"
+          :page-sizes="[30, 50, 100]"
           background
           class="ios-pager"
           @current-change="loadList"
@@ -329,6 +231,140 @@
         />
       </div>
     </section>
+
+    <el-drawer
+      v-model="detailDrawerVisible"
+      class="activity-detail-drawer"
+      size="760px"
+      destroy-on-close
+      append-to-body
+    >
+      <template #header>
+        <div class="detail-drawer-head">
+          <div class="detail-drawer-title">记录详情</div>
+          <div v-if="selectedRow" class="detail-drawer-subtitle">
+            {{ formatDateTime(selectedRow.created_at) }} · {{ selectedRow.category_label || selectedRow.category || '—' }}
+          </div>
+        </div>
+      </template>
+
+      <div v-if="selectedRow" class="expand-shell drawer-shell">
+        <div class="detail-topbar">
+          <div class="detail-topbar-main">
+            <div class="detail-topbar-title">{{ humanAction(selectedRow) }}</div>
+            <div class="detail-topbar-meta">
+              <span :class="['cell-pill', categoryClass(selectedRow.category)]">{{ selectedRow.category_label }}</span>
+              <span v-for="tag in mergedCategoryTags(selectedRow)" :key="`drawer-${selectedRow.id}-${tag}`" class="action-pill">{{ tag }}</span>
+              <span :class="['status-tag', statusClass(selectedRow.status)]">{{ statusLabel(selectedRow.status) }}</span>
+              <span v-if="isRerunRow(selectedRow)" class="status-fixed-pill is-rerun">重新爬取</span>
+              <span v-if="isRecoveredFailure(selectedRow)" class="status-fixed-pill">已修复</span>
+            </div>
+          </div>
+          <div class="detail-topbar-rj mono">{{ selectedRow.rjcode || '—' }}</div>
+        </div>
+
+        <div class="expand-grid">
+          <div class="expand-item">
+            <div class="ek">分类</div>
+            <div class="ev">{{ selectedRow.category_label }}（{{ selectedRow.category }}）</div>
+          </div>
+          <div class="expand-item">
+            <div class="ek">状态</div>
+            <div class="ev">
+              <span :class="['status-tag', statusClass(selectedRow.status)]">{{ statusLabel(selectedRow.status) }}</span>
+              <span v-if="isRerunRow(selectedRow)" class="status-fixed-pill is-rerun">重新爬取</span>
+              <span v-if="isRecoveredFailure(selectedRow)" class="status-fixed-pill">已修复</span>
+            </div>
+          </div>
+          <div class="expand-item">
+            <div class="ek">时间</div>
+            <div class="ev mono">{{ formatDateTime(selectedRow.created_at) }}</div>
+          </div>
+          <div class="expand-item span-2">
+            <div class="ek">摘要</div>
+            <div class="ev">{{ selectedRow.summary }}</div>
+          </div>
+          <div v-if="selectedRow.detail?.pair_summary" class="expand-item span-2">
+            <div class="ek">配对结果</div>
+            <div class="ev">{{ selectedRow.detail.pair_summary }}</div>
+          </div>
+          <div class="expand-item span-2">
+            <div class="ek">源路径</div>
+            <div class="ev mono break">{{ selectedRow.source_path || '—' }}</div>
+          </div>
+          <div class="expand-item span-2">
+            <div class="ek">任务 ID</div>
+            <div class="ev mono break">{{ selectedRow.task_id || '—' }}</div>
+          </div>
+
+          <div v-if="detailHighlights(selectedRow).length" class="expand-item span-2">
+            <div class="ek">关键字段</div>
+            <div class="kv-wrap">
+              <div
+                v-for="item in detailHighlights(selectedRow)"
+                :key="item.k"
+                class="kv-pill"
+              >
+                <span class="kv-k">{{ item.k }}</span>
+                <span class="kv-v mono">{{ item.v }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="filterDeleteMetricCards(selectedRow).length" class="expand-item span-2">
+            <div class="ek">删除概览</div>
+            <div class="metric-grid">
+              <div
+                v-for="item in filterDeleteMetricCards(selectedRow)"
+                :key="item.k"
+                class="metric-card"
+              >
+                <div class="metric-k">{{ item.k }}</div>
+                <div class="metric-v">{{ item.v }}</div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="filterDeleteEntrySections(selectedRow).length" class="expand-item span-2">
+            <div class="ek">删除清单</div>
+            <div class="entry-section-list">
+              <div
+                v-for="section in filterDeleteEntrySections(selectedRow)"
+                :key="section.key"
+                class="entry-section"
+              >
+                <div class="entry-section-title">{{ section.title }}</div>
+                <div class="entry-tree-box">
+                  <div
+                    v-for="item in section.rows"
+                    :key="`${section.key}-${item.key}`"
+                    class="tree-row"
+                    :style="{ paddingLeft: `${12 + item.depth * 18}px` }"
+                  >
+                    <div class="tree-main">
+                      <span class="tree-branch" aria-hidden="true">{{ item.depth ? '└' : '•' }}</span>
+                      <span :class="['entry-icon', `is-${item.type || 'file'}`]">
+                        <el-icon><component :is="item.type === 'dir' ? Folder : Document" /></el-icon>
+                      </span>
+                      <span class="entry-name">{{ item.label }}</span>
+                    </div>
+                    <span v-if="item.sizeText" class="entry-size">{{ item.sizeText }}</span>
+                    <span v-if="item.error" class="entry-error">{{ item.error }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="prettyDetail(selectedRow)" class="code-card">
+          <div class="code-card-head">
+            <span class="code-card-title">原始 JSON</span>
+          </div>
+          <pre class="expand-json"><code>{{ prettyDetail(selectedRow) }}</code></pre>
+        </div>
+      </div>
+    </el-drawer>
 
   </div>
 </template>
@@ -343,7 +379,9 @@ const loading = ref(false)
 const items = ref([])
 const total = ref(0)
 const page = ref(1)
-const limit = ref(50)
+const limit = ref(30)
+const detailDrawerVisible = ref(false)
+const selectedRow = ref(null)
 const statsDays = ref(14)
 const stats = reactive({
   days: 14,
@@ -366,7 +404,7 @@ const categoryOptions = [
   { value: 'subtitle_pair', label: '字幕配对' },
   { value: 'subtitle_import', label: '字幕补配' },
   { value: 'extract', label: '解压' },
-  { value: 'auto_import', label: '自动入库' },
+  { value: 'auto_import', label: '解压入库' },
   { value: 'process_existing', label: '已有目录处理' },
   { value: 'pipeline_filter', label: '筛选' },
   { value: 'pipeline_metadata', label: '元数据' },
@@ -570,12 +608,23 @@ function isRecoveredFailure(row) {
   })
 }
 
+function isRerunRow(row) {
+  return Boolean(row?.rerun || row?.detail?.rerun_linked || Number(row?.detail?.rerun_count || 0) > 0)
+}
+
 function humanAction(row) {
   const category = row.category
   const status = row.status
   const action = row.action
 
   if (category === 'pipeline_filter') {
+    if (hasMergedFilterDelete(row)) {
+      if (status === 'success') return '删除预审完成'
+      if (status === 'partial_success') return '删除预审完成'
+      if (status === 'cancelled') return '删除预审完成'
+      if (status === 'failed') return '删除预审完成'
+      return '删除预审'
+    }
     if (action === 'filter_delete_preview') {
       if (status === 'success') return '删除过滤预审完成'
       if (status === 'cancelled') return '删除过滤预审已取消'
@@ -608,9 +657,9 @@ function humanAction(row) {
     return status === 'success' ? '压缩包解压完成' : '压缩包解压失败'
   }
   if (category === 'auto_import') {
-    if (status === 'success') return '自动入库完成'
-    if (status === 'failed') return '自动入库失败'
-    if (status === 'incomplete') return '自动入库未正常结束'
+    if (status === 'success') return '解压入库完成'
+    if (status === 'failed') return '解压入库失败'
+    if (status === 'incomplete') return '解压入库未正常结束'
   }
   if (category === 'process_existing') {
     return status === 'success' ? '已有目录处理完成' : '已有目录处理失败'
@@ -646,6 +695,38 @@ function hasMergedPair(row) {
   return Boolean(row?.merged_pair || row?.detail?.pair_linked)
 }
 
+function hasMergedSubtitleImport(row) {
+  return Boolean(row?.merged_subtitle_import || row?.detail?.import_linked)
+}
+
+function hasMergedFilterDelete(row) {
+  return Boolean(row?.merged_filter_delete || row?.detail?.preview_linked)
+}
+
+function mergedSubtitleImportTag(row) {
+  const status = String(row?.detail?.import_status || row?.merged_subtitle_import_status || '')
+  if (status === 'success') return '字幕补配完成'
+  if (status === 'failed') return '字幕补配失败'
+  return '字幕补配'
+}
+
+function mergedFilterDeleteTag(row) {
+  const status = String(row?.status || '')
+  if (status === 'success') return '已删除'
+  if (status === 'partial_success') return '部分删除'
+  if (status === 'cancelled') return '已停止'
+  if (status === 'failed') return '删除失败'
+  return '已删除'
+}
+
+function mergedCategoryTags(row) {
+  const tags = []
+  if (hasMergedSubtitleImport(row)) tags.push(mergedSubtitleImportTag(row))
+  if (hasMergedPair(row)) tags.push('字幕配对完成')
+  if (hasMergedFilterDelete(row)) tags.push(mergedFilterDeleteTag(row))
+  return tags
+}
+
 function compactPath(p) {
   if (!p) return '—'
   const s = String(p)
@@ -660,7 +741,13 @@ function rowClassName({ row }) {
   const cls = []
   if (row.status) cls.push(`row-status-${row.status}`)
   if (isRecoveredFailure(row)) cls.push('row-recovered')
+  cls.push('activity-row')
   return cls.join(' ')
+}
+
+function openDetail(row) {
+  selectedRow.value = row
+  detailDrawerVisible.value = true
 }
 
 function prettyDetail(row) {
@@ -682,8 +769,11 @@ function detailHighlights(row) {
     'awaiting_manual_match',
     'output_path',
     'source_basename',
+    'archive_size_bytes',
+    'extract_output_bytes',
     'final_file_count',
     'record_id',
+    'import_final_file_count',
     'recovered_failure_count',
     'duration_ms',
     'selected_count',
@@ -697,7 +787,7 @@ function detailHighlights(row) {
     if (d[k] === undefined || d[k] === null) continue
     let value = d[k]
     if (k === 'duration_ms') value = formatDurationMs(value)
-    if (k === 'selected_size' || k === 'deleted_bytes') value = formatBytes(value)
+    if (['selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes'].includes(k)) value = formatBytes(value)
     out.push({ k, v: String(value) })
     if (out.length >= 10) break
   }
@@ -870,6 +960,11 @@ async function loadList() {
     })
     items.value = data.items || []
     total.value = data.total || 0
+    if (selectedRow.value) {
+      const nextSelected = items.value.find((item) => String(item.id) === String(selectedRow.value.id))
+      if (nextSelected) selectedRow.value = nextSelected
+      else detailDrawerVisible.value = false
+    }
   } finally {
     loading.value = false
   }
@@ -1193,6 +1288,7 @@ onMounted(() => {
 
 .table-panel {
   padding-bottom: 8px;
+  overflow-x: hidden;
 }
 
 .pager-wrap {
@@ -1290,6 +1386,11 @@ onMounted(() => {
   transform: translateY(-4px);
 }
 
+.status-fixed-pill.is-rerun {
+  background: rgba(255, 159, 10, 0.16);
+  color: #c56a00;
+}
+
 .action-text {
   display: inline-block;
   white-space: nowrap;
@@ -1301,6 +1402,13 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+
+.category-cell-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .action-pill {
@@ -1419,10 +1527,12 @@ onMounted(() => {
   --el-fill-color-lighter: #fbfbfc;
   border-radius: 16px;
   overflow: hidden;
+  width: 100%;
 }
 
 :deep(.ios-table .el-table__body tr) {
   transition: background-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+  cursor: pointer;
 }
 
 :deep(.ios-table .el-table__body tr:hover) {
@@ -1446,17 +1556,86 @@ onMounted(() => {
   padding-bottom: 6px;
 }
 
+:deep(.ios-table .cell) {
+  min-width: 0;
+}
+
+:deep(.ios-table .el-table__inner-wrapper::before) {
+  display: none;
+}
+
+:deep(.ios-table .el-scrollbar__bar.is-horizontal) {
+  display: none;
+}
+
 .expand-shell {
-  padding: 12px 14px;
-  background: #fbfbfd;
-  border-radius: 14px;
+  padding: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.96), rgba(248, 250, 255, 0.9)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 248, 252, 0.95));
+  border-radius: 22px;
   border: 1px solid rgba(29, 29, 31, 0.06);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 12px 30px rgba(15, 23, 42, 0.06);
+  overflow-x: hidden;
+}
+
+.drawer-shell {
+  margin: 0 4px 20px;
+}
+
+.detail-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid rgba(29, 29, 31, 0.08);
+}
+
+.detail-topbar-main {
+  min-width: 0;
+}
+
+.detail-topbar-title {
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 10px;
+}
+
+.detail-topbar-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-topbar-rj {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(0, 122, 255, 0.08);
+  color: #005fcc;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .expand-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 14px;
+  gap: 12px 14px;
+}
+
+.expand-item {
+  min-width: 0;
+  padding: 14px 15px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
 }
 
 .expand-item .ek {
@@ -1472,6 +1651,10 @@ onMounted(() => {
   font-size: 13px;
   line-height: 1.45;
   color: #1d1d1f;
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .expand-item.span-2 {
@@ -1482,6 +1665,7 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  overflow: hidden;
 }
 
 .kv-pill {
@@ -1512,13 +1696,19 @@ onMounted(() => {
 }
 
 .expand-json {
-  margin: 12px 0 0;
-  padding: 12px;
-  border-radius: 12px;
-  background: #f2f2f7;
+  margin: 0;
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: #0f172a;
+  color: #dbeafe;
   font-size: 12px;
+  line-height: 1.6;
   overflow: auto;
-  max-height: 260px;
+  max-height: 360px;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .metric-grid {
@@ -1565,6 +1755,7 @@ onMounted(() => {
 .entry-tree-box {
   max-height: 360px;
   overflow: auto;
+  overflow-x: hidden;
   padding: 8px;
   border-radius: 14px;
   background: #f7f8fb;
@@ -1640,6 +1831,42 @@ onMounted(() => {
   padding-left: 56px;
 }
 
+.detail-drawer-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.detail-drawer-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.detail-drawer-subtitle {
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.48);
+}
+
+.code-card {
+  margin-top: 16px;
+}
+
+.code-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.code-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(29, 29, 31, 0.48);
+}
+
 :deep(.ios-table th) {
   font-weight: 600;
   font-size: 12px;
@@ -1679,6 +1906,23 @@ onMounted(() => {
 
 :deep(.ios-dialog) {
   border-radius: 20px;
+}
+
+:deep(.activity-detail-drawer) {
+  --el-drawer-padding-primary: 18px;
+}
+
+:deep(.activity-detail-drawer .el-drawer__header) {
+  margin-bottom: 0;
+  padding-bottom: 12px;
+}
+
+:deep(.activity-detail-drawer .el-drawer__body) {
+  padding-top: 8px;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at top, rgba(242, 248, 255, 0.78), rgba(255, 255, 255, 0.92)),
+    linear-gradient(180deg, #f8fafc, #ffffff);
 }
 
 @media (max-width: 900px) {

@@ -44,8 +44,10 @@
             @click="selectWorkbenchTask(task.id)"
           >
             <div class="import-task-row-main">
-              <div class="import-task-row-rj">{{ getTaskDisplayRJCode(task) }}</div>
-              <div class="import-task-row-title">{{ task.folder_name || getFileName(task.folder_path) }}</div>
+              <div class="import-task-row-heading">
+                <span class="import-task-row-rj">{{ getTaskDisplayRJCode(task) }}</span>
+                <div class="import-task-row-title">{{ task.folder_name || getFileName(task.folder_path) }}</div>
+              </div>
               <div class="import-task-row-meta">
                 <span v-if="getTaskSourceRJCode(task)">来源 {{ getTaskSourceRJCode(task) }}</span>
                 <span v-if="task.target_rjcode">目标 {{ task.target_rjcode }}</span>
@@ -204,8 +206,10 @@
                 </div>
 
                 <div class="import-retarget-current">
-                  当前目标：{{ activeTask.folder_name || getFileName(activeTask.target_folder_path || activeTask.folder_path) || '-' }}
-                  <span v-if="activeTask.target_folder_path" class="import-retarget-path">{{ activeTask.target_folder_path }}</span>
+                  <div class="import-retarget-label">当前目标</div>
+                  <div class="import-retarget-name">{{ activeTask.folder_name || getFileName(activeTask.target_folder_path || activeTask.folder_path) || '-' }}</div>
+                  <div v-if="activeTask.target_rjcode" class="import-retarget-rj">{{ activeTask.target_rjcode }}</div>
+                  <div v-if="activeTask.target_folder_path" class="import-retarget-path">{{ activeTask.target_folder_path }}</div>
                 </div>
 
                 <el-empty
@@ -2227,6 +2231,8 @@ const subtitleWorkbenchCtx = computed(() => ({
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   overflow: visible;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .import-task-list-card,
@@ -2275,22 +2281,25 @@ const subtitleWorkbenchCtx = computed(() => ({
   max-height: calc(100vh - 150px);
   padding: 8px 12px;
   overflow: auto;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .import-task-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 248px);
   gap: 14px;
   width: 100%;
-  min-height: 88px;
-  padding: 12px 16px;
+  min-height: 96px;
+  padding: 14px 16px;
   border-radius: 14px;
   border: 1px solid #e4ebf7;
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   text-align: left;
-  align-items: center;
+  align-items: start;
   cursor: pointer;
   transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+  min-width: 0;
 }
 
 .import-task-row:hover {
@@ -2326,15 +2335,30 @@ const subtitleWorkbenchCtx = computed(() => ({
 
 .import-task-row-main {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
   align-content: start;
 }
 
+.import-task-row-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .import-task-row-rj {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  max-width: 100%;
+  padding: 3px 10px;
   font-size: 12px;
   font-weight: 700;
   color: #2c5ea8;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .import-task-row-title {
@@ -2343,6 +2367,8 @@ const subtitleWorkbenchCtx = computed(() => ({
   color: #223754;
   line-height: 1.35;
   word-break: break-word;
+  min-width: 0;
+  flex: 1 1 240px;
 }
 
 .import-task-row-meta {
@@ -2363,10 +2389,10 @@ const subtitleWorkbenchCtx = computed(() => ({
 
 .import-task-row-side {
   display: grid;
-  grid-template-columns: auto auto auto;
-  justify-content: end;
-  align-items: center;
-  column-gap: 14px;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: end;
+  align-content: start;
+  row-gap: 8px;
   min-width: 0;
   width: 100%;
 }
@@ -2428,22 +2454,22 @@ const subtitleWorkbenchCtx = computed(() => ({
 .import-task-row-progress {
   display: flex;
   align-items: center;
-  justify-content: center;
-  min-width: 84px;
+  justify-content: flex-end;
+  min-width: 0;
   font-size: 11px;
   line-height: 1.5;
   color: #62758f;
-  text-align: center;
-  white-space: nowrap;
+  text-align: right;
+  white-space: normal;
 }
 
 .import-task-row-actions {
   display: flex;
-  justify-content: center;
+  justify-content: flex-end;
   align-items: center;
   gap: 6px;
-  flex-wrap: nowrap;
-  min-width: auto;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .import-task-row-actions :deep(.el-button) {
@@ -2465,6 +2491,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   padding: 12px;
   overflow: visible;
   align-items: start;
+  min-width: 0;
 }
 
 .import-config-card {
@@ -2518,6 +2545,7 @@ const subtitleWorkbenchCtx = computed(() => ({
 
 .import-config-card :deep(.el-card__body) {
   padding: 10px 12px 12px;
+  overflow-x: hidden;
 }
 
 .import-config-stack {
@@ -2626,24 +2654,52 @@ const subtitleWorkbenchCtx = computed(() => ({
 .import-retarget-current {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   padding: 10px 12px;
   border-radius: 12px;
   background: #f6f9ff;
   border: 1px solid #d9e4fb;
   color: #30486f;
   font-size: 12px;
-  line-height: 1.7;
+  line-height: 1.6;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.import-retarget-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6a7f9d;
+}
+
+.import-retarget-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #223754;
+  word-break: break-word;
+}
+
+.import-retarget-rj {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(0, 113, 227, 0.08);
+  color: #2458a6;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .import-retarget-path {
   color: #667b9e;
-  word-break: break-all;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .candidate-list {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .candidate-item {
@@ -2755,6 +2811,7 @@ const subtitleWorkbenchCtx = computed(() => ({
     justify-content: flex-start;
     text-align: left;
     width: 100%;
+    justify-items: start;
   }
 
   .import-task-row-actions {
@@ -2943,6 +3000,11 @@ const subtitleWorkbenchCtx = computed(() => ({
 .import-chip-primary {
   background: rgba(0, 113, 227, 0.08);
   color: var(--apple-blue);
+}
+
+.import-task-row-rj {
+  box-shadow: none;
+  letter-spacing: 0.02em;
 }
 
 .task-status-pill {

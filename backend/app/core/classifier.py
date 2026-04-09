@@ -435,11 +435,20 @@ class SmartClassifier:
                 or metadata.get('maker_name', '')
             )
 
-            # 只在元数据缺失时才退回到文件夹名提取，避免把翻译者名覆盖成社团名。
-            if not maker_name and source_path:
+            extracted_maker = None
+            if source_path:
                 folder_name = os.path.basename(source_path)
                 extracted_maker = self._extract_maker_from_folder_name(folder_name)
-                if extracted_maker:
+                # 文件夹名已经是最终重命名结果时，优先使用 RJ 号前面的社团名。
+                if extracted_maker and metadata.get('rjcode') and str(metadata.get('rjcode')).upper() in folder_name.upper():
+                    if extracted_maker != maker_name:
+                        logger.info(
+                            "[分类] 使用文件夹名中的 RJ 前社团名覆盖分类社团名: metadata=%s folder=%s",
+                            maker_name,
+                            extracted_maker,
+                        )
+                    maker_name = extracted_maker
+                elif not maker_name and extracted_maker:
                     logger.info(f"[分类] 元数据缺少社团名，回退使用文件夹名提取结果: {extracted_maker}")
                     maker_name = extracted_maker
 

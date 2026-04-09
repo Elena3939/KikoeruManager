@@ -54,6 +54,11 @@ class RenameService:
         if self.config.rename.use_japanese_metadata:
             task.update_progress(61, "获取日语元数据")
             japanese_metadata = await self._get_japanese_metadata(metadata.get('rjcode'))
+            if japanese_metadata:
+                japanese_maker_name = str(japanese_metadata.get('maker_name') or '').strip()
+                if japanese_maker_name:
+                    metadata['classification_maker_name'] = japanese_maker_name
+                    metadata['original_maker_name'] = japanese_maker_name
 
         # 生成新名称
         new_name = self._compile_name(metadata, japanese_metadata)

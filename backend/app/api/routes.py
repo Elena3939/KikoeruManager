@@ -70,17 +70,98 @@ async def list_activity_logs(
 
     def _merge_activity_rows(raw_rows: List[ActivityLog]) -> List[Dict[str, Any]]:
         rows = [row.to_dict() for row in raw_rows]
+
+        def _format_bytes_short(size: Any) -> str:
+            try:
+                value = float(size or 0)
+            except Exception:
+                value = 0.0
+            units = ["B", "KB", "MB", "GB", "TB"]
+            idx = 0
+            while value >= 1024 and idx < len(units) - 1:
+                value /= 1024
+                idx += 1
+            if idx == 0:
+                return f"{int(value)} {units[idx]}"
+            return f"{value:.2f} {units[idx]}"
+
         crawl_by_task: dict[str, dict[str, Any]] = {}
+        crawl_rows_by_task: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             if row.get("category") == "subtitle_crawl" and row.get("task_id"):
-                crawl_by_task[str(row["task_id"])] = row
+                task_id = str(row["task_id"])
+                crawl_by_task.setdefault(task_id, row)
+                crawl_rows_by_task.setdefault(task_id, []).append(row)
+
+        superseded_crawl_ids: set[str] = set()
+        for task_id, crawl_rows in crawl_rows_by_task.items():
+            if len(crawl_rows) <= 1:
+                continue
+            latest_row = crawl_rows[0]
+            latest_detail = latest_row.get("detail") if isinstance(latest_row.get("detail"), dict) else {}
+            latest_row["detail"] = {
+                **latest_detail,
+                "rerun_count": len(crawl_rows) - 1,
+                "rerun_linked": True,
+            }
+            latest_row["rerun"] = True
+            for old_row in crawl_rows[1:]:
+                superseded_crawl_ids.add(str(old_row.get("id") or ""))
+
+        auto_import_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if row.get("category") == "auto_import":
+                auto_import_rows.append(row)
+
+        subtitle_import_rows: list[dict[str, Any]] = []
+        subtitle_import_by_task: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if row.get("category") != "subtitle_import":
+                continue
+            subtitle_import_rows.append(row)
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            import_task_id = str(detail.get("task_id") or row.get("task_id") or "").strip()
+            if import_task_id:
+                subtitle_import_by_task.setdefault(import_task_id, row)
+
+        preview_by_session: dict[str, dict[str, Any]] = {}
+        preview_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if row.get("category") != "pipeline_filter" or row.get("action") != "filter_delete_preview":
+                continue
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            session_key = str(detail.get("session_key") or "").strip()
+            if session_key:
+                preview_by_session.setdefault(session_key, row)
+            preview_rows.append(row)
 
         merged_pair_ids: set[str] = set()
+        merged_filter_preview_ids: set[str] = set()
         for row in rows:
             if row.get("category") != "subtitle_pair":
                 continue
             task_id = str(row.get("task_id") or "").strip()
             if not task_id:
+                continue
+            import_row = subtitle_import_by_task.get(task_id)
+            if import_row:
+                import_detail = import_row.get("detail") if isinstance(import_row.get("detail"), dict) else {}
+                pair_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+                import_row["detail"] = {
+                    **import_detail,
+                    "pair_summary": row.get("summary") or "",
+                    "pair_status": row.get("status") or "",
+                    "pair_action": row.get("action") or "",
+                    "pair_applied_pairs": int(pair_detail.get("applied_pairs") or pair_detail.get("manual_match_applied_pairs") or 0),
+                    "pair_deleted_subtitles": int(pair_detail.get("deleted_subtitles") or 0),
+                    "pair_final_file_count": int(pair_detail.get("final_file_count") or 0),
+                    "pair_linked": True,
+                    "pair_created_at": row.get("created_at") or "",
+                }
+                import_row["summary"] = f"{import_row.get('summary') or '字幕补配完成'}，{row.get('summary') or '已完成手动配对'}"
+                import_row["merged_pair"] = True
+                import_row["merged_pair_status"] = row.get("status") or ""
+                merged_pair_ids.add(str(row.get("id") or ""))
                 continue
             crawl_row = crawl_by_task.get(task_id)
             if not crawl_row:
@@ -104,12 +185,180 @@ async def list_activity_logs(
             crawl_row["merged_pair_status"] = row.get("status") or ""
             merged_pair_ids.add(str(row.get("id") or ""))
 
+        merged_subtitle_import_ids: set[str] = set()
+
+        def _coerce_dt(value: Any) -> Optional[datetime]:
+            try:
+                if not value:
+                    return None
+                return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except Exception:
+                return None
+
+        for row in subtitle_import_rows:
+            if row.get("action") != "pending_execute":
+                continue
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            import_source_path = str(
+                row.get("source_path")
+                or detail.get("preview_source_path")
+                or ""
+            ).strip()
+            import_rj = str(
+                row.get("rjcode")
+                or detail.get("target_rjcode")
+                or detail.get("source_rjcode")
+                or ""
+            ).strip().upper()
+            import_dt = _coerce_dt(row.get("created_at"))
+            best_auto_row = None
+            best_seconds = None
+            for candidate in auto_import_rows:
+                if candidate.get("status") not in {"success", "completed"}:
+                    continue
+                candidate_detail = candidate.get("detail") if isinstance(candidate.get("detail"), dict) else {}
+                candidate_source_mode = str(candidate_detail.get("source_mode") or "").strip()
+                if candidate_source_mode != "linked_translation_archive_pending":
+                    continue
+                candidate_source_path = str(candidate.get("source_path") or "").strip()
+                if import_source_path and candidate_source_path != import_source_path:
+                    continue
+                candidate_rj = str(
+                    candidate.get("rjcode")
+                    or candidate_detail.get("linked_target_rjcode")
+                    or candidate_detail.get("linked_source_rjcode")
+                    or ""
+                ).strip().upper()
+                if import_rj and candidate_rj and candidate_rj != import_rj:
+                    continue
+                candidate_dt = _coerce_dt(candidate.get("created_at"))
+                if not import_dt or not candidate_dt or candidate_dt > import_dt:
+                    continue
+                seconds = (import_dt - candidate_dt).total_seconds()
+                if seconds < 0 or seconds > 7 * 24 * 3600:
+                    continue
+                if best_seconds is None or seconds < best_seconds:
+                    best_seconds = seconds
+                    best_auto_row = candidate
+            if not best_auto_row:
+                continue
+
+            auto_detail = best_auto_row.get("detail") if isinstance(best_auto_row.get("detail"), dict) else {}
+            row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            best_auto_row["detail"] = {
+                **auto_detail,
+                "import_summary": row.get("summary") or "",
+                "import_status": row.get("status") or "",
+                "import_action": row.get("action") or "",
+                "import_created_at": row.get("created_at") or "",
+                "import_task_id": str(row_detail.get("task_id") or row.get("task_id") or "").strip() or None,
+                "import_final_file_count": int(row_detail.get("final_file_count") or 0),
+                "import_record_id": row_detail.get("record_id"),
+                "import_linked": True,
+                "source_rjcode": row_detail.get("source_rjcode") or auto_detail.get("linked_source_rjcode"),
+                "target_rjcode": row_detail.get("target_rjcode") or auto_detail.get("linked_target_rjcode"),
+            }
+            if row_detail.get("pair_linked"):
+                best_auto_row["detail"] = {
+                    **best_auto_row["detail"],
+                    "pair_summary": row_detail.get("pair_summary") or "",
+                    "pair_status": row_detail.get("pair_status") or "",
+                    "pair_action": row_detail.get("pair_action") or "",
+                    "pair_applied_pairs": int(row_detail.get("pair_applied_pairs") or 0),
+                    "pair_deleted_subtitles": int(row_detail.get("pair_deleted_subtitles") or 0),
+                    "pair_final_file_count": int(row_detail.get("pair_final_file_count") or 0),
+                    "pair_linked": True,
+                    "pair_created_at": row_detail.get("pair_created_at") or "",
+                }
+                best_auto_row["merged_pair"] = True
+                best_auto_row["merged_pair_status"] = row_detail.get("pair_status") or ""
+
+            summary_parts = [str(best_auto_row.get("summary") or "").strip()]
+            if row.get("summary"):
+                summary_parts.append(str(row.get("summary") or "").strip())
+            pair_summary = str((row_detail.get("pair_summary") if isinstance(row_detail, dict) else "") or "").strip()
+            if pair_summary:
+                summary_parts.append(pair_summary)
+            best_auto_row["summary"] = "；".join([part for part in summary_parts if part])[:4000]
+            best_auto_row["merged_subtitle_import"] = True
+            best_auto_row["merged_subtitle_import_status"] = row.get("status") or ""
+            merged_subtitle_import_ids.add(str(row.get("id") or ""))
+
+        for row in rows:
+            if row.get("category") != "pipeline_filter" or row.get("action") != "filter_delete_apply":
+                continue
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            session_key = str(detail.get("session_key") or "").strip()
+            preview_row = preview_by_session.get(session_key) if session_key else None
+            if not preview_row:
+                apply_path = str(row.get("source_path") or "").strip()
+                apply_dt = _coerce_dt(row.get("created_at"))
+                closest_row = None
+                closest_seconds = None
+                for candidate in preview_rows:
+                    if str(candidate.get("id") or "") in merged_filter_preview_ids:
+                        continue
+                    if str(candidate.get("source_path") or "").strip() != apply_path:
+                        continue
+                    candidate_dt = _coerce_dt(candidate.get("created_at"))
+                    if not apply_dt or not candidate_dt or candidate_dt > apply_dt:
+                        continue
+                    seconds = (apply_dt - candidate_dt).total_seconds()
+                    if seconds < 0 or seconds > 1800:
+                        continue
+                    if closest_seconds is None or seconds < closest_seconds:
+                        closest_seconds = seconds
+                        closest_row = candidate
+                preview_row = closest_row
+            if not preview_row:
+                continue
+
+            preview_detail = preview_row.get("detail") if isinstance(preview_row.get("detail"), dict) else {}
+            row["detail"] = {
+                **preview_detail,
+                **detail,
+                "preview_summary": preview_row.get("summary") or "",
+                "preview_status": preview_row.get("status") or "",
+                "preview_action": preview_row.get("action") or "",
+                "preview_created_at": preview_row.get("created_at") or "",
+                "preview_linked": True,
+            }
+            preview_selected_count = int(preview_detail.get("selected_count") or 0)
+            preview_selected_size = int(preview_detail.get("selected_size") or 0)
+            success_count = int(detail.get("success_count") or 0)
+            failed_count = int(detail.get("failed_count") or 0)
+            deleted_bytes = int(detail.get("deleted_bytes") or 0)
+            summary_parts = []
+            if preview_selected_count > 0:
+                preview_part = f"预审命中 {preview_selected_count} 项"
+                if preview_selected_size > 0:
+                    preview_part += f" · {_format_bytes_short(preview_selected_size)}"
+                summary_parts.append(preview_part)
+            if success_count > 0 or failed_count > 0 or deleted_bytes > 0:
+                delete_part = f"删除 {success_count} 项"
+                if failed_count > 0:
+                    delete_part += f" / 失败 {failed_count} 项"
+                if deleted_bytes > 0:
+                    delete_part += f" · {_format_bytes_short(deleted_bytes)}"
+                summary_parts.append(delete_part)
+            row["summary"] = "；".join(summary_parts) or (preview_row.get("summary") or row.get("summary") or "删除预审")
+            row["merged_filter_delete"] = True
+            row["merged_filter_delete_status"] = row.get("status") or ""
+            merged_filter_preview_ids.add(str(preview_row.get("id") or ""))
+
         items: list[dict[str, Any]] = []
         for row in rows:
+            if str(row.get("id") or "") in superseded_crawl_ids:
+                continue
             if str(row.get("id") or "") in merged_pair_ids:
+                continue
+            if str(row.get("id") or "") in merged_subtitle_import_ids:
+                continue
+            if str(row.get("id") or "") in merged_filter_preview_ids:
                 continue
             row["category_label"] = CATEGORY_LABELS.get(row.get("category"), row.get("category"))
             items.append(row)
+        items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
         return items
 
     page = max(1, page)
@@ -211,7 +460,19 @@ async def activity_logs_stats(
             metrics["subtitle_import_count"] += int(payload.get("final_file_count") or 1)
         elif category == "extract":
             metrics["extract_count"] += 1
-            metrics["extract_bytes"] += int(payload.get("output_size_bytes") or 0)
+            metrics["extract_bytes"] += int(
+                payload.get("extract_output_bytes")
+                or payload.get("output_size_bytes")
+                or 0
+            )
+        elif category == "auto_import":
+            if payload.get("extract_performed") or payload.get("archive_input"):
+                metrics["extract_count"] += 1
+                metrics["extract_bytes"] += int(
+                    payload.get("extract_output_bytes")
+                    or payload.get("output_size_bytes")
+                    or 0
+                )
         elif category == "pipeline_filter" and action == "filter_delete_apply":
             metrics["delete_count"] += int(payload.get("success_count") or 0)
             metrics["delete_bytes"] += int(payload.get("deleted_bytes") or 0)
@@ -250,6 +511,22 @@ async def create_filter_delete_activity_log(request: Request):
     except Exception as e:
         logger.error(f"写入删除过滤操作记录失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"写入删除过滤操作记录失败: {str(e)}")
+
+
+@app.post("/api/activity-logs/backfill-auto-import-extract")
+async def backfill_auto_import_extract_activity_logs():
+    """一次性回填旧 auto_import 操作记录中的解压字段。"""
+    from ..core.activity_log_service import backfill_auto_import_extract_fields
+
+    try:
+        result = backfill_auto_import_extract_fields()
+        return {
+            "message": "auto_import 解压字段回填完成",
+            **result,
+        }
+    except Exception as e:
+        logger.error(f"回填 auto_import 解压字段失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"回填 auto_import 解压字段失败: {str(e)}")
 
 
 # CORS配置

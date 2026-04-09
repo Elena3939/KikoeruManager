@@ -31,7 +31,7 @@ CATEGORY_LABELS = {
     CATEGORY_SUBTITLE_PAIR: "字幕配对",
     CATEGORY_SUBTITLE_IMPORT: "字幕补配",
     CATEGORY_EXTRACT: "解压",
-    CATEGORY_AUTO_IMPORT: "自动入库",
+    CATEGORY_AUTO_IMPORT: "解压入库",
     CATEGORY_PROCESS_EXISTING: "已有目录处理",
     CATEGORY_PIPELINE_FILTER: "筛选",
     CATEGORY_PIPELINE_METADATA: "元数据",
@@ -110,6 +110,76 @@ def _safe_path_size(path: Any) -> int:
         return total
     except Exception:
         return 0
+
+
+def _resolve_archive_snapshot(task: Any) -> tuple[int, Optional[str]]:
+    source_path = str(getattr(task, "source_path", "") or "").strip()
+    direct_size = _safe_path_size(source_path)
+    if direct_size > 0:
+        return direct_size, source_path
+
+    task_id = str(getattr(task, "id", "") or "").strip()
+    if not task_id:
+        return 0, source_path or None
+
+    try:
+        from ..models.database import ProcessedArchive, SessionLocal
+
+        db = SessionLocal()
+        try:
+            record = (
+                db.query(ProcessedArchive)
+                .filter(ProcessedArchive.task_id == task_id)
+                .order_by(ProcessedArchive.processed_at.desc())
+                .first()
+            )
+            if record is None and source_path:
+                record = (
+                    db.query(ProcessedArchive)
+                    .filter(
+                        (ProcessedArchive.original_path == source_path)
+                        | (ProcessedArchive.current_path == source_path)
+                    )
+                    .order_by(ProcessedArchive.processed_at.desc())
+                    .first()
+                )
+            if record is None:
+                return 0, source_path or None
+            record_size = int(record.file_size or 0)
+            record_path = str(record.current_path or record.original_path or source_path or "").strip() or None
+            if record_size > 0:
+                return record_size, record_path
+            return _safe_path_size(record_path), record_path
+        finally:
+            db.close()
+    except Exception:
+        logger.debug("[操作记录] 回查归档压缩包大小失败", exc_info=True)
+        return 0, source_path or None
+
+
+def _duration_ms_for_task(task: Any) -> int:
+    try:
+        started_at = getattr(task, "started_at", None) or getattr(task, "created_at", None)
+        completed_at = getattr(task, "completed_at", None) or datetime.now()
+        if not started_at or not completed_at:
+            return 0
+        return max(0, int((completed_at - started_at).total_seconds() * 1000))
+    except Exception:
+        return 0
+
+
+def _looks_like_archive_path(path: Any) -> bool:
+    try:
+        name = str(path or "").strip().lower()
+    except Exception:
+        return False
+    if not name:
+        return False
+    archive_exts = (
+        ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz",
+        ".001", ".part1", ".part01"
+    )
+    return name.endswith(archive_exts) or ".part" in name
 
 
 def _sanitize_for_db_json(value: Any, depth: int = 0) -> Any:
@@ -266,15 +336,63 @@ def log_task_lifecycle_event(task) -> None:
             "awaiting_manual_match": bool(meta.get("awaiting_manual_match")),
         }
     elif tt == TaskType.EXTRACT:
+        archive_size_bytes, archive_path = _resolve_archive_snapshot(task)
+        output_size_bytes = _safe_path_size(task.output_path) if st == TaskStatus.COMPLETED else 0
+        duration_ms = _duration_ms_for_task(task)
+        if st == TaskStatus.COMPLETED:
+            summary = (
+                f"{summary or '压缩包解压完成'}，"
+                f"压缩包 {_format_bytes(archive_size_bytes)}，"
+                f"解压产物 {_format_bytes(output_size_bytes)}，"
+                f"耗时 {_format_duration_ms(duration_ms)}"
+            )[:4000]
         detail = {
             "output_path": task.output_path,
-            "source_basename": os.path.basename(str(task.source_path or "")),
-            "output_size_bytes": _safe_path_size(task.output_path) if st == TaskStatus.COMPLETED else 0,
+            "source_basename": os.path.basename(str(archive_path or task.source_path or "")),
+            "archive_path": archive_path,
+            "archive_size_bytes": archive_size_bytes,
+            "output_size_bytes": output_size_bytes,
+            "duration_ms": duration_ms,
         }
     else:
+        archive_input = _looks_like_archive_path(task.source_path)
+        linked_preview = meta.get("linked_subtitle_preview") if isinstance(meta.get("linked_subtitle_preview"), dict) else {}
+        preview_extract_path = str(
+            linked_preview.get("source_subtitle_dir")
+            or linked_preview.get("staged_subtitle_dir")
+            or ""
+        ).strip()
+        extract_output_bytes = 0
+        if st == TaskStatus.COMPLETED and tt == TaskType.AUTO_PROCESS and archive_input:
+            extract_output_bytes = _safe_path_size(task.output_path) if task.output_path else 0
+            if extract_output_bytes <= 0 and preview_extract_path:
+                extract_output_bytes = _safe_path_size(preview_extract_path)
+        archive_size_bytes = 0
+        archive_path = None
+        if archive_input:
+            archive_size_bytes, archive_path = _resolve_archive_snapshot(task)
+        duration_ms = _duration_ms_for_task(task)
+        source_mode = str(meta.get("source_mode") or "").strip()
+        if st == TaskStatus.COMPLETED and tt == TaskType.AUTO_PROCESS and archive_input:
+            extract_label = "预检解包" if source_mode == "linked_translation_archive_pending" and not task.output_path else "解压产物"
+            summary = (
+                f"{summary or '解压入库完成'}，"
+                f"压缩包 {_format_bytes(archive_size_bytes)}，"
+                f"{extract_label} {_format_bytes(extract_output_bytes)}，"
+                f"耗时 {_format_duration_ms(duration_ms)}"
+            )[:4000]
         detail = {
             "output_path": task.output_path,
-            "source_basename": os.path.basename(str(task.source_path or "")),
+            "source_basename": os.path.basename(str(archive_path or task.source_path or "")),
+            "archive_path": archive_path,
+            "archive_input": archive_input,
+            "extract_performed": bool(tt == TaskType.AUTO_PROCESS and archive_input),
+            "extract_output_bytes": extract_output_bytes,
+            "archive_size_bytes": archive_size_bytes,
+            "duration_ms": duration_ms,
+            "source_mode": source_mode or None,
+            "linked_source_rjcode": str(linked_preview.get("source_rjcode") or "").strip().upper() or None,
+            "linked_target_rjcode": str(linked_preview.get("target_rjcode") or "").strip().upper() or None,
         }
 
     write_activity_log(
@@ -356,7 +474,20 @@ def log_from_subtitle_import_result(
     if err:
         msg = f"{msg}: {err}"[:1900]
     path = (archive_path or folder_path or str(result.get("source_path") or "") or "").strip()
-    detail = {k: result.get(k) for k in ("task_id", "final_file_count", "record_id") if result.get(k) is not None}
+    preview_source_path = str(preview.get("source_path") or "").strip()
+    preview_source_rjcode = str(preview.get("source_rjcode") or "").strip().upper()
+    preview_target_rjcode = str(preview.get("target_rjcode") or "").strip().upper()
+    detail = {
+        k: result.get(k)
+        for k in ("task_id", "final_file_count", "record_id")
+        if result.get(k) is not None
+    }
+    if preview_source_path:
+        detail["preview_source_path"] = preview_source_path
+    if preview_source_rjcode:
+        detail["source_rjcode"] = preview_source_rjcode
+    if preview_target_rjcode:
+        detail["target_rjcode"] = preview_target_rjcode
     log_subtitle_import_action(
         action=action,
         success=success,
@@ -390,6 +521,7 @@ def log_filter_delete_preview_result(payload: Dict[str, Any]) -> None:
 
     detail = {
         "mode": "filter_delete_preview",
+        "session_key": str(payload.get("session_key") or "").strip() or None,
         "scope_label": scope_label,
         "folder_name": payload.get("folder_name"),
         "folder_path": folder_path,
@@ -442,6 +574,8 @@ def log_filter_delete_apply_result(payload: Dict[str, Any]) -> None:
 
     detail = {
         "mode": "filter_delete_apply",
+        "session_key": str(payload.get("session_key") or "").strip() or None,
+        "execution_key": str(payload.get("execution_key") or "").strip() or None,
         "scope_label": scope_label,
         "folder_name": payload.get("folder_name"),
         "folder_path": folder_path,
@@ -468,3 +602,101 @@ def log_filter_delete_apply_result(payload: Dict[str, Any]) -> None:
         detail=detail,
         source_path=folder_path,
     )
+
+
+def backfill_auto_import_extract_fields() -> Dict[str, int]:
+    """一次性回填旧 auto_import 记录中的压缩包大小、解压标记与解压产物大小。"""
+    from ..models.database import ActivityLog, ProcessedArchive, SessionLocal
+
+    db = SessionLocal()
+    scanned = 0
+    updated = 0
+    skipped = 0
+    failed = 0
+    try:
+        rows = (
+            db.query(ActivityLog)
+            .filter(ActivityLog.category == CATEGORY_AUTO_IMPORT)
+            .all()
+        )
+        for row in rows:
+            scanned += 1
+            try:
+                detail = row.detail if isinstance(row.detail, dict) else {}
+                source_path = str(row.source_path or "").strip()
+                output_path = str(detail.get("output_path") or "").strip()
+                is_archive = _looks_like_archive_path(source_path)
+                current_archive_input = detail.get("archive_input")
+                current_extract_performed = detail.get("extract_performed")
+                current_extract_output_bytes = detail.get("extract_output_bytes")
+                current_archive_size_bytes = detail.get("archive_size_bytes")
+
+                next_archive_input = bool(is_archive)
+                next_extract_performed = bool(is_archive and row.status == "success")
+                next_extract_output_bytes = (
+                    _safe_path_size(output_path)
+                    if next_extract_performed and output_path
+                    else int(current_extract_output_bytes or 0)
+                )
+                next_archive_size_bytes = int(current_archive_size_bytes or 0)
+                archive_path = source_path
+                if next_archive_input:
+                    next_archive_size_bytes = _safe_path_size(source_path)
+                    if next_archive_size_bytes <= 0 and row.task_id:
+                        archive_record = (
+                            db.query(ProcessedArchive)
+                            .filter(ProcessedArchive.task_id == row.task_id)
+                            .order_by(ProcessedArchive.processed_at.desc())
+                            .first()
+                        )
+                        if archive_record is not None:
+                            next_archive_size_bytes = int(archive_record.file_size or 0)
+                            archive_path = str(archive_record.current_path or archive_record.original_path or source_path or "").strip()
+
+                needs_update = False
+                if current_archive_input is None:
+                    detail["archive_input"] = next_archive_input
+                    needs_update = True
+                if current_extract_performed is None and next_archive_input:
+                    detail["extract_performed"] = next_extract_performed
+                    needs_update = True
+                if (current_extract_output_bytes is None or int(current_extract_output_bytes or 0) <= 0) and next_extract_performed:
+                    detail["extract_output_bytes"] = int(next_extract_output_bytes or 0)
+                    needs_update = True
+                if (current_archive_size_bytes is None or int(current_archive_size_bytes or 0) <= 0) and next_archive_input:
+                    detail["archive_size_bytes"] = int(next_archive_size_bytes or 0)
+                    needs_update = True
+                if archive_path and archive_path != str(detail.get("archive_path") or "").strip():
+                    detail["archive_path"] = archive_path
+                    needs_update = True
+
+                if needs_update:
+                    row.detail = _sanitize_for_db_json(detail)
+                    if row.status == "success" and next_archive_input:
+                        duration_ms = int(detail.get("duration_ms") or 0)
+                        extract_output_bytes = int(detail.get("extract_output_bytes") or 0)
+                        extract_label = "预检解包" if str(detail.get("source_mode") or "").strip() == "linked_translation_archive_pending" and not output_path else "解压产物"
+                        row.summary = (
+                            f"{str(row.summary or '解压入库完成').split('，压缩包 ')[0]}，"
+                            f"压缩包 {_format_bytes(next_archive_size_bytes)}，"
+                            f"{extract_label} {_format_bytes(extract_output_bytes)}，"
+                            f"耗时 {_format_duration_ms(duration_ms)}"
+                        )[:4000]
+                    updated += 1
+                else:
+                    skipped += 1
+            except Exception:
+                failed += 1
+                logger.warning("[操作记录] 回填 auto_import 解压字段失败: id=%s", getattr(row, "id", None), exc_info=True)
+        db.commit()
+        return {
+            "scanned": scanned,
+            "updated": updated,
+            "skipped": skipped,
+            "failed": failed,
+        }
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
