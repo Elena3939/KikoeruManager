@@ -194,7 +194,7 @@ class ConflictResolutionService:
 
     def get_available_actions(self, conflict) -> list[str]:
         metadata = dict(conflict.new_metadata or {})
-        if str(conflict.conflict_type or "").upper() == "EXTRACT_FAILED":
+        if str(conflict.conflict_type or "").upper() in {"EXTRACT_FAILED", "PROCESS_FAILED"}:
             source_path = str(conflict.new_path or "").strip()
             if source_path and os.path.exists(source_path):
                 return ["RETRY", "SKIP"]

@@ -339,17 +339,22 @@ class SmartClassifier:
         
         db = next(get_db())
         try:
-            # 检查是否已存在相同的冲突记录（相同的RJ号）
-            # 无论新文件路径是否相同，只要是同一个RJ号且状态为PENDING，就不添加
-            if rjcode:
-                existing_conflict = db.query(ConflictWork).filter(
-                    ConflictWork.rjcode == rjcode,
-                    ConflictWork.status == 'PENDING'
+            pending_query = db.query(ConflictWork).filter(
+                ConflictWork.status == 'PENDING'
+            )
+
+            # 失败问题项允许同一 RJ 下保留多条不同来源记录；
+            # 否则会把后来的失败直接吞掉，任务中心里看得到失败，但问题作品页里没有。
+            existing_conflict = None
+            if new_path:
+                existing_conflict = pending_query.filter(
+                    ConflictWork.new_path == new_path
                 ).first()
-            else:
-                existing_conflict = db.query(ConflictWork).filter(
-                    ConflictWork.new_path == new_path,
-                    ConflictWork.status == 'PENDING'
+
+            if not existing_conflict and rjcode and conflict_type not in {'EXTRACT_FAILED', 'PROCESS_FAILED'}:
+                existing_conflict = pending_query.filter(
+                    ConflictWork.rjcode == rjcode,
+                    ConflictWork.conflict_type == conflict_type,
                 ).first()
             
             if existing_conflict:
@@ -424,16 +429,20 @@ class SmartClassifier:
             return ''
         
         elif rule.type == 'maker':
-            maker_name = metadata.get('maker_name', '')
-            
-            # 优先从文件夹名提取社团名
-            if source_path:
+            maker_name = (
+                metadata.get('classification_maker_name')
+                or metadata.get('original_maker_name')
+                or metadata.get('maker_name', '')
+            )
+
+            # 只在元数据缺失时才退回到文件夹名提取，避免把翻译者名覆盖成社团名。
+            if not maker_name and source_path:
                 folder_name = os.path.basename(source_path)
                 extracted_maker = self._extract_maker_from_folder_name(folder_name)
                 if extracted_maker:
-                    logger.info(f"[分类] 从文件夹名提取到社团名: {extracted_maker} (DLsite: {maker_name})")
+                    logger.info(f"[分类] 元数据缺少社团名，回退使用文件夹名提取结果: {extracted_maker}")
                     maker_name = extracted_maker
-            
+
             if not maker_name:
                 return None
             

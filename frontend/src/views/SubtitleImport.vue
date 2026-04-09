@@ -434,7 +434,7 @@ const SUBTITLE_IMPORT_WORKBENCH_BACKGROUND_KEY = 'kikoeru.ui.subtitleImport.work
 const SUBTITLE_IMPORT_QUEUE_STATE_KEY = 'kikoeru.ui.subtitleImport.workbenchQueueState'
 const SUBTITLE_IMPORT_TASK_DRAFTS_KEY = 'kikoeru.ui.subtitleImport.taskDrafts'
 const AUTO_IMPORT_POLL_INTERVAL_MS = 2500
-const PENDING_REFRESH_INTERVAL_MS = 1500
+const PENDING_REFRESH_INTERVAL_MS = 4000
 
 function loadJson(key, fallback) {
   try {

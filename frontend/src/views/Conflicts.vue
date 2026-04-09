@@ -114,21 +114,21 @@
         </div>
 
         <el-alert
-          v-if="isExtractFailed(activeConflict)"
-          title="这是一条解压失败问题项，不是重复作品冲突"
+          v-if="isFailureConflict(activeConflict)"
+          :title="isExtractFailed(activeConflict) ? '这是一条解压失败问题项，不是重复作品冲突' : '这是一条处理失败问题项，不是重复作品冲突'"
           type="error"
           show-icon
           :closable="false"
           class="detail-alert"
         >
           <template #default>
-            <span>{{ activeConflict.new_metadata?.error_message || '解压阶段失败，请检查密码、分卷完整性或压缩包本身是否损坏。' }}</span>
+            <span>{{ activeConflict.new_metadata?.error_message || (isExtractFailed(activeConflict) ? '解压阶段失败，请检查密码、分卷完整性或压缩包本身是否损坏。' : '导入流程处理中途失败，请按失败原因修复后重试。') }}</span>
           </template>
         </el-alert>
 
         <div class="detail-grid">
           <el-card shadow="never">
-            <template #header>{{ isExtractFailed(activeConflict) ? '失败来源' : '当前新内容' }}</template>
+            <template #header>{{ isFailureConflict(activeConflict) ? '失败来源' : '当前新内容' }}</template>
             <div class="meta-block">
               <label>来源路径</label>
               <pre>{{ getConflictSourcePath(activeConflict) }}</pre>
@@ -146,7 +146,7 @@
               <span>{{ formatTimestamp(activeConflict.context?.source?.stats?.created_at) }}</span>
             </div>
             <div class="meta-block" v-if="activeConflict.new_metadata">
-              <label>{{ isExtractFailed(activeConflict) ? '附带信息' : '作品信息' }}</label>
+              <label>{{ isFailureConflict(activeConflict) ? '附带信息' : '作品信息' }}</label>
               <span>{{ activeConflict.new_metadata.work_name || '-' }}</span>
               <span>{{ activeConflict.new_metadata.maker_name || '-' }}</span>
               <span>{{ Array.isArray(activeConflict.new_metadata.cvs) ? activeConflict.new_metadata.cvs.join(' / ') : '-' }}</span>
@@ -158,42 +158,42 @@
           </el-card>
 
           <el-card shadow="never">
-            <template #header>{{ isExtractFailed(activeConflict) ? '处理建议' : '已存在目录' }}</template>
+            <template #header>{{ isFailureConflict(activeConflict) ? '处理建议' : '已存在目录' }}</template>
             <div class="meta-block">
-              <label>{{ isExtractFailed(activeConflict) ? '建议动作' : '目标路径' }}</label>
-              <pre v-if="!isExtractFailed(activeConflict)">{{ getExistingConflictPath(activeConflict) }}</pre>
-              <span v-else>可直接跳过并删除当前失败来源；如果你已经补充了正确密码或完整分卷，建议回到任务列表重新处理。</span>
+              <label>{{ isFailureConflict(activeConflict) ? '建议动作' : '目标路径' }}</label>
+              <pre v-if="!isFailureConflict(activeConflict)">{{ getExistingConflictPath(activeConflict) }}</pre>
+              <span v-else>{{ isExtractFailed(activeConflict) ? '可直接跳过并删除当前失败来源；如果你已经补充了正确密码或完整分卷，建议回到任务列表重新处理。' : '可先根据失败原因修复来源内容后重试；如果确认不再处理，也可以直接跳过删除当前失败来源。' }}</span>
             </div>
-            <div class="meta-block" v-if="!isExtractFailed(activeConflict)">
+            <div class="meta-block" v-if="!isFailureConflict(activeConflict)">
               <label>落地位置</label>
               <span>{{ activeConflict.context?.existing?.library_name || '默认库存' }}</span>
               <span>{{ activeConflict.context?.existing?.is_remote ? '群晖远程目录' : '本地目录' }}</span>
             </div>
-            <div class="meta-block" v-if="!isExtractFailed(activeConflict)">
+            <div class="meta-block" v-if="!isFailureConflict(activeConflict)">
               <label>文件大小</label>
               <span>{{ formatFileSize(activeConflict.context?.existing?.stats?.size) }}</span>
             </div>
-            <div class="meta-block" v-if="!isExtractFailed(activeConflict)">
+            <div class="meta-block" v-if="!isFailureConflict(activeConflict)">
               <label>创建时间</label>
               <span>{{ formatTimestamp(activeConflict.context?.existing?.stats?.created_at) }}</span>
             </div>
             <div class="meta-block">
-              <label>{{ isExtractFailed(activeConflict) ? '记录时间' : '检测时间' }}</label>
+              <label>{{ isFailureConflict(activeConflict) ? '记录时间' : '检测时间' }}</label>
               <span>{{ formatDate(activeConflict.created_at) }}</span>
             </div>
           </el-card>
         </div>
 
         <el-card shadow="never" class="action-help">
-          <template #header>{{ isExtractFailed(activeConflict) ? '失败说明' : '动作说明' }}</template>
-          <ul v-if="!isExtractFailed(activeConflict)" class="help-list">
+          <template #header>{{ isFailureConflict(activeConflict) ? '失败说明' : '动作说明' }}</template>
+          <ul v-if="!isFailureConflict(activeConflict)" class="help-list">
             <li>保留新版：先经过删除审查，再安全替换已有目录，失败时走最小化破坏路径。</li>
             <li>跳过：不解压，直接删除当前压缩包或待处理目录，原有目录保持不变。</li>
             <li>合并：进入组件文件夹对比视图，逐文件决定保留新文件、旧文件或删除。</li>
           </ul>
           <ul v-else class="help-list">
-            <li>当前问题发生在解压阶段，不代表库存中已经有重复作品。</li>
-            <li>如果错误是密码不正确、分卷缺失或压缩包损坏，修复后重新处理通常更合适。</li>
+            <li>{{ isExtractFailed(activeConflict) ? '当前问题发生在解压阶段，不代表库存中已经有重复作品。' : '当前问题发生在导入处理链路中，不代表库存中已经有重复作品。' }}</li>
+            <li>{{ isExtractFailed(activeConflict) ? '如果错误是密码不正确、分卷缺失或压缩包损坏，修复后重新处理通常更合适。' : '如果错误发生在元数据、重命名、过滤或分类阶段，优先按当前失败原因排查对应链路。' }}</li>
             <li>如果确认不再处理这个包，可以直接点击“跳过”删除失败来源。</li>
           </ul>
         </el-card>
@@ -316,6 +316,10 @@ function canUseAction(conflict, action) {
 
 function isExtractFailed(conflict) {
   return conflict?.conflict_type === 'EXTRACT_FAILED'
+}
+
+function isFailureConflict(conflict) {
+  return ['EXTRACT_FAILED', 'PROCESS_FAILED'].includes(conflict?.conflict_type)
 }
 
 function isConflictSelected(conflictId) {
@@ -860,7 +864,8 @@ function getConflictTypeLabel(type) {
     LANGUAGE_VARIANT: '多语言版本',
     MULTIPLE_VERSIONS: '多版本冲突',
     LINKED_WORK: '关联作品',
-    EXTRACT_FAILED: '解压失败'
+    EXTRACT_FAILED: '解压失败',
+    PROCESS_FAILED: '处理失败'
   }[type] || type || '未知冲突'
 }
 

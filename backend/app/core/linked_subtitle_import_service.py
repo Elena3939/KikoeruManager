@@ -32,6 +32,7 @@ class LinkedSubtitleImportService:
     REMOTE_SEARCH_RETRY_DELAYS: tuple[float, ...] = ()
     REMOTE_PENDING_REASON = "远程库存暂未检出原作目录，请稍后重试"
     EXISTING_SUBTITLE_REASON = "原作目录已有字幕，按重复作品处理"
+    PENDING_REFRESH_MIN_INTERVAL_SECONDS = 12
     KIKOERU_UNCERTAIN_SOURCES = {
         "kikoeru_timeout",
         "kikoeru_exception",
@@ -2327,6 +2328,31 @@ class LinkedSubtitleImportService:
             "can_execute": self._can_execute_pending_import(preview),
         }
 
+    def _should_refresh_pending_record(
+        self,
+        conflict: ConflictWork,
+        preview: Dict[str, Any],
+        *,
+        refresh_candidates: bool,
+        refresh_min_interval_seconds: int,
+    ) -> bool:
+        if not refresh_candidates:
+            return False
+        if not self._should_retry_pending_candidate_search(preview):
+            return False
+
+        analysis_info = dict(conflict.analysis_info or {})
+        refreshed_at = str(analysis_info.get("candidate_refreshed_at") or "").strip()
+        if not refreshed_at:
+            return True
+
+        try:
+            refreshed_time = datetime.fromisoformat(refreshed_at)
+        except ValueError:
+            return True
+
+        return (datetime.now() - refreshed_time).total_seconds() >= max(1, int(refresh_min_interval_seconds or 0))
+
     async def queue_pending_archive_import(self, task: Task, rjcode: str) -> Dict[str, Any]:
         hinted_rjcode = self._extract_rjcode(
             rjcode
@@ -2444,7 +2470,12 @@ class LinkedSubtitleImportService:
         finally:
             db.close()
 
-    async def list_pending_imports(self) -> List[Dict[str, Any]]:
+    async def list_pending_imports(
+        self,
+        *,
+        refresh_candidates: bool = True,
+        refresh_min_interval_seconds: int = PENDING_REFRESH_MIN_INTERVAL_SECONDS,
+    ) -> List[Dict[str, Any]]:
         db = next(get_db())
         try:
             rows = db.query(ConflictWork).filter(
@@ -2459,7 +2490,15 @@ class LinkedSubtitleImportService:
                     original_preview,
                     source_path=str(row.new_path or ""),
                 )
-                refreshed_preview = await self._refresh_pending_preview_candidates(preview)
+                if self._should_refresh_pending_record(
+                    row,
+                    preview,
+                    refresh_candidates=refresh_candidates,
+                    refresh_min_interval_seconds=refresh_min_interval_seconds,
+                ):
+                    refreshed_preview = await self._refresh_pending_preview_candidates(preview)
+                else:
+                    refreshed_preview = self._refresh_preview_execution_state(dict(preview or {}))
                 if not self._should_create_pending_import(refreshed_preview):
                     converted_conflict = None
                     if self._is_existing_subtitle_duplicate_preview(refreshed_preview):

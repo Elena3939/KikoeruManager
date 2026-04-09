@@ -538,17 +538,15 @@ async function refreshData(options = {}) {
   }
 
   try {
-    const [overviewData, listData] = await Promise.all([
-      taskCenterApi.overview(),
-      taskCenterApi.list({ limit: 20 })
-    ])
+    const overviewData = await taskCenterApi.overview()
     if (currentRequestId !== refreshRequestId) {
       return
     }
     taskCenterOverview.value = overviewData || {}
-    const orderedItems = Array.isArray(listData) ? listData : []
-    const activeItems = orderedItems.filter(item => dashboardActiveStatuses.has(String(item?.status || '')))
-    const recentItems = Array.isArray(overviewData?.recent_items) ? overviewData.recent_items : orderedItems
+    const activeItems = Array.isArray(overviewData?.active_items)
+      ? overviewData.active_items.filter(item => dashboardActiveStatuses.has(String(item?.status || '')))
+      : []
+    const recentItems = Array.isArray(overviewData?.recent_items) ? overviewData.recent_items : []
     recentTasks.value = activeItems.length ? activeItems.slice(0, 6) : recentItems.slice(0, 5)
 
     // 获取当前完成的任务数

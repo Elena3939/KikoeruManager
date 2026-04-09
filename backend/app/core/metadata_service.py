@@ -120,6 +120,43 @@ class MetadataService:
             self._cache_metadata(metadata)
 
         return metadata.to_dict()
+
+    async def _resolve_original_maker_fields(self, product: Dict, rjcode: str) -> Dict[str, str]:
+        translation_info = dict(product.get('translation_info') or {})
+        original_workno = str(
+            translation_info.get('original_workno')
+            or translation_info.get('parent_workno')
+            or ''
+        ).strip().upper()
+        is_original = translation_info.get('is_original', True)
+
+        maker_fields = {
+            'maker_id': product.get('maker_id', '') or '',
+            'maker_name': product.get('maker_name', '') or '',
+            'original_workno': original_workno,
+        }
+        if is_original or not original_workno:
+            return maker_fields
+
+        try:
+            product_info = await get_dlsite_service().get_product_info(
+                original_workno,
+                locale='ja-JP',
+            )
+            original_product = dict((product_info or {}).get('product') or {})
+            if original_product:
+                maker_fields['maker_id'] = original_product.get('maker_id', '') or maker_fields['maker_id']
+                maker_fields['maker_name'] = original_product.get('maker_name', '') or maker_fields['maker_name']
+                logger.info(
+                    "[%s] 使用原作社团信息: original=%s maker_name=%s",
+                    rjcode,
+                    original_workno,
+                    maker_fields['maker_name'],
+                )
+        except Exception as exc:
+            logger.warning("[%s] 获取原作社团信息失败 %s: %s", rjcode, original_workno, exc)
+
+        return maker_fields
     
     def _extract_rjcode(self, path: str, search_subfolders: bool = True) -> Optional[str]:
         """从路径中提取 RJ 号。
@@ -232,9 +269,9 @@ class MetadataService:
         metadata = WorkMetadata()
         metadata.rjcode = product.get('workno', rjcode)
         metadata.work_name = product.get('work_name', '')
-
-        metadata.maker_id = product.get('maker_id', '')
-        metadata.maker_name = product.get('maker_name', '')
+        maker_fields = await self._resolve_original_maker_fields(product, rjcode)
+        metadata.maker_id = maker_fields.get('maker_id', '')
+        metadata.maker_name = maker_fields.get('maker_name', '')
         metadata.release_date = product.get('regist_date', '')[:10]
         metadata.series_name = product.get('series_name')
         metadata.series_id = product.get('series_id')
@@ -412,9 +449,10 @@ class MetadataService:
             metadata = WorkMetadata()
             metadata.rjcode = product.get('workno', rjcode)
             metadata.work_name = product.get('work_name', '')
-            
-            metadata.maker_id = product.get('maker_id', '')
-            metadata.maker_name = product.get('maker_name', '')
+
+            maker_fields = await self._resolve_original_maker_fields(product, rjcode)
+            metadata.maker_id = maker_fields.get('maker_id', '')
+            metadata.maker_name = maker_fields.get('maker_name', '')
             metadata.release_date = product.get('regist_date', '')[:10]
             metadata.series_name = product.get('series_name')
             metadata.series_id = product.get('series_id')

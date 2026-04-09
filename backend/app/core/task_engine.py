@@ -433,8 +433,33 @@ class TaskEngine:
         finally:
             db.close()
 
+    def _is_hidden_task(self, task: Task) -> bool:
+        metadata = dict(task.task_metadata or {})
+        return bool(metadata.get("hidden_in_task_lists"))
+
+    def _mark_task_superseded(self, task: Task, superseded_by_task_id: str, output_path: str = ""):
+        metadata = dict(task.task_metadata or {})
+        if str(metadata.get("superseded_by_task_id") or "").strip() == superseded_by_task_id and self._is_hidden_task(task):
+            return
+
+        metadata["superseded_by_task_id"] = superseded_by_task_id
+        metadata["superseded_at"] = datetime.now().isoformat()
+        metadata["superseded_reason"] = "later_completed"
+        metadata["hidden_in_task_lists"] = True
+        if output_path:
+            metadata["superseded_output_path"] = output_path
+        task.task_metadata = metadata
+
+        if task.status != TaskStatus.COMPLETED:
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = task.completed_at or datetime.now()
+        task.error_message = None
+        task.current_step = f"已由后续成功任务覆盖: {superseded_by_task_id}"
+
     def _task_matches_recovered_success(self, candidate: Task, source_path: str, rjcode: str, recovered_task_id: str) -> bool:
-        if not candidate or candidate.id == recovered_task_id or candidate.status != TaskStatus.FAILED:
+        if not candidate or candidate.id == recovered_task_id:
+            return False
+        if candidate.status == TaskStatus.COMPLETED:
             return False
 
         candidate_rjcode = self._extract_rjcode(
@@ -507,27 +532,16 @@ class TaskEngine:
                 if failed_task_id:
                     failed_task = self.get_task(failed_task_id)
                     if failed_task and self._task_matches_recovered_success(failed_task, source_path, rjcode, task.id):
-                        failed_metadata = dict(failed_task.task_metadata or {})
-                        failed_metadata["superseded_by_task_id"] = task.id
-                        failed_metadata["superseded_at"] = datetime.now().isoformat()
-                        failed_metadata["superseded_reason"] = "later_completed"
-                        if task.output_path:
-                            failed_metadata["superseded_output_path"] = task.output_path
-                        failed_task.task_metadata = failed_metadata
+                        self._mark_task_superseded(failed_task, task.id, task.output_path)
                         recovered_failed_task_ids.append(failed_task.id)
 
             for candidate in self.tasks.values():
                 if not self._task_matches_recovered_success(candidate, source_path, rjcode, task.id):
                     continue
                 candidate_metadata = dict(candidate.task_metadata or {})
-                if str(candidate_metadata.get("superseded_by_task_id") or "").strip() == task.id:
+                if str(candidate_metadata.get("superseded_by_task_id") or "").strip() == task.id and self._is_hidden_task(candidate):
                     continue
-                candidate_metadata["superseded_by_task_id"] = task.id
-                candidate_metadata["superseded_at"] = datetime.now().isoformat()
-                candidate_metadata["superseded_reason"] = "later_completed"
-                if task.output_path:
-                    candidate_metadata["superseded_output_path"] = task.output_path
-                candidate.task_metadata = candidate_metadata
+                self._mark_task_superseded(candidate, task.id, task.output_path)
                 recovered_failed_task_ids.append(candidate.id)
 
             recovered_failed_task_ids = list(dict.fromkeys(recovered_failed_task_ids))
@@ -1377,11 +1391,14 @@ class TaskEngine:
             return True
         return False
     
-    def get_all_tasks(self) -> list[Task]:
-        """获取所有任务，按创建时间倒序排列"""
+    def get_all_tasks(self, include_hidden: bool = False) -> list[Task]:
+        """获取所有任务，按创建时间倒序排列。默认隐藏已被后续成功覆盖的旧任务。"""
         for task in self.tasks.values():
             self._ensure_task_context(task)
-        return sorted(self.tasks.values(), key=lambda t: t.created_at, reverse=True)
+        tasks = list(self.tasks.values())
+        if not include_hidden:
+            tasks = [t for t in tasks if not self._is_hidden_task(t)]
+        return sorted(tasks, key=lambda t: t.created_at, reverse=True)
     
     def get_pending_tasks(self) -> list[Task]:
         """获取待处理任务，按创建时间倒序排列"""
@@ -1395,7 +1412,7 @@ class TaskEngine:
     
     def get_completed_tasks(self) -> list[Task]:
         """获取已完成任务，按创建时间倒序排列"""
-        return sorted([t for t in self.tasks.values() if t.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]],
+        return sorted([t for t in self.tasks.values() if t.status in [TaskStatus.COMPLETED, TaskStatus.FAILED] and not self._is_hidden_task(t)],
                      key=lambda t: t.created_at, reverse=True)
 
     def _save_waiting_retry_task(self, task: Task, subtitle_folder: str, work_title: str, retry_reason: str, retry_after):

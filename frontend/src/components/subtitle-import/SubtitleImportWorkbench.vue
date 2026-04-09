@@ -405,6 +405,7 @@ const subtitleOptions = ref(getSubtitleWorkbenchOptions())
 const taskLoading = ref(false)
 const manualRefreshing = ref(false)
 const taskLoadedOnce = ref(false)
+const taskRefreshing = ref(false)
 const linkedTasks = ref([])
 const activeTask = ref(null)
 const queueState = loadJson(SUBTITLE_IMPORT_QUEUE_STATE_KEY, {})
@@ -836,13 +837,19 @@ function buildCleanupSummary(result = {}) {
 }
 
 async function refreshTaskStatus(showMessage = false, options = {}) {
-  const { inspect = true, forceInspect = false, showOverlay } = options
+  const { inspect = true, forceInspect = false, showOverlay, silent = false } = options
   const shouldShowOverlay = typeof showOverlay === 'boolean'
     ? showOverlay
-    : (!taskLoadedOnce.value && !taskLoading.value)
+    : (!silent && !taskLoadedOnce.value && !taskLoading.value)
+
+  if (taskRefreshing.value) {
+    return
+  }
 
   manualRefreshing.value = showMessage
-  if (shouldShowOverlay) {
+  const shouldShowLoading = shouldShowOverlay || (!silent && (!linkedTasks.value.length || showMessage))
+  taskRefreshing.value = true
+  if (shouldShowLoading) {
     taskLoading.value = true
   }
   try {
@@ -877,7 +884,8 @@ async function refreshTaskStatus(showMessage = false, options = {}) {
     ElMessage.error('获取字幕补配任务状态失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     manualRefreshing.value = false
-    if (shouldShowOverlay) {
+    taskRefreshing.value = false
+    if (shouldShowLoading) {
       taskLoading.value = false
     }
   }
@@ -1979,7 +1987,7 @@ function startTaskStatusPolling() {
   if (taskStatusTimer || (!props.visible && !props.backgroundActive)) return
   taskStatusTimer = window.setInterval(() => {
     if (!props.visible && !props.backgroundActive) return
-    refreshTaskStatus(false, { inspect: false })
+    refreshTaskStatus(false, { inspect: false, silent: true })
   }, TASK_STATUS_REFRESH_MS)
 }
 
@@ -1989,7 +1997,7 @@ watch(() => [props.visible, props.backgroundActive], async ([visible, background
     return
   }
   startTaskStatusPolling()
-  await refreshTaskStatus(false, { inspect: visible, forceInspect: visible })
+  await refreshTaskStatus(false, { inspect: visible, forceInspect: visible, silent: linkedTasks.value.length > 0 })
 }, { immediate: true })
 
 watch(activeTask, async (task) => {

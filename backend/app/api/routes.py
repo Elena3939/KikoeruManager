@@ -1366,7 +1366,7 @@ async def get_conflicts():
 
 @app.post("/api/conflicts/{conflict_id}/retry")
 async def retry_extract_failed_conflict(conflict_id: str):
-    """重试问题作品中的解压失败项。"""
+    """重试问题作品中的失败项。"""
     from ..models.database import ConflictWork, get_db
 
     db = next(get_db())
@@ -1376,8 +1376,8 @@ async def retry_extract_failed_conflict(conflict_id: str):
             raise HTTPException(status_code=404, detail="问题作品不存在")
         if conflict.status != "PENDING":
             raise HTTPException(status_code=400, detail="当前问题项已不是待处理状态")
-        if conflict.conflict_type != "EXTRACT_FAILED":
-            raise HTTPException(status_code=400, detail="只有解压失败问题项支持重试")
+        if conflict.conflict_type not in {"EXTRACT_FAILED", "PROCESS_FAILED"}:
+            raise HTTPException(status_code=400, detail="只有失败问题项支持重试")
 
         source_path = str(conflict.new_path or "").strip()
         if not source_path:
@@ -1398,6 +1398,8 @@ async def retry_extract_failed_conflict(conflict_id: str):
         if existing_task:
             existing_task.task_metadata["retry_conflict_id"] = conflict.id
             existing_task.task_metadata["retry_conflict_source_path"] = source_path
+            if conflict.task_id:
+                existing_task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
             return {
                 "success": True,
                 "message": "已存在同源重试任务，继续跟踪当前任务",
@@ -1405,21 +1407,26 @@ async def retry_extract_failed_conflict(conflict_id: str):
                 "already_running": True,
             }
 
+        source_task_type = str((conflict.new_metadata or {}).get("source_task_type") or TaskType.AUTO_PROCESS.value).strip()
+        retry_task_type = TaskType(source_task_type) if source_task_type in {task_type.value for task_type in TaskType} else TaskType.AUTO_PROCESS
+
         task = Task(
-            task_type=TaskType.AUTO_PROCESS,
+            task_type=retry_task_type,
             source_path=source_path,
             auto_classify=True,
         )
         task.task_metadata["retry_conflict_id"] = conflict.id
         task.task_metadata["retry_conflict_source_path"] = source_path
         task.task_metadata["retry_from_conflicts"] = True
+        if conflict.task_id:
+            task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
         if conflict.rjcode:
             task.task_metadata["inferred_rjcode"] = conflict.rjcode
 
         await engine.submit(task)
         return {
             "success": True,
-            "message": "已开始重试解压失败作品",
+            "message": "已开始重试失败问题项",
             "task_id": task.id,
             "already_running": False,
         }

@@ -256,6 +256,60 @@ class TaskCenterService:
         metadata = dict(details.get("metadata") or {})
         return bool(self._safe_text(metadata.get("superseded_by_task_id")))
 
+    def _same_source_path(self, left: str, right: str) -> bool:
+        if not left or not right:
+            return False
+        try:
+            return os.path.abspath(left) == os.path.abspath(right)
+        except Exception:
+            return left == right
+
+    def _is_superseded_active_engine_item(self, item: Dict[str, Any], items: List[Dict[str, Any]]) -> bool:
+        if not self._safe_text(item.get("id")).startswith("engine:"):
+            return False
+
+        status = self._safe_text(item.get("status"))
+        if status not in {
+            TaskStatus.PENDING.value,
+            TaskStatus.PROCESSING.value,
+            TaskStatus.PAUSED.value,
+            TaskStatus.WAITING_MANUAL.value,
+            TaskStatus.WAITING_RETRY.value,
+        }:
+            return False
+
+        details = dict(item.get("details") or {})
+        metadata = dict(details.get("metadata") or {})
+        if self._safe_text(metadata.get("superseded_by_task_id")):
+            return True
+
+        item_id = self._safe_text(item.get("entity_id")) or self._safe_text(item.get("engine_task_id"))
+        source_path = self._safe_text(item.get("source_path"))
+        completed_at = self._last_timestamp(item)
+
+        for candidate in items:
+            if candidate is item:
+                continue
+            if not self._safe_text(candidate.get("id")).startswith("engine:"):
+                continue
+            if self._safe_text(candidate.get("status")) != TaskStatus.COMPLETED.value:
+                continue
+
+            candidate_completed_at = self._last_timestamp(candidate)
+            if candidate_completed_at and completed_at and candidate_completed_at < completed_at:
+                continue
+
+            candidate_details = dict(candidate.get("details") or {})
+            candidate_metadata = dict(candidate_details.get("metadata") or {})
+            recovered_failure_ids = candidate_metadata.get("recovered_failure_ids") or []
+            if item_id and item_id in {str(value) for value in recovered_failure_ids}:
+                return True
+
+            if source_path and self._same_source_path(source_path, self._safe_text(candidate.get("source_path"))):
+                return True
+
+        return False
+
     def _serialize_pending_subtitle_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         preview = dict(item.get("preview") or {})
         selected_candidate = dict(preview.get("selected_candidate") or {})
@@ -358,6 +412,11 @@ class TaskCenterService:
                     continue
                 seen_waiting_retry_ids.add(entity_id)
             deduped.append(item)
+
+        deduped = [
+            item for item in deduped
+            if not self._is_superseded_active_engine_item(item, deduped)
+        ]
         return deduped
 
     def _filter_items(
