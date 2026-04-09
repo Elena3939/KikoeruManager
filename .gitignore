@@ -61,3 +61,9 @@ setup-run.log
 setup-run2.log
 config/config.yaml
 .claude/
+
+# Local AI skills / generated assets
+.agents/
+design-skills/
+design-skills-test/
+.agents.rar
