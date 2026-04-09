@@ -101,6 +101,23 @@ export const configApi = {
   }
 }
 
+export const activityLogApi = {
+  list: async (params = {}) => {
+    const response = await apiClient.get('/activity-logs', { params })
+    return response.data
+  },
+
+  stats: async (params = {}) => {
+    const response = await apiClient.get('/activity-logs/stats', { params })
+    return response.data
+  },
+
+  logFilterDelete: async (payload = {}) => {
+    const response = await apiClient.post('/activity-logs/filter-delete', payload)
+    return response.data
+  }
+}
+
 export const backupApi = {
   status: async () => {
     const response = await apiClient.get('/library-backup/status')
@@ -869,13 +886,6 @@ export const rjSubtitleApi = {
     return response.data
   },
 
-  checkKikoeruSubtitleState: async (rjcode) => {
-    const response = await apiClient.post('/rj-subtitle/kikoeru-subtitle-state', {
-      rjcode
-    })
-    return response.data
-  },
-
   checkFolderSubtitleState: async (folderPath, options = {}) => {
     const response = await apiClient.post('/rj-subtitle/folder-subtitle-state', {
       folder_path: folderPath,
@@ -975,5 +985,6 @@ export default {
   asmrSync: asmrSyncApi,
   rjSubtitle: rjSubtitleApi,
   subtitleImport: subtitleImportApi,
-  backup: backupApi
+  backup: backupApi,
+  activityLog: activityLogApi
 }

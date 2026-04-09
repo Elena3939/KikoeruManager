@@ -10,6 +10,7 @@ import ExistingFolders from '../views/ExistingFolders.vue'
 import ASMRSync from '../views/ASMRSync.vue'
 import LibraryBackup from '../views/LibraryBackup.vue'
 import SubtitleImport from '../views/SubtitleImport.vue'
+import ActivityHistory from '../views/ActivityHistory.vue'
 
 const routes = [
   {
@@ -120,6 +121,16 @@ const routes = [
     meta: {
       title: '日志',
       icon: 'Document',
+      cache: false
+    }
+  },
+  {
+    path: '/activity-history',
+    name: 'ActivityHistory',
+    component: ActivityHistory,
+    meta: {
+      title: '操作记录',
+      icon: 'DataLine',
       cache: false
     }
   }

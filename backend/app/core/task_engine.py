@@ -1119,6 +1119,13 @@ class TaskEngine:
             task.fail(str(e))
             logger.info(f"[{rjcode}] ========== 任务失败 ==========")
         finally:
+            # 操作记录优先写入，避免后续清理/通知异常导致整段 finally 中断而未落库
+            try:
+                from .activity_log_service import log_task_lifecycle_event
+
+                log_task_lifecycle_event(task)
+            except Exception:
+                logger.warning("[操作记录] 任务周期记录失败", exc_info=True)
             # 清理任务产生的临时文件（无论成功还是失败）
             self._resolve_retry_extract_conflict(task)
             self._resolve_completed_failure_followups(task)

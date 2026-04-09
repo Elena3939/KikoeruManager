@@ -74,6 +74,11 @@
             <el-icon><Document /></el-icon>
             <span>日志</span>
           </el-menu-item>
+
+          <el-menu-item index="/activity-history">
+            <el-icon><DataLine /></el-icon>
+            <span>操作记录</span>
+          </el-menu-item>
         </el-menu>
 
         <div class="sidebar-footer">
@@ -132,7 +137,8 @@ import {
   Lock,
   Setting,
   Tickets,
-  WarningFilled
+  WarningFilled,
+  DataLine
 } from '@element-plus/icons-vue'
 import { useWatcherStore } from './stores'
 import Dashboard from './views/Dashboard.vue'
@@ -146,6 +152,7 @@ import ExistingFolders from './views/ExistingFolders.vue'
 import ASMRSync from './views/ASMRSync.vue'
 import LibraryBackup from './views/LibraryBackup.vue'
 import SubtitleImport from './views/SubtitleImport.vue'
+import ActivityHistory from './views/ActivityHistory.vue'
 import router from './router'
 
 const appVersion = '1.0.2'
@@ -164,7 +171,8 @@ const routeComponentMap = {
   ExistingFolders,
   ASMRSync,
   LibraryBackup,
-  SubtitleImport
+  SubtitleImport,
+  ActivityHistory
 }
 const currentViewComponent = computed(() => routeComponentMap[route.name] || Dashboard)
 const cachedViews = computed(() =>

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func, or_
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 from datetime import datetime
@@ -21,7 +21,7 @@ import tempfile
 # Create logger instance
 logger = logging.getLogger(__name__)
 
-from ..models.database import init_db, get_db
+from ..models.database import init_db, get_db, get_db_path_info, ActivityLog
 from ..core.task_engine import TaskEngine, Task, TaskType, get_task_engine
 from ..core.watcher import get_watcher
 from ..core.password_cleanup import get_cleanup_service
@@ -54,6 +54,203 @@ async def health_check():
         "version": "1.0.0",
         "timestamp": datetime.now().isoformat()
     }
+
+
+@app.get("/api/activity-logs")
+async def list_activity_logs(
+    page: int = 1,
+    limit: int = 50,
+    category: Optional[str] = None,
+    status: Optional[str] = None,
+    q: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """分页查询操作审计记录。"""
+    from ..core.activity_log_service import CATEGORY_LABELS
+
+    def _merge_activity_rows(raw_rows: List[ActivityLog]) -> List[Dict[str, Any]]:
+        rows = [row.to_dict() for row in raw_rows]
+        crawl_by_task: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if row.get("category") == "subtitle_crawl" and row.get("task_id"):
+                crawl_by_task[str(row["task_id"])] = row
+
+        merged_pair_ids: set[str] = set()
+        for row in rows:
+            if row.get("category") != "subtitle_pair":
+                continue
+            task_id = str(row.get("task_id") or "").strip()
+            if not task_id:
+                continue
+            crawl_row = crawl_by_task.get(task_id)
+            if not crawl_row:
+                continue
+            crawl_detail = crawl_row.get("detail") if isinstance(crawl_row.get("detail"), dict) else {}
+            pair_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            crawl_detail = {
+                **crawl_detail,
+                "pair_summary": row.get("summary") or "",
+                "pair_status": row.get("status") or "",
+                "pair_action": row.get("action") or "",
+                "pair_applied_pairs": int(pair_detail.get("applied_pairs") or pair_detail.get("manual_match_applied_pairs") or 0),
+                "pair_deleted_subtitles": int(pair_detail.get("deleted_subtitles") or 0),
+                "pair_final_file_count": int(pair_detail.get("final_file_count") or 0),
+                "pair_linked": True,
+                "pair_created_at": row.get("created_at") or "",
+            }
+            crawl_row["detail"] = crawl_detail
+            crawl_row["summary"] = f"{crawl_row.get('summary') or '字幕爬取完成'}，{row.get('summary') or '已完成手动配对'}"
+            crawl_row["merged_pair"] = True
+            crawl_row["merged_pair_status"] = row.get("status") or ""
+            merged_pair_ids.add(str(row.get("id") or ""))
+
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            if str(row.get("id") or "") in merged_pair_ids:
+                continue
+            row["category_label"] = CATEGORY_LABELS.get(row.get("category"), row.get("category"))
+            items.append(row)
+        return items
+
+    page = max(1, page)
+    limit = max(1, min(200, limit))
+    query = db.query(ActivityLog)
+    if category:
+        query = query.filter(ActivityLog.category == category)
+    if status:
+        query = query.filter(ActivityLog.status == status)
+    if q and str(q).strip():
+        term = f"%{str(q).strip()}%"
+        query = query.filter(
+            or_(
+                ActivityLog.summary.like(term),
+                ActivityLog.rjcode.like(term),
+                ActivityLog.source_path.like(term),
+                ActivityLog.task_id.like(term),
+            )
+        )
+    raw_rows = query.order_by(desc(ActivityLog.created_at)).all()
+    merged_items = _merge_activity_rows(raw_rows)
+    total = len(merged_items)
+    start = (page - 1) * limit
+    end = start + limit
+    return {"total": total, "page": page, "limit": limit, "items": merged_items[start:end]}
+
+
+@app.get("/api/activity-logs/stats")
+async def activity_logs_stats(
+    days: int = 14,
+    db: Session = Depends(get_db),
+):
+    """按天、分类、状态聚合（用于图表）。"""
+    from ..core.activity_log_service import CATEGORY_LABELS
+    from datetime import timedelta
+
+    days = int(days)
+    all_time = days <= 0
+    days = 0 if all_time else max(1, min(90, days))
+    cutoff = None if all_time else (datetime.now() - timedelta(days=days))
+    day_expr = func.strftime("%Y-%m-%d", ActivityLog.created_at)
+
+    day_query = db.query(day_expr.label("day"), func.count(ActivityLog.id))
+    if cutoff is not None:
+        day_query = day_query.filter(ActivityLog.created_at >= cutoff)
+    day_rows = day_query.group_by(day_expr).order_by(day_expr).all()
+    by_day = [{"date": a, "count": b} for a, b in day_rows if a]
+
+    cat_query = db.query(ActivityLog.category, func.count(ActivityLog.id))
+    if cutoff is not None:
+        cat_query = cat_query.filter(ActivityLog.created_at >= cutoff)
+    cat_rows = cat_query.group_by(ActivityLog.category).all()
+    by_category = [
+        {
+            "category": c,
+            "label": CATEGORY_LABELS.get(c, c),
+            "count": n,
+        }
+        for c, n in sorted(cat_rows, key=lambda x: -x[1])
+    ]
+
+    status_query = db.query(ActivityLog.status, func.count(ActivityLog.id))
+    if cutoff is not None:
+        status_query = status_query.filter(ActivityLog.created_at >= cutoff)
+    status_rows = status_query.group_by(ActivityLog.status).all()
+    by_status = {str(s): int(n) for s, n in status_rows if s}
+    total_in_range = sum(by_status.values())
+
+    metric_query = db.query(ActivityLog.category, ActivityLog.action, ActivityLog.status, ActivityLog.detail)
+    if cutoff is not None:
+        metric_query = metric_query.filter(ActivityLog.created_at >= cutoff)
+    metric_rows = metric_query.all()
+    metrics = {
+        "subtitle_download_count": 0,
+        "subtitle_match_count": 0,
+        "subtitle_crawl_count": 0,
+        "subtitle_import_count": 0,
+        "extract_count": 0,
+        "delete_count": 0,
+        "delete_bytes": 0,
+        "extract_bytes": 0,
+    }
+    for category, action, status, detail in metric_rows:
+        if status not in {"success", "completed", "partial_success"}:
+            continue
+        payload = detail if isinstance(detail, dict) else {}
+        if category == "subtitle_crawl":
+            metrics["subtitle_crawl_count"] += 1
+            metrics["subtitle_download_count"] += int(payload.get("downloaded_count") or 0)
+        elif category == "subtitle_pair":
+            metrics["subtitle_match_count"] += int(
+                payload.get("applied_pairs")
+                or payload.get("manual_match_applied_pairs")
+                or payload.get("matched_group_count")
+                or payload.get("final_file_count")
+                or 0
+            )
+        elif category == "subtitle_import":
+            metrics["subtitle_import_count"] += int(payload.get("final_file_count") or 1)
+        elif category == "extract":
+            metrics["extract_count"] += 1
+            metrics["extract_bytes"] += int(payload.get("output_size_bytes") or 0)
+        elif category == "pipeline_filter" and action == "filter_delete_apply":
+            metrics["delete_count"] += int(payload.get("success_count") or 0)
+            metrics["delete_bytes"] += int(payload.get("deleted_bytes") or 0)
+
+    return {
+        "days": days,
+        "total_in_range": total_in_range,
+        "by_day": by_day,
+        "by_category": by_category,
+        "by_status": by_status,
+        "metrics": metrics,
+        "db_path": get_db_path_info(),
+    }
+
+
+@app.post("/api/activity-logs/filter-delete")
+async def create_filter_delete_activity_log(request: Request):
+    """写入删除过滤预审 / 执行的操作记录。"""
+    from ..core.activity_log_service import (
+        log_filter_delete_apply_result,
+        log_filter_delete_preview_result,
+    )
+
+    try:
+        data = await request.json()
+        mode = str(data.get("mode") or "").strip()
+        if mode == "preview":
+            log_filter_delete_preview_result(data)
+        elif mode == "apply":
+            log_filter_delete_apply_result(data)
+        else:
+            raise HTTPException(status_code=400, detail="不支持的删除过滤日志类型")
+        return {"message": "操作记录已写入"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"写入删除过滤操作记录失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"写入删除过滤操作记录失败: {str(e)}")
+
 
 # CORS配置
 app.add_middleware(
@@ -4913,6 +5110,26 @@ async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCom
         })
         task.task_metadata["progress_log"] = logs[-30:]
 
+        try:
+            from ..core.activity_log_service import log_subtitle_pair_complete
+
+            rj_log = str(task.task_metadata.get("rjcode") or "").strip().upper()
+            _lf = linked_finalize_result if isinstance(linked_finalize_result, dict) else {}
+            log_subtitle_pair_complete(
+                task_id,
+                rj_log,
+                applied_pairs,
+                deleted_subtitles,
+                summary,
+                linked_detail={
+                    "applied": _lf.get("applied"),
+                    "final_file_count": _lf.get("final_file_count"),
+                    "reason": _lf.get("reason"),
+                },
+            )
+        except Exception:
+            logger.warning("[操作记录] 字幕配对记录失败", exc_info=True)
+
         return {"success": True, "task_id": task_id, "message": summary}
     except HTTPException:
         raise
@@ -5119,6 +5336,12 @@ async def execute_pending_linked_subtitle_import(record_id: str, request: Linked
             use_filter_rules=request.use_filter_rules,
             subtitle_filter_rules=request.subtitle_filter_rules,
         )
+        try:
+            from ..core.activity_log_service import log_from_subtitle_import_result
+
+            log_from_subtitle_import_result("pending_execute", result if isinstance(result, dict) else {"success": True})
+        except Exception:
+            logger.debug("[操作记录] 字幕补配预检执行记录失败", exc_info=True)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -5181,6 +5404,16 @@ async def execute_linked_subtitle_archive_import(request: LinkedSubtitleArchiveI
             use_filter_rules=request.use_filter_rules,
             subtitle_filter_rules=request.subtitle_filter_rules,
         )
+        try:
+            from ..core.activity_log_service import log_from_subtitle_import_result
+
+            log_from_subtitle_import_result(
+                "archive_import",
+                result if isinstance(result, dict) else {},
+                archive_path=request.archive_path,
+            )
+        except Exception:
+            logger.debug("[操作记录] 压缩包补配记录失败", exc_info=True)
         return result
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -5227,6 +5460,16 @@ async def execute_linked_subtitle_folder_import(request: LinkedSubtitleFolderImp
             use_filter_rules=request.use_filter_rules,
             subtitle_filter_rules=request.subtitle_filter_rules,
         )
+        try:
+            from ..core.activity_log_service import log_from_subtitle_import_result
+
+            log_from_subtitle_import_result(
+                "folder_import",
+                result if isinstance(result, dict) else {},
+                folder_path=request.folder_path,
+            )
+        except Exception:
+            logger.debug("[操作记录] 文件夹补配记录失败", exc_info=True)
         return result
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

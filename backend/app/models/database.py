@@ -390,6 +390,39 @@ class WaitingRetryTask(Base):
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 
+class ActivityLog(Base):
+    """用户操作审计表"""
+    __tablename__ = 'activity_logs'
+
+    id = Column(String(36), primary_key=True)
+    category = Column(String(40), index=True)
+    action = Column(String(80))
+    status = Column(String(20), index=True)
+    summary = Column(Text)
+    detail = Column(JSON)
+    rjcode = Column(String(32), index=True)
+    task_id = Column(String(36), index=True)
+    source_path = Column(Text)
+    created_at = Column(DateTime, default=get_local_now, index=True)
+
+    __table_args__ = (
+        Index('idx_activity_created_category', 'created_at', 'category'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'category': self.category,
+            'action': self.action,
+            'status': self.status,
+            'summary': self.summary,
+            'detail': self.detail or {},
+            'rjcode': self.rjcode,
+            'task_id': self.task_id,
+            'source_path': self.source_path,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
 import logging
 _db_logger = logging.getLogger(__name__)
 
