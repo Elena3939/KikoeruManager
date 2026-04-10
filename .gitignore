@@ -67,3 +67,5 @@ config/config.yaml
 design-skills/
 design-skills-test/
 .agents.rar
+scripts/generate_design_skills.ps1
+scripts/install_design_skills_to_agents.ps1
