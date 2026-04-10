@@ -1,23 +1,39 @@
 <template>
-  <div class="settings">
-    <div class="page-header">
-      <h1 class="page-title">设置</h1>
-      <el-button 
-        type="success" 
-        size="small" 
+  <div class="settings settings-ios">
+    <header class="settings-hero">
+      <div class="settings-hero-text">
+        <h1 class="page-title">设置</h1>
+        <p class="settings-subtitle">路径、规则与外部服务。改动后请保存配置。</p>
+      </div>
+      <el-button
+        class="settings-refresh-btn"
+        size="default"
         @click="reloadConfigFromServer"
         :loading="reloading"
         title="从配置文件重新加载"
       >
-        <el-icon><Refresh /></el-icon> 从配置文件刷新
+        <el-icon><Refresh /></el-icon>
+        从文件刷新
       </el-button>
-    </div>
-    
-    <el-form :model="config" label-position="top" v-loading="loading">
-      <!-- 可折叠面板容器 -->
-      <el-collapse accordion>
+    </header>
+
+    <nav class="settings-section-nav" aria-label="设置分区">
+      <button
+        v-for="item in settingsSections"
+        :key="item.name"
+        type="button"
+        class="settings-nav-pill"
+        :class="{ 'is-active': activeCollapse === item.name }"
+        @click="goToSection(item.name)"
+      >
+        {{ item.short }}
+      </button>
+    </nav>
+
+    <el-form :model="config" label-position="top" v-loading="loading" class="settings-form">
+      <el-collapse v-model="activeCollapse" accordion class="settings-collapse">
         <!-- 存储路径设置 -->
-        <el-collapse-item name="storage">
+        <el-collapse-item id="settings-section-storage" name="storage" class="settings-section-item">
           <template #title>
             <span class="collapse-title">存储路径</span>
           </template>
@@ -477,7 +493,7 @@
           </el-card>
         </el-collapse-item>
         <!-- 监视器设置 -->
-        <el-collapse-item name="watcher">
+        <el-collapse-item id="settings-section-watcher" name="watcher" class="settings-section-item">
           <template #title>
             <span class="collapse-title">文件夹监视器</span>
           </template>
@@ -516,7 +532,7 @@
         </el-collapse-item>
         
         <!-- 处理设置 -->
-        <el-collapse-item name="processing">
+        <el-collapse-item id="settings-section-processing" name="processing" class="settings-section-item">
           <template #title>
             <span class="collapse-title">处理配置</span>
           </template>
@@ -659,7 +675,7 @@
         </el-collapse-item>
         
         <!-- 过滤设置 -->
-        <el-collapse-item name="filter">
+        <el-collapse-item id="settings-section-filter" name="filter" class="settings-section-item">
           <template #title>
             <span class="collapse-title">过滤配置</span>
           </template>
@@ -789,7 +805,7 @@
         </el-collapse-item>
 
         <!-- 元数据设置 -->
-        <el-collapse-item name="metadata">
+        <el-collapse-item id="settings-section-metadata" name="metadata" class="settings-section-item">
           <template #title>
             <span class="collapse-title">元数据配置</span>
           </template>
@@ -833,7 +849,7 @@
         </el-collapse-item>
 
         <!-- 重命名设置 -->
-        <el-collapse-item name="rename">
+        <el-collapse-item id="settings-section-rename" name="rename" class="settings-section-item">
           <template #title>
             <span class="collapse-title">重命名配置</span>
           </template>
@@ -945,7 +961,7 @@
         </el-collapse-item>
 
         <!-- 密码库智能清理 -->
-        <el-collapse-item name="passwordCleanup">
+        <el-collapse-item id="settings-section-passwordCleanup" name="passwordCleanup" class="settings-section-item">
           <template #title>
             <span class="collapse-title">密码库智能清理</span>
           </template>
@@ -1062,7 +1078,7 @@
         </el-collapse-item>
 
         <!-- 已处理压缩包智能清理 -->
-        <el-collapse-item name="archiveCleanup">
+        <el-collapse-item id="settings-section-archiveCleanup" name="archiveCleanup" class="settings-section-item">
           <template #title>
             <span class="collapse-title">已处理压缩包智能清理</span>
           </template>
@@ -1161,7 +1177,7 @@
         </el-collapse-item>
 
         <!-- 路径映射设置 -->
-        <el-collapse-item name="pathMapping">
+        <el-collapse-item id="settings-section-pathMapping" name="pathMapping" class="settings-section-item">
           <template #title>
             <span class="collapse-title">路径映射（跨设备访问）</span>
           </template>
@@ -1234,7 +1250,7 @@
         </el-collapse-item>
 
         <!-- Kikoeru 服务器查重 -->
-        <el-collapse-item name="kikoeruServer">
+        <el-collapse-item id="settings-section-kikoeruServer" name="kikoeruServer" class="settings-section-item">
           <template #title>
             <span class="collapse-title">Kikoeru 服务器查重</span>
           </template>
@@ -1416,7 +1432,7 @@
         </el-collapse-item>
 
         <!-- ASMR 同步下载 -->
-        <el-collapse-item name="asmrSync">
+        <el-collapse-item id="settings-section-asmrSync" name="asmrSync" class="settings-section-item">
           <template #title>
             <span class="collapse-title">ASMR 同步下载</span>
           </template>
@@ -1586,7 +1602,7 @@
         </el-collapse-item>
 
         <!-- 分类规则 -->
-        <el-collapse-item name="classification">
+        <el-collapse-item id="settings-section-classification" name="classification" class="settings-section-item">
           <template #title>
             <span class="collapse-title">分类规则</span>
           </template>
@@ -1712,19 +1728,19 @@
         </el-collapse-item>
       </el-collapse>
 
-      <!-- 保存按钮 -->
-      <div class="actions">
-        <el-button type="primary" size="large" @click="saveConfig">
-          <el-icon><Check /></el-icon> 保存配置
+      <div class="settings-footer-actions">
+        <el-button class="settings-primary-btn" type="primary" size="large" @click="saveConfig">
+          <el-icon><Check /></el-icon>
+          保存配置
         </el-button>
-        <el-button size="large" @click="resetConfig">重置</el-button>
+        <el-button class="settings-secondary-btn" size="large" @click="resetConfig">全部重置</el-button>
       </div>
     </el-form>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, nextTick } from 'vue'
 import { Folder, FolderOpened, Plus, Delete, Check, QuestionFilled, Tools, Warning, View, ArrowRight, Document, Connection, Key, Link, Search, User, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useConfigStore } from '../stores'
@@ -1733,6 +1749,30 @@ import { configApi, kikoeruApi, pathMappingApi, cleanupApi, libraryApi } from '.
 const configStore = useConfigStore()
 const loading = ref(false)
 const testingLibraryId = ref('')
+
+const settingsSections = [
+  { name: 'storage', short: '存储' },
+  { name: 'watcher', short: '监视' },
+  { name: 'processing', short: '处理' },
+  { name: 'filter', short: '过滤' },
+  { name: 'metadata', short: '元数据' },
+  { name: 'rename', short: '重命名' },
+  { name: 'passwordCleanup', short: '密码' },
+  { name: 'archiveCleanup', short: '压缩包' },
+  { name: 'pathMapping', short: '路径' },
+  { name: 'kikoeruServer', short: '查重' },
+  { name: 'asmrSync', short: 'ASMR' },
+  { name: 'classification', short: '分类' }
+]
+
+const activeCollapse = ref('storage')
+
+function goToSection(name) {
+  activeCollapse.value = name
+  nextTick(() => {
+    document.getElementById(`settings-section-${name}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
 const SYNOLOGY_PROFILE_FIELDS = [
   'base_url',
   'username',
@@ -2969,27 +3009,180 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.settings {
-  max-width: 1200px;
+.settings-ios {
+  --ios-bg: #f5f5f7;
+  --ios-text: #1d1d1f;
+  --ios-text-2: rgba(0, 0, 0, 0.55);
+  --ios-text-3: rgba(0, 0, 0, 0.42);
+  --ios-blue: #0071e3;
+  --ios-blue-hover: #0077ed;
+  --ios-separator: rgba(0, 0, 0, 0.08);
+  --ios-card: #ffffff;
+  --ios-radius-lg: 14px;
+  --ios-radius-md: 10px;
+  max-width: 920px;
   margin: 0 auto;
+  padding: 4px 8px 40px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  color: var(--ios-text);
 }
 
-.page-header {
+.settings-hero {
   display: flex;
+  align-items: flex-end;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+  padding: 12px 4px 0;
+}
+
+.settings-hero-text {
+  min-width: 0;
 }
 
 .page-title {
-  font-size: 28px;
+  font-size: 34px;
   font-weight: 600;
-  color: #1e293b;
+  letter-spacing: -0.04em;
+  line-height: 1.08;
+  color: var(--ios-text);
   margin: 0;
+}
+
+.settings-subtitle {
+  margin: 8px 0 0;
+  font-size: 15px;
+  line-height: 1.47;
+  letter-spacing: -0.02em;
+  color: var(--ios-text-2);
+  max-width: 40rem;
+}
+
+.settings-refresh-btn {
+  flex-shrink: 0;
+  border-radius: 980px;
+  padding: 10px 18px;
+  font-weight: 500;
+  font-size: 14px;
+  border: 1px solid var(--ios-separator);
+  background: var(--ios-card);
+  color: var(--ios-blue);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.settings-refresh-btn:hover,
+.settings-refresh-btn:focus-visible {
+  background: #fafafc;
+  border-color: rgba(0, 0, 0, 0.12);
+  color: var(--ios-blue-hover);
+}
+
+.settings-section-nav {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 16px 4px 20px;
+  margin: 0 -4px 4px;
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  background: linear-gradient(180deg, var(--ios-bg) 88%, rgba(245, 245, 247, 0));
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.settings-section-nav::-webkit-scrollbar {
+  height: 0;
+  width: 0;
+}
+
+.settings-nav-pill {
+  flex-shrink: 0;
+  border: none;
+  cursor: pointer;
+  padding: 8px 15px;
+  border-radius: 980px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--ios-text);
+  background: var(--ios-card);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 0 0 1px rgba(0, 0, 0, 0.04);
+  transition:
+    background 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.settings-nav-pill:hover {
+  background: #fafafc;
+}
+
+.settings-nav-pill.is-active {
+  background: var(--ios-text);
+  color: #fff;
+  box-shadow: none;
+}
+
+.settings-form :deep(.el-form-item__label) {
+  color: var(--ios-text-2);
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+
+.settings-form :deep(.el-input__wrapper),
+.settings-form :deep(.el-select .el-input__wrapper) {
+  border-radius: var(--ios-radius-md);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.settings-form :deep(.el-input__wrapper:hover),
+.settings-form :deep(.el-select .el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14);
+}
+
+.settings-footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  padding: 28px 12px 8px;
+  margin-top: 12px;
+}
+
+.settings-primary-btn {
+  border-radius: 12px !important;
+  min-width: 148px;
+  font-weight: 500 !important;
+  --el-button-bg-color: var(--ios-blue);
+  --el-button-border-color: var(--ios-blue);
+  --el-button-hover-bg-color: var(--ios-blue-hover);
+  --el-button-hover-border-color: var(--ios-blue-hover);
+}
+
+.settings-secondary-btn {
+  border-radius: 12px !important;
+  min-width: 112px;
+  font-weight: 500 !important;
+  background: var(--ios-card) !important;
+  border: 1px solid var(--ios-separator) !important;
+  color: var(--ios-text) !important;
 }
 
 .setting-card {
   margin-bottom: 0;
+  border: none;
+  border-radius: var(--ios-radius-lg);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.06);
+}
+
+.setting-card :deep(.el-card__body) {
+  padding: 20px 18px;
 }
 
 .card-header {
@@ -2999,120 +3192,163 @@ onMounted(async () => {
 }
 
 .rule-item {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
-.actions {
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  padding: 24px 0;
+.rule-item :deep(.el-card) {
+  border: none;
+  border-radius: var(--ios-radius-md);
+  background: #fafafc;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
 }
 
 .card-actions {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
-  padding: 15px 0 0;
-  border-top: 1px solid #f0f0f0;
-  margin-top: 15px;
+  flex-wrap: wrap;
+  padding: 18px 0 0;
+  margin-top: 18px;
+  border-top: 1px solid var(--ios-separator);
+}
+
+.card-actions :deep(.el-button--primary) {
+  --el-button-bg-color: var(--ios-blue);
+  --el-button-border-color: var(--ios-blue);
+  --el-button-hover-bg-color: var(--ios-blue-hover);
+  --el-button-hover-border-color: var(--ios-blue-hover);
+  border-radius: 10px;
+}
+
+.card-actions :deep(.el-button) {
+  border-radius: 10px;
+  font-weight: 500;
 }
 
 .form-tip {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ios-text-3);
+  margin-top: 6px;
+  letter-spacing: -0.01em;
 }
 
 .text-gray {
-  color: #909399;
+  color: var(--ios-text-3);
 }
 
 .base-path-display {
-  background-color: #f5f7fa;
-  padding: 8px 12px;
-  border-radius: 4px;
-  border-left: 4px solid #409eff;
+  background-color: rgba(0, 113, 227, 0.06);
+  padding: 12px 14px;
+  border-radius: var(--ios-radius-md);
+  border-left: 3px solid var(--ios-blue);
 }
 
 .base-path-display .path-label {
-  color: #606266;
+  color: var(--ios-text-2);
   font-weight: 500;
 }
 
 .base-path-display .path-value {
-  color: #409eff;
-  font-family: monospace;
+  color: var(--ios-blue);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-weight: 600;
 }
 
 .path-preview {
-  background-color: #f0f9ff;
-  padding: 8px 12px;
-  border-radius: 4px;
-  border: 1px dashed #409eff;
+  background: #fff;
+  padding: 12px 14px;
+  border-radius: var(--ios-radius-md);
+  border: 1px solid rgba(0, 113, 227, 0.22);
 }
 
 .path-preview .preview-label {
-  color: #606266;
+  color: var(--ios-text-2);
   font-weight: 500;
 }
 
 .path-preview .preview-value {
-  color: #67c23a;
-  font-family: monospace;
+  color: #1d7a3a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-weight: 600;
 }
 
-/* 折叠面板标题样式 */
+.settings-collapse {
+  border: none;
+  --el-collapse-border-color: transparent;
+}
+
 .collapse-title {
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
-  color: #303133;
+  letter-spacing: -0.03em;
+  color: var(--ios-text);
   flex: 1;
 }
 
-/* 调整折叠面板间距 */
-:deep(.el-collapse-item) {
-  margin-bottom: 16px;
+.settings-collapse :deep(.el-collapse-item) {
+  margin-bottom: 20px;
   border: none;
+  background: var(--ios-card);
+  border-radius: var(--ios-radius-lg);
+  overflow: hidden;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.06);
+  scroll-margin-top: 96px;
 }
 
-:deep(.el-collapse-item__header) {
-  background-color: #f5f7fa;
-  border-radius: 8px;
-  padding: 12px 20px;
-  font-size: 15px;
+.settings-collapse :deep(.el-collapse-item__header) {
+  background-color: var(--ios-card);
+  padding: 16px 18px;
+  font-size: 17px;
   font-weight: 600;
-  color: #303133;
-  transition: all 0.3s;
-  border: 1px solid #e4e7ed;
+  color: var(--ios-text);
+  border: none;
+  transition: background 0.2s ease;
 }
 
-:deep(.el-collapse-item__header:hover) {
-  background-color: #ecf5ff;
-  border-color: #409eff;
+.settings-collapse :deep(.el-collapse-item__header:hover) {
+  background-color: rgba(0, 0, 0, 0.03);
 }
 
-:deep(.el-collapse-item__header.is-active) {
-  background-color: #ecf5ff;
-  border-color: #409eff;
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
+.settings-collapse :deep(.el-collapse-item__header.is-active) {
+  background-color: rgba(0, 0, 0, 0.04);
+  border-bottom: 1px solid var(--ios-separator);
 }
 
-:deep(.el-collapse-item__wrap) {
+.settings-collapse :deep(.el-collapse-item__arrow) {
+  color: var(--ios-text-3);
+}
+
+.settings-collapse :deep(.el-collapse-item__wrap) {
   border: none;
   padding: 0;
-  background-color: #fff;
-  border: 1px solid #e4e7ed;
-  border-top: none;
-  border-bottom-left-radius: 8px;
-  border-bottom-right-radius: 8px;
+  background-color: var(--ios-card);
 }
 
-:deep(.el-collapse-item__content) {
-  padding: 16px;
+.settings-collapse :deep(.el-collapse-item__content) {
+  padding: 18px 18px 22px;
+}
+
+.settings-ios :deep(.el-alert) {
+  border-radius: var(--ios-radius-md);
+  border: none;
+}
+
+.settings-ios :deep(.el-alert--info.is-light) {
+  background: rgba(0, 113, 227, 0.08);
+  color: var(--ios-text);
+}
+
+.settings-ios :deep(.el-alert--warning.is-light) {
+  background: rgba(255, 149, 0, 0.12);
+  color: var(--ios-text);
+}
+
+.settings-ios :deep(.el-divider__text) {
+  background: var(--ios-card);
+  color: var(--ios-text-2);
+  font-weight: 500;
+  font-size: 13px;
 }
 
 /* 分类规则布局 */

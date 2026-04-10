@@ -57,9 +57,9 @@
 
       <div class="fm-toolbar">
         <div class="fm-toolbar-left">
-          <button class="fm-btn fm-btn-danger" :disabled="!canConfirmFilterDelete" @click="confirmFilterDeleteSelection">{{ text.confirmDelete }}</button>
           <button v-if="filterDeleteLoading" class="fm-btn fm-btn-ghost" @click="cancelFilterDeletePreview()">{{ text.cancelPreview }}</button>
           <button v-if="filterDeleteDeleting" class="fm-btn fm-btn-ghost" @click="requestCancelFilterDeleteDeletion()">{{ text.stopDelete }}</button>
+          <button v-if="!filterDeleteBusy && filterDeleteFailedTargets.length" class="fm-btn fm-btn-warning" @click="retryFailedFilterDeleteTargets">{{ text.retryFailedTargets }}</button>
           <button class="fm-btn fm-btn-ghost" :disabled="!filterDeleteTreeHasDirectories || filterDeleteBusy" @click="expandFilterDeleteTree">{{ text.expandAll }}</button>
           <button class="fm-btn fm-btn-ghost" :disabled="!filterDeleteTreeHasDirectories || filterDeleteBusy" @click="collapseFilterDeleteTree">{{ text.collapseAll }}</button>
           <button class="fm-btn fm-btn-ghost" :disabled="filterDeleteBusy || !filterDeleteSelectedRoots.length" @click="clearFilterDeleteSelection">{{ text.clearSelection }}</button>
@@ -235,6 +235,7 @@ const text = {
   expandAll: '\u5c55\u5f00\u5168\u90e8',
   collapseAll: '\u6298\u53e0\u5168\u90e8',
   clearSelection: '\u53d6\u6d88\u9009\u62e9',
+  retryFailedTargets: '\u91cd\u8bd5\u5931\u8d25\u9879',
   fileTypeLabel: '\u6587\u4ef6\u7c7b\u578b',
   searchBasic: '\u641c\u7d22\u5f85\u5220\u9664\u6587\u4ef6\u540d\u6216\u8def\u5f84\u2026',
   searchFull: '\u641c\u7d22\u5f85\u5220\u9664\u6587\u4ef6\u540d\u3001\u8def\u5f84\u6216\u89c4\u5219\u2026',
@@ -311,6 +312,7 @@ const filterDeletePreviewInfo = ref({
 })
 const filterDeleteJobId = ref('')
 const filterDeleteDeleteCancelRequested = ref(false)
+const filterDeleteFailedTargets = ref([])
 const filterDeleteLoadedSessionKey = ref('')
 const filterDeleteStartedAt = ref(0)
 const filterDeletePreviewTargetIndex = ref(0)
@@ -353,7 +355,7 @@ const filterDeleteTypeOptions = computed(() => {
     })
     .map(([key, count]) => ({
       key,
-      label: key === FILTER_DELETE_NO_EXTENSION_KEY ? text.noExtension : key.toUpperCase(),
+      label: key === FILTER_DELETE_NO_EXTENSION_KEY ? text.noExtension : key.replace(/^\./, '').toUpperCase(),
       count
     }))
 })
@@ -540,6 +542,7 @@ async function resetFilterDeleteDialogState () {
   filterDeletePreviewTargetTotal.value = 0
   filterDeletePreviewLoggedSessionKey.value = ''
   filterDeleteApplyLoggedExecutionKey.value = ''
+  filterDeleteFailedTargets.value = []
   filterDeleteSearch.value = ''
   filterDeleteItems.value = []
   filterDeleteExpandedIds.value = new Set()
@@ -756,6 +759,7 @@ async function loadFilterDeletePreview () {
   resetFilterDeleteScroll()
   filterDeleteJobId.value = ''
   filterDeleteDeleteCancelRequested.value = false
+  filterDeleteFailedTargets.value = []
   filterDeleteLoading.value = true
   filterDeleteItems.value = []
   filterDeleteSelectedIds.value = new Set()
@@ -791,6 +795,12 @@ async function loadFilterDeletePreview () {
       })
       filterDeleteJobId.value = data?.job_id || ''
       applyFilterDeletePreviewData(data)
+      if (String(data?.status || '') === 'error') {
+        filterDeleteFailedTargets.value = [{
+          path: effectivePreviewTargetPaths.value[0],
+          error: data?.error || '预审失败'
+        }]
+      }
       if (['pending', 'running'].includes(data?.status || 'pending')) await pollFilterDeletePreviewStatus(filterDeleteJobId.value)
       else filterDeleteLoading.value = false
       await writeFilterDeletePreviewActivityLog()
@@ -808,6 +818,7 @@ async function loadFilterDeletePreview () {
     let hasTruncated = false
     let hasError = false
     let hasCancelled = false
+    const failedTargets = []
     const warnings = []
     const errors = []
 
@@ -841,7 +852,15 @@ async function loadFilterDeletePreview () {
       hasCancelled = hasCancelled || finalData?.status === 'canceled'
       if (finalData?.warning) warnings.push(finalData.warning)
       if (finalData?.error) errors.push(finalData.error)
+      if (finalData?.status === 'error') {
+        failedTargets.push({
+          path: targetPath,
+          error: finalData?.error || '预审失败'
+        })
+      }
     }
+
+    filterDeleteFailedTargets.value = failedTargets
 
     applyFilterDeletePreviewData({
       folder_name: props.scopeLabel || text.currentFolder,
@@ -877,6 +896,138 @@ async function loadFilterDeletePreview () {
     }
     await writeFilterDeletePreviewActivityLog('error')
     ElMessage.error('\u52a0\u8f7d\u8fc7\u6ee4\u5220\u9664\u9884\u89c8\u5931\u8d25: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
+async function retryFailedFilterDeleteTargets () {
+  if (filterDeleteBusy.value || !filterDeleteFailedTargets.value.length || !props.libraryId) return
+  const failedTargets = [...filterDeleteFailedTargets.value]
+  const retryStartedAt = Date.now()
+  filterDeleteLoading.value = true
+  const recoveredItems = []
+  let recoveredSelectedCount = 0
+  let recoveredSelectedSize = 0
+  let recoveredScannedEntries = 0
+  let recoveredDiscoveredEntries = 0
+  let recoveredRuleCount = Number(filterDeletePreviewInfo.value.ruleCount || 0)
+  let recoveredHasPartialSize = filterDeletePreviewInfo.value.selectedSizeExact === false
+  let recoveredHasBasicTreeOnly = filterDeletePreviewInfo.value.sizeDisabled === true
+  let recoveredHasTruncated = !!filterDeletePreviewInfo.value.truncated
+  const nextFailedTargets = []
+  const retryWarnings = []
+  const retryErrors = []
+
+  try {
+    for (let index = 0; index < failedTargets.length; index += 1) {
+      const target = failedTargets[index]
+      filterDeletePreviewInfo.value = {
+        ...filterDeletePreviewInfo.value,
+        status: 'running',
+        currentPath: displayFilterDeletePath(target.path),
+        progressMessage: `正在重试失败预审 ${index + 1} / ${failedTargets.length}: ${getFileName(target.path) || target.path}`
+      }
+      try {
+        const data = await libraryApi.startFilterDeletePreviewJob(props.libraryId, target.path, {
+          rules: props.rules
+        })
+        let finalData = data
+        if (['pending', 'running'].includes(data?.status || 'pending') && data?.job_id) {
+          finalData = await waitForFilterDeletePreviewJob(data.job_id, target.path, index, failedTargets.length)
+        }
+        if (finalData?.status === 'error') {
+          nextFailedTargets.push({
+            path: target.path,
+            error: finalData?.error || '预审失败'
+          })
+          if (finalData?.error) retryErrors.push(finalData.error)
+          continue
+        }
+        recoveredItems.push(...(Array.isArray(finalData?.items) ? finalData.items : []))
+        recoveredSelectedCount += Number(finalData?.selected_count || 0)
+        recoveredSelectedSize += Number(finalData?.selected_size || 0)
+        recoveredScannedEntries += Number(finalData?.scanned_entries || 0)
+        recoveredDiscoveredEntries += Number(finalData?.discovered_entries || 0)
+        recoveredRuleCount = Math.max(
+          recoveredRuleCount,
+          Array.isArray(finalData?.rules) ? finalData.rules.length : Number(finalData?.rule_count || 0)
+        )
+        recoveredHasPartialSize = recoveredHasPartialSize || finalData?.selected_size_exact === false
+        recoveredHasBasicTreeOnly = recoveredHasBasicTreeOnly || finalData?.size_disabled === true
+        recoveredHasTruncated = recoveredHasTruncated || !!finalData?.truncated
+        if (finalData?.warning) retryWarnings.push(finalData.warning)
+      } catch (error) {
+        nextFailedTargets.push({
+          path: target.path,
+          error: error?.response?.data?.detail || error?.message || '预审失败'
+        })
+        retryErrors.push(error?.response?.data?.detail || error?.message || '预审失败')
+      }
+    }
+
+    const mergedItemMap = new Map(filterDeleteItems.value.map(item => [item.id, item]))
+    recoveredItems.forEach(item => {
+      if (item?.id) mergedItemMap.set(item.id, item)
+    })
+    filterDeleteFailedTargets.value = nextFailedTargets
+    applyFilterDeletePreviewData({
+      folder_name: filterDeletePreviewInfo.value.folderName,
+      folder_path: filterDeletePreviewInfo.value.folderPath,
+      items: [...mergedItemMap.values()],
+      selected_count: Number(filterDeletePreviewInfo.value.selectedCount || 0) + recoveredSelectedCount,
+      selected_size: Number(filterDeletePreviewInfo.value.selectedSize || 0) + recoveredSelectedSize,
+      selected_size_exact: !recoveredHasPartialSize,
+      size_disabled: recoveredHasBasicTreeOnly,
+      truncated: recoveredHasTruncated,
+      rule_count: recoveredRuleCount,
+      scanned_entries: Number(filterDeletePreviewInfo.value.scannedEntries || 0) + recoveredScannedEntries,
+      discovered_entries: Number(filterDeletePreviewInfo.value.discoveredEntries || 0) + recoveredDiscoveredEntries,
+      pending_directories: nextFailedTargets.length,
+      current_path: '',
+      progress_message: nextFailedTargets.length
+        ? `重试完成，仍有 ${nextFailedTargets.length} 个目录预审失败`
+        : `失败项重试完成，已补回 ${recoveredItems.length} 个命中项`,
+      warning: retryWarnings.filter(Boolean).join('；'),
+      error: retryErrors.filter(Boolean).join('；'),
+      status: nextFailedTargets.length ? 'error' : 'completed'
+    }, { preserveSelection: true })
+    await activityLogApi.logFilterDelete({
+      mode: 'retry_preview',
+      session_key: filterDeleteSessionKey.value,
+      status: nextFailedTargets.length ? (recoveredItems.length ? 'partial_success' : 'failed') : 'success',
+      scope_label: props.scopeLabel || getFileName(props.currentPath) || text.currentFolder,
+      folder_name: filterDeletePreviewInfo.value.folderName || '',
+      folder_path: props.currentPath || filterDeletePreviewInfo.value.folderPath || '',
+      duration_ms: Math.max(0, Date.now() - retryStartedAt),
+      retry_target_count: failedTargets.length,
+      retry_success_count: failedTargets.length - nextFailedTargets.length,
+      retry_failed_count: nextFailedTargets.length,
+      recovered_item_count: recoveredItems.length,
+      recovered_selected_size: recoveredSelectedSize,
+      retry_targets: failedTargets.map(item => ({
+        path: item.path,
+        name: getFileName(item.path),
+        type: 'dir',
+        status: nextFailedTargets.some(target => target.path === item.path) ? 'failed' : 'success',
+        error: item.error || ''
+      })),
+      recovered_items: recoveredItems,
+      failed_targets: nextFailedTargets.map(item => ({
+        path: item.path,
+        name: getFileName(item.path),
+        type: 'dir',
+        status: 'failed',
+        error: item.error || '预审失败'
+      })),
+      warning: retryWarnings.filter(Boolean).join('；'),
+      error: retryErrors.filter(Boolean).join('；')
+    })
+    if (nextFailedTargets.length) {
+      ElMessage.warning(`失败项重试完成，仍有 ${nextFailedTargets.length} 个目录失败`)
+    } else {
+      ElMessage.success('失败项已重试成功并补回到当前预审结果')
+    }
+  } finally {
+    filterDeleteLoading.value = false
   }
 }
 
@@ -1938,15 +2089,15 @@ onBeforeUnmount(() => {
 .fd-type-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex: 0 0 auto;
-  min-height: 26px;
-  padding: 0 9px;
+  min-height: 22px;
+  padding: 0 7px;
   border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: 999px;
   background: #fafafc;
   color: var(--fd-apple-text);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: -0.12px;
   line-height: 1;
@@ -1994,12 +2145,12 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
   background: rgba(29, 29, 31, 0.08);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   line-height: 1;
 }
@@ -2062,6 +2213,19 @@ onBeforeUnmount(() => {
   border-color: var(--fd-apple-red);
   background: var(--fd-apple-red);
   box-shadow: 0 10px 20px rgba(217, 45, 32, 0.18);
+}
+
+.fm-btn-warning {
+  color: var(--fd-apple-orange);
+  border-color: rgba(184, 106, 18, 0.16);
+  background: var(--fd-apple-orange-soft);
+}
+
+.fm-btn-warning:hover:not(:disabled) {
+  color: #ffffff;
+  border-color: #b86a12;
+  background: #b86a12;
+  box-shadow: 0 10px 20px rgba(184, 106, 18, 0.18);
 }
 
 .fm-btn-ghost:hover:not(:disabled) {

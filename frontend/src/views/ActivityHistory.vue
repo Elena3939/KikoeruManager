@@ -163,7 +163,7 @@
 
     <section class="ios-panel table-panel">
       <el-table
-        :data="items"
+        :data="displayItems"
         v-loading="loading"
         class="ios-table"
         stripe
@@ -177,14 +177,39 @@
       >
         <el-table-column prop="created_at" label="时间" width="168">
           <template #default="{ row }">
-            <span class="cell-time">{{ formatDateTime(row.created_at) }}</span>
+            <span class="time-cell-wrap" :style="row.is_tree_child ? childIndentStyle(row, 0) : undefined">
+              <button
+                v-if="!row.is_tree_child && rowHasChildren(row)"
+                type="button"
+                class="tree-toggle-btn"
+                :class="{ expanded: isTreeRowExpanded(row) }"
+                @click.stop="toggleTreeRow(row)"
+              >
+                ▶
+              </button>
+              <span v-else class="tree-toggle-placeholder"></span>
+              <span class="cell-time">{{ formatDateTime(displayRowTime(row)) }}</span>
+            </span>
           </template>
         </el-table-column>
         <el-table-column prop="category_label" label="分类" width="212">
           <template #default="{ row }">
             <span class="category-cell-wrap">
-              <span :class="['cell-pill', categoryClass(row.category)]">{{ row.category_label }}</span>
-              <span v-for="tag in mergedCategoryTags(row)" :key="`${row.id}-${tag}`" class="action-pill">{{ tag }}</span>
+              <template v-if="row.is_tree_child">
+                <span class="tree-cell-content child-row-label" :style="childIndentStyle(row)">
+                  <span class="tree-guides" :style="treeGuideStyle(row)" aria-hidden="true"></span>
+                  <span :class="['child-type-dot', childTypeDotClass(row)]"></span>
+                  <span>{{ childRowCategoryLabel(row) }}</span>
+                </span>
+              </template>
+              <template v-else>
+                <span :class="['cell-pill', categoryClass(row.category)]">{{ row.category_label }}</span>
+              </template>
+              <span
+                v-for="tag in rowCategoryTags(row)"
+                :key="`${row.id}-${tag}`"
+                :class="['action-pill', { 'is-muted': tag === '未命中' }]"
+              >{{ tag }}</span>
             </span>
           </template>
         </el-table-column>
@@ -192,8 +217,13 @@
           <template #default="{ row }">
             <div class="status-cell">
               <span :class="['status-tag', statusClass(row.status)]">{{ statusLabel(row.status) }}</span>
-              <span v-if="isRerunRow(row)" class="status-fixed-pill is-rerun">重新爬取</span>
-              <span v-if="isRecoveredFailure(row)" class="status-fixed-pill">已修复</span>
+              <template v-if="!row.is_tree_child">
+                <span v-if="isRerunRow(row)" class="status-fixed-pill is-rerun">重新爬取</span>
+                <span v-if="isFilterDeleteRetriedSuccess(row)" class="status-fixed-pill">重试✔</span>
+                <span v-else-if="isFilterDeleteRetriedPartial(row)" class="status-fixed-pill is-partial">重新执行部分成功</span>
+                <span v-if="finalStatusLabel(row)" :class="['status-fixed-pill', 'is-final', finalStatusClass(row)]">{{ finalStatusLabel(row) }}</span>
+                <span v-if="isRecoveredFailure(row)" class="status-fixed-pill">已修复</span>
+              </template>
             </div>
           </template>
         </el-table-column>
@@ -202,10 +232,19 @@
             <span class="mono">{{ row.rjcode || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="summary" label="摘要" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="summary" label="摘要" min-width="240" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span :class="['tree-cell-content', { 'child-summary': row.is_tree_child }]" :style="row.is_tree_child ? childIndentStyle(row) : undefined">
+              <span class="tree-guides" v-if="row.is_tree_child" :style="treeGuideStyle(row)" aria-hidden="true"></span>
+              <span>{{ displaySummary(row) }}</span>
+            </span>
+          </template>
+        </el-table-column>
         <el-table-column prop="action" label="动作" width="170" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="action-wrap">
+            <span class="action-wrap" :class="{ 'child-action-wrap': row.is_tree_child }" :style="row.is_tree_child ? childIndentStyle(row) : undefined">
+              <span class="tree-guides" v-if="row.is_tree_child" :style="treeGuideStyle(row)" aria-hidden="true"></span>
+              <span v-if="row.is_tree_child" :class="['child-type-dot', childTypeDotClass(row)]"></span>
               <span :class="['action-text', actionClass(row)]">{{ humanAction(row) }}</span>
             </span>
           </template>
@@ -254,9 +293,15 @@
             <div class="detail-topbar-title">{{ humanAction(selectedRow) }}</div>
             <div class="detail-topbar-meta">
               <span :class="['cell-pill', categoryClass(selectedRow.category)]">{{ selectedRow.category_label }}</span>
-              <span v-for="tag in mergedCategoryTags(selectedRow)" :key="`drawer-${selectedRow.id}-${tag}`" class="action-pill">{{ tag }}</span>
+              <span
+                v-for="tag in rowCategoryTags(selectedRow)"
+                :key="`drawer-${selectedRow.id}-${tag}`"
+                :class="['action-pill', { 'is-muted': tag === '未命中' }]"
+              >{{ tag }}</span>
               <span :class="['status-tag', statusClass(selectedRow.status)]">{{ statusLabel(selectedRow.status) }}</span>
               <span v-if="isRerunRow(selectedRow)" class="status-fixed-pill is-rerun">重新爬取</span>
+              <span v-if="isFilterDeleteRetriedSuccess(selectedRow)" class="status-fixed-pill">重试✔</span>
+              <span v-else-if="isFilterDeleteRetriedPartial(selectedRow)" class="status-fixed-pill is-partial">重新执行部分成功</span>
               <span v-if="isRecoveredFailure(selectedRow)" class="status-fixed-pill">已修复</span>
             </div>
           </div>
@@ -273,6 +318,8 @@
             <div class="ev">
               <span :class="['status-tag', statusClass(selectedRow.status)]">{{ statusLabel(selectedRow.status) }}</span>
               <span v-if="isRerunRow(selectedRow)" class="status-fixed-pill is-rerun">重新爬取</span>
+              <span v-if="isFilterDeleteRetriedSuccess(selectedRow)" class="status-fixed-pill">重试✔</span>
+              <span v-else-if="isFilterDeleteRetriedPartial(selectedRow)" class="status-fixed-pill is-partial">重新执行部分成功</span>
               <span v-if="isRecoveredFailure(selectedRow)" class="status-fixed-pill">已修复</span>
             </div>
           </div>
@@ -282,11 +329,11 @@
           </div>
           <div class="expand-item span-2">
             <div class="ek">摘要</div>
-            <div class="ev">{{ selectedRow.summary }}</div>
+            <div class="ev">{{ displaySummary(selectedRow) }}</div>
           </div>
-          <div v-if="selectedRow.detail?.pair_summary" class="expand-item span-2">
+          <div v-if="pairSummaryText(selectedRow)" class="expand-item span-2">
             <div class="ek">配对结果</div>
-            <div class="ev">{{ selectedRow.detail.pair_summary }}</div>
+            <div class="ev">{{ pairSummaryText(selectedRow) }}</div>
           </div>
           <div class="expand-item span-2">
             <div class="ek">源路径</div>
@@ -325,11 +372,11 @@
             </div>
           </div>
 
-          <div v-if="filterDeleteEntrySections(selectedRow).length" class="expand-item span-2">
-            <div class="ek">删除清单</div>
+          <div v-if="activityEntrySections(selectedRow).length" class="expand-item span-2">
+            <div class="ek">{{ activityEntrySectionTitle(selectedRow) }}</div>
             <div class="entry-section-list">
               <div
-                v-for="section in filterDeleteEntrySections(selectedRow)"
+                v-for="section in activityEntrySections(selectedRow)"
                 :key="section.key"
                 class="entry-section"
               >
@@ -370,7 +417,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Document, Folder } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import api from '../api'
@@ -383,6 +430,7 @@ const limit = ref(30)
 const detailDrawerVisible = ref(false)
 const selectedRow = ref(null)
 const statsDays = ref(14)
+const expandedTreeRowIds = ref(new Set())
 const stats = reactive({
   days: 14,
   total_in_range: 0,
@@ -538,6 +586,15 @@ const metricCards = computed(() => {
   ]
 })
 
+const displayItems = computed(() => {
+  const rows = []
+  for (const row of items.value) {
+    rows.push(row)
+    rows.push(...buildChildDisplayRows(row))
+  }
+  return rows
+})
+
 const palette = [
   '#007aff',
   '#34c759',
@@ -612,19 +669,51 @@ function isRerunRow(row) {
   return Boolean(row?.rerun || row?.detail?.rerun_linked || Number(row?.detail?.rerun_count || 0) > 0)
 }
 
+function filterDeleteRetryStatus(row) {
+  return String(row?.detail?.retry_status || '').trim()
+}
+
+function isFilterDeleteRetriedSuccess(row) {
+  return filterDeleteRetryStatus(row) === 'success'
+}
+
+function isFilterDeleteRetriedPartial(row) {
+  return filterDeleteRetryStatus(row) === 'partial_success'
+}
+
+function hasFilterDeleteRetryChild(row) {
+  return Boolean(row?.merged_filter_retry || row?.detail?.retry_linked)
+}
+
 function humanAction(row) {
+  if (row?.is_tree_child) {
+    if (row.relation === 'rerun') {
+      if (row.status === 'success') return '重试完成'
+      if (row.status === 'failed') return '重试失败'
+      return '重试'
+    }
+    if (row.relation === 'pair') {
+      return row.status === 'success' ? '字幕手动配对完成' : '字幕手动配对'
+    }
+    if (row.relation === 'delete_apply') {
+      if (row.status === 'success') return '删除执行完成'
+      if (row.status === 'partial_success') return '删除执行部分成功'
+      if (row.status === 'cancelled') return '删除执行已停止'
+      if (row.status === 'failed') return '删除执行失败'
+      return '删除执行'
+    }
+    if (row.action === 'filter_delete_preview_retry') {
+      if (row.status === 'success') return '失败项重试成功'
+      if (row.status === 'partial_success') return '失败项重试部分成功'
+      if (row.status === 'failed') return '失败项重试失败'
+      return '失败项重试'
+    }
+  }
   const category = row.category
   const status = row.status
   const action = row.action
 
   if (category === 'pipeline_filter') {
-    if (hasMergedFilterDelete(row)) {
-      if (status === 'success') return '删除预审完成'
-      if (status === 'partial_success') return '删除预审完成'
-      if (status === 'cancelled') return '删除预审完成'
-      if (status === 'failed') return '删除预审完成'
-      return '删除预审'
-    }
     if (action === 'filter_delete_preview') {
       if (status === 'success') return '删除过滤预审完成'
       if (status === 'cancelled') return '删除过滤预审已取消'
@@ -638,8 +727,20 @@ function humanAction(row) {
       if (status === 'failed') return '删除过滤执行失败'
       return '删除过滤执行'
     }
+    if (action === 'filter_delete_preview_retry') {
+      if (status === 'success') return '删除过滤失败项重试完成'
+      if (status === 'partial_success') return '删除过滤失败项重试部分成功'
+      if (status === 'failed') return '删除过滤失败项重试失败'
+      return '删除过滤失败项重试'
+    }
   }
   if (category === 'subtitle_crawl') {
+    if (action === 'batch_start') {
+      if (status === 'success') return '批量字幕任务创建完成'
+      if (status === 'partial_success') return '批量字幕任务创建部分成功'
+      if (status === 'failed') return '批量字幕任务创建失败'
+      return '批量字幕任务创建'
+    }
     if (status === 'success') return 'RJ 字幕爬取完成'
     if (status === 'failed') return 'RJ 字幕爬取失败'
     if (status === 'waiting') return 'RJ 字幕任务等待中'
@@ -703,6 +804,45 @@ function hasMergedFilterDelete(row) {
   return Boolean(row?.merged_filter_delete || row?.detail?.preview_linked)
 }
 
+function isBatchChildCrawlRow(row) {
+  if (!row || !row.is_tree_child) return false
+  if (row.category !== 'subtitle_crawl' || row.action === 'batch_start') return false
+  return row?.parent_row?.category === 'subtitle_crawl' && row?.parent_row?.action === 'batch_start'
+}
+
+function collectDescendantRows(row) {
+  const rows = []
+  const walk = (node) => {
+    for (const child of collectChildRowsFromParent(node)) {
+      rows.push(child)
+      walk(child)
+    }
+  }
+  walk(row)
+  return rows
+}
+
+function latestPairRow(row) {
+  const pairRows = collectDescendantRows(row)
+    .filter((item) => item?.relation === 'pair' || item?.category === 'subtitle_pair')
+    .sort((left, right) => String(left.created_at || '').localeCompare(String(right.created_at || '')))
+  return pairRows.at(-1) || null
+}
+
+function isBatchChildPaired(row) {
+  if (!isBatchChildCrawlRow(row)) return false
+  const pairRow = latestPairRow(row)
+  return Boolean(pairRow && pairRow.status === 'success')
+}
+
+function pairSummaryText(row) {
+  if (!row) return ''
+  const detailSummary = String(row?.detail?.pair_summary || '').trim()
+  if (detailSummary) return detailSummary
+  const pairRow = latestPairRow(row)
+  return String(pairRow?.summary || '').trim()
+}
+
 function mergedSubtitleImportTag(row) {
   const status = String(row?.detail?.import_status || row?.merged_subtitle_import_status || '')
   if (status === 'success') return '字幕补配完成'
@@ -719,12 +859,34 @@ function mergedFilterDeleteTag(row) {
   return '已删除'
 }
 
+function isSubtitleBatchMiss(row) {
+  if (!row || row.category !== 'subtitle_crawl' || row.action !== 'batch_start') return false
+  const recognizedCount = Number(row?.detail?.recognized_rj_count || 0)
+  const createdCount = Number(row?.detail?.created_count || 0)
+  const skippedTotal = Number(row?.detail?.skipped_total || 0)
+  const hitCount = Math.max(recognizedCount, createdCount + skippedTotal)
+  return hitCount <= 0
+}
+
 function mergedCategoryTags(row) {
   const tags = []
   if (hasMergedSubtitleImport(row)) tags.push(mergedSubtitleImportTag(row))
-  if (hasMergedPair(row)) tags.push('字幕配对完成')
-  if (hasMergedFilterDelete(row)) tags.push(mergedFilterDeleteTag(row))
+  if (isSubtitleBatchMiss(row)) tags.push('未命中')
+  if (hasFilterDeleteRetryChild(row)) tags.push('附带重试')
+  if (isFilterDeleteRetriedSuccess(row)) tags.push('重试✔')
+  else if (isFilterDeleteRetriedPartial(row)) tags.push('重新执行部分成功')
   return tags
+}
+
+function rowCategoryTags(row) {
+  const tags = row?.is_tree_child ? [] : mergedCategoryTags(row)
+  if (isBatchChildPaired(row)) tags.push('已配对')
+  return tags
+}
+
+function displaySummary(row) {
+  if (isBatchChildPaired(row)) return pairSummaryText(row) || row?.summary || '—'
+  return row?.summary || '—'
 }
 
 function compactPath(p) {
@@ -739,6 +901,7 @@ function compactPath(p) {
 function rowClassName({ row }) {
   if (!row) return ''
   const cls = []
+  if (row.is_tree_child) cls.push('activity-row-child')
   if (row.status) cls.push(`row-status-${row.status}`)
   if (isRecoveredFailure(row)) cls.push('row-recovered')
   cls.push('activity-row')
@@ -746,8 +909,123 @@ function rowClassName({ row }) {
 }
 
 function openDetail(row) {
-  selectedRow.value = row
+  selectedRow.value = row || null
   detailDrawerVisible.value = true
+}
+
+function treeRowId(row) {
+  return String(row?.id || '')
+}
+
+function rowHasChildren(row) {
+  if (!row) return false
+  return collectChildRowsFromParent(row).length > 0
+}
+
+function isTreeRowExpanded(row) {
+  return expandedTreeRowIds.value.has(treeRowId(row))
+}
+
+function toggleTreeRow(row) {
+  const id = treeRowId(row)
+  if (!id || !rowHasChildren(row)) return
+  const next = new Set(expandedTreeRowIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedTreeRowIds.value = next
+}
+
+function buildChildDisplayRows(parentRow, children = null, depth = 1) {
+  const sourceChildren = Array.isArray(children)
+    ? children
+    : collectChildRowsFromParent(parentRow)
+  if (!isTreeRowExpanded(parentRow)) return []
+  const rows = []
+  for (const child of sourceChildren) {
+    const childRow = {
+      ...child,
+      parent_id: parentRow.id,
+      parent_row: parentRow,
+      is_tree_child: true,
+      tree_depth: depth
+    }
+    rows.push(childRow)
+    rows.push(...buildChildDisplayRows(parentRow, child.child_rows || [], depth + 1))
+  }
+  return rows
+}
+
+function collectChildRowsFromParent(row) {
+  const childRows = []
+  const seenIds = new Set()
+  const directChildren = Array.isArray(row?.child_rows) ? row.child_rows : []
+  const detailChildren = Array.isArray(row?.detail?.child_rows) ? row.detail.child_rows : []
+  for (const child of [...directChildren, ...detailChildren]) {
+    const id = String(child?.id || '')
+    if (id && seenIds.has(id)) continue
+    if (id) seenIds.add(id)
+    childRows.push(child)
+  }
+  return childRows.sort((left, right) => String(left.created_at || '').localeCompare(String(right.created_at || '')))
+}
+
+function childRowCategoryLabel(row) {
+  if (row?.relation === 'rerun') return '重试'
+  if (row?.relation === 'pair') return '字幕配对'
+  if (row?.relation === 'delete_apply') return '删除执行'
+  if (row?.action === 'filter_delete_preview_retry') return '失败重试'
+  return row?.category_label || row?.category || '子任务'
+}
+
+function childIndentStyle(row) {
+  return {}
+}
+
+function treeGuideStyle(row) {
+  const depth = Math.max(1, Number(row?.tree_depth || 1))
+  return {
+    '--tree-depth': depth
+  }
+}
+
+function collectDescendantStatuses(row) {
+  const statuses = []
+  const walk = (nodes = []) => {
+    for (const node of nodes) {
+      statuses.push(String(node?.status || ''))
+      if (Array.isArray(node?.child_rows) && node.child_rows.length) {
+        walk(node.child_rows)
+      }
+    }
+  }
+  walk(collectChildRowsFromParent(row))
+  return statuses
+}
+
+function finalStatusLabel(row) {
+  if (!row || row.is_tree_child || !rowHasChildren(row)) return ''
+  const statuses = [String(row.status || ''), ...collectDescendantStatuses(row)]
+  if (statuses[0] === 'failed' && (statuses.includes('success') || statuses.includes('partial_success'))) return '已修复'
+  if (statuses.includes('failed') && !statuses.includes('success') && !statuses.includes('partial_success')) return '异常'
+  if (!statuses.includes('waiting')) return '终了'
+  return ''
+}
+
+function finalStatusClass(row) {
+  const label = finalStatusLabel(row)
+  if (label === '已修复') return 'is-final-success'
+  if (label === '终了') return 'is-final-success'
+  if (label.includes('部分')) return 'is-final-partial'
+  return 'is-final-failed'
+}
+
+function childTypeDotClass(row) {
+  if (row?.relation === 'rerun') return 'is-rerun'
+  if (row?.relation === 'pair') return 'is-pair'
+  if (row?.relation === 'delete_apply') return 'is-delete-apply'
+  if (row?.category === 'subtitle_crawl') return 'is-crawl'
+  if (row?.action === 'filter_delete_preview_retry') return 'is-filter-retry'
+  return 'is-default'
 }
 
 function prettyDetail(row) {
@@ -781,13 +1059,26 @@ function detailHighlights(row) {
     'success_count',
     'failed_count',
     'deleted_bytes'
+    , 'retry_target_count'
+    , 'retry_success_count'
+    , 'retry_failed_count'
+    , 'retry_recovered_item_count'
+    , 'recovered_item_count'
+    , 'recovered_selected_size'
+    , 'scan_directory_count'
+    , 'recognized_rj_count'
+    , 'created_count'
+    , 'skipped_total'
+    , 'skipped_existing'
+    , 'skipped_duplicate'
+    , 'skipped_no_subtitle'
   ]
   const out = []
   for (const k of pickKeys) {
     if (d[k] === undefined || d[k] === null) continue
     let value = d[k]
     if (k === 'duration_ms') value = formatDurationMs(value)
-    if (['selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes'].includes(k)) value = formatBytes(value)
+    if (['selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes', 'recovered_selected_size'].includes(k)) value = formatBytes(value)
     out.push({ k, v: String(value) })
     if (out.length >= 10) break
   }
@@ -828,6 +1119,11 @@ function filterDeleteMetricCards(row) {
   if (d.deleted_bytes !== undefined) items.push({ k: '实际删除', v: formatBytes(d.deleted_bytes) })
   if (d.success_count !== undefined) items.push({ k: '成功', v: String(d.success_count) })
   if (d.failed_count !== undefined) items.push({ k: '失败', v: String(d.failed_count) })
+  if (d.retry_target_count !== undefined) items.push({ k: '重试目录', v: String(d.retry_target_count) })
+  if (d.retry_success_count !== undefined) items.push({ k: '重试成功', v: String(d.retry_success_count) })
+  if (d.retry_failed_count !== undefined) items.push({ k: '重试失败', v: String(d.retry_failed_count) })
+  if (d.recovered_item_count !== undefined) items.push({ k: '补回项数', v: String(d.recovered_item_count) })
+  if (d.recovered_selected_size !== undefined) items.push({ k: '补回大小', v: formatBytes(d.recovered_selected_size) })
   if (d.scanned_entries !== undefined) items.push({ k: '扫描数', v: String(d.scanned_entries) })
   if (d.rule_count !== undefined) items.push({ k: '规则数', v: String(d.rule_count) })
   return items.slice(0, 8)
@@ -924,12 +1220,105 @@ function filterDeleteEntrySections(row) {
     const items = mapFilterDeleteItems(d.failed_items)
     sections.push({ key: 'failed-items', title: `失败项（${d.failed_count || d.failed_items.length}）`, rows: buildFilterDeleteTreeRows(items) })
   }
+  if (Array.isArray(d.retry_targets) && d.retry_targets.length) {
+    const items = mapFilterDeleteItems(d.retry_targets)
+    sections.push({ key: 'retry-targets', title: `重试目录（${d.retry_target_count || d.retry_targets.length}）`, rows: buildFilterDeleteTreeRows(items) })
+  }
+  if (Array.isArray(d.recovered_items) && d.recovered_items.length) {
+    const items = mapFilterDeleteItems(d.recovered_items)
+    sections.push({ key: 'recovered-items', title: `重试补回项（${d.recovered_item_count || d.recovered_items.length}）`, rows: buildFilterDeleteTreeRows(items) })
+  }
+  if (Array.isArray(d.failed_targets) && d.failed_targets.length) {
+    const items = mapFilterDeleteItems(d.failed_targets)
+    sections.push({ key: 'retry-failed-targets', title: `重试后仍失败目录（${d.retry_failed_count || d.failed_targets.length}）`, rows: buildFilterDeleteTreeRows(items) })
+  }
   return sections
+}
+
+function subtitleBatchEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object' || d.mode !== 'subtitle_batch_start') return []
+  const sections = []
+  if (Array.isArray(d.source_directories) && d.source_directories.length) {
+    sections.push({
+      key: 'batch-source-directories',
+      title: `扫描目录（${d.source_directories.length}）`,
+      rows: d.source_directories.slice(0, 120).map((item, index) => ({
+        key: `${index}-${item.folder_path || item.path || item.folder_name || ''}`,
+        label: item.folder_name || item.name || item.folder_path || item.path || '未命名目录',
+        type: 'dir',
+        sizeText: item.folder_path || item.path || '',
+        error: '',
+        depth: 0
+      }))
+    })
+  }
+  if (Array.isArray(d.scan_targets) && d.scan_targets.length) {
+    sections.push({
+      key: 'batch-scan-targets',
+      title: `扫描结果（${d.scan_targets.length}）`,
+      rows: d.scan_targets.slice(0, 160).map((item, index) => ({
+        key: `${index}-${item.path || item.name || ''}`,
+        label: `${item.name || item.path || '未命名目录'}${item.message ? ` · ${item.message}` : ''}`,
+        type: 'dir',
+        sizeText: item.path || '',
+        error: '',
+        depth: 0
+      }))
+    })
+  }
+  if (Array.isArray(d.created_tasks) && d.created_tasks.length) {
+    sections.push({
+      key: 'batch-created-tasks',
+      title: `已创建爬取（${d.created_tasks.length}）`,
+      rows: d.created_tasks.slice(0, 160).map((item, index) => ({
+        key: `${index}-${item.task_id || item.folder_path || item.rjcode || ''}`,
+        label: `${item.rjcode ? `[${item.rjcode}] ` : ''}${item.folder_name || item.folder_path || '未命名目录'}`,
+        type: 'dir',
+        sizeText: item.folder_path || '',
+        error: '',
+        depth: 0
+      }))
+    })
+  }
+  if (Array.isArray(d.skipped_items) && d.skipped_items.length) {
+    sections.push({
+      key: 'batch-skipped-items',
+      title: `跳过项（${d.skipped_items.length}）`,
+      rows: d.skipped_items.slice(0, 160).map((item, index) => ({
+        key: `${index}-${item.folder_path || item.rjcode || item.folder_name || ''}`,
+        label: `${item.rjcode ? `[${item.rjcode}] ` : ''}${item.folder_name || item.folder_path || '未命名目录'}`,
+        type: 'dir',
+        sizeText: item.folder_path || '',
+        error: item.queue_message || '',
+        depth: 0
+      }))
+    })
+  }
+  return sections
+}
+
+function activityEntrySections(row) {
+  return [
+    ...subtitleBatchEntrySections(row),
+    ...filterDeleteEntrySections(row)
+  ]
+}
+
+function activityEntrySectionTitle(row) {
+  const d = row?.detail
+  if (d && typeof d === 'object' && d.mode === 'subtitle_batch_start') return '批量详情'
+  return '删除清单'
 }
 
 function formatDateTime(iso) {
   if (!iso) return '—'
   return dayjs(iso).format('YYYY-MM-DD HH:mm')
+}
+
+function displayRowTime(row) {
+  if (!row) return ''
+  return row.latest_activity_at || row.created_at
 }
 
 function formatShortDate(d) {
@@ -987,6 +1376,21 @@ function onPageSizeChange() {
 onMounted(() => {
   loadAll()
 })
+
+watch(items, (nextItems) => {
+  const validIds = new Set()
+  const walk = (rows) => {
+    for (const row of rows || []) {
+      if (rowHasChildren(row)) validIds.add(treeRowId(row))
+      const childRows = Array.isArray(row?.detail?.child_rows) ? row.detail.child_rows : []
+      walk(childRows)
+    }
+  }
+  walk(nextItems)
+  expandedTreeRowIds.value = new Set(
+    [...expandedTreeRowIds.value].filter((id) => validIds.has(id))
+  )
+}, { immediate: true, deep: true })
 </script>
 
 <style scoped>
@@ -1303,6 +1707,41 @@ onMounted(() => {
   font-size: 13px;
 }
 
+.time-cell-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tree-toggle-btn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(10, 132, 255, 0.08);
+  color: #0a84ff;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.tree-toggle-btn.expanded {
+  transform: rotate(90deg);
+}
+
+.tree-toggle-btn:hover {
+  background: rgba(10, 132, 255, 0.14);
+}
+
+.tree-toggle-placeholder {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+}
+
 .cell-pill {
   display: inline-block;
   padding: 4px 10px;
@@ -1377,18 +1816,52 @@ onMounted(() => {
 }
 
 .status-fixed-pill {
-  padding: 1px 6px;
-  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 16px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid rgba(52, 199, 89, 0.18);
   background: rgba(52, 199, 89, 0.1);
-  color: #248a3d;
-  font-size: 10px;
-  font-weight: 500;
-  transform: translateY(-4px);
+  color: #187d34;
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .status-fixed-pill.is-rerun {
-  background: rgba(255, 159, 10, 0.16);
+  border-color: rgba(255, 159, 10, 0.18);
+  background: rgba(255, 159, 10, 0.1);
   color: #c56a00;
+}
+
+.status-fixed-pill.is-partial {
+  border-color: rgba(255, 159, 10, 0.18);
+  background: rgba(255, 159, 10, 0.1);
+  color: #c56a00;
+}
+
+.status-fixed-pill.is-final {
+  border-radius: 3px;
+}
+
+.status-fixed-pill.is-final-success {
+  border-color: rgba(52, 199, 89, 0.16);
+  background: rgba(52, 199, 89, 0.08);
+  color: #187d34;
+}
+
+.status-fixed-pill.is-final-partial {
+  border-color: rgba(255, 159, 10, 0.16);
+  background: rgba(255, 159, 10, 0.08);
+  color: #c56a00;
+}
+
+.status-fixed-pill.is-final-failed {
+  border-color: rgba(215, 0, 21, 0.16);
+  background: rgba(215, 0, 21, 0.08);
+  color: #b0001a;
 }
 
 .action-text {
@@ -1400,8 +1873,13 @@ onMounted(() => {
 .action-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
+  position: relative;
+}
+
+.child-action-wrap {
+  padding-left: 0;
 }
 
 .category-cell-wrap {
@@ -1409,18 +1887,38 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  position: relative;
+}
+
+.child-row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 0;
+  color: rgba(29, 29, 31, 0.62);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .action-pill {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(52, 199, 89, 0.12);
+  min-height: 15px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid rgba(52, 199, 89, 0.16);
+  background: rgba(52, 199, 89, 0.08);
   color: #248a3d;
-  font-size: 11px;
+  font-size: 9px;
   font-weight: 600;
+  line-height: 1;
   white-space: nowrap;
+}
+
+.action-pill.is-muted {
+  border-color: rgba(142, 142, 147, 0.18);
+  background: rgba(142, 142, 147, 0.08);
+  color: #6b7280;
 }
 
 .action-text.is-success {
@@ -1433,6 +1931,85 @@ onMounted(() => {
 
 .action-text.is-neutral {
   color: #4b5563;
+}
+
+.child-summary {
+  display: inline-block;
+  padding-left: 0;
+  color: rgba(29, 29, 31, 0.76);
+  position: relative;
+}
+
+.tree-cell-content {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tree-guides {
+  position: absolute;
+  left: 0;
+  top: -10px;
+  bottom: -10px;
+  width: calc(var(--tree-depth, 1) * 14px);
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      rgba(10, 132, 255, 0.08) 0 1px,
+      transparent 1px 14px
+    );
+}
+
+.tree-guides::after {
+  content: '';
+  position: absolute;
+  left: calc((var(--tree-depth, 1) - 1) * 14px);
+  top: 50%;
+  width: 8px;
+  height: 1px;
+  background: rgba(10, 132, 255, 0.12);
+}
+
+.child-type-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.child-type-dot.is-rerun {
+  background: #ff9500;
+}
+
+.child-type-dot.is-crawl {
+  background: #0a84ff;
+}
+
+.child-type-dot.is-pair {
+  background: #5856d6;
+}
+
+.child-type-dot.is-filter-retry {
+  background: #ffcc00;
+}
+
+.child-type-dot.is-delete-apply {
+  background: #ff3b30;
+}
+
+.child-type-dot.is-default {
+  background: #8e8e93;
+}
+
+:deep(.ios-table .activity-row-child td) {
+  background: linear-gradient(180deg, rgba(52, 199, 89, 0.03), rgba(52, 199, 89, 0.06)) !important;
+}
+
+:deep(.ios-table .activity-row-child:hover > td) {
+  background: linear-gradient(180deg, rgba(52, 199, 89, 0.06), rgba(52, 199, 89, 0.09)) !important;
 }
 
 .mono {

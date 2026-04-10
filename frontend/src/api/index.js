@@ -839,7 +839,8 @@ export const rjSubtitleApi = {
       force_rerun: options.forceRerun ?? false,
       naming_strategy: options.namingStrategy ?? 'audio',
       use_filter_rules: options.useFilterRules ?? false,
-      subtitle_filter_rules: options.subtitleFilterRules || []
+      subtitle_filter_rules: options.subtitleFilterRules || [],
+      batch_context: options.batchContext || null
     })
     return response.data
   },

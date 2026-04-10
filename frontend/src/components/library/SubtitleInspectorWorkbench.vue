@@ -70,9 +70,25 @@
             >
               {{ view.subtitleSequenceMode ? '生成顺序预配对' : '按当前列表预配对' }}
             </el-button>
-            <el-button size="small" type="primary" :disabled="!view.subtitleManualPairs.length" :loading="view.subtitlePairApplying" @click="view.applySubtitleManualPairs">
-              {{ view.subtitleManualApplyLabel || '一键应用同名' }}
-            </el-button>
+            <el-tooltip
+              effect="light"
+              popper-class="subtitle-inspector-tooltip"
+              placement="top"
+              :disabled="Boolean(view.subtitleManualPairs.length)"
+              content="请先在中间区域生成或添加至少一组配对，再执行应用。"
+            >
+              <span class="subtitle-btn-tooltip-wrap">
+                <el-button
+                  size="small"
+                  type="primary"
+                  :disabled="!view.subtitleManualPairs.length"
+                  :loading="view.subtitlePairApplying"
+                  @click="view.applySubtitleManualPairs"
+                >
+                  {{ view.subtitleManualApplyLabel || '一键应用同名' }}
+                </el-button>
+              </span>
+            </el-tooltip>
           </div>
         </div>
 
@@ -128,7 +144,24 @@
             <div class="subtitle-match-panel-head subtitle-match-preview-head">
               <div class="subtitle-task-box-title">配对结果预览</div>
               <div class="subtitle-match-preview-actions">
-                <el-button size="small" type="primary" :disabled="!view.canAddSubtitleManualPair || view.subtitleInspectorBusy" @click="view.addSubtitleManualPair">加入手动配对</el-button>
+                <el-tooltip
+                  effect="light"
+                  popper-class="subtitle-inspector-tooltip"
+                  placement="top"
+                  :disabled="view.subtitleInspectorBusy || view.canAddSubtitleManualPair"
+                  content="请先在左侧选一条音频，再在右侧选一条字幕，然后点此加入配对。"
+                >
+                  <span class="subtitle-btn-tooltip-wrap">
+                    <el-button
+                      size="small"
+                      type="primary"
+                      :disabled="!view.canAddSubtitleManualPair || view.subtitleInspectorBusy"
+                      @click="view.addSubtitleManualPair"
+                    >
+                      加入手动配对
+                    </el-button>
+                  </span>
+                </el-tooltip>
                 <el-button size="small" text :disabled="view.subtitleInspectorBusy || (!view.subtitleSequenceSelection.audioPaths.length && !view.subtitleSequenceSelection.subtitlePaths.length)" @click="view.clearSubtitleSequenceSelection">清空顺序</el-button>
                 <el-button size="small" text :disabled="view.subtitleInspectorBusy || !view.subtitleManualPairs.length" @click="view.clearSubtitleManualPairs">清空配对</el-button>
               </div>
@@ -367,6 +400,10 @@ function formatSubtitleItemName(item = {}) {
   border: 1px solid #e6ebf2;
 }
 .subtitle-tree-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+.subtitle-btn-tooltip-wrap {
+  display: inline-flex;
+  vertical-align: middle;
+}
 .subtitle-tree-action-tip { font-size: 12px; color: var(--apple-text-faint); }
 .subtitle-tree-shell { display: flex; flex-direction: column; gap: 12px; min-height: 780px; }
 .subtitle-inspector-empty { display: grid; gap: 10px; padding: 18px 0 8px; }
@@ -426,7 +463,7 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-match-panel-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
 .subtitle-match-preview-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: start; }
 .subtitle-match-panel-tools, .subtitle-match-preview-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.subtitle-match-preview-actions { width: 100%; justify-content: flex-start; }
+.subtitle-match-preview-actions { width: 100%; justify-content: flex-start; align-items: center; gap: 6px; }
 .subtitle-task-box-title {
   font-family: 'SF Pro Display', 'Helvetica Neue', 'PingFang SC', sans-serif;
   font-size: 21px;
@@ -652,11 +689,35 @@ function formatSubtitleItemName(item = {}) {
   background: var(--apple-blue);
   border-color: var(--apple-blue);
   color: #ffffff;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
 }
-.subtitle-tree-card :deep(.el-button--primary:hover) {
-  background: #0077ed;
-  border-color: #0077ed;
-  color: #ffffff;
+.subtitle-tree-card :deep(.el-button--primary:hover:not(:disabled):not(.is-loading)) {
+  background: #ffffff !important;
+  border-color: var(--apple-blue) !important;
+  color: var(--apple-blue) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.18);
+}
+.subtitle-tree-card :deep(.el-button--primary:active:not(:disabled):not(.is-loading)) {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(0, 113, 227, 0.12);
+}
+/* 禁用态与旁侧 text 按钮一致：灰字、无蓝底（不可点一目了然） */
+.subtitle-tree-card :deep(.el-button--primary.is-disabled),
+.subtitle-tree-card :deep(.el-button--primary.is-disabled:hover),
+.subtitle-tree-card :deep(.el-button--primary:disabled) {
+  opacity: 1 !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--apple-text-faint) !important;
+  box-shadow: none !important;
+  transform: none !important;
+  filter: none !important;
 }
 .subtitle-tree-card :deep(.el-button--danger),
 .subtitle-tree-card :deep(.el-button--danger.is-plain) {
@@ -695,5 +756,23 @@ function formatSubtitleItemName(item = {}) {
   .subtitle-match-header,
   .subtitle-tree-selection-bar { flex-direction: column; align-items: flex-start; }
   .subtitle-match-preview-grid { grid-template-columns: 1fr; }
+}
+</style>
+
+<style>
+/* Tooltip 挂载到 body，需非 scoped；浅灰底替代默认深色气泡 */
+.subtitle-inspector-tooltip.el-popper {
+  background: #e8e8ec !important;
+  border: 1px solid rgba(29, 29, 31, 0.1) !important;
+  color: #1d1d1f !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08) !important;
+  padding: 8px 12px !important;
+  font-size: 13px !important;
+  line-height: 1.45 !important;
+  max-width: min(320px, calc(100vw - 24px));
+}
+.subtitle-inspector-tooltip.el-popper .el-popper__arrow::before {
+  background: #e8e8ec !important;
+  border: 1px solid rgba(29, 29, 31, 0.1) !important;
 }
 </style>

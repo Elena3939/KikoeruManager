@@ -1592,9 +1592,15 @@ function matchesSubtitleTaskFilter (task, filter = subtitleTaskFilter.value) {
   return true
 }
 
+function isSubtitleTaskAwaitingManualWork (task) {
+  if (!task || isRJSubtitleTaskCancelled(task)) return false
+  if (task.manual_match_completed) return false
+  return Boolean(task.awaiting_manual_match || task.status === 'completed')
+}
+
 function matchesSubtitleTaskManualFilter (task, filter = subtitleTaskManualFilter.value) {
   if (filter === 'all') return true
-  if (filter === 'awaiting_manual_match') return Boolean(task?.awaiting_manual_match)
+  if (filter === 'awaiting_manual_match') return isSubtitleTaskAwaitingManualWork(task)
   if (filter === 'manual_match_completed') return Boolean(task?.manual_match_completed)
   if (filter === 'processing') return task?.status === 'processing'
   if (filter === 'pending') return task?.status === 'pending'
@@ -1660,7 +1666,7 @@ const subtitleTaskOverview = computed(() => ([
 ]).filter(item => item.key === 'all' || item.value > 0))
 const subtitleTaskManualOverview = computed(() => ([
   { key: 'all', label: '全部', value: subtitleTasks.value.length },
-  { key: 'awaiting_manual_match', label: '待处理', value: subtitleTasks.value.filter(task => task.awaiting_manual_match).length },
+  { key: 'awaiting_manual_match', label: '待处理', value: subtitleTasks.value.filter(task => isSubtitleTaskAwaitingManualWork(task)).length },
   { key: 'processing', label: '执行中', value: subtitleTasks.value.filter(task => task.status === 'processing').length },
   { key: 'pending', label: '等待中', value: subtitleTasks.value.filter(task => task.status === 'pending').length },
   { key: 'manual_match_completed', label: '已匹配完成', value: subtitleTasks.value.filter(task => task.manual_match_completed).length },
@@ -1688,7 +1694,7 @@ function subtitleTaskSortWeight (task) {
   if (task.status === 'processing') return 0
   if (task.status === 'pending') return 1
   if (task.status === 'paused') return 2
-  if (task.status === 'completed' && task.awaiting_manual_match) return 3
+  if (isSubtitleTaskAwaitingManualWork(task)) return 3
   if (task.status === 'failed') return 4
   if (task.manual_match_completed) return 5
   if (task.status === 'completed') return 6
@@ -3443,7 +3449,7 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 }
 
 async function autoQueueScannedSubtitleItem (item, options = {}) {
-  const { requestToken = 0 } = options
+  const { requestToken = 0, batchContext = null } = options
   if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
 
   incrementSubtitleScanSession('foundDirectories')
@@ -3482,7 +3488,16 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
       queue_state: 'creating',
       queue_message: availability.message || '检测到可用字幕，正在加入任务'
     })
-    const data = await submitRJSubtitleTasks([item], { silent: true, refresh: false })
+    const data = await submitRJSubtitleTasks([item], {
+      silent: true,
+      refresh: false,
+      batchContext: batchContext
+        ? {
+            ...batchContext,
+            log_parent: false
+          }
+        : null
+    })
     if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
     const skippedItem = Array.isArray(data?.skipped_items)
       ? data.skipped_items.find(entry => buildSubtitleSelectionKey(entry) === buildSubtitleSelectionKey(item))
@@ -3655,6 +3670,15 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
     .map(item => item?.folder_path ? item : toRJSubtitleItem(item))
     .filter(Boolean)
   const shouldScanCurrentFolder = scanCurrentFolder && directItems.length === 0 && Boolean(currentPath.value)
+  const batchContext = {
+    batch_id: `subtitle-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    source_directories: [],
+    scan_targets: [],
+    requested_count: 0,
+    recognized_rj_count: 0,
+    scan_directory_count: 0,
+    summary: buildSubtitleScanTargetSummary({})
+  }
   subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
   clearSubtitleScanWorkspace()
@@ -3666,6 +3690,12 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
   try {
     await refreshRJSubtitleStatus(false, { silent: true })
     const scanTargets = uniqueSubtitleScanTargets(directItems)
+    batchContext.source_directories = uniqueSubtitleItems(directItems).map(item => ({
+      folder_path: item.folder_path || '',
+      folder_name: item.folder_name || getFileName(item.folder_path),
+      library_id: item.library_id || selectedLibraryId.value || ''
+    })).filter(item => item.folder_path)
+    batchContext.scan_directory_count = scanTargets.length || (shouldScanCurrentFolder ? 1 : 0)
     subtitleSelectionScanTotal.value = scanTargets.length || (shouldScanCurrentFolder ? 1 : 0)
     let scannedItems = []
     let incrementalScannedItems = []
@@ -3676,7 +3706,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
           incrementalScannedItems = uniqueSubtitleItems([...incrementalScannedItems, chunkItem])
           subtitleScannedSelectionItems.value = incrementalScannedItems
           updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, incrementalScannedItems, { sync: true })
-          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken })
+          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken, batchContext })
         },
         onTargetResult: result => {
           if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -3698,7 +3728,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
           if (subtitleSelectionRequestToken.value !== requestToken) return
           subtitleScannedSelectionItems.value = uniqueSubtitleItems([...subtitleScannedSelectionItems.value, chunkItem])
           updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, subtitleScannedSelectionItems.value, { sync: true })
-          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken }, '当前目录扫描命中后自动入任务失败')
+          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken, batchContext }, '当前目录扫描命中后自动入任务失败')
         },
         onTargetResult: result => {
           if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -3721,6 +3751,28 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
     if (subtitleSelectionRequestToken.value !== requestToken) return
     subtitleScannedSelectionItems.value = uniqueSubtitleItems(scannedItems)
     syncSubtitleSelectionState()
+    batchContext.requested_count = subtitleDialogSelection.value.length
+    batchContext.recognized_rj_count = subtitleScanSession.value.foundDirectories
+    batchContext.scan_targets = (subtitleScanTargetResults.value || []).map(item => ({
+      path: item.path || '',
+      name: item.name || getFileName(item.path),
+      library_id: item.library_id || '',
+      status: item.status || 'pending',
+      message: item.message || '',
+      summary: buildSubtitleScanTargetSummary(item.summary || {})
+    })).filter(item => item.path)
+    batchContext.summary = batchContext.scan_targets.reduce((acc, item) => {
+      const summary = buildSubtitleScanTargetSummary(item.summary || {})
+      return mergeSubtitleScanTargetSummary(acc, summary)
+    }, buildSubtitleScanTargetSummary({}))
+    await submitRJSubtitleTasks([], {
+      silent: true,
+      refresh: false,
+      batchContext: {
+        ...batchContext,
+        log_parent: true
+      }
+    })
     await refreshRJSubtitleStatus(false, { silent: true })
   } finally {
     if (subtitleSelectionRequestToken.value === requestToken) {
@@ -3798,10 +3850,47 @@ async function rescanSubtitleSelectionTarget (target) {
 }
 
 async function submitRJSubtitleTasks (items, options = {}) {
-  const { silent = false, refresh = true, skipIfExistingSubtitlesOverride = null, forceRerun = false } = options
+  const { silent = false, refresh = true, skipIfExistingSubtitlesOverride = null, forceRerun = false, batchContext: batchContextOverride = null } = options
+  const rawItems = Array.isArray(items) ? items : []
+  const buildBatchContext = () => {
+    const sourceDirectories = uniqueSubtitleItems(subtitleSelectionSourceItems.value || []).map(item => ({
+      folder_path: item.folder_path || '',
+      folder_name: item.folder_name || getFileName(item.folder_path),
+      library_id: item.library_id || selectedLibraryId.value || ''
+    })).filter(item => item.folder_path)
+    const scanTargets = (subtitleScanTargetResults.value || []).map(item => ({
+      path: item.path || '',
+      name: item.name || getFileName(item.path),
+      library_id: item.library_id || '',
+      status: item.status || 'pending',
+      message: item.message || '',
+      summary: buildSubtitleScanTargetSummary(item.summary || {})
+    })).filter(item => item.path)
+    const batchSummary = scanTargets.reduce((acc, item) => {
+      const summary = buildSubtitleScanTargetSummary(item.summary || {})
+      return mergeSubtitleScanTargetSummary(acc, summary)
+    }, buildSubtitleScanTargetSummary({}))
+    const sourceCount = sourceDirectories.length
+    const scanCount = scanTargets.length
+    const itemCount = rawItems.length
+    const hasScanContext = sourceCount > 0 || scanCount > 0
+    if (!hasScanContext && itemCount <= 1) return null
+    return {
+      batch_id: `subtitle-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      requested_count: itemCount,
+      recognized_rj_count: Math.max(Number(batchSummary.found || 0), itemCount),
+      scan_directory_count: Math.max(sourceCount, scanCount, 0),
+      source_directories: sourceDirectories,
+      scan_targets: scanTargets,
+      summary: batchSummary
+    }
+  }
+  const batchContext = batchContextOverride || buildBatchContext()
   if (!Array.isArray(items) || !items.length) {
-    if (!silent) ElMessage.warning('没有可执行的 RJ 文件夹')
-    return null
+    if (!batchContext) {
+      if (!silent) ElMessage.warning('没有可执行的 RJ 文件夹')
+      return null
+    }
   }
 
   const effectiveSkipIfExistingSubtitles = forceRerun
@@ -3809,7 +3898,7 @@ async function submitRJSubtitleTasks (items, options = {}) {
     : typeof skipIfExistingSubtitlesOverride === 'boolean'
       ? skipIfExistingSubtitlesOverride
       : subtitleOptions.value.skipIfExistingSubtitles
-  const executableItems = [...items]
+  const executableItems = [...rawItems]
 
   subtitleSubmitting.value = true
   try {
@@ -3820,7 +3909,8 @@ async function submitRJSubtitleTasks (items, options = {}) {
       forceRerun,
       namingStrategy: subtitleOptions.value.namingStrategy,
       useFilterRules: subtitleOptions.value.useFilterRules,
-      subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules)
+      subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules),
+      batchContext
     })
     if (refresh) await refreshRJSubtitleStatus(false, { silent: true })
     const firstCreatedTaskId = data.tasks?.[0]?.task_id
@@ -3852,6 +3942,19 @@ async function startSingleRJSubtitle (item) {
   if (!item?.folder_path) return
   const requestToken = ++subtitleSelectionRequestToken.value
   const pendingAutoQueueJobs = []
+  const batchContext = {
+    batch_id: `subtitle-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    source_directories: [{
+      folder_path: item.folder_path || '',
+      folder_name: item.folder_name || getFileName(item.folder_path),
+      library_id: item.library_id || selectedLibraryId.value || ''
+    }].filter(entry => entry.folder_path),
+    scan_targets: [],
+    requested_count: 0,
+    recognized_rj_count: 0,
+    scan_directory_count: 1,
+    summary: buildSubtitleScanTargetSummary({})
+  }
   subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
   resetSubtitleScanRunIndicators()
@@ -3883,7 +3986,7 @@ async function startSingleRJSubtitle (item) {
         if (subtitleSelectionRequestToken.value !== requestToken) return
         subtitleScannedSelectionItems.value = uniqueSubtitleItems([...subtitleScannedSelectionItems.value, chunkItem])
         updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, subtitleScannedSelectionItems.value, { sync: true })
-        startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken }, '单项扫描命中后自动入任务失败')
+        startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken, batchContext }, '单项扫描命中后自动入任务失败')
       },
       onTargetResult: result => {
         if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -3902,6 +4005,28 @@ async function startSingleRJSubtitle (item) {
     if (subtitleSelectionRequestToken.value !== requestToken) return
     subtitleScannedSelectionItems.value = uniqueSubtitleItems(scannedItems)
     syncSubtitleSelectionState()
+    batchContext.requested_count = subtitleDialogSelection.value.length
+    batchContext.recognized_rj_count = subtitleScanSession.value.foundDirectories
+    batchContext.scan_targets = (subtitleScanTargetResults.value || []).map(entry => ({
+      path: entry.path || '',
+      name: entry.name || getFileName(entry.path),
+      library_id: entry.library_id || '',
+      status: entry.status || 'pending',
+      message: entry.message || '',
+      summary: buildSubtitleScanTargetSummary(entry.summary || {})
+    })).filter(entry => entry.path)
+    batchContext.summary = batchContext.scan_targets.reduce((acc, entry) => {
+      const summary = buildSubtitleScanTargetSummary(entry.summary || {})
+      return mergeSubtitleScanTargetSummary(acc, summary)
+    }, buildSubtitleScanTargetSummary({}))
+    await submitRJSubtitleTasks([], {
+      silent: true,
+      refresh: false,
+      batchContext: {
+        ...batchContext,
+        log_parent: true
+      }
+    })
     await refreshRJSubtitleStatus(false, { silent: true })
     const resolvedItem = scannedItems.find(candidate => buildSubtitleSelectionKey(candidate) === buildSubtitleSelectionKey(item)) || null
     if (!resolvedItem) {
@@ -3934,8 +4059,9 @@ function getRJSubtitleTaskStatusLabel (taskOrStatus) {
   if (isRJSubtitleTaskCancelled(taskOrStatus)) return '已取消'
   if (typeof taskOrStatus === 'object') {
     if (taskOrStatus.manual_match_completed) return '已匹配完成'
-    if (taskOrStatus.awaiting_manual_match) return '筛选并匹配'
-    if (taskOrStatus.status === 'completed') return '待处理'
+    if (isSubtitleTaskAwaitingManualWork(taskOrStatus)) {
+      return taskOrStatus.awaiting_manual_match ? '筛选并匹配' : '待处理'
+    }
   }
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const labels = {
@@ -3951,8 +4077,7 @@ function getRJSubtitleTaskBaseStatusLabel (taskOrStatus) {
   if (isRJSubtitleTaskCancelled(taskOrStatus)) return '已取消'
   if (typeof taskOrStatus === 'object') {
     if (taskOrStatus.manual_match_completed) return '已完成'
-    if (taskOrStatus.awaiting_manual_match) return '待处理'
-    if (taskOrStatus.status === 'completed') return '待处理'
+    if (isSubtitleTaskAwaitingManualWork(taskOrStatus)) return '待处理'
   }
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const labels = {
@@ -3968,8 +4093,7 @@ function getRJSubtitleTaskStatusType (taskOrStatus) {
   if (isRJSubtitleTaskCancelled(taskOrStatus)) return 'info'
   if (typeof taskOrStatus === 'object') {
     if (taskOrStatus.manual_match_completed) return 'success'
-    if (taskOrStatus.awaiting_manual_match) return 'warning'
-    if (taskOrStatus.status === 'completed') return 'warning'
+    if (isSubtitleTaskAwaitingManualWork(taskOrStatus)) return 'warning'
   }
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const types = {
@@ -3985,8 +4109,7 @@ function getRJSubtitleTaskBaseStatusType (taskOrStatus) {
   if (isRJSubtitleTaskCancelled(taskOrStatus)) return 'info'
   if (typeof taskOrStatus === 'object') {
     if (taskOrStatus.manual_match_completed) return 'success'
-    if (taskOrStatus.awaiting_manual_match) return 'warning'
-    if (taskOrStatus.status === 'completed') return 'warning'
+    if (isSubtitleTaskAwaitingManualWork(taskOrStatus)) return 'warning'
   }
   const status = typeof taskOrStatus === 'object' ? taskOrStatus.status : taskOrStatus
   const types = {
@@ -4016,8 +4139,7 @@ function getRJSubtitleTaskStatusClass (taskOrStatus) {
   if (isRJSubtitleTaskCancelled(taskOrStatus)) return 'cancelled'
   if (typeof taskOrStatus === 'object') {
     if (taskOrStatus.manual_match_completed) return 'manual_match_completed'
-    if (taskOrStatus.awaiting_manual_match) return 'awaiting_manual_match'
-    if (taskOrStatus.status === 'completed') return 'awaiting_manual_match'
+    if (isSubtitleTaskAwaitingManualWork(taskOrStatus)) return 'awaiting_manual_match'
     return taskOrStatus.status || 'pending'
   }
   return taskOrStatus || 'pending'
@@ -4028,7 +4150,7 @@ function getRJSubtitleProgressStatus (task) {
   if (isRJSubtitleTaskCancelled(task)) return undefined
   if (task.status === 'failed') return 'exception'
   if (task.manual_match_completed) return 'success'
-  if (task.awaiting_manual_match || task.status === 'completed') return 'warning'
+  if (isSubtitleTaskAwaitingManualWork(task)) return 'warning'
   return ''
 }
 
@@ -4055,21 +4177,25 @@ function getRJSubtitleLangLabel (lang) {
 function getSubtitleTaskInspectLabel (task) {
   if (!task?.subtitle_dir) return '等待字幕生成'
   if (task.manual_match_completed) return '已匹配完成'
-  if (task.awaiting_manual_match) return '筛选并匹配'
+  if (isSubtitleTaskAwaitingManualWork(task)) {
+    return task.awaiting_manual_match ? '筛选并匹配' : '检查字幕树'
+  }
   return '检查字幕树'
 }
 
 function getSubtitleTaskManualStateText (task) {
   if (!task) return ''
   if (task.manual_match_completed) return `已匹配完成 ${task.manual_match_applied_pairs || 0}`
-  if (task.awaiting_manual_match) return '筛选并匹配'
+  if (isSubtitleTaskAwaitingManualWork(task)) {
+    return task.awaiting_manual_match ? '筛选并匹配' : '待处理'
+  }
   return ''
 }
 
 function getSubtitleTaskManualStateChipClass (task) {
   if (!task) return ''
   if (task.manual_match_completed) return 'is-success'
-  if (task.awaiting_manual_match) return 'is-warning'
+  if (isSubtitleTaskAwaitingManualWork(task)) return 'is-warning'
   return ''
 }
 
@@ -4083,7 +4209,7 @@ function buildDefaultSubtitleTaskDetailPanels (task) {
   if (task.status === 'processing') return ['download', 'log']
   if (task.status === 'failed' || isRJSubtitleTaskCancelled(task)) return ['issues', 'log']
   if (task.manual_match_completed) return ['written', 'log']
-  if (task.awaiting_manual_match) return ['written', 'download']
+  if (isSubtitleTaskAwaitingManualWork(task)) return ['written', 'download']
   if (task.status === 'completed') return ['written']
   return []
 }
@@ -5607,7 +5733,7 @@ async function ensureSubtitleInspectorFocus () {
     await inspectSubtitleTask(preferredTask)
     return
   }
-  const nextTask = sortSubtitleTasksByCreatedAt(subtitleTasks.value.filter(task => task.subtitle_dir && task.awaiting_manual_match))[0]
+  const nextTask = sortSubtitleTasksByCreatedAt(subtitleTasks.value.filter(task => task.subtitle_dir && isSubtitleTaskAwaitingManualWork(task)))[0]
     || sortSubtitleTasksByCreatedAt(subtitleTasks.value.filter(task => task.subtitle_dir))[0]
   if (nextTask?.subtitle_dir) {
     await inspectSubtitleTask(nextTask)

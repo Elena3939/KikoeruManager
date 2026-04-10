@@ -334,6 +334,7 @@ def log_task_lifecycle_event(task) -> None:
             "written_files_count": len(meta.get("written_files") or []) if isinstance(meta.get("written_files"), list) else meta.get("written_files"),
             "folder_path": meta.get("folder_path"),
             "awaiting_manual_match": bool(meta.get("awaiting_manual_match")),
+            "batch_id": str(meta.get("batch_id") or "").strip() or None,
         }
     elif tt == TaskType.EXTRACT:
         archive_size_bytes, archive_path = _resolve_archive_snapshot(task)
@@ -549,6 +550,199 @@ def log_filter_delete_preview_result(payload: Dict[str, Any]) -> None:
         detail=detail,
         source_path=folder_path,
     )
+
+
+def _mark_filter_delete_failed_preview_retried(payload: Dict[str, Any], retry_status: str) -> None:
+    from ..models.database import ActivityLog, SessionLocal
+
+    session_key = str(payload.get("session_key") or "").strip()
+    folder_path = str(payload.get("folder_path") or "").strip()
+    retry_targets = _build_filter_delete_items(payload.get("retry_targets"))
+    retry_target_count = int(payload.get("retry_target_count") or len(retry_targets))
+    retry_success_count = int(payload.get("retry_success_count") or 0)
+    retry_failed_count = int(payload.get("retry_failed_count") or 0)
+    retry_item_count = int(payload.get("recovered_item_count") or 0)
+    retry_completed_at = datetime.now().isoformat()
+
+    if not session_key:
+        return
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(ActivityLog)
+            .filter(
+                ActivityLog.category == CATEGORY_PIPELINE_FILTER,
+                ActivityLog.action == "filter_delete_preview",
+                ActivityLog.status == "failed",
+            )
+            .order_by(ActivityLog.created_at.desc())
+            .all()
+        )
+        updated = 0
+        for row in rows:
+            detail = row.detail if isinstance(row.detail, dict) else {}
+            if str(detail.get("session_key") or "").strip() != session_key:
+                continue
+            if folder_path and str(row.source_path or "").strip() not in {"", folder_path}:
+                continue
+            detail = {
+                **detail,
+                "retry_status": retry_status,
+                "retry_completed": retry_status in {"success", "partial_success"},
+                "retry_completed_at": retry_completed_at,
+                "retry_target_count": retry_target_count,
+                "retry_success_count": retry_success_count,
+                "retry_failed_count": retry_failed_count,
+                "retry_recovered_item_count": retry_item_count,
+                "retry_targets": retry_targets,
+            }
+            row.detail = _sanitize_for_db_json(detail)
+            status_text = "已重试成功" if retry_status == "success" else ("已重试部分成功" if retry_status == "partial_success" else "重试仍失败")
+            summary = str(row.summary or "").strip()
+            if status_text not in summary:
+                row.summary = f"{summary}；{status_text}"[:4000] if summary else status_text
+            updated += 1
+        if updated:
+            db.commit()
+        else:
+            db.rollback()
+    except Exception:
+        db.rollback()
+        logger.warning("[操作记录] 回写删除预审重试状态失败", exc_info=True)
+    finally:
+        db.close()
+
+
+def log_subtitle_batch_start_result(payload: Dict[str, Any]) -> None:
+    batch_id = str(payload.get("batch_id") or "").strip()
+    requested_count = int(payload.get("requested_count") or 0)
+    recognized_rj_count = int(payload.get("recognized_rj_count") or 0)
+    created_count = int(payload.get("created_count") or 0)
+    skipped_total = int(payload.get("skipped_total") or 0)
+    skipped_existing = int(payload.get("skipped_existing") or 0)
+    skipped_duplicate = int(payload.get("skipped_duplicate") or 0)
+    skipped_no_subtitle = int(payload.get("skipped_no_subtitle") or 0)
+    scan_directory_count = int(payload.get("scan_directory_count") or 0)
+    force_rerun = bool(payload.get("force_rerun"))
+    skip_if_existing_subtitles = bool(payload.get("skip_if_existing_subtitles"))
+    naming_strategy = str(payload.get("naming_strategy") or "audio").strip() or "audio"
+
+    if created_count > 0 and skipped_total > 0:
+        status = "partial_success"
+    elif created_count <= 0 and skipped_total > 0 and recognized_rj_count > 0:
+        status = "success"
+    elif created_count > 0:
+        status = "success"
+    else:
+        status = "failed"
+
+    summary_parts = []
+    if scan_directory_count > 0:
+        summary_parts.append(f"扫描目录 {scan_directory_count} 个")
+    if recognized_rj_count > 0:
+        summary_parts.append(f"识别 RJ {recognized_rj_count} 个")
+    if created_count > 0:
+        summary_parts.append(f"创建爬取 {created_count} 个")
+    if skipped_total > 0:
+        summary_parts.append(f"跳过 {skipped_total} 个")
+    summary = f"批量创建字幕任务，{'，'.join(summary_parts) if summary_parts else '无有效结果'}"
+
+    detail = {
+        "mode": "subtitle_batch_start",
+        "batch_id": batch_id or None,
+        "requested_count": requested_count,
+        "recognized_rj_count": recognized_rj_count,
+        "created_count": created_count,
+        "skipped_total": skipped_total,
+        "skipped_existing": skipped_existing,
+        "skipped_duplicate": skipped_duplicate,
+        "skipped_no_subtitle": skipped_no_subtitle,
+        "scan_directory_count": scan_directory_count,
+        "force_rerun": force_rerun,
+        "skip_if_existing_subtitles": skip_if_existing_subtitles,
+        "naming_strategy": naming_strategy,
+        "source_directories": payload.get("source_directories") or [],
+        "scan_targets": payload.get("scan_targets") or [],
+        "created_tasks": payload.get("created_tasks") or [],
+        "skipped_items": payload.get("skipped_items") or [],
+    }
+    write_activity_log(
+        category=CATEGORY_SUBTITLE_CRAWL,
+        action="batch_start",
+        status=status,
+        summary=summary[:4000],
+        detail=detail,
+        task_id=batch_id or None,
+        source_path=str(payload.get("source_path") or "").strip() or None,
+    )
+
+
+def log_filter_delete_retry_result(payload: Dict[str, Any]) -> None:
+    status = str(payload.get("status") or "success")
+    scope_label = str(payload.get("scope_label") or payload.get("folder_name") or "删除过滤")
+    folder_path = str(payload.get("folder_path") or "").strip() or None
+    duration_ms = int(payload.get("duration_ms") or 0)
+    retry_target_count = int(payload.get("retry_target_count") or 0)
+    retry_success_count = int(payload.get("retry_success_count") or 0)
+    retry_failed_count = int(payload.get("retry_failed_count") or 0)
+    recovered_item_count = int(payload.get("recovered_item_count") or 0)
+    recovered_selected_size = int(payload.get("recovered_selected_size") or 0)
+    warning = str(payload.get("warning") or "").strip()
+    error = str(payload.get("error") or "").strip()
+
+    if status == "success":
+        summary = (
+            f"{scope_label} 删除预审失败项重试成功，"
+            f"目录 {retry_success_count}/{retry_target_count}，"
+            f"补回 {recovered_item_count} 项，"
+            f"新增 {_format_bytes(recovered_selected_size)}，"
+            f"耗时 {_format_duration_ms(duration_ms)}"
+        )
+    elif status == "partial_success":
+        summary = (
+            f"{scope_label} 删除预审失败项重试部分成功，"
+            f"成功 {retry_success_count} 个目录，失败 {retry_failed_count} 个目录，"
+            f"补回 {recovered_item_count} 项，"
+            f"耗时 {_format_duration_ms(duration_ms)}"
+        )
+    else:
+        summary = (
+            f"{scope_label} 删除预审失败项重试失败，"
+            f"目录 {retry_target_count} 个，"
+            f"耗时 {_format_duration_ms(duration_ms)}"
+        )
+        if error:
+            summary = f"{summary}：{error}"[:4000]
+
+    detail = {
+        "mode": "filter_delete_preview_retry",
+        "session_key": str(payload.get("session_key") or "").strip() or None,
+        "scope_label": scope_label,
+        "folder_name": payload.get("folder_name"),
+        "folder_path": folder_path,
+        "duration_ms": duration_ms,
+        "retry_target_count": retry_target_count,
+        "retry_success_count": retry_success_count,
+        "retry_failed_count": retry_failed_count,
+        "recovered_item_count": recovered_item_count,
+        "recovered_selected_size": recovered_selected_size,
+        "retry_targets": _build_filter_delete_items(payload.get("retry_targets")),
+        "recovered_items": _build_filter_delete_items(payload.get("recovered_items")),
+        "failed_targets": _build_filter_delete_items(payload.get("failed_targets")),
+        "warning": warning or None,
+        "error": error or None,
+    }
+    normalized_status = "success" if status == "success" else ("partial_success" if status == "partial_success" else "failed")
+    write_activity_log(
+        category=CATEGORY_PIPELINE_FILTER,
+        action="filter_delete_preview_retry",
+        status=normalized_status,
+        summary=summary,
+        detail=detail,
+        source_path=folder_path,
+    )
+    _mark_filter_delete_failed_preview_retried(payload, normalized_status)
 
 
 def log_filter_delete_apply_result(payload: Dict[str, Any]) -> None:
