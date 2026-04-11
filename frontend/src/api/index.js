@@ -63,8 +63,8 @@ export const taskApi = {
 }
 
 export const taskCenterApi = {
-  overview: async () => {
-    const response = await apiClient.get('/task-center/overview')
+  overview: async (params = {}) => {
+    const response = await apiClient.get('/task-center/overview', { params })
     return response.data
   },
 
@@ -440,11 +440,13 @@ export const libraryApi = {
     return response.data
   },
 
-  browserRename: async (libraryId, path, newName) => {
+  browserRename: async (libraryId, path, newName, options = {}) => {
     const response = await apiClient.post('/library/browser/rename', {
       library_id: libraryId,
       path,
-      new_name: newName
+      new_name: newName,
+      skip_activity_log: options.skipActivityLog ?? false,
+      rename_context: options.renameContext || ''
     })
     return response.data
   },
@@ -461,11 +463,13 @@ export const libraryApi = {
     return response.data
   },
 
-  browserDelete: async (libraryId, path, confirmed = false) => {
+  browserDelete: async (libraryId, path, confirmed = false, options = {}) => {
     const response = await apiClient.post('/library/browser/delete', {
       library_id: libraryId,
       path,
-      confirmed
+      confirmed,
+      skip_activity_log: options.skipActivityLog ?? false,
+      batch_id: options.batchId || ''
     })
     return response.data
   },
@@ -859,7 +863,8 @@ export const rjSubtitleApi = {
     const response = await apiClient.post(`/rj-subtitle/task/${taskId}/manual-complete`, {
       applied_pairs: payload.appliedPairs ?? 0,
       deleted_subtitles: payload.deletedSubtitles ?? 0,
-      naming_strategy: payload.namingStrategy || 'audio'
+      naming_strategy: payload.namingStrategy || 'audio',
+      pair_changes: payload.pairChanges || []
     })
     return response.data
   },
