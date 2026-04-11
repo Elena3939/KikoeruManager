@@ -172,7 +172,6 @@
         :row-class-name="rowClassName"
         table-layout="fixed"
         row-key="id"
-        highlight-current-row
         @row-click="openDetail"
       >
         <el-table-column prop="created_at" label="时间" width="168">
@@ -692,6 +691,11 @@ function humanAction(row) {
       if (row.status === 'failed') return '重试失败'
       return '重试'
     }
+    if (row.relation === 'subtitle_import') {
+      if (row.status === 'success') return '字幕补配完成'
+      if (row.status === 'failed') return '字幕补配失败'
+      return '字幕补配'
+    }
     if (row.relation === 'pair') {
       return row.status === 'success' ? '字幕手动配对完成' : '字幕手动配对'
     }
@@ -772,6 +776,17 @@ function humanAction(row) {
     return '元数据整理'
   }
   if (category === 'pipeline_rename') {
+    if (action === 'batch_api_rename') {
+      if (status === 'success') return '批量 API 重命名完成'
+      if (status === 'partial_success') return '批量 API 重命名部分成功'
+      if (status === 'failed') return '批量 API 重命名失败'
+      return '批量 API 重命名'
+    }
+    if (action === 'api_rename' || action === 'batch_api_rename_item') {
+      if (status === 'success') return 'API 重命名完成'
+      if (status === 'failed') return 'API 重命名失败'
+      return 'API 重命名'
+    }
     return '重命名处理'
   }
   if (category === 'asmr_sync') {
@@ -798,6 +813,10 @@ function hasMergedPair(row) {
 
 function hasMergedSubtitleImport(row) {
   return Boolean(row?.merged_subtitle_import || row?.detail?.import_linked)
+}
+
+function hasChildRelation(row, relation) {
+  return collectChildRowsFromParent(row).some((child) => child?.relation === relation)
 }
 
 function hasMergedFilterDelete(row) {
@@ -870,7 +889,7 @@ function isSubtitleBatchMiss(row) {
 
 function mergedCategoryTags(row) {
   const tags = []
-  if (hasMergedSubtitleImport(row)) tags.push(mergedSubtitleImportTag(row))
+  if (hasMergedSubtitleImport(row) && !hasChildRelation(row, 'subtitle_import')) tags.push(mergedSubtitleImportTag(row))
   if (isSubtitleBatchMiss(row)) tags.push('未命中')
   if (hasFilterDeleteRetryChild(row)) tags.push('附带重试')
   if (isFilterDeleteRetriedSuccess(row)) tags.push('重试✔')
@@ -884,8 +903,27 @@ function rowCategoryTags(row) {
   return tags
 }
 
+function subtitleImportSourceSuffix(row) {
+  const detail = row?.detail
+  const sourceRj = String(
+    detail?.source_rjcode ||
+    detail?.preview_source_rjcode ||
+    ''
+  ).trim().toUpperCase()
+  if (!sourceRj) return ''
+  return `，来源于 ${sourceRj}`
+}
+
 function displaySummary(row) {
   if (isBatchChildPaired(row)) return pairSummaryText(row) || row?.summary || '—'
+  if (row?.category === 'subtitle_import' || row?.relation === 'subtitle_import') {
+    const base = String(row?.summary || '—').trim() || '—'
+    const suffix = subtitleImportSourceSuffix(row)
+    if (suffix && !base.includes(`来源于 ${String(row?.detail?.source_rjcode || row?.detail?.preview_source_rjcode || '').trim().toUpperCase()}`)) {
+      return `${base}${suffix}`
+    }
+    return base
+  }
   return row?.summary || '—'
 }
 
@@ -971,8 +1009,11 @@ function collectChildRowsFromParent(row) {
 
 function childRowCategoryLabel(row) {
   if (row?.relation === 'rerun') return '重试'
+  if (row?.relation === 'subtitle_import') return '字幕补配'
+  if (row?.relation === 'rename_item') return '子重命名'
   if (row?.relation === 'pair') return '字幕配对'
   if (row?.relation === 'delete_apply') return '删除执行'
+  if (row?.relation === 'retry_preview') return '失败重试'
   if (row?.action === 'filter_delete_preview_retry') return '失败重试'
   return row?.category_label || row?.category || '子任务'
 }
@@ -1021,9 +1062,12 @@ function finalStatusClass(row) {
 
 function childTypeDotClass(row) {
   if (row?.relation === 'rerun') return 'is-rerun'
+  if (row?.relation === 'subtitle_import') return 'is-subtitle-import'
+  if (row?.relation === 'rename_item') return 'is-rename-item'
   if (row?.relation === 'pair') return 'is-pair'
   if (row?.relation === 'delete_apply') return 'is-delete-apply'
   if (row?.category === 'subtitle_crawl') return 'is-crawl'
+  if (row?.relation === 'retry_preview') return 'is-filter-retry'
   if (row?.action === 'filter_delete_preview_retry') return 'is-filter-retry'
   return 'is-default'
 }
@@ -1986,6 +2030,14 @@ watch(items, (nextItems) => {
 
 .child-type-dot.is-crawl {
   background: #0a84ff;
+}
+
+.child-type-dot.is-subtitle-import {
+  background: #ff9f0a;
+}
+
+.child-type-dot.is-rename-item {
+  background: #64d2ff;
 }
 
 .child-type-dot.is-pair {

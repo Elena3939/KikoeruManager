@@ -454,6 +454,90 @@ def log_subtitle_import_action(
     )
 
 
+def log_api_rename_action(
+    *,
+    action: str,
+    success: bool,
+    source_path: str,
+    new_path: str = "",
+    old_name: str = "",
+    new_name: str = "",
+    rjcode: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    library_id: Optional[str] = None,
+    error: str = "",
+    status: Optional[str] = None,
+    extra_detail: Optional[Dict[str, Any]] = None,
+) -> None:
+    normalized_source_path = str(source_path or "").strip()
+    normalized_new_path = str(new_path or "").strip()
+    normalized_old_name = str(old_name or "").strip() or (os.path.basename(normalized_source_path) if normalized_source_path else "")
+    normalized_new_name = str(new_name or "").strip() or (os.path.basename(normalized_new_path) if normalized_new_path else "")
+    normalized_error = str(error or "").strip()
+    normalized_status = str(status or ("success" if success else "failed")).strip() or ("success" if success else "failed")
+    summary_target = normalized_new_name or normalized_old_name or "未命名"
+    summary = f"{normalized_old_name or '原名称未知'} -> {summary_target}"
+    if normalized_status == "failed" and normalized_error:
+        summary = f"{summary}：{normalized_error}"[:4000]
+    else:
+        summary = summary[:4000]
+    detail = {
+        "mode": "api_rename",
+        "rename_key": normalized_source_path or normalized_new_path or None,
+        "old_name": normalized_old_name or None,
+        "new_name": normalized_new_name or None,
+        "old_path": normalized_source_path or None,
+        "new_path": normalized_new_path or None,
+        "batch_id": str(batch_id or "").strip() or None,
+        "library_id": str(library_id or "").strip() or None,
+        "error": normalized_error or None,
+    }
+    if isinstance(extra_detail, dict):
+        detail.update(extra_detail)
+    write_activity_log(
+        category=CATEGORY_PIPELINE_RENAME,
+        action=action,
+        status=normalized_status,
+        summary=summary,
+        detail={k: v for k, v in detail.items() if v is not None},
+        rjcode=rjcode,
+        source_path=normalized_source_path or None,
+    )
+
+
+def log_batch_api_rename_result(
+    *,
+    batch_id: str,
+    total_count: int,
+    success_count: int,
+    failed_count: int,
+    results: list[dict[str, Any]],
+    source_path: str = "",
+) -> None:
+    status = "success"
+    if success_count > 0 and failed_count > 0:
+        status = "partial_success"
+    elif success_count <= 0:
+        status = "failed"
+    summary = f"批量 API 重命名完成，成功 {success_count} 项，失败 {failed_count} 项"
+    write_activity_log(
+        category=CATEGORY_PIPELINE_RENAME,
+        action="batch_api_rename",
+        status=status,
+        summary=summary[:4000],
+        detail={
+            "mode": "batch_api_rename",
+            "batch_id": str(batch_id or "").strip() or None,
+            "total_count": int(total_count or 0),
+            "success_count": int(success_count or 0),
+            "failed_count": int(failed_count or 0),
+            "results": results[:200] if isinstance(results, list) else [],
+        },
+        source_path=str(source_path or "").strip() or None,
+        task_id=str(batch_id or "").strip() or None,
+    )
+
+
 def log_from_subtitle_import_result(
     action: str,
     result: Dict[str, Any],

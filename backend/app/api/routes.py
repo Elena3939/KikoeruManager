@@ -102,6 +102,50 @@ async def list_activity_logs(
         merged_filter_preview_ids: set[str] = set()
         merged_filter_retry_ids: set[str] = set()
         merged_subtitle_import_ids: set[str] = set()
+
+        def _make_tree_child(
+            row: dict[str, Any],
+            *,
+            relation: str,
+            category_label: str,
+            detail: Optional[dict[str, Any]] = None,
+            child_rows: Optional[list[dict[str, Any]]] = None,
+            fallback_id: str = "",
+        ) -> dict[str, Any]:
+            return {
+                "id": str(row.get("id") or fallback_id),
+                "relation": relation,
+                "category": row.get("category"),
+                "category_label": category_label,
+                "action": row.get("action"),
+                "status": row.get("status"),
+                "summary": row.get("summary"),
+                "created_at": row.get("created_at"),
+                "source_path": row.get("source_path"),
+                "rjcode": row.get("rjcode"),
+                "detail": detail if isinstance(detail, dict) else (row.get("detail") if isinstance(row.get("detail"), dict) else {}),
+                "child_rows": child_rows if isinstance(child_rows, list) else [],
+            }
+
+        def _append_tree_child(parent_row: dict[str, Any], child_row: dict[str, Any]) -> None:
+            parent_detail = parent_row.get("detail") if isinstance(parent_row.get("detail"), dict) else {}
+            child_rows = list(parent_detail.get("child_rows") or [])
+            child_rows.append(child_row)
+            child_rows = sorted(
+                child_rows,
+                key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
+            )
+            latest_activity = _coerce_dt(parent_row.get("created_at")) or datetime.min
+            for item in child_rows:
+                latest_activity = max(latest_activity, _coerce_dt(item.get("created_at")) or datetime.min)
+            parent_row["detail"] = {
+                **parent_detail,
+                "child_rows": child_rows,
+                "child_row_count": len(child_rows),
+                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at"),
+            }
+            parent_row["has_child_rows"] = True
+            parent_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at")
         for row in rows:
             if row.get("category") == "subtitle_crawl" and row.get("task_id"):
                 task_id = str(row["task_id"])
@@ -232,6 +276,7 @@ async def list_activity_logs(
 
         subtitle_import_rows: list[dict[str, Any]] = []
         subtitle_import_by_task: dict[str, dict[str, Any]] = {}
+        subtitle_import_rows_by_rj: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             if row.get("category") != "subtitle_import":
                 continue
@@ -240,11 +285,35 @@ async def list_activity_logs(
             import_task_id = str(detail.get("task_id") or row.get("task_id") or "").strip()
             if import_task_id:
                 subtitle_import_by_task.setdefault(import_task_id, row)
+            import_rj = str(
+                row.get("rjcode")
+                or detail.get("target_rjcode")
+                or detail.get("source_rjcode")
+                or ""
+            ).strip().upper()
+            if import_rj:
+                subtitle_import_rows_by_rj.setdefault(import_rj, []).append(row)
 
         preview_by_session: dict[str, dict[str, Any]] = {}
         preview_rows: list[dict[str, Any]] = []
         retry_rows_by_session: dict[str, list[dict[str, Any]]] = {}
+        rename_rows_by_key: dict[str, list[dict[str, Any]]] = {}
+        rename_batch_rows_by_id: dict[str, dict[str, Any]] = {}
+        merged_rename_ids: set[str] = set()
+        merged_rename_batch_child_ids: set[str] = set()
         for row in rows:
+            if row.get("category") == "pipeline_rename":
+                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+                batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
+                rename_key = str(detail.get("rename_key") or row.get("source_path") or "").strip()
+                if row.get("action") == "batch_api_rename":
+                    if batch_id:
+                        rename_batch_rows_by_id[batch_id] = row
+                    continue
+                if batch_id:
+                    continue
+                if rename_key:
+                    rename_rows_by_key.setdefault(rename_key, []).append(row)
             if row.get("category") != "pipeline_filter" or row.get("action") != "filter_delete_preview":
                 if row.get("category") == "pipeline_filter" and row.get("action") == "filter_delete_preview_retry":
                     detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
@@ -264,9 +333,25 @@ async def list_activity_logs(
             if str(row.get("id") or "") in merged_pair_ids:
                 continue
             task_id = str(row.get("task_id") or "").strip()
-            if not task_id:
-                continue
-            import_row = subtitle_import_by_task.get(task_id)
+            pair_dt = _coerce_dt(row.get("created_at"))
+            import_row = subtitle_import_by_task.get(task_id) if task_id else None
+            if not import_row:
+                pair_rj = str(row.get("rjcode") or "").strip().upper()
+                best_import_row = None
+                best_import_seconds = None
+                for candidate in subtitle_import_rows_by_rj.get(pair_rj, []):
+                    if str(candidate.get("id") or "") in merged_subtitle_import_ids:
+                        continue
+                    candidate_dt = _coerce_dt(candidate.get("created_at"))
+                    if not pair_dt or not candidate_dt or candidate_dt > pair_dt:
+                        continue
+                    seconds = (pair_dt - candidate_dt).total_seconds()
+                    if seconds < 0 or seconds > 7 * 24 * 3600:
+                        continue
+                    if best_import_seconds is None or seconds < best_import_seconds:
+                        best_import_seconds = seconds
+                        best_import_row = candidate
+                import_row = best_import_row
             if import_row:
                 import_detail = import_row.get("detail") if isinstance(import_row.get("detail"), dict) else {}
                 pair_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
@@ -281,10 +366,21 @@ async def list_activity_logs(
                     "pair_linked": True,
                     "pair_created_at": row.get("created_at") or "",
                 }
-                import_row["summary"] = f"{import_row.get('summary') or '字幕补配完成'}，{row.get('summary') or '已完成手动配对'}"
+                _append_tree_child(
+                    import_row,
+                    _make_tree_child(
+                        row,
+                        relation="pair",
+                        category_label="字幕配对",
+                        detail=pair_detail,
+                        fallback_id=f"{task_id}-pair-{pair_detail.get('final_file_count') or row.get('created_at') or '0'}",
+                    ),
+                )
                 import_row["merged_pair"] = True
                 import_row["merged_pair_status"] = row.get("status") or ""
                 merged_pair_ids.add(str(row.get("id") or ""))
+                continue
+            if not task_id:
                 continue
             crawl_row = crawl_by_task.get(task_id)
             if not crawl_row or task_id in crawl_rows_by_task:
@@ -356,46 +452,92 @@ async def list_activity_logs(
             if not best_auto_row:
                 continue
 
-            auto_detail = best_auto_row.get("detail") if isinstance(best_auto_row.get("detail"), dict) else {}
             row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            best_auto_row["detail"] = {
-                **auto_detail,
-                "import_summary": row.get("summary") or "",
-                "import_status": row.get("status") or "",
-                "import_action": row.get("action") or "",
-                "import_created_at": row.get("created_at") or "",
+            import_child_rows = list(row_detail.get("child_rows") or [])
+            import_child_detail = {
+                **row_detail,
                 "import_task_id": str(row_detail.get("task_id") or row.get("task_id") or "").strip() or None,
                 "import_final_file_count": int(row_detail.get("final_file_count") or 0),
                 "import_record_id": row_detail.get("record_id"),
-                "import_linked": True,
-                "source_rjcode": row_detail.get("source_rjcode") or auto_detail.get("linked_source_rjcode"),
-                "target_rjcode": row_detail.get("target_rjcode") or auto_detail.get("linked_target_rjcode"),
             }
-            if row_detail.get("pair_linked"):
-                best_auto_row["detail"] = {
-                    **best_auto_row["detail"],
-                    "pair_summary": row_detail.get("pair_summary") or "",
-                    "pair_status": row_detail.get("pair_status") or "",
-                    "pair_action": row_detail.get("pair_action") or "",
-                    "pair_applied_pairs": int(row_detail.get("pair_applied_pairs") or 0),
-                    "pair_deleted_subtitles": int(row_detail.get("pair_deleted_subtitles") or 0),
-                    "pair_final_file_count": int(row_detail.get("pair_final_file_count") or 0),
-                    "pair_linked": True,
-                    "pair_created_at": row_detail.get("pair_created_at") or "",
-                }
-                best_auto_row["merged_pair"] = True
-                best_auto_row["merged_pair_status"] = row_detail.get("pair_status") or ""
-
-            summary_parts = [str(best_auto_row.get("summary") or "").strip()]
-            if row.get("summary"):
-                summary_parts.append(str(row.get("summary") or "").strip())
-            pair_summary = str((row_detail.get("pair_summary") if isinstance(row_detail, dict) else "") or "").strip()
-            if pair_summary:
-                summary_parts.append(pair_summary)
-            best_auto_row["summary"] = "；".join([part for part in summary_parts if part])[:4000]
+            _append_tree_child(
+                best_auto_row,
+                _make_tree_child(
+                    row,
+                    relation="subtitle_import",
+                    category_label="字幕补配",
+                    detail=import_child_detail,
+                    child_rows=import_child_rows,
+                    fallback_id=f"{str(best_auto_row.get('id') or 'auto')}-subtitle-import",
+                ),
+            )
             best_auto_row["merged_subtitle_import"] = True
             best_auto_row["merged_subtitle_import_status"] = row.get("status") or ""
             merged_subtitle_import_ids.add(str(row.get("id") or ""))
+
+        for rename_key, rename_rows in rename_rows_by_key.items():
+            ordered_rows = sorted(rename_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
+            if len(ordered_rows) <= 1:
+                continue
+            root_row = ordered_rows[0]
+            root_detail = root_row.get("detail") if isinstance(root_row.get("detail"), dict) else {}
+            latest_activity = _coerce_dt(root_row.get("created_at")) or datetime.min
+            child_rows: list[dict[str, Any]] = []
+            for rerun_index, rename_row in enumerate(ordered_rows[1:], start=1):
+                child_rows.append(
+                    _make_tree_child(
+                        rename_row,
+                        relation="rerun",
+                        category_label="API 重命名",
+                        fallback_id=f"{rename_key}-rename-rerun-{rerun_index}",
+                    )
+                )
+                merged_rename_ids.add(str(rename_row.get("id") or ""))
+                latest_activity = max(latest_activity, _coerce_dt(rename_row.get("created_at")) or datetime.min)
+            root_row["detail"] = {
+                **root_detail,
+                "child_rows": child_rows,
+                "child_row_count": len(child_rows),
+                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at"),
+            }
+            root_row["has_child_rows"] = True
+            root_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at")
+            root_row["rerun"] = True
+
+        for batch_id, batch_row in rename_batch_rows_by_id.items():
+            batch_detail = batch_row.get("detail") if isinstance(batch_row.get("detail"), dict) else {}
+            child_rows: list[dict[str, Any]] = []
+            latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
+            for row in rows:
+                row_id = str(row.get("id") or "")
+                if row_id == str(batch_row.get("id") or ""):
+                    continue
+                if row.get("category") != "pipeline_rename":
+                    continue
+                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+                if str(detail.get("batch_id") or "").strip() != batch_id:
+                    continue
+                child_rows.append(
+                    _make_tree_child(
+                        row,
+                        relation="rename_item",
+                        category_label="子重命名",
+                    )
+                )
+                merged_rename_batch_child_ids.add(row_id)
+                latest_activity = max(latest_activity, _coerce_dt(row.get("created_at")) or datetime.min)
+            if child_rows:
+                batch_row["detail"] = {
+                    **batch_detail,
+                    "child_rows": sorted(
+                        child_rows,
+                        key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
+                    ),
+                    "child_row_count": len(child_rows),
+                    "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
+                }
+                batch_row["has_child_rows"] = True
+                batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
 
         for row in rows:
             if row.get("category") != "pipeline_filter" or row.get("action") != "filter_delete_apply":
@@ -547,6 +689,10 @@ async def list_activity_logs(
             if str(row.get("id") or "") in merged_pair_ids:
                 continue
             if str(row.get("id") or "") in merged_subtitle_import_ids:
+                continue
+            if str(row.get("id") or "") in merged_rename_ids:
+                continue
+            if str(row.get("id") or "") in merged_rename_batch_child_ids:
                 continue
             if str(row.get("id") or "") in merged_filter_preview_ids:
                 continue
@@ -1067,6 +1213,15 @@ async def get_task_center_item(item_id: Optional[str] = None, engine_task_id: Op
         return await service.get_item(item_id=item_id, engine_task_id=engine_task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/task-center/diagnose")
+async def diagnose_task_center_serialization():
+    """诊断任务中心聚合中具体是哪条数据序列化失败。"""
+    from ..core.task_center_service import get_task_center_service
+
+    service = get_task_center_service()
+    return await service.diagnose_serialization_failures()
 
 
 @app.post("/api/task-center/{item_id}/action")
@@ -1843,6 +1998,7 @@ async def get_conflicts():
 async def retry_extract_failed_conflict(conflict_id: str):
     """重试问题作品中的失败项。"""
     from ..models.database import ConflictWork, get_db
+    from ..core.task_engine import TaskStatus
 
     db = next(get_db())
     try:
@@ -3070,9 +3226,14 @@ async def rename_library_file(request: Request):
 @app.post("/api/library/api-rename")
 async def api_rename_library_file(request: Request):
     """使用API重新获取元数据并重命名"""
+    file_path = ""
+    library_id = None
+    rjcode = ""
+    old_name = ""
+    new_name = ""
     try:
         data = await request.json()
-        file_path = data.get("path")
+        file_path = str(data.get("path") or "").strip()
         library_id = data.get("library_id")
         manager = get_library_manager() if library_id else None
         library = manager.get_library_definition(library_id) if library_id else None
@@ -3092,6 +3253,7 @@ async def api_rename_library_file(request: Request):
             raise HTTPException(status_code=400, detail="无法从文件名提取RJ号")
         
         rjcode = rj_match.group(0).upper()
+        old_name = target_name
         logger.info(f"API重新命名: {file_path}, RJ号: {rjcode}")
         
         # 获取元数据（强制刷新，不使用缓存）
@@ -3196,15 +3358,46 @@ async def api_rename_library_file(request: Request):
             raise HTTPException(status_code=400, detail="新名称已存在")
         
         if new_path == file_path:
+            try:
+                from ..core.activity_log_service import log_api_rename_action
+
+                log_api_rename_action(
+                    action="api_rename",
+                    success=True,
+                    source_path=file_path,
+                    new_path=new_path,
+                    old_name=old_name,
+                    new_name=new_name,
+                    rjcode=rjcode or None,
+                    library_id=str(library_id or "") or None,
+                    extra_detail={"no_change": True},
+                )
+            except Exception:
+                logger.debug("[操作记录] API 重命名无变化记录失败", exc_info=True)
             return {"message": "名称已是最新，无需重命名", "name": new_name}
-        
+
         # 执行重命名
         if is_remote_library:
             await manager.rename(library_id, file_path, new_name)
         else:
             os.rename(file_path, new_path)
         logger.info(f"API重命名成功: {file_path} -> {new_path}")
-        
+        try:
+            from ..core.activity_log_service import log_api_rename_action
+
+            log_api_rename_action(
+                action="api_rename",
+                success=True,
+                source_path=file_path,
+                new_path=new_path,
+                old_name=old_name,
+                new_name=new_name,
+                rjcode=rjcode or None,
+                library_id=str(library_id or "") or None,
+            )
+        except Exception:
+            logger.debug("[操作记录] API 重命名成功记录失败", exc_info=True)
+
         return {
             "message": "API重命名成功",
             "old_name": os.path.basename(file_path),
@@ -3213,10 +3406,41 @@ async def api_rename_library_file(request: Request):
             "metadata": metadata
         }
         
-    except HTTPException:
+    except HTTPException as exc:
+        try:
+            from ..core.activity_log_service import log_api_rename_action
+
+            log_api_rename_action(
+                action="api_rename",
+                success=False,
+                source_path=file_path,
+                old_name=old_name,
+                new_name=new_name,
+                rjcode=rjcode or None,
+                library_id=str(library_id or "") or None,
+                error=str(exc.detail or exc),
+                status="failed",
+            )
+        except Exception:
+            logger.debug("[操作记录] API 重命名 HTTP 异常记录失败", exc_info=True)
         raise
     except Exception as e:
         logger.error(f"API重命名失败: {e}", exc_info=True)
+        try:
+            from ..core.activity_log_service import log_api_rename_action
+
+            log_api_rename_action(
+                action="api_rename",
+                success=False,
+                source_path=file_path,
+                old_name=old_name,
+                new_name=new_name,
+                rjcode=rjcode or None,
+                library_id=str(library_id or "") or None,
+                error=str(e),
+            )
+        except Exception:
+            logger.debug("[操作记录] API 重命名失败记录失败", exc_info=True)
         raise HTTPException(status_code=500, detail=f"API重命名失败: {str(e)}")
 
 def map_path_to_local(remote_path: str) -> tuple[str, bool]:
@@ -3394,6 +3618,7 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
     try:
         data = await request.json()
         paths = data.get("paths", [])
+        library_id = data.get("library_id")
         
         if not paths:
             raise HTTPException(status_code=400, detail="路径列表不能为空")
@@ -3412,13 +3637,27 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
             from ..core.task_engine import Task, TaskType
             from ..core.metadata_service import MetadataService
             from ..core.rename_service import RenameService
+            from ..core.activity_log_service import log_api_rename_action, log_batch_api_rename_result
             
             results = []
             for path in paths:
+                path = str(path or "").strip()
+                child_rjcode = ""
+                old_name = os.path.basename(path) if path else ""
+                new_name = ""
                 try:
                     # 提取 RJ 号
                     rj_match = re.search(r'[RVB]J\d{6,8}', os.path.basename(path), re.IGNORECASE)
                     if not rj_match:
+                        log_api_rename_action(
+                            action="batch_api_rename_item",
+                            success=False,
+                            source_path=path,
+                            old_name=old_name,
+                            batch_id=batch_id,
+                            library_id=str(library_id or "") or None,
+                            error="无法提取 RJ 号",
+                        )
                         results.append({
                             "path": path,
                             "success": False,
@@ -3427,6 +3666,7 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                         continue
                     
                     rjcode = rj_match.group(0).upper()
+                    child_rjcode = rjcode
                     
                     # 创建临时任务
                     temp_task = Task(task_type=TaskType.METADATA, source_path=path)
@@ -3459,12 +3699,35 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                     new_path = os.path.join(parent_dir, new_name)
                     
                     if os.path.exists(new_path) and new_path != path:
+                        log_api_rename_action(
+                            action="batch_api_rename_item",
+                            success=False,
+                            source_path=path,
+                            old_name=old_name,
+                            new_name=new_name,
+                            rjcode=child_rjcode or None,
+                            batch_id=batch_id,
+                            library_id=str(library_id or "") or None,
+                            error="新名称已存在",
+                        )
                         results.append({
                             "path": path,
                             "success": False,
                             "error": "新名称已存在"
                         })
                     elif new_path == path:
+                        log_api_rename_action(
+                            action="batch_api_rename_item",
+                            success=True,
+                            source_path=path,
+                            new_path=new_path,
+                            old_name=old_name,
+                            new_name=new_name,
+                            rjcode=child_rjcode or None,
+                            batch_id=batch_id,
+                            library_id=str(library_id or "") or None,
+                            extra_detail={"no_change": True},
+                        )
                         results.append({
                             "path": path,
                             "success": True,
@@ -3473,6 +3736,17 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                         })
                     else:
                         os.rename(path, new_path)
+                        log_api_rename_action(
+                            action="batch_api_rename_item",
+                            success=True,
+                            source_path=path,
+                            new_path=new_path,
+                            old_name=old_name,
+                            new_name=new_name,
+                            rjcode=child_rjcode or None,
+                            batch_id=batch_id,
+                            library_id=str(library_id or "") or None,
+                        )
                         results.append({
                             "path": path,
                             "success": True,
@@ -3482,6 +3756,20 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                     
                 except Exception as e:
                     logger.error(f"批量 API 重命名失败：{path}, {e}")
+                    try:
+                        log_api_rename_action(
+                            action="batch_api_rename_item",
+                            success=False,
+                            source_path=path,
+                            old_name=old_name,
+                            new_name=new_name,
+                            rjcode=child_rjcode or None,
+                            batch_id=batch_id,
+                            library_id=str(library_id or "") or None,
+                            error=str(e),
+                        )
+                    except Exception:
+                        logger.debug("[操作记录] 批量 API 重命名子项失败记录失败", exc_info=True)
                     results.append({
                         "path": path,
                         "success": False,
@@ -3490,6 +3778,17 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
             
             # 保存结果（可选：保存到文件或数据库）
             logger.info(f"批量 API重命名完成：batch_id={batch_id}, success={sum(1 for r in results if r['success'])}/{len(results)}")
+            try:
+                log_batch_api_rename_result(
+                    batch_id=batch_id,
+                    total_count=len(paths),
+                    success_count=sum(1 for r in results if r.get('success')),
+                    failed_count=sum(1 for r in results if not r.get('success')),
+                    results=results,
+                    source_path=str(paths[0] or "").strip() if paths else "",
+                )
+            except Exception:
+                logger.debug("[操作记录] 批量 API 重命名汇总记录失败", exc_info=True)
         
         background_tasks.add_task(process_batch)
         
@@ -5890,7 +6189,18 @@ async def execute_pending_linked_subtitle_import(record_id: str, request: Linked
         try:
             from ..core.activity_log_service import log_from_subtitle_import_result
 
-            log_from_subtitle_import_result("pending_execute", result if isinstance(result, dict) else {"success": True})
+            activity_result = result if isinstance(result, dict) else {"success": True}
+            activity_preview = activity_result.get("preview") if isinstance(activity_result.get("preview"), dict) else {}
+            activity_archive_path = str(
+                activity_result.get("source_path")
+                or activity_preview.get("source_path")
+                or ""
+            ).strip()
+            log_from_subtitle_import_result(
+                "pending_execute",
+                activity_result,
+                archive_path=activity_archive_path,
+            )
         except Exception:
             logger.debug("[操作记录] 字幕补配预检执行记录失败", exc_info=True)
         return result

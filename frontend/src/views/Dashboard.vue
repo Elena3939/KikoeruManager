@@ -467,10 +467,12 @@ let dashboardViewActive = false
 let refreshRunning = false
 let refreshPending = false
 let refreshRequestId = 0
+let visibilityBound = false
 
 onMounted(async () => {
   await initializeDashboardPage()
   dashboardViewActive = true
+  bindDashboardVisibilityRefresh()
   startDashboardPolling()
 })
 
@@ -489,6 +491,7 @@ onDeactivated(() => {
 onUnmounted(() => {
   dashboardViewActive = false
   stopDashboardPolling()
+  unbindDashboardVisibilityRefresh()
   if (archiveSearchTimeout) {
     clearTimeout(archiveSearchTimeout)
     archiveSearchTimeout = null
@@ -510,6 +513,26 @@ function startDashboardPolling() {
   intervalId = setInterval(() => {
     refreshData({ silent: true })
   }, 3000)
+}
+
+function handleDashboardVisibilityRefresh() {
+  if (!dashboardViewActive) return
+  if (document.visibilityState === 'hidden') return
+  refreshData({ silent: true })
+}
+
+function bindDashboardVisibilityRefresh() {
+  if (visibilityBound) return
+  visibilityBound = true
+  window.addEventListener('focus', handleDashboardVisibilityRefresh)
+  document.addEventListener('visibilitychange', handleDashboardVisibilityRefresh)
+}
+
+function unbindDashboardVisibilityRefresh() {
+  if (!visibilityBound) return
+  visibilityBound = false
+  window.removeEventListener('focus', handleDashboardVisibilityRefresh)
+  document.removeEventListener('visibilitychange', handleDashboardVisibilityRefresh)
 }
 
 async function initializeDashboardPage() {
@@ -538,15 +561,17 @@ async function refreshData(options = {}) {
   }
 
   try {
-    const overviewData = await taskCenterApi.overview()
+    const [overviewData, listData] = await Promise.all([
+      taskCenterApi.overview(),
+      taskCenterApi.list({ limit: 300, _t: Date.now() })
+    ])
     if (currentRequestId !== refreshRequestId) {
       return
     }
     taskCenterOverview.value = overviewData || {}
-    const activeItems = Array.isArray(overviewData?.active_items)
-      ? overviewData.active_items.filter(item => dashboardActiveStatuses.has(String(item?.status || '')))
-      : []
-    const recentItems = Array.isArray(overviewData?.recent_items) ? overviewData.recent_items : []
+    const taskItems = Array.isArray(listData) ? listData : []
+    const activeItems = taskItems.filter(item => dashboardActiveStatuses.has(String(item?.status || '')))
+    const recentItems = taskItems
     recentTasks.value = activeItems.length ? activeItems.slice(0, 6) : recentItems.slice(0, 5)
 
     // 获取当前完成的任务数
@@ -583,6 +608,13 @@ async function refreshData(options = {}) {
     }
   } catch (error) {
     console.error('获取任务中心概览失败:', error)
+    recentTasks.value = []
+    taskCenterOverview.value = {
+      recent_items: [],
+      active_items: [],
+      counts_by_status: {},
+      highlight_counts: {}
+    }
   } finally {
     refreshRunning = false
     if (!silent) {

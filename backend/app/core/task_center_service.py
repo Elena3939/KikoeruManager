@@ -1,9 +1,12 @@
+import logging
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
+
+logger = logging.getLogger(__name__)
 
 
 class TaskCenterService:
@@ -576,21 +579,128 @@ class TaskCenterService:
             )
         )
 
+    def _safe_serialize_engine_task(self, task: Task) -> Optional[Dict[str, Any]]:
+        try:
+            return self._serialize_engine_task(task)
+        except Exception:
+            logger.exception(
+                "[任务中心] 序列化引擎任务失败，已跳过: task_id=%s type=%s source=%s",
+                getattr(task, "id", ""),
+                getattr(getattr(task, "type", None), "value", getattr(task, "type", "")),
+                getattr(task, "source_path", ""),
+            )
+            return None
+
+    def _safe_serialize_pending_item(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            return self._serialize_pending_subtitle_item(item)
+        except Exception:
+            logger.exception(
+                "[任务中心] 序列化字幕补配预检项失败，已跳过: id=%s task_id=%s source=%s",
+                item.get("id", ""),
+                item.get("task_id", ""),
+                item.get("source_path", ""),
+            )
+            return None
+
+    def _safe_serialize_waiting_retry_item(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            return self._serialize_waiting_retry_item(item)
+        except Exception:
+            logger.exception(
+                "[任务中心] 序列化等待重试任务失败，已跳过: id=%s rj=%s",
+                item.get("id", ""),
+                item.get("rjcode", ""),
+            )
+            return None
+
     async def _build_all_items(self) -> List[Dict[str, Any]]:
         engine = get_task_engine()
-        items = [self._serialize_engine_task(task) for task in engine.get_all_tasks()]
+        items = [
+            serialized
+            for serialized in (self._safe_serialize_engine_task(task) for task in engine.get_all_tasks())
+            if serialized
+        ]
 
         subtitle_import_service = get_linked_subtitle_import_service()
         pending_items = await subtitle_import_service.list_pending_imports()
-        items.extend(self._serialize_pending_subtitle_item(item) for item in pending_items)
+        items.extend(
+            serialized
+            for serialized in (self._safe_serialize_pending_item(item) for item in pending_items)
+            if serialized
+        )
 
         waiting_retry_items = engine.get_waiting_retry_tasks_from_db()
-        items.extend(self._serialize_waiting_retry_item(item) for item in waiting_retry_items)
+        items.extend(
+            serialized
+            for serialized in (self._safe_serialize_waiting_retry_item(item) for item in waiting_retry_items)
+            if serialized
+        )
 
         items = self._merge_linked_subtitle_pipeline_items(items)
         items = self._dedupe_items(items)
         items = [item for item in items if not self._is_superseded_failed_item(item)]
         return self._sort_items(items)
+
+    async def diagnose_serialization_failures(self) -> Dict[str, Any]:
+        engine = get_task_engine()
+        report: Dict[str, Any] = {
+            "engine_tasks": [],
+            "pending_items": [],
+            "waiting_retry_items": [],
+        }
+
+        for task in engine.get_all_tasks():
+            try:
+                self._serialize_engine_task(task)
+            except Exception as exc:
+                report["engine_tasks"].append({
+                    "task_id": getattr(task, "id", ""),
+                    "type": getattr(getattr(task, "type", None), "value", getattr(task, "type", "")),
+                    "status": getattr(getattr(task, "status", None), "value", getattr(task, "status", "")),
+                    "source_path": getattr(task, "source_path", ""),
+                    "output_path": getattr(task, "output_path", ""),
+                    "rjcode": getattr(task, "rjcode", ""),
+                    "error": repr(exc),
+                    "task_metadata_type": type(getattr(task, "task_metadata", None)).__name__,
+                    "task_metadata_preview": self._json_safe(getattr(task, "task_metadata", None)),
+                })
+
+        subtitle_import_service = get_linked_subtitle_import_service()
+        pending_items = await subtitle_import_service.list_pending_imports()
+        for item in pending_items:
+            try:
+                self._serialize_pending_subtitle_item(item)
+            except Exception as exc:
+                report["pending_items"].append({
+                    "id": item.get("id", ""),
+                    "task_id": item.get("task_id", ""),
+                    "source_path": item.get("source_path", ""),
+                    "error": repr(exc),
+                    "item_preview": self._json_safe(item),
+                })
+
+        waiting_retry_items = engine.get_waiting_retry_tasks_from_db()
+        for item in waiting_retry_items:
+            try:
+                self._serialize_waiting_retry_item(item)
+            except Exception as exc:
+                report["waiting_retry_items"].append({
+                    "id": item.get("id", ""),
+                    "rjcode": item.get("rjcode", ""),
+                    "error": repr(exc),
+                    "item_preview": self._json_safe(item),
+                })
+
+        report["summary"] = {
+            "engine_task_total": len(engine.get_all_tasks()),
+            "engine_task_failures": len(report["engine_tasks"]),
+            "pending_item_total": len(pending_items),
+            "pending_item_failures": len(report["pending_items"]),
+            "waiting_retry_total": len(waiting_retry_items),
+            "waiting_retry_failures": len(report["waiting_retry_items"]),
+        }
+        return report
 
     async def list_items(
         self,

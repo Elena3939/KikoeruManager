@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="library">
             <h1 class="page-title">{{ labels.pageTitle }}</h1>
 
@@ -1883,12 +1883,18 @@ function syncSubtitleSelectionState () {
 function resolveAutoActiveSubtitleTask (tasks = visibleSubtitleTasks.value) {
   const orderedTasks = sortSubtitleTasksForWorkbench(tasks)
   const preferredTask = findTaskMatchingPreferredSelection(orderedTasks)
-  if (preferredTask && ['processing', 'pending'].includes(preferredTask.status)) return preferredTask
+  if (preferredTask) return preferredTask
   const processing = orderedTasks.find(task => task.status === 'processing')
   if (processing) return processing
   const pending = orderedTasks.find(task => task.status === 'pending')
   if (pending) return pending
-  return null
+  const manualMatched = orderedTasks.find(task => Boolean(task?.manual_match_completed))
+  if (manualMatched) return manualMatched
+  const completed = orderedTasks.find(task => task.status === 'completed')
+  if (completed) return completed
+  const failed = orderedTasks.find(task => task.status === 'failed' || isRJSubtitleTaskCancelled(task))
+  if (failed) return failed
+  return orderedTasks[0] || null
 }
 
 function resolveCurrentSubtitleTaskId (tasks = visibleSubtitleTasks.value) {
@@ -2323,6 +2329,13 @@ watch(selectedLibraryId, async (newId, oldId) => {
 })
 
 watch(subtitleTasks, () => {
+  const normalized = normalizeSubtitleTaskFilterSelection(subtitleTaskFilter.value, subtitleTaskManualFilter.value)
+  if (normalized.taskFilter !== subtitleTaskFilter.value) {
+    subtitleTaskFilter.value = normalized.taskFilter
+  }
+  if (normalized.manualFilter !== subtitleTaskManualFilter.value) {
+    subtitleTaskManualFilter.value = normalized.manualFilter
+  }
   syncSubtitleTaskListState()
 })
 

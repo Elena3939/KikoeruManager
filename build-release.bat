@@ -19,9 +19,7 @@ set "TARGET_EXE=%ROOT%\..\%PROJECT_NAME%.exe"
 
 if not exist "%PYTHON_EXE%" (
   echo 未找到后端虚拟环境: %PYTHON_EXE%
-  exit /b 1
-)
-
+  exit /b
 if not exist "%ICON%" (
   echo 未找到图标文件: %ICON%
   exit /b 1
