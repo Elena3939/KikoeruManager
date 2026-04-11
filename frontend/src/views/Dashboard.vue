@@ -120,7 +120,7 @@
 
       <el-table :data="recentTasks" v-loading="loading" style="width: 100%" row-key="id">
 
-        <el-table-column prop="title" label="任务" show-overflow-tooltip min-width="260">
+        <el-table-column prop="title" label="源文件" show-overflow-tooltip min-width="260">
           <template #default="{ row }">
             <div class="source-file-cell">
               <span class="filename">{{ row.title }}</span>
@@ -147,21 +147,21 @@
         <el-table-column label="关键信息" min-width="260">
           <template #default="{ row }">
             <div class="task-summary-cell">
-              <span
-                v-for="(piece, index) in getDashboardSummary(row)"
-                :key="`${row.id}-summary-${index}`"
-                class="task-summary-pill"
-              >
-                {{ piece }}
-              </span>
+              <span v-if="getDashboardRJLabel(row)" class="task-summary-pill">{{ getDashboardRJLabel(row) }}</span>
+              <span v-else class="task-summary-empty">-</span>
             </div>
           </template>
         </el-table-column>
 
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)" size="small">
-              {{ row.status_label || getStatusLabel(row.status) }}
+            <el-tag
+              :type="getRowStatusType(row)"
+              size="small"
+              class="dashboard-status-tag"
+              :class="`is-${getRowStatusClass(row)}`"
+            >
+              {{ getRowStatusLabel(row) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -171,7 +171,7 @@
             <div class="progress-cell">
               <el-progress
                 :percentage="row.progress"
-                :status="getProgressStatus(row.status)"
+                :status="getRowProgressStatus(row)"
                 :stroke-width="12"
                 :show-text="false"
               />
@@ -180,26 +180,22 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="180" fixed="right" align="center">
+        <el-table-column label="操作" width="220" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button
-              v-for="action in row.actions || []"
-              :key="`${row.id}-${action}`"
-              size="small"
-              :type="getDashboardActionType(action)"
-              :plain="action !== 'cancel'"
-              @click="handleTaskCenterAction(row, action)"
-            >
-              {{ getActionLabel(action) }}
-            </el-button>
-            <el-button
-              v-if="!row.actions?.length && row.route_hint"
-              size="small"
-              plain
-              @click="$router.push(row.route_hint)"
-            >
-              查看
-            </el-button>
+            <div class="task-action-group">
+              <el-button
+                v-for="action in row.actions || []"
+                :key="`${row.id}-${action}`"
+                size="small"
+                class="task-action-btn"
+                :class="`is-${action}`"
+                :type="getDashboardActionType(action)"
+                :plain="action !== 'cancel'"
+                @click="handleTaskCenterAction(row, action)"
+              >
+                {{ getActionLabel(action) }}
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -348,12 +344,14 @@ const router = useRouter()
 const loading = ref(false)
 const scanning = ref(false)
 const watcherRunning = ref(false)
-const recentTasks = ref([])
+const dashboardTaskItems = ref([])
 const taskCenterOverview = ref({
   recent_items: [],
   active_items: [],
+  counts_by_domain: {},
   counts_by_status: {},
-  highlight_counts: {}
+  highlight_counts: {},
+  total: 0
 })
 const stats = ref({
   pending: 0,
@@ -368,6 +366,53 @@ const domainCounts = computed(() => ({
   asmr_sync: Number(taskCenterOverview.value?.counts_by_domain?.asmr_sync || 0)
 }))
 const dashboardActiveStatuses = new Set(['processing', 'pending', 'paused', 'waiting_manual', 'waiting_retry'])
+const dashboardDomains = ['import', 'rj_subtitle', 'subtitle_import', 'asmr_sync', 'system']
+
+function getFileName(path) {
+  if (!path) return ''
+  return String(path).split(/[\\/]/).pop()
+}
+
+const recentTasks = computed(() => {
+  const taskItems = Array.isArray(dashboardTaskItems.value) ? dashboardTaskItems.value : []
+  const activeItems = taskItems.filter(item => dashboardActiveStatuses.has(String(item?.status || '').trim()))
+  return activeItems.length ? activeItems.slice(0, 6) : taskItems.slice(0, 5)
+})
+
+function buildDashboardOverview(taskItems) {
+  const countsByDomain = Object.fromEntries(dashboardDomains.map((key) => [key, 0]))
+  const countsByStatus = {
+    pending: 0,
+    processing: 0,
+    paused: 0,
+    waiting_manual: 0,
+    waiting_retry: 0,
+    completed: 0,
+    failed: 0
+  }
+
+  for (const item of taskItems) {
+    const domain = String(item?.domain || '').trim()
+    const status = String(item?.status || '').trim()
+    if (domain in countsByDomain) countsByDomain[domain] += 1
+    if (status in countsByStatus) countsByStatus[status] += 1
+  }
+
+  const activeItems = taskItems.filter(item => dashboardActiveStatuses.has(String(item?.status || '').trim()))
+  return {
+    total: taskItems.length,
+    recent_items: taskItems.slice(0, 5),
+    active_items: activeItems.slice(0, 6),
+    counts_by_domain: countsByDomain,
+    counts_by_status: countsByStatus,
+    highlight_counts: {
+      processing: countsByStatus.processing,
+      waiting_manual: countsByStatus.waiting_manual,
+      waiting_retry: countsByStatus.waiting_retry,
+      failed: countsByStatus.failed
+    }
+  }
+}
 
 // 已处理压缩包相关
 const archives = ref([])
@@ -561,21 +606,18 @@ async function refreshData(options = {}) {
   }
 
   try {
-    const [overviewData, listData] = await Promise.all([
-      taskCenterApi.overview(),
-      taskCenterApi.list({ limit: 300, _t: Date.now() })
-    ])
+    const cacheBust = Date.now()
+    const listData = await taskCenterApi.list({ limit: 300, _t: cacheBust })
     if (currentRequestId !== refreshRequestId) {
       return
     }
-    taskCenterOverview.value = overviewData || {}
     const taskItems = Array.isArray(listData) ? listData : []
-    const activeItems = taskItems.filter(item => dashboardActiveStatuses.has(String(item?.status || '')))
-    const recentItems = taskItems
-    recentTasks.value = activeItems.length ? activeItems.slice(0, 6) : recentItems.slice(0, 5)
+    dashboardTaskItems.value = taskItems
+    const derivedOverview = buildDashboardOverview(taskItems)
+    taskCenterOverview.value = derivedOverview
 
     // 获取当前完成的任务数
-    const currentCompletedCount = Number(overviewData?.counts_by_status?.completed || 0)
+    const currentCompletedCount = Number(derivedOverview?.counts_by_status?.completed || 0)
 
     // 如果完成的任务数增加了，或者距离上次刷新已处理压缩包已超过30秒，则刷新
     const now = Date.now()
@@ -601,19 +643,21 @@ async function refreshData(options = {}) {
     }
 
     stats.value = {
-      pending: Number(overviewData?.counts_by_status?.pending || 0),
-      processing: Number(overviewData?.counts_by_status?.processing || 0),
-      completed: Number(overviewData?.counts_by_status?.completed || 0),
+      pending: Number(derivedOverview?.counts_by_status?.pending || 0),
+      processing: Number(derivedOverview?.counts_by_status?.processing || 0),
+      completed: Number(derivedOverview?.counts_by_status?.completed || 0),
       conflicts: conflictCount
     }
   } catch (error) {
     console.error('获取任务中心概览失败:', error)
-    recentTasks.value = []
+    dashboardTaskItems.value = []
     taskCenterOverview.value = {
       recent_items: [],
       active_items: [],
+      counts_by_domain: {},
       counts_by_status: {},
-      highlight_counts: {}
+      highlight_counts: {},
+      total: 0
     }
   } finally {
     refreshRunning = false
@@ -644,8 +688,11 @@ function getStatusLabel(status) {
     'processing': '处理中',
     'paused': '已暂停',
     'waiting_manual': '等待手动处理',
+    'waiting_retry': '等待重试',
     'completed': '已完成',
-    'failed': '失败'
+    'failed': '失败',
+    'cancelled': '已取消',
+    'canceled': '已取消'
   }
   return labels[status] || status
 }
@@ -656,10 +703,36 @@ function getStatusType(status) {
     'processing': 'warning',
     'paused': '',
     'waiting_manual': 'warning',
+    'waiting_retry': 'danger',
     'completed': 'success',
-    'failed': 'danger'
+    'failed': 'danger',
+    'cancelled': 'info',
+    'canceled': 'info'
   }
   return types[status] || ''
+}
+
+function isCancelledTask(row) {
+  if (!row) return false
+  if (row.status === 'cancelled' || row.status === 'canceled') return true
+  if (row.error_message === '用户取消') return true
+  const metadata = row?.details?.metadata || {}
+  return Boolean(metadata.is_cancelled || metadata.cancelled || metadata.canceled)
+}
+
+function getRowStatusLabel(row) {
+  if (isCancelledTask(row)) return '已取消'
+  return row?.status_label || getStatusLabel(row?.status)
+}
+
+function getRowStatusType(row) {
+  if (isCancelledTask(row)) return getStatusType('cancelled')
+  return getStatusType(row?.status)
+}
+
+function getRowStatusClass(row) {
+  if (isCancelledTask(row)) return 'cancelled'
+  return String(row?.status || '').trim() || 'default'
 }
 
 function pickMetricValue(row, label) {
@@ -667,56 +740,9 @@ function pickMetricValue(row, label) {
   return metrics.find(metric => metric?.label === label)?.value || ''
 }
 
-function getDashboardSummary(row) {
-  if (!row) return []
-
-  const details = row.details || {}
-  const metadata = details.metadata || {}
-  const preview = details.preview || {}
-  const domain = row.domain
-  const pieces = []
-  const recoveredFailureCount = pickMetricValue(row, '此前失败')
-  const recoveredConflictCount = pickMetricValue(row, '问题作品')
-
-  if (domain === 'rj_subtitle') {
-    const downloadCount = pickMetricValue(row, '下载')
-    const writtenCount = pickMetricValue(row, '写入')
-    const subtitleDir = row.target_path || metadata.subtitle_dir || ''
-    if (row.rjcode) pieces.push(`RJ ${row.rjcode}`)
-    if (downloadCount) pieces.push(`下载 ${downloadCount}`)
-    if (writtenCount) pieces.push(`写入 ${writtenCount}`)
-    if (subtitleDir) pieces.push(`目录 ${getFileName(subtitleDir)}`)
-  } else if (domain === 'subtitle_import') {
-    const subtitleCount = pickMetricValue(row, '来源字幕') || preview.subtitle_count
-    const candidateCount = pickMetricValue(row, '可执行候选') || pickMetricValue(row, '候选目录')
-    const targetFolder = row.target_path || preview.selected_candidate?.folder_path || ''
-    if (row.rjcode) pieces.push(`目标 ${row.rjcode}`)
-    if (subtitleCount) pieces.push(`候选字幕 ${subtitleCount}`)
-    if (candidateCount) pieces.push(`候选目录 ${candidateCount}`)
-    if (targetFolder) pieces.push(`目标目录 ${getFileName(targetFolder)}`)
-  } else if (domain === 'asmr_sync') {
-    const downloadFiles = pickMetricValue(row, '下载文件')
-    const failedFiles = pickMetricValue(row, '失败文件')
-    if (row.rjcode) pieces.push(`RJ ${row.rjcode}`)
-    if (downloadFiles) pieces.push(`文件 ${downloadFiles}`)
-    if (failedFiles) pieces.push(`失败 ${failedFiles}`)
-    if (row.subtitle) pieces.push(`来源 ${getFileName(row.subtitle)}`)
-  } else {
-    const outputName = pickMetricValue(row, '输出') || row.target_path
-    const targetLibrary = pickMetricValue(row, '目标库')
-    if (row.rjcode) pieces.push(`RJ ${row.rjcode}`)
-    if (outputName) pieces.push(`输出 ${getFileName(outputName)}`)
-    if (targetLibrary) pieces.push(`目标库 ${targetLibrary}`)
-  }
-
-  if (recoveredFailureCount) pieces.push(`已恢复 ${recoveredFailureCount}`)
-  if (recoveredConflictCount) pieces.push(recoveredConflictCount)
-
-  if (!pieces.length && row.current_step) {
-    pieces.push(row.current_step)
-  }
-
-  return pieces.slice(0, 4)
+function getDashboardRJLabel(row) {
+  const rjcode = String(row?.rjcode || '').trim().toUpperCase()
+  return rjcode || ''
 }
 
 function getRecoveredNotice(row) {
@@ -725,9 +751,9 @@ function getRecoveredNotice(row) {
   return String(metadata.recovered_notice || '').trim()
 }
 
-function getProgressStatus(status) {
-  if (status === 'failed') return 'exception'
-  if (status === 'completed') return 'success'
+function getRowProgressStatus(row) {
+  if (isCancelledTask(row) || row?.status === 'failed' || row?.status === 'waiting_retry') return 'exception'
+  if (row?.status === 'completed') return 'success'
   return ''
 }
 
@@ -784,6 +810,7 @@ function getActionLabel(action) {
     pause: '暂停',
     resume: '恢复',
     cancel: '取消',
+    retry: '重试',
     retry_waiting: '重试',
     delete_waiting_retry: '移除',
     open_subtitle_import: '前往处理'
@@ -796,6 +823,7 @@ function getDashboardActionType(action) {
     pause: 'warning',
     resume: 'primary',
     cancel: 'danger',
+    retry: 'primary',
     retry_waiting: 'primary',
     delete_waiting_retry: 'danger',
     open_subtitle_import: 'primary'
@@ -1266,6 +1294,63 @@ function formatDate(dateString) {
   line-height: 1.4;
 }
 
+.task-summary-empty {
+  font-size: 13px;
+  color: var(--apple-subtle);
+}
+
+.task-action-group {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  max-width: 160px;
+  margin: 0 auto;
+}
+
+.task-action-btn {
+  min-width: 76px;
+  height: 28px;
+  margin: 0;
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 28px;
+  box-shadow: none;
+}
+
+.task-action-btn:deep(span) {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+.task-action-btn.is-pause,
+.task-action-btn.is-resume,
+.task-action-btn.is-retry,
+.task-action-btn.is-open_subtitle_import,
+.task-action-btn.is-retry_waiting {
+  background: #5aa7ff;
+  color: #fff;
+}
+
+.task-action-btn.is-cancel,
+.task-action-btn.is-delete_waiting_retry {
+  background: #ff7875;
+  color: #fff;
+}
+
+.task-action-btn:hover,
+.task-action-btn:focus {
+  opacity: 0.92;
+  transform: none;
+}
+
 .task-id {
   font-family: monospace;
   color: var(--apple-muted);
@@ -1464,6 +1549,50 @@ function formatDate(dateString) {
 :deep(.el-tag) {
   border-radius: 999px;
   font-weight: 500;
+}
+
+:deep(.dashboard-status-tag.el-tag) {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+  letter-spacing: 0.01em;
+}
+
+:deep(.dashboard-status-tag.is-completed.el-tag) {
+  color: #2f7d32;
+  background: linear-gradient(180deg, #eef9ef 0%, #e4f6e6 100%);
+  border-color: #c8ebcf;
+}
+
+:deep(.dashboard-status-tag.is-processing.el-tag) {
+  color: #b86a00;
+  background: linear-gradient(180deg, #fff6e8 0%, #ffedd2 100%);
+  border-color: #ffd7a0;
+}
+
+:deep(.dashboard-status-tag.is-pending.el-tag),
+:deep(.dashboard-status-tag.is-paused.el-tag) {
+  color: #51606f;
+  background: linear-gradient(180deg, #f4f6f8 0%, #eceff3 100%);
+  border-color: #dde3ea;
+}
+
+:deep(.dashboard-status-tag.is-waiting_manual.el-tag),
+:deep(.dashboard-status-tag.is-waiting_retry.el-tag) {
+  color: #8f5a17;
+  background: linear-gradient(180deg, #fff5df 0%, #ffe8bf 100%);
+  border-color: #f3d39a;
+}
+
+:deep(.dashboard-status-tag.is-failed.el-tag),
+:deep(.dashboard-status-tag.is-cancelled.el-tag) {
+  color: #a63f3f;
+  background: linear-gradient(180deg, #fff0f0 0%, #ffe3e3 100%);
+  border-color: #f3c4c4;
 }
 
 @media (max-width: 1200px) {
