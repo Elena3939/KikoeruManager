@@ -4651,7 +4651,10 @@ async function rollbackSubtitleManualRenamePairs (pairs, audioLibraryId, subtitl
     const rollbackSourcePath = pair.final_path || pair.temp_path
     if (!rollbackSourcePath || !pair.current_name) continue
     try {
-      await libraryApi.browserRename(operationLibraryId, rollbackSourcePath, pair.current_name)
+      await libraryApi.browserRename(operationLibraryId, rollbackSourcePath, pair.current_name, {
+        skipActivityLog: true,
+        renameContext: 'subtitle_manual_match_pair'
+      })
       restored += 1
     } catch (error) {
       failed.push({
@@ -4779,14 +4782,20 @@ async function applySubtitleManualPairs () {
 
     for (const pair of phaseOne) {
       const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
-      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.source_path, pair.temp_name)
+      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.source_path, pair.temp_name, {
+        skipActivityLog: true,
+        renameContext: 'subtitle_manual_match_pair'
+      })
       pair.temp_path = renameResult?.new_path || joinPath(String(pair.source_path || '').replace(/[\\/][^\\/]+$/, ''), pair.temp_name)
       phaseOneCompleted.push(pair)
     }
 
     for (const pair of phaseOne) {
       const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
-      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name)
+      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name, {
+        skipActivityLog: true,
+        renameContext: 'subtitle_manual_match_pair'
+      })
       pair.final_path = renameResult?.new_path || joinPath(String(pair.temp_path || '').replace(/[\\/][^\\/]+$/, ''), pair.target_name)
       phaseTwoCompleted.push(pair)
     }
@@ -4797,10 +4806,17 @@ async function applySubtitleManualPairs () {
 
     const currentTaskId = subtitleInspectorInfo.value.taskId
     if (subtitleInspectorInfo.value.taskId) {
+      const pairChanges = subtitleManualPairs.value.map(pair => ({
+        audio_before: pair.audio_name || '',
+        audio_after: pair.target_audio_name || '',
+        subtitle_before: pair.subtitle_name || '',
+        subtitle_after: pair.target_subtitle_name || ''
+      }))
       await rjSubtitleApi.completeManual(subtitleInspectorInfo.value.taskId, {
         appliedPairs: appliedPairCount,
         deletedSubtitles: unusedSubtitleRows.length,
-        namingStrategy: effectiveNamingStrategy
+        namingStrategy: effectiveNamingStrategy,
+        pairChanges
       })
       markSubtitleTaskManualMatchCompleted(subtitleInspectorInfo.value.taskId, {
         appliedPairs: appliedPairCount,
