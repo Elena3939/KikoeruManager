@@ -1320,6 +1320,7 @@ async function confirmFilterDeleteSelection () {
     let failedCount = 0
     let deletedBytes = 0
     let deletedFolderCount = 0
+    const batchId = `filter-delete-${filterDeleteSessionKey.value || Date.now()}`
     const succeededPaths = []
     const failedItems = []
     for (let index = 0; index < paths.length; index += 1) {
@@ -1333,7 +1334,10 @@ async function confirmFilterDeleteSelection () {
         progressMessage: `\u6b63\u5728\u5220\u9664 ${index + 1} / ${paths.length}: ${getFileName(path) || path}`
       }
       try {
-        await libraryApi.browserDelete(props.libraryId, path, true)
+        await libraryApi.browserDelete(props.libraryId, path, true, {
+          skipActivityLog: true,
+          batchId
+        })
         successCount += 1
         succeededPaths.push(path)
         deletedBytes += Number(sizeByPath.get(path) || 0)
@@ -1388,7 +1392,8 @@ async function confirmFilterDeleteSelection () {
       deleted_folder_count: deletedFolderCount,
       attempted_items: attemptedItems,
       succeeded_items: succeededItems,
-      failed_items: failedItems
+      failed_items: failedItems,
+      batch_id: batchId
     })
     if (filterDeleteDeleteCancelRequested.value) ElMessage.warning(`\u8fc7\u6ee4\u5220\u9664\u5df2\u505c\u6b62\uff1a\u6210\u529f ${successCount} \u9879\uff0c\u5931\u8d25 ${failedCount} \u9879`)
     else if (failedCount > 0) ElMessage.warning(`\u8fc7\u6ee4\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f ${successCount} \u9879\uff0c\u5931\u8d25 ${failedCount} \u9879`)
