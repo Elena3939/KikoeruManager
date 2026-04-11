@@ -207,7 +207,7 @@
               <span
                 v-for="tag in rowCategoryTags(row)"
                 :key="`${row.id}-${tag}`"
-                :class="['action-pill', { 'is-muted': tag === '未命中' }]"
+                :class="['action-pill', actionTagClass(row, tag), { 'is-muted': tag === '未命中' }]"
               >{{ tag }}</span>
             </span>
           </template>
@@ -228,7 +228,7 @@
         </el-table-column>
         <el-table-column prop="rjcode" label="RJ" width="110">
           <template #default="{ row }">
-            <span class="mono">{{ row.rjcode || '—' }}</span>
+            <span class="mono">{{ displayRjcode(row) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="summary" label="摘要" min-width="240" show-overflow-tooltip>
@@ -295,7 +295,7 @@
               <span
                 v-for="tag in rowCategoryTags(selectedRow)"
                 :key="`drawer-${selectedRow.id}-${tag}`"
-                :class="['action-pill', { 'is-muted': tag === '未命中' }]"
+                :class="['action-pill', actionTagClass(selectedRow, tag), { 'is-muted': tag === '未命中' }]"
               >{{ tag }}</span>
               <span :class="['status-tag', statusClass(selectedRow.status)]">{{ statusLabel(selectedRow.status) }}</span>
               <span v-if="isRerunRow(selectedRow)" class="status-fixed-pill is-rerun">重新爬取</span>
@@ -304,7 +304,37 @@
               <span v-if="isRecoveredFailure(selectedRow)" class="status-fixed-pill">已修复</span>
             </div>
           </div>
-          <div class="detail-topbar-rj mono">{{ selectedRow.rjcode || '—' }}</div>
+          <div class="detail-topbar-rj mono">{{ displayRjcode(selectedRow) }}</div>
+        </div>
+
+        <div v-if="pathCompareModel(selectedRow)" class="path-compare-card" :class="[`is-${pathCompareModel(selectedRow).kind}`, `is-status-${pathCompareReasonClass(selectedRow)}`]">
+          <div class="path-compare-head">
+            <span class="path-compare-title">{{ pathCompareModel(selectedRow).title }}</span>
+            <div class="path-compare-head-right">
+              <span
+                v-if="pathCompareModel(selectedRow).opTag"
+                :class="['path-op-tag', pathCompareModel(selectedRow).opTagClass]"
+              >{{ pathCompareModel(selectedRow).opTag }}</span>
+              <span :class="['path-compare-status', pathCompareReasonClass(selectedRow)]">{{ statusLabel(selectedRow.status) }}</span>
+            </div>
+          </div>
+          <div class="path-compare-body">
+            <div class="path-compare-col old">
+              <div class="path-compare-label">OLD PATH</div>
+              <div class="path-compare-path mono break">{{ pathCompareModel(selectedRow).beforePath || '—' }}</div>
+            </div>
+            <div class="path-compare-arrow">→</div>
+            <div class="path-compare-col new">
+              <div class="path-compare-label">NEW PATH</div>
+              <div class="path-compare-path mono break">{{ pathCompareModel(selectedRow).afterPath || '—' }}</div>
+            </div>
+          </div>
+          <div
+            class="path-compare-reason"
+            :class="[pathCompareReasonClass(selectedRow), { 'is-empty': !pathCompareModel(selectedRow).reason }]"
+          >
+            {{ pathCompareModel(selectedRow).reason || pathCompareDefaultReason(selectedRow) }}
+          </div>
         </div>
 
         <div class="expand-grid">
@@ -333,6 +363,23 @@
           <div v-if="pairSummaryText(selectedRow)" class="expand-item span-2">
             <div class="ek">配对结果</div>
             <div class="ev">{{ pairSummaryText(selectedRow) }}</div>
+          </div>
+          <div v-if="pairChangeRows(selectedRow).length" class="expand-item span-2">
+            <div class="ek">配对重命名</div>
+            <div class="pair-change-table">
+              <div class="pair-change-row pair-change-head">
+                <span>音频</span>
+                <span>字幕</span>
+              </div>
+              <div
+                v-for="(item, index) in pairChangeRows(selectedRow)"
+                :key="`${index}-${item.audio_before}`"
+                class="pair-change-row"
+              >
+                <span class="pair-change-cell mono">{{ item.audio_before }} → {{ item.audio_after }}</span>
+                <span class="pair-change-cell mono">{{ item.subtitle_before }} → {{ item.subtitle_after }}</span>
+              </div>
+            </div>
           </div>
           <div class="expand-item span-2">
             <div class="ek">源路径</div>
@@ -456,6 +503,7 @@ const categoryOptions = [
   { value: 'pipeline_filter', label: '筛选' },
   { value: 'pipeline_metadata', label: '元数据' },
   { value: 'pipeline_rename', label: '重命名' },
+  { value: 'pipeline_delete', label: '删除' },
   { value: 'asmr_sync', label: 'ASMR 同步' }
 ]
 
@@ -637,6 +685,8 @@ function categoryClass(c) {
       return 'cat-auto-import'
     case 'process_existing':
       return 'cat-process-existing'
+    case 'pipeline_delete':
+      return 'cat-pipeline-delete'
     case 'asmr_sync':
       return 'cat-asmr-sync'
     default:
@@ -682,6 +732,29 @@ function isFilterDeleteRetriedPartial(row) {
 
 function hasFilterDeleteRetryChild(row) {
   return Boolean(row?.merged_filter_retry || row?.detail?.retry_linked)
+}
+
+function isApiRenameAction(row) {
+  const action = String(row?.action || '').trim()
+  return action === 'api_rename' || action === 'batch_api_rename' || action === 'batch_api_rename_item'
+}
+
+function isManualRenameAction(row) {
+  const action = String(row?.action || '').trim()
+  if (!action) return false
+  return action === 'rename' || action === 'manual_rename' || action === 'batch_rename_item'
+}
+
+function renameOpTag(row) {
+  if (isApiRenameAction(row)) return 'API重命名'
+  if (isManualRenameAction(row)) return '重命名'
+  return '重命名'
+}
+
+function renameOpTagClass(row) {
+  if (isApiRenameAction(row)) return 'is-api-rename'
+  if (isManualRenameAction(row)) return 'is-manual-rename'
+  return 'is-rename'
 }
 
 function humanAction(row) {
@@ -782,12 +855,31 @@ function humanAction(row) {
       if (status === 'failed') return '批量 API 重命名失败'
       return '批量 API 重命名'
     }
-    if (action === 'api_rename' || action === 'batch_api_rename_item') {
-      if (status === 'success') return 'API 重命名完成'
-      if (status === 'failed') return 'API 重命名失败'
-      return 'API 重命名'
+    if (isApiRenameAction(row)) {
+      if (status === 'success') return 'API重命名完成'
+      if (status === 'failed') return 'API重命名失败'
+      return 'API重命名'
+    }
+    if (isManualRenameAction(row)) {
+      if (status === 'success') return '重命名完成'
+      if (status === 'failed') return '重命名失败'
+      return '重命名'
     }
     return '重命名处理'
+  }
+  if (category === 'pipeline_delete') {
+    if (action === 'batch_api_delete') {
+      if (status === 'success') return '批量删除完成'
+      if (status === 'partial_success') return '批量删除部分成功'
+      if (status === 'failed') return '批量删除失败'
+      return '批量删除'
+    }
+    if (action === 'delete' || action === 'batch_delete_item') {
+      if (status === 'success') return '删除完成'
+      if (status === 'failed') return '删除失败'
+      return '删除'
+    }
+    return '删除处理'
   }
   if (category === 'asmr_sync') {
     if (status === 'success') return 'ASMR 同步下载完成'
@@ -899,6 +991,7 @@ function mergedCategoryTags(row) {
 
 function rowCategoryTags(row) {
   const tags = row?.is_tree_child ? [] : mergedCategoryTags(row)
+  if (row?.category === 'pipeline_rename') tags.unshift(renameOpTag(row))
   if (isBatchChildPaired(row)) tags.push('已配对')
   return tags
 }
@@ -934,6 +1027,138 @@ function compactPath(p) {
   const prefix = s.slice(0, 28)
   const suffix = s.slice(-26)
   return `${prefix}…${suffix}`
+}
+
+function normalizeRjcode(value) {
+  const text = String(value || '').trim().toUpperCase()
+  if (!text) return ''
+  const repeated = text.match(/(?:RJ)+(\d{4,})/i)
+  if (repeated) return `RJ${repeated[1]}`
+  const match = text.match(/RJ\d{4,}/i)
+  if (match) return match[0].toUpperCase()
+  return text
+}
+
+function extractRjFromText(value) {
+  const text = String(value || '')
+  if (!text) return ''
+  const match = text.match(/RJ\d{4,}/i)
+  return match ? match[0].toUpperCase() : ''
+}
+
+function inferRjcodeFromRow(row) {
+  if (!row) return ''
+  const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+  const candidates = [
+    row.rjcode,
+    detail.rjcode,
+    detail.source_rjcode,
+    detail.preview_source_rjcode,
+    detail.target_rjcode,
+    detail.old_name,
+    detail.new_name,
+    detail.old_path,
+    detail.new_path,
+    row.source_path,
+    row.summary,
+    row.task_id
+  ]
+  for (const item of candidates) {
+    const byValue = normalizeRjcode(item)
+    if (byValue.startsWith('RJ')) return byValue
+    const byText = extractRjFromText(item)
+    if (byText) return byText
+  }
+  return ''
+}
+
+function pairChangeRows(row) {
+  const detail = row?.detail
+  const changes = Array.isArray(detail?.pair_changes) ? detail.pair_changes : []
+  return changes
+    .map(item => ({
+      audio_before: String(item?.audio_before || '').trim(),
+      audio_after: String(item?.audio_after || '').trim(),
+      subtitle_before: String(item?.subtitle_before || '').trim(),
+      subtitle_after: String(item?.subtitle_after || '').trim()
+    }))
+    .filter(item => item.audio_before || item.audio_after || item.subtitle_before || item.subtitle_after)
+}
+
+function displayRjcode(row) {
+  const inferred = inferRjcodeFromRow(row)
+  return inferred || '—'
+}
+
+function pathCompareModel(row) {
+  if (!row) return null
+  const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+  const sourcePath = String(row.source_path || detail.path || '').trim()
+
+  if (row.category === 'pipeline_rename') {
+    const beforePath = String(sourcePath || detail.old_path || '').trim()
+    const afterPath = String(detail.new_path || '').trim()
+    const oldName = String(detail.old_name || '').trim()
+    const newName = String(detail.new_name || '').trim()
+    const reason = String(detail.error || detail.reason || '').trim()
+    if (!beforePath && !afterPath && !oldName && !newName && !reason) return null
+    return {
+      kind: 'rename',
+      title: '重命名前后路径对比',
+      beforePath: beforePath || oldName,
+      afterPath: afterPath || newName,
+      reason,
+      opTag: renameOpTag(row),
+      opTagClass: renameOpTagClass(row)
+    }
+  }
+
+  if (row.category === 'pipeline_delete') {
+    const beforePath = String(sourcePath || detail.path || '').trim()
+    const afterPath = row.status === 'success' ? '（已删除）' : '（删除失败，原路径保留）'
+    const reason = String(detail.error || detail.reason || '').trim()
+    if (!beforePath && !reason) return null
+    return {
+      kind: 'delete',
+      title: '删除前后路径对比',
+      beforePath,
+      afterPath,
+      reason,
+      opTag: '删除',
+      opTagClass: 'is-delete'
+    }
+  }
+
+  return null
+}
+
+function pathCompareReasonClass(row) {
+  const status = String(row?.status || '').trim()
+  if (status === 'success') return 'is-success'
+  if (status === 'partial_success') return 'is-warn'
+  return 'is-fail'
+}
+
+function pathCompareDefaultReason(row) {
+  const status = String(row?.status || '').trim()
+  if (row?.category === 'pipeline_rename') {
+    if (status === 'success') return '重命名成功：新路径已生效'
+    if (status === 'partial_success') return '重命名部分成功：请检查失败项原因'
+    return '重命名失败：原路径保持不变'
+  }
+  if (row?.category === 'pipeline_delete') {
+    if (status === 'success') return '删除成功：目标已移除'
+    if (status === 'partial_success') return '删除部分成功：请检查失败项原因'
+    return '删除失败：目标仍保留在原路径'
+  }
+  return '执行完成'
+}
+
+function actionTagClass(row, tag) {
+  if (tag === 'API重命名') return 'is-api-rename'
+  if (tag === '重命名') return 'is-manual-rename'
+  if (tag === '删除') return 'is-delete'
+  return ''
 }
 
 function rowClassName({ row }) {
@@ -1011,6 +1236,7 @@ function childRowCategoryLabel(row) {
   if (row?.relation === 'rerun') return '重试'
   if (row?.relation === 'subtitle_import') return '字幕补配'
   if (row?.relation === 'rename_item') return '子重命名'
+  if (row?.relation === 'delete_item') return '子删除'
   if (row?.relation === 'pair') return '字幕配对'
   if (row?.relation === 'delete_apply') return '删除执行'
   if (row?.relation === 'retry_preview') return '失败重试'
@@ -1064,6 +1290,7 @@ function childTypeDotClass(row) {
   if (row?.relation === 'rerun') return 'is-rerun'
   if (row?.relation === 'subtitle_import') return 'is-subtitle-import'
   if (row?.relation === 'rename_item') return 'is-rename-item'
+  if (row?.relation === 'delete_item') return 'is-delete-item'
   if (row?.relation === 'pair') return 'is-pair'
   if (row?.relation === 'delete_apply') return 'is-delete-apply'
   if (row?.category === 'subtitle_crawl') return 'is-crawl'
@@ -1086,6 +1313,11 @@ function detailHighlights(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
   const pickKeys = [
+    'rjcode',
+    'source_rjcode',
+    'target_rjcode',
+    'linked_source_rjcode',
+    'linked_target_rjcode',
     'downloaded_count',
     'written_files_count',
     'awaiting_manual_match',
@@ -1093,6 +1325,8 @@ function detailHighlights(row) {
     'source_basename',
     'archive_size_bytes',
     'extract_output_bytes',
+    'filtered_count',
+    'filtered_size',
     'final_file_count',
     'record_id',
     'import_final_file_count',
@@ -1122,7 +1356,9 @@ function detailHighlights(row) {
     if (d[k] === undefined || d[k] === null) continue
     let value = d[k]
     if (k === 'duration_ms') value = formatDurationMs(value)
-    if (['selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes', 'recovered_selected_size'].includes(k)) value = formatBytes(value)
+    if (['selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes', 'recovered_selected_size', 'filtered_size'].includes(k)) value = formatBytes(value)
+    if (k.includes('rjcode')) value = normalizeRjcode(value)
+    if (!String(value || '').trim()) continue
     out.push({ k, v: String(value) })
     if (out.length >= 10) break
   }
@@ -1279,6 +1515,23 @@ function filterDeleteEntrySections(row) {
   return sections
 }
 
+function importFilteredEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (!['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return []
+
+  const rawItems = Array.isArray(d.filtered_items) ? d.filtered_items : []
+  if (!rawItems.length) return []
+
+  const items = mapFilterDeleteItems(rawItems)
+  const total = Number(d.filtered_count || rawItems.length || 0)
+  return [{
+    key: 'import-filtered-items',
+    title: `过滤移除项（${total}）`,
+    rows: buildFilterDeleteTreeRows(items)
+  }]
+}
+
 function subtitleBatchEntrySections(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object' || d.mode !== 'subtitle_batch_start') return []
@@ -1344,6 +1597,7 @@ function subtitleBatchEntrySections(row) {
 
 function activityEntrySections(row) {
   return [
+    ...importFilteredEntrySections(row),
     ...subtitleBatchEntrySections(row),
     ...filterDeleteEntrySections(row)
   ]
@@ -1352,6 +1606,7 @@ function activityEntrySections(row) {
 function activityEntrySectionTitle(row) {
   const d = row?.detail
   if (d && typeof d === 'object' && d.mode === 'subtitle_batch_start') return '批量详情'
+  if (['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return '处理清单'
   return '删除清单'
 }
 
@@ -1831,6 +2086,11 @@ watch(items, (nextItems) => {
   color: #5e5ce6;
 }
 
+.cat-pipeline-delete {
+  background: rgba(255, 59, 48, 0.1);
+  color: #d70015;
+}
+
 .cat-default {
   background: #f2f2f7;
   color: #1d1d1f;
@@ -1965,6 +2225,24 @@ watch(items, (nextItems) => {
   color: #6b7280;
 }
 
+.action-pill.is-api-rename {
+  border-color: rgba(10, 132, 255, 0.2);
+  background: rgba(10, 132, 255, 0.12);
+  color: #005fcc;
+}
+
+.action-pill.is-manual-rename {
+  border-color: rgba(88, 86, 214, 0.2);
+  background: rgba(88, 86, 214, 0.12);
+  color: #4b3db8;
+}
+
+.action-pill.is-delete {
+  border-color: rgba(215, 0, 21, 0.22);
+  background: rgba(215, 0, 21, 0.1);
+  color: #b0001a;
+}
+
 .action-text.is-success {
   color: #248a3d;
 }
@@ -2052,6 +2330,10 @@ watch(items, (nextItems) => {
   background: #ff3b30;
 }
 
+.child-type-dot.is-delete-item {
+  background: #ff453a;
+}
+
 .child-type-dot.is-default {
   background: #8e8e93;
 }
@@ -2106,6 +2388,34 @@ watch(items, (nextItems) => {
 .detail-kv .v {
   color: #1d1d1f;
   line-height: 1.45;
+}
+
+.pair-change-table {
+  display: grid;
+  gap: 6px;
+}
+
+.pair-change-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f7f7fa;
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.06);
+}
+
+.pair-change-head {
+  background: #eef5ff;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(29, 29, 31, 0.68);
+}
+
+.pair-change-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-json {
@@ -2251,6 +2561,188 @@ watch(items, (nextItems) => {
   color: #005fcc;
   font-size: 13px;
   font-weight: 700;
+}
+
+.path-compare-card {
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 251, 255, 0.92));
+}
+
+.path-compare-card.is-rename {
+  border-color: rgba(10, 132, 255, 0.25);
+}
+
+.path-compare-card.is-delete {
+  border-color: rgba(215, 0, 21, 0.26);
+}
+
+.path-compare-card.is-status-is-success {
+  box-shadow: inset 0 0 0 1px rgba(52, 199, 89, 0.12);
+}
+
+.path-compare-card.is-status-is-warn {
+  box-shadow: inset 0 0 0 1px rgba(255, 159, 10, 0.14);
+}
+
+.path-compare-card.is-status-is-fail {
+  box-shadow: inset 0 0 0 1px rgba(215, 0, 21, 0.15);
+}
+
+.path-compare-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.path-compare-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.path-compare-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.path-op-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.path-op-tag.is-api-rename {
+  border-color: rgba(10, 132, 255, 0.22);
+  background: rgba(10, 132, 255, 0.12);
+  color: #005fcc;
+}
+
+.path-op-tag.is-manual-rename {
+  border-color: rgba(88, 86, 214, 0.22);
+  background: rgba(88, 86, 214, 0.12);
+  color: #4b3db8;
+}
+
+.path-op-tag.is-rename {
+  border-color: rgba(64, 132, 255, 0.2);
+  background: rgba(64, 132, 255, 0.1);
+  color: #0a5ac2;
+}
+
+.path-op-tag.is-delete {
+  border-color: rgba(215, 0, 21, 0.24);
+  background: rgba(215, 0, 21, 0.11);
+  color: #b0001a;
+}
+
+.path-compare-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.path-compare-status.is-success {
+  background: rgba(52, 199, 89, 0.12);
+  color: #187d34;
+}
+
+.path-compare-status.is-warn {
+  background: rgba(255, 159, 10, 0.12);
+  color: #c56a00;
+}
+
+.path-compare-status.is-fail {
+  background: rgba(215, 0, 21, 0.11);
+  color: #b0001a;
+}
+
+.path-compare-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+.path-compare-col {
+  min-width: 0;
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.path-compare-col.old {
+  background: rgba(255, 149, 0, 0.08);
+}
+
+.path-compare-col.new {
+  background: rgba(10, 132, 255, 0.08);
+}
+
+.path-compare-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(29, 29, 31, 0.52);
+  margin-bottom: 6px;
+}
+
+.path-compare-path {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #1d1d1f;
+}
+
+.path-compare-arrow {
+  align-self: center;
+  color: rgba(29, 29, 31, 0.4);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.path-compare-reason {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  border: 1px solid transparent;
+}
+
+.path-compare-reason.is-success {
+  border-color: rgba(52, 199, 89, 0.2);
+  background: rgba(52, 199, 89, 0.08);
+  color: #187d34;
+}
+
+.path-compare-reason.is-warn {
+  border-color: rgba(255, 159, 10, 0.2);
+  background: rgba(255, 159, 10, 0.1);
+  color: #c56a00;
+}
+
+.path-compare-reason.is-fail {
+  border-color: rgba(215, 0, 21, 0.2);
+  background: rgba(215, 0, 21, 0.09);
+  color: #b0001a;
+}
+
+.path-compare-reason.is-empty {
+  opacity: 0.9;
 }
 
 .expand-grid {
