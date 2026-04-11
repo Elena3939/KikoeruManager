@@ -74,6 +74,21 @@ class TaskCenterService:
     def _safe_text(self, value: Any) -> str:
         return str(value or "").strip()
 
+    def _normalize_rjcode(self, value: Any) -> str:
+        text = self._safe_text(value).upper()
+        if not text:
+            return ""
+        import re
+        match = re.search(r"(?:RJ)+\d{4,}", text, re.IGNORECASE)
+        if match:
+            number_match = re.search(r"\d{4,}", match.group(0))
+            if number_match:
+                return f"RJ{number_match.group(0)}"
+        match = re.search(r"RJ\d{4,}", text, re.IGNORECASE)
+        if match:
+            return match.group(0).upper()
+        return text
+
     def _basename(self, value: Any) -> str:
         normalized = self._safe_text(value).rstrip("\\/")
         if not normalized:
@@ -231,6 +246,7 @@ class TaskCenterService:
 
         return [item for item in items if self._safe_text(item.get("id")) not in merged_item_ids]
 
+
     def _infer_domain(self, task: Task) -> str:
         metadata = dict(task.task_metadata or {})
         explicit = self._safe_text(metadata.get("task_domain"))
@@ -244,9 +260,19 @@ class TaskCenterService:
             actions.extend(["pause", "cancel"])
         elif task.status == TaskStatus.PAUSED:
             actions.append("resume")
+        elif task.status == TaskStatus.FAILED and self._can_retry_engine_task(task, domain):
+            actions.append("retry")
         elif task.status == TaskStatus.WAITING_RETRY and domain == "asmr_sync":
             actions.extend(["retry_waiting", "delete_waiting_retry"])
         return actions
+
+    def _can_retry_engine_task(self, task: Task, domain: str) -> bool:
+        if domain not in {"import", "system"}:
+            return False
+        source_path = self._safe_text(getattr(task, "source_path", ""))
+        if not source_path or not os.path.exists(source_path):
+            return False
+        return True
 
     def _resolve_display_status(self, task: Task, domain: str, metadata: Dict[str, Any]) -> str:
         if domain == "rj_subtitle":
@@ -268,7 +294,7 @@ class TaskCenterService:
             or self._safe_text(metadata.get("folder_path"))
         )
         route_hint = self.DOMAIN_ROUTE_HINT.get(domain, "/tasks")
-        rjcode = (
+        rjcode = self._normalize_rjcode(
             self._safe_text(getattr(task, "rjcode", ""))
             or self._safe_text(metadata.get("target_rjcode"))
             or self._safe_text(metadata.get("actual_rjcode"))
@@ -806,6 +832,42 @@ class TaskCenterService:
             if normalized_action == "cancel":
                 engine.cancel_task(engine_task_id)
                 return {"success": True, "message": "任务已取消"}
+            if normalized_action == "retry":
+                if not self._can_retry_engine_task(task, self._infer_domain(task)):
+                    raise ValueError("当前任务不支持重试")
+                from .file_processor import get_file_processor
+
+                file_processor = get_file_processor()
+                source_path = self._safe_text(task.source_path)
+                new_task = await file_processor.process_file(
+                    source_path,
+                    auto_classify=bool(getattr(task, "auto_classify", False)),
+                    wait_stable=False,
+                    is_processed=lambda path: False,
+                    mark_processed=None,
+                )
+                if not new_task:
+                    raise ValueError("无法重新创建任务")
+
+                previous_metadata = dict(task.task_metadata or {})
+                new_metadata = dict(new_task.task_metadata or {})
+                if previous_metadata.get("target_library_id"):
+                    new_metadata["target_library_id"] = previous_metadata.get("target_library_id")
+                new_metadata["retry_from_task_id"] = task.id
+                new_metadata["source_page"] = previous_metadata.get("source_page") or new_metadata.get("source_page") or "dashboard"
+                new_metadata["source_action"] = "retry_task"
+                new_metadata["source_label"] = previous_metadata.get("source_label") or new_metadata.get("source_label") or self._basename(source_path)
+                new_task.task_metadata = new_metadata
+
+                old_metadata = previous_metadata
+                old_metadata["superseded_by_task_id"] = new_task.id
+                task.task_metadata = old_metadata
+
+                return {
+                    "success": True,
+                    "message": "已重新创建任务",
+                    "route_hint": self.DOMAIN_ROUTE_HINT.get(self._infer_domain(new_task), "/tasks"),
+                }
             raise ValueError("当前任务不支持该动作")
 
         if normalized_item_id.startswith("waiting-retry:"):
