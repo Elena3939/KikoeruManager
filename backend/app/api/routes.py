@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import tempfile
+import uuid
 
 # Create logger instance
 logger = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ async def list_activity_logs(
         merged_filter_preview_ids: set[str] = set()
         merged_filter_retry_ids: set[str] = set()
         merged_subtitle_import_ids: set[str] = set()
+        merged_import_batch_child_ids: set[str] = set()
 
         def _make_tree_child(
             row: dict[str, Any],
@@ -269,6 +271,67 @@ async def list_activity_logs(
                 batch_row["has_child_rows"] = True
                 batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
 
+        import_batch_rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            if row.get("action") != "batch_start":
+                continue
+            if row.get("category") not in {"auto_import", "process_existing"}:
+                continue
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
+            if batch_id:
+                import_batch_rows_by_key[(str(row.get("category") or "").strip(), batch_id)] = row
+
+        for (category_key, batch_id), batch_row in import_batch_rows_by_key.items():
+            batch_detail = batch_row.get("detail") if isinstance(batch_row.get("detail"), dict) else {}
+            child_rows: list[dict[str, Any]] = []
+            latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
+            extract_completed_count = 0
+            extract_output_total = 0
+            archive_size_total = 0
+            for row in rows:
+                row_id = str(row.get("id") or "")
+                if row_id == str(batch_row.get("id") or ""):
+                    continue
+                if str(row.get("category") or "").strip() != category_key:
+                    continue
+                if str(row.get("action") or "").strip() == "batch_start":
+                    continue
+                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+                if str(detail.get("batch_id") or "").strip() != batch_id:
+                    continue
+                child_rows.append(
+                    _make_tree_child(
+                        row,
+                        relation="import_item",
+                        category_label="子解压任务" if category_key == "auto_import" else "子处理任务",
+                    )
+                )
+                merged_import_batch_child_ids.add(row_id)
+                if str(row.get("status") or "").strip() in {"success", "completed"}:
+                    extract_completed_count += 1
+                extract_output_total += int(detail.get("extract_output_bytes") or 0)
+                archive_size_total += int(detail.get("archive_size_bytes") or 0)
+                latest_activity = max(
+                    latest_activity,
+                    _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min,
+                )
+            if child_rows:
+                batch_row["detail"] = {
+                    **batch_detail,
+                    "child_rows": sorted(
+                        child_rows,
+                        key=lambda item: _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
+                    ),
+                    "child_row_count": len(child_rows),
+                    "extract_completed_count": extract_completed_count,
+                    "aggregate_extract_output_bytes": extract_output_total,
+                    "aggregate_archive_size_bytes": archive_size_total,
+                    "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
+                }
+                batch_row["has_child_rows"] = True
+                batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
+
         auto_import_rows: list[dict[str, Any]] = []
         for row in rows:
             if row.get("category") == "auto_import":
@@ -299,8 +362,12 @@ async def list_activity_logs(
         retry_rows_by_session: dict[str, list[dict[str, Any]]] = {}
         rename_rows_by_key: dict[str, list[dict[str, Any]]] = {}
         rename_batch_rows_by_id: dict[str, dict[str, Any]] = {}
+        delete_rows_by_key: dict[str, list[dict[str, Any]]] = {}
+        delete_batch_rows_by_id: dict[str, dict[str, Any]] = {}
         merged_rename_ids: set[str] = set()
         merged_rename_batch_child_ids: set[str] = set()
+        merged_delete_ids: set[str] = set()
+        merged_delete_batch_child_ids: set[str] = set()
         for row in rows:
             if row.get("category") == "pipeline_rename":
                 detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
@@ -314,6 +381,18 @@ async def list_activity_logs(
                     continue
                 if rename_key:
                     rename_rows_by_key.setdefault(rename_key, []).append(row)
+            if row.get("category") == "pipeline_delete":
+                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+                batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
+                delete_key = str(detail.get("delete_key") or row.get("source_path") or "").strip()
+                if row.get("action") == "batch_api_delete":
+                    if batch_id:
+                        delete_batch_rows_by_id[batch_id] = row
+                    continue
+                if batch_id:
+                    continue
+                if delete_key:
+                    delete_rows_by_key.setdefault(delete_key, []).append(row)
             if row.get("category") != "pipeline_filter" or row.get("action") != "filter_delete_preview":
                 if row.get("category") == "pipeline_filter" and row.get("action") == "filter_delete_preview_retry":
                     detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
@@ -423,8 +502,6 @@ async def list_activity_logs(
             best_auto_row = None
             best_seconds = None
             for candidate in auto_import_rows:
-                if candidate.get("status") not in {"success", "completed"}:
-                    continue
                 candidate_detail = candidate.get("detail") if isinstance(candidate.get("detail"), dict) else {}
                 candidate_source_mode = str(candidate_detail.get("source_mode") or "").strip()
                 if candidate_source_mode != "linked_translation_archive_pending":
@@ -525,6 +602,70 @@ async def list_activity_logs(
                     )
                 )
                 merged_rename_batch_child_ids.add(row_id)
+                latest_activity = max(latest_activity, _coerce_dt(row.get("created_at")) or datetime.min)
+            if child_rows:
+                batch_row["detail"] = {
+                    **batch_detail,
+                    "child_rows": sorted(
+                        child_rows,
+                        key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
+                    ),
+                    "child_row_count": len(child_rows),
+                    "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
+                }
+                batch_row["has_child_rows"] = True
+                batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
+
+        for delete_key, delete_rows in delete_rows_by_key.items():
+            ordered_rows = sorted(delete_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
+            if len(ordered_rows) <= 1:
+                continue
+            root_row = ordered_rows[0]
+            root_detail = root_row.get("detail") if isinstance(root_row.get("detail"), dict) else {}
+            latest_activity = _coerce_dt(root_row.get("created_at")) or datetime.min
+            child_rows: list[dict[str, Any]] = []
+            for rerun_index, delete_row in enumerate(ordered_rows[1:], start=1):
+                child_rows.append(
+                    _make_tree_child(
+                        delete_row,
+                        relation="delete_item",
+                        category_label="子删除",
+                        fallback_id=f"{delete_key}-delete-rerun-{rerun_index}",
+                    )
+                )
+                merged_delete_ids.add(str(delete_row.get("id") or ""))
+                latest_activity = max(latest_activity, _coerce_dt(delete_row.get("created_at")) or datetime.min)
+            root_row["detail"] = {
+                **root_detail,
+                "child_rows": child_rows,
+                "child_row_count": len(child_rows),
+                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at"),
+            }
+            root_row["has_child_rows"] = True
+            root_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at")
+            root_row["rerun"] = True
+
+        for batch_id, batch_row in delete_batch_rows_by_id.items():
+            batch_detail = batch_row.get("detail") if isinstance(batch_row.get("detail"), dict) else {}
+            child_rows: list[dict[str, Any]] = []
+            latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
+            for row in rows:
+                row_id = str(row.get("id") or "")
+                if row_id == str(batch_row.get("id") or ""):
+                    continue
+                if row.get("category") != "pipeline_delete":
+                    continue
+                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+                if str(detail.get("batch_id") or "").strip() != batch_id:
+                    continue
+                child_rows.append(
+                    _make_tree_child(
+                        row,
+                        relation="delete_item",
+                        category_label="子删除",
+                    )
+                )
+                merged_delete_batch_child_ids.add(row_id)
                 latest_activity = max(latest_activity, _coerce_dt(row.get("created_at")) or datetime.min)
             if child_rows:
                 batch_row["detail"] = {
@@ -690,6 +831,8 @@ async def list_activity_logs(
                 continue
             if str(row.get("id") or "") in merged_subtitle_import_ids:
                 continue
+            if str(row.get("id") or "") in merged_import_batch_child_ids:
+                continue
             if str(row.get("id") or "") in merged_rename_ids:
                 continue
             if str(row.get("id") or "") in merged_rename_batch_child_ids:
@@ -697,6 +840,10 @@ async def list_activity_logs(
             if str(row.get("id") or "") in merged_filter_preview_ids:
                 continue
             if str(row.get("id") or "") in merged_filter_retry_ids:
+                continue
+            if str(row.get("id") or "") in merged_delete_ids:
+                continue
+            if str(row.get("id") or "") in merged_delete_batch_child_ids:
                 continue
             items.append(row)
         items.sort(key=lambda item: str(item.get("latest_activity_at") or item.get("created_at") or ""), reverse=True)
@@ -817,6 +964,11 @@ async def activity_logs_stats(
         elif category == "pipeline_filter" and action == "filter_delete_apply":
             metrics["delete_count"] += int(payload.get("success_count") or 0)
             metrics["delete_bytes"] += int(payload.get("deleted_bytes") or 0)
+        elif category == "pipeline_delete":
+            if action == "batch_api_delete":
+                metrics["delete_count"] += int(payload.get("success_count") or 0)
+            elif action in {"delete", "batch_delete_item"} and status in {"success", "completed"}:
+                metrics["delete_count"] += 1
 
     return {
         "days": days,
@@ -1085,7 +1237,12 @@ async def upload_files(files: List[UploadFile] = File(...), target_library_id: O
     # 不再为每个文件单独创建任务
     # 改为调用扫描逻辑，复用分卷文件识别
     # 扫描逻辑会正确识别分卷文件，只为主文件创建任务
-    scan_result = await _scan_and_create_tasks()
+    scan_result = await _scan_and_create_tasks(
+        source_page="dashboard",
+        source_action="upload_scan",
+        source_label="仪表盘 / 上传后扫描",
+        target_library_id=target_library_id,
+    )
     if target_library_id and scan_result["task_ids"]:
         engine = get_task_engine()
         for task_id in scan_result["task_ids"]:
@@ -1101,7 +1258,13 @@ async def upload_files(files: List[UploadFile] = File(...), target_library_id: O
     }
 
 
-async def _scan_and_create_tasks():
+async def _scan_and_create_tasks(
+    *,
+    source_page: str = "dashboard",
+    source_action: str = "scan_input",
+    source_label: str = "仪表盘 / 扫描导入",
+    target_library_id: Optional[str] = None,
+):
     """扫描输入目录并创建任务（使用 FileProcessor 统一处理逻辑）"""
     config = get_config()
     input_path = config.storage.input_path
@@ -1116,6 +1279,25 @@ async def _scan_and_create_tasks():
 
     watcher = get_watcher()
     file_processor = get_file_processor()
+    from ..core.activity_log_service import log_import_batch_start_result
+
+    batch_id = str(uuid.uuid4())
+    batch_context = {
+        "batch_id": batch_id,
+        "session_id": batch_id,
+        "batch_title": "批量解压入库",
+        "batch_label": "解压入库批次",
+        "source_page": source_page,
+        "source_action": source_action,
+        "source_label": source_label,
+        "log_parent": True,
+    }
+    report: dict[str, Any] = {
+        "requested_count": 0,
+        "created_count": 0,
+        "skipped_processed_count": 0,
+        "skipped_duplicate_count": 0,
+    }
 
     # 使用 FileProcessor 统一处理目录
     tasks = await file_processor.process_directory(
@@ -1127,15 +1309,40 @@ async def _scan_and_create_tasks():
             any(t.source_path == path and t.status.value in ["pending", "processing"]
                 for t in get_task_engine().get_all_tasks())
         ),
-        mark_processed=watcher._mark_file_processed
+        mark_processed=watcher._mark_file_processed,
+        task_metadata={"target_library_id": target_library_id} if target_library_id else None,
+        batch_context=batch_context,
+        report=report,
     )
 
     created_task_ids = [task.id for task in tasks]
+    requested_count = int(report.get("requested_count") or len(tasks))
+    created_tasks = [{"task_id": task.id, "source_path": task.source_path} for task in tasks]
+    log_import_batch_start_result({
+        "batch_id": batch_id,
+        "requested_count": requested_count,
+        "created_count": len(tasks),
+        "skipped_total": int(report.get("skipped_processed_count") or 0) + int(report.get("skipped_duplicate_count") or 0),
+        "skipped_processed": int(report.get("skipped_processed_count") or 0),
+        "skipped_duplicate": int(report.get("skipped_duplicate_count") or 0),
+        "archive_count": requested_count,
+        "extracted_count": len(tasks),
+        "auto_classify": bool(config.watcher.auto_classify),
+        "target_library_id": target_library_id,
+        "source_page": source_page,
+        "source_action": source_action,
+        "source_label": source_label,
+        "source_paths": [task.source_path for task in tasks],
+        "created_tasks": created_tasks,
+        "skipped_items": [],
+        "source_path": input_path,
+    })
 
     return {
         "message": f"找到 {len(tasks)} 个待处理文件",
         "found_count": len(tasks),
-        "task_ids": created_task_ids
+        "task_ids": created_task_ids,
+        "batch_id": batch_id,
     }
 
 @app.get("/api/backup/history")
@@ -1547,11 +1754,16 @@ async def get_watcher_status():
 @app.post("/api/scan")
 async def scan_input_directory():
     """手动扫描输入目录"""
-    result = await _scan_and_create_tasks()
+    result = await _scan_and_create_tasks(
+        source_page="dashboard",
+        source_action="scan_input",
+        source_label="仪表盘 / 扫描导入",
+    )
     return {
         "message": f"扫描完成，找到 {result['found_count']} 个文件",
         "found_count": result["found_count"],
-        "task_ids": result["task_ids"]
+        "task_ids": result["task_ids"],
+        "batch_id": result.get("batch_id"),
     }
 
 # 健康检查
@@ -2937,16 +3149,56 @@ async def cancel_library_browser_filter_delete_preview(request: Request):
 
 @app.post("/api/library/browser/rename")
 async def rename_library_browser_item(request: Request):
+    path = ""
+    new_name = ""
+    library_id = None
+    skip_activity_log = False
+    rename_context = ""
     try:
         data = await request.json()
-        path = data.get("path")
-        new_name = data.get("new_name")
+        path = str(data.get("path") or "").strip()
+        new_name = str(data.get("new_name") or "").strip()
         library_id = data.get("library_id")
+        skip_activity_log = bool(data.get("skip_activity_log"))
+        rename_context = str(data.get("rename_context") or "").strip()
         if not path or not new_name:
             raise HTTPException(status_code=400, detail="缺少必要参数")
         manager = get_library_manager()
-        return await manager.rename(library_id, path, new_name)
-    except HTTPException:
+        result = await manager.rename(library_id, path, new_name)
+        try:
+            from ..core.activity_log_service import log_api_rename_action
+            if not skip_activity_log:
+                new_path = str(result.get("new_path") or result.get("path") or "").strip() if isinstance(result, dict) else ""
+                log_api_rename_action(
+                    action="rename",
+                    success=True,
+                    source_path=path,
+                    new_path=new_path,
+                    old_name=os.path.basename(path),
+                    new_name=new_name,
+                    library_id=str(library_id or "") or None,
+                    extra_detail={"rename_context": rename_context} if rename_context else None,
+                )
+        except Exception:
+            logger.debug("[操作记录] 库存重命名记录失败", exc_info=True)
+        return result
+    except HTTPException as exc:
+        try:
+            from ..core.activity_log_service import log_api_rename_action
+            if path and not skip_activity_log:
+                log_api_rename_action(
+                    action="rename",
+                    success=False,
+                    source_path=path,
+                    old_name=os.path.basename(path),
+                    new_name=new_name,
+                    library_id=str(library_id or "") or None,
+                    error=str(exc.detail or exc),
+                    status="failed",
+                    extra_detail={"rename_context": rename_context} if rename_context else None,
+                )
+        except Exception:
+            logger.debug("[操作记录] 库存重命名失败记录失败", exc_info=True)
         raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2956,46 +3208,175 @@ async def rename_library_browser_item(request: Request):
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error(f"库存重命名失败: {e}", exc_info=True)
+        try:
+            from ..core.activity_log_service import log_api_rename_action
+            if path and not skip_activity_log:
+                log_api_rename_action(
+                    action="rename",
+                    success=False,
+                    source_path=path,
+                    old_name=os.path.basename(path),
+                    new_name=new_name,
+                    library_id=str(library_id or "") or None,
+                    error=str(e),
+                    extra_detail={"rename_context": rename_context} if rename_context else None,
+                )
+        except Exception:
+            logger.debug("[操作记录] 库存重命名异常记录失败", exc_info=True)
         raise HTTPException(status_code=500, detail=f"库存重命名失败: {str(e)}")
 
 
 @app.post("/api/library/browser/delete")
 async def delete_library_browser_item(request: Request):
+    path = ""
+    library_id = None
+    skip_activity_log = False
+    batch_id = ""
     try:
         data = await request.json()
-        path = data.get("path")
+        path = str(data.get("path") or "").strip()
         library_id = data.get("library_id")
         confirmed = data.get("confirmed", False)
+        skip_activity_log = bool(data.get("skip_activity_log"))
+        batch_id = str(data.get("batch_id") or "").strip()
         if not path:
             raise HTTPException(status_code=400, detail="缺少路径")
         manager = get_library_manager()
-        return await manager.delete(library_id, path, confirmed=confirmed)
-    except HTTPException:
+        result = await manager.delete(library_id, path, confirmed=confirmed)
+        try:
+            from ..core.activity_log_service import log_api_delete_action
+            if confirmed and not skip_activity_log:
+                log_api_delete_action(
+                    action="delete",
+                    success=True,
+                    source_path=path,
+                    item_name=os.path.basename(path),
+                    item_type="dir" if str(result.get("type") or "").strip() == "folder" else "file",
+                    library_id=str(library_id or "") or None,
+                    batch_id=batch_id or None,
+                )
+        except Exception:
+            logger.debug("[操作记录] 库存删除记录失败", exc_info=True)
+        return result
+    except HTTPException as exc:
+        try:
+            from ..core.activity_log_service import log_api_delete_action
+            if path and not skip_activity_log:
+                log_api_delete_action(
+                    action="delete",
+                    success=False,
+                    source_path=path,
+                    item_name=os.path.basename(path),
+                    item_type="unknown",
+                    library_id=str(library_id or "") or None,
+                    error=str(exc.detail or exc),
+                    status="failed",
+                    batch_id=batch_id or None,
+                )
+        except Exception:
+            logger.debug("[操作记录] 库存删除失败记录失败", exc_info=True)
         raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error(f"库存删除失败: {e}", exc_info=True)
+        try:
+            from ..core.activity_log_service import log_api_delete_action
+            if path and not skip_activity_log:
+                log_api_delete_action(
+                    action="delete",
+                    success=False,
+                    source_path=path,
+                    item_name=os.path.basename(path),
+                    item_type="unknown",
+                    library_id=str(library_id or "") or None,
+                    error=str(e),
+                    batch_id=batch_id or None,
+                )
+        except Exception:
+            logger.debug("[操作记录] 库存删除异常记录失败", exc_info=True)
         raise HTTPException(status_code=500, detail=f"库存删除失败: {str(e)}")
 
 
 @app.post("/api/library/browser/batch-delete")
 async def batch_delete_library_browser_items(request: Request):
+    paths: list[str] = []
+    library_id = None
+    batch_id = ""
     try:
         data = await request.json()
-        paths = data.get("paths") or []
+        paths = [str(p or "").strip() for p in (data.get("paths") or []) if str(p or "").strip()]
         library_id = data.get("library_id")
         confirmed = data.get("confirmed", False)
         if not paths:
             raise HTTPException(status_code=400, detail="路径列表不能为空")
         manager = get_library_manager()
-        return await manager.batch_delete(library_id, paths, confirmed=confirmed)
+        result = await manager.batch_delete(library_id, paths, confirmed=confirmed)
+        try:
+            from ..core.activity_log_service import log_api_delete_action, log_batch_api_delete_result
+            if confirmed and isinstance(result, dict):
+                batch_id = str(data.get("batch_id") or "").strip() or str(uuid.uuid4())
+                success_count = int(result.get("success_count") or 0)
+                failed_paths = result.get("failed_paths") or []
+                failed_count = len(failed_paths) if isinstance(failed_paths, list) else 0
+                per_item_results = []
+
+                failed_map = {}
+                if isinstance(failed_paths, list):
+                    for item in failed_paths:
+                        p = str((item or {}).get("path") or "").strip()
+                        if p:
+                            failed_map[p] = str((item or {}).get("error") or "").strip()
+
+                for p in paths:
+                    err = failed_map.get(p, "")
+                    ok = not bool(err)
+                    log_api_delete_action(
+                        action="batch_delete_item",
+                        success=ok,
+                        source_path=p,
+                        item_name=os.path.basename(p),
+                        item_type="unknown",
+                        library_id=str(library_id or "") or None,
+                        error=err,
+                        batch_id=batch_id,
+                    )
+                    per_item_results.append({
+                        "path": p,
+                        "success": ok,
+                        "error": err,
+                    })
+
+                log_batch_api_delete_result(
+                    batch_id=batch_id,
+                    total_count=len(paths),
+                    success_count=success_count,
+                    failed_count=failed_count,
+                    results=per_item_results,
+                    source_path=paths[0] if paths else "",
+                )
+        except Exception:
+            logger.debug("[操作记录] 库存批量删除记录失败", exc_info=True)
+        return result
     except HTTPException:
         raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error(f"库存批量删除失败: {e}", exc_info=True)
+        try:
+            from ..core.activity_log_service import log_batch_api_delete_result
+            if paths:
+                log_batch_api_delete_result(
+                    batch_id=batch_id,
+                    total_count=len(paths),
+                    success_count=0,
+                    failed_count=len(paths),
+                    results=[{"path": p, "success": False, "error": str(e)} for p in paths],
+                    source_path=paths[0],
+                )
+        except Exception:
+            logger.debug("[操作记录] 库存批量删除异常记录失败", exc_info=True)
         raise HTTPException(status_code=500, detail=f"库存批量删除失败: {str(e)}")
 
 
@@ -4567,6 +4948,7 @@ async def process_existing_folders(request: Request):
     }
     """
     try:
+        from ..core.activity_log_service import log_import_batch_start_result
         data = await request.json()
         folders = data.get("folders", [])
         auto_classify = data.get("auto_classify", True)
@@ -4597,29 +4979,60 @@ async def process_existing_folders(request: Request):
         # 创建处理任务
         engine = get_task_engine()
         created_tasks = []
-        skipped_existing = 0
-        skipped_duplicate = 0
-        skipped_existing = 0
-        skipped_duplicate = 0
-        skipped_existing = 0
-        skipped_duplicate = 0
-        
+        batch_id = str(uuid.uuid4())
+
         for folder_path in valid_folders:
             task = Task(
                 task_type=TaskType.PROCESS_EXISTING_FOLDER,
                 source_path=folder_path,
-                auto_classify=auto_classify
+                auto_classify=auto_classify,
+                metadata={
+                    "batch_id": batch_id,
+                    "session_id": batch_id,
+                    "batch_title": "批量已有目录处理",
+                    "batch_label": "已有目录处理批次",
+                    "batch_requested_count": len(valid_folders),
+                    "batch_log_parent": True,
+                    "source_page": "existing-folders",
+                    "source_action": "process_existing_batch",
+                    "source_label": "已有目录页 / 批量处理",
+                }
             )
             await engine.submit(task)
             created_tasks.append({
                 "task_id": task.id,
                 "folder_path": folder_path
             })
-        
+
+        log_import_batch_start_result(
+            {
+                "batch_id": batch_id,
+                "requested_count": len(valid_folders),
+                "created_count": len(created_tasks),
+                "skipped_total": max(0, len(folders) - len(valid_folders)),
+                "archive_count": 0,
+                "extracted_count": 0,
+                "auto_classify": bool(auto_classify),
+                "source_page": "existing-folders",
+                "source_action": "process_existing_batch",
+                "source_label": "已有目录页 / 批量处理",
+                "source_paths": valid_folders,
+                "created_tasks": created_tasks,
+                "skipped_items": [
+                    {"folder_path": folder_path, "reason": "invalid_path"}
+                    for folder_path in folders
+                    if folder_path not in valid_folders
+                ],
+                "source_path": valid_folders[0] if valid_folders else None,
+            },
+            category="process_existing",
+        )
+
         return {
             "message": f"已创建 {len(created_tasks)} 个处理任务",
             "requested": len(folders),
             "created": len(created_tasks),
+            "batch_id": batch_id,
             "tasks": created_tasks
         }
         
@@ -5369,6 +5782,7 @@ class RJSubtitleManualCompleteRequest(BaseModel):
     applied_pairs: int = 0
     deleted_subtitles: int = 0
     naming_strategy: str = "audio"
+    pair_changes: List[dict] = []
 
 
 class RJSubtitleRerunRequest(BaseModel):
@@ -5926,6 +6340,8 @@ async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCom
         applied_pairs = max(0, int(request.applied_pairs or 0))
         deleted_subtitles = max(0, int(request.deleted_subtitles or 0))
         naming_strategy = str(request.naming_strategy or task.task_metadata.get("naming_strategy") or "audio").lower()
+        pair_changes = request.pair_changes if isinstance(request.pair_changes, list) else []
+        pair_changes = pair_changes[:200]
         linked_finalize_result = await get_linked_subtitle_import_service().finalize_manual_match_task(task)
 
         task.task_metadata = task.task_metadata or {}
@@ -5975,6 +6391,7 @@ async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCom
                     "final_file_count": _lf.get("final_file_count"),
                     "reason": _lf.get("reason"),
                     "batch_id": str(task.task_metadata.get("batch_id") or "").strip() or None,
+                    "pair_changes": pair_changes,
                 },
             )
         except Exception:
