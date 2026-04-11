@@ -1825,14 +1825,20 @@ async function applySubtitleManualPairs() {
 
     for (const pair of phaseOne) {
       const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
-      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.source_path, pair.temp_name)
+    const renameResult = await libraryApi.browserRename(operationLibraryId, pair.source_path, pair.temp_name, {
+      skipActivityLog: true,
+      renameContext: 'subtitle_manual_match_pair'
+    })
       pair.temp_path = renameResult?.new_path || joinPath(String(pair.source_path || '').replace(/[\\/][^\\/]+$/, ''), pair.temp_name)
       phaseOneRenamed.push(pair)
     }
 
     for (const pair of phaseOne) {
       const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
-      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name)
+    const renameResult = await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name, {
+      skipActivityLog: true,
+      renameContext: 'subtitle_manual_match_pair'
+    })
       pair.final_path = renameResult?.new_path || joinPath(String(pair.temp_path || '').replace(/[\\/][^\\/]+$/, ''), pair.target_name)
       phaseTwoRenamed.push(pair)
     }
@@ -1858,7 +1864,10 @@ async function applySubtitleManualPairs() {
       for (const pair of [...phaseTwoRenamed].reverse()) {
         const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
         try {
-          await libraryApi.browserRename(operationLibraryId, pair.final_path || pair.target_path || pair.temp_path, pair.current_name)
+          await libraryApi.browserRename(operationLibraryId, pair.final_path || pair.target_path || pair.temp_path, pair.current_name, {
+            skipActivityLog: true,
+            renameContext: 'subtitle_manual_match_pair'
+          })
         } catch (rollbackError) {
           rollbackErrors.push(`${pair.target_name} -> ${pair.current_name}: ${rollbackError.response?.data?.detail || rollbackError.message}`)
         }
@@ -1867,7 +1876,10 @@ async function applySubtitleManualPairs() {
         if (phaseTwoRenamed.includes(pair)) continue
         const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
         try {
-          await libraryApi.browserRename(operationLibraryId, pair.temp_path || pair.source_path, pair.current_name)
+        await libraryApi.browserRename(operationLibraryId, pair.temp_path || pair.source_path, pair.current_name, {
+          skipActivityLog: true,
+          renameContext: 'subtitle_manual_match_pair'
+        })
         } catch (rollbackError) {
           rollbackErrors.push(`${pair.temp_name} -> ${pair.current_name}: ${rollbackError.response?.data?.detail || rollbackError.message}`)
         }
