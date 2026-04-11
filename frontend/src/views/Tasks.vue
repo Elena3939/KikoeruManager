@@ -16,19 +16,19 @@
     <section class="summary-strip">
       <div class="summary-tile">
         <span class="summary-label">处理中</span>
-        <span class="summary-value">{{ overview.highlight_counts?.processing || 0 }}</span>
+        <span class="summary-value">{{ summaryCounts.processing }}</span>
       </div>
       <div class="summary-tile">
         <span class="summary-label">等待人工</span>
-        <span class="summary-value">{{ overview.highlight_counts?.waiting_manual || 0 }}</span>
+        <span class="summary-value">{{ summaryCounts.waiting_manual }}</span>
       </div>
       <div class="summary-tile">
         <span class="summary-label">等待重试</span>
-        <span class="summary-value">{{ overview.highlight_counts?.waiting_retry || 0 }}</span>
+        <span class="summary-value">{{ summaryCounts.waiting_retry }}</span>
       </div>
       <div class="summary-tile">
         <span class="summary-label">失败</span>
-        <span class="summary-value">{{ overview.highlight_counts?.failed || 0 }}</span>
+        <span class="summary-value">{{ summaryCounts.failed }}</span>
       </div>
     </section>
 
@@ -102,15 +102,15 @@
                 <span class="task-title">{{ item.title }}</span>
                 <span v-if="item.subtitle" class="task-subtitle">{{ item.subtitle }}</span>
               </div>
-              <div class="task-list-badges">
-                <el-tag size="small" effect="plain">{{ item.domain_label }}</el-tag>
-                <el-tag size="small" :type="getStatusTagType(item.status)">{{ item.status_label }}</el-tag>
-              </div>
+            <div class="task-list-badges">
+              <el-tag size="small" effect="plain">{{ item.domain_label }}</el-tag>
+              <el-tag size="small" :type="getStatusTagType(item.status)" class="task-status-tag" :class="getStatusTagClass(item.status)">{{ item.status_label }}</el-tag>
+            </div>
             </div>
 
             <div class="task-list-meta">
               <span>{{ item.source_label }}</span>
-              <span>{{ item.current_step }}</span>
+              <span v-if="shouldShowTaskMetaStep(item)">{{ item.current_step }}</span>
             </div>
 
             <div v-if="getRecoveredNotice(item)" class="recovered-banner">
@@ -162,7 +162,7 @@
             </div>
             <div class="detail-tags">
               <el-tag effect="plain">{{ selectedItem.domain_label }}</el-tag>
-              <el-tag :type="getStatusTagType(selectedItem.status)">{{ selectedItem.status_label }}</el-tag>
+              <el-tag :type="getStatusTagType(selectedItem.status)" class="task-status-tag" :class="getStatusTagClass(selectedItem.status)">{{ selectedItem.status_label }}</el-tag>
             </div>
           </div>
 
@@ -173,7 +173,7 @@
             </div>
             <div class="detail-block">
               <span class="detail-block-label">RJ</span>
-              <span class="detail-block-value">{{ selectedItem.rjcode || '-' }}</span>
+              <span class="detail-block-value">{{ formatRJCode(selectedItem.rjcode) || '-' }}</span>
             </div>
             <div class="detail-block">
               <span class="detail-block-label">创建时间</span>
@@ -214,6 +214,27 @@
             </div>
           </div>
 
+          <div v-if="filterRemovedTreeRows(selectedItem).length" class="detail-section">
+            <span class="detail-section-label">过滤移除清单</span>
+            <div class="detail-entry-tree-box">
+              <div
+                v-for="entry in filterRemovedTreeRows(selectedItem)"
+                :key="`${selectedItem.id}-${entry.key}`"
+                class="detail-tree-row"
+                :style="{ paddingLeft: `${12 + entry.depth * 18}px` }"
+              >
+                <div class="detail-tree-main">
+                  <span class="detail-tree-branch" aria-hidden="true">{{ entry.depth ? '└' : '•' }}</span>
+                  <span class="detail-tree-icon" :class="`is-${entry.type || 'file'}`">
+                    <el-icon><component :is="entry.type === 'dir' ? Folder : Document" /></el-icon>
+                  </span>
+                  <span class="detail-tree-name">{{ entry.label }}</span>
+                </div>
+                <span v-if="entry.sizeText" class="detail-tree-size">{{ entry.sizeText }}</span>
+              </div>
+            </div>
+          </div>
+
           <div class="detail-section">
             <span class="detail-section-label">路径信息</span>
             <div class="detail-path-row">
@@ -249,18 +270,13 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { CircleCheckFilled, Refresh, Search } from '@element-plus/icons-vue'
+import { CircleCheckFilled, Refresh, Search, Folder, Document } from '@element-plus/icons-vue'
 import { taskCenterApi } from '../api'
 
 const router = useRouter()
 
 const loading = ref(false)
 const refreshing = ref(false)
-const overview = ref({
-  highlight_counts: {},
-  counts_by_domain: {},
-  counts_by_status: {}
-})
 const items = ref([])
 const selectedItemId = ref('')
 const currentDomain = ref('all')
@@ -268,6 +284,7 @@ const currentStatus = ref('all')
 const searchQuery = ref('')
 
 let intervalId = null
+let queuedRefresh = false
 
 const domainOptions = [
   { value: 'all', label: '全部' },
@@ -314,6 +331,24 @@ const filteredItems = computed(() => {
   })
 })
 
+const summaryCounts = computed(() => {
+  const counts = {
+    processing: 0,
+    waiting_manual: 0,
+    waiting_retry: 0,
+    failed: 0
+  }
+
+  for (const item of items.value) {
+    const status = String(item?.status || '').trim()
+    if (status in counts) {
+      counts[status] += 1
+    }
+  }
+
+  return counts
+})
+
 const selectedItem = computed(() => {
   if (!filteredItems.value.length) {
     return null
@@ -350,6 +385,7 @@ onUnmounted(() => {
 async function refreshTaskCenter(showMessage = false, options = {}) {
   const { silent = false } = options
   if (refreshing.value) {
+    queuedRefresh = true
     return
   }
   try {
@@ -357,22 +393,27 @@ async function refreshTaskCenter(showMessage = false, options = {}) {
     if (!silent) {
       loading.value = true
     }
-    const [overviewData, listData] = await Promise.all([
-      taskCenterApi.overview(),
-      taskCenterApi.list({ limit: 300 })
-    ])
-    overview.value = overviewData || {}
+    const cacheBust = Date.now()
+    const listData = await taskCenterApi.list({ limit: 300, _t: cacheBust })
     items.value = Array.isArray(listData) ? listData : []
     if (showMessage) {
       ElMessage.success('任务中心已刷新')
     }
   } catch (error) {
     console.error('获取任务中心失败:', error)
-    ElMessage.error('获取任务中心失败: ' + (error.response?.data?.detail || error.message))
+    if (!silent) {
+      ElMessage.error('获取任务中心失败: ' + (error.response?.data?.detail || error.message))
+    }
   } finally {
     refreshing.value = false
     if (!silent) {
       loading.value = false
+    }
+    if (queuedRefresh) {
+      queuedRefresh = false
+      refreshTaskCenter(false, { silent: true }).catch((error) => {
+        console.error('任务中心补偿刷新失败:', error)
+      })
     }
   }
 }
@@ -395,6 +436,81 @@ function pickMetricValue(item, label) {
 
 function containsRJ(value) {
   return /[RVB]J(?:\d{8}|\d{6})(?!\d)/i.test(String(value || ''))
+}
+
+function formatRJCode(value) {
+  const raw = String(value || '').trim().toUpperCase()
+  if (!raw) return ''
+  const match = raw.match(/(?:RJ)+\s*(\d{6,8})/i)
+  if (match) {
+    return `RJ${match[1]}`
+  }
+  const fallback = raw.match(/[RVB]J\s*(\d{6,8})/i)
+  if (fallback) {
+    return `RJ${fallback[1]}`
+  }
+  return raw
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0)
+  if (!size || Number.isNaN(size)) return ''
+  if (size < 1024) return `${Math.round(size)} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let current = size / 1024
+  let unitIndex = 0
+  while (current >= 1024 && unitIndex < units.length - 1) {
+    current /= 1024
+    unitIndex += 1
+  }
+  return `${current.toFixed(2)} ${units[unitIndex]}`
+}
+
+function buildTreeRows(items = []) {
+  const roots = []
+  const nodeMap = new Map()
+
+  const ensureNode = (key, label, type, parentKey = '') => {
+    if (nodeMap.has(key)) return nodeMap.get(key)
+    const node = { key, label, type, sizeText: '', children: [] }
+    nodeMap.set(key, node)
+    if (parentKey && nodeMap.has(parentKey)) nodeMap.get(parentKey).children.push(node)
+    else roots.push(node)
+    return node
+  }
+
+  for (const item of items) {
+    const rawPath = String(item?.relative_path || item?.name || item?.path || '').replace(/^\/+|\/+$/g, '')
+    if (!rawPath) continue
+    const parts = rawPath.split('/').filter(Boolean)
+    let parentKey = ''
+    let joined = ''
+    parts.forEach((part, index) => {
+      joined = joined ? `${joined}/${part}` : part
+      const isLeaf = index === parts.length - 1
+      const node = ensureNode(joined, part, isLeaf ? (item?.type || 'file') : 'dir', parentKey)
+      if (isLeaf) {
+        node.type = item?.type || 'file'
+        node.sizeText = formatBytes(item?.size)
+      }
+      parentKey = joined
+    })
+  }
+
+  const rows = []
+  const walk = (nodes, depth = 0) => {
+    const sorted = [...nodes].sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+      return a.label.localeCompare(b.label, 'zh-Hans-CN-u-kn-true')
+    })
+    for (const node of sorted) {
+      rows.push({ key: node.key, label: node.label, type: node.type, sizeText: node.sizeText, depth })
+      if (node.children.length) walk(node.children, depth + 1)
+    }
+  }
+
+  walk(roots)
+  return rows
 }
 
 function getImportFailureStageLabel(item) {
@@ -434,6 +550,29 @@ function getOutputPath(item) {
     ''
 }
 
+function normalizeRJ(value) {
+  const text = String(value || '').trim().toUpperCase()
+  const repeated = text.match(/(?:RJ)+(\d{4,})/i)
+  if (repeated) return `RJ${repeated[1]}`
+  const standard = text.match(/RJ\d{4,}/i)
+  return standard ? standard[0].toUpperCase() : ''
+}
+
+function dedupeSummaryPieces(pieces) {
+  const out = []
+  const seen = new Set()
+  for (const piece of pieces) {
+    const text = String(piece || '').trim()
+    if (!text) continue
+    const normalizedRJ = normalizeRJ(text)
+    const key = normalizedRJ ? `RJ:${normalizedRJ}` : text
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(text)
+  }
+  return out
+}
+
 function getTaskSummary(item) {
   if (!item) {
     return []
@@ -451,14 +590,16 @@ function getTaskSummary(item) {
     const failureStage = getImportFailureStageLabel(item)
     if (failureStage) pieces.push(failureStage)
     if (targetLibrary) pieces.push(`目标库 ${targetLibrary}`)
-    if (!pieces.length && item.rjcode && !containsRJ(item.title) && !containsRJ(item.subtitle)) {
-      pieces.push(item.rjcode)
+    const normalizedRJ = formatRJCode(item.rjcode)
+    if (!pieces.length && normalizedRJ && !containsRJ(item.title) && !containsRJ(item.subtitle)) {
+      pieces.push(normalizedRJ)
     }
   } else if (item.domain === 'rj_subtitle') {
     const downloadCount = pickMetricValue(item, '下载')
     const writtenCount = pickMetricValue(item, '写入')
     const subtitleDir = item.target_path || metadata.subtitle_dir || ''
-    if (item.rjcode) pieces.push(`RJ ${item.rjcode}`)
+    const normalizedRJ = formatRJCode(item.rjcode)
+    if (normalizedRJ) pieces.push(`RJ ${normalizedRJ}`)
     if (downloadCount) pieces.push(`下载 ${downloadCount}`)
     if (writtenCount) pieces.push(`写入 ${writtenCount}`)
     if (subtitleDir) pieces.push(`目录 ${getFileName(subtitleDir)}`)
@@ -466,21 +607,24 @@ function getTaskSummary(item) {
     const subtitleCount = pickMetricValue(item, '来源字幕') || preview.subtitle_count
     const candidateCount = pickMetricValue(item, '可执行候选') || pickMetricValue(item, '候选目录')
     const targetFolder = item.target_path || preview.selected_candidate?.folder_path || ''
-    if (item.rjcode) pieces.push(`目标 ${item.rjcode}`)
+    const normalizedRJ = formatRJCode(item.rjcode)
+    if (normalizedRJ) pieces.push(`目标 ${normalizedRJ}`)
     if (subtitleCount) pieces.push(`候选字幕 ${subtitleCount}`)
     if (candidateCount) pieces.push(`候选目录 ${candidateCount}`)
     if (targetFolder) pieces.push(`目标目录 ${getFileName(targetFolder)}`)
   } else if (item.domain === 'asmr_sync') {
     const downloadFiles = pickMetricValue(item, '下载文件')
     const failedFiles = pickMetricValue(item, '失败文件')
-    if (item.rjcode) pieces.push(`RJ ${item.rjcode}`)
+    const normalizedRJ = formatRJCode(item.rjcode)
+    if (normalizedRJ) pieces.push(`RJ ${normalizedRJ}`)
     if (downloadFiles) pieces.push(`文件 ${downloadFiles}`)
     if (failedFiles) pieces.push(`失败 ${failedFiles}`)
     if (item.subtitle) pieces.push(`来源 ${getFileName(item.subtitle)}`)
   } else {
     const outputName = pickMetricValue(item, '输出') || item.target_path
     const targetLibrary = pickMetricValue(item, '目标库')
-    if (item.rjcode) pieces.push(`RJ ${item.rjcode}`)
+    const normalizedRJ = formatRJCode(item.rjcode)
+    if (normalizedRJ) pieces.push(`RJ ${normalizedRJ}`)
     if (outputName) pieces.push(`输出 ${getFileName(outputName)}`)
     if (targetLibrary) pieces.push(`目标库 ${targetLibrary}`)
   }
@@ -488,17 +632,55 @@ function getTaskSummary(item) {
   if (recoveredFailureCount) pieces.push(`已恢复 ${recoveredFailureCount}`)
   if (recoveredConflictCount) pieces.push(recoveredConflictCount)
 
-  if (!pieces.length && item.current_step) {
-    pieces.push(item.current_step)
-  }
+  return dedupeSummaryPieces(pieces).slice(0, 4)
+}
 
-  return pieces.slice(0, 4)
+function mapFilteredItems(item) {
+  const details = item?.details || {}
+  const metadata = details.metadata || {}
+  const rawItems = [
+    ...(Array.isArray(metadata.filtered_items) ? metadata.filtered_items : []),
+    ...(Array.isArray(metadata.filtered_files) ? metadata.filtered_files : []),
+    ...(Array.isArray(metadata.filtered_dirs) ? metadata.filtered_dirs : [])
+  ]
+
+  const mapped = []
+  const seen = new Set()
+  for (const current of rawItems) {
+    if (!current) continue
+    const asObject = typeof current === 'object' ? current : { path: String(current) }
+    const relativePath = String(asObject.relative_path || asObject.path || asObject.name || '').replace(/^[/\\]+|[/\\]+$/g, '')
+    if (!relativePath || seen.has(relativePath)) continue
+    seen.add(relativePath)
+    mapped.push({
+      key: relativePath,
+      path: relativePath,
+      type: asObject.type === 'dir' || asObject.is_dir ? 'dir' : 'file',
+      sizeText: asObject.size !== undefined && asObject.size !== null ? formatBytes(asObject.size) : ''
+    })
+  }
+  return mapped
+}
+
+function filterRemovedTreeRows(item) {
+  return buildTreeRows(mapFilteredItems(item))
 }
 
 function getRecoveredNotice(item) {
   const details = item?.details || {}
   const metadata = details.metadata || {}
   return String(metadata.recovered_notice || '').trim()
+}
+
+function shouldShowTaskMetaStep(item) {
+  const step = String(item?.current_step || '').trim()
+  const statusLabel = String(item?.status_label || '').trim()
+  if (!step) return false
+  if (step === statusLabel) return false
+  if (['完成', '已完成', '处理中', '等待中', '待处理', '已暂停', '失败', '等待重试', '等待人工'].includes(step)) {
+    return false
+  }
+  return true
 }
 
 function getStatusTagType(status) {
@@ -512,6 +694,12 @@ function getStatusTagType(status) {
     failed: 'danger'
   }
   return types[status] || 'info'
+}
+
+function getStatusTagClass(status) {
+  const normalized = String(status || '').trim()
+  if (!normalized) return 'is-default'
+  return `is-${normalized}`
 }
 
 function getActionLabel(action) {
@@ -988,6 +1176,78 @@ function formatDateTime(value) {
   border-top: 1px solid rgba(29, 29, 31, 0.08);
 }
 
+.detail-entry-tree-box {
+  max-height: 360px;
+  overflow: auto;
+  overflow-x: hidden;
+  padding: 8px;
+  border-radius: 14px;
+  background: #f7f8fb;
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.06);
+}
+
+.detail-tree-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(29, 29, 31, 0.05);
+}
+
+.detail-tree-row:last-child {
+  border-bottom: none;
+}
+
+.detail-tree-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detail-tree-branch {
+  color: rgba(29, 29, 31, 0.35);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  flex: 0 0 auto;
+}
+
+.detail-tree-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.detail-tree-icon.is-dir {
+  background: rgba(10, 132, 255, 0.12);
+  color: #0a84ff;
+}
+
+.detail-tree-icon.is-file {
+  background: rgba(120, 120, 128, 0.12);
+  color: #4b5563;
+}
+
+.detail-tree-name {
+  min-width: 0;
+  color: #1d1d1f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.detail-tree-size {
+  color: rgba(29, 29, 31, 0.55);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .detail-section-label {
   display: block;
   margin-bottom: 12px;
@@ -1033,6 +1293,7 @@ function formatDateTime(value) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+
 
 .detail-metric-card {
   padding: 14px 16px;
@@ -1094,6 +1355,51 @@ function formatDateTime(value) {
 
 :deep(.el-tag) {
   border-radius: 999px;
+}
+
+:deep(.task-status-tag.el-tag) {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+  letter-spacing: 0.01em;
+}
+
+:deep(.task-status-tag.is-completed.el-tag) {
+  color: #2f7d32;
+  background: linear-gradient(180deg, #eef9ef 0%, #e4f6e6 100%);
+  border-color: #c8ebcf;
+}
+
+:deep(.task-status-tag.is-processing.el-tag) {
+  color: #b86a00;
+  background: linear-gradient(180deg, #fff6e8 0%, #ffedd2 100%);
+  border-color: #ffd7a0;
+}
+
+:deep(.task-status-tag.is-pending.el-tag),
+:deep(.task-status-tag.is-paused.el-tag) {
+  color: #51606f;
+  background: linear-gradient(180deg, #f4f6f8 0%, #eceff3 100%);
+  border-color: #dde3ea;
+}
+
+:deep(.task-status-tag.is-waiting_manual.el-tag),
+:deep(.task-status-tag.is-waiting_retry.el-tag) {
+  color: #8f5a17;
+  background: linear-gradient(180deg, #fff5df 0%, #ffe8bf 100%);
+  border-color: #f3d39a;
+}
+
+:deep(.task-status-tag.is-failed.el-tag),
+:deep(.task-status-tag.is-cancelled.el-tag),
+:deep(.task-status-tag.is-canceled.el-tag) {
+  color: #a63f3f;
+  background: linear-gradient(180deg, #fff0f0 0%, #ffe3e3 100%);
+  border-color: #f3c4c4;
 }
 
 :deep(.el-progress-bar__outer) {
