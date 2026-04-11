@@ -1,7 +1,7 @@
 import os
 import re
 import shutil
-from typing import Optional
+from typing import Any, Optional
 import logging
 
 from ..config.settings import get_config
@@ -27,7 +27,13 @@ class FilterService:
         """
         if not self.config.filter.enabled:
             logger.info("过滤功能已禁用，跳过")
-            return
+            return {
+                "filtered_files": [],
+                "filtered_dirs": [],
+                "filtered_items": [],
+                "filtered_count": 0,
+                "filtered_size": 0,
+            }
         
         task.update_progress(45, "过滤文件中")
         logger.info(f"开始过滤目录: {path}")
@@ -57,6 +63,8 @@ class FilterService:
         
         filtered_files = []
         filtered_dirs = []
+        filtered_items: list[dict[str, Any]] = []
+        filtered_size = 0
         
         # 遍历目录
         for root, dirs, files in os.walk(path, topdown=False):
@@ -64,8 +72,26 @@ class FilterService:
             for file in files:
                 file_path = os.path.join(root, file)
                 if self._should_filter_file(file_path, rules):
+                    size_bytes = 0
+                    relative_path = ""
+                    try:
+                        size_bytes = int(os.path.getsize(file_path)) if os.path.exists(file_path) else 0
+                    except Exception:
+                        size_bytes = 0
+                    try:
+                        relative_path = os.path.relpath(file_path, path).replace("\\", "/")
+                    except Exception:
+                        relative_path = file
                     self._delete_file(file_path)
                     filtered_files.append(file)
+                    filtered_size += size_bytes
+                    filtered_items.append({
+                        "path": file_path,
+                        "relative_path": relative_path,
+                        "name": file,
+                        "type": "file",
+                        "size": size_bytes,
+                    })
                     logger.info(f"过滤文件: {file}")
             
             # 过滤文件夹
@@ -73,12 +99,33 @@ class FilterService:
                 for dir_name in dirs:
                     dir_path = os.path.join(root, dir_name)
                     if self._should_filter_dir(dir_path, rules):
+                        size_bytes = self._calculate_path_size(dir_path)
+                        relative_path = ""
+                        try:
+                            relative_path = os.path.relpath(dir_path, path).replace("\\", "/")
+                        except Exception:
+                            relative_path = dir_name
                         self._delete_dir(dir_path)
                         filtered_dirs.append(dir_name)
+                        filtered_size += size_bytes
+                        filtered_items.append({
+                            "path": dir_path,
+                            "relative_path": relative_path,
+                            "name": dir_name,
+                            "type": "dir",
+                            "size": size_bytes,
+                        })
                         logger.info(f"过滤文件夹: {dir_name}")
         
         task.update_progress(50, f"过滤完成，已过滤 {len(filtered_files)} 个文件，{len(filtered_dirs)} 个文件夹")
         logger.info(f"过滤完成: 文件 {len(filtered_files)} 个，文件夹 {len(filtered_dirs)} 个")
+        return {
+            "filtered_files": filtered_files,
+            "filtered_dirs": filtered_dirs,
+            "filtered_items": filtered_items,
+            "filtered_count": len(filtered_items),
+            "filtered_size": int(filtered_size),
+        }
     
     def _create_filter_rule(self, name: str, pattern: str, target: str = "file", action: str = "exclude", enabled: bool = True):
         """创建过滤规则对象"""
@@ -148,6 +195,25 @@ class FilterService:
             os.remove(file_path)
         except Exception as e:
             logger.error(f"删除文件失败: {file_path}, {e}")
+
+    def _calculate_path_size(self, path: str) -> int:
+        """计算文件或目录大小（字节）"""
+        try:
+            if not path or not os.path.exists(path):
+                return 0
+            if os.path.isfile(path):
+                return int(os.path.getsize(path))
+            total = 0
+            for root, _, files in os.walk(path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    try:
+                        total += int(os.path.getsize(file_path))
+                    except Exception:
+                        continue
+            return int(total)
+        except Exception:
+            return 0
     
     def _delete_dir(self, dir_path: str):
         """删除文件夹"""
