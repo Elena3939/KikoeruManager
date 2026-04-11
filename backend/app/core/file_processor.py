@@ -60,7 +60,10 @@ class FileProcessor:
         is_processed: Optional[Callable[[str], bool]] = None,
         mark_processed: Optional[Callable[[str], None]] = None,
         pause_fn: Optional[Callable[[], None]] = None,
-        resume_fn: Optional[Callable[[], None]] = None
+        resume_fn: Optional[Callable[[], None]] = None,
+        task_metadata: Optional[dict] = None,
+        batch_context: Optional[dict] = None,
+        report: Optional[dict] = None,
     ) -> Optional[Task]:
         """统一的文件处理流程
 
@@ -84,6 +87,8 @@ class FileProcessor:
             # 1. 检查文件是否已处理
             if is_processed and is_processed(file_path):
                 logger.debug(f"[FileProcessor] 文件已处理，跳过: {file_path}")
+                if isinstance(report, dict):
+                    report["skipped_processed_count"] = int(report.get("skipped_processed_count") or 0) + 1
                 return None
 
             # 2. 等待文件稳定
@@ -138,18 +143,42 @@ class FileProcessor:
                 logger.info(f"[FileProcessor] 文件已在任务队列中: {file_path}")
                 if mark_processed:
                     mark_processed(file_path)
+                if isinstance(report, dict):
+                    report["skipped_duplicate_count"] = int(report.get("skipped_duplicate_count") or 0) + 1
                 return None
 
             # 6. 创建任务
             logger.info(f"[FileProcessor] 创建任务: {file_path}")
+            merged_metadata = dict(task_metadata or {})
+            if isinstance(batch_context, dict):
+                merged_metadata.update({
+                    "batch_id": str(batch_context.get("batch_id") or "").strip() or None,
+                    "session_id": str(batch_context.get("session_id") or batch_context.get("batch_id") or "").strip() or None,
+                    "batch_title": str(batch_context.get("batch_title") or "").strip() or None,
+                    "batch_label": str(batch_context.get("batch_label") or "").strip() or None,
+                    "batch_source_page": str(batch_context.get("source_page") or "").strip() or None,
+                    "batch_source_action": str(batch_context.get("source_action") or "").strip() or None,
+                    "batch_source_label": str(batch_context.get("source_label") or "").strip() or None,
+                    "batch_requested_count": int(batch_context.get("requested_count") or 0),
+                    "batch_log_parent": bool(batch_context.get("log_parent")),
+                })
+                if batch_context.get("source_page"):
+                    merged_metadata.setdefault("source_page", batch_context.get("source_page"))
+                if batch_context.get("source_action"):
+                    merged_metadata.setdefault("source_action", batch_context.get("source_action"))
+                if batch_context.get("source_label"):
+                    merged_metadata.setdefault("source_label", batch_context.get("source_label"))
             task = Task(
                 task_type=TaskType.AUTO_PROCESS,
                 source_path=file_path,
-                auto_classify=auto_classify
+                auto_classify=auto_classify,
+                metadata=merged_metadata,
             )
 
             await engine.submit(task)
             logger.info(f"[FileProcessor] 任务已提交: {task.id}")
+            if isinstance(report, dict):
+                report["created_count"] = int(report.get("created_count") or 0) + 1
 
             # 标记文件为已处理
             if mark_processed:
@@ -170,7 +199,10 @@ class FileProcessor:
         is_processed: Optional[Callable[[str], bool]] = None,
         mark_processed: Optional[Callable[[str], None]] = None,
         pause_fn: Optional[Callable[[], None]] = None,
-        resume_fn: Optional[Callable[[], None]] = None
+        resume_fn: Optional[Callable[[], None]] = None,
+        task_metadata: Optional[dict] = None,
+        batch_context: Optional[dict] = None,
+        report: Optional[dict] = None,
     ) -> List[Task]:
         """扫描目录并处理所有文件
 
@@ -216,6 +248,8 @@ class FileProcessor:
                     archive_files.append(file_path)
 
         logger.info(f"[FileProcessor] 找到 {len(archive_files)} 个待处理文件")
+        if isinstance(report, dict):
+            report["requested_count"] = len(archive_files)
 
         # 记录已处理的分卷文件，避免重复创建任务
         processed_volumes: Set[str] = set()
@@ -239,7 +273,12 @@ class FileProcessor:
                 auto_classify=auto_classify,
                 wait_stable=False,
                 is_processed=is_processed,
-                mark_processed=mark_processed
+                mark_processed=mark_processed,
+                pause_fn=pause_fn,
+                resume_fn=resume_fn,
+                task_metadata=task_metadata,
+                batch_context=batch_context,
+                report=report,
             )
             if task:
                 tasks.append(task)
