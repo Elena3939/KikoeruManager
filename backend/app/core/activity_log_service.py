@@ -24,6 +24,7 @@ CATEGORY_PROCESS_EXISTING = "process_existing"
 CATEGORY_PIPELINE_FILTER = "pipeline_filter"
 CATEGORY_PIPELINE_METADATA = "pipeline_metadata"
 CATEGORY_PIPELINE_RENAME = "pipeline_rename"
+CATEGORY_PIPELINE_DELETE = "pipeline_delete"
 CATEGORY_ASMR_SYNC = "asmr_sync"
 
 CATEGORY_LABELS = {
@@ -36,6 +37,7 @@ CATEGORY_LABELS = {
     CATEGORY_PIPELINE_FILTER: "筛选",
     CATEGORY_PIPELINE_METADATA: "元数据",
     CATEGORY_PIPELINE_RENAME: "重命名",
+    CATEGORY_PIPELINE_DELETE: "删除",
     CATEGORY_ASMR_SYNC: "ASMR 同步",
 }
 
@@ -391,9 +393,14 @@ def log_task_lifecycle_event(task) -> None:
             "extract_output_bytes": extract_output_bytes,
             "archive_size_bytes": archive_size_bytes,
             "duration_ms": duration_ms,
+            "batch_id": str(meta.get("batch_id") or "").strip() or None,
+            "session_id": str(meta.get("session_id") or "").strip() or None,
             "source_mode": source_mode or None,
             "linked_source_rjcode": str(linked_preview.get("source_rjcode") or "").strip().upper() or None,
             "linked_target_rjcode": str(linked_preview.get("target_rjcode") or "").strip().upper() or None,
+            "filtered_count": int(meta.get("filtered_count") or 0),
+            "filtered_size": int(meta.get("filtered_size") or 0),
+            "filtered_items": _build_filter_delete_items(meta.get("filtered_items"), limit=240),
         }
 
     write_activity_log(
@@ -421,6 +428,9 @@ def log_subtitle_pair_complete(
         "deleted_subtitles": deleted_subtitles,
     }
     if isinstance(linked_detail, dict):
+        pair_changes = linked_detail.get("pair_changes")
+        if isinstance(pair_changes, list):
+            linked_detail["pair_changes"] = pair_changes[:200]
         detail.update(linked_detail)
     write_activity_log(
         category=CATEGORY_SUBTITLE_PAIR,
@@ -527,6 +537,90 @@ def log_batch_api_rename_result(
         summary=summary[:4000],
         detail={
             "mode": "batch_api_rename",
+            "batch_id": str(batch_id or "").strip() or None,
+            "total_count": int(total_count or 0),
+            "success_count": int(success_count or 0),
+            "failed_count": int(failed_count or 0),
+            "results": results[:200] if isinstance(results, list) else [],
+        },
+        source_path=str(source_path or "").strip() or None,
+        task_id=str(batch_id or "").strip() or None,
+    )
+
+
+def log_api_delete_action(
+    *,
+    action: str,
+    success: bool,
+    source_path: str,
+    item_name: str = "",
+    item_type: str = "",
+    rjcode: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    library_id: Optional[str] = None,
+    error: str = "",
+    status: Optional[str] = None,
+    extra_detail: Optional[Dict[str, Any]] = None,
+) -> None:
+    normalized_source_path = str(source_path or "").strip()
+    normalized_name = str(item_name or "").strip() or (os.path.basename(normalized_source_path) if normalized_source_path else "")
+    normalized_type = str(item_type or "").strip() or "unknown"
+    normalized_error = str(error or "").strip()
+    normalized_status = str(status or ("success" if success else "failed")).strip() or ("success" if success else "failed")
+
+    summary = f"删除 {normalized_type}：{normalized_name or '未命名'}"
+    if normalized_status == "failed" and normalized_error:
+        summary = f"{summary}：{normalized_error}"[:4000]
+    else:
+        summary = summary[:4000]
+
+    detail = {
+        "mode": "api_delete",
+        "delete_key": normalized_source_path or None,
+        "item_name": normalized_name or None,
+        "item_type": normalized_type or None,
+        "path": normalized_source_path or None,
+        "batch_id": str(batch_id or "").strip() or None,
+        "library_id": str(library_id or "").strip() or None,
+        "error": normalized_error or None,
+    }
+    if isinstance(extra_detail, dict):
+        detail.update(extra_detail)
+
+    write_activity_log(
+        category=CATEGORY_PIPELINE_DELETE,
+        action=action,
+        status=normalized_status,
+        summary=summary,
+        detail={k: v for k, v in detail.items() if v is not None},
+        rjcode=rjcode,
+        source_path=normalized_source_path or None,
+    )
+
+
+def log_batch_api_delete_result(
+    *,
+    batch_id: str,
+    total_count: int,
+    success_count: int,
+    failed_count: int,
+    results: list[dict[str, Any]],
+    source_path: str = "",
+) -> None:
+    status = "success"
+    if success_count > 0 and failed_count > 0:
+        status = "partial_success"
+    elif success_count <= 0:
+        status = "failed"
+
+    summary = f"批量删除完成，成功 {success_count} 项，失败 {failed_count} 项"
+    write_activity_log(
+        category=CATEGORY_PIPELINE_DELETE,
+        action="batch_api_delete",
+        status=status,
+        summary=summary[:4000],
+        detail={
+            "mode": "batch_api_delete",
             "batch_id": str(batch_id or "").strip() or None,
             "total_count": int(total_count or 0),
             "success_count": int(success_count or 0),
@@ -753,6 +847,80 @@ def log_subtitle_batch_start_result(payload: Dict[str, Any]) -> None:
     }
     write_activity_log(
         category=CATEGORY_SUBTITLE_CRAWL,
+        action="batch_start",
+        status=status,
+        summary=summary[:4000],
+        detail=detail,
+        task_id=batch_id or None,
+        source_path=str(payload.get("source_path") or "").strip() or None,
+    )
+
+
+def log_import_batch_start_result(payload: Dict[str, Any], *, category: str = CATEGORY_AUTO_IMPORT) -> None:
+    batch_id = str(payload.get("batch_id") or "").strip()
+    requested_count = int(payload.get("requested_count") or 0)
+    created_count = int(payload.get("created_count") or 0)
+    skipped_total = int(payload.get("skipped_total") or 0)
+    skipped_processed = int(payload.get("skipped_processed") or 0)
+    skipped_duplicate = int(payload.get("skipped_duplicate") or 0)
+    archive_count = int(payload.get("archive_count") or 0)
+    extracted_count = int(payload.get("extracted_count") or 0)
+    total_archive_size_bytes = int(payload.get("total_archive_size_bytes") or 0)
+    auto_classify = bool(payload.get("auto_classify"))
+    target_library_id = str(payload.get("target_library_id") or "").strip() or None
+    source_paths = payload.get("source_paths") or []
+    created_tasks = payload.get("created_tasks") or []
+    skipped_items = payload.get("skipped_items") or []
+    source_action = str(payload.get("source_action") or "").strip()
+
+    if created_count > 0 and skipped_total > 0:
+        status = "partial_success"
+    elif created_count > 0:
+        status = "success"
+    elif requested_count > 0 or archive_count > 0 or skipped_total > 0:
+        status = "success"
+    else:
+        status = "failed"
+
+    summary_parts = []
+    if requested_count > 0:
+        summary_parts.append(f"候选 {requested_count} 个")
+    if archive_count > 0:
+        summary_parts.append(f"压缩包 {archive_count} 个")
+    if extracted_count > 0:
+        summary_parts.append(f"已提交解压 {extracted_count} 个")
+    elif created_count > 0:
+        summary_parts.append(f"已提交处理 {created_count} 个")
+    if skipped_total > 0:
+        summary_parts.append(f"跳过 {skipped_total} 个")
+    if total_archive_size_bytes > 0:
+        summary_parts.append(f"总大小 {_format_bytes(total_archive_size_bytes)}")
+
+    base_summary = "批量创建解压任务" if category == CATEGORY_AUTO_IMPORT else "批量创建已有目录处理任务"
+    summary = f"{base_summary}，{'，'.join(summary_parts) if summary_parts else '无有效结果'}"
+
+    detail = {
+        "mode": "import_batch_start" if category == CATEGORY_AUTO_IMPORT else "process_existing_batch_start",
+        "batch_id": batch_id or None,
+        "requested_count": requested_count,
+        "created_count": created_count,
+        "skipped_total": skipped_total,
+        "skipped_processed": skipped_processed,
+        "skipped_duplicate": skipped_duplicate,
+        "archive_count": archive_count,
+        "extracted_count": extracted_count,
+        "total_archive_size_bytes": total_archive_size_bytes,
+        "auto_classify": auto_classify,
+        "target_library_id": target_library_id,
+        "source_page": str(payload.get("source_page") or "").strip() or None,
+        "source_action": source_action or None,
+        "source_label": str(payload.get("source_label") or "").strip() or None,
+        "source_paths": source_paths,
+        "created_tasks": created_tasks,
+        "skipped_items": skipped_items,
+    }
+    write_activity_log(
+        category=category,
         action="batch_start",
         status=status,
         summary=summary[:4000],
