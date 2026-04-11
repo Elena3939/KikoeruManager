@@ -811,7 +811,15 @@ class TaskEngine:
                 logger.debug(f"[{rjcode}] 步骤4: 过滤")
                 if config.auto_process.filter:
                     task.update_progress(75, "过滤文件中")
-                    await filter_service.filter(renamed_path, task)
+                    filter_result = await filter_service.filter(renamed_path, task)
+                    task.task_metadata = {
+                        **(task.task_metadata or {}),
+                        "filtered_files": list((filter_result or {}).get("filtered_files") or []),
+                        "filtered_dirs": list((filter_result or {}).get("filtered_dirs") or []),
+                        "filtered_items": list((filter_result or {}).get("filtered_items") or []),
+                        "filtered_count": int((filter_result or {}).get("filtered_count") or 0),
+                        "filtered_size": int((filter_result or {}).get("filtered_size") or 0),
+                    }
                 else:
                     logger.info(f"[{rjcode}] 步骤[过滤]已禁用，跳过")
 
@@ -994,7 +1002,15 @@ class TaskEngine:
                 logger.debug(f"[{rjcode}] 步骤3: 过滤")
                 if config.process_existing.filter:
                     task.update_progress(70, "过滤文件中")
-                    await filter_service.filter(renamed_path, task)
+                    filter_result = await filter_service.filter(renamed_path, task)
+                    task.task_metadata = {
+                        **(task.task_metadata or {}),
+                        "filtered_files": list((filter_result or {}).get("filtered_files") or []),
+                        "filtered_dirs": list((filter_result or {}).get("filtered_dirs") or []),
+                        "filtered_items": list((filter_result or {}).get("filtered_items") or []),
+                        "filtered_count": int((filter_result or {}).get("filtered_count") or 0),
+                        "filtered_size": int((filter_result or {}).get("filtered_size") or 0),
+                    }
                 else:
                     logger.info(f"[{rjcode}] 步骤[过滤]已禁用，跳过")
 
