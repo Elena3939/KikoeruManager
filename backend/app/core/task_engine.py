@@ -28,6 +28,8 @@ class TaskType(str, Enum):
     PROCESS_EXISTING_FOLDER = "process_existing_folder"  # 处理已存在的文件夹（跳过解压）
     ASMR_SYNC_DOWNLOAD = "asmr_sync_download"  # ASMR 同步下载任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
+    CIRCLE_COMPLETION_INDEX = "circle_completion_index"
+    CIRCLE_COMPLETION_DOWNLOAD_BATCH = "circle_completion_download_batch"
 
 class Task:
     """任务对象"""
@@ -277,6 +279,8 @@ class TaskEngine:
             return "rj_subtitle"
         if task.type == TaskType.ASMR_SYNC_DOWNLOAD:
             return "asmr_sync"
+        if task.type in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
+            return "circle_completion"
         return "system"
 
     def _ensure_task_context(self, task: Task):
@@ -813,13 +817,19 @@ class TaskEngine:
                     if effective_rjcode and not metadata.get('rjcode'):
                         metadata['rjcode'] = effective_rjcode
                     logger.debug(f"[{rjcode}] 元数据: {metadata.get('work_name', '未知')}")
-                    task.task_metadata = metadata
+                    task.task_metadata = {
+                        **(task.task_metadata or {}),
+                        **metadata,
+                    }
                     if effective_rjcode:
                         self._sync_task_rjcode(task, effective_rjcode, source=task.task_metadata.get('rjcode_source') or 'metadata_fallback')
                 else:
                     logger.info(f"[{rjcode}] 步骤[获取元数据]已禁用，跳过")
                     metadata = {'rjcode': self._get_effective_rjcode(task, extracted_path) or rjcode}
-                    task.task_metadata = metadata
+                    task.task_metadata = {
+                        **(task.task_metadata or {}),
+                        **metadata,
+                    }
                     self._sync_task_rjcode(task, metadata.get('rjcode'), source='task_fallback')
 
                 await task.wait_if_paused()
@@ -1004,13 +1014,19 @@ class TaskEngine:
                     if effective_rjcode and not metadata.get('rjcode'):
                         metadata['rjcode'] = effective_rjcode
                     logger.debug(f"[{rjcode}] 元数据: {metadata.get('work_name', '未知')}")
-                    task.task_metadata = metadata
+                    task.task_metadata = {
+                        **(task.task_metadata or {}),
+                        **metadata,
+                    }
                     if effective_rjcode:
                         self._sync_task_rjcode(task, effective_rjcode, source=task.task_metadata.get('rjcode_source') or 'metadata_fallback')
                 else:
                     logger.info(f"[{rjcode}] 步骤[获取元数据]已禁用，跳过")
                     metadata = {'rjcode': self._get_effective_rjcode(task, extracted_path) or rjcode}
-                    task.task_metadata = metadata
+                    task.task_metadata = {
+                        **(task.task_metadata or {}),
+                        **metadata,
+                    }
                     self._sync_task_rjcode(task, metadata.get('rjcode'), source='task_fallback')
 
                 await task.wait_if_paused()
@@ -1167,6 +1183,10 @@ class TaskEngine:
                     await self._process_asmr_sync_download(task)
                 elif task.type == TaskType.RJ_SUBTITLE_FETCH:
                     await self._process_rj_subtitle_fetch(task)
+                elif task.type == TaskType.CIRCLE_COMPLETION_INDEX:
+                    await self._process_circle_completion_index(task)
+                elif task.type == TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH:
+                    task.update_progress(100, "完成")
 
                 # 只有当任务没有被设置为其他状态（如 waiting_retry）时才标记为完成
                 if task.status == TaskStatus.PROCESSING:
@@ -2563,6 +2583,65 @@ class TaskEngine:
         except Exception as e:
             logger.error(f"[{rjcode}] RJ 字幕抓取任务失败: {e}", exc_info=True)
             task.fail(str(e))
+
+    async def _process_circle_completion_index(self, task: Task):
+        """处理社团补全索引任务"""
+        from .circle_completion_service import get_circle_completion_service
+
+        task.task_metadata = dict(task.task_metadata or {})
+        task.task_metadata.setdefault('progress_log', [])
+
+        def append_progress_log(message: str, progress: Optional[int] = None, level: str = 'info'):
+            if not message:
+                return
+            logs = list(task.task_metadata.get('progress_log') or [])
+            last = logs[-1] if logs else None
+            if last and last.get('message') == message and last.get('progress') == progress and last.get('level') == level:
+                return
+            logs.append({
+                'time': datetime.now().isoformat(),
+                'progress': task.progress if progress is None else progress,
+                'message': message,
+                'level': level,
+            })
+            task.task_metadata['progress_log'] = logs[-40:]
+
+        circle_query = str(task.task_metadata.get('circle_query') or task.source_path or '').strip()
+        if not circle_query:
+            raise ValueError('社团名不能为空')
+
+        task.task_metadata['circle_query'] = circle_query
+        append_progress_log("准备建立社团索引", 1)
+
+        def progress_callback(progress: int, step: str, **meta):
+            task.update_progress(progress, step)
+            task.task_metadata = {
+                **(task.task_metadata or {}),
+                'index_meta': {
+                    **dict((task.task_metadata or {}).get('index_meta') or {}),
+                    **{key: value for key, value in (meta or {}).items() if value is not None},
+                },
+            }
+            append_progress_log(step, progress)
+
+        result = await get_circle_completion_service().index_circle_catalog(
+            circle_query,
+            force_refresh=bool(task.task_metadata.get('force_refresh')),
+            include_dlsite=bool(task.task_metadata.get('include_dlsite', True)),
+            include_kikoeru=bool(task.task_metadata.get('include_kikoeru', True)),
+            progress_callback=progress_callback,
+            cancel_callback=task.is_cancelled,
+        )
+
+        task.task_metadata = {
+            **(task.task_metadata or {}),
+            'circle_id': str(result.get('circle_id') or ''),
+            'circle_name': str(((result.get('summary') or {}).get('circle_name')) or circle_query),
+            'index_result': result,
+            'indexed_counts': dict(result.get('indexed_counts') or {}),
+        }
+        task.update_progress(100, "社团索引完成")
+        append_progress_log("社团索引完成", 100, 'success')
 
 # 全局任务引擎实例
 _task_engine: Optional[TaskEngine] = None

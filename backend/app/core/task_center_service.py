@@ -18,6 +18,7 @@ class TaskCenterService:
         "rj_subtitle": "RJ 字幕",
         "subtitle_import": "字幕补配",
         "asmr_sync": "ASMR 同步",
+        "circle_completion": "社团补全",
         "system": "系统任务",
     }
 
@@ -46,7 +47,8 @@ class TaskCenterService:
         "rj_subtitle": 1,
         "subtitle_import": 2,
         "asmr_sync": 3,
-        "system": 4,
+        "circle_completion": 4,
+        "system": 5,
     }
 
     TASK_TYPE_TO_DOMAIN = {
@@ -54,6 +56,8 @@ class TaskCenterService:
         TaskType.PROCESS_EXISTING_FOLDER: "import",
         TaskType.RJ_SUBTITLE_FETCH: "rj_subtitle",
         TaskType.ASMR_SYNC_DOWNLOAD: "asmr_sync",
+        TaskType.CIRCLE_COMPLETION_INDEX: "circle_completion",
+        TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: "circle_completion",
         TaskType.EXTRACT: "system",
         TaskType.FILTER: "system",
         TaskType.METADATA: "system",
@@ -65,6 +69,7 @@ class TaskCenterService:
         "rj_subtitle": "/library",
         "subtitle_import": "/subtitle-import",
         "asmr_sync": "/asmr-sync",
+        "circle_completion": "/circle-completion",
         "system": "/tasks",
     }
 
@@ -344,6 +349,24 @@ class TaskCenterService:
             self._append_metric(metrics, "MD5失败", verify_summary.get("failed"))
             self._append_metric(metrics, "已上传", upload_summary.get("uploaded"))
             self._append_metric(metrics, "已写入", sync_result.get("downloaded_files"))
+        elif domain == "circle_completion":
+            if task.type == TaskType.CIRCLE_COMPLETION_INDEX:
+                index_meta = dict(metadata.get("index_meta") or {})
+                indexed_counts = dict(metadata.get("indexed_counts") or {})
+                title = self._safe_text(metadata.get("circle_name")) or self._safe_text(metadata.get("circle_query")) or "社团索引任务"
+                subtitle = self._safe_text(metadata.get("circle_id")) or self._safe_text(metadata.get("circle_query"))
+                self._append_metric(metrics, "候选", index_meta.get("combined_candidates_count") or index_meta.get("aggregated_count"))
+                self._append_metric(metrics, "DLsite", index_meta.get("dlsite_candidates_count") or index_meta.get("dlsite_profile_total"))
+                self._append_metric(metrics, "可下载", index_meta.get("asmr_available_count") or indexed_counts.get("downloadable_count"))
+            else:
+                title = self._safe_text(metadata.get("circle_name")) or self._safe_text(metadata.get("work_title")) or rjcode or "社团补全任务"
+                subtitle = self._safe_text(metadata.get("canonical_rjcode")) or self._safe_text(metadata.get("circle_id"))
+                self._append_metric(metrics, "RJ", rjcode)
+                self._append_metric(metrics, "Canonical", metadata.get("canonical_rjcode"))
+                self._append_metric(metrics, "资源数", metadata.get("selected_resource_count"))
+            source_label = source_label or "社团补全"
+            source_action = source_action or ("index_start" if task.type == TaskType.CIRCLE_COMPLETION_INDEX else "batch_download")
+            source_page = source_page or "circle-completion"
         else:
             title = self._basename(source_path) or task.type.value
             subtitle = self._safe_text(metadata.get("work_name")) or self._safe_text(metadata.get("folder_path"))

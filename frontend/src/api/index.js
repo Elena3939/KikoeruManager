@@ -1026,6 +1026,54 @@ export const subtitleImportApi = {
   }
 }
 
+export const circleCompletionApi = {
+  searchCircles: async (keyword = '', limit = 30) => {
+    const response = await apiClient.get('/circle-completion/circles', { params: { keyword, limit } })
+    return response.data
+  },
+
+  listRecentIndexes: async (limit = 20) => {
+    const response = await apiClient.get('/circle-completion/recent', { params: { limit } })
+    return response.data
+  },
+
+  indexCircle: async (payload) => {
+    const response = await apiClient.post('/circle-completion/index', payload)
+    return response.data
+  },
+
+  startIndexCircle: async (payload) => {
+    const response = await apiClient.post('/circle-completion/index/start', payload)
+    return response.data
+  },
+
+  getIndexJobStatus: async (jobId) => {
+    const response = await apiClient.get(`/circle-completion/index/jobs/${jobId}`)
+    return response.data
+  },
+
+  getCircleDetail: async (circleId, options = {}) => {
+    const response = await apiClient.get(`/circle-completion/circles/${circleId}`, {
+      params: {
+        only_missing: options.onlyMissing ?? false,
+        only_downloadable: options.onlyDownloadable ?? false,
+        include_dl_only: options.includeDlOnly ?? true
+      }
+    })
+    return response.data
+  },
+
+  previewBatchDownload: async (payload) => {
+    const response = await apiClient.post('/circle-completion/download/preview', payload)
+    return response.data
+  },
+
+  startBatchDownload: async (payload) => {
+    const response = await apiClient.post('/circle-completion/download/start', payload)
+    return response.data
+  }
+}
+
 export default {
   task: taskApi,
   config: configApi,
@@ -1044,6 +1092,7 @@ export default {
   asmrSync: asmrSyncApi,
   rjSubtitle: rjSubtitleApi,
   subtitleImport: subtitleImportApi,
+  circleCompletion: circleCompletionApi,
   backup: backupApi,
   activityLog: activityLogApi
 }

@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, field
 import aiohttp
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 from ..config.settings import get_config, save_config
 from ..core.dlsite_service import get_dlsite_service
@@ -225,6 +226,22 @@ class KikoeruDuplicateService:
         # Kikoeru 标准搜索 API: /api/search?page=1&sort=desc&order=release&nsfw=0&keyword={rjcode}
         return f"{self.config.server_url}/api/search?page=1&sort=desc&order=release&nsfw=0&keyword={rjcode}"
 
+    def _build_keyword_search_url(self, keyword: str, page: int = 1) -> str:
+        encoded = quote(str(keyword or "").strip())
+        return (
+            f"{self.config.server_url}/api/search"
+            f"?page={max(1, int(page))}"
+            f"&sort=desc"
+            f"&order=created_at"
+            f"&nsfw=2"
+            f"&lyric="
+            f"&keyword={encoded}"
+        )
+
+    def _build_keyword_works_page_url(self, keyword: str) -> str:
+        encoded = quote(str(keyword or "").strip())
+        return f"{self.config.server_url}/works?keyword={encoded}"
+
     def _build_tracks_url(self, work_id: int) -> str:
         return f"{self.config.server_url}/api/tracks/{int(work_id)}"
     
@@ -243,6 +260,17 @@ class KikoeruDuplicateService:
             logger.debug("[Kikoeru] 未配置 API Token，使用无认证请求")
         
         return headers
+
+    def _get_page_headers(self, keyword: str) -> Dict[str, str]:
+        headers = {
+            **self._get_headers(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Referer': self._build_keyword_works_page_url(keyword),
+        }
+        return headers
+
+    def _normalize_search_text(self, value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip()).lower()
 
     def _is_subtitle_track_file(self, item: Dict) -> bool:
         if not isinstance(item, dict):
@@ -794,6 +822,96 @@ class KikoeruDuplicateService:
             logger.exception(e)
         
         return results
+
+    async def search_circle_works(self, keyword: str, max_pages: int = 200) -> List[Dict]:
+        """按 works 页面实际搜索链路分页拉取社团作品。"""
+        if not self.config.enabled:
+            return []
+        if not await self._ensure_valid_token():
+            return []
+
+        session = await self._get_session()
+        headers = self._get_headers()
+        page_headers = self._get_page_headers(keyword)
+        all_works: List[Dict] = []
+        seen_ids: Set[int] = set()
+        normalized_keyword = str(keyword or "").strip()
+
+        # 先访问 works 页面，保持和前端搜索页一致的会话/来源语义。
+        try:
+            async with session.get(
+                self._build_keyword_works_page_url(normalized_keyword),
+                headers=page_headers,
+                timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+            ) as response:
+                await response.text()
+                if response.status != 200:
+                    logger.warning("[Kikoeru] 社团 works 页面预热失败 keyword=%s status=%s", normalized_keyword, response.status)
+        except Exception as exc:
+            logger.warning("[Kikoeru] 社团 works 页面预热失败 keyword=%s: %s", normalized_keyword, exc)
+
+        empty_or_stalled_pages = 0
+        for page in range(1, max(1, int(max_pages)) + 1):
+            url = self._build_keyword_search_url(normalized_keyword, page=page)
+            try:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                ) as response:
+                    if response.status != 200:
+                        break
+                    data = await response.json()
+            except Exception as exc:
+                logger.warning("[Kikoeru] 社团搜索失败 page=%s keyword=%s: %s", page, keyword, exc)
+                break
+
+            works = data.get('works', []) if isinstance(data, dict) else []
+            if not isinstance(works, list) or not works:
+                break
+
+            added = 0
+            for work in works:
+                if not isinstance(work, dict):
+                    continue
+                try:
+                    work_id = int(work.get('id') or 0)
+                except Exception:
+                    work_id = 0
+                if work_id and work_id in seen_ids:
+                    continue
+                if work_id:
+                    seen_ids.add(work_id)
+                all_works.append(work)
+                added += 1
+
+            if added <= 0:
+                empty_or_stalled_pages += 1
+                if empty_or_stalled_pages >= 2:
+                    break
+                continue
+
+            empty_or_stalled_pages = 0
+
+            # 如果接口带总数/总页数，优先按服务端声明停止。
+            total_pages = 0
+            pagination = data.get('pagination') if isinstance(data.get('pagination'), dict) else {}
+            meta = data.get('meta') if isinstance(data.get('meta'), dict) else {}
+            for candidate in (
+                data.get('total_pages'),
+                data.get('last_page'),
+                pagination.get('total_pages'),
+                pagination.get('last_page'),
+                meta.get('total_pages'),
+                meta.get('last_page'),
+            ):
+                try:
+                    total_pages = max(total_pages, int(candidate or 0))
+                except Exception:
+                    pass
+            if total_pages > 0 and page >= total_pages:
+                break
+        return all_works
 
     async def close(self):
         """关闭 HTTP Session"""

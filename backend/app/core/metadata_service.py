@@ -348,31 +348,7 @@ class MetadataService:
                         logger.warning(f"[{rjcode}] 获取翻译标题失败: {e}")
 
             elif translation_info.get('is_translation_agree', False):
-                logger.info(f"[{rjcode}] 原作存在翻译申请，检查是否有可用中文翻译")
-
-                translation_status = translation_info.get('translation_status_for_translator', {})
-                logger.info(f"[{rjcode}] 翻译状态: {translation_status}")
-
-                chi_hans_status = translation_status.get('CHI_HANS', {})
-                if chi_hans_status.get('is_available', False) and not chi_hans_status.get('is_denied', True):
-                    logger.info(f"[{rjcode}] 简体中文翻译申请可用，尝试获取")
-                    try:
-                        translated_name = await self._fetch_translated_title(rjcode, 'zh-CN', validate_chinese=True)
-                        if translated_name:
-                            logger.info(f"[{rjcode}] 成功获取简体中文翻译标题: {translated_name}")
-                    except Exception as e:
-                        logger.warning(f"[{rjcode}] 获取简体中文翻译标题失败: {e}")
-
-                if not translated_name:
-                    chi_hant_status = translation_status.get('CHI_HANT', {})
-                    if chi_hant_status.get('is_available', False) and not chi_hant_status.get('is_denied', True):
-                        logger.info(f"[{rjcode}] 繁体中文翻译申请可用，尝试获取")
-                        try:
-                            translated_name = await self._fetch_translated_title(rjcode, 'zh-TW', validate_chinese=True)
-                            if translated_name:
-                                logger.info(f"[{rjcode}] 成功获取繁体中文翻译标题: {translated_name}")
-                        except Exception as e:
-                            logger.warning(f"[{rjcode}] 获取繁体中文翻译标题失败: {e}")
+                logger.info(f"[{rjcode}] 原作仅存在翻译申请信息，忽略，不视为实际翻译作品")
 
             if translated_name:
                 metadata.work_name = translated_name
@@ -534,33 +510,9 @@ class MetadataService:
                         except Exception as e:
                             logger.warning(f"[{rjcode}] 获取翻译标题失败: {e}")
                 
-                # 情况 2: 原作存在翻译申请
+                # 情况 2: 原作仅存在翻译申请，不视为实际翻译作品
                 elif translation_info.get('is_translation_agree', False):
-                    logger.info(f"[{rjcode}] 原作存在翻译申请，检查是否有可用中文翻译")
-                    
-                    translation_status = translation_info.get('translation_status_for_translator', {})
-                    logger.info(f"[{rjcode}] 翻译状态: {translation_status}")
-                    
-                    chi_hans_status = translation_status.get('CHI_HANS', {})
-                    if chi_hans_status.get('is_available', False) and not chi_hans_status.get('is_denied', True):
-                        logger.info(f"[{rjcode}] 简体中文翻译申请可用，尝试获取")
-                        try:
-                            translated_name = await self._fetch_translated_title(rjcode, 'zh-CN', validate_chinese=True)
-                            if translated_name:
-                                logger.info(f"[{rjcode}] 成功获取简体中文翻译标题: {translated_name}")
-                        except Exception as e:
-                            logger.warning(f"[{rjcode}] 获取简体中文翻译标题失败: {e}")
-                    
-                    if not translated_name:
-                        chi_hant_status = translation_status.get('CHI_HANT', {})
-                        if chi_hant_status.get('is_available', False) and not chi_hant_status.get('is_denied', True):
-                            logger.info(f"[{rjcode}] 繁体中文翻译申请可用，尝试获取")
-                            try:
-                                translated_name = await self._fetch_translated_title(rjcode, 'zh-TW', validate_chinese=True)
-                                if translated_name:
-                                    logger.info(f"[{rjcode}] 成功获取繁体中文翻译标题: {translated_name}")
-                            except Exception as e:
-                                logger.warning(f"[{rjcode}] 获取繁体中文翻译标题失败: {e}")
+                    logger.info(f"[{rjcode}] 原作仅存在翻译申请信息，忽略，不拉取伪翻译标题")
                 
                 if translated_name:
                     metadata.work_name = translated_name

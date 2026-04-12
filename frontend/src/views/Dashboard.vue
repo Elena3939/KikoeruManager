@@ -125,15 +125,6 @@
             <div class="source-file-cell">
               <span class="filename">{{ row.title }}</span>
               <span v-if="row.subtitle" class="task-subline">{{ row.subtitle }}</span>
-              <div v-if="getRecoveredNotice(row)" class="recovered-banner">
-                <div class="recovered-banner-icon">
-                  <el-icon><CircleCheckFilled /></el-icon>
-                </div>
-                <div class="recovered-banner-content">
-                  <div class="recovered-banner-title">已恢复</div>
-                  <div class="recovered-banner-text">{{ getRecoveredNotice(row) }}</div>
-                </div>
-              </div>
             </div>
           </template>
         </el-table-column>

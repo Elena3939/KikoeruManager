@@ -60,6 +60,11 @@
             <span>ASMR 同步下载</span>
           </el-menu-item>
 
+          <el-menu-item index="/circle-completion">
+            <el-icon><CollectionTag /></el-icon>
+            <span>社团补全</span>
+          </el-menu-item>
+
           <el-menu-item index="/library-backup">
             <el-icon><FolderOpened /></el-icon>
             <span>库存打包</span>
@@ -128,6 +133,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   Box,
+  CollectionTag,
   Document,
   Download,
   Folder,
@@ -153,6 +159,7 @@ import ASMRSync from './views/ASMRSync.vue'
 import LibraryBackup from './views/LibraryBackup.vue'
 import SubtitleImport from './views/SubtitleImport.vue'
 import ActivityHistory from './views/ActivityHistory.vue'
+import CircleCompletion from './views/CircleCompletion.vue'
 import router from './router'
 
 const appVersion = '1.0.2'
@@ -170,6 +177,7 @@ const routeComponentMap = {
   PasswordVault,
   ExistingFolders,
   ASMRSync,
+  CircleCompletion,
   LibraryBackup,
   SubtitleImport,
   ActivityHistory

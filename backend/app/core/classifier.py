@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import asyncio
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Optional, Dict
@@ -606,6 +607,7 @@ class SmartClassifier:
     def _update_library_snapshot(self, rjcode: str, folder_path: str):
         """更新库存快照"""
         from datetime import datetime
+        from .circle_completion_service import get_circle_completion_service
         
         db = next(get_db())
         try:
@@ -632,6 +634,20 @@ class SmartClassifier:
             db.rollback()
         finally:
             db.close()
+
+        try:
+            loop = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            coroutine = get_circle_completion_service().sync_owned_for_rj(rjcode, folder_path=folder_path)
+            if loop and loop.is_running():
+                loop.create_task(coroutine)
+            else:
+                asyncio.run(coroutine)
+        except Exception:
+            logger.warning("更新社团补全拥有态索引失败: %s", rjcode, exc_info=True)
     
     def _get_folder_size(self, folder_path: str) -> int:
         """获取文件夹大小"""

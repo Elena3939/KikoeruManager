@@ -178,7 +178,7 @@
           <template #default="{ row }">
             <span class="time-cell-wrap" :style="row.is_tree_child ? childIndentStyle(row, 0) : undefined">
               <button
-                v-if="!row.is_tree_child && rowHasChildren(row)"
+                v-if="rowHasChildren(row)"
                 type="button"
                 class="tree-toggle-btn"
                 :class="{ expanded: isTreeRowExpanded(row) }"
@@ -216,10 +216,10 @@
           <template #default="{ row }">
             <div class="status-cell">
               <span :class="['status-tag', statusClass(row.status)]">{{ statusLabel(row.status) }}</span>
+              <span v-if="isRecoveredFailure(row)" class="recovered-leading-badge">已修复</span>
               <template v-if="!row.is_tree_child">
                 <span v-if="isRerunRow(row)" class="status-fixed-pill is-rerun">重新爬取</span>
                 <span v-if="finalStatusLabel(row)" :class="['status-fixed-pill', 'is-final', finalStatusClass(row)]">{{ finalStatusLabel(row) }}</span>
-                <span v-if="isRecoveredFailure(row)" class="status-fixed-pill">已修复</span>
               </template>
             </div>
           </template>
@@ -631,7 +631,8 @@ const categoryOptions = [
   { value: 'pipeline_metadata', label: '元数据' },
   { value: 'pipeline_rename', label: '重命名' },
   { value: 'pipeline_delete', label: '删除' },
-  { value: 'asmr_sync', label: 'ASMR 同步' }
+  { value: 'asmr_sync', label: 'ASMR 同步' },
+  { value: 'circle_completion', label: '社团补全' }
 ]
 
 const byDay = computed(() => stats.by_day || [])
@@ -816,6 +817,8 @@ function categoryClass(c) {
       return 'cat-pipeline-delete'
     case 'asmr_sync':
       return 'cat-asmr-sync'
+    case 'circle_completion':
+      return 'cat-circle-completion'
     default:
       return 'cat-default'
   }
@@ -829,13 +832,38 @@ function statusClass(s) {
   }
 }
 
+function flattenActivityRows(sourceRows, out = []) {
+  for (const row of sourceRows || []) {
+    if (!row || typeof row !== 'object') continue
+    out.push(row)
+    const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+    const childRows = Array.isArray(detail.child_rows) ? detail.child_rows : []
+    if (childRows.length) flattenActivityRows(childRows, out)
+  }
+  return out
+}
+
+function recoveredMatchKey(row) {
+  if (!row) return ''
+  const rj = displayRjcode(row)
+  if (rj && rj !== '—') return `rj:${rj}`
+  const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+  const sourcePath = String(row.source_path || detail.archive_path || detail.source_path || '').trim().toLowerCase()
+  return sourcePath ? `path:${sourcePath}` : ''
+}
+
 function isRecoveredFailure(row) {
-  if (!row || row.status !== 'failed' || !row.rjcode) return false
-  return items.value.some((other) => {
+  if (!row || row.status !== 'failed') return false
+  if (!['extract', 'auto_import', 'process_existing'].includes(String(row.category || '').trim())) return false
+  if (row?.detail?.recovered_by_success) return true
+  const key = recoveredMatchKey(row)
+  if (!key) return false
+  const allRows = flattenActivityRows(items.value)
+  return allRows.some((other) => {
     if (!other || other === row) return false
     if (other.status !== 'success') return false
-    if (other.category !== row.category) return false
-    if (String(other.rjcode || '') !== String(row.rjcode || '')) return false
+    if (!['extract', 'auto_import', 'process_existing'].includes(String(other.category || '').trim())) return false
+    if (recoveredMatchKey(other) !== key) return false
     if (!other.created_at || !row.created_at) return false
     return other.created_at > row.created_at
   })
@@ -923,6 +951,21 @@ function humanAction(row) {
       if (row.status === 'failed') return '补充删除失败'
       return '补充删除'
     }
+    if (row.relation === 'asmr_resource') {
+      return row.status === 'success' ? '文件下载完成' : '文件下载'
+    }
+    if (row.relation === 'asmr_upload') {
+      return row.status === 'success' ? '文件上传完成' : '文件上传'
+    }
+    if (row.relation === 'asmr_verify_failed') {
+      return '文件校验失败'
+    }
+    if (row.relation === 'asmr_plan') {
+      return '下载计划已生成'
+    }
+    if (row.relation === 'asmr_session') {
+      return displaySummary(row) || '下载会话'
+    }
   }
   const category = row.category
   const status = row.status
@@ -974,6 +1017,7 @@ function humanAction(row) {
   }
   if (category === 'auto_import') {
     if (status === 'success') return '解压入库完成'
+    if (status === 'partial_success') return '解压入库部分成功'
     if (status === 'failed') return '解压入库失败'
     if (status === 'incomplete') return '解压入库未正常结束'
   }
@@ -1022,6 +1066,14 @@ function humanAction(row) {
   if (category === 'asmr_sync') {
     if (status === 'success') return 'ASMR 同步下载完成'
     if (status === 'failed') return 'ASMR 同步下载失败'
+  }
+  if (category === 'circle_completion') {
+    if (action === 'index_completed') return status === 'success' ? '创建索引检索成功' : '创建索引检索失败'
+    if (action === 'index_failed') return '创建索引检索失败'
+    if (action === 'download_batch_start') return '创建下载任务'
+    if (action === 'download_item_queued') return '下载任务已加入队列'
+    if (status === 'success') return '社团补全完成'
+    if (status === 'failed') return '社团补全失败'
   }
 
   // 回退：用中文状态 + 英文动作描述
@@ -1477,7 +1529,7 @@ function isSubtitleBatchMiss(row) {
 
 function mergedCategoryTags(row) {
   const tags = []
-  if (hasMergedSubtitleImport(row) && !hasChildRelation(row, 'subtitle_import')) tags.push(mergedSubtitleImportTag(row))
+  if (hasMergedSubtitleImport(row)) tags.push(mergedSubtitleImportTag(row))
   if (isSubtitleBatchMiss(row)) tags.push('未命中')
   if (isFilterDeleteRetriedSuccess(row)) tags.push('已修复')
   else if (isFilterDeleteRetriedPartial(row)) tags.push('部分修复')
@@ -1530,6 +1582,9 @@ function displaySummary(row) {
       return base.replace(/未知RJ号?|未知RJ/gi, rjcode)
     }
     return base
+  }
+  if (row?.category === 'circle_completion') {
+    return String(row?.summary || '—').trim() || '—'
   }
   return row?.summary || '—'
 }
@@ -1679,6 +1734,7 @@ function rowClassName({ row }) {
   if (!row) return ''
   const cls = []
   if (row.is_tree_child) cls.push('activity-row-child')
+  if (row.is_tree_child && Number(row.tree_depth || 0) >= 2) cls.push('activity-row-grandchild')
   if (row.status) cls.push(`row-status-${row.status}`)
   if (isRecoveredFailure(row)) cls.push('row-recovered')
   cls.push('activity-row')
@@ -1728,7 +1784,7 @@ function buildChildDisplayRows(parentRow, children = null, depth = 1) {
       tree_depth: depth
     }
     rows.push(childRow)
-    rows.push(...buildChildDisplayRows(parentRow, child.child_rows || [], depth + 1))
+    rows.push(...buildChildDisplayRows(childRow, null, depth + 1))
   }
   return rows
 }
@@ -1757,6 +1813,12 @@ function childRowCategoryLabel(row) {
   if (row?.relation === 'retry_apply') return '补充删除'
   if (row?.relation === 'retry_preview') return '补充删除'
   if (row?.action === 'filter_delete_preview_retry') return '补充删除'
+  if (row?.relation === 'download_batch') return '下载任务'
+  if (row?.relation === 'asmr_resource') return '下载文件'
+  if (row?.relation === 'asmr_upload') return '上传文件'
+  if (row?.relation === 'asmr_verify_failed') return '校验失败'
+  if (row?.relation === 'asmr_plan') return '下载计划'
+  if (row?.relation === 'asmr_session') return '下载过程'
   return row?.category_label || row?.category || '子任务'
 }
 
@@ -1813,6 +1875,7 @@ function finalStatusClass(row) {
   if (label === '配对√') return 'is-final-success'
   if (label === '删除√') return 'is-final-success'
   if (label === '入库√') return 'is-final-success'
+  if (label === '完成√') return 'is-final-success'
   if (label === '已修复') return 'is-final-success'
   if (label === '部分配对√') return 'is-final-partial'
   if (label === '部分删除√') return 'is-final-partial'
@@ -1848,6 +1911,74 @@ function prettyDetail(row) {
 function detailHighlights(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
+  const keyLabelMap = {
+    rjcode: 'RJ',
+    source_rjcode: '来源 RJ',
+    target_rjcode: '目标 RJ',
+    linked_source_rjcode: '关联来源 RJ',
+    linked_target_rjcode: '关联目标 RJ',
+    downloaded_count: '抓取字幕数',
+    written_files_count: '写入字幕数',
+    awaiting_manual_match: '待手动配对',
+    output_path: '输出目录',
+    source_basename: '压缩包文件',
+    archive_size_bytes: '压缩包大小',
+    extract_output_bytes: '解压产物大小',
+    filtered_count: '过滤文件数',
+    filtered_size: '过滤体积',
+    final_file_count: '最终文件数',
+    record_id: '记录 ID',
+    import_final_file_count: '导入文件数',
+    recovered_failure_count: '修复失败数',
+    duration_ms: '耗时',
+    selected_count: '命中数量',
+    selected_size: '命中体积',
+    success_count: '成功数量',
+    failed_count: '失败数量',
+    deleted_bytes: '删除体积',
+    retry_target_count: '重试目标数',
+    retry_success_count: '重试成功数',
+    retry_failed_count: '重试失败数',
+    retry_recovered_item_count: '重试补回项数',
+    recovered_item_count: '补回项数',
+    recovered_selected_size: '补回体积',
+    batch_task_count: '下载任务数',
+    downloaded_bytes: '下载大小',
+    download_root: '下载目录',
+    final_output_path: '最终入库路径',
+    target_path: '上传目标',
+    target_library_id: '目标库存',
+    target_subdir: '库存前缀目录',
+    upload_mode: '上传模式',
+    uploaded_count: '上传文件数',
+    circle_name: '社团名',
+    resource_name: '文件名',
+    resource_path: '相对路径',
+    local_path: '本地路径',
+    upload_path: '上传路径',
+    size_bytes: '文件大小',
+    local_owned_count: '本地已有',
+    owned_count: '服务器已有',
+    missing_count: '缺失数量',
+    downloadable_count: '可下载数量',
+    dl_count: 'DL 数量',
+    works_count: '作品总数',
+    scan_directory_count: '扫描目录数',
+    recognized_rj_count: '识别 RJ 数',
+    created_count: '创建任务数',
+    skipped_total: '跳过数量',
+    skipped_existing: '已存在跳过',
+    skipped_duplicate: '重复跳过',
+    skipped_no_subtitle: '无字幕跳过',
+    batch_duration_ms: '批量总耗时',
+    archive_count: '压缩包总数',
+    requested_count: '候选数量',
+    extract_completed_count: '完成解压数',
+    failed_child_count: '失败项数',
+    partial_child_count: '部分成功项数',
+    aggregate_archive_size_bytes: '批量压缩包大小',
+    aggregate_extract_output_bytes: '批量解压产物大小'
+  }
   const pickKeys = [
     'rjcode',
     'source_rjcode',
@@ -1886,16 +2017,25 @@ function detailHighlights(row) {
     , 'skipped_existing'
     , 'skipped_duplicate'
     , 'skipped_no_subtitle'
+    , 'requested_count'
+    , 'archive_count'
+    , 'extract_completed_count'
+    , 'failed_child_count'
+    , 'partial_child_count'
+    , 'aggregate_archive_size_bytes'
+    , 'aggregate_extract_output_bytes'
+    , 'batch_duration_ms'
   ]
   const out = []
   for (const k of pickKeys) {
     if (d[k] === undefined || d[k] === null) continue
     let value = d[k]
-    if (k === 'duration_ms') value = formatDurationMs(value)
-    if (['selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes', 'recovered_selected_size', 'filtered_size'].includes(k)) value = formatBytes(value)
+    if (k === 'duration_ms' || k === 'batch_duration_ms') value = formatDurationMs(value)
+    if (k === 'awaiting_manual_match') value = value ? '是' : '否'
+    if (['selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes', 'recovered_selected_size', 'filtered_size', 'aggregate_archive_size_bytes', 'aggregate_extract_output_bytes'].includes(k)) value = formatBytes(value)
     if (k.includes('rjcode')) value = normalizeRjcode(value)
     if (!String(value || '').trim()) continue
-    out.push({ k, v: String(value) })
+    out.push({ k: keyLabelMap[k] || k, v: String(value) })
     if (out.length >= 10) break
   }
   return out
@@ -2568,6 +2708,22 @@ watch(selectedRow, (row) => {
   min-width: 0;
 }
 
+.recovered-leading-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: #eef8ef;
+  color: #2f9e44;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: inset 0 0 0 1px rgba(47, 158, 68, 0.18);
+  flex: 0 0 auto;
+}
+
 .tree-toggle-btn {
   width: 18px;
   height: 18px;
@@ -2899,6 +3055,14 @@ watch(selectedRow, (row) => {
 
 :deep(.ios-table .activity-row-child:hover > td) {
   background: linear-gradient(180deg, rgba(52, 199, 89, 0.06), rgba(52, 199, 89, 0.09)) !important;
+}
+
+:deep(.ios-table .activity-row-grandchild td) {
+  background: linear-gradient(180deg, rgba(255, 159, 10, 0.04), rgba(255, 204, 117, 0.10)) !important;
+}
+
+:deep(.ios-table .activity-row-grandchild:hover > td) {
+  background: linear-gradient(180deg, rgba(255, 159, 10, 0.08), rgba(255, 204, 117, 0.15)) !important;
 }
 
 .mono {
@@ -3272,6 +3436,54 @@ watch(selectedRow, (row) => {
 
 :deep(.ios-table .el-table__body tr:hover .cell-pill) {
   background: #e9ecf2;
+}
+
+:deep(.ios-table .el-table__body tr.row-recovered) {
+  opacity: 0.7;
+}
+
+:deep(.ios-table .el-table__body tr.row-recovered > td) {
+  background: rgba(120, 126, 145, 0.08) !important;
+  position: relative;
+}
+
+:deep(.ios-table .el-table__body tr.row-recovered > td::after) {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 2px solid rgba(112, 119, 139, 0.52);
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 2;
+}
+
+:deep(.ios-table .el-table__body tr.row-recovered .cell),
+:deep(.ios-table .el-table__body tr.row-recovered .mono),
+:deep(.ios-table .el-table__body tr.row-recovered .action-text),
+:deep(.ios-table .el-table__body tr.row-recovered .cell-time),
+:deep(.ios-table .el-table__body tr.row-recovered .status-tag),
+:deep(.ios-table .el-table__body tr.row-recovered .status-fixed-pill),
+:deep(.ios-table .el-table__body tr.row-recovered a) {
+  color: rgba(88, 95, 112, 0.72) !important;
+  text-decoration: none !important;
+}
+
+:deep(.ios-table .el-table__body tr.row-recovered .recovered-leading-badge) {
+  opacity: 1;
+  color: #2f9e44 !important;
+  background: #eef8ef !important;
+  box-shadow: inset 0 0 0 1px rgba(47, 158, 68, 0.18) !important;
+  text-decoration: none !important;
+  position: relative;
+  z-index: 5;
+  filter: none !important;
+}
+
+:deep(.ios-table .el-table__body tr.row-recovered .tree-toggle-btn) {
+  position: relative;
+  z-index: 4;
 }
 
 :deep(.ios-table .el-table__body td) {

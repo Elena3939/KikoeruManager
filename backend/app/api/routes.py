@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import contextlib
 import json
@@ -96,6 +96,15 @@ async def list_activity_logs(
                 return f"{int(value)} {units[idx]}"
             return f"{value:.2f} {units[idx]}"
 
+        def _format_duration_short(duration_ms: Any) -> str:
+            try:
+                total_seconds = max(0, int(round(float(duration_ms or 0) / 1000)))
+            except Exception:
+                total_seconds = 0
+            minutes = total_seconds // 60
+            seconds = total_seconds % 60
+            return f"{minutes}分{seconds}秒" if minutes else f"{seconds}秒"
+
         crawl_by_task: dict[str, dict[str, Any]] = {}
         crawl_rows_by_task: dict[str, list[dict[str, Any]]] = {}
         pair_rows_by_task: dict[str, list[dict[str, Any]]] = {}
@@ -104,6 +113,7 @@ async def list_activity_logs(
         merged_filter_retry_ids: set[str] = set()
         merged_subtitle_import_ids: set[str] = set()
         merged_import_batch_child_ids: set[str] = set()
+        import_batch_child_rows_by_source_id: dict[str, dict[str, Any]] = {}
 
         def _make_tree_child(
             row: dict[str, Any],
@@ -173,6 +183,128 @@ async def list_activity_logs(
                     continue
                 latest = max(latest, _max_tree_activity(child))
             return latest
+
+        def _is_success_status(value: Any) -> bool:
+            return str(value or "").strip() in {"success", "completed"}
+
+        def _is_failed_status(value: Any) -> bool:
+            return str(value or "").strip() in {"failed", "cancelled"}
+
+        def _coalesce_import_batch_rows(children: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            if not children:
+                return []
+            latest_success_by_key: dict[str, datetime] = {}
+            for child in children:
+                key = str(child.get("source_path") or child.get("rjcode") or "").strip()
+                if not key or not _is_success_status(child.get("status")):
+                    continue
+                child_dt = _coerce_dt(child.get("latest_activity_at") or child.get("created_at")) or datetime.min
+                previous = latest_success_by_key.get(key)
+                if previous is None or child_dt >= previous:
+                    latest_success_by_key[key] = child_dt
+
+            normalized: list[dict[str, Any]] = []
+            for child in children:
+                key = str(child.get("source_path") or child.get("rjcode") or "").strip()
+                child_dt = _coerce_dt(child.get("latest_activity_at") or child.get("created_at")) or datetime.min
+                child_detail = child.get("detail") if isinstance(child.get("detail"), dict) else {}
+                recovered_by_success = False
+                if key and _is_failed_status(child.get("status")):
+                    recovered_dt = latest_success_by_key.get(key)
+                    if recovered_dt and recovered_dt >= child_dt:
+                        recovered_by_success = True
+                next_child = dict(child)
+                next_detail = dict(child_detail)
+                next_detail["recovered_by_success"] = recovered_by_success
+                if recovered_by_success:
+                    next_detail["recovered_badge"] = "已覆盖"
+                    next_child["recovered_badge"] = "已覆盖"
+                next_child["detail"] = next_detail
+                normalized.append(next_child)
+            return normalized
+
+        def _import_row_match_key(row: dict[str, Any]) -> str:
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            rj_candidates = [
+                row.get("rjcode"),
+                detail.get("rjcode"),
+                detail.get("linked_source_rjcode"),
+                detail.get("linked_target_rjcode"),
+                detail.get("source_basename"),
+                row.get("source_path"),
+                detail.get("archive_path"),
+                row.get("summary"),
+                row.get("task_id"),
+            ]
+            rjcode = ""
+            for candidate in rj_candidates:
+                text = str(candidate or "").strip().upper()
+                if not text:
+                    continue
+                repeated = re.search(r"(?:RJ)+(\d{4,})", text, re.IGNORECASE)
+                if repeated:
+                    rjcode = f"RJ{repeated.group(1)}"
+                    break
+                matched = re.search(r"RJ\d{4,}", text, re.IGNORECASE)
+                if matched:
+                    rjcode = matched.group(0).upper()
+                    break
+            if rjcode:
+                return rjcode
+            source_path = str(
+                row.get("source_path")
+                or detail.get("archive_path")
+                or detail.get("source_path")
+                or ""
+            ).strip()
+            if source_path:
+                return os.path.normcase(os.path.abspath(source_path))
+            return ""
+
+        def _build_latest_import_success_map(raw_rows: list[dict[str, Any]]) -> dict[str, datetime]:
+            latest_success_by_key: dict[str, datetime] = {}
+            for row in raw_rows:
+                if str(row.get("category") or "").strip() not in {"auto_import", "process_existing"}:
+                    continue
+                if not _is_success_status(row.get("status")):
+                    continue
+                key = _import_row_match_key(row)
+                if not key:
+                    continue
+                row_dt = _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min
+                previous = latest_success_by_key.get(key)
+                if previous is None or row_dt >= previous:
+                    latest_success_by_key[key] = row_dt
+            return latest_success_by_key
+
+        def _is_recovered_import_failure(row: dict[str, Any], latest_success_by_key: dict[str, datetime]) -> bool:
+            if str(row.get("category") or "").strip() not in {"auto_import", "process_existing"}:
+                return False
+            if not _is_failed_status(row.get("status")):
+                return False
+            key = _import_row_match_key(row)
+            if not key:
+                return False
+            row_dt = _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min
+            recovered_dt = latest_success_by_key.get(key)
+            return bool(recovered_dt and recovered_dt >= row_dt)
+
+        latest_import_success_by_key = _build_latest_import_success_map(rows)
+
+        for row in rows:
+            if str(row.get("category") or "").strip() not in {"auto_import", "process_existing"}:
+                continue
+            if not _is_failed_status(row.get("status")):
+                continue
+            if not _is_recovered_import_failure(row, latest_import_success_by_key):
+                continue
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            row["detail"] = {
+                **detail,
+                "recovered_by_success": True,
+                "recovered_badge": "已覆盖",
+            }
+            row["recovered_badge"] = "已覆盖"
 
         def _is_successful_pair_state(row: dict[str, Any]) -> bool:
             detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
@@ -481,6 +613,16 @@ async def list_activity_logs(
             extract_completed_count = 0
             extract_output_total = 0
             archive_size_total = 0
+            batch_created_task_ids = {
+                str(item.get("task_id") or "").strip()
+                for item in (batch_detail.get("created_tasks") or [])
+                if isinstance(item, dict) and str(item.get("task_id") or "").strip()
+            }
+            batch_source_paths = {
+                str(path).strip()
+                for path in (batch_detail.get("source_paths") or [])
+                if str(path).strip()
+            }
             for row in rows:
                 row_id = str(row.get("id") or "")
                 if row_id == str(batch_row.get("id") or ""):
@@ -490,16 +632,24 @@ async def list_activity_logs(
                 if str(row.get("action") or "").strip() == "batch_start":
                     continue
                 detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-                if str(detail.get("batch_id") or "").strip() != batch_id:
-                    continue
-                child_rows.append(
-                    _make_tree_child(
-                        row,
-                        relation="import_item",
-                        category_label="子解压任务" if category_key == "auto_import" else "子处理任务",
-                    )
+                row_batch_id = str(detail.get("batch_id") or "").strip()
+                row_task_id = str(row.get("task_id") or "").strip()
+                row_source_path = str(row.get("source_path") or "").strip()
+                matched_by_batch_id = bool(row_batch_id) and row_batch_id == batch_id
+                matched_by_parent_manifest = (
+                    (row_task_id and row_task_id in batch_created_task_ids)
+                    or (row_source_path and row_source_path in batch_source_paths)
                 )
+                if not matched_by_batch_id and not matched_by_parent_manifest:
+                    continue
                 merged_import_batch_child_ids.add(row_id)
+                child_row = _make_tree_child(
+                    row,
+                    relation="import_item",
+                    category_label="子解压任务" if category_key == "auto_import" else "子处理任务",
+                )
+                child_rows.append(child_row)
+                import_batch_child_rows_by_source_id[row_id] = child_rows[-1]
                 if str(row.get("status") or "").strip() in {"success", "completed"}:
                     extract_completed_count += 1
                 extract_output_total += int(detail.get("extract_output_bytes") or 0)
@@ -509,6 +659,62 @@ async def list_activity_logs(
                     _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min,
                 )
             if child_rows:
+                child_rows = _coalesce_import_batch_rows(child_rows)
+                extract_completed_count = sum(1 for item in child_rows if _is_success_status(item.get("status")))
+                failed_child_count = sum(
+                    1 for item in child_rows
+                    if _is_failed_status(item.get("status"))
+                    and not bool(((item.get("detail") if isinstance(item.get("detail"), dict) else {}) or {}).get("recovered_by_success"))
+                )
+                partial_child_count = sum(1 for item in child_rows if str(item.get("status") or "").strip() == "partial_success")
+                latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
+                earliest_child_activity = datetime.max
+                max_child_duration_ms = 0
+                latest_child_completed_at = datetime.min
+                for item in child_rows:
+                    item_created_at = _coerce_dt(item.get("created_at"))
+                    item_latest_at = _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
+                    latest_activity = max(latest_activity, item_latest_at)
+                    if item_created_at:
+                        earliest_child_activity = min(earliest_child_activity, item_created_at)
+                    item_detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+                    item_duration_ms = int(item_detail.get("duration_ms") or 0)
+                    max_child_duration_ms = max(max_child_duration_ms, item_duration_ms)
+                    if item_created_at and item_duration_ms > 0:
+                        item_completed_at = item_created_at + timedelta(milliseconds=item_duration_ms)
+                        latest_child_completed_at = max(latest_child_completed_at, item_completed_at)
+                batch_duration_ms = 0
+                duration_end_at = latest_child_completed_at if latest_child_completed_at != datetime.min else latest_activity
+                if earliest_child_activity != datetime.max and duration_end_at != datetime.min and duration_end_at >= earliest_child_activity:
+                    batch_duration_ms = int((duration_end_at - earliest_child_activity).total_seconds() * 1000)
+                batch_duration_ms = max(batch_duration_ms, max_child_duration_ms)
+
+                if failed_child_count > 0 and extract_completed_count > 0:
+                    batch_row["status"] = "partial_success"
+                elif failed_child_count > 0:
+                    batch_row["status"] = "failed"
+                elif partial_child_count > 0:
+                    batch_row["status"] = "partial_success"
+                else:
+                    batch_row["status"] = "success"
+
+                summary_parts = []
+                requested_count = int(batch_detail.get("requested_count") or len(child_rows) or 0)
+                archive_count = int(batch_detail.get("archive_count") or requested_count or 0)
+                if requested_count > 0:
+                    summary_parts.append(f"候选 {requested_count} 个")
+                if archive_count > 0:
+                    summary_parts.append(f"压缩包 {archive_count} 个")
+                if extract_completed_count > 0:
+                    summary_parts.append(f"已提交解压 {extract_completed_count} 个")
+                if failed_child_count > 0:
+                    summary_parts.append(f"失败 {failed_child_count} 个")
+                if batch_duration_ms > 0:
+                    total_seconds = max(0, int(round(batch_duration_ms / 1000)))
+                    minutes = total_seconds // 60
+                    seconds = total_seconds % 60
+                    summary_parts.append(f"耗时 {minutes} 分 {seconds} 秒" if minutes else f"耗时 {seconds} 秒")
+                batch_row["summary"] = f"{'批量创建解压任务' if category_key == 'auto_import' else '批量创建已有目录处理任务'}，{'，'.join(summary_parts)}"
                 batch_row["detail"] = {
                     **batch_detail,
                     "child_rows": sorted(
@@ -517,8 +723,11 @@ async def list_activity_logs(
                     ),
                     "child_row_count": len(child_rows),
                     "extract_completed_count": extract_completed_count,
+                    "failed_child_count": failed_child_count,
+                    "partial_child_count": partial_child_count,
                     "aggregate_extract_output_bytes": extract_output_total,
                     "aggregate_archive_size_bytes": archive_size_total,
+                    "batch_duration_ms": batch_duration_ms,
                     "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
                 }
                 batch_row["has_child_rows"] = True
@@ -560,6 +769,8 @@ async def list_activity_logs(
         merged_rename_batch_child_ids: set[str] = set()
         merged_delete_ids: set[str] = set()
         merged_delete_batch_child_ids: set[str] = set()
+        merged_circle_completion_ids: set[str] = set()
+        merged_asmr_sync_ids: set[str] = set()
         for row in rows:
             if row.get("category") == "pipeline_rename":
                 detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
@@ -685,7 +896,8 @@ async def list_activity_logs(
         for row in subtitle_import_rows:
             if row.get("action") != "pending_execute":
                 continue
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            detail = row_detail
             import_source_path = str(
                 row.get("source_path")
                 or detail.get("preview_source_path")
@@ -708,13 +920,20 @@ async def list_activity_logs(
                 candidate_source_path = str(candidate.get("source_path") or "").strip()
                 if import_source_path and candidate_source_path != import_source_path:
                     continue
-                candidate_rj = str(
-                    candidate.get("rjcode")
-                    or candidate_detail.get("linked_target_rjcode")
-                    or candidate_detail.get("linked_source_rjcode")
+                candidate_target_rj = str(
+                    candidate_detail.get("linked_target_rjcode")
+                    or candidate.get("rjcode")
                     or ""
                 ).strip().upper()
-                if import_rj and candidate_rj and candidate_rj != import_rj:
+                candidate_source_rj = str(
+                    candidate_detail.get("linked_source_rjcode")
+                    or candidate.get("rjcode")
+                    or ""
+                ).strip().upper()
+                if import_rj and candidate_target_rj and candidate_target_rj != import_rj:
+                    continue
+                import_source_rj = str(detail.get("source_rjcode") or "").strip().upper()
+                if import_source_rj and candidate_source_rj and candidate_source_rj != import_source_rj:
                     continue
                 candidate_dt = _coerce_dt(candidate.get("created_at"))
                 if not import_dt or not candidate_dt or candidate_dt > import_dt:
@@ -728,7 +947,6 @@ async def list_activity_logs(
             if not best_auto_row:
                 continue
 
-            row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
             import_child_rows = list(row_detail.get("child_rows") or [])
             import_child_detail = {
                 **row_detail,
@@ -736,19 +954,30 @@ async def list_activity_logs(
                 "import_final_file_count": int(row_detail.get("final_file_count") or 0),
                 "import_record_id": row_detail.get("record_id"),
             }
+            target_import_row = import_batch_child_rows_by_source_id.get(str(best_auto_row.get("id") or "")) or best_auto_row
             _append_tree_child(
-                best_auto_row,
+                target_import_row,
                 _make_tree_child(
                     row,
                     relation="subtitle_import",
                     category_label="字幕补配",
                     detail=import_child_detail,
                     child_rows=import_child_rows,
-                    fallback_id=f"{str(best_auto_row.get('id') or 'auto')}-subtitle-import",
+                    fallback_id=f"{str(target_import_row.get('id') or best_auto_row.get('id') or 'auto')}-subtitle-import",
                 ),
             )
-            best_auto_row["merged_subtitle_import"] = True
-            best_auto_row["merged_subtitle_import_status"] = row.get("status") or ""
+            target_import_row["merged_subtitle_import"] = True
+            target_import_row["merged_subtitle_import_status"] = row.get("status") or ""
+            target_import_row["detail"] = {
+                **(target_import_row.get("detail") if isinstance(target_import_row.get("detail"), dict) else {}),
+                "import_linked": True,
+                "import_status": row.get("status") or "",
+                "import_summary": row.get("summary") or "",
+                "import_target_rjcode": str(row.get("rjcode") or row_detail.get("target_rjcode") or "").strip().upper() or None,
+            }
+            if target_import_row is not best_auto_row:
+                best_auto_row["merged_subtitle_import"] = True
+                best_auto_row["merged_subtitle_import_status"] = row.get("status") or ""
             merged_subtitle_import_ids.add(str(row.get("id") or ""))
 
         for rename_key, rename_rows in rename_rows_by_key.items():
@@ -1162,6 +1391,219 @@ async def list_activity_logs(
             preview_row["has_child_rows"] = True
             preview_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else preview_row.get("created_at")
 
+        circle_index_rows_by_circle: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            if str(row.get("category") or "").strip() != "circle_completion":
+                continue
+            if str(row.get("action") or "").strip() != "index_completed":
+                continue
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            circle_id = str(detail.get("circle_id") or "").strip()
+            if not circle_id:
+                continue
+            circle_index_rows_by_circle.setdefault(circle_id, []).append(row)
+
+        for circle_id, circle_rows in circle_index_rows_by_circle.items():
+            circle_rows.sort(key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
+
+        for row in rows:
+            if str(row.get("category") or "").strip() != "circle_completion":
+                continue
+            if str(row.get("action") or "").strip() != "download_batch_start":
+                continue
+
+            row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            circle_id = str(row_detail.get("circle_id") or "").strip()
+            if not circle_id:
+                continue
+            parent_candidates = circle_index_rows_by_circle.get(circle_id) or []
+            if not parent_candidates:
+                continue
+
+            row_dt = _coerce_dt(row.get("created_at")) or datetime.min
+            parent_row = None
+            for candidate in parent_candidates:
+                candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
+                if candidate_dt <= row_dt:
+                    parent_row = candidate
+            if parent_row is None:
+                parent_row = parent_candidates[-1]
+
+            child_detail = {
+                **row_detail,
+                "batch_task_count": len(row_detail.get("items") or []),
+            }
+            child_row = _make_tree_child(
+                row,
+                relation="download_batch",
+                category_label="下载任务",
+                detail=child_detail,
+            )
+            _append_tree_child(parent_row, child_row)
+            parent_row["merged_circle_completion_download"] = True
+            parent_row["merged_circle_completion_download_status"] = row.get("status") or ""
+            merged_circle_completion_ids.add(str(row.get("id") or ""))
+
+        asmr_rows_by_session: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            if str(row.get("category") or "").strip() != "asmr_sync":
+                continue
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            session_id = str(detail.get("session_id") or row.get("task_id") or "").strip()
+            if not session_id:
+                continue
+            asmr_rows_by_session.setdefault(session_id, []).append(row)
+
+        parent_action_priority = {
+            "session_completed": 90,
+            "session_partial_failed": 85,
+            "task_finished": 80,
+            "task_finished_incomplete": 75,
+            "session_started": 60,
+            "enhanced_plan_created": 40,
+        }
+        child_action_relations = {
+            "resource_downloaded": ("asmr_resource", "下载文件"),
+            "resource_uploaded": ("asmr_upload", "上传文件"),
+            "resource_verify_failed": ("asmr_verify_failed", "校验失败"),
+            "session_started": ("asmr_session", "下载开始"),
+            "enhanced_plan_created": ("asmr_plan", "下载计划"),
+            "queue_reordered": ("asmr_session", "队列调整"),
+            "task_paused": ("asmr_session", "任务暂停"),
+            "task_resumed": ("asmr_session", "任务恢复"),
+            "task_retried": ("asmr_session", "任务重试"),
+        }
+
+        for session_id, session_rows in asmr_rows_by_session.items():
+            if len(session_rows) <= 1:
+                continue
+            ordered_rows = sorted(session_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
+            parent_row = max(
+                ordered_rows,
+                key=lambda item: (
+                    parent_action_priority.get(str(item.get("action") or "").strip(), 0),
+                    _coerce_dt(item.get("created_at")) or datetime.min,
+                ),
+            )
+            parent_detail = parent_row.get("detail") if isinstance(parent_row.get("detail"), dict) else {}
+            task_finished_row = next(
+                (item for item in reversed(ordered_rows) if str(item.get("action") or "").strip() == "task_finished"),
+                None,
+            )
+            task_finished_detail = task_finished_row.get("detail") if isinstance(task_finished_row and task_finished_row.get("detail"), dict) else {}
+            session_complete_row = next(
+                (
+                    item for item in reversed(ordered_rows)
+                    if str(item.get("action") or "").strip() in {"session_completed", "session_partial_failed"}
+                ),
+                None,
+            )
+            session_complete_detail = session_complete_row.get("detail") if isinstance(session_complete_row and session_complete_row.get("detail"), dict) else {}
+            session_started_row = next(
+                (item for item in ordered_rows if str(item.get("action") or "").strip() == "session_started"),
+                None,
+            )
+            session_started_detail = session_started_row.get("detail") if isinstance(session_started_row and session_started_row.get("detail"), dict) else {}
+            resource_rows = [
+                item for item in ordered_rows
+                if str(item.get("action") or "").strip() == "resource_downloaded"
+            ]
+            success_count = int(
+                session_complete_detail.get("success_count")
+                or task_finished_detail.get("success_count")
+                or len(resource_rows)
+                or 0
+            )
+            failed_count = int(
+                session_complete_detail.get("failed_count")
+                or task_finished_detail.get("failed_count")
+                or 0
+            )
+            downloaded_bytes = int(
+                session_complete_detail.get("downloaded_bytes")
+                or task_finished_detail.get("downloaded_bytes")
+                or sum(int((item.get("detail") if isinstance(item.get("detail"), dict) else {}).get("size_bytes") or 0) for item in resource_rows)
+                or 0
+            )
+            duration_ms = int(
+                session_complete_detail.get("duration_ms")
+                or task_finished_detail.get("duration_ms")
+                or 0
+            )
+            download_root = str(
+                session_complete_detail.get("download_root")
+                or task_finished_detail.get("download_root")
+                or parent_detail.get("download_root")
+                or ""
+            ).strip()
+            target_path = str(
+                session_complete_detail.get("target_path")
+                or session_started_detail.get("target_path")
+                or task_finished_detail.get("target_path")
+                or parent_detail.get("target_path")
+                or ""
+            ).strip()
+            upload_mode = str(
+                session_complete_detail.get("upload_mode")
+                or session_started_detail.get("upload_mode")
+                or task_finished_detail.get("upload_mode")
+                or parent_detail.get("upload_mode")
+                or ""
+            ).strip()
+            uploaded_count = int(
+                session_complete_detail.get("uploaded_count")
+                or task_finished_detail.get("uploaded_count")
+                or 0
+            )
+
+            child_rows: list[dict[str, Any]] = []
+            latest_activity = _coerce_dt(parent_row.get("created_at")) or datetime.min
+            for row in ordered_rows:
+                if row is parent_row:
+                    continue
+                action = str(row.get("action") or "").strip()
+                relation_info = child_action_relations.get(action)
+                if not relation_info:
+                    merged_asmr_sync_ids.add(str(row.get("id") or ""))
+                    continue
+                relation, category_label = relation_info
+                child_rows.append(
+                    _make_tree_child(
+                        row,
+                        relation=relation,
+                        category_label=category_label,
+                    )
+                )
+                merged_asmr_sync_ids.add(str(row.get("id") or ""))
+                latest_activity = max(latest_activity, _coerce_dt(row.get("created_at")) or datetime.min)
+
+            if success_count > 0 or downloaded_bytes > 0 or duration_ms > 0:
+                summary_parts = [f"下载 {success_count} 个文件"]
+                if downloaded_bytes > 0:
+                    summary_parts.append(_format_bytes_short(downloaded_bytes))
+                if duration_ms > 0:
+                    summary_parts.append(f"耗时 {_format_duration_short(duration_ms)}")
+                parent_row["summary"] = " / ".join(summary_parts)
+
+            parent_row["detail"] = {
+                **parent_detail,
+                "session_id": session_id,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "downloaded_bytes": downloaded_bytes,
+                "duration_ms": duration_ms,
+                "download_root": download_root or None,
+                "target_path": target_path or None,
+                "upload_mode": upload_mode or None,
+                "uploaded_count": uploaded_count,
+                "child_rows": child_rows,
+                "child_row_count": len(child_rows),
+                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at"),
+            }
+            parent_row["source_path"] = target_path or download_root or parent_row.get("source_path")
+            parent_row["has_child_rows"] = bool(child_rows)
+            parent_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at")
+
         items: list[dict[str, Any]] = []
         for row in rows:
             if str(row.get("id") or "") in merged_batch_child_ids:
@@ -1185,6 +1627,10 @@ async def list_activity_logs(
             if str(row.get("id") or "") in merged_delete_ids:
                 continue
             if str(row.get("id") or "") in merged_delete_batch_child_ids:
+                continue
+            if str(row.get("id") or "") in merged_circle_completion_ids:
+                continue
+            if str(row.get("id") or "") in merged_asmr_sync_ids:
                 continue
             items.append(row)
         items.sort(key=lambda item: str(item.get("latest_activity_at") or item.get("created_at") or ""), reverse=True)
@@ -7225,6 +7671,32 @@ class ASMRSyncEnhancedStartRequest(BaseModel):
 class ASMRSyncEnhancedPriorityRequest(BaseModel):
     queue_priority: int
 
+
+class CircleCompletionIndexRequest(BaseModel):
+    circle_query: str
+    force_refresh: bool = False
+    include_dlsite: bool = True
+    include_kikoeru: bool = True
+
+
+class CircleCompletionIndexJobRequest(BaseModel):
+    circle_query: str
+    force_refresh: bool = True
+    include_dlsite: bool = True
+    include_kikoeru: bool = True
+
+
+class CircleCompletionDownloadPreviewRequest(BaseModel):
+    circle_id: str
+    canonical_rjcodes: List[str]
+
+
+class CircleCompletionDownloadStartRequest(BaseModel):
+    circle_id: str
+    circle_name: str = ""
+    items: List[dict]
+    batch_options: Dict[str, Any] = {}
+
 @app.post("/api/asmr-sync/scan")
 async def asmr_sync_scan(request: ASMRSyncScanRequest):
     """扫描指定文件夹，返回发现的 RJ 号和字幕文件列表"""
@@ -7647,6 +8119,330 @@ async def asmr_sync_enhanced_session_retry_failed(session_id: str):
         raise HTTPException(status_code=500, detail=f"重试失败资源失败: {str(exc)}")
 
 
+@app.post("/api/circle-completion/index")
+async def circle_completion_index(request: CircleCompletionIndexRequest):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        result = await get_circle_completion_service().index_circle_catalog(
+            request.circle_query,
+            force_refresh=bool(request.force_refresh),
+            include_dlsite=bool(request.include_dlsite),
+            include_kikoeru=bool(request.include_kikoeru),
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("社团索引失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"建立社团索引失败: {str(exc)}")
+
+
+@app.post("/api/circle-completion/index/start")
+async def circle_completion_index_start(request: CircleCompletionIndexJobRequest):
+    from ..core.task_engine import Task, TaskType, TaskStatus, get_task_engine
+
+    try:
+        circle_query = str(request.circle_query or "").strip()
+        if not circle_query:
+            raise ValueError("社团名不能为空")
+
+        task = Task(
+            task_type=TaskType.CIRCLE_COMPLETION_INDEX,
+            source_path=circle_query,
+            auto_classify=False,
+            metadata={
+                "circle_query": circle_query,
+                "circle_name": circle_query,
+                "force_refresh": bool(request.force_refresh),
+                "include_dlsite": bool(request.include_dlsite),
+                "include_kikoeru": bool(request.include_kikoeru),
+                "task_domain": "circle_completion",
+                "source_page": "circle-completion",
+                "source_action": "index_start",
+                "source_label": circle_query,
+                "business_key": circle_query,
+                "progress_log": [],
+            },
+        )
+        task.ensure_business_context("circle_completion", {
+            "source_page": "circle-completion",
+            "source_action": "index_start",
+            "source_label": circle_query,
+            "business_key": circle_query,
+        })
+        await get_task_engine().submit(task)
+        return {
+            "success": True,
+            "job_id": task.id,
+            "status": task.status.value if isinstance(task.status, TaskStatus) else str(task.status),
+            "progress": int(task.progress or 0),
+            "current_step": task.current_step,
+            "circle_query": circle_query,
+            "circle_id": "",
+            "started_at": task.created_at.isoformat() if task.created_at else None,
+            "finished_at": None,
+            "elapsed_seconds": 0,
+            "error_message": None,
+            "meta": {},
+            "result": {},
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("启动社团索引任务失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动社团索引任务失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/index/jobs/{job_id}")
+async def circle_completion_index_job_status(job_id: str):
+    from ..core.task_engine import get_task_engine
+
+    try:
+        task = get_task_engine().get_task(job_id)
+        if task is None:
+            raise ValueError("索引任务不存在")
+        metadata = dict(task.task_metadata or {})
+        started_at = task.started_at or task.created_at
+        finished_at = task.completed_at
+        elapsed_seconds = 0.0
+        if started_at:
+            end_time = finished_at or datetime.now()
+            elapsed_seconds = max(0.0, (end_time - started_at).total_seconds())
+        return {
+            "success": True,
+            "job_id": task.id,
+            "status": task.status.value,
+            "progress": int(task.progress or 0),
+            "current_step": task.current_step,
+            "circle_query": str(metadata.get("circle_query") or task.source_path or "").strip(),
+            "circle_id": str(metadata.get("circle_id") or "").strip(),
+            "started_at": started_at.isoformat() if started_at else None,
+            "finished_at": finished_at.isoformat() if finished_at else None,
+            "elapsed_seconds": round(elapsed_seconds, 1),
+            "error_message": task.error_message,
+            "meta": dict(metadata.get("index_meta") or {}),
+            "result": dict(metadata.get("index_result") or {}),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("查询社团索引任务失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"查询社团索引任务失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/circles")
+async def circle_completion_circles(keyword: str = "", limit: int = 30):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        circles = await get_circle_completion_service().search_circles(keyword, limit=limit)
+        return {"success": True, "circles": circles}
+    except Exception as exc:
+        logger.error("查询社团索引失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"查询社团索引失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/recent")
+async def circle_completion_recent(limit: int = 20):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        circles = await get_circle_completion_service().list_recent_indexes(limit=limit)
+        return {"success": True, "circles": circles}
+    except Exception as exc:
+        logger.error("查询最近社团索引失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"查询最近社团索引失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/circles/{circle_id}")
+async def circle_completion_detail(
+    circle_id: str,
+    only_missing: bool = False,
+    only_downloadable: bool = False,
+    include_dl_only: bool = True,
+):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        result = await get_circle_completion_service().build_circle_completion_view(
+            circle_id,
+            only_missing=bool(only_missing),
+            only_downloadable=bool(only_downloadable),
+            include_dl_only=bool(include_dl_only),
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("查询社团补全详情失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"查询社团补全详情失败: {str(exc)}")
+
+
+@app.post("/api/circle-completion/download/preview")
+async def circle_completion_download_preview(request: CircleCompletionDownloadPreviewRequest):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        result = await get_circle_completion_service().preview_batch_download(
+            request.circle_id,
+            request.canonical_rjcodes,
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("预览社团批量下载失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"预览批量下载失败: {str(exc)}")
+
+
+@app.post("/api/circle-completion/download/start")
+async def circle_completion_download_start(request: CircleCompletionDownloadStartRequest):
+    from ..core.activity_log_service import log_circle_completion_event
+    from ..core.asmr_resource_service import get_asmr_resource_service
+    from ..core.task_engine import Task, TaskType, get_task_engine
+
+    if not request.items:
+        raise HTTPException(status_code=400, detail="没有可创建的下载项")
+
+    config = get_config()
+    batch_id = str(uuid.uuid4())
+    engine = get_task_engine()
+    engine.set_max_concurrent(int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5))
+    session_service = get_asmr_resource_service()
+    created_tasks = []
+    child_rows = []
+    batch_options = dict(request.batch_options or {})
+    download_base_path = str(batch_options.get("download_base_path") or "").strip()
+    target_library_id = str(batch_options.get("target_library_id") or "").strip()
+    target_subdir = str(batch_options.get("target_subdir") or "").strip()
+    naming_mode = str(batch_options.get("naming_mode") or "api").strip().lower() or "api"
+    classify_mode = str(batch_options.get("classify_mode") or "circle").strip().lower() or "circle"
+
+    for item in request.items:
+        rjcode = str(item.get("rjcode") or "").strip().upper()
+        session_id = str(item.get("session_id") or "").strip()
+        selected_resources = list(item.get("selected_resources") or [])
+        if not rjcode or not session_id or not selected_resources:
+            continue
+        task = Task(
+            task_type=TaskType.ASMR_SYNC_DOWNLOAD,
+            source_path=str(item.get("folder_path") or rjcode),
+            auto_classify=False,
+            metadata={
+                "rjcode": rjcode,
+                "work_title": str(item.get("work_title") or rjcode),
+                "folder_path": str(item.get("folder_path") or ""),
+                "download_mode": "enhanced",
+                "session_id": session_id,
+                "parent_session_id": batch_id,
+                "circle_id": request.circle_id,
+                "circle_name": request.circle_name,
+                "canonical_rjcode": str(item.get("canonical_rjcode") or rjcode),
+                "display_rjcodes": list(item.get("display_rjcodes") or [rjcode]),
+                "selected_resources": selected_resources,
+                "selected_resource_count": len(selected_resources),
+                "upload_options": dict(item.get("upload_options") or {}),
+                "download_base_path": download_base_path,
+                "postprocess_options": {
+                    "enabled": True,
+                    "target_library_id": target_library_id,
+                    "target_subdir": target_subdir,
+                    "naming_mode": naming_mode,
+                    "classify_mode": classify_mode,
+                    "circle_name": str((item.get("postprocess_options") or {}).get("circle_name") or request.circle_name or ""),
+                },
+                "verify_md5_after_download": bool(item.get("verify_md5_after_download", True)),
+                "download_timeout_seconds": int(item.get("download_timeout_seconds") or 0),
+                "priority": int(item.get("queue_priority") or item.get("priority") or 100),
+                "queue_priority": int(item.get("queue_priority") or item.get("priority") or 100),
+                "resource_filter_snapshot": dict(item.get("resource_filter_snapshot") or {}),
+                "task_domain": "circle_completion",
+                "source_page": "circle-completion",
+                "source_action": "batch_download",
+                "source_label": str(item.get("work_title") or rjcode),
+                "business_key": str(item.get("canonical_rjcode") or rjcode),
+            },
+            rjcode=rjcode,
+        )
+        await engine.submit(task)
+        session_service._update_session(
+            session_id,
+            task_id=task.id,
+            status="queued",
+            queue_priority=int(item.get("queue_priority") or item.get("priority") or 100),
+            target_path=str((item.get("upload_options") or {}).get("target_path") or ""),
+            upload_mode=str((item.get("upload_options") or {}).get("mode") or "disabled"),
+            statistics={
+                "selected_resource_count": len(selected_resources),
+                "upload_library_id": str((item.get("upload_options") or {}).get("library_id") or ""),
+                "parent_session_id": batch_id,
+                "circle_id": request.circle_id,
+            },
+            selected_resources=selected_resources,
+        )
+        created_tasks.append({
+            "task_id": task.id,
+            "session_id": session_id,
+            "rjcode": rjcode,
+            "canonical_rjcode": str(item.get("canonical_rjcode") or rjcode),
+            "work_title": str(item.get("work_title") or ""),
+            "selected_resource_count": len(selected_resources),
+        })
+        child_rows.append({
+            "id": task.id,
+            "category": "circle_completion",
+            "category_label": "社团补全",
+            "action": "download_item_queued",
+            "status": "success",
+            "summary": f"{rjcode} 已加入下载队列，共 {len(selected_resources)} 个资源",
+            "detail": {
+                "session_id": session_id,
+                "parent_session_id": batch_id,
+                "canonical_rjcode": str(item.get("canonical_rjcode") or rjcode),
+                "display_rjcodes": list(item.get("display_rjcodes") or [rjcode]),
+                "downloadable": True,
+                "selected_resource_count": len(selected_resources),
+                "download_base_path": download_base_path or None,
+                "target_library_id": target_library_id or None,
+                "target_subdir": target_subdir or None,
+                "naming_mode": naming_mode,
+                "classify_mode": classify_mode,
+            },
+            "task_id": task.id,
+            "rjcode": rjcode,
+            "created_at": datetime.now().isoformat(),
+        })
+
+    if not created_tasks:
+        raise HTTPException(status_code=400, detail="没有有效下载项")
+
+    log_circle_completion_event(
+        "download_batch_start",
+        summary=f"{request.circle_name or request.circle_id} 已创建 {len(created_tasks)} 个下载子任务",
+        circle_id=request.circle_id,
+        circle_name=request.circle_name or request.circle_id,
+        batch_id=batch_id,
+        detail={
+            "items": created_tasks,
+            "child_rows": child_rows,
+            "download_base_path": download_base_path or None,
+            "target_library_id": target_library_id or None,
+            "target_subdir": target_subdir or None,
+            "naming_mode": naming_mode,
+            "classify_mode": classify_mode,
+        },
+    )
+
+    return {
+        "success": True,
+        "batch_id": batch_id,
+        "circle_id": request.circle_id,
+        "tasks": created_tasks,
+        "message": f"已创建 {len(created_tasks)} 个社团补全下载任务",
+    }
+
+
 @app.get("/api/asmr-sync/status")
 async def asmr_sync_status():
     """获取当前同步任务状态"""
@@ -7673,13 +8469,17 @@ async def asmr_sync_status():
                     "actual_rjcode": t.task_metadata.get("actual_rjcode", ""),
                     "work_title": t.task_metadata.get("work_title", ""),
                     "status": t.status.value,
+                    "display_status": "partial_failed" if (t.status.value == "completed" and (t.task_metadata.get("failed_files") or t.task_metadata.get("verification_failures") or t.task_metadata.get("failure_reason"))) else t.status.value,
                     "progress": t.progress,
                     "current_step": t.current_step,
                     "error_message": t.error_message,
+                    "output_path": getattr(t, "output_path", ""),
                     "download_files": t.task_metadata.get("download_files", []),
+                    "upload_files": t.task_metadata.get("upload_files", []),
                     "failed_files": t.task_metadata.get("failed_files", []),
                     "uploaded_files": t.task_metadata.get("uploaded_files", []),
                     "verification_failures": t.task_metadata.get("verification_failures", []),
+                    "progress_log": t.task_metadata.get("progress_log", []),
                     "performance_metrics": t.task_metadata.get("performance_metrics", {}),
                     "sync_result": t.task_metadata.get("sync_result", {}),
                     "subtitle_moved_to": t.task_metadata.get("subtitle_moved_to", ""),
@@ -7694,6 +8494,11 @@ async def asmr_sync_status():
                         "verify_summary": t.task_metadata.get("verify_summary", {}),
                         "upload_summary": t.task_metadata.get("upload_summary", {}),
                         "retry_summary": t.task_metadata.get("retry_summary", {}),
+                        "download_root": t.task_metadata.get("download_root", ""),
+                        "download_base_path": t.task_metadata.get("download_base_path", ""),
+                        "final_output_path": t.task_metadata.get("final_output_path", ""),
+                        "target_path": t.task_metadata.get("target_path", ""),
+                        "failure_reason": t.task_metadata.get("failure_reason", ""),
                     }
                 }
                 for t in asmr_tasks[:20]  # 只返回最近20个

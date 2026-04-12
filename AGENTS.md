@@ -215,6 +215,59 @@
   - 移动字幕源目录到 `Finished`
 - 改 RJ 或任务系统时，别误伤这条链
 
+### 4.8 社团补全现在是独立工作台
+
+- 前端入口：`frontend/src/views/CircleCompletion.vue`
+- 后端核心：`backend/app/core/circle_completion_service.py`
+- Kikoeru 相关：`backend/app/core/kikoeru_duplicate_service.py`
+- 这条链路现在不是简单列表页，已经包含：
+  - 社团索引建立 / 刷新
+  - Kikoeru 服务器已拥有判定
+  - DLsite 关联链聚合
+  - asmr.one 资源预览
+  - 批量增强下载
+  - 下载完成后按社团名入库
+- 当前服务器拥有判定是两段式：
+  1. 先按社团关键词走 Kikoeru 搜索分页
+  2. 再对聚合后的 canonical RJ 走 `check_duplicate_with_linkages`
+- Kikoeru 没有稳定社团搜索 API 时，当前实现直接走站内真实搜索数据源分页，不要再退回拍脑袋猜接口
+- 社团补全下载的当前落盘原则：
+  - 先下到临时目录
+  - 作品目录走 API 命名
+  - 最终按 `目标库存 / 可选前缀目录 / 社团名 / API命名后的作品目录` 入库
+- 预览弹窗里的“库存内前缀目录”现在是下拉缓存，不是自由输入；空值语义是“直接按社团名入库”
+- 下载工作台有自己的一套状态缓存和后台悬浮卡：
+  - 前端本地缓存 key 在 `CircleCompletion.vue`
+  - 不要随手删掉恢复逻辑，否则刷新页面后用户看不到还在跑的批量下载
+- 社团补全索引任务支持取消：
+  - 前端按钮在 `CircleCompletion.vue`
+  - 后端取消检查在 `circle_completion_service.py`
+  - 新增长循环时记得补 `cancel_callback`
+- 社团补全相关操作日志已经单独收敛：
+  - 不要再写 `view_built` 这种纯视图噪音日志
+  - 主记录应聚焦“创建索引检索成功 / 创建下载任务 / 下载完成”
+  - 同一 RJ 的下载文件不要平铺成一堆顶层记录，应挂到父记录或任务详情里
+
+### 4.9 大文件上传现在必须走流式
+
+- 群晖上传核心在 `backend/app/core/library_manager.py`
+- ASMR 增强下载上传链路在 `backend/app/core/asmr_resource_service.py`
+- 当前已经修过一次“大 wav 上传把内存打爆”：
+  - 不能再把整文件 `read()` 到内存再拼 multipart
+  - 必须保持分块流式上传
+  - 本地复制入库同样要走分块，不要退回 `shutil.copy2` 这种无进度粗放写法
+- 下载工作台现在依赖这些运行态字段：
+  - `download_files`
+  - `upload_files`
+  - `uploaded_files`
+  - `progress_log`
+  - `failure_reason`
+  - `final_output_path`
+- 如果改了下载 / 上传链路，记得同步检查：
+  - `/api/asmr-sync/status`
+  - `frontend/src/views/CircleCompletion.vue`
+  - `frontend/src/views/ActivityHistory.vue`
+
 ## 5. 群晖 / 远程库存注意点
 
 - 远程搜索必须优先走群晖原生接口，不要偷偷退回本地递归逻辑

@@ -11,6 +11,7 @@ import ASMRSync from '../views/ASMRSync.vue'
 import LibraryBackup from '../views/LibraryBackup.vue'
 import SubtitleImport from '../views/SubtitleImport.vue'
 import ActivityHistory from '../views/ActivityHistory.vue'
+import CircleCompletion from '../views/CircleCompletion.vue'
 
 const routes = [
   {
@@ -122,6 +123,16 @@ const routes = [
       title: '日志',
       icon: 'Document',
       cache: false
+    }
+  },
+  {
+    path: '/circle-completion',
+    name: 'CircleCompletion',
+    component: CircleCompletion,
+    meta: {
+      title: '社团补全',
+      icon: 'CollectionTag',
+      cache: true
     }
   },
   {

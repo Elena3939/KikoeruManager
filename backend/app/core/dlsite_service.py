@@ -74,12 +74,19 @@ class DLsiteApiService:
             url = f"{url}/?locale={locale}"
         return url
 
+    def _build_circle_profile_url(self, maker_id: str, language: str = "JPN", page: int = 1) -> str:
+        normalized_maker_id = str(maker_id or "").strip().upper()
+        normalized_language = str(language or "JPN").strip().upper() or "JPN"
+        base = f"https://www.dlsite.com/maniax/circle/profile/=/maker_id/{normalized_maker_id}.html/options[0]/{normalized_language}"
+        if page > 1:
+            return f"{base}/page/{page}"
+        return base
+
     def _get_browser_headers(self, accept: str = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8') -> Dict[str, str]:
         return {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': accept,
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
         }
 
@@ -91,6 +98,18 @@ class DLsiteApiService:
             'product_workno': path_match.group(1).upper() if path_match else '',
             'translation_workno': str((query.get('translation') or [''])[0] or '').strip().upper(),
         }
+
+    def _extract_worknos_from_listing_html(self, text: str) -> List[str]:
+        if not text:
+            return []
+        seen = set()
+        result: List[str] = []
+        for matched in re.findall(r'/product_id/([RVB]J(?:\d{8}|\d{6}))\.html', text, re.IGNORECASE):
+            workno = self._normalize_workno(matched)
+            if workno and workno not in seen:
+                seen.add(workno)
+                result.append(workno)
+        return result
 
     def _extract_translation_linkage_from_html(self, html: str, requested_workno: str) -> Dict[str, str]:
         normalized_requested = self._normalize_workno(requested_workno)
@@ -677,6 +696,64 @@ class DLsiteApiService:
             logger.error(f"获取完整关联链失败 {rjcode}: {e}")
         
         return result
+
+    async def list_circle_worknos_by_maker(
+        self,
+        maker_id: str,
+        *,
+        language: str = "JPN",
+        max_pages: int = 200,
+    ) -> List[str]:
+        normalized_maker_id = str(maker_id or "").strip().upper()
+        normalized_language = str(language or "JPN").strip().upper() or "JPN"
+        if not normalized_maker_id:
+            return []
+
+        cache_key = f"circle_profile:{normalized_maker_id}:{normalized_language}"
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                return list(cached_data.get('data') or [])
+
+        client = await self._get_client()
+        found: List[str] = []
+        seen: Set[str] = set()
+        empty_streak = 0
+
+        for page in range(1, max(1, int(max_pages)) + 1):
+            url = self._build_circle_profile_url(normalized_maker_id, language=normalized_language, page=page)
+            try:
+                response = await client.get(url, headers=self._get_browser_headers())
+                if response.status_code != 200:
+                    logger.warning("[DLsite] 社团主页抓取失败 maker_id=%s page=%s status=%s", normalized_maker_id, page, response.status_code)
+                    break
+                page_worknos = self._extract_worknos_from_listing_html(response.text)
+            except Exception as exc:
+                logger.warning("[DLsite] 社团主页抓取异常 maker_id=%s page=%s error=%s", normalized_maker_id, page, exc)
+                break
+
+            new_count = 0
+            for workno in page_worknos:
+                if workno not in seen:
+                    seen.add(workno)
+                    found.append(workno)
+                    new_count += 1
+
+            logger.info("[DLsite] 社团主页分页抓取 maker_id=%s lang=%s page=%s new=%s total=%s", normalized_maker_id, normalized_language, page, new_count, len(found))
+
+            if not page_worknos or new_count == 0:
+                empty_streak += 1
+            else:
+                empty_streak = 0
+
+            if empty_streak >= 2:
+                break
+
+        self.cache[cache_key] = {
+            'data': list(found),
+            'timestamp': datetime.now()
+        }
+        return found
     
     async def get_work_info(self, rjcode: str) -> Optional[Dict]:
         """获取作品详细信息"""

@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import quote, unquote
 
 import aiohttp
@@ -283,33 +283,44 @@ class SynologyFileStationClient:
         *,
         quote_fields: bool = False,
         include_content_type: bool = False,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> dict[str, Any]:
         file_name = remote_name or os.path.basename(local_path)
-        with open(local_path, "rb") as handle:
-            file_bytes = handle.read()
         boundary = f"----CodexSynology{uuid.uuid4().hex}"
-
-        body = bytearray()
+        file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+        preamble = bytearray()
         for key, value in form_fields.items():
-            body.extend(f"--{boundary}\r\n".encode("utf-8"))
-            body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
-            body.extend(str(value).encode("utf-8"))
-            body.extend(b"\r\n")
+            preamble.extend(f"--{boundary}\r\n".encode("utf-8"))
+            preamble.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+            preamble.extend(str(value).encode("utf-8"))
+            preamble.extend(b"\r\n")
 
-        body.extend(f"--{boundary}\r\n".encode("utf-8"))
-        body.extend(f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode("utf-8"))
+        preamble.extend(f"--{boundary}\r\n".encode("utf-8"))
+        preamble.extend(f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode("utf-8"))
         if include_content_type:
-            body.extend(b"Content-Type: application/octet-stream\r\n")
-        body.extend(b"\r\n")
-        body.extend(file_bytes)
-        body.extend(b"\r\n")
-        body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+            preamble.extend(b"Content-Type: application/octet-stream\r\n")
+        preamble.extend(b"\r\n")
+        epilogue = b"\r\n" + f"--{boundary}--\r\n".encode("utf-8")
+
+        async def body_iter():
+            uploaded = 0
+            yield bytes(preamble)
+            with open(local_path, "rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 256)
+                    if not chunk:
+                        break
+                    uploaded += len(chunk)
+                    if progress_callback:
+                        progress_callback(uploaded, file_size)
+                    yield chunk
+            yield epilogue
 
         headers = {
             "Content-Type": f"multipart/form-data; boundary={boundary}",
         }
 
-        async with session.post(url, params=query_params, data=bytes(body), headers=headers, ssl=self.config.verify_ssl) as response:
+        async with session.post(url, params=query_params, data=body_iter(), headers=headers, ssl=self.config.verify_ssl) as response:
             data = await self._read_response_payload(response, api_name)
 
         if not data.get("success"):
@@ -629,7 +640,14 @@ class SynologyFileStationClient:
             await asyncio.sleep(1.0)
         raise RuntimeError(f"Synology CopyMove task timed out: {task_id}, status={last_status}")
 
-    async def upload_file(self, dest_folder: str, local_path: str, overwrite: bool = False, remote_name: Optional[str] = None):
+    async def upload_file(
+        self,
+        dest_folder: str,
+        local_path: str,
+        overwrite: bool = False,
+        remote_name: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ):
         normalized_path = str(PurePosixPath(dest_folder or "/"))
         overwrite_value = "true" if overwrite else "false"
         upload_total_timeout = max(12, min(int(self.config.timeout or 30), 18))
@@ -751,6 +769,7 @@ class SynologyFileStationClient:
                         remote_name=remote_name,
                         quote_fields=variant["quote_fields"],
                         include_content_type=variant["include_content_type"],
+                        progress_callback=progress_callback,
                     )
                     return
                 except Exception as exc:

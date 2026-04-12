@@ -26,6 +26,7 @@ CATEGORY_PIPELINE_METADATA = "pipeline_metadata"
 CATEGORY_PIPELINE_RENAME = "pipeline_rename"
 CATEGORY_PIPELINE_DELETE = "pipeline_delete"
 CATEGORY_ASMR_SYNC = "asmr_sync"
+CATEGORY_CIRCLE_COMPLETION = "circle_completion"
 
 CATEGORY_LABELS = {
     CATEGORY_SUBTITLE_CRAWL: "字幕爬取",
@@ -39,6 +40,7 @@ CATEGORY_LABELS = {
     CATEGORY_PIPELINE_RENAME: "重命名",
     CATEGORY_PIPELINE_DELETE: "删除",
     CATEGORY_ASMR_SYNC: "ASMR 同步",
+    CATEGORY_CIRCLE_COMPLETION: "社团补全",
 }
 
 ASMR_SYNC_ACTIONS = {
@@ -54,6 +56,17 @@ ASMR_SYNC_ACTIONS = {
     "task_paused",
     "task_resumed",
     "task_retried",
+}
+
+CIRCLE_COMPLETION_ACTIONS = {
+    "index_started",
+    "index_completed",
+    "index_failed",
+    "view_built",
+    "download_batch_start",
+    "download_batch_completed",
+    "download_batch_partial_failed",
+    "download_item_queued",
 }
 
 
@@ -428,6 +441,39 @@ def log_task_lifecycle_event(task) -> None:
             "awaiting_manual_match": bool(meta.get("awaiting_manual_match")),
             "batch_id": str(meta.get("batch_id") or "").strip() or None,
         }
+    elif tt == TaskType.ASMR_SYNC_DOWNLOAD:
+        performance_metrics = meta.get("performance_metrics") if isinstance(meta.get("performance_metrics"), dict) else {}
+        download_root = str(meta.get("download_root") or "").strip()
+        selected_resources = list(meta.get("selected_resources") or [])
+        uploaded_files = list(meta.get("uploaded_files") or [])
+        downloaded_bytes = int(performance_metrics.get("downloaded_bytes") or 0)
+        success_count = int(performance_metrics.get("success_count") or 0)
+        failed_count = int(performance_metrics.get("failed_count") or 0)
+        uploaded_count = int(performance_metrics.get("uploaded_count") or len(uploaded_files) or 0)
+        duration_ms = int(performance_metrics.get("duration_ms") or _duration_ms_for_task(task) or 0)
+        upload_options = meta.get("upload_options") if isinstance(meta.get("upload_options"), dict) else {}
+        target_path = str(upload_options.get("target_path") or "").strip()
+        upload_mode = str(upload_options.get("mode") or "").strip() or None
+        if st == TaskStatus.COMPLETED and success_count > 0:
+            summary_parts = [f"下载 {success_count} 个文件"]
+            if downloaded_bytes > 0:
+                summary_parts.append(_format_bytes(downloaded_bytes))
+            if duration_ms > 0:
+                summary_parts.append(f"耗时 {_format_duration_ms(duration_ms)}")
+            summary = " / ".join(summary_parts)[:4000]
+        detail = {
+            "session_id": str(meta.get("session_id") or "").strip() or None,
+            "download_root": download_root or None,
+            "target_path": target_path or None,
+            "upload_mode": upload_mode,
+            "selected_resource_count": int(meta.get("selected_resource_count") or len(selected_resources) or 0),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "uploaded_count": uploaded_count,
+            "downloaded_bytes": downloaded_bytes,
+            "duration_ms": duration_ms,
+            "uploaded_files": uploaded_files[:200],
+        }
     elif tt == TaskType.EXTRACT:
         archive_size_bytes, archive_path = _resolve_archive_snapshot(task)
         output_size_bytes = _safe_path_size(task.output_path) if st == TaskStatus.COMPLETED else 0
@@ -492,6 +538,10 @@ def log_task_lifecycle_event(task) -> None:
             "filtered_size": int(meta.get("filtered_size") or 0),
             "filtered_items": _build_filter_delete_items(meta.get("filtered_items"), limit=240),
         }
+        if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
+            detail["circle_id"] = str(meta.get("circle_id") or "").strip() or None
+            detail["circle_name"] = str(meta.get("circle_name") or "").strip() or None
+            detail["parent_session_id"] = str(meta.get("parent_session_id") or "").strip() or None
 
     write_activity_log(
         category=category,
@@ -502,6 +552,41 @@ def log_task_lifecycle_event(task) -> None:
         rjcode=rj or None,
         task_id=task.id,
         source_path=task.source_path,
+    )
+
+
+def log_circle_completion_event(
+    action: str,
+    *,
+    status: str = "success",
+    summary: str,
+    circle_id: Optional[str] = None,
+    circle_name: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    source_path: Optional[str] = None,
+    detail: Optional[Dict[str, Any]] = None,
+) -> None:
+    payload = dict(detail or {})
+    if circle_id:
+        payload.setdefault("circle_id", circle_id)
+    if circle_name:
+        payload.setdefault("circle_name", circle_name)
+    if batch_id:
+        payload.setdefault("batch_id", batch_id)
+    if session_id:
+        payload.setdefault("session_id", session_id)
+    if action not in CIRCLE_COMPLETION_ACTIONS:
+        payload.setdefault("custom_action", action)
+    write_activity_log(
+        category=CATEGORY_CIRCLE_COMPLETION,
+        action=action,
+        status=status,
+        summary=summary,
+        detail=payload,
+        task_id=task_id or batch_id or session_id,
+        source_path=source_path,
     )
 
 

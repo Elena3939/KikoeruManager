@@ -143,6 +143,134 @@ class WorkLinkage(Base):
         Index('idx_original_linked', 'original_rjcode', 'linked_rjcode'),
     )
 
+
+class CircleCatalog(Base):
+    """社团索引表"""
+    __tablename__ = 'circle_catalogs'
+
+    circle_id = Column(String(120), primary_key=True)
+    circle_name = Column(Text)
+    circle_name_normalized = Column(String(255), index=True)
+    source_mask = Column(String(120), default='')
+    last_indexed_at = Column(DateTime, default=get_local_now, index=True)
+    last_local_sync_at = Column(DateTime)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {
+            'circle_id': self.circle_id,
+            'circle_name': self.circle_name,
+            'circle_name_normalized': self.circle_name_normalized,
+            'source_mask': self.source_mask or '',
+            'last_indexed_at': self.last_indexed_at.isoformat() if self.last_indexed_at else None,
+            'last_local_sync_at': self.last_local_sync_at.isoformat() if self.last_local_sync_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class CircleWork(Base):
+    """社团作品索引表"""
+    __tablename__ = 'circle_works'
+
+    id = Column(String(36), primary_key=True)
+    circle_id = Column(String(120), index=True)
+    canonical_rjcode = Column(String(20), index=True)
+    display_rjcode = Column(String(20), index=True)
+    title = Column(Text)
+    maker_id = Column(String(20), index=True)
+    maker_name = Column(Text)
+    source_mask = Column(String(120), default='')
+    linked_rjcodes = Column(JSON)
+    has_kikoeru = Column(Boolean, default=False, index=True)
+    has_dlsite = Column(Boolean, default=False, index=True)
+    has_asmr_one = Column(Boolean, default=False, index=True)
+    kikoeru_work_id = Column(Integer)
+    asmr_one_cached_at = Column(DateTime)
+    dlsite_cached_at = Column(DateTime)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_circle_work_unique', 'circle_id', 'canonical_rjcode', unique=True),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'circle_id': self.circle_id,
+            'canonical_rjcode': self.canonical_rjcode,
+            'display_rjcode': self.display_rjcode,
+            'title': self.title,
+            'maker_id': self.maker_id,
+            'maker_name': self.maker_name,
+            'source_mask': self.source_mask or '',
+            'linked_rjcodes': self.linked_rjcodes or [],
+            'has_kikoeru': bool(self.has_kikoeru),
+            'has_dlsite': bool(self.has_dlsite),
+            'has_asmr_one': bool(self.has_asmr_one),
+            'kikoeru_work_id': self.kikoeru_work_id,
+            'asmr_one_cached_at': self.asmr_one_cached_at.isoformat() if self.asmr_one_cached_at else None,
+            'dlsite_cached_at': self.dlsite_cached_at.isoformat() if self.dlsite_cached_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class WorkCanonicalLink(Base):
+    """作品 canonical 归一关系"""
+    __tablename__ = 'work_canonical_links'
+
+    id = Column(String(36), primary_key=True)
+    canonical_rjcode = Column(String(20), index=True)
+    linked_rjcode = Column(String(20), index=True)
+    link_type = Column(String(20), default='linked')
+    lang = Column(String(20), default='')
+    cached_at = Column(DateTime, default=get_local_now)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_work_canonical_unique', 'canonical_rjcode', 'linked_rjcode', unique=True),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'canonical_rjcode': self.canonical_rjcode,
+            'linked_rjcode': self.linked_rjcode,
+            'link_type': self.link_type,
+            'lang': self.lang,
+            'cached_at': self.cached_at.isoformat() if self.cached_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class LibraryOwnedWork(Base):
+    """库存拥有态索引表"""
+    __tablename__ = 'library_owned_works'
+
+    canonical_rjcode = Column(String(20), primary_key=True)
+    owned_rjcodes = Column(JSON)
+    primary_folder_path = Column(Text)
+    library_id = Column(String(80), index=True)
+    folder_count = Column(Integer, default=0)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+    created_at = Column(DateTime, default=get_local_now)
+
+    def to_dict(self):
+        return {
+            'canonical_rjcode': self.canonical_rjcode,
+            'owned_rjcodes': self.owned_rjcodes or [],
+            'primary_folder_path': self.primary_folder_path,
+            'library_id': self.library_id,
+            'folder_count': self.folder_count,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
 class KikoeruSearchConfig(Base):
     """Kikoeru 搜索配置表"""
     __tablename__ = 'kikoeru_search_configs'

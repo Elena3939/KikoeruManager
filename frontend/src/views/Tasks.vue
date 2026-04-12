@@ -214,6 +214,27 @@
             </div>
           </div>
 
+          <div v-if="getCircleIndexMetaEntries(selectedItem).length" class="detail-section">
+            <span class="detail-section-label">进度元信息</span>
+            <div class="detail-metrics-grid">
+              <div v-for="entry in getCircleIndexMetaEntries(selectedItem)" :key="`${selectedItem.id}-${entry.label}`" class="detail-metric-card">
+                <span class="detail-metric-label">{{ entry.label }}</span>
+                <span class="detail-metric-value">{{ entry.value }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="getCircleIndexProgressLog(selectedItem).length" class="detail-section">
+            <span class="detail-section-label">进度日志</span>
+            <div class="detail-progress-log">
+              <div v-for="(entry, index) in getCircleIndexProgressLog(selectedItem)" :key="`${selectedItem.id}-progress-${index}`" class="detail-progress-log-row">
+                <span class="detail-progress-log-time">{{ formatDateTime(entry.time) }}</span>
+                <span class="detail-progress-log-progress">{{ entry.progress }}%</span>
+                <span class="detail-progress-log-message">{{ entry.message }}</span>
+              </div>
+            </div>
+          </div>
+
           <div v-if="filterRemovedTreeRows(selectedItem).length" class="detail-section">
             <span class="detail-section-label">过滤移除清单</span>
             <div class="detail-entry-tree-box">
@@ -620,6 +641,14 @@ function getTaskSummary(item) {
     if (downloadFiles) pieces.push(`文件 ${downloadFiles}`)
     if (failedFiles) pieces.push(`失败 ${failedFiles}`)
     if (item.subtitle) pieces.push(`来源 ${getFileName(item.subtitle)}`)
+  } else if (item.domain === 'circle_completion') {
+    const candidateCount = pickMetricValue(item, '候选')
+    const dlsiteCount = pickMetricValue(item, 'DLsite')
+    const downloadableCount = pickMetricValue(item, '可下载')
+    if (item.title) pieces.push(item.title)
+    if (candidateCount) pieces.push(`候选 ${candidateCount}`)
+    if (dlsiteCount) pieces.push(`DLsite ${dlsiteCount}`)
+    if (downloadableCount) pieces.push(`可下载 ${downloadableCount}`)
   } else {
     const outputName = pickMetricValue(item, '输出') || item.target_path
     const targetLibrary = pickMetricValue(item, '目标库')
@@ -670,6 +699,40 @@ function getRecoveredNotice(item) {
   const details = item?.details || {}
   const metadata = details.metadata || {}
   return String(metadata.recovered_notice || '').trim()
+}
+
+function getCircleIndexMetaEntries(item) {
+  if (item?.kind !== 'circle_completion_index') {
+    return []
+  }
+  const metadata = item?.details?.metadata || {}
+  const indexMeta = metadata.index_meta || {}
+  const indexedCounts = metadata.indexed_counts || {}
+  const entries = [
+    ['社团', metadata.circle_name || metadata.circle_query || ''],
+    ['Maker ID', indexMeta.maker_id || ''],
+    ['来源模式', indexMeta.dlsite_source_mode || ''],
+    ['本地候选', indexMeta.local_candidates_count],
+    ['Kikoeru', indexMeta.kikoeru_candidates_count],
+    ['DLsite原作', indexMeta.dlsite_profile_total || indexMeta.dlsite_candidates_count],
+    ['合并候选', indexMeta.combined_candidates_count || indexMeta.aggregated_count],
+    ['已检查下载', indexMeta.asmr_checked_count],
+    ['可下载', indexMeta.asmr_available_count || indexedCounts.downloadable_count],
+    ['最终作品', indexedCounts.works],
+    ['服务器缺失', indexedCounts.missing_count],
+  ]
+  return entries
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== '')
+    .map(([label, value]) => ({ label, value: String(value) }))
+}
+
+function getCircleIndexProgressLog(item) {
+  if (item?.kind !== 'circle_completion_index') {
+    return []
+  }
+  const metadata = item?.details?.metadata || {}
+  const logs = Array.isArray(metadata.progress_log) ? metadata.progress_log : []
+  return logs.slice().reverse()
 }
 
 function shouldShowTaskMetaStep(item) {
@@ -1292,6 +1355,39 @@ function formatDateTime(value) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.detail-progress-log {
+  display: grid;
+  gap: 10px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 4px 2px 2px;
+}
+
+.detail-progress-log-row {
+  display: grid;
+  grid-template-columns: 132px 52px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid #e8eef7;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.detail-progress-log-time,
+.detail-progress-log-progress {
+  font-size: 12px;
+  font-weight: 700;
+  color: #6d8199;
+}
+
+.detail-progress-log-message {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #243b5e;
+  word-break: break-word;
 }
 
 
