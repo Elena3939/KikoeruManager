@@ -423,6 +423,161 @@ class ActivityLog(Base):
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 
+
+class ASMRWork(Base):
+    """ASMR 作品元信息表"""
+    __tablename__ = 'asmr_works'
+
+    rjcode = Column(String(20), primary_key=True)
+    title = Column(Text)
+    circle = Column(Text)
+    source_provider = Column(String(40), default='asmr.one', index=True)
+    tags = Column(JSON)
+    work_status = Column(String(20), default='cataloged', index=True)
+    last_error = Column(Text)
+    last_scraped_at = Column(DateTime)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {
+            'rjcode': self.rjcode,
+            'title': self.title,
+            'circle': self.circle,
+            'source_provider': self.source_provider,
+            'tags': self.tags or [],
+            'work_status': self.work_status,
+            'last_error': self.last_error,
+            'last_scraped_at': self.last_scraped_at.isoformat() if self.last_scraped_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class ASMRResourceRecord(Base):
+    """ASMR 资源库表"""
+    __tablename__ = 'asmr_resource_records'
+
+    id = Column(String(36), primary_key=True)
+    rjcode = Column(String(20), index=True)
+    work_rjcode = Column(String(20), index=True)
+    source_workno = Column(String(20), index=True)
+    work_title = Column(Text)
+    source_provider = Column(String(40), default='asmr.one', index=True)
+    resource_type = Column(String(20), index=True)
+    language = Column(String(16), default='')
+    file_name = Column(Text)
+    relative_path = Column(Text)
+    normalized_name = Column(String(255), index=True)
+    file_ext = Column(String(16), default='')
+    size_bytes = Column(BigInteger, default=0)
+    duration_seconds = Column(Float, nullable=True)
+    checksum_md5 = Column(String(32), default='')
+    remote_url = Column(Text)
+    local_path = Column(Text)
+    upload_path = Column(Text)
+    download_status = Column(String(20), default='cataloged', index=True)
+    match_status = Column(String(20), default='unmatched', index=True)
+    verify_status = Column(String(20), default='pending', index=True)
+    upload_status = Column(String(20), default='pending', index=True)
+    missing_reason = Column(String(120))
+    session_id = Column(String(36), index=True)
+    retry_count = Column(Integer, default=0)
+    last_seen_at = Column(DateTime, default=get_local_now, index=True)
+    last_error = Column(Text)
+    extra_metadata = Column(JSON)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_asmr_resource_unique', 'rjcode', 'source_provider', 'relative_path'),
+        Index('idx_asmr_resource_status', 'download_status', 'updated_at'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'rjcode': self.rjcode,
+            'work_rjcode': self.work_rjcode,
+            'source_workno': self.source_workno,
+            'work_title': self.work_title,
+            'source_provider': self.source_provider,
+            'resource_type': self.resource_type,
+            'language': self.language,
+            'file_name': self.file_name,
+            'relative_path': self.relative_path,
+            'normalized_name': self.normalized_name,
+            'file_ext': self.file_ext,
+            'size_bytes': self.size_bytes,
+            'duration_seconds': self.duration_seconds,
+            'checksum_md5': self.checksum_md5,
+            'remote_url': self.remote_url,
+            'local_path': self.local_path,
+            'upload_path': self.upload_path,
+            'download_status': self.download_status,
+            'match_status': self.match_status,
+            'verify_status': self.verify_status,
+            'upload_status': self.upload_status,
+            'missing_reason': self.missing_reason,
+            'session_id': self.session_id,
+            'retry_count': self.retry_count,
+            'last_seen_at': self.last_seen_at.isoformat() if self.last_seen_at else None,
+            'last_error': self.last_error,
+            'extra_metadata': self.extra_metadata or {},
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class ASMRDownloadSession(Base):
+    """ASMR 增强下载会话表"""
+    __tablename__ = 'asmr_download_sessions'
+
+    id = Column(String(36), primary_key=True)
+    rjcode = Column(String(20), index=True)
+    task_id = Column(String(36), index=True)
+    source_provider = Column(String(40), default='asmr.one', index=True)
+    source_page = Column(String(40), default='asmr-sync')
+    source_action = Column(String(80), default='enhanced_download')
+    source_label = Column(Text)
+    status = Column(String(20), default='planning', index=True)
+    queue_priority = Column(Integer, default=100, index=True)
+    folder_path = Column(Text)
+    target_path = Column(Text)
+    upload_mode = Column(String(20), default='disabled')
+    selected_filters = Column(JSON)
+    selected_resources = Column(JSON)
+    statistics = Column(JSON)
+    failure_summary = Column(JSON)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'rjcode': self.rjcode,
+            'task_id': self.task_id,
+            'source_provider': self.source_provider,
+            'source_page': self.source_page,
+            'source_action': self.source_action,
+            'source_label': self.source_label,
+            'status': self.status,
+            'queue_priority': self.queue_priority,
+            'folder_path': self.folder_path,
+            'target_path': self.target_path,
+            'upload_mode': self.upload_mode,
+            'selected_filters': self.selected_filters or {},
+            'selected_resources': self.selected_resources or [],
+            'statistics': self.statistics or {},
+            'failure_summary': self.failure_summary or {},
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
 import logging
 _db_logger = logging.getLogger(__name__)
 
@@ -466,6 +621,32 @@ def init_db():
             conn.execute(
                 text(
                     f"ALTER TABLE conflict_works ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
+                )
+            )
+        result = conn.execute(text("PRAGMA table_info(asmr_resource_records)"))
+        asmr_columns = {row[1] for row in result.fetchall()}
+        asmr_missing_columns = []
+        if result.returns_rows:
+            if 'work_rjcode' not in asmr_columns:
+                asmr_missing_columns.append(("work_rjcode", "VARCHAR(20)", "''"))
+            if 'match_status' not in asmr_columns:
+                asmr_missing_columns.append(("match_status", "VARCHAR(20)", "'unmatched'"))
+            if 'verify_status' not in asmr_columns:
+                asmr_missing_columns.append(("verify_status", "VARCHAR(20)", "'pending'"))
+            if 'upload_status' not in asmr_columns:
+                asmr_missing_columns.append(("upload_status", "VARCHAR(20)", "'pending'"))
+            if 'missing_reason' not in asmr_columns:
+                asmr_missing_columns.append(("missing_reason", "TEXT", "NULL"))
+            if 'session_id' not in asmr_columns:
+                asmr_missing_columns.append(("session_id", "VARCHAR(36)", "NULL"))
+            if 'retry_count' not in asmr_columns:
+                asmr_missing_columns.append(("retry_count", "INTEGER", "0"))
+            if 'last_seen_at' not in asmr_columns:
+                asmr_missing_columns.append(("last_seen_at", "DATETIME", "NULL"))
+        for column_name, column_type, default_value in asmr_missing_columns:
+            conn.execute(
+                text(
+                    f"ALTER TABLE asmr_resource_records ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
                 )
             )
     _db_logger.info(f"[数据库] 表创建完成")

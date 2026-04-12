@@ -2227,6 +2227,7 @@ onMounted(async () => {
   await initializeLibraryPage()
   libraryViewActive = true
   await consumeSubtitleRouteFocus()
+  await consumeSubtitleBatchSelectionRoute()
 })
 
 onActivated(async () => {
@@ -2234,6 +2235,7 @@ onActivated(async () => {
   libraryViewActive = true
   await resumeLibraryPage()
   await consumeSubtitleRouteFocus()
+  await consumeSubtitleBatchSelectionRoute()
 })
 
 onDeactivated(() => {
@@ -3631,19 +3633,62 @@ async function openSubtitleTaskPanel () {
 function getSubtitleRouteFocusPayload () {
   const subtitleDialog = route.query.subtitleDialog
   const subtitleTaskId = route.query.subtitleTaskId
+  const subtitleFolderPath = route.query.subtitleFolderPath
+  const subtitleLibraryId = route.query.subtitleLibraryId
+  const subtitleRjcode = route.query.subtitleRjcode
   const shouldOpen = subtitleDialog === '1'
   const taskId = typeof subtitleTaskId === 'string' ? subtitleTaskId.trim() : ''
+  const folderPath = typeof subtitleFolderPath === 'string' ? subtitleFolderPath.trim() : ''
+  const libraryId = typeof subtitleLibraryId === 'string' ? subtitleLibraryId.trim() : ''
+  const rjcode = typeof subtitleRjcode === 'string' ? subtitleRjcode.trim().toUpperCase() : ''
   return {
     shouldOpen,
     taskId,
-    focusKey: shouldOpen && taskId ? `${subtitleDialog}:${taskId}` : ''
+    folderPath,
+    libraryId,
+    rjcode,
+    focusKey: shouldOpen ? `${subtitleDialog}:${taskId}:${libraryId}:${folderPath}` : ''
   }
+}
+
+function getSubtitleBatchSelectionRouteFlag () {
+  return String(route.query.subtitleBatchSelection || '').trim() === '1'
+}
+
+function normalizeLibraryMatchPath(path = '', isRemote = false) {
+  const value = String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  if (!value) return ''
+  return isRemote ? value : value.toLowerCase()
+}
+
+function isPathWithinLibraryRoot(targetPath = '', library = null) {
+  if (!targetPath || !library) return false
+  const isRemote = String(library.type || '') === 'synology_filestation'
+  const rootCandidate = library.browse_root_path || library.root_path || library.path || ''
+  const normalizedTarget = normalizeLibraryMatchPath(targetPath, isRemote)
+  const normalizedRoot = normalizeLibraryMatchPath(rootCandidate, isRemote)
+  if (!normalizedTarget || !normalizedRoot) return false
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`)
+}
+
+function resolveLibraryIdByPath(targetPath = '', preferredLibraryId = '') {
+  const normalizedPreferred = String(preferredLibraryId || '').trim()
+  const preferred = normalizedPreferred ? libraries.value.find(item => item.id === normalizedPreferred) || null : null
+  if (preferred && isPathWithinLibraryRoot(targetPath, preferred)) {
+    return preferred.id
+  }
+  const matched = libraries.value.find(item => isPathWithinLibraryRoot(targetPath, item))
+  return matched?.id || normalizedPreferred || ''
 }
 
 async function clearSubtitleRouteFocusQuery () {
   const nextQuery = { ...route.query }
   delete nextQuery.subtitleDialog
   delete nextQuery.subtitleTaskId
+  delete nextQuery.subtitleFolderPath
+  delete nextQuery.subtitleLibraryId
+  delete nextQuery.subtitleRjcode
+  delete nextQuery.subtitleBatchSelection
   delete nextQuery.subtitleImport
   await router.replace({
     path: route.path,
@@ -3651,24 +3696,86 @@ async function clearSubtitleRouteFocusQuery () {
   })
 }
 
+async function openSubtitleDialogWithPresetSelection (items = [], preferredKey = '') {
+  const normalizedItems = uniqueSubtitleItems((Array.isArray(items) ? items : [])
+    .map(item => ({
+      library_id: item.library_id || selectedLibraryId.value,
+      folder_path: item.folder_path || '',
+      folder_name: item.folder_name || getFileName(item.folder_path),
+      rjcode: item.rjcode || extractRJCode(item.folder_path || '') || '',
+      task_id: item.task_id || '',
+      queue_message: item.queue_message || '',
+      manual_match_completed: Boolean(item.manual_match_completed),
+      manual_match_applied_pairs: Number(item.manual_match_applied_pairs || 0),
+      manual_match_deleted_subtitles: Number(item.manual_match_deleted_subtitles || 0)
+    }))
+    .filter(item => item.folder_path))
+  if (!normalizedItems.length) return
+
+  const firstLibraryId = normalizedItems[0]?.library_id || ''
+  if (firstLibraryId && selectedLibraryId.value !== firstLibraryId) {
+    selectedLibraryId.value = firstLibraryId
+  }
+
+  subtitleDialogBackgroundActive.value = false
+  subtitleDialogVisible.value = true
+  clearSubtitleScanWorkspace()
+  subtitleSelectionLoading.value = false
+  subtitleSelectionSourceItems.value = normalizedItems
+  subtitleScannedSelectionItems.value = normalizedItems
+  subtitleDialogSelection.value = mergeSubtitleSelectionRuntimeState(normalizedItems, normalizedItems)
+  subtitlePreferredSelectionKey.value = preferredKey || buildSubtitleSelectionKey(normalizedItems[0]) || ''
+  clearSubtitleInspectorState()
+  await nextTick()
+  await refreshRJSubtitleStatus(false, { silent: true })
+}
+
+async function consumeSubtitleBatchSelectionRoute () {
+  if (!getSubtitleBatchSelectionRouteFlag()) return
+  const payload = loadJson('activity-history-subtitle-batch-selection', null)
+  try { localStorage.removeItem('activity-history-subtitle-batch-selection') } catch (_) {}
+  if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
+    await clearSubtitleRouteFocusQuery()
+    return
+  }
+  await openSubtitleDialogWithPresetSelection(payload.items, String(payload.preferred_key || '').trim())
+  await clearSubtitleRouteFocusQuery()
+}
+
 async function consumeSubtitleRouteFocus () {
-  const { shouldOpen, taskId, focusKey } = getSubtitleRouteFocusPayload()
-  if (!shouldOpen || !taskId) return
+  const { shouldOpen, taskId, folderPath, libraryId, rjcode, focusKey } = getSubtitleRouteFocusPayload()
+  if (!shouldOpen || (!taskId && !folderPath)) return
   if (subtitleRouteFocusKey.value === focusKey && subtitleDialogVisible.value) return
 
   subtitleRouteFocusKey.value = focusKey
+  const resolvedLibraryId = resolveLibraryIdByPath(folderPath, libraryId)
+  if (resolvedLibraryId && selectedLibraryId.value !== resolvedLibraryId) {
+    selectedLibraryId.value = resolvedLibraryId
+  }
   subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
   await nextTick()
   await refreshRJSubtitleStatus(false, { silent: true })
 
   const matchedTask = subtitleTasks.value.find(item => item.id === taskId)
-  if (!matchedTask) return
+  if (matchedTask) {
+    if (matchedTask.subtitle_dir) {
+      await inspectSubtitleTask(matchedTask)
+    } else {
+      focusSubtitleTask(matchedTask.id)
+    }
+    await clearSubtitleRouteFocusQuery()
+    return
+  }
 
-  if (matchedTask.subtitle_dir) {
-    await inspectSubtitleTask(matchedTask)
-  } else {
-    focusSubtitleTask(matchedTask.id)
+  if (folderPath) {
+    await inspectSubtitleSelectionFolder({
+      library_id: resolvedLibraryId || selectedLibraryId.value,
+      folder_path: folderPath,
+      folder_name: getFileName(folderPath),
+      rjcode: rjcode || extractRJCode(folderPath) || '',
+      queue_message: '来自操作记录'
+    }, { force: true, preferredTaskId: taskId })
   }
 
   await clearSubtitleRouteFocusQuery()
@@ -4805,20 +4912,33 @@ async function applySubtitleManualPairs () {
     }
 
     const currentTaskId = subtitleInspectorInfo.value.taskId
-    if (subtitleInspectorInfo.value.taskId) {
+    const matchedSelectionItem = subtitleDialogSelection.value.find(item => buildSubtitleSelectionKey(item) === subtitlePreferredSelectionKey.value) || {
+      library_id: subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
+      folder_path: subtitleInspectorInfo.value.folderPath,
+      folder_name: getFileName(subtitleInspectorInfo.value.folderPath),
+      rjcode: extractRJCode(subtitleInspectorInfo.value.folderPath || '') || ''
+    }
+    const fallbackTask = currentTaskId
+      ? null
+      : findSubtitleTaskBySelection(matchedSelectionItem)
+    const effectiveTaskId = currentTaskId || fallbackTask?.id || ''
+    if (effectiveTaskId) {
       const pairChanges = subtitleManualPairs.value.map(pair => ({
         audio_before: pair.audio_name || '',
         audio_after: pair.target_audio_name || '',
         subtitle_before: pair.subtitle_name || '',
         subtitle_after: pair.target_subtitle_name || ''
       }))
-      await rjSubtitleApi.completeManual(subtitleInspectorInfo.value.taskId, {
+      await rjSubtitleApi.completeManual(effectiveTaskId, {
         appliedPairs: appliedPairCount,
         deletedSubtitles: unusedSubtitleRows.length,
         namingStrategy: effectiveNamingStrategy,
-        pairChanges
+        pairChanges,
+        folderPath: subtitleInspectorInfo.value.folderPath || matchedSelectionItem.folder_path || '',
+        libraryId: subtitleInspectorInfo.value.libraryId || matchedSelectionItem.library_id || selectedLibraryId.value,
+        rjcode: matchedSelectionItem.rjcode || extractRJCode(subtitleInspectorInfo.value.folderPath || '') || ''
       })
-      markSubtitleTaskManualMatchCompleted(subtitleInspectorInfo.value.taskId, {
+      markSubtitleTaskManualMatchCompleted(effectiveTaskId, {
         appliedPairs: appliedPairCount,
         deletedSubtitles: unusedSubtitleRows.length,
         namingStrategy: effectiveNamingStrategy,
@@ -4831,7 +4951,7 @@ async function applySubtitleManualPairs () {
       ])
 
       if (isLinkedImport) {
-        const refreshedTask = subtitleTasks.value.find(task => task.id === currentTaskId)
+        const refreshedTask = subtitleTasks.value.find(task => task.id === effectiveTaskId)
         if (refreshedTask?.subtitle_dir) {
           await inspectSubtitleTask(refreshedTask, { force: true })
         } else {
@@ -4841,12 +4961,6 @@ async function applySubtitleManualPairs () {
         await reloadSubtitleInspector()
       }
     } else {
-      const matchedSelectionItem = subtitleDialogSelection.value.find(item => buildSubtitleSelectionKey(item) === subtitlePreferredSelectionKey.value) || {
-        library_id: subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
-        folder_path: subtitleInspectorInfo.value.folderPath,
-        folder_name: getFileName(subtitleInspectorInfo.value.folderPath),
-        rjcode: extractRJCode(subtitleInspectorInfo.value.folderPath || '') || ''
-      }
       markSubtitleSelectionManualMatchCompleted(matchedSelectionItem, {
         appliedPairs: appliedPairCount,
         deletedSubtitles: unusedSubtitleRows.length
@@ -5770,11 +5884,12 @@ async function ensureSubtitleInspectorFocus () {
 }
 
 async function inspectSubtitleSelectionFolder (item, options = {}) {
-  const { force = false } = options
+  const { force = false, preferredTaskId = '' } = options
   if (!item?.folder_path) return
 
   const inspectorLibraryId = item.library_id || selectedLibraryId.value
   let subtitleDir = joinFolderPath(item.folder_path, 'subtitles')
+  const matchedTask = findSubtitleTaskBySelection(item)
   subtitlePreferredSelectionKey.value = buildSubtitleSelectionKey(item)
 
   if (
@@ -5813,17 +5928,17 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
     subtitleInspectorAudioItems.value = audioData.items || []
     resetSubtitleManualMatchState()
     subtitleInspectorInfo.value = {
-      taskId: '',
+      taskId: matchedTask?.id || String(preferredTaskId || item.task_id || '').trim(),
       libraryId: inspectorLibraryId,
-      audioLibraryId: inspectorLibraryId,
-      subtitleLibraryId: inspectorLibraryId,
+      audioLibraryId: matchedTask?.library_id || inspectorLibraryId,
+      subtitleLibraryId: matchedTask?.subtitle_library_id || inspectorLibraryId,
       folderPath: item.folder_path || '',
       subtitleDir: subtitleData.folder_path || subtitleDir,
-      sourceMode: '',
-      manualMatchCompleted: Boolean(item.manual_match_completed),
-      manualMatchAppliedPairs: Number(item.manual_match_applied_pairs || 0),
-      manualMatchDeletedSubtitles: Number(item.manual_match_deleted_subtitles || 0),
-      manualMatchMessage: String(item.queue_message || ''),
+      sourceMode: matchedTask?.source_mode || '',
+      manualMatchCompleted: Boolean(matchedTask?.manual_match_completed ?? item.manual_match_completed),
+      manualMatchAppliedPairs: Number(matchedTask?.manual_match_applied_pairs ?? item.manual_match_applied_pairs ?? 0),
+      manualMatchDeletedSubtitles: Number(matchedTask?.manual_match_deleted_subtitles ?? item.manual_match_deleted_subtitles ?? 0),
+      manualMatchMessage: String(matchedTask?.current_step || item.queue_message || ''),
       totalFiles: subtitleData.total_files || 0,
       totalSize: (subtitleData.items || []).reduce((sum, child) => sum + (child.size || 0), 0)
     }

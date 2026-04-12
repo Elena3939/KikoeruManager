@@ -1478,6 +1478,153 @@
               达到最大次数后任务将标记为失败
             </div>
 
+            <el-divider>增强下载工作台</el-divider>
+
+            <el-row :gutter="20">
+              <el-col :span="6">
+                <el-form-item label="并发会话数">
+                  <el-input-number
+                    v-model="config.asmr_sync.enhanced_max_parallel_sessions"
+                    :min="1"
+                    :max="10"
+                    :disabled="!config.asmr_sync.enabled"
+                    style="width: 100%;"
+                  />
+                  <div class="form-tip">增强下载队列同时执行的会话数量</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="单会话并发数">
+                  <el-input-number
+                    v-model="config.asmr_sync.enhanced_per_session_concurrency"
+                    :min="1"
+                    :max="10"
+                    :disabled="!config.asmr_sync.enabled"
+                    style="width: 100%;"
+                  />
+                  <div class="form-tip">单个 RJ 会话内允许同时下载的文件数</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="下载超时（秒）">
+                  <el-input-number
+                    v-model="config.asmr_sync.download_timeout_seconds"
+                    :min="10"
+                    :max="600"
+                    :step="10"
+                    :disabled="!config.asmr_sync.enabled"
+                    style="width: 100%;"
+                  />
+                  <div class="form-tip">单文件下载请求超时</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="单文件重试次数">
+                  <el-input-number
+                    v-model="config.asmr_sync.retry_count"
+                    :min="1"
+                    :max="10"
+                    :disabled="!config.asmr_sync.enabled"
+                    style="width: 100%;"
+                  />
+                  <div class="form-tip">网络异常、超时、5xx 时自动重试</div>
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <el-row :gutter="20">
+              <el-col :span="6">
+                <el-form-item label="重试延迟（秒）">
+                  <el-input-number
+                    v-model="config.asmr_sync.retry_delay"
+                    :min="1"
+                    :max="60"
+                    :disabled="!config.asmr_sync.enabled"
+                    style="width: 100%;"
+                  />
+                  <div class="form-tip">每次自动重试之间的等待时间</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="强制 MD5 校验">
+                  <el-switch v-model="config.asmr_sync.md5_verify_required" :disabled="!config.asmr_sync.enabled" />
+                  <div class="form-tip">远端提供 hash 时执行完整性校验</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="时长容差（秒）">
+                  <el-input-number
+                    v-model="config.asmr_sync.match_duration_tolerance_seconds"
+                    :min="0"
+                    :max="30"
+                    :step="0.5"
+                    :precision="1"
+                    :disabled="!config.asmr_sync.enabled"
+                    style="width: 100%;"
+                  />
+                  <div class="form-tip">弱匹配时允许的音频时长误差</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="大小容差比例">
+                  <el-input-number
+                    v-model="config.asmr_sync.match_size_tolerance_ratio"
+                    :min="0"
+                    :max="0.5"
+                    :step="0.01"
+                    :precision="2"
+                    :disabled="!config.asmr_sync.enabled"
+                    style="width: 100%;"
+                  />
+                  <div class="form-tip">例如 0.08 表示允许 8% 大小误差</div>
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <el-divider>自动上传</el-divider>
+
+            <el-row :gutter="20">
+              <el-col :span="6">
+                <el-form-item label="启用自动上传">
+                  <el-switch v-model="config.asmr_sync.auto_upload_enabled" :disabled="!config.asmr_sync.enabled" />
+                  <div class="form-tip">增强下载完成后按规则直传目标目录</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="上传模式">
+                  <el-select
+                    v-model="config.asmr_sync.auto_upload_mode"
+                    :disabled="!config.asmr_sync.enabled || !config.asmr_sync.auto_upload_enabled"
+                    style="width: 100%;"
+                  >
+                    <el-option label="本地复制" value="local" />
+                    <el-option label="群晖上传" value="synology" />
+                  </el-select>
+                  <div class="form-tip">增强下载工作台默认上传模式</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="默认目标路径">
+                  <el-input
+                    v-model="config.asmr_sync.auto_upload_target_path"
+                    :disabled="!config.asmr_sync.enabled || !config.asmr_sync.auto_upload_enabled"
+                    placeholder="本地目录或群晖远程目录"
+                  />
+                  <div class="form-tip">会自动带入增强下载工作台</div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="默认群晖库存 ID">
+                  <el-input
+                    v-model="config.asmr_sync.auto_upload_library_id"
+                    :disabled="!config.asmr_sync.enabled || !config.asmr_sync.auto_upload_enabled || config.asmr_sync.auto_upload_mode !== 'synology'"
+                    placeholder="例如 synology-main"
+                  />
+                  <div class="form-tip">仅群晖上传模式需要</div>
+                </el-form-item>
+              </el-col>
+            </el-row>
+
             <el-form-item label="HTTP代理">
               <el-input
                 v-model="config.asmr_sync.http_proxy"
@@ -1983,12 +2130,22 @@ const defaultConfig = {
     enabled: true,
     api_base_url: 'https://api.asmr-200.com/api',
     max_concurrent_downloads: 3,
+    enhanced_max_parallel_sessions: 5,
+    enhanced_per_session_concurrency: 3,
     http_proxy: '',
     retry_interval_hours: 1.0,
     max_retry_count: 10,
     retry_cron: '0 */1 * * *',
     retry_count: 3,
     retry_delay: 5,
+    download_timeout_seconds: 60,
+    md5_verify_required: true,
+    auto_upload_enabled: false,
+    auto_upload_mode: 'local',
+    auto_upload_library_id: '',
+    auto_upload_target_path: '',
+    match_duration_tolerance_seconds: 3.0,
+    match_size_tolerance_ratio: 0.08,
     lrc_clean_enabled: true,
     lrc_clean_patterns: [
       '@[\\w]{3,}',
@@ -2161,12 +2318,22 @@ async function loadConfig() {
         enabled: data?.asmr_sync?.enabled ?? true,
         api_base_url: data?.asmr_sync?.api_base_url || 'https://api.asmr-200.com/api',
         max_concurrent_downloads: data?.asmr_sync?.max_concurrent_downloads ?? 3,
+        enhanced_max_parallel_sessions: data?.asmr_sync?.enhanced_max_parallel_sessions ?? 5,
+        enhanced_per_session_concurrency: data?.asmr_sync?.enhanced_per_session_concurrency ?? 3,
         http_proxy: data?.asmr_sync?.http_proxy || '',
         retry_interval_hours: data?.asmr_sync?.retry_interval_hours ?? 1.0,
         max_retry_count: data?.asmr_sync?.max_retry_count ?? 10,
         retry_cron: data?.asmr_sync?.retry_cron || '0 */1 * * *',
         retry_count: data?.asmr_sync?.retry_count ?? 3,
         retry_delay: data?.asmr_sync?.retry_delay ?? 5,
+        download_timeout_seconds: data?.asmr_sync?.download_timeout_seconds ?? 60,
+        md5_verify_required: data?.asmr_sync?.md5_verify_required ?? true,
+        auto_upload_enabled: data?.asmr_sync?.auto_upload_enabled ?? false,
+        auto_upload_mode: data?.asmr_sync?.auto_upload_mode || 'local',
+        auto_upload_library_id: data?.asmr_sync?.auto_upload_library_id || '',
+        auto_upload_target_path: data?.asmr_sync?.auto_upload_target_path || '',
+        match_duration_tolerance_seconds: data?.asmr_sync?.match_duration_tolerance_seconds ?? 3.0,
+        match_size_tolerance_ratio: data?.asmr_sync?.match_size_tolerance_ratio ?? 0.08,
         lrc_clean_enabled: data?.asmr_sync?.lrc_clean_enabled ?? true,
         lrc_clean_patterns: data?.asmr_sync?.lrc_clean_patterns || defaultConfig.asmr_sync.lrc_clean_patterns,
         simplify_chinese_enabled: data?.asmr_sync?.simplify_chinese_enabled ?? true
@@ -2372,12 +2539,22 @@ async function saveConfig() {
         enabled: config.value.asmr_sync?.enabled ?? true,
         api_base_url: config.value.asmr_sync?.api_base_url || 'https://api.asmr-200.com/api',
         max_concurrent_downloads: config.value.asmr_sync?.max_concurrent_downloads ?? 3,
+        enhanced_max_parallel_sessions: config.value.asmr_sync?.enhanced_max_parallel_sessions ?? 5,
+        enhanced_per_session_concurrency: config.value.asmr_sync?.enhanced_per_session_concurrency ?? 3,
         http_proxy: config.value.asmr_sync?.http_proxy || '',
         retry_interval_hours: config.value.asmr_sync?.retry_interval_hours ?? 1.0,
         max_retry_count: config.value.asmr_sync?.max_retry_count ?? 10,
         retry_cron: config.value.asmr_sync?.retry_cron || '0 */1 * * *',
         retry_count: config.value.asmr_sync?.retry_count ?? 3,
         retry_delay: config.value.asmr_sync?.retry_delay ?? 5,
+        download_timeout_seconds: config.value.asmr_sync?.download_timeout_seconds ?? 60,
+        md5_verify_required: config.value.asmr_sync?.md5_verify_required ?? true,
+        auto_upload_enabled: config.value.asmr_sync?.auto_upload_enabled ?? false,
+        auto_upload_mode: config.value.asmr_sync?.auto_upload_mode || 'local',
+        auto_upload_library_id: config.value.asmr_sync?.auto_upload_library_id || '',
+        auto_upload_target_path: config.value.asmr_sync?.auto_upload_target_path || '',
+        match_duration_tolerance_seconds: config.value.asmr_sync?.match_duration_tolerance_seconds ?? 3.0,
+        match_size_tolerance_ratio: config.value.asmr_sync?.match_size_tolerance_ratio ?? 0.08,
         lrc_clean_enabled: config.value.asmr_sync?.lrc_clean_enabled ?? true,
         lrc_clean_patterns: config.value.asmr_sync?.lrc_clean_patterns || [],
         simplify_chinese_enabled: config.value.asmr_sync?.simplify_chinese_enabled ?? true

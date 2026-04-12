@@ -720,6 +720,56 @@ export const asmrSyncApi = {
     return response.data
   },
 
+  planEnhanced: async (payload) => {
+    const response = await apiClient.post('/asmr-sync/enhanced/plan', payload)
+    return response.data
+  },
+
+  startEnhanced: async (items, autoClassify = false) => {
+    const response = await apiClient.post('/asmr-sync/enhanced/start', {
+      items,
+      auto_classify: autoClassify
+    })
+    return response.data
+  },
+
+  dashboardEnhanced: async () => {
+    const response = await apiClient.get('/asmr-sync/enhanced/dashboard')
+    return response.data
+  },
+
+  sessionsEnhanced: async (limit = 50) => {
+    const response = await apiClient.get('/asmr-sync/enhanced/sessions', { params: { limit } })
+    return response.data
+  },
+
+  sessionEnhanced: async (sessionId) => {
+    const response = await apiClient.get(`/asmr-sync/enhanced/sessions/${sessionId}`)
+    return response.data
+  },
+
+  updateSessionPriority: async (sessionId, queuePriority) => {
+    const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/priority`, {
+      queue_priority: queuePriority
+    })
+    return response.data
+  },
+
+  pauseSession: async (sessionId) => {
+    const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/pause`)
+    return response.data
+  },
+
+  resumeSession: async (sessionId) => {
+    const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/resume`)
+    return response.data
+  },
+
+  retryFailedSession: async (sessionId) => {
+    const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/retry-failed`)
+    return response.data
+  },
+
   preview: async (rjcode) => {
     const response = await apiClient.post('/asmr-sync/preview', { rjcode })
     return response.data
@@ -864,7 +914,10 @@ export const rjSubtitleApi = {
       applied_pairs: payload.appliedPairs ?? 0,
       deleted_subtitles: payload.deletedSubtitles ?? 0,
       naming_strategy: payload.namingStrategy || 'audio',
-      pair_changes: payload.pairChanges || []
+      pair_changes: payload.pairChanges || [],
+      folder_path: payload.folderPath || '',
+      library_id: payload.libraryId || '',
+      rjcode: payload.rjcode || ''
     })
     return response.data
   },

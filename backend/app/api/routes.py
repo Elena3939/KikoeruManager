@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -122,6 +122,7 @@ async def list_activity_logs(
                 "action": row.get("action"),
                 "status": row.get("status"),
                 "summary": row.get("summary"),
+                "task_id": row.get("task_id"),
                 "created_at": row.get("created_at"),
                 "source_path": row.get("source_path"),
                 "rjcode": row.get("rjcode"),
@@ -148,6 +149,149 @@ async def list_activity_logs(
             }
             parent_row["has_child_rows"] = True
             parent_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at")
+
+        def _walk_tree_rows(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for node in nodes or []:
+                if not isinstance(node, dict):
+                    continue
+                out.append(node)
+                child_nodes = node.get("child_rows") if isinstance(node.get("child_rows"), list) else []
+                if child_nodes:
+                    out.extend(_walk_tree_rows(child_nodes))
+            return out
+
+        def _max_tree_activity(node: dict[str, Any]) -> datetime:
+            latest = _coerce_dt(node.get("created_at")) or datetime.min
+            for child in node.get("child_rows") if isinstance(node.get("child_rows"), list) else []:
+                if not isinstance(child, dict):
+                    continue
+                latest = max(latest, _max_tree_activity(child))
+            detail = node.get("detail") if isinstance(node.get("detail"), dict) else {}
+            for child in detail.get("child_rows") if isinstance(detail.get("child_rows"), list) else []:
+                if not isinstance(child, dict):
+                    continue
+                latest = max(latest, _max_tree_activity(child))
+            return latest
+
+        def _is_successful_pair_state(row: dict[str, Any]) -> bool:
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            pair_status = str(
+                row.get("merged_pair_status")
+                or detail.get("pair_status")
+                or ""
+            ).strip()
+            if pair_status == "success":
+                return True
+            return bool(detail.get("manual_match_completed"))
+
+        def _recompute_subtitle_batch_rollup(batch_row: dict[str, Any]) -> None:
+            batch_detail = batch_row.get("detail") if isinstance(batch_row.get("detail"), dict) else {}
+            child_rows = sorted(
+                [
+                    child for child in (batch_detail.get("child_rows") or [])
+                    if isinstance(child, dict)
+                ],
+                key=lambda item: _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
+            )
+            if not child_rows:
+                return
+
+            descendant_rows = _walk_tree_rows(child_rows)
+            crawl_descendants = [
+                item for item in descendant_rows
+                if str(item.get("category") or "").strip() == "subtitle_crawl"
+            ]
+            pair_descendants = [
+                item for item in descendant_rows
+                if str(item.get("relation") or "").strip() == "pair"
+                or str(item.get("category") or "").strip() == "subtitle_pair"
+            ]
+
+            paired_child_count = sum(
+                1
+                for item in crawl_descendants
+                if _is_successful_pair_state(item)
+                or any(
+                    str(pair_item.get("status") or "").strip() == "success"
+                    and (
+                        str(pair_item.get("rjcode") or "").strip().upper()
+                        == str(item.get("rjcode") or "").strip().upper()
+                        or (
+                            str(pair_item.get("source_path") or "").strip()
+                            and str(pair_item.get("source_path") or "").strip()
+                            == str(item.get("source_path") or "").strip()
+                        )
+                    )
+                    for pair_item in pair_descendants
+                )
+            )
+            awaiting_manual_child_count = sum(
+                1
+                for item in crawl_descendants
+                if not _is_successful_pair_state(item)
+                and bool((item.get("detail") if isinstance(item.get("detail"), dict) else {}).get("awaiting_manual_match"))
+            )
+            unpaired_child_count = max(0, len(crawl_descendants) - paired_child_count)
+
+            latest_pair_row = None
+            latest_pair_dt = datetime.min
+            for pair_item in pair_descendants:
+                if str(pair_item.get("status") or "").strip() != "success":
+                    continue
+                pair_dt = _coerce_dt(pair_item.get("created_at")) or datetime.min
+                if pair_dt >= latest_pair_dt:
+                    latest_pair_row = pair_item
+                    latest_pair_dt = pair_dt
+            if not latest_pair_row:
+                for crawl_item in crawl_descendants:
+                    if not _is_successful_pair_state(crawl_item):
+                        continue
+                    crawl_detail = crawl_item.get("detail") if isinstance(crawl_item.get("detail"), dict) else {}
+                    pair_dt = _coerce_dt(crawl_detail.get("pair_created_at") or crawl_item.get("latest_activity_at") or crawl_item.get("created_at")) or datetime.min
+                    if pair_dt >= latest_pair_dt:
+                        latest_pair_row = crawl_item
+                        latest_pair_dt = pair_dt
+
+            latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
+            for child in child_rows:
+                latest_activity = max(latest_activity, _max_tree_activity(child))
+
+            pair_detail = latest_pair_row.get("detail") if isinstance(latest_pair_row, dict) and isinstance(latest_pair_row.get("detail"), dict) else {}
+            batch_row["detail"] = {
+                **batch_detail,
+                "child_rows": child_rows,
+                "child_row_count": len(child_rows),
+                "paired_child_count": paired_child_count,
+                "awaiting_manual_child_count": awaiting_manual_child_count,
+                "unpaired_child_count": unpaired_child_count,
+                "pair_linked": bool(latest_pair_row),
+                "pair_status": str(
+                    (latest_pair_row or {}).get("status")
+                    or pair_detail.get("pair_status")
+                    or ""
+                ).strip() if latest_pair_row else "",
+                "pair_summary": str(
+                    (latest_pair_row or {}).get("summary")
+                    or pair_detail.get("pair_summary")
+                    or ""
+                ).strip() if latest_pair_row else "",
+                "pair_created_at": (
+                    (latest_pair_row or {}).get("created_at")
+                    or pair_detail.get("pair_created_at")
+                    or ""
+                ) if latest_pair_row else "",
+                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
+            }
+            batch_row["has_child_rows"] = True
+            batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
+            if latest_pair_row:
+                batch_row["merged_pair"] = True
+                batch_row["merged_pair_status"] = str(
+                    latest_pair_row.get("status")
+                    or pair_detail.get("pair_status")
+                    or ""
+                ).strip()
         for row in rows:
             if row.get("category") == "subtitle_crawl" and row.get("task_id"):
                 task_id = str(row["task_id"])
@@ -259,17 +403,65 @@ async def list_activity_logs(
                     _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min,
                 )
             if child_rows:
+                ordered_child_rows = sorted(
+                    child_rows,
+                    key=lambda item: _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
+                )
+                descendant_rows = _walk_tree_rows(ordered_child_rows)
+                crawl_descendants = [
+                    item for item in descendant_rows
+                    if str(item.get("category") or "").strip() == "subtitle_crawl"
+                ]
+                pair_descendants = [
+                    item for item in descendant_rows
+                    if str(item.get("relation") or "").strip() == "pair"
+                    or str(item.get("category") or "").strip() == "subtitle_pair"
+                ]
+                paired_child_count = sum(
+                    1
+                    for item in crawl_descendants
+                    if any(
+                        str(pair_item.get("status") or "").strip() == "success"
+                        and (
+                            str(pair_item.get("rjcode") or "").strip().upper()
+                            == str(item.get("rjcode") or "").strip().upper()
+                            or (
+                                str(pair_item.get("source_path") or "").strip()
+                                and str(pair_item.get("source_path") or "").strip()
+                                == str(item.get("source_path") or "").strip()
+                            )
+                        )
+                        for pair_item in pair_descendants
+                    )
+                )
+                awaiting_manual_child_count = sum(
+                    1
+                    for item in crawl_descendants
+                    if bool((item.get("detail") if isinstance(item.get("detail"), dict) else {}).get("awaiting_manual_match"))
+                )
+                unpaired_child_count = max(0, len(crawl_descendants) - paired_child_count)
+                latest_pair_row = None
+                for pair_item in sorted(pair_descendants, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min):
+                    if str(pair_item.get("status") or "").strip() == "success":
+                        latest_pair_row = pair_item
                 batch_row["detail"] = {
                     **batch_detail,
-                    "child_rows": sorted(
-                        child_rows,
-                        key=lambda item: _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
-                    ),
+                    "child_rows": ordered_child_rows,
                     "child_row_count": len(child_rows),
+                    "paired_child_count": paired_child_count,
+                    "awaiting_manual_child_count": awaiting_manual_child_count,
+                    "unpaired_child_count": unpaired_child_count,
+                    "pair_linked": bool(latest_pair_row),
+                    "pair_status": str(latest_pair_row.get("status") or "").strip() if latest_pair_row else "",
+                    "pair_summary": str(latest_pair_row.get("summary") or "").strip() if latest_pair_row else "",
+                    "pair_created_at": latest_pair_row.get("created_at") if latest_pair_row else "",
                     "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
                 }
                 batch_row["has_child_rows"] = True
                 batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
+                if latest_pair_row:
+                    batch_row["merged_pair"] = True
+                    batch_row["merged_pair_status"] = str(latest_pair_row.get("status") or "").strip()
 
         import_batch_rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         for row in rows:
@@ -462,12 +654,14 @@ async def list_activity_logs(
             if not task_id:
                 continue
             crawl_row = crawl_by_task.get(task_id)
-            if not crawl_row or task_id in crawl_rows_by_task:
+            if not crawl_row:
                 continue
             crawl_detail = crawl_row.get("detail") if isinstance(crawl_row.get("detail"), dict) else {}
             pair_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
             crawl_detail = {
                 **crawl_detail,
+                "awaiting_manual_match": False,
+                "manual_match_completed": str(row.get("status") or "").strip() == "success",
                 "pair_summary": row.get("summary") or "",
                 "pair_status": row.get("status") or "",
                 "pair_action": row.get("action") or "",
@@ -476,12 +670,17 @@ async def list_activity_logs(
                 "pair_final_file_count": int(pair_detail.get("final_file_count") or 0),
                 "pair_linked": True,
                 "pair_created_at": row.get("created_at") or "",
+                "manual_match_applied_pairs": int(pair_detail.get("applied_pairs") or pair_detail.get("manual_match_applied_pairs") or 0),
+                "manual_match_deleted_subtitles": int(pair_detail.get("deleted_subtitles") or 0),
             }
             crawl_row["detail"] = crawl_detail
             crawl_row["summary"] = f"{crawl_row.get('summary') or '字幕爬取完成'}，{row.get('summary') or '已完成手动配对'}"
             crawl_row["merged_pair"] = True
             crawl_row["merged_pair_status"] = row.get("status") or ""
             merged_pair_ids.add(str(row.get("id") or ""))
+
+        for batch_row in batch_rows_by_id.values():
+            _recompute_subtitle_batch_rollup(batch_row)
 
         for row in subtitle_import_rows:
             if row.get("action") != "pending_execute":
@@ -711,7 +910,7 @@ async def list_activity_logs(
 
             preview_detail = preview_row.get("detail") if isinstance(preview_row.get("detail"), dict) else {}
             preview_child_list = list(preview_detail.get("child_rows") or [])
-            preview_child_list.append({
+            apply_child = {
                 "id": str(row.get("id") or f"{session_key}-apply"),
                 "relation": "delete_apply",
                 "category": row.get("category"),
@@ -724,7 +923,8 @@ async def list_activity_logs(
                 "rjcode": row.get("rjcode"),
                 "detail": detail,
                 "child_rows": [],
-            })
+            }
+            preview_child_list.append(apply_child)
             preview_selected_count = int(preview_detail.get("selected_count") or 0)
             preview_selected_size = int(preview_detail.get("selected_size") or 0)
             success_count = int(detail.get("success_count") or 0)
@@ -762,17 +962,47 @@ async def list_activity_logs(
             parent_row = preview_by_session.get(session_key)
             if not parent_row:
                 continue
-            latest_retry_row = retry_rows[0]
+            ordered_retry_rows = sorted(retry_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
+            latest_retry_row = ordered_retry_rows[-1]
             latest_retry_detail = latest_retry_row.get("detail") if isinstance(latest_retry_row.get("detail"), dict) else {}
             parent_detail = parent_row.get("detail") if isinstance(parent_row.get("detail"), dict) else {}
             child_rows = list(parent_detail.get("child_rows") or [])
+            target_apply_child = None
+            for child in sorted(child_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min):
+                if str(child.get("relation") or "").strip() != "delete_apply":
+                    continue
+                child_detail = child.get("detail") if isinstance(child.get("detail"), dict) else {}
+                child_session_key = str(child_detail.get("session_key") or "").strip()
+                if child_session_key and child_session_key == session_key:
+                    target_apply_child = child
+            if not target_apply_child:
+                latest_retry_path = str(latest_retry_row.get("source_path") or parent_row.get("source_path") or "").strip()
+                latest_retry_dt = _coerce_dt(latest_retry_row.get("created_at"))
+                closest_child = None
+                closest_seconds = None
+                for child in sorted(child_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min):
+                    if str(child.get("relation") or "").strip() != "delete_apply":
+                        continue
+                    child_path = str(child.get("source_path") or "").strip()
+                    child_dt = _coerce_dt(child.get("created_at"))
+                    if latest_retry_path and child_path and child_path != latest_retry_path:
+                        continue
+                    if not latest_retry_dt or not child_dt or child_dt > latest_retry_dt:
+                        continue
+                    seconds = (latest_retry_dt - child_dt).total_seconds()
+                    if seconds < 0 or seconds > 1800:
+                        continue
+                    if closest_seconds is None or seconds < closest_seconds:
+                        closest_seconds = seconds
+                        closest_child = child
+                target_apply_child = closest_child
             retry_children = []
-            for retry_row in sorted(retry_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min):
+            for retry_row in ordered_retry_rows:
                 retry_children.append({
                     "id": str(retry_row.get("id") or f"{session_key}-retry"),
                     "relation": "retry_preview",
                     "category": retry_row.get("category"),
-                    "category_label": "失败重试",
+                    "category_label": "补充删除",
                     "action": retry_row.get("action"),
                     "status": retry_row.get("status"),
                     "summary": retry_row.get("summary"),
@@ -782,8 +1012,29 @@ async def list_activity_logs(
                     "detail": retry_row.get("detail") if isinstance(retry_row.get("detail"), dict) else {},
                     "child_rows": [],
                 })
-            child_rows.extend(retry_children)
             latest_activity = _coerce_dt(latest_retry_row.get("created_at")) or _coerce_dt(parent_row.get("created_at")) or datetime.min
+            retry_status = str(latest_retry_detail.get("retry_status") or latest_retry_row.get("status") or "").strip()
+            if target_apply_child:
+                apply_detail = target_apply_child.get("detail") if isinstance(target_apply_child.get("detail"), dict) else {}
+                apply_child_rows = list(target_apply_child.get("child_rows") or [])
+                apply_child_rows.extend(retry_children)
+                target_apply_child["detail"] = {
+                    **apply_detail,
+                    "retry_linked": True,
+                    "retry_status": retry_status,
+                    "retry_summary": latest_retry_row.get("summary") or "",
+                    "retry_target_count": int(latest_retry_detail.get("retry_target_count") or apply_detail.get("retry_target_count") or 0),
+                    "retry_success_count": int(latest_retry_detail.get("retry_success_count") or apply_detail.get("retry_success_count") or 0),
+                    "retry_failed_count": int(latest_retry_detail.get("retry_failed_count") or apply_detail.get("retry_failed_count") or 0),
+                    "recovered_item_count": int(latest_retry_detail.get("recovered_item_count") or apply_detail.get("recovered_item_count") or 0),
+                    "recovered_selected_size": int(latest_retry_detail.get("recovered_selected_size") or apply_detail.get("recovered_selected_size") or 0),
+                }
+                target_apply_child["child_rows"] = sorted(
+                    apply_child_rows,
+                    key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
+                )
+            else:
+                child_rows.extend(retry_children)
             parent_row["detail"] = {
                 **parent_detail,
                 "retry_linked": True,
@@ -800,6 +1051,9 @@ async def list_activity_logs(
                 "recovered_items": latest_retry_detail.get("recovered_items") or parent_detail.get("recovered_items") or [],
                 "failed_targets": latest_retry_detail.get("failed_targets") or parent_detail.get("failed_targets") or [],
                 "retry_status": latest_retry_detail.get("retry_status") or parent_detail.get("retry_status") or "",
+                "repair_status": retry_status,
+                "repair_summary": latest_retry_row.get("summary") or "",
+                "repair_completed_at": latest_retry_row.get("created_at") or "",
                 "child_rows": sorted(
                     child_rows,
                     key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
@@ -807,19 +1061,106 @@ async def list_activity_logs(
                 "child_row_count": len(child_rows),
                 "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at"),
             }
-            retry_status = str(parent_row["detail"].get("retry_status") or latest_retry_row.get("status") or "").strip()
             if retry_status == "success":
-                parent_row["retry_badge"] = "重试✔"
+                parent_row["retry_badge"] = "已修复"
             elif retry_status == "partial_success":
-                parent_row["retry_badge"] = "重新执行部分成功"
+                parent_row["retry_badge"] = "部分修复"
             elif retry_status == "failed":
-                parent_row["retry_badge"] = "重新执行仍失败"
+                parent_row["retry_badge"] = "未修复"
             parent_row["merged_filter_retry"] = True
             parent_row["merged_filter_retry_status"] = retry_status
             parent_row["has_child_rows"] = True
             parent_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at")
             for retry_row in retry_rows:
                 merged_filter_retry_ids.add(str(retry_row.get("id") or ""))
+
+        for preview_row in preview_rows:
+            parent_detail = preview_row.get("detail") if isinstance(preview_row.get("detail"), dict) else {}
+            original_children = sorted(
+                [
+                    child for child in (parent_detail.get("child_rows") or [])
+                    if isinstance(child, dict)
+                ],
+                key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
+            )
+            if not original_children:
+                continue
+
+            normalized_children: list[dict[str, Any]] = []
+            pending_apply_child: Optional[dict[str, Any]] = None
+            repair_status = str(parent_detail.get("repair_status") or "").strip()
+            repair_summary = str(parent_detail.get("repair_summary") or "").strip()
+            repair_completed_at = str(parent_detail.get("repair_completed_at") or "").strip()
+
+            for child in original_children:
+                relation = str(child.get("relation") or "").strip()
+                if relation != "delete_apply":
+                    normalized_children.append(child)
+                    continue
+
+                child_status = str(child.get("status") or "").strip()
+                if pending_apply_child and child_status:
+                    retry_apply_child = {
+                        **child,
+                        "relation": "retry_apply",
+                        "category_label": "补充删除",
+                    }
+                    pending_detail = pending_apply_child.get("detail") if isinstance(pending_apply_child.get("detail"), dict) else {}
+                    pending_child_rows = list(pending_apply_child.get("child_rows") or [])
+                    pending_child_rows.append(retry_apply_child)
+                    pending_apply_child["child_rows"] = sorted(
+                        pending_child_rows,
+                        key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
+                    )
+                    pending_apply_child["detail"] = {
+                        **pending_detail,
+                        "retry_linked": True,
+                        "retry_status": "failed" if child_status == "cancelled" else child_status,
+                        "retry_summary": child.get("summary") or "",
+                        "repair_status": "failed" if child_status == "cancelled" else child_status,
+                        "repair_summary": child.get("summary") or "",
+                        "repair_completed_at": child.get("created_at") or "",
+                    }
+                    repair_status = "failed" if child_status == "cancelled" else child_status
+                    repair_summary = str(child.get("summary") or "").strip()
+                    repair_completed_at = str(child.get("created_at") or "").strip()
+                    if child_status == "success":
+                        pending_apply_child = None
+                    else:
+                        pending_apply_child = pending_apply_child
+                    continue
+
+                normalized_children.append(child)
+                if child_status in {"partial_success", "failed", "cancelled"}:
+                    pending_apply_child = child
+                else:
+                    pending_apply_child = None
+
+            latest_activity = _coerce_dt(preview_row.get("created_at")) or datetime.min
+            for child in normalized_children:
+                latest_activity = max(latest_activity, _max_tree_activity(child))
+
+            preview_row["detail"] = {
+                **parent_detail,
+                "child_rows": normalized_children,
+                "child_row_count": len(normalized_children),
+                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else preview_row.get("created_at"),
+                "repair_status": repair_status,
+                "repair_summary": repair_summary,
+                "repair_completed_at": repair_completed_at,
+                "retry_linked": bool(repair_status) or bool(parent_detail.get("retry_linked")),
+            }
+            if repair_status:
+                if repair_status == "success":
+                    preview_row["retry_badge"] = "已修复"
+                elif repair_status == "partial_success":
+                    preview_row["retry_badge"] = "部分修复"
+                elif repair_status == "failed":
+                    preview_row["retry_badge"] = "未修复"
+                preview_row["merged_filter_retry"] = True
+                preview_row["merged_filter_retry_status"] = repair_status
+            preview_row["has_child_rows"] = True
+            preview_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else preview_row.get("created_at")
 
         items: list[dict[str, Any]] = []
         for row in rows:
@@ -5783,6 +6124,9 @@ class RJSubtitleManualCompleteRequest(BaseModel):
     deleted_subtitles: int = 0
     naming_strategy: str = "audio"
     pair_changes: List[dict] = []
+    folder_path: str = ""
+    library_id: Optional[str] = None
+    rjcode: str = ""
 
 
 class RJSubtitleRerunRequest(BaseModel):
@@ -6327,21 +6671,81 @@ async def rj_subtitle_kikoeru_subtitle_state(request: RJSubtitleKikoeruSubtitleS
 
 
 @app.post("/api/rj-subtitle/task/{task_id}/manual-complete")
-async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCompleteRequest):
+async def rj_subtitle_manual_complete(
+    task_id: str,
+    request: RJSubtitleManualCompleteRequest,
+    db: Session = Depends(get_db),
+):
     from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
     from ..core.task_engine import TaskStatus, TaskType, get_task_engine
 
     try:
         engine = get_task_engine()
         task = engine.get_task(task_id)
-        if not task or task.type != TaskType.RJ_SUBTITLE_FETCH:
-            raise HTTPException(status_code=404, detail="任务不存在")
-
         applied_pairs = max(0, int(request.applied_pairs or 0))
         deleted_subtitles = max(0, int(request.deleted_subtitles or 0))
-        naming_strategy = str(request.naming_strategy or task.task_metadata.get("naming_strategy") or "audio").lower()
+        fallback_folder_path = str(request.folder_path or "").strip()
+        fallback_rjcode = str(request.rjcode or "").strip().upper()
         pair_changes = request.pair_changes if isinstance(request.pair_changes, list) else []
         pair_changes = pair_changes[:200]
+        fallback_crawl_row = None
+
+        if task and task.type != TaskType.RJ_SUBTITLE_FETCH:
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+        if not task:
+            crawl_query = (
+                db.query(ActivityLog)
+                .filter(ActivityLog.category == "subtitle_crawl")
+                .order_by(desc(ActivityLog.created_at))
+            )
+            if task_id:
+                fallback_crawl_row = crawl_query.filter(ActivityLog.task_id == task_id).first()
+            if not fallback_crawl_row and fallback_folder_path:
+                path_query = crawl_query.filter(ActivityLog.source_path == fallback_folder_path)
+                if fallback_rjcode:
+                    path_query = path_query.filter(ActivityLog.rjcode == fallback_rjcode)
+                fallback_crawl_row = path_query.first()
+            if not fallback_crawl_row and fallback_rjcode:
+                fallback_crawl_row = crawl_query.filter(ActivityLog.rjcode == fallback_rjcode).first()
+            if not fallback_crawl_row:
+                raise HTTPException(status_code=404, detail="任务不存在，且未找到对应的字幕抓取记录")
+
+            crawl_detail = fallback_crawl_row.detail if isinstance(fallback_crawl_row.detail, dict) else {}
+            naming_strategy = str(request.naming_strategy or crawl_detail.get("naming_strategy") or "audio").lower()
+            rj_log = fallback_rjcode or str(fallback_crawl_row.rjcode or "").strip().upper()
+            source_path = fallback_folder_path or str(fallback_crawl_row.source_path or "").strip()
+            summary_parts = [f"后处理完成，已应用 {applied_pairs} 组配对"]
+            if deleted_subtitles:
+                summary_parts.append(f"删除 {deleted_subtitles} 个未使用字幕")
+            summary = "，".join(summary_parts)
+
+            from ..core.activity_log_service import log_subtitle_pair_complete
+
+            log_subtitle_pair_complete(
+                task_id,
+                rj_log,
+                applied_pairs,
+                deleted_subtitles,
+                summary,
+                linked_detail={
+                    "batch_id": str(crawl_detail.get("batch_id") or "").strip() or None,
+                    "pair_changes": pair_changes,
+                    "folder_path": source_path or None,
+                    "library_id": str(request.library_id or crawl_detail.get("library_id") or "").strip() or None,
+                    "naming_strategy": naming_strategy,
+                    "manual_match_completed": True,
+                },
+                source_path=source_path or None,
+            )
+            return {
+                "success": True,
+                "message": summary,
+                "task_id": task_id,
+                "fallback_logged": True,
+            }
+
+        naming_strategy = str(request.naming_strategy or task.task_metadata.get("naming_strategy") or "audio").lower()
         linked_finalize_result = await get_linked_subtitle_import_service().finalize_manual_match_task(task)
 
         task.task_metadata = task.task_metadata or {}
@@ -6392,7 +6796,11 @@ async def rj_subtitle_manual_complete(task_id: str, request: RJSubtitleManualCom
                     "reason": _lf.get("reason"),
                     "batch_id": str(task.task_metadata.get("batch_id") or "").strip() or None,
                     "pair_changes": pair_changes,
+                    "folder_path": str(task.task_metadata.get("folder_path") or task.source_path or "").strip() or None,
+                    "library_id": str(task.task_metadata.get("library_id") or "").strip() or None,
+                    "naming_strategy": naming_strategy,
                 },
+                source_path=str(task.task_metadata.get("folder_path") or task.source_path or "").strip() or None,
             )
         except Exception:
             logger.warning("[操作记录] 字幕配对记录失败", exc_info=True)
@@ -6797,6 +7205,26 @@ class ASMRSyncStartRequest(BaseModel):
     items: List[dict]  # [{rjcode, subtitle_folder, work_title}]
     auto_classify: bool = True
 
+
+class ASMRSyncEnhancedPlanRequest(BaseModel):
+    """增强下载计划请求"""
+    rjcodes: List[str]
+    folder_path: Optional[str] = ""
+    resource_types: List[str] = []
+    audio_formats: List[str] = []
+    subtitle_languages: List[str] = []
+    include_existing: bool = False
+
+
+class ASMRSyncEnhancedStartRequest(BaseModel):
+    """增强下载启动请求"""
+    items: List[dict]  # [{rjcode, work_title, selected_resources, folder_path, upload_options}]
+    auto_classify: bool = False
+
+
+class ASMRSyncEnhancedPriorityRequest(BaseModel):
+    queue_priority: int
+
 @app.post("/api/asmr-sync/scan")
 async def asmr_sync_scan(request: ASMRSyncScanRequest):
     """扫描指定文件夹，返回发现的 RJ 号和字幕文件列表"""
@@ -6958,7 +7386,8 @@ async def asmr_sync_start(request: ASMRSyncStartRequest):
                 metadata={
                     "rjcode": rjcode,
                     "subtitle_folder": subtitle_folder,
-                    "work_title": work_title
+                    "work_title": work_title,
+                    "download_mode": "legacy",
                 }
             )
 
@@ -6980,6 +7409,242 @@ async def asmr_sync_start(request: ASMRSyncStartRequest):
     except Exception as e:
         logger.error(f"开始同步下载失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"启动失败: {str(e)}")
+
+
+@app.post("/api/asmr-sync/enhanced/plan")
+async def asmr_sync_enhanced_plan(request: ASMRSyncEnhancedPlanRequest):
+    """为输入的 RJ 号构建增强下载计划。"""
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    if not request.rjcodes:
+        raise HTTPException(status_code=400, detail="至少需要一个 RJ 号")
+
+    service = get_asmr_resource_service()
+    plans = []
+    errors = []
+    filters = {
+        "resource_types": request.resource_types,
+        "audio_formats": request.audio_formats,
+        "subtitle_languages": request.subtitle_languages,
+        "include_existing": request.include_existing,
+    }
+
+    for raw_rjcode in request.rjcodes:
+        normalized_rjcode = service.normalize_rjcode(raw_rjcode)
+        if not normalized_rjcode:
+            continue
+        try:
+            plan = await service.build_download_plan(
+                rjcode=normalized_rjcode,
+                folder_path=str(request.folder_path or "").strip(),
+                filters=filters,
+                refresh=True,
+            )
+            plans.append(plan)
+        except Exception as exc:
+            logger.warning("构建增强下载计划失败: %s (%s)", normalized_rjcode, exc)
+            errors.append({
+                "rjcode": normalized_rjcode,
+                "error": str(exc),
+            })
+
+    return {
+        "success": len(plans) > 0,
+        "plans": plans,
+        "errors": errors,
+        "requested_count": len(request.rjcodes),
+        "planned_count": len(plans),
+    }
+
+
+@app.post("/api/asmr-sync/enhanced/start")
+async def asmr_sync_enhanced_start(request: ASMRSyncEnhancedStartRequest):
+    """启动增强下载任务，支持按文件清单下载。"""
+    from ..core.asmr_resource_service import get_asmr_resource_service
+    from ..core.task_engine import Task, TaskType, get_task_engine
+
+    config = get_config()
+
+    if not request.items:
+        raise HTTPException(status_code=400, detail="没有可启动的增强下载任务")
+
+    engine = get_task_engine()
+    engine.set_max_concurrent(int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5))
+    service = get_asmr_resource_service()
+    created_tasks = []
+    for item in request.items:
+        rjcode = str(item.get("rjcode") or "").strip().upper()
+        session_id = str(item.get("session_id") or "").strip()
+        selected_resources = list(item.get("selected_resources") or [])
+        if not rjcode:
+            continue
+        if not session_id:
+            raise HTTPException(status_code=400, detail=f"{rjcode} 缺少 session_id")
+        if not selected_resources:
+            raise HTTPException(status_code=400, detail=f"{rjcode} 没有选中任何资源")
+
+        task = Task(
+            task_type=TaskType.ASMR_SYNC_DOWNLOAD,
+            source_path=str(item.get("folder_path") or rjcode),
+            auto_classify=bool(request.auto_classify),
+            metadata={
+                "rjcode": rjcode,
+                "work_title": str(item.get("work_title") or ""),
+                "folder_path": str(item.get("folder_path") or ""),
+                "download_mode": "enhanced",
+                "session_id": session_id,
+                "selected_resources": selected_resources,
+                "selected_resource_count": len(selected_resources),
+                "upload_options": dict(item.get("upload_options") or {}),
+                "verify_md5_after_download": bool(item.get("verify_md5_after_download", True)),
+                "download_timeout_seconds": int(item.get("download_timeout_seconds") or 0),
+                "priority": int(item.get("queue_priority") or item.get("priority") or 100),
+                "queue_priority": int(item.get("queue_priority") or item.get("priority") or 100),
+                "verify_summary": {},
+                "upload_summary": {},
+                "retry_summary": {},
+                "resource_filter_snapshot": dict(item.get("resource_filter_snapshot") or {}),
+                "source_page": "asmr-sync",
+                "source_action": "enhanced_download",
+                "source_label": str(item.get("work_title") or rjcode),
+            }
+        )
+        await engine.submit(task)
+        service._update_session(
+            session_id,
+            task_id=task.id,
+            status="queued",
+            queue_priority=int(item.get("queue_priority") or item.get("priority") or 100),
+            target_path=str((item.get("upload_options") or {}).get("target_path") or ""),
+            upload_mode=str((item.get("upload_options") or {}).get("mode") or "disabled"),
+            statistics={
+                "selected_resource_count": len(selected_resources),
+                "upload_library_id": str((item.get("upload_options") or {}).get("library_id") or ""),
+            },
+            selected_resources=selected_resources,
+        )
+        created_tasks.append({
+            "task_id": task.id,
+            "session_id": session_id,
+            "rjcode": rjcode,
+            "work_title": str(item.get("work_title") or ""),
+            "selected_resource_count": len(selected_resources),
+        })
+
+    return {
+        "success": len(created_tasks) > 0,
+        "message": f"已创建 {len(created_tasks)} 个增强下载任务",
+        "tasks": created_tasks,
+    }
+
+
+@app.get("/api/asmr-sync/enhanced/dashboard")
+async def asmr_sync_enhanced_dashboard():
+    """增强下载监控看板摘要。"""
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "dashboard": get_asmr_resource_service().get_dashboard_summary(),
+        }
+    except Exception as exc:
+        logger.error("获取增强下载看板失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取监控看板失败: {str(exc)}")
+
+
+@app.get("/api/asmr-sync/enhanced/sessions")
+async def asmr_sync_enhanced_sessions(limit: int = 50):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "sessions": get_asmr_resource_service().list_sessions(limit=limit),
+        }
+    except Exception as exc:
+        logger.error("获取增强下载会话列表失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取会话列表失败: {str(exc)}")
+
+
+@app.get("/api/asmr-sync/enhanced/sessions/{session_id}")
+async def asmr_sync_enhanced_session_detail(session_id: str):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "session": get_asmr_resource_service().get_session_detail(session_id),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("获取增强下载会话详情失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取会话详情失败: {str(exc)}")
+
+
+@app.post("/api/asmr-sync/enhanced/sessions/{session_id}/priority")
+async def asmr_sync_enhanced_session_priority(session_id: str, request: ASMRSyncEnhancedPriorityRequest):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "session": await get_asmr_resource_service().update_session_priority(session_id, request.queue_priority),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("调整增强下载会话优先级失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"调整优先级失败: {str(exc)}")
+
+
+@app.post("/api/asmr-sync/enhanced/sessions/{session_id}/pause")
+async def asmr_sync_enhanced_session_pause(session_id: str):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "session": await get_asmr_resource_service().control_session(session_id, "pause"),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("暂停增强下载会话失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"暂停会话失败: {str(exc)}")
+
+
+@app.post("/api/asmr-sync/enhanced/sessions/{session_id}/resume")
+async def asmr_sync_enhanced_session_resume(session_id: str):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "session": await get_asmr_resource_service().control_session(session_id, "resume"),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("恢复增强下载会话失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"恢复会话失败: {str(exc)}")
+
+
+@app.post("/api/asmr-sync/enhanced/sessions/{session_id}/retry-failed")
+async def asmr_sync_enhanced_session_retry_failed(session_id: str):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "session": await get_asmr_resource_service().retry_failed_session(session_id),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("重试增强下载会话失败资源失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"重试失败资源失败: {str(exc)}")
 
 
 @app.get("/api/asmr-sync/status")
@@ -7013,12 +7678,22 @@ async def asmr_sync_status():
                     "error_message": t.error_message,
                     "download_files": t.task_metadata.get("download_files", []),
                     "failed_files": t.task_metadata.get("failed_files", []),
+                    "uploaded_files": t.task_metadata.get("uploaded_files", []),
+                    "verification_failures": t.task_metadata.get("verification_failures", []),
+                    "performance_metrics": t.task_metadata.get("performance_metrics", {}),
                     "sync_result": t.task_metadata.get("sync_result", {}),
                     "subtitle_moved_to": t.task_metadata.get("subtitle_moved_to", ""),
+                    "download_mode": t.task_metadata.get("download_mode", "legacy"),
+                    "session_id": t.task_metadata.get("session_id", ""),
+                    "queue_priority": t.task_metadata.get("queue_priority", t.task_metadata.get("priority", 100)),
                     "task_metadata": {
                         "retry_reason": t.task_metadata.get("retry_reason", ""),
                         "retry_count": t.task_metadata.get("retry_count", 0),
-                        "retry_after": t.task_metadata.get("retry_after", "")
+                        "retry_after": t.task_metadata.get("retry_after", ""),
+                        "selected_resource_count": t.task_metadata.get("selected_resource_count", 0),
+                        "verify_summary": t.task_metadata.get("verify_summary", {}),
+                        "upload_summary": t.task_metadata.get("upload_summary", {}),
+                        "retry_summary": t.task_metadata.get("retry_summary", {}),
                     }
                 }
                 for t in asmr_tasks[:20]  # 只返回最近20个

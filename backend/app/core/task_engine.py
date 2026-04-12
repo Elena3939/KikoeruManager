@@ -235,6 +235,41 @@ class TaskEngine:
         logger.info(f"[{rjcode}] 任务提交 - ID: {task.id[:8]}..., 源文件: {os.path.basename(task.source_path)}")
         return task.id
 
+    def _task_queue_priority(self, task: Task) -> tuple[int, datetime]:
+        metadata = dict(task.task_metadata or {})
+        try:
+            priority = int(metadata.get("queue_priority") or metadata.get("priority") or 100)
+        except Exception:
+            priority = 100
+        return priority, task.created_at
+
+    def _rebuild_pending_queue(self):
+        pending: list[Task] = []
+        while True:
+            try:
+                pending.append(self.queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        for task in sorted(pending, key=self._task_queue_priority):
+            self.queue.put_nowait(task)
+
+    def update_task_priority(self, task_id: str, queue_priority: int) -> bool:
+        task = self.tasks.get(task_id)
+        if not task:
+            return False
+        if task.task_metadata is None:
+            task.task_metadata = {}
+        task.task_metadata["queue_priority"] = max(1, int(queue_priority))
+        if task.status == TaskStatus.PENDING:
+            self._rebuild_pending_queue()
+        return True
+
+    def get_tasks_by_session(self, session_id: str) -> list[Task]:
+        target = str(session_id or "").strip()
+        if not target:
+            return []
+        return [task for task in self.tasks.values() if str((task.task_metadata or {}).get("session_id") or "") == target]
+
     def _infer_task_domain(self, task: Task) -> str:
         if task.type in {TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
             return "import"
@@ -2023,6 +2058,14 @@ class TaskEngine:
         logger.info(f"[{rjcode}] 开始 ASMR 同步下载任务")
 
         try:
+            if str(task.task_metadata.get('download_mode') or '').strip().lower() == 'enhanced':
+                from .asmr_resource_service import get_asmr_resource_service
+
+                task.update_progress(3, "准备增强下载任务")
+                await get_asmr_resource_service().process_download_task(task)
+                logger.info(f"[{rjcode}] ASMR 增强下载任务完成")
+                return
+
             # 步骤1: 创建下载目录
             task.update_progress(5, "准备下载目录")
             temp_path = config.storage.temp_path

@@ -35,6 +35,221 @@
       </div>
     </el-card>
 
+    <el-card class="enhanced-card">
+      <template #header>
+        <div class="header-content">
+          <span class="title">增强下载工作台</span>
+          <el-tag type="success">RJ 直输 / 缺失检测 / 文件勾选 / 自动上传</el-tag>
+        </div>
+      </template>
+
+      <div class="enhanced-dashboard">
+        <div v-for="card in enhancedMetricCards" :key="card.label" class="metric-card">
+          <div class="metric-label">{{ card.label }}</div>
+          <div class="metric-value">{{ card.value }}</div>
+          <div class="metric-help">{{ card.help }}</div>
+        </div>
+      </div>
+
+      <el-form label-width="100px" class="enhanced-form">
+        <el-row :gutter="16">
+          <el-col :md="12" :sm="24">
+            <el-form-item label="RJ 号列表">
+              <el-input
+                v-model="enhancedInput"
+                type="textarea"
+                :rows="4"
+                placeholder="支持粘贴 RJ123456、RJ234567，空格/换行/逗号均可分隔"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :md="12" :sm="24">
+            <el-form-item label="本地目录">
+              <el-input v-model="enhancedFolderPath" placeholder="可选，用于缺失资源比对" clearable />
+            </el-form-item>
+            <el-form-item label="资源类型">
+              <el-select v-model="enhancedFilters.resourceTypes" multiple collapse-tags placeholder="默认全部" style="width: 100%">
+                <el-option label="音频" value="audio" />
+                <el-option label="字幕" value="subtitle" />
+                <el-option label="封面" value="cover" />
+                <el-option label="其他" value="other" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="音频格式">
+              <el-select v-model="enhancedFilters.audioFormats" multiple collapse-tags placeholder="默认全部" style="width: 100%">
+                <el-option label="MP3" value="mp3" />
+                <el-option label="WAV" value="wav" />
+                <el-option label="FLAC" value="flac" />
+                <el-option label="M4A" value="m4a" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="字幕语言">
+              <el-select v-model="enhancedFilters.subtitleLanguages" multiple collapse-tags placeholder="默认全部" style="width: 100%">
+                <el-option label="中文" value="zh" />
+                <el-option label="日文" value="ja" />
+                <el-option label="英文" value="en" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="16">
+          <el-col :md="8" :sm="24">
+            <el-form-item label="上传模式">
+              <el-select v-model="enhancedUpload.mode" style="width: 100%">
+                <el-option label="关闭自动上传" value="disabled" />
+                <el-option label="复制到本地目录" value="local" />
+                <el-option label="上传到群晖库存" value="synology" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :md="8" :sm="24">
+            <el-form-item label="目标路径">
+              <el-input v-model="enhancedUpload.targetPath" placeholder="自动上传目标目录或远程路径" clearable />
+            </el-form-item>
+          </el-col>
+          <el-col :md="8" :sm="24">
+            <el-form-item label="群晖库存ID">
+              <el-input v-model="enhancedUpload.libraryId" :disabled="enhancedUpload.mode !== 'synology'" placeholder="仅群晖模式需要" clearable />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <div class="enhanced-actions">
+          <el-checkbox v-model="enhancedFilters.includeExisting">包含已存在文件</el-checkbox>
+          <el-button type="primary" @click="buildEnhancedPlans" :loading="enhancedPlanning">
+            <el-icon><Search /></el-icon>
+            生成补档计划
+          </el-button>
+          <el-button type="success" @click="startEnhancedDownload" :loading="enhancedStarting" :disabled="!hasEnhancedSelections">
+            <el-icon><Download /></el-icon>
+            启动勾选资源下载
+          </el-button>
+          <el-button @click="loadEnhancedDashboard" :loading="enhancedDashboardLoading">
+            <el-icon><Refresh /></el-icon>
+            刷新看板
+          </el-button>
+        </div>
+      </el-form>
+
+      <div v-if="enhancedPlans.length > 0" class="enhanced-plan-list">
+        <div v-for="plan in enhancedPlans" :key="plan.rjcode" class="enhanced-plan-item">
+          <div class="enhanced-plan-header">
+            <div>
+              <div class="plan-rj">{{ plan.rjcode }}</div>
+              <div class="plan-title">{{ plan.title || '未命名作品' }}</div>
+            </div>
+            <div class="plan-summary">
+              <el-tag type="danger">缺失 {{ plan.summary?.missing_total || 0 }}</el-tag>
+              <el-tag type="success">可选 {{ plan.summary?.selectable_total || 0 }}</el-tag>
+              <el-tag type="info">本地仅有 {{ plan.summary?.local_only_total || 0 }}</el-tag>
+            </div>
+          </div>
+
+          <div class="plan-issues" v-if="(plan.local_pair_issues?.missing_subtitles_for_audio?.length || 0) > 0 || (plan.local_pair_issues?.orphan_subtitles_without_audio?.length || 0) > 0">
+            <el-alert
+              type="warning"
+              show-icon
+              :closable="false"
+              :title="`检测到音频缺字幕 ${plan.local_pair_issues?.missing_subtitles_for_audio?.length || 0} 项，孤立字幕 ${plan.local_pair_issues?.orphan_subtitles_without_audio?.length || 0} 项`"
+            />
+          </div>
+
+          <div class="plan-toolbar">
+            <el-checkbox :model-value="plan.selectable_resources.every(item => item.selected)" @change="togglePlanSelection(plan, $event)">
+              全选当前计划
+            </el-checkbox>
+            <div class="plan-toolbar-actions">
+              <span class="plan-selected-count">已选 {{ getSelectedResourceCount(plan) }} / {{ plan.selectable_resources.length }}</span>
+              <el-button size="small" @click="applyPlanPreset(plan, 'missing_audio')">只选缺音频</el-button>
+              <el-button size="small" @click="applyPlanPreset(plan, 'missing_subtitle')">只选缺字幕</el-button>
+              <el-button size="small" @click="applyPlanPreset(plan, 'covers')">只选封面</el-button>
+            </div>
+          </div>
+
+          <div v-if="plan.grouped_resources?.length" class="plan-group-list">
+            <el-tag v-for="group in plan.grouped_resources" :key="group.group_key" effect="plain">
+              {{ getResourceTypeLabel(group.resource_type) }} / {{ group.language || '未标注' }} / {{ group.extension.toUpperCase() }} / {{ group.count }}
+            </el-tag>
+          </div>
+
+          <div v-if="plan.match_conflicts?.length" class="plan-issues">
+            <el-alert
+              type="error"
+              show-icon
+              :closable="false"
+              :title="`检测到匹配冲突 ${plan.match_conflicts.length} 项，建议打开会话详情复核`"
+            />
+          </div>
+
+          <div class="plan-resource-grid">
+            <label v-for="item in plan.selectable_resources" :key="`${plan.rjcode}-${item.relative_path}`" class="resource-chip">
+              <el-checkbox v-model="item.selected" />
+              <div class="resource-chip-body">
+                <div class="resource-name">{{ item.file_name }}</div>
+                <div class="resource-meta">
+                  <span>{{ getResourceTypeLabel(item.resource_type) }}</span>
+                  <span>{{ item.language || '未标注' }}</span>
+                  <span>{{ formatSize(item.size_bytes) }}</span>
+                  <span v-if="item.exists_locally">本地已有</span>
+                  <span v-if="item.match_basis?.length">匹配: {{ item.match_basis.join(' / ') }}</span>
+                </div>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="enhancedSessions.length > 0" class="session-board">
+        <div class="session-board-header">
+          <div>
+            <div class="title">下载队列</div>
+            <div class="session-board-help">按会话聚合，支持优先级、暂停、恢复、失败资源重试</div>
+          </div>
+          <el-button @click="loadEnhancedSessions" :loading="enhancedSessionsLoading">
+            <el-icon><Refresh /></el-icon>
+            刷新队列
+          </el-button>
+        </div>
+
+        <div class="session-grid">
+          <div v-for="session in enhancedSessions" :key="session.id" class="session-card">
+            <div class="session-card-header">
+              <div>
+                <div class="session-rj">{{ session.rjcode }}</div>
+                <div class="session-title">{{ session.source_label || '未命名会话' }}</div>
+              </div>
+              <div class="session-header-tags">
+                <el-tag size="small">{{ getSessionStatusLabel(session.status) }}</el-tag>
+                <el-tag size="small" type="info">P{{ session.queue_priority }}</el-tag>
+              </div>
+            </div>
+
+            <div class="session-metrics">
+              <span>资源 {{ session.statistics?.selected_resource_count || 0 }}</span>
+              <span>成功 {{ session.statistics?.success_count || 0 }}</span>
+              <span>失败 {{ session.statistics?.failed_count || 0 }}</span>
+              <span>上传 {{ session.statistics?.uploaded_count || 0 }}</span>
+            </div>
+
+            <div class="session-meta">
+              <span>{{ getUploadModeLabel(session.upload_mode) }}</span>
+              <span>{{ session.target_path || '未设置目标路径' }}</span>
+            </div>
+
+            <div class="session-actions">
+              <el-button size="small" @click="changeSessionPriority(session, -10)">上移</el-button>
+              <el-button size="small" @click="changeSessionPriority(session, 10)">下移</el-button>
+              <el-button v-if="session.status === 'paused'" size="small" type="primary" @click="resumeEnhancedSession(session)">恢复</el-button>
+              <el-button v-else-if="session.status === 'queued' || session.status === 'downloading' || session.status === 'uploading' || session.status === 'verifying'" size="small" @click="pauseEnhancedSession(session)">暂停</el-button>
+              <el-button v-if="session.status === 'failed' || session.status === 'partial_failed'" size="small" type="warning" @click="retryEnhancedSession(session)">重试失败项</el-button>
+              <el-button size="small" type="primary" plain @click="openEnhancedSession(session)">详情</el-button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </el-card>
+
     <!-- 扫描结果 -->
     <el-card v-if="scanResults.length > 0" class="results-card">
       <template #header>
@@ -333,6 +548,41 @@
         </el-card>
       </div>
     </el-card>
+
+    <el-drawer v-model="enhancedSessionDrawerVisible" size="55%" :title="enhancedSessionDetail?.rjcode ? `${enhancedSessionDetail.rjcode} 会话详情` : '会话详情'">
+      <div v-loading="enhancedSessionDetailLoading">
+        <template v-if="enhancedSessionDetail">
+          <div class="session-detail-summary">
+            <el-tag>{{ getSessionStatusLabel(enhancedSessionDetail.status) }}</el-tag>
+            <el-tag type="info">优先级 {{ enhancedSessionDetail.queue_priority }}</el-tag>
+            <el-tag>{{ getUploadModeLabel(enhancedSessionDetail.upload_mode) }}</el-tag>
+          </div>
+
+          <el-descriptions :column="2" border class="session-detail-descriptions">
+            <el-descriptions-item label="标题">{{ enhancedSessionDetail.source_label || '未命名会话' }}</el-descriptions-item>
+            <el-descriptions-item label="目标路径">{{ enhancedSessionDetail.target_path || '未设置' }}</el-descriptions-item>
+            <el-descriptions-item label="已选资源">{{ enhancedSessionDetail.statistics?.selected_resource_count || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="已上传">{{ enhancedSessionDetail.statistics?.uploaded_count || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="成功/失败">{{ enhancedSessionDetail.statistics?.success_count || 0 }} / {{ enhancedSessionDetail.statistics?.failed_count || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="MD5 失败">{{ enhancedSessionDetail.statistics?.verify_summary?.failed || 0 }}</el-descriptions-item>
+          </el-descriptions>
+
+          <el-table v-if="enhancedSessionDetail.resources?.length" :data="enhancedSessionDetail.resources" max-height="420" size="small" class="session-resource-table">
+            <el-table-column prop="file_name" label="文件" min-width="240" show-overflow-tooltip />
+            <el-table-column prop="resource_type" label="类型" width="90" />
+            <el-table-column prop="download_status" label="下载" width="100" />
+            <el-table-column prop="verify_status" label="校验" width="100" />
+            <el-table-column prop="upload_status" label="上传" width="100" />
+            <el-table-column label="匹配依据" min-width="180">
+              <template #default="{ row }">{{ row.extra_metadata?.match_basis?.join(' / ') || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="upload_path" label="上传目标" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="last_error" label="异常" min-width="180" show-overflow-tooltip />
+          </el-table>
+          <el-empty v-else description="暂无资源详情" />
+        </template>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -354,6 +604,37 @@ const previewLoading = ref(false)
 const previewData = ref(null)
 const tasks = ref([])
 const nextRetryTime = ref('')
+const enhancedInput = ref('')
+const enhancedFolderPath = ref('')
+const enhancedPlanning = ref(false)
+const enhancedStarting = ref(false)
+const enhancedDashboardLoading = ref(false)
+const enhancedSessionsLoading = ref(false)
+const enhancedSessionDrawerVisible = ref(false)
+const enhancedSessionDetailLoading = ref(false)
+const enhancedSessionDetail = ref(null)
+const enhancedPlans = ref([])
+const enhancedSessions = ref([])
+const enhancedDashboard = ref({
+  total_rj: 0,
+  total_resources: 0,
+  downloaded_resources: 0,
+  uploaded_resources: 0,
+  processing_tasks: 0,
+  pending_tasks: 0,
+  failed_tasks: 0
+})
+const enhancedFilters = ref({
+  resourceTypes: ['audio', 'subtitle', 'cover'],
+  audioFormats: [],
+  subtitleLanguages: [],
+  includeExisting: false
+})
+const enhancedUpload = ref({
+  mode: 'disabled',
+  targetPath: '',
+  libraryId: ''
+})
 let statusInterval = null
 let asmrSyncInitialized = false
 let asmrSyncViewActive = false
@@ -365,6 +646,46 @@ const waitingRetryTasks = computed(() => {
 
 const activeTasks = computed(() => {
   return tasks.value.filter(t => t.status !== 'waiting_retry')
+})
+
+const enhancedMetricCards = computed(() => {
+  const dashboard = enhancedDashboard.value || {}
+  return [
+    {
+      label: '已建档 RJ',
+      value: dashboard.total_rj || 0,
+      help: '资源库中已记录的作品数'
+    },
+    {
+      label: '资源条目',
+      value: dashboard.total_resources || 0,
+      help: '已抓取并落库的远端资源'
+    },
+    {
+      label: '已下载',
+      value: dashboard.downloaded_resources || 0,
+      help: '已完成下载的文件数'
+    },
+    {
+      label: '已上传',
+      value: dashboard.uploaded_resources || 0,
+      help: '已进入自动上传管道的文件数'
+    },
+    {
+      label: '处理中',
+      value: dashboard.processing_tasks || 0,
+      help: '当前运行中的增强下载任务'
+    },
+    {
+      label: '待处理/失败',
+      value: `${dashboard.pending_tasks || 0} / ${dashboard.failed_tasks || 0}`,
+      help: '当前排队与失败任务概况'
+    }
+  ]
+})
+
+const hasEnhancedSelections = computed(() => {
+  return enhancedPlans.value.some(plan => (plan.selectable_resources || []).some(item => item.selected))
 })
 
 // 格式化下次重试时间
@@ -396,6 +717,207 @@ const getLangName = (lang) => {
 const getStatusText = (status) => {
   const map = { 'pending': '等待中', 'processing': '处理中', 'completed': '已完成', 'failed': '失败', 'paused': '已暂停', 'waiting_retry': '等待重试' }
   return map[status] || status
+}
+
+const getResourceTypeLabel = (type) => {
+  const map = { audio: '音频', subtitle: '字幕', cover: '封面', other: '其他' }
+  return map[type] || type || '资源'
+}
+
+const parseEnhancedRJCodes = () => {
+  return [...new Set(
+    (enhancedInput.value || '')
+      .split(/[\s,，;；]+/)
+      .map(item => item.trim().toUpperCase())
+      .filter(Boolean)
+  )]
+}
+
+const getSelectedResourceCount = (plan) => {
+  return (plan?.selectable_resources || []).filter(item => item.selected).length
+}
+
+const getUploadModeLabel = (mode) => {
+  const map = { disabled: '仅下载', local: '本地复制', synology: '群晖上传' }
+  return map[mode] || mode || '未设置'
+}
+
+const getSessionStatusLabel = (status) => {
+  const map = {
+    planning: '规划中',
+    queued: '排队中',
+    downloading: '下载中',
+    verifying: '校验中',
+    uploading: '上传中',
+    completed: '已完成',
+    partial_failed: '部分失败',
+    failed: '失败',
+    paused: '已暂停'
+  }
+  return map[status] || status || '未知'
+}
+
+const togglePlanSelection = (plan, checked) => {
+  ;(plan.selectable_resources || []).forEach(item => {
+    item.selected = Boolean(checked)
+  })
+}
+
+const applyPlanPreset = (plan, presetKey) => {
+  const preset = new Set(plan?.selection_presets?.[presetKey] || [])
+  ;(plan.selectable_resources || []).forEach(item => {
+    item.selected = preset.has(item.relative_path)
+  })
+}
+
+const loadEnhancedDashboard = async () => {
+  enhancedDashboardLoading.value = true
+  try {
+    const result = await asmrSyncApi.dashboardEnhanced()
+    enhancedDashboard.value = result.dashboard || enhancedDashboard.value
+  } catch (error) {
+    console.error('加载增强看板失败:', error)
+  } finally {
+    enhancedDashboardLoading.value = false
+  }
+}
+
+const loadEnhancedSessions = async () => {
+  enhancedSessionsLoading.value = true
+  try {
+    const result = await asmrSyncApi.sessionsEnhanced()
+    enhancedSessions.value = result.sessions || []
+  } catch (error) {
+    console.error('加载增强会话失败:', error)
+  } finally {
+    enhancedSessionsLoading.value = false
+  }
+}
+
+const buildEnhancedPlans = async () => {
+  const rjcodes = parseEnhancedRJCodes()
+  if (rjcodes.length === 0) return ElMessage.warning('请先输入至少一个 RJ 号')
+  enhancedPlanning.value = true
+  try {
+    const result = await asmrSyncApi.planEnhanced({
+      rjcodes,
+      folder_path: enhancedFolderPath.value || '',
+      resource_types: enhancedFilters.value.resourceTypes,
+      audio_formats: enhancedFilters.value.audioFormats,
+      subtitle_languages: enhancedFilters.value.subtitleLanguages,
+      include_existing: enhancedFilters.value.includeExisting
+    })
+    enhancedPlans.value = (result.plans || []).map(plan => ({
+      ...plan,
+      selectable_resources: (plan.selectable_resources || []).map(item => ({
+        ...item,
+        selected: Boolean(item.selected)
+      }))
+    }))
+    if (result.errors?.length) {
+      ElMessage.warning(`已生成 ${result.planned_count} 个计划，${result.errors.length} 个 RJ 失败`)
+    } else {
+      ElMessage.success(`已生成 ${result.planned_count} 个增强下载计划`)
+    }
+    await loadEnhancedDashboard()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '生成下载计划失败')
+  } finally {
+    enhancedPlanning.value = false
+  }
+}
+
+const startEnhancedDownload = async () => {
+  const items = enhancedPlans.value
+    .map(plan => ({
+      session_id: plan.session_id,
+      rjcode: plan.rjcode,
+      work_title: plan.title,
+      folder_path: plan.folder_path || enhancedFolderPath.value || '',
+      selected_resources: (plan.selectable_resources || []).filter(item => item.selected),
+      queue_priority: 100,
+      upload_options: {
+        enabled: enhancedUpload.value.mode !== 'disabled',
+        mode: enhancedUpload.value.mode,
+        target_path: enhancedUpload.value.targetPath,
+        library_id: enhancedUpload.value.libraryId
+      },
+      verify_md5_after_download: true,
+      resource_filter_snapshot: {
+        resource_types: enhancedFilters.value.resourceTypes,
+        audio_formats: enhancedFilters.value.audioFormats,
+        subtitle_languages: enhancedFilters.value.subtitleLanguages,
+        include_existing: enhancedFilters.value.includeExisting
+      }
+    }))
+    .filter(item => item.selected_resources.length > 0)
+
+  if (items.length === 0) return ElMessage.warning('请先勾选需要补充下载的资源')
+  enhancedStarting.value = true
+  try {
+    const result = await asmrSyncApi.startEnhanced(items)
+    ElMessage.success(result.message || '增强下载任务已创建')
+    await refreshStatus()
+    await loadEnhancedSessions()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '启动增强下载失败')
+  } finally {
+    enhancedStarting.value = false
+  }
+}
+
+const openEnhancedSession = async (session) => {
+  enhancedSessionDrawerVisible.value = true
+  enhancedSessionDetailLoading.value = true
+  try {
+    const result = await asmrSyncApi.sessionEnhanced(session.id)
+    enhancedSessionDetail.value = result.session || null
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '加载会话详情失败')
+  } finally {
+    enhancedSessionDetailLoading.value = false
+  }
+}
+
+const changeSessionPriority = async (session, delta) => {
+  const nextPriority = Math.max(1, Number(session.queue_priority || 100) + delta)
+  try {
+    await asmrSyncApi.updateSessionPriority(session.id, nextPriority)
+    await loadEnhancedSessions()
+    await refreshStatus()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '调整优先级失败')
+  }
+}
+
+const pauseEnhancedSession = async (session) => {
+  try {
+    await asmrSyncApi.pauseSession(session.id)
+    await loadEnhancedSessions()
+    await refreshStatus()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '暂停会话失败')
+  }
+}
+
+const resumeEnhancedSession = async (session) => {
+  try {
+    await asmrSyncApi.resumeSession(session.id)
+    await loadEnhancedSessions()
+    await refreshStatus()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '恢复会话失败')
+  }
+}
+
+const retryEnhancedSession = async (session) => {
+  try {
+    await asmrSyncApi.retryFailedSession(session.id)
+    await loadEnhancedSessions()
+    await refreshStatus()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '重试失败资源失败')
+  }
 }
 
 const pauseTask = async (taskId) => {
@@ -458,6 +980,11 @@ const loadSavedFolder = async () => {
     const config = await configApi.get()
     if (config.storage?.asmr_subtitle_path) {
       subtitleFolder.value = config.storage.asmr_subtitle_path
+    }
+    enhancedUpload.value = {
+      mode: config.asmr_sync?.auto_upload_enabled ? (config.asmr_sync?.auto_upload_mode || 'local') : 'disabled',
+      targetPath: config.asmr_sync?.auto_upload_target_path || '',
+      libraryId: config.asmr_sync?.auto_upload_library_id || ''
     }
   } catch (error) {
     console.error('加载配置失败:', error)
@@ -575,6 +1102,8 @@ const refreshStatus = async () => {
       const item = scanResults.value.find(i => i.rjcode === task.rjcode)
       if (item) item.status = task.status === 'processing' ? 'downloading' : task.status
     })
+    await loadEnhancedDashboard()
+    await loadEnhancedSessions()
   } catch (error) {
     console.error('获取状态失败:', error)
   } finally {
@@ -607,6 +1136,7 @@ async function initializeASMRSyncPage () {
   await loadSavedFolder()
   await loadWaitingRetryTasks()
   await refreshStatus()
+  await loadEnhancedSessions()
   if (subtitleFolder.value) {
     await scanFolder()
   }
@@ -625,6 +1155,7 @@ onActivated(async () => {
   asmrSyncViewActive = true
   await loadWaitingRetryTasks()
   await refreshStatus()
+  await loadEnhancedSessions()
   startStatusPolling()
 })
 
@@ -640,7 +1171,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.asm-sync-page {
+.asmr-sync-page {
   padding: 20px;
 }
 
@@ -648,10 +1179,15 @@ onUnmounted(() => {
   margin-bottom: 20px;
 }
 
+.enhanced-card {
+  margin-bottom: 20px;
+}
+
 .header-content {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .header-content .title {
@@ -661,6 +1197,261 @@ onUnmounted(() => {
 
 .scan-section {
   margin-top: 16px;
+}
+
+.enhanced-dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.metric-card {
+  padding: 18px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f5f8ff 100%);
+  border: 1px solid rgba(64, 158, 255, 0.12);
+  box-shadow: 0 10px 30px rgba(31, 35, 41, 0.06);
+}
+
+.metric-label {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 8px;
+}
+
+.metric-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.metric-help {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #606266;
+}
+
+.enhanced-form {
+  margin-bottom: 16px;
+}
+
+.enhanced-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.enhanced-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.enhanced-plan-item {
+  padding: 18px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+  border: 1px solid rgba(64, 158, 255, 0.08);
+  box-shadow: 0 12px 36px rgba(31, 35, 41, 0.06);
+}
+
+.enhanced-plan-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.plan-rj {
+  font-size: 20px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.plan-title {
+  margin-top: 4px;
+  color: #606266;
+  font-size: 13px;
+}
+
+.plan-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.plan-issues {
+  margin-bottom: 12px;
+}
+
+.plan-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.plan-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.plan-selected-count {
+  font-size: 12px;
+  color: #606266;
+}
+
+.plan-group-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.plan-resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.resource-chip {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px;
+  border-radius: 14px;
+  background: #f8fafc;
+  border: 1px solid rgba(144, 147, 153, 0.16);
+}
+
+.resource-chip-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.resource-name {
+  font-size: 13px;
+  color: #303133;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.resource-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #909399;
+}
+
+.session-board {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(64, 158, 255, 0.12);
+}
+
+.session-board-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.session-board-help {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
+}
+
+.session-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.session-card {
+  padding: 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(245, 248, 255, 0.98) 100%);
+  border: 1px solid rgba(64, 158, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(31, 35, 41, 0.06);
+}
+
+.session-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.session-rj {
+  font-size: 18px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.session-title {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #606266;
+}
+
+.session-header-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.session-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: #606266;
+}
+
+.session-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: #909399;
+  word-break: break-all;
+}
+
+.session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.session-detail-summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.session-detail-descriptions {
+  margin-bottom: 16px;
+}
+
+.session-resource-table {
+  margin-top: 12px;
 }
 
 .results-card {

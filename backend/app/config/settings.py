@@ -209,12 +209,24 @@ class ASMRSyncConfig(BaseModel):
     enabled: bool = True
     api_base_url: str = "https://api.asmr-200.com/api"
     max_concurrent_downloads: int = 3
+    enhanced_max_parallel_sessions: int = 5
+    enhanced_per_session_concurrency: int = 3
+    queue_worker_limit: int = 5
     http_proxy: Optional[str] = None
     retry_interval_hours: float = 1.0# 重试间隔（小时）
     max_retry_count: int = 10  # 最大重试次数
     retry_cron: str = "0 */1 * * *"# 重试cron表达式（默认每小时执行一次）
     retry_count: int = 3
     retry_delay: int = 5
+    download_timeout_seconds: int = 60
+    verify_md5_after_download: bool = True
+    md5_verify_required: bool = True
+    auto_upload_enabled: bool = False
+    auto_upload_mode: str = "local"
+    auto_upload_library_id: str = ""
+    auto_upload_target_path: str = ""
+    match_duration_tolerance_seconds: float = 3.0
+    match_size_tolerance_ratio: float = 0.08
     # LRC广告清理配置
     lrc_clean_enabled: bool = True  # 是否启用LRC广告清理
     lrc_clean_patterns: List[str] = [  # 自定义清理规则（正则表达式）

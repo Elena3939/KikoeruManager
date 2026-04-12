@@ -336,9 +336,13 @@ class TaskCenterService:
             source_action = source_action or "asmr_sync_start"
             source_page = source_page or "asmr-sync"
             sync_result = dict(metadata.get("sync_result") or {})
+            verify_summary = dict(metadata.get("verify_summary") or {})
+            upload_summary = dict(metadata.get("upload_summary") or {})
             self._append_metric(metrics, "RJ", rjcode or metadata.get("actual_rjcode"))
-            self._append_metric(metrics, "下载文件", len(metadata.get("download_files") or []))
+            self._append_metric(metrics, "资源数", metadata.get("selected_resource_count") or len(metadata.get("download_files") or []))
             self._append_metric(metrics, "失败文件", len(metadata.get("failed_files") or []))
+            self._append_metric(metrics, "MD5失败", verify_summary.get("failed"))
+            self._append_metric(metrics, "已上传", upload_summary.get("uploaded"))
             self._append_metric(metrics, "已写入", sync_result.get("downloaded_files"))
         else:
             title = self._basename(source_path) or task.type.value

@@ -218,8 +218,6 @@
               <span :class="['status-tag', statusClass(row.status)]">{{ statusLabel(row.status) }}</span>
               <template v-if="!row.is_tree_child">
                 <span v-if="isRerunRow(row)" class="status-fixed-pill is-rerun">重新爬取</span>
-                <span v-if="isFilterDeleteRetriedSuccess(row)" class="status-fixed-pill">重试✔</span>
-                <span v-else-if="isFilterDeleteRetriedPartial(row)" class="status-fixed-pill is-partial">重新执行部分成功</span>
                 <span v-if="finalStatusLabel(row)" :class="['status-fixed-pill', 'is-final', finalStatusClass(row)]">{{ finalStatusLabel(row) }}</span>
                 <span v-if="isRecoveredFailure(row)" class="status-fixed-pill">已修复</span>
               </template>
@@ -299,8 +297,7 @@
               >{{ tag }}</span>
               <span :class="['status-tag', statusClass(selectedRow.status)]">{{ statusLabel(selectedRow.status) }}</span>
               <span v-if="isRerunRow(selectedRow)" class="status-fixed-pill is-rerun">重新爬取</span>
-              <span v-if="isFilterDeleteRetriedSuccess(selectedRow)" class="status-fixed-pill">重试✔</span>
-              <span v-else-if="isFilterDeleteRetriedPartial(selectedRow)" class="status-fixed-pill is-partial">重新执行部分成功</span>
+              <span v-if="finalStatusLabel(selectedRow)" :class="['status-fixed-pill', 'is-final', finalStatusClass(selectedRow)]">{{ finalStatusLabel(selectedRow) }}</span>
               <span v-if="isRecoveredFailure(selectedRow)" class="status-fixed-pill">已修复</span>
             </div>
           </div>
@@ -347,8 +344,7 @@
             <div class="ev">
               <span :class="['status-tag', statusClass(selectedRow.status)]">{{ statusLabel(selectedRow.status) }}</span>
               <span v-if="isRerunRow(selectedRow)" class="status-fixed-pill is-rerun">重新爬取</span>
-              <span v-if="isFilterDeleteRetriedSuccess(selectedRow)" class="status-fixed-pill">重试✔</span>
-              <span v-else-if="isFilterDeleteRetriedPartial(selectedRow)" class="status-fixed-pill is-partial">重新执行部分成功</span>
+              <span v-if="finalStatusLabel(selectedRow)" :class="['status-fixed-pill', 'is-final', finalStatusClass(selectedRow)]">{{ finalStatusLabel(selectedRow) }}</span>
               <span v-if="isRecoveredFailure(selectedRow)" class="status-fixed-pill">已修复</span>
             </div>
           </div>
@@ -360,24 +356,150 @@
             <div class="ek">摘要</div>
             <div class="ev">{{ displaySummary(selectedRow) }}</div>
           </div>
-          <div v-if="pairSummaryText(selectedRow)" class="expand-item span-2">
-            <div class="ek">配对结果</div>
-            <div class="ev">{{ pairSummaryText(selectedRow) }}</div>
-          </div>
-          <div v-if="pairChangeRows(selectedRow).length" class="expand-item span-2">
-            <div class="ek">配对重命名</div>
-            <div class="pair-change-table">
-              <div class="pair-change-row pair-change-head">
-                <span>音频</span>
-                <span>字幕</span>
+          <div v-if="pairWorkbenchModel(selectedRow)" class="expand-item span-2 pair-workbench-block">
+            <div class="pair-workbench-card" :class="{ 'is-awaiting': pairWorkbenchModel(selectedRow).awaiting }">
+              <div class="pair-workbench-main">
+                <div class="pair-workbench-kicker">{{ pairWorkbenchModel(selectedRow).awaiting ? '待继续处理' : '可查看工作台' }}</div>
+                <div class="pair-workbench-title">{{ pairWorkbenchModel(selectedRow).title }}</div>
+                <div class="pair-workbench-desc">{{ pairWorkbenchModel(selectedRow).description }}</div>
+                <div v-if="pairWorkbenchModel(selectedRow).chips.length" class="pair-workbench-chips">
+                  <span
+                    v-for="chip in pairWorkbenchModel(selectedRow).chips"
+                    :key="chip"
+                    class="pair-workbench-chip"
+                  >{{ chip }}</span>
+                </div>
               </div>
-              <div
-                v-for="(item, index) in pairChangeRows(selectedRow)"
-                :key="`${index}-${item.audio_before}`"
-                class="pair-change-row"
+              <el-button
+                type="primary"
+                class="pair-workbench-btn"
+                @click="openSubtitlePairWorkbench(selectedRow)"
               >
-                <span class="pair-change-cell mono">{{ item.audio_before }} → {{ item.audio_after }}</span>
-                <span class="pair-change-cell mono">{{ item.subtitle_before }} → {{ item.subtitle_after }}</span>
+                {{ pairWorkbenchModel(selectedRow).buttonText }}
+              </el-button>
+            </div>
+          </div>
+          <div v-if="subtitleBatchWorkbenchModel(selectedRow)" class="expand-item span-2">
+            <div class="ek">批量工作台</div>
+            <div class="batch-workbench-shell">
+              <div class="batch-workbench-summary">
+                <div class="batch-workbench-title">这条批量记录包含 {{ subtitleBatchWorkbenchModel(selectedRow).items.length }} 个已执行 RJ</div>
+                <div class="batch-workbench-desc">勾选要继续处理的 RJ，直接带回库存里的字幕工作台。这里只展示批量子任务，不展示单个 RJ 的配对映射。</div>
+                <div class="batch-workbench-metrics">
+                  <span class="batch-workbench-metric">已配对 {{ subtitleBatchWorkbenchModel(selectedRow).pairedCount }}</span>
+                  <span class="batch-workbench-metric">待配对 {{ subtitleBatchWorkbenchModel(selectedRow).awaitingCount }}</span>
+                  <span class="batch-workbench-metric">共 {{ subtitleBatchWorkbenchModel(selectedRow).items.length }}</span>
+                </div>
+              </div>
+              <div class="batch-workbench-toolbar">
+                <div class="batch-workbench-toolbar-start">
+                  <label class="batch-workbench-checkall">
+                    <input
+                      v-model="batchWorkbenchAwaitingOnly"
+                      type="checkbox"
+                    >
+                    <span>只看待配对</span>
+                  </label>
+                  <button
+                    type="button"
+                    class="batch-workbench-quick-btn"
+                    @click="selectAwaitingBatchWorkbenchItems(selectedRow)"
+                  >
+                    全选未配对
+                  </button>
+                </div>
+                <label class="batch-workbench-checkall">
+                  <input
+                    type="checkbox"
+                    :checked="isAllBatchWorkbenchItemsSelected(selectedRow)"
+                    @change="toggleAllBatchWorkbenchItems(selectedRow, $event.target.checked)"
+                  >
+                  <span>全选</span>
+                </label>
+                <el-button
+                  type="primary"
+                  class="pair-workbench-btn"
+                  :disabled="!selectedBatchWorkbenchItems(selectedRow).length"
+                  @click="openSubtitleBatchWorkbench(selectedRow)"
+                >
+                  将选中项带到工作台
+                </el-button>
+              </div>
+              <div class="batch-workbench-list">
+                <label
+                  v-for="item in visibleBatchWorkbenchItems(selectedRow)"
+                  :key="item.key"
+                  class="batch-workbench-item"
+                >
+                  <input
+                    v-model="selectedBatchWorkbenchKeys"
+                    type="checkbox"
+                    :value="item.key"
+                  >
+                  <div class="batch-workbench-item-main">
+                    <div class="batch-workbench-item-head">
+                      <span class="batch-workbench-item-rj">{{ item.rjcode || '未知RJ' }}</span>
+                      <span :class="['batch-workbench-item-status', `is-${item.stateClass}`]">{{ item.stateLabel }}</span>
+                    </div>
+                    <div class="batch-workbench-item-name">{{ item.folderName }}</div>
+                    <div class="batch-workbench-item-summary">{{ item.summary }}</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div v-if="pairResultModel(selectedRow)" class="expand-item span-2">
+            <div class="ek">配对结果</div>
+            <div class="pair-result-shell">
+              <div class="pair-result-summary">
+                <div class="pair-result-title-row">
+                  <div class="pair-result-title">{{ pairResultModel(selectedRow).title }}</div>
+                  <span :class="['pair-result-status', `is-${pairResultModel(selectedRow).status}`]">
+                    {{ pairResultModel(selectedRow).statusLabel }}
+                  </span>
+                </div>
+                <div v-if="pairResultModel(selectedRow).summary" class="pair-result-summary-text">
+                  {{ pairResultModel(selectedRow).summary }}
+                </div>
+                <div class="pair-result-metrics">
+                  <div
+                    v-for="metric in pairResultModel(selectedRow).metrics"
+                    :key="metric.label"
+                    class="pair-result-metric"
+                  >
+                    <div class="pair-result-metric-label">{{ metric.label }}</div>
+                    <div class="pair-result-metric-value">{{ metric.value }}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="pairResultModel(selectedRow).changes.length" class="pair-change-board">
+                <div class="pair-change-board-head">
+                  <span>配对映射</span>
+                  <span class="pair-change-board-count">{{ pairResultModel(selectedRow).changes.length }} 组</span>
+                </div>
+                <div
+                  v-for="(item, index) in pairResultModel(selectedRow).changes"
+                  :key="`${index}-${item.audio_before}-${item.subtitle_before}`"
+                  class="pair-change-card"
+                >
+                  <div class="pair-change-card-grid">
+                    <div class="pair-change-column">
+                      <div class="pair-change-label">音频</div>
+                      <div class="pair-change-value mono">{{ item.audio_before || '—' }}</div>
+                      <div v-if="item.audio_after && item.audio_after !== item.audio_before" class="pair-change-target mono">
+                        → {{ item.audio_after }}
+                      </div>
+                    </div>
+                    <div class="pair-change-column">
+                      <div class="pair-change-label">字幕</div>
+                      <div class="pair-change-value mono">{{ item.subtitle_before || '—' }}</div>
+                      <div v-if="item.subtitle_after && item.subtitle_after !== item.subtitle_before" class="pair-change-target mono">
+                        → {{ item.subtitle_after }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -463,11 +585,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { Document, Folder } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import dayjs from 'dayjs'
 import api from '../api'
 
+const router = useRouter()
 const loading = ref(false)
 const items = ref([])
 const total = ref(0)
@@ -477,6 +602,8 @@ const detailDrawerVisible = ref(false)
 const selectedRow = ref(null)
 const statsDays = ref(14)
 const expandedTreeRowIds = ref(new Set())
+const selectedBatchWorkbenchKeys = ref([])
+const batchWorkbenchAwaitingOnly = ref(false)
 const stats = reactive({
   days: 14,
   total_in_range: 0,
@@ -719,7 +846,7 @@ function isRerunRow(row) {
 }
 
 function filterDeleteRetryStatus(row) {
-  return String(row?.detail?.retry_status || '').trim()
+  return String(row?.detail?.repair_status || row?.detail?.retry_status || '').trim()
 }
 
 function isFilterDeleteRetriedSuccess(row) {
@@ -728,6 +855,10 @@ function isFilterDeleteRetriedSuccess(row) {
 
 function isFilterDeleteRetriedPartial(row) {
   return filterDeleteRetryStatus(row) === 'partial_success'
+}
+
+function isFilterDeleteRetriedFailed(row) {
+  return filterDeleteRetryStatus(row) === 'failed'
 }
 
 function hasFilterDeleteRetryChild(row) {
@@ -779,11 +910,18 @@ function humanAction(row) {
       if (row.status === 'failed') return '删除执行失败'
       return '删除执行'
     }
-    if (row.action === 'filter_delete_preview_retry') {
-      if (row.status === 'success') return '失败项重试成功'
-      if (row.status === 'partial_success') return '失败项重试部分成功'
-      if (row.status === 'failed') return '失败项重试失败'
-      return '失败项重试'
+    if (row.relation === 'retry_apply') {
+      if (row.status === 'success') return '补充删除完成'
+      if (row.status === 'partial_success') return '补充删除部分成功'
+      if (row.status === 'cancelled') return '补充删除已停止'
+      if (row.status === 'failed') return '补充删除失败'
+      return '补充删除'
+    }
+    if (row.relation === 'retry_preview' || row.action === 'filter_delete_preview_retry') {
+      if (row.status === 'success') return '补充删除完成'
+      if (row.status === 'partial_success') return '补充删除部分成功'
+      if (row.status === 'failed') return '补充删除失败'
+      return '补充删除'
     }
   }
   const category = row.category
@@ -903,6 +1041,48 @@ function hasMergedPair(row) {
   return Boolean(row?.merged_pair || row?.detail?.pair_linked)
 }
 
+function batchPairRollup(row) {
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const pairedChildCount = Math.max(0, Number(detail.paired_child_count || 0))
+  const awaitingManualChildCount = Math.max(0, Number(detail.awaiting_manual_child_count || 0))
+  const unpairedChildCount = Math.max(0, Number(detail.unpaired_child_count || 0))
+  const totalTrackedCount = Math.max(pairedChildCount + unpairedChildCount, Number(detail.child_row_count || 0))
+  const fullyPaired = pairedChildCount > 0 && awaitingManualChildCount <= 0 && unpairedChildCount <= 0
+  const partiallyPaired = pairedChildCount > 0 && !fullyPaired
+  return {
+    pairedChildCount,
+    awaitingManualChildCount,
+    unpairedChildCount,
+    totalTrackedCount,
+    fullyPaired,
+    partiallyPaired
+  }
+}
+
+function isSubtitleBatchRootRow(row) {
+  return Boolean(row && !row.is_tree_child && row.category === 'subtitle_crawl' && row.action === 'batch_start')
+}
+
+function isSubtitleBatchRootPaired(row) {
+  if (!isSubtitleBatchRootRow(row)) return false
+  return batchPairRollup(row).fullyPaired
+}
+
+function isSubtitleBatchRootPartiallyPaired(row) {
+  if (!isSubtitleBatchRootRow(row)) return false
+  return batchPairRollup(row).partiallyPaired
+}
+
+function isPairCompletedRow(row) {
+  if (!row) return false
+  if (row?.category === 'subtitle_pair' && row?.status === 'success') return true
+  if (row?.category === 'subtitle_crawl' && hasMergedPair(row) && String(row?.merged_pair_status || row?.detail?.pair_status || '') === 'success') {
+    return true
+  }
+  if (isSubtitleBatchRootPaired(row)) return true
+  return isBatchChildPaired(row)
+}
+
 function hasMergedSubtitleImport(row) {
   return Boolean(row?.merged_subtitle_import || row?.detail?.import_linked)
 }
@@ -954,20 +1134,336 @@ function pairSummaryText(row) {
   return String(pairRow?.summary || '').trim()
 }
 
+function pairDetailRow(row) {
+  if (!row) return null
+  if (row.category === 'subtitle_pair') return row
+  return latestPairRow(row)
+}
+
+function isSubtitlePairRelatedRow(row) {
+  if (!row) return false
+  if (['subtitle_crawl', 'subtitle_pair'].includes(String(row.category || ''))) return true
+  if (['pair', 'subtitle_import'].includes(String(row.relation || ''))) return true
+  return Boolean(pairDetailRow(row))
+}
+
+function pairDetailPayload(row) {
+  const sourceRow = pairDetailRow(row)
+  if (sourceRow?.detail && typeof sourceRow.detail === 'object') return sourceRow.detail
+  if (row?.detail && typeof row.detail === 'object') return row.detail
+  return {}
+}
+
+function resolveSubtitleTaskId(row) {
+  const pairRow = pairDetailRow(row)
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const pairDetail = pairRow?.detail && typeof pairRow.detail === 'object' ? pairRow.detail : {}
+  const candidates = [
+    row?.task_id,
+    detail.task_id,
+    pairRow?.task_id,
+    pairDetail.task_id
+  ]
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim()
+    if (value) return value
+  }
+  return ''
+}
+
+function resolveSubtitleFolderPath(row) {
+  const pairRow = pairDetailRow(row)
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const pairDetail = pairRow?.detail && typeof pairRow.detail === 'object' ? pairRow.detail : {}
+  const candidates = [
+    detail.folder_path,
+    pairDetail.folder_path,
+    row?.source_path,
+    pairRow?.source_path
+  ]
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim()
+    if (value) return value
+  }
+  return ''
+}
+
+function resolveSubtitleLibraryId(row) {
+  const pairRow = pairDetailRow(row)
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const pairDetail = pairRow?.detail && typeof pairRow.detail === 'object' ? pairRow.detail : {}
+  const candidates = [
+    detail.library_id,
+    detail.subtitle_library_id,
+    pairDetail.library_id,
+    pairDetail.subtitle_library_id
+  ]
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim()
+    if (value) return value
+  }
+  return ''
+}
+
+function unmatchedAudioCount(row) {
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const pairDetail = pairDetailPayload(row)
+  const summary = String(row?.summary || '').trim()
+  const pairSummary = pairSummaryText(row)
+  const matchResult = detail.match_result && typeof detail.match_result === 'object' ? detail.match_result : {}
+  const pairMatchResult = pairDetail.match_result && typeof pairDetail.match_result === 'object' ? pairDetail.match_result : {}
+  const directCount = [
+    detail.unmatched_audio_count,
+    pairDetail.unmatched_audio_count,
+    Array.isArray(matchResult.unmatched_audio) ? matchResult.unmatched_audio.length : null,
+    Array.isArray(pairMatchResult.unmatched_audio) ? pairMatchResult.unmatched_audio.length : null
+  ].find(value => Number.isFinite(Number(value)))
+  if (Number.isFinite(Number(directCount))) return Number(directCount)
+  const matched = `${summary} ${pairSummary}`.match(/未匹配音频\s*(\d+)/)
+  return matched ? Number(matched[1] || 0) : 0
+}
+
+function isManualPairCompleted(row) {
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const pairDetail = pairDetailPayload(row)
+  return Boolean(
+    detail.manual_match_completed
+    || pairDetail.manual_match_completed
+    || (pairDetailRow(row)?.status === 'success')
+  )
+}
+
+function isAwaitingManualPair(row) {
+  if (!row) return false
+  if (isManualPairCompleted(row)) return false
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const pairDetail = pairDetailPayload(row)
+  if (detail.awaiting_manual_match || pairDetail.awaiting_manual_match) return true
+  if (row.category === 'subtitle_crawl' && unmatchedAudioCount(row) > 0) return true
+  return false
+}
+
+function pairWorkbenchModel(row) {
+  if (isSubtitleBatchRootRow(row)) return null
+  if (!isSubtitlePairRelatedRow(row)) return null
+  const taskId = resolveSubtitleTaskId(row)
+  const folderPath = resolveSubtitleFolderPath(row)
+  if (!taskId && !folderPath) return null
+  const awaiting = isAwaitingManualPair(row)
+  const chips = []
+  const unmatchedCount = unmatchedAudioCount(row)
+  const downloadedCount = Number(row?.detail?.downloaded_count || pairDetailPayload(row)?.downloaded_count || 0)
+  const writtenCount = Number(row?.detail?.written_files_count || pairDetailPayload(row)?.written_files_count || 0)
+  if (displayRjcode(row) && displayRjcode(row) !== '—') chips.push(displayRjcode(row))
+  if (downloadedCount > 0) chips.push(`抓到 ${downloadedCount}`)
+  if (writtenCount > 0) chips.push(`写入 ${writtenCount}`)
+  if (unmatchedCount > 0) chips.push(`未配对音频 ${unmatchedCount}`)
+  return {
+    awaiting,
+    title: awaiting ? '这条记录还有字幕没完成配对' : '这条记录可回到字幕工作台查看',
+    description: awaiting
+      ? '直接打开库存里的字幕配对面板，继续处理还没来得及配对的音频和字幕。'
+      : '会定位到对应字幕任务，方便复查当前配对状态和字幕目录。',
+    buttonText: awaiting ? '继续配对' : '打开配对面板',
+    chips
+  }
+}
+
+function pairResultModel(row) {
+  if (!row) return null
+  if (isSubtitleBatchRootRow(row)) return null
+  if (!isSubtitlePairRelatedRow(row)) return null
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const pairRow = pairDetailRow(row)
+  const pairDetail = pairDetailPayload(row)
+  const changes = pairChangeRows(pairRow || row)
+  const appliedPairs = Number(
+    pairDetail.applied_pairs
+    ?? pairDetail.manual_match_applied_pairs
+    ?? detail.applied_pairs
+    ?? detail.manual_match_applied_pairs
+    ?? changes.length
+    ?? 0
+  )
+  const deletedSubtitles = Number(
+    pairDetail.deleted_subtitles
+    ?? pairDetail.manual_match_deleted_subtitles
+    ?? detail.deleted_subtitles
+    ?? detail.manual_match_deleted_subtitles
+    ?? 0
+  )
+  const unmatchedCount = unmatchedAudioCount(row)
+  const namingStrategy = String(pairDetail.naming_strategy || detail.naming_strategy || '').trim()
+  const downloadedCount = Number(detail.downloaded_count || pairDetail.downloaded_count || 0)
+  const writtenCount = Number(detail.written_files_count || pairDetail.written_files_count || 0)
+  const summary = pairSummaryText(row) || String(row?.summary || '').trim()
+  const hasData = Boolean(summary || changes.length || appliedPairs || deletedSubtitles || downloadedCount || writtenCount || unmatchedCount)
+  if (!hasData) return null
+  const awaiting = isAwaitingManualPair(row)
+  const completed = isManualPairCompleted(row)
+  const status = completed ? 'success' : (awaiting ? 'warning' : 'default')
+  const statusLabel = completed ? '已完成配对' : (awaiting ? '待手动配对' : '已抓取未继续')
+  const metrics = [
+    { label: '已配对', value: `${Math.max(0, appliedPairs)} 组` },
+    { label: '未配对音频', value: `${Math.max(0, unmatchedCount)} 个` },
+    { label: '删除字幕', value: `${Math.max(0, deletedSubtitles)} 个` },
+    { label: '抓取字幕', value: `${Math.max(0, downloadedCount)} 个` }
+  ]
+  if (writtenCount > 0) metrics.push({ label: '写入字幕', value: `${writtenCount} 个` })
+  if (namingStrategy) metrics.push({ label: '命名策略', value: namingStrategy === 'audio' ? '按音频名' : namingStrategy })
+  return {
+    title: completed ? '字幕配对已落地' : '字幕配对状态',
+    status,
+    statusLabel,
+    summary,
+    metrics,
+    changes
+  }
+}
+
+async function openSubtitlePairWorkbench(row) {
+  if (isSubtitleBatchRootRow(row)) {
+    ElMessage.warning('批量根记录请使用下面的批量工作台入口')
+    return
+  }
+  if (!isSubtitlePairRelatedRow(row)) {
+    ElMessage.warning('这条记录不是字幕配对链路')
+    return
+  }
+  const taskId = resolveSubtitleTaskId(row)
+  const folderPath = resolveSubtitleFolderPath(row)
+  const libraryId = resolveSubtitleLibraryId(row)
+  const rjcode = displayRjcode(row)
+  if (!taskId && !folderPath) {
+    ElMessage.warning('这条记录没有可定位的字幕任务或目录')
+    return
+  }
+  await router.push({
+    path: '/library',
+    query: {
+      subtitleDialog: '1',
+      ...(taskId ? { subtitleTaskId: taskId } : {}),
+      ...(folderPath ? { subtitleFolderPath: folderPath } : {}),
+      ...(libraryId ? { subtitleLibraryId: libraryId } : {}),
+      ...(rjcode && rjcode !== '—' ? { subtitleRjcode: rjcode } : {})
+    }
+  })
+}
+
+function subtitleBatchWorkbenchItems(row) {
+  if (!isSubtitleBatchRootRow(row)) return []
+  return collectChildRowsFromParent(row)
+    .filter((item) => String(item?.category || '').trim() === 'subtitle_crawl')
+    .map((item) => {
+      const key = String(item?.id || item?.task_id || item?.source_path || '')
+      const paired = isPairCompletedRow(item)
+      const awaiting = isAwaitingManualPair(item)
+      return {
+        key,
+        taskId: resolveSubtitleTaskId(item),
+        folderPath: resolveSubtitleFolderPath(item),
+        libraryId: resolveSubtitleLibraryId(item),
+        rjcode: displayRjcode(item),
+        folderName: String(item?.detail?.folder_name || '').trim() || compactPath(item?.source_path || ''),
+        summary: displaySummary(item),
+        stateLabel: paired ? '配对√' : (awaiting ? '待配对' : '已抓取'),
+        stateClass: paired ? 'success' : (awaiting ? 'warning' : 'default')
+      }
+    })
+    .filter((item) => item.key && (item.taskId || item.folderPath))
+}
+
+function subtitleBatchWorkbenchModel(row) {
+  if (!isSubtitleBatchRootRow(row)) return null
+  const items = subtitleBatchWorkbenchItems(row)
+  if (!items.length) return null
+  return {
+    items,
+    pairedCount: items.filter((item) => item.stateClass === 'success').length,
+    awaitingCount: items.filter((item) => item.stateClass === 'warning').length
+  }
+}
+
+function visibleBatchWorkbenchItems(row) {
+  const items = subtitleBatchWorkbenchItems(row)
+  if (!batchWorkbenchAwaitingOnly.value) return items
+  return items.filter((item) => item.stateClass === 'warning')
+}
+
+function syncBatchWorkbenchSelection(row) {
+  const items = subtitleBatchWorkbenchItems(row)
+  const validKeys = new Set(items.map((item) => item.key))
+  const next = selectedBatchWorkbenchKeys.value.filter((key) => validKeys.has(key))
+  if (next.length) {
+    selectedBatchWorkbenchKeys.value = next
+    return
+  }
+  selectedBatchWorkbenchKeys.value = items.map((item) => item.key)
+}
+
+function selectedBatchWorkbenchItems(row) {
+  const selectedKeys = new Set(selectedBatchWorkbenchKeys.value)
+  return subtitleBatchWorkbenchItems(row).filter((item) => selectedKeys.has(item.key))
+}
+
+function isAllBatchWorkbenchItemsSelected(row) {
+  const items = visibleBatchWorkbenchItems(row)
+  if (!items.length) return false
+  const selectedKeys = new Set(selectedBatchWorkbenchKeys.value)
+  return items.every((item) => selectedKeys.has(item.key))
+}
+
+function toggleAllBatchWorkbenchItems(row, checked) {
+  const items = visibleBatchWorkbenchItems(row)
+  selectedBatchWorkbenchKeys.value = checked ? items.map((item) => item.key) : []
+}
+
+function selectAwaitingBatchWorkbenchItems(row) {
+  const items = subtitleBatchWorkbenchItems(row).filter((item) => item.stateClass === 'warning')
+  selectedBatchWorkbenchKeys.value = items.map((item) => item.key)
+}
+
+async function openSubtitleBatchWorkbench(row) {
+  const pickedItems = selectedBatchWorkbenchItems(row)
+  if (!pickedItems.length) {
+    ElMessage.warning('先勾选至少一个 RJ')
+    return
+  }
+  try {
+    localStorage.setItem('activity-history-subtitle-batch-selection', JSON.stringify({
+      items: pickedItems.map((item) => ({
+        task_id: item.taskId || '',
+        library_id: item.libraryId || '',
+        folder_path: item.folderPath || '',
+        folder_name: item.folderName || '',
+        rjcode: item.rjcode || '',
+        queue_message: item.summary || ''
+      })),
+      preferred_key: `${pickedItems[0]?.libraryId || ''}::${String(pickedItems[0]?.folderPath || '').replace(/\\/g, '/')}`
+    }))
+  } catch (_) {}
+  await router.push({
+    path: '/library',
+    query: {
+      subtitleBatchSelection: '1'
+    }
+  })
+}
+
 function mergedSubtitleImportTag(row) {
   const status = String(row?.detail?.import_status || row?.merged_subtitle_import_status || '')
-  if (status === 'success') return '字幕补配完成'
-  if (status === 'failed') return '字幕补配失败'
+  if (status === 'success') return '配对√'
+  if (status === 'failed') return '补配失败'
   return '字幕补配'
 }
 
 function mergedFilterDeleteTag(row) {
   const status = String(row?.status || '')
-  if (status === 'success') return '已删除'
-  if (status === 'partial_success') return '部分删除'
+  if (status === 'success') return '删除√'
+  if (status === 'partial_success') return '部分删除√'
   if (status === 'cancelled') return '已停止'
   if (status === 'failed') return '删除失败'
-  return '已删除'
+  return '删除√'
 }
 
 function isSubtitleBatchMiss(row) {
@@ -983,16 +1479,18 @@ function mergedCategoryTags(row) {
   const tags = []
   if (hasMergedSubtitleImport(row) && !hasChildRelation(row, 'subtitle_import')) tags.push(mergedSubtitleImportTag(row))
   if (isSubtitleBatchMiss(row)) tags.push('未命中')
-  if (hasFilterDeleteRetryChild(row)) tags.push('附带重试')
-  if (isFilterDeleteRetriedSuccess(row)) tags.push('重试✔')
-  else if (isFilterDeleteRetriedPartial(row)) tags.push('重新执行部分成功')
+  if (isFilterDeleteRetriedSuccess(row)) tags.push('已修复')
+  else if (isFilterDeleteRetriedPartial(row)) tags.push('部分修复')
+  else if (isFilterDeleteRetriedFailed(row)) tags.push('未修复')
   return tags
 }
 
 function rowCategoryTags(row) {
   const tags = row?.is_tree_child ? [] : mergedCategoryTags(row)
   if (row?.category === 'pipeline_rename') tags.unshift(renameOpTag(row))
-  if (isBatchChildPaired(row)) tags.push('已配对')
+  if (!row?.is_tree_child && isSubtitleBatchRootPartiallyPaired(row)) tags.push('部分配对√')
+  if (!row?.is_tree_child && row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) tags.push('配对√')
+  else if (isBatchChildPaired(row)) tags.push('配对√')
   return tags
 }
 
@@ -1008,12 +1506,28 @@ function subtitleImportSourceSuffix(row) {
 }
 
 function displaySummary(row) {
-  if (isBatchChildPaired(row)) return pairSummaryText(row) || row?.summary || '—'
+  if (isSubtitleBatchRootRow(row)) {
+    const rollup = batchPairRollup(row)
+    const base = String(row?.summary || '—').trim() || '—'
+    if (rollup.pairedChildCount > 0) {
+      return `${base}，后续已完成 ${rollup.pairedChildCount} 项配对，剩余 ${Math.max(0, rollup.awaitingManualChildCount || rollup.unpairedChildCount)} 项待处理`
+    }
+    return base
+  }
+  if (isPairCompletedRow(row)) return pairSummaryText(row) || row?.summary || '—'
   if (row?.category === 'subtitle_import' || row?.relation === 'subtitle_import') {
     const base = String(row?.summary || '—').trim() || '—'
     const suffix = subtitleImportSourceSuffix(row)
     if (suffix && !base.includes(`来源于 ${String(row?.detail?.source_rjcode || row?.detail?.preview_source_rjcode || '').trim().toUpperCase()}`)) {
       return `${base}${suffix}`
+    }
+    return base
+  }
+  if (row?.category === 'pipeline_filter') {
+    const rjcode = displayRjcode(row)
+    const base = String(row?.summary || '—').trim() || '—'
+    if (rjcode && rjcode !== '—' && base.includes('未知RJ')) {
+      return base.replace(/未知RJ号?|未知RJ/gi, rjcode)
     }
     return base
   }
@@ -1173,6 +1687,7 @@ function rowClassName({ row }) {
 
 function openDetail(row) {
   selectedRow.value = row || null
+  syncBatchWorkbenchSelection(row)
   detailDrawerVisible.value = true
 }
 
@@ -1239,8 +1754,9 @@ function childRowCategoryLabel(row) {
   if (row?.relation === 'delete_item') return '子删除'
   if (row?.relation === 'pair') return '字幕配对'
   if (row?.relation === 'delete_apply') return '删除执行'
-  if (row?.relation === 'retry_preview') return '失败重试'
-  if (row?.action === 'filter_delete_preview_retry') return '失败重试'
+  if (row?.relation === 'retry_apply') return '补充删除'
+  if (row?.relation === 'retry_preview') return '补充删除'
+  if (row?.action === 'filter_delete_preview_retry') return '补充删除'
   return row?.category_label || row?.category || '子任务'
 }
 
@@ -1271,17 +1787,36 @@ function collectDescendantStatuses(row) {
 
 function finalStatusLabel(row) {
   if (!row || row.is_tree_child || !rowHasChildren(row)) return ''
+  if (isSubtitleBatchRootPaired(row)) return '配对√'
+  if (isSubtitleBatchRootPartiallyPaired(row)) return '部分配对√'
+  if (row?.category === 'pipeline_filter' && row?.action === 'filter_delete_preview') {
+    if (isFilterDeleteRetriedSuccess(row)) return '删除√'
+    if (isFilterDeleteRetriedPartial(row)) return '部分删除√'
+    if (isFilterDeleteRetriedFailed(row)) return '未修复'
+  }
+  if (row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) return '配对√'
   const statuses = [String(row.status || ''), ...collectDescendantStatuses(row)]
   if (statuses[0] === 'failed' && (statuses.includes('success') || statuses.includes('partial_success'))) return '已修复'
   if (statuses.includes('failed') && !statuses.includes('success') && !statuses.includes('partial_success')) return '异常'
-  if (!statuses.includes('waiting')) return '终了'
+  if (!statuses.includes('waiting')) {
+    if (row?.category === 'subtitle_crawl') return '配对√'
+    if (row?.category === 'pipeline_filter') return '删除√'
+    if (row?.category === 'subtitle_import') return '配对√'
+    if (['extract', 'auto_import', 'process_existing'].includes(String(row?.category || ''))) return '入库√'
+    return '完成√'
+  }
   return ''
 }
 
 function finalStatusClass(row) {
   const label = finalStatusLabel(row)
+  if (label === '配对√') return 'is-final-success'
+  if (label === '删除√') return 'is-final-success'
+  if (label === '入库√') return 'is-final-success'
   if (label === '已修复') return 'is-final-success'
-  if (label === '终了') return 'is-final-success'
+  if (label === '部分配对√') return 'is-final-partial'
+  if (label === '部分删除√') return 'is-final-partial'
+  if (label === '部分修复') return 'is-final-partial'
   if (label.includes('部分')) return 'is-final-partial'
   return 'is-final-failed'
 }
@@ -1293,6 +1828,7 @@ function childTypeDotClass(row) {
   if (row?.relation === 'delete_item') return 'is-delete-item'
   if (row?.relation === 'pair') return 'is-pair'
   if (row?.relation === 'delete_apply') return 'is-delete-apply'
+  if (row?.relation === 'retry_apply') return 'is-filter-retry'
   if (row?.category === 'subtitle_crawl') return 'is-crawl'
   if (row?.relation === 'retry_preview') return 'is-filter-retry'
   if (row?.action === 'filter_delete_preview_retry') return 'is-filter-retry'
@@ -1662,6 +2198,11 @@ async function loadAll() {
   await Promise.all([loadStats(), loadList()])
 }
 
+function handleActivityPageVisibilityRefresh() {
+  if (document.visibilityState !== 'visible') return
+  loadAll()
+}
+
 function applyFilters() {
   page.value = 1
   loadList()
@@ -1674,6 +2215,15 @@ function onPageSizeChange() {
 
 onMounted(() => {
   loadAll()
+  document.addEventListener('visibilitychange', handleActivityPageVisibilityRefresh)
+})
+
+onActivated(() => {
+  loadAll()
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', handleActivityPageVisibilityRefresh)
 })
 
 watch(items, (nextItems) => {
@@ -1690,6 +2240,11 @@ watch(items, (nextItems) => {
     [...expandedTreeRowIds.value].filter((id) => validIds.has(id))
   )
 }, { immediate: true, deep: true })
+
+watch(selectedRow, (row) => {
+  batchWorkbenchAwaitingOnly.value = false
+  syncBatchWorkbenchSelection(row)
+}, { immediate: true })
 </script>
 
 <style scoped>
@@ -2395,6 +2950,235 @@ watch(items, (nextItems) => {
   gap: 6px;
 }
 
+.pair-workbench-block {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pair-workbench-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.98));
+  box-shadow:
+    0 14px 32px rgba(15, 23, 42, 0.08),
+    inset 0 0 0 1px rgba(96, 165, 250, 0.18);
+}
+
+.pair-workbench-card.is-awaiting {
+  background: linear-gradient(135deg, rgba(255, 247, 237, 0.96), rgba(255, 255, 255, 0.98));
+  box-shadow:
+    0 14px 32px rgba(245, 158, 11, 0.12),
+    inset 0 0 0 1px rgba(251, 191, 36, 0.22);
+}
+
+.pair-workbench-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pair-workbench-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(29, 29, 31, 0.48);
+}
+
+.pair-workbench-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.pair-workbench-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(29, 29, 31, 0.72);
+}
+
+.pair-workbench-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pair-workbench-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.08);
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.pair-workbench-btn {
+  flex: 0 0 auto;
+  min-width: 112px;
+  border-radius: 999px;
+}
+
+.pair-result-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.pair-result-summary {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 252, 0.96));
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.06);
+}
+
+.pair-result-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pair-result-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.pair-result-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.pair-result-status.is-success {
+  background: rgba(52, 199, 89, 0.14);
+  color: #15803d;
+}
+
+.pair-result-status.is-warning {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.pair-result-status.is-default {
+  background: rgba(120, 120, 128, 0.12);
+  color: #4b5563;
+}
+
+.pair-result-summary-text {
+  font-size: 13px;
+  line-height: 1.65;
+  color: rgba(29, 29, 31, 0.78);
+}
+
+.pair-result-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.pair-result-metric {
+  padding: 12px 13px;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.95);
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
+}
+
+.pair-result-metric-label {
+  margin-bottom: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(29, 29, 31, 0.42);
+}
+
+.pair-result-metric-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.pair-change-board {
+  display: grid;
+  gap: 10px;
+}
+
+.pair-change-board-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(29, 29, 31, 0.52);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pair-change-board-count {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(10, 132, 255, 0.1);
+  color: #0066cc;
+}
+
+.pair-change-card {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #f8fafc;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+
+.pair-change-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.pair-change-column {
+  min-width: 0;
+}
+
+.pair-change-label {
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(29, 29, 31, 0.42);
+}
+
+.pair-change-value,
+.pair-change-target {
+  font-size: 12px;
+  line-height: 1.65;
+  color: #111827;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.pair-change-target {
+  margin-top: 4px;
+  color: #0066cc;
+}
+
 .pair-change-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -3046,6 +3830,154 @@ watch(items, (nextItems) => {
     linear-gradient(180deg, #f8fafc, #ffffff);
 }
 
+.batch-workbench-shell {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #f8fbff, #ffffff);
+  border: 1px solid rgba(53, 114, 239, 0.12);
+}
+
+.batch-workbench-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.batch-workbench-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #14213d;
+}
+
+.batch-workbench-desc {
+  font-size: 13px;
+  color: #5f6b7a;
+  line-height: 1.6;
+}
+
+.batch-workbench-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.batch-workbench-metric {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #31599b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.batch-workbench-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.batch-workbench-toolbar-start {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.batch-workbench-checkall {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #334155;
+}
+
+.batch-workbench-quick-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.batch-workbench-quick-btn:hover {
+  color: #1d4ed8;
+}
+
+.batch-workbench-list {
+  display: grid;
+  gap: 10px;
+}
+
+.batch-workbench-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: #fff;
+}
+
+.batch-workbench-item-main {
+  display: grid;
+  gap: 6px;
+}
+
+.batch-workbench-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-workbench-item-rj {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1d4ed8;
+}
+
+.batch-workbench-item-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.batch-workbench-item-status.is-success {
+  background: #ecfdf3;
+  color: #2f855a;
+}
+
+.batch-workbench-item-status.is-warning {
+  background: #fff7e6;
+  color: #b7791f;
+}
+
+.batch-workbench-item-status.is-default {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.batch-workbench-item-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  word-break: break-all;
+}
+
+.batch-workbench-item-summary {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
 @media (max-width: 900px) {
   .stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3061,6 +3993,20 @@ watch(items, (nextItems) => {
 
   .activity-hero {
     flex-direction: column;
+  }
+
+  .pair-workbench-card,
+  .pair-result-title-row,
+  .pair-change-card-grid,
+  .batch-workbench-toolbar,
+  .batch-workbench-toolbar-start {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pair-workbench-btn {
+    width: 100%;
   }
 }
 </style>

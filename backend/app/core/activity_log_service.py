@@ -41,6 +41,21 @@ CATEGORY_LABELS = {
     CATEGORY_ASMR_SYNC: "ASMR 同步",
 }
 
+ASMR_SYNC_ACTIONS = {
+    "enhanced_plan_created",
+    "enhanced_plan_failed",
+    "session_started",
+    "resource_downloaded",
+    "resource_verify_failed",
+    "resource_uploaded",
+    "session_partial_failed",
+    "session_completed",
+    "queue_reordered",
+    "task_paused",
+    "task_resumed",
+    "task_retried",
+}
+
 
 def _format_bytes(size: Any) -> str:
     try:
@@ -92,6 +107,49 @@ def _build_filter_delete_items(items: Any, limit: int = 200) -> list[dict[str, A
             "error": item.get("error"),
         })
     return out
+
+
+def _extract_rjcode(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    import re
+
+    repeated = re.search(r"(?:RJ)+(\d{4,})", text, re.IGNORECASE)
+    if repeated:
+        return f"RJ{repeated.group(1)}"
+    matched = re.search(r"RJ\d{4,}", text, re.IGNORECASE)
+    if matched:
+        return matched.group(0).upper()
+    return ""
+
+
+def _infer_rjcode_from_payload(payload: Dict[str, Any]) -> str:
+    candidates = [
+        payload.get("rjcode"),
+        payload.get("source_rjcode"),
+        payload.get("target_rjcode"),
+        payload.get("scope_label"),
+        payload.get("folder_name"),
+        payload.get("folder_path"),
+        payload.get("source_path"),
+    ]
+    for candidate in candidates:
+        rjcode = _extract_rjcode(candidate)
+        if rjcode:
+            return rjcode
+    return ""
+
+
+def _resolve_filter_scope_label(payload: Dict[str, Any]) -> tuple[str, str]:
+    base_label = str(payload.get("scope_label") or payload.get("folder_name") or "删除过滤").strip() or "删除过滤"
+    rjcode = _infer_rjcode_from_payload(payload)
+    if rjcode:
+        if base_label in {"删除过滤", "未知RJ", "未知RJ号"}:
+            return f"{rjcode} RJ目录", rjcode
+        if "未知RJ" in base_label:
+            return base_label.replace("未知RJ号", rjcode).replace("未知RJ", rjcode), rjcode
+    return base_label, rjcode
 
 
 def _safe_path_size(path: Any) -> int:
@@ -260,6 +318,36 @@ def write_activity_log(
         db.close()
 
 
+def log_asmr_sync_event(
+    action: str,
+    *,
+    status: str = "success",
+    summary: str,
+    session_id: Optional[str] = None,
+    rjcode: Optional[str] = None,
+    task_id: Optional[str] = None,
+    source_path: Optional[str] = None,
+    detail: Optional[Dict[str, Any]] = None,
+) -> None:
+    payload = dict(detail or {})
+    if session_id:
+        payload.setdefault("session_id", session_id)
+    if rjcode:
+        payload.setdefault("rjcode", str(rjcode).strip().upper())
+    if action not in ASMR_SYNC_ACTIONS:
+        payload.setdefault("custom_action", action)
+    write_activity_log(
+        category=CATEGORY_ASMR_SYNC,
+        action=action,
+        status=status,
+        summary=summary,
+        detail=payload,
+        rjcode=rjcode,
+        task_id=task_id or session_id,
+        source_path=source_path,
+    )
+
+
 def log_task_lifecycle_event(task) -> None:
     """任务线程结束时记录一条（成功 / 失败 / 取消 / 等待）。"""
     from .task_engine import TaskStatus, TaskType
@@ -335,6 +423,8 @@ def log_task_lifecycle_event(task) -> None:
             "downloaded_count": meta.get("downloaded_count"),
             "written_files_count": len(meta.get("written_files") or []) if isinstance(meta.get("written_files"), list) else meta.get("written_files"),
             "folder_path": meta.get("folder_path"),
+            "library_id": meta.get("library_id"),
+            "subtitle_library_id": meta.get("subtitle_library_id"),
             "awaiting_manual_match": bool(meta.get("awaiting_manual_match")),
             "batch_id": str(meta.get("batch_id") or "").strip() or None,
         }
@@ -422,6 +512,7 @@ def log_subtitle_pair_complete(
     deleted_subtitles: int,
     summary: str,
     linked_detail: Optional[Dict[str, Any]] = None,
+    source_path: Optional[str] = None,
 ) -> None:
     detail = {
         "applied_pairs": applied_pairs,
@@ -440,6 +531,7 @@ def log_subtitle_pair_complete(
         detail=detail,
         rjcode=rjcode,
         task_id=task_id,
+        source_path=source_path,
     )
 
 
@@ -684,7 +776,7 @@ def log_filter_delete_preview_result(payload: Dict[str, Any]) -> None:
     selected_size = int(payload.get("selected_size") or 0)
     duration_ms = int(payload.get("duration_ms") or 0)
     rule_count = int(payload.get("rule_count") or 0)
-    scope_label = str(payload.get("scope_label") or payload.get("folder_name") or "删除过滤")
+    scope_label, inferred_rjcode = _resolve_filter_scope_label(payload)
     folder_path = str(payload.get("folder_path") or "").strip() or None
     warning = str(payload.get("warning") or "").strip()
     error = str(payload.get("error") or "").strip()
@@ -726,6 +818,7 @@ def log_filter_delete_preview_result(payload: Dict[str, Any]) -> None:
         status="success" if status == "success" else ("cancelled" if status == "cancelled" else "failed"),
         summary=summary,
         detail=detail,
+        rjcode=inferred_rjcode or None,
         source_path=folder_path,
     )
 
@@ -932,7 +1025,7 @@ def log_import_batch_start_result(payload: Dict[str, Any], *, category: str = CA
 
 def log_filter_delete_retry_result(payload: Dict[str, Any]) -> None:
     status = str(payload.get("status") or "success")
-    scope_label = str(payload.get("scope_label") or payload.get("folder_name") or "删除过滤")
+    scope_label, inferred_rjcode = _resolve_filter_scope_label(payload)
     folder_path = str(payload.get("folder_path") or "").strip() or None
     duration_ms = int(payload.get("duration_ms") or 0)
     retry_target_count = int(payload.get("retry_target_count") or 0)
@@ -992,6 +1085,7 @@ def log_filter_delete_retry_result(payload: Dict[str, Any]) -> None:
         status=normalized_status,
         summary=summary,
         detail=detail,
+        rjcode=inferred_rjcode or None,
         source_path=folder_path,
     )
     _mark_filter_delete_failed_preview_retried(payload, normalized_status)
@@ -1003,7 +1097,7 @@ def log_filter_delete_apply_result(payload: Dict[str, Any]) -> None:
     failed_count = int(payload.get("failed_count") or 0)
     duration_ms = int(payload.get("duration_ms") or 0)
     deleted_bytes = int(payload.get("deleted_bytes") or 0)
-    scope_label = str(payload.get("scope_label") or payload.get("folder_name") or "删除过滤")
+    scope_label, inferred_rjcode = _resolve_filter_scope_label(payload)
     folder_path = str(payload.get("folder_path") or "").strip() or None
     error = str(payload.get("error") or "").strip()
 
@@ -1046,6 +1140,7 @@ def log_filter_delete_apply_result(payload: Dict[str, Any]) -> None:
         ),
         summary=summary,
         detail=detail,
+        rjcode=inferred_rjcode or None,
         source_path=folder_path,
     )
 
