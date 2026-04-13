@@ -775,6 +775,7 @@ class ASMRResourceService:
         folder_path: str = "",
         filters: Optional[Dict[str, Any]] = None,
         refresh: bool = True,
+        emit_activity_log: bool = True,
     ) -> Dict[str, Any]:
         del refresh
         from .activity_log_service import log_asmr_sync_event
@@ -861,22 +862,24 @@ class ASMRResourceService:
                 "grouped_resources": self._group_resources(selectable_resources),
                 "selection_presets": self._build_selection_presets(selectable_resources),
             }
-            log_asmr_sync_event(
-                "enhanced_plan_created",
-                summary=f"{normalized_rjcode} 已生成补档计划，候选 {summary['selectable_total']} 个",
-                session_id=session_id,
-                rjcode=normalized_rjcode,
-                detail={"resource_count": summary["selectable_total"], "selected_filters": filters or {}},
-            )
+            if emit_activity_log:
+                log_asmr_sync_event(
+                    "enhanced_plan_created",
+                    summary=f"{normalized_rjcode} 已生成补档计划，候选 {summary['selectable_total']} 个",
+                    session_id=session_id,
+                    rjcode=normalized_rjcode,
+                    detail={"resource_count": summary["selectable_total"], "selected_filters": filters or {}},
+                )
             return result
         except Exception as exc:
-            log_asmr_sync_event(
-                "enhanced_plan_failed",
-                status="failed",
-                summary=f"{normalized_rjcode} 生成补档计划失败：{str(exc)}",
-                rjcode=normalized_rjcode,
-                detail={"selected_filters": filters or {}, "exception_type": exc.__class__.__name__},
-            )
+            if emit_activity_log:
+                log_asmr_sync_event(
+                    "enhanced_plan_failed",
+                    status="failed",
+                    summary=f"{normalized_rjcode} 生成补档计划失败：{str(exc)}",
+                    rjcode=normalized_rjcode,
+                    detail={"selected_filters": filters or {}, "exception_type": exc.__class__.__name__},
+                )
             raise
 
     async def _upload_to_local(self, source_path: str, target_root: str, relative_path: str, progress_callback=None) -> str:

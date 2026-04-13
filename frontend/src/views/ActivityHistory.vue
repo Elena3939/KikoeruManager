@@ -271,7 +271,7 @@
     <el-drawer
       v-model="detailDrawerVisible"
       class="activity-detail-drawer"
-      size="760px"
+      :size="detailDrawerSize"
       destroy-on-close
       append-to-body
     >
@@ -285,6 +285,7 @@
       </template>
 
       <div v-if="selectedRow" class="expand-shell drawer-shell">
+        <div class="detail-drawer-resize-handle" @mousedown="startDetailDrawerResize"></div>
         <div class="detail-topbar">
           <div class="detail-topbar-main">
             <div class="detail-topbar-title">{{ humanAction(selectedRow) }}</div>
@@ -355,6 +356,89 @@
           <div class="expand-item span-2">
             <div class="ek">摘要</div>
             <div class="ev">{{ displaySummary(selectedRow) }}</div>
+          </div>
+          <div v-if="selectedCircleCompletionIndexModel" class="expand-item span-2">
+            <div class="ek">索引概览</div>
+            <div class="circle-index-card">
+              <div class="circle-index-head">
+                <div>
+                  <div class="circle-index-title">社团源对比</div>
+                  <div class="circle-index-desc">按 `{{ selectedCircleCompletionIndexModel.priorityRule }}` 规则归类，逐行对比 Kikoeru、DLsite、asmr.one 的 RJ 命中情况。</div>
+                </div>
+                <div class="circle-index-flags">
+                  <span class="circle-index-flag">强制刷新 {{ selectedCircleCompletionIndexModel.forceRefresh ? '开' : '关' }}</span>
+                  <span class="circle-index-flag">DLsite {{ selectedCircleCompletionIndexModel.includeDlsite ? '开' : '关' }}</span>
+                  <span class="circle-index-flag">Kikoeru {{ selectedCircleCompletionIndexModel.includeKikoeru ? '开' : '关' }}</span>
+                </div>
+              </div>
+
+              <div class="circle-index-metric-grid">
+                <div
+                  v-for="item in selectedCircleCompletionIndexModel.sourceBreakdown"
+                  :key="item.key"
+                  class="circle-index-metric"
+                  :class="`is-${item.key}`"
+                >
+                  <div class="circle-index-metric-label">{{ item.label }}</div>
+                  <div class="circle-index-metric-value">{{ item.count }}</div>
+                </div>
+              </div>
+
+              <div class="circle-index-section-list">
+                <div class="circle-index-diff-board">
+                  <div class="circle-index-diff-head">
+                    <div class="circle-index-col work">作品</div>
+                    <div class="circle-index-col source kikoeru">Kikoeru</div>
+                    <div class="circle-index-col source dlsite">DLsite</div>
+                    <div class="circle-index-col source asmr">asmr.one</div>
+                  </div>
+                  <div
+                    v-for="item in pagedCircleIndexRows(selectedCircleCompletionIndexModel)"
+                    :key="item.workRjcode"
+                    class="circle-index-diff-row"
+                  >
+                    <div class="circle-index-col work">
+                      <div class="circle-index-work-top">
+                        <span class="circle-index-work-rj mono">{{ item.workRjcode || '—' }}</span>
+                        <span :class="['circle-index-status-pill', `is-${item.statusKey}`]">{{ item.statusLabel }}</span>
+                      </div>
+                      <div class="circle-index-work-title">{{ item.title || item.workRjcode || '未命名作品' }}</div>
+                    </div>
+                    <div class="circle-index-col source kikoeru">
+                      <div v-if="item.sourceCompare.kikoeru.primary_rjcode" class="circle-index-chip-list">
+                        <span class="circle-index-chip mono">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
+                        <span v-if="item.sourceCompare.kikoeru.primaryBadge" class="circle-index-chip is-kikoeru-tag">{{ item.sourceCompare.kikoeru.primaryBadge }}</span>
+                        <span v-for="tag in item.sourceCompare.kikoeru.tags" :key="`kt-${item.workRjcode}-${tag}`" class="circle-index-chip is-kikoeru-tag">{{ tag }}</span>
+                      </div>
+                      <span v-else class="circle-index-empty">未收录</span>
+                    </div>
+                    <div class="circle-index-col source dlsite">
+                      <div v-if="item.sourceCompare.dlsite.all_rjcodes.length" class="circle-index-chip-list">
+                        <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="circle-index-chip mono">{{ code }}</span>
+                      </div>
+                      <span v-else class="circle-index-empty">未发现</span>
+                    </div>
+                    <div class="circle-index-col source asmr">
+                      <div v-if="item.sourceCompare.asmr_one.primary_rjcode" class="circle-index-chip-list">
+                        <span class="circle-index-chip mono is-asmr">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
+                        <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="circle-index-chip is-asmr-badge">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
+                      </div>
+                      <span v-else class="circle-index-empty">暂无来源</span>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="selectedCircleCompletionIndexModel.rows.length > circleIndexPageSize" class="circle-index-pager">
+                  <el-pagination
+                    :current-page="getCircleIndexSectionPage('all')"
+                    :page-size="circleIndexPageSize"
+                    layout="prev, pager, next"
+                    :total="selectedCircleCompletionIndexModel.rows.length"
+                    background
+                    @current-change="setCircleIndexSectionPage('all', $event)"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
           <div v-if="pairWorkbenchModel(selectedRow)" class="expand-item span-2 pair-workbench-block">
             <div class="pair-workbench-card" :class="{ 'is-awaiting': pairWorkbenchModel(selectedRow).awaiting }">
@@ -600,6 +684,8 @@ const page = ref(1)
 const limit = ref(30)
 const detailDrawerVisible = ref(false)
 const selectedRow = ref(null)
+const detailDrawerWidth = ref(1180)
+const circleIndexSectionPages = ref({})
 const statsDays = ref(14)
 const expandedTreeRowIds = ref(new Set())
 const selectedBatchWorkbenchKeys = ref([])
@@ -660,6 +746,10 @@ const categoryWithPct = computed(() =>
     pct: Math.round((c.count / catMax.value) * 100)
   }))
 )
+
+const selectedCircleCompletionIndexModel = computed(() => circleCompletionIndexModel(selectedRow.value))
+const detailDrawerSize = computed(() => `${detailDrawerWidth.value}px`)
+const circleIndexPageSize = 10
 
 const successRatioText = computed(() => {
   const b = stats.by_status || {}
@@ -1064,6 +1154,11 @@ function humanAction(row) {
     return '删除处理'
   }
   if (category === 'asmr_sync') {
+    if (action === 'enhanced_plan_created') return '增强下载计划已生成'
+    if (action === 'enhanced_plan_failed') return '增强下载计划生成失败'
+    if (action === 'session_started') return 'ASMR 下载任务开始'
+    if (action === 'session_partial_failed') return 'ASMR 下载任务部分失败'
+    if (action === 'session_completed') return 'ASMR 下载任务完成'
     if (status === 'success') return 'ASMR 同步下载完成'
     if (status === 'failed') return 'ASMR 同步下载失败'
   }
@@ -1898,6 +1993,107 @@ function childTypeDotClass(row) {
   return 'is-default'
 }
 
+function circleCompletionIndexModel(row) {
+  if (!row || row.category !== 'circle_completion' || row.action !== 'index_completed') return null
+  const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+  const sourceBreakdown = Array.isArray(detail.source_breakdown)
+    ? detail.source_breakdown
+        .map(item => ({
+          key: String(item?.key || '').trim(),
+          label: String(item?.label || item?.key || '未命名'),
+          count: Number(item?.count || 0)
+        }))
+        .filter(item => item.key)
+    : []
+  const workSections = Array.isArray(detail.work_sections)
+    ? detail.work_sections
+        .map(section => ({
+          key: String(section?.key || '').trim(),
+          count: Number(section?.count || 0),
+          rows: Array.isArray(section?.rows)
+            ? section.rows.map(item => ({
+                canonical_rjcode: String(item?.canonical_rjcode || '').trim(),
+                workRjcode: String(item?.work_rjcode || item?.canonical_rjcode || '').trim(),
+                display_rjcode: String(item?.display_rjcode || '').trim(),
+                title: String(item?.title || '').trim(),
+                preferred_variant_label: String(item?.preferred_variant_label || '').trim(),
+                statusLabel: String(item?.status_label || '').trim() || '未标记',
+                statusKey: String(item?.status_key || '').trim() || 'unknown',
+                sourceCompare: {
+                  kikoeru: {
+                    primary_rjcode: String(item?.source_compare?.kikoeru?.primary_rjcode || '').trim(),
+                    primaryBadge: String(item?.source_compare?.kikoeru?.primary_badge || '').trim(),
+                    all_rjcodes: Array.isArray(item?.source_compare?.kikoeru?.all_rjcodes) ? item.source_compare.kikoeru.all_rjcodes.filter(Boolean) : [],
+                    tags: Array.isArray(item?.source_compare?.kikoeru?.tags) ? item.source_compare.kikoeru.tags.filter(Boolean) : [],
+                  },
+                  dlsite: {
+                    all_rjcodes: Array.isArray(item?.source_compare?.dlsite?.all_rjcodes) ? item.source_compare.dlsite.all_rjcodes.filter(Boolean) : [],
+                  },
+                  asmr_one: {
+                    primary_rjcode: String(item?.source_compare?.asmr_one?.primary_rjcode || '').trim(),
+                    primaryBadge: String(item?.source_compare?.asmr_one?.primary_badge || '').trim(),
+                    all_rjcodes: Array.isArray(item?.source_compare?.asmr_one?.all_rjcodes) ? item.source_compare.asmr_one.all_rjcodes.filter(Boolean) : [],
+                  }
+                }
+              }))
+            : []
+        }))
+        .filter(section => section.key && section.rows.length)
+    : []
+  const rows = workSections.flatMap(section => section.rows || [])
+  if (!sourceBreakdown.length && !rows.length) return null
+  return {
+    priorityRule: String(detail.priority_rule || '简体 > 繁体 > 原作'),
+    forceRefresh: Boolean(detail.force_refresh),
+    includeDlsite: Boolean(detail.include_dlsite),
+    includeKikoeru: Boolean(detail.include_kikoeru),
+    sourceBreakdown,
+    rows,
+  }
+}
+
+function getCircleIndexSectionPage(sectionKey) {
+  return Math.max(1, Number(circleIndexSectionPages.value?.[sectionKey] || 1))
+}
+
+function setCircleIndexSectionPage(sectionKey, page) {
+  circleIndexSectionPages.value = {
+    ...circleIndexSectionPages.value,
+    [sectionKey]: Math.max(1, Number(page || 1))
+  }
+}
+
+function pagedCircleIndexRows(section) {
+  const page = getCircleIndexSectionPage('all')
+  const rows = Array.isArray(section?.rows) ? section.rows : (Array.isArray(section) ? section : [])
+  const start = (page - 1) * circleIndexPageSize
+  return rows.slice(start, start + circleIndexPageSize)
+}
+
+let detailDrawerResizeState = null
+
+function handleDetailDrawerResize(event) {
+  if (!detailDrawerResizeState) return
+  const delta = Number(detailDrawerResizeState.startX || 0) - Number(event.clientX || 0)
+  detailDrawerWidth.value = Math.max(920, Math.min(1680, Number(detailDrawerResizeState.startWidth || 1180) + delta))
+}
+
+function stopDetailDrawerResize() {
+  if (!detailDrawerResizeState) return
+  detailDrawerResizeState = null
+  document.removeEventListener('mousemove', handleDetailDrawerResize)
+  document.removeEventListener('mouseup', stopDetailDrawerResize)
+}
+
+function startDetailDrawerResize(event) {
+  detailDrawerResizeState = {
+    startX: Number(event.clientX || 0),
+    startWidth: detailDrawerWidth.value
+  }
+  document.addEventListener('mousemove', handleDetailDrawerResize)
+  document.addEventListener('mouseup', stopDetailDrawerResize)
+}
+
 function prettyDetail(row) {
   if (!row?.detail || typeof row.detail !== 'object') return ''
   if (String(row?.detail?.mode || '').startsWith('filter_delete_')) return ''
@@ -2364,6 +2560,7 @@ onActivated(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleActivityPageVisibilityRefresh)
+  stopDetailDrawerResize()
 })
 
 watch(items, (nextItems) => {
@@ -2383,6 +2580,7 @@ watch(items, (nextItems) => {
 
 watch(selectedRow, (row) => {
   batchWorkbenchAwaitingOnly.value = false
+  circleIndexSectionPages.value = {}
   syncBatchWorkbenchSelection(row)
 }, { immediate: true })
 </script>
@@ -3096,6 +3294,31 @@ watch(selectedRow, (row) => {
   grid-template-columns: 1fr;
 }
 
+.drawer-shell {
+  position: relative;
+}
+
+.detail-drawer-resize-handle {
+  position: absolute;
+  left: -10px;
+  top: 0;
+  bottom: 0;
+  width: 18px;
+  cursor: ew-resize;
+  z-index: 20;
+}
+
+.detail-drawer-resize-handle::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 84px;
+  bottom: 20px;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.42);
+}
+
 .detail-kv .k {
   color: rgba(29, 29, 31, 0.45);
   font-size: 12px;
@@ -3118,6 +3341,295 @@ watch(selectedRow, (row) => {
   padding: 0;
   background: transparent;
   box-shadow: none;
+}
+
+.circle-index-card {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.98));
+  box-shadow:
+    0 16px 36px rgba(15, 23, 42, 0.08),
+    inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+
+.circle-index-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.circle-index-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.circle-index-desc {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(15, 23, 42, 0.66);
+}
+
+.circle-index-flags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.circle-index-flag {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.05);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.circle-index-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.circle-index-metric {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.14);
+}
+
+.circle-index-metric.is-kikoeru {
+  background: rgba(239, 246, 255, 0.92);
+}
+
+.circle-index-metric.is-dlsite {
+  background: rgba(255, 247, 237, 0.94);
+}
+
+.circle-index-metric.is-asmr_one {
+  background: rgba(240, 253, 244, 0.94);
+}
+
+.circle-index-metric.is-downloadable {
+  background: rgba(236, 253, 245, 0.98);
+}
+
+.circle-index-metric.is-dl_only {
+  background: rgba(254, 242, 242, 0.96);
+}
+
+.circle-index-metric-label {
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.62);
+}
+
+.circle-index-metric-value {
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.circle-index-section-list {
+  display: grid;
+  gap: 18px;
+}
+
+.circle-index-section {
+  display: grid;
+  gap: 12px;
+}
+
+.circle-index-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.circle-index-section-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.circle-index-section-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  color: rgba(17, 24, 39, 0.62);
+}
+
+.circle-index-section-count {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(10, 132, 255, 0.08);
+  color: #005fcc;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.circle-index-diff-board {
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+
+.circle-index-diff-head,
+.circle-index-diff-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) repeat(3, minmax(140px, 1fr));
+}
+
+.circle-index-diff-head {
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.98));
+}
+
+.circle-index-diff-row + .circle-index-diff-row {
+  border-top: 1px solid rgba(226, 232, 240, 0.92);
+}
+
+.circle-index-col {
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.circle-index-col + .circle-index-col {
+  border-left: 1px solid rgba(226, 232, 240, 0.92);
+}
+
+.circle-index-col.source.kikoeru {
+  background: rgba(239, 246, 255, 0.52);
+}
+
+.circle-index-col.source.dlsite {
+  background: rgba(255, 247, 237, 0.58);
+}
+
+.circle-index-col.source.asmr {
+  background: rgba(240, 253, 244, 0.62);
+}
+
+.circle-index-diff-head .circle-index-col {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.68);
+}
+
+.circle-index-work-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.circle-index-work-rj {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.circle-index-work-title {
+  margin-top: 6px;
+  color: #111827;
+  line-height: 1.5;
+}
+
+.circle-index-work-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: rgba(17, 24, 39, 0.58);
+}
+
+.circle-index-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.circle-index-status-pill.is-owned {
+  background: rgba(10, 132, 255, 0.12);
+  color: #005fcc;
+}
+
+.circle-index-status-pill.is-downloadable {
+  background: rgba(52, 199, 89, 0.12);
+  color: #248a3d;
+}
+
+.circle-index-status-pill.is-dl_only {
+  background: rgba(255, 59, 48, 0.10);
+  color: #c2410c;
+}
+
+.circle-index-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.circle-index-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.circle-index-chip.is-asmr {
+  background: rgba(236, 253, 245, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(52, 199, 89, 0.18);
+  color: #248a3d;
+}
+
+.circle-index-chip.is-kikoeru-tag {
+  background: rgba(239, 246, 255, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.18);
+  color: #005fcc;
+}
+
+.circle-index-empty {
+  font-size: 12px;
+  color: rgba(100, 116, 139, 0.78);
+}
+
+.circle-index-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 10px;
+}
+
+@media (max-width: 1120px) {
+  .circle-index-head {
+    flex-direction: column;
+  }
+
+  .circle-index-flags {
+    justify-content: flex-start;
+  }
+
+  .circle-index-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .circle-index-diff-head,
+  .circle-index-diff-row {
+    grid-template-columns: minmax(220px, 1.2fr) repeat(3, minmax(120px, 1fr));
+  }
 }
 
 .pair-workbench-card {

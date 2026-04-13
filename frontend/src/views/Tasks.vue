@@ -202,6 +202,9 @@
               <span class="detail-progress-text">{{ selectedItem.progress }}%</span>
             </div>
             <div v-if="selectedItem.error_message" class="detail-error">{{ selectedItem.error_message }}</div>
+            <div v-if="getDLsiteFailureReason(selectedItem)" class="detail-error">
+              DLsite 抓取失败原因：{{ getDLsiteFailureReason(selectedItem) }}
+            </div>
           </div>
 
           <div v-if="selectedItem.metrics?.length" class="detail-section">
@@ -701,6 +704,14 @@ function getRecoveredNotice(item) {
   return String(metadata.recovered_notice || '').trim()
 }
 
+function getDLsiteFailureReason(item) {
+  if (!item) return ''
+  const details = item.details || {}
+  const metadata = details.metadata || {}
+  const indexMeta = metadata.index_meta || {}
+  return String(indexMeta.dlsite_failure_reason || metadata.dlsite_failure_reason || '').trim()
+}
+
 function getCircleIndexMetaEntries(item) {
   if (item?.kind !== 'circle_completion_index') {
     return []
@@ -712,6 +723,7 @@ function getCircleIndexMetaEntries(item) {
     ['社团', metadata.circle_name || metadata.circle_query || ''],
     ['Maker ID', indexMeta.maker_id || ''],
     ['来源模式', indexMeta.dlsite_source_mode || ''],
+    ['DLsite失败原因', getDLsiteFailureReason(item)],
     ['本地候选', indexMeta.local_candidates_count],
     ['Kikoeru', indexMeta.kikoeru_candidates_count],
     ['DLsite原作', indexMeta.dlsite_profile_total || indexMeta.dlsite_candidates_count],

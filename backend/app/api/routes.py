@@ -1444,6 +1444,39 @@ async def list_activity_logs(
             parent_row["merged_circle_completion_download_status"] = row.get("status") or ""
             merged_circle_completion_ids.add(str(row.get("id") or ""))
 
+        for row in rows:
+            if str(row.get("category") or "").strip() != "circle_completion":
+                continue
+            if str(row.get("action") or "").strip() not in {"task_finished", "task_finished_incomplete"}:
+                continue
+
+            row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            circle_id = str(row_detail.get("circle_id") or "").strip()
+            if not circle_id:
+                continue
+
+            parent_candidates = circle_index_rows_by_circle.get(circle_id) or []
+            if not parent_candidates:
+                continue
+
+            row_dt = _coerce_dt(row.get("created_at")) or datetime.min
+            parent_row = None
+            for candidate in parent_candidates:
+                candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
+                if candidate_dt <= row_dt:
+                    parent_row = candidate
+            if parent_row is None:
+                parent_row = parent_candidates[-1]
+
+            child_row = _make_tree_child(
+                row,
+                relation="circle_task_finish",
+                category_label="任务收尾",
+                detail=row_detail,
+            )
+            _append_tree_child(parent_row, child_row)
+            merged_circle_completion_ids.add(str(row.get("id") or ""))
+
         asmr_rows_by_session: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             if str(row.get("category") or "").strip() != "asmr_sync":
