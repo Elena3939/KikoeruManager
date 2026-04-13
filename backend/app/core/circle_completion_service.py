@@ -11,7 +11,6 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote
 
-import aiohttp
 
 from ..config.settings import get_config
 from ..models.database import (
@@ -132,6 +131,152 @@ class CircleCompletionService:
         if normalized_type == "original":
             return "优先版本 原版"
         return f"优先版本 {lang_label}"
+
+    def _variant_group(self, link_type: Any, lang: Any) -> Dict[str, str]:
+        normalized_type = str(link_type or "").strip().lower()
+        normalized_lang = self._normalize_lang_code(lang)
+        if normalized_lang in {"CHI_HANS", "ZH_HANS", "ZH_CN", "CHS", "SIMPLIFIED_CHINESE"}:
+            return {"key": "simplified", "label": "简体优先", "short_label": "简体"}
+        if normalized_lang in {"CHI_HANT", "ZH_HANT", "ZH_TW", "CHT", "TRADITIONAL_CHINESE"}:
+            return {"key": "traditional", "label": "繁体优先", "short_label": "繁体"}
+        if normalized_type == "original" or normalized_lang in {"", "JPN"}:
+            return {"key": "original", "label": "原作优先", "short_label": "原作"}
+        return {"key": "other", "label": "其他语言", "short_label": "其他"}
+
+    def _build_circle_index_log_detail(
+        self,
+        summary: Dict[str, Any],
+        *,
+        force_refresh: bool,
+        include_dlsite: bool,
+        include_kikoeru: bool,
+    ) -> Dict[str, Any]:
+        works = list(summary.get("works") or [])
+        source_breakdown = [
+            {"key": "kikoeru", "label": "Kikoeru", "count": sum(1 for item in works if item.get("server_owned"))},
+            {"key": "dlsite", "label": "DLsite", "count": sum(1 for item in works if item.get("has_dlsite"))},
+            {"key": "asmr_one", "label": "asmr.one", "count": sum(1 for item in works if item.get("has_asmr_one"))},
+            {"key": "downloadable", "label": "可下载", "count": sum(1 for item in works if not item.get("server_owned") and item.get("has_asmr_one"))},
+            {"key": "dl_only", "label": "暂无来源", "count": sum(1 for item in works if not item.get("server_owned") and item.get("has_dlsite") and not item.get("has_asmr_one"))},
+        ]
+        section_meta = {
+            "simplified": {"label": "简体优先", "description": "优先命中简体中文版本"},
+            "traditional": {"label": "繁体优先", "description": "未命中简体时回落到繁体版本"},
+            "original": {"label": "原作优先", "description": "未命中翻译作时回落到原作版本"},
+            "other": {"label": "其他语言", "description": "存在其他语言版本，但不属于简繁原作优先链"},
+        }
+        grouped_rows: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for item in works:
+            preferred_variant = item.get("preferred_variant") if isinstance(item.get("preferred_variant"), dict) else {}
+            group_key = str(preferred_variant.get("group_key") or "original")
+            source_compare = item.get("source_compare") if isinstance(item.get("source_compare"), dict) else {}
+            grouped_rows[group_key].append({
+                "canonical_rjcode": item.get("canonical_rjcode"),
+                "work_rjcode": source_compare.get("work_rjcode") or item.get("canonical_rjcode"),
+                "display_rjcode": item.get("display_rjcode"),
+                "asmr_available_rjcode": item.get("asmr_available_rjcode"),
+                "title": item.get("title"),
+                "preferred_variant_label": preferred_variant.get("label") or "优先版本 未标记",
+                "status_label": "服务器已有" if item.get("server_owned") else ("可下载" if item.get("has_asmr_one") else "暂无来源"),
+                "status_key": "owned" if item.get("server_owned") else ("downloadable" if item.get("has_asmr_one") else "dl_only"),
+                "source_compare": source_compare,
+            })
+        work_sections = []
+        for group_key in ["simplified", "traditional", "original", "other"]:
+            rows = grouped_rows.get(group_key) or []
+            if not rows:
+                continue
+            rows.sort(key=lambda item: (str(item.get("canonical_rjcode") or ""), str(item.get("title") or "")))
+            work_sections.append({
+                "key": group_key,
+                "label": section_meta[group_key]["label"],
+                "description": section_meta[group_key]["description"],
+                "count": len(rows),
+                "rows": rows,
+            })
+        return {
+            "priority_rule": "简体 > 繁体 > 原作",
+            "source_breakdown": source_breakdown,
+            "work_sections": work_sections,
+            "force_refresh": bool(force_refresh),
+            "include_dlsite": bool(include_dlsite),
+            "include_kikoeru": bool(include_kikoeru),
+        }
+
+    def _build_source_compare(
+        self,
+        item: Dict[str, Any],
+        canonical_info: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        original_rjcode = str(item.get("canonical_rjcode") or "").strip()
+        preferred_variant = item.get("preferred_variant") if isinstance(item.get("preferred_variant"), dict) else {}
+        preferred_rjcode = str(preferred_variant.get("rjcode") or item.get("display_rjcode") or original_rjcode).strip()
+        kikoeru_found_rjcodes = []
+        for code in list(item.get("kikoeru_found_rjcodes") or []):
+            normalized = self.normalize_rjcode(code)
+            if normalized and normalized not in kikoeru_found_rjcodes:
+                kikoeru_found_rjcodes.append(normalized)
+        kikoeru_subtitle_rjcodes = []
+        for code in list(item.get("kikoeru_subtitle_rjcodes") or []):
+            normalized = self.normalize_rjcode(code)
+            if normalized and normalized not in kikoeru_subtitle_rjcodes:
+                kikoeru_subtitle_rjcodes.append(normalized)
+        linked_rjcodes = [
+            variant["rjcode"]
+            for variant in self._sort_linked_variants(canonical_info, preferred_rjcode or original_rjcode)
+            if variant.get("rjcode")
+        ]
+        sorted_variants = self._sort_linked_variants(canonical_info, preferred_rjcode or original_rjcode)
+        link_map = dict(canonical_info.get("link_map") or {})
+
+        def resolve_variant_badge(rjcode: str) -> str:
+            normalized = self.normalize_rjcode(rjcode)
+            if not normalized or normalized == original_rjcode:
+                return ""
+            meta = link_map.get(normalized) or {}
+            group = self._variant_group(meta.get("link_type"), meta.get("lang"))
+            short_label = str(group.get("short_label") or "").strip()
+            return short_label if short_label not in {"原作", "其他", ""} else ""
+
+        asmr_available_rjcode = self.normalize_rjcode(item.get("asmr_available_rjcode"))
+        translation_like_rjcodes = [code for code in kikoeru_found_rjcodes if code != original_rjcode]
+        kikoeru_primary = ""
+        for variant in sorted_variants:
+            candidate = self.normalize_rjcode(variant.get("rjcode"))
+            if candidate and candidate in kikoeru_found_rjcodes:
+                kikoeru_primary = candidate
+                break
+        if not kikoeru_primary:
+            kikoeru_primary = original_rjcode if original_rjcode in kikoeru_found_rjcodes else (kikoeru_found_rjcodes[0] if kikoeru_found_rjcodes else "")
+        kikoeru_tags: List[str] = []
+        if (
+            kikoeru_primary
+            and kikoeru_primary == original_rjcode
+            and not translation_like_rjcodes
+            and original_rjcode in kikoeru_subtitle_rjcodes
+        ):
+            kikoeru_tags.append("字幕")
+        return {
+            "work_rjcode": original_rjcode,
+            "preferred_rjcode": preferred_rjcode,
+            "kikoeru": {
+                "primary_rjcode": kikoeru_primary,
+                "all_rjcodes": kikoeru_found_rjcodes,
+                "primary_badge": resolve_variant_badge(kikoeru_primary),
+                "tags": kikoeru_tags,
+                "status": "owned" if kikoeru_found_rjcodes else "missing",
+            },
+            "dlsite": {
+                "all_rjcodes": linked_rjcodes,
+                "status": "available" if linked_rjcodes else "missing",
+            },
+            "asmr_one": {
+                "primary_rjcode": asmr_available_rjcode,
+                "all_rjcodes": [asmr_available_rjcode] if asmr_available_rjcode else [],
+                "primary_badge": resolve_variant_badge(asmr_available_rjcode),
+                "status": "available" if asmr_available_rjcode else "missing",
+            },
+        }
 
     def _snapshot_job(self, job_id: str) -> Dict[str, Any]:
         job = self._index_jobs.get(job_id)
@@ -286,6 +431,17 @@ class CircleCompletionService:
             "maker_id": resolved_maker_id,
         }
 
+    def _find_catalog_by_normalized_name(self, db, normalized_name: str) -> Optional[CircleCatalog]:
+        normalized_name = str(normalized_name or "").strip()
+        if not normalized_name:
+            return None
+        return (
+            db.query(CircleCatalog)
+            .filter(CircleCatalog.circle_name_normalized == normalized_name)
+            .order_by(CircleCatalog.last_indexed_at.desc(), CircleCatalog.updated_at.desc(), CircleCatalog.created_at.desc())
+            .first()
+        )
+
     async def resolve_canonical_rj(self, rjcode: str, refresh: bool = False) -> Dict[str, Any]:
         normalized_rj = self.normalize_rjcode(rjcode)
         if not normalized_rj:
@@ -408,21 +564,61 @@ class CircleCompletionService:
                 return True
         return False
 
-    async def _search_dlsite_circle_works(self, keyword: str, max_pages: int = 2) -> List[str]:
-        session = aiohttp.ClientSession()
+    async def _probe_kikoeru_state(self, probe_rjcode: str) -> Dict[str, Any]:
+        normalized_rj = self.normalize_rjcode(probe_rjcode)
+        if not normalized_rj:
+            return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
+        try:
+            results = await self.kikoeru_service.check_duplicate_with_linkages(normalized_rj, use_cache=True)
+        except Exception:
+            logger.warning("[社团补全] Kikoeru 状态补查失败 %s", normalized_rj, exc_info=True)
+            return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
+
+        found_rjcodes: List[str] = []
+        subtitle_rjcodes: List[str] = []
+        for workno, result in (results or {}).items():
+            if not getattr(result, "is_found", False):
+                continue
+            matched_rj = self.normalize_rjcode(
+                getattr(result, "matched_rjcode", None) or workno or getattr(result, "rjcode", None)
+            )
+            if matched_rj and matched_rj not in found_rjcodes:
+                found_rjcodes.append(matched_rj)
+            subtitle_check_source = str(getattr(result, "subtitle_check_source", "") or "").strip()
+            if matched_rj and getattr(result, "has_lyric_hint", False) and subtitle_check_source and subtitle_check_source != "search_only":
+                if matched_rj not in subtitle_rjcodes:
+                    subtitle_rjcodes.append(matched_rj)
+        return {
+            "has_kikoeru": bool(found_rjcodes),
+            "found_rjcodes": found_rjcodes,
+            "subtitle_rjcodes": subtitle_rjcodes,
+        }
+
+    async def _search_dlsite_circle_works(self, keyword: str, max_pages: int = 2) -> tuple[List[str], str]:
         found: List[str] = []
         seen = set()
+        failure_reason = ""
+        client = await self.dlsite_service._get_client()
+        headers = self.dlsite_service._get_browser_headers()
         try:
             for page in range(1, max_pages + 1):
                 suffix = "" if page == 1 else f"/page/{page}"
                 url = f"{self.DL_SEARCH_URL.format(keyword=quote(keyword))}{suffix}"
                 try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as response:
-                        if response.status != 200:
-                            break
-                        text = await response.text()
+                    response = await client.get(url, headers=headers, timeout=12.0)
+                    if response.status_code != 200:
+                        logger.warning(
+                            "[社团补全] DLsite 社团关键字搜索失败 keyword=%s page=%s status=%s",
+                            keyword,
+                            page,
+                            response.status_code,
+                        )
+                        failure_reason = f"DLsite 关键字搜索返回 HTTP {response.status_code}（第 {page} 页）"
+                        break
+                    text = response.text
                 except Exception as exc:
                     logger.warning("[社团补全] DLsite 社团搜索失败 keyword=%s page=%s: %s", keyword, page, exc)
+                    failure_reason = f"DLsite 关键字搜索失败（第 {page} 页）: {str(exc)}"
                     break
                 matches = re.findall(r"[RVB]J\d{6,8}", text, re.IGNORECASE)
                 new_count = 0
@@ -435,8 +631,48 @@ class CircleCompletionService:
                 if new_count == 0:
                     break
         finally:
-            await session.close()
-        return found
+            pass
+        return found, failure_reason
+
+    async def _resolve_seed_maker_id(
+        self,
+        circle_query: str,
+        seed_candidates: List[Dict[str, Any]],
+        *,
+        progress_callback: Optional[Callable[..., None]] = None,
+    ) -> Dict[str, str]:
+        normalized_query = self.normalize_circle_name(circle_query)
+        if not seed_candidates:
+            return {"maker_id": "", "maker_name": ""}
+
+        total = min(len(seed_candidates), 8)
+        for index, item in enumerate(seed_candidates[:total], start=1):
+            rjcode = self.normalize_rjcode(item.get("rjcode"))
+            if not rjcode:
+                continue
+            try:
+                metadata = await self._fetch_metadata_dict(rjcode)
+            except Exception:
+                metadata = {}
+            maker_id = str(metadata.get("maker_id") or item.get("maker_id") or "").strip()
+            maker_name = str(metadata.get("maker_name") or item.get("maker_name") or "").strip()
+            if progress_callback and (index == 1 or index == total):
+                progress_callback(
+                    34,
+                    f"补查 DLsite 社团标识 {index}/{total}",
+                    seed_probe_rjcode=rjcode,
+                    seed_probe_maker_id=maker_id,
+                )
+            if maker_id and (
+                not normalized_query
+                or not maker_name
+                or normalized_query in self.normalize_circle_name(maker_name)
+            ):
+                return {
+                    "maker_id": maker_id,
+                    "maker_name": maker_name,
+                }
+        return {"maker_id": "", "maker_name": ""}
 
     async def _collect_dlsite_circle_candidates(
         self,
@@ -448,20 +684,32 @@ class CircleCompletionService:
         normalized_maker_id = str(maker_id or "").strip().upper()
         dlsite_rjcodes: List[str] = []
         source_mode = "keyword"
+        failure_messages: List[str] = []
 
         if normalized_maker_id:
             try:
                 dlsite_rjcodes = await self.dlsite_service.list_circle_worknos_by_maker(normalized_maker_id, language="JPN")
                 source_mode = "maker_profile"
                 if progress_callback:
-                    progress_callback(44, "已抓取 DLsite 社团主页原作列表", dlsite_profile_total=len(dlsite_rjcodes), dlsite_source_mode=source_mode)
-            except Exception:
+                    progress_callback(44, "已抓取 DLsite 社团主页原作列表", dlsite_profile_total=len(dlsite_rjcodes), dlsite_source_mode=source_mode, dlsite_failure_reason="")
+            except Exception as exc:
                 logger.warning("[社团补全] 按 maker_id 抓取 DLsite 社团主页失败 maker_id=%s", normalized_maker_id, exc_info=True)
+                failure_messages.append(f"DLsite 社团主页抓取失败: {str(exc)}")
+                if progress_callback:
+                    progress_callback(44, "DLsite 社团主页抓取失败，准备回退关键字搜索", dlsite_source_mode=source_mode, dlsite_failure_reason=" / ".join(failure_messages))
 
         if not dlsite_rjcodes:
-            dlsite_rjcodes = await self._search_dlsite_circle_works(circle_query)
+            dlsite_rjcodes, keyword_failure_reason = await self._search_dlsite_circle_works(circle_query)
+            if keyword_failure_reason:
+                failure_messages.append(keyword_failure_reason)
             if progress_callback:
-                progress_callback(44, "已回退关键字搜索 DLsite", dlsite_profile_total=len(dlsite_rjcodes), dlsite_source_mode=source_mode)
+                progress_callback(
+                    44,
+                    "已回退关键字搜索 DLsite",
+                    dlsite_profile_total=len(dlsite_rjcodes),
+                    dlsite_source_mode=source_mode,
+                    dlsite_failure_reason=" / ".join(failure_messages),
+                )
 
         candidates: List[Dict[str, Any]] = []
         total_rjcodes = max(1, len(dlsite_rjcodes))
@@ -487,6 +735,7 @@ class CircleCompletionService:
                     dlsite_profile_total=len(dlsite_rjcodes),
                     dlsite_candidates_count=len(candidates),
                     dlsite_source_mode=source_mode,
+                    dlsite_failure_reason=" / ".join(failure_messages),
                 )
         return candidates
 
@@ -641,6 +890,18 @@ class CircleCompletionService:
         if combined_seed_candidates:
             preferred_seed = next((item for item in combined_seed_candidates if item.get("maker_id")), combined_seed_candidates[0])
             identity_seed = self.resolve_circle_identity(preferred_seed.get("maker_id"), preferred_seed.get("maker_name"), circle_query)
+        if not identity_seed["maker_id"] and combined_seed_candidates:
+            seed_identity = await self._resolve_seed_maker_id(
+                circle_query,
+                combined_seed_candidates,
+                progress_callback=progress_callback,
+            )
+            if seed_identity["maker_id"]:
+                identity_seed = self.resolve_circle_identity(
+                    seed_identity["maker_id"],
+                    seed_identity["maker_name"] or circle_query,
+                    circle_query,
+                )
 
         report(
             38,
@@ -676,6 +937,15 @@ class CircleCompletionService:
         circle_id = identity["circle_id"]
         if not circle_id:
             raise ValueError("无法确定社团标识")
+        normalized_circle_name = str(identity.get("circle_name_normalized") or "").strip()
+        if normalized_circle_name:
+            db = SessionLocal()
+            try:
+                existing_catalog = self._find_catalog_by_normalized_name(db, normalized_circle_name)
+                if existing_catalog and str(existing_catalog.circle_id or "").strip():
+                    circle_id = str(existing_catalog.circle_id).strip()
+            finally:
+                db.close()
 
         aggregated: Dict[str, Dict[str, Any]] = {}
         total_candidates = max(1, len(combined_candidates))
@@ -693,16 +963,25 @@ class CircleCompletionService:
             canonical_info = await self.resolve_canonical_rj(rjcode, refresh=force_refresh)
             preferred_variant = self._preferred_variant(canonical_info, rjcode)
             canonical = canonical_info["canonical_rjcode"] or rjcode
+            canonical_metadata = metadata
+            if canonical and canonical != rjcode:
+                try:
+                    canonical_metadata = await self._fetch_metadata_dict(canonical)
+                except Exception:
+                    canonical_metadata = metadata
             bucket = aggregated.setdefault(canonical, {
                 "canonical_rjcode": canonical,
                 "display_rjcode": preferred_variant["rjcode"] or rjcode,
-                "title": str(item.get("title") or metadata.get("work_name") or ""),
-                "maker_id": str(metadata.get("maker_id") or item.get("maker_id") or identity["maker_id"] or ""),
-                "maker_name": str(metadata.get("maker_name") or item.get("maker_name") or identity["circle_name"] or circle_query),
+                "title": str(canonical_metadata.get("work_name") or item.get("title") or metadata.get("work_name") or ""),
+                "maker_id": str(canonical_metadata.get("maker_id") or metadata.get("maker_id") or item.get("maker_id") or identity["maker_id"] or ""),
+                "maker_name": str(canonical_metadata.get("maker_name") or metadata.get("maker_name") or item.get("maker_name") or identity["circle_name"] or circle_query),
                 "linked_rjcodes": [variant["rjcode"] for variant in self._sort_linked_variants(canonical_info, rjcode)],
                 "has_kikoeru": False,
+                "kikoeru_found_rjcodes": [],
+                "kikoeru_subtitle_rjcodes": [],
                 "has_dlsite": True,
                 "has_asmr_one": False,
+                "asmr_available_rjcode": "",
                 "kikoeru_work_id": None,
                 "source_flags": set(),
                 "preferred_variant_label": self._variant_label(preferred_variant["link_type"], preferred_variant["lang"]),
@@ -710,9 +989,9 @@ class CircleCompletionService:
                 "preferred_link_type": preferred_variant["link_type"],
             })
             bucket["display_rjcode"] = bucket["display_rjcode"] or preferred_variant["rjcode"] or rjcode
-            bucket["title"] = bucket["title"] or str(item.get("title") or metadata.get("work_name") or "")
-            bucket["maker_id"] = bucket["maker_id"] or str(metadata.get("maker_id") or item.get("maker_id") or "")
-            bucket["maker_name"] = bucket["maker_name"] or str(metadata.get("maker_name") or item.get("maker_name") or circle_query)
+            bucket["title"] = bucket["title"] or str(canonical_metadata.get("work_name") or item.get("title") or metadata.get("work_name") or "")
+            bucket["maker_id"] = bucket["maker_id"] or str(canonical_metadata.get("maker_id") or metadata.get("maker_id") or item.get("maker_id") or "")
+            bucket["maker_name"] = bucket["maker_name"] or str(canonical_metadata.get("maker_name") or metadata.get("maker_name") or item.get("maker_name") or circle_query)
             bucket["linked_rjcodes"] = [variant["rjcode"] for variant in self._sort_linked_variants(
                 {
                     "linked_rjcodes": list(set(bucket["linked_rjcodes"]) | set(canonical_info.get("linked_rjcodes") or [rjcode])),
@@ -728,6 +1007,8 @@ class CircleCompletionService:
                 bucket["source_flags"].add(source)
             if source == "kikoeru":
                 bucket["has_kikoeru"] = True
+                if rjcode not in bucket["kikoeru_found_rjcodes"]:
+                    bucket["kikoeru_found_rjcodes"].append(rjcode)
                 if item.get("kikoeru_work_id"):
                     bucket["kikoeru_work_id"] = int(item["kikoeru_work_id"])
             if source == "dlsite":
@@ -777,6 +1058,7 @@ class CircleCompletionService:
                 asmr_available += 1
                 actual_norm = self.normalize_rjcode(actual_rjcode)
                 if actual_norm:
+                    item["asmr_available_rjcode"] = actual_norm
                     item["linked_rjcodes"] = sorted(set(item["linked_rjcodes"]) | {actual_norm})
             checked_asmr += 1
             report(
@@ -792,8 +1074,11 @@ class CircleCompletionService:
         for canonical, item in aggregated.items():
             ensure_not_cancelled()
             probe_rj = item["display_rjcode"] or canonical
-            if not item["has_kikoeru"]:
-                item["has_kikoeru"] = await self._probe_kikoeru_owned_state(probe_rj)
+            if not item["has_kikoeru"] or not item["kikoeru_found_rjcodes"]:
+                kikoeru_state = await self._probe_kikoeru_state(probe_rj)
+                item["has_kikoeru"] = bool(kikoeru_state.get("has_kikoeru"))
+                item["kikoeru_found_rjcodes"] = list(kikoeru_state.get("found_rjcodes") or [])
+                item["kikoeru_subtitle_rjcodes"] = list(kikoeru_state.get("subtitle_rjcodes") or [])
                 if item["has_kikoeru"]:
                     item["source_flags"].add("kikoeru")
             if item["has_kikoeru"]:
@@ -836,8 +1121,11 @@ class CircleCompletionService:
                 row.source_mask = ",".join(sorted(item["source_flags"]))
                 row.linked_rjcodes = item["linked_rjcodes"]
                 row.has_kikoeru = bool(item["has_kikoeru"])
+                row.kikoeru_found_rjcodes = list(item["kikoeru_found_rjcodes"] or [])
+                row.kikoeru_subtitle_rjcodes = list(item["kikoeru_subtitle_rjcodes"] or [])
                 row.has_dlsite = bool(item["has_dlsite"] or "dlsite" in item["source_flags"])
                 row.has_asmr_one = bool(item["has_asmr_one"])
+                row.asmr_available_rjcode = item["asmr_available_rjcode"] or None
                 row.kikoeru_work_id = item["kikoeru_work_id"]
                 row.dlsite_cached_at = datetime.now() if row.has_dlsite else row.dlsite_cached_at
                 row.asmr_one_cached_at = datetime.now() if row.has_asmr_one else row.asmr_one_cached_at
@@ -871,9 +1159,11 @@ class CircleCompletionService:
             "index_completed",
             summary=(
                 f"本地有 {indexed_counts['local_owned_count']} 个 / "
-                f"缺失 {indexed_counts['missing_count']} 个 / "
+                f"Kikoeru 有 {indexed_counts['owned_count']} 个 / "
+                f"DL 有 {indexed_counts['dl_count']} 个 / "
+                f"asmr.one 有 {sum(1 for item in summary.get('works') or [] if item.get('has_asmr_one'))} 个 / "
                 f"可下载 {indexed_counts['downloadable_count']} 个 / "
-                f"DL 有 {indexed_counts['dl_count']} 个"
+                f"暂无来源 {sum(1 for item in summary.get('works') or [] if not item.get('server_owned') and item.get('has_dlsite') and not item.get('has_asmr_one'))} 个"
             ),
             circle_id=circle_id,
             circle_name=identity["circle_name"] or circle_query,
@@ -885,9 +1175,12 @@ class CircleCompletionService:
                 "downloadable_count": indexed_counts["downloadable_count"],
                 "dl_count": indexed_counts["dl_count"],
                 "works_count": indexed_counts["works"],
-                "force_refresh": bool(force_refresh),
-                "include_dlsite": bool(include_dlsite),
-                "include_kikoeru": bool(include_kikoeru),
+                **self._build_circle_index_log_detail(
+                    summary,
+                    force_refresh=force_refresh,
+                    include_dlsite=include_dlsite,
+                    include_kikoeru=include_kikoeru,
+                ),
             },
         )
         return {
@@ -905,11 +1198,16 @@ class CircleCompletionService:
         try:
             rows = db.query(CircleCatalog).order_by(CircleCatalog.last_indexed_at.desc()).all()
             out = []
+            seen_keys = set()
             for row in rows:
                 if normalized:
                     haystack = f"{row.circle_name or ''} {row.circle_id or ''} {row.circle_name_normalized or ''}".lower()
                     if normalized not in haystack:
                         continue
+                dedupe_key = str(row.circle_name_normalized or "").strip() or str(row.circle_id or "").strip()
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
                 out.append(row.to_dict())
                 if len(out) >= max(1, int(limit)):
                     break
@@ -1006,11 +1304,28 @@ class CircleCompletionService:
                 item["owned_rjcodes"] = list((owned_row.owned_rjcodes or []) if owned_row else [])
                 item["primary_folder_path"] = owned_row.primary_folder_path if owned_row else ""
                 item["has_dlsite"] = has_dlsite
+                canonical_info = {
+                    "canonical_rjcode": row.canonical_rjcode,
+                    "linked_rjcodes": list(row.linked_rjcodes or [row.display_rjcode or row.canonical_rjcode]),
+                    "link_map": link_map_by_canonical.get(row.canonical_rjcode) or {},
+                }
+                preferred_variant = self._preferred_variant(canonical_info, row.display_rjcode or row.canonical_rjcode)
+                preferred_group = self._variant_group(preferred_variant.get("link_type"), preferred_variant.get("lang"))
+                item["preferred_variant"] = {
+                    "rjcode": preferred_variant.get("rjcode"),
+                    "lang": preferred_variant.get("lang"),
+                    "link_type": preferred_variant.get("link_type"),
+                    "label": self._variant_label(preferred_variant.get("link_type"), preferred_variant.get("lang")),
+                    "group_key": preferred_group["key"],
+                    "group_label": preferred_group["label"],
+                    "group_short_label": preferred_group["short_label"],
+                }
+                item["source_compare"] = self._build_source_compare(item, canonical_info)
                 item["status_tags"] = [
                     *(["服务器已有"] if server_owned else ["服务器缺失"]),
                     *(["可下载"] if row.has_asmr_one else ["暂不可下载"]),
                 ]
-                item["download_plan"] = {"rjcode": row.display_rjcode} if row.has_asmr_one else None
+                item["download_plan"] = {"rjcode": row.asmr_available_rjcode or row.display_rjcode} if row.has_asmr_one else None
                 items.append(item)
 
             result = {
@@ -1051,11 +1366,32 @@ class CircleCompletionService:
         for row in rows:
             if not row.has_asmr_one:
                 continue
+            resolved_rjcode = self.normalize_rjcode(row.asmr_available_rjcode)
+            probe_candidates: List[str] = []
+            for candidate in [resolved_rjcode, row.display_rjcode, row.canonical_rjcode, *(row.linked_rjcodes or [])]:
+                normalized = self.normalize_rjcode(candidate)
+                if normalized and normalized not in probe_candidates:
+                    probe_candidates.append(normalized)
+
+            if not resolved_rjcode:
+                for probe_rjcode in probe_candidates:
+                    try:
+                        actual_rjcode, work_info = await self.asmr_service.find_best_available_work(probe_rjcode)
+                    except Exception:
+                        continue
+                    if actual_rjcode and work_info:
+                        resolved_rjcode = self.normalize_rjcode(actual_rjcode)
+                        break
+
+            if not resolved_rjcode:
+                raise ValueError(f"未找到可下载作品 {row.display_rjcode or row.canonical_rjcode}")
+
             plan = await self.asmr_resource_service.build_download_plan(
-                rjcode=row.display_rjcode or row.canonical_rjcode,
+                rjcode=resolved_rjcode,
                 folder_path="",
                 filters={},
                 refresh=True,
+                emit_activity_log=False,
             )
             skip_reasons = self._build_filter_skip_reasons(plan.get("selectable_resources") or [])
             for item in plan.get("selectable_resources") or []:
@@ -1067,6 +1403,8 @@ class CircleCompletionService:
             plan["circle_id"] = circle_id
             plan["circle_name"] = catalog.circle_name
             plan["canonical_rjcode"] = row.canonical_rjcode
+            plan["requested_rjcode"] = row.display_rjcode or row.canonical_rjcode
+            plan["resolved_rjcode"] = resolved_rjcode
             plan["display_rjcodes"] = row.linked_rjcodes or [row.display_rjcode]
             plans.append(plan)
 

@@ -5,6 +5,11 @@
         <div class="hero-eyebrow">Circle Completion</div>
         <h1>社团补全</h1>
         <p>按社团建立索引，以 Kikoeru 服务器是否已收录作为缺失判断，再结合 DLsite 关联链和 asmr.one 下载能力，把真正缺的作品批量送进下载队列。</p>
+        <div class="hero-inline-metrics">
+          <span class="hero-inline-pill">索引优先复用现有社团</span>
+          <span class="hero-inline-pill">下载后自动按社团入库</span>
+          <span class="hero-inline-pill">仅蓝色操作可交互</span>
+        </div>
       </div>
       <div class="hero-actions">
         <el-input
@@ -62,7 +67,10 @@
       <aside class="circle-sidebar">
         <div class="sidebar-card">
           <div class="sidebar-head">
-            <div class="sidebar-title">最近索引</div>
+            <div>
+              <div class="sidebar-overline">社团目录</div>
+              <div class="sidebar-title">最近索引</div>
+            </div>
             <el-button text class="sidebar-refresh-button" @click="loadRecentCircles">刷新</el-button>
           </div>
           <div class="sidebar-search">
@@ -77,6 +85,7 @@
               :class="{ active: activeCircleId === circle.circle_id }"
               @click="selectCircle(circle.circle_id)"
             >
+              <div class="circle-list-topline">{{ circle.circle_id }}</div>
               <div class="circle-list-name">{{ circle.circle_name || circle.circle_id }}</div>
               <div class="circle-list-meta">
                 <span>{{ formatDateTime(circle.last_indexed_at) }}</span>
@@ -91,9 +100,13 @@
       <main class="circle-main">
         <section class="toolbar-card">
           <div class="toolbar-main">
-            <div>
+            <div class="toolbar-copy">
+              <div class="toolbar-overline">当前社团</div>
               <div class="toolbar-title">{{ detail.circle_name || '未选择社团' }}</div>
-              <div class="toolbar-subtitle">{{ detail.source_mask || '等待建立索引' }}</div>
+              <div class="toolbar-subtitle">
+                <span>{{ detail.source_mask || '等待建立索引' }}</span>
+                <span v-if="detail.last_indexed_at">最近刷新 {{ formatDateTime(detail.last_indexed_at) }}</span>
+              </div>
             </div>
             <div class="toolbar-metrics">
               <span class="metric-pill">服务器已有 {{ detail.owned_count || 0 }}</span>
@@ -113,6 +126,7 @@
         <section v-if="detail.works?.length" class="works-card">
           <div class="batch-bar">
             <div class="batch-bar-copy">
+              <div class="batch-overline">批量下载</div>
               <div class="batch-count">已选 {{ selectedCanonicalRJCodes.length }} 个作品</div>
               <div class="batch-hint">这里只看服务器缺失项。进入下载器的仍然只会是 asmr.one 可下载作品。</div>
             </div>
@@ -131,20 +145,16 @@
                   :key="item.canonical_rjcode"
                   class="work-card"
                   :class="{ selected: selectedCanonicals.has(item.canonical_rjcode), disabled: !item.has_asmr_one }"
+                  @click="toggleSelection(item)"
                 >
                   <div class="work-card-head">
-                    <div>
-                      <div class="work-rj">{{ item.display_rjcode || item.canonical_rjcode }}</div>
+                    <div class="work-card-copy">
+                      <div class="work-rj">{{ item.source_compare?.work_rjcode || item.canonical_rjcode }}</div>
                       <div class="work-title">{{ item.title || '未命名作品' }}</div>
                     </div>
-                    <el-checkbox
-                      :model-value="selectedCanonicals.has(item.canonical_rjcode)"
-                      :disabled="!item.has_asmr_one"
-                      @change="toggleSelection(item)"
-                    />
                   </div>
 
-                  <div class="work-linked">{{ item.display_rjcode || item.canonical_rjcode }}</div>
+                  <div class="work-linked">优先版本 {{ item.preferred_variant?.group_short_label || '原作' }} · {{ item.download_plan?.rjcode || item.display_rjcode || item.canonical_rjcode }}</div>
 
                   <div class="work-tags">
                     <span class="tag-chip" :class="{ owned: item.server_owned }">服务器 {{ item.server_owned ? '已有' : '缺失' }}</span>
@@ -153,10 +163,7 @@
                   </div>
 
                   <div v-if="item.has_asmr_one" class="work-actions">
-                    <el-button size="small" class="work-action-button" @click="openBatchPreview(item.canonical_rjcode)">预览下载</el-button>
-                    <el-button size="small" class="work-action-button primary" type="primary" plain @click="toggleSelection(item)">
-                      {{ selectedCanonicals.has(item.canonical_rjcode) ? '移出批量' : '加入批量' }}
-                    </el-button>
+                    <el-button size="small" class="work-action-button" @click.stop="openBatchPreview(item.canonical_rjcode)">预览下载</el-button>
                   </div>
                 </article>
               </div>
@@ -174,8 +181,9 @@
             <el-tab-pane label="服务器已拥有" name="owned">
               <div class="owned-list">
                 <article v-for="item in pagedOwnedWorks" :key="item.canonical_rjcode" class="owned-card">
+                  <div class="owned-overline">已收录</div>
                   <div class="owned-title">{{ item.title || item.canonical_rjcode }}</div>
-                  <div class="owned-meta">{{ item.display_rjcode || item.canonical_rjcode }}</div>
+                  <div class="owned-meta">{{ item.source_compare?.work_rjcode || item.canonical_rjcode }}</div>
                   <div class="owned-path">服务器已收录</div>
                 </article>
               </div>
@@ -185,6 +193,60 @@
                   :page-size="worksPageSize"
                   layout="total, prev, pager, next"
                   :total="ownedWorks.length"
+                  background
+                />
+              </div>
+            </el-tab-pane>
+
+            <el-tab-pane label="来源对比" name="compare">
+              <div class="compare-board">
+                <div class="compare-head">
+                  <div class="compare-col work">作品</div>
+                  <div class="compare-col source kikoeru">Kikoeru</div>
+                  <div class="compare-col source dlsite">DLsite</div>
+                  <div class="compare-col source asmr">asmr.one</div>
+                </div>
+                <div
+                  v-for="item in pagedCompareWorks"
+                  :key="`compare-${item.workRjcode}`"
+                  class="compare-row"
+                >
+                  <div class="compare-col work">
+                    <div class="compare-work-top">
+                      <span class="compare-work-rj">{{ item.workRjcode || '—' }}</span>
+                      <span :class="['compare-status-pill', `is-${item.statusKey}`]">{{ item.statusLabel }}</span>
+                    </div>
+                    <div class="compare-work-title">{{ item.title || item.workRjcode || '未命名作品' }}</div>
+                  </div>
+                  <div class="compare-col source kikoeru">
+                    <div v-if="item.sourceCompare.kikoeru.primary_rjcode" class="compare-chip-list">
+                      <span class="compare-chip">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
+                      <span v-if="item.sourceCompare.kikoeru.primaryBadge" class="compare-chip is-kikoeru-tag">{{ item.sourceCompare.kikoeru.primaryBadge }}</span>
+                      <span v-for="tag in item.sourceCompare.kikoeru.tags" :key="`k-${item.workRjcode}-${tag}`" class="compare-chip is-kikoeru-tag">{{ tag }}</span>
+                    </div>
+                    <span v-else class="compare-empty">未收录</span>
+                  </div>
+                  <div class="compare-col source dlsite">
+                    <div v-if="item.sourceCompare.dlsite.all_rjcodes.length" class="compare-chip-list">
+                      <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="compare-chip">{{ code }}</span>
+                    </div>
+                    <span v-else class="compare-empty">未发现</span>
+                  </div>
+                  <div class="compare-col source asmr">
+                    <div v-if="item.sourceCompare.asmr_one.primary_rjcode" class="compare-chip-list">
+                      <span class="compare-chip is-asmr">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
+                      <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="compare-chip is-asmr-badge">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
+                    </div>
+                    <span v-else class="compare-empty">暂无来源</span>
+                  </div>
+                </div>
+              </div>
+              <div class="works-pager">
+                <el-pagination
+                  v-model:current-page="comparePage"
+                  :page-size="comparePageSize"
+                  layout="total, prev, pager, next"
+                  :total="compareWorks.length"
                   background
                 />
               </div>
@@ -533,9 +595,9 @@ const detail = reactive({
   works: []
 })
 const filters = reactive({
-  onlyMissing: true,
+  onlyMissing: false,
   onlyDownloadable: false,
-  includeDlOnly: true
+  includeDlOnly: false
 })
 const activeTab = ref('missing')
 const selectedCanonicals = ref(new Set())
@@ -548,8 +610,10 @@ const downloadWorkbenchBackgroundActive = ref(false)
 const downloadWorkbenchRefreshing = ref(false)
 const trackedDownloadTasks = ref([])
 const worksPageSize = 24
+const comparePageSize = 10
 const missingPage = ref(1)
 const ownedPage = ref(1)
+const comparePage = ref(1)
 const indexJob = reactive({
   visible: false,
   job_id: '',
@@ -581,6 +645,33 @@ const pagedMissingWorks = computed(() => {
 const pagedOwnedWorks = computed(() => {
   const start = (ownedPage.value - 1) * worksPageSize
   return ownedWorks.value.slice(start, start + worksPageSize)
+})
+const compareWorks = computed(() => (detail.works || []).map(item => ({
+  workRjcode: String(item?.source_compare?.work_rjcode || item?.canonical_rjcode || '').trim(),
+  title: String(item?.title || '').trim(),
+  preferredVariantLabel: String(item?.preferred_variant?.label || '优先版本 未标记').trim(),
+  statusLabel: item?.server_owned ? '服务器已有' : (item?.has_asmr_one ? '可下载' : '暂无来源'),
+  statusKey: item?.server_owned ? 'owned' : (item?.has_asmr_one ? 'downloadable' : 'dl_only'),
+  sourceCompare: {
+    kikoeru: {
+      primary_rjcode: String(item?.source_compare?.kikoeru?.primary_rjcode || '').trim(),
+      primaryBadge: String(item?.source_compare?.kikoeru?.primary_badge || '').trim(),
+      all_rjcodes: Array.isArray(item?.source_compare?.kikoeru?.all_rjcodes) ? item.source_compare.kikoeru.all_rjcodes.filter(Boolean) : [],
+      tags: Array.isArray(item?.source_compare?.kikoeru?.tags) ? item.source_compare.kikoeru.tags.filter(Boolean) : [],
+    },
+    dlsite: {
+      all_rjcodes: Array.isArray(item?.source_compare?.dlsite?.all_rjcodes) ? item.source_compare.dlsite.all_rjcodes.filter(Boolean) : [],
+    },
+    asmr_one: {
+      primary_rjcode: String(item?.source_compare?.asmr_one?.primary_rjcode || '').trim(),
+      primaryBadge: String(item?.source_compare?.asmr_one?.primary_badge || '').trim(),
+      all_rjcodes: Array.isArray(item?.source_compare?.asmr_one?.all_rjcodes) ? item.source_compare.asmr_one.all_rjcodes.filter(Boolean) : [],
+    },
+  }
+})))
+const pagedCompareWorks = computed(() => {
+  const start = (comparePage.value - 1) * comparePageSize
+  return compareWorks.value.slice(start, start + comparePageSize)
 })
 const selectedCanonicalRJCodes = computed(() => [...selectedCanonicals.value])
 const selectedFileCount = computed(() => previewPlans.value.reduce((sum, plan) => sum + (plan.selected_resource_count || 0), 0))
@@ -641,11 +732,13 @@ onBeforeUnmount(() => {
 watch(activeTab, (tab) => {
   if (tab === 'missing') missingPage.value = 1
   if (tab === 'owned') ownedPage.value = 1
+  if (tab === 'compare') comparePage.value = 1
 })
 
 watch(() => detail.works, () => {
   missingPage.value = 1
   ownedPage.value = 1
+  comparePage.value = 1
 }, { deep: true })
 
 watch(downloadWorkbenchVisible, (visible) => {
@@ -1745,65 +1838,95 @@ async function startBatchDownload() {
 .circle-hero {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(280px, 420px);
-  gap: 16px;
-  padding: 24px 26px;
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at top right, rgba(0, 113, 227, 0.16), transparent 28%),
-    linear-gradient(135deg, #f7fbff 0%, #eef5ff 48%, #fdfefe 100%);
-  border: 1px solid #dde9fb;
-  box-shadow: 0 18px 34px rgba(45, 86, 145, 0.08);
+  gap: 20px;
+  padding: 30px 34px;
+  border-radius: 28px;
+  background: linear-gradient(180deg, #fbfcfe 0%, #f5f6f8 100%);
+  border: 1px solid rgba(29, 29, 31, 0.08);
+  box-shadow: 0 12px 28px rgba(29, 29, 31, 0.05);
 }
 .hero-eyebrow {
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: .14em;
   text-transform: uppercase;
-  color: #5d7baa;
+  color: #0071e3;
 }
 .circle-hero h1 {
-  margin: 8px 0 10px;
-  font-size: 32px;
-  line-height: 1.05;
-  color: #1d3557;
+  margin: 6px 0 8px;
+  font-size: 34px;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  color: #1d1d1f;
 }
 .circle-hero p {
   margin: 0;
-  max-width: 760px;
-  color: #5c6f86;
-  line-height: 1.7;
+  max-width: 720px;
+  color: rgba(29, 29, 31, 0.7);
+  line-height: 1.62;
 }
 .hero-actions {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   align-content: center;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(29, 29, 31, 0.06);
 }
 .hero-search-input :deep(.el-input__wrapper) {
-  min-height: 44px;
+  min-height: 46px;
   border-radius: 14px;
-  box-shadow: 0 0 0 1px rgba(190, 213, 247, 0.95) inset;
-  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 0 0 1px rgba(29, 29, 31, 0.08) inset;
+  background: rgba(255, 255, 255, 0.96);
 }
 .hero-search-input :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 2px rgba(77, 136, 226, 0.22) inset;
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.18) inset;
 }
 .hero-search-button,
 .batch-action-button,
 .work-action-button {
   border-radius: 12px;
   font-weight: 800;
-  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease, color .18s ease;
+  position: relative;
+  overflow: hidden;
+  transition: transform .18s ease, box-shadow .22s ease, border-color .18s ease, background .22s ease, color .22s ease, filter .18s ease;
 }
 .hero-search-button {
-  min-height: 44px;
-  border: 1px solid #82b7f8;
-  background: linear-gradient(135deg, #79b8ff 0%, #5fa4f3 100%);
-  box-shadow: 0 12px 24px rgba(76, 134, 220, 0.22);
+  min-height: 46px;
+  border: 1px solid #0071e3;
+  background: linear-gradient(135deg, #0a84ff 0%, #0071e3 100%);
+  box-shadow: 0 10px 22px rgba(0, 113, 227, 0.24);
+}
+.hero-search-button::after,
+.batch-action-button::after,
+.work-action-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, rgba(255,255,255,0) 20%, rgba(255,255,255,0.22) 50%, rgba(255,255,255,0) 80%);
+  opacity: 0;
+  transform: translateX(-18%);
+  transition: opacity .2s ease, transform .28s ease;
+  pointer-events: none;
 }
 .hero-search-button:hover,
 .batch-action-button:hover,
 .work-action-button:hover {
-  transform: translateY(-1px);
+  transform: translateY(-2px);
+  filter: saturate(1.05);
+}
+.hero-search-button:hover::after,
+.batch-action-button:hover::after,
+.work-action-button:hover::after {
+  opacity: 1;
+  transform: translateX(12%);
+}
+.hero-search-button:active,
+.batch-action-button:active,
+.work-action-button:active {
+  transform: translateY(0) scale(0.985);
+  box-shadow: 0 6px 14px rgba(0, 113, 227, 0.14);
 }
 .sidebar-refresh-button {
   font-weight: 800;
@@ -1846,11 +1969,11 @@ async function startBatchDownload() {
 .progress-meta-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
+  min-height: 24px;
+  padding: 0 9px;
   border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 11px;
+  font-weight: 700;
 }
 .index-progress-status {
   background: #edf4ff;
@@ -1902,9 +2025,9 @@ async function startBatchDownload() {
   box-shadow: 0 14px 30px rgba(46, 74, 120, 0.07);
 }
 .sidebar-card {
-  padding: 18px;
+  padding: 22px 20px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 .sidebar-head,
 .toolbar-main,
@@ -1920,16 +2043,16 @@ async function startBatchDownload() {
 .toolbar-title {
   font-size: 18px;
   font-weight: 800;
-  color: #223a5d;
+  color: #1d1d1f;
 }
 .toolbar-card {
-  padding: 18px 18px 14px;
+  padding: 20px 20px 16px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 .toolbar-subtitle {
   font-size: 12px;
-  color: #6b809d;
+  color: rgba(29, 29, 31, 0.58);
   margin-top: 4px;
 }
 .toolbar-metrics {
@@ -1942,28 +2065,29 @@ async function startBatchDownload() {
 .reason-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 12px;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 4px;
+  font-size: 10px;
   font-weight: 700;
+  line-height: 1;
 }
 .metric-pill {
-  background: #edf4ff;
-  color: #265aa7;
-  border: 1px solid #d4e5ff;
+  background: #f0f5fb;
+  color: #48617d;
+  border: 1px solid #d6e0ec;
 }
 .metric-pill.warn {
-  background: #fff6ea;
-  color: #a05c16;
-  border-color: #f6d8a8;
+  background: #fff3e2;
+  color: #9a5809;
+  border-color: #f1c98c;
 }
 .metric-pill.ok,
 .tag-chip.ok,
 .reason-pill.ok {
-  background: #ecfaf1;
-  color: #19744b;
-  border: 1px solid #cdeedb;
+  background: #eaf8ef;
+  color: #1c7a4d;
+  border: 1px solid #bfe4cb;
 }
 .toolbar-filters {
   display: flex;
@@ -1984,58 +2108,58 @@ async function startBatchDownload() {
 }
 .circle-list-item {
   width: 100%;
-  padding: 12px;
-  border: 1px solid #e6eef7;
-  border-radius: 14px;
-  background: #fbfdff;
+  padding: 14px 12px;
+  border: 1px solid rgba(29, 29, 31, 0.07);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.84);
   text-align: left;
   cursor: pointer;
   transition: border-color .18s ease, box-shadow .18s ease, background .18s ease, transform .18s ease;
 }
 .circle-list-item:hover {
-  border-color: #b8d3ff;
-  background: #f4f8ff;
-  box-shadow: 0 10px 20px rgba(69, 122, 195, 0.10);
+  border-color: rgba(0, 113, 227, 0.16);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 18px rgba(29, 29, 31, 0.05);
   transform: translateY(-1px);
 }
 .circle-list-item.active {
-  border-color: #9ec3ff;
-  background: linear-gradient(180deg, #f7faff 0%, #edf4ff 100%);
-  box-shadow: 0 0 0 1px rgba(120, 171, 244, 0.22), 0 10px 20px rgba(69, 122, 195, 0.08);
+  border-color: rgba(0, 113, 227, 0.18);
+  background: linear-gradient(180deg, #f8fbff 0%, #eff5fc 100%);
+  box-shadow: 0 0 0 1px rgba(0, 113, 227, 0.12), 0 8px 18px rgba(29, 29, 31, 0.04);
   transform: none;
 }
 .circle-list-name {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
-  color: #274064;
+  color: #1d1d1f;
 }
 .circle-list-meta {
   margin-top: 4px;
   display: grid;
   gap: 2px;
   font-size: 11px;
-  color: #7a8ca4;
+  color: rgba(29, 29, 31, 0.5);
 }
 .works-card {
-  padding: 16px;
+  padding: 18px;
   display: grid;
-  gap: 16px;
+  gap: 14px;
 }
 .batch-bar {
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #f5f9ff 0%, #fffdf8 100%);
-  border: 1px solid #e5eefc;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #f7f9fb 0%, #ffffff 100%);
+  border: 1px solid rgba(29, 29, 31, 0.06);
 }
 .batch-count {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 800;
-  color: #21426d;
+  color: #1d1d1f;
 }
 .batch-hint {
   margin-top: 4px;
   font-size: 12px;
-  color: #6d7f98;
+  color: rgba(29, 29, 31, 0.56);
 }
 .batch-bar-actions {
   display: flex;
@@ -2043,73 +2167,133 @@ async function startBatchDownload() {
   flex-wrap: wrap;
 }
 .batch-action-button {
-  min-width: 116px;
-  min-height: 36px;
-  border: 1px solid #d6e3f7;
-  background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%);
-  color: #335276;
+  min-width: 112px;
+  min-height: 38px;
+  border: 1px solid rgba(0, 113, 227, 0.16);
+  background: linear-gradient(180deg, #ffffff 0%, #f6faff 100%);
+  color: #235ea8;
 }
 .batch-action-button.ghost {
+  border-color: rgba(29, 29, 31, 0.08);
   background: #fff;
-  color: #637892;
+  color: rgba(29, 29, 31, 0.6);
 }
 .batch-action-button.primary {
-  border-color: #82b7f8;
-  background: linear-gradient(135deg, #79b8ff 0%, #5fa4f3 100%);
+  border-color: #0071e3;
+  background: linear-gradient(135deg, #0a84ff 0%, #0071e3 100%);
   color: #fff;
-  box-shadow: 0 10px 20px rgba(76, 134, 220, 0.18);
+  box-shadow: 0 10px 20px rgba(0, 113, 227, 0.18);
+}
+.batch-action-button:hover {
+  background: linear-gradient(180deg, #f3f8ff 0%, #e7f1ff 100%);
+  border-color: rgba(0, 113, 227, 0.24);
+  color: #0c5ec2;
+}
+.batch-action-button.primary:hover {
+  background: linear-gradient(135deg, #2997ff 0%, #0077ed 100%);
+  border-color: #0077ed;
+  color: #fff;
+}
+.work-action-button:hover {
+  background: linear-gradient(180deg, #f2f7ff 0%, #e9f2ff 100%);
+  border-color: rgba(0, 113, 227, 0.24);
+  color: #0f63c8;
+}
+.work-action-button.primary:hover {
+  background: linear-gradient(180deg, #dcecff 0%, #cfe3ff 100%);
+  border-color: rgba(0, 113, 227, 0.28);
+  color: #005ecb;
 }
 .work-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
 }
 .work-card,
 .owned-card,
 .info-card,
 .preview-plan {
   border-radius: 18px;
-  border: 1px solid #e8eef7;
-  background: #fcfdff;
+  border: 1px solid rgba(29, 29, 31, 0.07);
+  background: #fcfcfd;
 }
 .work-card {
-  padding: 14px;
+  padding: 12px 12px 11px;
   display: grid;
-  gap: 10px;
-  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+  gap: 8px;
+  align-content: start;
+  min-height: 164px;
+  cursor: pointer;
+  transition: border-color .18s ease, box-shadow .22s ease, transform .18s ease, background .18s ease, filter .18s ease, opacity .18s ease;
+}
+.work-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(52, 120, 246, 0.16);
+  box-shadow: 0 12px 24px rgba(38, 74, 134, 0.08);
+  background: #ffffff;
 }
 .work-card.selected {
-  border-color: #9bc1ff;
-  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.08);
-  background: #f7fbff;
+  border-color: rgba(52, 120, 246, 0.36);
+  box-shadow: 0 0 0 2px rgba(52, 120, 246, 0.14), 0 16px 30px rgba(52, 120, 246, 0.12);
+  background: linear-gradient(180deg, #f8fbff 0%, #eef5ff 100%);
 }
 .work-card.disabled {
-  opacity: .82;
+  opacity: .96;
+  filter: saturate(0.56) grayscale(0.12);
+  background: linear-gradient(180deg, #fafbfd 0%, #f1f3f6 100%);
+  border-color: rgba(29, 29, 31, 0.07);
+  cursor: default;
+}
+.work-card.disabled:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(29, 29, 31, 0.05);
+  background: linear-gradient(180deg, #fafbfd 0%, #f1f3f6 100%);
+  border-color: rgba(29, 29, 31, 0.08);
 }
 .work-card-head {
   display: flex;
   justify-content: space-between;
   gap: 10px;
+  align-items: flex-start;
+}
+.work-card-copy {
+  min-height: 72px;
 }
 .work-rj {
-  font-size: 12px;
-  font-weight: 800;
-  color: #4f73ab;
+  font-size: 11px;
+  font-weight: 700;
+  color: #5d7caa;
+}
+.work-card.disabled .work-rj,
+.work-card.disabled .work-title,
+.work-card.disabled .work-linked {
+  color: rgba(29, 29, 31, 0.4);
 }
 .work-title,
 .owned-title {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 800;
-  color: #22395a;
-  line-height: 1.5;
+  color: #1f3554;
+  line-height: 1.42;
+}
+.work-title {
+  display: -webkit-box;
+  min-height: calc(1.42em * 3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 .work-linked,
 .owned-meta,
 .owned-path {
-  font-size: 12px;
-  color: #70839a;
-  line-height: 1.6;
+  font-size: 11px;
+  color: rgba(29, 29, 31, 0.46);
+  line-height: 1.5;
   word-break: break-all;
+}
+.work-linked {
+  min-height: 17px;
 }
 .work-tags,
 .work-actions,
@@ -2119,31 +2303,111 @@ async function startBatchDownload() {
   gap: 8px;
   flex-wrap: wrap;
 }
+.work-tags {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.work-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: 0;
+  flex-wrap: nowrap;
+  width: 100%;
+  margin-top: auto;
+}
 .tag-chip {
-  min-height: 24px;
-  background: #f2f6fb;
-  color: #516882;
-  border: 1px solid #e1e9f3;
+  height: 20px;
+  min-height: 20px;
+  width: auto;
+  max-width: 100%;
+  justify-content: center;
+  padding: 0 8px;
+  background: #f5f7fa;
+  color: #62748a;
+  border: 1px solid #dbe3ee;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0;
+  flex: 0 0 auto;
 }
 .tag-chip.accent {
-  background: #eef4ff;
-  color: #3564a6;
-  border-color: #cfe0ff;
+  background: #edf4ff;
+  color: #4c7ed0;
+  border-color: #d3e1fb;
 }
 .tag-chip.owned {
-  background: #eefaf3;
-  color: #1d7d50;
-  border-color: #d2eedc;
+  background: #eef6ff;
+  color: #5a7698;
+  border-color: #d8e1ef;
+}
+.work-tags .tag-chip:nth-child(1) {
+  background: #fff4f2;
+  color: #b86a5e;
+  border-color: #f3ddd8;
+}
+.work-tags .tag-chip:nth-child(1).owned {
+  background: #edf8f1;
+  color: #458467;
+  border-color: #d2e8da;
+}
+.work-tags .tag-chip:nth-child(2) {
+  background: #edf4ff;
+  color: #557fc1;
+  border-color: #d4e0f8;
+}
+.work-tags .tag-chip:nth-child(3) {
+  background: #f4f6f9;
+  color: #7f8c9b;
+  border-color: #e1e6ed;
+}
+.work-tags .tag-chip:nth-child(3).ok {
+  background: #edf9f1;
+  color: #468568;
+  border-color: #d0e8d8;
+}
+.work-card.disabled .work-tags .tag-chip:nth-child(3) {
+  background: #edf1f5;
+  color: #97a2af;
+  border-color: #dbe2ea;
+}
+.work-card.disabled .work-tags .tag-chip:nth-child(1) {
+  background: #f4efee;
+  color: #9d8c88;
+  border-color: #e8dfdc;
+}
+.work-card.disabled .work-tags .tag-chip:nth-child(2) {
+  background: #eef1f5;
+  color: #92a0b1;
+  border-color: #dde3eb;
 }
 .work-action-button {
-  border: 1px solid #d5e2f5;
-  background: #fff;
-  color: #38587c;
+  border: 1px solid #b9d7ff;
+  background: #ffffff;
+  color: #1f6fd6;
+  width: auto;
+  min-width: 84px;
+  min-height: 26px;
+  padding: 0 12px;
+  justify-content: center;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 2px 6px rgba(31, 111, 214, 0.08);
 }
-.work-action-button.primary {
-  border-color: #b8d3ff;
-  background: #eef5ff;
-  color: #2f69b6;
+.work-action-button:hover {
+  background: linear-gradient(180deg, #2997ff 0%, #0077ed 100%);
+  border-color: #0077ed;
+  color: #fff;
+  box-shadow: 0 8px 16px rgba(31, 111, 214, 0.18);
 }
 .owned-list,
 .info-grid,
@@ -2202,10 +2466,18 @@ async function startBatchDownload() {
   background: #f0f6ff;
   color: #2256a6;
   border-radius: 10px;
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 5px 10px;
+  font-size: 11px;
   font-weight: 800;
   cursor: pointer;
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.preset-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 14px rgba(76, 134, 220, 0.12);
+}
+.preset-chip:active {
+  transform: scale(0.98);
 }
 .preset-chip.ghost {
   background: #fff;
@@ -2309,6 +2581,121 @@ async function startBatchDownload() {
   justify-content: center;
   color: #6c7d95;
 }
+.compare-board {
+  border: 1px solid #e6edf7;
+  border-radius: 18px;
+  overflow: auto;
+  background: #fff;
+}
+.compare-head,
+.compare-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) repeat(3, minmax(180px, 1fr));
+}
+.compare-head {
+  background: #f5f8fd;
+  border-bottom: 1px solid #e8eef6;
+  font-size: 12px;
+  font-weight: 800;
+  color: #61748d;
+}
+.compare-row + .compare-row {
+  border-top: 1px solid #eff3f8;
+}
+.compare-col {
+  padding: 14px 16px;
+  min-width: 0;
+}
+.compare-col + .compare-col {
+  border-left: 1px solid #eff3f8;
+}
+.compare-col.source.kikoeru {
+  background: rgba(239, 246, 255, 0.56);
+}
+.compare-col.source.dlsite {
+  background: rgba(255, 247, 237, 0.62);
+}
+.compare-col.source.asmr {
+  background: rgba(236, 253, 245, 0.66);
+}
+.compare-work-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.compare-work-rj {
+  font-weight: 800;
+  color: #223754;
+}
+.compare-work-title {
+  margin-top: 6px;
+  color: #24364f;
+  line-height: 1.55;
+}
+.compare-work-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #7b8797;
+}
+.compare-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.compare-status-pill.is-owned {
+  background: rgba(10, 132, 255, 0.12);
+  color: #005fcc;
+}
+.compare-status-pill.is-downloadable {
+  background: rgba(52, 199, 89, 0.12);
+  color: #248a3d;
+}
+.compare-status-pill.is-dl_only {
+  background: rgba(255, 59, 48, 0.10);
+  color: #c2410c;
+}
+.compare-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.compare-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #d8e4f2;
+  color: #23406f;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.compare-chip.is-kikoeru-tag {
+  border-color: rgba(10, 132, 255, 0.16);
+  background: rgba(239, 246, 255, 0.96);
+  color: #005fcc;
+  font-weight: 800;
+}
+.compare-chip.is-asmr {
+  border-color: rgba(52, 199, 89, 0.16);
+  background: rgba(236, 253, 245, 0.98);
+  color: #248a3d;
+  font-weight: 800;
+}
+.compare-chip.is-asmr-badge {
+  border-color: rgba(52, 199, 89, 0.14);
+  background: rgba(220, 252, 231, 0.94);
+  color: #1f8f51;
+  font-weight: 800;
+}
+.compare-empty {
+  color: #8a97aa;
+  font-size: 12px;
+}
 @media (max-width: 1100px) {
   .circle-shell,
   .circle-hero {
@@ -2328,6 +2715,10 @@ async function startBatchDownload() {
   .download-task-meta-grid,
   .download-settings-grid {
     grid-template-columns: 1fr;
+  }
+  .compare-head,
+  .compare-row {
+    grid-template-columns: minmax(220px, 1.2fr) repeat(3, minmax(150px, 1fr));
   }
   .circle-download-floating-card {
     right: 12px;

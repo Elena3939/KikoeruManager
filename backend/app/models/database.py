@@ -184,8 +184,11 @@ class CircleWork(Base):
     source_mask = Column(String(120), default='')
     linked_rjcodes = Column(JSON)
     has_kikoeru = Column(Boolean, default=False, index=True)
+    kikoeru_found_rjcodes = Column(JSON)
+    kikoeru_subtitle_rjcodes = Column(JSON)
     has_dlsite = Column(Boolean, default=False, index=True)
     has_asmr_one = Column(Boolean, default=False, index=True)
+    asmr_available_rjcode = Column(String(20), index=True)
     kikoeru_work_id = Column(Integer)
     asmr_one_cached_at = Column(DateTime)
     dlsite_cached_at = Column(DateTime)
@@ -208,8 +211,11 @@ class CircleWork(Base):
             'source_mask': self.source_mask or '',
             'linked_rjcodes': self.linked_rjcodes or [],
             'has_kikoeru': bool(self.has_kikoeru),
+            'kikoeru_found_rjcodes': self.kikoeru_found_rjcodes or [],
+            'kikoeru_subtitle_rjcodes': self.kikoeru_subtitle_rjcodes or [],
             'has_dlsite': bool(self.has_dlsite),
             'has_asmr_one': bool(self.has_asmr_one),
+            'asmr_available_rjcode': self.asmr_available_rjcode,
             'kikoeru_work_id': self.kikoeru_work_id,
             'asmr_one_cached_at': self.asmr_one_cached_at.isoformat() if self.asmr_one_cached_at else None,
             'dlsite_cached_at': self.dlsite_cached_at.isoformat() if self.dlsite_cached_at else None,
@@ -775,6 +781,22 @@ def init_db():
             conn.execute(
                 text(
                     f"ALTER TABLE asmr_resource_records ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
+                )
+            )
+        result = conn.execute(text("PRAGMA table_info(circle_works)"))
+        circle_work_columns = {row[1] for row in result.fetchall()}
+        circle_work_missing_columns = []
+        if result.returns_rows:
+            if 'asmr_available_rjcode' not in circle_work_columns:
+                circle_work_missing_columns.append(("asmr_available_rjcode", "VARCHAR(20)", "NULL"))
+            if 'kikoeru_found_rjcodes' not in circle_work_columns:
+                circle_work_missing_columns.append(("kikoeru_found_rjcodes", "JSON", "'[]'"))
+            if 'kikoeru_subtitle_rjcodes' not in circle_work_columns:
+                circle_work_missing_columns.append(("kikoeru_subtitle_rjcodes", "JSON", "'[]'"))
+        for column_name, column_type, default_value in circle_work_missing_columns:
+            conn.execute(
+                text(
+                    f"ALTER TABLE circle_works ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
                 )
             )
     _db_logger.info(f"[数据库] 表创建完成")
