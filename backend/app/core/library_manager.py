@@ -650,8 +650,13 @@ class SynologyFileStationClient:
     ):
         normalized_path = str(PurePosixPath(dest_folder or "/"))
         overwrite_value = "true" if overwrite else "false"
-        upload_total_timeout = max(12, min(int(self.config.timeout or 30), 18))
-        timeout = aiohttp.ClientTimeout(total=upload_total_timeout, connect=min(10, upload_total_timeout))
+        connect_timeout = max(10, int(self.config.timeout or 30))
+        timeout = aiohttp.ClientTimeout(
+            total=None,
+            connect=connect_timeout,
+            sock_connect=connect_timeout,
+            sock_read=None,
+        )
         payload_variants = [
             {
                 "query": {},
@@ -1016,9 +1021,17 @@ class LibraryManager:
         return self._active_libraries(cfg)[0]
 
     def _library_from_payload(self, payload: dict[str, Any]) -> LibraryDefinition:
+        library_id = str(payload.get("id") or "").strip()
         library_type = (payload.get("type") or "local").lower()
         synology_payload = copy.deepcopy(payload.get("synology") or {})
         synology_profile_id = str(payload.get("synology_profile_id") or "").strip()
+        if library_id and library_type == "synology_filestation" and not synology_payload:
+            try:
+                existing = self.get_library_definition(library_id)
+                if existing and existing.type == "synology_filestation" and existing.synology:
+                    return existing
+            except Exception:
+                pass
         if library_type == "synology_filestation" and synology_profile_id:
             storage = get_config().storage.model_dump()
             profile_map = {

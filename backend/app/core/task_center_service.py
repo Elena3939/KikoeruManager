@@ -100,6 +100,38 @@ class TaskCenterService:
             return ""
         return os.path.basename(normalized) or normalized
 
+    def _format_bytes(self, value: Any) -> str:
+        try:
+            size = max(0, int(float(value or 0)))
+        except Exception:
+            return self._safe_text(value)
+        if size < 1024:
+            return f"{size} B"
+        units = ["KB", "MB", "GB", "TB"]
+        current = size / 1024
+        unit_index = 0
+        while current >= 1024 and unit_index < len(units) - 1:
+            current /= 1024
+            unit_index += 1
+        return f"{current:.2f} {units[unit_index]}"
+
+    def _format_duration_ms(self, value: Any) -> str:
+        try:
+            ms = max(0, int(float(value or 0)))
+        except Exception:
+            return self._safe_text(value)
+        if ms < 1000:
+            return f"{ms} ms"
+        total_seconds = int(round(ms / 1000))
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        if hours > 0:
+            return f"{hours}时{minutes}分{seconds}秒"
+        if minutes > 0:
+            return f"{minutes}分{seconds}秒"
+        return f"{seconds}秒"
+
     def _append_metric(self, items: List[Dict[str, str]], label: str, value: Any):
         if value is None:
             return
@@ -335,20 +367,32 @@ class TaskCenterService:
             if metadata.get("awaiting_manual_match"):
                 self._append_metric(metrics, "待手配", "是")
         elif domain == "asmr_sync":
-            title = self._safe_text(metadata.get("work_title")) or rjcode or self._basename(source_path) or "ASMR 同步任务"
+            is_reimport_task = source_action in {"reimport_local_download_root", "reimport_downloaded_session"}
+            title = self._safe_text(metadata.get("work_title")) or rjcode or self._basename(source_path) or ("直接入库任务" if is_reimport_task else "ASMR 同步任务")
             subtitle = self._safe_text(metadata.get("subtitle_folder")) or source_path
-            source_label = source_label or "ASMR 同步下载"
-            source_action = source_action or "asmr_sync_start"
-            source_page = source_page or "asmr-sync"
+            source_label = source_label or ("直接入库" if is_reimport_task else "ASMR 同步下载")
+            source_action = source_action or ("reimport_downloaded_session" if is_reimport_task else "asmr_sync_start")
+            source_page = source_page or ("circle-completion" if is_reimport_task else "asmr-sync")
             sync_result = dict(metadata.get("sync_result") or {})
             verify_summary = dict(metadata.get("verify_summary") or {})
             upload_summary = dict(metadata.get("upload_summary") or {})
+            performance_metrics = dict(metadata.get("performance_metrics") or {})
             self._append_metric(metrics, "RJ", rjcode or metadata.get("actual_rjcode"))
             self._append_metric(metrics, "资源数", metadata.get("selected_resource_count") or len(metadata.get("download_files") or []))
             self._append_metric(metrics, "失败文件", len(metadata.get("failed_files") or []))
             self._append_metric(metrics, "MD5失败", verify_summary.get("failed"))
             self._append_metric(metrics, "已上传", upload_summary.get("uploaded"))
+            self._append_metric(metrics, "上传大小", self._format_bytes(performance_metrics.get("uploaded_bytes")) if performance_metrics.get("uploaded_bytes") else None)
+            self._append_metric(metrics, "平均上传", f"{self._format_bytes(performance_metrics.get('average_upload_speed_bytes'))}/s" if performance_metrics.get("average_upload_speed_bytes") else None)
+            self._append_metric(metrics, "耗时", self._format_duration_ms(performance_metrics.get("duration_ms")) if performance_metrics.get("duration_ms") else None)
             self._append_metric(metrics, "已写入", sync_result.get("downloaded_files"))
+            if is_reimport_task:
+                self._append_metric(
+                    metrics,
+                    "目标库",
+                    self._safe_text(metadata.get("target_library_id"))
+                    or self._safe_text((metadata.get("postprocess_options") or {}).get("target_library_id")),
+                )
         elif domain == "circle_completion":
             if task.type == TaskType.CIRCLE_COMPLETION_INDEX:
                 index_meta = dict(metadata.get("index_meta") or {})

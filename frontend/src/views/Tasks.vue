@@ -259,6 +259,27 @@
             </div>
           </div>
 
+          <div v-if="uploadedFileTreeRows(selectedItem).length" class="detail-section">
+            <span class="detail-section-label">上传文件树</span>
+            <div class="detail-entry-tree-box">
+              <div
+                v-for="entry in uploadedFileTreeRows(selectedItem)"
+                :key="`${selectedItem.id}-${entry.key}`"
+                class="detail-tree-row"
+                :style="{ paddingLeft: `${12 + entry.depth * 18}px` }"
+              >
+                <div class="detail-tree-main">
+                  <span class="detail-tree-branch" aria-hidden="true">{{ entry.depth ? '└' : '•' }}</span>
+                  <span class="detail-tree-icon" :class="`is-${entry.type || 'file'}`">
+                    <el-icon><component :is="entry.type === 'dir' ? Folder : Document" /></el-icon>
+                  </span>
+                  <span class="detail-tree-name">{{ entry.label }}</span>
+                </div>
+                <span v-if="entry.sizeText" class="detail-tree-size">{{ entry.sizeText }}</span>
+              </div>
+            </div>
+          </div>
+
           <div class="detail-section">
             <span class="detail-section-label">路径信息</span>
             <div class="detail-path-row">
@@ -639,9 +660,17 @@ function getTaskSummary(item) {
   } else if (item.domain === 'asmr_sync') {
     const downloadFiles = pickMetricValue(item, '下载文件')
     const failedFiles = pickMetricValue(item, '失败文件')
+    const uploadedCount = pickMetricValue(item, '已上传')
+    const uploadedBytes = pickMetricValue(item, '上传大小')
+    const averageUpload = pickMetricValue(item, '平均上传')
+    const duration = pickMetricValue(item, '耗时')
     const normalizedRJ = formatRJCode(item.rjcode)
     if (normalizedRJ) pieces.push(`RJ ${normalizedRJ}`)
     if (downloadFiles) pieces.push(`文件 ${downloadFiles}`)
+    if (uploadedCount) pieces.push(`上传 ${uploadedCount}`)
+    if (uploadedBytes) pieces.push(uploadedBytes)
+    if (averageUpload) pieces.push(averageUpload)
+    if (duration) pieces.push(duration)
     if (failedFiles) pieces.push(`失败 ${failedFiles}`)
     if (item.subtitle) pieces.push(`来源 ${getFileName(item.subtitle)}`)
   } else if (item.domain === 'circle_completion') {
@@ -696,6 +725,23 @@ function mapFilteredItems(item) {
 
 function filterRemovedTreeRows(item) {
   return buildTreeRows(mapFilteredItems(item))
+}
+
+function mapUploadedFiles(item) {
+  const details = item?.details || {}
+  const metadata = details.metadata || {}
+  const uploadedFiles = Array.isArray(metadata.uploaded_files) ? metadata.uploaded_files : []
+  return uploadedFiles.map((current, index) => ({
+    key: String(current?.relative_path || current?.name || current?.upload_path || `${index}`),
+    relative_path: String(current?.relative_path || current?.name || current?.upload_path || ''),
+    name: String(current?.name || current?.relative_path || current?.upload_path || '未命名文件'),
+    type: 'file',
+    size: Number(current?.size_bytes || 0),
+  })).filter(item => item.relative_path || item.name)
+}
+
+function uploadedFileTreeRows(item) {
+  return buildTreeRows(mapUploadedFiles(item))
 }
 
 function getRecoveredNotice(item) {

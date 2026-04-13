@@ -770,6 +770,32 @@ export const asmrSyncApi = {
     return response.data
   },
 
+  retrySessionFiles: async (sessionId, relativePaths = []) => {
+    const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/retry-files`, {
+      relative_paths: relativePaths
+    })
+    return response.data
+  },
+
+  reimportDownloadedSession: async (sessionId, payload = {}) => {
+    const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/reimport-downloaded`, {
+      target_library_id: payload.targetLibraryId || '',
+      target_subdir: payload.targetSubdir || ''
+    })
+    return response.data
+  },
+
+  reimportLocalDownload: async (payload = {}) => {
+    const response = await apiClient.post('/asmr-sync/enhanced/reimport-local-download', {
+      download_root: payload.downloadRoot || '',
+      rjcode: payload.rjcode || '',
+      circle_name: payload.circleName || '',
+      target_library_id: payload.targetLibraryId || '',
+      target_subdir: payload.targetSubdir || ''
+    })
+    return response.data
+  },
+
   preview: async (rjcode) => {
     const response = await apiClient.post('/asmr-sync/preview', { rjcode })
     return response.data
@@ -1065,6 +1091,11 @@ export const circleCompletionApi = {
 
   previewBatchDownload: async (payload) => {
     const response = await apiClient.post('/circle-completion/download/preview', payload)
+    return response.data
+  },
+
+  refreshSelectedWorks: async (payload) => {
+    const response = await apiClient.post('/circle-completion/refresh-selected', payload)
     return response.data
   },
 

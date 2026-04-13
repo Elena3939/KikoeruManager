@@ -63,6 +63,7 @@ CIRCLE_COMPLETION_ACTIONS = {
     "index_completed",
     "index_failed",
     "view_built",
+    "refresh_selected_works",
     "download_batch_start",
     "download_batch_completed",
     "download_batch_partial_failed",
@@ -448,18 +449,47 @@ def log_task_lifecycle_event(task) -> None:
         download_root = str(meta.get("download_root") or "").strip()
         selected_resources = list(meta.get("selected_resources") or [])
         uploaded_files = list(meta.get("uploaded_files") or [])
+        upload_runtime = meta.get("upload_runtime") if isinstance(meta.get("upload_runtime"), dict) else {}
+        postprocess_options = meta.get("postprocess_options") if isinstance(meta.get("postprocess_options"), dict) else {}
+        source_action = str(meta.get("source_action") or "").strip()
         downloaded_bytes = int(performance_metrics.get("downloaded_bytes") or 0)
         success_count = int(performance_metrics.get("success_count") or 0)
         failed_count = int(performance_metrics.get("failed_count") or 0)
         uploaded_count = int(performance_metrics.get("uploaded_count") or len(uploaded_files) or 0)
         duration_ms = int(performance_metrics.get("duration_ms") or _duration_ms_for_task(task) or 0)
+        uploaded_bytes = int(
+            performance_metrics.get("uploaded_bytes")
+            or upload_runtime.get("total_bytes")
+            or sum(int(item.get("size_bytes") or 0) for item in uploaded_files)
+            or 0
+        )
+        average_upload_speed_bytes = int(
+            performance_metrics.get("average_upload_speed_bytes")
+            or (uploaded_bytes / max(duration_ms / 1000, 1) if uploaded_bytes > 0 and duration_ms > 0 else 0)
+            or 0
+        )
         upload_options = meta.get("upload_options") if isinstance(meta.get("upload_options"), dict) else {}
         target_path = str(upload_options.get("target_path") or "").strip()
         upload_mode = str(upload_options.get("mode") or "").strip() or None
+        target_library_id = str(
+            meta.get("target_library_id")
+            or postprocess_options.get("target_library_id")
+            or upload_options.get("library_id")
+            or ""
+        ).strip()
+        target_subdir = str(postprocess_options.get("target_subdir") or "").strip()
+        if not target_path:
+            target_path = str(meta.get("final_output_path") or postprocess_options.get("target_path") or "").strip()
+        is_reimport_task = source_action in {"reimport_local_download_root", "reimport_downloaded_session"}
         if st == TaskStatus.COMPLETED and success_count > 0:
-            summary_parts = [f"下载 {success_count} 个文件"]
-            if downloaded_bytes > 0:
+            effective_count = uploaded_count if uploaded_count > 0 else success_count
+            summary_parts = [f"{'上传' if uploaded_count > 0 or is_reimport_task else '下载'} {effective_count} 个文件"]
+            if uploaded_bytes > 0:
+                summary_parts.append(_format_bytes(uploaded_bytes))
+            elif downloaded_bytes > 0:
                 summary_parts.append(_format_bytes(downloaded_bytes))
+            if average_upload_speed_bytes > 0:
+                summary_parts.append(f"平均 {_format_bytes(average_upload_speed_bytes)}/s")
             if duration_ms > 0:
                 summary_parts.append(f"耗时 {_format_duration_ms(duration_ms)}")
             summary = " / ".join(summary_parts)[:4000]
@@ -468,11 +498,16 @@ def log_task_lifecycle_event(task) -> None:
             "download_root": download_root or None,
             "target_path": target_path or None,
             "upload_mode": upload_mode,
+            "target_library_id": target_library_id or None,
+            "target_subdir": target_subdir or None,
+            "source_action": source_action or None,
             "selected_resource_count": int(meta.get("selected_resource_count") or len(selected_resources) or 0),
             "success_count": success_count,
             "failed_count": failed_count,
             "uploaded_count": uploaded_count,
             "downloaded_bytes": downloaded_bytes,
+            "uploaded_bytes": uploaded_bytes,
+            "average_upload_speed_bytes": average_upload_speed_bytes,
             "duration_ms": duration_ms,
             "uploaded_files": uploaded_files[:200],
         }

@@ -405,11 +405,16 @@
                       <div class="circle-index-work-title">{{ item.title || item.workRjcode || '未命名作品' }}</div>
                     </div>
                     <div class="circle-index-col source kikoeru">
-                      <div v-if="item.sourceCompare.kikoeru.primary_rjcode" class="circle-index-chip-list">
-                        <span class="circle-index-chip mono">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
-                        <span v-if="item.sourceCompare.kikoeru.primaryBadge" class="circle-index-chip is-kikoeru-tag">{{ item.sourceCompare.kikoeru.primaryBadge }}</span>
-                        <span v-for="tag in item.sourceCompare.kikoeru.tags" :key="`kt-${item.workRjcode}-${tag}`" class="circle-index-chip is-kikoeru-tag">{{ tag }}</span>
-                      </div>
+                    <div v-if="item.sourceCompare.kikoeru.primary_rjcode" class="circle-index-chip-list">
+                      <span class="circle-index-chip mono">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
+                      <span v-for="badge in item.sourceCompare.kikoeru.variantBadges" :key="`kb-${item.workRjcode}-${badge}`" class="circle-index-chip is-kikoeru-tag">{{ badge }}</span>
+                      <span v-for="tag in normalizeKikoeruTags(item.sourceCompare.kikoeru.tags)" :key="`kt-${item.workRjcode}-${tag}`" class="circle-index-chip is-kikoeru-tag" :class="{ 'has-icon': tag === '字幕' }">
+                        <svg v-if="tag === '字幕'" class="kikoeru-tag-icon" viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M6.5 11.2 3.7 8.4l-1.1 1.1 3.9 3.9 7-7-1.1-1.1z" />
+                        </svg>
+                        <span>{{ tag }}</span>
+                      </span>
+                    </div>
                       <span v-else class="circle-index-empty">未收录</span>
                     </div>
                     <div class="circle-index-col source dlsite">
@@ -436,6 +441,48 @@
                     background
                     @current-change="setCircleIndexSectionPage('all', $event)"
                   />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-if="selectedCircleCompletionRefreshModel" class="expand-item span-2">
+            <div class="ek">本次更新作品</div>
+            <div class="circle-refresh-card">
+              <div class="circle-refresh-head">
+                <div>
+                  <div class="circle-refresh-title">社团作品拥有状态更新</div>
+                  <div class="circle-refresh-desc">这次实际刷新到的作品、命中的 RJ 变体，以及每个变体对应的简体 / 繁体 / 原作标签。</div>
+                </div>
+                <div class="circle-refresh-metrics">
+                  <span class="circle-refresh-metric">已选 {{ selectedCircleCompletionRefreshModel.selectedCount }}</span>
+                  <span class="circle-refresh-metric">已刷新 {{ selectedCircleCompletionRefreshModel.refreshedCount }}</span>
+                  <span class="circle-refresh-metric">服务器已有 {{ selectedCircleCompletionRefreshModel.kikoeruOwnedCount }}</span>
+                </div>
+              </div>
+              <div class="circle-refresh-list">
+                <div
+                  v-for="item in selectedCircleCompletionRefreshModel.items"
+                  :key="`${item.canonical_rjcode}-${item.display_rjcode}`"
+                  class="circle-refresh-item"
+                >
+                  <div class="circle-refresh-item-top">
+                    <span class="circle-refresh-title-rj mono">{{ item.display_rjcode || item.canonical_rjcode }}</span>
+                    <span class="circle-refresh-status" :class="{ 'is-owned': item.has_kikoeru, 'is-missing': !item.has_kikoeru }">
+                      {{ item.has_kikoeru ? '服务器已有' : '服务器缺失' }}
+                    </span>
+                  </div>
+                  <div class="circle-refresh-item-title">{{ item.title || item.display_rjcode || item.canonical_rjcode }}</div>
+                  <div class="circle-refresh-variant-list">
+                    <span
+                      v-for="variant in item.variants"
+                      :key="`${item.canonical_rjcode}-${variant.rjcode}-${variant.group_key}`"
+                      class="circle-refresh-variant-chip"
+                      :class="`is-${variant.group_key || 'other'}`"
+                    >
+                      <span class="mono">{{ variant.rjcode }}</span>
+                      <span>{{ variant.label }}</span>
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -748,6 +795,7 @@ const categoryWithPct = computed(() =>
 )
 
 const selectedCircleCompletionIndexModel = computed(() => circleCompletionIndexModel(selectedRow.value))
+const selectedCircleCompletionRefreshModel = computed(() => circleCompletionRefreshModel(selectedRow.value))
 const detailDrawerSize = computed(() => `${detailDrawerWidth.value}px`)
 const circleIndexPageSize = 10
 
@@ -944,15 +992,15 @@ function recoveredMatchKey(row) {
 
 function isRecoveredFailure(row) {
   if (!row || row.status !== 'failed') return false
-  if (!['extract', 'auto_import', 'process_existing'].includes(String(row.category || '').trim())) return false
+  if (!['extract', 'auto_import', 'process_existing', 'asmr_sync'].includes(String(row.category || '').trim())) return false
   if (row?.detail?.recovered_by_success) return true
   const key = recoveredMatchKey(row)
   if (!key) return false
   const allRows = flattenActivityRows(items.value)
   return allRows.some((other) => {
     if (!other || other === row) return false
-    if (other.status !== 'success') return false
-    if (!['extract', 'auto_import', 'process_existing'].includes(String(other.category || '').trim())) return false
+    if (!['success', 'partial_success'].includes(String(other.status || '').trim())) return false
+    if (!['extract', 'auto_import', 'process_existing', 'asmr_sync'].includes(String(other.category || '').trim())) return false
     if (recoveredMatchKey(other) !== key) return false
     if (!other.created_at || !row.created_at) return false
     return other.created_at > row.created_at
@@ -1007,6 +1055,9 @@ function renameOpTagClass(row) {
 }
 
 function humanAction(row) {
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const sourceAction = String(row?.source_action || detail.source_action || '').trim()
+  const isReimportTask = sourceAction === 'reimport_local_download_root' || sourceAction === 'reimport_downloaded_session'
   if (row?.is_tree_child) {
     if (row.relation === 'rerun') {
       if (row.status === 'success') return '重试完成'
@@ -1154,6 +1205,14 @@ function humanAction(row) {
     return '删除处理'
   }
   if (category === 'asmr_sync') {
+    if (isReimportTask) {
+      if (action === 'task_retried') return '直接入库任务已创建'
+      if (action === 'session_started') return '直接入库任务开始'
+      if (action === 'session_partial_failed') return '直接入库部分失败'
+      if (action === 'session_completed') return '直接入库完成'
+      if (status === 'success') return '直接入库完成'
+      if (status === 'failed') return '直接入库失败'
+    }
     if (action === 'enhanced_plan_created') return '增强下载计划已生成'
     if (action === 'enhanced_plan_failed') return '增强下载计划生成失败'
     if (action === 'session_started') return 'ASMR 下载任务开始'
@@ -1165,6 +1224,7 @@ function humanAction(row) {
   if (category === 'circle_completion') {
     if (action === 'index_completed') return status === 'success' ? '创建索引检索成功' : '创建索引检索失败'
     if (action === 'index_failed') return '创建索引检索失败'
+    if (action === 'refresh_selected_works') return status === 'success' ? '社团作品信息更新' : '社团作品信息更新失败'
     if (action === 'download_batch_start') return '创建下载任务'
     if (action === 'download_item_queued') return '下载任务已加入队列'
     if (status === 'success') return '社团补全完成'
@@ -1513,7 +1573,7 @@ function subtitleBatchWorkbenchItems(row) {
         rjcode: displayRjcode(item),
         folderName: String(item?.detail?.folder_name || '').trim() || compactPath(item?.source_path || ''),
         summary: displaySummary(item),
-        stateLabel: paired ? '配对√' : (awaiting ? '待配对' : '已抓取'),
+        stateLabel: paired ? '配对✔' : (awaiting ? '待配对' : '已抓取'),
         stateClass: paired ? 'success' : (awaiting ? 'warning' : 'default')
       }
     })
@@ -1599,18 +1659,18 @@ async function openSubtitleBatchWorkbench(row) {
 
 function mergedSubtitleImportTag(row) {
   const status = String(row?.detail?.import_status || row?.merged_subtitle_import_status || '')
-  if (status === 'success') return '配对√'
+  if (status === 'success') return '配对✔'
   if (status === 'failed') return '补配失败'
   return '字幕补配'
 }
 
 function mergedFilterDeleteTag(row) {
   const status = String(row?.status || '')
-  if (status === 'success') return '删除√'
-  if (status === 'partial_success') return '部分删除√'
+  if (status === 'success') return '删除✔'
+  if (status === 'partial_success') return '部分删除✔'
   if (status === 'cancelled') return '已停止'
   if (status === 'failed') return '删除失败'
-  return '删除√'
+  return '删除✔'
 }
 
 function isSubtitleBatchMiss(row) {
@@ -1635,9 +1695,9 @@ function mergedCategoryTags(row) {
 function rowCategoryTags(row) {
   const tags = row?.is_tree_child ? [] : mergedCategoryTags(row)
   if (row?.category === 'pipeline_rename') tags.unshift(renameOpTag(row))
-  if (!row?.is_tree_child && isSubtitleBatchRootPartiallyPaired(row)) tags.push('部分配对√')
-  if (!row?.is_tree_child && row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) tags.push('配对√')
-  else if (isBatchChildPaired(row)) tags.push('配对√')
+  if (!row?.is_tree_child && isSubtitleBatchRootPartiallyPaired(row)) tags.push('部分配对✔')
+  if (!row?.is_tree_child && row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) tags.push('配对✔')
+  else if (isBatchChildPaired(row)) tags.push('配对✔')
   return tags
 }
 
@@ -1944,36 +2004,37 @@ function collectDescendantStatuses(row) {
 
 function finalStatusLabel(row) {
   if (!row || row.is_tree_child || !rowHasChildren(row)) return ''
-  if (isSubtitleBatchRootPaired(row)) return '配对√'
-  if (isSubtitleBatchRootPartiallyPaired(row)) return '部分配对√'
+  if (isSubtitleBatchRootPaired(row)) return '配对✔'
+  if (isSubtitleBatchRootPartiallyPaired(row)) return '部分配对✔'
   if (row?.category === 'pipeline_filter' && row?.action === 'filter_delete_preview') {
-    if (isFilterDeleteRetriedSuccess(row)) return '删除√'
-    if (isFilterDeleteRetriedPartial(row)) return '部分删除√'
+    if (isFilterDeleteRetriedSuccess(row)) return '删除✔'
+    if (isFilterDeleteRetriedPartial(row)) return '部分删除✔'
     if (isFilterDeleteRetriedFailed(row)) return '未修复'
   }
-  if (row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) return '配对√'
+  if (row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) return '配对✔'
   const statuses = [String(row.status || ''), ...collectDescendantStatuses(row)]
   if (statuses[0] === 'failed' && (statuses.includes('success') || statuses.includes('partial_success'))) return '已修复'
   if (statuses.includes('failed') && !statuses.includes('success') && !statuses.includes('partial_success')) return '异常'
   if (!statuses.includes('waiting')) {
-    if (row?.category === 'subtitle_crawl') return '配对√'
-    if (row?.category === 'pipeline_filter') return '删除√'
-    if (row?.category === 'subtitle_import') return '配对√'
-    if (['extract', 'auto_import', 'process_existing'].includes(String(row?.category || ''))) return '入库√'
-    return '完成√'
+    if (row?.category === 'subtitle_crawl') return '配对✔'
+    if (row?.category === 'pipeline_filter') return '删除✔'
+    if (row?.category === 'subtitle_import') return '配对✔'
+    if (['extract', 'auto_import', 'process_existing'].includes(String(row?.category || ''))) return '入库✔'
+    return '完成✔'
   }
   return ''
 }
 
 function finalStatusClass(row) {
   const label = finalStatusLabel(row)
-  if (label === '配对√') return 'is-final-success'
-  if (label === '删除√') return 'is-final-success'
-  if (label === '入库√') return 'is-final-success'
-  if (label === '完成√') return 'is-final-success'
-  if (label === '已修复') return 'is-final-success'
-  if (label === '部分配对√') return 'is-final-partial'
-  if (label === '部分删除√') return 'is-final-partial'
+  if (label === '配对✔') return 'is-final-success'
+  if (label === '删除✔') return 'is-final-success'
+  if (label === '入库✔') return 'is-final-success'
+  if (label === '完成✔') return 'is-final-success'
+  if (label === '已修复✔') return 'is-final-success'
+  if (label === '已修复✔') return 'is-final-success'
+  if (label === '部分配对') return 'is-final-partial'
+  if (label === '部分删除') return 'is-final-partial'
   if (label === '部分修复') return 'is-final-partial'
   if (label.includes('部分')) return 'is-final-partial'
   return 'is-final-failed'
@@ -2023,6 +2084,9 @@ function circleCompletionIndexModel(row) {
                   kikoeru: {
                     primary_rjcode: String(item?.source_compare?.kikoeru?.primary_rjcode || '').trim(),
                     primaryBadge: String(item?.source_compare?.kikoeru?.primary_badge || '').trim(),
+                    variantBadges: Array.isArray(item?.source_compare?.kikoeru?.variant_badges) && item.source_compare.kikoeru.variant_badges.length
+                      ? item.source_compare.kikoeru.variant_badges.filter(Boolean)
+                      : (String(item?.source_compare?.kikoeru?.primary_badge || '').trim() ? [String(item.source_compare.kikoeru.primary_badge).trim()] : []),
                     all_rjcodes: Array.isArray(item?.source_compare?.kikoeru?.all_rjcodes) ? item.source_compare.kikoeru.all_rjcodes.filter(Boolean) : [],
                     tags: Array.isArray(item?.source_compare?.kikoeru?.tags) ? item.source_compare.kikoeru.tags.filter(Boolean) : [],
                   },
@@ -2050,6 +2114,51 @@ function circleCompletionIndexModel(row) {
     sourceBreakdown,
     rows,
   }
+}
+
+function circleCompletionRefreshModel(row) {
+  if (!row || row.category !== 'circle_completion' || row.action !== 'refresh_selected_works') return null
+  const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+  const items = Array.isArray(detail.refreshed_items)
+    ? detail.refreshed_items
+        .map(item => ({
+          canonical_rjcode: String(item?.canonical_rjcode || '').trim(),
+          title: String(item?.title || '').trim(),
+          display_rjcode: String(item?.display_rjcode || item?.canonical_rjcode || '').trim(),
+          preferred_variant_label: String(item?.preferred_variant_label || '').trim(),
+          has_kikoeru: Boolean(item?.has_kikoeru),
+          has_asmr_one: Boolean(item?.has_asmr_one),
+          variants: Array.isArray(item?.variants)
+            ? item.variants
+                .map(variant => ({
+                  rjcode: String(variant?.rjcode || '').trim(),
+                  label: String(variant?.label || '').trim() || '其他',
+                  group_key: String(variant?.group_key || 'other').trim() || 'other',
+                }))
+                .filter(variant => variant.rjcode)
+            : []
+        }))
+        .filter(item => item.canonical_rjcode)
+    : []
+  if (!items.length) return null
+  return {
+    selectedCount: Number(detail.selected_count || items.length),
+    refreshedCount: Number(detail.refreshed_count || items.length),
+    kikoeruOwnedCount: Number(detail.kikoeru_owned_count || 0),
+    items,
+  }
+}
+
+function normalizeKikoeruTags(tags) {
+  const source = Array.isArray(tags) ? tags : []
+  const normalized = []
+  for (const tag of source) {
+    const text = String(tag || '').trim()
+    if (!text) continue
+    const value = text.startsWith('字幕') ? '字幕' : text
+    if (!normalized.includes(value)) normalized.push(value)
+  }
+  return normalized
 }
 
 function getCircleIndexSectionPage(sectionKey) {
@@ -2140,6 +2249,8 @@ function detailHighlights(row) {
     recovered_selected_size: '补回体积',
     batch_task_count: '下载任务数',
     downloaded_bytes: '下载大小',
+    uploaded_bytes: '上传大小',
+    average_upload_speed_bytes: '平均上传速度',
     download_root: '下载目录',
     final_output_path: '最终入库路径',
     target_path: '上传目标',
@@ -2221,6 +2332,8 @@ function detailHighlights(row) {
     , 'aggregate_archive_size_bytes'
     , 'aggregate_extract_output_bytes'
     , 'batch_duration_ms'
+    , 'uploaded_bytes'
+    , 'average_upload_speed_bytes'
   ]
   const out = []
   for (const k of pickKeys) {
@@ -2228,7 +2341,8 @@ function detailHighlights(row) {
     let value = d[k]
     if (k === 'duration_ms' || k === 'batch_duration_ms') value = formatDurationMs(value)
     if (k === 'awaiting_manual_match') value = value ? '是' : '否'
-    if (['selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes', 'recovered_selected_size', 'filtered_size', 'aggregate_archive_size_bytes', 'aggregate_extract_output_bytes'].includes(k)) value = formatBytes(value)
+    if (['selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes', 'recovered_selected_size', 'filtered_size', 'aggregate_archive_size_bytes', 'aggregate_extract_output_bytes', 'uploaded_bytes'].includes(k)) value = formatBytes(value)
+    if (k === 'average_upload_speed_bytes') value = `${formatBytes(value)}/s`
     if (k.includes('rjcode')) value = normalizeRjcode(value)
     if (!String(value || '').trim()) continue
     out.push({ k: keyLabelMap[k] || k, v: String(value) })
@@ -2404,6 +2518,28 @@ function importFilteredEntrySections(row) {
   }]
 }
 
+function asmrSyncEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (String(row?.category || '').trim() !== 'asmr_sync') return []
+  const uploadedFiles = Array.isArray(d.uploaded_files) ? d.uploaded_files : []
+  if (!uploadedFiles.length) return []
+  const items = uploadedFiles.slice(0, 200).map((item, index) => ({
+    key: String(item?.relative_path || item?.name || item?.upload_path || `${index}`),
+    path: String(item?.relative_path || item?.name || item?.upload_path || ''),
+    relative_path: String(item?.relative_path || item?.name || item?.upload_path || ''),
+    name: String(item?.name || item?.relative_path || item?.upload_path || '未命名文件'),
+    type: 'file',
+    sizeText: item?.size_bytes !== undefined && item?.size_bytes !== null ? formatBytes(item.size_bytes) : '',
+    error: '',
+  }))
+  return [{
+    key: 'asmr-uploaded-files',
+    title: `上传文件（${d.uploaded_count || uploadedFiles.length}）`,
+    rows: buildFilterDeleteTreeRows(items)
+  }]
+}
+
 function subtitleBatchEntrySections(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object' || d.mode !== 'subtitle_batch_start') return []
@@ -2469,6 +2605,7 @@ function subtitleBatchEntrySections(row) {
 
 function activityEntrySections(row) {
   return [
+    ...asmrSyncEntrySections(row),
     ...importFilteredEntrySections(row),
     ...subtitleBatchEntrySections(row),
     ...filterDeleteEntrySections(row)
@@ -2478,6 +2615,7 @@ function activityEntrySections(row) {
 function activityEntrySectionTitle(row) {
   const d = row?.detail
   if (d && typeof d === 'object' && d.mode === 'subtitle_batch_start') return '批量详情'
+  if (String(row?.category || '').trim() === 'asmr_sync') return '文件清单'
   if (['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return '处理清单'
   return '删除清单'
 }
@@ -3601,6 +3739,16 @@ watch(selectedRow, (row) => {
   box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.18);
   color: #005fcc;
 }
+.circle-index-chip.has-icon {
+  gap: 4px;
+}
+.kikoeru-tag-icon {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+  fill: currentColor;
+  flex: 0 0 auto;
+}
 
 .circle-index-empty {
   font-size: 12px;
@@ -3613,8 +3761,152 @@ watch(selectedRow, (row) => {
   padding-top: 10px;
 }
 
+.circle-refresh-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+  border: 1px solid rgba(73, 119, 198, 0.14);
+}
+
+.circle-refresh-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.circle-refresh-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: #163961;
+}
+
+.circle-refresh-desc {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #5f738d;
+}
+
+.circle-refresh-metrics {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.circle-refresh-metric {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #eef5ff;
+  color: #345f9b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.circle-refresh-list {
+  display: grid;
+  gap: 10px;
+}
+
+.circle-refresh-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(192, 209, 232, 0.74);
+}
+
+.circle-refresh-item-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.circle-refresh-title-rj {
+  font-size: 13px;
+  font-weight: 800;
+  color: #21487a;
+}
+
+.circle-refresh-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.circle-refresh-status.is-owned {
+  background: rgba(10, 132, 255, 0.12);
+  color: #005fcc;
+}
+
+.circle-refresh-status.is-missing {
+  background: rgba(255, 95, 86, 0.10);
+  color: #c2410c;
+}
+
+.circle-refresh-item-title {
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 700;
+  color: #193556;
+}
+
+.circle-refresh-variant-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.circle-refresh-variant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+  background: #f8fbff;
+  color: #325074;
+}
+
+.circle-refresh-variant-chip.is-simplified {
+  background: rgba(52, 199, 89, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(52, 199, 89, 0.18);
+  color: #1f8f51;
+}
+
+.circle-refresh-variant-chip.is-traditional {
+  background: rgba(255, 159, 10, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 159, 10, 0.18);
+  color: #b96b00;
+}
+
+.circle-refresh-variant-chip.is-original {
+  background: rgba(10, 132, 255, 0.10);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.16);
+  color: #005fcc;
+}
+
 @media (max-width: 1120px) {
   .circle-index-head {
+    flex-direction: column;
+  }
+
+  .circle-refresh-head {
     flex-direction: column;
   }
 
@@ -3976,10 +4268,16 @@ watch(selectedRow, (row) => {
 :deep(.ios-table .el-table__body tr.row-recovered .action-text),
 :deep(.ios-table .el-table__body tr.row-recovered .cell-time),
 :deep(.ios-table .el-table__body tr.row-recovered .status-tag),
-:deep(.ios-table .el-table__body tr.row-recovered .status-fixed-pill),
 :deep(.ios-table .el-table__body tr.row-recovered a) {
   color: rgba(88, 95, 112, 0.72) !important;
   text-decoration: none !important;
+}
+
+:deep(.ios-table .el-table__body tr.row-recovered .status-fixed-pill.is-final-success),
+:deep(.ios-table .el-table__body tr.row-recovered .status-fixed-pill:not(.is-final-failed):not(.is-final-partial):not(.is-rerun)) {
+  color: #187d34 !important;
+  background: rgba(52, 199, 89, 0.1) !important;
+  border-color: rgba(52, 199, 89, 0.18) !important;
 }
 
 :deep(.ios-table .el-table__body tr.row-recovered .recovered-leading-badge) {

@@ -329,10 +329,12 @@ class AppConfig(BaseModel):
 
 # 全局配置实例
 _config: Optional[AppConfig] = None
+_config_loaded_path: str = ""
+_config_loaded_mtime: float = 0.0
 
 def load_config(config_path: str = None) -> AppConfig:
     """加载配置"""
-    global _config
+    global _config, _config_loaded_path, _config_loaded_mtime
     logger = logging.getLogger(__name__)
 
     if config_path is None:
@@ -348,6 +350,8 @@ def load_config(config_path: str = None) -> AppConfig:
             project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
             config_path = os.path.join(project_root, 'config', 'config.yaml')
 
+    config_path = os.path.abspath(config_path)
+    _config_loaded_path = config_path
     logger.info(f"[CONFIG] 尝试加载配置文件: {config_path}")
     logger.info(f"[CONFIG] 配置文件是否存在: {os.path.exists(config_path)}")
 
@@ -614,6 +618,10 @@ def load_config(config_path: str = None) -> AppConfig:
                         config_data['backup_zip'][key] = value
 
             _config = AppConfig(**config_data)
+            try:
+                _config_loaded_mtime = os.path.getmtime(config_path)
+            except OSError:
+                _config_loaded_mtime = 0.0
             logger.info(f"[CONFIG] 加载后 template = '{_config.rename.template}'")
             logger.info(f"[CONFIG] storage.input_path = '{_config.storage.input_path}'")
             logger.info(f"[CONFIG] storage.library_path = '{_config.storage.library_path}'")
@@ -627,15 +635,21 @@ def load_config(config_path: str = None) -> AppConfig:
         except Exception as e:
             logger.error(f"配置文件加载失败，使用默认配置: {e}")
             _config = AppConfig()
+            _config_loaded_mtime = 0.0
     else:
         logger.info("配置文件不存在，使用默认配置")
         _config = AppConfig()
+        _config_loaded_mtime = 0.0
         # 保存默认配置
         config_dir = os.path.dirname(config_path)
         os.makedirs(config_dir, exist_ok=True)
         with open(config_path, 'w', encoding='utf-8') as f:
             yaml.dump(_config.model_dump(), f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         logger.info(f"默认配置已保存到: {config_path}")
+        try:
+            _config_loaded_mtime = os.path.getmtime(config_path)
+        except OSError:
+            _config_loaded_mtime = 0.0
     
     return _config
 
@@ -643,6 +657,14 @@ def get_config() -> AppConfig:
     """获取配置"""
     if _config is None:
         return load_config()
+    config_path = _config_loaded_path or os.path.abspath(get_config_file_path())
+    try:
+        current_mtime = os.path.getmtime(config_path)
+    except OSError:
+        current_mtime = 0.0
+    if config_path and current_mtime and current_mtime != _config_loaded_mtime:
+        logging.getLogger(__name__).info(f"[CONFIG] 检测到配置文件变更，自动重新加载: {config_path}")
+        return load_config(config_path)
     return _config
 
 def deep_merge(base: dict, update: dict) -> dict:

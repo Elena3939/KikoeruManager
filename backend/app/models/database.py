@@ -683,6 +683,9 @@ class ASMRDownloadSession(Base):
     selected_resources = Column(JSON)
     statistics = Column(JSON)
     failure_summary = Column(JSON)
+    local_download_ready = Column(Boolean, default=False, index=True)
+    local_download_root = Column(Text)
+    local_downloaded_count = Column(Integer, default=0)
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     created_at = Column(DateTime, default=get_local_now)
@@ -706,6 +709,9 @@ class ASMRDownloadSession(Base):
             'selected_resources': self.selected_resources or [],
             'statistics': self.statistics or {},
             'failure_summary': self.failure_summary or {},
+            'local_download_ready': bool(self.local_download_ready),
+            'local_download_root': self.local_download_root,
+            'local_downloaded_count': int(self.local_downloaded_count or 0),
             'started_at': self.started_at.isoformat() if self.started_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -797,6 +803,22 @@ def init_db():
             conn.execute(
                 text(
                     f"ALTER TABLE circle_works ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
+                )
+            )
+        result = conn.execute(text("PRAGMA table_info(asmr_download_sessions)"))
+        session_columns = {row[1] for row in result.fetchall()}
+        session_missing_columns = []
+        if result.returns_rows:
+            if 'local_download_ready' not in session_columns:
+                session_missing_columns.append(("local_download_ready", "BOOLEAN", "0"))
+            if 'local_download_root' not in session_columns:
+                session_missing_columns.append(("local_download_root", "TEXT", "NULL"))
+            if 'local_downloaded_count' not in session_columns:
+                session_missing_columns.append(("local_downloaded_count", "INTEGER", "0"))
+        for column_name, column_type, default_value in session_missing_columns:
+            conn.execute(
+                text(
+                    f"ALTER TABLE asmr_download_sessions ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
                 )
             )
     _db_logger.info(f"[数据库] 表创建完成")

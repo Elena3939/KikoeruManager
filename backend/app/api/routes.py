@@ -22,7 +22,7 @@ import uuid
 # Create logger instance
 logger = logging.getLogger(__name__)
 
-from ..models.database import init_db, get_db, get_db_path_info, ActivityLog
+from ..models.database import init_db, get_db, get_db_path_info, ActivityLog, ASMRDownloadSession, SessionLocal
 from ..core.task_engine import TaskEngine, Task, TaskType, get_task_engine
 from ..core.watcher import get_watcher
 from ..core.password_cleanup import get_cleanup_service
@@ -1588,6 +1588,34 @@ async def list_activity_logs(
                 or task_finished_detail.get("uploaded_count")
                 or 0
             )
+            uploaded_files = list(
+                session_complete_detail.get("uploaded_files")
+                or task_finished_detail.get("uploaded_files")
+                or parent_detail.get("uploaded_files")
+                or []
+            )
+            uploaded_bytes = int(
+                session_complete_detail.get("uploaded_bytes")
+                or task_finished_detail.get("uploaded_bytes")
+                or sum(int((item or {}).get("size_bytes") or 0) for item in uploaded_files)
+                or 0
+            )
+            average_upload_speed_bytes = int(
+                session_complete_detail.get("average_upload_speed_bytes")
+                or task_finished_detail.get("average_upload_speed_bytes")
+                or (uploaded_bytes / max(duration_ms / 1000, 1) if uploaded_bytes > 0 and duration_ms > 0 else 0)
+                or 0
+            )
+            original_parent_status = str(parent_row.get("status") or "").strip() or "success"
+            rollup_status = original_parent_status
+            if success_count > 0 and failed_count <= 0:
+                rollup_status = "success"
+            elif success_count > 0 and failed_count > 0:
+                rollup_status = "partial_success"
+            elif failed_count > 0:
+                rollup_status = "failed"
+            elif upload_mode == "disabled" and (download_root or downloaded_bytes > 0):
+                rollup_status = "success"
 
             child_rows: list[dict[str, Any]] = []
             latest_activity = _coerce_dt(parent_row.get("created_at")) or datetime.min
@@ -1610,13 +1638,23 @@ async def list_activity_logs(
                 merged_asmr_sync_ids.add(str(row.get("id") or ""))
                 latest_activity = max(latest_activity, _coerce_dt(row.get("created_at")) or datetime.min)
 
-            if success_count > 0 or downloaded_bytes > 0 or duration_ms > 0:
-                summary_parts = [f"下载 {success_count} 个文件"]
-                if downloaded_bytes > 0:
+            if success_count > 0 or downloaded_bytes > 0 or duration_ms > 0 or uploaded_count > 0:
+                summary_parts = [f"{'上传' if uploaded_count > 0 else '下载'} {uploaded_count if uploaded_count > 0 else success_count} 个文件"]
+                if uploaded_bytes > 0:
+                    summary_parts.append(_format_bytes_short(uploaded_bytes))
+                elif downloaded_bytes > 0:
                     summary_parts.append(_format_bytes_short(downloaded_bytes))
+                if average_upload_speed_bytes > 0:
+                    summary_parts.append(f"平均 {_format_bytes_short(average_upload_speed_bytes)}/s")
                 if duration_ms > 0:
                     summary_parts.append(f"耗时 {_format_duration_short(duration_ms)}")
                 parent_row["summary"] = " / ".join(summary_parts)
+
+            parent_row["status"] = rollup_status
+            if rollup_status == "success":
+                parent_row["action"] = "session_completed"
+            elif rollup_status == "partial_success":
+                parent_row["action"] = "session_partial_failed"
 
             parent_row["detail"] = {
                 **parent_detail,
@@ -1629,6 +1667,10 @@ async def list_activity_logs(
                 "target_path": target_path or None,
                 "upload_mode": upload_mode or None,
                 "uploaded_count": uploaded_count,
+                "uploaded_bytes": uploaded_bytes,
+                "average_upload_speed_bytes": average_upload_speed_bytes,
+                "uploaded_files": uploaded_files[:200],
+                "recovered_by_success": rollup_status == "success" and original_parent_status == "failed",
                 "child_rows": child_rows,
                 "child_row_count": len(child_rows),
                 "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at"),
@@ -7724,11 +7766,33 @@ class CircleCompletionDownloadPreviewRequest(BaseModel):
     canonical_rjcodes: List[str]
 
 
+class CircleCompletionRefreshSelectedRequest(BaseModel):
+    circle_id: str
+    canonical_rjcodes: List[str]
+
+
 class CircleCompletionDownloadStartRequest(BaseModel):
     circle_id: str
     circle_name: str = ""
     items: List[dict]
     batch_options: Dict[str, Any] = {}
+
+
+class ASMRRetryFailedResourcesRequest(BaseModel):
+    relative_paths: List[str] = []
+
+
+class ASMRReimportDownloadedRequest(BaseModel):
+    target_library_id: str
+    target_subdir: str = ""
+
+
+class ASMRReimportLocalDownloadRequest(BaseModel):
+    download_root: str
+    rjcode: str
+    circle_name: str = ""
+    target_library_id: str
+    target_subdir: str = ""
 
 @app.post("/api/asmr-sync/scan")
 async def asmr_sync_scan(request: ASMRSyncScanRequest):
@@ -8152,6 +8216,64 @@ async def asmr_sync_enhanced_session_retry_failed(session_id: str):
         raise HTTPException(status_code=500, detail=f"重试失败资源失败: {str(exc)}")
 
 
+@app.post("/api/asmr-sync/enhanced/sessions/{session_id}/retry-files")
+async def asmr_sync_enhanced_session_retry_files(session_id: str, request: ASMRRetryFailedResourcesRequest):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "session": await get_asmr_resource_service().retry_failed_session_resources(session_id, request.relative_paths),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("重试增强下载会话指定失败文件失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"重试指定失败文件失败: {str(exc)}")
+
+
+@app.post("/api/asmr-sync/enhanced/sessions/{session_id}/reimport-downloaded")
+async def asmr_sync_enhanced_session_reimport_downloaded(session_id: str, request: ASMRReimportDownloadedRequest):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "session": await get_asmr_resource_service().reimport_downloaded_session(
+                session_id,
+                target_library_id=request.target_library_id,
+                target_subdir=request.target_subdir,
+            ),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("从本地已下载内容重新入库失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"重新入库失败: {str(exc)}")
+
+
+@app.post("/api/asmr-sync/enhanced/reimport-local-download")
+async def asmr_sync_enhanced_reimport_local_download(request: ASMRReimportLocalDownloadRequest):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        return {
+            "success": True,
+            "result": await get_asmr_resource_service().reimport_local_download_root(
+                download_root=request.download_root,
+                rjcode=request.rjcode,
+                target_library_id=request.target_library_id,
+                target_subdir=request.target_subdir,
+                circle_name=request.circle_name,
+            ),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("从本地下载目录直接入库失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"从本地下载目录直接入库失败: {str(exc)}")
+
+
 @app.post("/api/circle-completion/index")
 async def circle_completion_index(request: CircleCompletionIndexRequest):
     from ..core.circle_completion_service import get_circle_completion_service
@@ -8329,6 +8451,23 @@ async def circle_completion_download_preview(request: CircleCompletionDownloadPr
         raise HTTPException(status_code=500, detail=f"预览批量下载失败: {str(exc)}")
 
 
+@app.post("/api/circle-completion/refresh-selected")
+async def circle_completion_refresh_selected(request: CircleCompletionRefreshSelectedRequest):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        result = await get_circle_completion_service().refresh_circle_works(
+            request.circle_id,
+            request.canonical_rjcodes,
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("批量刷新社团作品状态失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"批量刷新社团作品状态失败: {str(exc)}")
+
+
 @app.post("/api/circle-completion/download/start")
 async def circle_completion_download_start(request: CircleCompletionDownloadStartRequest):
     from ..core.activity_log_service import log_circle_completion_event
@@ -8487,6 +8626,46 @@ async def asmr_sync_status():
 
         # 过滤出 ASMR 同步任务
         asmr_tasks = [t for t in all_tasks if t.type == TaskType.ASMR_SYNC_DOWNLOAD]
+        session_ids = {
+            str(t.task_metadata.get("session_id") or "").strip()
+            for t in asmr_tasks
+            if str(t.task_metadata.get("session_id") or "").strip()
+        }
+        session_map = {}
+        if session_ids:
+            db = SessionLocal()
+            try:
+                rows = db.query(ASMRDownloadSession).filter(ASMRDownloadSession.id.in_(list(session_ids))).all()
+                for row in rows:
+                    session = row.to_dict()
+                    statistics = dict(session.get("statistics") or {})
+                    local_root = str(session.get("local_download_root") or statistics.get("download_root") or "").strip()
+                    local_count = int(session.get("local_downloaded_count") or 0)
+                    local_ready = bool(session.get("local_download_ready"))
+                    if local_root and os.path.isdir(local_root):
+                        if local_count <= 0:
+                            local_count = sum(
+                                1
+                                for item in (session.get("selected_resources") or [])
+                                if os.path.exists(
+                                    os.path.join(
+                                        local_root,
+                                        str(item.get("relative_path") or item.get("file_name") or "").strip().replace("/", os.sep),
+                                    )
+                                )
+                            )
+                        local_ready = local_ready or local_count > 0
+                    else:
+                        local_root = ""
+                        local_count = 0
+                        local_ready = False
+                    session_map[str(row.id)] = {
+                        "local_download_ready": local_ready,
+                        "local_download_root": local_root,
+                        "local_downloaded_count": local_count,
+                    }
+            finally:
+                db.close()
 
         return {
             "total_tasks": len(asmr_tasks),
@@ -8497,6 +8676,7 @@ async def asmr_sync_status():
             "waiting_retry": len([t for t in asmr_tasks if t.status.value == "waiting_retry"]),
             "tasks": [
                 {
+                    "session_state": session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}),
                     "id": t.id,
                     "rjcode": t.task_metadata.get("rjcode", ""),
                     "actual_rjcode": t.task_metadata.get("actual_rjcode", ""),
@@ -8506,9 +8686,13 @@ async def asmr_sync_status():
                     "progress": t.progress,
                     "current_step": t.current_step,
                     "error_message": t.error_message,
+                    "created_at": t.created_at.isoformat() if getattr(t, "created_at", None) else None,
+                    "started_at": t.started_at.isoformat() if getattr(t, "started_at", None) else None,
+                    "completed_at": t.completed_at.isoformat() if getattr(t, "completed_at", None) else None,
                     "output_path": getattr(t, "output_path", ""),
                     "download_files": t.task_metadata.get("download_files", []),
                     "upload_files": t.task_metadata.get("upload_files", []),
+                    "upload_runtime": t.task_metadata.get("upload_runtime", {}),
                     "failed_files": t.task_metadata.get("failed_files", []),
                     "uploaded_files": t.task_metadata.get("uploaded_files", []),
                     "verification_failures": t.task_metadata.get("verification_failures", []),
@@ -8527,11 +8711,17 @@ async def asmr_sync_status():
                         "verify_summary": t.task_metadata.get("verify_summary", {}),
                         "upload_summary": t.task_metadata.get("upload_summary", {}),
                         "retry_summary": t.task_metadata.get("retry_summary", {}),
-                        "download_root": t.task_metadata.get("download_root", ""),
+                        "download_root": (
+                            session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}).get("local_download_root")
+                            or t.task_metadata.get("download_root", "")
+                        ),
                         "download_base_path": t.task_metadata.get("download_base_path", ""),
                         "final_output_path": t.task_metadata.get("final_output_path", ""),
                         "target_path": t.task_metadata.get("target_path", ""),
                         "failure_reason": t.task_metadata.get("failure_reason", ""),
+                        "local_download_ready": session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}).get("local_download_ready", False),
+                        "local_download_root": session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}).get("local_download_root", ""),
+                        "local_downloaded_count": session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}).get("local_downloaded_count", 0),
                     }
                 }
                 for t in asmr_tasks[:20]  # 只返回最近20个
