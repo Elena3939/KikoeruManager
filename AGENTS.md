@@ -247,6 +247,24 @@
   - 不要再写 `view_built` 这种纯视图噪音日志
   - 主记录应聚焦“创建索引检索成功 / 创建下载任务 / 下载完成”
   - 同一 RJ 的下载文件不要平铺成一堆顶层记录，应挂到父记录或任务详情里
+- 最近这轮改动后，社团索引还额外依赖这些实现细节：
+  - 建索引时优先按 `circle_name_normalized` 复用已有 `circle_catalogs.circle_id`，不要因为同名社团重复生成新 catalog
+  - 如果种子作品没有 `maker_id`，会回退补查多个 seed 作品 metadata 来反推 `maker_id`
+  - DLsite 抓取失败原因现在会写进任务详情和操作日志 detail，排障先看 `dlsite_failure_reason`
+  - `circle_works` 现在新增并依赖：
+    - `asmr_available_rjcode`
+    - `kikoeru_found_rjcodes`
+    - `kikoeru_subtitle_rjcodes`
+  - 前端“来源对比”标签页和操作历史里的“社团源对比”卡片都吃这些字段，改接口时要保持兼容
+- 索引结果现在不只是计数：
+  - 后端会给每个作品算 `preferred_variant`
+  - 同时产出 `source_compare.kikoeru / dlsite / asmr_one`
+  - Kikoeru、DLsite、asmr.one 三列对比要能区分原作、简体、繁体、字幕提示等标签
+- 批量下载入口现在优先走 `asmr_available_rjcode`
+  - 不要再默认拿 `display_rjcode` 直接生成下载计划
+  - 社团补全内部生成增强下载计划时会关闭通用 ASMR 预览日志，避免操作历史里刷出无意义顶层记录
+- 最近索引列表现在会按 `circle_name_normalized / circle_id` 去重
+  - 如果看到同名社团重复，多半是旧缓存脏数据，需要先处理数据库而不是改前端
 
 ### 4.9 大文件上传现在必须走流式
 
@@ -267,6 +285,27 @@
   - `/api/asmr-sync/status`
   - `frontend/src/views/CircleCompletion.vue`
   - `frontend/src/views/ActivityHistory.vue`
+
+### 4.10 历史重复社团索引现在有一次性清理脚本
+
+- 脚本：`backend/scripts/merge_duplicate_circle_catalogs.py`
+- 用途：
+  - 按 `circle_name_normalized` 找出重复 `circle_catalogs`
+  - 预览重复组
+  - 备份 `backend/data/cache.db`
+  - 合并 `circle_works`
+  - 删除重复 catalog
+- 默认是预览模式：
+  - `py -3 backend/scripts/merge_duplicate_circle_catalogs.py`
+- 真正写入要显式加：
+  - `py -3 backend/scripts/merge_duplicate_circle_catalogs.py --apply`
+- 这脚本只适合清理历史脏数据，不是日常索引流程的一部分
+- 合并逻辑当前会保留：
+  - 最新时间
+  - 更完整的标题 / maker 信息
+  - 合并后的 `source_mask`
+  - 合并后的 `linked_rjcodes`
+- 如果后续继续给 `circle_works` 加字段，要同步检查这个脚本的 merge 逻辑，不然清理历史数据会丢信息
 
 ## 5. 群晖 / 远程库存注意点
 
@@ -309,6 +348,11 @@
   4. `frontend/src/views/Dashboard.vue`
   5. `frontend/src/views/ActivityHistory.vue`
   6. `frontend/src/views/Library.vue`
+- 如果是“社团补全任务看不懂 / 历史记录不完整”：
+  1. 看 `ActivityHistory.vue` 里的社团索引概览卡片有没有数据
+  2. 看 `routes.py` 是否把 `circle_completion` 的 `task_finished / task_finished_incomplete` 合并到索引父记录下
+  3. 看 `Tasks.vue` 是否展示了 `dlsite_failure_reason`
+  4. 看 `activity_log_service.py` 是否把 `CIRCLE_COMPLETION_INDEX / CIRCLE_COMPLETION_DOWNLOAD_BATCH` 正确映射到 `circle_completion`
 
 ### 用户说“推送仓库”
 
@@ -358,6 +402,10 @@
   - RJ 接口还能创建任务
   - 任务状态查询还能返回
   - 操作日志列表还能正常聚合返回
+- 如果改了社团补全，再补：
+  - `py -3 -m py_compile backend/app/core/circle_completion_service.py backend/app/core/asmr_resource_service.py backend/app/models/database.py`
+  - 有历史缓存时，确认 `init_db()` 的 `circle_works` 增量字段迁移能跑
+  - 如果动了去重逻辑，先用 `backend/scripts/merge_duplicate_circle_catalogs.py` 预览再决定是否执行 `--apply`
 
 ### 改桌面版后
 
@@ -373,6 +421,17 @@
 - 至少检查：
   - `.github/workflows/ghcr.yml`
   - 版本 tag 仍符合 semver
+
+### 改社团补全前端后
+
+- 至少执行：`npm run build`
+- 重点看：
+  - 最近索引列表是否按社团去重
+  - 缺失作品卡片点击整卡选择是否正常
+  - “来源对比”标签页分页是否正常
+  - 预览下载是否仍然拿到正确的 `resolved_rjcode`
+  - `ActivityHistory.vue` 里的社团索引概览抽屉是否正常渲染
+  - 历史详情抽屉拖拽宽度后没有事件泄漏
 
 ## 9. 现在建议优先级
 
