@@ -176,6 +176,12 @@
   - 操作记录有没有落
   - 同一业务会不会被拆成一堆不可读日志
   - 子任务是否应该挂到父记录下
+- 最近这轮针对“解压入库 / 字幕补配”又加了几条硬口径：
+  - `subtitle_import` 只有真正执行导入的 `archive_import / folder_import` 才允许挂到“解压入库”树下
+  - `pending_execute` 只是预检 / 进入工作台，不算真实执行，不能出现在历史树和顶层列表里
+  - 同一批量解压下的子节点会按 `relation / task_id / source_path / rjcode / action` 去重，防止一个 RJ 被重复挂 3-4 次
+  - 历史页里残留的 `waiting + task_finished` 文案统一展示成 `等待处理`，不要再回退成 `等待 · task_finished`
+- 手动字幕配对完成后，如果 `manual_complete` 实际触发了最终导入，路由层还要补写一条真正的 `subtitle_import` 完成日志；只做了配对、不落盘，不应该伪造“字幕补配完成”
 
 ### 4.5 删除过滤已经是“预审制”
 
@@ -201,6 +207,16 @@
   - `EXTRACT_FAILED`
   - `PROCESS_FAILED`
 - 失败项重试成功后，要注意同步清理 / 标记恢复，不要留下脏状态
+- 最近对重复作品状态口径做了收紧：
+  - `重复作品 / 正在处理中 / 需要人工判断` 这类任务状态应落 `waiting_manual`
+  - 不要再把重复冲突写成 `completed/success`，否则历史记录会被误读成“正常入库完成”
+- `classifier._check_existing()` 现在必须排除运行态目录：
+  - `待处理`
+  - `_conflicts`
+  - `temp`
+  - `tmp`
+  这些路径只代表临时态 / 问题态，不能拿来判定“服务器已经存在”或“库存重复”
+- 如果 `LibrarySnapshot` 里命中这些临时路径，当前实现会顺手清掉脏快照；以后改查重时别把这个清洗逻辑删回去
 
 ### 4.7 ASMR 同步下载链路还在
 
@@ -256,6 +272,24 @@
     - `kikoeru_found_rjcodes`
     - `kikoeru_subtitle_rjcodes`
   - 前端“来源对比”标签页和操作历史里的“社团源对比”卡片都吃这些字段，改接口时要保持兼容
+- DLsite 关联链现在不能只信 `language_editions`：
+  - 要递归翻译本 / 子作品 / parent-child 关系，像 `RJ01021152 -> RJ01092544` 这种同语言不同译者也必须进 canonical 链
+  - 系统内和 DL 关联作品相关的地方要统一复用 `dlsite_service.get_linked_works()`，不要各写一套
+- Kikoeru 命中口径已经改掉：
+  - 只要同原作任一关联 RJ 命中，就算 `服务器已有`
+  - 前端主卡片和刷新结果优先显示真实命中的 `matched_rjcode`
+  - 不要再要求“当前优先 RJ 精确命中”才算服务器拥有
+- `circle_completion_service` 刷新结果返回模型已经偏业务语义，不再给前端直接喂“服务器命中变体 / 字幕状态变体”这种调试字段
+  - 当前前端依赖：
+    - `server_match_rjcodes`
+    - `server_match_primary_rjcode`
+    - `subtitle_present`
+    - `change_flags`
+- `ActivityHistory.vue` 的社团刷新抽屉现在固定按“有更新优先”排序，且有：
+  - `全部 / 仅有更新 / 仅无变化`
+  - 每页 10 条
+  - 有更新卡片右上角 `NEW`
+  如果后端改返回结构，别忘了把这些筛选和排序一起维护
 - 索引结果现在不只是计数：
   - 后端会给每个作品算 `preferred_variant`
   - 同时产出 `source_compare.kikoeru / dlsite / asmr_one`
@@ -306,6 +340,16 @@
   - 合并后的 `source_mask`
   - 合并后的 `linked_rjcodes`
 - 如果后续继续给 `circle_works` 加字段，要同步检查这个脚本的 merge 逻辑，不然清理历史数据会丢信息
+
+### 4.11 操作历史脏数据现在还有单独清理脚本
+
+- 脚本：`backend/scripts/cleanup_dirty_activity_logs.py`
+- 作用：
+  - 删除旧的 `subtitle_import / pending_execute` 噪音记录
+  - 把旧的“重复作品但状态写成 success”的日志修正为等待人工处理口径
+  - 清理由 `待处理 / _conflicts / temp / tmp` 路径误判出来的问题作品脏数据
+- 默认先预览，真正写入要加 `--apply`
+- 这是历史数据修复脚本，不是常规运行流程；以后如果继续扩展活动日志状态，记得同步维护这个脚本的筛选条件
 
 ## 5. 群晖 / 远程库存注意点
 
