@@ -144,6 +144,28 @@ async def list_activity_logs(
             parent_detail = parent_row.get("detail") if isinstance(parent_row.get("detail"), dict) else {}
             child_rows = list(parent_detail.get("child_rows") or [])
             child_rows.append(child_row)
+            deduped_child_rows: list[dict[str, Any]] = []
+            dedupe_index: dict[str, int] = {}
+            for item in child_rows:
+                item_detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+                dedupe_key = "|".join([
+                    str(item.get("relation") or item.get("category") or "").strip(),
+                    str(item.get("task_id") or item_detail.get("task_id") or "").strip(),
+                    str(item.get("source_path") or item_detail.get("preview_source_path") or "").strip(),
+                    str(item.get("rjcode") or item_detail.get("target_rjcode") or item_detail.get("source_rjcode") or "").strip().upper(),
+                    str(item.get("action") or "").strip(),
+                ])
+                current_dt = _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
+                if dedupe_key in dedupe_index:
+                    previous_index = dedupe_index[dedupe_key]
+                    previous_item = deduped_child_rows[previous_index]
+                    previous_dt = _coerce_dt(previous_item.get("latest_activity_at") or previous_item.get("created_at")) or datetime.min
+                    if current_dt >= previous_dt:
+                        deduped_child_rows[previous_index] = item
+                    continue
+                dedupe_index[dedupe_key] = len(deduped_child_rows)
+                deduped_child_rows.append(item)
+            child_rows = deduped_child_rows
             child_rows = sorted(
                 child_rows,
                 key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
@@ -894,10 +916,12 @@ async def list_activity_logs(
             _recompute_subtitle_batch_rollup(batch_row)
 
         for row in subtitle_import_rows:
-            if row.get("action") != "pending_execute":
+            if str(row.get("action") or "").strip() not in {"archive_import", "folder_import"}:
                 continue
             row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
             detail = row_detail
+            if not _is_success_status(row.get("status")) and int(row_detail.get("final_file_count") or 0) <= 0:
+                continue
             import_source_path = str(
                 row.get("source_path")
                 or detail.get("preview_source_path")
@@ -939,7 +963,7 @@ async def list_activity_logs(
                 if not import_dt or not candidate_dt or candidate_dt > import_dt:
                     continue
                 seconds = (import_dt - candidate_dt).total_seconds()
-                if seconds < 0 or seconds > 7 * 24 * 3600:
+                if seconds < 0 or seconds > 1800:
                     continue
                 if best_seconds is None or seconds < best_seconds:
                     best_seconds = seconds
@@ -1392,18 +1416,26 @@ async def list_activity_logs(
             preview_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else preview_row.get("created_at")
 
         circle_index_rows_by_circle: dict[str, list[dict[str, Any]]] = {}
+        circle_refresh_rows_by_circle: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             if str(row.get("category") or "").strip() != "circle_completion":
                 continue
-            if str(row.get("action") or "").strip() != "index_completed":
+            action = str(row.get("action") or "").strip()
+            if action not in {"index_completed", "refresh_selected_works"}:
                 continue
             detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
             circle_id = str(detail.get("circle_id") or "").strip()
             if not circle_id:
                 continue
-            circle_index_rows_by_circle.setdefault(circle_id, []).append(row)
+            if action == "index_completed":
+                circle_index_rows_by_circle.setdefault(circle_id, []).append(row)
+            elif action == "refresh_selected_works":
+                circle_refresh_rows_by_circle.setdefault(circle_id, []).append(row)
 
         for circle_id, circle_rows in circle_index_rows_by_circle.items():
+            circle_rows.sort(key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
+
+        for circle_id, circle_rows in circle_refresh_rows_by_circle.items():
             circle_rows.sort(key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
 
         for row in rows:
@@ -1453,6 +1485,48 @@ async def list_activity_logs(
             row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
             circle_id = str(row_detail.get("circle_id") or "").strip()
             if not circle_id:
+                continue
+
+            source_action = str(row.get("source_action") or row_detail.get("source_action") or "").strip()
+            if source_action == "refresh_selected":
+                parent_candidates = circle_refresh_rows_by_circle.get(circle_id) or []
+                if parent_candidates:
+                    row_dt = _coerce_dt(row.get("created_at")) or datetime.min
+                    parent_row = None
+                    for candidate in parent_candidates:
+                        candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
+                        if candidate_dt <= row_dt:
+                            parent_row = candidate
+                    if parent_row is None:
+                        parent_row = parent_candidates[-1]
+                    parent_row["latest_activity_at"] = row.get("created_at") or parent_row.get("latest_activity_at") or parent_row.get("created_at")
+                merged_circle_completion_ids.add(str(row.get("id") or ""))
+                continue
+
+            # 兼容旧日志：早期 refresh_selected 的 task_finished 没带 source_action，
+            # 这里按同社团 + 时间邻近的 refresh_selected_works 父记录兜底归并。
+            refresh_parent_candidates = circle_refresh_rows_by_circle.get(circle_id) or []
+            if refresh_parent_candidates:
+                row_dt = _coerce_dt(row.get("created_at")) or datetime.min
+                fallback_parent = None
+                fallback_delta_seconds = None
+                for candidate in refresh_parent_candidates:
+                    candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
+                    delta_seconds = abs((row_dt - candidate_dt).total_seconds())
+                    if fallback_parent is None or delta_seconds < (fallback_delta_seconds or float("inf")):
+                        fallback_parent = candidate
+                        fallback_delta_seconds = delta_seconds
+                if fallback_parent is not None and (fallback_delta_seconds or 0) <= 120:
+                    fallback_parent["latest_activity_at"] = row.get("created_at") or fallback_parent.get("latest_activity_at") or fallback_parent.get("created_at")
+                    merged_circle_completion_ids.add(str(row.get("id") or ""))
+                    continue
+
+            # 兼容更老的 refresh_selected 收尾日志：没有 source_action，
+            # 但 source_path 往往就是社团名，且不会附着到 index_completed。
+            circle_name = str(row_detail.get("circle_name") or "").strip()
+            row_source_path = str(row.get("source_path") or "").strip()
+            if circle_name and row_source_path and row_source_path == circle_name:
+                merged_circle_completion_ids.add(str(row.get("id") or ""))
                 continue
 
             parent_candidates = circle_index_rows_by_circle.get(circle_id) or []
@@ -1688,6 +1762,8 @@ async def list_activity_logs(
             if str(row.get("id") or "") in merged_pair_ids:
                 continue
             if str(row.get("id") or "") in merged_subtitle_import_ids:
+                continue
+            if str(row.get("category") or "").strip() == "subtitle_import" and str(row.get("action") or "").strip() == "pending_execute":
                 continue
             if str(row.get("id") or "") in merged_import_batch_child_ids:
                 continue
@@ -7301,7 +7377,7 @@ async def rj_subtitle_manual_complete(
         task.task_metadata["progress_log"] = logs[-30:]
 
         try:
-            from ..core.activity_log_service import log_subtitle_pair_complete
+            from ..core.activity_log_service import log_subtitle_pair_complete, log_subtitle_import_action
 
             rj_log = str(task.task_metadata.get("rjcode") or "").strip().upper()
             _lf = linked_finalize_result if isinstance(linked_finalize_result, dict) else {}
@@ -7323,6 +7399,42 @@ async def rj_subtitle_manual_complete(
                 },
                 source_path=str(task.task_metadata.get("folder_path") or task.source_path or "").strip() or None,
             )
+            if _lf.get("applied"):
+                imported_count = int(_lf.get("final_file_count") or 0)
+                import_target_rj = str(
+                    task.task_metadata.get("target_rjcode")
+                    or task.task_metadata.get("actual_rjcode")
+                    or rj_log
+                    or ""
+                ).strip().upper()
+                import_source_path = str(
+                    task.task_metadata.get("source_archive_path")
+                    or task.task_metadata.get("source_subtitle_folder_path")
+                    or task.source_path
+                    or ""
+                ).strip() or None
+                import_action = (
+                    "archive_import"
+                    if str(task.task_metadata.get("source_mode") or "").strip() == "linked_translation_archive_import"
+                    else "folder_import"
+                )
+                log_subtitle_import_action(
+                    action=import_action,
+                    success=True,
+                    summary=f"字幕补配完成，共导入 {imported_count} 个字幕文件",
+                    detail={
+                        "task_id": task_id,
+                        "final_file_count": imported_count,
+                        "target_rjcode": import_target_rj or None,
+                        "source_rjcode": str(task.task_metadata.get("rjcode") or "").strip().upper() or None,
+                        "manual_match_completed": True,
+                        "manual_match_applied_pairs": applied_pairs,
+                        "manual_match_deleted_subtitles": deleted_subtitles,
+                    },
+                    rjcode=import_target_rj or rj_log or None,
+                    task_id=task_id,
+                    source_path=import_source_path,
+                )
         except Exception:
             logger.warning("[操作记录] 字幕配对记录失败", exc_info=True)
 
@@ -7768,6 +7880,12 @@ class CircleCompletionDownloadPreviewRequest(BaseModel):
 
 class CircleCompletionRefreshSelectedRequest(BaseModel):
     circle_id: str
+    canonical_rjcodes: List[str]
+
+
+class CircleCompletionRefreshSelectedJobRequest(BaseModel):
+    circle_id: str
+    circle_name: str = ""
     canonical_rjcodes: List[str]
 
 
@@ -8466,6 +8584,106 @@ async def circle_completion_refresh_selected(request: CircleCompletionRefreshSel
     except Exception as exc:
         logger.error("批量刷新社团作品状态失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"批量刷新社团作品状态失败: {str(exc)}")
+
+
+@app.post("/api/circle-completion/refresh-selected/start")
+async def circle_completion_refresh_selected_start(request: CircleCompletionRefreshSelectedJobRequest):
+    from ..core.task_engine import Task, TaskType, TaskStatus, get_task_engine
+
+    try:
+        circle_id = str(request.circle_id or "").strip()
+        circle_name = str(request.circle_name or "").strip()
+        canonical_rjcodes = [str(code or "").strip() for code in list(request.canonical_rjcodes or []) if str(code or "").strip()]
+        if not circle_id:
+            raise ValueError("缺少社团标识")
+        if not canonical_rjcodes:
+            raise ValueError("没有选中要刷新的作品")
+
+        task = Task(
+            task_type=TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED,
+            source_path=circle_name or circle_id,
+            auto_classify=False,
+            metadata={
+                "circle_id": circle_id,
+                "circle_name": circle_name,
+                "canonical_rjcodes": canonical_rjcodes,
+                "selected_count": len(canonical_rjcodes),
+                "task_domain": "circle_completion",
+                "source_page": "circle-completion",
+                "source_action": "refresh_selected",
+                "source_label": circle_name or circle_id,
+                "business_key": f"{circle_id}:refresh_selected",
+                "progress_log": [],
+            },
+        )
+        task.ensure_business_context("circle_completion", {
+            "source_page": "circle-completion",
+            "source_action": "refresh_selected",
+            "source_label": circle_name or circle_id,
+            "business_key": f"{circle_id}:refresh_selected",
+        })
+        await get_task_engine().submit(task)
+        return {
+            "success": True,
+            "job_id": task.id,
+            "status": task.status.value if isinstance(task.status, TaskStatus) else str(task.status),
+            "progress": int(task.progress or 0),
+            "current_step": task.current_step,
+            "circle_id": circle_id,
+            "circle_name": circle_name,
+            "selected_count": len(canonical_rjcodes),
+            "started_at": task.created_at.isoformat() if task.created_at else None,
+            "finished_at": None,
+            "elapsed_seconds": 0,
+            "error_message": None,
+            "meta": {},
+            "result": {},
+            "progress_log": [],
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("启动批量刷新社团作品任务失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动批量刷新社团作品任务失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/refresh-selected/jobs/{job_id}")
+async def circle_completion_refresh_selected_job_status(job_id: str):
+    from ..core.task_engine import get_task_engine
+
+    try:
+        task = get_task_engine().get_task(job_id)
+        if task is None:
+            raise ValueError("刷新任务不存在")
+        metadata = dict(task.task_metadata or {})
+        started_at = task.started_at or task.created_at
+        finished_at = task.completed_at
+        elapsed_seconds = 0.0
+        if started_at:
+            end_time = finished_at or datetime.now()
+            elapsed_seconds = max(0.0, (end_time - started_at).total_seconds())
+        return {
+            "success": True,
+            "job_id": task.id,
+            "status": task.status.value,
+            "progress": int(task.progress or 0),
+            "current_step": task.current_step,
+            "circle_id": str(metadata.get("circle_id") or "").strip(),
+            "circle_name": str(metadata.get("circle_name") or task.source_path or "").strip(),
+            "selected_count": int(metadata.get("selected_count") or 0),
+            "started_at": started_at.isoformat() if started_at else None,
+            "finished_at": finished_at.isoformat() if finished_at else None,
+            "elapsed_seconds": round(elapsed_seconds, 1),
+            "error_message": task.error_message,
+            "meta": dict(metadata.get("refresh_meta") or {}),
+            "result": dict(metadata.get("refresh_result") or {}),
+            "progress_log": list(metadata.get("progress_log") or []),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("查询批量刷新社团作品任务失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"查询批量刷新社团作品任务失败: {str(exc)}")
 
 
 @app.post("/api/circle-completion/download/start")

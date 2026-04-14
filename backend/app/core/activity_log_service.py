@@ -393,6 +393,7 @@ def log_task_lifecycle_event(task) -> None:
         TaskType.RENAME: CATEGORY_PIPELINE_RENAME,
         TaskType.ASMR_SYNC_DOWNLOAD: CATEGORY_ASMR_SYNC,
         TaskType.CIRCLE_COMPLETION_INDEX: CATEGORY_CIRCLE_COMPLETION,
+        TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED: CATEGORY_CIRCLE_COMPLETION,
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: CATEGORY_CIRCLE_COMPLETION,
     }
     category = type_map.get(tt, CATEGORY_AUTO_IMPORT) if tt else CATEGORY_AUTO_IMPORT
@@ -575,10 +576,24 @@ def log_task_lifecycle_event(task) -> None:
             "filtered_size": int(meta.get("filtered_size") or 0),
             "filtered_items": _build_filter_delete_items(meta.get("filtered_items"), limit=240),
         }
-        if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
+        if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
             detail["circle_id"] = str(meta.get("circle_id") or "").strip() or None
             detail["circle_name"] = str(meta.get("circle_name") or "").strip() or None
             detail["parent_session_id"] = str(meta.get("parent_session_id") or "").strip() or None
+
+    if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
+        detail["source_page"] = str(meta.get("source_page") or "").strip() or None
+        detail["source_action"] = str(meta.get("source_action") or "").strip() or None
+        detail["source_label"] = str(meta.get("source_label") or "").strip() or None
+        detail["business_key"] = str(meta.get("business_key") or "").strip() or None
+        if tt == TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED:
+            detail["selected_count"] = int(meta.get("selected_count") or 0) or None
+            detail["refreshed_count"] = int(meta.get("refreshed_count") or 0) or None
+            detail["changed_count"] = int(
+                meta.get("changed_count")
+                or ((meta.get("refresh_result") or {}).get("changed_count") if isinstance(meta.get("refresh_result"), dict) else 0)
+                or 0
+            ) or None
 
     write_activity_log(
         category=category,

@@ -451,39 +451,65 @@
               <div class="circle-refresh-head">
                 <div>
                   <div class="circle-refresh-title">社团作品拥有状态更新</div>
-                  <div class="circle-refresh-desc">这次实际刷新到的作品、命中的 RJ 变体，以及每个变体对应的简体 / 繁体 / 原作标签。</div>
+                  <div class="circle-refresh-desc">只展示这次刷新后的业务状态：服务器是否命中、命中的服务器 RJ、字幕有没有，以及是否真的发生变化。</div>
                 </div>
                 <div class="circle-refresh-metrics">
                   <span class="circle-refresh-metric">已选 {{ selectedCircleCompletionRefreshModel.selectedCount }}</span>
                   <span class="circle-refresh-metric">已刷新 {{ selectedCircleCompletionRefreshModel.refreshedCount }}</span>
-                  <span class="circle-refresh-metric">服务器已有 {{ selectedCircleCompletionRefreshModel.kikoeruOwnedCount }}</span>
+                  <span class="circle-refresh-metric is-changed">有更新 {{ selectedCircleCompletionRefreshModel.changedCount }}</span>
+                  <span class="circle-refresh-metric">命中服务器 {{ selectedCircleCompletionRefreshModel.serverMatchedCount }}</span>
+                </div>
+              </div>
+              <div class="circle-refresh-toolbar">
+                <div class="circle-refresh-filter-group">
+                  <button type="button" class="circle-refresh-filter-btn" :class="{ active: circleRefreshFilter === 'all' }" @click="setCircleRefreshFilter('all')">全部</button>
+                  <button type="button" class="circle-refresh-filter-btn" :class="{ active: circleRefreshFilter === 'changed' }" @click="setCircleRefreshFilter('changed')">仅有更新</button>
+                  <button type="button" class="circle-refresh-filter-btn" :class="{ active: circleRefreshFilter === 'unchanged' }" @click="setCircleRefreshFilter('unchanged')">仅无变化</button>
                 </div>
               </div>
               <div class="circle-refresh-list">
                 <div
-                  v-for="item in selectedCircleCompletionRefreshModel.items"
+                  v-for="item in pagedCircleCompletionRefreshItems"
                   :key="`${item.canonical_rjcode}-${item.display_rjcode}`"
                   class="circle-refresh-item"
+                  :class="{ 'is-changed': item.changed }"
                 >
+                  <span v-if="item.changed" class="circle-refresh-new-badge">NEW</span>
                   <div class="circle-refresh-item-top">
                     <span class="circle-refresh-title-rj mono">{{ item.display_rjcode || item.canonical_rjcode }}</span>
-                    <span class="circle-refresh-status" :class="{ 'is-owned': item.has_kikoeru, 'is-missing': !item.has_kikoeru }">
-                      {{ item.has_kikoeru ? '服务器已有' : '服务器缺失' }}
+                    <span class="circle-refresh-status" :class="`is-${item.resultStatus}`">
+                      {{ item.resultLabel }}
+                    </span>
+                    <span class="circle-refresh-status" :class="item.changed ? 'is-updated' : 'is-unchanged'">
+                      {{ item.changed ? '有更新' : '无变化' }}
                     </span>
                   </div>
                   <div class="circle-refresh-item-title">{{ item.title || item.display_rjcode || item.canonical_rjcode }}</div>
-                  <div class="circle-refresh-variant-list">
-                    <span
-                      v-for="variant in item.variants"
-                      :key="`${item.canonical_rjcode}-${variant.rjcode}-${variant.group_key}`"
-                      class="circle-refresh-variant-chip"
-                      :class="`is-${variant.group_key || 'other'}`"
+                  <div v-if="item.changeDetails.length" class="circle-refresh-change-list">
+                    <div
+                      v-for="change in item.changeDetails"
+                      :key="`${item.canonical_rjcode}-${change.key}`"
+                      class="circle-refresh-change-row"
                     >
-                      <span class="mono">{{ variant.rjcode }}</span>
-                      <span>{{ variant.label }}</span>
-                    </span>
+                      <span class="circle-refresh-change-label">{{ change.label }}</span>
+                      <div class="circle-refresh-change-values">
+                        <span class="circle-refresh-change-before">{{ formatRefreshChangeValue(change.before) }}</span>
+                        <span class="circle-refresh-change-arrow">→</span>
+                        <span class="circle-refresh-change-after">{{ formatRefreshChangeValue(change.after) }}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
+              </div>
+              <div v-if="selectedCircleCompletionRefreshModel.filteredCount > circleRefreshPageSize" class="circle-refresh-pager">
+                <el-pagination
+                  :current-page="circleRefreshPage"
+                  :page-size="circleRefreshPageSize"
+                  layout="prev, pager, next"
+                  :total="selectedCircleCompletionRefreshModel.filteredCount"
+                  background
+                  @current-change="setCircleRefreshPage"
+                />
               </div>
             </div>
           </div>
@@ -733,6 +759,8 @@ const detailDrawerVisible = ref(false)
 const selectedRow = ref(null)
 const detailDrawerWidth = ref(1180)
 const circleIndexSectionPages = ref({})
+const circleRefreshFilter = ref('all')
+const circleRefreshPage = ref(1)
 const statsDays = ref(14)
 const expandedTreeRowIds = ref(new Set())
 const selectedBatchWorkbenchKeys = ref([])
@@ -798,6 +826,12 @@ const selectedCircleCompletionIndexModel = computed(() => circleCompletionIndexM
 const selectedCircleCompletionRefreshModel = computed(() => circleCompletionRefreshModel(selectedRow.value))
 const detailDrawerSize = computed(() => `${detailDrawerWidth.value}px`)
 const circleIndexPageSize = 10
+const circleRefreshPageSize = 10
+const pagedCircleCompletionRefreshItems = computed(() => {
+  const rows = Array.isArray(selectedCircleCompletionRefreshModel.value?.items) ? selectedCircleCompletionRefreshModel.value.items : []
+  const start = (circleRefreshPage.value - 1) * circleRefreshPageSize
+  return rows.slice(start, start + circleRefreshPageSize)
+})
 
 const successRatioText = computed(() => {
   const b = stats.by_status || {}
@@ -1227,11 +1261,28 @@ function humanAction(row) {
     if (action === 'refresh_selected_works') return status === 'success' ? '社团作品信息更新' : '社团作品信息更新失败'
     if (action === 'download_batch_start') return '创建下载任务'
     if (action === 'download_item_queued') return '下载任务已加入队列'
+    if (action === 'task_finished' || action === 'task_finished_incomplete') {
+      if (sourceAction === 'refresh_selected') {
+        if (status === 'success') return '社团作品信息更新完成'
+        if (status === 'incomplete') return '社团作品信息更新未正常结束'
+        if (status === 'failed') return '社团作品信息更新失败'
+        return '社团作品信息更新'
+      }
+      if (sourceAction === 'index_circle' || sourceAction === 'circle_index') {
+        if (status === 'success') return '社团补全完成'
+        if (status === 'incomplete') return '社团补全未正常结束'
+        if (status === 'failed') return '社团补全失败'
+        return '社团补全'
+      }
+    }
     if (status === 'success') return '社团补全完成'
     if (status === 'failed') return '社团补全失败'
   }
 
   // 回退：用中文状态 + 英文动作描述
+  if (status === 'waiting' && (action === 'task_finished' || action === 'task_finished_incomplete')) {
+    return '等待处理'
+  }
   const base = statusLabel(status)
   if (!action) return base
   return `${base} · ${action}`
@@ -1694,6 +1745,10 @@ function mergedCategoryTags(row) {
 
 function rowCategoryTags(row) {
   const tags = row?.is_tree_child ? [] : mergedCategoryTags(row)
+  if (!row?.is_tree_child && row?.category === 'circle_completion' && row?.action === 'refresh_selected_works') {
+    const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+    tags.push(Number(detail?.changed_count || 0) > 0 ? '有更新' : '无变化')
+  }
   if (row?.category === 'pipeline_rename') tags.unshift(renameOpTag(row))
   if (!row?.is_tree_child && isSubtitleBatchRootPartiallyPaired(row)) tags.push('部分配对✔')
   if (!row?.is_tree_child && row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) tags.push('配对✔')
@@ -1882,6 +1937,8 @@ function actionTagClass(row, tag) {
   if (tag === 'API重命名') return 'is-api-rename'
   if (tag === '重命名') return 'is-manual-rename'
   if (tag === '删除') return 'is-delete'
+  if (tag === '有更新') return 'is-updated'
+  if (tag === '无变化') return 'is-unchanged'
   return ''
 }
 
@@ -1898,8 +1955,19 @@ function rowClassName({ row }) {
 
 function openDetail(row) {
   selectedRow.value = row || null
+  circleRefreshFilter.value = 'all'
+  circleRefreshPage.value = 1
   syncBatchWorkbenchSelection(row)
   detailDrawerVisible.value = true
+}
+
+function setCircleRefreshFilter(value) {
+  circleRefreshFilter.value = String(value || 'all')
+  circleRefreshPage.value = 1
+}
+
+function setCircleRefreshPage(nextPage) {
+  circleRefreshPage.value = Math.max(1, Number(nextPage || 1))
 }
 
 function treeRowId(row) {
@@ -2119,7 +2187,7 @@ function circleCompletionIndexModel(row) {
 function circleCompletionRefreshModel(row) {
   if (!row || row.category !== 'circle_completion' || row.action !== 'refresh_selected_works') return null
   const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
-  const items = Array.isArray(detail.refreshed_items)
+  const rawItems = Array.isArray(detail.refreshed_items)
     ? detail.refreshed_items
         .map(item => ({
           canonical_rjcode: String(item?.canonical_rjcode || '').trim(),
@@ -2128,25 +2196,55 @@ function circleCompletionRefreshModel(row) {
           preferred_variant_label: String(item?.preferred_variant_label || '').trim(),
           has_kikoeru: Boolean(item?.has_kikoeru),
           has_asmr_one: Boolean(item?.has_asmr_one),
-          variants: Array.isArray(item?.variants)
-            ? item.variants
-                .map(variant => ({
-                  rjcode: String(variant?.rjcode || '').trim(),
-                  label: String(variant?.label || '').trim() || '其他',
-                  group_key: String(variant?.group_key || 'other').trim() || 'other',
+          asmrAvailableRjcode: String(item?.asmr_available_rjcode || '').trim(),
+          serverMatchPrimaryRjcode: String(item?.server_match_primary_rjcode || '').trim(),
+          serverMatchRjcodes: Array.isArray(item?.server_match_rjcodes) ? item.server_match_rjcodes.map(code => String(code || '').trim()).filter(Boolean) : [],
+          subtitlePresent: Boolean(item?.subtitle_present),
+          changed: Boolean(item?.changed),
+          resultStatus: Boolean(item?.has_kikoeru) ? 'owned' : (Boolean(item?.has_asmr_one) ? 'downloadable' : 'missing'),
+          resultLabel: Boolean(item?.has_kikoeru) ? '服务器已有' : (Boolean(item?.has_asmr_one) ? 'asmr.one 可下载' : '无来源'),
+          changeDetails: Array.isArray(item?.change_details)
+            ? item.change_details
+                .map(change => ({
+                  key: String(change?.key || '').trim(),
+                  label: String(change?.label || '').trim() || '状态变更',
+                  before: change?.before,
+                  after: change?.after,
                 }))
-                .filter(variant => variant.rjcode)
+                .filter(change => change.key)
             : []
         }))
         .filter(item => item.canonical_rjcode)
     : []
-  if (!items.length) return null
+  if (!rawItems.length) return null
+  const filteredItems = rawItems.filter(item => {
+    if (circleRefreshFilter.value === 'changed') return item.changed
+    if (circleRefreshFilter.value === 'unchanged') return !item.changed
+    return true
+  })
+  const items = [...filteredItems].sort((left, right) => {
+    const leftServerChanged = left.changeDetails.some(change => change.key === 'server_state')
+    const rightServerChanged = right.changeDetails.some(change => change.key === 'server_state')
+    if (left.changed !== right.changed) return left.changed ? -1 : 1
+    if (leftServerChanged !== rightServerChanged) return leftServerChanged ? -1 : 1
+    return String(left.display_rjcode || left.canonical_rjcode).localeCompare(String(right.display_rjcode || right.canonical_rjcode))
+  })
   return {
-    selectedCount: Number(detail.selected_count || items.length),
-    refreshedCount: Number(detail.refreshed_count || items.length),
-    kikoeruOwnedCount: Number(detail.kikoeru_owned_count || 0),
+    selectedCount: Number(detail.selected_count || rawItems.length),
+    refreshedCount: Number(detail.refreshed_count || rawItems.length),
+    changedCount: Number(detail.changed_count || rawItems.filter(item => item.changed).length),
+    serverMatchedCount: Number(detail.kikoeru_owned_count || rawItems.filter(item => item.has_kikoeru).length),
+    filteredCount: items.length,
     items,
   }
+}
+
+function formatRefreshChangeValue(value) {
+  if (Array.isArray(value)) {
+    const normalized = value.map(item => String(item || '').trim()).filter(Boolean)
+    return normalized.length ? normalized.join(' / ') : '—'
+  }
+  return String(value ?? '').trim() || '—'
 }
 
 function normalizeKikoeruTags(tags) {
@@ -3290,6 +3388,18 @@ watch(selectedRow, (row) => {
   color: #b0001a;
 }
 
+.action-pill.is-updated {
+  border-color: rgba(52, 199, 89, 0.22);
+  background: rgba(52, 199, 89, 0.12);
+  color: #17803d;
+}
+
+.action-pill.is-unchanged {
+  border-color: rgba(255, 159, 10, 0.22);
+  background: rgba(255, 159, 10, 0.12);
+  color: #b96b00;
+}
+
 .action-text.is-success {
   color: #248a3d;
 }
@@ -3797,6 +3907,35 @@ watch(selectedRow, (row) => {
   justify-content: flex-end;
 }
 
+.circle-refresh-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.circle-refresh-filter-group {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.circle-refresh-filter-btn {
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: #fff;
+  color: #46627f;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.circle-refresh-filter-btn.active {
+  background: #eef5ff;
+  border-color: rgba(10, 132, 255, 0.18);
+  color: #005fcc;
+}
+
 .circle-refresh-metric {
   display: inline-flex;
   align-items: center;
@@ -3815,12 +3954,34 @@ watch(selectedRow, (row) => {
 }
 
 .circle-refresh-item {
+  position: relative;
   display: grid;
   gap: 8px;
   padding: 12px 14px;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(192, 209, 232, 0.74);
+}
+
+.circle-refresh-item.is-changed {
+  border-color: rgba(52, 199, 89, 0.24);
+  box-shadow: 0 12px 24px rgba(52, 199, 89, 0.08);
+}
+
+.circle-refresh-new-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #2dbb61, #34c759);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
 }
 
 .circle-refresh-item-top {
@@ -3851,9 +4012,24 @@ watch(selectedRow, (row) => {
   color: #005fcc;
 }
 
+.circle-refresh-status.is-downloadable {
+  background: rgba(52, 199, 89, 0.12);
+  color: #1f8f51;
+}
+
 .circle-refresh-status.is-missing {
   background: rgba(255, 95, 86, 0.10);
   color: #c2410c;
+}
+
+.circle-refresh-status.is-updated {
+  background: rgba(52, 199, 89, 0.15);
+  color: #17803d;
+}
+
+.circle-refresh-status.is-unchanged {
+  background: rgba(255, 159, 10, 0.14);
+  color: #b96b00;
 }
 
 .circle-refresh-item-title {
@@ -3863,7 +4039,63 @@ watch(selectedRow, (row) => {
   color: #193556;
 }
 
+.circle-refresh-change-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.circle-refresh-change-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.circle-refresh-change-label {
+  min-width: 88px;
+  font-weight: 800;
+  color: #48617f;
+}
+
+.circle-refresh-change-values {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.circle-refresh-change-before,
+.circle-refresh-change-after {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #f5f8fc;
+  color: #26405f;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+
+.circle-refresh-change-after {
+  background: rgba(52, 199, 89, 0.10);
+  color: #1f8f51;
+  box-shadow: inset 0 0 0 1px rgba(52, 199, 89, 0.18);
+}
+
+.circle-refresh-change-arrow {
+  color: #7f93ab;
+  font-weight: 800;
+}
+
 .circle-refresh-variant-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.circle-refresh-meta-list {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -3873,6 +4105,19 @@ watch(selectedRow, (row) => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+  background: #f8fbff;
+  color: #325074;
+}
+
+.circle-refresh-meta-chip {
+  display: inline-flex;
+  align-items: center;
   min-height: 24px;
   padding: 0 10px;
   border-radius: 999px;
@@ -3899,6 +4144,24 @@ watch(selectedRow, (row) => {
   background: rgba(10, 132, 255, 0.10);
   box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.16);
   color: #005fcc;
+}
+
+.circle-refresh-variant-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(52, 199, 89, 0.18);
+  color: #17803d;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.circle-refresh-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
 }
 
 @media (max-width: 1120px) {
