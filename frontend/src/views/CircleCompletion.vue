@@ -112,7 +112,7 @@
               <span class="metric-pill owned">服务器已有 {{ detail.owned_count || 0 }}</span>
               <span class="metric-pill warn">服务器缺失 {{ detail.missing_count || 0 }}</span>
               <span class="metric-pill ok">可下载 {{ detail.downloadable_count || 0 }}</span>
-              <span class="metric-pill muted">{{ detail.dl_only_count || 0 }} 个暂不可下</span>
+              <span class="metric-pill muted">暂不可下载 {{ detail.dl_only_count || 0 }}</span>
             </div>
           </div>
 
@@ -135,7 +135,7 @@
               <el-button class="batch-action-button ghost" @click="clearSelection">清空</el-button>
               <el-button
                 class="batch-action-button refresh"
-                :disabled="!activeCircleId || indexing || selectedCanonicalRJCodes.length === 0"
+                :disabled="!activeCircleId || indexing || selectedCanonicalRJCodes.length === 0 || isRefreshJobActive"
                 :loading="refreshingCurrentCircle"
                 @click="refreshSelectedCircleIndex"
               >
@@ -144,6 +144,59 @@
               <el-button class="batch-action-button primary" type="primary" :disabled="selectedDownloadableRJCodes.length === 0" :loading="previewing" @click="openBatchPreview()">创建下载任务</el-button>
             </div>
           </div>
+
+          <section v-if="refreshJob.visible" class="index-progress-card refresh-progress-card">
+            <div class="index-progress-head">
+              <div>
+                <div class="index-progress-title">批量刷新进度</div>
+                <div class="index-progress-subtitle">
+                  {{ refreshJob.circle_name || detail.circle_name || '当前社团' }} · {{ refreshJob.current_step || '处理中' }}
+                </div>
+              </div>
+              <div class="index-progress-head-actions">
+                <el-button
+                  v-if="canCancelRefreshJob"
+                  size="small"
+                  class="index-cancel-button"
+                  :loading="cancellingRefreshJob"
+                  @click="cancelRefreshJob"
+                >
+                  取消刷新
+                </el-button>
+                <div class="index-progress-status" :class="refreshJob.status">{{ refreshJobStatusText }}</div>
+              </div>
+            </div>
+
+            <el-progress
+              :percentage="refreshJob.progress || 0"
+              :status="refreshJob.status === 'failed' ? 'exception' : (refreshJob.status === 'completed' ? 'success' : '')"
+              :stroke-width="12"
+            />
+
+            <div class="index-progress-meta">
+              <span class="progress-meta-pill">耗时 {{ formatElapsed(refreshJob.elapsed_seconds) }}</span>
+              <span class="progress-meta-pill">总数 {{ refreshJob.selected_count || refreshJob.meta.total_count || 0 }}</span>
+              <span class="progress-meta-pill">已处理 {{ refreshJob.meta.processed_count || 0 }}</span>
+              <span class="progress-meta-pill ok">有变化 {{ refreshJob.meta.changed_count || 0 }}</span>
+              <span class="progress-meta-pill">Kikoeru {{ refreshJob.meta.kikoeru_owned_count || 0 }}</span>
+              <span class="progress-meta-pill">asmr.one {{ refreshJob.meta.asmr_available_count || 0 }}</span>
+              <span v-if="refreshJob.meta.current_rjcode" class="progress-meta-pill">当前 {{ refreshJob.meta.current_rjcode }}</span>
+            </div>
+
+            <div v-if="refreshJob.progress_log?.length" class="refresh-progress-log-list">
+              <div
+                v-for="entry in refreshJob.progress_log.slice(-6)"
+                :key="`${refreshJob.job_id}-${entry.time}-${entry.message}`"
+                class="refresh-progress-log-item"
+                :class="entry.level || 'info'"
+              >
+                <span class="refresh-progress-log-time">{{ formatLogTime(entry.time) }}</span>
+                <span class="refresh-progress-log-message">{{ entry.message }}</span>
+              </div>
+            </div>
+
+            <div v-if="refreshJob.error_message" class="index-progress-error">{{ refreshJob.error_message }}</div>
+          </section>
 
           <el-tabs v-model="activeTab" class="circle-tabs">
             <el-tab-pane label="缺失作品" name="missing">
@@ -776,6 +829,7 @@ import api, { asmrSyncApi, circleCompletionApi, libraryApi } from '../api'
 
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'prekikoeru.circleCompletion.targetSubdirs'
 const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.downloadWorkbench'
+const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'prekikoeru.circleCompletion.refreshJob'
 
 const circleQuery = ref('')
 const circleSearch = ref('')
@@ -841,6 +895,26 @@ const indexJob = reactive({
 let indexJobTimer = null
 const cancellingIndexJob = ref(false)
 const refreshingCurrentCircle = ref(false)
+const refreshJob = reactive({
+  visible: false,
+  job_id: '',
+  status: '',
+  progress: 0,
+  current_step: '',
+  circle_id: '',
+  circle_name: '',
+  selected_count: 0,
+  elapsed_seconds: 0,
+  auto_hide_at: '',
+  changed_codes: [],
+  error_message: '',
+  meta: {},
+  result: {},
+  progress_log: []
+})
+let refreshJobTimer = null
+let refreshJobAutoHideTimer = null
+const cancellingRefreshJob = ref(false)
 const downloadSettings = reactive({
   downloadBasePath: '',
   targetLibraryId: '',
@@ -865,8 +939,12 @@ const compareWorks = computed(() => (detail.works || []).map(item => ({
   workRjcode: String(item?.source_compare?.work_rjcode || item?.canonical_rjcode || '').trim(),
   title: String(item?.title || '').trim(),
   preferredVariantLabel: String(item?.preferred_variant?.label || '优先版本 未标记').trim(),
-  statusLabel: item?.server_owned ? formatServerOwnedLabel(item) : (item?.has_asmr_one ? '可下载' : '暂无来源'),
-  statusKey: item?.server_owned ? 'owned' : (item?.has_asmr_one ? 'downloadable' : 'dl_only'),
+  statusLabel: item?.server_owned
+    ? formatServerOwnedLabel(item)
+    : (item?.has_asmr_one ? '可下载' : '暂无来源'),
+  statusKey: item?.server_owned
+    ? 'owned'
+    : (item?.has_asmr_one ? 'downloadable' : 'dl_only'),
   sourceCompare: {
     kikoeru: {
       primary_rjcode: String(item?.source_compare?.kikoeru?.primary_rjcode || '').trim(),
@@ -890,16 +968,13 @@ const compareWorks = computed(() => (detail.works || []).map(item => ({
 
 function formatServerOwnedLabel(item) {
   if (!item?.server_owned) return '服务器缺失'
-  const variantBadges = Array.isArray(item?.source_compare?.kikoeru?.variant_badges) && item.source_compare.kikoeru.variant_badges.length
-    ? item.source_compare.kikoeru.variant_badges.filter(Boolean)
-    : (String(item?.source_compare?.kikoeru?.primary_badge || '').trim() ? [String(item.source_compare.kikoeru.primary_badge).trim()] : [])
-  const tags = normalizeKikoeruTags(item?.source_compare?.kikoeru?.tags)
-  const parts = []
-  for (const badge of ['简中', '繁中']) {
-    if (variantBadges.includes(badge) && !parts.includes(badge)) parts.push(badge)
-  }
-  if (tags.includes('字幕')) parts.push('字幕')
-  return parts.length ? `服务器已有(${parts.join(')/(')})` : '服务器已有'
+  const matched = String(
+    item?.server_match_primary_rjcode ||
+    item?.source_compare?.kikoeru?.matched_rjcode ||
+    item?.source_compare?.kikoeru?.primary_rjcode ||
+    ''
+  ).trim()
+  return matched ? `服务器已有 · ${matched}` : '服务器已有'
 }
 
 function normalizeKikoeruTags(tags) {
@@ -914,41 +989,6 @@ function normalizeKikoeruTags(tags) {
   return normalized
 }
 
-function buildWorkStatusSnapshot(item) {
-  return {
-    canonical_rjcode: String(item?.canonical_rjcode || '').trim(),
-    display_rjcode: String(item?.display_rjcode || '').trim(),
-    asmr_available_rjcode: String(item?.asmr_available_rjcode || '').trim(),
-    has_asmr_one: Boolean(item?.has_asmr_one),
-    has_kikoeru: Boolean(item?.has_kikoeru || item?.server_owned),
-    local_download_ready: Boolean(item?.local_download_ready),
-    source_mask: String(item?.source_mask || '').trim(),
-    found_rjcodes: JSON.stringify(Array.isArray(item?.kikoeru_found_rjcodes) ? item.kikoeru_found_rjcodes : []),
-    subtitle_rjcodes: JSON.stringify(Array.isArray(item?.kikoeru_subtitle_rjcodes) ? item.kikoeru_subtitle_rjcodes : []),
-  }
-}
-
-function buildWorkSnapshotMap(items = []) {
-  const map = new Map()
-  for (const item of items) {
-    const snapshot = buildWorkStatusSnapshot(item)
-    if (snapshot.canonical_rjcode) map.set(snapshot.canonical_rjcode, snapshot)
-  }
-  return map
-}
-
-function hasWorkStatusChanged(previous, next) {
-  if (!previous || !next) return false
-  return previous.display_rjcode !== next.display_rjcode
-    || previous.asmr_available_rjcode !== next.asmr_available_rjcode
-    || previous.has_asmr_one !== next.has_asmr_one
-    || previous.has_kikoeru !== next.has_kikoeru
-    || previous.local_download_ready !== next.local_download_ready
-    || previous.source_mask !== next.source_mask
-    || previous.found_rjcodes !== next.found_rjcodes
-    || previous.subtitle_rjcodes !== next.subtitle_rjcodes
-}
-
 function flashChangedWorks(codes = []) {
   const normalized = [...new Set((codes || []).map(code => String(code || '').trim()).filter(Boolean))]
   if (!normalized.length) return
@@ -961,6 +1001,18 @@ function flashChangedWorks(codes = []) {
     flashedWorkCodes.value = new Set()
     flashedWorkTimer = null
   }, 3000)
+}
+
+function prioritizeChangedWorks(codes = []) {
+  const normalized = [...new Set((codes || []).map(code => String(code || '').trim()).filter(Boolean))]
+  if (!normalized.length || !Array.isArray(detail.works) || !detail.works.length) return
+  const order = new Map(normalized.map((code, index) => [code, index]))
+  detail.works = [...detail.works].sort((left, right) => {
+    const leftIndex = order.has(left?.canonical_rjcode) ? order.get(left.canonical_rjcode) : Number.POSITIVE_INFINITY
+    const rightIndex = order.has(right?.canonical_rjcode) ? order.get(right.canonical_rjcode) : Number.POSITIVE_INFINITY
+    if (leftIndex !== rightIndex) return leftIndex - rightIndex
+    return 0
+  })
 }
 
 const pagedCompareWorks = computed(() => {
@@ -1011,18 +1063,51 @@ const indexJobStatusText = computed(() => {
 const canCancelIndexJob = computed(() =>
   Boolean(indexJob.job_id) && ['pending', 'processing'].includes(String(indexJob.status || ''))
 )
+const refreshJobStatusText = computed(() => {
+  if (refreshJob.error_message === '用户取消' || refreshJob.current_step === '已取消') return '已取消'
+  if (refreshJob.status === 'completed') return '已完成'
+  if (refreshJob.status === 'failed') return '失败'
+  if (refreshJob.status === 'processing') return '进行中'
+  return '等待中'
+})
+const isRefreshJobActive = computed(() =>
+  Boolean(refreshJob.job_id) && ['pending', 'processing'].includes(String(refreshJob.status || ''))
+)
+const canCancelRefreshJob = computed(() => isRefreshJobActive.value)
 
 onMounted(async () => {
+  hydrateRefreshJobState()
   hydrateDownloadWorkbenchState()
   loadCachedTargetSubdirs()
   await Promise.all([loadRecentCircles(), loadLibraries()])
   if (trackedDownloadTaskIds.value.length) await refreshDownloadWorkbench()
+  if (isRefreshJobActive.value) await pollRefreshJob(refreshJob.job_id, { silentFinish: true })
+  else if (refreshJob.job_id && refreshJob.status === 'completed') {
+    if (refreshJob.changed_codes?.length) {
+      await refreshActiveCircle()
+      prioritizeChangedWorks(refreshJob.changed_codes)
+      flashChangedWorks(refreshJob.changed_codes)
+    }
+    resumeRefreshJobAutoHide()
+  }
 })
 
 onActivated(() => {
   if (indexJob.job_id && !['completed', 'failed'].includes(indexJob.status)) {
     indexing.value = true
     pollIndexJob(indexJob.job_id)
+  }
+  if (isRefreshJobActive.value) {
+    refreshingCurrentCircle.value = true
+    pollRefreshJob(refreshJob.job_id, { silentFinish: true })
+  } else if (refreshJob.job_id && refreshJob.status === 'completed') {
+    if (refreshJob.changed_codes?.length && activeCircleId.value) {
+      refreshActiveCircle().then(() => {
+        prioritizeChangedWorks(refreshJob.changed_codes)
+        flashChangedWorks(refreshJob.changed_codes)
+      }).catch(() => {})
+    }
+    resumeRefreshJobAutoHide()
   }
   if (trackedDownloadTaskIds.value.length) {
     refreshDownloadWorkbench()
@@ -1031,6 +1116,8 @@ onActivated(() => {
 
 onBeforeUnmount(() => {
   stopIndexJobPolling()
+  stopRefreshJobPolling()
+  stopRefreshJobAutoHide()
   stopDownloadWorkbenchPolling()
 })
 
@@ -1061,6 +1148,13 @@ watch(downloadWorkbenchBackgroundActive, () => {
 watch(trackedDownloadTaskIds, () => {
   persistDownloadWorkbenchState()
 }, { deep: true })
+
+watch(
+  () => [refreshJob.job_id, refreshJob.status, refreshJob.progress, refreshJob.current_step, refreshJob.elapsed_seconds].join(':'),
+  () => {
+    persistRefreshJobState()
+  }
+)
 
 watch(() => downloadSettings.targetSubdir, (value) => {
   if (value) rememberTargetSubdir(value)
@@ -1421,6 +1515,93 @@ function clearDownloadWorkbenchState() {
   } catch (_) {}
 }
 
+function persistRefreshJobState() {
+  try {
+    if (!refreshJob.job_id) {
+      localStorage.removeItem(CIRCLE_COMPLETION_REFRESH_JOB_KEY)
+      return
+    }
+    localStorage.setItem(CIRCLE_COMPLETION_REFRESH_JOB_KEY, JSON.stringify({
+      job_id: refreshJob.job_id,
+      status: refreshJob.status,
+      circle_id: refreshJob.circle_id,
+      circle_name: refreshJob.circle_name,
+      selected_count: refreshJob.selected_count,
+      auto_hide_at: refreshJob.auto_hide_at,
+      changed_codes: Array.isArray(refreshJob.changed_codes) ? refreshJob.changed_codes : [],
+    }))
+  } catch (_) {}
+}
+
+function hydrateRefreshJobState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CIRCLE_COMPLETION_REFRESH_JOB_KEY) || '{}')
+    refreshJob.visible = Boolean(raw.job_id)
+    refreshJob.job_id = String(raw.job_id || '').trim()
+    refreshJob.status = String(raw.status || '').trim()
+    refreshJob.circle_id = String(raw.circle_id || '').trim()
+    refreshJob.circle_name = String(raw.circle_name || '').trim()
+    refreshJob.selected_count = Number(raw.selected_count || 0)
+    refreshJob.auto_hide_at = String(raw.auto_hide_at || '').trim()
+    refreshJob.changed_codes = Array.isArray(raw.changed_codes) ? raw.changed_codes.filter(Boolean) : []
+  } catch (_) {
+    clearRefreshJobState()
+  }
+}
+
+function clearRefreshJobState() {
+  refreshJob.visible = false
+  refreshJob.job_id = ''
+  refreshJob.status = ''
+  refreshJob.progress = 0
+  refreshJob.current_step = ''
+  refreshJob.circle_id = ''
+  refreshJob.circle_name = ''
+  refreshJob.selected_count = 0
+  refreshJob.elapsed_seconds = 0
+  refreshJob.auto_hide_at = ''
+  refreshJob.changed_codes = []
+  refreshJob.error_message = ''
+  refreshJob.meta = {}
+  refreshJob.result = {}
+  refreshJob.progress_log = []
+  stopRefreshJobPolling()
+  stopRefreshJobAutoHide()
+  try {
+    localStorage.removeItem(CIRCLE_COMPLETION_REFRESH_JOB_KEY)
+  } catch (_) {}
+}
+
+function stopRefreshJobAutoHide() {
+  if (refreshJobAutoHideTimer) {
+    window.clearTimeout(refreshJobAutoHideTimer)
+    refreshJobAutoHideTimer = null
+  }
+}
+
+function scheduleRefreshJobAutoHide(delayMs = 10000) {
+  stopRefreshJobAutoHide()
+  const targetAt = new Date(Date.now() + Math.max(0, Number(delayMs || 0))).toISOString()
+  refreshJob.auto_hide_at = targetAt
+  persistRefreshJobState()
+  refreshJobAutoHideTimer = window.setTimeout(() => {
+    clearRefreshJobState()
+  }, Math.max(0, Number(delayMs || 0)))
+}
+
+function resumeRefreshJobAutoHide() {
+  if (!refreshJob.auto_hide_at || refreshJob.status !== 'completed') return
+  const remainMs = new Date(refreshJob.auto_hide_at).getTime() - Date.now()
+  if (!Number.isFinite(remainMs) || remainMs <= 0) {
+    clearRefreshJobState()
+    return
+  }
+  stopRefreshJobAutoHide()
+  refreshJobAutoHideTimer = window.setTimeout(() => {
+    clearRefreshJobState()
+  }, remainMs)
+}
+
 function stopDownloadWorkbenchPolling() {
   if (downloadWorkbenchTimer) {
     window.clearTimeout(downloadWorkbenchTimer)
@@ -1618,6 +1799,13 @@ function closeDownloadWorkbench() {
   clearDownloadWorkbenchState()
 }
 
+function stopRefreshJobPolling() {
+  if (refreshJobTimer) {
+    window.clearTimeout(refreshJobTimer)
+    refreshJobTimer = null
+  }
+}
+
 function stopIndexJobPolling() {
   if (indexJobTimer) {
     window.clearTimeout(indexJobTimer)
@@ -1635,6 +1823,29 @@ function applyIndexJob(payload = {}) {
   indexJob.elapsed_seconds = Number(payload.elapsed_seconds || 0)
   indexJob.error_message = payload.error_message || ''
   indexJob.meta = payload.meta || {}
+}
+
+function applyRefreshJob(payload = {}) {
+  refreshJob.visible = true
+  refreshJob.job_id = payload.job_id || refreshJob.job_id || ''
+  refreshJob.status = payload.status || ''
+  refreshJob.progress = Number(payload.progress || 0)
+  refreshJob.current_step = payload.current_step || ''
+  refreshJob.circle_id = payload.circle_id || ''
+  refreshJob.circle_name = payload.circle_name || ''
+  refreshJob.selected_count = Number(payload.selected_count || 0)
+  refreshJob.elapsed_seconds = Number(payload.elapsed_seconds || 0)
+  refreshJob.auto_hide_at = payload.auto_hide_at || refreshJob.auto_hide_at || ''
+  refreshJob.changed_codes = Array.isArray(payload.changed_codes) ? payload.changed_codes.filter(Boolean) : (Array.isArray(refreshJob.changed_codes) ? refreshJob.changed_codes : [])
+  refreshJob.error_message = payload.error_message || ''
+  refreshJob.meta = payload.meta || {}
+  refreshJob.result = payload.result || {}
+  refreshJob.progress_log = Array.isArray(payload.progress_log) ? payload.progress_log : []
+  if (refreshJob.status !== 'completed') {
+    stopRefreshJobAutoHide()
+    refreshJob.auto_hide_at = ''
+  }
+  persistRefreshJobState()
 }
 
 async function pollIndexJob(jobId) {
@@ -1667,6 +1878,59 @@ async function pollIndexJob(jobId) {
   }
 }
 
+async function pollRefreshJob(jobId, options = {}) {
+  stopRefreshJobPolling()
+  const silentFinish = Boolean(options?.silentFinish)
+  try {
+    const result = await circleCompletionApi.getRefreshSelectedJobStatus(jobId)
+    applyRefreshJob(result)
+    if (result.status === 'completed') {
+      refreshingCurrentCircle.value = false
+      await Promise.all([refreshActiveCircle(), loadRecentCircles()])
+      const changedCodes = (Array.isArray(result.result?.items) ? result.result.items : [])
+        .filter(item => item?.changed)
+        .map(item => item.canonical_rjcode)
+      prioritizeChangedWorks(changedCodes)
+      flashChangedWorks(changedCodes)
+      refreshJob.current_step = `批量刷新完成，${changedCodes.length} 个状态变更，10 秒后自动隐藏`
+      refreshJob.status = 'completed'
+      refreshJob.progress = 100
+      refreshJob.error_message = ''
+      refreshJob.meta = {
+        ...(refreshJob.meta || {}),
+        changed_count: changedCodes.length,
+      }
+      refreshJob.changed_codes = changedCodes
+      scheduleRefreshJobAutoHide(10000)
+      if (!silentFinish) {
+        ElMessage.success(`已刷新 ${result.result?.refreshed_count || result.meta?.processed_count || refreshJob.selected_count || 0} 个作品`)
+      }
+      return
+    }
+    if (result.status === 'failed') {
+      refreshingCurrentCircle.value = false
+      if (result.error_message === '用户取消' || result.current_step === '已取消') {
+        ElMessage.info('批量刷新已取消')
+      } else if (!silentFinish) {
+        ElMessage.error(result.error_message || '批量刷新失败')
+      }
+      clearRefreshJobState()
+      return
+    }
+    refreshJobTimer = window.setTimeout(() => {
+      pollRefreshJob(jobId, { silentFinish: true })
+    }, 1000)
+  } catch (error) {
+    refreshingCurrentCircle.value = false
+    if (!silentFinish) {
+      ElMessage.error(error.response?.data?.detail || '查询批量刷新进度失败')
+    }
+    refreshJobTimer = window.setTimeout(() => {
+      pollRefreshJob(jobId, { silentFinish: true })
+    }, 2000)
+  }
+}
+
 async function cancelIndexJob() {
   if (!indexJob.job_id || cancellingIndexJob.value) return
   cancellingIndexJob.value = true
@@ -1682,6 +1946,25 @@ async function cancelIndexJob() {
     ElMessage.error(error.response?.data?.detail || '取消社团索引失败')
   } finally {
     cancellingIndexJob.value = false
+  }
+}
+
+async function cancelRefreshJob() {
+  if (!refreshJob.job_id || cancellingRefreshJob.value) return
+  cancellingRefreshJob.value = true
+  try {
+    await api.task.cancel(refreshJob.job_id)
+    stopRefreshJobPolling()
+    refreshJob.status = 'failed'
+    refreshJob.current_step = '已取消'
+    refreshJob.error_message = '用户取消'
+    refreshingCurrentCircle.value = false
+    persistRefreshJobState()
+    ElMessage.success('已发送取消请求')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '取消批量刷新失败')
+  } finally {
+    cancellingRefreshJob.value = false
   }
 }
 
@@ -1740,22 +2023,25 @@ async function refreshSelectedCircleIndex() {
     ElMessage.warning('先选中要刷新的作品')
     return
   }
+  if (isRefreshJobActive.value) {
+    ElMessage.warning('已有批量刷新任务在跑')
+    return
+  }
   refreshingCurrentCircle.value = true
   try {
-    const previousMap = buildWorkSnapshotMap(detail.works || [])
-    const result = await circleCompletionApi.refreshSelectedWorks({
+    const result = await circleCompletionApi.startRefreshSelectedWorks({
       circle_id: circleId,
+      circle_name: detail.circle_name || '',
       canonical_rjcodes: codes
     })
-    await Promise.all([refreshActiveCircle(), loadRecentCircles()])
-    const nextMap = buildWorkSnapshotMap(detail.works || [])
-    const changedCodes = codes.filter(code => hasWorkStatusChanged(previousMap.get(code), nextMap.get(code)))
-    flashChangedWorks(changedCodes)
-    ElMessage.success(`已刷新 ${result.refreshed_count || codes.length} 个作品`)
+    applyRefreshJob(result)
+    await pollRefreshJob(result.job_id)
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '批量刷新选中作品失败')
   } finally {
-    refreshingCurrentCircle.value = false
+    if (!isRefreshJobActive.value) {
+      refreshingCurrentCircle.value = false
+    }
   }
 }
 
@@ -2973,6 +3259,9 @@ async function startBatchDownload() {
   align-items: center;
   gap: 10px;
 }
+.refresh-progress-card {
+  margin: 0 20px 18px;
+}
 .index-cancel-button {
   border-radius: 999px;
 }
@@ -3030,6 +3319,45 @@ async function startBatchDownload() {
   font-size: 13px;
   color: #bb3f33;
   line-height: 1.6;
+}
+.refresh-progress-log-list {
+  display: grid;
+  gap: 8px;
+}
+.refresh-progress-log-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid #dfe8f4;
+  color: #506784;
+  font-size: 12px;
+}
+.refresh-progress-log-item.success {
+  background: rgba(236, 250, 241, 0.9);
+  border-color: #cdeedb;
+  color: #1f7a52;
+}
+.refresh-progress-log-item.warning {
+  background: rgba(255, 248, 233, 0.9);
+  border-color: #f3dfb0;
+  color: #8c641a;
+}
+.refresh-progress-log-item.error {
+  background: rgba(255, 241, 240, 0.9);
+  border-color: #ffd4d1;
+  color: #b74237;
+}
+.refresh-progress-log-time {
+  flex: 0 0 auto;
+  color: #8092a9;
+  font-variant-numeric: tabular-nums;
+}
+.refresh-progress-log-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .circle-shell {
   display: grid;

@@ -27,6 +27,7 @@ class TranslationInfo:
     is_child: bool = False
     parent_workno: Optional[str] = None
     original_workno: Optional[str] = None
+    child_worknos: List[str] = field(default_factory=list)
     lang: str = "JPN"
 
 
@@ -129,6 +130,32 @@ class DLsiteApiService:
                     'translation_workno': translation_workno,
                 }
         return {}
+
+    def _extract_translation_worknos_from_html(self, html: str, base_workno: str = '') -> List[str]:
+        normalized_base = self._normalize_workno(base_workno)
+        if not html:
+            return []
+
+        seen = set()
+        result: List[str] = []
+        pattern = re.compile(
+            r'product_id/([RVB]J(?:\d{8}|\d{6}))\.html[^"\'>\s]*translation=([RVB]J(?:\d{8}|\d{6}))',
+            re.IGNORECASE,
+        )
+        for match in pattern.finditer(str(html or '')):
+            product_workno = self._normalize_workno(match.group(1))
+            translation_workno = self._normalize_workno(match.group(2))
+            if product_workno and product_workno not in seen:
+                seen.add(product_workno)
+                result.append(product_workno)
+            if not translation_workno:
+                continue
+            if translation_workno not in seen:
+                seen.add(translation_workno)
+                result.append(translation_workno)
+        if normalized_base and normalized_base not in seen:
+            result.append(normalized_base)
+        return result
 
     def _decode_html_value(self, value: Optional[str]) -> str:
         return html.unescape(str(value or '').strip())
@@ -309,6 +336,31 @@ class DLsiteApiService:
         except Exception as exc:
             logger.warning("[DLsite] 页面元数据抓取失败: requested=%s error=%s", workno, exc)
             return None
+
+    async def _fetch_product_page_html(self, rjcode: str, locale: Optional[str] = None) -> str:
+        workno = self._normalize_workno(rjcode)
+        if not workno:
+            return ''
+
+        page_url = self._build_product_page_url(workno, locale=locale)
+        cache_key = f"page_html:{page_url}"
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                return str(cached_data.get('data') or '')
+
+        try:
+            client = await self._get_client()
+            response = await client.get(page_url, headers=self._get_browser_headers())
+            text = str(response.text or '')
+            self.cache[cache_key] = {
+                'data': text,
+                'timestamp': datetime.now(),
+            }
+            return text
+        except Exception as exc:
+            logger.warning("[DLsite] 页面 HTML 抓取失败: requested=%s error=%s", workno, exc)
+            return ''
 
     async def _fetch_product_payload(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
         data = await self._fetch_api(self._build_product_api_url(rjcode, locale=locale))
@@ -542,6 +594,11 @@ class DLsiteApiService:
                 is_child=translation_info.get('is_child', False),
                 parent_workno=translation_info.get('parent_workno'),
                 original_workno=translation_info.get('original_workno'),
+                child_worknos=[
+                    self._normalize_workno(workno)
+                    for workno in list(translation_info.get('child_worknos') or [])
+                    if self._normalize_workno(workno)
+                ],
                 lang=translation_info.get('lang', 'JPN')
             )
         
@@ -559,70 +616,76 @@ class DLsiteApiService:
         返回:
             Dict[str, LinkedWork]: RJ 号到作品信息的映射
         """
-        trans = await self.get_translation_info(rjcode)
-        result = {}
-        
-        try:
-            # 如果是翻译版本，先获取原版作品的关联信息
-            original_rjcode = rjcode
-            if not trans.is_original and trans.original_workno:
-                original_rjcode = trans.original_workno
-                logger.info(f"[DLsite] {rjcode} 是翻译版本，从原版 {original_rjcode} 获取完整关联链")
-            
-            # 获取原版作品信息
-            url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={original_rjcode}"
-            data = await self._fetch_api(url)
-            
-            if not (data and isinstance(data, list) and len(data) > 0):
-                logger.warning(f"[DLsite] API 返回空数据：{rjcode}")
-                return {rjcode: LinkedWork(workno=rjcode, work_type='original', lang='JPN')}
-            
-            product = data[0]
-            
-            # 添加原版作品
-            result[original_rjcode] = LinkedWork(workno=original_rjcode, work_type='original', lang='JPN')
-            
-            # 获取所有语言版本（翻译版本）- 包括不同译者的版本
-            language_editions = product.get('language_editions', [])
-            if isinstance(language_editions, dict):
-                language_editions = list(language_editions.values())
-            
-            for edition in language_editions:
-                workno = edition.get('workno')
-                lang = edition.get('lang', 'JPN')
-                title = edition.get('work_name', '')
-                if workno and workno not in result:
+        async def _get_direct_linked_works(target_rjcode: str) -> Dict[str, LinkedWork]:
+            target_rjcode = self._normalize_workno(target_rjcode)
+            trans = await self.get_translation_info(target_rjcode)
+            product_info = await self.get_product_info(target_rjcode)
+            product = dict((product_info or {}).get('product') or {})
+            api = product
+            result: Dict[str, LinkedWork] = {}
+
+            if trans.is_original:
+                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='original', lang='JPN')
+                language_editions = api.get('language_editions', [])
+                if isinstance(language_editions, dict):
+                    language_editions = list(language_editions.values())
+                for edition in language_editions or []:
+                    workno = self._normalize_workno(edition.get('workno'))
+                    if not workno:
+                        continue
                     result[workno] = LinkedWork(
                         workno=workno,
                         work_type='translation',
-                        lang=lang,
-                        title=title
+                        lang=str(edition.get('lang') or 'JPN').strip() or 'JPN',
+                        title=str(edition.get('work_name') or '').strip(),
                     )
-                    logger.debug(f"[DLsite] 添加翻译版本：{workno} ({lang})")
-            
-            # 额外检查：如果当前作品有子作品（嵌套翻译），也添加进来
-            child_worknos = product.get('child_worknos', [])
-            if isinstance(child_worknos, list):
-                for child_workno in child_worknos:
-                    if child_workno not in result:
-                        result[child_workno] = LinkedWork(
-                            workno=child_workno,
-                            work_type='child_translation',
-                            lang=trans.lang
-                        )
-                        logger.debug(f"[DLsite] 添加子翻译版本：{child_workno}")
-            
-            # 如果当前查询的是翻译版本，确保它也在结果中
-            if rjcode not in result:
-                result[rjcode] = LinkedWork(
-                    workno=rjcode,
-                    work_type='translation' if not trans.is_original else 'original',
-                    lang=trans.lang
-                )
-            
-            logger.info(f"[DLsite] {rjcode} 关联作品 ({len(result)}个): {list(result.keys())}")
+            elif trans.is_parent:
+                original_workno = self._normalize_workno(trans.original_workno or '')
+                if original_workno:
+                    result[original_workno] = LinkedWork(workno=original_workno, work_type='original', lang='JPN')
+                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='translation', lang=trans.lang or 'JPN')
+                for child_workno in list(trans.child_worknos or []):
+                    normalized_child = self._normalize_workno(child_workno)
+                    if not normalized_child:
+                        continue
+                    result[normalized_child] = LinkedWork(workno=normalized_child, work_type='child_translation', lang=trans.lang or 'JPN')
+            elif trans.is_child:
+                original_workno = self._normalize_workno(trans.original_workno or '')
+                parent_workno = self._normalize_workno(trans.parent_workno or '')
+                if original_workno:
+                    result[original_workno] = LinkedWork(workno=original_workno, work_type='original', lang='JPN')
+                if parent_workno:
+                    result[parent_workno] = LinkedWork(workno=parent_workno, work_type='translation', lang=trans.lang or 'JPN')
+                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='child_translation', lang=trans.lang or 'JPN')
+            else:
+                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='original', lang='JPN')
+
             return result
-            
+
+        try:
+            normalized_rjcode = self._normalize_workno(rjcode)
+            trans = await self.get_translation_info(normalized_rjcode)
+            if not trans.is_original and trans.original_workno:
+                original_rjcode = self._normalize_workno(trans.original_workno)
+                logger.info(f"[DLsite] {normalized_rjcode} 是翻译版本，从原版 {original_rjcode} 获取完整关联链")
+                result = await self.get_linked_works(original_rjcode)
+                direct_links = await _get_direct_linked_works(normalized_rjcode)
+                result.update(direct_links)
+                logger.info(f"[DLsite] {normalized_rjcode} 关联作品 ({len(result)}个): {list(result.keys())}")
+                return result
+
+            result = await _get_direct_linked_works(normalized_rjcode)
+            probe_worknos = [
+                workno
+                for workno, work in list(result.items())
+                if workno != normalized_rjcode and str(getattr(work, 'lang', '') or '').strip().upper() != 'JPN'
+            ]
+            for probe_workno in probe_worknos:
+                direct_links = await _get_direct_linked_works(probe_workno)
+                result.update(direct_links)
+
+            logger.info(f"[DLsite] {normalized_rjcode} 关联作品 ({len(result)}个): {list(result.keys())}")
+            return result
         except Exception as e:
             logger.error(f"获取关联作品失败 {rjcode}: {e}")
             import traceback

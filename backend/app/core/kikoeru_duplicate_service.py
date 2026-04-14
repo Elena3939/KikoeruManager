@@ -6,6 +6,7 @@ import logging
 import asyncio
 import re
 import time
+import difflib
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, field
 import aiohttp
@@ -271,6 +272,196 @@ class KikoeruDuplicateService:
 
     def _normalize_search_text(self, value: str) -> str:
         return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+    def _normalize_title_for_match(self, value: str) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        text = re.sub(r"[\[\(（【].*?[\]\)）】]", " ", text)
+        text = re.sub(r"(cv|声優|翻訳|汉化|漢化|中国語版|繁體中文版|繁体中文版|簡体中文版|简体中文版)\s*[:：]?\s*[\w\-\sぁ-んァ-ヶ一-龯]*", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"[^0-9a-zぁ-んァ-ヶ一-龯]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    def _extract_title_match_tokens(self, value: str) -> List[str]:
+        normalized = self._normalize_title_for_match(value)
+        if not normalized:
+            return []
+        return [token for token in normalized.split(" ") if len(token) >= 2]
+
+    def _work_to_rjcode(self, work: Dict) -> str:
+        if not isinstance(work, dict):
+            return ""
+        for candidate in (
+            work.get('sourceWorkno'),
+            work.get('source_workno'),
+            work.get('workno'),
+            work.get('rjcode'),
+        ):
+            normalized = self._normalize_rjcode(str(candidate or "").strip()) if str(candidate or "").strip() else ""
+            if re.fullmatch(r"(RJ|BJ|VJ)\d{6,8}", normalized):
+                return normalized
+        try:
+            work_id = int(work.get('id') or 0)
+        except Exception:
+            work_id = 0
+        return f"RJ{work_id:06d}" if 0 < work_id < 1_000_000 else (f"RJ{work_id:08d}" if work_id > 0 else "")
+
+    def _detect_work_language(self, work: Dict) -> str:
+        if not isinstance(work, dict):
+            return ""
+        tags = work.get('tags', [])
+        tag_names = []
+        if isinstance(tags, list):
+            for tag in tags:
+                if isinstance(tag, dict):
+                    tag_names.append(str(tag.get('name') or '').strip())
+                else:
+                    tag_names.append(str(tag or '').strip())
+        title = str(work.get('title') or '').strip()
+        joined = " ".join([title, *tag_names]).upper()
+        if any(token in joined for token in ['CHI_HANS', 'ZH_CN', 'ZH-HANS', '简体', '簡体', '简中']):
+            return 'CHI_HANS'
+        if any(token in joined for token in ['CHI_HANT', 'ZH_TW', 'ZH-HANT', '繁体', '繁體', '繁中']):
+            return 'CHI_HANT'
+        if 'ENG' in joined or 'ENGLISH' in joined:
+            return 'ENG'
+        return ''
+
+    async def _search_works_by_keyword(self, keyword: str, page: int = 1) -> List[Dict]:
+        normalized_keyword = str(keyword or "").strip()
+        if not normalized_keyword:
+            return []
+        session = await self._get_session()
+        headers = self._get_headers()
+        url = self._build_keyword_search_url(normalized_keyword, page=page)
+        logger.info("[Kikoeru相关翻译补查] 搜索 keyword=%s page=%s", normalized_keyword, page)
+        async with session.get(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=self.config.timeout)
+        ) as response:
+            if response.status != 200:
+                logger.warning("[Kikoeru相关翻译补查] 搜索失败 keyword=%s status=%s", normalized_keyword, response.status)
+                return []
+            data = await response.json()
+        works = data.get('works', []) if isinstance(data, dict) else []
+        return works if isinstance(works, list) else []
+
+    async def _find_related_translation_candidates(
+        self,
+        requested_rjcode: str,
+        linked_works: Dict[str, any],
+    ) -> Dict[str, KikoeruCheckResult]:
+        dlsite_service = get_dlsite_service()
+        requested_work = linked_works.get(requested_rjcode)
+        requested_lang = str(getattr(requested_work, 'lang', '') or '').upper()
+        requested_type = str(getattr(requested_work, 'work_type', '') or '').strip().lower()
+        if requested_lang not in {'CHI_HANS', 'CHI_HANT', 'ENG'}:
+            return {}
+        if requested_type not in {'translation', 'child_translation'}:
+            return {}
+
+        try:
+            product_info = await dlsite_service.get_product_info(requested_rjcode)
+        except Exception as exc:
+            logger.warning("[Kikoeru相关翻译补查] 获取作品信息失败 %s: %s", requested_rjcode, exc)
+            return {}
+        if not product_info or not product_info.get('product'):
+            return {}
+
+        product = dict(product_info.get('product') or {})
+        translation_info = dict(product.get('translation_info') or {})
+        original_workno = self._normalize_rjcode(
+            translation_info.get('original_workno')
+            or translation_info.get('parent_workno')
+            or ''
+        )
+        original_title = ""
+        if original_workno and original_workno != requested_rjcode:
+            try:
+                original_product_info = await dlsite_service.get_product_info(original_workno)
+                original_title = str(((original_product_info or {}).get('product') or {}).get('work_name') or '').strip()
+            except Exception as exc:
+                logger.warning("[Kikoeru相关翻译补查] 获取原作信息失败 %s: %s", original_workno, exc)
+
+        requested_title = str(product.get('work_name') or '').strip()
+        keyword_candidates: List[str] = []
+        for candidate in [requested_title, original_title]:
+            normalized = self._normalize_title_for_match(candidate)
+            if normalized and normalized not in keyword_candidates:
+                keyword_candidates.append(normalized)
+        if not keyword_candidates:
+            return {}
+
+        target_texts = [self._normalize_title_for_match(requested_title)]
+        if original_title:
+            target_texts.append(self._normalize_title_for_match(original_title))
+        target_tokens = set()
+        for text in [requested_title, original_title]:
+            target_tokens.update(self._extract_title_match_tokens(text))
+        if not target_tokens:
+            return {}
+
+        matched_results: Dict[str, KikoeruCheckResult] = {}
+        seen_candidate_rjcodes: Set[str] = set()
+        session = await self._get_session()
+        headers = self._get_headers()
+
+        for keyword in keyword_candidates[:2]:
+            try:
+                works = await self._search_works_by_keyword(keyword, page=1)
+            except Exception as exc:
+                logger.warning("[Kikoeru相关翻译补查] 搜索异常 keyword=%s error=%s", keyword, exc)
+                continue
+
+            for work in works[:20]:
+                candidate_rjcode = self._work_to_rjcode(work)
+                if not candidate_rjcode or candidate_rjcode in seen_candidate_rjcodes:
+                    continue
+                seen_candidate_rjcodes.add(candidate_rjcode)
+                if candidate_rjcode == requested_rjcode or candidate_rjcode in linked_works:
+                    continue
+
+                candidate_lang = self._detect_work_language(work)
+                if candidate_lang and candidate_lang != requested_lang:
+                    continue
+
+                candidate_title = str(work.get('title') or '').strip()
+                normalized_candidate_title = self._normalize_title_for_match(candidate_title)
+                if not normalized_candidate_title:
+                    continue
+
+                similarity = max(
+                    [difflib.SequenceMatcher(None, normalized_candidate_title, text).ratio() for text in target_texts if text] or [0.0]
+                )
+                overlap = len(set(self._extract_title_match_tokens(candidate_title)) & target_tokens)
+                if similarity < 0.72 and overlap < max(2, min(4, len(target_tokens))):
+                    continue
+
+                result = KikoeruCheckResult(
+                    is_found=True,
+                    rjcode=requested_rjcode,
+                    work_id=int(work.get('id') or 0),
+                    title=candidate_title,
+                    circle_name=str((work.get('circle') or {}).get('name') or ''),
+                    tags=[str(tag.get('name') or '') for tag in (work.get('tags') or []) if isinstance(tag, dict)],
+                    total_count=1,
+                    source="kikoeru_related_translation",
+                    match_type="related_translation",
+                    matched_rjcode=candidate_rjcode,
+                )
+                result = await self._hydrate_track_subtitle_state(result, session, headers)
+                matched_results[candidate_rjcode] = result
+                logger.info(
+                    "[Kikoeru相关翻译补查] 命中 requested=%s candidate=%s similarity=%.3f overlap=%s title=%s",
+                    requested_rjcode,
+                    candidate_rjcode,
+                    similarity,
+                    overlap,
+                    candidate_title,
+                )
+        return matched_results
 
     def _is_subtitle_track_file(self, item: Dict) -> bool:
         if not isinstance(item, dict):
@@ -782,6 +973,7 @@ class KikoeruDuplicateService:
         Returns:
             Dict[str, KikoeruCheckResult]: 所有关联作品及其查重结果
         """
+        rjcode = self._normalize_rjcode(rjcode)
         results = {}
         
         # 1. 首先查询原始作品
@@ -816,6 +1008,17 @@ class KikoeruDuplicateService:
                     logger.info(f"[Kikoeru关联查询] 没有关联作品")
             else:
                 logger.info(f"[Kikoeru关联查询] {rjcode} 没有关联作品")
+
+            found_works = [res for res in results.values() if getattr(res, 'is_found', False)]
+            if not found_works:
+                related_translation_results = await self._find_related_translation_candidates(rjcode, linked_works or {})
+                if related_translation_results:
+                    logger.info(
+                        "[Kikoeru关联查询] 关联链未命中，补查到 %s 个同语言相关翻译作品: %s",
+                        len(related_translation_results),
+                        list(related_translation_results.keys()),
+                    )
+                    results.update(related_translation_results)
                 
         except Exception as e:
             logger.error(f"[Kikoeru关联查询] 获取关联作品失败 {rjcode}: {e}")

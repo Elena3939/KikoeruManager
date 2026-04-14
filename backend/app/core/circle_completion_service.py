@@ -326,16 +326,23 @@ class CircleCompletionService:
         has_translation_variant = bool(ordered_variant_badges)
         if not has_translation_variant and kikoeru_subtitle_rjcodes:
             kikoeru_tags.append("字幕")
+        matched_server_rjcodes = list(kikoeru_found_rjcodes)
+        matched_server_primary = kikoeru_primary or (matched_server_rjcodes[0] if matched_server_rjcodes else "")
+        subtitle_present = bool(kikoeru_subtitle_rjcodes)
         return {
             "work_rjcode": original_rjcode,
             "preferred_rjcode": preferred_rjcode,
             "kikoeru": {
-                "primary_rjcode": kikoeru_primary,
-                "all_rjcodes": kikoeru_found_rjcodes,
-                "primary_badge": resolve_variant_badge(kikoeru_primary),
+                "primary_rjcode": matched_server_primary,
+                "matched_rjcode": matched_server_primary,
+                "matched_rjcodes": matched_server_rjcodes,
+                "all_rjcodes": matched_server_rjcodes,
+                "subtitle_rjcodes": kikoeru_subtitle_rjcodes,
+                "subtitle_present": subtitle_present,
+                "primary_badge": resolve_variant_badge(matched_server_primary),
                 "variant_badges": ordered_variant_badges,
                 "tags": kikoeru_tags,
-                "status": "owned" if kikoeru_found_rjcodes else "missing",
+                "status": "owned" if matched_server_rjcodes else "missing",
             },
             "dlsite": {
                 "all_rjcodes": linked_rjcodes,
@@ -1307,10 +1314,14 @@ class CircleCompletionService:
             ]
             if not item["has_kikoeru"] or not item["kikoeru_found_rjcodes"] or not item["kikoeru_subtitle_rjcodes"]:
                 kikoeru_state = await self._probe_kikoeru_state_for_candidates(probe_candidates)
-                item["has_kikoeru"] = bool(kikoeru_state.get("has_kikoeru"))
-                item["kikoeru_found_rjcodes"] = list(kikoeru_state.get("found_rjcodes") or [])
-                item["kikoeru_subtitle_rjcodes"] = list(kikoeru_state.get("subtitle_rjcodes") or [])
-                if item["has_kikoeru"]:
+                found_rjcodes = [self.normalize_rjcode(code) for code in list(kikoeru_state.get("found_rjcodes") or [])]
+                found_rjcodes = [code for code in found_rjcodes if code]
+                subtitle_rjcodes = [self.normalize_rjcode(code) for code in list(kikoeru_state.get("subtitle_rjcodes") or [])]
+                subtitle_rjcodes = [code for code in subtitle_rjcodes if code]
+                item["has_kikoeru"] = bool(found_rjcodes)
+                item["kikoeru_found_rjcodes"] = found_rjcodes
+                item["kikoeru_subtitle_rjcodes"] = subtitle_rjcodes
+                if item["has_kikoeru"] or found_rjcodes:
                     item["source_flags"].add("kikoeru")
             if item["has_kikoeru"]:
                 kikoeru_owned += 1
@@ -1519,23 +1530,12 @@ class CircleCompletionService:
             for row in works:
                 owned_row = owned_rows.get(row.canonical_rjcode)
                 local_owned = owned_row is not None
-                server_owned = bool(row.has_kikoeru)
-                has_dlsite = True
-                is_unavailable = not server_owned and not bool(row.has_asmr_one)
-                if only_missing and server_owned:
-                    continue
-                if only_downloadable and not row.has_asmr_one:
-                    continue
-                if not include_dl_only and is_unavailable:
-                    continue
                 item = row.to_dict()
                 item["circle_name"] = catalog.circle_name
-                item["owned"] = server_owned
-                item["server_owned"] = server_owned
                 item["local_owned"] = local_owned
                 item["owned_rjcodes"] = list((owned_row.owned_rjcodes or []) if owned_row else [])
                 item["primary_folder_path"] = owned_row.primary_folder_path if owned_row else ""
-                item["has_dlsite"] = has_dlsite
+                item["has_dlsite"] = True
                 local_download = local_download_session_map.get(self.normalize_rjcode(row.canonical_rjcode)) or {}
                 item["local_download_ready"] = bool(local_download)
                 item["local_download_session_id"] = str(local_download.get("session_id") or "").strip()
@@ -1559,6 +1559,26 @@ class CircleCompletionService:
                     "group_short_label": preferred_group["short_label"],
                 }
                 item["source_compare"] = self._build_source_compare(item, canonical_info, metadata_map)
+                kikoeru_compare = item["source_compare"].get("kikoeru") if isinstance(item["source_compare"], dict) else {}
+                server_match_rjcodes = list((kikoeru_compare or {}).get("matched_rjcodes") or (kikoeru_compare or {}).get("all_rjcodes") or [])
+                server_match_primary_rjcode = str(
+                    (kikoeru_compare or {}).get("matched_rjcode")
+                    or (kikoeru_compare or {}).get("primary_rjcode")
+                    or (server_match_rjcodes[0] if server_match_rjcodes else "")
+                ).strip()
+                server_owned = bool(server_match_rjcodes)
+                is_unavailable = not server_owned and not bool(row.has_asmr_one)
+                if only_missing and server_owned:
+                    continue
+                if only_downloadable and not row.has_asmr_one:
+                    continue
+                if not include_dl_only and is_unavailable:
+                    continue
+                item["owned"] = server_owned
+                item["server_owned"] = server_owned
+                item["server_match_rjcodes"] = server_match_rjcodes
+                item["server_match_primary_rjcode"] = server_match_primary_rjcode
+                item["subtitle_present"] = bool((kikoeru_compare or {}).get("subtitle_present"))
                 item["status_tags"] = [
                     *(["本地已下载"] if item["local_download_ready"] else []),
                     *(["服务器已有"] if server_owned else ["服务器缺失"]),
@@ -1662,7 +1682,14 @@ class CircleCompletionService:
             "default_target_subdir": "",
         }
 
-    async def refresh_circle_works(self, circle_id: str, canonical_rjcodes: List[str]) -> Dict[str, Any]:
+    async def refresh_circle_works(
+        self,
+        circle_id: str,
+        canonical_rjcodes: List[str],
+        *,
+        progress_callback: Optional[Callable[..., None]] = None,
+        cancel_callback: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, Any]:
         from .activity_log_service import log_circle_completion_event
 
         normalized_codes = []
@@ -1692,9 +1719,142 @@ class CircleCompletionService:
             refreshed_count = 0
             asmr_available_count = 0
             kikoeru_owned_count = 0
-            for row in rows:
+            total = len(rows)
+
+            def _normalize_code_list(values: Any) -> List[str]:
+                normalized_codes: List[str] = []
+                for value in list(values or []):
+                    normalized = self.normalize_rjcode(value)
+                    if normalized and normalized not in normalized_codes:
+                        normalized_codes.append(normalized)
+                return normalized_codes
+
+            def _pick_server_primary(target_rjcodes: List[str], canonical_info_map: Dict[str, Any], fallback_rjcode: str) -> str:
+                normalized_targets = _normalize_code_list(target_rjcodes)
+                if not normalized_targets:
+                    return ""
+                for variant in self._sort_linked_variants(canonical_info_map, fallback_rjcode):
+                    candidate = self.normalize_rjcode(variant.get("rjcode"))
+                    if candidate and candidate in normalized_targets:
+                        return candidate
+                return normalized_targets[0]
+
+            def _build_refresh_change_details(
+                before_snapshot: Dict[str, Any],
+                *,
+                after_display_rjcode: str,
+                after_asmr_rjcode: str,
+                after_has_asmr_one: bool,
+                after_has_kikoeru: bool,
+                after_source_mask: str,
+                after_found_rjcodes: List[str],
+                after_subtitle_rjcodes: List[str],
+                canonical_info_map: Dict[str, Any],
+            ) -> List[Dict[str, Any]]:
+                changes: List[Dict[str, Any]] = []
+
+                before_asmr_rjcode = str(before_snapshot.get("asmr_available_rjcode") or "").strip()
+                before_found_rjcodes = _normalize_code_list(before_snapshot.get("found_rjcodes") or [])
+                before_subtitle_rjcodes = _normalize_code_list(before_snapshot.get("subtitle_rjcodes") or [])
+                before_server_primary = _pick_server_primary(before_found_rjcodes, canonical_info_map, after_display_rjcode or canonical)
+                after_server_primary = _pick_server_primary(after_found_rjcodes, canonical_info_map, after_display_rjcode or canonical)
+                before_subtitle_present = bool(before_subtitle_rjcodes)
+                after_subtitle_present = bool(after_subtitle_rjcodes)
+
+                if bool(before_snapshot.get("has_kikoeru")) != bool(after_has_kikoeru):
+                    changes.append({
+                        "key": "server_state",
+                        "label": "服务器状态",
+                        "before": "服务器已有" if bool(before_snapshot.get("has_kikoeru")) else "服务器缺失",
+                        "after": "服务器已有" if bool(after_has_kikoeru) else "服务器缺失",
+                        "change_type": "gain" if after_has_kikoeru else "loss",
+                    })
+
+                if bool(before_snapshot.get("has_asmr_one")) != bool(after_has_asmr_one):
+                    changes.append({
+                        "key": "asmr_available",
+                        "label": "asmr.one",
+                        "before": "可下载" if bool(before_snapshot.get("has_asmr_one")) else "暂无来源",
+                        "after": "可下载" if bool(after_has_asmr_one) else "暂无来源",
+                        "change_type": "gain" if after_has_asmr_one else "loss",
+                    })
+
+                if before_asmr_rjcode != after_asmr_rjcode:
+                    changes.append({
+                        "key": "asmr_rjcode",
+                        "label": "asmr.one RJ",
+                        "before": before_asmr_rjcode or "—",
+                        "after": after_asmr_rjcode or "—",
+                        "change_type": "switch" if before_asmr_rjcode and after_asmr_rjcode else ("gain" if after_asmr_rjcode else "loss"),
+                    })
+
+                if str(before_snapshot.get("display_rjcode") or "").strip() != after_display_rjcode:
+                    changes.append({
+                        "key": "preferred_rjcode",
+                        "label": "优先RJ",
+                        "before": str(before_snapshot.get("display_rjcode") or "").strip() or "—",
+                        "after": after_display_rjcode or "—",
+                        "change_type": "switch",
+                    })
+
+                if before_server_primary != after_server_primary:
+                    changes.append({
+                        "key": "server_rjcode",
+                        "label": "服务器RJ",
+                        "before": before_server_primary or "—",
+                        "after": after_server_primary or "—",
+                        "change_type": "switch" if before_server_primary and after_server_primary else ("gain" if after_server_primary else "loss"),
+                    })
+
+                if before_subtitle_present != after_subtitle_present:
+                    changes.append({
+                        "key": "subtitle_state",
+                        "label": "字幕状态",
+                        "before": "有" if before_subtitle_present else "无",
+                        "after": "有" if after_subtitle_present else "无",
+                        "change_type": "gain" if after_subtitle_present else "loss",
+                    })
+
+                if str(before_snapshot.get("source_mask") or "").strip() != after_source_mask:
+                    before_sources = [flag for flag in str(before_snapshot.get("source_mask") or "").split(",") if flag]
+                    after_sources = [flag for flag in str(after_source_mask or "").split(",") if flag]
+                    changes.append({
+                        "key": "source_mask",
+                        "label": "来源集合",
+                        "before": before_sources,
+                        "after": after_sources,
+                        "change_type": "switch",
+                    })
+                return changes
+
+            def report(progress: int, step: str, **meta: Any):
+                if progress_callback:
+                    progress_callback(progress, step, **meta)
+
+            report(2, "准备刷新选中作品", total_count=total, processed_count=0, changed_count=0)
+
+            for index, row in enumerate(rows, start=1):
+                if cancel_callback and cancel_callback():
+                    raise RuntimeError("用户取消")
                 canonical = self.normalize_rjcode(row.canonical_rjcode)
                 preferred_seed = row.display_rjcode or canonical
+                previous_snapshot = {
+                    "display_rjcode": str(row.display_rjcode or "").strip(),
+                    "asmr_available_rjcode": str(row.asmr_available_rjcode or "").strip(),
+                    "has_asmr_one": bool(row.has_asmr_one),
+                    "has_kikoeru": bool(row.has_kikoeru),
+                    "source_mask": str(row.source_mask or "").strip(),
+                    "found_rjcodes": list(row.kikoeru_found_rjcodes or []),
+                    "subtitle_rjcodes": list(row.kikoeru_subtitle_rjcodes or []),
+                }
+                report(
+                    min(96, 5 + int(((index - 1) / max(total, 1)) * 88)),
+                    f"刷新作品 {index}/{total}",
+                    total_count=total,
+                    processed_count=index - 1,
+                    current_rjcode=canonical,
+                    current_display_rjcode=preferred_seed,
+                )
                 canonical_info = await self.resolve_canonical_rj(canonical, refresh=True)
                 preferred_variant = self._preferred_variant(canonical_info, preferred_seed)
                 linked_rjcodes = [variant["rjcode"] for variant in self._sort_linked_variants(canonical_info, preferred_seed or canonical)]
@@ -1729,6 +1889,8 @@ class CircleCompletionService:
                 actual_norm = self.normalize_rjcode(actual_rjcode)
 
                 kikoeru_state = await self._probe_kikoeru_state_for_candidates(probe_candidates or [canonical])
+                found_rjcodes = _normalize_code_list(kikoeru_state.get("found_rjcodes") or [])
+                subtitle_rjcodes = _normalize_code_list(kikoeru_state.get("subtitle_rjcodes") or [])
                 source_flags = {flag for flag in str(row.source_mask or "").split(",") if flag}
                 if row.has_dlsite:
                     source_flags.add("dlsite")
@@ -1736,7 +1898,7 @@ class CircleCompletionService:
                     source_flags.add("asmr_one")
                 else:
                     source_flags.discard("asmr_one")
-                if kikoeru_state.get("has_kikoeru"):
+                if found_rjcodes:
                     source_flags.add("kikoeru")
                 else:
                     source_flags.discard("kikoeru")
@@ -1746,9 +1908,9 @@ class CircleCompletionService:
                 row.maker_id = str(metadata.get("maker_id") or row.maker_id or "").strip() or row.maker_id
                 row.maker_name = str(metadata.get("maker_name") or row.maker_name or "").strip() or row.maker_name
                 row.linked_rjcodes = linked_rjcodes or row.linked_rjcodes or [row.display_rjcode or canonical]
-                row.has_kikoeru = bool(kikoeru_state.get("has_kikoeru"))
-                row.kikoeru_found_rjcodes = list(kikoeru_state.get("found_rjcodes") or [])
-                row.kikoeru_subtitle_rjcodes = list(kikoeru_state.get("subtitle_rjcodes") or [])
+                row.has_kikoeru = bool(found_rjcodes)
+                row.kikoeru_found_rjcodes = found_rjcodes
+                row.kikoeru_subtitle_rjcodes = subtitle_rjcodes
                 row.has_asmr_one = bool(actual_norm)
                 row.asmr_available_rjcode = actual_norm or None
                 row.source_mask = ",".join(sorted(source_flags))
@@ -1760,16 +1922,30 @@ class CircleCompletionService:
                     asmr_available_count += 1
                 if row.has_kikoeru:
                     kikoeru_owned_count += 1
-                variant_items = []
-                for variant in self._sort_linked_variants(canonical_info, preferred_seed or canonical):
-                    group = self._variant_group(variant.get("link_type"), variant.get("lang"))
-                    variant_items.append({
-                        "rjcode": variant.get("rjcode"),
-                        "label": group.get("short_label") or "其他",
-                        "group_key": group.get("key") or "other",
-                        "link_type": variant.get("link_type"),
-                        "lang": variant.get("lang"),
-                    })
+                normalized_found_rjcodes = _normalize_code_list(row.kikoeru_found_rjcodes or [])
+                normalized_subtitle_rjcodes = _normalize_code_list(row.kikoeru_subtitle_rjcodes or [])
+                server_match_primary_rjcode = _pick_server_primary(normalized_found_rjcodes, canonical_info, preferred_seed or canonical)
+                subtitle_present = bool(normalized_subtitle_rjcodes)
+                change_details = _build_refresh_change_details(
+                    previous_snapshot,
+                    after_display_rjcode=str(row.display_rjcode or "").strip(),
+                    after_asmr_rjcode=str(row.asmr_available_rjcode or "").strip(),
+                    after_has_asmr_one=bool(row.has_asmr_one),
+                    after_has_kikoeru=bool(row.has_kikoeru),
+                    after_source_mask=str(row.source_mask or "").strip(),
+                    after_found_rjcodes=normalized_found_rjcodes,
+                    after_subtitle_rjcodes=normalized_subtitle_rjcodes,
+                    canonical_info_map=canonical_info,
+                )
+                changed = bool(change_details)
+                source_compare = self._build_source_compare({
+                    "canonical_rjcode": row.canonical_rjcode,
+                    "display_rjcode": row.display_rjcode,
+                    "asmr_available_rjcode": row.asmr_available_rjcode,
+                    "kikoeru_found_rjcodes": normalized_found_rjcodes,
+                    "kikoeru_subtitle_rjcodes": normalized_subtitle_rjcodes,
+                    "preferred_variant": preferred_variant,
+                }, canonical_info, metadata_map=None)
                 refreshed_items.append({
                     "canonical_rjcode": row.canonical_rjcode,
                     "title": row.title or "",
@@ -1778,14 +1954,46 @@ class CircleCompletionService:
                     "has_asmr_one": bool(row.has_asmr_one),
                     "has_kikoeru": bool(row.has_kikoeru),
                     "asmr_available_rjcode": row.asmr_available_rjcode or "",
-                    "kikoeru_found_rjcodes": list(row.kikoeru_found_rjcodes or []),
-                    "kikoeru_subtitle_rjcodes": list(row.kikoeru_subtitle_rjcodes or []),
-                    "variants": variant_items,
+                    "server_match_rjcodes": normalized_found_rjcodes,
+                    "server_match_primary_rjcode": server_match_primary_rjcode,
+                    "subtitle_present": subtitle_present,
+                    "changed": changed,
+                    "change_count": len(change_details),
+                    "change_flags": {
+                        "server_state_changed": any(change.get("key") == "server_state" for change in change_details),
+                        "server_rjcode_changed": any(change.get("key") == "server_rjcode" for change in change_details),
+                        "subtitle_state_changed": any(change.get("key") == "subtitle_state" for change in change_details),
+                        "asmr_state_changed": any(change.get("key") in {"asmr_available", "asmr_rjcode"} for change in change_details),
+                        "preferred_rj_changed": any(change.get("key") == "preferred_rjcode" for change in change_details),
+                    },
+                    "change_details": change_details,
+                    "source_compare": source_compare,
                 })
+                report(
+                    min(96, 5 + int((index / max(total, 1)) * 88)),
+                    f"已刷新 {index}/{total}",
+                    total_count=total,
+                    processed_count=index,
+                    changed_count=len([item for item in refreshed_items if item.get("changed")]),
+                    current_rjcode=canonical,
+                    current_display_rjcode=row.display_rjcode,
+                    asmr_available_count=asmr_available_count,
+                    kikoeru_owned_count=kikoeru_owned_count,
+                )
 
             catalog.last_indexed_at = datetime.now()
             catalog.updated_at = datetime.now()
             db.commit()
+            changed_count = len([item for item in refreshed_items if item.get("changed")])
+            report(
+                100,
+                "批量刷新完成",
+                total_count=total,
+                processed_count=refreshed_count,
+                changed_count=changed_count,
+                asmr_available_count=asmr_available_count,
+                kikoeru_owned_count=kikoeru_owned_count,
+            )
 
             log_circle_completion_event(
                 "refresh_selected_works",
@@ -1795,6 +2003,7 @@ class CircleCompletionService:
                 detail={
                     "selected_count": len(normalized_codes),
                     "refreshed_count": refreshed_count,
+                    "changed_count": changed_count,
                     "asmr_available_count": asmr_available_count,
                     "kikoeru_owned_count": kikoeru_owned_count,
                     "canonical_rjcodes": normalized_codes[:200],
@@ -1806,6 +2015,7 @@ class CircleCompletionService:
                 "circle_name": catalog.circle_name,
                 "selected_count": len(normalized_codes),
                 "refreshed_count": refreshed_count,
+                "changed_count": changed_count,
                 "asmr_available_count": asmr_available_count,
                 "kikoeru_owned_count": kikoeru_owned_count,
                 "items": refreshed_items,

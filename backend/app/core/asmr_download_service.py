@@ -304,92 +304,40 @@ class ASMRDownloadService:
             if (datetime.now() - cached['timestamp']).total_seconds() < self._cache_ttl:
                 return cached['data']
 
-        session = await self._get_session()
-        request_kwargs = self._proxy_request_kwargs()
-        request_headers = self._browser_like_headers("https://www.dlsite.com/")
-        request_timeout = aiohttp.ClientTimeout(total=25, connect=8, sock_read=20)
-        works = []
-
+        works: List[LinkedWorkInfo] = []
         try:
-            # 获取作品信息
-            url = f"{self.DLSITE_API}?workno=RJ{rjcode_num}"
-            logger.info(
-                f"[DLsite] 获取关联作品: {url} | proxy={'on' if request_kwargs.get('proxy') else 'off'}"
-            )
+            from .dlsite_service import get_dlsite_service
 
-            async with session.get(url, headers=request_headers, timeout=request_timeout, **request_kwargs) as response:
-                if response.status != 200:
-                    logger.warning(f"[DLsite] 获取作品信息失败: HTTP {response.status}")
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", 'JPN', 'original'))
-                    return works
-
-                data = await response.json()
-                if not data or not isinstance(data, list) or len(data) == 0:
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", 'JPN', 'original'))
-                    return works
-
-                product = data[0]
-
-                # 获取翻译信息
-                trans_info = product.get('translation_info', {})
-                is_original = trans_info.get('is_original', True)
-                is_parent = trans_info.get('is_parent', False)
-                is_child = trans_info.get('is_child', False)
-                original_workno = trans_info.get('original_workno')
-                parent_workno = trans_info.get('parent_workno')
-                current_lang = trans_info.get('lang', 'JPN')
-
-                # 添加原作品
-                if is_original:
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", 'JPN', 'original'))
-                elif original_workno:
-                    works.append(LinkedWorkInfo(original_workno, 'JPN', 'original'))
-                    if parent_workno and parent_workno != original_workno:
-                        works.append(LinkedWorkInfo(parent_workno, current_lang, 'parent'))
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", current_lang, 'child'))
-                elif is_parent:
-                    if original_workno:
-                        works.append(LinkedWorkInfo(original_workno, 'JPN', 'original'))
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", current_lang, 'parent'))
-                else:
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", current_lang, 'original'))
-
-                # 获取语言版本
-                language_editions = product.get('language_editions', [])
-                if isinstance(language_editions, dict):
-                    language_editions = list(language_editions.values())
-
-                for edition in language_editions:
-                    workno = edition.get('workno')
-                    lang = edition.get('lang', 'JPN')
-                    if workno and workno not in [w.workno for w in works]:
-                        works.append(LinkedWorkInfo(workno, lang, 'translation'))
-
-                # 对于子版本，也需要从父版本或原版获取语言版本
-                if is_child and original_workno:
-                    try:
-                        parent_url = f"{self.DLSITE_API}?workno={original_workno}"
-                        async with session.get(parent_url, headers=request_headers, timeout=request_timeout, **request_kwargs) as parent_response:
-                            if parent_response.status == 200:
-                                parent_data = await parent_response.json()
-                                if parent_data and isinstance(parent_data, list) and len(parent_data) > 0:
-                                    parent_product = parent_data[0]
-                                    parent_editions = parent_product.get('language_editions', [])
-                                    if isinstance(parent_editions, dict):
-                                        parent_editions = list(parent_editions.values())
-
-                                    for edition in parent_editions:
-                                        workno = edition.get('workno')
-                                        lang = edition.get('lang', 'JPN')
-                                        if workno and workno not in [w.workno for w in works]:
-                                            works.append(LinkedWorkInfo(workno, lang, 'translation'))
-                    except Exception as e:
-                        logger.warning(f"[DLsite] 获取父版本语言版本失败: {e}")
-
+            linked_map = await get_dlsite_service().get_linked_works(f"RJ{rjcode_num}")
+            type_map = {
+                'original': 'original',
+                'translation': 'translation',
+                'parent': 'parent',
+                'child': 'child',
+                'child_translation': 'child',
+            }
+            for workno, linked_work in (linked_map or {}).items():
+                normalized_workno = str(workno or '').strip().upper()
+                if not normalized_workno:
+                    continue
+                works.append(LinkedWorkInfo(
+                    normalized_workno,
+                    str(getattr(linked_work, 'lang', 'JPN') or 'JPN').strip() or 'JPN',
+                    type_map.get(str(getattr(linked_work, 'work_type', '') or '').strip().lower(), 'translation'),
+                ))
         except Exception as e:
             logger.error(f"[DLsite] 获取关联作品失败: {e}")
             if not works:
                 works.append(LinkedWorkInfo(f"RJ{rjcode_num}", 'JPN', 'original'))
+
+        deduped: List[LinkedWorkInfo] = []
+        seen_worknos = set()
+        for work in works:
+            if work.workno in seen_worknos:
+                continue
+            seen_worknos.add(work.workno)
+            deduped.append(work)
+        works = deduped
 
         # 按语言优先级排序
         works.sort(key=lambda w: w.priority)
