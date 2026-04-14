@@ -29,6 +29,7 @@ class TaskType(str, Enum):
     ASMR_SYNC_DOWNLOAD = "asmr_sync_download"  # ASMR 同步下载任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
     CIRCLE_COMPLETION_INDEX = "circle_completion_index"
+    CIRCLE_COMPLETION_REFRESH_SELECTED = "circle_completion_refresh_selected"
     CIRCLE_COMPLETION_DOWNLOAD_BATCH = "circle_completion_download_batch"
 
 class Task:
@@ -279,7 +280,7 @@ class TaskEngine:
             return "rj_subtitle"
         if task.type == TaskType.ASMR_SYNC_DOWNLOAD:
             return "asmr_sync"
-        if task.type in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
+        if task.type in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
             return "circle_completion"
         return "system"
 
@@ -750,7 +751,7 @@ class TaskEngine:
                         logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
                         if is_duplicate:
                             logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
-                            task.status = TaskStatus.COMPLETED
+                            task.status = TaskStatus.WAITING_MANUAL
                             task.update_progress(100, "重复作品，请在问题作品页面处理")
                             task.completed_at = datetime.now()
                             return
@@ -803,7 +804,7 @@ class TaskEngine:
                             os.makedirs(conflict_base_path, exist_ok=True)
                             final_path = classifier._move_with_rename(extracted_path, conflict_base_path)
                             task.output_path = final_path
-                            task.status = TaskStatus.COMPLETED
+                            task.status = TaskStatus.WAITING_MANUAL
                             task.update_progress(100, "重复作品，请在问题作品页面处理")
                             task.completed_at = datetime.now()
                             return
@@ -983,7 +984,7 @@ class TaskEngine:
                         )
 
                         logger.info(f"[{rjcode}] 已添加到问题作品列表")
-                        task.status = TaskStatus.COMPLETED
+                        task.status = TaskStatus.WAITING_MANUAL
                         task.update_progress(100, f"发现{get_conflict_type_name(conflict_type)}，请在问题作品页面处理")
                         task.completed_at = datetime.now()
                         return
@@ -991,7 +992,7 @@ class TaskEngine:
                     is_processing = await classifier.check_duplicate_before_extract(rjcode, task, self)
                     if is_processing:
                         logger.info(f"[{rjcode}] 正在处理中，已添加到问题作品列表")
-                        task.status = TaskStatus.COMPLETED
+                        task.status = TaskStatus.WAITING_MANUAL
                         task.update_progress(100, "正在处理中，请在问题作品页面查看")
                         task.completed_at = datetime.now()
                         return
@@ -1185,6 +1186,8 @@ class TaskEngine:
                     await self._process_rj_subtitle_fetch(task)
                 elif task.type == TaskType.CIRCLE_COMPLETION_INDEX:
                     await self._process_circle_completion_index(task)
+                elif task.type == TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED:
+                    await self._process_circle_completion_refresh_selected(task)
                 elif task.type == TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH:
                     task.update_progress(100, "完成")
 
@@ -1642,6 +1645,9 @@ class TaskEngine:
             search_subfolders: 是否递归搜索子目录（默认 True）
         """
         import re
+        path = str(path or "")
+        if not path:
+            return None
             
         # 优先匹配标准格式 [RVB]J + 6/8 位数字（搜索整个路径）
         pattern = r'[RVB]J(\d{8}|\d{6})(?!\d)'
@@ -2642,6 +2648,68 @@ class TaskEngine:
         }
         task.update_progress(100, "社团索引完成")
         append_progress_log("社团索引完成", 100, 'success')
+
+    async def _process_circle_completion_refresh_selected(self, task: Task):
+        """处理社团补全选中作品刷新任务"""
+        from .circle_completion_service import get_circle_completion_service
+
+        task.task_metadata = dict(task.task_metadata or {})
+        task.task_metadata.setdefault('progress_log', [])
+
+        def append_progress_log(message: str, progress: Optional[int] = None, level: str = 'info'):
+            if not message:
+                return
+            logs = list(task.task_metadata.get('progress_log') or [])
+            last = logs[-1] if logs else None
+            if last and last.get('message') == message and last.get('progress') == progress and last.get('level') == level:
+                return
+            logs.append({
+                'time': datetime.now().isoformat(),
+                'progress': task.progress if progress is None else progress,
+                'message': message,
+                'level': level,
+            })
+            task.task_metadata['progress_log'] = logs[-40:]
+
+        circle_id = str(task.task_metadata.get('circle_id') or '').strip()
+        canonical_rjcodes = list(task.task_metadata.get('canonical_rjcodes') or [])
+        if not circle_id:
+            raise ValueError('缺少社团标识')
+        if not canonical_rjcodes:
+            raise ValueError('没有选中要刷新的作品')
+
+        task.task_metadata['circle_id'] = circle_id
+        task.task_metadata['selected_count'] = len(canonical_rjcodes)
+        append_progress_log("准备批量刷新选中作品", 1)
+
+        def progress_callback(progress: int, step: str, **meta):
+            task.update_progress(progress, step)
+            task.task_metadata = {
+                **(task.task_metadata or {}),
+                'refresh_meta': {
+                    **dict((task.task_metadata or {}).get('refresh_meta') or {}),
+                    **{key: value for key, value in (meta or {}).items() if value is not None},
+                },
+            }
+            append_progress_log(step, progress)
+
+        result = await get_circle_completion_service().refresh_circle_works(
+            circle_id,
+            canonical_rjcodes,
+            progress_callback=progress_callback,
+            cancel_callback=task.is_cancelled,
+        )
+
+        task.task_metadata = {
+            **(task.task_metadata or {}),
+            'circle_id': str(result.get('circle_id') or circle_id),
+            'circle_name': str(result.get('circle_name') or task.task_metadata.get('circle_name') or ''),
+            'refresh_result': result,
+            'refreshed_count': int(result.get('refreshed_count') or 0),
+            'changed_count': int(result.get('changed_count') or 0),
+        }
+        task.update_progress(100, "批量刷新完成")
+        append_progress_log("批量刷新完成", 100, 'success')
 
 # 全局任务引擎实例
 _task_engine: Optional[TaskEngine] = None

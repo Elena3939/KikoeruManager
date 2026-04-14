@@ -258,6 +258,27 @@ class SmartClassifier:
     def _check_existing(self, rjcode: str) -> Optional[Dict]:
         """检查作品是否已存在于库存"""
         logger.info(f"检查RJ号 {rjcode} 是否已存在于库存")
+
+        def _is_valid_library_path(path: str) -> bool:
+            normalized = os.path.abspath(str(path or "").strip())
+            if not normalized or not os.path.exists(normalized):
+                return False
+            library_root = os.path.abspath(str(self.config.storage.library_path or "").strip())
+            if library_root and not (normalized == library_root or normalized.startswith(library_root + os.sep)):
+                return False
+            invalid_markers = [
+                f"{os.sep}_conflicts{os.sep}",
+                f"{os.sep}待处理{os.sep}",
+                f"{os.sep}temp{os.sep}",
+                f"{os.sep}tmp{os.sep}",
+            ]
+            lowered = normalized.lower()
+            if lowered.endswith(f"{os.sep}_conflicts") or lowered.endswith(f"{os.sep}待处理"):
+                return False
+            for marker in invalid_markers:
+                if marker.lower() in lowered:
+                    return False
+            return True
         
         db = next(get_db())
         try:
@@ -270,15 +291,14 @@ class SmartClassifier:
             if snapshot:
                 folder_path = str(snapshot.folder_path)
                 logger.info(f"数据库中找到记录: {rjcode} -> {folder_path}")
-                if os.path.exists(folder_path):
+                if _is_valid_library_path(folder_path):
                     logger.info(f"确认路径存在: {folder_path}")
                     return {
                         'path': folder_path,
                         'size': snapshot.folder_size
                     }
                 else:
-                    # 路径不存在，清理过期的数据库记录
-                    logger.warning(f"数据库记录存在但路径已不存在，清理过期记录: {rjcode} -> {folder_path}")
+                    logger.warning(f"数据库记录无效，清理过期/临时记录: {rjcode} -> {folder_path}")
                     db.delete(snapshot)
                     db.commit()
 
@@ -287,7 +307,7 @@ class SmartClassifier:
             logger.info(f"扫描库存目录: {library_path}")
             found_count = 0
             for folder in library_path.rglob('*'):
-                if folder.is_dir() and rjcode in folder.name:
+                if folder.is_dir() and rjcode in folder.name and _is_valid_library_path(str(folder)):
                     found_count += 1
                     logger.info(f"目录扫描找到已存在的作品: {rjcode} -> {folder}")
                     return {
