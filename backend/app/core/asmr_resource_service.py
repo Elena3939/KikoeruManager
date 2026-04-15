@@ -38,6 +38,18 @@ class ASMRResourceService:
 
             asmr_service = get_asmr_download_service()
         self.asmr_service = asmr_service
+        self._global_upload_lock = asyncio.Lock()
+        self._synology_clients: Dict[str, Any] = {}
+
+    def _get_synology_client(self, library_id: str, synology_config: Any):
+        from .library_manager import SynologyFileStationClient
+
+        cache_key = str(library_id or "").strip() or str(getattr(synology_config, "base_url", "") or "").strip()
+        client = self._synology_clients.get(cache_key)
+        if client is None:
+            client = SynologyFileStationClient(synology_config)
+            self._synology_clients[cache_key] = client
+        return client
 
     def normalize_rjcode(self, value: Any) -> str:
         text = str(value or "").strip().upper()
@@ -85,6 +97,125 @@ class ASMRResourceService:
         })
         task.task_metadata["progress_log"] = logs[-80:]
 
+    def _update_download_runtime(
+        self,
+        task,
+        download_progress_state: Dict[str, Dict[str, Any]],
+        *,
+        file_key: str,
+        file_name: str,
+        relative_path: str,
+        downloaded_bytes: int,
+        total_bytes: int,
+        index: int,
+        total_files: int,
+        stage: str,
+    ) -> None:
+        now = datetime.now()
+        runtime = dict(task.task_metadata.get("download_runtime") or {})
+        started_at = str(runtime.get("started_at") or "").strip() or now.isoformat()
+        previous = dict(download_progress_state.get(file_key) or {})
+        file_started_at = str(previous.get("started_at") or "").strip() or now.isoformat()
+        previous_updated_at = str(previous.get("updated_at") or "").strip()
+        previous_downloaded = int(previous.get("downloaded") or 0)
+        previous_speed = int(previous.get("speed_bytes_per_sec") or 0)
+        try:
+            aggregate_elapsed = max(0.001, (now - datetime.fromisoformat(started_at)).total_seconds())
+        except Exception:
+            aggregate_elapsed = 0.001
+            started_at = now.isoformat()
+        try:
+            previous_updated = datetime.fromisoformat(previous_updated_at) if previous_updated_at else None
+        except Exception:
+            previous_updated = None
+        try:
+            file_elapsed = max(0.001, (now - datetime.fromisoformat(file_started_at)).total_seconds())
+        except Exception:
+            file_elapsed = 0.001
+            file_started_at = now.isoformat()
+
+        if previous_updated is not None:
+            speed_window = max(0.001, (now - previous_updated).total_seconds())
+            speed_delta = max(0, int(downloaded_bytes or 0) - previous_downloaded)
+            if speed_delta > 0 and speed_window >= 0.35:
+                instant_speed = int(speed_delta / speed_window)
+            else:
+                instant_speed = 0
+        else:
+            instant_speed = 0
+        average_speed = int(downloaded_bytes / file_elapsed) if downloaded_bytes > 0 else 0
+        if instant_speed > 0 and average_speed > 0:
+            file_speed = int((instant_speed * 0.75) + (average_speed * 0.25))
+        else:
+            file_speed = instant_speed or average_speed or previous_speed
+        if previous_speed > 0 and file_speed > 0:
+            file_speed = int((previous_speed * 0.45) + (file_speed * 0.55))
+        file_remaining = max(0, int(total_bytes or 0) - int(downloaded_bytes or 0))
+        file_eta = int(file_remaining / file_speed) if file_speed > 0 and file_remaining > 0 else 0
+
+        download_progress_state[file_key] = {
+            **previous,
+            "name": file_name,
+            "downloaded": int(downloaded_bytes or 0),
+            "total": int(total_bytes or 0),
+            "progress": int(downloaded_bytes / total_bytes * 100) if total_bytes else 0,
+            "index": index,
+            "relative_path": relative_path,
+            "stage": stage,
+            "started_at": file_started_at,
+            "updated_at": now.isoformat(),
+            "speed_bytes_per_sec": file_speed,
+            "eta_seconds": file_eta,
+        }
+        ordered_files = sorted(download_progress_state.values(), key=lambda item: item.get("index") or 0)
+        task.task_metadata["download_files"] = ordered_files
+
+        transferred_bytes = sum(max(0, int(item.get("downloaded") or 0)) for item in ordered_files)
+        aggregate_total = sum(max(0, int(item.get("total") or 0)) for item in ordered_files)
+        completed_files = sum(1 for item in ordered_files if int(item.get("progress") or 0) >= 100)
+        active_items = [
+            item for item in ordered_files
+            if 0 < int(item.get("downloaded") or 0) < max(1, int(item.get("total") or 0))
+        ]
+        aggregate_speed = sum(max(0, int(item.get("speed_bytes_per_sec") or 0)) for item in active_items)
+        if aggregate_speed <= 0 and transferred_bytes > 0:
+            aggregate_speed = int(transferred_bytes / aggregate_elapsed)
+        remaining_bytes = max(0, aggregate_total - transferred_bytes)
+        aggregate_eta = int(remaining_bytes / aggregate_speed) if aggregate_speed > 0 and remaining_bytes > 0 else 0
+
+        task.task_metadata["download_runtime"] = {
+            **runtime,
+            "started_at": started_at,
+            "updated_at": now.isoformat(),
+            "stage": stage,
+            "current_file_name": file_name,
+            "current_relative_path": relative_path,
+            "current_file_index": index,
+            "total_files": total_files,
+            "completed_files": completed_files,
+            "active_file_count": len(active_items),
+            "transferred_bytes": transferred_bytes,
+            "total_bytes": aggregate_total,
+            "progress": int(transferred_bytes / aggregate_total * 100) if aggregate_total else 0,
+            "speed_bytes_per_sec": aggregate_speed,
+            "eta_seconds": aggregate_eta,
+        }
+
+    def _finalize_download_runtime(self, task, status: str = "completed") -> None:
+        runtime = dict(task.task_metadata.get("download_runtime") or {})
+        if not runtime:
+            return
+        now = datetime.now()
+        runtime["updated_at"] = now.isoformat()
+        runtime["status"] = status
+        if status in {"completed", "failed"}:
+            runtime["ended_at"] = now.isoformat()
+        if status == "completed":
+            runtime["eta_seconds"] = 0
+            if int(runtime.get("total_bytes") or 0) > 0:
+                runtime["progress"] = 100
+        task.task_metadata["download_runtime"] = runtime
+
     def _update_upload_runtime(
         self,
         task,
@@ -105,6 +236,9 @@ class ASMRResourceService:
         started_at = str(runtime.get("started_at") or "").strip() or now.isoformat()
         previous = dict(upload_progress_state.get(file_key) or {})
         file_started_at = str(previous.get("started_at") or "").strip() or now.isoformat()
+        previous_updated_at = str(previous.get("updated_at") or "").strip()
+        previous_uploaded = int(previous.get("uploaded") or 0)
+        previous_speed = int(previous.get("speed_bytes_per_sec") or 0)
         try:
             aggregate_elapsed = max(0.001, (now - datetime.fromisoformat(started_at)).total_seconds())
         except Exception:
@@ -115,8 +249,23 @@ class ASMRResourceService:
         except Exception:
             file_elapsed = 0.001
             file_started_at = now.isoformat()
-
-        file_speed = int(uploaded_bytes / file_elapsed) if uploaded_bytes > 0 else 0
+        try:
+            previous_updated = datetime.fromisoformat(previous_updated_at) if previous_updated_at else None
+        except Exception:
+            previous_updated = None
+        if previous_updated is not None:
+            speed_window = max(0.001, (now - previous_updated).total_seconds())
+            speed_delta = max(0, int(uploaded_bytes or 0) - previous_uploaded)
+            instant_speed = int(speed_delta / speed_window) if speed_delta > 0 and speed_window >= 0.35 else 0
+        else:
+            instant_speed = 0
+        average_speed = int(uploaded_bytes / file_elapsed) if uploaded_bytes > 0 else 0
+        if instant_speed > 0 and average_speed > 0:
+            file_speed = int((instant_speed * 0.75) + (average_speed * 0.25))
+        else:
+            file_speed = instant_speed or average_speed or previous_speed
+        if previous_speed > 0 and file_speed > 0:
+            file_speed = int((previous_speed * 0.45) + (file_speed * 0.55))
         file_remaining = max(0, int(total_bytes or 0) - int(uploaded_bytes or 0))
         file_eta = int(file_remaining / file_speed) if file_speed > 0 and file_remaining > 0 else 0
 
@@ -141,7 +290,13 @@ class ASMRResourceService:
         transferred_bytes = sum(max(0, int(item.get("uploaded") or 0)) for item in ordered_files)
         aggregate_total = sum(max(0, int(item.get("total") or 0)) for item in ordered_files)
         completed_files = sum(1 for item in ordered_files if int(item.get("progress") or 0) >= 100)
-        aggregate_speed = int(transferred_bytes / aggregate_elapsed) if transferred_bytes > 0 else 0
+        active_items = [
+            item for item in ordered_files
+            if 0 < int(item.get("uploaded") or 0) < max(1, int(item.get("total") or 0))
+        ]
+        aggregate_speed = sum(max(0, int(item.get("speed_bytes_per_sec") or 0)) for item in active_items)
+        if aggregate_speed <= 0 and transferred_bytes > 0:
+            aggregate_speed = int(transferred_bytes / aggregate_elapsed)
         remaining_bytes = max(0, aggregate_total - transferred_bytes)
         aggregate_eta = int(remaining_bytes / aggregate_speed) if aggregate_speed > 0 and remaining_bytes > 0 else 0
 
@@ -155,16 +310,13 @@ class ASMRResourceService:
             "current_file_index": index,
             "total_files": total_files,
             "completed_files": completed_files,
-            "active_file_count": sum(
-                1
-                for item in ordered_files
-                if 0 < int(item.get("uploaded") or 0) < max(1, int(item.get("total") or 0))
-            ),
+            "active_file_count": len(active_items),
             "transferred_bytes": transferred_bytes,
             "total_bytes": aggregate_total,
             "progress": int(transferred_bytes / aggregate_total * 100) if aggregate_total else 0,
             "speed_bytes_per_sec": aggregate_speed,
             "eta_seconds": aggregate_eta,
+            "is_waiting_turn": False,
             "target_path": target_path or str(runtime.get("target_path") or ""),
         }
 
@@ -182,6 +334,31 @@ class ASMRResourceService:
             if int(runtime.get("total_bytes") or 0) > 0:
                 runtime["progress"] = 100
         task.task_metadata["upload_runtime"] = runtime
+
+    def _mark_upload_waiting(
+        self,
+        task,
+        *,
+        file_name: str,
+        relative_path: str,
+        index: int,
+        total_files: int,
+    ) -> None:
+        runtime = dict(task.task_metadata.get("upload_runtime") or {})
+        now = datetime.now().isoformat()
+        task.task_metadata["upload_runtime"] = {
+            **runtime,
+            "updated_at": now,
+            "stage": "waiting_upload_turn",
+            "current_file_name": file_name,
+            "current_relative_path": relative_path,
+            "current_file_index": index,
+            "total_files": total_files,
+            "active_file_count": 0,
+            "speed_bytes_per_sec": 0,
+            "eta_seconds": 0,
+            "is_waiting_turn": True,
+        }
 
     def _extract_track_number(self, value: Any) -> Optional[int]:
         text = str(value or "")
@@ -873,7 +1050,7 @@ class ASMRResourceService:
                 "session_id": session_id,
                 "selected_resources": retry_resources,
                 "selected_resource_count": len(retry_resources),
-                "download_root": str((session.get("statistics") or {}).get("download_root") or session.get("target_path") or ""),
+                "download_root": str((session.get("statistics") or {}).get("download_root") or session.get("local_download_root") or session.get("target_path") or ""),
                 "queue_priority": int(session.get("queue_priority") or 100),
                 "upload_options": {
                     "enabled": str(session.get("upload_mode") or "disabled") != "disabled",
@@ -888,7 +1065,7 @@ class ASMRResourceService:
             rjcode=session.get("rjcode"),
         )
         await engine.submit(task)
-        updated = self._update_session(session_id, task_id=task.id, status="queued", selected_resources=retry_resources)
+        updated = self._update_session(session_id, task_id=task.id, status="queued")
         log_asmr_sync_event(
             "task_retried",
             summary=f"{updated.get('rjcode') or session_id} 已重新提交失败资源",
@@ -909,7 +1086,14 @@ class ASMRResourceService:
         failure_summary = dict(session.get("failure_summary") or {})
         failed_items = list(failure_summary.get("failed_resources") or [])
         failed_paths = {str(item.get("relative_path") or "").strip() for item in failed_items if str(item.get("relative_path") or "").strip()}
+        selected_paths = {
+            str(item.get("relative_path") or item.get("file_name") or "").strip()
+            for item in selected_resources
+            if str(item.get("relative_path") or item.get("file_name") or "").strip()
+        }
         target_paths = {path for path in normalized_paths if path in failed_paths}
+        if not target_paths:
+            target_paths = {path for path in normalized_paths if path in selected_paths}
         if not target_paths:
             raise ValueError("指定文件不在失败列表中")
 
@@ -935,7 +1119,7 @@ class ASMRResourceService:
                 "session_id": session_id,
                 "selected_resources": retry_resources,
                 "selected_resource_count": len(retry_resources),
-                "download_root": str((session.get("statistics") or {}).get("download_root") or session.get("target_path") or ""),
+                "download_root": str((session.get("statistics") or {}).get("download_root") or session.get("local_download_root") or session.get("target_path") or ""),
                 "queue_priority": int(session.get("queue_priority") or 100),
                 "upload_options": {
                     "enabled": str(session.get("upload_mode") or "disabled") != "disabled",
@@ -950,7 +1134,7 @@ class ASMRResourceService:
             rjcode=session.get("rjcode"),
         )
         await engine.submit(task)
-        updated = self._update_session(session_id, task_id=task.id, status="queued", selected_resources=retry_resources)
+        updated = self._update_session(session_id, task_id=task.id, status="queued")
         log_asmr_sync_event(
             "task_retried",
             summary=f"{updated.get('rjcode') or session_id} 已重新提交 {len(retry_resources)} 个失败文件",
@@ -1018,6 +1202,7 @@ class ASMRResourceService:
                     "circle_name": str((statistics.get("circle_name") or session.get("source_label") or "")).strip(),
                     "skip_metadata_fetch": True,
                 },
+                "verify_md5_after_download": False,
                 "source_page": session.get("source_page") or "circle-completion",
                 "source_action": "reimport_downloaded_session",
                 "source_label": session.get("source_label") or session.get("rjcode"),
@@ -1025,7 +1210,7 @@ class ASMRResourceService:
             rjcode=session.get("rjcode"),
         )
         await engine.submit(task)
-        updated = self._update_session(session_id, task_id=task.id, status="queued", selected_resources=reusable_resources)
+        updated = self._update_session(session_id, task_id=task.id, status="queued")
         log_asmr_sync_event(
             "task_retried",
             summary=f"{updated.get('rjcode') or session_id} 已从本地已下载内容重新入库",
@@ -1104,6 +1289,7 @@ class ASMRResourceService:
                     "circle_name": str(circle_name or "").strip(),
                     "skip_metadata_fetch": True,
                 },
+                "verify_md5_after_download": False,
                 "source_page": "circle-completion",
                 "source_action": "reimport_local_download_root",
                 "source_label": str(circle_name or normalized_rjcode).strip() or normalized_rjcode,
@@ -1259,13 +1445,13 @@ class ASMRResourceService:
         relative_path: str,
         progress_callback=None,
     ) -> str:
-        from .library_manager import SynologyFileStationClient, get_library_manager
+        from .library_manager import get_library_manager
 
         manager = get_library_manager()
         library = manager.get_library_definition(library_id)
         if not library.synology:
             raise RuntimeError("远程库存未配置群晖参数")
-        client = SynologyFileStationClient(library.synology)
+        client = self._get_synology_client(library_id, library.synology)
         remote_relative = self._sanitize_relative_path(relative_path).replace("\\", "/")
         remote_target = str(PurePosixPath(target_root) / PurePosixPath(remote_relative).parent)
         remote_name = PurePosixPath(remote_relative).name
@@ -1300,6 +1486,62 @@ class ASMRResourceService:
             "classify_mode": str(options.get("classify_mode") or "circle").strip().lower() or "circle",
             "circle_name": str(options.get("circle_name") or task_metadata.get("circle_name") or "").strip(),
             "skip_metadata_fetch": bool(options.get("skip_metadata_fetch")),
+        }
+
+    async def _prepare_circle_completion_synology_upload_target(
+        self,
+        *,
+        rjcode: str,
+        metadata: Dict[str, Any],
+        upload_options: Dict[str, Any],
+        postprocess_options: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        from .library_manager import get_library_manager
+
+        target_library_id = str(upload_options.get("library_id") or postprocess_options.get("target_library_id") or "").strip()
+        if not target_library_id:
+            return None
+        manager = get_library_manager()
+        target_library = manager.get_library_definition(target_library_id)
+        if not target_library or target_library.type != "synology_filestation" or not target_library.synology:
+            return None
+
+        final_metadata = dict(metadata or {})
+        final_metadata["rjcode"] = rjcode
+        final_metadata["work_name"] = str(final_metadata.get("work_name") or final_metadata.get("work_title") or metadata.get("work_title") or rjcode).strip() or rjcode
+        final_metadata["work_title"] = str(final_metadata.get("work_title") or final_metadata["work_name"]).strip() or final_metadata["work_name"]
+        circle_name = str(postprocess_options.get("circle_name") or final_metadata.get("maker_name") or "").strip()
+        if circle_name:
+            final_metadata["classification_maker_name"] = circle_name
+            final_metadata["original_maker_name"] = circle_name
+            final_metadata["maker_name"] = str(final_metadata.get("maker_name") or circle_name).strip() or circle_name
+
+        folder_name = await self._build_api_rename_name(rjcode, final_metadata) if postprocess_options.get("naming_mode") == "api" else self._sanitize_folder_name(final_metadata["work_name"], rjcode)
+        circle_dir = self._sanitize_folder_name(circle_name or final_metadata.get("maker_name") or "未分类社团", "未分类社团")
+        target_root = PurePosixPath(target_library.root_path)
+        target_subdir = str(postprocess_options.get("target_subdir") or "").strip().strip("/\\")
+        if target_subdir:
+            target_root = target_root / target_subdir
+        target_root = target_root / circle_dir
+
+        client = self._get_synology_client(target_library_id, target_library.synology)
+        await manager._ensure_remote_directory(client, str(target_root))
+
+        remote_root = str(target_root / folder_name)
+        if not await manager._remote_path_exists(client, remote_root):
+            await client.create_folder(str(target_root), folder_name)
+
+        return {
+            "final_metadata": final_metadata,
+            "upload_options": {
+                **upload_options,
+                "enabled": True,
+                "mode": "synology",
+                "library_id": target_library_id,
+                "target_path": remote_root,
+            },
+            "final_output_path": remote_root,
+            "immediate_synology_upload": True,
         }
 
     def _sanitize_folder_name(self, value: Any, fallback: str) -> str:
@@ -1472,9 +1714,37 @@ class ASMRResourceService:
         )
         upload_options = self._resolve_upload_options(metadata)
         postprocess_options = self._resolve_postprocess_options(metadata)
+        target_library_id = str(postprocess_options.get("target_library_id") or "").strip()
+        if target_library_id and upload_options.get("mode") != "synology":
+            try:
+                from .library_manager import get_library_manager
+                target_library = get_library_manager().get_library_definition(target_library_id)
+                if target_library and target_library.type == "synology_filestation":
+                    upload_options = {
+                        **upload_options,
+                        "enabled": True,
+                        "mode": "synology",
+                        "library_id": target_library_id,
+                    }
+            except Exception:
+                logger.warning("推断群晖即时上传配置失败: rj=%s target_library_id=%s", rjcode, target_library_id, exc_info=True)
+        immediate_synology_upload = False
+        if postprocess_options.get("enabled") and upload_options.get("enabled") and upload_options.get("mode") == "synology":
+            prepared_remote_upload = await self._prepare_circle_completion_synology_upload_target(
+                rjcode=rjcode,
+                metadata=metadata,
+                upload_options=upload_options,
+                postprocess_options=postprocess_options,
+            )
+            if prepared_remote_upload:
+                upload_options = dict(prepared_remote_upload.get("upload_options") or upload_options)
+                metadata.update(dict(prepared_remote_upload.get("final_metadata") or {}))
+                metadata["final_output_path"] = str(prepared_remote_upload.get("final_output_path") or "")
+                immediate_synology_upload = bool(prepared_remote_upload.get("immediate_synology_upload"))
         per_session_concurrency = max(1, int(getattr(config.asmr_sync, "enhanced_per_session_concurrency", 3) or 3))
 
         task.task_metadata["download_files"] = []
+        task.task_metadata["download_runtime"] = {}
         task.task_metadata["upload_files"] = []
         task.task_metadata["uploaded_files"] = []
         task.task_metadata["upload_runtime"] = {}
@@ -1483,6 +1753,11 @@ class ASMRResourceService:
         task.task_metadata["progress_log"] = list(task.task_metadata.get("progress_log") or [])
         task.task_metadata["download_mode"] = "enhanced"
         task.task_metadata["session_id"] = session_id
+        task.task_metadata["upload_options"] = upload_options
+        task.task_metadata["target_path"] = str(upload_options.get("target_path") or "").strip()
+        if metadata.get("final_output_path"):
+            task.task_metadata["final_output_path"] = metadata.get("final_output_path")
+            self._append_task_log(task, f"已准备群晖即时上传目录: {metadata.get('final_output_path')}")
 
         temp_root = os.path.join(config.storage.temp_path, "asmr_enhanced")
         os.makedirs(temp_root, exist_ok=True)
@@ -1508,6 +1783,8 @@ class ASMRResourceService:
         total_files = max(len(selected_resources), 1)
         source_action = str(metadata.get("source_action") or "").strip()
         reimport_only = source_action in {"reimport_local_download_root", "reimport_downloaded_session"}
+        if reimport_only:
+            verify_md5 = bool(metadata.get("verify_md5_after_download", False))
         start_summary = (
             f"{rjcode} 已开始直接入库，共 {len(selected_resources)} 个资源"
             if reimport_only
@@ -1521,7 +1798,6 @@ class ASMRResourceService:
                 status="queued",
                 target_path=upload_options["target_path"],
                 upload_mode=upload_options["mode"],
-                selected_resources=selected_resources,
             )
             log_asmr_sync_event(
                 "session_started",
@@ -1550,31 +1826,35 @@ class ASMRResourceService:
                         self._update_session(session_id, status="downloading")
 
                     def file_progress_callback(downloaded_bytes: int, total_bytes: int, name=display_name, file_index=index):
-                        progress_state[name] = {
-                            "name": name,
-                            "downloaded": downloaded_bytes,
-                            "total": total_bytes,
-                            "progress": int(downloaded_bytes / total_bytes * 100) if total_bytes else 0,
-                            "index": file_index,
-                            "total_files": total_files,
-                            "relative_path": relative_path,
-                        }
-                        task.task_metadata["download_files"] = sorted(progress_state.values(), key=lambda item: item.get("index") or 0)
+                        self._update_download_runtime(
+                            task,
+                            progress_state,
+                            file_key=relative_path or name,
+                            file_name=name,
+                            relative_path=relative_path,
+                            downloaded_bytes=downloaded_bytes,
+                            total_bytes=total_bytes,
+                            index=file_index,
+                            total_files=total_files,
+                            stage="download",
+                        )
                         task.current_step = f"{'资源检查中' if reimport_only else '下载中'} {file_index}/{total_files}: {name}"
 
                     file_exists = os.path.exists(destination) and os.path.getsize(destination) > 0
                     if file_exists:
                         existing_size = os.path.getsize(destination)
-                        progress_state[display_name] = {
-                            "name": display_name,
-                            "downloaded": existing_size,
-                            "total": existing_size,
-                            "progress": 100,
-                            "index": index,
-                            "total_files": total_files,
-                            "relative_path": relative_path,
-                        }
-                        task.task_metadata["download_files"] = sorted(progress_state.values(), key=lambda item: item.get("index") or 0)
+                        self._update_download_runtime(
+                            task,
+                            progress_state,
+                            file_key=relative_path or display_name,
+                            file_name=display_name,
+                            relative_path=relative_path,
+                            downloaded_bytes=existing_size,
+                            total_bytes=existing_size,
+                            index=index,
+                            total_files=total_files,
+                            stage="download_reused" if not reimport_only else "ready_for_upload",
+                        )
                         task.current_step = f"{'准备入库' if reimport_only else '复用已下载文件'} {index}/{total_files}: {display_name}"
                         self._append_task_log(task, f"{display_name} {'准备直接入库' if reimport_only else '复用已下载文件'}")
                     else:
@@ -1588,16 +1868,18 @@ class ASMRResourceService:
                             timeout=timeout,
                         )
                         if not ok:
-                            return {"name": display_name, "relative_path": relative_path, "reason": "下载失败", "resource": resource, "stage": "download"}
+                            return {"name": display_name, "relative_path": relative_path, "reason": "下载失败", "resource": resource, "stage": "download", "local_path": destination if os.path.exists(destination) else ""}
                         self._append_task_log(task, f"{display_name} 下载完成")
 
-                    if session_id:
-                        self._update_session(session_id, status="verifying")
-                    checksum_md5 = self._compute_md5(destination)
+                    checksum_md5 = ""
                     expected_md5 = str(resource.get("checksum_md5") or "").strip().lower()
                     verify_status = "skipped"
                     verify_ok = True
                     if verify_md5 and expected_md5:
+                        if session_id:
+                            self._update_session(session_id, status="verifying")
+                        task.current_step = f"校验中 {index}/{total_files}: {display_name}"
+                        checksum_md5 = await asyncio.to_thread(self._compute_md5, destination)
                         verify_ok = checksum_md5.lower() == expected_md5
                         verify_status = "passed" if verify_ok else "failed"
                         if not verify_ok:
@@ -1623,38 +1905,48 @@ class ASMRResourceService:
                     uploaded_path = ""
                     upload_status = "skipped" if not upload_options["enabled"] else "pending"
                     if upload_options["enabled"]:
-                        if session_id:
-                            self._update_session(session_id, status="uploading")
-                        def upload_progress_callback(uploaded_bytes: int, total_bytes: int, name=display_name, file_index=index):
-                            self._update_upload_runtime(
-                                task,
-                                upload_progress_state,
-                                file_key=relative_path or name,
-                                file_name=name,
-                                relative_path=relative_path,
-                                uploaded_bytes=uploaded_bytes,
-                                total_bytes=total_bytes,
-                                index=file_index,
-                                total_files=total_files,
-                                stage="upload",
-                                target_path=uploaded_path or upload_options["target_path"],
-                            )
-                            task.current_step = f"上传中 {file_index}/{total_files}: {name}"
-                        if upload_options["mode"] == "synology" and upload_options["library_id"] and upload_options["target_path"]:
-                            uploaded_path = await self._upload_to_synology(
-                                destination,
-                                upload_options["library_id"],
-                                upload_options["target_path"],
-                                relative_path,
-                                progress_callback=upload_progress_callback,
-                            )
-                        elif upload_options["target_path"]:
-                            uploaded_path = await self._upload_to_local(
-                                destination,
-                                upload_options["target_path"],
-                                relative_path,
-                                progress_callback=upload_progress_callback,
-                            )
+                        self._mark_upload_waiting(
+                            task,
+                            file_name=display_name,
+                            relative_path=relative_path,
+                            index=index,
+                            total_files=total_files,
+                        )
+                        async with self._global_upload_lock:
+                            if session_id:
+                                self._update_session(session_id, status="uploading")
+
+                            def upload_progress_callback(uploaded_bytes: int, total_bytes: int, name=display_name, file_index=index):
+                                self._update_upload_runtime(
+                                    task,
+                                    upload_progress_state,
+                                    file_key=relative_path or name,
+                                    file_name=name,
+                                    relative_path=relative_path,
+                                    uploaded_bytes=uploaded_bytes,
+                                    total_bytes=total_bytes,
+                                    index=file_index,
+                                    total_files=total_files,
+                                    stage="upload",
+                                    target_path=uploaded_path or upload_options["target_path"],
+                                )
+                                task.current_step = f"上传中 {file_index}/{total_files}: {name}"
+
+                            if upload_options["mode"] == "synology" and upload_options["library_id"] and upload_options["target_path"]:
+                                uploaded_path = await self._upload_to_synology(
+                                    destination,
+                                    upload_options["library_id"],
+                                    upload_options["target_path"],
+                                    relative_path,
+                                    progress_callback=upload_progress_callback,
+                                )
+                            elif upload_options["target_path"]:
+                                uploaded_path = await self._upload_to_local(
+                                    destination,
+                                    upload_options["target_path"],
+                                    relative_path,
+                                    progress_callback=upload_progress_callback,
+                                )
                         upload_status = "uploaded" if uploaded_path else "failed"
                         if uploaded_path and session_id:
                             log_asmr_sync_event(
@@ -1751,10 +2043,12 @@ class ASMRResourceService:
                 "failed": len([item for item in success_files if item.get("upload_status") == "failed"]),
             }
             retry_summary = {"network_retry_count": max_retries, "failed_resource_count": len(failed_files)}
+            self._finalize_download_runtime(task, "completed" if success_files else "failed")
             task.task_metadata.update(
                 {
                     "download_root": download_root,
                     "downloaded_resources": success_files,
+                    "download_runtime": dict(task.task_metadata.get("download_runtime") or {}),
                     "uploaded_files": uploaded_files,
                     "verification_failures": verification_failures,
                     "failed_files": failed_files,
@@ -1856,13 +2150,20 @@ class ASMRResourceService:
                 raise ValueError("没有任何文件下载成功")
 
             if postprocess_options.get("enabled"):
-                final_output_path = await self._finalize_circle_completion_download(
-                    task,
-                    download_root,
-                    rjcode,
-                    metadata,
-                    postprocess_options,
-                )
+                if immediate_synology_upload and upload_options.get("target_path"):
+                    final_output_path = str(upload_options.get("target_path") or "").strip()
+                    task.task_metadata["final_output_path"] = final_output_path
+                    self._finalize_upload_runtime(task, "completed" if uploaded_files else "failed")
+                    if uploaded_files and len(uploaded_files) == len(success_files) and not failed_files and os.path.isdir(download_root):
+                        shutil.rmtree(download_root, ignore_errors=True)
+                else:
+                    final_output_path = await self._finalize_circle_completion_download(
+                        task,
+                        download_root,
+                        rjcode,
+                        metadata,
+                        postprocess_options,
+                    )
                 task.output_path = final_output_path
                 task.task_metadata["final_output_path"] = final_output_path
                 self._append_task_log(task, f"已入库到: {final_output_path}")
@@ -1922,6 +2223,7 @@ class ASMRResourceService:
             }
         except Exception as exc:
             task.task_metadata["failure_reason"] = str(exc)
+            self._finalize_download_runtime(task, "failed")
             self._finalize_upload_runtime(task, "failed")
             self._append_task_log(task, f"任务失败: {str(exc)}", "error")
             if session_id:
@@ -1934,8 +2236,8 @@ class ASMRResourceService:
                     local_download_root=download_root if os.path.isdir(download_root) else "",
                     local_downloaded_count=len(success_files),
                 )
-            if not success_files and os.path.isdir(download_root):
-                shutil.rmtree(download_root, ignore_errors=True)
+            if os.path.isdir(download_root):
+                self._append_task_log(task, "已保留未完成下载片段，后续重试将优先尝试断点续传")
             raise
 
     def get_dashboard_summary(self) -> Dict[str, Any]:

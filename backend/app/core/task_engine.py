@@ -329,6 +329,13 @@ class TaskEngine:
             task.task_metadata["rjcode_source"] = source
         return normalized
 
+    def _resolve_task_log_type_label(self, task: Task) -> str:
+        """给日志输出业务语义标签，避免直接入库显示成下载任务。"""
+        source_action = str((task.task_metadata or {}).get("source_action") or "").strip()
+        if task.type == TaskType.ASMR_SYNC_DOWNLOAD and source_action in {"reimport_local_download_root", "reimport_downloaded_session"}:
+            return "direct_reimport"
+        return task.type.value
+
     def _record_problem_work_for_extract_failure(self, task: Task, rjcode: Optional[str], reason: str):
         """将解压阶段失败的任务记录到问题作品列表，避免前端无项可见"""
         from .classifier import SmartClassifier
@@ -619,7 +626,7 @@ class TaskEngine:
         rjcode = self._extract_rjcode(task.source_path) or inferred_rjcode or "未知"
         self._sync_task_rjcode(task, rjcode if rjcode != "未知" else None, source="source_path")
         logger.info(f"[{rjcode}] ========== 开始处理任务 ==========")
-        logger.info(f"[{rjcode}] 任务ID: {task.id}, 类型: {task.type.value}")
+        logger.info(f"[{rjcode}] 任务ID: {task.id}, 类型: {self._resolve_task_log_type_label(task)}")
         logger.info(f"[{rjcode}] 源路径: {task.source_path}")
         
         try:
@@ -2077,19 +2084,21 @@ class TaskEngine:
         subtitle_folder = task.task_metadata.get('subtitle_folder', '')
         work_title = task.task_metadata.get('work_title', '')
         written_count = 0
+        source_action = str(task.task_metadata.get('source_action') or '').strip()
+        is_reimport_task = source_action in {'reimport_local_download_root', 'reimport_downloaded_session'}
 
         def append_progress_log(*args, **kwargs):
             return None
 
-        logger.info(f"[{rjcode}] 开始 ASMR 同步下载任务")
+        logger.info(f"[{rjcode}] 开始{'直接入库' if is_reimport_task else 'ASMR 同步下载'}任务")
 
         try:
             if str(task.task_metadata.get('download_mode') or '').strip().lower() == 'enhanced':
                 from .asmr_resource_service import get_asmr_resource_service
 
-                task.update_progress(3, "准备增强下载任务")
+                task.update_progress(3, "准备直接入库任务" if is_reimport_task else "准备增强下载任务")
                 await get_asmr_resource_service().process_download_task(task)
-                logger.info(f"[{rjcode}] ASMR 增强下载任务完成")
+                logger.info(f"[{rjcode}] {'直接入库' if is_reimport_task else 'ASMR 增强下载'}任务完成")
                 return
 
             # 步骤1: 创建下载目录
