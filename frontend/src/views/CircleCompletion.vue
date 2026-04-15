@@ -354,147 +354,17 @@
       </main>
     </section>
 
-    <el-dialog v-model="previewDialogVisible" width="1080px" title="创建下载任务" class="circle-preview-dialog">
-      <div v-if="previewLoading" class="dialog-loading">正在生成下载计划...</div>
-      <template v-else>
-        <div class="preview-toolbar">
-          <div class="preview-presets">
-            <button
-              type="button"
-              class="preset-chip"
-              :class="`state-${allPreviewSelectionState}`"
-              @click="toggleAllPreviewSelection"
-            >
-              <span v-if="allPreviewSelectionState === 'partial'" class="preset-chip-indicator" aria-hidden="true">-</span>
-              <span>全部</span>
-              <span class="preset-chip-count">{{ selectedFileCount }} / {{ previewSelectableResources.length }}</span>
-            </button>
-            <button
-              v-for="chip in previewFileTypeChips"
-              :key="chip.key"
-              type="button"
-              class="preset-chip"
-              :class="`state-${chip.state}`"
-              @click="togglePreviewFileType(chip)"
-            >
-              <span v-if="chip.state === 'partial'" class="preset-chip-indicator" aria-hidden="true">-</span>
-              <span>{{ chip.label }}</span>
-              <span class="preset-chip-count">{{ chip.selected }} / {{ chip.total }}</span>
-            </button>
-            <button type="button" class="preset-chip ghost" @click="resetRecommended">恢复推荐</button>
-          </div>
-          <div class="preview-stats">{{ selectedFileCount }} 已选，共 {{ formatSize(selectedTotalBytes) }}</div>
-        </div>
-
-        <section class="download-settings-card">
-          <div class="download-settings-head">
-            <div class="download-settings-title">落地设置</div>
-            <div class="download-settings-subtitle">社团补全下载会先落到临时目录，再自动按社团名入库，作品目录使用 API 命名后的文件夹名。</div>
-          </div>
-          <div class="download-settings-grid">
-            <label class="setting-field setting-field-wide">
-              <span class="setting-label">下载临时目录</span>
-              <el-input v-model="downloadSettings.downloadBasePath" placeholder="留空则使用默认临时目录" clearable />
-            </label>
-            <label class="setting-field">
-              <span class="setting-label">目标库存</span>
-              <el-select v-model="downloadSettings.targetLibraryId" placeholder="默认媒体库根目录" clearable filterable>
-                <el-option
-                  v-for="library in targetLibraries"
-                  :key="library.id"
-                  :label="`${library.name} (${library.type === 'local' ? '本地' : '远程'})`"
-                  :value="library.id"
-                />
-              </el-select>
-            </label>
-            <label class="setting-field">
-              <span class="setting-label">库存内前缀目录</span>
-              <el-select v-model="downloadSettings.targetSubdir" placeholder="选择库存内前缀目录" clearable filterable>
-                <el-option label="直接按社团名入库 / API 命名后的文件" value="" />
-                <el-option
-                  v-for="option in targetSubdirOptions"
-                  :key="option"
-                  :label="option"
-                  :value="option"
-                />
-              </el-select>
-            </label>
-            <div class="setting-field setting-field-wide setting-static">
-              <span class="setting-label">最终行为</span>
-              <div class="setting-static-value">
-                <span class="setting-pill ok">直接按社团名入库</span>
-                <span class="setting-pill">API 命名后的文件</span>
-                <span v-if="resolvedTargetRoot" class="setting-hint">目标根目录：{{ resolvedTargetRoot }}</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <div class="preview-plan-list">
-          <section v-for="plan in previewPlans" :key="plan.session_id" class="preview-plan">
-            <div class="preview-plan-head">
-              <div>
-                <div class="preview-plan-rj">{{ plan.rjcode }}</div>
-                <div class="preview-plan-title">{{ plan.title || plan.canonical_rjcode }}</div>
-              </div>
-              <div class="preview-plan-meta">
-                <span>{{ plan.selected_resource_count }} 已选</span>
-                <span>{{ formatSize(plan.selected_size_bytes) }}</span>
-              </div>
-            </div>
-
-            <div class="tree-shell">
-              <div class="tree-head">
-                <div class="tree-col-check">
-                  <input
-                    type="checkbox"
-                    class="tree-check"
-                    :checked="isPlanAllSelected(plan)"
-                    :indeterminate.prop="isPlanPartiallySelected(plan)"
-                    @click="togglePlanAll(plan)"
-                  >
-                </div>
-                <div class="tree-col-name">文件名</div>
-                <div class="tree-col-size">大小</div>
-              </div>
-
-              <div class="tree-body">
-                <div v-for="row in plan.flatRows" :key="row.id" class="tree-row" :class="{ dir: row.type === 'dir', selected: row.checked }" @click="handleTreeRowClick(plan, row)">
-                  <div class="tree-col-check" @click.stop>
-                    <input
-                      type="checkbox"
-                      class="tree-check"
-                      :checked="row.checked"
-                      :indeterminate.prop="row.indeterminate"
-                      @click.stop="toggleTreeRow(plan, row, $event)"
-                    >
-                  </div>
-                  <div class="tree-col-name">
-                    <div class="tree-name-cell" :style="{ paddingLeft: `${row.depth * 18 + 6}px` }">
-                      <button v-if="row.type === 'dir'" type="button" class="tree-arrow" :class="{ open: plan.expandedIds.has(row.id) }" @click.stop="toggleExpand(plan, row)">
-                        &gt;
-                      </button>
-                      <span v-else class="tree-arrow-placeholder"></span>
-                      <el-icon class="tree-file-icon" :class="getTreeRowIconClass(row)">
-                        <component :is="getTreeRowIconComponent(row)" />
-                      </el-icon>
-                      <span class="tree-name">{{ row.name }}</span>
-                    </div>
-                  </div>
-                  <div class="tree-col-size">{{ formatSize(row.size_bytes) }}</div>
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-      </template>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="previewDialogVisible = false">取消</el-button>
-          <el-button type="primary" :loading="starting" :disabled="selectedFileCount === 0" @click="startBatchDownload">下载</el-button>
-        </span>
-      </template>
-    </el-dialog>
+    <CircleDownloadPreviewDialog
+      v-model:visible="previewDialogVisible"
+      :loading="previewLoading"
+      :starting="starting"
+      :plans="previewPlans"
+      :libraries="libraries"
+      :target-subdir-options="targetSubdirOptions"
+      :settings="downloadSettings"
+      :circle-name="detail.circle_name"
+      @submit="startBatchDownload"
+    />
 
     <DownloadTaskWorkbenchDialog
       v-model:visible="downloadWorkbenchVisible"
@@ -708,8 +578,8 @@
 <script setup>
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Document, Files, FolderOpened, Headset, PictureFilled } from '@element-plus/icons-vue'
 import api, { asmrSyncApi, circleCompletionApi, libraryApi } from '../api'
+import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'prekikoeru.circleCompletion.targetSubdirs'
@@ -810,7 +680,13 @@ const downloadSettings = reactive({
 const cachedTargetSubdirs = ref([])
 let flashedWorkTimer = null
 
-const missingWorks = computed(() => (detail.works || []).filter(item => !item.owned))
+function isPreferredMissingWorkVisible(item) {
+  if (item?.owned) return false
+  const groupKey = String(item?.preferred_variant?.group_key || '').trim()
+  return ['original', 'simplified', 'traditional'].includes(groupKey || 'original')
+}
+
+const missingWorks = computed(() => (detail.works || []).filter(item => isPreferredMissingWorkVisible(item)))
 const ownedWorks = computed(() => (detail.works || []).filter(item => item.owned))
 const pagedMissingWorks = computed(() => {
   const start = (missingPage.value - 1) * worksPageSize
@@ -909,73 +785,8 @@ const selectedDownloadableRJCodes = computed(() => selectedCanonicalRJCodes.valu
   const item = (detail.works || []).find(work => work.canonical_rjcode === code)
   return Boolean(item?.has_asmr_one)
 }))
-const selectedFileCount = computed(() => previewPlans.value.reduce((sum, plan) => sum + (plan.selected_resource_count || 0), 0))
-const selectedTotalBytes = computed(() => previewPlans.value.reduce((sum, plan) => sum + (plan.selected_size_bytes || 0), 0))
-const previewSelectableResources = computed(() => previewPlans.value.flatMap(plan => Array.isArray(plan?.selectable_resources) ? plan.selectable_resources : []))
-const previewFileTypeChips = computed(() => {
-  const typeOrder = new Map([
-    ['.wav', 0],
-    ['.flac', 1],
-    ['.mp3', 2],
-    ['.m4a', 3],
-    ['.ogg', 4],
-    ['.aac', 5],
-    ['.wma', 6],
-    ['.pdf', 20],
-    ['.txt', 21],
-    ['.cue', 22],
-    ['.json', 23],
-    ['.jpg', 30],
-    ['.jpeg', 31],
-    ['.png', 32],
-    ['.webp', 33],
-    ['.gif', 34],
-    ['.bmp', 35],
-    ['.srt', 40],
-    ['.ass', 41],
-    ['.ssa', 42],
-    ['.vtt', 43],
-    ['.lrc', 44],
-    ['__no_ext__', 99],
-  ])
-  const groups = new Map()
-  previewSelectableResources.value.forEach((item) => {
-    const key = getPreviewFileTypeKey(item)
-    const label = getPreviewFileTypeLabel(item)
-    const current = groups.get(key) || { key, label, total: 0, selected: 0 }
-    current.total += 1
-    if (item?.selected) current.selected += 1
-    groups.set(key, current)
-  })
-  return [...groups.values()]
-    .map((item) => ({
-      ...item,
-      state: item.selected === 0 ? 'none' : (item.selected === item.total ? 'all' : 'partial')
-    }))
-    .sort((left, right) => {
-      const leftOrder = typeOrder.has(left.key) ? typeOrder.get(left.key) : 80
-      const rightOrder = typeOrder.has(right.key) ? typeOrder.get(right.key) : 80
-      if (leftOrder !== rightOrder) return leftOrder - rightOrder
-      return left.label.localeCompare(right.label, 'zh-CN')
-    })
-})
-const allPreviewSelectionState = computed(() => {
-  const total = previewSelectableResources.value.length
-  if (!total) return 'none'
-  const selected = previewSelectableResources.value.filter(item => item?.selected).length
-  if (selected === 0) return 'none'
-  if (selected === total) return 'all'
-  return 'partial'
-})
 const targetLibraries = computed(() => (libraries.value || []).filter(item => item?.enabled !== false))
-const selectedTargetLibrary = computed(() => targetLibraries.value.find(item => item.id === downloadSettings.targetLibraryId) || null)
 const targetSubdirOptions = computed(() => [...new Set((cachedTargetSubdirs.value || []).filter(Boolean))])
-const resolvedTargetRoot = computed(() => {
-  const root = String(selectedTargetLibrary.value?.root_path || '').trim()
-  const prefix = String(downloadSettings.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
-  if (root && prefix) return `${root}${root.includes('/') ? '/' : '\\'}${prefix}`
-  return root || prefix || ''
-})
 const processingDownloadTasks = computed(() => trackedDownloadTasks.value.filter(task => ['processing'].includes(String(task.status || ''))))
 const pendingDownloadTasks = computed(() => trackedDownloadTasks.value.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task.status || ''))))
 const completedDownloadTasks = computed(() => trackedDownloadTasks.value.filter(task => String(task.status || '') === 'completed'))
@@ -2152,12 +1963,13 @@ async function openBatchPreview(singleCanonical = '') {
   previewing.value = true
   previewDialogVisible.value = true
   previewLoading.value = true
+  previewPlans.value = []
   try {
     const result = await circleCompletionApi.previewBatchDownload({
       circle_id: detail.circle_id,
       canonical_rjcodes: codes
     })
-    previewPlans.value = (result.plans || []).map(buildPlanState)
+    previewPlans.value = result.plans || []
     downloadSettings.downloadBasePath = result.download_base_path || downloadSettings.downloadBasePath || ''
     if (!downloadSettings.targetLibraryId) {
       downloadSettings.targetLibraryId = result.default_target_library_id || downloadSettings.targetLibraryId
@@ -2173,260 +1985,8 @@ async function openBatchPreview(singleCanonical = '') {
     previewLoading.value = false
   }
 }
-
-function buildPlanState(plan) {
-  const resources = (plan.selectable_resources || []).map(item => ({
-    ...item,
-    selected: Boolean(item.selected),
-    recommended: Boolean(item.selected),
-    recommended_skip_reasons: item.recommended_skip_reasons || []
-  }))
-  const tree = buildTree(resources)
-  const expandedIds = new Set(tree.map(node => node.id))
-  const state = {
-    ...plan,
-    selectable_resources: resources,
-    tree,
-    expandedIds,
-    flatRows: []
-  }
-  refreshPlanTree(state)
-  return state
-}
-
-function buildTree(resources) {
-  const roots = []
-  const dirMap = new Map()
-  for (const resource of resources) {
-    const path = String(resource.relative_path || resource.file_name || '')
-    const parts = path.split('/').filter(Boolean)
-    let children = roots
-    let parentPath = ''
-    for (let i = 0; i < parts.length; i += 1) {
-      const name = parts[i]
-      const currentPath = parentPath ? `${parentPath}/${name}` : name
-      const isFile = i === parts.length - 1
-      if (isFile) {
-        children.push({
-          id: currentPath,
-          name,
-          path: currentPath,
-          type: 'file',
-          resource,
-          size_bytes: Number(resource.size_bytes || 0),
-          children: []
-        })
-      } else {
-        if (!dirMap.has(currentPath)) {
-          const node = {
-            id: currentPath,
-            name,
-            path: currentPath,
-            type: 'dir',
-            size_bytes: 0,
-            children: []
-          }
-          dirMap.set(currentPath, node)
-          children.push(node)
-        }
-        children = dirMap.get(currentPath).children
-      }
-      parentPath = currentPath
-    }
-  }
-  return roots
-}
-
-function flattenTree(nodes, expandedIds, depth = 0, out = []) {
-  for (const node of nodes || []) {
-    out.push({ ...node, depth })
-    if (node.type === 'dir' && expandedIds.has(node.id)) flattenTree(node.children, expandedIds, depth + 1, out)
-  }
-  return out
-}
-
-function collectLeafResources(node) {
-  if (!node) return []
-  if (node.type === 'file') return [node.resource]
-  return (node.children || []).flatMap(child => collectLeafResources(child))
-}
-
-function annotateSelection(node) {
-  if (node.type === 'file') {
-    return {
-      ...node,
-      checked: Boolean(node.resource.selected),
-      indeterminate: false,
-      recommended_skip_reasons: node.resource.recommended_skip_reasons || []
-    }
-  }
-  const children = (node.children || []).map(annotateSelection)
-  const leafResources = children.flatMap(child => child.type === 'file' ? [child.resource] : collectLeafResources(child))
-  const checkedCount = leafResources.filter(item => item.selected).length
-  return {
-    ...node,
-    children,
-    size_bytes: children.reduce((sum, child) => sum + Number(child.size_bytes || 0), 0),
-    checked: checkedCount > 0 && checkedCount === leafResources.length,
-    indeterminate: checkedCount > 0 && checkedCount < leafResources.length
-  }
-}
-
-function refreshPlanTree(plan) {
-  plan.tree = (plan.tree || []).map(annotateSelection)
-  plan.flatRows = flattenTree(plan.tree, plan.expandedIds, 0, [])
-  plan.selected_resource_count = plan.selectable_resources.filter(item => item.selected).length
-  plan.selected_size_bytes = plan.selectable_resources.filter(item => item.selected).reduce((sum, item) => sum + Number(item.size_bytes || 0), 0)
-}
-
-function toggleExpand(plan, row) {
-  const next = new Set(plan.expandedIds)
-  if (next.has(row.id)) next.delete(row.id)
-  else next.add(row.id)
-  plan.expandedIds = next
-  refreshPlanTree(plan)
-}
-
-function updateResourceSelection(plan, row, nextSelected) {
-  const targetIds = new Set(collectLeafResources(row).map(item => item.relative_path))
-  plan.selectable_resources.forEach(item => {
-    if (targetIds.has(item.relative_path)) item.selected = nextSelected
-  })
-  refreshPlanTree(plan)
-}
-
-function toggleTreeRow(plan, row) {
-  const nextSelected = row.indeterminate ? true : !row.checked
-  updateResourceSelection(plan, row, nextSelected)
-}
-
-function handleTreeRowClick(plan, row) {
-  if (!row) return
-  if (row.type === 'dir') {
-    toggleExpand(plan, row)
-    return
-  }
-  toggleTreeRow(plan, row)
-}
-
-function isPlanAllSelected(plan) {
-  return plan.selectable_resources.length > 0 && plan.selectable_resources.every(item => item.selected)
-}
-
-function isPlanPartiallySelected(plan) {
-  const checkedCount = plan.selectable_resources.filter(item => item.selected).length
-  return checkedCount > 0 && checkedCount < plan.selectable_resources.length
-}
-
-function togglePlanAll(plan) {
-  const next = !isPlanAllSelected(plan)
-  plan.selectable_resources.forEach(item => {
-    item.selected = next
-  })
-  refreshPlanTree(plan)
-}
-
-function getPreviewFileTypeKey(item) {
-  const explicitExt = String(item?.file_ext || '').trim().toLowerCase()
-  if (explicitExt) return explicitExt.startsWith('.') ? explicitExt : `.${explicitExt}`
-  const sourceName = String(item?.relative_path || item?.file_name || '').trim().toLowerCase()
-  const match = sourceName.match(/\.([^.\\/]+)$/)
-  if (match?.[1]) return `.${match[1]}`
-  return '__no_ext__'
-}
-
-function getPreviewFileTypeLabel(item) {
-  const key = getPreviewFileTypeKey(item)
-  return key === '__no_ext__' ? '无后缀' : key.replace(/^\./, '')
-}
-
-function toggleAllPreviewSelection() {
-  const nextSelected = allPreviewSelectionState.value !== 'all'
-  previewPlans.value.forEach(plan => {
-    plan.selectable_resources.forEach(item => {
-      item.selected = nextSelected
-    })
-    refreshPlanTree(plan)
-  })
-}
-
-function togglePreviewFileType(chip) {
-  const key = String(chip?.key || '').trim()
-  if (!key) return
-  const nextSelected = String(chip?.state || '') !== 'all'
-  previewPlans.value.forEach(plan => {
-    plan.selectable_resources.forEach(item => {
-      if (getPreviewFileTypeKey(item) === key) item.selected = nextSelected
-    })
-    refreshPlanTree(plan)
-  })
-}
-
-function resetRecommended() {
-  previewPlans.value.forEach(plan => {
-    plan.selectable_resources.forEach(item => {
-      item.selected = Boolean(item.recommended)
-    })
-    refreshPlanTree(plan)
-  })
-}
-
-function getTreeRowFileType(row) {
-  if (row?.type === 'dir') return 'folder'
-  const resource = row?.resource || {}
-  const ext = getPreviewFileTypeKey(resource)
-  const resourceType = String(resource.resource_type || '').toLowerCase()
-  if (['.wav', '.flac', '.mp3', '.m4a', '.ogg', '.aac', '.wma'].includes(ext) || resourceType === 'audio') return 'audio'
-  if (['.srt', '.ass', '.ssa', '.vtt', '.lrc'].includes(ext) || resourceType === 'subtitle') return 'subtitle'
-  if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(ext) || resourceType === 'cover') return 'image'
-  if (['.pdf', '.txt', '.cue', '.md', '.json'].includes(ext)) return 'document'
-  return 'file'
-}
-
-function getTreeRowIconClass(row) {
-  return `is-${getTreeRowFileType(row)}`
-}
-
-function getTreeRowIconComponent(row) {
-  const type = getTreeRowFileType(row)
-  if (type === 'folder') return FolderOpened
-  if (type === 'audio') return Headset
-  if (type === 'subtitle') return Files
-  if (type === 'image') return PictureFilled
-  return Document
-}
-
-async function startBatchDownload() {
-  const targetLibrary = selectedTargetLibrary.value
-  const useImmediateSynologyUpload = targetLibrary?.type === 'synology_filestation' && String(downloadSettings.targetLibraryId || '').trim()
-  const items = previewPlans.value
-    .map(plan => ({
-      session_id: plan.session_id,
-      rjcode: plan.rjcode,
-      canonical_rjcode: plan.canonical_rjcode,
-      display_rjcodes: plan.display_rjcodes || [],
-      work_title: plan.title,
-      folder_path: plan.folder_path || '',
-      selected_resources: plan.selectable_resources.filter(item => item.selected),
-      upload_options: {
-        enabled: useImmediateSynologyUpload,
-        mode: useImmediateSynologyUpload ? 'synology' : 'disabled',
-        target_path: '',
-        library_id: useImmediateSynologyUpload ? String(downloadSettings.targetLibraryId || '').trim() : ''
-      },
-      postprocess_options: {
-        enabled: true,
-        target_library_id: downloadSettings.targetLibraryId || '',
-        target_subdir: downloadSettings.targetSubdir || '',
-        naming_mode: downloadSettings.namingMode,
-        classify_mode: downloadSettings.classifyMode,
-        circle_name: detail.circle_name || ''
-      },
-      resource_filter_snapshot: {},
-      verify_md5_after_download: true
-    }))
-    .filter(item => item.selected_resources.length > 0)
-
+async function startBatchDownload(payload = {}) {
+  const items = Array.isArray(payload.items) ? payload.items : []
   if (!items.length) {
     ElMessage.warning('没有选中任何文件')
     return
@@ -2437,13 +1997,7 @@ async function startBatchDownload() {
     const result = await circleCompletionApi.startBatchDownload({
       circle_id: detail.circle_id,
       circle_name: detail.circle_name,
-      batch_options: {
-        download_base_path: downloadSettings.downloadBasePath || '',
-        target_library_id: downloadSettings.targetLibraryId || '',
-        target_subdir: downloadSettings.targetSubdir || '',
-        naming_mode: downloadSettings.namingMode,
-        classify_mode: downloadSettings.classifyMode
-      },
+      batch_options: payload.batchOptions || {},
       items
     })
     rememberTargetSubdir(downloadSettings.targetSubdir || '')
@@ -2472,11 +2026,15 @@ async function startBatchDownload() {
 .download-settings-card {
   display: grid;
   gap: 14px;
-  margin-bottom: 16px;
-  padding: 16px 18px;
-  border: 1px solid #dfe8f6;
-  border-radius: 18px;
-  background: linear-gradient(180deg, #fbfdff 0%, #f5f8fc 100%);
+  padding: 20px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.64) 0%, rgba(244, 248, 255, 0.44) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.62),
+    0 18px 36px rgba(78, 104, 146, 0.14);
+  backdrop-filter: blur(18px);
 }
 .download-settings-head {
   display: grid;
@@ -2507,16 +2065,6 @@ async function startBatchDownload() {
   font-size: 12px;
   font-weight: 700;
   color: #55708f;
-}
-.setting-static {
-  align-content: start;
-}
-.setting-static-value {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  min-height: 40px;
 }
 .setting-pill,
 .setting-hint {
@@ -4054,59 +3602,137 @@ async function startBatchDownload() {
 .circle-tabs :deep(.el-tabs__content) {
   padding-top: 2px;
 }
+.preview-dialog-shell {
+  display: grid;
+  gap: 18px;
+  min-height: 660px;
+}
+.preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.preview-header-title {
+  font-size: 26px;
+  line-height: 1.1;
+  font-weight: 900;
+  color: #16181d;
+  letter-spacing: -0.04em;
+}
+.preview-close-button {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(22, 24, 29, 0.56);
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .18s ease, color .18s ease, transform .18s ease;
+}
+.preview-close-button:hover {
+  background: rgba(255,255,255,0.52);
+  color: #22262d;
+  transform: rotate(90deg);
+}
+.preview-layout {
+  display: grid;
+  grid-template-columns: 380px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.preview-side-column {
+  display: grid;
+  gap: 20px;
+}
 .preview-toolbar {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
   align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 2px;
 }
 .preview-presets {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .preset-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid #d9e4f2;
-  background: #f7f9fc;
-  color: #60748d;
-  border-radius: 10px;
-  padding: 5px 10px;
-  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.62) 0%, rgba(231, 236, 242, 0.52) 100%);
+  color: #667085;
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 14px;
   font-weight: 800;
   cursor: pointer;
-  transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.88),
+    0 12px 24px rgba(148, 163, 184, 0.12);
+  transition: transform .2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow .2s ease, background .2s ease, color .2s ease, border-color .2s ease, opacity .2s ease;
+  white-space: nowrap;
 }
 .preset-chip:hover {
   transform: translateY(-1px);
-  box-shadow: 0 8px 14px rgba(76, 134, 220, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72) 0%, rgba(236, 240, 245, 0.66) 100%);
+  color: #1f2937;
+  border-color: rgba(255,255,255,0.75);
 }
 .preset-chip:active {
   transform: scale(0.98);
 }
 .preset-chip.ghost {
-  background: #fff;
-  color: #536a86;
-  border-color: #dde5f1;
+  color: #6b7280;
+  margin-left: 4px;
 }
 .preset-chip.state-all {
-  background: #e9f7ef;
-  border-color: #b8e0c6;
-  color: #24724b;
+  background: linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(223, 228, 235, 0.9) 100%);
+  color: #111827;
+  border-color: rgba(255,255,255,0.78);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.9),
+    0 10px 22px rgba(148, 163, 184, 0.16);
+  animation: chipActivate 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.preset-chip.state-all .preset-chip-count {
+  background: rgba(255, 255, 255, 0.56);
+  color: #374151;
+}
+.preset-chip.state-all:hover {
+  background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(229, 234, 240, 0.92) 100%);
+  color: #111827;
+  border-color: rgba(255,255,255,0.82);
 }
 .preset-chip.state-partial {
-  background: #fff7e8;
-  border-color: #efd39a;
-  color: #9a5b08;
+  background: linear-gradient(180deg, rgba(234, 238, 244, 0.94) 0%, rgba(209, 216, 225, 0.92) 100%);
+  color: #374151;
+  border-color: rgba(255,255,255,0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.78),
+    0 8px 18px rgba(148, 163, 184, 0.12);
+  animation: chipPartial 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .preset-chip.state-none {
-  background: #f7f9fc;
-  border-color: #d9e4f2;
-  color: #60748d;
+  color: #6b7280;
+  background: linear-gradient(180deg, rgba(243, 245, 248, 0.78) 0%, rgba(227, 232, 238, 0.72) 100%);
+  border-color: rgba(255,255,255,0.5);
+  box-shadow: none;
+}
+@keyframes chipActivate {
+  0%   { transform: scale(0.92); opacity: 0.7; }
+  55%  { transform: scale(1.06); }
+  80%  { transform: scale(0.98); }
+  100% { transform: scale(1);    opacity: 1; }
+}
+@keyframes chipPartial {
+  0%   { transform: scale(0.95); }
+  60%  { transform: scale(1.04); }
+  100% { transform: scale(1); }
 }
 .preset-chip-indicator {
   width: 12px;
@@ -4122,120 +3748,408 @@ async function startBatchDownload() {
   font-weight: 900;
 }
 .preset-chip-count {
-  min-width: 18px;
-  height: 18px;
+  min-width: 22px;
+  height: 22px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 5px;
-  background: rgba(255, 255, 255, 0.78);
-  font-size: 10px;
+  padding: 0 7px;
+  background: rgba(255, 255, 255, 0.34);
+  font-size: 12px;
   line-height: 1;
+  color: inherit;
 }
 .preview-stats {
-  font-size: 13px;
-  color: #5d728d;
-  font-weight: 700;
-}
-.preview-plan-rj {
-  font-size: 12px;
+  font-size: 15px;
+  color: #20252d;
   font-weight: 800;
-  color: #4b70aa;
+}
+.preview-panel-card {
+  padding: 22px 20px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.56);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0%, rgba(239, 243, 248, 0.14) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.74),
+    0 22px 44px rgba(148, 163, 184, 0.16);
+  backdrop-filter: blur(28px) saturate(130%);
+  -webkit-backdrop-filter: blur(28px) saturate(130%);
+}
+.download-settings-card {
+  display: grid;
+  gap: 18px;
+}
+.download-settings-head {
+  display: grid;
+  gap: 4px;
+}
+.download-settings-title {
+  font-size: 16px;
+  font-weight: 900;
+  color: #15181d;
+}
+.download-settings-subtitle {
+  font-size: 12px;
+  color: rgba(53, 59, 68, 0.64);
+  line-height: 1.5;
+}
+.download-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 14px;
+}
+.setting-field {
+  display: grid;
+  gap: 8px;
+}
+.setting-field-wide {
+  grid-column: 1 / -1;
+}
+.setting-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #303641;
+}
+.preview-panel-card :deep(.el-input__wrapper),
+.preview-panel-card :deep(.el-select__wrapper) {
+  min-height: 40px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.88),
+    0 0 0 1px rgba(203, 213, 225, 0.5);
+}
+.preview-panel-card :deep(.el-input__inner),
+.preview-panel-card :deep(.el-select__placeholder),
+.preview-panel-card :deep(.el-select__selected-item),
+.preview-panel-card :deep(.el-input__inner::placeholder) {
+  color: #1b2027;
+}
+.preview-panel-card :deep(.el-select__caret),
+.preview-panel-card :deep(.el-input__icon) {
+  color: #79879c;
+}
+.preview-action-card {
+  align-content: start;
+}
+.preview-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.preview-action-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.64);
+  background: rgba(255, 255, 255, 0.72);
+  color: #334155;
+  font-size: 14px;
+  font-weight: 800;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.88),
+    0 10px 22px rgba(148, 163, 184, 0.08);
+}
+.preview-action-pill.is-primary {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(232, 237, 243, 0.86) 100%);
+  color: #111827;
+}
+.preview-target-root {
+  font-size: 12px;
+  color: rgba(38, 44, 52, 0.72);
+  line-height: 1.6;
+  word-break: break-all;
+}
+.preview-tree-panel {
+  display: grid;
+  min-height: 0;
+  overflow: hidden;
+  align-content: start;
+}
+.preview-plan-list {
+  display: grid;
+  gap: 0;
+  max-height: 100%;
+  overflow: auto;
+  padding-right: 0;
+  overflow-x: hidden;
+}
+.preview-plan {
+  display: grid;
+  gap: 0;
+  align-content: start;
 }
 .preview-plan-title {
-  margin-top: 4px;
   font-size: 15px;
-  font-weight: 800;
-  color: #1f3759;
+  font-weight: 900;
+  color: #14181d;
+  line-height: 1.4;
+}
+.preview-plan-heading {
+  min-width: 0;
+}
+.preview-plan-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.preview-plan-folder-icon {
+  margin-top: 0;
+  font-size: 20px;
+  color: #f4c54d;
+  flex: 0 0 auto;
+}
+.preview-plan-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px 10px;
+}
+.preview-plan-meta {
+  color: #5f6b7b;
+  font-size: 14px;
+  font-weight: 700;
+  display: grid;
+  gap: 8px;
+  text-align: right;
 }
 .tree-shell {
-  margin-top: 12px;
-  border: 1px solid #e6edf7;
-  border-radius: 14px;
+  margin: 0 6px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.46);
+  border-radius: 20px;
   overflow: hidden;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(248, 250, 252, 0.06) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.42),
+    0 18px 34px rgba(148, 163, 184, 0.08);
+  min-width: 0;
 }
 .tree-head,
 .tree-row {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) 120px;
+  grid-template-columns: 40px minmax(0, 1fr) 112px;
   align-items: center;
-  padding: 0 12px;
+  padding: 0 18px;
+  min-width: 0;
 }
 .tree-head {
-  min-height: 38px;
-  background: #f5f8fd;
-  border-bottom: 1px solid #e8eef6;
-  font-size: 12px;
-  font-weight: 800;
-  color: #61748d;
+  display: none;
 }
 .tree-body {
-  max-height: 420px;
-  overflow: auto;
+  max-height: 360px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 0 12px;
 }
 .tree-row {
-  min-height: 38px;
-  border-bottom: 1px solid #eff3f8;
+  min-height: 40px;
+  border-bottom: none;
   cursor: pointer;
+  border-radius: 12px;
+  transition: background .16s ease, box-shadow .16s ease;
 }
 .tree-row.dir {
-  background: #fbfcfe;
+  margin-bottom: 2px;
+}
+.tree-row-root {
+  min-height: 44px;
+  margin-bottom: 8px;
+  background: transparent;
 }
 .tree-row.selected {
-  background: #eef6ff;
+  background: rgba(213, 221, 232, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.36);
+}
+.tree-row:hover {
+  background: rgba(255,255,255,0.4);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28);
 }
 .tree-name-cell {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
 }
 .tree-arrow,
-.tree-arrow-placeholder {
+.tree-arrow-placeholder,
+.tree-arrow-spacer {
   width: 16px;
   flex: 0 0 16px;
 }
 .tree-arrow {
   border: none;
   background: transparent;
-  color: #7e95b4;
+  color: #7b8798;
   cursor: pointer;
   transition: transform .18s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 .tree-arrow.open {
+  transform: rotate(0deg);
+}
+.tree-arrow-glyph {
+  display: inline-block;
   transform: rotate(90deg);
+  line-height: 1;
+}
+.tree-arrow.open .tree-arrow-glyph {
+  transform: rotate(0deg);
 }
 .tree-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #2a3f60;
+  color: #243041;
+  font-size: 14px;
+  font-weight: 500;
+  min-width: 0;
+}
+.tree-col-size {
+  text-align: right;
+  font-size: 13px;
+  color: #5f6b7b;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .tree-file-icon {
   width: 18px;
   height: 18px;
   flex: 0 0 18px;
-  font-size: 16px;
-  color: #6d819b;
-}
-.tree-file-icon.is-folder {
-  color: #3f6ca7;
-}
-.tree-file-icon.is-audio {
-  color: #2d7a50;
-}
-.tree-file-icon.is-subtitle {
-  color: #a0610b;
-}
-.tree-file-icon.is-image {
-  color: #6950b8;
-}
-.tree-file-icon.is-document {
-  color: #376fbe;
+  font-size: 17px;
+  color: #7a8fa6;
+  transition: color 0.15s ease;
 }
 .tree-file-icon.is-file {
-  color: #60748d;
+  color: #7a8fa6;
+}
+.tree-file-icon.is-folder {
+  color: #f4c54d;
+}
+.tree-file-icon.is-audio {
+  color: #775dd0;
+}
+.tree-file-icon.is-subtitle {
+  color: #667085;
+}
+.tree-file-icon.is-image {
+  color: #4d99f0;
+}
+.tree-file-icon.is-document {
+  color: #7b8798;
+}
+.tree-col-check :deep(.el-checkbox__input.is-checked .el-checkbox__inner),
+.tree-col-check :deep(.el-checkbox__input.is-indeterminate .el-checkbox__inner) {
+  background-color: #5fa2ee;
+  border-color: #5fa2ee;
+}
+.tree-col-check :deep(.el-checkbox__inner) {
+  background: rgba(255,255,255,0.74);
+  border-color: rgba(137, 158, 187, 0.52);
+  border-radius: 6px;
+}
+.preview-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.preview-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.preview-footer-btn {
+  min-width: 164px;
+  min-height: 52px;
+  border-radius: 18px;
+  font-size: 14px;
+  font-weight: 800;
+}
+.preview-footer-btn.is-ghost {
+  border-color: rgba(255,255,255,0.72);
+  background: linear-gradient(180deg, rgba(255,255,255,0.7) 0%, rgba(235, 239, 244, 0.58) 100%);
+  color: #1f2937;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.9),
+    0 16px 30px rgba(148, 163, 184, 0.12);
+}
+.preview-footer-btn.is-primary {
+  border: 1px solid rgba(255,255,255,0.3);
+  background: linear-gradient(180deg, #84baf5 0%, #6ea8ed 100%);
+  color: #ffffff;
+  box-shadow: 0 20px 38px rgba(109, 168, 237, 0.28);
+}
+:deep(.circle-preview-dialog .el-dialog) {
+  border-radius: 26px;
+  overflow: hidden;
+  max-width: calc(100vw - 32px);
+  background:
+    radial-gradient(circle at 20% 12%, rgba(255,255,255,0.28), transparent 34%),
+    radial-gradient(circle at 80% 18%, rgba(255,255,255,0.24), transparent 26%),
+    radial-gradient(circle at 54% 82%, rgba(255,255,255,0.18), transparent 24%),
+    linear-gradient(180deg, rgba(224, 231, 240, 0.56) 0%, rgba(212, 220, 231, 0.42) 100%);
+  border: 1px solid rgba(255,255,255,0.56);
+  box-shadow:
+    0 34px 72px rgba(148, 163, 184, 0.22),
+    inset 0 1px 0 rgba(255,255,255,0.76);
+  backdrop-filter: blur(36px) saturate(138%);
+  -webkit-backdrop-filter: blur(36px) saturate(138%);
+}
+:deep(.circle-preview-dialog .el-dialog__header) {
+  display: none;
+}
+:deep(.circle-preview-dialog .el-dialog__body) {
+  padding: 28px 28px 14px;
+  background: transparent;
+}
+:deep(.circle-preview-dialog .el-dialog__footer) {
+  padding: 8px 28px 28px;
+  background: transparent;
+}
+@media (max-width: 1100px) {
+  .preview-layout {
+    grid-template-columns: 1fr;
+  }
+  .preview-side-column {
+    order: 2;
+  }
+  .preview-tree-panel {
+    order: 1;
+  }
+}
+@media (max-width: 720px) {
+  .preview-dialog-shell {
+    min-height: auto;
+  }
+  .preview-header-title {
+    font-size: 22px;
+  }
+  .preview-layout {
+    gap: 16px;
+  }
+  .download-settings-grid,
+  .preview-action-grid {
+    grid-template-columns: 1fr;
+  }
+  .preview-dialog-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .preview-footer-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
 }
 .tree-check {
   width: 14px;
