@@ -69,6 +69,7 @@ SYNOLOGY_FILESTATION_ERROR_MESSAGES: dict[int, str] = {
     117: "Target file or folder already exists",
     118: "Target file or folder does not exist or was moved",
     119: "目标路径无效、不存在，或当前账号无权访问",
+    414: "目标文件已存在",
 }
 
 
@@ -211,6 +212,7 @@ class SynologyFileStationClient:
         self._sid: Optional[str] = None
         self._device_id: str = config.device_id or ""
         self._api_info_cache: dict[str, tuple[str, int]] = {}
+        self._preferred_upload_variant_name: Optional[str] = None
 
     async def _read_response_payload(self, response: aiohttp.ClientResponse, api: str) -> dict[str, Any]:
         try:
@@ -270,6 +272,18 @@ class SynologyFileStationClient:
             rf"'code'\s*:\s*{code}\b",
         ]
         return any(re.search(pattern, message, re.IGNORECASE) for pattern in patterns)
+
+    def _first_info_item(self, data: dict[str, Any]) -> Optional[dict[str, Any]]:
+        files = data.get("files") or []
+        return files[0] if files else None
+
+    async def _get_remote_file_info_if_exists(self, path: str) -> Optional[dict[str, Any]]:
+        normalized_path = str(PurePosixPath(path or "/"))
+        try:
+            info = await self.stat(normalized_path)
+            return self._first_info_item(info)
+        except Exception:
+            return None
 
     async def _post_file_upload(
         self,
@@ -651,14 +665,80 @@ class SynologyFileStationClient:
         normalized_path = str(PurePosixPath(dest_folder or "/"))
         overwrite_value = "true" if overwrite else "false"
         connect_timeout = max(10, int(self.config.timeout or 30))
+        response_timeout = max(90, connect_timeout * 6)
         timeout = aiohttp.ClientTimeout(
             total=None,
             connect=connect_timeout,
             sock_connect=connect_timeout,
-            sock_read=None,
+            sock_read=response_timeout,
         )
         payload_variants = [
             {
+                "name": "query_only",
+                "query": {"path": normalized_path, "overwrite": overwrite_value},
+                "form": {},
+                "quote_fields": True,
+                "include_content_type": False,
+                "include_sid": True,
+            },
+            {
+                "name": "minimal_form",
+                "query": {},
+                "form": {
+                    "path": normalized_path,
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": True,
+                "include_content_type": False,
+                "include_sid": True,
+            },
+            {
+                "name": "content_type_form",
+                "query": {},
+                "form": {
+                    "path": normalized_path,
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": False,
+                "include_content_type": True,
+                "include_sid": True,
+            },
+            {
+                "name": "no_sid_form",
+                "query": {},
+                "form": {
+                    "path": normalized_path,
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": True,
+                "include_content_type": True,
+                "include_sid": False,
+            },
+            {
+                "name": "json_path_form",
+                "query": {},
+                "form": {
+                    "path": f'["{normalized_path}"]',
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": True,
+                "include_content_type": True,
+                "include_sid": True,
+            },
+            {
+                "name": "create_parents_form",
+                "query": {},
+                "form": {
+                    "path": normalized_path,
+                    "create_parents": "true",
+                    "overwrite": overwrite_value,
+                },
+                "quote_fields": True,
+                "include_content_type": False,
+                "include_sid": True,
+            },
+            {
+                "name": "duplicate_api_fields",
                 "query": {},
                 "form": {
                     "api": "SYNO.FileStation.Upload",
@@ -672,66 +752,18 @@ class SynologyFileStationClient:
                 "include_content_type": False,
                 "include_sid": True,
             },
-            {
-                "query": {},
-                "form": {
-                    "path": normalized_path,
-                    "overwrite": overwrite_value,
-                },
-                "quote_fields": True,
-                "include_content_type": False,
-                "include_sid": True,
-            },
-            {
-                "query": {"path": normalized_path, "overwrite": overwrite_value},
-                "form": {},
-                "quote_fields": True,
-                "include_content_type": False,
-                "include_sid": True,
-            },
-            {
-                "query": {},
-                "form": {
-                    "path": normalized_path,
-                    "create_parents": "true",
-                    "overwrite": overwrite_value,
-                },
-                "quote_fields": True,
-                "include_content_type": False,
-                "include_sid": True,
-            },
-            {
-                "query": {},
-                "form": {
-                    "path": f'["{normalized_path}"]',
-                    "overwrite": overwrite_value,
-                },
-                "quote_fields": True,
-                "include_content_type": True,
-                "include_sid": True,
-            },
-            {
-                "query": {},
-                "form": {
-                    "path": normalized_path,
-                    "overwrite": overwrite_value,
-                },
-                "quote_fields": False,
-                "include_content_type": True,
-                "include_sid": True,
-            },
-            {
-                "query": {},
-                "form": {
-                    "path": normalized_path,
-                    "overwrite": overwrite_value,
-                },
-                "quote_fields": True,
-                "include_content_type": True,
-                "include_sid": False,
-            },
         ]
+        preferred_variant_name = str(self._preferred_upload_variant_name or "").strip()
+        if preferred_variant_name:
+            logger.info("[SynologyUpload] 命中已缓存成功变体: %s", preferred_variant_name)
+            payload_variants = sorted(
+                payload_variants,
+                key=lambda item: 0 if item.get("name") == preferred_variant_name else 1,
+            )
         last_error: Optional[Exception] = None
+        file_name = remote_name or os.path.basename(local_path)
+        remote_file_path = str(PurePosixPath(normalized_path) / file_name)
+        local_file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
             if not self._sid:
@@ -755,9 +787,10 @@ class SynologyFileStationClient:
                         if "_sid" in form:
                             form["_sid"] = self._sid
                     logger.info(
-                        "[SynologyUpload] 尝试变体 %s/%s path=%s api_path=%s api_version=%s query_keys=%s form_keys=%s",
+                        "[SynologyUpload] 尝试变体 %s/%s name=%s path=%s api_path=%s api_version=%s query_keys=%s form_keys=%s",
                         index + 1,
                         len(payload_variants),
+                        variant.get("name"),
                         normalized_path,
                         api_path,
                         api_version,
@@ -776,16 +809,38 @@ class SynologyFileStationClient:
                         include_content_type=variant["include_content_type"],
                         progress_callback=progress_callback,
                     )
+                    self._preferred_upload_variant_name = str(variant.get("name") or "").strip() or None
                     return
                 except Exception as exc:
                     logger.warning(
-                        "[SynologyUpload] 变体失败 %s/%s path=%s error=%s",
+                        "[SynologyUpload] 变体失败 %s/%s name=%s path=%s error=%s",
                         index + 1,
                         len(payload_variants),
+                        variant.get("name"),
                         normalized_path,
                         exc,
                     )
                     last_error = exc
+                    if self._is_error_code(exc, 414):
+                        remote_info = await self._get_remote_file_info_if_exists(remote_file_path)
+                        remote_size = int((remote_info or {}).get("additional", {}).get("size") or (remote_info or {}).get("size") or 0)
+                        if remote_size > 0 and remote_size == local_file_size:
+                            logger.info(
+                                "[SynologyUpload] 414 后远端校验命中，直接判定成功 path=%s size=%s variant=%s",
+                                remote_file_path,
+                                remote_size,
+                                variant.get("name"),
+                            )
+                            self._preferred_upload_variant_name = str(variant.get("name") or "").strip() or self._preferred_upload_variant_name
+                            if progress_callback:
+                                progress_callback(local_file_size, local_file_size)
+                            return
+                        logger.info(
+                            "[SynologyUpload] 414 后远端校验未命中，继续切换变体 path=%s local_size=%s remote_size=%s",
+                            remote_file_path,
+                            local_file_size,
+                            remote_size,
+                        )
                     if not self._is_error_code(exc, 101) or index == len(payload_variants) - 1:
                         continue
 

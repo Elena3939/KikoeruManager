@@ -210,7 +210,7 @@ class ASMRSyncConfig(BaseModel):
     api_base_url: str = "https://api.asmr-200.com/api"
     max_concurrent_downloads: int = 3
     enhanced_max_parallel_sessions: int = 5
-    enhanced_per_session_concurrency: int = 3
+    enhanced_per_session_concurrency: int = 5
     queue_worker_limit: int = 5
     http_proxy: Optional[str] = None
     retry_interval_hours: float = 1.0# 重试间隔（小时）

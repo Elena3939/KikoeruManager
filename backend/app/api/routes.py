@@ -8899,6 +8899,7 @@ async def asmr_sync_status():
                     "rjcode": t.task_metadata.get("rjcode", ""),
                     "actual_rjcode": t.task_metadata.get("actual_rjcode", ""),
                     "work_title": t.task_metadata.get("work_title", ""),
+                    "source_label": t.task_metadata.get("source_label", ""),
                     "status": t.status.value,
                     "display_status": "partial_failed" if (t.status.value == "completed" and (t.task_metadata.get("failed_files") or t.task_metadata.get("verification_failures") or t.task_metadata.get("failure_reason"))) else t.status.value,
                     "progress": t.progress,
@@ -8909,6 +8910,7 @@ async def asmr_sync_status():
                     "completed_at": t.completed_at.isoformat() if getattr(t, "completed_at", None) else None,
                     "output_path": getattr(t, "output_path", ""),
                     "download_files": t.task_metadata.get("download_files", []),
+                    "download_runtime": t.task_metadata.get("download_runtime", {}),
                     "upload_files": t.task_metadata.get("upload_files", []),
                     "upload_runtime": t.task_metadata.get("upload_runtime", {}),
                     "failed_files": t.task_metadata.get("failed_files", []),
@@ -8926,9 +8928,12 @@ async def asmr_sync_status():
                         "retry_count": t.task_metadata.get("retry_count", 0),
                         "retry_after": t.task_metadata.get("retry_after", ""),
                         "selected_resource_count": t.task_metadata.get("selected_resource_count", 0),
+                        "selected_resources": t.task_metadata.get("selected_resources", []),
                         "verify_summary": t.task_metadata.get("verify_summary", {}),
                         "upload_summary": t.task_metadata.get("upload_summary", {}),
                         "retry_summary": t.task_metadata.get("retry_summary", {}),
+                        "source_action": t.task_metadata.get("source_action", ""),
+                        "circle_name": t.task_metadata.get("circle_name", ""),
                         "download_root": (
                             session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}).get("local_download_root")
                             or t.task_metadata.get("download_root", "")

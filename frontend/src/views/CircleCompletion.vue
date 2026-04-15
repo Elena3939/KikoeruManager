@@ -359,13 +359,28 @@
       <template v-else>
         <div class="preview-toolbar">
           <div class="preview-presets">
-            <button type="button" class="preset-chip" @click="applyPreset('wav')">wav</button>
-            <button type="button" class="preset-chip" @click="applyPreset('flac')">flac</button>
-            <button type="button" class="preset-chip" @click="applyPreset('mp3')">mp3</button>
-            <button type="button" class="preset-chip" @click="applyPreset('pdf')">pdf</button>
-            <button type="button" class="preset-chip" @click="applyPreset('image')">图片</button>
-            <button type="button" class="preset-chip" @click="applyPreset('subtitle')">字幕</button>
-            <button type="button" class="preset-chip ghost" @click="applyPreset('audio')">仅音频</button>
+            <button
+              type="button"
+              class="preset-chip"
+              :class="`state-${allPreviewSelectionState}`"
+              @click="toggleAllPreviewSelection"
+            >
+              <span v-if="allPreviewSelectionState === 'partial'" class="preset-chip-indicator" aria-hidden="true">-</span>
+              <span>全部</span>
+              <span class="preset-chip-count">{{ selectedFileCount }} / {{ previewSelectableResources.length }}</span>
+            </button>
+            <button
+              v-for="chip in previewFileTypeChips"
+              :key="chip.key"
+              type="button"
+              class="preset-chip"
+              :class="`state-${chip.state}`"
+              @click="togglePreviewFileType(chip)"
+            >
+              <span v-if="chip.state === 'partial'" class="preset-chip-indicator" aria-hidden="true">-</span>
+              <span>{{ chip.label }}</span>
+              <span class="preset-chip-count">{{ chip.selected }} / {{ chip.total }}</span>
+            </button>
             <button type="button" class="preset-chip ghost" @click="resetRecommended">恢复推荐</button>
           </div>
           <div class="preview-stats">{{ selectedFileCount }} 已选，共 {{ formatSize(selectedTotalBytes) }}</div>
@@ -441,7 +456,6 @@
                 </div>
                 <div class="tree-col-name">文件名</div>
                 <div class="tree-col-size">大小</div>
-                <div class="tree-col-note">推荐状态</div>
               </div>
 
               <div class="tree-body">
@@ -461,16 +475,13 @@
                         &gt;
                       </button>
                       <span v-else class="tree-arrow-placeholder"></span>
+                      <el-icon class="tree-file-icon" :class="getTreeRowIconClass(row)">
+                        <component :is="getTreeRowIconComponent(row)" />
+                      </el-icon>
                       <span class="tree-name">{{ row.name }}</span>
                     </div>
                   </div>
                   <div class="tree-col-size">{{ formatSize(row.size_bytes) }}</div>
-                  <div class="tree-col-note">
-                    <template v-if="row.type === 'file'">
-                      <span v-for="reason in row.recommended_skip_reasons" :key="reason" class="reason-pill">{{ reason }}</span>
-                      <span v-if="!row.recommended_skip_reasons?.length" class="reason-pill ok">推荐下载</span>
-                    </template>
-                  </div>
                 </div>
               </div>
             </div>
@@ -485,156 +496,28 @@
       </template>
     </el-dialog>
 
+    <DownloadTaskWorkbenchDialog
+      v-model:visible="downloadWorkbenchVisible"
+      :tasks="trackedDownloadTasks"
+      :refreshing="downloadWorkbenchRefreshing"
+      :retrying-keys="[...retryingTaskIds]"
+      @refresh="refreshDownloadWorkbench({ silent: true })"
+      @background="hideDownloadWorkbenchToBackground"
+      @close="closeDownloadWorkbench"
+      @retry-task="retryDownloadTask"
+      @retry-waiting="retryWaitingDownloadTask"
+      @retry-file="handleRetrySingleFailedFile"
+      @reimport-task="openReimportDialog"
+    />
+
     <el-dialog
-      v-model="downloadWorkbenchVisible"
-      width="980px"
-      title="社团补全下载任务"
-      class="circle-download-workbench"
-      :close-on-click-modal="false"
+      v-model="reimportDialogVisible"
+      width="860px"
+      title="从已下载内容直接入库"
+      class="circle-reimport-dialog"
+      :show-close="false"
+      :before-close="handleReimportDialogBeforeClose"
     >
-      <div class="workbench-toolbar">
-        <div class="workbench-summary">
-          <div class="workbench-stat">
-            <span class="workbench-stat-label">任务</span>
-            <strong class="workbench-stat-value">{{ trackedDownloadTasks.length }}</strong>
-          </div>
-          <div class="workbench-stat">
-            <span class="workbench-stat-label">进行中</span>
-            <strong class="workbench-stat-value">{{ processingDownloadTasks.length }}</strong>
-          </div>
-          <div class="workbench-stat">
-            <span class="workbench-stat-label">等待中</span>
-            <strong class="workbench-stat-value">{{ pendingDownloadTasks.length }}</strong>
-          </div>
-          <div class="workbench-stat">
-            <span class="workbench-stat-label">完成</span>
-            <strong class="workbench-stat-value">{{ completedDownloadTasks.length }}</strong>
-          </div>
-          <div class="workbench-stat danger">
-            <span class="workbench-stat-label">失败</span>
-            <strong class="workbench-stat-value">{{ failedDownloadTasks.length }}</strong>
-          </div>
-        </div>
-        <div class="workbench-actions">
-          <el-button size="small" class="workbench-action-btn is-refresh" @click="refreshDownloadWorkbench({ silent: true })">刷新</el-button>
-          <el-button size="small" class="workbench-action-btn is-background" @click="hideDownloadWorkbenchToBackground">隐藏到后台</el-button>
-          <el-button size="small" class="workbench-action-btn is-close" @click="closeDownloadWorkbench">关闭</el-button>
-        </div>
-      </div>
-
-      <div v-if="trackedDownloadTasks.length" class="download-task-list">
-        <article v-for="task in trackedDownloadTasks" :key="task.id" class="download-task-card">
-          <div class="download-task-head">
-            <div class="download-task-heading">
-              <div class="download-task-rj-row">
-                <div class="download-task-rj">{{ task.rjcode || '未知 RJ' }}</div>
-                <span v-if="isTaskDownloaded(task)" class="download-state-chip is-downloaded">已下载</span>
-              </div>
-              <div class="download-task-title">{{ task.work_title || task.source_label || '未命名任务' }}</div>
-            </div>
-            <div class="download-task-status">
-              <span class="setting-pill" :class="getDownloadTaskStatusClass(task)">{{ getDownloadTaskStatusLabel(task) }}</span>
-            </div>
-          </div>
-          <el-progress
-            :percentage="Number(task.progress || 0)"
-            :status="getDownloadTaskProgressStatus(task)"
-            :stroke-width="10"
-            :show-text="false"
-          />
-          <div class="download-task-step">{{ task.current_step || '等待处理' }}</div>
-          <div v-if="getTaskFailureText(task)" class="download-task-error">
-            <span class="download-task-error-label">失败原因</span>
-            <span class="download-task-error-text">{{ getTaskFailureText(task) }}</span>
-          </div>
-          <div v-if="canRetryDownloadTask(task) || isTaskDownloaded(task)" class="download-task-actions">
-            <el-button v-if="canRetryDownloadTask(task)" size="small" class="download-task-action-btn is-primary" :loading="retryingTaskIds.has(task.id)" @click="retryDownloadTask(task)">重试失败项</el-button>
-            <el-button v-if="String(task.status || '') === 'waiting_retry'" size="small" class="download-task-action-btn" :loading="retryingTaskIds.has(`${task.id}:waiting`)" @click="retryWaitingDownloadTask(task)">立即重试</el-button>
-            <el-button v-if="isTaskDownloaded(task)" size="small" class="download-task-action-btn is-upload" @click="openReimportDialog(task)">直接入库</el-button>
-          </div>
-          <div v-if="getRetryableFailedFiles(task).length" class="download-failed-list">
-            <div class="download-file-title">失败文件</div>
-            <div v-for="file in getRetryableFailedFiles(task)" :key="`${task.id}-failed-${file.relative_path || file.name}`" class="download-failed-item">
-              <div class="download-failed-main">
-                <div class="download-file-name">{{ file.name || file.relative_path || '未知文件' }}</div>
-                <div class="download-failed-reason">{{ file.reason || file.exception_type || '失败' }}</div>
-              </div>
-              <el-button
-                size="small"
-                class="download-task-action-btn is-primary"
-                :loading="retryingTaskIds.has(`${task.id}:${file.relative_path || file.name}`)"
-                @click="retrySingleFailedFile(task, file)"
-              >
-                重试这个文件
-              </el-button>
-            </div>
-          </div>
-          <div class="download-task-meta-grid">
-            <div class="download-task-meta-item">
-              <span class="download-task-meta-label">下载目录</span>
-              <span class="download-task-meta-value">{{ task.task_metadata?.local_download_root || task.session_state?.local_download_root || task.task_metadata?.download_root || task.task_metadata?.download_base_path || '默认临时目录' }}</span>
-            </div>
-            <div class="download-task-meta-item">
-              <span class="download-task-meta-label">最终路径</span>
-              <span class="download-task-meta-value">{{ task.task_metadata?.final_output_path || task.output_path || task.task_metadata?.target_path || '处理中' }}</span>
-            </div>
-            <div class="download-task-meta-item">
-              <span class="download-task-meta-label">{{ getTaskTransferLabel(task) }}</span>
-              <span class="download-task-meta-value">{{ formatSize(getTaskTransferBytes(task)) }}</span>
-            </div>
-            <div class="download-task-meta-item">
-              <span class="download-task-meta-label">上传文件</span>
-              <span class="download-task-meta-value">{{ getUploadedCount(task) }} 个</span>
-            </div>
-            <div class="download-task-meta-item">
-              <span class="download-task-meta-label">耗时</span>
-              <span class="download-task-meta-value">{{ formatDurationMs(task.performance_metrics?.duration_ms || task.task_metadata?.performance_metrics?.duration_ms || 0) }}</span>
-            </div>
-            <div class="download-task-meta-item">
-              <span class="download-task-meta-label">失败统计</span>
-              <span class="download-task-meta-value">{{ getFailureSummary(task) }}</span>
-            </div>
-          </div>
-          <div v-if="task.download_files?.length" class="download-file-list">
-            <div class="download-file-title">文件进度</div>
-            <div v-for="file in task.download_files.slice(0, 8)" :key="`${task.id}-${file.name}`" class="download-file-item">
-              <div class="download-file-row">
-                <div class="download-file-name">{{ file.name }}</div>
-                <div class="download-file-size">{{ formatSize(file.downloaded) }} / {{ formatSize(file.total) }}</div>
-              </div>
-              <el-progress :percentage="Number(file.progress || 0)" :stroke-width="6" :show-text="false" />
-            </div>
-          </div>
-          <div v-if="task.upload_files?.length" class="download-file-list upload-stage">
-            <div class="download-file-title">上传 / 入库进度</div>
-            <div v-for="file in task.upload_files.slice(0, 8)" :key="`${task.id}-upload-${file.name}`" class="download-file-item">
-              <div class="download-file-row">
-                <div class="download-file-name">{{ file.name }}</div>
-                <div class="download-file-size">{{ formatSize(file.uploaded) }} / {{ formatSize(file.total) }}</div>
-              </div>
-              <el-progress :percentage="Number(file.progress || 0)" :stroke-width="6" :show-text="false" color="#31b26d" />
-            </div>
-          </div>
-          <div v-if="task.uploaded_files?.length" class="download-result-list">
-            <div class="download-file-title">已上传 / 已入库</div>
-            <div v-for="file in task.uploaded_files.slice(0, 6)" :key="`${task.id}-uploaded-${file.name}`" class="download-result-item">
-              <span class="download-result-name">{{ file.name }}</span>
-              <span class="download-result-path">{{ file.upload_path }}</span>
-            </div>
-          </div>
-          <div v-if="task.progress_log?.length" class="download-log-list">
-            <div class="download-file-title">过程日志</div>
-            <div v-for="entry in task.progress_log.slice(-8)" :key="`${task.id}-${entry.time}-${entry.message}`" class="download-log-item" :class="entry.level || 'info'">
-              <span class="download-log-time">{{ formatLogTime(entry.time) }}</span>
-              <span class="download-log-message">{{ entry.message }}</span>
-            </div>
-          </div>
-        </article>
-      </div>
-      <el-empty v-else description="暂无社团补全下载任务" :image-size="72" />
-    </el-dialog>
-
-    <el-dialog v-model="reimportDialogVisible" width="860px" title="从已下载内容直接入库" class="circle-reimport-dialog">
       <div class="reimport-dialog-body">
           <div v-if="reimportTrackedTask" class="reimport-progress-card">
             <div class="reimport-progress-head">
@@ -737,7 +620,7 @@
       </div>
       <template #footer>
         <span class="dialog-footer">
-          <el-button @click="reimportDialogVisible = false">取消</el-button>
+          <el-button @click="closeReimportDialog">取消</el-button>
           <el-button
             v-if="reimportTrackedTask && ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(reimportTrackedTask.status || ''))"
             @click="hideReimportDialogToBackground"
@@ -825,7 +708,9 @@
 <script setup>
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Document, Files, FolderOpened, Headset, PictureFilled } from '@element-plus/icons-vue'
 import api, { asmrSyncApi, circleCompletionApi, libraryApi } from '../api'
+import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'prekikoeru.circleCompletion.targetSubdirs'
 const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.downloadWorkbench'
@@ -1026,6 +911,62 @@ const selectedDownloadableRJCodes = computed(() => selectedCanonicalRJCodes.valu
 }))
 const selectedFileCount = computed(() => previewPlans.value.reduce((sum, plan) => sum + (plan.selected_resource_count || 0), 0))
 const selectedTotalBytes = computed(() => previewPlans.value.reduce((sum, plan) => sum + (plan.selected_size_bytes || 0), 0))
+const previewSelectableResources = computed(() => previewPlans.value.flatMap(plan => Array.isArray(plan?.selectable_resources) ? plan.selectable_resources : []))
+const previewFileTypeChips = computed(() => {
+  const typeOrder = new Map([
+    ['.wav', 0],
+    ['.flac', 1],
+    ['.mp3', 2],
+    ['.m4a', 3],
+    ['.ogg', 4],
+    ['.aac', 5],
+    ['.wma', 6],
+    ['.pdf', 20],
+    ['.txt', 21],
+    ['.cue', 22],
+    ['.json', 23],
+    ['.jpg', 30],
+    ['.jpeg', 31],
+    ['.png', 32],
+    ['.webp', 33],
+    ['.gif', 34],
+    ['.bmp', 35],
+    ['.srt', 40],
+    ['.ass', 41],
+    ['.ssa', 42],
+    ['.vtt', 43],
+    ['.lrc', 44],
+    ['__no_ext__', 99],
+  ])
+  const groups = new Map()
+  previewSelectableResources.value.forEach((item) => {
+    const key = getPreviewFileTypeKey(item)
+    const label = getPreviewFileTypeLabel(item)
+    const current = groups.get(key) || { key, label, total: 0, selected: 0 }
+    current.total += 1
+    if (item?.selected) current.selected += 1
+    groups.set(key, current)
+  })
+  return [...groups.values()]
+    .map((item) => ({
+      ...item,
+      state: item.selected === 0 ? 'none' : (item.selected === item.total ? 'all' : 'partial')
+    }))
+    .sort((left, right) => {
+      const leftOrder = typeOrder.has(left.key) ? typeOrder.get(left.key) : 80
+      const rightOrder = typeOrder.has(right.key) ? typeOrder.get(right.key) : 80
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder
+      return left.label.localeCompare(right.label, 'zh-CN')
+    })
+})
+const allPreviewSelectionState = computed(() => {
+  const total = previewSelectableResources.value.length
+  if (!total) return 'none'
+  const selected = previewSelectableResources.value.filter(item => item?.selected).length
+  if (selected === 0) return 'none'
+  if (selected === total) return 'all'
+  return 'partial'
+})
 const targetLibraries = computed(() => (libraries.value || []).filter(item => item?.enabled !== false))
 const selectedTargetLibrary = computed(() => targetLibraries.value.find(item => item.id === downloadSettings.targetLibraryId) || null)
 const targetSubdirOptions = computed(() => [...new Set((cachedTargetSubdirs.value || []).filter(Boolean))])
@@ -1050,6 +991,14 @@ const showReimportBackgroundCard = computed(() =>
 )
 const backgroundDownloadPercent = computed(() => {
   if (!trackedDownloadTasks.value.length) return 0
+  const aggregate = trackedDownloadTasks.value.reduce((sum, task) => {
+    sum.transferred += getTaskTransferredBytes(task)
+    sum.total += getTaskTotalBytes(task)
+    return sum
+  }, { transferred: 0, total: 0 })
+  if (aggregate.total > 0) {
+    return Math.max(0, Math.min(100, Math.round((aggregate.transferred / aggregate.total) * 100)))
+  }
   const total = trackedDownloadTasks.value.reduce((sum, task) => sum + Number(task.progress || 0), 0)
   return Math.max(0, Math.min(100, Math.round(total / trackedDownloadTasks.value.length)))
 })
@@ -1240,13 +1189,32 @@ function formatTaskEta(task) {
 }
 
 function formatFileEta(file) {
-  if (Number(file?.progress || 0) >= 100) return '完成'
+  if (Number(file?.progress || 0) >= 100) return '等待确认'
   return formatEtaSeconds(file?.eta_seconds)
+}
+
+function getDownloadRuntime(task) {
+  const runtime = task?.download_runtime || task?.performance_metrics?.download_runtime || task?.task_metadata?.performance_metrics?.download_runtime || {}
+  return runtime && typeof runtime === 'object' ? runtime : {}
 }
 
 function getUploadRuntime(task) {
   const runtime = task?.upload_runtime || task?.performance_metrics?.upload_runtime || task?.task_metadata?.performance_metrics?.upload_runtime || {}
   return runtime && typeof runtime === 'object' ? runtime : {}
+}
+
+function getTaskTransferredBytes(task) {
+  const downloadTransferred = Number(getDownloadRuntime(task)?.transferred_bytes || 0)
+  const uploadTransferred = Number(getUploadRuntime(task)?.transferred_bytes || 0)
+  if (Number(getUploadRuntime(task)?.total_bytes || 0) > 0) return downloadTransferred + uploadTransferred
+  return downloadTransferred
+}
+
+function getTaskTotalBytes(task) {
+  const downloadTotal = Number(getDownloadRuntime(task)?.total_bytes || 0)
+  const uploadTotal = Number(getUploadRuntime(task)?.total_bytes || 0)
+  if (uploadTotal > 0) return Math.max(downloadTotal, getTaskTransferBytes(task)) + uploadTotal
+  return downloadTotal || getTaskTransferBytes(task)
 }
 
 function getUploadTransferredBytes(task) {
@@ -1309,8 +1277,13 @@ function getCurrentUploadSequenceLabel(task) {
 function getUploadStageLabel(task) {
   const runtime = getUploadRuntime(task)
   const stage = String(runtime?.stage || '').trim()
-  if (stage === 'library_upload') return '远程入库上传'
-  if (stage === 'upload') return '自动上传'
+  const currentStep = String(task?.current_step || '').trim()
+  const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []
+  const pendingConfirmation = uploadFiles.some(item => Number(item?.progress || 0) >= 100)
+  if (stage === 'library_upload') return '上传到服务器目录'
+  if (stage === 'upload') return '上传到服务器目录'
+  if (pendingConfirmation) return '等待服务器确认'
+  if (currentStep.includes('校验中')) return '校验文件'
   if (isReimportTask(task)) return '准备入库'
   return '处理中'
 }
@@ -1408,6 +1381,8 @@ function getTaskTransferBytes(task) {
   const selectedResources = Array.isArray(task?.task_metadata?.selected_resources) ? task.task_metadata.selected_resources : []
   const selectedBytes = selectedResources.reduce((sum, item) => sum + Number(item?.size_bytes || 0), 0)
   if (selectedBytes > 0) return selectedBytes
+  const downloadRuntimeTotal = Number(getDownloadRuntime(task)?.total_bytes || 0)
+  if (downloadRuntimeTotal > 0) return downloadRuntimeTotal
   const uploadedFiles = Array.isArray(task?.uploaded_files) ? task.uploaded_files : []
   return uploadedFiles.reduce((sum, item) => sum + Number(item?.size_bytes || 0), 0)
 }
@@ -1643,6 +1618,29 @@ async function refreshDownloadWorkbench(options = {}) {
   }
 }
 
+function replaceTrackedDownloadTaskForSession(sessionId, nextTaskId) {
+  const normalizedTaskId = String(nextTaskId || '').trim()
+  if (!normalizedTaskId) return
+  const normalizedSessionId = String(sessionId || '').trim()
+  const sameSessionTaskIds = normalizedSessionId
+    ? trackedDownloadTasks.value
+      .filter(task => String(task?.task_metadata?.session_id || task?.session_id || '').trim() === normalizedSessionId)
+      .map(task => String(task?.id || '').trim())
+      .filter(Boolean)
+    : []
+  trackedDownloadTaskIds.value = [
+    normalizedTaskId,
+    ...trackedDownloadTaskIds.value.filter(id => id !== normalizedTaskId && !sameSessionTaskIds.includes(String(id || '').trim()))
+  ]
+}
+
+function appendTrackedDownloadTask(nextTaskId) {
+  const normalizedTaskId = String(nextTaskId || '').trim()
+  if (!normalizedTaskId) return
+  if (trackedDownloadTaskIds.value.includes(normalizedTaskId)) return
+  trackedDownloadTaskIds.value = [normalizedTaskId, ...trackedDownloadTaskIds.value]
+}
+
 function canRetryDownloadTask(task) {
   const status = String(task?.status || '')
   return ['failed', 'partial_failed', 'waiting_retry'].includes(status)
@@ -1655,7 +1653,12 @@ async function retryDownloadTask(task) {
   next.add(taskId)
   retryingTaskIds.value = next
   try {
-    if (sessionId) await asmrSyncApi.retryFailedSession(sessionId)
+    let nextTaskId = ''
+    if (sessionId) {
+      const response = await asmrSyncApi.retryFailedSession(sessionId)
+      nextTaskId = String(response?.session?.task_id || '').trim()
+      replaceTrackedDownloadTaskForSession(sessionId, nextTaskId)
+    }
     else if (taskId) await asmrSyncApi.retry(taskId)
     else throw new Error('缺少任务标识')
     ElMessage.success('已提交重试')
@@ -1697,7 +1700,9 @@ async function retrySingleFailedFile(task, file) {
   retryingTaskIds.value = next
   try {
     if (!sessionId || !relativePath) throw new Error('缺少会话或文件路径')
-    await asmrSyncApi.retrySessionFiles(sessionId, [relativePath])
+    const response = await asmrSyncApi.retrySessionFiles(sessionId, [relativePath])
+    const nextTaskId = String(response?.session?.task_id || '').trim()
+    appendTrackedDownloadTask(nextTaskId)
     ElMessage.success('已提交该文件重试')
     await refreshDownloadWorkbench({ silent: true })
   } catch (error) {
@@ -1707,6 +1712,10 @@ async function retrySingleFailedFile(task, file) {
     done.delete(key)
     retryingTaskIds.value = done
   }
+}
+
+function handleRetrySingleFailedFile(payload) {
+  retrySingleFailedFile(payload?.task, payload?.file)
 }
 
 function openReimportDialog(task) {
@@ -1773,6 +1782,19 @@ function hideReimportDialogToBackground() {
   if (!reimportTrackedTask.value) return
   reimportDialogVisible.value = false
   reimportBackgroundActive.value = true
+}
+
+function handleReimportDialogBeforeClose(done) {
+  if (isReimportTaskActive(reimportTrackedTask.value)) {
+    hideReimportDialogToBackground()
+    return
+  }
+  done()
+}
+
+function closeReimportDialog() {
+  reimportDialogVisible.value = false
+  reimportBackgroundActive.value = false
 }
 
 function resumeReimportDialogFromBackground() {
@@ -2304,18 +2326,37 @@ function togglePlanAll(plan) {
   refreshPlanTree(plan)
 }
 
-function matchPreset(item, preset) {
-  const ext = String(item.file_ext || '').toLowerCase()
-  if (preset === 'subtitle') return item.resource_type === 'subtitle'
-  if (preset === 'audio') return item.resource_type === 'audio'
-  if (preset === 'image') return item.resource_type === 'cover'
-  return ext === `.${preset}`
+function getPreviewFileTypeKey(item) {
+  const explicitExt = String(item?.file_ext || '').trim().toLowerCase()
+  if (explicitExt) return explicitExt.startsWith('.') ? explicitExt : `.${explicitExt}`
+  const sourceName = String(item?.relative_path || item?.file_name || '').trim().toLowerCase()
+  const match = sourceName.match(/\.([^.\\/]+)$/)
+  if (match?.[1]) return `.${match[1]}`
+  return '__no_ext__'
 }
 
-function applyPreset(preset) {
+function getPreviewFileTypeLabel(item) {
+  const key = getPreviewFileTypeKey(item)
+  return key === '__no_ext__' ? '无后缀' : key.replace(/^\./, '')
+}
+
+function toggleAllPreviewSelection() {
+  const nextSelected = allPreviewSelectionState.value !== 'all'
   previewPlans.value.forEach(plan => {
     plan.selectable_resources.forEach(item => {
-      item.selected = matchPreset(item, preset)
+      item.selected = nextSelected
+    })
+    refreshPlanTree(plan)
+  })
+}
+
+function togglePreviewFileType(chip) {
+  const key = String(chip?.key || '').trim()
+  if (!key) return
+  const nextSelected = String(chip?.state || '') !== 'all'
+  previewPlans.value.forEach(plan => {
+    plan.selectable_resources.forEach(item => {
+      if (getPreviewFileTypeKey(item) === key) item.selected = nextSelected
     })
     refreshPlanTree(plan)
   })
@@ -2330,7 +2371,34 @@ function resetRecommended() {
   })
 }
 
+function getTreeRowFileType(row) {
+  if (row?.type === 'dir') return 'folder'
+  const resource = row?.resource || {}
+  const ext = getPreviewFileTypeKey(resource)
+  const resourceType = String(resource.resource_type || '').toLowerCase()
+  if (['.wav', '.flac', '.mp3', '.m4a', '.ogg', '.aac', '.wma'].includes(ext) || resourceType === 'audio') return 'audio'
+  if (['.srt', '.ass', '.ssa', '.vtt', '.lrc'].includes(ext) || resourceType === 'subtitle') return 'subtitle'
+  if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(ext) || resourceType === 'cover') return 'image'
+  if (['.pdf', '.txt', '.cue', '.md', '.json'].includes(ext)) return 'document'
+  return 'file'
+}
+
+function getTreeRowIconClass(row) {
+  return `is-${getTreeRowFileType(row)}`
+}
+
+function getTreeRowIconComponent(row) {
+  const type = getTreeRowFileType(row)
+  if (type === 'folder') return FolderOpened
+  if (type === 'audio') return Headset
+  if (type === 'subtitle') return Files
+  if (type === 'image') return PictureFilled
+  return Document
+}
+
 async function startBatchDownload() {
+  const targetLibrary = selectedTargetLibrary.value
+  const useImmediateSynologyUpload = targetLibrary?.type === 'synology_filestation' && String(downloadSettings.targetLibraryId || '').trim()
   const items = previewPlans.value
     .map(plan => ({
       session_id: plan.session_id,
@@ -2341,10 +2409,10 @@ async function startBatchDownload() {
       folder_path: plan.folder_path || '',
       selected_resources: plan.selectable_resources.filter(item => item.selected),
       upload_options: {
-        enabled: false,
-        mode: 'disabled',
+        enabled: useImmediateSynologyUpload,
+        mode: useImmediateSynologyUpload ? 'synology' : 'disabled',
         target_path: '',
-        library_id: ''
+        library_id: useImmediateSynologyUpload ? String(downloadSettings.targetLibraryId || '').trim() : ''
       },
       postprocess_options: {
         enabled: true,
@@ -2948,25 +3016,6 @@ async function startBatchDownload() {
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
-}
-:deep(.circle-download-workbench .el-dialog) {
-  border-radius: 24px;
-  overflow: hidden;
-}
-:deep(.circle-download-workbench .el-dialog__header) {
-  margin-right: 0;
-  padding: 22px 24px 14px;
-  border-bottom: 1px solid #e6eef8;
-  background: linear-gradient(180deg, #fbfdff 0%, #f5f9ff 100%);
-}
-:deep(.circle-download-workbench .el-dialog__title) {
-  font-size: 20px;
-  font-weight: 800;
-  color: #1d3557;
-}
-:deep(.circle-download-workbench .el-dialog__body) {
-  padding: 20px 24px 24px;
-  background: #f8fbff;
 }
 :deep(.circle-reimport-dialog .el-dialog) {
   border-radius: 22px;
@@ -4006,12 +4055,25 @@ async function startBatchDownload() {
   padding-top: 2px;
 }
 .preview-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
   margin-bottom: 14px;
 }
+.preview-presets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .preset-chip {
-  border: 1px solid #cfe0ff;
-  background: #f0f6ff;
-  color: #2256a6;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #d9e4f2;
+  background: #f7f9fc;
+  color: #60748d;
   border-radius: 10px;
   padding: 5px 10px;
   font-size: 11px;
@@ -4030,6 +4092,46 @@ async function startBatchDownload() {
   background: #fff;
   color: #536a86;
   border-color: #dde5f1;
+}
+.preset-chip.state-all {
+  background: #e9f7ef;
+  border-color: #b8e0c6;
+  color: #24724b;
+}
+.preset-chip.state-partial {
+  background: #fff7e8;
+  border-color: #efd39a;
+  color: #9a5b08;
+}
+.preset-chip.state-none {
+  background: #f7f9fc;
+  border-color: #d9e4f2;
+  color: #60748d;
+}
+.preset-chip-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: currentColor;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 900;
+}
+.preset-chip-count {
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 10px;
+  line-height: 1;
 }
 .preview-stats {
   font-size: 13px;
@@ -4056,7 +4158,7 @@ async function startBatchDownload() {
 .tree-head,
 .tree-row {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) 120px 220px;
+  grid-template-columns: 42px minmax(0, 1fr) 120px;
   align-items: center;
   padding: 0 12px;
 }
@@ -4110,16 +4212,35 @@ async function startBatchDownload() {
   white-space: nowrap;
   color: #2a3f60;
 }
+.tree-file-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  font-size: 16px;
+  color: #6d819b;
+}
+.tree-file-icon.is-folder {
+  color: #3f6ca7;
+}
+.tree-file-icon.is-audio {
+  color: #2d7a50;
+}
+.tree-file-icon.is-subtitle {
+  color: #a0610b;
+}
+.tree-file-icon.is-image {
+  color: #6950b8;
+}
+.tree-file-icon.is-document {
+  color: #376fbe;
+}
+.tree-file-icon.is-file {
+  color: #60748d;
+}
 .tree-check {
   width: 14px;
   height: 14px;
   accent-color: #409eff;
-}
-.reason-pill {
-  min-height: 22px;
-  background: #fff6ea;
-  color: #975a17;
-  border: 1px solid #f4d8b1;
 }
 .dialog-loading {
   min-height: 220px;

@@ -601,7 +601,12 @@ class ASMRDownloadService:
                 if resume_offset > 0:
                     headers['Range'] = f'bytes={resume_offset}-'
 
-                async with session.get(request_url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout), **request_kwargs) as response:
+                async with session.get(
+                    request_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_connect=10, sock_read=timeout),
+                    **request_kwargs,
+                ) as response:
                     # 处理响应状态
                     if resume_offset > 0 and response.status == 206:
                         # 服务器支持断点续传
@@ -640,12 +645,23 @@ class ASMRDownloadService:
                     write_path = temp_path if resume_offset == 0 or response.status == 206 else dest_path
                     mode = 'ab' if resume_offset > 0 and response.status == 206 else 'wb'
 
+                    last_progress_reported = downloaded
+                    last_progress_reported_at = time.monotonic()
                     with open(write_path, mode) as f:
                         async for chunk in response.content.iter_chunked(8192):
                             f.write(chunk)
                             downloaded += len(chunk)
                             if progress_callback and total_size > 0:
-                                progress_callback(downloaded, total_size)
+                                now_monotonic = time.monotonic()
+                                should_report = (
+                                    downloaded >= total_size
+                                    or (downloaded - last_progress_reported) >= 256 * 1024
+                                    or (now_monotonic - last_progress_reported_at) >= 0.5
+                                )
+                                if should_report:
+                                    progress_callback(downloaded, total_size)
+                                    last_progress_reported = downloaded
+                                    last_progress_reported_at = now_monotonic
 
                     # 下载完成，重命名临时文件
                     if os.path.exists(temp_path):
