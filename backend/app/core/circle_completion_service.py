@@ -1653,12 +1653,27 @@ class CircleCompletionService:
                 emit_activity_log=False,
             )
             skip_reasons = self._build_filter_skip_reasons(plan.get("selectable_resources") or [])
+            kept_resources = []
+            filtered_out_resources = []
             for item in plan.get("selectable_resources") or []:
                 reasons = list(skip_reasons.get(str(item.get("relative_path") or ""), []))
                 if reasons:
                     item["selected"] = False
                     item["recommended_skip_reasons"] = reasons
-            plan["selection_presets"] = self.asmr_resource_service._build_selection_presets(plan.get("selectable_resources") or [])
+                    filtered_out_resources.append(item)
+                    continue
+                kept_resources.append(item)
+            plan["selectable_resources"] = kept_resources
+            plan["filtered_out_resources"] = filtered_out_resources
+            plan["filtered_out_count"] = len(filtered_out_resources)
+            plan["summary"] = {
+                **dict(plan.get("summary") or {}),
+                "selectable_total": len(kept_resources),
+                "selected_total": len([item for item in kept_resources if item.get("selected")]),
+                "filtered_out_total": len(filtered_out_resources),
+            }
+            plan["grouped_resources"] = self.asmr_resource_service._group_resources(kept_resources)
+            plan["selection_presets"] = self.asmr_resource_service._build_selection_presets(kept_resources)
             plan["circle_id"] = circle_id
             plan["circle_name"] = catalog.circle_name
             plan["canonical_rjcode"] = row.canonical_rjcode
