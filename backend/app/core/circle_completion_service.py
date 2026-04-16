@@ -8,7 +8,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import quote
 
 
@@ -44,6 +44,11 @@ class CircleCompletionService:
         self.asmr_service = get_asmr_download_service()
         self.asmr_resource_service = get_asmr_resource_service()
         self._index_jobs: Dict[str, Dict[str, Any]] = {}
+        self._public_variant_cache: Dict[str, bool] = {}
+        self._asmr_probe_cache: Dict[str, tuple[str, Optional[Dict[str, Any]]]] = {}
+        self._metadata_cache: Dict[str, Dict[str, Any]] = {}
+        self._canonical_cache: Dict[str, Dict[str, Any]] = {}
+        self._kikoeru_state_cache: Dict[str, Dict[str, Any]] = {}
 
     def normalize_circle_name(self, value: Any) -> str:
         text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
@@ -117,6 +122,269 @@ class CircleCompletionService:
             "link_type": "self",
             "lang": "",
         }
+
+    def _is_displayable_variant(self, link_type: Any, lang: Any) -> bool:
+        group_key = str(self._variant_group(link_type, lang).get("key") or "").strip()
+        return group_key in {"simplified", "traditional", "original"}
+
+    async def _is_public_catalog_variant(self, rjcode: str, *, link_type: Any, lang: Any) -> bool:
+        normalized = self.normalize_rjcode(rjcode)
+        if not normalized or not self._is_displayable_variant(link_type, lang):
+            return False
+        cache_key = f"{normalized}:{str(link_type or '').strip().lower()}:{self._normalize_lang_code(lang)}"
+        cached = self._public_variant_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        group_key = str(self._variant_group(link_type, lang).get("key") or "").strip()
+        try:
+            if group_key in {"simplified", "traditional"}:
+                result = bool(await self.dlsite_service._is_public_work_available(normalized))
+            else:
+                result = bool(await self.dlsite_service.get_product_info(normalized))
+        except Exception:
+            result = False
+        self._public_variant_cache[cache_key] = result
+        return result
+
+    def _pick_display_variant(
+        self,
+        canonical_info: Dict[str, Any],
+        fallback_rjcode: str,
+        metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        variants = self._sort_linked_variants(canonical_info, fallback_rjcode)
+        allowed = [
+            variant for variant in variants
+            if self._is_displayable_variant(variant.get("link_type"), variant.get("lang"))
+        ]
+        metadata_map = metadata_map or {}
+        for variant in allowed:
+            normalized = self.normalize_rjcode(variant.get("rjcode"))
+            title = str((metadata_map.get(normalized) or {}).get("work_name") or "").strip()
+            if title:
+                return variant
+        canonical_rjcode = self.normalize_rjcode(canonical_info.get("canonical_rjcode") or fallback_rjcode)
+        for variant in allowed:
+            normalized = self.normalize_rjcode(variant.get("rjcode"))
+            if normalized == canonical_rjcode or self._variant_group(variant.get("link_type"), variant.get("lang")).get("key") == "original":
+                return variant
+        if allowed:
+            return allowed[0]
+        return self._preferred_variant(canonical_info, fallback_rjcode)
+
+    async def _resolve_public_display_title(
+        self,
+        rjcode: str,
+        *,
+        link_type: Any,
+        lang: Any,
+        metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> str:
+        normalized = self.normalize_rjcode(rjcode)
+        if not normalized or not self._is_displayable_variant(link_type, lang):
+            return ""
+        metadata_map = metadata_map or {}
+        cached_title = str((metadata_map.get(normalized) or {}).get("work_name") or "").strip()
+        group_key = str(self._variant_group(link_type, lang).get("key") or "").strip()
+        if group_key in {"simplified", "traditional"}:
+            try:
+                fallback = await self.dlsite_service._resolve_translation_page_fallback(normalized)
+            except Exception:
+                fallback = None
+            if self.normalize_rjcode((fallback or {}).get("translation_workno")) != normalized:
+                return ""
+            if cached_title:
+                return cached_title
+            try:
+                info = await self.dlsite_service.get_product_info(normalized)
+            except Exception:
+                info = None
+            return str((((info or {}).get("product") or {}).get("work_name")) or "").strip()
+        return cached_title
+
+    async def _pick_public_display_variant_and_title(
+        self,
+        canonical_info: Dict[str, Any],
+        fallback_rjcode: str,
+        metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> tuple[Dict[str, Any], str]:
+        metadata_map = metadata_map or {}
+        allowed = await self._list_public_display_variants(
+            canonical_info,
+            fallback_rjcode,
+            metadata_map,
+        )
+        for variant in allowed:
+            title = await self._resolve_public_display_title(
+                str(variant.get("rjcode") or ""),
+                link_type=variant.get("link_type"),
+                lang=variant.get("lang"),
+                metadata_map=metadata_map,
+            )
+            if title:
+                return variant, title
+        canonical_rjcode = self.normalize_rjcode(canonical_info.get("canonical_rjcode") or fallback_rjcode)
+        fallback_variant = next((
+            variant for variant in allowed
+            if self.normalize_rjcode(variant.get("rjcode")) == canonical_rjcode
+            or str(self._variant_group(variant.get("link_type"), variant.get("lang")).get("key") or "").strip() == "original"
+        ), None)
+        if fallback_variant is None:
+            fallback_variant = allowed[0] if allowed else {
+                "rjcode": canonical_rjcode,
+                "link_type": "original",
+                "lang": "JPN",
+            }
+        fallback_title = str((metadata_map.get(self.normalize_rjcode(fallback_variant.get("rjcode"))) or {}).get("work_name") or "").strip()
+        return fallback_variant, fallback_title
+
+    async def _list_public_display_variants(
+        self,
+        canonical_info: Dict[str, Any],
+        fallback_rjcode: str,
+        metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        metadata_map = metadata_map or {}
+        variants = self._sort_linked_variants(canonical_info, fallback_rjcode)
+        public_variants: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        original_variant: Optional[Dict[str, Any]] = None
+        canonical_rjcode = self.normalize_rjcode(canonical_info.get("canonical_rjcode") or fallback_rjcode)
+
+        for variant in variants:
+            normalized = self.normalize_rjcode(variant.get("rjcode"))
+            if not normalized or normalized in seen:
+                continue
+            link_type = variant.get("link_type")
+            lang = variant.get("lang")
+            if not self._is_displayable_variant(link_type, lang):
+                continue
+            normalized_variant = {
+                "rjcode": normalized,
+                "link_type": str(link_type or "").strip().lower() or "self",
+                "lang": self._normalize_lang_code(lang),
+            }
+            group_key = str(self._variant_group(link_type, lang).get("key") or "").strip()
+            if group_key == "original" or normalized == canonical_rjcode:
+                if original_variant is None:
+                    original_variant = normalized_variant
+                continue
+            title = await self._resolve_public_display_title(
+                normalized,
+                link_type=link_type,
+                lang=lang,
+                metadata_map=metadata_map,
+            )
+            if not title:
+                continue
+            public_variants.append(normalized_variant)
+            seen.add(normalized)
+
+        if original_variant is not None:
+            original_code = self.normalize_rjcode(original_variant.get("rjcode"))
+            if original_code and original_code not in seen:
+                public_variants.append(original_variant)
+                seen.add(original_code)
+        elif canonical_rjcode and canonical_rjcode not in seen:
+            public_variants.append({
+                "rjcode": canonical_rjcode,
+                "link_type": "original",
+                "lang": "JPN",
+            })
+        return public_variants
+
+    async def _build_public_download_probe_candidates(
+        self,
+        canonical_info: Dict[str, Any],
+        fallback_rjcode: str,
+        metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        extra_candidates: Optional[List[Any]] = None,
+    ) -> List[str]:
+        metadata_map = metadata_map or {}
+        candidates: List[str] = []
+        seen: Set[str] = set()
+
+        def append_candidate(value: Any) -> None:
+            normalized = self.normalize_rjcode(value)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                candidates.append(normalized)
+
+        public_variants = await self._list_public_display_variants(canonical_info, fallback_rjcode, metadata_map)
+        for variant in public_variants:
+            normalized = self.normalize_rjcode(variant.get("rjcode"))
+            if not normalized:
+                continue
+            if not await self._is_public_catalog_variant(
+                normalized,
+                link_type=variant.get("link_type"),
+                lang=variant.get("lang"),
+            ):
+                continue
+            append_candidate(normalized)
+
+        for candidate in list(extra_candidates or []):
+            normalized = self.normalize_rjcode(candidate)
+            if not normalized:
+                continue
+            variant = next((
+                item for item in public_variants
+                if self.normalize_rjcode(item.get("rjcode")) == normalized
+            ), None)
+            if variant is None:
+                continue
+            if not await self._is_public_catalog_variant(
+                normalized,
+                link_type=variant.get("link_type"),
+                lang=variant.get("lang"),
+            ):
+                continue
+            append_candidate(normalized)
+        return candidates
+
+    async def _find_public_downloadable_work(
+        self,
+        canonical_info: Dict[str, Any],
+        fallback_rjcode: str,
+        metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        extra_candidates: Optional[List[Any]] = None,
+    ) -> tuple[str, Optional[Dict[str, Any]]]:
+        cache_key = "|".join(await self._build_public_download_probe_candidates(
+            canonical_info,
+            fallback_rjcode,
+            metadata_map=metadata_map,
+            extra_candidates=extra_candidates,
+        ))
+        if cache_key:
+            cached = self._asmr_probe_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        probe_candidates = await self._build_public_download_probe_candidates(
+            canonical_info,
+            fallback_rjcode,
+            metadata_map=metadata_map,
+            extra_candidates=extra_candidates,
+        )
+        for probe_rjcode in probe_candidates:
+            try:
+                work_info = await self.asmr_service.fetch_work_info(probe_rjcode)
+            except Exception:
+                work_info = None
+            if not work_info:
+                continue
+            try:
+                tracks = await self.asmr_service.fetch_track_list(probe_rjcode)
+            except Exception:
+                tracks = None
+            if tracks:
+                result = (probe_rjcode, work_info)
+                if cache_key:
+                    self._asmr_probe_cache[cache_key] = result
+                return result
+        result = ("", None)
+        if cache_key:
+            self._asmr_probe_cache[cache_key] = result
+        return result
 
     def _variant_label(self, link_type: Any, lang: Any) -> str:
         normalized_type = str(link_type or "").strip().lower()
@@ -194,12 +462,23 @@ class CircleCompletionService:
                 normalized_codes.append(normalized)
         if not normalized_codes:
             return {}
-        rows = db.query(WorkMetadata).filter(WorkMetadata.rjcode.in_(normalized_codes)).all()
-        return {
+        cached_map = {
+            code: self._metadata_cache[code]
+            for code in normalized_codes
+            if code in self._metadata_cache
+        }
+        missing_codes = [code for code in normalized_codes if code not in cached_map]
+        if not missing_codes:
+            return cached_map
+        rows = db.query(WorkMetadata).filter(WorkMetadata.rjcode.in_(missing_codes)).all()
+        db_map = {
             str(row.rjcode or "").strip().upper(): row.to_dict()
             for row in rows
             if str(row.rjcode or "").strip()
         }
+        self._metadata_cache.update(db_map)
+        cached_map.update(db_map)
+        return cached_map
 
     def _build_circle_index_log_detail(
         self,
@@ -654,33 +933,46 @@ class CircleCompletionService:
                 "linked_rjcodes": [],
                 "link_map": {},
             }
+        if not refresh:
+            cached_payload = self._canonical_cache.get(normalized_rj)
+            if cached_payload is not None:
+                return cached_payload
 
+        def build_canonical_payload(rows: List[Any], fallback_rj: str) -> Dict[str, Any]:
+            canonical = next((row.canonical_rjcode for row in rows if row.canonical_rjcode), fallback_rj)
+            linked = sorted({row.linked_rjcode for row in rows if row.linked_rjcode})
+            return {
+                "canonical_rjcode": canonical,
+                "linked_rjcodes": linked,
+                "link_map": {
+                    row.linked_rjcode: {
+                        "link_type": row.link_type,
+                        "lang": row.lang,
+                    }
+                    for row in rows
+                    if row.linked_rjcode
+                },
+            }
+
+        cached_rows: List[Any] = []
         db = SessionLocal()
         try:
-            if not refresh:
-                rows = (
-                    db.query(WorkCanonicalLink)
-                    .filter(
-                        (WorkCanonicalLink.linked_rjcode == normalized_rj)
-                        | (WorkCanonicalLink.canonical_rjcode == normalized_rj)
-                    )
-                    .all()
+            cached_rows = (
+                db.query(WorkCanonicalLink)
+                .filter(
+                    (WorkCanonicalLink.linked_rjcode == normalized_rj)
+                    | (WorkCanonicalLink.canonical_rjcode == normalized_rj)
                 )
-                if rows:
-                    canonical = next((row.canonical_rjcode for row in rows if row.canonical_rjcode), normalized_rj)
-                    linked = sorted({row.linked_rjcode for row in rows if row.linked_rjcode})
-                    return {
-                        "canonical_rjcode": canonical,
-                        "linked_rjcodes": linked,
-                        "link_map": {
-                            row.linked_rjcode: {
-                                "link_type": row.link_type,
-                                "lang": row.lang,
-                            }
-                            for row in rows
-                            if row.linked_rjcode
-                        },
-                    }
+                .all()
+            )
+            if cached_rows and not refresh:
+                payload = build_canonical_payload(cached_rows, normalized_rj)
+                for linked_rjcode in payload.get("linked_rjcodes") or [normalized_rj]:
+                    normalized_linked = self.normalize_rjcode(linked_rjcode)
+                    if normalized_linked:
+                        self._canonical_cache[normalized_linked] = payload
+                self._canonical_cache[normalized_rj] = payload
+                return payload
         finally:
             db.close()
 
@@ -706,6 +998,35 @@ class CircleCompletionService:
                     "link_type": work_type,
                     "lang": lang,
                 })
+        degraded_refresh = bool(refresh and len(link_rows) <= 1 and canonical_rjcode == normalized_rj)
+        if degraded_refresh and cached_rows:
+            cached_payload = build_canonical_payload(cached_rows, normalized_rj)
+            cached_canonical = self.normalize_rjcode(cached_payload.get("canonical_rjcode"))
+            if cached_canonical and cached_canonical != normalized_rj:
+                try:
+                    recovered_linked_map = await self.dlsite_service.get_linked_works(cached_canonical)
+                except Exception as exc:
+                    logger.warning("[社团补全] 使用缓存 canonical 纠正关联链失败 %s -> %s: %s", normalized_rj, cached_canonical, exc)
+                    recovered_linked_map = {}
+                if recovered_linked_map:
+                    recovered_rows: List[Dict[str, str]] = []
+                    recovered_canonical = cached_canonical
+                    for linked_rj, linked_work in recovered_linked_map.items():
+                        linked_rj_norm = self.normalize_rjcode(linked_rj)
+                        if not linked_rj_norm:
+                            continue
+                        work_type = str(getattr(linked_work, "work_type", "") or "linked").strip() or "linked"
+                        lang = str(getattr(linked_work, "lang", "") or "").strip()
+                        if work_type == "original":
+                            recovered_canonical = linked_rj_norm
+                        recovered_rows.append({
+                            "linked_rjcode": linked_rj_norm,
+                            "link_type": work_type,
+                            "lang": lang,
+                        })
+                    if recovered_rows:
+                        link_rows = recovered_rows
+                        canonical_rjcode = recovered_canonical
         if not link_rows:
             link_rows = [{"linked_rjcode": normalized_rj, "link_type": "self", "lang": ""}]
 
@@ -731,7 +1052,7 @@ class CircleCompletionService:
         finally:
             db.close()
 
-        return {
+        payload = {
             "canonical_rjcode": canonical_rjcode,
             "linked_rjcodes": sorted({row["linked_rjcode"] for row in link_rows}),
             "link_map": {
@@ -742,17 +1063,33 @@ class CircleCompletionService:
                 for row in link_rows
             },
         }
+        for linked_rjcode in payload.get("linked_rjcodes") or [normalized_rj]:
+            normalized_linked = self.normalize_rjcode(linked_rjcode)
+            if normalized_linked:
+                self._canonical_cache[normalized_linked] = payload
+        self._canonical_cache[normalized_rj] = payload
+        return payload
 
     async def _fetch_metadata_dict(self, rjcode: str) -> Dict[str, Any]:
+        normalized_rj = self.normalize_rjcode(rjcode)
+        if not normalized_rj:
+            return {}
+        cached_metadata = self._metadata_cache.get(normalized_rj)
+        if cached_metadata is not None:
+            return cached_metadata
         db = SessionLocal()
         try:
-            cached = db.query(WorkMetadata).filter(WorkMetadata.rjcode == rjcode).first()
+            cached = db.query(WorkMetadata).filter(WorkMetadata.rjcode == normalized_rj).first()
             if cached:
-                return cached.to_dict()
+                payload = cached.to_dict()
+                self._metadata_cache[normalized_rj] = payload
+                return payload
         finally:
             db.close()
-        fake_task = type("FakeTask", (), {"task_metadata": {"rjcode": rjcode}, "rjcode": rjcode, "update_progress": lambda *args, **kwargs: None})()
-        return await self.metadata_service.fetch(rjcode, fake_task)
+        fake_task = type("FakeTask", (), {"task_metadata": {"rjcode": normalized_rj}, "rjcode": normalized_rj, "update_progress": lambda *args, **kwargs: None})()
+        payload = await self.metadata_service.fetch(normalized_rj, fake_task)
+        self._metadata_cache[normalized_rj] = dict(payload or {})
+        return self._metadata_cache[normalized_rj]
 
     async def _probe_kikoeru_owned_state(self, probe_rjcode: str) -> bool:
         normalized_rj = self.normalize_rjcode(probe_rjcode)
@@ -772,6 +1109,9 @@ class CircleCompletionService:
         normalized_rj = self.normalize_rjcode(probe_rjcode)
         if not normalized_rj:
             return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
+        cached_state = self._kikoeru_state_cache.get(normalized_rj)
+        if cached_state is not None:
+            return cached_state
         try:
             results = await self.kikoeru_service.check_duplicate_with_linkages(normalized_rj, use_cache=True)
         except Exception:
@@ -792,11 +1132,13 @@ class CircleCompletionService:
             if matched_rj and getattr(result, "has_lyric_hint", False) and subtitle_check_source and subtitle_check_source != "search_only":
                 if matched_rj not in subtitle_rjcodes:
                     subtitle_rjcodes.append(matched_rj)
-        return {
+        payload = {
             "has_kikoeru": bool(found_rjcodes),
             "found_rjcodes": found_rjcodes,
             "subtitle_rjcodes": subtitle_rjcodes,
         }
+        self._kikoeru_state_cache[normalized_rj] = payload
+        return payload
 
     async def _probe_kikoeru_state_for_candidates(self, candidates: List[str]) -> Dict[str, Any]:
         normalized_candidates: List[str] = []
@@ -809,8 +1151,14 @@ class CircleCompletionService:
 
         found_rjcodes: List[str] = []
         subtitle_rjcodes: List[str] = []
-        for candidate in normalized_candidates:
-            state = await self._probe_kikoeru_state(candidate)
+        semaphore = asyncio.Semaphore(8)
+
+        async def probe_candidate(candidate: str) -> Dict[str, Any]:
+            async with semaphore:
+                return await self._probe_kikoeru_state(candidate)
+
+        for future in asyncio.as_completed([probe_candidate(candidate) for candidate in normalized_candidates]):
+            state = await future
             for code in list(state.get("found_rjcodes") or []):
                 normalized_code = self.normalize_rjcode(code)
                 if normalized_code and normalized_code not in found_rjcodes:
@@ -945,25 +1293,36 @@ class CircleCompletionService:
 
         candidates: List[Dict[str, Any]] = []
         total_rjcodes = max(1, len(dlsite_rjcodes))
-        for index, rjcode in enumerate(dlsite_rjcodes, start=1):
-            try:
-                meta = await self._fetch_metadata_dict(rjcode)
-            except Exception:
-                meta = {"rjcode": rjcode}
+        semaphore = asyncio.Semaphore(10)
+
+        async def fetch_candidate(rjcode: str) -> Optional[Dict[str, Any]]:
+            async with semaphore:
+                try:
+                    meta = await self._fetch_metadata_dict(rjcode)
+                except Exception:
+                    meta = {"rjcode": rjcode}
             maker_name = str(meta.get("maker_name") or "").strip()
             if maker_name and self.normalize_circle_name(circle_query) not in self.normalize_circle_name(maker_name) and not normalized_maker_id:
-                continue
-            candidates.append({
+                return None
+            return {
                 "rjcode": rjcode,
                 "title": meta.get("work_name") or "",
                 "maker_id": meta.get("maker_id") or normalized_maker_id or "",
                 "maker_name": maker_name or circle_query,
                 "source": "dlsite",
-            })
-            if progress_callback and (index == total_rjcodes or index % 25 == 0):
+            }
+
+        completed = 0
+        futures = [fetch_candidate(rjcode) for rjcode in dlsite_rjcodes]
+        for future in asyncio.as_completed(futures):
+            candidate = await future
+            completed += 1
+            if candidate:
+                candidates.append(candidate)
+            if progress_callback and (completed == total_rjcodes or completed % 10 == 0):
                 progress_callback(
-                    44 + int((index / total_rjcodes) * 8),
-                    f"解析 DLsite 社团作品 {index}/{total_rjcodes}",
+                    44 + int((completed / total_rjcodes) * 8),
+                    f"解析 DLsite 社团作品 {completed}/{total_rjcodes}",
                     dlsite_profile_total=len(dlsite_rjcodes),
                     dlsite_candidates_count=len(candidates),
                     dlsite_source_mode=source_mode,
@@ -1182,32 +1541,78 @@ class CircleCompletionService:
         aggregated: Dict[str, Dict[str, Any]] = {}
         total_candidates = max(1, len(combined_candidates))
         metadata_checked = 0
-        for item in combined_candidates:
+        candidate_semaphore = asyncio.Semaphore(8)
+
+        async def prepare_candidate(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             ensure_not_cancelled()
             rjcode = self.normalize_rjcode(item.get("rjcode"))
             if not rjcode:
-                continue
-            metadata = {}
-            try:
-                metadata = await self._fetch_metadata_dict(rjcode)
-            except Exception:
-                metadata = {}
-            canonical_info = await self.resolve_canonical_rj(rjcode, refresh=force_refresh)
-            preferred_variant = self._preferred_variant(canonical_info, rjcode)
-            canonical = canonical_info["canonical_rjcode"] or rjcode
-            canonical_metadata = metadata
-            if canonical and canonical != rjcode:
+                return None
+            async with candidate_semaphore:
                 try:
-                    canonical_metadata = await self._fetch_metadata_dict(canonical)
+                    metadata = await self._fetch_metadata_dict(rjcode)
                 except Exception:
-                    canonical_metadata = metadata
+                    metadata = {}
+                canonical_info = await self.resolve_canonical_rj(rjcode, refresh=force_refresh)
+                canonical = canonical_info["canonical_rjcode"] or rjcode
+                canonical_metadata = metadata
+                if canonical and canonical != rjcode:
+                    try:
+                        canonical_metadata = await self._fetch_metadata_dict(canonical)
+                    except Exception:
+                        canonical_metadata = metadata
+                display_metadata_map = {
+                    self.normalize_rjcode(rjcode): metadata or {},
+                    self.normalize_rjcode(canonical): canonical_metadata or {},
+                }
+                public_variants = await self._list_public_display_variants(
+                    canonical_info,
+                    canonical or rjcode,
+                    display_metadata_map,
+                )
+                preferred_variant, preferred_title = await self._pick_public_display_variant_and_title(
+                    canonical_info,
+                    canonical or rjcode,
+                    display_metadata_map,
+                )
+            return {
+                "item": item,
+                "rjcode": rjcode,
+                "metadata": metadata or {},
+                "canonical_info": canonical_info,
+                "canonical": canonical,
+                "canonical_metadata": canonical_metadata or {},
+                "preferred_variant": preferred_variant,
+                "preferred_title": preferred_title,
+                "public_linked_rjcodes": [variant["rjcode"] for variant in public_variants if variant.get("rjcode")],
+            }
+
+        for future in asyncio.as_completed([prepare_candidate(item) for item in combined_candidates]):
+            prepared = await future
+            metadata_checked += 1
+            if not prepared:
+                report(
+                    52 + int((metadata_checked / total_candidates) * 18),
+                    f"整理候选作品 {metadata_checked}/{total_candidates}",
+                    aggregated_count=len(aggregated),
+                    metadata_checked_count=metadata_checked,
+                )
+                continue
+            item = prepared["item"]
+            rjcode = prepared["rjcode"]
+            metadata = prepared["metadata"]
+            canonical = prepared["canonical"]
+            canonical_metadata = prepared["canonical_metadata"]
+            preferred_variant = prepared["preferred_variant"]
+            preferred_title = prepared["preferred_title"]
+            public_linked_rjcodes = prepared["public_linked_rjcodes"]
             bucket = aggregated.setdefault(canonical, {
                 "canonical_rjcode": canonical,
                 "display_rjcode": preferred_variant["rjcode"] or rjcode,
-                "title": str(canonical_metadata.get("work_name") or item.get("title") or metadata.get("work_name") or ""),
+                "title": preferred_title or str(canonical_metadata.get("work_name") or item.get("title") or metadata.get("work_name") or ""),
                 "maker_id": str(canonical_metadata.get("maker_id") or metadata.get("maker_id") or item.get("maker_id") or identity["maker_id"] or ""),
                 "maker_name": str(canonical_metadata.get("maker_name") or metadata.get("maker_name") or item.get("maker_name") or identity["circle_name"] or circle_query),
-                "linked_rjcodes": [variant["rjcode"] for variant in self._sort_linked_variants(canonical_info, rjcode)],
+                "linked_rjcodes": public_linked_rjcodes or [preferred_variant["rjcode"] or canonical or rjcode],
                 "has_kikoeru": False,
                 "kikoeru_found_rjcodes": [],
                 "kikoeru_subtitle_rjcodes": [],
@@ -1220,20 +1625,14 @@ class CircleCompletionService:
                 "preferred_lang": preferred_variant["lang"],
                 "preferred_link_type": preferred_variant["link_type"],
             })
-            bucket["display_rjcode"] = bucket["display_rjcode"] or preferred_variant["rjcode"] or rjcode
-            bucket["title"] = bucket["title"] or str(canonical_metadata.get("work_name") or item.get("title") or metadata.get("work_name") or "")
+            bucket["display_rjcode"] = preferred_variant["rjcode"] or canonical or rjcode
+            bucket["title"] = preferred_title or bucket["title"] or str(canonical_metadata.get("work_name") or item.get("title") or metadata.get("work_name") or "")
             bucket["maker_id"] = bucket["maker_id"] or str(canonical_metadata.get("maker_id") or metadata.get("maker_id") or item.get("maker_id") or "")
             bucket["maker_name"] = bucket["maker_name"] or str(canonical_metadata.get("maker_name") or metadata.get("maker_name") or item.get("maker_name") or circle_query)
-            bucket["linked_rjcodes"] = [variant["rjcode"] for variant in self._sort_linked_variants(
-                {
-                    "linked_rjcodes": list(set(bucket["linked_rjcodes"]) | set(canonical_info.get("linked_rjcodes") or [rjcode])),
-                    "link_map": canonical_info.get("link_map") or {},
-                },
-                bucket["display_rjcode"] or rjcode,
-            )]
-            bucket["preferred_variant_label"] = bucket["preferred_variant_label"] or self._variant_label(preferred_variant["link_type"], preferred_variant["lang"])
-            bucket["preferred_lang"] = bucket["preferred_lang"] or preferred_variant["lang"]
-            bucket["preferred_link_type"] = bucket["preferred_link_type"] or preferred_variant["link_type"]
+            bucket["linked_rjcodes"] = public_linked_rjcodes or bucket["linked_rjcodes"]
+            bucket["preferred_variant_label"] = self._variant_label(preferred_variant["link_type"], preferred_variant["lang"])
+            bucket["preferred_lang"] = preferred_variant["lang"]
+            bucket["preferred_link_type"] = preferred_variant["link_type"]
             source = str(item.get("source") or "").strip()
             if source:
                 bucket["source_flags"].add(source)
@@ -1248,7 +1647,6 @@ class CircleCompletionService:
             if source == "local":
                 bucket["source_flags"].add("local")
             bucket["source_flags"].add("dlsite")
-            metadata_checked += 1
             report(
                 52 + int((metadata_checked / total_candidates) * 18),
                 f"整理候选作品 {metadata_checked}/{total_candidates}",
@@ -1277,21 +1675,59 @@ class CircleCompletionService:
         checked_asmr = 0
         asmr_available = 0
         total_aggregated = max(1, len(aggregated))
-        for canonical, item in aggregated.items():
-            ensure_not_cancelled()
-            probe_rj = item["display_rjcode"] or canonical
+        asmr_semaphore = asyncio.Semaphore(6)
+
+        async def load_probe_inputs() -> List[tuple[str, Dict[str, Any], Dict[str, Dict[str, Any]], Dict[str, Any]]]:
+            db = SessionLocal()
             try:
-                actual_rjcode, work_info = await self.asmr_service.find_best_available_work(probe_rj)
-            except Exception:
-                actual_rjcode, work_info = None, None
-            if actual_rjcode and work_info:
+                link_rows = (
+                    db.query(WorkCanonicalLink)
+                    .filter(WorkCanonicalLink.canonical_rjcode.in_(list(aggregated.keys())))
+                    .all()
+                    if aggregated else []
+                )
+                link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+                for link_row in link_rows:
+                    link_map_by_canonical[str(link_row.canonical_rjcode or "")][str(link_row.linked_rjcode or "")] = {
+                        "link_type": str(link_row.link_type or ""),
+                        "lang": str(link_row.lang or ""),
+                    }
+                payloads = []
+                for canonical, item in aggregated.items():
+                    linked_rjcodes = list(item.get("linked_rjcodes") or [item.get("display_rjcode") or canonical])
+                    metadata_map = self._load_cached_metadata_map(db, linked_rjcodes)
+                    canonical_info = {
+                        "canonical_rjcode": canonical,
+                        "linked_rjcodes": linked_rjcodes,
+                        "link_map": link_map_by_canonical.get(canonical) or {},
+                    }
+                    payloads.append((canonical, item, metadata_map, canonical_info))
+                return payloads
+            finally:
+                db.close()
+
+        probe_payloads = await load_probe_inputs()
+        async def run_payload(payload: tuple[str, Dict[str, Any], Dict[str, Dict[str, Any]], Dict[str, Any]]) -> tuple[str, str]:
+            canonical, item, metadata_map, canonical_info = payload
+            async with asmr_semaphore:
+                actual_rjcode, _ = await self._find_public_downloadable_work(
+                    canonical_info,
+                    item.get("display_rjcode") or canonical,
+                    metadata_map=metadata_map,
+                    extra_candidates=[item.get("asmr_available_rjcode"), item.get("display_rjcode"), canonical],
+                )
+            return canonical, self.normalize_rjcode(actual_rjcode)
+
+        for future in asyncio.as_completed([run_payload(payload) for payload in probe_payloads]):
+            ensure_not_cancelled()
+            canonical, actual_norm = await future
+            item = aggregated.get(canonical) or {}
+            if actual_norm:
                 item["has_asmr_one"] = True
                 item["source_flags"].add("asmr_one")
+                item["asmr_available_rjcode"] = actual_norm
+                item["linked_rjcodes"] = sorted(set(item["linked_rjcodes"]) | {actual_norm})
                 asmr_available += 1
-                actual_norm = self.normalize_rjcode(actual_rjcode)
-                if actual_norm:
-                    item["asmr_available_rjcode"] = actual_norm
-                    item["linked_rjcodes"] = sorted(set(item["linked_rjcodes"]) | {actual_norm})
             checked_asmr += 1
             report(
                 74 + int((checked_asmr / total_aggregated) * 16),
@@ -1303,8 +1739,12 @@ class CircleCompletionService:
         report(90, "补查 Kikoeru 服务器拥有态", aggregated_count=len(aggregated))
         checked_kikoeru = 0
         kikoeru_owned = 0
-        for canonical, item in aggregated.items():
+        kikoeru_semaphore = asyncio.Semaphore(6)
+
+        async def run_kikoeru_probe(canonical: str, item: Dict[str, Any]) -> tuple[str, Optional[Dict[str, Any]]]:
             ensure_not_cancelled()
+            if item["has_kikoeru"] and item["kikoeru_found_rjcodes"] and item["kikoeru_subtitle_rjcodes"]:
+                return canonical, None
             probe_candidates = [
                 item.get("display_rjcode"),
                 canonical,
@@ -1312,8 +1752,15 @@ class CircleCompletionService:
                 *(item.get("linked_rjcodes") or []),
                 *(item.get("kikoeru_found_rjcodes") or []),
             ]
-            if not item["has_kikoeru"] or not item["kikoeru_found_rjcodes"] or not item["kikoeru_subtitle_rjcodes"]:
-                kikoeru_state = await self._probe_kikoeru_state_for_candidates(probe_candidates)
+            async with kikoeru_semaphore:
+                state = await self._probe_kikoeru_state_for_candidates(probe_candidates)
+            return canonical, state
+
+        for future in asyncio.as_completed([run_kikoeru_probe(canonical, item) for canonical, item in aggregated.items()]):
+            ensure_not_cancelled()
+            canonical, kikoeru_state = await future
+            item = aggregated.get(canonical) or {}
+            if kikoeru_state is not None:
                 found_rjcodes = [self.normalize_rjcode(code) for code in list(kikoeru_state.get("found_rjcodes") or [])]
                 found_rjcodes = [code for code in found_rjcodes if code]
                 subtitle_rjcodes = [self.normalize_rjcode(code) for code in list(kikoeru_state.get("subtitle_rjcodes") or [])]
@@ -1323,7 +1770,7 @@ class CircleCompletionService:
                 item["kikoeru_subtitle_rjcodes"] = subtitle_rjcodes
                 if item["has_kikoeru"] or found_rjcodes:
                     item["source_flags"].add("kikoeru")
-            if item["has_kikoeru"]:
+            if item.get("has_kikoeru"):
                 kikoeru_owned += 1
             checked_kikoeru += 1
             report(
@@ -1547,7 +1994,26 @@ class CircleCompletionService:
                     "link_map": link_map_by_canonical.get(row.canonical_rjcode) or {},
                 }
                 metadata_map = self._load_cached_metadata_map(db, canonical_info["linked_rjcodes"])
-                preferred_variant = self._preferred_variant(canonical_info, row.display_rjcode or row.canonical_rjcode)
+                stored_display_rjcode = self.normalize_rjcode(row.display_rjcode) or self.normalize_rjcode(row.canonical_rjcode)
+                item["display_rjcode"] = stored_display_rjcode
+                item["linked_rjcodes"] = list(row.linked_rjcodes or [stored_display_rjcode or row.canonical_rjcode])
+                if not str(item.get("title") or "").strip():
+                    item["title"] = str((metadata_map.get(stored_display_rjcode) or {}).get("work_name") or row.title or "").strip()
+                view_canonical_info = {
+                    **canonical_info,
+                    "linked_rjcodes": item["linked_rjcodes"],
+                }
+                preferred_variant = next((
+                    variant
+                    for variant in self._sort_linked_variants(view_canonical_info, stored_display_rjcode or row.canonical_rjcode)
+                    if self.normalize_rjcode(variant.get("rjcode")) == stored_display_rjcode
+                ), None)
+                if preferred_variant is None:
+                    preferred_variant = self._pick_display_variant(
+                        view_canonical_info,
+                        stored_display_rjcode or row.canonical_rjcode,
+                        metadata_map,
+                    )
                 preferred_group = self._variant_group(preferred_variant.get("link_type"), preferred_variant.get("lang"))
                 item["preferred_variant"] = {
                     "rjcode": preferred_variant.get("rjcode"),
@@ -1558,7 +2024,7 @@ class CircleCompletionService:
                     "group_label": preferred_group["label"],
                     "group_short_label": preferred_group["short_label"],
                 }
-                item["source_compare"] = self._build_source_compare(item, canonical_info, metadata_map)
+                item["source_compare"] = self._build_source_compare(item, view_canonical_info, metadata_map)
                 kikoeru_compare = item["source_compare"].get("kikoeru") if isinstance(item["source_compare"], dict) else {}
                 server_match_rjcodes = list((kikoeru_compare or {}).get("matched_rjcodes") or (kikoeru_compare or {}).get("all_rjcodes") or [])
                 server_match_primary_rjcode = str(
@@ -1567,19 +2033,22 @@ class CircleCompletionService:
                     or (server_match_rjcodes[0] if server_match_rjcodes else "")
                 ).strip()
                 server_owned = bool(server_match_rjcodes)
-                is_unavailable = not server_owned and not bool(row.has_asmr_one)
-                if only_missing and server_owned:
+                completion_owned = bool(server_owned or local_owned)
+                is_unavailable = not completion_owned and not bool(row.has_asmr_one)
+                if only_missing and completion_owned:
                     continue
                 if only_downloadable and not row.has_asmr_one:
                     continue
                 if not include_dl_only and is_unavailable:
                     continue
-                item["owned"] = server_owned
+                item["owned"] = completion_owned
+                item["completion_owned"] = completion_owned
                 item["server_owned"] = server_owned
                 item["server_match_rjcodes"] = server_match_rjcodes
                 item["server_match_primary_rjcode"] = server_match_primary_rjcode
                 item["subtitle_present"] = bool((kikoeru_compare or {}).get("subtitle_present"))
                 item["status_tags"] = [
+                    *(["库存已收录"] if local_owned else []),
                     *(["本地已下载"] if item["local_download_ready"] else []),
                     *(["服务器已有"] if server_owned else ["服务器缺失"]),
                     *(["可下载"] if row.has_asmr_one else ["暂不可下载"]),
@@ -1594,9 +2063,9 @@ class CircleCompletionService:
                 "last_indexed_at": catalog.last_indexed_at.isoformat() if catalog.last_indexed_at else None,
                 "local_owned_count": sum(1 for item in items if item["local_owned"]),
                 "owned_count": sum(1 for item in items if item["server_owned"]),
-                "missing_count": sum(1 for item in items if not item["server_owned"]),
-                "downloadable_count": sum(1 for item in items if not item["server_owned"] and item["has_asmr_one"]),
-                "dl_only_count": sum(1 for item in items if not item["server_owned"] and not item["has_asmr_one"]),
+                "missing_count": sum(1 for item in items if not item["owned"]),
+                "downloadable_count": sum(1 for item in items if not item["owned"] and item["has_asmr_one"]),
+                "dl_only_count": sum(1 for item in items if not item["owned"] and not item["has_asmr_one"]),
                 "dl_count": sum(1 for item in items if item["has_dlsite"]),
                 "works": items,
             }
@@ -1604,7 +2073,12 @@ class CircleCompletionService:
             db.close()
         return result
 
-    async def preview_batch_download(self, circle_id: str, canonical_rjcodes: List[str]) -> Dict[str, Any]:
+    async def preview_batch_download(
+        self,
+        circle_id: str,
+        canonical_rjcodes: List[str],
+        requested_rjcodes: Optional[Dict[str, List[str]]] = None,
+    ) -> Dict[str, Any]:
         from ..config.settings import get_config
         from .library_manager import get_library_manager
 
@@ -1621,13 +2095,20 @@ class CircleCompletionService:
         finally:
             db.close()
 
+        requested_rjcodes = dict(requested_rjcodes or {})
         plans = []
         for row in rows:
             if not row.has_asmr_one:
                 continue
-            resolved_rjcode = self.normalize_rjcode(row.asmr_available_rjcode)
+            explicit_candidates = []
+            for candidate in requested_rjcodes.get(str(row.canonical_rjcode or "").strip(), []) or []:
+                normalized = self.normalize_rjcode(candidate)
+                if normalized and normalized not in explicit_candidates:
+                    explicit_candidates.append(normalized)
+
+            resolved_rjcode = next((candidate for candidate in explicit_candidates if candidate), "") or self.normalize_rjcode(row.asmr_available_rjcode)
             probe_candidates: List[str] = []
-            for candidate in [resolved_rjcode, row.display_rjcode, row.canonical_rjcode, *(row.linked_rjcodes or [])]:
+            for candidate in [*explicit_candidates, resolved_rjcode, row.asmr_available_rjcode, row.display_rjcode, row.canonical_rjcode, *(row.linked_rjcodes or [])]:
                 normalized = self.normalize_rjcode(candidate)
                 if normalized and normalized not in probe_candidates:
                     probe_candidates.append(normalized)
@@ -1872,35 +2353,44 @@ class CircleCompletionService:
                 )
                 canonical_info = await self.resolve_canonical_rj(canonical, refresh=True)
                 preferred_variant = self._preferred_variant(canonical_info, preferred_seed)
-                linked_rjcodes = [variant["rjcode"] for variant in self._sort_linked_variants(canonical_info, preferred_seed or canonical)]
 
                 metadata = {}
+                metadata_map: Dict[str, Dict[str, Any]] = {}
                 for candidate in [canonical, preferred_variant.get("rjcode"), row.asmr_available_rjcode, *(row.linked_rjcodes or [])]:
                     normalized = self.normalize_rjcode(candidate)
                     if not normalized:
                         continue
                     try:
-                        metadata = await self._fetch_metadata_dict(normalized)
+                        fetched_metadata = await self._fetch_metadata_dict(normalized)
                     except Exception:
-                        metadata = {}
-                    if metadata:
-                        break
+                        fetched_metadata = {}
+                    metadata_map[normalized] = fetched_metadata or {}
+                    if fetched_metadata and not metadata:
+                        metadata = fetched_metadata
+                public_variants = await self._list_public_display_variants(
+                    canonical_info,
+                    canonical or preferred_seed,
+                    metadata_map,
+                )
+                linked_rjcodes = [variant["rjcode"] for variant in public_variants if variant.get("rjcode")]
+                preferred_variant, preferred_title = await self._pick_public_display_variant_and_title(
+                    canonical_info,
+                    canonical or preferred_seed,
+                    metadata_map,
+                )
 
-                probe_candidates = []
-                for candidate in [preferred_variant.get("rjcode"), canonical, row.asmr_available_rjcode, *linked_rjcodes, *(row.kikoeru_found_rjcodes or [])]:
-                    normalized = self.normalize_rjcode(candidate)
-                    if normalized and normalized not in probe_candidates:
-                        probe_candidates.append(normalized)
-
-                actual_rjcode = ""
-                work_info = None
-                for probe_rjcode in probe_candidates or [canonical]:
-                    try:
-                        actual_rjcode, work_info = await self.asmr_service.find_best_available_work(probe_rjcode)
-                    except Exception:
-                        actual_rjcode, work_info = None, None
-                    if actual_rjcode and work_info:
-                        break
+                probe_candidates = await self._build_public_download_probe_candidates(
+                    canonical_info,
+                    canonical or preferred_seed,
+                    metadata_map=metadata_map,
+                    extra_candidates=[preferred_variant.get("rjcode"), canonical, row.asmr_available_rjcode, *linked_rjcodes],
+                )
+                actual_rjcode, _ = await self._find_public_downloadable_work(
+                    canonical_info,
+                    canonical or preferred_seed,
+                    metadata_map=metadata_map,
+                    extra_candidates=probe_candidates,
+                )
                 actual_norm = self.normalize_rjcode(actual_rjcode)
 
                 kikoeru_state = await self._probe_kikoeru_state_for_candidates(probe_candidates or [canonical])
@@ -1918,11 +2408,11 @@ class CircleCompletionService:
                 else:
                     source_flags.discard("kikoeru")
 
-                row.display_rjcode = preferred_variant.get("rjcode") or row.display_rjcode or canonical
-                row.title = str(metadata.get("work_name") or row.title or "").strip() or row.title
+                row.display_rjcode = self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical or row.display_rjcode
+                row.title = preferred_title or str((metadata_map.get(row.display_rjcode) or {}).get("work_name") or row.title or "").strip() or row.title
                 row.maker_id = str(metadata.get("maker_id") or row.maker_id or "").strip() or row.maker_id
                 row.maker_name = str(metadata.get("maker_name") or row.maker_name or "").strip() or row.maker_name
-                row.linked_rjcodes = linked_rjcodes or row.linked_rjcodes or [row.display_rjcode or canonical]
+                row.linked_rjcodes = linked_rjcodes or [row.display_rjcode or canonical]
                 row.has_kikoeru = bool(found_rjcodes)
                 row.kikoeru_found_rjcodes = found_rjcodes
                 row.kikoeru_subtitle_rjcodes = subtitle_rjcodes

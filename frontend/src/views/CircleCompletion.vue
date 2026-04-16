@@ -585,6 +585,7 @@ import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWork
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'prekikoeru.circleCompletion.targetSubdirs'
 const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.downloadWorkbench'
 const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'prekikoeru.circleCompletion.refreshJob'
+const CIRCLE_COMPLETION_INDEX_JOB_KEY = 'prekikoeru.circleCompletion.indexJob'
 
 const circleQuery = ref('')
 const circleSearch = ref('')
@@ -785,6 +786,27 @@ const selectedDownloadableRJCodes = computed(() => selectedCanonicalRJCodes.valu
   const item = (detail.works || []).find(work => work.canonical_rjcode === code)
   return Boolean(item?.has_asmr_one)
 }))
+function getPreviewRequestedRjcodes(canonicalCodes = []) {
+  const mapping = {}
+  canonicalCodes.forEach(code => {
+    const item = (detail.works || []).find(work => work.canonical_rjcode === code)
+    if (!item) return
+    const candidates = [
+      item.download_plan?.rjcode,
+      item.asmr_available_rjcode,
+      item.display_rjcode,
+      item.canonical_rjcode,
+      ...(Array.isArray(item.linked_rjcodes) ? item.linked_rjcodes : [])
+    ]
+      .map(value => String(value || '').trim().toUpperCase())
+      .filter(Boolean)
+      .filter((value, index, array) => array.indexOf(value) === index)
+    if (candidates.length) {
+      mapping[code] = candidates
+    }
+  })
+  return mapping
+}
 const targetLibraries = computed(() => (libraries.value || []).filter(item => item?.enabled !== false))
 const targetSubdirOptions = computed(() => [...new Set((cachedTargetSubdirs.value || []).filter(Boolean))])
 const processingDownloadTasks = computed(() => trackedDownloadTasks.value.filter(task => ['processing'].includes(String(task.status || ''))))
@@ -836,11 +858,15 @@ const isRefreshJobActive = computed(() =>
 const canCancelRefreshJob = computed(() => isRefreshJobActive.value)
 
 onMounted(async () => {
+  hydrateIndexJobState()
   hydrateRefreshJobState()
   hydrateDownloadWorkbenchState()
   loadCachedTargetSubdirs()
   await Promise.all([loadRecentCircles(), loadLibraries()])
   if (trackedDownloadTaskIds.value.length) await refreshDownloadWorkbench()
+  if (indexJob.job_id && ['pending', 'processing'].includes(String(indexJob.status || ''))) {
+    await pollIndexJob(indexJob.job_id)
+  }
   if (isRefreshJobActive.value) await pollRefreshJob(refreshJob.job_id, { silentFinish: true })
   else if (refreshJob.job_id && refreshJob.status === 'completed') {
     if (refreshJob.changed_codes?.length) {
@@ -853,7 +879,7 @@ onMounted(async () => {
 })
 
 onActivated(() => {
-  if (indexJob.job_id && !['completed', 'failed'].includes(indexJob.status)) {
+  if (indexJob.job_id && ['pending', 'processing'].includes(String(indexJob.status || ''))) {
     indexing.value = true
     pollIndexJob(indexJob.job_id)
   }
@@ -930,6 +956,24 @@ watch(
         refreshDownloadWorkbench({ silent: true }),
         activeCircleId.value ? refreshActiveCircle() : Promise.resolve()
       ])
+    } catch (_) {}
+  }
+)
+
+watch(
+  () => trackedDownloadTasks.value.map(task => [task?.id, task?.status, task?.completed_at].join(':')).join('|'),
+  async (value, previousValue) => {
+    if (!value || value === previousValue) return
+    const justFinished = trackedDownloadTasks.value.some(task => {
+      if (!task || !isTaskFinished(task)) return false
+      const taskId = String(task?.id || '').trim()
+      const previousText = String(previousValue || '')
+      if (!taskId) return false
+      return !previousText.includes(taskId) || !previousText.includes(`${taskId}:${task.status}:${task.completed_at || ''}`)
+    })
+    if (!justFinished || !activeCircleId.value) return
+    try {
+      await refreshActiveCircle()
     } catch (_) {}
   }
 )
@@ -1274,6 +1318,61 @@ function persistDownloadWorkbenchState() {
       visible: downloadWorkbenchVisible.value,
       background: downloadWorkbenchBackgroundActive.value
     }))
+  } catch (_) {}
+}
+
+function persistIndexJobState() {
+  try {
+    if (!indexJob.job_id) {
+      localStorage.removeItem(CIRCLE_COMPLETION_INDEX_JOB_KEY)
+      return
+    }
+    localStorage.setItem(CIRCLE_COMPLETION_INDEX_JOB_KEY, JSON.stringify({
+      job_id: indexJob.job_id,
+      status: indexJob.status,
+      progress: indexJob.progress,
+      current_step: indexJob.current_step,
+      circle_query: indexJob.circle_query,
+      elapsed_seconds: indexJob.elapsed_seconds,
+      error_message: indexJob.error_message,
+      meta: indexJob.meta || {},
+      visible: indexJob.visible,
+    }))
+  } catch (_) {}
+}
+
+function hydrateIndexJobState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CIRCLE_COMPLETION_INDEX_JOB_KEY) || '{}')
+    indexJob.visible = Boolean(raw.job_id && raw.visible !== false)
+    indexJob.job_id = String(raw.job_id || '').trim()
+    indexJob.status = String(raw.status || '').trim()
+    indexJob.progress = Number(raw.progress || 0)
+    indexJob.current_step = String(raw.current_step || '').trim()
+    indexJob.circle_query = String(raw.circle_query || '').trim()
+    indexJob.elapsed_seconds = Number(raw.elapsed_seconds || 0)
+    indexJob.error_message = String(raw.error_message || '').trim()
+    indexJob.meta = raw.meta && typeof raw.meta === 'object' ? raw.meta : {}
+    indexing.value = Boolean(indexJob.job_id && ['pending', 'processing'].includes(indexJob.status))
+  } catch (_) {
+    clearIndexJobState()
+  }
+}
+
+function clearIndexJobState() {
+  indexJob.visible = false
+  indexJob.job_id = ''
+  indexJob.status = ''
+  indexJob.progress = 0
+  indexJob.current_step = ''
+  indexJob.circle_query = ''
+  indexJob.elapsed_seconds = 0
+  indexJob.error_message = ''
+  indexJob.meta = {}
+  indexing.value = false
+  stopIndexJobPolling()
+  try {
+    localStorage.removeItem(CIRCLE_COMPLETION_INDEX_JOB_KEY)
   } catch (_) {}
 }
 
@@ -1656,6 +1755,7 @@ function applyIndexJob(payload = {}) {
   indexJob.elapsed_seconds = Number(payload.elapsed_seconds || 0)
   indexJob.error_message = payload.error_message || ''
   indexJob.meta = payload.meta || {}
+  persistIndexJobState()
 }
 
 function applyRefreshJob(payload = {}) {
@@ -1687,13 +1787,14 @@ async function pollIndexJob(jobId) {
     const result = await circleCompletionApi.getIndexJobStatus(jobId)
     applyIndexJob(result)
     if (result.status === 'completed') {
-      indexing.value = false
+      clearIndexJobState()
       activeCircleId.value = result.circle_id || result.result?.circle_id || ''
       await Promise.all([loadRecentCircles(), refreshActiveCircle()])
       ElMessage.success('社团索引已刷新')
       return
     }
     if (result.status === 'failed') {
+      persistIndexJobState()
       indexing.value = false
       if (result.error_message === '用户取消' || result.current_step === '已取消') {
         ElMessage.info('社团索引已取消')
@@ -1707,6 +1808,7 @@ async function pollIndexJob(jobId) {
     }, 800)
   } catch (error) {
     indexing.value = false
+    persistIndexJobState()
     ElMessage.error(error.response?.data?.detail || '查询社团索引进度失败')
   }
 }
@@ -1774,6 +1876,7 @@ async function cancelIndexJob() {
     indexJob.current_step = '已取消'
     indexJob.error_message = '用户取消'
     indexing.value = false
+    persistIndexJobState()
     ElMessage.success('已发送取消请求')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '取消社团索引失败')
@@ -1841,6 +1944,7 @@ async function handleIndexCircle() {
     await pollIndexJob(result.job_id)
   } catch (error) {
     indexing.value = false
+    persistIndexJobState()
     ElMessage.error(error.response?.data?.detail || '启动社团索引失败')
   }
 }
@@ -1967,7 +2071,8 @@ async function openBatchPreview(singleCanonical = '') {
   try {
     const result = await circleCompletionApi.previewBatchDownload({
       circle_id: detail.circle_id,
-      canonical_rjcodes: codes
+      canonical_rjcodes: codes,
+      requested_rjcodes: getPreviewRequestedRjcodes(codes)
     })
     previewPlans.value = result.plans || []
     downloadSettings.downloadBasePath = result.download_base_path || downloadSettings.downloadBasePath || ''

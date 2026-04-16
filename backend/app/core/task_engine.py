@@ -28,6 +28,7 @@ class TaskType(str, Enum):
     PROCESS_EXISTING_FOLDER = "process_existing_folder"  # 处理已存在的文件夹（跳过解压）
     ASMR_SYNC_DOWNLOAD = "asmr_sync_download"  # ASMR 同步下载任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
+    LOCAL_LIBRARY_UPLOAD = "local_library_upload"
     CIRCLE_COMPLETION_INDEX = "circle_completion_index"
     CIRCLE_COMPLETION_REFRESH_SELECTED = "circle_completion_refresh_selected"
     CIRCLE_COMPLETION_DOWNLOAD_BATCH = "circle_completion_download_batch"
@@ -280,6 +281,8 @@ class TaskEngine:
             return "rj_subtitle"
         if task.type == TaskType.ASMR_SYNC_DOWNLOAD:
             return "asmr_sync"
+        if task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
+            return "upload"
         if task.type in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
             return "circle_completion"
         return "system"
@@ -1191,6 +1194,8 @@ class TaskEngine:
                     await self._process_asmr_sync_download(task)
                 elif task.type == TaskType.RJ_SUBTITLE_FETCH:
                     await self._process_rj_subtitle_fetch(task)
+                elif task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
+                    await self._process_local_library_upload(task)
                 elif task.type == TaskType.CIRCLE_COMPLETION_INDEX:
                     await self._process_circle_completion_index(task)
                 elif task.type == TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED:
@@ -2719,6 +2724,202 @@ class TaskEngine:
         }
         task.update_progress(100, "批量刷新完成")
         append_progress_log("批量刷新完成", 100, 'success')
+
+    async def _process_local_library_upload(self, task: Task):
+        from .library_manager import get_library_manager
+
+        task.task_metadata = dict(task.task_metadata or {})
+        task.task_metadata.setdefault("upload_files", [])
+        task.task_metadata.setdefault("uploaded_files", [])
+        task.task_metadata.setdefault("progress_log", [])
+        task.task_metadata.setdefault("upload_runtime", {})
+
+        selected_items = [
+            {
+                "source_path": str((item or {}).get("source_path") or "").strip(),
+                "relative_target_dir": str((item or {}).get("relative_target_dir") or "").strip(),
+            }
+            for item in (task.task_metadata.get("selected_items") or [])
+            if str((item or {}).get("source_path") or "").strip()
+        ]
+        selected_paths = [
+            str(path or "").strip()
+            for path in (task.task_metadata.get("selected_paths") or [])
+            if str(path or "").strip()
+        ]
+        target_library_id = str(task.task_metadata.get("target_library_id") or "").strip()
+        target_subdir = str(task.task_metadata.get("target_subdir") or "").strip()
+        circle_name = str(task.task_metadata.get("circle_name") or "").strip()
+
+        if not selected_paths:
+            raise RuntimeError("没有可上传的目录")
+        if not target_library_id:
+            raise RuntimeError("缺少目标库存")
+
+        def append_progress_log(message: str, progress: Optional[int] = None, level: str = "info"):
+            if not message:
+                return
+            logs = list(task.task_metadata.get("progress_log") or [])
+            last = logs[-1] if logs else None
+            if last and last.get("message") == message and last.get("progress") == progress and last.get("level") == level:
+                return
+            logs.append({
+                "time": datetime.now().isoformat(),
+                "message": message,
+                "progress": progress,
+                "level": level,
+            })
+            task.task_metadata["progress_log"] = logs[-40:]
+
+        def build_relative_target_dir():
+            if circle_name and target_subdir:
+                return f"{target_subdir}/{circle_name}".strip("/")
+            if circle_name:
+                return circle_name
+            return target_subdir or None
+
+        upload_files = []
+        total_bytes = 0
+        total_files = 0
+        source_entries = selected_items or [{"source_path": path, "relative_target_dir": build_relative_target_dir() or ""} for path in selected_paths]
+        for entry in source_entries:
+            source_dir = str(entry.get("source_path") or "").strip()
+            normalized_source_dir = str(source_dir or "").strip()
+            if not normalized_source_dir:
+                continue
+            task_scope = os.path.basename(os.path.abspath(normalized_source_dir))
+            for root, _, files in os.walk(normalized_source_dir):
+                for filename in files:
+                    local_path = os.path.join(root, filename)
+                    try:
+                        file_size = int(os.path.getsize(local_path))
+                    except OSError:
+                        file_size = 0
+                    relative_path = os.path.relpath(local_path, normalized_source_dir).replace(os.sep, "/")
+                    upload_files.append({
+                        "task_scope": task_scope,
+                        "source_dir": normalized_source_dir,
+                        "name": filename,
+                        "relative_path": relative_path,
+                        "local_path": local_path,
+                        "status": "pending",
+                        "progress": 0,
+                        "size": file_size,
+                        "uploaded_bytes": 0,
+                    })
+                    total_files += 1
+                    total_bytes += file_size
+
+        task.task_metadata["upload_files"] = upload_files
+        task.task_metadata["upload_runtime"] = {
+            "phase": "preparing",
+            "total_files": total_files,
+            "completed_files": 0,
+            "transferred_bytes": 0,
+            "total_bytes": total_bytes,
+            "speed_bytes_per_sec": 0,
+            "last_non_zero_speed_bytes_per_sec": 0,
+            "current_file_name": "",
+            "current_relative_path": "",
+            "current_source_dir": "",
+        }
+
+        task.update_progress(1, "准备上传目录")
+        append_progress_log(f"准备上传 {len(selected_paths)} 个目录", 1)
+
+        manager = get_library_manager()
+        uploaded = []
+        uploaded_rows = []
+        runtime = dict(task.task_metadata.get("upload_runtime") or {})
+
+        def progress_callback(snapshot: dict):
+            runtime.update(snapshot or {})
+            try:
+                speed_value = int(runtime.get("speed_bytes_per_sec") or 0)
+            except Exception:
+                speed_value = 0
+            if speed_value > 0:
+                runtime["last_non_zero_speed_bytes_per_sec"] = speed_value
+            task.task_metadata["upload_runtime"] = dict(runtime)
+            phase = str(runtime.get("phase") or "").strip()
+            current_file_name = str(runtime.get("current_file_name") or "").strip()
+            current_relative_path = str(runtime.get("current_relative_path") or "").strip()
+            if phase == "preparing":
+                label = current_relative_path or current_file_name or "准备远程目录"
+                task.current_step = f"准备上传: {label}"
+            elif current_file_name:
+                task.current_step = f"上传中: {current_file_name}"
+            current_relative_path = str(runtime.get("current_relative_path") or "").strip()
+            total_bytes_current = max(0, int(runtime.get("current_file_total_bytes") or 0))
+            uploaded_bytes_current = max(0, int(runtime.get("current_file_uploaded_bytes") or 0))
+            if current_relative_path:
+                rows = list(task.task_metadata.get("upload_files") or [])
+                for row in rows:
+                    if str(row.get("relative_path") or "").strip() != current_relative_path:
+                        continue
+                    row["status"] = "uploading" if phase != "preparing" else "preparing"
+                    row["uploaded_bytes"] = uploaded_bytes_current
+                    if total_bytes_current > 0:
+                        row["progress"] = max(0, min(100, int((uploaded_bytes_current / total_bytes_current) * 100)))
+                    break
+                task.task_metadata["upload_files"] = rows
+
+        def file_completed_callback(file_row: dict):
+            uploaded_rows.append(dict(file_row or {}))
+            task.task_metadata["uploaded_files"] = uploaded_rows[-200:]
+            relative_path = str((file_row or {}).get("relative_path") or "").strip()
+            rows = list(task.task_metadata.get("upload_files") or [])
+            for row in rows:
+                if str(row.get("relative_path") or "").strip() != relative_path:
+                    continue
+                row["status"] = "completed"
+                row["uploaded_bytes"] = int(row.get("size") or 0)
+                row["progress"] = 100
+                break
+            task.task_metadata["upload_files"] = rows
+
+        total_dirs = len(source_entries)
+        for index, entry in enumerate(source_entries, start=1):
+            source_dir = str(entry.get("source_path") or "").strip()
+            relative_target_dir = str(entry.get("relative_target_dir") or "").strip() or build_relative_target_dir()
+            source_name = os.path.basename(os.path.abspath(source_dir))
+            step_progress = max(1, min(95, int(((index - 1) / max(total_dirs, 1)) * 100)))
+            task.update_progress(step_progress, f"上传目录 {index}/{total_dirs}: {source_name}")
+            append_progress_log(f"开始上传目录 {source_name}", step_progress)
+            if relative_target_dir:
+                task.task_metadata["target_path"] = relative_target_dir.replace("\\", "/")
+            target_path = await manager.upload_directory_to_library(
+                target_library_id,
+                source_dir,
+                relative_target_dir,
+                delete_source_on_success=True,
+                progress_callback=progress_callback,
+                file_completed_callback=file_completed_callback,
+            )
+            uploaded.append({"source": source_dir, "target": target_path})
+            append_progress_log(
+                f"目录上传完成: {source_name}",
+                min(99, int((index / max(total_dirs, 1)) * 100)),
+                "success",
+            )
+
+        task.task_metadata["upload_runtime"] = {
+            **runtime,
+            "phase": "completed",
+            "completed_files": total_files,
+            "transferred_bytes": total_bytes,
+            "total_bytes": total_bytes,
+            "speed_bytes_per_sec": 0,
+        }
+        task.task_metadata["upload_result"] = {
+            "uploaded": uploaded,
+            "count": len(uploaded),
+        }
+        if uploaded:
+            task.output_path = str(uploaded[-1].get("target") or "")
+            task.task_metadata["final_output_path"] = task.output_path
+        task.update_progress(100, "上传完成")
+        append_progress_log(f"上传完成，共 {len(uploaded)} 个目录", 100, "success")
 
 # 全局任务引擎实例
 _task_engine: Optional[TaskEngine] = None

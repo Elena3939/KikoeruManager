@@ -415,6 +415,32 @@ class DLsiteApiService:
             logger.warning("[DLsite] 页面 fallback 失败: requested=%s error=%s", workno, exc)
             return {}
 
+    async def _is_public_work_available(self, rjcode: str, locale: Optional[str] = None) -> bool:
+        workno = self._normalize_workno(rjcode)
+        if not workno:
+            return False
+
+        cache_key = f"public_work_available:{workno}:{locale or ''}"
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                return bool(cached_data.get('data'))
+
+        fallback = await self._resolve_translation_page_fallback(workno, locale=locale)
+        available = bool(
+            self._normalize_workno((fallback or {}).get('translation_workno') or '') == workno
+            and self._normalize_workno((fallback or {}).get('product_workno') or '')
+        )
+        if not available:
+            page_product = await self._fetch_product_page_metadata(workno, locale=locale)
+            available = bool(page_product and self._normalize_workno(page_product.get('workno') or workno))
+
+        self.cache[cache_key] = {
+            'data': available,
+            'timestamp': datetime.now(),
+        }
+        return available
+
     async def get_product_info(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
         requested_workno = self._normalize_workno(rjcode)
         if not requested_workno:
@@ -633,10 +659,21 @@ class DLsiteApiService:
                     workno = self._normalize_workno(edition.get('workno'))
                     if not workno:
                         continue
+                    edition_lang = str(edition.get('lang') or '').strip() or ''
+                    if workno != target_rjcode and edition_lang.upper() != 'JPN':
+                        is_public = await self._is_public_work_available(workno)
+                        if not is_public:
+                            logger.info(
+                                "[DLsite] 跳过前台不可见的翻译版本: parent=%s edition=%s lang=%s",
+                                target_rjcode,
+                                workno,
+                                edition_lang,
+                            )
+                            continue
                     result[workno] = LinkedWork(
                         workno=workno,
                         work_type='translation',
-                        lang=str(edition.get('lang') or 'JPN').strip() or 'JPN',
+                        lang=edition_lang,
                         title=str(edition.get('work_name') or '').strip(),
                     )
             elif trans.is_parent:

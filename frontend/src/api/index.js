@@ -286,6 +286,13 @@ export const libraryApi = {
     return response.data
   },
 
+  getStorageInfo: async (libraryId) => {
+    const response = await apiClient.get('/library/storage-info', {
+      params: { library_id: libraryId }
+    })
+    return response.data
+  },
+
   browseFiles: async ({
     libraryId = null,
     page = 1,
@@ -1115,6 +1122,18 @@ export const circleCompletionApi = {
   }
 }
 
+export const localUploadApi = {
+  start: async (payload) => {
+    const response = await apiClient.post('/local-upload/start', payload)
+    return response.data
+  },
+
+  status: async () => {
+    const response = await apiClient.get('/local-upload/status')
+    return response.data
+  }
+}
+
 export default {
   task: taskApi,
   config: configApi,
@@ -1134,6 +1153,7 @@ export default {
   rjSubtitle: rjSubtitleApi,
   subtitleImport: subtitleImportApi,
   circleCompletion: circleCompletionApi,
+  localUpload: localUploadApi,
   backup: backupApi,
   activityLog: activityLogApi
 }

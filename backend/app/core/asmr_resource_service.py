@@ -1026,6 +1026,91 @@ class ASMRResourceService:
         )
         return updated
 
+    def _get_latest_session_task_metadata(self, session_id: str, fallback_task_id: str = "") -> Dict[str, Any]:
+        from .task_engine import get_task_engine
+
+        engine = get_task_engine()
+        tasks = [task for task in engine.get_tasks_by_session(session_id) if task]
+        if not tasks and fallback_task_id:
+            fallback_task = engine.get_task(str(fallback_task_id))
+            if fallback_task:
+                tasks = [fallback_task]
+        if not tasks:
+            return {}
+
+        def task_sort_value(task: Any) -> float:
+            for attr in ("completed_at", "started_at", "created_at"):
+                value = getattr(task, attr, None)
+                if isinstance(value, datetime):
+                    return value.timestamp()
+            return 0.0
+
+        latest_task = max(tasks, key=task_sort_value)
+        return dict(latest_task.task_metadata or {})
+
+    def _build_retry_task_options(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        statistics = dict(session.get("statistics") or {})
+        latest_task_metadata = self._get_latest_session_task_metadata(
+            str(session.get("id") or "").strip(),
+            str(session.get("task_id") or "").strip(),
+        )
+        upload_source = dict(latest_task_metadata.get("upload_options") or {})
+        postprocess_source = dict(latest_task_metadata.get("postprocess_options") or {})
+        circle_name = str(
+            postprocess_source.get("circle_name")
+            or latest_task_metadata.get("circle_name")
+            or statistics.get("circle_name")
+            or session.get("source_label")
+            or session.get("rjcode")
+            or ""
+        ).strip()
+        target_library_id = str(
+            postprocess_source.get("target_library_id")
+            or statistics.get("target_library_id")
+            or statistics.get("postprocess_target_library_id")
+            or statistics.get("upload_library_id")
+            or upload_source.get("library_id")
+            or ""
+        ).strip()
+        target_subdir = str(
+            postprocess_source.get("target_subdir")
+            or statistics.get("target_subdir")
+            or statistics.get("postprocess_target_subdir")
+            or ""
+        ).strip().strip("/\\")
+        naming_mode = str(
+            postprocess_source.get("naming_mode")
+            or statistics.get("naming_mode")
+            or statistics.get("postprocess_naming_mode")
+            or "api"
+        ).strip().lower() or "api"
+        classify_mode = str(
+            postprocess_source.get("classify_mode")
+            or statistics.get("classify_mode")
+            or statistics.get("postprocess_classify_mode")
+            or "circle"
+        ).strip().lower() or "circle"
+        upload_options = {
+            "enabled": bool(upload_source.get("enabled", str(session.get("upload_mode") or "disabled") != "disabled")),
+            "mode": str(upload_source.get("mode") or session.get("upload_mode") or "disabled"),
+            "target_path": str(upload_source.get("target_path") or session.get("target_path") or ""),
+            "library_id": str(upload_source.get("library_id") or statistics.get("upload_library_id") or "").strip(),
+        }
+        postprocess_options = {
+            "enabled": bool(postprocess_source.get("enabled")) or bool(target_library_id),
+            "target_library_id": target_library_id,
+            "target_subdir": target_subdir,
+            "naming_mode": naming_mode,
+            "classify_mode": classify_mode,
+            "circle_name": circle_name,
+            "skip_metadata_fetch": bool(postprocess_source.get("skip_metadata_fetch")),
+        }
+        return {
+            "latest_task_metadata": latest_task_metadata,
+            "upload_options": upload_options,
+            "postprocess_options": postprocess_options,
+        }
+
     async def retry_failed_session(self, session_id: str) -> Dict[str, Any]:
         from .activity_log_service import log_asmr_sync_event
         from .task_engine import Task, TaskType, get_task_engine
@@ -1038,6 +1123,8 @@ class ASMRResourceService:
         if not retry_resources:
             raise ValueError("会话中没有可重试资源")
 
+        retry_options = self._build_retry_task_options(session)
+        latest_task_metadata = dict(retry_options.get("latest_task_metadata") or {})
         engine = get_task_engine()
         task = Task(
             task_type=TaskType.ASMR_SYNC_DOWNLOAD,
@@ -1052,12 +1139,15 @@ class ASMRResourceService:
                 "selected_resource_count": len(retry_resources),
                 "download_root": str((session.get("statistics") or {}).get("download_root") or session.get("local_download_root") or session.get("target_path") or ""),
                 "queue_priority": int(session.get("queue_priority") or 100),
-                "upload_options": {
-                    "enabled": str(session.get("upload_mode") or "disabled") != "disabled",
-                    "mode": session.get("upload_mode") or "disabled",
-                    "target_path": session.get("target_path") or "",
-                    "library_id": str((session.get("statistics") or {}).get("upload_library_id") or ""),
-                },
+                "upload_options": retry_options.get("upload_options") or {},
+                "postprocess_options": retry_options.get("postprocess_options") or {},
+                "verify_md5_after_download": latest_task_metadata.get("verify_md5_after_download", True),
+                "download_timeout_seconds": int(latest_task_metadata.get("download_timeout_seconds") or 0),
+                "circle_name": str(
+                    (retry_options.get("postprocess_options") or {}).get("circle_name")
+                    or latest_task_metadata.get("circle_name")
+                    or ""
+                ).strip(),
                 "source_page": session.get("source_page") or "asmr-sync",
                 "source_action": "retry_failed_resources",
                 "source_label": session.get("source_label") or session.get("rjcode"),
@@ -1107,6 +1197,8 @@ class ASMRResourceService:
         from .activity_log_service import log_asmr_sync_event
         from .task_engine import Task, TaskType, get_task_engine
 
+        retry_options = self._build_retry_task_options(session)
+        latest_task_metadata = dict(retry_options.get("latest_task_metadata") or {})
         engine = get_task_engine()
         task = Task(
             task_type=TaskType.ASMR_SYNC_DOWNLOAD,
@@ -1121,12 +1213,15 @@ class ASMRResourceService:
                 "selected_resource_count": len(retry_resources),
                 "download_root": str((session.get("statistics") or {}).get("download_root") or session.get("local_download_root") or session.get("target_path") or ""),
                 "queue_priority": int(session.get("queue_priority") or 100),
-                "upload_options": {
-                    "enabled": str(session.get("upload_mode") or "disabled") != "disabled",
-                    "mode": session.get("upload_mode") or "disabled",
-                    "target_path": session.get("target_path") or "",
-                    "library_id": str((session.get("statistics") or {}).get("upload_library_id") or ""),
-                },
+                "upload_options": retry_options.get("upload_options") or {},
+                "postprocess_options": retry_options.get("postprocess_options") or {},
+                "verify_md5_after_download": latest_task_metadata.get("verify_md5_after_download", True),
+                "download_timeout_seconds": int(latest_task_metadata.get("download_timeout_seconds") or 0),
+                "circle_name": str(
+                    (retry_options.get("postprocess_options") or {}).get("circle_name")
+                    or latest_task_metadata.get("circle_name")
+                    or ""
+                ).strip(),
                 "source_page": session.get("source_page") or "asmr-sync",
                 "source_action": "retry_failed_resource_item",
                 "source_label": session.get("source_label") or session.get("rjcode"),
@@ -1693,6 +1788,20 @@ class ASMRResourceService:
         target_dir = os.path.join(*target_parts)
         return classifier._move_with_rename(renamed_root, target_dir)
 
+    async def _sync_circle_completion_owned_state(self, rjcode: str, folder_path: str, library_id: str = "") -> None:
+        if not rjcode or not folder_path:
+            return
+        try:
+            from .circle_completion_service import get_circle_completion_service
+
+            await get_circle_completion_service().sync_owned_for_rj(
+                rjcode,
+                folder_path=folder_path,
+                library_id=library_id,
+            )
+        except Exception:
+            logger.warning("[社团补全] 回写库存拥有态失败 rj=%s path=%s", rjcode, folder_path, exc_info=True)
+
     async def process_download_task(self, task) -> Dict[str, Any]:
         from .activity_log_service import log_asmr_sync_event
 
@@ -2169,6 +2278,24 @@ class ASMRResourceService:
                 self._append_task_log(task, f"已入库到: {final_output_path}")
 
             final_status = "partial_failed" if failed_files or verification_failures else "completed"
+            if (
+                final_status == "completed"
+                and postprocess_options.get("enabled")
+                and final_output_path
+                and (
+                    str(metadata.get("source_page") or "").strip() == "circle-completion"
+                    or str(metadata.get("task_domain") or "").strip() == "circle_completion"
+                )
+            ):
+                await self._sync_circle_completion_owned_state(
+                    rjcode,
+                    final_output_path,
+                    library_id=str(
+                        postprocess_options.get("target_library_id")
+                        or upload_options.get("library_id")
+                        or ""
+                    ).strip(),
+                )
             self._finalize_upload_runtime(task, "completed" if (uploaded_files or task.task_metadata.get("upload_runtime")) else final_status)
             if session_id:
                 self._update_session(

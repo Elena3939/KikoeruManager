@@ -247,8 +247,12 @@ class SmartClassifier:
             relative_target_dir = os.path.relpath(target_path, target_library.root_path).replace("\\", "/")
             if relative_target_dir == '.':
                 relative_target_dir = ''
-            final_path = await manager.upload_directory_to_library(target_library.id, source_path, relative_target_dir)
-            shutil.rmtree(source_path, ignore_errors=True)
+            final_path = await manager.upload_directory_to_library(
+                target_library.id,
+                source_path,
+                relative_target_dir,
+                delete_source_on_success=True,
+            )
         
         # 4. 更新库存快照
         self._update_library_snapshot(rjcode, final_path)

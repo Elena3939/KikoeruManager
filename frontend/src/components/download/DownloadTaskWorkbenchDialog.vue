@@ -448,10 +448,7 @@ function mergeTaskGroup(group) {
   const primary = sorted[0] || {}
   const base = [...sorted].sort((a, b) => getTaskResourceCount(b) - getTaskResourceCount(a) || getTaskTimestamp(b) - getTaskTimestamp(a))[0] || primary
   const mergedSelectedResources = dedupeByRelativePath(sorted.flatMap(task => Array.isArray(task?.task_metadata?.selected_resources) ? task.task_metadata.selected_resources : []))
-  const mergedDownloadFiles = dedupeByRelativePath(sorted.flatMap(task => Array.isArray(task?.download_files) ? task.download_files.map(file => ({ ...file, __task_status: String(task?.status || '') })) : []))
-  const mergedUploadFiles = dedupeByRelativePath(sorted.flatMap(task => Array.isArray(task?.upload_files) ? task.upload_files.map(file => ({ ...file, __task_status: String(task?.status || '') })) : []))
-  const mergedUploadedFiles = dedupeByRelativePath(sorted.flatMap(task => Array.isArray(task?.uploaded_files) ? task.uploaded_files.map(file => ({ ...file, __task_status: String(task?.status || '') })) : []))
-  const mergedFailedFiles = dedupeByRelativePath([...sorted].reverse().flatMap(task => Array.isArray(task?.failed_files) ? task.failed_files.map(file => ({ ...file, __task_status: String(task?.status || '') })) : []))
+  const mergedFileCollections = mergeLatestFileCollections(sorted)
   const mergedLogs = [...sorted].flatMap(task => Array.isArray(task?.progress_log) ? task.progress_log : []).sort((a, b) => new Date(a?.time || 0).getTime() - new Date(b?.time || 0).getTime())
   const mergedTask = {
     ...base,
@@ -466,10 +463,10 @@ function mergeTaskGroup(group) {
       selected_resources: mergedSelectedResources,
       selected_resource_count: mergedSelectedResources.length || Number(base?.task_metadata?.selected_resource_count || 0),
     },
-    download_files: mergedDownloadFiles,
-    upload_files: mergedUploadFiles,
-    uploaded_files: mergedUploadedFiles,
-    failed_files: mergedFailedFiles,
+    download_files: mergedFileCollections.download_files,
+    upload_files: mergedFileCollections.upload_files,
+    uploaded_files: mergedFileCollections.uploaded_files,
+    failed_files: mergedFileCollections.failed_files,
     progress_log: mergedLogs,
     source_task_ids: sorted.map(item => item.id).filter(Boolean),
     active_task_id: primary?.id || base?.id || '',
@@ -496,8 +493,8 @@ function getTaskRowsCompletionState(task) {
   const rows = getUnifiedFileRows(task)
   if (!rows.length) return { rows, allCompleted: false, hasDanger: false, hasSuccess: false }
   const hasDanger = rows.some(item => item.tone === 'danger')
-  const hasSuccess = rows.some(item => item.tone === 'success')
-  const allCompleted = rows.every(item => item.tone === 'success')
+  const hasSuccess = rows.some(item => isSuccessfulFileTone(item.tone))
+  const allCompleted = rows.every(item => isSuccessfulFileTone(item.tone))
   return { rows, allCompleted, hasDanger, hasSuccess }
 }
 
@@ -535,6 +532,42 @@ function dedupeByRelativePath(items) {
     if (!map.has(key)) map.set(key, item)
   })
   return [...map.values()]
+}
+
+function mergeLatestFileCollections(tasks) {
+  const latestByPath = new Map()
+  const pushFiles = (bucket, items, task) => {
+    ;(Array.isArray(items) ? items : []).forEach((file, index) => {
+      const key = String(file?.relative_path || file?.name || file?.file_name || `row-${index}`).trim()
+      if (!key || latestByPath.has(key)) return
+      latestByPath.set(key, {
+        bucket,
+        file: { ...file, __task_status: String(task?.status || '') },
+      })
+    })
+  }
+
+  ;(tasks || []).forEach((task) => {
+    pushFiles('uploaded_files', task?.uploaded_files, task)
+    pushFiles('failed_files', task?.failed_files, task)
+    pushFiles('upload_files', task?.upload_files, task)
+    pushFiles('download_files', task?.download_files, task)
+  })
+
+  const merged = {
+    download_files: [],
+    upload_files: [],
+    uploaded_files: [],
+    failed_files: [],
+  }
+  latestByPath.forEach(({ bucket, file }) => {
+    merged[bucket].push(file)
+  })
+  return merged
+}
+
+function isSuccessfulFileTone(tone) {
+  return ['success', 'upload-success'].includes(String(tone || ''))
 }
 
 function getDownloadRuntime(task) {

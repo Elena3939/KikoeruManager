@@ -888,10 +888,14 @@ async function loadFilterDeletePreview () {
     filterDeleteLoading.value = false
     await writeFilterDeletePreviewActivityLog()
   } catch (error) {
-    visible.value = false
+    clearFilterDeletePoll()
+    filterDeleteLoading.value = false
+    filterDeleteJobId.value = ''
     filterDeletePreviewInfo.value = {
       ...filterDeletePreviewInfo.value,
       status: 'error',
+      pendingDirectories: 0,
+      progressMessage: '',
       error: error.response?.data?.detail || error.message || '加载删除过滤预审失败'
     }
     await writeFilterDeletePreviewActivityLog('error')

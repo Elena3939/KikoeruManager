@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import copy
 import json
 import logging
@@ -405,6 +405,82 @@ class SynologyFileStationClient:
     @property
     def device_id(self) -> str:
         return self._device_id
+
+    async def get_storage_info(self) -> dict[str, Any]:
+        timeout_value = int(self.config.timeout or 0)
+        timeout = aiohttp.ClientTimeout(total=None if timeout_value <= 0 else timeout_value)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            if not self._sid:
+                await self._login(session)
+            api_name = "SYNO.Core.System"
+            path, version = await self._resolve_api_route(session, api_name, default_path="entry.cgi", default_version=1)
+            url = f"{self.config.base_url.rstrip('/')}/webapi/{path.lstrip('/')}"
+            params = {
+                "api": api_name,
+                "method": "info",
+                "version": str(version),
+                "type": "storage",
+                "_sid": self._sid,
+            }
+            async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+                data = await self._read_response_payload(response, api_name)
+            if not data.get("success"):
+                raise RuntimeError(_format_synology_error(api_name, "查询群晖存储信息", data))
+            storage = data.get("data") or {}
+            volumes = (
+                storage.get("vol_info")
+                or storage.get("volume_info")
+                or storage.get("volumes")
+                or []
+            )
+            if isinstance(volumes, dict):
+                volumes = list(volumes.values())
+
+            total_size = 0
+            used_size = 0
+            normalized_volumes: list[dict[str, Any]] = []
+            for item in volumes:
+                if not isinstance(item, dict):
+                    continue
+                total_value = int(
+                    item.get("total_size")
+                    or item.get("size_total")
+                    or item.get("total")
+                    or 0
+                )
+                used_value = int(
+                    item.get("used_size")
+                    or item.get("size_used")
+                    or item.get("used")
+                    or 0
+                )
+                free_value = int(
+                    item.get("free_size")
+                    or item.get("size_free")
+                    or item.get("free")
+                    or max(0, total_value - used_value)
+                    or 0
+                )
+                if total_value <= 0 and free_value > 0 and used_value > 0:
+                    total_value = free_value + used_value
+                if used_value <= 0 and total_value > 0 and free_value > 0:
+                    used_value = max(0, total_value - free_value)
+                total_size += max(0, total_value)
+                used_size += max(0, used_value)
+                normalized_volumes.append({
+                    **item,
+                    "total_size": max(0, total_value),
+                    "used_size": max(0, used_value),
+                    "free_size": max(0, free_value),
+                })
+            free_size = max(0, total_size - used_size)
+            return {
+                "total_size_bytes": total_size,
+                "used_size_bytes": used_size,
+                "free_size_bytes": free_size,
+                "free_space_gb": round(free_size / (1024 ** 3), 2) if free_size > 0 else 0,
+                "volumes": normalized_volumes,
+            }
 
     async def test_connection(self, folder_path: str) -> dict[str, Any]:
         if folder_path in ("", "/"):
@@ -2486,7 +2562,16 @@ class LibraryManager:
             "total_size_gb": _gb(total_size),
         }
 
-    async def upload_directory_to_library(self, library_id: str, source_dir: str, relative_target_dir: Optional[str] = None) -> str:
+    async def upload_directory_to_library(
+        self,
+        library_id: str,
+        source_dir: str,
+        relative_target_dir: Optional[str] = None,
+        *,
+        delete_source_on_success: bool = False,
+        progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        file_completed_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> str:
         library = self.get_library_definition(library_id)
         if library.type == "local":
             return await asyncio.to_thread(self._move_directory_to_local_library, library, source_dir, relative_target_dir)
@@ -2497,9 +2582,28 @@ class LibraryManager:
         target_root = PurePosixPath(library.root_path)
         if relative_target_dir:
             target_root = target_root / relative_target_dir
+        target_root_path = self._normalize_remote_path(str(target_root))
+        await self._ensure_remote_directory(client, target_root_path)
 
-        await self._upload_directory_to_synology(client, source_dir, str(target_root))
-        return str(target_root / os.path.basename(source_dir))
+        normalized_source_dir = str(source_dir or "").rstrip("\\/")
+        source_name = os.path.basename(os.path.abspath(normalized_source_dir))
+        if not source_name:
+            raise RuntimeError("来源目录名称无效，无法上传到远程库存")
+
+        final_remote_path = self._normalize_remote_path(str(PurePosixPath(target_root_path) / source_name))
+        if not await self._remote_path_exists(client, final_remote_path):
+            await self._ensure_remote_directory(client, final_remote_path)
+
+        await self._upload_directory_to_synology(
+            client,
+            source_dir,
+            final_remote_path,
+            progress_callback=progress_callback,
+            file_completed_callback=file_completed_callback,
+        )
+        if delete_source_on_success and os.path.isdir(source_dir):
+            shutil.rmtree(source_dir, ignore_errors=True)
+        return final_remote_path
 
     def _move_directory_to_local_library(self, library: LibraryDefinition, source_dir: str, relative_target_dir: Optional[str]) -> str:
         target_root = library.root_path
@@ -2514,16 +2618,113 @@ class LibraryManager:
         shutil.move(source_dir, final_path)
         return final_path
 
-    async def _upload_directory_to_synology(self, client: SynologyFileStationClient, source_dir: str, remote_root: str):
+    async def _upload_directory_to_synology(
+        self,
+        client: SynologyFileStationClient,
+        source_dir: str,
+        remote_root: str,
+        *,
+        progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        file_completed_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    ):
         remote_root = remote_root.rstrip("/")
-        await client.create_folder(str(PurePosixPath(remote_root).parent), PurePosixPath(remote_root).name)
+        if progress_callback:
+            progress_callback({
+                "phase": "preparing",
+                "current_file_name": "",
+                "current_relative_path": "",
+                "current_source_dir": source_dir,
+                "current_file_total_bytes": 0,
+                "current_file_uploaded_bytes": 0,
+                "completed_files": 0,
+                "total_files": 0,
+                "transferred_bytes": 0,
+                "total_bytes": 0,
+                "speed_bytes_per_sec": 0,
+            })
+        file_rows = []
         for root, dirs, files in os.walk(source_dir):
             relative = os.path.relpath(root, source_dir)
             remote_dir = remote_root if relative == "." else f"{remote_root}/{relative.replace(os.sep, '/')}"
             for directory in dirs:
+                if progress_callback:
+                    progress_callback({
+                        "phase": "preparing",
+                        "current_file_name": directory,
+                        "current_relative_path": os.path.join(relative if relative != "." else "", directory).replace(os.sep, "/"),
+                        "current_source_dir": source_dir,
+                        "current_file_total_bytes": 0,
+                        "current_file_uploaded_bytes": 0,
+                        "completed_files": 0,
+                        "total_files": len(file_rows),
+                        "transferred_bytes": 0,
+                        "total_bytes": 0,
+                        "speed_bytes_per_sec": 0,
+                    })
                 await client.create_folder(remote_dir, directory)
             for filename in files:
-                await client.upload_file(remote_dir, os.path.join(root, filename))
+                local_path = os.path.join(root, filename)
+                relative_path = os.path.relpath(local_path, source_dir).replace(os.sep, "/")
+                try:
+                    file_size = int(os.path.getsize(local_path))
+                except OSError:
+                    file_size = 0
+                file_rows.append({
+                    "local_path": local_path,
+                    "relative_path": relative_path,
+                    "name": filename,
+                    "size": file_size,
+                    "remote_dir": remote_dir,
+                    "source_dir": source_dir,
+                })
+
+        total_bytes = sum(int(item.get("size") or 0) for item in file_rows)
+        transferred_before_current = 0
+        started_at = time.monotonic()
+        completed_files = 0
+
+        def emit_progress(current_row: dict, uploaded_bytes: int):
+            if not progress_callback:
+                return
+            transferred_bytes = min(total_bytes, transferred_before_current + max(0, int(uploaded_bytes or 0)))
+            elapsed = max(0.001, time.monotonic() - started_at)
+            progress_callback({
+                "phase": "uploading",
+                "current_file_name": current_row.get("name") or "",
+                "current_relative_path": current_row.get("relative_path") or "",
+                "current_source_dir": current_row.get("source_dir") or "",
+                "current_file_total_bytes": int(current_row.get("size") or 0),
+                "current_file_uploaded_bytes": max(0, int(uploaded_bytes or 0)),
+                "completed_files": completed_files,
+                "total_files": len(file_rows),
+                "transferred_bytes": transferred_bytes,
+                "total_bytes": total_bytes,
+                "speed_bytes_per_sec": int(transferred_bytes / elapsed) if transferred_bytes > 0 else 0,
+            })
+
+        for row in file_rows:
+            def on_file_progress(uploaded: int, _total: int, current_row=row):
+                emit_progress(current_row, uploaded)
+
+            await client.upload_file(
+                row["remote_dir"],
+                row["local_path"],
+                progress_callback=on_file_progress,
+            )
+            completed_files += 1
+            transferred_before_current += int(row.get("size") or 0)
+            emit_progress(row, int(row.get("size") or 0))
+            if file_completed_callback:
+                file_completed_callback({
+                    "name": row.get("name") or "",
+                    "relative_path": row.get("relative_path") or "",
+                    "size": int(row.get("size") or 0),
+                    "uploaded_bytes": int(row.get("size") or 0),
+                    "progress": 100,
+                    "status": "completed",
+                    "source_dir": row.get("source_dir") or "",
+                    "remote_dir": row.get("remote_dir") or "",
+                })
 
     async def _ensure_remote_directory(self, client: SynologyFileStationClient, remote_dir: str):
         normalized = self._normalize_remote_path(remote_dir)
@@ -4028,10 +4229,11 @@ class LibraryManager:
     ) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
-        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
-        target_path = self._normalize_remote_path(path)
-        if not self._remote_path_is_within_root(target_path, browse_root):
-            raise PermissionError("目标路径超出当前库存范围")
+        _, target_path = self._resolve_remote_operation_path(
+            library,
+            path,
+            action="删除过滤预审",
+        )
 
         active_rules = self._normalize_filter_rules(rules)
         normalized_request_id = str(request_id or "").strip()
@@ -4186,11 +4388,11 @@ class LibraryManager:
             return preview
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
-
-        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
-        target_path = self._normalize_remote_path(path)
-        if not self._remote_path_is_within_root(target_path, browse_root):
-            raise PermissionError("目标路径超出当前库存范围")
+        _, target_path = self._resolve_remote_operation_path(
+            library,
+            path,
+            action="删除过滤预审",
+        )
 
         active_rules = self._normalize_filter_rules(rules)
         job_id = uuid.uuid4().hex
@@ -4646,10 +4848,11 @@ class LibraryManager:
             return await asyncio.to_thread(self._local_delete, library, path, confirmed)
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
-        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
-        target_path = self._normalize_remote_path(path)
-        if not self._remote_path_is_within_root(target_path, browse_root):
-            raise PermissionError("目标路径超出当前库存范围")
+        _, target_path = self._resolve_remote_operation_path(
+            library,
+            path,
+            action="删除",
+        )
         client = SynologyFileStationClient(library.synology)
         if not confirmed:
             preview = await self._remote_delete_preview(client, target_path)
@@ -4744,11 +4947,14 @@ class LibraryManager:
             return await asyncio.to_thread(self._local_batch_delete, library, paths, confirmed)
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
-        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path)
-        normalized_paths = [self._normalize_remote_path(path) for path in paths]
-        for path in normalized_paths:
-            if not self._remote_path_is_within_root(path, browse_root):
-                raise PermissionError("目标路径超出当前库存范围")
+        normalized_paths = [
+            self._resolve_remote_operation_path(
+                library,
+                path,
+                action="批量删除",
+            )[1]
+            for path in paths
+        ]
         return await self._remote_batch_delete(library, normalized_paths, confirmed)
 
     def _collect_local_stats(self, library: LibraryDefinition) -> dict[str, Any]:

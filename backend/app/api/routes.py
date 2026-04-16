@@ -29,7 +29,7 @@ from ..core.password_cleanup import get_cleanup_service
 from ..core.processed_archive_cleanup import get_processed_archive_cleanup_service
 from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
-from ..core.library_manager import get_library_manager
+from ..core.library_manager import get_library_manager, SynologyFileStationClient
 from ..core.password_utils import (
     normalize_filename_value,
     normalize_optional_text,
@@ -3875,6 +3875,27 @@ async def test_library_connection(request: Request):
     except Exception as e:
         logger.error(f"库存连接测试失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"库存连接测试失败: {str(e)}")
+
+
+@app.get("/api/library/storage-info")
+async def get_library_storage_info(library_id: str):
+    try:
+        manager = get_library_manager()
+        library = manager.get_library_definition(library_id)
+        if library.type != "synology_filestation" or not library.synology:
+            raise HTTPException(status_code=400, detail="目标库存不是群晖库存")
+        client = SynologyFileStationClient(library.synology)
+        storage_info = await client.get_storage_info()
+        return {
+            "library_id": library.id,
+            "library_name": library.name,
+            **storage_info,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取库存空间失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取库存空间失败: {str(e)}")
 
 
 @app.get("/api/library/browser/files")
@@ -7876,6 +7897,7 @@ class CircleCompletionIndexJobRequest(BaseModel):
 class CircleCompletionDownloadPreviewRequest(BaseModel):
     circle_id: str
     canonical_rjcodes: List[str]
+    requested_rjcodes: Dict[str, List[str]] = {}
 
 
 class CircleCompletionRefreshSelectedRequest(BaseModel):
@@ -7911,6 +7933,14 @@ class ASMRReimportLocalDownloadRequest(BaseModel):
     circle_name: str = ""
     target_library_id: str
     target_subdir: str = ""
+
+class LocalUploadStartRequest(BaseModel):
+    source_library_id: str
+    source_base_path: str
+    selected_paths: List[str]
+    target_library_id: str
+    target_subdir: str = ""
+    circle_name: str = ""
 
 @app.post("/api/asmr-sync/scan")
 async def asmr_sync_scan(request: ASMRSyncScanRequest):
@@ -8560,6 +8590,7 @@ async def circle_completion_download_preview(request: CircleCompletionDownloadPr
         result = await get_circle_completion_service().preview_batch_download(
             request.circle_id,
             request.canonical_rjcodes,
+            request.requested_rjcodes,
         )
         return {"success": True, **result}
     except ValueError as exc:
@@ -8768,6 +8799,11 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
                 "upload_library_id": str((item.get("upload_options") or {}).get("library_id") or ""),
                 "parent_session_id": batch_id,
                 "circle_id": request.circle_id,
+                "target_library_id": target_library_id,
+                "target_subdir": target_subdir,
+                "naming_mode": naming_mode,
+                "classify_mode": classify_mode,
+                "circle_name": str((item.get("postprocess_options") or {}).get("circle_name") or request.circle_name or ""),
             },
             selected_resources=selected_resources,
         )
@@ -8831,6 +8867,148 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
         "tasks": created_tasks,
         "message": f"已创建 {len(created_tasks)} 个社团补全下载任务",
     }
+
+@app.post("/api/local-upload/start")
+async def local_upload_start(request: LocalUploadStartRequest):
+    from pathlib import PurePosixPath
+    from ..core.library_manager import get_library_manager
+    from ..core.task_engine import Task, TaskType, get_task_engine
+    try:
+        source_library_id = str(request.source_library_id or "").strip()
+        source_base_path = str(request.source_base_path or "").strip()
+        selected_paths = [str(p or "").strip() for p in (request.selected_paths or []) if str(p or "").strip()]
+        target_library_id = str(request.target_library_id or "").strip()
+        target_subdir = str(request.target_subdir or "").strip()
+        circle_name = str(request.circle_name or "").strip()
+        if not source_library_id:
+            raise HTTPException(status_code=400, detail="缺少来源库存")
+        if not source_base_path:
+            raise HTTPException(status_code=400, detail="缺少来源目录")
+        if not selected_paths:
+            raise HTTPException(status_code=400, detail="没有选中要上传的目录")
+        if not target_library_id:
+            raise HTTPException(status_code=400, detail="缺少目标库存")
+
+        manager = get_library_manager()
+        target_library = manager.get_library_definition(target_library_id)
+        target_root = PurePosixPath(str(target_library.root_path or "").replace("\\", "/"))
+        if target_subdir:
+            target_root = target_root / target_subdir.strip("/\\")
+        if circle_name:
+            target_root = target_root / circle_name
+        selected_items = []
+        for selected_path in selected_paths:
+            relative_target_dir = str(target_root).replace("\\", "/").strip("/")
+            selected_items.append({
+                "source_path": selected_path,
+                "relative_target_dir": relative_target_dir,
+            })
+
+        preview_target_path = str(target_root)
+        if len(selected_paths) == 1:
+            preview_target_path = str(PurePosixPath(preview_target_path) / os.path.basename(os.path.abspath(selected_paths[0])))
+
+        task = Task(
+            task_type=TaskType.LOCAL_LIBRARY_UPLOAD,
+            source_path=source_base_path,
+            metadata={
+                "source_library_id": source_library_id,
+                "source_base_path": source_base_path,
+                "selected_paths": selected_paths,
+                "selected_items": selected_items,
+                "target_library_id": target_library_id,
+                "target_subdir": target_subdir,
+                "circle_name": circle_name,
+                "target_path": preview_target_path.replace("\\", "/"),
+                "selected_dir_count": len(selected_paths),
+                "source_page": "library",
+                "source_action": "upload_to_server",
+                "source_label": os.path.basename(source_base_path.rstrip("\\/")) or "上传到服务器",
+            },
+        )
+        task.task_metadata["upload_files"] = []
+        task.task_metadata["uploaded_files"] = []
+        task.task_metadata["progress_log"] = []
+        task.task_metadata["upload_runtime"] = {}
+        task.ensure_business_context(
+            "upload",
+            defaults={
+                "source_page": "library",
+                "source_action": "upload_to_server",
+                "source_label": os.path.basename(source_base_path.rstrip("\\/")) or "上传到服务器",
+                "business_key": f"{target_library_id}:{'|'.join(selected_paths)}",
+            },
+        )
+
+        engine = get_task_engine()
+        task_id = await engine.submit(task)
+        return {
+            "success": True,
+            "task_id": task_id,
+            "count": len(selected_paths),
+            "message": f"已创建 {len(selected_paths)} 个目录上传任务",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("本地库存上传到群晖失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"上传失败: {str(exc)}")
+
+
+@app.get("/api/local-upload/status")
+async def local_upload_status():
+    from ..core.task_engine import TaskType, get_task_engine
+
+    try:
+        engine = get_task_engine()
+        all_tasks = engine.get_all_tasks()
+        upload_tasks = [t for t in all_tasks if t.type == TaskType.LOCAL_LIBRARY_UPLOAD]
+
+        return {
+            "total_tasks": len(upload_tasks),
+            "processing": len([t for t in upload_tasks if t.status.value == "processing"]),
+            "pending": len([t for t in upload_tasks if t.status.value == "pending"]),
+            "completed": len([t for t in upload_tasks if t.status.value == "completed"]),
+            "failed": len([t for t in upload_tasks if t.status.value == "failed"]),
+            "tasks": [
+                {
+                    "id": t.id,
+                    "status": t.status.value,
+                    "display_status": t.status.value,
+                    "progress": t.progress,
+                    "current_step": t.current_step,
+                    "error_message": t.error_message,
+                    "created_at": t.created_at.isoformat() if getattr(t, "created_at", None) else None,
+                    "started_at": t.started_at.isoformat() if getattr(t, "started_at", None) else None,
+                    "completed_at": t.completed_at.isoformat() if getattr(t, "completed_at", None) else None,
+                    "source_path": t.source_path,
+                    "output_path": getattr(t, "output_path", ""),
+                    "upload_files": t.task_metadata.get("upload_files", []),
+                    "uploaded_files": t.task_metadata.get("uploaded_files", []),
+                    "upload_runtime": t.task_metadata.get("upload_runtime", {}),
+                    "progress_log": t.task_metadata.get("progress_log", []),
+                    "task_metadata": {
+                        "source_library_id": t.task_metadata.get("source_library_id", ""),
+                        "source_base_path": t.task_metadata.get("source_base_path", ""),
+                        "selected_paths": t.task_metadata.get("selected_paths", []),
+                        "selected_items": t.task_metadata.get("selected_items", []),
+                        "selected_dir_count": t.task_metadata.get("selected_dir_count", 0),
+                        "target_library_id": t.task_metadata.get("target_library_id", ""),
+                        "target_subdir": t.task_metadata.get("target_subdir", ""),
+                        "circle_name": t.task_metadata.get("circle_name", ""),
+                        "target_path": t.task_metadata.get("target_path", ""),
+                        "final_output_path": t.task_metadata.get("final_output_path", ""),
+                        "upload_result": t.task_metadata.get("upload_result", {}),
+                        "source_action": t.task_metadata.get("source_action", ""),
+                        "source_label": t.task_metadata.get("source_label", ""),
+                    },
+                }
+                for t in upload_tasks[:20]
+            ],
+        }
+    except Exception as exc:
+        logger.error("获取本地上传任务状态失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取上传状态失败: {str(exc)}")
 
 
 @app.get("/api/asmr-sync/status")

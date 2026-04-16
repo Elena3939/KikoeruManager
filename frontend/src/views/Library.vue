@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="library">
             <h1 class="page-title">{{ labels.pageTitle }}</h1>
 
@@ -132,6 +132,16 @@
             @click="startCurrentFolderRJSubtitle"
           >
             {{ toolbarActionScope === 'page' ? '当前页抓字幕' : '当前目录抓字幕' }}
+          </el-button>
+          <el-button
+            v-if="!isRemoteCurrentLibrary"
+            class="toolbar-utility-btn toolbar-utility-btn-neutral"
+            size="small"
+            plain
+            :disabled="selectedUploadCount === 0 || !hasRemoteUploadLibraries"
+            @click="openLocalUploadDialog"
+          >
+            上传到服务器
           </el-button>
           <el-button class="toolbar-utility-btn toolbar-utility-btn-neutral" size="small" plain @click="openSubtitleTaskPanel">
             字幕任务面板
@@ -275,6 +285,17 @@
           >
             <el-icon><Delete /></el-icon>批量删过滤预审
           </el-button>
+          <el-button
+            v-if="!isRemoteCurrentLibrary"
+            class="batch-action-btn batch-action-btn-neutral"
+            size="small"
+            plain
+            :disabled="selectedUploadCount === 0 || !hasRemoteUploadLibraries"
+            :loading="localUploadSubmitting"
+            @click="openLocalUploadDialog"
+          >
+            上传到服务器
+          </el-button>
           <el-button class="batch-action-btn batch-action-btn-danger" size="small" type="danger" plain :disabled="!isWritableCurrentLibrary" :loading="batchDeleting" @click="handleBatchDelete"><el-icon><Delete /></el-icon>批量删除</el-button>
           <el-button class="batch-action-btn batch-action-btn-neutral" size="small" type="warning" plain :disabled="!selectedApiRenameRows.length || apiRenameBusy" :loading="batchRenaming" @click="handleBatchApiRename"><el-icon><Edit /></el-icon>批量 API重命名</el-button>
           <el-button class="batch-action-btn batch-action-btn-neutral" size="small" @click="clearSelection">取消选择</el-button>
@@ -297,6 +318,60 @@
         <el-button type="primary" :loading="isRenaming" @click="confirmRename">确认重命名</el-button>
       </template>
     </el-dialog>
+
+    <ServerUploadPreviewDialog
+      :visible="localUploadDialogVisible"
+      :starting="localUploadSubmitting"
+      title="上传到服务器"
+      :source-library-id="selectedLibraryId"
+      :source-library-name="currentLibrary?.name || ''"
+      :source-items="selectedUploadSourceItems"
+      :libraries="libraries"
+      :initial-target-library-id="localUploadForm.targetLibraryId"
+      :initial-target-subdir="localUploadForm.targetSubdir"
+      @update:visible="value => localUploadDialogVisible = value"
+      @submit="submitLocalUpload"
+    />
+
+    <UploadTaskWorkbenchDialog
+      v-model:visible="uploadWorkbenchVisible"
+      :tasks="trackedUploadTasks"
+      :refreshing="uploadWorkbenchRefreshing"
+      @refresh="refreshUploadWorkbench"
+      @background="hideUploadWorkbenchToBackground"
+      @close="closeUploadWorkbench"
+    />
+
+    <div v-if="showUploadBackgroundCard" class="subtitle-floating-card upload-floating-card">
+      <div class="subtitle-floating-head">
+        <div>
+          <div class="subtitle-floating-title">上传任务正在后台运行</div>
+          <div class="subtitle-floating-mode">
+            {{ activeBackgroundUploadTask ? `${activeBackgroundUploadTask.work_title || activeBackgroundUploadTask.source_label || '-'} · ${getUploadBackgroundTargetLabel(activeBackgroundUploadTask)}` : '保留当前上传队列与进度状态' }}
+          </div>
+        </div>
+        <div class="subtitle-floating-count">{{ trackedUploadTasks.length }}</div>
+      </div>
+      <el-progress
+        :percentage="uploadBackgroundPercent"
+        :stroke-width="8"
+        :show-text="false"
+      />
+      <div class="subtitle-floating-chip-row">
+        <span class="subtitle-floating-chip">进行中 {{ processingUploadTasks.length }}</span>
+        <span class="subtitle-floating-chip">等待中 {{ pendingUploadTasks.length }}</span>
+        <span class="subtitle-floating-chip">完成 {{ completedUploadTasks.length }}</span>
+        <span class="subtitle-floating-chip" :class="{ 'subtitle-mini-chip-danger': failedUploadTasks.length > 0 }">失败 {{ failedUploadTasks.length }}</span>
+        <span class="subtitle-floating-chip">速度 {{ formatSpeed(getUploadBackgroundSpeed(activeBackgroundUploadTask)) }}</span>
+      </div>
+      <div class="subtitle-floating-text">
+        {{ activeBackgroundUploadTask?.current_step || '隐藏后继续保留上传队列和进度。' }}
+      </div>
+      <div class="subtitle-floating-actions">
+        <el-button size="small" type="primary" @click="resumeUploadWorkbenchFromBackground">恢复工作台</el-button>
+        <el-button size="small" @click="closeUploadWorkbench">关闭</el-button>
+      </div>
+    </div>
 
     <el-dialog
       v-model="subtitleDialogVisible"
@@ -1156,7 +1231,9 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMoun
 import { useRoute, useRouter } from 'vue-router'
 import { Refresh, Search, Folder, FolderOpened, Delete, Edit, Files, Document, Picture, VideoPlay, Headset, Tickets, ArrowDown, Loading } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { configApi, libraryApi, rjSubtitleApi } from '../api'
+import { configApi, libraryApi, localUploadApi, rjSubtitleApi } from '../api'
+import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
+import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchDialog.vue'
 import FilterDeleteDialog from '../components/library/FilterDeleteDialog.vue'
 import FolderContentsDialog from '../components/library/FolderContentsDialog.vue'
 import SubtitleInspectorWorkbench from '../components/library/SubtitleInspectorWorkbench.vue'
@@ -1239,6 +1316,31 @@ const searchResultReturnState = ref(createSearchResultReturnState())
 const renameDialogVisible = ref(false)
 const renameForm = ref({ currentName: '', newName: '', path: '', libraryId: '' })
 const isRenaming = ref(false)
+const localUploadDialogVisible = ref(false)
+const localUploadSubmitting = ref(false)
+const localUploadForm = ref({ targetLibraryId: '', targetSubdir: '' })
+const trackedUploadTaskIds = ref([])
+const trackedUploadTasks = ref([])
+const uploadWorkbenchVisible = ref(false)
+const uploadWorkbenchBackgroundActive = ref(false)
+const uploadWorkbenchRefreshing = ref(false)
+const LOCAL_UPLOAD_WORKBENCH_KEY = 'prekikoeru.library.uploadWorkbench'
+let uploadWorkbenchTimer = null
+const processingUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'processing'))
+const pendingUploadTasks = computed(() => trackedUploadTasks.value.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))))
+const completedUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'completed'))
+const failedUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'failed'))
+const showUploadBackgroundCard = computed(() => uploadWorkbenchBackgroundActive.value && !uploadWorkbenchVisible.value && trackedUploadTaskIds.value.length > 0)
+const activeBackgroundUploadTask = computed(() => processingUploadTasks.value[0] || pendingUploadTasks.value[0] || trackedUploadTasks.value[0] || null)
+const uploadBackgroundPercent = computed(() => {
+  const task = activeBackgroundUploadTask.value
+  if (!task) return 0
+  const runtime = task?.upload_runtime || {}
+  const total = Number(runtime?.total_bytes || 0)
+  const transferred = Number(runtime?.transferred_bytes || 0)
+  if (total > 0) return Math.max(0, Math.min(100, Math.round((transferred / total) * 100)))
+  return Math.max(0, Math.min(100, Number(task?.progress || 0)))
+})
 const mappedPathDialogVisible = ref(false)
 const mappedPathInfo = ref({ originalPath: '', mappedPath: '', isMapped: false })
 const tampermonkeyLoaded = ref(false)
@@ -1466,6 +1568,8 @@ const isRemoteCurrentLibrary = computed(() => currentLibrary.value?.type === 'sy
 const currentLibraryTypeLabel = computed(() => isRemoteCurrentLibrary.value ? '\u8fdc\u7a0b\u670d\u52a1\u5668\u5e93\u5b58' : '\u672c\u5730\u5e93\u5b58')
 const currentLibraryScopeLabel = computed(() => isRemoteCurrentLibrary.value ? '\u8fdc\u7a0b' : '\u672c\u5730')
 const isWritableCurrentLibrary = computed(() => !!currentLibrary.value?.writable)
+const remoteUploadLibraries = computed(() => (Array.isArray(libraries.value) ? libraries.value : []).filter(item => item?.type === 'synology_filestation' && item?.enabled !== false))
+const hasRemoteUploadLibraries = computed(() => remoteUploadLibraries.value.length > 0)
 const isAllSelected = computed(() => files.value.length > 0 && selectedRows.value.length === files.value.length)
 const aggregatePending = computed(() => Object.values(statsMap.value).some(item => item?.status === 'pending'))
 const remoteIdleLibraries = computed(() => libraries.value.filter(item => item.type === 'synology_filestation' && ['idle', undefined].includes(statsMap.value[item.id]?.status)).length)
@@ -1547,6 +1651,40 @@ const librarySearchSummary = computed(() => {
 const currentFolderRJCode = computed(() => extractRJCode(currentPath.value || ''))
 const currentPageDirectoryRows = computed(() => files.value.filter(row => row?.is_directory))
 const toolbarActionScopeLabel = computed(() => toolbarActionScope.value === 'page' ? '当前页目录' : '当前目录')
+function normalizeRemoteActionPath (path = '') {
+  const normalized = String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  return normalized || '/'
+}
+
+function joinRemoteActionPath (basePath = '', name = '') {
+  const normalizedBase = normalizeRemoteActionPath(basePath)
+  const normalizedName = String(name || '').trim().replace(/^\/+|\/+$/g, '')
+  if (!normalizedName) return normalizedBase
+  if (normalizedBase === '/') return `/${normalizedName}`
+  return `${normalizedBase}/${normalizedName}`
+}
+
+function resolveDirectoryActionPath (row) {
+  const rawPath = String(row?.path || '').trim()
+  if (!isRemoteCurrentLibrary.value) return rawPath
+
+  const currentDir = normalizeRemoteActionPath(currentPath.value)
+  const browseRoot = normalizeRemoteActionPath(browseRootPath.value)
+  const parentPath = normalizeRemoteActionPath(row?.parent_path || '')
+  const rowPath = normalizeRemoteActionPath(rawPath)
+  const rowName = String(row?.name || getFileName(rawPath)).trim()
+  const rebuiltPath = rowName ? joinRemoteActionPath(currentDir, rowName) : currentDir
+  const withinBrowseRoot = browseRoot === '/' || rowPath === browseRoot || rowPath.startsWith(`${browseRoot}/`)
+
+  if (rowName && parentPath === currentDir) {
+    return rebuiltPath
+  }
+  if (rowName && rawPath && !withinBrowseRoot && currentDir && currentDir !== '/') {
+    return rebuiltPath
+  }
+  return rawPath
+}
+
 const toolbarSubtitleScopeRows = computed(() => {
   if (toolbarActionScope.value === 'page') {
     if (currentPageDirectoryRows.value.length) return currentPageDirectoryRows.value
@@ -1556,7 +1694,7 @@ const toolbarSubtitleScopeRows = computed(() => {
 })
 const toolbarFilterDeletePaths = computed(() => {
   if (toolbarActionScope.value === 'page') {
-    const pagePaths = currentPageDirectoryRows.value.map(row => row.path).filter(Boolean)
+    const pagePaths = currentPageDirectoryRows.value.map(resolveDirectoryActionPath).filter(Boolean)
     if (pagePaths.length) return [...new Set(pagePaths)]
     return currentPath.value ? [currentPath.value] : []
   }
@@ -1568,6 +1706,13 @@ const canProcessCurrentFolder = computed(() => {
   return !!currentPath.value
 })
 const selectedFilterDeleteRows = computed(() => selectedRows.value.filter(row => row?.is_directory))
+const selectedUploadRows = computed(() => (Array.isArray(selectedRows.value) ? selectedRows.value : []).filter(row => row?.is_directory && row?.path))
+const selectedUploadCount = computed(() => selectedUploadRows.value.length)
+const selectedUploadSourceItems = computed(() => selectedUploadRows.value.map(row => ({
+  name: row?.name || getFileName(row?.path || ''),
+  path: row?.path || '',
+  size: Number(row?.size || 0),
+})).filter(item => item.path))
 const canFilterDeleteCurrentFolder = computed(() => {
   if (!isWritableCurrentLibrary.value) return false
   if (toolbarActionScope.value === 'page') return toolbarFilterDeletePaths.value.length > 0
@@ -2204,11 +2349,15 @@ function stopLibraryPolling () {
 
 async function initializeLibraryPage () {
   if (libraryInitialized) return
+  restoreUploadWorkbenchState()
   await loadLibraries()
   loadRJSubtitlePreferences()
   restoreSubtitleScanWorkspace()
   if (selectedLibraryId.value) {
     await refreshStats(false, { silent: true })
+  }
+  if (trackedUploadTaskIds.value.length) {
+    await refreshUploadWorkbench({ silent: true })
   }
   libraryInitialized = true
 }
@@ -2217,6 +2366,9 @@ async function resumeLibraryPage () {
   bindLibraryKeydown()
   await refreshLibrary({ silent: true })
   await refreshStats(false, { silent: true })
+  if (trackedUploadTaskIds.value.length) {
+    await refreshUploadWorkbench({ silent: true })
+  }
   if (subtitleDialogSessionActive.value) {
     await refreshRJSubtitleStatus(false, { silent: true })
   }
@@ -2241,6 +2393,7 @@ onActivated(async () => {
 onDeactivated(() => {
   libraryViewActive = false
   stopLibraryPolling()
+  stopUploadWorkbenchPolling()
   unbindLibraryKeydown()
   if (filterDeleteBackgroundTimer) {
     clearInterval(filterDeleteBackgroundTimer)
@@ -2251,12 +2404,29 @@ onDeactivated(() => {
 onBeforeUnmount(() => {
   libraryViewActive = false
   stopLibraryPolling()
+  stopUploadWorkbenchPolling()
   unbindLibraryKeydown()
   if (filterDeleteBackgroundTimer) {
     clearInterval(filterDeleteBackgroundTimer)
     filterDeleteBackgroundTimer = null
   }
 })
+
+watch(uploadWorkbenchVisible, () => {
+  persistUploadWorkbenchState()
+  if (uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
+  else stopUploadWorkbenchPolling()
+})
+
+watch(uploadWorkbenchBackgroundActive, () => {
+  persistUploadWorkbenchState()
+  if (uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
+  else stopUploadWorkbenchPolling()
+})
+
+watch(trackedUploadTaskIds, () => {
+  persistUploadWorkbenchState()
+}, { deep: true })
 
 watch(pageSize, async value => {
   storeNumber(PAGE_SIZE_KEY, value)
@@ -2684,7 +2854,7 @@ async function handleSortChange ({ prop, order }) {
 }
 
 function handleSelectionChange (selection) {
-  selectedRows.value = selection
+  selectedRows.value = Array.isArray(selection) ? selection : []
 }
 
 function getFileName (path) {
@@ -2739,6 +2909,25 @@ function extractRJCode (value) {
   return match ? match[0].toUpperCase() : null
 }
 
+function formatSize (bytes) {
+  const value = Number(bytes || 0)
+  if (!value) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let current = value
+  let index = 0
+  while (current >= 1024 && index < units.length - 1) {
+    current /= 1024
+    index += 1
+  }
+  const digits = current >= 100 || index === 0 ? 0 : current >= 10 ? 1 : 2
+  return `${current.toFixed(digits)} ${units[index]}`
+}
+
+function formatSpeed (bytesPerSec) {
+  const value = Number(bytesPerSec || 0)
+  return value > 0 ? `${formatSize(value)}/s` : '—'
+}
+
 function canFetchRJSubtitle (row) {
   return !!row?.is_directory && isWritableCurrentLibrary.value
 }
@@ -2763,6 +2952,184 @@ function toggleAllSelection () {
 function clearSelection () {
   tableRef.value?.clearSelection()
   selectedRows.value = []
+}
+
+function openLocalUploadDialog () {
+  if (isRemoteCurrentLibrary.value) {
+    ElMessage.warning('请先切换到本地库存后再上传到服务器')
+    return
+  }
+  if (!selectedUploadRows.value.length) {
+    ElMessage.warning('请先选中要上传的目录')
+    return
+  }
+  if (!remoteUploadLibraries.value.length) {
+    ElMessage.warning('当前没有可用的服务器库存')
+    return
+  }
+  localUploadForm.value = {
+    targetLibraryId: localUploadForm.value.targetLibraryId || remoteUploadLibraries.value[0]?.id || '',
+    targetSubdir: localUploadForm.value.targetSubdir || ''
+  }
+  localUploadDialogVisible.value = true
+}
+
+async function submitLocalUpload () {
+  const payload = arguments[0] && typeof arguments[0] === 'object' ? arguments[0] : null
+  const selectedPaths = Array.isArray(payload?.selected_paths) && payload.selected_paths.length
+    ? payload.selected_paths
+    : selectedUploadRows.value.map(row => row.path)
+  const targetLibraryId = String(payload?.target_library_id || localUploadForm.value.targetLibraryId || '').trim()
+  const targetSubdir = String(payload?.target_subdir || localUploadForm.value.targetSubdir || '').trim()
+
+  if (!selectedPaths.length) {
+    ElMessage.warning('请先选中要上传的目录')
+    return
+  }
+  if (!targetLibraryId) {
+    ElMessage.warning('请选择目标服务器库存')
+    return
+  }
+  localUploadForm.value = {
+    targetLibraryId,
+    targetSubdir,
+  }
+  localUploadSubmitting.value = true
+  try {
+    const requestPayload = {
+      source_library_id: selectedLibraryId.value,
+      source_base_path: currentPath.value || browseRootPath.value || currentLibrary.value?.path || '',
+      selected_paths: selectedPaths,
+      target_library_id: targetLibraryId,
+      target_subdir: targetSubdir,
+      circle_name: ''
+    }
+    const result = await localUploadApi.start(requestPayload)
+    rememberUploadTaskId(result.task_id)
+    uploadWorkbenchVisible.value = true
+    uploadWorkbenchBackgroundActive.value = false
+    localUploadDialogVisible.value = false
+    persistUploadWorkbenchState()
+    await refreshUploadWorkbench()
+    ElMessage.success(`已创建 ${result.count || selectedPaths.length} 个目录上传任务`)
+    clearSelection()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '上传失败')
+  } finally {
+    localUploadSubmitting.value = false
+  }
+}
+
+function persistUploadWorkbenchState () {
+  try {
+    localStorage.setItem(LOCAL_UPLOAD_WORKBENCH_KEY, JSON.stringify({
+      taskIds: trackedUploadTaskIds.value,
+      visible: uploadWorkbenchVisible.value,
+      background: uploadWorkbenchBackgroundActive.value
+    }))
+  } catch (_) {}
+}
+
+function restoreUploadWorkbenchState () {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LOCAL_UPLOAD_WORKBENCH_KEY) || '{}')
+    trackedUploadTaskIds.value = Array.isArray(raw.taskIds) ? raw.taskIds.filter(Boolean) : []
+    uploadWorkbenchVisible.value = Boolean(raw.visible && trackedUploadTaskIds.value.length)
+    uploadWorkbenchBackgroundActive.value = Boolean(raw.background && trackedUploadTaskIds.value.length)
+  } catch (_) {
+    trackedUploadTaskIds.value = []
+    uploadWorkbenchVisible.value = false
+    uploadWorkbenchBackgroundActive.value = false
+  }
+}
+
+function stopUploadWorkbenchPolling () {
+  if (uploadWorkbenchTimer) {
+    window.clearTimeout(uploadWorkbenchTimer)
+    uploadWorkbenchTimer = null
+  }
+}
+
+function startUploadWorkbenchPolling () {
+  if (!trackedUploadTaskIds.value.length) return
+  stopUploadWorkbenchPolling()
+  uploadWorkbenchTimer = window.setTimeout(() => {
+    refreshUploadWorkbench({ silent: true })
+  }, 2000)
+}
+
+function rememberUploadTaskId (nextTaskId) {
+  const normalized = String(nextTaskId || '').trim()
+  if (!normalized) return
+  if (trackedUploadTaskIds.value.includes(normalized)) return
+  trackedUploadTaskIds.value = [normalized, ...trackedUploadTaskIds.value]
+}
+
+async function refreshUploadWorkbench (options = {}) {
+  const silent = Boolean(options?.silent)
+  if (!trackedUploadTaskIds.value.length) {
+    trackedUploadTasks.value = []
+    stopUploadWorkbenchPolling()
+    persistUploadWorkbenchState()
+    return
+  }
+  if (!silent) uploadWorkbenchRefreshing.value = true
+  try {
+    const result = await localUploadApi.status()
+    const allTasks = Array.isArray(result.tasks) ? result.tasks : []
+    trackedUploadTasks.value = trackedUploadTaskIds.value
+      .map(id => allTasks.find(task => String(task?.id || '') === String(id || '')))
+      .filter(Boolean)
+    trackedUploadTaskIds.value = trackedUploadTasks.value.map(task => task.id)
+
+    const justCompleted = trackedUploadTasks.value.some(task => {
+      const status = String(task?.status || '')
+      return ['completed', 'failed'].includes(status)
+    })
+    if (justCompleted) {
+      await Promise.allSettled([refreshLibrary(), refreshStats()])
+    }
+
+    const stillActive = trackedUploadTasks.value.some(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
+    if (stillActive || uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
+    else stopUploadWorkbenchPolling()
+    persistUploadWorkbenchState()
+  } catch (error) {
+    if (!silent) ElMessage.error(error.response?.data?.detail || error.message || '获取上传任务失败')
+    if (uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
+  } finally {
+    if (!silent) uploadWorkbenchRefreshing.value = false
+  }
+}
+
+function hideUploadWorkbenchToBackground () {
+  uploadWorkbenchVisible.value = false
+  uploadWorkbenchBackgroundActive.value = true
+  persistUploadWorkbenchState()
+}
+
+function resumeUploadWorkbenchFromBackground () {
+  uploadWorkbenchBackgroundActive.value = false
+  uploadWorkbenchVisible.value = true
+  persistUploadWorkbenchState()
+}
+
+function closeUploadWorkbench () {
+  uploadWorkbenchVisible.value = false
+  uploadWorkbenchBackgroundActive.value = false
+  trackedUploadTaskIds.value = []
+  trackedUploadTasks.value = []
+  stopUploadWorkbenchPolling()
+  persistUploadWorkbenchState()
+}
+
+function getUploadBackgroundSpeed (task) {
+  const runtime = task?.upload_runtime || {}
+  return Number(runtime?.speed_bytes_per_sec || runtime?.last_non_zero_speed_bytes_per_sec || 0)
+}
+
+function getUploadBackgroundTargetLabel (task) {
+  return String(task?.task_metadata?.final_output_path || task?.task_metadata?.target_path || task?.output_path || '目标路径处理中').trim()
 }
 
 function uniqueSubtitleItems (items) {
@@ -6532,7 +6899,7 @@ async function openSelectedFilterDeleteDialog () {
   }
   filterDeleteDialogLibraryId.value = selectedLibraryId.value
   filterDeleteDialogPath.value = currentPath.value
-  filterDeleteDialogTargetPaths.value = [...new Set(targetRows.map(row => row.path).filter(Boolean))]
+  filterDeleteDialogTargetPaths.value = [...new Set(targetRows.map(resolveDirectoryActionPath).filter(Boolean))]
   filterDeleteDialogRules.value = await loadConfiguredFilterRules()
   filterDeleteDialogScopeLabel.value = `已选目录（${filterDeleteDialogTargetPaths.value.length} 项）`
   filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
