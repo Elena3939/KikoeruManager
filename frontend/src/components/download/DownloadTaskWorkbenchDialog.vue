@@ -1,122 +1,238 @@
 <template>
-  <el-dialog
-    :model-value="visible"
-    width="980px"
-    title="社团补全下载任务"
-    class="circle-download-workbench"
-    :close-on-click-modal="false"
-    @update:model-value="emit('update:visible', $event)"
-  >
-    <div class="workbench-toolbar">
-      <div class="workbench-summary">
-        <div class="workbench-stat"><span class="workbench-stat-label">任务</span><strong class="workbench-stat-value">{{ mergedTasks.length }}</strong></div>
-        <div class="workbench-stat"><span class="workbench-stat-label">进行中</span><strong class="workbench-stat-value">{{ processingTasks.length }}</strong></div>
-        <div class="workbench-stat"><span class="workbench-stat-label">等待中</span><strong class="workbench-stat-value">{{ pendingTasks.length }}</strong></div>
-        <div class="workbench-stat"><span class="workbench-stat-label">部分失败</span><strong class="workbench-stat-value">{{ partialFailedTasks.length }}</strong></div>
-        <div class="workbench-stat"><span class="workbench-stat-label">已完成</span><strong class="workbench-stat-value">{{ completedTasks.length }}</strong></div>
-      </div>
-      <div class="workbench-actions">
-        <button class="workbench-action-btn" :disabled="refreshing" @click.stop="emit('refresh')">刷新</button>
-        <button class="workbench-action-btn" @click.stop="emit('background')">隐藏到后台</button>
-        <button class="workbench-action-btn" @click.stop="emit('close')">关闭</button>
-      </div>
-    </div>
+  <!--
+    社团补全下载工作台新视觉原型。
+    当前只作为独立 V1 原型文件存在，不接入、不替换正式组件。
+    数据契约与旧组件保持兼容，便于后续在 CircleCompletion 中切换验收。
+  -->
+  <Teleport to="body">
+    <transition name="el-fade-in">
+      <div v-if="visible" class="v1-overlay">
+        <div class="v1-shell">
+          <header class="v1-header">
+            <div class="v1-header-copy">
+              <div class="v1-title">Download Manager</div>
+              <div class="v1-subtitle">社团补全下载任务</div>
 
-    <div class="workbench-filter-row">
-      <button v-for="item in filterOptions" :key="item.value" class="filter-pill" :class="{ active: activeFilter === item.value }" @click="activeFilter = item.value">
-        {{ item.label }}
-      </button>
-    </div>
-
-    <div v-if="filteredTasks.length" class="download-task-list">
-      <article
-        v-for="task in filteredTasks"
-        :key="task.id"
-        class="download-task-card"
-        :class="{
-          expanded: expandedTaskIds.has(task.id),
-          'is-success': getTaskTone(task) === 'success',
-          'is-warning': getTaskTone(task) === 'warning',
-          'is-danger': getTaskTone(task) === 'danger',
-        }"
-        @click="toggleExpanded(task.id)"
-      >
-        <div class="download-task-topline">
-          <div class="download-task-badges">
-            <span class="task-rjcode">{{ task.rjcode || '未知 RJ' }}</span>
-            <span v-if="isTaskDownloaded(task)" class="task-pill success">已下载</span>
-            <span v-if="getFailureCount(task)" class="task-pill danger">失败 {{ getFailureCount(task) }}</span>
-          </div>
-          <span class="task-pill" :class="getTaskTone(task)">{{ getDownloadTaskStatusLabel(task) }}</span>
-        </div>
-        <div class="download-task-title">{{ task.work_title || task.source_label || '未命名任务' }}</div>
-        <div class="task-progress-row">
-          <el-progress :percentage="getTaskOverallPercent(task)" :status="getProgressStatus(task)" :stroke-width="8" :show-text="false" class="task-progress" />
-          <span class="task-progress-value">{{ getTaskOverallPercent(task) }}%</span>
-        </div>
-        <div class="download-task-meta-strip">
-          <span class="meta-pill">{{ getTaskStageLabel(task) }}</span>
-          <span class="meta-pill">{{ getPrimarySizeText(task) }}</span>
-          <span class="meta-pill">总大小 {{ formatSize(getTaskTransferBytes(task)) }}</span>
-          <span class="meta-pill">下载速度 {{ formatSpeed(getVisibleDownloadSpeed(task)) }}</span>
-          <span class="meta-pill">上传速度 {{ formatSpeed(getVisibleUploadSpeed(task)) }}</span>
-          <span class="meta-pill">{{ getPrimaryFileProgressLabel(task) }}</span>
-        </div>
-        <div v-if="task.current_step" class="download-task-step">{{ task.current_step }}</div>
-        <div class="download-task-footer">
-          <div class="download-task-footer-spacer"></div>
-          <button v-if="canRetryDownloadTask(task)" class="task-retry-btn" :disabled="retryingSet.has(task.id)" @click.stop="emit('retry-task', task)">
-            {{ retryingSet.has(task.id) ? '重试中' : '重试失败项' }}
-          </button>
-        </div>
-        <div v-if="expandedTaskIds.has(task.id)" class="download-task-detail" @click.stop>
-          <div class="download-detail-grid">
-            <div class="download-detail-item"><span class="download-detail-label">下载目录</span><span class="download-detail-value">{{ getDownloadRoot(task) }}</span></div>
-            <div class="download-detail-item"><span class="download-detail-label">最终路径</span><span class="download-detail-value">{{ getFinalOutputPath(task) }}</span></div>
-          </div>
-          <div v-if="getUnifiedFileRows(task).length" class="download-file-panel">
-            <div class="download-file-title">文件流水线</div>
-            <div v-for="file in getUnifiedFileRows(task)" :key="`${task.id}-${file.relative_path || file.name}`" class="download-file-item" :class="`is-${file.tone}`">
-              <div class="download-file-head">
-                <div class="download-file-main">
-                  <div class="download-file-name">{{ file.name }}</div>
-                  <div class="download-file-subline">
-                    <span>{{ file.stageLabel }}</span>
-                    <span>{{ file.sizeText }}</span>
-                    <span v-if="file.downloadSpeedVisible">下载 {{ formatSpeed(file.downloadSpeed) }}</span>
-                    <span v-if="file.uploadSpeedVisible">上传 {{ formatSpeed(file.uploadSpeed) }}</span>
-                  </div>
-                </div>
-                <span class="task-pill small" :class="file.tone">{{ file.statusText }}</span>
-              </div>
-              <div class="task-progress-row file-progress-row">
-                <el-progress :percentage="file.progress" :stroke-width="6" :show-text="false" :status="file.progressStatus" :color="file.color" class="task-progress" />
-                <span class="task-progress-value">{{ file.progress }}%</span>
-              </div>
-              <div v-if="file.reason" class="download-file-error">{{ file.reason }}</div>
-              <div v-if="file.retryable" class="download-file-footer">
-                <div class="download-file-footer-spacer"></div>
-                <button class="file-retry-btn" :disabled="retryingSet.has(`${task.id}:${file.relative_path || file.name}`)" @click.stop="emit('retry-file', { task, file })">
-                  {{ retryingSet.has(`${task.id}:${file.relative_path || file.name}`) ? '重试中' : '重试' }}
+              <div class="v1-tabs">
+                <button
+                  v-for="tab in filterTabs"
+                  :key="tab.value"
+                  type="button"
+                  class="v1-tab"
+                  :class="{ active: activeFilter === tab.value }"
+                  @click="activeFilter = tab.value"
+                >
+                  <span>{{ tab.label }}</span>
+                  <span v-if="tab.count !== null" class="v1-tab-badge">{{ tab.count }}</span>
                 </button>
               </div>
             </div>
-          </div>
-          <div v-if="task.progress_log?.length" class="download-log-list">
-            <div class="download-file-title">最近日志</div>
-            <div v-for="entry in task.progress_log.slice(-6)" :key="`${task.id}-${entry.time}-${entry.message}`" class="download-log-item" :class="entry.level || 'info'">
-              <span class="download-log-time">{{ formatLogTime(entry.time) }}</span>
-              <span class="download-log-message">{{ entry.message }}</span>
+
+            <div class="v1-header-tools">
+              <label class="v1-search">
+                <Search :size="16" />
+                <input v-model.trim="searchQuery" type="text" placeholder="搜索任务..." />
+              </label>
+              <button
+                type="button"
+                class="v1-icon-button"
+                :class="{ spinning: refreshing || localSpinning }"
+                title="刷新"
+                @click.stop="handleRefresh"
+              >
+                <RefreshCw :size="18" />
+              </button>
+              <button type="button" class="v1-icon-button" title="隐藏到后台" @click.stop="emit('background')">
+                <Minimize2 :size="18" />
+              </button>
+              <button type="button" class="v1-icon-button" title="关闭" @click.stop="emit('close')">
+                <X :size="18" />
+              </button>
             </div>
-          </div>
+          </header>
+
+          <main class="v1-body v1-scrollbar">
+            <article
+              v-for="task in filteredTasks"
+              :key="task.id"
+              class="v1-task-card"
+              :class="{ expanded: expandedTaskIds.has(task.id) }"
+              @click="toggleExpanded(task.id)"
+            >
+              <div class="v1-task-summary">
+                <div class="v1-task-icon" :class="iconToneClass(task)">
+                  <component :is="getTaskIcon(task)" :size="24" />
+                </div>
+
+                <div class="v1-task-main">
+                  <div class="v1-task-head">
+                    <div class="v1-task-name-wrap">
+                      <h3 class="v1-task-name">{{ task.work_title || task.source_label || '未命名任务' }}</h3>
+                      <div class="v1-task-rj">{{ task.rjcode || '未知 RJ' }}</div>
+                    </div>
+
+                    <div class="v1-task-actions" @click.stop>
+                      <template v-if="['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))">
+                        <button type="button" class="v1-inline-action" @click="toggleExpanded(task.id)">等待中</button>
+                      </template>
+                      <template v-else-if="canRetryDownloadTask(task)">
+                        <button
+                          type="button"
+                          class="v1-inline-action danger"
+                          :disabled="retryingSet.has(task.id)"
+                          @click.stop="emit('retry-task', task)"
+                        >
+                          {{ retryingSet.has(task.id) ? '重试中' : '重试失败项' }}
+                        </button>
+                      </template>
+                    </div>
+                  </div>
+
+                  <div class="v1-task-meta">
+                    <span class="v1-status-line" :class="statusToneClass(task)">
+                      <component :is="getTaskStatusMetaIcon(task)" :size="12" class="v1-status-icon" />
+                      {{ getDownloadTaskStatusLabel(task) }}
+                    </span>
+                    <span>{{ getPrimarySizeText(task) }}</span>
+                    <span>{{ getPrimaryFileProgressLabel(task) }}</span>
+                    <span v-if="getVisibleDownloadSpeed(task) > 0" class="v1-speed-line">
+                      <Zap :size="12" />
+                      下载 {{ formatSpeed(getVisibleDownloadSpeed(task)) }}
+                    </span>
+                    <span v-if="getVisibleUploadSpeed(task) > 0" class="v1-speed-line upload">
+                      <Zap :size="12" />
+                      上传 {{ formatSpeed(getVisibleUploadSpeed(task)) }}
+                    </span>
+                    <span v-if="task.current_step">{{ task.current_step }}</span>
+                  </div>
+
+                </div>
+              </div>
+
+              <transition
+                enter-active-class="transition-all duration-300 ease-out grid"
+                enter-from-class="grid-rows-[0fr] opacity-0"
+                enter-to-class="grid-rows-[1fr] opacity-100"
+                leave-active-class="transition-all duration-200 ease-in grid"
+                leave-from-class="grid-rows-[1fr] opacity-100"
+                leave-to-class="grid-rows-[0fr] opacity-0"
+              >
+                <div v-show="expandedTaskIds.has(task.id)" class="grid overflow-hidden" @click.stop>
+                  <div class="min-h-0">
+                    <div class="v1-task-detail">
+                      <div v-if="task.error_message || task?.task_metadata?.failure_reason" class="v1-error-box">
+                        <AlertCircle :size="16" />
+                        <div class="v1-error-copy">
+                          <div class="v1-error-title">失败信息</div>
+                          <div class="v1-error-text">{{ task.error_message || task?.task_metadata?.failure_reason }}</div>
+                        </div>
+                      </div>
+
+                      <div class="v1-path-grid">
+                        <div class="v1-path-card">
+                          <div class="v1-path-label">下载目录</div>
+                          <div class="v1-path-value">{{ getDownloadRoot(task) }}</div>
+                        </div>
+                        <div class="v1-path-card">
+                          <div class="v1-path-label">最终路径</div>
+                          <div class="v1-path-value">{{ getFinalOutputPath(task) }}</div>
+                        </div>
+                      </div>
+
+                      <div v-if="getUnifiedFileRows(task).length" class="v1-detail-section">
+                        <div class="v1-file-list">
+                          <div
+                            v-for="file in getUnifiedFileRows(task)"
+                            :key="`${task.id}-${file.relative_path || file.name}-detail`"
+                            class="v1-file-row"
+                          >
+                            <div class="v1-file-row-top">
+                              <div class="v1-file-row-main">
+                                <span class="v1-file-row-name">{{ file.name }}</span>
+                                <span v-if="file.tone === 'success'" class="v1-file-chip success">{{ file.statusText }}</span>
+                                <span v-else-if="file.tone === 'danger'" class="v1-file-chip danger">{{ file.statusText }}</span>
+                              </div>
+                              <div class="v1-file-row-side">
+                                <span>{{ file.progress }}% • {{ file.sizeText }}</span>
+                                <span v-if="file.downloadSpeedVisible">下载 {{ formatSpeed(file.downloadSpeed) }}</span>
+                                <span v-if="file.uploadSpeedVisible">上传 {{ formatSpeed(file.uploadSpeed) }}</span>
+                                <button
+                                  v-if="file.retryable"
+                                  type="button"
+                                  class="v1-file-retry"
+                                  :disabled="retryingSet.has(`${task.id}:${file.relative_path || file.name}`)"
+                                  @click.stop="emit('retry-file', { task, file })"
+                                >
+                                  {{ retryingSet.has(`${task.id}:${file.relative_path || file.name}`) ? '重试中' : '重试' }}
+                                </button>
+                              </div>
+                            </div>
+                            <div class="v1-strip-track">
+                              <div class="v1-strip-fill" :class="fileToneClass(file)" :style="{ width: `${file.progress}%` }"></div>
+                            </div>
+                            <div v-if="file.reason" class="v1-file-reason">{{ file.reason }}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div v-if="task.progress_log?.length" class="v1-detail-section">
+                        <div class="v1-detail-section-label">最近日志</div>
+                        <div class="v1-log-list">
+                          <div
+                            v-for="entry in task.progress_log.slice(-6)"
+                            :key="`${task.id}-${entry.time}-${entry.message}`"
+                            class="v1-log-row"
+                          >
+                            <span class="v1-log-time">{{ formatLogTime(entry.time) }}</span>
+                            <span class="v1-log-message">{{ entry.message }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </transition>
+            </article>
+
+            <div v-if="!filteredTasks.length" class="v1-empty-state">
+              <Archive :size="36" />
+              <div class="v1-empty-title">暂无符合筛选的下载任务</div>
+              <div class="v1-empty-text">切换标签或修改搜索词后再试。</div>
+            </div>
+          </main>
+
+          <footer class="v1-footer">
+            <div class="v1-footer-metrics">
+              <div class="v1-footer-block">
+                <span class="v1-footer-label">下载速度</span>
+                <span class="v1-footer-value">{{ totalDownloadSpeed }}</span>
+              </div>
+              <div class="v1-footer-divider"></div>
+              <div class="v1-footer-block">
+                <span class="v1-footer-label">上传速度</span>
+                <span class="v1-footer-value">{{ totalUploadSpeed }}</span>
+              </div>
+              <div class="v1-footer-divider"></div>
+              <div class="v1-footer-block">
+                <span class="v1-footer-label">剩余任务</span>
+                <span class="v1-footer-value">{{ remainingTaskSummary }}</span>
+              </div>
+            </div>
+
+            <div class="v1-footer-actions">
+              <button type="button" class="v1-footer-action primary" @click.stop="handleRefresh">刷新</button>
+              <button type="button" class="v1-footer-action" @click.stop="emit('background')">隐藏到后台</button>
+              <button type="button" class="v1-footer-action" @click.stop="emit('close')">关闭</button>
+            </div>
+          </footer>
         </div>
-      </article>
-    </div>
-    <el-empty v-else description="暂无符合筛选的下载任务" :image-size="72" />
-  </el-dialog>
+      </div>
+    </transition>
+  </Teleport>
 </template>
 
 <script setup>
+import { Archive, AlertCircle, CheckCircle2, Clock3, Download, HardDriveUpload, Minimize2, RefreshCw, Search, TriangleAlert, X, Zap } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
@@ -138,15 +254,15 @@ const emit = defineEmits([
 ])
 
 const activeFilter = ref('all')
+const searchQuery = ref('')
 const expandedTaskIds = ref(new Set())
+const localSpinning = ref(false)
 
-const filterOptions = [
-  { value: 'all', label: '全部' },
-  { value: 'processing', label: '进行中' },
-  { value: 'pending', label: '等待中' },
-  { value: 'partial_failed', label: '部分失败' },
-  { value: 'completed', label: '已完成' },
-]
+function handleRefresh() {
+  emit('refresh')
+  localSpinning.value = true
+  setTimeout(() => { localSpinning.value = false }, 900)
+}
 
 const retryingSet = computed(() => new Set((props.retryingKeys || []).map(item => String(item || ''))))
 const mergedTasks = computed(() => buildMergedTasks(props.tasks || []))
@@ -155,14 +271,36 @@ const pendingTasks = computed(() => mergedTasks.value.filter(task => ['pending',
 const partialFailedTasks = computed(() => mergedTasks.value.filter(task => getTaskTone(task) === 'warning'))
 const completedTasks = computed(() => mergedTasks.value.filter(task => getTaskTone(task) === 'success'))
 
+const filterTabs = computed(() => ([
+  { value: 'all', label: '全部', count: mergedTasks.value.length },
+  { value: 'processing', label: '进行中', count: processingTasks.value.length },
+  { value: 'pending', label: '等待中', count: pendingTasks.value.length },
+  { value: 'partial_failed', label: '部分失败', count: partialFailedTasks.value.length },
+  { value: 'completed', label: '已完成', count: completedTasks.value.length },
+]))
+
 const filteredTasks = computed(() => {
-  const list = mergedTasks.value || []
-  if (activeFilter.value === 'all') return list
-  if (activeFilter.value === 'processing') return list.filter(task => String(task?.status || '') === 'processing')
-  if (activeFilter.value === 'pending') return list.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
-  if (activeFilter.value === 'partial_failed') return list.filter(task => getTaskTone(task) === 'warning')
-  if (activeFilter.value === 'completed') return list.filter(task => getTaskTone(task) === 'success')
-  return list
+  let list = mergedTasks.value || []
+  if (activeFilter.value === 'processing') list = list.filter(task => String(task?.status || '') === 'processing')
+  else if (activeFilter.value === 'pending') list = list.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
+  else if (activeFilter.value === 'partial_failed') list = list.filter(task => getTaskTone(task) === 'warning')
+  else if (activeFilter.value === 'completed') list = list.filter(task => getTaskTone(task) === 'success')
+
+  const keyword = searchQuery.value.trim().toLowerCase()
+  if (!keyword) return list
+  return list.filter((task) => {
+    const haystack = [task?.rjcode, task?.work_title, task?.source_label, getDownloadRoot(task), getFinalOutputPath(task)]
+      .map(item => String(item || '').toLowerCase())
+      .join(' ')
+    return haystack.includes(keyword)
+  })
+})
+
+const totalDownloadSpeed = computed(() => formatSpeed(processingTasks.value.reduce((sum, task) => sum + getVisibleDownloadSpeed(task), 0)))
+const totalUploadSpeed = computed(() => formatSpeed(processingTasks.value.reduce((sum, task) => sum + getVisibleUploadSpeed(task), 0)))
+const remainingTaskSummary = computed(() => {
+  const remaining = processingTasks.value.length + pendingTasks.value.length
+  return remaining ? `${remaining} 个` : '已全部完成'
 })
 
 watch(() => mergedTasks.value.map(task => task.id).join(':'), () => {
@@ -178,6 +316,56 @@ function toggleExpanded(taskId) {
   if (next.has(taskId)) next.delete(taskId)
   else next.add(taskId)
   expandedTaskIds.value = next
+}
+
+function iconToneClass(task) {
+  const tone = getTaskTone(task)
+  if (tone === 'success') return 'success'
+  if (tone === 'warning') return 'warning'
+  if (tone === 'danger') return 'danger'
+  if (['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))) return 'pending'
+  return 'processing'
+}
+
+function statusToneClass(task) {
+  const tone = getTaskTone(task)
+  if (tone === 'success' && isUploadEnabled(task)) return 'upload-success'
+  if (tone === 'success') return 'success'
+  if (tone === 'warning') return 'warning'
+  if (tone === 'danger') return 'danger'
+  if (['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))) return 'pending'
+  return 'processing'
+}
+
+function fileToneClass(file) {
+  if (file.tone === 'success') return 'success'
+  if (file.tone === 'upload-success') return 'upload-success'
+  if (file.tone === 'danger') return 'danger'
+  if (file.tone === 'upload') return 'upload'
+  if (file.tone === 'processing') return 'processing'
+  return 'neutral'
+}
+
+function compactFileSizeText(file) {
+  if (file.sizeText) return file.sizeText.replace(/^下载大小\s*/, '').replace(/^下载\s*/, '').replace(/^上传\s*/, '')
+  return '0 B'
+}
+
+function getTaskIcon(task) {
+  const tone = getTaskTone(task)
+  if (tone === 'success') return CheckCircle2
+  if (tone === 'warning' || tone === 'danger') return TriangleAlert
+  if (getTaskStageLabel(task).includes('上传')) return HardDriveUpload
+  if (['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))) return Clock3
+  return Download
+}
+
+function getTaskStatusMetaIcon(task) {
+  const status = String(task?.display_status || task?.status || '')
+  if (status === 'completed') return CheckCircle2
+  if (status === 'failed' || status === 'partial_failed') return TriangleAlert
+  if (status === 'paused' || status === 'pending' || status === 'waiting_retry') return Clock3
+  return Archive
 }
 
 function formatSize(bytes) {
@@ -213,27 +401,17 @@ function getTaskSourceAction(task) {
 }
 
 function getTaskLocalDownloadRoot(task) {
-  return String(
-    task?.task_metadata?.local_download_root
-    || task?.session_state?.local_download_root
-    || task?.task_metadata?.download_root
-    || ''
-  ).trim()
+  return String(task?.task_metadata?.local_download_root || task?.session_state?.local_download_root || task?.task_metadata?.download_root || '').trim()
 }
 
 function getTaskMergeKey(task) {
   const sessionId = getTaskSessionId(task)
   const rjcode = getTaskRjcode(task)
   if (sessionId) return `session:${sessionId}::${rjcode || 'unknown'}`
-
   const sourceAction = getTaskSourceAction(task)
   const localDownloadRoot = getTaskLocalDownloadRoot(task)
-  if ((sourceAction === 'reimport_local_download_root' || sourceAction === 'reimport_downloaded_session') && rjcode && localDownloadRoot) {
-    return `reimport:${rjcode}::${localDownloadRoot.toLowerCase()}`
-  }
-  if (rjcode && localDownloadRoot) {
-    return `download-root:${rjcode}::${localDownloadRoot.toLowerCase()}`
-  }
+  if ((sourceAction === 'reimport_local_download_root' || sourceAction === 'reimport_downloaded_session') && rjcode && localDownloadRoot) return `reimport:${rjcode}::${localDownloadRoot.toLowerCase()}`
+  if (rjcode && localDownloadRoot) return `download-root:${rjcode}::${localDownloadRoot.toLowerCase()}`
   if (rjcode) return `rj:${rjcode}`
   return `task:${String(task?.id || '').trim()}`
 }
@@ -275,7 +453,6 @@ function mergeTaskGroup(group) {
   const mergedUploadedFiles = dedupeByRelativePath(sorted.flatMap(task => Array.isArray(task?.uploaded_files) ? task.uploaded_files.map(file => ({ ...file, __task_status: String(task?.status || '') })) : []))
   const mergedFailedFiles = dedupeByRelativePath([...sorted].reverse().flatMap(task => Array.isArray(task?.failed_files) ? task.failed_files.map(file => ({ ...file, __task_status: String(task?.status || '') })) : []))
   const mergedLogs = [...sorted].flatMap(task => Array.isArray(task?.progress_log) ? task.progress_log : []).sort((a, b) => new Date(a?.time || 0).getTime() - new Date(b?.time || 0).getTime())
-
   const mergedTask = {
     ...base,
     ...primary,
@@ -329,7 +506,6 @@ function deriveMergedStatus(task, sourceTasks) {
   const { allCompleted, hasDanger, hasSuccess } = getTaskRowsCompletionState(task)
   const hasFinalOutputPath = getFinalOutputPath(task) !== '处理中'
   const percent = getTaskOverallPercent(task)
-
   if (hasAnyActiveRuntime(task)) return 'processing'
   if (allCompleted && percent >= 100 && hasFinalOutputPath) return 'completed'
   if (hasDanger) return hasSuccess ? 'partial_failed' : 'failed'
@@ -376,21 +552,36 @@ function isTaskProcessing(task) {
 }
 
 function isUploadEnabled(task) {
-  return Boolean(task?.task_metadata?.upload_options?.enabled || task?.upload_options?.enabled || ['local', 'synology'].includes(String(task?.task_metadata?.upload_mode || task?.upload_mode || '').trim()))
+  const explicitUpload = Boolean(
+    task?.task_metadata?.upload_options?.enabled ||
+    task?.upload_options?.enabled ||
+    ['local', 'synology'].includes(String(task?.task_metadata?.upload_mode || task?.upload_mode || '').trim())
+  )
+  if (explicitUpload) return true
+
+  const hasUploadRows = (Array.isArray(task?.upload_files) && task.upload_files.length > 0) || (Array.isArray(task?.uploaded_files) && task.uploaded_files.length > 0)
+  if (hasUploadRows) return true
+
+  const finalPath = String(getFinalOutputPath(task) || '').trim()
+  const downloadRoot = String(getDownloadRoot(task) || '').trim()
+  if (finalPath && finalPath !== '处理中' && downloadRoot && finalPath !== downloadRoot) return true
+
+  const progressLogs = Array.isArray(task?.progress_log) ? task.progress_log : []
+  if (progressLogs.some(entry => /已入库|上传完成|上传成功|入库完成/.test(String(entry?.message || '')))) return true
+
+  return false
 }
 
 function getVisibleDownloadSpeed(task) {
   const runtime = getDownloadRuntime(task)
   const runtimeSpeed = Number(runtime?.speed_bytes_per_sec || 0)
-  if (isTaskProcessing(task) && runtimeSpeed > 0) return runtimeSpeed
-  return 0
+  return isTaskProcessing(task) && hasActiveDownloadRuntime(task) && runtimeSpeed > 0 ? runtimeSpeed : 0
 }
 
 function getVisibleUploadSpeed(task) {
   const runtime = getUploadRuntime(task)
   const runtimeSpeed = Number(runtime?.speed_bytes_per_sec || 0)
-  if (isTaskProcessing(task) && runtimeSpeed > 0) return runtimeSpeed
-  return 0
+  return isTaskProcessing(task) && hasActiveUploadRuntime(task) && runtimeSpeed > 0 ? runtimeSpeed : 0
 }
 
 function getTaskTransferBytes(task) {
@@ -427,7 +618,7 @@ function getDownloadCompletedCount(task) {
 }
 
 function getUploadCompletedCount(task) {
-  return getUnifiedFileRows(task).filter(item => item.tone === 'success').length
+  return getUnifiedFileRows(task).filter(item => ['success', 'upload-success'].includes(String(item.tone || ''))).length
 }
 
 function getFailureCount(task) {
@@ -438,15 +629,10 @@ function hasTaskFailures(task) {
   return getFailureCount(task) > 0 || Boolean(String(task?.task_metadata?.failure_reason || '').trim() || String(task?.error_message || '').trim())
 }
 
-function isTaskDownloaded(task) {
-  const persistedReady = Boolean(task?.task_metadata?.local_download_ready || task?.session_state?.local_download_ready)
-  const downloadRoot = String(task?.task_metadata?.local_download_root || task?.session_state?.local_download_root || task?.task_metadata?.download_root || '').trim()
-  return Boolean((persistedReady || getDownloadCompletedCount(task) > 0) && downloadRoot)
-}
-
 function getDownloadTaskStatusLabel(task) {
   const status = String(task?.display_status || task?.status || '')
   const map = { pending: '等待中', processing: '处理中', completed: '已完成', partial_failed: '部分失败', failed: '失败', paused: '已暂停', waiting_retry: '等待重试' }
+  if (status === 'completed' && isUploadEnabled(task)) return '已上传 / 已入库'
   return map[status] || (status || '未知')
 }
 
@@ -458,14 +644,6 @@ function getTaskTone(task) {
   return 'neutral'
 }
 
-function getProgressStatus(task) {
-  const tone = getTaskTone(task)
-  if (tone === 'danger') return 'exception'
-  if (tone === 'warning') return 'warning'
-  if (tone === 'success') return 'success'
-  return ''
-}
-
 function getTaskStageLabel(task) {
   const status = String(task?.display_status || task?.status || '')
   if (status === 'waiting_retry') return '等待重试'
@@ -473,7 +651,7 @@ function getTaskStageLabel(task) {
   if (status === 'paused') return '已暂停'
   if (status === 'failed') return '失败'
   if (status === 'partial_failed' || (status === 'completed' && hasTaskFailures(task))) return '部分失败'
-  if (status === 'completed') return '已完成'
+  if (status === 'completed') return isUploadEnabled(task) ? '已上传 / 已入库' : '已完成'
   const uploadRuntime = getUploadRuntime(task)
   const downloadRuntime = getDownloadRuntime(task)
   if (Number(uploadRuntime?.active_file_count || 0) > 0) return '上传 / 入库中'
@@ -498,6 +676,7 @@ function getPrimaryFileProgressLabel(task) {
   const stage = getTaskStageLabel(task)
   const total = getTaskResourceCount(task)
   if (!total) return '文件 0 / 0'
+  if (getTaskTone(task) === 'success' && isUploadEnabled(task)) return `已上传 ${getUploadCompletedCount(task)} / ${total}`
   if (stage === '上传 / 入库中' || stage === '上传准备中') return `上传 ${getUploadCompletedCount(task)} / ${total}`
   if (getDownloadCompletedCount(task) > 0 && getDownloadCompletedCount(task) < total) return `下载 ${getDownloadCompletedCount(task)} / ${total}`
   if (getTaskTone(task) === 'warning') return `成功 ${Math.max(0, total - getFailureCount(task))} / ${total}`
@@ -508,7 +687,18 @@ function getPrimarySizeText(task) {
   const total = formatSize(getTaskTransferBytes(task))
   const tone = getTaskTone(task)
   const stage = getTaskStageLabel(task)
-  if (tone === 'success') return `下载大小 ${total}`
+  const downloadSpeedVisible = getVisibleDownloadSpeed(task) > 0
+  const uploadSpeedVisible = getVisibleUploadSpeed(task) > 0
+  if (downloadSpeedVisible && uploadSpeedVisible) {
+    return `下载 ${formatSize(getTaskDownloadedBytes(task))} / ${total}  上传 ${formatSize(getTaskUploadedBytes(task))} / ${total}`
+  }
+  if (tone === 'success') {
+    if (isUploadEnabled(task)) {
+      const uploaded = Math.max(getTaskUploadedBytes(task), getTaskTransferBytes(task))
+      return `上传 ${formatSize(uploaded)} / ${total}`
+    }
+    return `下载大小 ${total}`
+  }
   if (stage === '上传 / 入库中' || stage === '上传准备中') return `上传 ${formatSize(getTaskUploadedBytes(task))} / ${total}`
   return `下载 ${formatSize(getTaskDownloadedBytes(task))} / ${total}`
 }
@@ -541,11 +731,25 @@ function getUnifiedFileRows(task) {
     const rowKey = String(key || payload.relative_path || payload.name || '').trim()
     if (!rowKey) return null
     const existing = rows.get(rowKey) || {
-      key: rowKey, name: payload.name || payload.file_name || payload.relative_path || '未知文件', relative_path: payload.relative_path || '',
-      total: Number(payload.size_bytes || 0), downloadedBytes: 0, uploadedBytes: 0, sourceTaskStatus: '', progress: 0, tone: 'neutral',
-      color: '#262626', progressStatus: '', reason: '', retryable: false, statusText: '等待中', stageLabel: '等待中',
-      sizeText: payload.size_bytes ? `下载大小 ${formatSize(payload.size_bytes)}` : '下载大小 0 B', downloadSpeed: 0, uploadSpeed: 0,
-      downloadSpeedVisible: false, uploadSpeedVisible: false, index: Number(payload.index || 0),
+      key: rowKey,
+      name: payload.name || payload.file_name || payload.relative_path || '未知文件',
+      relative_path: payload.relative_path || '',
+      total: Number(payload.size_bytes || 0),
+      downloadedBytes: 0,
+      uploadedBytes: 0,
+      sourceTaskStatus: '',
+      progress: 0,
+      tone: 'neutral',
+      reason: '',
+      retryable: false,
+      statusText: '等待中',
+      stageLabel: '等待中',
+      sizeText: payload.size_bytes ? `下载大小 ${formatSize(payload.size_bytes)}` : '下载大小 0 B',
+      downloadSpeed: 0,
+      uploadSpeed: 0,
+      downloadSpeedVisible: false,
+      uploadSpeedVisible: false,
+      index: Number(payload.index || 0),
     }
     const next = { ...existing, name: payload.name || payload.file_name || existing.name, relative_path: payload.relative_path || existing.relative_path, total: Math.max(Number(payload.total || payload.size_bytes || 0), Number(existing.total || 0)), index: Number(payload.index || existing.index || 0) }
     rows.set(rowKey, next)
@@ -573,12 +777,10 @@ function getUnifiedFileRows(task) {
       row.stageLabel = uploadWaitingTurn ? '上传准备中' : '上传中'
       row.statusText = row.stageLabel
       row.tone = 'neutral'
-      row.color = '#d4d4d4'
     } else {
-      row.stageLabel = progress >= 100 ? '已下载' : (fileTaskProcessing ? '下载中' : '等待重试')
+      row.stageLabel = progress >= 100 ? (uploadEnabled ? '上传准备中' : '已下载') : (fileTaskProcessing ? '下载中' : '等待重试')
       row.statusText = row.stageLabel
-      row.tone = progress >= 100 ? 'neutral' : (fileTaskProcessing ? 'processing' : 'neutral')
-      row.color = progress >= 100 ? '#d4d4d4' : (fileTaskProcessing ? '#000000' : '#c7c7cc')
+      row.tone = progress >= 100 ? (uploadEnabled ? 'upload' : 'neutral') : (fileTaskProcessing ? 'processing' : 'neutral')
     }
     row.sizeText = `下载 ${formatSize(file.downloaded || 0)} / ${formatSize(row.total)}`
   })
@@ -594,11 +796,10 @@ function getUnifiedFileRows(task) {
     row.downloadSpeedVisible = false
     row.uploadSpeed = Number(file.speed_bytes_per_sec || 0)
     row.uploadSpeedVisible = isTaskProcessing(task) && Number(file.progress || 0) < 100 && row.uploadSpeed > 0
-    row.stageLabel = Number(file.progress || 0) >= 100 ? '已完成' : '上传中'
+    row.stageLabel = Number(file.progress || 0) >= 100 ? '已上传' : '上传中'
     row.statusText = row.stageLabel
-    row.sizeText = Number(file.progress || 0) >= 100 ? `下载大小 ${formatSize(row.total)}` : `上传 ${formatSize(file.uploaded || 0)} / ${formatSize(row.total)}`
-    row.tone = Number(file.progress || 0) >= 100 ? 'success' : 'upload'
-    row.color = Number(file.progress || 0) >= 100 ? '#737373' : '#000000'
+    row.sizeText = Number(file.progress || 0) >= 100 ? `上传 ${formatSize(row.total)} / ${formatSize(row.total)}` : `上传 ${formatSize(file.uploaded || 0)} / ${formatSize(row.total)}`
+    row.tone = Number(file.progress || 0) >= 100 ? 'upload-success' : 'upload'
   })
 
   uploadedFiles.forEach((file) => {
@@ -611,11 +812,10 @@ function getUnifiedFileRows(task) {
     row.progress = 100
     row.downloadSpeedVisible = false
     row.uploadSpeedVisible = false
-    row.stageLabel = '已完成'
-    row.statusText = '已完成'
-    row.sizeText = `下载大小 ${formatSize(sizeBytes)}`
-    row.tone = 'success'
-    row.color = '#737373'
+    row.stageLabel = uploadEnabled ? '已上传' : '已完成'
+    row.statusText = row.stageLabel
+    row.sizeText = uploadEnabled ? `上传 ${formatSize(sizeBytes)} / ${formatSize(sizeBytes)}` : `下载大小 ${formatSize(sizeBytes)}`
+    row.tone = uploadEnabled ? 'upload-success' : 'success'
   })
 
   failedFiles.forEach((file) => {
@@ -628,93 +828,253 @@ function getUnifiedFileRows(task) {
     row.reason = String(file.reason || file.exception_type || '失败').trim()
     row.retryable = Boolean(row.relative_path)
     row.tone = 'danger'
-    row.color = '#ef4444'
-    row.progressStatus = 'exception'
     const failedStage = String(file.stage || '').trim()
     row.stageLabel = failedStage === 'upload' ? '上传失败' : '下载失败'
     row.statusText = row.stageLabel
     row.sizeText = failedStage === 'upload' ? `上传 ${formatSize(file.uploaded || 0)} / ${formatSize(row.total)}` : `下载 ${formatSize(file.downloaded || 0)} / ${formatSize(row.total)}`
   })
 
+  const taskCompleted = String(task?.display_status || task?.status || '') === 'completed'
+  const taskHasFailures = failedFiles.length > 0 || Boolean(String(task?.task_metadata?.failure_reason || '').trim() || String(task?.error_message || '').trim())
+  const taskHasFinalOutput = getFinalOutputPath(task) !== '处理中'
+  if (taskCompleted && !taskHasFailures && taskHasFinalOutput) {
+    rows.forEach((row) => {
+      if (row.tone === 'danger') return
+      const totalBytes = Number(row.total || 0)
+      if (totalBytes <= 0) return
+      if (Number(row.downloadedBytes || 0) <= 0) row.downloadedBytes = totalBytes
+      if (isUploadEnabled(task)) {
+        if (Number(row.uploadedBytes || 0) <= 0) row.uploadedBytes = totalBytes
+        row.stageLabel = '已上传'
+        row.statusText = '已上传'
+        row.sizeText = `上传 ${formatSize(totalBytes)} / ${formatSize(totalBytes)}`
+        row.tone = 'upload-success'
+      } else {
+        row.stageLabel = '已完成'
+        row.statusText = '已完成'
+        row.sizeText = `下载大小 ${formatSize(totalBytes)}`
+        row.tone = 'success'
+      }
+      row.progress = 100
+      row.downloadSpeed = 0
+      row.uploadSpeed = 0
+      row.downloadSpeedVisible = false
+      row.uploadSpeedVisible = false
+    })
+  }
+
   return [...rows.values()].sort((a, b) => {
-    const rank = { danger: 0, upload: 1, processing: 2, neutral: 3, success: 4 }
-    return (rank[a.tone] ?? 9) - (rank[b.tone] ?? 9) || (a.index || 0) - (b.index || 0)
-  }).slice(0, 14)
+    return (a.index || 0) - (b.index || 0)
+  })
 }
 </script>
 
 <style scoped>
-.circle-download-workbench,
-.circle-download-workbench * { box-sizing: border-box; }
-.workbench-toolbar,.workbench-summary,.download-task-card,.workbench-actions,.filter-pill,.task-pill,.task-retry-btn,.file-retry-btn { font-family: "SF Pro Rounded","SF Pro Text","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif; }
-.workbench-toolbar { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:12px; }
-.workbench-summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; flex:1; }
-.workbench-stat { border:1px solid #e5e5e5; border-radius:8px; background:#fff; padding:10px 12px; display:grid; gap:2px; }
-.workbench-stat-label { font-size:11px; color:#86868b; }
-.workbench-stat-value { font-size:16px; font-weight:600; color:#1d1d1f; }
-.workbench-actions { display:flex; gap:8px; flex-wrap:wrap; }
-.workbench-action-btn,.filter-pill,.task-retry-btn,.file-retry-btn { min-height:30px; border-radius:9999px; border:1px solid #d2d2d7; background:#fff; color:#1d1d1f; padding:0 12px; font-size:12px; font-weight:500; cursor:pointer; transition:background-color .14s ease,border-color .14s ease,color .14s ease; }
-.workbench-action-btn { appearance:none; outline:none; box-shadow:none; transition:none; }
-.workbench-action-btn:focus,
-.workbench-action-btn:focus-visible,
-.workbench-action-btn:active { outline:none; box-shadow:none; }
-.workbench-action-btn:hover,.filter-pill:hover,.task-retry-btn:hover,.file-retry-btn:hover { background:#fbfbfd; border-color:#b5b5bc; }
-.workbench-action-btn:disabled,.task-retry-btn:disabled,.file-retry-btn:disabled { cursor:default; opacity:.55; }
-.workbench-filter-row { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
-.filter-pill.active { background:#0071e3; border-color:#0071e3; color:#fff; }
-.download-task-list { display:grid; gap:10px; max-height:70vh; overflow:auto; padding-right:4px; }
-.download-task-card { display:grid; gap:10px; border:1px solid #e5e5e7; border-radius:8px; background:#fff; padding:12px; cursor:pointer; }
-.download-task-card.expanded { background:#fbfbfd; }
-.download-task-card.is-success { border-color:#9ed9ad; box-shadow:0 0 0 1px rgba(52,199,89,.16) inset; background:#fbfffc; }
-.download-task-card.is-warning { border-color:#f3d3a1; }
-.download-task-card.is-danger { border-color:#f0b2aa; }
-.download-task-topline { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
-.download-task-badges { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-.task-rjcode { font-size:12px; font-weight:600; color:#0071e3; }
-.task-pill { display:inline-flex; align-items:center; min-height:22px; padding:0 10px; border-radius:9999px; border:1px solid #d2d2d7; background:#fff; font-size:11px; color:#515154; white-space:nowrap; }
-.task-pill.small { min-height:20px; padding:0 8px; font-size:10px; }
-.task-pill.success { border-color:#b8e6c3; background:#f1fff4; color:#19703a; }
-.task-pill.danger { border-color:#ffd2cc; background:#fff5f3; color:#c93420; }
-.task-pill.warning { border-color:#ffe0b2; background:#fff8ed; color:#b45f06; }
-.task-pill.neutral { color:#515154; }
-.download-task-title { font-size:15px; line-height:1.3; font-weight:600; color:#1d1d1f; word-break:break-word; }
-.task-progress-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; }
-.task-progress-value { font-size:11px; color:#6e6e73; white-space:nowrap; }
-.download-task-meta-strip { display:flex; gap:6px; flex-wrap:wrap; }
-.meta-pill { display:inline-flex; align-items:center; min-height:26px; padding:0 10px; border-radius:9999px; background:#fff; border:1px solid #e5e5e7; color:#515154; font-size:11px; }
-.download-task-step { font-size:12px; color:#6e6e73; line-height:1.35; }
-.download-task-footer { display:flex; justify-content:flex-end; align-items:center; gap:10px; }
-.download-task-footer-spacer,.download-file-footer-spacer { flex:1; }
-.task-retry-btn,.file-retry-btn { background:#0071e3; border-color:#0071e3; color:#fff; }
-.task-retry-btn:hover,.file-retry-btn:hover { background:#0077ed; border-color:#0077ed; }
-.download-task-detail { display:grid; gap:10px; padding-top:2px; }
-.download-detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-.download-detail-item,.download-file-panel,.download-log-list { display:grid; gap:6px; border:1px solid #e5e5e7; border-radius:8px; background:#fff; padding:10px 12px; }
-.download-detail-label,.download-file-title { font-size:11px; color:#86868b; }
-.download-detail-value { font-size:12px; color:#1d1d1f; word-break:break-all; }
-.download-file-panel { gap:8px; }
-.download-file-item { display:grid; gap:3px; border:1px solid #e5e5e7; border-radius:8px; background:#fff; padding:6px 9px; }
-.download-file-item.is-danger { border-color:#ef4444; }
-.download-file-head { display:flex; justify-content:space-between; gap:6px; align-items:flex-start; }
-.download-file-main { min-width:0; display:grid; gap:1px; }
-.download-file-name { font-size:11px; color:#1d1d1f; word-break:break-word; line-height:1.2; }
-.download-file-subline { display:flex; gap:4px 6px; flex-wrap:wrap; font-size:10px; color:#6e6e73; line-height:1.15; }
-.file-progress-row { align-items:center; gap:6px; margin-top:1px; }
-.download-file-error { font-size:10px; color:#c93420; line-height:1.3; }
-.download-file-footer { display:flex; justify-content:space-between; align-items:flex-end; min-height:0; margin-top:1px; }
-.download-log-item { display:grid; grid-template-columns:68px minmax(0,1fr); gap:8px; font-size:11px; }
-.download-log-time { color:#a1a1a6; }
-.download-log-message { color:#515154; word-break:break-word; }
-:deep(.circle-download-workbench .el-dialog) { border-radius:10px; overflow:hidden; box-shadow:none; }
-:deep(.circle-download-workbench .el-dialog__header) { margin-right:0; padding:16px 18px 10px; border-bottom:1px solid #e5e5e7; background:#f5f5f7; }
-:deep(.circle-download-workbench .el-dialog__title) { font-size:18px; font-weight:600; color:#1d1d1f; }
-:deep(.circle-download-workbench .el-dialog__body) { padding:16px 18px 18px; background:#f5f5f7; }
-:deep(.circle-download-workbench .el-progress-bar__outer) { background:#e9e9ee; }
-:deep(.circle-download-workbench .el-progress-bar__inner) { background:linear-gradient(90deg,#0071e3 0%,#2f8fff 100%); }
+.v1-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 16px;
+  background: transparent;
+  backdrop-filter: none;
+}
 
-@media (max-width:760px) {
-  .workbench-toolbar,.download-task-topline,.download-file-head,.download-task-footer { display:grid; grid-template-columns:1fr; }
-  .workbench-summary,.download-detail-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .task-progress-row { grid-template-columns:1fr auto; }
+.v1-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1122px;
+  height: min(88vh, 870px);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 38px;
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow:
+    0 30px 80px rgba(15, 23, 42, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(16px) saturate(200%);
+  -webkit-backdrop-filter: blur(16px) saturate(200%);
+  font-family: "Manrope", "Inter", "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  isolation: isolate;
+}
+
+.v1-shell::before,
+.v1-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.v1-shell::before {
+  inset: 1px 1px auto 1px;
+  height: 128px;
+  border-radius: 37px 37px 24px 24px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.36) 0%, rgba(255,255,255,0.1) 58%, rgba(255,255,255,0) 100%);
+  opacity: 0.95;
+}
+
+.v1-shell::after {
+  border-radius: inherit;
+  background:
+    linear-gradient(115deg, rgba(191, 219, 254, 0.16) 0%, transparent 22%),
+    linear-gradient(245deg, rgba(186, 230, 253, 0.12) 0%, transparent 18%),
+    linear-gradient(180deg, rgba(255,255,255,0.08) 0%, transparent 28%, transparent 72%, rgba(148, 163, 184, 0.08) 100%);
+  mix-blend-mode: screen;
+}
+
+.v1-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: center;
+  padding: 32px 40px 20px;
+  background: rgba(255, 255, 255, 0.12);
+  border-bottom: 1px solid rgba(217, 228, 236, 0.7);
+}
+
+.v1-header-copy { display: flex; flex-direction: column; justify-content: center; min-height: 88px; }
+.v1-title { color: #111827; font-size: 24px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+.v1-subtitle { margin-top: 6px; color: #60707a; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+.v1-tabs { display: flex; gap: 24px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
+.v1-tab { display: inline-flex; align-items: center; gap: 8px; padding: 0 0 10px; border: none; border-bottom: 3px solid transparent; background: transparent; color: #5d7184; font-size: 15px; font-weight: 600; cursor: pointer; transition: color .18s ease, transform .18s ease, border-color .18s ease; }
+.v1-tab.active { color: #2563eb; border-bottom-color: #2563eb; }
+.v1-tab:hover { color: #334155; transform: translateY(-1px); }
+.v1-tab-badge { min-width: 24px; padding: 0 8px; border-radius: 999px; background: #d9e4ec; color: #58708a; font-size: 11px; line-height: 22px; text-align: center; }
+.v1-header-tools { display: flex; align-items: center; gap: 12px; min-height: 88px; }
+.v1-search { display: inline-flex; align-items: center; gap: 10px; width: 274px; height: 44px; padding: 0 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.3); color: #7b8793; box-shadow: 0 2px 8px rgba(15, 23, 42, 0.045), inset 0 1px 0 rgba(255,255,255,.3); backdrop-filter: blur(16px) saturate(140%); transition: box-shadow .18s ease, transform .18s ease, background-color .18s ease, border-color .18s ease; border: 1px solid rgba(255,255,255,.18); }
+.v1-search:focus-within { background: rgba(255,255,255,.5); box-shadow: 0 0 0 3px rgba(59,130,246,.12), 0 2px 8px rgba(15, 23, 42, 0.045), inset 0 1px 0 rgba(255,255,255,.35); transform: translateY(-1px); border-color: rgba(96,165,250,.4); }
+.v1-search input { width: 100%; border: none; background: transparent; color: #334155; font-size: 14px; outline: none; }
+.v1-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: none; border-radius: 999px; background: rgba(255,255,255,.16); color: #475569; cursor: pointer; transition: background-color .18s ease, transform .18s ease, color .18s ease, box-shadow .18s ease; box-shadow: inset 0 1px 0 rgba(255,255,255,.24); }
+.v1-icon-button:hover { background: rgba(255,255,255,.34); color: #1f2937; transform: translateY(-1px) scale(1.03); box-shadow: 0 8px 18px rgba(148, 163, 184, 0.14), inset 0 1px 0 rgba(255,255,255,.28); }
+.v1-icon-button:active { transform: translateY(0) scale(0.98); }
+.v1-icon-button.spinning svg { animation: v1-refresh-spin .9s linear infinite; }
+.v1-body { flex: 1; overflow-y: auto; padding: 18px 40px 14px; background: rgba(231, 239, 245, 0.32); }
+.v1-task-card { position: relative; margin-bottom: 20px; border: 1px solid rgba(255, 255, 255, 0.36); border-radius: 32px; background: linear-gradient(180deg, rgba(255,255,255,.34), rgba(255,255,255,.16)); box-shadow: 0 10px 24px rgba(15, 23, 42, 0.045), inset 0 1px 0 rgba(255,255,255,.4), inset 0 0 0 1px rgba(255,255,255,.05); overflow: hidden; cursor: pointer; transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease, background-color .22s ease; }
+.v1-task-card::before {
+  content: "";
+  position: absolute;
+  inset: 1px 1px auto 1px;
+  height: 64px;
+  border-radius: 31px 31px 16px 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,.24) 0%, rgba(255,255,255,.06) 100%);
+  pointer-events: none;
+}
+.v1-task-card:hover { transform: translateY(-2px); box-shadow: 0 16px 28px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,.38), inset 0 0 0 1px rgba(255,255,255,.06); border-color: rgba(255,255,255,.46); background: linear-gradient(180deg, rgba(255,255,255,.38), rgba(255,255,255,.16)); }
+.v1-task-card.expanded { box-shadow: 0 18px 34px rgba(15, 23, 42, 0.1), inset 0 1px 0 rgba(255,255,255,.4), inset 0 0 0 1px rgba(255,255,255,.08); }
+.v1-task-summary { display: flex; align-items: center; gap: 16px; padding: 18px 22px; min-height: 92px; }
+.v1-task-icon { display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 999px; flex-shrink: 0; box-shadow: inset 0 1px 0 rgba(255,255,255,.42); }
+.v1-task-icon.processing { background: linear-gradient(180deg, #9fccff 0%, #8ec0f6 100%); color: #123f67; }
+.v1-task-icon.pending { background: #e1e9f0; color: #566167; }
+.v1-task-icon.success { background: linear-gradient(180deg, #d5ecfb 0%, #c6e0f1 100%); color: #415866; }
+.v1-task-icon.warning { background: #fce7c7; color: #9a5b00; }
+.v1-task-icon.danger { background: #fde2e2; color: #b91c1c; }
+.v1-task-main { flex: 1; min-width: 0; }
+.v1-task-head { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+.v1-task-name-wrap { min-width: 0; flex: 1; }
+.v1-task-name { margin: 0; color: #1f2937; font-size: 14px; font-weight: 800; line-height: 1.18; letter-spacing: -0.02em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.v1-task-rj { margin-top: 5px; color: #2563eb; font-size: 12px; font-weight: 700; line-height: 1; }
+.v1-task-actions { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; padding-left: 12px; }
+.v1-inline-action { border: 1px solid rgba(255,255,255,.24); background: rgba(255,255,255,.22); color: #475569; font-size: 12px; font-weight: 700; cursor: pointer; transition: color .18s ease, transform .18s ease, opacity .18s ease, box-shadow .18s ease, background-color .18s ease; min-height: 30px; padding: 0 12px; border-radius: 999px; box-shadow: 0 2px 8px rgba(15,23,42,.04), inset 0 1px 0 rgba(255,255,255,.3); backdrop-filter: blur(12px) saturate(140%); }
+.v1-inline-action.primary { color: #2563eb; }
+.v1-inline-action.danger { color: #dc2626; }
+.v1-inline-action:hover { transform: translateY(-1px); opacity: .95; background: rgba(255,255,255,.38); box-shadow: 0 8px 16px rgba(148, 163, 184, 0.12), inset 0 1px 0 rgba(255,255,255,.34); }
+.v1-inline-action:active { transform: translateY(0); }
+.v1-task-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; color: #556474; font-size: 12px; line-height: 1.1; }
+.v1-status-line,.v1-speed-line { display: inline-flex; align-items: center; gap: 5px; }
+.v1-status-line.processing,.v1-speed-line { color: #2563eb; }
+.v1-speed-line.upload { color: #4f8f96; }
+.v1-status-line.pending { color: #7c8b96; }
+.v1-status-line.success { color: #3e5560; }
+.v1-status-line.upload-success { color: #4f8f96; }
+.v1-status-line.warning { color: #9a5b00; }
+.v1-status-line.danger { color: #b91c1c; }
+.v1-status-icon { flex-shrink: 0; opacity: .92; }
+.v1-expanded-strip { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(225, 233, 240, 0.9); }
+.v1-strip-row + .v1-strip-row { margin-top: 12px; }
+.v1-strip-top { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; margin-bottom: 6px; color: #475569; font-size: 12px; align-items: end; }
+.v1-strip-name.waiting { font-style: italic; color: #7b8793; }
+.v1-strip-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v1-strip-size { white-space: nowrap; color: #64748b; font-variant-numeric: tabular-nums; }
+.v1-strip-track { width: 100%; height: 6px; overflow: hidden; border-radius: 999px; background: #d8e2ea; }
+.v1-strip-fill { height: 100%; border-radius: 999px; background: #346290; transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1), background 0.4s ease; }
+.v1-strip-fill.processing,.v1-strip-fill.neutral { background: linear-gradient(90deg, #2f5f92 0%, #3f729f 100%); }
+.v1-strip-fill.upload { background: linear-gradient(90deg, #4f8f96 0%, #6aaeb5 100%); }
+.v1-strip-fill.upload-success { background: linear-gradient(90deg, #4b8d95 0%, #79bcc2 100%); }
+.v1-strip-fill.success { background: linear-gradient(90deg, #415866 0%, #5e7480 100%); }
+.v1-strip-fill.danger { background: #dc2626; }
+.v1-task-detail { position: relative; padding: 0 22px 18px; background: linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.08)); border-top: 1px solid rgba(225, 233, 240, 0.55); box-shadow: inset 0 1px 0 rgba(255,255,255,.18); }
+.v1-task-detail::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 0 0 32px 32px;
+  pointer-events: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.16);
+}
+.v1-error-box { display: flex; gap: 10px; margin-top: 18px; padding: 14px 16px; border-radius: 16px; background: rgba(254, 226, 226, 0.45); color: #b91c1c; border: 1px solid rgba(255,255,255,.28); box-shadow: inset 0 1px 0 rgba(255,255,255,.24); }
+.v1-error-title { font-size: 12px; font-weight: 800; }
+.v1-error-text { margin-top: 4px; font-size: 12px; line-height: 1.55; word-break: break-word; }
+.v1-path-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+.v1-path-card { padding: 14px 16px; border-radius: 16px; background: linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,.12)); border: 1px solid rgba(255, 255, 255, 0.3); box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04), inset 0 1px 0 rgba(255,255,255,.32), inset 0 0 0 1px rgba(255,255,255,.04); }
+.v1-path-label,.v1-detail-section-label { color: #76838f; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.v1-path-value { margin-top: 8px; color: #334155; font-size: 13px; line-height: 1.55; word-break: break-all; }
+.v1-detail-section { margin-top: 16px; }
+.v1-file-list,.v1-log-list { margin-top: 8px; }
+.v1-file-row { padding: 9px 0; }
+.v1-file-row + .v1-file-row { border-top: 1px solid rgba(225, 233, 240, 0.8); }
+.v1-file-row-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; align-items: flex-end; }
+.v1-file-row-main,.v1-file-row-side { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.v1-file-row-main { min-width: 0; flex: 1; }
+.v1-file-row-name { color: #1f2937; font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v1-file-row-side { color: #556474; font-size: 11px; justify-content: flex-end; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.v1-file-chip { display: inline-flex; align-items: center; min-height: 22px; padding: 0 9px; border-radius: 999px; font-size: 10px; font-weight: 800; }
+.v1-file-chip.success { background: #dcecf5; color: #3e5560; }
+.v1-file-chip.danger { background: #fee2e2; color: #b91c1c; }
+.v1-file-retry { border: none; background: transparent; color: #dc2626; font-size: 12px; font-weight: 700; cursor: pointer; }
+.v1-file-reason { margin-top: 8px; color: #b91c1c; font-size: 12px; line-height: 1.5; }
+.v1-log-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 10px; color: #556474; font-size: 12px; line-height: 1.5; }
+.v1-log-row + .v1-log-row { margin-top: 6px; }
+.v1-log-time { color: #94a3b8; }
+.v1-log-message { word-break: break-word; }
+.v1-empty-state { display: grid; justify-items: center; gap: 8px; padding: 110px 24px; color: #71808d; }
+.v1-empty-title { color: #334155; font-size: 18px; font-weight: 800; }
+.v1-empty-text { font-size: 13px; }
+.v1-footer { display: flex; justify-content: space-between; align-items: flex-end; gap: 18px; padding: 22px 40px 28px; background: rgba(255, 255, 255, 0.12); border-top: 1px solid rgba(217, 228, 236, 0.42); }
+.v1-footer-metrics,.v1-footer-actions { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; }
+.v1-footer-block { display: grid; gap: 4px; }
+.v1-footer-label { color: #64748b; font-size: 10px; font-weight: 800; letter-spacing: 0.18em; }
+.v1-footer-value { color: #111827; font-size: 16px; font-weight: 800; }
+.v1-footer-divider { width: 1px; height: 44px; background: rgba(169, 179, 187, 0.32); }
+.v1-footer-actions { gap: 28px; }
+.v1-footer-action { border: none; background: transparent; color: #64748b; font-size: 13px; font-weight: 800; letter-spacing: 0.16em; cursor: pointer; transition: color .18s ease, transform .18s ease, opacity .18s ease, text-shadow .18s ease; }
+.v1-footer-action.primary { color: #2563eb; }
+.v1-footer-action:hover { color: #1d4ed8; transform: translateY(-1px); opacity: .95; text-shadow: 0 0 18px rgba(37,99,235,.16); }
+.v1-footer-action:active { transform: translateY(0); }
+
+@keyframes v1-refresh-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.v1-scrollbar::-webkit-scrollbar { width: 6px; }
+.v1-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.v1-scrollbar::-webkit-scrollbar-thumb { background: #b4c1cb; border-radius: 999px; }
+@media (max-width: 900px) {
+  .v1-header,.v1-task-head,.v1-footer { flex-direction: column; }
+  .v1-header-tools,.v1-task-actions,.v1-footer-actions { width: 100%; justify-content: flex-start; }
+  .v1-search { width: 100%; }
+  .v1-path-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .v1-header,.v1-body,.v1-footer { padding-left: 18px; padding-right: 18px; }
+  .v1-shell { border-radius: 28px; }
+  .v1-task-summary { padding: 18px; }
+  .v1-task-detail { padding-left: 18px; padding-right: 18px; }
+  .v1-log-row { grid-template-columns: 1fr; gap: 2px; }
 }
 </style>

@@ -21,14 +21,13 @@
         </button>
       </div>
 
-      <div class="tabs-row px-8 pb-3 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+      <div class="tabs-row px-8 pt-1 pb-3 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
         <button
           type="button"
           class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
-          :class="allPreviewSelectionState === 'all' ? 'tab-chip-active' : 'tab-chip-idle'"
+          :class="allPreviewSelectionState === 'all' ? 'tab-chip-active' : (allPreviewSelectionState === 'partial' ? 'tab-chip-partial' : 'tab-chip-idle')"
           @click="toggleAllPreviewSelection"
         >
-          <span v-if="allPreviewSelectionState === 'partial'" class="tab-chip-indicator">-</span>
           <span>全部</span>
           <span class="tab-count">{{ selectedFileCount }}/{{ previewSelectableResources.length }}</span>
         </button>
@@ -37,10 +36,9 @@
           :key="chip.key"
           type="button"
           class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
-          :class="chip.state === 'all' ? 'tab-chip-active' : 'tab-chip-idle'"
+          :class="chip.state === 'all' ? 'tab-chip-active' : (chip.state === 'partial' ? 'tab-chip-partial' : 'tab-chip-idle')"
           @click="togglePreviewFileType(chip)"
         >
-          <span v-if="chip.state === 'partial'" class="tab-chip-indicator">-</span>
           <span>{{ chip.label }}</span>
           <span class="tab-count">{{ chip.selected }}/{{ chip.total }}</span>
         </button>
@@ -150,7 +148,10 @@
             </div>
 
             <div class="space-y-1">
-              <p class="target-path text-xs text-slate-500">目标目录: <span class="text-slate-700">{{ resolvedTargetRoot || '-' }}</span></p>
+              <p class="target-path text-xs text-slate-500 leading-relaxed">
+                入库路径: <span class="text-slate-700 break-all">{{ resolvedTargetRoot || '-' }}</span>
+                <span class="text-slate-400"> / {作品目录}</span>
+              </p>
             </div>
               </section>
             </div>
@@ -192,7 +193,7 @@
                         {{ plan.rjcode }} <span class="node-title-muted">{{ plan.title || plan.canonical_rjcode }}</span>
                       </span>
                     </div>
-                    <span class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(plan.selected_size_bytes) }}</span>
+                    <span class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(plan.total_size_bytes) }}</span>
                   </div>
                 </div>
 
@@ -289,9 +290,15 @@ const targetLibraries = computed(() => (props.libraries || []).filter(item => it
 const selectedTargetLibrary = computed(() => targetLibraries.value.find(item => item.id === props.settings.targetLibraryId) || null)
 const resolvedTargetRoot = computed(() => {
   const root = String(selectedTargetLibrary.value?.root_path || '').trim()
+  const sep = root.includes('/') ? '/' : '\\'
   const prefix = String(props.settings.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
-  if (root && prefix) return `${root}${root.includes('/') ? '/' : '\\'}${prefix}`
-  return root || prefix || ''
+  const circle = String(props.circleName || '').trim()
+  
+  const parts = [root]
+  if (prefix) parts.push(prefix)
+  if (circle) parts.push(circle)
+  
+  return parts.filter(Boolean).join(sep)
 })
 const selectedFileCount = computed(() => planStates.value.reduce((sum, plan) => sum + Number(plan.selected_resource_count || 0), 0))
 const selectedTotalBytes = computed(() => planStates.value.reduce((sum, plan) => sum + Number(plan.selected_size_bytes || 0), 0))
@@ -491,6 +498,7 @@ function annotateSelection(node) {
 function refreshPlanTree(plan) {
   plan.tree = (plan.tree || []).map(annotateSelection)
   plan.flatRows = flattenTree(plan.tree, plan.expandedIds, 0, [])
+  plan.total_size_bytes = plan.selectable_resources.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0)
   plan.selected_resource_count = plan.selectable_resources.filter(item => item.selected).length
   plan.selected_size_bytes = plan.selectable_resources.filter(item => item.selected).reduce((sum, item) => sum + Number(item.size_bytes || 0), 0)
 }
@@ -505,6 +513,15 @@ function toggleExpand(plan, row) {
 
 function togglePlanExpand(plan) {
   plan.rootExpanded = plan.rootExpanded === false ? true : false
+}
+
+function getPlanFinalPath(plan) {
+  const base = resolvedTargetRoot.value
+  if (!base) return '-'
+  const sep = base.includes('/') ? '/' : '\\'
+  // 优先使用后端给出的 folder_path，如果没有则拼凑一个预览名
+  const workFolder = plan.folder_path || `${plan.rjcode} ${plan.title || plan.canonical_rjcode}`
+  return `${base}${sep}${workFolder}`
 }
 
 function updateResourceSelection(plan, row, nextSelected) {
@@ -680,14 +697,13 @@ function formatSize(bytes) {
   aspect-ratio: 16 / 9;
   min-height: 0;
   border-radius: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  background:
-    radial-gradient(circle at 55% 14%, rgba(185, 219, 247, 0.2), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0.34));
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.15);
   box-shadow:
-    0 30px 80px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.65);
-  backdrop-filter: blur(26px) saturate(150%);
+    0 30px 80px rgba(15, 23, 42, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(16px) saturate(200%);
+  -webkit-backdrop-filter: blur(16px) saturate(200%);
   display: flex;
   flex-direction: column;
   isolation: isolate;
@@ -696,28 +712,7 @@ function formatSize(bytes) {
 
 .window::before,
 .window::after {
-  content: '';
-  position: absolute;
-  border-radius: 999px;
-  filter: blur(90px);
-  pointer-events: none;
-  z-index: -1;
-}
-
-.window::before {
-  top: -10%;
-  left: -10%;
-  width: 40%;
-  height: 40%;
-  background: rgba(191, 219, 254, 0.6);
-}
-
-.window::after {
-  right: -10%;
-  bottom: -10%;
-  width: 40%;
-  height: 40%;
-  background: rgba(207, 250, 254, 0.7);
+  display: none;
 }
 
 .window-header {
@@ -759,7 +754,7 @@ function formatSize(bytes) {
   align-items: center;
   gap: 6px;
   overflow-x: auto;
-  padding: 0 32px 12px;
+  padding: 4px 32px 12px;
 }
 
 .tab-chip {
@@ -767,20 +762,20 @@ function formatSize(bytes) {
   padding: 4px 12px;
   border-radius: 999px;
   border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.66);
+  background: rgba(255, 255, 255, 0.25);
   box-shadow:
     0 2px 8px rgba(15, 23, 42, 0.045),
-    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
   display: inline-flex;
   align-items: center;
   gap: 5px;
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.005em;
-  color: rgb(107, 114, 128);
+  color: rgb(71, 85, 105);
   white-space: nowrap;
   cursor: pointer;
-  backdrop-filter: blur(14px) saturate(135%);
+  backdrop-filter: blur(16px) saturate(140%);
   transition: transform 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
 }
 
@@ -789,21 +784,35 @@ function formatSize(bytes) {
 }
 
 .tab-chip-active {
-  border-color: rgba(71, 85, 105, 0.24);
-  background: rgba(71, 85, 105, 0.88);
-  color: rgba(255, 255, 255, 0.96);
+  border-color: rgba(59, 130, 246, 0.8);
+  background: #3b82f6;
+  color: #ffffff;
   box-shadow:
-    0 4px 10px rgba(51, 65, 85, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    0 4px 10px rgba(59, 130, 246, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.tab-chip-partial {
+  border-color: rgba(147, 197, 253, 0.6);
+  background: rgba(219, 234, 254, 0.45);
+  color: #2563eb;
+}
+
+.tab-chip-partial:hover {
+  background: rgba(219, 234, 254, 0.65);
+  border-color: rgba(96, 165, 250, 0.8);
+  color: #1d4ed8;
 }
 
 .tab-chip-idle {
-  border-color: rgba(226, 232, 240, 0.88);
+  border-color: rgba(226, 232, 240, 0.6);
+  background: rgba(255, 255, 255, 0.3);
   color: rgb(100, 116, 139);
 }
 
 .tab-chip-idle:hover {
-  background: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.5);
+  border-color: rgba(203, 213, 225, 0.7);
   color: rgb(51, 65, 85);
 }
 
@@ -814,20 +823,18 @@ function formatSize(bytes) {
   line-height: 1;
   font-weight: 500;
   letter-spacing: normal;
-  background: rgba(248, 250, 252, 0.72);
+  background: rgba(248, 250, 252, 0.4);
   color: rgb(156, 163, 175);
 }
 
 .tab-chip-active .tab-count {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.74);
+  background: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
 }
 
-.tab-chip-indicator {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 8px;
+.tab-chip-partial .tab-count {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
 }
 
 .restore-button {
@@ -853,12 +860,12 @@ function formatSize(bytes) {
 
 .glass-card {
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.58));
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0.1));
   box-shadow:
-    0 12px 34px rgba(15, 23, 42, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  backdrop-filter: blur(22px) saturate(140%);
+    0 8px 24px rgba(15, 23, 42, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  /* 内层卡片移除过度模糊，依赖外层 window 的高斯模糊，以保证透视感 */
 }
 
 .settings-card {
@@ -1274,12 +1281,10 @@ function formatSize(bytes) {
 }
 
 .primary-cta {
-  border: 1px solid rgba(147, 197, 253, 0.8);
-  background: linear-gradient(180deg, #78b4f1 0%, #5f9feb 100%);
+  border: none;
+  background: #3b82f6;
   color: white;
-  box-shadow:
-    0 8px 20px rgba(96, 165, 250, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
 }
 
 .primary-cta:hover,
@@ -1289,36 +1294,29 @@ function formatSize(bytes) {
 
 .primary-cta:disabled {
   cursor: not-allowed;
-  opacity: 0.62;
+  background: #94a3b8;
+  opacity: 0.7;
   transform: none;
-  box-shadow:
-    0 4px 12px rgba(148, 163, 184, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  box-shadow: none;
 }
 
-.primary-cta:hover {
-  background: linear-gradient(180deg, #86bef5 0%, #6aaaf0 100%);
-  box-shadow:
-    0 12px 26px rgba(96, 165, 250, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+.primary-cta:hover:not(:disabled) {
+  background: #2563eb;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
 }
 
 .secondary-cta {
-  border: 1px solid rgba(255, 255, 255, 0.86);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.72));
-  color: rgb(71, 85, 105);
-  box-shadow:
-    0 6px 16px rgba(148, 163, 184, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
 }
 
 .secondary-cta:hover {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(241, 245, 249, 0.88));
-  border-color: rgba(226, 232, 240, 0.95);
-  color: rgb(30, 41, 59);
-  box-shadow:
-    0 10px 22px rgba(148, 163, 184, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #0f172a;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.06);
 }
 
 .primary-cta:active,

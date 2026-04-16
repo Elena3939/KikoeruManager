@@ -1,1 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap');
 @import "tailwindcss";
+
+@theme {
+  --font-headline: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  --color-primary: #346290;
+  --color-primary-container: #9ecaff;
+  --color-on-primary-container: #08426f;
+  
+  --color-surface: #f6fafe;
+  --color-surface-container-low: #eef4fa;
+  --color-surface-container: #e7eff5;
+  --color-surface-container-high: #e1e9f0;
+  --color-surface-container-highest: #d9e4ec;
+  --color-surface-container-lowest: #ffffff;
+  
+  --color-on-surface: #2a343a;
+  --color-on-surface-variant: #566167;
+  --color-outline-variant: #a9b3bb;
+  
+  --color-secondary-container: #cde6f4;
+  --color-on-secondary-container: #3e5560;
+
+  --color-error: #ba1a1a;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #410002;
+
+  --radius-lg: 2rem;
+  --radius-xl: 3rem;
+}
+
+@layer components {
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #a9b3bb;
+    border-radius: 10px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #727c83;
+  }
+
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    vertical-align: middle;
+  }
+}
