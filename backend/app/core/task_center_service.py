@@ -56,6 +56,7 @@ class TaskCenterService:
         TaskType.PROCESS_EXISTING_FOLDER: "import",
         TaskType.RJ_SUBTITLE_FETCH: "rj_subtitle",
         TaskType.ASMR_SYNC_DOWNLOAD: "asmr_sync",
+        TaskType.LOCAL_LIBRARY_UPLOAD: "upload",
         TaskType.CIRCLE_COMPLETION_INDEX: "circle_completion",
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: "circle_completion",
         TaskType.EXTRACT: "system",
@@ -720,7 +721,11 @@ class TaskCenterService:
         ]
 
         subtitle_import_service = get_linked_subtitle_import_service()
-        pending_items = await subtitle_import_service.list_pending_imports()
+        try:
+            pending_items = await subtitle_import_service.list_pending_imports()
+        except Exception:
+            logger.exception("[任务中心] 读取字幕补配预检列表失败，当前轮次已跳过 pending items")
+            pending_items = []
         items.extend(
             serialized
             for serialized in (self._safe_serialize_pending_item(item) for item in pending_items)

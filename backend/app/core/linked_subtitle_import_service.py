@@ -1894,6 +1894,13 @@ class LinkedSubtitleImportService:
             source_dir = str(preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or "").strip()
             if source_dir and os.path.isdir(source_dir):
                 source_subtitles = self._scan_source_subtitles(source_dir, source_root=source_dir)
+                if not source_subtitles:
+                    logger.warning(
+                        "[字幕补配] 预检缓存字幕工作区为空，重新解包来源压缩包: source=%s stage_dir=%s",
+                        archive_path,
+                        source_dir,
+                    )
+                    temp_dir, source_subtitles = await self._collect_archive_subtitles_to_stage(archive_path)
             else:
                 temp_dir, source_subtitles = await self._collect_archive_subtitles_to_stage(archive_path)
             workbench_result = await self._create_manual_match_workbench(
@@ -2302,7 +2309,7 @@ class LinkedSubtitleImportService:
             "candidates": candidates,
             "selected_candidate": selected_candidate,
             "candidate_count": len(candidates),
-            "ready_candidate_count": len(candidates),
+            "ready_candidate_count": len([item for item in candidates if bool(item.get("ready_for_import"))]),
             "candidate_search_status": candidate_search_status,
             "candidate_search_reason": candidate_search_reason,
         })
@@ -2485,49 +2492,79 @@ class LinkedSubtitleImportService:
             items: List[Dict[str, Any]] = []
             updated = False
             for row in rows:
-                original_preview = dict((row.analysis_info or {}).get("preview") or {})
-                preview = await self._repair_cached_preview_rj_fields(
-                    original_preview,
-                    source_path=str(row.new_path or ""),
-                )
-                if self._should_refresh_pending_record(
-                    row,
-                    preview,
-                    refresh_candidates=refresh_candidates,
-                    refresh_min_interval_seconds=refresh_min_interval_seconds,
-                ):
-                    refreshed_preview = await self._refresh_pending_preview_candidates(preview)
-                else:
-                    refreshed_preview = self._refresh_preview_execution_state(dict(preview or {}))
-                if not self._should_create_pending_import(refreshed_preview):
-                    converted_conflict = None
-                    if self._is_existing_subtitle_duplicate_preview(refreshed_preview):
-                        converted_conflict = self._upsert_existing_subtitle_conflict(
-                            db,
-                            source_path=str(row.new_path or ""),
-                            preview=refreshed_preview,
-                            task_id=str(row.task_id or "").strip() or None,
-                            queue_origin=str((row.new_metadata or {}).get("queue_origin") or "auto_process"),
-                        )
-                    stage_dir = str(
-                        refreshed_preview.get("source_subtitle_dir") or refreshed_preview.get("staged_subtitle_dir") or ""
-                    ).strip()
-                    if stage_dir:
-                        self._cleanup_stage_dir(stage_dir)
-                    if converted_conflict is row:
+                try:
+                    original_preview = dict((row.analysis_info or {}).get("preview") or {})
+                    preview = await self._repair_cached_preview_rj_fields(
+                        original_preview,
+                        source_path=str(row.new_path or ""),
+                    )
+                    if self._should_refresh_pending_record(
+                        row,
+                        preview,
+                        refresh_candidates=refresh_candidates,
+                        refresh_min_interval_seconds=refresh_min_interval_seconds,
+                    ):
+                        refreshed_preview = await self._refresh_pending_preview_candidates(preview)
+                    else:
+                        refreshed_preview = self._refresh_preview_execution_state(dict(preview or {}))
+                    if not self._should_create_pending_import(refreshed_preview):
+                        converted_conflict = None
+                        if self._is_existing_subtitle_duplicate_preview(refreshed_preview):
+                            converted_conflict = self._upsert_existing_subtitle_conflict(
+                                db,
+                                source_path=str(row.new_path or ""),
+                                preview=refreshed_preview,
+                                task_id=str(row.task_id or "").strip() or None,
+                                queue_origin=str((row.new_metadata or {}).get("queue_origin") or "auto_process"),
+                            )
+                        stage_dir = str(
+                            refreshed_preview.get("source_subtitle_dir") or refreshed_preview.get("staged_subtitle_dir") or ""
+                        ).strip()
+                        if stage_dir:
+                            self._cleanup_stage_dir(stage_dir)
+                        if converted_conflict is row:
+                            updated = True
+                            continue
+                        db.delete(row)
                         updated = True
                         continue
-                    db.delete(row)
-                    updated = True
-                    continue
-                if refreshed_preview != original_preview:
-                    row.analysis_info = {
-                        **(row.analysis_info or {}),
-                        "preview": refreshed_preview,
-                        "candidate_refreshed_at": datetime.now().isoformat(),
-                    }
-                    updated = True
-                items.append(self._serialize_pending_record(row))
+                    if refreshed_preview != original_preview:
+                        row.analysis_info = {
+                            **(row.analysis_info or {}),
+                            "preview": refreshed_preview,
+                            "candidate_refreshed_at": datetime.now().isoformat(),
+                        }
+                        updated = True
+                    items.append(self._serialize_pending_record(row))
+                except Exception as exc:
+                    logger.exception(
+                        "[字幕补配] 构建待处理预检单失败，已跳过: record_id=%s task_id=%s source=%s",
+                        getattr(row, "id", ""),
+                        getattr(row, "task_id", ""),
+                        getattr(row, "new_path", ""),
+                    )
+                    fallback_preview = self._refresh_preview_execution_state(
+                        dict((row.analysis_info or {}).get("preview") or {})
+                    )
+                    fallback_preview["execute_reason"] = str(
+                        fallback_preview.get("execute_reason")
+                        or f"预检单刷新失败：{str(exc)}"
+                    )
+                    fallback_preview["reason"] = str(
+                        fallback_preview.get("reason")
+                        or fallback_preview.get("execute_reason")
+                        or ""
+                    )
+                    items.append({
+                        "id": row.id,
+                        "task_id": row.task_id,
+                        "status": row.status,
+                        "created_at": row.created_at.isoformat() if row.created_at else None,
+                        "source_path": row.new_path,
+                        "source_mode": (row.analysis_info or {}).get("source_mode") or self.PENDING_SOURCE_MODE,
+                        "preview": fallback_preview,
+                        "can_execute": False,
+                    })
             if updated:
                 db.commit()
             return items
