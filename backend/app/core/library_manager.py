@@ -212,7 +212,7 @@ class SynologyFileStationClient:
         self._sid: Optional[str] = None
         self._device_id: str = config.device_id or ""
         self._api_info_cache: dict[str, tuple[str, int]] = {}
-        self._preferred_upload_variant_name: Optional[str] = None
+        self._preferred_upload_variant_name: Optional[str] = "minimal_form"
 
     async def _read_response_payload(self, response: aiohttp.ClientResponse, api: str) -> dict[str, Any]:
         try:
@@ -674,20 +674,20 @@ class SynologyFileStationClient:
         )
         payload_variants = [
             {
-                "name": "query_only",
-                "query": {"path": normalized_path, "overwrite": overwrite_value},
-                "form": {},
-                "quote_fields": True,
-                "include_content_type": False,
-                "include_sid": True,
-            },
-            {
                 "name": "minimal_form",
                 "query": {},
                 "form": {
                     "path": normalized_path,
                     "overwrite": overwrite_value,
                 },
+                "quote_fields": True,
+                "include_content_type": False,
+                "include_sid": True,
+            },
+            {
+                "name": "query_only",
+                "query": {"path": normalized_path, "overwrite": overwrite_value},
+                "form": {},
                 "quote_fields": True,
                 "include_content_type": False,
                 "include_sid": True,
@@ -758,7 +758,11 @@ class SynologyFileStationClient:
             logger.info("[SynologyUpload] 命中已缓存成功变体: %s", preferred_variant_name)
             payload_variants = sorted(
                 payload_variants,
-                key=lambda item: 0 if item.get("name") == preferred_variant_name else 1,
+                key=lambda item: (
+                    0 if item.get("name") == "minimal_form" else
+                    1 if item.get("name") == preferred_variant_name else
+                    2
+                ),
             )
         last_error: Optional[Exception] = None
         file_name = remote_name or os.path.basename(local_path)
