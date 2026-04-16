@@ -125,6 +125,7 @@
         </div>
       </el-main>
     </el-container>
+    <BackgroundWorkbenchHost />
   </el-container>
 </template>
 
@@ -160,6 +161,7 @@ import LibraryBackup from './views/LibraryBackup.vue'
 import SubtitleImport from './views/SubtitleImport.vue'
 import ActivityHistory from './views/ActivityHistory.vue'
 import CircleCompletion from './views/CircleCompletion.vue'
+import BackgroundWorkbenchHost from './components/workbench/BackgroundWorkbenchHost.vue'
 import router from './router'
 
 const appVersion = '1.0.2'

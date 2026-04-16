@@ -394,26 +394,6 @@
       />
     </el-dialog>
 
-    <div v-if="workbenchBackgroundActive && !workbenchDialogVisible" class="workbench-background-dock">
-      <div class="workbench-background-card">
-        <div class="workbench-background-main">
-          <div class="workbench-background-title">字幕补配工作台正在后台运行</div>
-          <div class="workbench-background-meta">
-            <span>全部 {{ workbenchBackgroundSummary.total || 0 }}</span>
-            <span>进行中 {{ workbenchBackgroundSummary.processing || 0 }}</span>
-            <span>已完成 {{ workbenchBackgroundSummary.completed || 0 }}</span>
-            <span>失败 {{ workbenchBackgroundSummary.failed || 0 }}</span>
-          </div>
-          <div v-if="workbenchBackgroundSummary.activeTask" class="workbench-background-active">
-            {{ workbenchBackgroundSummary.activeTask.rjcode || '当前任务' }} · {{ workbenchBackgroundSummary.activeTask.title || '-' }} · {{ workbenchBackgroundSummary.activeTask.progressText || workbenchBackgroundSummary.activeTask.statusLabel || '-' }}
-          </div>
-        </div>
-        <div class="workbench-background-actions">
-          <el-button size="small" type="primary" @click="restoreImportWorkbench">恢复工作台</el-button>
-          <el-button size="small" @click="closeImportWorkbench">关闭</el-button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -423,18 +403,19 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { rjSubtitleApi, subtitleImportApi } from '../api'
 import SubtitleImportWorkbench from '../components/subtitle-import/SubtitleImportWorkbench.vue'
+import { useBackgroundWorkbenchManager } from '../composables/useBackgroundWorkbenchManager'
 
 const route = useRoute()
 const router = useRouter()
 const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const SUBTITLE_IMPORT_OPTIONS_KEY = 'kikoeru.ui.subtitleImport.workbenchOptions'
-const SUBTITLE_IMPORT_WORKBENCH_TASK_KEY = 'kikoeru.ui.subtitleImport.activeTaskId'
-const SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY = 'kikoeru.ui.subtitleImport.workbenchVisible'
-const SUBTITLE_IMPORT_WORKBENCH_BACKGROUND_KEY = 'kikoeru.ui.subtitleImport.workbenchBackground'
 const SUBTITLE_IMPORT_QUEUE_STATE_KEY = 'kikoeru.ui.subtitleImport.workbenchQueueState'
 const SUBTITLE_IMPORT_TASK_DRAFTS_KEY = 'kikoeru.ui.subtitleImport.taskDrafts'
+const SUBTITLE_IMPORT_WORKBENCH_ID = 'subtitle-import-workbench'
 const AUTO_IMPORT_POLL_INTERVAL_MS = 2500
 const PENDING_REFRESH_INTERVAL_MS = 4000
+
+const workbenchManager = useBackgroundWorkbenchManager()
 
 function loadJson(key, fallback) {
   try {
@@ -513,54 +494,8 @@ function getSubtitleWorkbenchFilterOptions() {
   }
 }
 
-function persistWorkbenchTaskId(taskId = '') {
-  try {
-    if (taskId) localStorage.setItem(SUBTITLE_IMPORT_WORKBENCH_TASK_KEY, String(taskId))
-    else localStorage.removeItem(SUBTITLE_IMPORT_WORKBENCH_TASK_KEY)
-  } catch (_) {}
-}
-
-function readPersistedWorkbenchTaskId() {
-  try {
-    return String(localStorage.getItem(SUBTITLE_IMPORT_WORKBENCH_TASK_KEY) || '')
-  } catch (_) {
-    return ''
-  }
-}
-
-function persistWorkbenchDialogVisible(visible) {
-  try {
-    localStorage.setItem(SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY, visible ? '1' : '0')
-  } catch (_) {}
-}
-
-function readPersistedWorkbenchDialogVisible() {
-  try {
-    return localStorage.getItem(SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY) === '1'
-  } catch (_) {
-    return false
-  }
-}
-
-function persistWorkbenchBackgroundActive(active) {
-  try {
-    localStorage.setItem(SUBTITLE_IMPORT_WORKBENCH_BACKGROUND_KEY, active ? '1' : '0')
-  } catch (_) {}
-}
-
-function readPersistedWorkbenchBackgroundActive() {
-  try {
-    return localStorage.getItem(SUBTITLE_IMPORT_WORKBENCH_BACKGROUND_KEY) === '1'
-  } catch (_) {
-    return false
-  }
-}
-
 function clearPersistedWorkbenchSession() {
   try {
-    localStorage.removeItem(SUBTITLE_IMPORT_WORKBENCH_VISIBLE_KEY)
-    localStorage.removeItem(SUBTITLE_IMPORT_WORKBENCH_BACKGROUND_KEY)
-    localStorage.removeItem(SUBTITLE_IMPORT_WORKBENCH_TASK_KEY)
     localStorage.removeItem(SUBTITLE_IMPORT_QUEUE_STATE_KEY)
     localStorage.removeItem(SUBTITLE_IMPORT_TASK_DRAFTS_KEY)
   } catch (_) {}
@@ -588,10 +523,48 @@ const folderPreviewLoading = ref(false)
 const folderImporting = ref(false)
 const folderPreview = ref(null)
 const folderCandidateSelection = ref('')
-const activeWorkbenchTaskId = ref(String(route.query.taskId || ''))
-const workbenchDialogVisible = ref(Boolean(route.query.taskId || readPersistedWorkbenchDialogVisible()))
-const workbenchBackgroundActive = ref(Boolean(!route.query.taskId && readPersistedWorkbenchBackgroundActive()))
-const workbenchDialogInitialized = ref(Boolean(route.query.taskId || readPersistedWorkbenchTaskId() || readPersistedWorkbenchDialogVisible() || readPersistedWorkbenchBackgroundActive()))
+workbenchManager.registerWorkbench({
+  id: SUBTITLE_IMPORT_WORKBENCH_ID,
+  type: 'subtitle-import',
+  title: '字幕补配工作台',
+  priority: 72,
+  actions: ['resume', 'close'],
+  onClose: () => {
+    resetImportWorkbenchSession()
+  }
+})
+const subtitleImportWorkbenchRuntime = workbenchManager.getWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID)
+const activeWorkbenchTaskId = ref(String(
+  route.query.taskId ||
+  subtitleImportWorkbenchRuntime.value?.payload?.activeTaskId ||
+  ''
+))
+const workbenchDialogVisible = computed({
+  get: () => Boolean(subtitleImportWorkbenchRuntime.value?.visible),
+  set: (value) => {
+    workbenchManager.patchWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID, {
+      visible: Boolean(value),
+      restorable: Boolean(value) || Boolean(workbenchBackgroundActive.value) || Boolean(activeWorkbenchTaskId.value)
+    })
+  }
+})
+const workbenchBackgroundActive = computed({
+  get: () => Boolean(subtitleImportWorkbenchRuntime.value?.backgroundActive),
+  set: (value) => {
+    workbenchManager.patchWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID, {
+      backgroundActive: Boolean(value),
+      cardVisible: Boolean(value),
+      dismissed: false,
+      restorable: Boolean(value) || Boolean(workbenchDialogVisible.value) || Boolean(activeWorkbenchTaskId.value)
+    })
+  }
+})
+const workbenchDialogInitialized = ref(Boolean(
+  route.query.taskId ||
+  activeWorkbenchTaskId.value ||
+  subtitleImportWorkbenchRuntime.value?.visible ||
+  subtitleImportWorkbenchRuntime.value?.backgroundActive
+))
 const workbenchBackgroundSummary = ref({
   total: 0,
   processing: 0,
@@ -605,6 +578,66 @@ const autoImportingPendingId = ref('')
 const autoImportBlockedIds = ref(new Set())
 let autoImportTimer = null
 let pendingRefreshTimer = null
+
+function syncSubtitleImportWorkbenchCardState() {
+  const summary = workbenchBackgroundSummary.value || {}
+  const total = Number(summary.total || 0)
+  const processing = Number(summary.processing || 0)
+  const completed = Number(summary.completed || 0)
+  const failed = Number(summary.failed || 0)
+  const activeTask = summary.activeTask || null
+  const percentage = total > 0 ? Math.max(0, Math.min(100, Math.round(((completed + failed) / total) * 100))) : 0
+  const tone = processing > 0 ? 'info' : failed > 0 ? 'warning' : completed > 0 ? 'success' : 'neutral'
+  const label = processing > 0 ? '后台运行中' : failed > 0 ? '可回看' : completed > 0 ? '已完成' : '待处理'
+
+  workbenchManager.patchWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID, {
+    title: '字幕补配工作台',
+    cardVisible: Boolean(workbenchBackgroundActive.value),
+    dismissed: false,
+    payload: {
+      activeTaskId: String(activeWorkbenchTaskId.value || '')
+    },
+    status: {
+      key: tone,
+      label,
+      tone
+    },
+    progress: {
+      percentage,
+      status: failed > 0 && processing <= 0 ? 'warning' : completed > 0 && processing <= 0 && failed <= 0 ? 'success' : '',
+      label: activeTask?.progressText || activeTask?.statusLabel || ''
+    },
+    summary: {
+      subtitle: activeTask
+        ? `${activeTask.rjcode || '当前任务'} · ${activeTask.title || '-'}`
+        : '保留当前队列与人工补配上下文',
+      text: activeTask?.progressText || activeTask?.statusLabel || '隐藏后继续保留任务队列、自动轮询和手动补配上下文。'
+    },
+    metrics: [
+      { key: 'total', label: '全部', value: total, tone: 'neutral' },
+      { key: 'processing', label: '进行中', value: processing, tone: processing > 0 ? 'info' : 'neutral' },
+      { key: 'completed', label: '完成', value: completed, tone: completed > 0 ? 'success' : 'neutral' },
+      { key: 'failed', label: '失败', value: failed, tone: failed > 0 ? 'danger' : 'neutral' }
+    ]
+  })
+}
+
+function resetImportWorkbenchSession() {
+  workbenchDialogVisible.value = false
+  workbenchBackgroundActive.value = false
+  workbenchDialogInitialized.value = false
+  activeWorkbenchTaskId.value = ''
+  workbenchBackgroundSummary.value = {
+    total: 0,
+    processing: 0,
+    completed: 0,
+    failed: 0,
+    clearable: 0,
+    selectedTaskId: '',
+    activeTask: null
+  }
+  clearPersistedWorkbenchSession()
+}
 
 const activePendingItem = computed(() => {
   return pendingItems.value.find(item => item.id === activePendingId.value) || null
@@ -688,7 +721,9 @@ onUnmounted(() => {
 watch(() => route.query.taskId, (value) => {
   if (value) {
     activeWorkbenchTaskId.value = String(value || '')
-    persistWorkbenchTaskId(activeWorkbenchTaskId.value)
+    workbenchManager.openWorkbench(SUBTITLE_IMPORT_WORKBENCH_ID, {
+      activeTaskId: activeWorkbenchTaskId.value
+    })
     workbenchDialogInitialized.value = true
     workbenchBackgroundActive.value = false
     workbenchDialogVisible.value = true
@@ -698,14 +733,6 @@ watch(() => route.query.taskId, (value) => {
     activeWorkbenchTaskId.value = ''
   }
 }, { immediate: true })
-
-watch(workbenchDialogVisible, (visible) => {
-  persistWorkbenchDialogVisible(visible)
-})
-
-watch(workbenchBackgroundActive, (active) => {
-  persistWorkbenchBackgroundActive(active)
-})
 
 watch(() => [workbenchDialogVisible.value, workbenchBackgroundActive.value], ([visible, backgroundActive]) => {
   if (!visible && !backgroundActive) {
@@ -746,7 +773,12 @@ watch(() => [workbenchDialogVisible.value, workbenchBackgroundActive.value], ([v
 
 watch(activeWorkbenchTaskId, (taskId) => {
   const normalized = String(taskId || '')
-  persistWorkbenchTaskId(normalized)
+  workbenchManager.patchWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID, {
+    payload: {
+      activeTaskId: normalized
+    },
+    restorable: Boolean(normalized) || Boolean(workbenchDialogVisible.value) || Boolean(workbenchBackgroundActive.value)
+  })
   if (!workbenchDialogVisible.value) return
   if (String(route.query.taskId || '') === normalized) {
     return
@@ -759,6 +791,10 @@ watch(activeWorkbenchTaskId, (taskId) => {
     query: nextQuery
   })
 })
+
+watch(() => workbenchBackgroundSummary.value, () => {
+  syncSubtitleImportWorkbenchCardState()
+}, { deep: true, immediate: true })
 
 watch(pendingItems, () => {
   pruneAutoImportBlockedIds()
@@ -784,13 +820,22 @@ async function refreshSubtitleImportPage(options = {}) {
 async function restoreActiveWorkbenchTask(options = {}) {
   const { silent = false } = options
   try {
-    const requestedId = String(route.query.taskId || activeWorkbenchTaskId.value || readPersistedWorkbenchTaskId() || '')
+    const requestedId = String(
+      route.query.taskId ||
+      activeWorkbenchTaskId.value ||
+      subtitleImportWorkbenchRuntime.value?.payload?.activeTaskId ||
+      ''
+    )
     const data = await rjSubtitleApi.status()
     const candidates = (data.tasks || []).filter(task => isLinkedSubtitleWorkbenchTask(task))
     const matchedTask = (requestedId && candidates.find(task => task.id === requestedId)) || candidates.at(-1) || null
     if (!matchedTask) {
-      persistWorkbenchTaskId('')
       activeWorkbenchTaskId.value = ''
+      workbenchManager.patchWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID, {
+        payload: {
+          activeTaskId: ''
+        }
+      })
       if (route.query.taskId) {
         const nextQuery = { ...route.query }
         delete nextQuery.taskId
@@ -802,7 +847,11 @@ async function restoreActiveWorkbenchTask(options = {}) {
       return
     }
     activeWorkbenchTaskId.value = String(matchedTask.id || '')
-    persistWorkbenchTaskId(activeWorkbenchTaskId.value)
+    workbenchManager.patchWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID, {
+      payload: {
+        activeTaskId: activeWorkbenchTaskId.value
+      }
+    })
     if (workbenchDialogVisible.value && route.query.taskId !== activeWorkbenchTaskId.value) {
       router.replace({
         path: '/subtitle-import',
@@ -1076,47 +1125,33 @@ async function executeFolderImport() {
 function openImportedTask(taskId) {
   const nextTaskId = String(taskId || '')
   workbenchDialogInitialized.value = true
-  workbenchBackgroundActive.value = false
-  workbenchDialogVisible.value = true
+  workbenchManager.openWorkbench(SUBTITLE_IMPORT_WORKBENCH_ID, {
+    activeTaskId: nextTaskId
+  })
   if (!nextTaskId) return
   if (activeWorkbenchTaskId.value === nextTaskId && route.query.taskId === nextTaskId) return
   activeWorkbenchTaskId.value = nextTaskId
-  persistWorkbenchTaskId(activeWorkbenchTaskId.value)
 }
 
 function openImportWorkbench() {
   workbenchDialogInitialized.value = true
-  workbenchBackgroundActive.value = false
-  workbenchDialogVisible.value = true
+  workbenchManager.openWorkbench(SUBTITLE_IMPORT_WORKBENCH_ID, {
+    activeTaskId: String(activeWorkbenchTaskId.value || '')
+  })
 }
 
 function restoreImportWorkbench() {
   workbenchDialogInitialized.value = true
-  workbenchBackgroundActive.value = false
-  workbenchDialogVisible.value = true
+  workbenchManager.resumeWorkbench(SUBTITLE_IMPORT_WORKBENCH_ID)
 }
 
 function hideImportWorkbenchToBackground() {
   workbenchDialogInitialized.value = true
-  workbenchBackgroundActive.value = true
-  workbenchDialogVisible.value = false
+  workbenchManager.backgroundWorkbench(SUBTITLE_IMPORT_WORKBENCH_ID)
 }
 
 function closeImportWorkbench() {
-  workbenchDialogVisible.value = false
-  workbenchBackgroundActive.value = false
-  workbenchDialogInitialized.value = false
-  activeWorkbenchTaskId.value = ''
-  workbenchBackgroundSummary.value = {
-    total: 0,
-    processing: 0,
-    completed: 0,
-    failed: 0,
-    clearable: 0,
-    selectedTaskId: '',
-    activeTask: null
-  }
-  clearPersistedWorkbenchSession()
+  workbenchManager.closeWorkbench(SUBTITLE_IMPORT_WORKBENCH_ID)
 }
 
 function handleWorkbenchStateChange(payload) {
@@ -1129,6 +1164,7 @@ function handleWorkbenchStateChange(payload) {
     selectedTaskId: String(payload?.selectedTaskId || ''),
     activeTask: payload?.activeTask || null
   }
+  syncSubtitleImportWorkbenchCardState()
 }
 
 function candidateKey(candidate) {
