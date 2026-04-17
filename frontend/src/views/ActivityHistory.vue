@@ -191,36 +191,99 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="category_label" label="分类" width="212">
+        <el-table-column prop="category_label" label="分类" width="160">
           <template #default="{ row }">
-            <span class="category-cell-wrap">
+            <span class="flex items-start gap-1.5 flex-wrap">
               <template v-if="row.is_tree_child">
-                <span class="tree-cell-content child-row-label" :style="childIndentStyle(row)">
+                <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500/80" :style="childIndentStyle(row)">
                   <span class="tree-guides" :style="treeGuideStyle(row)" aria-hidden="true"></span>
-                  <span :class="['child-type-dot', childTypeDotClass(row)]"></span>
+                  <span :class="['size-1.5 rounded-full', childTypeDotClass(row)]"></span>
                   <span>{{ childRowCategoryLabel(row) }}</span>
                 </span>
               </template>
               <template v-else>
-                <span :class="['cell-pill', categoryClass(row.category)]">{{ row.category_label }}</span>
+                <div class="flex items-center gap-1.5">
+                  <span
+                    class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors duration-200"
+                    :class="[getCategoryConfig(row.category).color, getCategoryConfig(row.category).bg, getCategoryConfig(row.category).border]"
+                  >
+                    <Search v-if="row.category === 'subtitle_crawl'" :size="12" :stroke-width="2.5" />
+                    <Link v-else-if="row.category === 'subtitle_pair'" :size="12" :stroke-width="2.5" />
+                    <FileDown v-else-if="row.category === 'subtitle_import'" :size="12" :stroke-width="2.5" />
+                    <Package v-else-if="row.category === 'extract'" :size="12" :stroke-width="2.5" />
+                    <Database v-else-if="row.category === 'auto_import'" :size="12" :stroke-width="2.5" />
+                    <Folder v-else-if="row.category === 'process_existing'" :size="12" :stroke-width="2.5" />
+                    <Scissors v-else-if="row.category === 'pipeline_delete'" :size="12" :stroke-width="2.5" />
+                    <RefreshCw v-else-if="row.category === 'asmr_sync'" :size="12" :stroke-width="2.5" />
+                    <Users v-else-if="row.category === 'circle_completion'" :size="12" :stroke-width="2.5" />
+                    <Tag v-else :size="12" :stroke-width="2.5" />
+                    {{ row.category_label }}
+                  </span>
+                  <div v-if="rowCategoryTags(row).length" class="flex flex-col gap-[3px] justify-center">
+                    <span
+                      v-for="tag in rowCategoryTags(row)"
+                      :key="`${row.id}-${tag}`"
+                      class="inline-flex items-center px-1 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider leading-none border shadow-[0_1px_2px_rgba(0,0,0,0.02)] transition-all duration-200"
+                      :class="[
+                        tag === '未命中'
+                          ? 'bg-slate-50 text-slate-500 border-slate-200/60'
+                          : 'bg-emerald-50 text-emerald-600 border-emerald-100',
+                        actionTagClass(row, tag) === 'is-api-rename' && 'bg-blue-50 text-blue-600 border-blue-100',
+                        actionTagClass(row, tag) === 'is-manual-rename' && 'bg-violet-50 text-violet-600 border-violet-100'
+                      ]"
+                    >{{ tag }}</span>
+                  </div>
+                </div>
               </template>
-              <span
-                v-for="tag in rowCategoryTags(row)"
-                :key="`${row.id}-${tag}`"
-                :class="['action-pill', actionTagClass(row, tag), { 'is-muted': tag === '未命中' }]"
-              >{{ tag }}</span>
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="126">
+        <el-table-column prop="status" label="状态" width="130">
           <template #default="{ row }">
-            <div class="status-cell">
-              <span :class="['status-tag', statusClass(row.status)]">{{ statusLabel(row.status) }}</span>
-              <span v-if="isRecoveredFailure(row)" class="recovered-leading-badge">已修复</span>
-              <template v-if="!row.is_tree_child">
-                <span v-if="isRerunRow(row)" class="status-fixed-pill is-rerun">重新爬取</span>
-                <span v-if="finalStatusLabel(row)" :class="['status-fixed-pill', 'is-final', finalStatusClass(row)]">{{ finalStatusLabel(row) }}</span>
-              </template>
+            <div class="flex items-center gap-1.5">
+              <span
+                class="inline-flex items-center gap-1.5 text-xs font-bold transition-all duration-200"
+                :class="getStatusConfig(row.status).color"
+              >
+                <CheckCircle2 v-if="row.status === 'success'" :size="14" :stroke-width="2.5" />
+                <AlertCircle v-else-if="row.status === 'partial_success'" :size="14" :stroke-width="2.5" />
+                <XCircle v-else-if="row.status === 'failed'" :size="14" :stroke-width="2.5" />
+                <MinusCircle v-else-if="row.status === 'cancelled'" :size="14" :stroke-width="2.5" />
+                <Clock v-else-if="row.status === 'waiting'" :size="14" :stroke-width="2.5" />
+                <PlayCircle v-else-if="row.status === 'incomplete'" :size="14" :stroke-width="2.5" />
+                <MinusCircle v-else :size="14" :stroke-width="2.5" />
+                {{ getStatusConfig(row.status).label }}
+              </span>
+              <div v-if="showAsmrUploadBadge(row) || isRecoveredFailure(row) || (!row.is_tree_child && (isRerunRow(row) || finalStatusLabel(row)))" class="flex flex-col gap-[3px] justify-center">
+                <span
+                  v-if="showAsmrUploadBadge(row)"
+                  class="inline-flex shrink-0 items-center gap-[3px] rounded-full border border-emerald-200/80 bg-emerald-50/90 px-1 py-[1.5px] text-[8.5px] font-bold uppercase tracking-wider leading-none text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]"
+                  title="上传成功"
+                >
+                  <span class="size-1 rounded-full bg-emerald-500"></span>
+                  <span>上传</span>
+                  <Check :size="8" :stroke-width="3" />
+                </span>
+                <span
+                  v-if="isRecoveredFailure(row) && finalStatusLabel(row) !== '已修复✔'"
+                  class="inline-flex items-center px-1 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider leading-none border border-emerald-200 bg-emerald-50 text-emerald-600 shadow-sm"
+                >已修复</span>
+                <template v-if="!row.is_tree_child">
+                  <span
+                    v-if="isRerunRow(row)"
+                    class="inline-flex items-center px-1 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider leading-none border border-amber-200 bg-amber-50 text-amber-600 shadow-sm"
+                  >重新爬取</span>
+                  <span
+                    v-if="finalStatusLabel(row)"
+                    class="inline-flex items-center px-1 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider leading-none border shadow-sm"
+                    :class="[
+                      finalStatusClass(row) === 'is-final-success' ? 'border-emerald-200 bg-emerald-50 text-emerald-600' :
+                      finalStatusClass(row) === 'is-final-failed' ? 'border-rose-200 bg-rose-50 text-rose-600' :
+                      'border-amber-200 bg-amber-50 text-amber-600'
+                    ]"
+                  >{{ finalStatusLabel(row) }}</span>
+                </template>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -268,180 +331,226 @@
       </div>
     </section>
 
-    <el-drawer
-      v-model="detailDrawerVisible"
-      class="activity-detail-drawer"
-      :size="detailDrawerSize"
-      destroy-on-close
-      append-to-body
+    <ActivityLogDetailDialog
+      :visible="detailDialogVisible"
+      :row="selectedRow"
+      :get-category-config="getCategoryConfig"
+      :get-status-config="getStatusConfig"
+      :human-action="humanAction"
+      :format-date-time="formatDateTime"
+      :display-rjcode="displayRjcode"
+      :row-tags="selectedRow ? rowCategoryTags(selectedRow) : []"
+      :action-tag-class="actionTagClass"
+      :is-rerun="selectedRow ? isRerunRow(selectedRow) : false"
+      :final-status-label="selectedRow ? finalStatusLabel(selectedRow) : ''"
+      :final-status-class="selectedRow ? finalStatusClass(selectedRow) : ''"
+      :is-recovered-failure="selectedRow ? isRecoveredFailure(selectedRow) : false"
+      :path-compare="selectedRow ? pathCompareModel(selectedRow) : null"
+      :path-compare-reason-class="selectedRow ? pathCompareReasonClass(selectedRow) : ''"
+      :path-compare-default-reason="selectedRow ? pathCompareDefaultReason(selectedRow) : ''"
+      :summary-text="selectedRow ? displaySummary(selectedRow) : ''"
+      @close="detailDialogVisible = false"
     >
-      <template #header>
-        <div class="detail-drawer-head">
-          <div class="detail-drawer-title">记录详情</div>
-          <div v-if="selectedRow" class="detail-drawer-subtitle">
-            {{ formatDateTime(selectedRow.created_at) }} · {{ selectedRow.category_label || selectedRow.category || '—' }}
-          </div>
-        </div>
-      </template>
-
-      <div v-if="selectedRow" class="expand-shell drawer-shell">
-        <div class="detail-drawer-resize-handle" @mousedown="startDetailDrawerResize"></div>
-        <div class="detail-topbar">
-          <div class="detail-topbar-main">
-            <div class="detail-topbar-title">{{ humanAction(selectedRow) }}</div>
-            <div class="detail-topbar-meta">
-              <span :class="['cell-pill', categoryClass(selectedRow.category)]">{{ selectedRow.category_label }}</span>
-              <span
-                v-for="tag in rowCategoryTags(selectedRow)"
-                :key="`drawer-${selectedRow.id}-${tag}`"
-                :class="['action-pill', actionTagClass(selectedRow, tag), { 'is-muted': tag === '未命中' }]"
-              >{{ tag }}</span>
-              <span :class="['status-tag', statusClass(selectedRow.status)]">{{ statusLabel(selectedRow.status) }}</span>
-              <span v-if="isRerunRow(selectedRow)" class="status-fixed-pill is-rerun">重新爬取</span>
-              <span v-if="finalStatusLabel(selectedRow)" :class="['status-fixed-pill', 'is-final', finalStatusClass(selectedRow)]">{{ finalStatusLabel(selectedRow) }}</span>
-              <span v-if="isRecoveredFailure(selectedRow)" class="status-fixed-pill">已修复</span>
-            </div>
-          </div>
-          <div class="detail-topbar-rj mono">{{ displayRjcode(selectedRow) }}</div>
-        </div>
-
-        <div v-if="pathCompareModel(selectedRow)" class="path-compare-card" :class="[`is-${pathCompareModel(selectedRow).kind}`, `is-status-${pathCompareReasonClass(selectedRow)}`]">
-          <div class="path-compare-head">
-            <span class="path-compare-title">{{ pathCompareModel(selectedRow).title }}</span>
-            <div class="path-compare-head-right">
-              <span
-                v-if="pathCompareModel(selectedRow).opTag"
-                :class="['path-op-tag', pathCompareModel(selectedRow).opTagClass]"
-              >{{ pathCompareModel(selectedRow).opTag }}</span>
-              <span :class="['path-compare-status', pathCompareReasonClass(selectedRow)]">{{ statusLabel(selectedRow.status) }}</span>
-            </div>
-          </div>
-          <div class="path-compare-body">
-            <div class="path-compare-col old">
-              <div class="path-compare-label">OLD PATH</div>
-              <div class="path-compare-path mono break">{{ pathCompareModel(selectedRow).beforePath || '—' }}</div>
-            </div>
-            <div class="path-compare-arrow">→</div>
-            <div class="path-compare-col new">
-              <div class="path-compare-label">NEW PATH</div>
-              <div class="path-compare-path mono break">{{ pathCompareModel(selectedRow).afterPath || '—' }}</div>
-            </div>
-          </div>
-          <div
-            class="path-compare-reason"
-            :class="[pathCompareReasonClass(selectedRow), { 'is-empty': !pathCompareModel(selectedRow).reason }]"
-          >
-            {{ pathCompareModel(selectedRow).reason || pathCompareDefaultReason(selectedRow) }}
-          </div>
-        </div>
-
+      <div v-if="selectedRow" class="expand-shell">
         <div class="expand-grid">
-          <div class="expand-item">
+          <div v-if="!selectedCircleCompletionIndexModel" class="expand-item">
             <div class="ek">分类</div>
-            <div class="ev">{{ selectedRow.category_label }}（{{ selectedRow.category }}）</div>
-          </div>
-          <div class="expand-item">
-            <div class="ek">状态</div>
-            <div class="ev">
-              <span :class="['status-tag', statusClass(selectedRow.status)]">{{ statusLabel(selectedRow.status) }}</span>
-              <span v-if="isRerunRow(selectedRow)" class="status-fixed-pill is-rerun">重新爬取</span>
-              <span v-if="finalStatusLabel(selectedRow)" :class="['status-fixed-pill', 'is-final', finalStatusClass(selectedRow)]">{{ finalStatusLabel(selectedRow) }}</span>
-              <span v-if="isRecoveredFailure(selectedRow)" class="status-fixed-pill">已修复</span>
+            <div class="ev flex items-center gap-2 mt-1">
+              <div class="flex items-center gap-1.5">
+                <span
+                  class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border"
+                  :class="[getCategoryConfig(selectedRow.category).color, getCategoryConfig(selectedRow.category).bg, getCategoryConfig(selectedRow.category).border]"
+                >
+                  <Search v-if="selectedRow.category === 'subtitle_crawl'" :size="14" :stroke-width="2.5" />
+                  <Link v-else-if="selectedRow.category === 'subtitle_pair'" :size="14" :stroke-width="2.5" />
+                  <FileDown v-else-if="selectedRow.category === 'subtitle_import'" :size="14" :stroke-width="2.5" />
+                  <Package v-else-if="selectedRow.category === 'extract'" :size="14" :stroke-width="2.5" />
+                  <Database v-else-if="selectedRow.category === 'auto_import'" :size="14" :stroke-width="2.5" />
+                  <Folder v-else-if="selectedRow.category === 'process_existing'" :size="14" :stroke-width="2.5" />
+                  <Scissors v-else-if="selectedRow.category === 'pipeline_delete'" :size="14" :stroke-width="2.5" />
+                  <RefreshCw v-else-if="selectedRow.category === 'asmr_sync'" :size="14" :stroke-width="2.5" />
+                  <Users v-else-if="selectedRow.category === 'circle_completion'" :size="14" :stroke-width="2.5" />
+                  <Tag v-else :size="14" :stroke-width="2.5" />
+                  {{ selectedRow.category_label }}
+                </span>
+                <span class="text-xs text-slate-400 font-medium">({{ selectedRow.category }})</span>
+              </div>
+              <div v-if="rowCategoryTags(selectedRow).length" class="flex flex-col gap-[3px] justify-center ml-1">
+                <span
+                  v-for="tag in rowCategoryTags(selectedRow)"
+                  :key="`drawer-${selectedRow.id}-${tag}`"
+                  class="inline-flex items-center px-1 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider leading-none border shadow-sm transition-all duration-200"
+                  :class="[
+                    tag === '未命中'
+                      ? 'bg-slate-50 text-slate-500 border-slate-200/60'
+                      : 'bg-emerald-50 text-emerald-600 border-emerald-100',
+                    actionTagClass(selectedRow, tag) === 'is-api-rename' && 'bg-blue-50 text-blue-600 border-blue-100',
+                    actionTagClass(selectedRow, tag) === 'is-manual-rename' && 'bg-violet-50 text-violet-600 border-violet-100'
+                  ]"
+                >{{ tag }}</span>
+              </div>
             </div>
           </div>
-          <div class="expand-item">
+          <div v-if="!selectedCircleCompletionIndexModel" class="expand-item">
+            <div class="ek">状态</div>
+            <div class="ev flex items-center gap-2 mt-1">
+              <span
+                class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border"
+                :class="[getStatusConfig(selectedRow.status).color, getStatusConfig(selectedRow.status).bg, getStatusConfig(selectedRow.status).border]"
+              >
+                <CheckCircle2 v-if="selectedRow.status === 'success'" :size="14" :stroke-width="2.5" />
+                <AlertCircle v-else-if="selectedRow.status === 'partial_success'" :size="14" :stroke-width="2.5" />
+                <XCircle v-else-if="selectedRow.status === 'failed'" :size="14" :stroke-width="2.5" />
+                <MinusCircle v-else-if="selectedRow.status === 'cancelled'" :size="14" :stroke-width="2.5" />
+                <Clock v-else-if="selectedRow.status === 'waiting'" :size="14" :stroke-width="2.5" />
+                <PlayCircle v-else-if="selectedRow.status === 'incomplete'" :size="14" :stroke-width="2.5" />
+                <MinusCircle v-else :size="14" :stroke-width="2.5" />
+                {{ getStatusConfig(selectedRow.status).label }}
+              </span>
+              <div v-if="isRerunRow(selectedRow) || finalStatusLabel(selectedRow) || isRecoveredFailure(selectedRow)" class="flex flex-col gap-[3px] justify-center ml-1">
+                <span
+                  v-if="isRerunRow(selectedRow)"
+                  class="inline-flex items-center px-1 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider leading-none border border-amber-200 bg-amber-50 text-amber-600 shadow-sm"
+                >重新爬取</span>
+                <span
+                  v-if="finalStatusLabel(selectedRow)"
+                  class="inline-flex items-center px-1 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider leading-none border shadow-sm"
+                  :class="[
+                    finalStatusClass(selectedRow) === 'is-final-success' ? 'border-emerald-200 bg-emerald-50 text-emerald-600' :
+                    finalStatusClass(selectedRow) === 'is-final-failed' ? 'border-rose-200 bg-rose-50 text-rose-600' :
+                    'border-amber-200 bg-amber-50 text-amber-600'
+                  ]"
+                >{{ finalStatusLabel(selectedRow) }}</span>
+                <span
+                  v-if="isRecoveredFailure(selectedRow) && finalStatusLabel(selectedRow) !== '已修复✔'"
+                  class="inline-flex items-center px-1 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider leading-none border border-emerald-200 bg-emerald-50 text-emerald-600 shadow-sm"
+                >已修复</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="!selectedCircleCompletionIndexModel" class="expand-item">
             <div class="ek">时间</div>
             <div class="ev mono">{{ formatDateTime(selectedRow.created_at) }}</div>
           </div>
-          <div class="expand-item span-2">
+          <div v-if="!selectedCircleCompletionIndexModel" class="expand-item span-2">
             <div class="ek">摘要</div>
             <div class="ev">{{ displaySummary(selectedRow) }}</div>
           </div>
           <div v-if="selectedCircleCompletionIndexModel" class="expand-item span-2">
-            <div class="ek">索引概览</div>
-            <div class="circle-index-card">
-              <div class="circle-index-head">
-                <div>
-                  <div class="circle-index-title">社团源对比</div>
-                  <div class="circle-index-desc">按 `{{ selectedCircleCompletionIndexModel.priorityRule }}` 规则归类，逐行对比 Kikoeru、DLsite、asmr.one 的 RJ 命中情况。</div>
+            <div class="compare-layout-shell">
+              <div class="compare-table-shell">
+                <div class="compare-table-head" @click="compareExpanded = !compareExpanded">
+                  <div class="compare-table-title-wrap">
+                    <div class="compare-table-icon">
+                      <LayoutGrid :size="18" :stroke-width="2.4" />
+                    </div>
+                    <div>
+                      <div class="compare-table-title">社团概括</div>
+                      <div class="compare-table-subtitle">{{ circleIndexSummaryText }}</div>
+                    </div>
+                  </div>
+                  <div class="compare-table-toolbar">
+                    <label class="compare-search" @click.stop>
+                      <Search :size="14" :stroke-width="2.4" />
+                      <input v-model.trim="compareSearchQuery" type="text" placeholder="Filter resources...">
+                    </label>
+                    <label class="compare-filter" @click.stop>
+                      <SlidersHorizontal :size="13" :stroke-width="2.4" />
+                      <el-select
+                        v-model="compareSourceFilter"
+                        size="small"
+                        popper-class="compare-filter-popper"
+                        placeholder="全部来源"
+                        @click.stop
+                      >
+                        <el-option value="all" label="全部来源" />
+                        <el-option value="kikoeru" label="Kikoeru" />
+                        <el-option value="dlsite" label="DLsite" />
+                        <el-option value="asmr_one" label="asmr.one" />
+                        <el-option value="missing" label="暂无来源" />
+                      </el-select>
+                    </label>
+                  </div>
                 </div>
-                <div class="circle-index-flags">
-                  <span class="circle-index-flag">强制刷新 {{ selectedCircleCompletionIndexModel.forceRefresh ? '开' : '关' }}</span>
-                  <span class="circle-index-flag">DLsite {{ selectedCircleCompletionIndexModel.includeDlsite ? '开' : '关' }}</span>
-                  <span class="circle-index-flag">Kikoeru {{ selectedCircleCompletionIndexModel.includeKikoeru ? '开' : '关' }}</span>
-                </div>
-              </div>
 
-              <div class="circle-index-metric-grid">
-                <div
-                  v-for="item in selectedCircleCompletionIndexModel.sourceBreakdown"
-                  :key="item.key"
-                  class="circle-index-metric"
-                  :class="`is-${item.key}`"
+                <transition
+                  enter-active-class="transition-[max-height,opacity] duration-300 ease-out overflow-hidden"
+                  enter-from-class="max-h-0 opacity-0"
+                  enter-to-class="max-h-[1200px] opacity-100"
+                  leave-active-class="transition-[max-height,opacity] duration-200 ease-in overflow-hidden"
+                  leave-from-class="max-h-[1200px] opacity-100"
+                  leave-to-class="max-h-0 opacity-0"
                 >
-                  <div class="circle-index-metric-label">{{ item.label }}</div>
-                  <div class="circle-index-metric-value">{{ item.count }}</div>
-                </div>
-              </div>
+                  <div v-if="compareExpanded">
+                    <div class="compare-column-head">
+                      <div class="compare-col-meta">RESOURCE METADATA</div>
+                      <div class="compare-col-source">KIKOERU</div>
+                      <div class="compare-col-source">DLSITE</div>
+                      <div class="compare-col-source">ASMR.ONE</div>
+                    </div>
 
-              <div class="circle-index-section-list">
-                <div class="circle-index-diff-board">
-                  <div class="circle-index-diff-head">
-                    <div class="circle-index-col work">作品</div>
-                    <div class="circle-index-col source kikoeru">Kikoeru</div>
-                    <div class="circle-index-col source dlsite">DLsite</div>
-                    <div class="circle-index-col source asmr">asmr.one</div>
+                    <div class="compare-rows-wrap">
+                      <div
+                        v-for="item in filteredCircleIndexRows"
+                        :key="item.workRjcode"
+                        class="compare-row"
+                      >
+                        <div class="compare-meta-cell">
+                          <div class="compare-thumb compare-thumb-empty">
+                            <FileText :size="18" :stroke-width="2.2" />
+                          </div>
+                          <div class="compare-meta-copy">
+                            <div class="compare-meta-title">{{ item.title || item.workRjcode || '未命名作品' }}</div>
+                            <div class="compare-meta-tags">
+                              <span class="compare-rj-badge mono">{{ item.workRjcode || '—' }}</span>
+                              <span :class="['circle-index-status-pill', `is-${item.statusKey}`]">{{ item.statusLabel }}</span>
+                              <span v-if="item.preferred_variant_label" class="compare-meta-tag">{{ item.preferred_variant_label }}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="compare-source-cell">
+                          <div class="compare-source-status" :class="`is-${circleIndexSourceTone('kikoeru', item)}`">
+                            <component :is="circleIndexSourceIcon('kikoeru', item)" :size="14" :stroke-width="2.6" />
+                          </div>
+                          <div class="compare-source-meta">
+                            <div v-if="item.sourceCompare.kikoeru.primary_rjcode" class="compare-source-code mono">{{ item.sourceCompare.kikoeru.primary_rjcode }}</div>
+                            <div v-if="item.sourceCompare.kikoeru.variantBadges.length || normalizeKikoeruTags(item.sourceCompare.kikoeru.tags).length" class="compare-source-tags">
+                              <span v-for="badge in item.sourceCompare.kikoeru.variantBadges" :key="`kb-${item.workRjcode}-${badge}`" class="compare-meta-tag">{{ badge }}</span>
+                              <span v-for="tag in normalizeKikoeruTags(item.sourceCompare.kikoeru.tags)" :key="`kt-${item.workRjcode}-${tag}`" class="compare-meta-tag">{{ tag }}</span>
+                            </div>
+                            <span v-else-if="!item.sourceCompare.kikoeru.primary_rjcode" class="circle-index-empty">未收录</span>
+                          </div>
+                        </div>
+
+                        <div class="compare-source-cell">
+                          <div class="compare-source-status" :class="`is-${circleIndexSourceTone('dlsite', item)}`">
+                            <component :is="circleIndexSourceIcon('dlsite', item)" :size="14" :stroke-width="2.6" />
+                          </div>
+                          <div class="compare-source-meta">
+                            <div v-if="item.sourceCompare.dlsite.all_rjcodes.length" class="compare-source-tags">
+                              <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="compare-meta-tag mono">{{ code }}</span>
+                            </div>
+                            <span v-else class="circle-index-empty">未发现</span>
+                          </div>
+                        </div>
+
+                        <div class="compare-source-cell">
+                          <div class="compare-source-status" :class="`is-${circleIndexSourceTone('asmr_one', item)}`">
+                            <component :is="circleIndexSourceIcon('asmr_one', item)" :size="14" :stroke-width="2.6" />
+                          </div>
+                          <div class="compare-source-meta">
+                            <div v-if="item.sourceCompare.asmr_one.primary_rjcode" class="compare-source-tags">
+                              <span class="compare-meta-tag mono">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
+                              <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="compare-meta-tag">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
+                            </div>
+                            <span v-else class="circle-index-empty">暂无来源</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div
-                    v-for="item in pagedCircleIndexRows(selectedCircleCompletionIndexModel)"
-                    :key="item.workRjcode"
-                    class="circle-index-diff-row"
-                  >
-                    <div class="circle-index-col work">
-                      <div class="circle-index-work-top">
-                        <span class="circle-index-work-rj mono">{{ item.workRjcode || '—' }}</span>
-                        <span :class="['circle-index-status-pill', `is-${item.statusKey}`]">{{ item.statusLabel }}</span>
-                      </div>
-                      <div class="circle-index-work-title">{{ item.title || item.workRjcode || '未命名作品' }}</div>
-                    </div>
-                    <div class="circle-index-col source kikoeru">
-                    <div v-if="item.sourceCompare.kikoeru.primary_rjcode" class="circle-index-chip-list">
-                      <span class="circle-index-chip mono">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
-                      <span v-for="badge in item.sourceCompare.kikoeru.variantBadges" :key="`kb-${item.workRjcode}-${badge}`" class="circle-index-chip is-kikoeru-tag">{{ badge }}</span>
-                      <span v-for="tag in normalizeKikoeruTags(item.sourceCompare.kikoeru.tags)" :key="`kt-${item.workRjcode}-${tag}`" class="circle-index-chip is-kikoeru-tag" :class="{ 'has-icon': tag === '字幕' }">
-                        <svg v-if="tag === '字幕'" class="kikoeru-tag-icon" viewBox="0 0 16 16" aria-hidden="true">
-                          <path d="M6.5 11.2 3.7 8.4l-1.1 1.1 3.9 3.9 7-7-1.1-1.1z" />
-                        </svg>
-                        <span>{{ tag }}</span>
-                      </span>
-                    </div>
-                      <span v-else class="circle-index-empty">未收录</span>
-                    </div>
-                    <div class="circle-index-col source dlsite">
-                      <div v-if="item.sourceCompare.dlsite.all_rjcodes.length" class="circle-index-chip-list">
-                        <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="circle-index-chip mono">{{ code }}</span>
-                      </div>
-                      <span v-else class="circle-index-empty">未发现</span>
-                    </div>
-                    <div class="circle-index-col source asmr">
-                      <div v-if="item.sourceCompare.asmr_one.primary_rjcode" class="circle-index-chip-list">
-                        <span class="circle-index-chip mono is-asmr">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
-                        <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="circle-index-chip is-asmr-badge">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
-                      </div>
-                      <span v-else class="circle-index-empty">暂无来源</span>
-                    </div>
-                  </div>
-                </div>
-                <div v-if="selectedCircleCompletionIndexModel.rows.length > circleIndexPageSize" class="circle-index-pager">
-                  <el-pagination
-                    :current-page="getCircleIndexSectionPage('all')"
-                    :page-size="circleIndexPageSize"
-                    layout="prev, pager, next"
-                    :total="selectedCircleCompletionIndexModel.rows.length"
-                    background
-                    @current-change="setCircleIndexSectionPage('all', $event)"
-                  />
-                </div>
+                </transition>
               </div>
             </div>
           </div>
@@ -543,9 +652,18 @@
                 <div class="batch-workbench-title">这条批量记录包含 {{ subtitleBatchWorkbenchModel(selectedRow).items.length }} 个已执行 RJ</div>
                 <div class="batch-workbench-desc">勾选要继续处理的 RJ，直接带回库存里的字幕工作台。这里只展示批量子任务，不展示单个 RJ 的配对映射。</div>
                 <div class="batch-workbench-metrics">
-                  <span class="batch-workbench-metric">已配对 {{ subtitleBatchWorkbenchModel(selectedRow).pairedCount }}</span>
-                  <span class="batch-workbench-metric">待配对 {{ subtitleBatchWorkbenchModel(selectedRow).awaitingCount }}</span>
-                  <span class="batch-workbench-metric">共 {{ subtitleBatchWorkbenchModel(selectedRow).items.length }}</span>
+                  <span class="inline-flex items-center gap-1 px-1.5 py-[1px] rounded bg-emerald-50 text-emerald-600 text-[8.5px] font-bold uppercase tracking-wider leading-none border border-emerald-100/60 shadow-sm">
+                    <CheckCircle2 :size="10" :stroke-width="2.5" />
+                    已配对 {{ subtitleBatchWorkbenchModel(selectedRow).pairedCount }}
+                  </span>
+                  <span class="inline-flex items-center gap-1 px-1.5 py-[1px] rounded bg-amber-50 text-amber-600 text-[8.5px] font-bold uppercase tracking-wider leading-none border border-amber-100/60 shadow-sm">
+                    <Clock :size="10" :stroke-width="2.5" />
+                    待配对 {{ subtitleBatchWorkbenchModel(selectedRow).awaitingCount }}
+                  </span>
+                  <span class="inline-flex items-center gap-1 px-1.5 py-[1px] rounded bg-slate-50 text-slate-500 text-[8.5px] font-bold uppercase tracking-wider leading-none border border-slate-200/60 shadow-sm">
+                    <FileText :size="10" :stroke-width="2.5" />
+                    共 {{ subtitleBatchWorkbenchModel(selectedRow).items.length }}
+                  </span>
                 </div>
               </div>
               <div class="batch-workbench-toolbar">
@@ -596,7 +714,19 @@
                   <div class="batch-workbench-item-main">
                     <div class="batch-workbench-item-head">
                       <span class="batch-workbench-item-rj">{{ item.rjcode || '未知RJ' }}</span>
-                      <span :class="['batch-workbench-item-status', `is-${item.stateClass}`]">{{ item.stateLabel }}</span>
+                      <span
+                        class="inline-flex items-center gap-1 px-1 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider leading-none border shadow-sm"
+                        :class="[
+                          item.stateClass === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-600' :
+                          item.stateClass === 'failed' ? 'border-rose-200 bg-rose-50 text-rose-600' :
+                          'border-amber-200 bg-amber-50 text-amber-600'
+                        ]"
+                      >
+                        <CheckCircle2 v-if="item.stateClass === 'success'" :size="8" :stroke-width="3" />
+                        <XCircle v-else-if="item.stateClass === 'failed'" :size="8" :stroke-width="3" />
+                        <Clock v-else :size="8" :stroke-width="3" />
+                        {{ item.stateLabel }}
+                      </span>
                     </div>
                     <div class="batch-workbench-item-name">{{ item.folderName }}</div>
                     <div class="batch-workbench-item-summary">{{ item.summary }}</div>
@@ -611,7 +741,17 @@
               <div class="pair-result-summary">
                 <div class="pair-result-title-row">
                   <div class="pair-result-title">{{ pairResultModel(selectedRow).title }}</div>
-                  <span :class="['pair-result-status', `is-${pairResultModel(selectedRow).status}`]">
+                  <span
+                    class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border"
+                    :class="[
+                      pairResultModel(selectedRow).status === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-600' :
+                      pairResultModel(selectedRow).status === 'failed' ? 'border-rose-200 bg-rose-50 text-rose-600' :
+                      'border-amber-200 bg-amber-50 text-amber-600'
+                    ]"
+                  >
+                    <CheckCircle2 v-if="pairResultModel(selectedRow).status === 'success'" :size="14" :stroke-width="2.5" />
+                    <XCircle v-else-if="pairResultModel(selectedRow).status === 'failed'" :size="14" :stroke-width="2.5" />
+                    <AlertCircle v-else :size="14" :stroke-width="2.5" />
                     {{ pairResultModel(selectedRow).statusLabel }}
                   </span>
                 </div>
@@ -660,11 +800,11 @@
               </div>
             </div>
           </div>
-          <div class="expand-item span-2">
+          <div v-if="!selectedCircleCompletionIndexModel" class="expand-item span-2">
             <div class="ek">源路径</div>
             <div class="ev mono break">{{ selectedRow.source_path || '—' }}</div>
           </div>
-          <div class="expand-item span-2">
+          <div v-if="!selectedCircleCompletionIndexModel" class="expand-item span-2">
             <div class="ek">任务 ID</div>
             <div class="ev mono break">{{ selectedRow.task_id || '—' }}</div>
           </div>
@@ -705,8 +845,17 @@
                 :key="section.key"
                 class="entry-section"
               >
-                <div class="entry-section-title">{{ section.title }}</div>
-                <div class="entry-tree-box">
+                <div class="entry-section-head">
+                  <div class="entry-section-title">{{ section.title }}</div>
+                  <button
+                    type="button"
+                    class="entry-section-toggle"
+                    @click="toggleEntrySection(section.key)"
+                  >
+                    {{ isEntrySectionExpanded(section.key) ? '收起' : '展开' }}
+                  </button>
+                </div>
+                <div v-show="isEntrySectionExpanded(section.key)" class="entry-tree-box">
                   <div
                     v-for="item in section.rows"
                     :key="`${section.key}-${item.key}`"
@@ -715,8 +864,8 @@
                   >
                     <div class="tree-main">
                       <span class="tree-branch" aria-hidden="true">{{ item.depth ? '└' : '•' }}</span>
-                      <span :class="['entry-icon', `is-${item.type || 'file'}`]">
-                        <el-icon><component :is="item.type === 'dir' ? Folder : Document" /></el-icon>
+                      <span :class="['entry-icon', entryIconClass(item)]">
+                        <component :is="resolveEntryIcon(item)" :size="14" />
                       </span>
                       <span class="entry-name">{{ item.label }}</span>
                     </div>
@@ -736,7 +885,7 @@
           <pre class="expand-json"><code>{{ prettyDetail(selectedRow) }}</code></pre>
         </div>
       </div>
-    </el-drawer>
+    </ActivityLogDetailDialog>
 
   </div>
 </template>
@@ -744,27 +893,89 @@
 <script setup>
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Document, Folder } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import {
+  AlertCircle,
+  Box,
+  Check,
+  CheckCircle2,
+  Clock,
+  Database,
+  Download,
+  File as FileIcon,
+  FileDown,
+  FileText,
+  Folder,
+  LayoutGrid,
+  Link,
+  MinusCircle,
+  Music,
+  Package,
+  PlayCircle,
+  RefreshCw,
+  Scissors,
+  Search,
+  SlidersHorizontal,
+  Tag,
+  Users,
+  XCircle
+} from 'lucide-vue-next'
 import dayjs from 'dayjs'
 import api from '../api'
+import ActivityLogDetailDialog from '../components/activity/ActivityLogDetailDialog.vue'
 
 const router = useRouter()
 const loading = ref(false)
+
+const categoryConfigs = {
+  subtitle_crawl: { icon: Search, color: 'text-indigo-600', bg: 'bg-indigo-50/80', border: 'border-indigo-100/50' },
+  subtitle_pair: { icon: Link, color: 'text-violet-600', bg: 'bg-violet-50/80', border: 'border-violet-100/50' },
+  subtitle_import: { icon: FileDown, color: 'text-amber-600', bg: 'bg-amber-50/80', border: 'border-amber-100/50' },
+  extract: { icon: Package, color: 'text-emerald-600', bg: 'bg-emerald-50/80', border: 'border-emerald-100/50' },
+  auto_import: { icon: Database, color: 'text-emerald-600', bg: 'bg-emerald-50/80', border: 'border-emerald-100/50' },
+  process_existing: { icon: Folder, color: 'text-slate-600', bg: 'bg-slate-50/80', border: 'border-slate-100/50' },
+  pipeline_delete: { icon: Scissors, color: 'text-rose-600', bg: 'bg-rose-50/80', border: 'border-rose-100/50' },
+  asmr_sync: { icon: RefreshCw, color: 'text-indigo-600', bg: 'bg-indigo-50/80', border: 'border-indigo-100/50' },
+  circle_completion: { icon: Users, color: 'text-blue-600', bg: 'bg-blue-50/80', border: 'border-blue-100/50' },
+  default: { icon: Tag, color: 'text-slate-600', bg: 'bg-slate-50/80', border: 'border-slate-100/50' }
+}
+
+const statusConfigs = {
+  success: { icon: CheckCircle2, color: 'text-emerald-600', bg: 'bg-emerald-50/80', border: 'border-emerald-100/50', label: '成功' },
+  partial_success: { icon: AlertCircle, color: 'text-amber-600', bg: 'bg-amber-50/80', border: 'border-amber-100/50', label: '部分成功' },
+  failed: { icon: XCircle, color: 'text-rose-600', bg: 'bg-rose-50/80', border: 'border-rose-100/50', label: '失败' },
+  cancelled: { icon: MinusCircle, color: 'text-slate-400', bg: 'bg-slate-50/80', border: 'border-slate-100/50', label: '已取消' },
+  waiting: { icon: Clock, color: 'text-indigo-500', bg: 'bg-indigo-50/80', border: 'border-indigo-100/50', label: '等待' },
+  incomplete: { icon: PlayCircle, color: 'text-slate-500', bg: 'bg-slate-50/80', border: 'border-slate-100/50', label: '未完成' },
+  default: { icon: MinusCircle, color: 'text-slate-400', bg: 'bg-slate-50/80', border: 'border-slate-100/50', label: '—' }
+}
+
+function getCategoryConfig(c) {
+  return categoryConfigs[c] || categoryConfigs.default
+}
+
+function getStatusConfig(s) {
+  return statusConfigs[s] || statusConfigs.default
+}
+
 const items = ref([])
 const total = ref(0)
 const page = ref(1)
 const limit = ref(30)
-const detailDrawerVisible = ref(false)
+const detailDialogVisible = ref(false)
 const selectedRow = ref(null)
-const detailDrawerWidth = ref(1180)
-const circleIndexSectionPages = ref({})
 const circleRefreshFilter = ref('all')
 const circleRefreshPage = ref(1)
 const statsDays = ref(14)
 const expandedTreeRowIds = ref(new Set())
 const selectedBatchWorkbenchKeys = ref([])
 const batchWorkbenchAwaitingOnly = ref(false)
+const collapsedEntrySectionKeys = ref(new Set())
+const compareSearchQuery = ref('')
+const compareSourceFilter = ref('all')
+const compareExpanded = ref(true)
+const lastLoadedAt = ref(0)
+const ACTIVITY_AUTO_REFRESH_STALE_MS = 3 * 60 * 1000
 const stats = reactive({
   days: 14,
   total_in_range: 0,
@@ -824,8 +1035,42 @@ const categoryWithPct = computed(() =>
 
 const selectedCircleCompletionIndexModel = computed(() => circleCompletionIndexModel(selectedRow.value))
 const selectedCircleCompletionRefreshModel = computed(() => circleCompletionRefreshModel(selectedRow.value))
-const detailDrawerSize = computed(() => `${detailDrawerWidth.value}px`)
-const circleIndexPageSize = 10
+const filteredCircleIndexRows = computed(() => {
+  const rows = Array.isArray(selectedCircleCompletionIndexModel.value?.rows) ? selectedCircleCompletionIndexModel.value.rows : []
+  const query = String(compareSearchQuery.value || '').trim().toLowerCase()
+  return rows.filter((item) => {
+    const sourceMatch = compareSourceFilter.value === 'all'
+      || (compareSourceFilter.value === 'kikoeru' && item?.sourceCompare?.kikoeru?.primary_rjcode)
+      || (compareSourceFilter.value === 'dlsite' && Array.isArray(item?.sourceCompare?.dlsite?.all_rjcodes) && item.sourceCompare.dlsite.all_rjcodes.length)
+      || (compareSourceFilter.value === 'asmr_one' && item?.sourceCompare?.asmr_one?.primary_rjcode)
+      || (compareSourceFilter.value === 'missing' && !item?.sourceCompare?.kikoeru?.primary_rjcode && !(Array.isArray(item?.sourceCompare?.dlsite?.all_rjcodes) && item.sourceCompare.dlsite.all_rjcodes.length) && !item?.sourceCompare?.asmr_one?.primary_rjcode)
+    if (!sourceMatch) return false
+    if (!query) return true
+    const haystack = [
+      item?.title,
+      item?.workRjcode,
+      item?.display_rjcode,
+      item?.preferred_variant_label,
+      item?.sourceCompare?.kikoeru?.primary_rjcode,
+      ...(Array.isArray(item?.sourceCompare?.dlsite?.all_rjcodes) ? item.sourceCompare.dlsite.all_rjcodes : []),
+      item?.sourceCompare?.asmr_one?.primary_rjcode,
+    ].map((value) => String(value || '').toLowerCase())
+    return haystack.some((value) => value.includes(query))
+  })
+})
+const circleIndexSummaryText = computed(() => {
+  const model = selectedCircleCompletionIndexModel.value
+  const total = Array.isArray(model?.rows) ? model.rows.length : 0
+  const visible = filteredCircleIndexRows.value.length
+  if (!model) return ''
+  const breakdown = Array.isArray(model.sourceBreakdown) ? model.sourceBreakdown : []
+  const sourceText = breakdown
+    .filter((item) => Number(item.count || 0) > 0)
+    .map((item) => `${item.label} ${item.count}`)
+    .join(' · ')
+  const scopeText = visible === total ? `共 ${total} 项作品` : `共 ${total} 项作品，当前筛出 ${visible} 项`
+  return sourceText ? `${scopeText} · ${sourceText}` : scopeText
+})
 const circleRefreshPageSize = 10
 const pagedCircleCompletionRefreshItems = computed(() => {
   const rows = Array.isArray(selectedCircleCompletionRefreshModel.value?.items) ? selectedCircleCompletionRefreshModel.value.items : []
@@ -957,51 +1202,6 @@ const palette = [
 
 function categoryColor(i) {
   return palette[i % palette.length]
-}
-
-function statusLabel(s) {
-  const m = {
-    success: '成功',
-    partial_success: '部分成功',
-    failed: '失败',
-    cancelled: '已取消',
-    waiting: '等待',
-    incomplete: '未完成'
-  }
-  return m[s] || s || '—'
-}
-
-function categoryClass(c) {
-  switch (c) {
-    case 'subtitle_crawl':
-      return 'cat-subtitle-crawl'
-    case 'subtitle_pair':
-      return 'cat-subtitle-pair'
-    case 'subtitle_import':
-      return 'cat-subtitle-import'
-    case 'extract':
-      return 'cat-extract'
-    case 'auto_import':
-      return 'cat-auto-import'
-    case 'process_existing':
-      return 'cat-process-existing'
-    case 'pipeline_delete':
-      return 'cat-pipeline-delete'
-    case 'asmr_sync':
-      return 'cat-asmr-sync'
-    case 'circle_completion':
-      return 'cat-circle-completion'
-    default:
-      return 'cat-default'
-  }
-}
-
-function statusClass(s) {
-  return {
-    'is-ok': s === 'success',
-    'is-warn': s === 'partial_success' || s === 'waiting' || s === 'cancelled' || s === 'incomplete',
-    'is-fail': s === 'failed',
-  }
 }
 
 function flattenActivityRows(sourceRows, out = []) {
@@ -1958,7 +2158,7 @@ function openDetail(row) {
   circleRefreshFilter.value = 'all'
   circleRefreshPage.value = 1
   syncBatchWorkbenchSelection(row)
-  detailDrawerVisible.value = true
+  detailDialogVisible.value = true
 }
 
 function setCircleRefreshFilter(value) {
@@ -1992,19 +2192,99 @@ function toggleTreeRow(row) {
   expandedTreeRowIds.value = next
 }
 
+function isAsmrDownloadChildRow(row) {
+  return Boolean(row?.is_tree_child && row?.relation === 'asmr_resource')
+}
+
+function isAsmrUploadChildRow(row) {
+  return Boolean(row?.is_tree_child && row?.relation === 'asmr_upload')
+}
+
+function normalizeAsmrFileKeySegment(value) {
+  const raw = String(value || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!raw) return []
+  const normalized = raw.toLowerCase()
+  const baseName = normalized.split('/').filter(Boolean).pop() || ''
+  return [...new Set([normalized, baseName].filter(Boolean))]
+}
+
+function extractAsmrSummaryResourceName(summary) {
+  const text = String(summary || '').trim()
+  if (!text) return ''
+  const slashIndex = text.indexOf('/')
+  if (slashIndex >= 0) {
+    return text
+      .slice(slashIndex + 1)
+      .replace(/\s+(已上传|下载完成|上传完成|上传失败|下载失败).*$/u, '')
+      .trim()
+  }
+  return text
+    .replace(/^(文件下载完成|文件上传完成|文件下载|文件上传)\s*/u, '')
+    .replace(/\s+(已上传|下载完成|上传完成|上传失败|下载失败).*$/u, '')
+    .trim()
+}
+
+function collectAsmrRowMatchKeys(row) {
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const values = [
+    detail.resource_path,
+    detail.relative_path,
+    detail.resource_name,
+    detail.upload_path,
+    detail.target_path,
+    row?.source_path,
+    extractAsmrSummaryResourceName(row?.summary)
+  ]
+  return [...new Set(values.flatMap(normalizeAsmrFileKeySegment))]
+}
+
+function buildAsmrUploadMatchMap(children) {
+  const map = new Map()
+  for (const child of children || []) {
+    if (!isAsmrUploadChildRow({ ...child, is_tree_child: true })) continue
+    const createdAt = String(child?.created_at || '')
+    for (const key of collectAsmrRowMatchKeys(child)) {
+      const previous = map.get(key)
+      if (!previous || createdAt >= String(previous?.created_at || '')) {
+        map.set(key, child)
+      }
+    }
+  }
+  return map
+}
+
+function findMergedAsmrUploadRow(downloadRow, uploadMap) {
+  if (!isAsmrDownloadChildRow(downloadRow)) return null
+  for (const key of collectAsmrRowMatchKeys(downloadRow)) {
+    const matched = uploadMap.get(key)
+    if (matched) return matched
+  }
+  return null
+}
+
 function buildChildDisplayRows(parentRow, children = null, depth = 1) {
   const sourceChildren = Array.isArray(children)
     ? children
     : collectChildRowsFromParent(parentRow)
   if (!isTreeRowExpanded(parentRow)) return []
   const rows = []
+  const asmrUploadMap = buildAsmrUploadMatchMap(sourceChildren)
   for (const child of sourceChildren) {
+    const childSeed = {
+      ...child,
+      is_tree_child: true
+    }
+    if (isAsmrUploadChildRow(childSeed)) {
+      continue
+    }
+    const mergedUploadRow = findMergedAsmrUploadRow(childSeed, asmrUploadMap)
     const childRow = {
       ...child,
       parent_id: parentRow.id,
       parent_row: parentRow,
       is_tree_child: true,
-      tree_depth: depth
+      tree_depth: depth,
+      merged_upload_row: mergedUploadRow,
     }
     rows.push(childRow)
     rows.push(...buildChildDisplayRows(childRow, null, depth + 1))
@@ -2045,6 +2325,11 @@ function childRowCategoryLabel(row) {
   return row?.category_label || row?.category || '子任务'
 }
 
+function showAsmrUploadBadge(row) {
+  if (!isAsmrDownloadChildRow(row)) return false
+  return String(row?.merged_upload_row?.status || '').trim() === 'success'
+}
+
 function childIndentStyle(row) {
   return {}
 }
@@ -2081,7 +2366,7 @@ function finalStatusLabel(row) {
   }
   if (row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) return '配对✔'
   const statuses = [String(row.status || ''), ...collectDescendantStatuses(row)]
-  if (statuses[0] === 'failed' && (statuses.includes('success') || statuses.includes('partial_success'))) return '已修复'
+  if (statuses[0] === 'failed' && (statuses.includes('success') || statuses.includes('partial_success'))) return '已修复✔'
   if (statuses.includes('failed') && !statuses.includes('success') && !statuses.includes('partial_success')) return '异常'
   if (!statuses.includes('waiting')) {
     if (row?.category === 'subtitle_crawl') return '配对✔'
@@ -2099,7 +2384,6 @@ function finalStatusClass(row) {
   if (label === '删除✔') return 'is-final-success'
   if (label === '入库✔') return 'is-final-success'
   if (label === '完成✔') return 'is-final-success'
-  if (label === '已修复✔') return 'is-final-success'
   if (label === '已修复✔') return 'is-final-success'
   if (label === '部分配对') return 'is-final-partial'
   if (label === '部分删除') return 'is-final-partial'
@@ -2259,46 +2543,21 @@ function normalizeKikoeruTags(tags) {
   return normalized
 }
 
-function getCircleIndexSectionPage(sectionKey) {
-  return Math.max(1, Number(circleIndexSectionPages.value?.[sectionKey] || 1))
-}
-
-function setCircleIndexSectionPage(sectionKey, page) {
-  circleIndexSectionPages.value = {
-    ...circleIndexSectionPages.value,
-    [sectionKey]: Math.max(1, Number(page || 1))
+function circleIndexSourceTone(sourceKey, item) {
+  if (sourceKey === 'kikoeru') {
+    return item?.sourceCompare?.kikoeru?.primary_rjcode ? 'check' : 'empty'
   }
-}
-
-function pagedCircleIndexRows(section) {
-  const page = getCircleIndexSectionPage('all')
-  const rows = Array.isArray(section?.rows) ? section.rows : (Array.isArray(section) ? section : [])
-  const start = (page - 1) * circleIndexPageSize
-  return rows.slice(start, start + circleIndexPageSize)
-}
-
-let detailDrawerResizeState = null
-
-function handleDetailDrawerResize(event) {
-  if (!detailDrawerResizeState) return
-  const delta = Number(detailDrawerResizeState.startX || 0) - Number(event.clientX || 0)
-  detailDrawerWidth.value = Math.max(920, Math.min(1680, Number(detailDrawerResizeState.startWidth || 1180) + delta))
-}
-
-function stopDetailDrawerResize() {
-  if (!detailDrawerResizeState) return
-  detailDrawerResizeState = null
-  document.removeEventListener('mousemove', handleDetailDrawerResize)
-  document.removeEventListener('mouseup', stopDetailDrawerResize)
-}
-
-function startDetailDrawerResize(event) {
-  detailDrawerResizeState = {
-    startX: Number(event.clientX || 0),
-    startWidth: detailDrawerWidth.value
+  if (sourceKey === 'dlsite') {
+    return Array.isArray(item?.sourceCompare?.dlsite?.all_rjcodes) && item.sourceCompare.dlsite.all_rjcodes.length ? 'check' : 'empty'
   }
-  document.addEventListener('mousemove', handleDetailDrawerResize)
-  document.addEventListener('mouseup', stopDetailDrawerResize)
+  if (sourceKey === 'asmr_one') {
+    return item?.sourceCompare?.asmr_one?.primary_rjcode ? 'check' : 'empty'
+  }
+  return 'empty'
+}
+
+function circleIndexSourceIcon(sourceKey, item) {
+  return circleIndexSourceTone(sourceKey, item) === 'check' ? CheckCircle2 : MinusCircle
 }
 
 function prettyDetail(row) {
@@ -2718,6 +2977,36 @@ function activityEntrySectionTitle(row) {
   return '删除清单'
 }
 
+function resolveEntryIcon(item) {
+  if (String(item?.type || '').trim() === 'dir') return Folder
+  const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
+  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(name)) return Music
+  if (/\.(srt|ass|ssa|vtt|lrc|txt|md|json)$/i.test(name)) return FileText
+  return FileIcon
+}
+
+function entryIconClass(item) {
+  if (String(item?.type || '').trim() === 'dir') return 'is-dir'
+  const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
+  if (/\.(wav|flac)$/i.test(name)) return 'is-audio-blue'
+  if (/\.(mp3|m4a|ogg|aac|wma|opus|cue)$/i.test(name)) return 'is-audio-purple'
+  if (/\.(srt|ass|ssa|vtt|lrc|txt|md|json)$/i.test(name)) return 'is-text'
+  return 'is-file'
+}
+
+function isEntrySectionExpanded(sectionKey) {
+  return !collapsedEntrySectionKeys.value.has(String(sectionKey || ''))
+}
+
+function toggleEntrySection(sectionKey) {
+  const key = String(sectionKey || '')
+  if (!key) return
+  const next = new Set(collapsedEntrySectionKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedEntrySectionKeys.value = next
+}
+
 function formatDateTime(iso) {
   if (!iso) return '—'
   return dayjs(iso).format('YYYY-MM-DD HH:mm')
@@ -2759,7 +3048,7 @@ async function loadList() {
     if (selectedRow.value) {
       const nextSelected = items.value.find((item) => String(item.id) === String(selectedRow.value.id))
       if (nextSelected) selectedRow.value = nextSelected
-      else detailDrawerVisible.value = false
+      else detailDialogVisible.value = false
     }
   } finally {
     loading.value = false
@@ -2768,10 +3057,18 @@ async function loadList() {
 
 async function loadAll() {
   await Promise.all([loadStats(), loadList()])
+  lastLoadedAt.value = Date.now()
+}
+
+function shouldSoftRefreshActivityPage() {
+  const lastLoaded = Number(lastLoadedAt.value || 0)
+  if (!lastLoaded) return true
+  return Date.now() - lastLoaded >= ACTIVITY_AUTO_REFRESH_STALE_MS
 }
 
 function handleActivityPageVisibilityRefresh() {
   if (document.visibilityState !== 'visible') return
+  if (!shouldSoftRefreshActivityPage()) return
   loadAll()
 }
 
@@ -2791,12 +3088,12 @@ onMounted(() => {
 })
 
 onActivated(() => {
+  if (!shouldSoftRefreshActivityPage()) return
   loadAll()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleActivityPageVisibilityRefresh)
-  stopDetailDrawerResize()
 })
 
 watch(items, (nextItems) => {
@@ -2816,7 +3113,10 @@ watch(items, (nextItems) => {
 
 watch(selectedRow, (row) => {
   batchWorkbenchAwaitingOnly.value = false
-  circleIndexSectionPages.value = {}
+  collapsedEntrySectionKeys.value = new Set()
+  compareSearchQuery.value = ''
+  compareSourceFilter.value = 'all'
+  compareExpanded.value = true
   syncBatchWorkbenchSelection(row)
 }, { immediate: true })
 </script>
@@ -3110,12 +3410,12 @@ watch(selectedRow, (row) => {
 .filters-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
 }
 
 .filter-select {
-  width: 140px;
+  width: 110px;
 }
 
 .table-panel {
@@ -3140,22 +3440,6 @@ watch(selectedRow, (row) => {
   align-items: center;
   gap: 6px;
   min-width: 0;
-}
-
-.recovered-leading-badge {
-  display: inline-flex;
-  align-items: center;
-  height: 16px;
-  padding: 0 6px;
-  border-radius: 4px;
-  background: #eef8ef;
-  color: #2f9e44;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-  box-shadow: inset 0 0 0 1px rgba(47, 158, 68, 0.18);
-  flex: 0 0 auto;
 }
 
 .tree-toggle-btn {
@@ -3186,133 +3470,6 @@ watch(selectedRow, (row) => {
   height: 18px;
 }
 
-.cell-pill {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: #f2f2f7;
-  font-size: 12px;
-  font-weight: 500;
-  color: #1d1d1f;
-}
-
-.cat-subtitle-crawl {
-  background: rgba(10, 132, 255, 0.08);
-  color: #0a84ff;
-}
-
-.cat-subtitle-pair {
-  background: rgba(88, 86, 214, 0.08);
-  color: #5856d6;
-}
-
-.cat-subtitle-import {
-  background: rgba(255, 149, 0, 0.08);
-  color: #ff9500;
-}
-
-.cat-extract {
-  background: rgba(52, 199, 89, 0.08);
-  color: #34c759;
-}
-
-.cat-auto-import {
-  background: rgba(48, 209, 88, 0.08);
-  color: #30d158;
-}
-
-.cat-process-existing {
-  background: rgba(142, 142, 147, 0.08);
-  color: #8e8e93;
-}
-
-.cat-asmr-sync {
-  background: rgba(94, 92, 230, 0.08);
-  color: #5e5ce6;
-}
-
-.cat-pipeline-delete {
-  background: rgba(255, 59, 48, 0.1);
-  color: #d70015;
-}
-
-.cat-default {
-  background: #f2f2f7;
-  color: #1d1d1f;
-}
-
-.status-tag {
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.status-tag.is-ok {
-  color: #248a3d;
-}
-
-.status-tag.is-fail {
-  color: #d70015;
-}
-
-.status-tag.is-warn {
-  color: #b35c00;
-}
-
-.status-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.status-fixed-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 16px;
-  padding: 0 4px;
-  border-radius: 4px;
-  border: 1px solid rgba(52, 199, 89, 0.18);
-  background: rgba(52, 199, 89, 0.1);
-  color: #187d34;
-  font-size: 9px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
-.status-fixed-pill.is-rerun {
-  border-color: rgba(255, 159, 10, 0.18);
-  background: rgba(255, 159, 10, 0.1);
-  color: #c56a00;
-}
-
-.status-fixed-pill.is-partial {
-  border-color: rgba(255, 159, 10, 0.18);
-  background: rgba(255, 159, 10, 0.1);
-  color: #c56a00;
-}
-
-.status-fixed-pill.is-final {
-  border-radius: 3px;
-}
-
-.status-fixed-pill.is-final-success {
-  border-color: rgba(52, 199, 89, 0.16);
-  background: rgba(52, 199, 89, 0.08);
-  color: #187d34;
-}
-
-.status-fixed-pill.is-final-partial {
-  border-color: rgba(255, 159, 10, 0.16);
-  background: rgba(255, 159, 10, 0.08);
-  color: #c56a00;
-}
-
-.status-fixed-pill.is-final-failed {
-  border-color: rgba(215, 0, 21, 0.16);
-  background: rgba(215, 0, 21, 0.08);
-  color: #b0001a;
-}
-
 .action-text {
   display: inline-block;
   white-space: nowrap;
@@ -3331,14 +3488,6 @@ watch(selectedRow, (row) => {
   padding-left: 0;
 }
 
-.category-cell-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  position: relative;
-}
-
 .child-row-label {
   display: inline-flex;
   align-items: center;
@@ -3347,57 +3496,6 @@ watch(selectedRow, (row) => {
   color: rgba(29, 29, 31, 0.62);
   font-size: 12px;
   font-weight: 600;
-}
-
-.action-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 15px;
-  padding: 0 4px;
-  border-radius: 4px;
-  border: 1px solid rgba(52, 199, 89, 0.16);
-  background: rgba(52, 199, 89, 0.08);
-  color: #248a3d;
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.action-pill.is-muted {
-  border-color: rgba(142, 142, 147, 0.18);
-  background: rgba(142, 142, 147, 0.08);
-  color: #6b7280;
-}
-
-.action-pill.is-api-rename {
-  border-color: rgba(10, 132, 255, 0.2);
-  background: rgba(10, 132, 255, 0.12);
-  color: #005fcc;
-}
-
-.action-pill.is-manual-rename {
-  border-color: rgba(88, 86, 214, 0.2);
-  background: rgba(88, 86, 214, 0.12);
-  color: #4b3db8;
-}
-
-.action-pill.is-delete {
-  border-color: rgba(215, 0, 21, 0.22);
-  background: rgba(215, 0, 21, 0.1);
-  color: #b0001a;
-}
-
-.action-pill.is-updated {
-  border-color: rgba(52, 199, 89, 0.22);
-  background: rgba(52, 199, 89, 0.12);
-  color: #17803d;
-}
-
-.action-pill.is-unchanged {
-  border-color: rgba(255, 159, 10, 0.22);
-  background: rgba(255, 159, 10, 0.12);
-  color: #b96b00;
 }
 
 .action-text.is-success {
@@ -3674,18 +3772,6 @@ watch(selectedRow, (row) => {
   background: rgba(254, 242, 242, 0.96);
 }
 
-.circle-index-metric-label {
-  font-size: 12px;
-  color: rgba(15, 23, 42, 0.62);
-}
-
-.circle-index-metric-value {
-  margin-top: 8px;
-  font-size: 24px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
 .circle-index-section-list {
   display: grid;
   gap: 18px;
@@ -3869,6 +3955,345 @@ watch(selectedRow, (row) => {
   display: flex;
   justify-content: flex-end;
   padding-top: 10px;
+}
+
+.compare-layout-shell {
+  display: grid;
+  gap: 0;
+}
+
+.compare-table-shell {
+  display: flex;
+  flex-direction: column;
+  border-radius: 28px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 16px 40px rgba(15, 23, 42, 0.05),
+    inset 0 0 0 1px rgba(226, 232, 240, 0.88);
+}
+
+.compare-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 22px 14px;
+  cursor: pointer;
+}
+
+.compare-table-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.compare-table-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: rgba(241, 245, 249, 0.96);
+  color: #64748b;
+  flex: 0 0 auto;
+}
+
+.compare-table-title {
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 800;
+  color: #1f2937;
+}
+
+.compare-table-subtitle {
+  margin-top: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compare-table-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.compare-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.94);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  color: #94a3b8;
+}
+
+.compare-search input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.compare-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.94);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  color: #94a3b8;
+}
+
+.compare-filter :deep(.el-select) {
+  width: 108px;
+}
+
+.compare-filter :deep(.el-select__wrapper) {
+  min-height: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  border: none;
+}
+
+.compare-filter :deep(.el-select__selection) {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.compare-filter :deep(.el-select__placeholder),
+.compare-filter :deep(.el-select__selected-item),
+.compare-filter :deep(.el-select__input-wrapper) {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.compare-filter :deep(.el-select__caret) {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+:global(.compare-filter-popper.el-select__popper) {
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  box-shadow:
+    0 20px 40px rgba(15, 23, 42, 0.08),
+    0 6px 18px rgba(15, 23, 42, 0.04);
+}
+
+:global(.compare-filter-popper .el-select-dropdown__wrap) {
+  padding: 6px;
+}
+
+:global(.compare-filter-popper .el-select-dropdown__item) {
+  margin: 2px 0;
+  height: 34px;
+  line-height: 34px;
+  border-radius: 12px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+:global(.compare-filter-popper .el-select-dropdown__item.is-hovering),
+:global(.compare-filter-popper .el-select-dropdown__item:hover) {
+  background: rgba(241, 245, 249, 0.9);
+  color: #1f2937;
+}
+
+:global(.compare-filter-popper .el-select-dropdown__item.is-selected) {
+  background: rgba(239, 246, 255, 0.96);
+  color: #2563eb;
+}
+
+.compare-column-head {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) repeat(3, minmax(120px, 1fr));
+  gap: 12px;
+  padding: 12px 22px 10px;
+  border-top: 1px solid rgba(241, 245, 249, 0.9);
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.compare-col-source {
+  text-align: center;
+}
+
+.compare-rows-wrap {
+  max-height: 580px;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(203, 213, 225, 0.95) rgba(241, 245, 249, 0.92);
+}
+
+.compare-rows-wrap::-webkit-scrollbar {
+  width: 10px;
+}
+
+.compare-rows-wrap::-webkit-scrollbar-track {
+  background: rgba(241, 245, 249, 0.92);
+  border-radius: 999px;
+}
+
+.compare-rows-wrap::-webkit-scrollbar-thumb {
+  background: rgba(203, 213, 225, 0.96);
+  border-radius: 999px;
+  border: 2px solid rgba(241, 245, 249, 0.92);
+}
+
+.compare-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) repeat(3, minmax(120px, 1fr));
+  gap: 12px;
+  align-items: center;
+  padding: 14px 12px;
+  margin: 0 8px;
+  border-top: 1px solid rgba(241, 245, 249, 0.9);
+}
+
+.compare-meta-cell {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.compare-thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+}
+
+.compare-thumb-empty {
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.92));
+  color: #94a3b8;
+}
+
+.compare-meta-copy {
+  min-width: 0;
+}
+
+.compare-meta-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1f2937;
+  line-height: 1.35;
+}
+
+.compare-meta-tags,
+.compare-source-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.compare-rj-badge,
+.compare-meta-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.96);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.compare-source-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.compare-source-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.compare-source-status.is-check {
+  background: rgba(236, 253, 245, 0.95);
+  color: #10b981;
+}
+
+.compare-source-status.is-empty {
+  background: rgba(241, 245, 249, 0.95);
+  color: #cbd5e1;
+}
+
+.compare-source-meta {
+  min-width: 0;
+}
+
+.compare-source-code {
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+}
+
+@media (max-width: 1200px) {
+  .compare-table-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .compare-table-toolbar {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .compare-column-head,
+  .compare-row {
+    grid-template-columns: 1fr;
+  }
+
+  .compare-col-source {
+    text-align: left;
+  }
+
+  .compare-source-cell {
+    justify-content: flex-start;
+  }
 }
 
 .circle-refresh-card {
@@ -4817,7 +5242,7 @@ watch(selectedRow, (row) => {
 .expand-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 14px;
+  gap: 12px 10px;
 }
 
 .expand-item {
@@ -4939,7 +5364,36 @@ watch(selectedRow, (row) => {
   font-size: 12px;
   font-weight: 600;
   color: rgba(29, 29, 31, 0.56);
+}
+
+.entry-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 6px;
+}
+
+.entry-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.8);
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.entry-section-toggle:hover {
+  background: rgba(248, 250, 252, 0.96);
+  color: #334155;
+  border-color: rgba(148, 163, 184, 0.32);
 }
 
 .entry-tree-box {
@@ -4960,6 +5414,8 @@ watch(selectedRow, (row) => {
   padding-top: 6px;
   padding-bottom: 6px;
   border-bottom: 1px solid rgba(29, 29, 31, 0.05);
+  cursor: default;
+  transition: none;
 }
 
 .tree-row:last-child {
@@ -4990,13 +5446,28 @@ watch(selectedRow, (row) => {
 }
 
 .entry-icon.is-dir {
-  background: rgba(10, 132, 255, 0.12);
-  color: #0a84ff;
+  background: rgba(239, 246, 255, 0.92);
+  color: #60a5fa;
 }
 
 .entry-icon.is-file {
-  background: rgba(120, 120, 128, 0.12);
-  color: #4b5563;
+  background: rgba(248, 250, 252, 0.92);
+  color: #64748b;
+}
+
+.entry-icon.is-audio-blue {
+  background: rgba(219, 234, 254, 0.92);
+  color: #3b82f6;
+}
+
+.entry-icon.is-audio-purple {
+  background: rgba(237, 233, 254, 0.92);
+  color: #8b5cf6;
+}
+
+.entry-icon.is-text {
+  background: rgba(241, 245, 249, 0.96);
+  color: #475569;
 }
 
 .entry-name {
