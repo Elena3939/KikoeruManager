@@ -3,6 +3,8 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timezone
 import os
+import shutil
+import sqlite3
 
 def get_local_now():
     """获取当前本地时间（用于数据库默认值）"""
@@ -190,6 +192,7 @@ class CircleWork(Base):
     has_asmr_one = Column(Boolean, default=False, index=True)
     asmr_available_rjcode = Column(String(20), index=True)
     kikoeru_work_id = Column(Integer)
+    image_url = Column(String(500))
     asmr_one_cached_at = Column(DateTime)
     dlsite_cached_at = Column(DateTime)
     created_at = Column(DateTime, default=get_local_now)
@@ -217,6 +220,7 @@ class CircleWork(Base):
             'has_asmr_one': bool(self.has_asmr_one),
             'asmr_available_rjcode': self.asmr_available_rjcode,
             'kikoeru_work_id': self.kikoeru_work_id,
+            'image_url': self.image_url,
             'asmr_one_cached_at': self.asmr_one_cached_at.isoformat() if self.asmr_one_cached_at else None,
             'dlsite_cached_at': self.dlsite_cached_at.isoformat() if self.dlsite_cached_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -722,12 +726,65 @@ import logging
 _db_logger = logging.getLogger(__name__)
 
 # 数据库连接
+def _count_password_entries(db_path):
+    if not os.path.exists(db_path):
+        return 0
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM password_entries")
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
+def _migrate_legacy_db_if_needed(target_db_path):
+    project_root = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), '..', '..', '..')
+    )
+    legacy_db_path = os.path.abspath(
+        os.path.join(project_root, 'backend', 'data', 'cache.db')
+    )
+    target_db_path = os.path.abspath(target_db_path)
+
+    if legacy_db_path == target_db_path or not os.path.exists(legacy_db_path):
+        return
+
+    legacy_password_count = _count_password_entries(legacy_db_path)
+    target_password_count = _count_password_entries(target_db_path)
+
+    if legacy_password_count <= 0 or target_password_count > 0:
+        return
+
+    os.makedirs(os.path.dirname(target_db_path), exist_ok=True)
+
+    if os.path.exists(target_db_path):
+        backup_path = f"{target_db_path}.pre-legacy-migration"
+        if not os.path.exists(backup_path):
+            shutil.copy2(target_db_path, backup_path)
+            _db_logger.info(f"[数据库] 已备份空目标库到: {backup_path}")
+
+    shutil.copy2(legacy_db_path, target_db_path)
+    _db_logger.warning(
+        "[数据库] 检测到旧数据库并完成迁移: %s -> %s (password_entries: %s)",
+        legacy_db_path,
+        target_db_path,
+        legacy_password_count,
+    )
+
 def get_db_path():
-    data_dir = os.environ.get('DATA_PATH', './data')
+    default_data_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), '..', '..', '..', 'data')
+    )
+    data_dir = os.environ.get('DATA_PATH', default_data_dir)
     os.makedirs(data_dir, exist_ok=True)
     db_path = os.path.join(data_dir, 'cache.db')
     # 转换为绝对路径
     db_path = os.path.abspath(db_path)
+    _migrate_legacy_db_if_needed(db_path)
     return db_path
 
 # 获取数据库路径
@@ -799,6 +856,8 @@ def init_db():
                 circle_work_missing_columns.append(("kikoeru_found_rjcodes", "JSON", "'[]'"))
             if 'kikoeru_subtitle_rjcodes' not in circle_work_columns:
                 circle_work_missing_columns.append(("kikoeru_subtitle_rjcodes", "JSON", "'[]'"))
+            if 'image_url' not in circle_work_columns:
+                circle_work_missing_columns.append(("image_url", "VARCHAR(500)", "NULL"))
         for column_name, column_type, default_value in circle_work_missing_columns:
             conn.execute(
                 text(

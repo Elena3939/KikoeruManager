@@ -939,6 +939,16 @@ class ASMRResourceService:
                 local_ready = False
                 local_count = 0
                 local_root = ""
+            if (
+                bool(record.local_download_ready) != bool(local_ready)
+                or int(record.local_downloaded_count or 0) != int(local_count)
+                or str(record.local_download_root or "").strip() != str(local_root or "").strip()
+            ):
+                record.local_download_ready = bool(local_ready)
+                record.local_downloaded_count = int(local_count)
+                record.local_download_root = str(local_root or "").strip() or None
+                record.updated_at = datetime.now()
+                db.commit()
             session["local_download_ready"] = local_ready
             session["local_download_root"] = local_root
             session["local_downloaded_count"] = local_count
@@ -1969,10 +1979,12 @@ class ASMRResourceService:
                     else:
                         if not remote_url:
                             return {"name": display_name, "relative_path": relative_path, "reason": "缺少下载地址", "resource": resource, "stage": "download"}
+                        self._append_task_log(task, f"{display_name} 开始请求资源 {index}/{total_files}")
                         ok = await self.asmr_service.download_file(
                             remote_url,
                             destination,
                             progress_callback=file_progress_callback,
+                            log_callback=lambda message, level="info", current_task=task: self._append_task_log(current_task, message, level),
                             max_retries=max_retries,
                             timeout=timeout,
                         )
@@ -2297,15 +2309,17 @@ class ASMRResourceService:
                     ).strip(),
                 )
             self._finalize_upload_runtime(task, "completed" if (uploaded_files or task.task_metadata.get("upload_runtime")) else final_status)
+            persisted_local_root = download_root if os.path.isdir(download_root) else ""
+            persisted_local_count = len(success_files) if persisted_local_root else 0
             if session_id:
                 self._update_session(
                     session_id,
                     status=final_status,
                     statistics={**(task.task_metadata.get("performance_metrics") or {}), "verify_summary": verify_summary, "upload_summary": upload_summary, "download_root": download_root},
                     failure_summary={"failed_resources": failed_files, "verification_failures": verification_failures},
-                    local_download_ready=bool(success_files),
-                    local_download_root=download_root,
-                    local_downloaded_count=len(success_files),
+                    local_download_ready=bool(persisted_local_root and persisted_local_count > 0),
+                    local_download_root=persisted_local_root,
+                    local_downloaded_count=persisted_local_count,
                 )
                 log_asmr_sync_event(
                     "session_partial_failed" if final_status == "partial_failed" else "session_completed",

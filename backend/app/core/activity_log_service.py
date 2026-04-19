@@ -778,6 +778,41 @@ def log_batch_api_rename_result(
     )
 
 
+def log_batch_manual_rename_result(
+    *,
+    batch_id: str,
+    total_count: int,
+    success_count: int,
+    failed_count: int,
+    results: list[dict[str, Any]],
+    source_path: str = "",
+    rename_context: str = "",
+) -> None:
+    status = "success"
+    if success_count > 0 and failed_count > 0:
+        status = "partial_success"
+    elif success_count <= 0:
+        status = "failed"
+    summary = f"批量乱码修复完成，成功 {success_count} 项，失败 {failed_count} 项"
+    write_activity_log(
+        category=CATEGORY_PIPELINE_RENAME,
+        action="batch_manual_rename",
+        status=status,
+        summary=summary[:4000],
+        detail={
+            "mode": "batch_manual_rename",
+            "batch_id": str(batch_id or "").strip() or None,
+            "rename_context": str(rename_context or "").strip() or None,
+            "total_count": int(total_count or 0),
+            "success_count": int(success_count or 0),
+            "failed_count": int(failed_count or 0),
+            "results": results[:200] if isinstance(results, list) else [],
+        },
+        source_path=str(source_path or "").strip() or None,
+        task_id=str(batch_id or "").strip() or None,
+    )
+
+
 def log_api_delete_action(
     *,
     action: str,

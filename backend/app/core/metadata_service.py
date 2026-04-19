@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import asyncio
 from datetime import datetime, timedelta
@@ -73,7 +73,7 @@ class MetadataService:
 
         return self._session
     
-    async def fetch(self, path: str, task: Task) -> dict:
+    async def fetch(self, path: str, task: Task, force_refresh: bool = False) -> dict:
         """
         从路径中提取 RJ 号并获取元数据。
         """
@@ -94,11 +94,13 @@ class MetadataService:
 
         task.update_progress(65, f"获取元数据 {rjcode}")
 
-        if self.config.metadata.cache_enabled:
+        if self.config.metadata.cache_enabled and not force_refresh:
             cached = self._get_cached_metadata(rjcode)
-            if cached:
+            if cached and not self._should_refresh_cached_metadata(cached):
                 logger.info("使用缓存元数据: %s", rjcode)
                 return cached.to_dict()
+            if cached:
+                logger.info("缓存元数据命中但已判定需要刷新: %s maker_name=%s", rjcode, cached.maker_name)
 
         metadata = None
         try:
@@ -120,6 +122,29 @@ class MetadataService:
             self._cache_metadata(metadata)
 
         return metadata.to_dict()
+
+    def _should_refresh_cached_metadata(self, cached: WorkMetadataModel) -> bool:
+        maker_name = str(getattr(cached, "maker_name", "") or "").strip()
+        work_name = str(getattr(cached, "work_name", "") or "").strip()
+        if not maker_name:
+            return True
+
+        normalized_maker = maker_name.lower()
+        suspicious_markers = (
+            "みんなで翻訳",
+            "everyone translation",
+            "translation",
+            "翻译",
+            "翻訳",
+        )
+        if any(marker in normalized_maker for marker in suspicious_markers):
+            return True
+
+        # 某些翻译占位社团名会和作品标题几乎一样，命中时也强制刷新。
+        if work_name and maker_name == work_name:
+            return True
+
+        return False
 
     async def _resolve_original_maker_fields(self, product: Dict, rjcode: str) -> Dict[str, str]:
         translation_info = dict(product.get('translation_info') or {})

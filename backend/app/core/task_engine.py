@@ -460,20 +460,17 @@ class TaskEngine:
                 next_metadata["retry_task_id"] = task.id
                 if task.output_path:
                     next_metadata["retry_output_path"] = task.output_path
-
                 conflict.new_metadata = next_metadata
-                conflict.status = "RETRIED"
 
             if failed_task_id:
                 failed_task = self.get_task(failed_task_id)
                 if failed_task and failed_task.id != task.id and failed_task.status == TaskStatus.FAILED:
-                    failed_task.status = TaskStatus.COMPLETED
-                    failed_task.completed_at = datetime.now()
-                    failed_task.error_message = None
-                    failed_task.current_step = f"已由重试任务恢复: {task.id}"
                     if task.output_path and not failed_task.output_path:
                         failed_task.output_path = task.output_path
+                    self._mark_task_superseded(failed_task, task.id, task.output_path)
 
+            if conflict:
+                db.delete(conflict)
             db.commit()
             if conflict:
                 logger.info("失败问题项重试成功，已移出问题作品: conflict_id=%s task_id=%s", conflict.id, task.id)
@@ -575,7 +572,6 @@ class TaskEngine:
                 if task.output_path:
                     next_metadata["retry_output_path"] = task.output_path
                 conflict.new_metadata = next_metadata
-                conflict.status = "RETRIED"
                 recovered_conflict_ids.append(str(conflict.id))
 
                 failed_task_id = str(conflict.task_id or "").strip()
@@ -584,6 +580,7 @@ class TaskEngine:
                     if failed_task and self._task_matches_recovered_success(failed_task, source_path, rjcode, task.id):
                         self._mark_task_superseded(failed_task, task.id, task.output_path)
                         recovered_failed_task_ids.append(failed_task.id)
+                db.delete(conflict)
 
             for candidate in self.tasks.values():
                 if not self._task_matches_recovered_success(candidate, source_path, rjcode, task.id):
@@ -2626,42 +2623,120 @@ class TaskEngine:
             })
             task.task_metadata['progress_log'] = logs[-40:]
 
-        circle_query = str(task.task_metadata.get('circle_query') or task.source_path or '').strip()
-        if not circle_query:
+        raw_circle_queries = list(task.task_metadata.get('circle_queries') or [])
+        normalized_circle_queries = []
+        for value in raw_circle_queries:
+            query = str(value or '').strip()
+            if query and query not in normalized_circle_queries:
+                normalized_circle_queries.append(query)
+        if not normalized_circle_queries:
+            circle_query = str(task.task_metadata.get('circle_query') or task.source_path or '').strip()
+            if circle_query:
+                normalized_circle_queries = [circle_query]
+        if not normalized_circle_queries:
             raise ValueError('社团名不能为空')
 
-        task.task_metadata['circle_query'] = circle_query
+        is_batch = len(normalized_circle_queries) > 1
+        task.task_metadata['circle_query'] = normalized_circle_queries[0]
+        task.task_metadata['circle_queries'] = normalized_circle_queries
+        task.task_metadata['batch_total'] = len(normalized_circle_queries)
         append_progress_log("准备建立社团索引", 1)
 
-        def progress_callback(progress: int, step: str, **meta):
-            task.update_progress(progress, step)
-            task.task_metadata = {
-                **(task.task_metadata or {}),
-                'index_meta': {
-                    **dict((task.task_metadata or {}).get('index_meta') or {}),
-                    **{key: value for key, value in (meta or {}).items() if value is not None},
-                },
-            }
-            append_progress_log(step, progress)
+        batch_results = []
+        last_successful_result = None
+        success_count = 0
+        failed_count = 0
+        total_queries = len(normalized_circle_queries)
 
-        result = await get_circle_completion_service().index_circle_catalog(
-            circle_query,
-            force_refresh=bool(task.task_metadata.get('force_refresh')),
-            include_dlsite=bool(task.task_metadata.get('include_dlsite', True)),
-            include_kikoeru=bool(task.task_metadata.get('include_kikoeru', True)),
-            progress_callback=progress_callback,
-            cancel_callback=task.is_cancelled,
-        )
+        for batch_index, circle_query in enumerate(normalized_circle_queries, start=1):
+            if task.is_cancelled():
+                raise asyncio.CancelledError()
 
+            def progress_callback(progress: int, step: str, **meta):
+                base_progress = int(((batch_index - 1) / max(total_queries, 1)) * 100)
+                scaled_progress = base_progress + int((max(0, min(100, int(progress or 0))) / 100) * (100 / max(total_queries, 1)))
+                task.update_progress(min(99, scaled_progress), step)
+                task.task_metadata = {
+                    **(task.task_metadata or {}),
+                    'circle_query': circle_query,
+                    'current_circle_query': circle_query,
+                    'batch_index': batch_index,
+                    'batch_total': total_queries,
+                    'index_meta': {
+                        **dict((task.task_metadata or {}).get('index_meta') or {}),
+                        **{key: value for key, value in (meta or {}).items() if value is not None},
+                        'batch_index': batch_index,
+                        'batch_total': total_queries,
+                        'current_circle_query': circle_query,
+                        'completed_queries': success_count,
+                        'failed_queries': failed_count,
+                        'is_batch': is_batch,
+                    },
+                }
+                prefix = f"[{batch_index}/{total_queries}] " if is_batch else ""
+                append_progress_log(f"{prefix}{step}", min(99, scaled_progress))
+
+            try:
+                result = await get_circle_completion_service().index_circle_catalog(
+                    circle_query,
+                    force_refresh=bool(task.task_metadata.get('force_refresh')),
+                    include_dlsite=bool(task.task_metadata.get('include_dlsite', True)),
+                    include_kikoeru=bool(task.task_metadata.get('include_kikoeru', True)),
+                    only_new_works=bool(task.task_metadata.get('only_new_works')),
+                    progress_callback=progress_callback,
+                    cancel_callback=task.is_cancelled,
+                )
+                last_successful_result = result
+                success_count += 1
+                batch_results.append({
+                    'circle_query': circle_query,
+                    'success': True,
+                    'circle_id': str(result.get('circle_id') or ''),
+                    'circle_name': str(((result.get('summary') or {}).get('circle_name')) or circle_query),
+                    'result': result,
+                })
+                append_progress_log(f"[{batch_index}/{total_queries}] 社团索引完成：{circle_query}", None, 'success' if is_batch else 'info')
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failed_count += 1
+                batch_results.append({
+                    'circle_query': circle_query,
+                    'success': False,
+                    'error_message': str(exc),
+                })
+                append_progress_log(f"[{batch_index}/{total_queries}] 社团索引失败：{circle_query} - {exc}", None, 'warning')
+
+        if not success_count and failed_count:
+            raise RuntimeError(f"批量建立失败：共 {failed_count} 个社团建立失败")
+
+        if last_successful_result is None:
+            raise RuntimeError("社团索引未生成有效结果")
+
+        summary_step = "批量社团索引完成" if is_batch else "社团索引完成"
         task.task_metadata = {
             **(task.task_metadata or {}),
-            'circle_id': str(result.get('circle_id') or ''),
-            'circle_name': str(((result.get('summary') or {}).get('circle_name')) or circle_query),
-            'index_result': result,
-            'indexed_counts': dict(result.get('indexed_counts') or {}),
+            'circle_query': str((last_successful_result.get('summary') or {}).get('circle_name') or normalized_circle_queries[0]),
+            'circle_id': str(last_successful_result.get('circle_id') or ''),
+            'circle_name': str(((last_successful_result.get('summary') or {}).get('circle_name')) or normalized_circle_queries[0]),
+            'index_result': last_successful_result,
+            'index_batch_results': batch_results,
+            'indexed_counts': dict(last_successful_result.get('indexed_counts') or {}),
+            'index_meta': {
+                **dict((task.task_metadata or {}).get('index_meta') or {}),
+                'batch_total': total_queries,
+                'completed_queries': success_count,
+                'failed_queries': failed_count,
+                'is_batch': is_batch,
+                'current_circle_query': normalized_circle_queries[-1],
+            },
         }
-        task.update_progress(100, "社团索引完成")
-        append_progress_log("社团索引完成", 100, 'success')
+        task.update_progress(100, f"{summary_step}（成功 {success_count} / 失败 {failed_count}）" if is_batch else summary_step)
+        append_progress_log(
+            f"{summary_step}（成功 {success_count} / 失败 {failed_count}）" if is_batch else summary_step,
+            100,
+            'success',
+        )
 
     async def _process_circle_completion_refresh_selected(self, task: Task):
         """处理社团补全选中作品刷新任务"""
@@ -2710,6 +2785,7 @@ class TaskEngine:
         result = await get_circle_completion_service().refresh_circle_works(
             circle_id,
             canonical_rjcodes,
+            force_refresh=bool(task.task_metadata.get('force_refresh')),
             progress_callback=progress_callback,
             cancel_callback=task.is_cancelled,
         )
@@ -2721,11 +2797,13 @@ class TaskEngine:
             'refresh_result': result,
             'refreshed_count': int(result.get('refreshed_count') or 0),
             'changed_count': int(result.get('changed_count') or 0),
+            'force_refresh': bool(task.task_metadata.get('force_refresh')),
         }
         task.update_progress(100, "批量刷新完成")
         append_progress_log("批量刷新完成", 100, 'success')
 
     async def _process_local_library_upload(self, task: Task):
+        from .circle_completion_service import get_circle_completion_service
         from .library_manager import get_library_manager
 
         task.task_metadata = dict(task.task_metadata or {})
@@ -2918,6 +2996,33 @@ class TaskEngine:
         if uploaded:
             task.output_path = str(uploaded[-1].get("target") or "")
             task.task_metadata["final_output_path"] = task.output_path
+
+        source_rjcodes = []
+        for entry in source_entries:
+            source_dir = str((entry or {}).get("source_path") or "").strip()
+            normalized_rjcode = self._extract_rjcode(source_dir)
+            if normalized_rjcode and normalized_rjcode not in source_rjcodes:
+                source_rjcodes.append(normalized_rjcode)
+
+        if source_rjcodes and uploaded:
+            circle_service = get_circle_completion_service()
+            for index, rjcode in enumerate(source_rjcodes):
+                target_info = uploaded[min(index, len(uploaded) - 1)] if uploaded else {}
+                target_path = str((target_info or {}).get("target") or task.output_path or "").strip()
+                try:
+                    await circle_service.sync_owned_for_rj(
+                        rjcode,
+                        folder_path=target_path,
+                        library_id=target_library_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[社团补全] 本地上传完成后回写拥有态失败 rj=%s target=%s error=%s",
+                        rjcode,
+                        target_path,
+                        exc,
+                        exc_info=True,
+                    )
         task.update_progress(100, "上传完成")
         append_progress_log(f"上传完成，共 {len(uploaded)} 个目录", 100, "success")
 

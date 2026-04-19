@@ -182,10 +182,18 @@ class ExtractService:
                 raise Exception("分卷组不完整或等待超时")
             archive_path = volume_set.entry_path or volume_set.volumes[0]
 
-        # 3.5 如果密码库是按文件名匹配到的，且条目里带 RJ 号，则只注入 RJ 提示。
-        # 不改源文件名，避免监控链路还在等旧路径导致超时。
-        password_candidates = await self._get_password_candidates_for_archive(archive_path)
-        hinted_rjcode = self._apply_filename_password_rj_hint(archive_path, task, password_candidates)
+        manual_retry_password = normalize_password_value(
+            (task.task_metadata or {}).get("manual_retry_password")
+        )
+        manual_retry_password_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
+
+        password_candidates: List[Dict[str, Optional[str]]] = []
+        hinted_rjcode = None
+        if not (manual_retry_password and manual_retry_password_only):
+            # 3.5 如果密码库是按文件名匹配到的，且条目里带 RJ 号，则只注入 RJ 提示。
+            # 不改源文件名，避免监控链路还在等旧路径导致超时。
+            password_candidates = await self._get_password_candidates_for_archive(archive_path)
+            hinted_rjcode = self._apply_filename_password_rj_hint(archive_path, task, password_candidates)
         
         # 检查暂停和取消
         await task.wait_if_paused()
@@ -2161,25 +2169,35 @@ class ExtractService:
             if item.get("rjcode")
         }
 
-        # 获取RJ号相关密码
-        rj_passwords = self._get_rj_passwords(archive_info.path)
+        manual_retry_password = normalize_password_value(
+            (task.task_metadata or {}).get("manual_retry_password")
+        )
+        manual_retry_password_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
 
-        # 构建密码列表：RJ号密码优先，然后密码库密码，已知密码，最后是默认密码
-        password_list = []
-        password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
-        password_list.extend(vault_passwords)  # 密码库密码
-        if archive_info.password and archive_info.password not in password_list:
-            password_list.append(archive_info.password)
-        password_list.append("")  # 无密码
-        password_list.extend(self.config.extract.password_list)  # 默认密码
-        
-        # 去重（保持顺序）
-        seen = set()
-        unique_passwords = []
-        for pwd in password_list:
-            if pwd not in seen:
-                seen.add(pwd)
-                unique_passwords.append(pwd)
+        if manual_retry_password and manual_retry_password_only:
+            unique_passwords = [manual_retry_password]
+            vault_passwords = []
+            rj_passwords = []
+        else:
+            # 获取RJ号相关密码
+            rj_passwords = self._get_rj_passwords(archive_info.path)
+
+            # 构建密码列表：RJ号密码优先，然后密码库密码，已知密码，最后是默认密码
+            password_list = []
+            password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
+            password_list.extend(vault_passwords)  # 密码库密码
+            if archive_info.password and archive_info.password not in password_list:
+                password_list.append(archive_info.password)
+            password_list.append("")  # 无密码
+            password_list.extend(self.config.extract.password_list)  # 默认密码
+            
+            # 去重（保持顺序）
+            seen = set()
+            unique_passwords = []
+            for pwd in password_list:
+                if pwd not in seen:
+                    seen.add(pwd)
+                    unique_passwords.append(pwd)
         
         for password in unique_passwords:
             password_args = [f'-p{password}'] if password else []
@@ -2195,7 +2213,9 @@ class ExtractService:
 
             try:
                 # 判断密码来源
-                if password in rj_passwords:
+                if manual_retry_password and manual_retry_password_only:
+                    password_source = "指定密码"
+                elif password in rj_passwords:
                     password_source = "RJ号"
                 elif password in vault_passwords:
                     password_source = "密码库"

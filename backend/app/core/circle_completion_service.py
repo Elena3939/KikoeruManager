@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 import unicodedata
 import uuid
 from collections import defaultdict
@@ -49,6 +50,7 @@ class CircleCompletionService:
         self._metadata_cache: Dict[str, Dict[str, Any]] = {}
         self._canonical_cache: Dict[str, Dict[str, Any]] = {}
         self._kikoeru_state_cache: Dict[str, Dict[str, Any]] = {}
+        self._local_download_fallback_cache: Dict[str, Any] = {"expires_at": 0.0, "data": {}}
 
     def normalize_circle_name(self, value: Any) -> str:
         text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
@@ -665,31 +667,25 @@ class CircleCompletionService:
             .all()
         )
         session_by_rj: Dict[str, Dict[str, Any]] = {}
+        stale_rows_corrected = False
         for row in rows:
             session = row.to_dict()
             statistics = dict(session.get("statistics") or {})
             local_root = str(session.get("local_download_root") or statistics.get("download_root") or "").strip()
             local_count = int(session.get("local_downloaded_count") or 0)
-            local_ready = bool(session.get("local_download_ready"))
-            if local_root and os.path.isdir(local_root):
-                if local_count <= 0:
-                    local_count = sum(
-                        1
-                        for item in (session.get("selected_resources") or [])
-                        if os.path.exists(
-                            os.path.join(
-                                local_root,
-                                self.asmr_resource_service._sanitize_relative_path(
-                                    str(item.get("relative_path") or item.get("file_name") or "")
-                                ),
-                            )
-                        )
-                    )
-                local_ready = local_ready or local_count > 0
-            else:
-                local_root = ""
-                local_count = 0
-                local_ready = False
+            # 详情页切换频繁，这里优先使用数据库中已持久化的下载状态，
+            # 避免每次点击社团都触发大量磁盘 exists / walk 检查。
+            local_root_exists = bool(local_root and os.path.isdir(local_root))
+            local_ready = bool(local_root_exists and (session.get("local_download_ready") or local_count > 0))
+            if not local_root_exists and (
+                bool(session.get("local_download_ready"))
+                or local_count > 0
+                or str(row.local_download_root or "").strip()
+            ):
+                row.local_download_ready = False
+                row.local_download_root = None
+                row.local_downloaded_count = 0
+                stale_rows_corrected = True
             if not local_ready:
                 continue
             normalized_rj = self.normalize_rjcode(session.get("rjcode"))
@@ -700,6 +696,12 @@ class CircleCompletionService:
                     "downloaded_count": local_count,
                     "updated_at": session.get("updated_at"),
                 }
+        if stale_rows_corrected:
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.warning("[社团补全] 自动清理失效本地下载标记失败", exc_info=True)
 
         result: Dict[str, Dict[str, Any]] = {}
         for canonical, candidates in canonical_candidates.items():
@@ -724,6 +726,10 @@ class CircleCompletionService:
         return result
 
     def _scan_local_download_root_fallback(self) -> Dict[str, Dict[str, Any]]:
+        cache_expires_at = float(self._local_download_fallback_cache.get("expires_at") or 0.0)
+        if cache_expires_at > time.time():
+            return dict(self._local_download_fallback_cache.get("data") or {})
+
         config = get_config()
         temp_root = os.path.join(str(config.storage.temp_path or "").strip(), "asmr_enhanced")
         if not temp_root or not os.path.isdir(temp_root):
@@ -759,6 +765,10 @@ class CircleCompletionService:
                 "downloaded_count": file_count,
                 "updated_at": datetime.fromtimestamp(entry.stat().st_mtime).isoformat() if entry.stat() else None,
             }
+        self._local_download_fallback_cache = {
+            "expires_at": time.time() + 30,
+            "data": dict(result),
+        }
         return result
 
     def _snapshot_job(self, job_id: str) -> Dict[str, Any]:
@@ -1070,33 +1080,36 @@ class CircleCompletionService:
         self._canonical_cache[normalized_rj] = payload
         return payload
 
-    async def _fetch_metadata_dict(self, rjcode: str) -> Dict[str, Any]:
+    async def _fetch_metadata_dict(self, rjcode: str, *, refresh: bool = False) -> Dict[str, Any]:
         normalized_rj = self.normalize_rjcode(rjcode)
         if not normalized_rj:
             return {}
+        if refresh:
+            self._metadata_cache.pop(normalized_rj, None)
         cached_metadata = self._metadata_cache.get(normalized_rj)
-        if cached_metadata is not None:
+        if not refresh and cached_metadata is not None:
             return cached_metadata
-        db = SessionLocal()
-        try:
-            cached = db.query(WorkMetadata).filter(WorkMetadata.rjcode == normalized_rj).first()
-            if cached:
-                payload = cached.to_dict()
-                self._metadata_cache[normalized_rj] = payload
-                return payload
-        finally:
-            db.close()
+        if not refresh:
+            db = SessionLocal()
+            try:
+                cached = db.query(WorkMetadata).filter(WorkMetadata.rjcode == normalized_rj).first()
+                if cached:
+                    payload = cached.to_dict()
+                    self._metadata_cache[normalized_rj] = payload
+                    return payload
+            finally:
+                db.close()
         fake_task = type("FakeTask", (), {"task_metadata": {"rjcode": normalized_rj}, "rjcode": normalized_rj, "update_progress": lambda *args, **kwargs: None})()
-        payload = await self.metadata_service.fetch(normalized_rj, fake_task)
+        payload = await self.metadata_service.fetch(normalized_rj, fake_task, force_refresh=refresh)
         self._metadata_cache[normalized_rj] = dict(payload or {})
         return self._metadata_cache[normalized_rj]
 
-    async def _probe_kikoeru_owned_state(self, probe_rjcode: str) -> bool:
+    async def _probe_kikoeru_owned_state(self, probe_rjcode: str, *, use_cache: bool = True) -> bool:
         normalized_rj = self.normalize_rjcode(probe_rjcode)
         if not normalized_rj:
             return False
         try:
-            results = await self.kikoeru_service.check_duplicate_with_linkages(normalized_rj, use_cache=True)
+            results = await self.kikoeru_service.check_duplicate_with_linkages(normalized_rj, use_cache=use_cache)
         except Exception:
             logger.warning("[社团补全] Kikoeru 拥有态补查失败 %s", normalized_rj, exc_info=True)
             return False
@@ -1105,15 +1118,17 @@ class CircleCompletionService:
                 return True
         return False
 
-    async def _probe_kikoeru_state(self, probe_rjcode: str) -> Dict[str, Any]:
+    async def _probe_kikoeru_state(self, probe_rjcode: str, *, use_cache: bool = True) -> Dict[str, Any]:
         normalized_rj = self.normalize_rjcode(probe_rjcode)
         if not normalized_rj:
             return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
         cached_state = self._kikoeru_state_cache.get(normalized_rj)
-        if cached_state is not None:
+        if use_cache and cached_state is not None:
             return cached_state
+        if not use_cache:
+            self._kikoeru_state_cache.pop(normalized_rj, None)
         try:
-            results = await self.kikoeru_service.check_duplicate_with_linkages(normalized_rj, use_cache=True)
+            results = await self.kikoeru_service.check_duplicate_with_linkages(normalized_rj, use_cache=use_cache)
         except Exception:
             logger.warning("[社团补全] Kikoeru 状态补查失败 %s", normalized_rj, exc_info=True)
             return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
@@ -1140,7 +1155,7 @@ class CircleCompletionService:
         self._kikoeru_state_cache[normalized_rj] = payload
         return payload
 
-    async def _probe_kikoeru_state_for_candidates(self, candidates: List[str]) -> Dict[str, Any]:
+    async def _probe_kikoeru_state_for_candidates(self, candidates: List[str], *, use_cache: bool = True) -> Dict[str, Any]:
         normalized_candidates: List[str] = []
         for candidate in candidates or []:
             normalized = self.normalize_rjcode(candidate)
@@ -1155,7 +1170,7 @@ class CircleCompletionService:
 
         async def probe_candidate(candidate: str) -> Dict[str, Any]:
             async with semaphore:
-                return await self._probe_kikoeru_state(candidate)
+                return await self._probe_kikoeru_state(candidate, use_cache=use_cache)
 
         for future in asyncio.as_completed([probe_candidate(candidate) for candidate in normalized_candidates]):
             state = await future
@@ -1309,6 +1324,7 @@ class CircleCompletionService:
                 "title": meta.get("work_name") or "",
                 "maker_id": meta.get("maker_id") or normalized_maker_id or "",
                 "maker_name": maker_name or circle_query,
+                "image_url": meta.get("cover_url") or "",
                 "source": "dlsite",
             }
 
@@ -1350,6 +1366,7 @@ class CircleCompletionService:
                     "title": row.work_name,
                     "maker_id": maker_id,
                     "maker_name": maker_name,
+                    "image_url": row.cover_url or "",
                     "source": "local",
                 })
             return results
@@ -1432,6 +1449,7 @@ class CircleCompletionService:
         force_refresh: bool = False,
         include_dlsite: bool = True,
         include_kikoeru: bool = True,
+        only_new_works: bool = False,
         progress_callback: Optional[Callable[..., None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
@@ -1537,10 +1555,25 @@ class CircleCompletionService:
                     circle_id = str(existing_catalog.circle_id).strip()
             finally:
                 db.close()
+        if not circle_id or str(circle_id).strip().lower().startswith("name:"):
+            raise ValueError("未识别到有效社团标识，已跳过入社团目录")
+
+        existing_canonical_rjcodes: set[str] = set()
+        if only_new_works and circle_id:
+            db = SessionLocal()
+            try:
+                existing_canonical_rjcodes = {
+                    str(row.canonical_rjcode or "").strip().upper()
+                    for row in db.query(CircleWork).filter(CircleWork.circle_id == circle_id).all()
+                    if str(row.canonical_rjcode or "").strip()
+                }
+            finally:
+                db.close()
 
         aggregated: Dict[str, Dict[str, Any]] = {}
         total_candidates = max(1, len(combined_candidates))
         metadata_checked = 0
+        skipped_existing = 0
         candidate_semaphore = asyncio.Semaphore(8)
 
         async def prepare_candidate(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1606,6 +1639,17 @@ class CircleCompletionService:
             preferred_variant = prepared["preferred_variant"]
             preferred_title = prepared["preferred_title"]
             public_linked_rjcodes = prepared["public_linked_rjcodes"]
+            if only_new_works and canonical in existing_canonical_rjcodes:
+                skipped_existing += 1
+                report(
+                    52 + int((metadata_checked / total_candidates) * 18),
+                    f"整理候选作品 {metadata_checked}/{total_candidates}",
+                    aggregated_count=len(aggregated),
+                    metadata_checked_count=metadata_checked,
+                    skipped_existing_count=skipped_existing,
+                    existing_indexed_count=len(existing_canonical_rjcodes),
+                )
+                continue
             bucket = aggregated.setdefault(canonical, {
                 "canonical_rjcode": canonical,
                 "display_rjcode": preferred_variant["rjcode"] or rjcode,
@@ -1629,6 +1673,7 @@ class CircleCompletionService:
             bucket["title"] = preferred_title or bucket["title"] or str(canonical_metadata.get("work_name") or item.get("title") or metadata.get("work_name") or "")
             bucket["maker_id"] = bucket["maker_id"] or str(canonical_metadata.get("maker_id") or metadata.get("maker_id") or item.get("maker_id") or "")
             bucket["maker_name"] = bucket["maker_name"] or str(canonical_metadata.get("maker_name") or metadata.get("maker_name") or item.get("maker_name") or circle_query)
+            bucket["image_url"] = bucket.get("image_url") or str(canonical_metadata.get("cover_url") or metadata.get("cover_url") or item.get("image_url") or "")
             bucket["linked_rjcodes"] = public_linked_rjcodes or bucket["linked_rjcodes"]
             bucket["preferred_variant_label"] = self._variant_label(preferred_variant["link_type"], preferred_variant["lang"])
             bucket["preferred_lang"] = preferred_variant["lang"]
@@ -1652,9 +1697,37 @@ class CircleCompletionService:
                 f"整理候选作品 {metadata_checked}/{total_candidates}",
                 aggregated_count=len(aggregated),
                 metadata_checked_count=metadata_checked,
+                skipped_existing_count=skipped_existing,
+                existing_indexed_count=len(existing_canonical_rjcodes),
             )
 
         if not aggregated:
+            if only_new_works and existing_canonical_rjcodes:
+                summary = await self.build_circle_completion_view(circle_id)
+                indexed_counts = {
+                    "works": len(summary.get("works") or []),
+                    "local_owned_count": int(summary.get("local_owned_count") or 0),
+                    "owned_count": int(summary.get("owned_count") or 0),
+                    "missing_count": int(summary.get("missing_count") or 0),
+                    "downloadable_count": int(summary.get("downloadable_count") or 0),
+                    "dl_count": int(summary.get("dl_count") or 0),
+                }
+                report(100, "索引完成", aggregated_count=0, skipped_existing_count=skipped_existing)
+                return {
+                    "circle_id": circle_id,
+                    "summary": {
+                        "circle_name": identity["circle_name"] or circle_query,
+                        **indexed_counts,
+                    },
+                    "indexed_counts": indexed_counts,
+                    "incremental": {
+                        "only_new_works": True,
+                        "existing_indexed_count": len(existing_canonical_rjcodes),
+                        "skipped_existing_count": skipped_existing,
+                        "newly_indexed_count": 0,
+                    },
+                }
+
             db = SessionLocal()
             try:
                 row = db.query(CircleCatalog).filter(CircleCatalog.circle_id == circle_id).first()
@@ -1669,7 +1742,17 @@ class CircleCompletionService:
             finally:
                 db.close()
             report(100, "索引完成", aggregated_count=0)
-            return {"circle_id": circle_id, "summary": {"total": 0}, "indexed_counts": {"works": 0}}
+            return {
+                "circle_id": circle_id,
+                "summary": {"total": 0},
+                "indexed_counts": {"works": 0},
+                "incremental": {
+                    "only_new_works": bool(only_new_works),
+                    "existing_indexed_count": len(existing_canonical_rjcodes),
+                    "skipped_existing_count": skipped_existing,
+                    "newly_indexed_count": 0,
+                },
+            }
 
         report(74, "检查 asmr.one 可下载状态", aggregated_count=len(aggregated))
         checked_asmr = 0
@@ -1807,6 +1890,7 @@ class CircleCompletionService:
                 row.title = item["title"]
                 row.maker_id = item["maker_id"]
                 row.maker_name = item["maker_name"]
+                row.image_url = item.get("image_url") or ""
                 row.source_mask = ",".join(sorted(item["source_flags"]))
                 row.linked_rjcodes = item["linked_rjcodes"]
                 row.has_kikoeru = bool(item["has_kikoeru"])
@@ -1818,8 +1902,9 @@ class CircleCompletionService:
                 row.kikoeru_work_id = item["kikoeru_work_id"]
                 row.dlsite_cached_at = datetime.now() if row.has_dlsite else row.dlsite_cached_at
                 row.asmr_one_cached_at = datetime.now() if row.has_asmr_one else row.asmr_one_cached_at
-            for obsolete in existing_rows.values():
-                db.delete(obsolete)
+            if not only_new_works:
+                for obsolete in existing_rows.values():
+                    db.delete(obsolete)
             db.commit()
         except Exception:
             db.rollback()
@@ -1870,6 +1955,10 @@ class CircleCompletionService:
                     include_dlsite=include_dlsite,
                     include_kikoeru=include_kikoeru,
                 ),
+                "only_new_works": bool(only_new_works),
+                "existing_indexed_count": len(existing_canonical_rjcodes),
+                "skipped_existing_count": skipped_existing,
+                "newly_indexed_count": len(aggregated),
             },
         )
         return {
@@ -1879,6 +1968,12 @@ class CircleCompletionService:
                 **indexed_counts,
             },
             "indexed_counts": indexed_counts,
+            "incremental": {
+                "only_new_works": bool(only_new_works),
+                "existing_indexed_count": len(existing_canonical_rjcodes),
+                "skipped_existing_count": skipped_existing,
+                "newly_indexed_count": len(aggregated),
+            },
         }
 
     async def search_circles(self, keyword: str = "", limit: int = 30) -> List[Dict[str, Any]]:
@@ -1949,19 +2044,25 @@ class CircleCompletionService:
             if catalog is None:
                 raise ValueError("社团索引不存在")
 
-            owned_rows = {
-                row.canonical_rjcode: row
-                for row in db.query(LibraryOwnedWork).all()
-            }
             works = (
                 db.query(CircleWork)
                 .filter(CircleWork.circle_id == catalog.circle_id)
                 .order_by(CircleWork.updated_at.desc())
                 .all()
             )
+            work_canonical_rjcodes = [row.canonical_rjcode for row in works if str(row.canonical_rjcode or "").strip()]
+            owned_rows = (
+                {
+                    row.canonical_rjcode: row
+                    for row in db.query(LibraryOwnedWork)
+                    .filter(LibraryOwnedWork.canonical_rjcode.in_(work_canonical_rjcodes))
+                    .all()
+                }
+                if work_canonical_rjcodes else {}
+            )
             link_rows = (
                 db.query(WorkCanonicalLink)
-                .filter(WorkCanonicalLink.canonical_rjcode.in_([row.canonical_rjcode for row in works]))
+                .filter(WorkCanonicalLink.canonical_rjcode.in_(work_canonical_rjcodes))
                 .all()
                 if works else []
             )
@@ -1972,6 +2073,19 @@ class CircleCompletionService:
                     "lang": str(link_row.lang or ""),
                 }
             local_download_session_map = self._build_local_download_session_map(db, works, link_map_by_canonical)
+
+            metadata_lookup_rjcodes: List[str] = []
+            for row in works:
+                for candidate in [
+                    row.canonical_rjcode,
+                    row.display_rjcode,
+                    *(row.linked_rjcodes or []),
+                    *(link_map_by_canonical.get(str(row.canonical_rjcode or ""), {}).keys()),
+                ]:
+                    normalized_candidate = self.normalize_rjcode(candidate)
+                    if normalized_candidate and normalized_candidate not in metadata_lookup_rjcodes:
+                        metadata_lookup_rjcodes.append(normalized_candidate)
+            metadata_map_all = self._load_cached_metadata_map(db, metadata_lookup_rjcodes)
 
             items = []
             for row in works:
@@ -1993,7 +2107,11 @@ class CircleCompletionService:
                     "linked_rjcodes": list(row.linked_rjcodes or [row.display_rjcode or row.canonical_rjcode]),
                     "link_map": link_map_by_canonical.get(row.canonical_rjcode) or {},
                 }
-                metadata_map = self._load_cached_metadata_map(db, canonical_info["linked_rjcodes"])
+                metadata_map = {
+                    code: metadata_map_all[code]
+                    for code in canonical_info["linked_rjcodes"]
+                    if code in metadata_map_all
+                }
                 stored_display_rjcode = self.normalize_rjcode(row.display_rjcode) or self.normalize_rjcode(row.canonical_rjcode)
                 item["display_rjcode"] = stored_display_rjcode
                 item["linked_rjcodes"] = list(row.linked_rjcodes or [stored_display_rjcode or row.canonical_rjcode])
@@ -2183,6 +2301,7 @@ class CircleCompletionService:
         circle_id: str,
         canonical_rjcodes: List[str],
         *,
+        force_refresh: bool = False,
         progress_callback: Optional[Callable[..., None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
@@ -2351,7 +2470,7 @@ class CircleCompletionService:
                     current_rjcode=canonical,
                     current_display_rjcode=preferred_seed,
                 )
-                canonical_info = await self.resolve_canonical_rj(canonical, refresh=True)
+                canonical_info = await self.resolve_canonical_rj(canonical, refresh=force_refresh)
                 preferred_variant = self._preferred_variant(canonical_info, preferred_seed)
 
                 metadata = {}
@@ -2361,7 +2480,7 @@ class CircleCompletionService:
                     if not normalized:
                         continue
                     try:
-                        fetched_metadata = await self._fetch_metadata_dict(normalized)
+                        fetched_metadata = await self._fetch_metadata_dict(normalized, refresh=force_refresh)
                     except Exception:
                         fetched_metadata = {}
                     metadata_map[normalized] = fetched_metadata or {}
@@ -2393,7 +2512,10 @@ class CircleCompletionService:
                 )
                 actual_norm = self.normalize_rjcode(actual_rjcode)
 
-                kikoeru_state = await self._probe_kikoeru_state_for_candidates(probe_candidates or [canonical])
+                kikoeru_state = await self._probe_kikoeru_state_for_candidates(
+                    probe_candidates or [canonical],
+                    use_cache=not force_refresh,
+                )
                 found_rjcodes = _normalize_code_list(kikoeru_state.get("found_rjcodes") or [])
                 subtitle_rjcodes = _normalize_code_list(kikoeru_state.get("subtitle_rjcodes") or [])
                 source_flags = {flag for flag in str(row.source_mask or "").split(",") if flag}
@@ -2484,6 +2606,7 @@ class CircleCompletionService:
                     current_display_rjcode=row.display_rjcode,
                     asmr_available_count=asmr_available_count,
                     kikoeru_owned_count=kikoeru_owned_count,
+                    force_refresh=bool(force_refresh),
                 )
 
             catalog.last_indexed_at = datetime.now()
@@ -2498,6 +2621,7 @@ class CircleCompletionService:
                 changed_count=changed_count,
                 asmr_available_count=asmr_available_count,
                 kikoeru_owned_count=kikoeru_owned_count,
+                force_refresh=bool(force_refresh),
             )
 
             log_circle_completion_event(
@@ -2511,6 +2635,7 @@ class CircleCompletionService:
                     "changed_count": changed_count,
                     "asmr_available_count": asmr_available_count,
                     "kikoeru_owned_count": kikoeru_owned_count,
+                    "force_refresh": bool(force_refresh),
                     "canonical_rjcodes": normalized_codes[:200],
                     "refreshed_items": refreshed_items[:50],
                 },
@@ -2523,6 +2648,7 @@ class CircleCompletionService:
                 "changed_count": changed_count,
                 "asmr_available_count": asmr_available_count,
                 "kikoeru_owned_count": kikoeru_owned_count,
+                "force_refresh": bool(force_refresh),
                 "items": refreshed_items,
             }
         except Exception:

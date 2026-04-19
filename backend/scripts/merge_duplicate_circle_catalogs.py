@@ -10,8 +10,8 @@ from typing import Iterable
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "backend" / "data" / "cache.db"
-BACKUP_DIR = ROOT / "backend" / "data" / "backups"
+DB_PATH = ROOT / "data" / "cache.db"
+BACKUP_DIR = ROOT / "data" / "backups"
 
 
 def parse_args() -> argparse.Namespace:

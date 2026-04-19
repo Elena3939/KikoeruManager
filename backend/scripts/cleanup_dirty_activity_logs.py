@@ -106,7 +106,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="清理历史脏操作记录/问题作品")
     parser.add_argument(
         "--db",
-        default=str(Path(__file__).resolve().parents[1] / "data" / "cache.db"),
+        default=str(Path(__file__).resolve().parents[2] / "data" / "cache.db"),
         help="SQLite 数据库路径",
     )
     parser.add_argument("--apply", action="store_true", help="执行写入清理")

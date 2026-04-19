@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import logging
 import os
 import re
@@ -577,6 +577,109 @@ class LinkedSubtitleImportService:
             "renamed_collision_files": stage_plan.get("renamed_collision_files") or [],
         }
 
+    def _should_direct_import_to_empty_candidate(
+        self,
+        preview: Dict[str, Any],
+        target_candidate: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        candidates = list(preview.get("candidates") or [])
+        candidate = target_candidate or preview.get("selected_candidate")
+        if not candidate and len(candidates) == 1:
+            candidate = candidates[0]
+        if not candidate:
+            return False
+        if len(candidates) != 1:
+            return False
+        if not bool(candidate.get("ready_for_import")):
+            return False
+        if int(candidate.get("existing_subtitle_count") or 0) > 0:
+            return False
+        return int(candidate.get("total_files") or 0) == 0
+
+    async def _direct_import_source_subtitles_to_target(
+        self,
+        *,
+        source_subtitles: List[Dict[str, Any]],
+        target_candidate: Dict[str, Any],
+        use_filter_rules: bool = False,
+        subtitle_filter_rules: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        library_id = str(target_candidate.get("library_id") or "").strip()
+        target_folder_path = str(target_candidate.get("folder_path") or "").strip()
+        if not library_id or not target_folder_path:
+            raise ValueError("缺少目标目录信息，无法直接入库")
+
+        temp_root = os.path.join(
+            self.extract_service.config.storage.temp_path,
+            "linked_subtitle_import_direct",
+            uuid.uuid4().hex,
+        )
+        temp_subtitle_dir = os.path.join(temp_root, "subtitles")
+        os.makedirs(temp_subtitle_dir, exist_ok=True)
+
+        try:
+            stage_plan = self._prepare_workbench_stage_subtitles(
+                source_subtitles,
+                use_filter_rules=use_filter_rules,
+                subtitle_filter_rules=subtitle_filter_rules,
+            )
+            copied_items = self._copy_source_subtitles_to_workspace(
+                stage_plan.get("subtitles") or [],
+                destination_dir=temp_subtitle_dir,
+            )
+            if not copied_items:
+                raise ValueError("来源中没有可直接入库的字幕文件")
+
+            final_subtitle_dir = await self._publish_workbench_to_target(
+                library_id=library_id,
+                workbench_root_dir=temp_root,
+                subtitle_dir=temp_subtitle_dir,
+                target_folder_path=target_folder_path,
+            )
+            final_items = await self._wait_for_published_subtitles(
+                library_id=library_id,
+                subtitle_dir=final_subtitle_dir,
+                expected_count=len(copied_items),
+            )
+            return {
+                "success": True,
+                "partial": False,
+                "error": None,
+                "download_files": copied_items,
+                "downloaded_count": len(copied_items),
+                "filtered_out_count": int(stage_plan.get("filtered_out_count") or 0),
+                "content_deduped_count": int(stage_plan.get("content_deduped_count") or 0),
+                "content_deduped_files": stage_plan.get("content_deduped_files") or [],
+                "renamed_collision_files": stage_plan.get("renamed_collision_files") or [],
+                "written_files": [
+                    {
+                        "subtitle_name": item.get("source_name") or item.get("name") or "",
+                        "output_name": item.get("relative_path") or item.get("name") or "",
+                        "match_type": "empty_target_direct_import",
+                        "match_score": 100,
+                    }
+                    for item in final_items
+                ],
+                "skipped_files": [],
+                "write_errors": [],
+                "awaiting_manual_match": False,
+                "existing_subtitle_count": int(target_candidate.get("existing_subtitle_count") or 0),
+                "subtitle_dir": final_subtitle_dir,
+                "subtitle_library_id": library_id,
+                "linked_workbench_root_dir": "",
+                "match_result": {
+                    "matches": [],
+                    "matched_group_count": 0,
+                    "matched_subtitle_count": len(final_items),
+                    "unmatched_audio": [],
+                    "unmatched_subtitles": [],
+                },
+            }
+        except Exception:
+            if os.path.isdir(temp_root):
+                shutil.rmtree(temp_root, ignore_errors=True)
+            raise
+
     async def _publish_workbench_to_target(
         self,
         *,
@@ -813,6 +916,8 @@ class LinkedSubtitleImportService:
             execute_reason = "压缩包预检临时解包后未发现可导入的字幕文件"
         elif candidates and not ready_candidates:
             execute_reason = "原作目录已有字幕，按重复作品处理"
+        elif self._should_direct_import_to_empty_candidate(preview, selected_candidate):
+            execute_reason = "目标目录为空且仅命中一个候选目录，将按新作品直接入库"
         elif not candidates:
             execute_reason = "目标作品仍缺字幕，但尚未定位到可用库存目录，可稍后重试或手动选择目标目录"
         elif len(ready_candidates) > 1:
@@ -1903,46 +2008,54 @@ class LinkedSubtitleImportService:
                     temp_dir, source_subtitles = await self._collect_archive_subtitles_to_stage(archive_path)
             else:
                 temp_dir, source_subtitles = await self._collect_archive_subtitles_to_stage(archive_path)
-            workbench_result = await self._create_manual_match_workbench(
-                source_subtitles=source_subtitles,
-                target_candidate=target_candidate,
-                use_filter_rules=use_filter_rules,
-                subtitle_filter_rules=subtitle_filter_rules,
-            )
-            import_result = {
-                "success": True,
-                "partial": False,
-                "error": None,
-                "download_files": workbench_result.get("staged_files", []),
-                "downloaded_count": int(workbench_result.get("downloaded_count") or 0),
-                "filtered_out_count": int(workbench_result.get("filtered_out_count") or 0),
-                "content_deduped_count": int(workbench_result.get("content_deduped_count") or 0),
-                "content_deduped_files": workbench_result.get("content_deduped_files", []),
-                "renamed_collision_files": workbench_result.get("renamed_collision_files", []),
-                "written_files": [
-                    {
-                        "subtitle_name": item.get("name") or "",
-                        "output_name": item.get("name") or "",
-                        "match_type": "raw_workbench_stage",
-                        "match_score": 0,
-                    }
-                    for item in (workbench_result.get("staged_files") or [])
-                ],
-                "skipped_files": [],
-                "write_errors": [],
-                "awaiting_manual_match": True,
-                "existing_subtitle_count": int(target_candidate.get("existing_subtitle_count") or 0),
-                "subtitle_dir": workbench_result.get("subtitle_dir") or "",
-                "subtitle_library_id": workbench_result.get("library_id") or "",
-                "linked_workbench_root_dir": workbench_result.get("workspace_root_dir") or "",
-                "match_result": {
-                    "matches": [],
-                    "matched_group_count": 0,
-                    "matched_subtitle_count": 0,
-                    "unmatched_audio": [],
-                    "unmatched_subtitles": [],
-                },
-            }
+            if self._should_direct_import_to_empty_candidate(preview, target_candidate):
+                import_result = await self._direct_import_source_subtitles_to_target(
+                    source_subtitles=source_subtitles,
+                    target_candidate=target_candidate,
+                    use_filter_rules=use_filter_rules,
+                    subtitle_filter_rules=subtitle_filter_rules,
+                )
+            else:
+                workbench_result = await self._create_manual_match_workbench(
+                    source_subtitles=source_subtitles,
+                    target_candidate=target_candidate,
+                    use_filter_rules=use_filter_rules,
+                    subtitle_filter_rules=subtitle_filter_rules,
+                )
+                import_result = {
+                    "success": True,
+                    "partial": False,
+                    "error": None,
+                    "download_files": workbench_result.get("staged_files", []),
+                    "downloaded_count": int(workbench_result.get("downloaded_count") or 0),
+                    "filtered_out_count": int(workbench_result.get("filtered_out_count") or 0),
+                    "content_deduped_count": int(workbench_result.get("content_deduped_count") or 0),
+                    "content_deduped_files": workbench_result.get("content_deduped_files", []),
+                    "renamed_collision_files": workbench_result.get("renamed_collision_files", []),
+                    "written_files": [
+                        {
+                            "subtitle_name": item.get("name") or "",
+                            "output_name": item.get("name") or "",
+                            "match_type": "raw_workbench_stage",
+                            "match_score": 0,
+                        }
+                        for item in (workbench_result.get("staged_files") or [])
+                    ],
+                    "skipped_files": [],
+                    "write_errors": [],
+                    "awaiting_manual_match": True,
+                    "existing_subtitle_count": int(target_candidate.get("existing_subtitle_count") or 0),
+                    "subtitle_dir": workbench_result.get("subtitle_dir") or "",
+                    "subtitle_library_id": workbench_result.get("library_id") or "",
+                    "linked_workbench_root_dir": workbench_result.get("workspace_root_dir") or "",
+                    "match_result": {
+                        "matches": [],
+                        "matched_group_count": 0,
+                        "matched_subtitle_count": 0,
+                        "unmatched_audio": [],
+                        "unmatched_subtitles": [],
+                    },
+                }
         finally:
             if temp_dir and os.path.isdir(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2001,46 +2114,54 @@ class LinkedSubtitleImportService:
         source_dir = preview.get("source_subtitle_dir") or folder_path
         source_root = folder_path
         source_subtitles = self._scan_source_subtitles(source_dir, source_root=source_root)
-        workbench_result = await self._create_manual_match_workbench(
-            source_subtitles=source_subtitles,
-            target_candidate=target_candidate,
-            use_filter_rules=use_filter_rules,
-            subtitle_filter_rules=subtitle_filter_rules,
-        )
-        import_result = {
-            "success": True,
-            "partial": False,
-            "error": None,
-            "download_files": workbench_result.get("staged_files", []),
-            "downloaded_count": int(workbench_result.get("downloaded_count") or 0),
-            "filtered_out_count": int(workbench_result.get("filtered_out_count") or 0),
-            "content_deduped_count": int(workbench_result.get("content_deduped_count") or 0),
-            "content_deduped_files": workbench_result.get("content_deduped_files", []),
-            "renamed_collision_files": workbench_result.get("renamed_collision_files", []),
-            "written_files": [
-                {
-                    "subtitle_name": item.get("name") or "",
-                    "output_name": item.get("name") or "",
-                    "match_type": "raw_workbench_stage",
-                    "match_score": 0,
-                }
-                for item in (workbench_result.get("staged_files") or [])
-            ],
-            "skipped_files": [],
-            "write_errors": [],
-            "awaiting_manual_match": True,
-            "existing_subtitle_count": int(target_candidate.get("existing_subtitle_count") or 0),
-            "subtitle_dir": workbench_result.get("subtitle_dir") or "",
-            "subtitle_library_id": workbench_result.get("library_id") or "",
-            "linked_workbench_root_dir": workbench_result.get("workspace_root_dir") or "",
-            "match_result": {
-                "matches": [],
-                "matched_group_count": 0,
-                "matched_subtitle_count": 0,
-                "unmatched_audio": [],
-                "unmatched_subtitles": [],
-            },
-        }
+        if self._should_direct_import_to_empty_candidate(preview, target_candidate):
+            import_result = await self._direct_import_source_subtitles_to_target(
+                source_subtitles=source_subtitles,
+                target_candidate=target_candidate,
+                use_filter_rules=use_filter_rules,
+                subtitle_filter_rules=subtitle_filter_rules,
+            )
+        else:
+            workbench_result = await self._create_manual_match_workbench(
+                source_subtitles=source_subtitles,
+                target_candidate=target_candidate,
+                use_filter_rules=use_filter_rules,
+                subtitle_filter_rules=subtitle_filter_rules,
+            )
+            import_result = {
+                "success": True,
+                "partial": False,
+                "error": None,
+                "download_files": workbench_result.get("staged_files", []),
+                "downloaded_count": int(workbench_result.get("downloaded_count") or 0),
+                "filtered_out_count": int(workbench_result.get("filtered_out_count") or 0),
+                "content_deduped_count": int(workbench_result.get("content_deduped_count") or 0),
+                "content_deduped_files": workbench_result.get("content_deduped_files", []),
+                "renamed_collision_files": workbench_result.get("renamed_collision_files", []),
+                "written_files": [
+                    {
+                        "subtitle_name": item.get("name") or "",
+                        "output_name": item.get("name") or "",
+                        "match_type": "raw_workbench_stage",
+                        "match_score": 0,
+                    }
+                    for item in (workbench_result.get("staged_files") or [])
+                ],
+                "skipped_files": [],
+                "write_errors": [],
+                "awaiting_manual_match": True,
+                "existing_subtitle_count": int(target_candidate.get("existing_subtitle_count") or 0),
+                "subtitle_dir": workbench_result.get("subtitle_dir") or "",
+                "subtitle_library_id": workbench_result.get("library_id") or "",
+                "linked_workbench_root_dir": workbench_result.get("workspace_root_dir") or "",
+                "match_result": {
+                    "matches": [],
+                    "matched_group_count": 0,
+                    "matched_subtitle_count": 0,
+                    "unmatched_audio": [],
+                    "unmatched_subtitles": [],
+                },
+            }
 
         task = None
         if import_result.get("success") and import_result.get("awaiting_manual_match"):
@@ -2715,7 +2836,10 @@ class LinkedSubtitleImportService:
                     original_task.status = TaskStatus.COMPLETED
                     original_task.progress = 100
                     original_task.completed_at = datetime.now()
-                    original_task.current_step = "已转入字幕补配并完成原始字幕导入"
+                    if bool((result.get("import_result") or {}).get("awaiting_manual_match")):
+                        original_task.current_step = "已转入字幕补配并完成原始字幕导入"
+                    else:
+                        original_task.current_step = "目标目录为空，已按新作品直接导入字幕"
 
             return result
         finally:

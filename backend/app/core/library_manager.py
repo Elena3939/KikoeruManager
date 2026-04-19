@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import codecs
 import json
 import logging
 import os
@@ -20,6 +21,15 @@ from ..config.settings import get_config, get_config_file_path
 logger = logging.getLogger(__name__)
 
 LIBRARY_SEARCH_RESULT_LIMIT = 2000
+MOJIBAKE_SOURCE_ENCODINGS = ("gbk", "gb18030", "big5", "utf-8", "latin-1")
+MOJIBAKE_TARGET_ENCODINGS = ("cp932", "shift_jis", "utf-8", "gb18030", "big5", "euc_jp")
+MOJIBAKE_PROTECTED_SUFFIX_PATTERNS = (
+    re.compile(r"(\.part\d+\.(?:rar|zip|7z|exe))$", re.IGNORECASE),
+    re.compile(r"(\.part\d+)$", re.IGNORECASE),
+    re.compile(r"(\.7z\.\d{3})$", re.IGNORECASE),
+    re.compile(r"(\.z\d{2})$", re.IGNORECASE),
+    re.compile(r"(\.r\d{2})$", re.IGNORECASE),
+)
 
 
 def _config_file_path() -> str:
@@ -44,6 +54,181 @@ def _stats_log_file_path() -> str:
 
 def _gb(value: int) -> float:
     return round(value / (1024 ** 3), 2)
+
+
+def _safe_encode_text(value: str, encoding: str) -> Optional[bytes]:
+    try:
+        return value.encode(encoding, errors="strict")
+    except Exception:
+        return None
+
+
+def _safe_decode_text(value: bytes, encoding: str) -> Optional[str]:
+    try:
+        return value.decode(encoding, errors="strict")
+    except Exception:
+        return None
+
+
+def _mojibake_score(text: str) -> int:
+    if not text:
+        return -999
+    score = 0
+    if "\ufffd" in text:
+        score -= 20
+    if re.search(r"[ÃÂÐæçéèêïîöôåäüë鈥鐩鍙彇瀛侀濂彂鍥犺诲悕浜嬩负澶ф湰]", text):
+        score -= 10
+    if re.search(r"[\u3040-\u309f]", text):
+        score += 14
+    if re.search(r"[\u30a0-\u30ff]", text):
+        score += 14
+    if re.search(r"[\u4e00-\u9fff]", text):
+        score += 8
+    if re.search(r"[A-Za-z0-9]", text):
+        score += 2
+    if re.search(r"[一-龥]{6,}", text) and not re.search(r"[\u3040-\u30ff]", text):
+        score -= 8
+    if re.search(r"(Track\d+|トラック\d+)", text, re.IGNORECASE):
+        score += 2
+    if re.search(r"[僧偺傍價側係價億偉]", text):
+        score -= 4
+    if re.search(r"[^\w\s\-\.\(\)\[\]{}~!@#$%^&,+=;\u3040-\u30ff\u4e00-\u9fff]", text):
+        score -= 2
+    return score
+
+
+def _looks_like_safe_repair(original: str, candidate: str) -> bool:
+    original = str(original or "").strip()
+    candidate = str(candidate or "").strip()
+    if not original or not candidate or original == candidate:
+        return False
+    original_ext = os.path.splitext(original)[1].lower()
+    candidate_ext = os.path.splitext(candidate)[1].lower()
+    if original_ext and candidate_ext and original_ext != candidate_ext:
+        return False
+    delta = _mojibake_score(candidate) - _mojibake_score(original)
+    if re.search(r"Track\d+", original, re.IGNORECASE):
+        return delta >= 4 and bool(re.search(r"[\u3040-\u30ff]", candidate))
+    return delta >= 5
+
+
+def _guess_mojibake_name_repairs(name: str, *, relaxed: bool = False) -> list[dict[str, Any]]:
+    original = str(name or "").strip()
+    if not original:
+        return []
+
+    protected_suffix = ""
+    repair_target = original
+    for pattern in MOJIBAKE_PROTECTED_SUFFIX_PATTERNS:
+        match = pattern.search(original)
+        if not match:
+            continue
+        protected_suffix = match.group(1)
+        repair_target = original[:-len(protected_suffix)]
+        break
+
+    if not repair_target:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = {original}
+    for source_encoding in MOJIBAKE_SOURCE_ENCODINGS:
+        encoded = _safe_encode_text(repair_target, source_encoding)
+        if not encoded:
+            continue
+        for target_encoding in MOJIBAKE_TARGET_ENCODINGS:
+            if source_encoding == target_encoding:
+                continue
+            decoded = _safe_decode_text(encoded, target_encoding)
+            if not decoded:
+                continue
+            candidate = f"{decoded.strip()}{protected_suffix}"
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if not relaxed and not _looks_like_safe_repair(original, candidate):
+                continue
+            candidates.append({
+                "name": candidate,
+                "score": _mojibake_score(candidate),
+                "source_encoding": source_encoding,
+                "target_encoding": target_encoding,
+            })
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    return candidates
+
+
+def _track_group_key(relative_path: str) -> str:
+    normalized = str(relative_path or "").replace("\\", "/").strip()
+    directory = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
+    return directory.lower()
+
+
+def _looks_like_track_bundle(name: str) -> bool:
+    text = str(name or "").strip()
+    if not text:
+        return False
+    return bool(
+        re.search(r"track\s*\d+", text, re.IGNORECASE)
+        and re.search(r"(?:~|-|〜|～|to)\s*track\s*\d+", text, re.IGNORECASE)
+    )
+
+
+def _extract_title_from_readme_text(text: str) -> str:
+    content = str(text or "").strip()
+    if not content:
+        return ""
+    quoted = re.search(r"「([^」]{4,200})」", content)
+    if quoted:
+        return quoted.group(1).strip()
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    for line in lines[:8]:
+        if len(line) >= 6 and re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", line):
+            return line
+    return ""
+
+
+def _guess_local_title_from_readme(parent_dir: str) -> str:
+    if not parent_dir or not os.path.isdir(parent_dir):
+        return ""
+    for candidate_name in ("readme.txt", "README.txt", "Readme.txt"):
+        candidate_path = os.path.join(parent_dir, candidate_name)
+        if not os.path.isfile(candidate_path):
+            continue
+        for encoding in ("utf-8", "utf-8-sig", "cp932", "shift_jis", "gb18030"):
+            try:
+                with open(candidate_path, "r", encoding=encoding, errors="strict") as handle:
+                    return _extract_title_from_readme_text(handle.read())
+            except Exception:
+                continue
+    return ""
+
+
+def _is_audio_filename(name: str) -> bool:
+    return bool(re.search(r"\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$", str(name or ""), re.IGNORECASE))
+
+
+def _source_name_suspiciousness(name: str) -> int:
+    text = str(name or "").strip()
+    if not text:
+        return -999
+    score = 0
+    if _looks_like_track_bundle(text):
+        score += 5
+    if _is_audio_filename(text):
+        score += 3
+    if re.search(r"Track\d+", text, re.IGNORECASE):
+        score += 3
+    base_name = os.path.splitext(text)[0]
+    cjk_chunks = re.findall(r"[\u4e00-\u9fff]+", base_name)
+    if cjk_chunks:
+        longest = max(len(chunk) for chunk in cjk_chunks)
+        if longest <= 3:
+            score += 4
+    if re.search(r"[A-Za-z0-9].*[\u4e00-\u9fff]|[\u4e00-\u9fff].*[A-Za-z0-9]", text):
+        score += 2
+    return score
 
 
 SYNOLOGY_COMMON_ERROR_MESSAGES: dict[int, str] = {
@@ -284,6 +469,27 @@ class SynologyFileStationClient:
             return self._first_info_item(info)
         except Exception:
             return None
+
+    def _is_retryable_upload_error(self, exc: Exception) -> bool:
+        if isinstance(exc, (aiohttp.ClientConnectionError, ConnectionError, TimeoutError, asyncio.TimeoutError)):
+            return True
+        message = str(exc or "")
+        lowered = message.lower()
+        return any(token in lowered for token in [
+            "winerror 64",
+            "指定的网络名不再可用",
+            "connection lost",
+            "connection reset",
+            "server disconnected",
+            "broken pipe",
+            "cannot write request body",
+            "timeout",
+        ])
+
+    async def _remote_file_matches_local_size(self, path: str, local_file_size: int) -> bool:
+        remote_info = await self._get_remote_file_info_if_exists(path)
+        remote_size = int((remote_info or {}).get("additional", {}).get("size") or (remote_info or {}).get("size") or 0)
+        return remote_size > 0 and remote_size == local_file_size
 
     async def _post_file_upload(
         self,
@@ -740,10 +946,14 @@ class SynologyFileStationClient:
     ):
         normalized_path = str(PurePosixPath(dest_folder or "/"))
         overwrite_value = "true" if overwrite else "false"
+        local_file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
         connect_timeout = max(10, int(self.config.timeout or 30))
         response_timeout = max(90, connect_timeout * 6)
+        estimated_transfer_timeout = (local_file_size // (512 * 1024)) + 180 if local_file_size > 0 else 180
+        total_timeout = max(response_timeout, connect_timeout * 4, estimated_transfer_timeout)
+        total_timeout = min(max(total_timeout, 180), 6 * 60 * 60)
         timeout = aiohttp.ClientTimeout(
-            total=None,
+            total=total_timeout,
             connect=connect_timeout,
             sock_connect=connect_timeout,
             sock_read=response_timeout,
@@ -830,6 +1040,7 @@ class SynologyFileStationClient:
             },
         ]
         preferred_variant_name = str(self._preferred_upload_variant_name or "").strip()
+        per_variant_retry_limit = 3
         if preferred_variant_name:
             logger.info("[SynologyUpload] 命中已缓存成功变体: %s", preferred_variant_name)
             payload_variants = sorted(
@@ -857,72 +1068,97 @@ class SynologyFileStationClient:
             }
 
             for index, variant in enumerate(payload_variants):
-                try:
-                    query = dict(base_query)
-                    query.update(variant["query"])
-                    form = dict(variant["form"])
-                    include_sid = variant.get("include_sid", True)
-                    if self._sid and include_sid:
-                        query.setdefault("_sid", self._sid)
-                        if "_sid" in form:
-                            form["_sid"] = self._sid
-                    logger.info(
-                        "[SynologyUpload] 尝试变体 %s/%s name=%s path=%s api_path=%s api_version=%s query_keys=%s form_keys=%s",
-                        index + 1,
-                        len(payload_variants),
-                        variant.get("name"),
-                        normalized_path,
-                        api_path,
-                        api_version,
-                        sorted(query.keys()),
-                        sorted(form.keys()),
-                    )
-                    await self._post_file_upload(
-                        session,
-                        upload_url,
-                        "SYNO.FileStation.Upload",
-                        query,
-                        form,
-                        local_path,
-                        remote_name=remote_name,
-                        quote_fields=variant["quote_fields"],
-                        include_content_type=variant["include_content_type"],
-                        progress_callback=progress_callback,
-                    )
-                    self._preferred_upload_variant_name = str(variant.get("name") or "").strip() or None
-                    return
-                except Exception as exc:
-                    logger.warning(
-                        "[SynologyUpload] 变体失败 %s/%s name=%s path=%s error=%s",
-                        index + 1,
-                        len(payload_variants),
-                        variant.get("name"),
-                        normalized_path,
-                        exc,
-                    )
-                    last_error = exc
-                    if self._is_error_code(exc, 414):
-                        remote_info = await self._get_remote_file_info_if_exists(remote_file_path)
-                        remote_size = int((remote_info or {}).get("additional", {}).get("size") or (remote_info or {}).get("size") or 0)
-                        if remote_size > 0 and remote_size == local_file_size:
-                            logger.info(
-                                "[SynologyUpload] 414 后远端校验命中，直接判定成功 path=%s size=%s variant=%s",
-                                remote_file_path,
-                                remote_size,
-                                variant.get("name"),
-                            )
-                            self._preferred_upload_variant_name = str(variant.get("name") or "").strip() or self._preferred_upload_variant_name
-                            if progress_callback:
-                                progress_callback(local_file_size, local_file_size)
-                            return
+                for attempt in range(1, per_variant_retry_limit + 1):
+                    try:
+                        query = dict(base_query)
+                        query.update(variant["query"])
+                        form = dict(variant["form"])
+                        include_sid = variant.get("include_sid", True)
+                        if self._sid and include_sid:
+                            query.setdefault("_sid", self._sid)
+                            if "_sid" in form:
+                                form["_sid"] = self._sid
                         logger.info(
-                            "[SynologyUpload] 414 后远端校验未命中，继续切换变体 path=%s local_size=%s remote_size=%s",
-                            remote_file_path,
-                            local_file_size,
-                            remote_size,
+                            "[SynologyUpload] 尝试变体 %s/%s name=%s attempt=%s/%s path=%s api_path=%s api_version=%s query_keys=%s form_keys=%s",
+                            index + 1,
+                            len(payload_variants),
+                            variant.get("name"),
+                            attempt,
+                            per_variant_retry_limit,
+                            normalized_path,
+                            api_path,
+                            api_version,
+                            sorted(query.keys()),
+                            sorted(form.keys()),
                         )
-                    if not self._is_error_code(exc, 101) or index == len(payload_variants) - 1:
-                        continue
+                        await self._post_file_upload(
+                            session,
+                            upload_url,
+                            "SYNO.FileStation.Upload",
+                            query,
+                            form,
+                            local_path,
+                            remote_name=remote_name,
+                            quote_fields=variant["quote_fields"],
+                            include_content_type=variant["include_content_type"],
+                            progress_callback=progress_callback,
+                        )
+                        self._preferred_upload_variant_name = str(variant.get("name") or "").strip() or None
+                        return
+                    except Exception as exc:
+                        logger.warning(
+                            "[SynologyUpload] 变体失败 %s/%s name=%s attempt=%s/%s path=%s error=%s",
+                            index + 1,
+                            len(payload_variants),
+                            variant.get("name"),
+                            attempt,
+                            per_variant_retry_limit,
+                            normalized_path,
+                            exc,
+                        )
+                        last_error = exc
+                        if self._is_error_code(exc, 414):
+                            if await self._remote_file_matches_local_size(remote_file_path, local_file_size):
+                                logger.info(
+                                    "[SynologyUpload] 414 后远端校验命中，直接判定成功 path=%s size=%s variant=%s",
+                                    remote_file_path,
+                                    local_file_size,
+                                    variant.get("name"),
+                                )
+                                self._preferred_upload_variant_name = str(variant.get("name") or "").strip() or self._preferred_upload_variant_name
+                                if progress_callback:
+                                    progress_callback(local_file_size, local_file_size)
+                                return
+                            logger.info(
+                                "[SynologyUpload] 414 后远端校验未命中，继续切换变体 path=%s local_size=%s",
+                                remote_file_path,
+                                local_file_size,
+                            )
+                            break
+                        if self._is_retryable_upload_error(exc):
+                            if await self._remote_file_matches_local_size(remote_file_path, local_file_size):
+                                logger.info(
+                                    "[SynologyUpload] 网络中断后远端校验命中，直接判定成功 path=%s size=%s variant=%s",
+                                    remote_file_path,
+                                    local_file_size,
+                                    variant.get("name"),
+                                )
+                                self._preferred_upload_variant_name = str(variant.get("name") or "").strip() or self._preferred_upload_variant_name
+                                if progress_callback:
+                                    progress_callback(local_file_size, local_file_size)
+                                return
+                            if attempt < per_variant_retry_limit:
+                                retry_wait = min(8.0, 1.5 * attempt)
+                                logger.warning(
+                                    "[SynologyUpload] 检测到可恢复网络中断，准备重试同一变体 name=%s attempt=%s/%s wait=%.1fs",
+                                    variant.get("name"),
+                                    attempt,
+                                    per_variant_retry_limit,
+                                    retry_wait,
+                                )
+                                await asyncio.sleep(retry_wait)
+                                continue
+                        break
 
         if last_error:
             raise last_error
@@ -3667,6 +3903,163 @@ class LibraryManager:
             return await asyncio.to_thread(self._local_folder_contents, library, path)
         return await self._remote_folder_contents(library, path)
 
+    async def preview_mojibake_repairs(self, library_id: str, path: str, selected_paths: Optional[list[str]] = None) -> dict[str, Any]:
+        library = self.get_library_definition(library_id)
+        contents = await self.folder_contents(library_id, path)
+        items = contents.get("items") or []
+        forced_paths = {str(item or "").strip() for item in (selected_paths or []) if str(item or "").strip()}
+        repairs: list[dict[str, Any]] = []
+        directory_rows: dict[str, dict[str, Any]] = {}
+        item_rows: list[dict[str, Any]] = []
+        track_group_pairs: dict[str, dict[str, int]] = {}
+
+        def build_dir_path(relative_dir: str) -> str:
+            base_path = str(contents.get("folder_path") or path or "").strip()
+            normalized_relative = str(relative_dir or "").strip().replace("\\", "/")
+            if not normalized_relative:
+                return base_path
+            if library.type == "local":
+                return os.path.join(base_path, *[part for part in normalized_relative.split("/") if part])
+            return str(PurePosixPath(base_path) / normalized_relative)
+
+        for item in items:
+            current_name = str(item.get("name") or "").strip()
+            item_path = str(item.get("path") or "").strip()
+            relative_path = str(item.get("relative_path") or current_name)
+            if not current_name or not item_path:
+                continue
+            item_rows.append({
+                "path": item_path,
+                "relative_path": relative_path,
+                "current_name": current_name,
+                "item_type": "file",
+            })
+            parts = [part for part in relative_path.replace("\\", "/").split("/") if part]
+            current_dir = []
+            for part in parts[:-1]:
+                current_dir.append(part)
+                relative_dir = "/".join(current_dir)
+                if relative_dir in directory_rows:
+                    continue
+                dir_candidates = _guess_mojibake_name_repairs(part)
+                if not dir_candidates:
+                    continue
+                best_dir = dir_candidates[0]
+                directory_rows[relative_dir] = {
+                    "path": build_dir_path(relative_dir),
+                    "relative_path": relative_dir,
+                    "current_name": part,
+                    "suggested_name": best_dir["name"],
+                    "score": best_dir["score"],
+                    "encoding_pair": f"{best_dir['source_encoding']} -> {best_dir['target_encoding']}",
+                    "item_type": "dir",
+                    "needs_manual_input": False,
+                }
+            candidates = _guess_mojibake_name_repairs(current_name)
+            if not candidates:
+                continue
+            best = candidates[0]
+            group_key = _track_group_key(relative_path)
+            pair_key = f"{best['source_encoding']}->{best['target_encoding']}"
+            track_group_pairs.setdefault(group_key, {})
+            track_group_pairs[group_key][pair_key] = track_group_pairs[group_key].get(pair_key, 0) + 1
+            repairs.append({
+                "path": item_path,
+                "relative_path": relative_path,
+                "current_name": current_name,
+                "suggested_name": best["name"],
+                "score": best["score"],
+                "encoding_pair": f"{best['source_encoding']} -> {best['target_encoding']}",
+                "item_type": "file",
+                "needs_manual_input": False,
+                "forced_include": False,
+            })
+
+        repair_paths = {str(item.get("path") or "") for item in repairs}
+        for row in item_rows:
+            if row["path"] in repair_paths:
+                continue
+            group_key = _track_group_key(row["relative_path"])
+            pair_counts = track_group_pairs.get(group_key) or {}
+            if not pair_counts:
+                continue
+            dominant_pair, dominant_count = max(pair_counts.items(), key=lambda item: item[1])
+            if dominant_count < 2:
+                continue
+            relaxed_candidates = _guess_mojibake_name_repairs(row["current_name"], relaxed=True)
+            if not relaxed_candidates:
+                continue
+            source_encoding, target_encoding = dominant_pair.split("->", 1)
+            matched = next(
+                (
+                    candidate for candidate in relaxed_candidates
+                    if candidate["source_encoding"] == source_encoding and candidate["target_encoding"] == target_encoding
+                ),
+                None
+            )
+            if not matched:
+                matched = relaxed_candidates[0]
+            if _mojibake_score(matched["name"]) < _mojibake_score(row["current_name"]) + 2:
+                continue
+            repairs.append({
+                "path": row["path"],
+                "relative_path": row["relative_path"],
+                "current_name": row["current_name"],
+                "suggested_name": matched["name"],
+                "score": matched["score"],
+                "encoding_pair": f"{matched['source_encoding']} -> {matched['target_encoding']}",
+                "item_type": "file",
+                "needs_manual_input": False,
+                "forced_include": False,
+            })
+            repair_paths.add(row["path"])
+
+        for row in item_rows:
+            if row["path"] in repair_paths:
+                continue
+            group_key = _track_group_key(row["relative_path"])
+            pair_counts = track_group_pairs.get(group_key) or {}
+            if sum(pair_counts.values()) < 2:
+                continue
+            if not _is_audio_filename(row["current_name"]):
+                continue
+            dominant_pair, _ = max(pair_counts.items(), key=lambda item: item[1])
+            repairs.append({
+                "path": row["path"],
+                "relative_path": row["relative_path"],
+                "current_name": row["current_name"],
+                "suggested_name": row["current_name"],
+                "score": _mojibake_score(row["current_name"]),
+                "encoding_pair": dominant_pair.replace("->", " -> "),
+                "item_type": "file",
+                "needs_manual_input": True,
+                "forced_include": False,
+            })
+            repair_paths.add(row["path"])
+
+        for row in item_rows:
+            if row["path"] in repair_paths or row["path"] not in forced_paths:
+                continue
+            repairs.append({
+                "path": row["path"],
+                "relative_path": row["relative_path"],
+                "current_name": row["current_name"],
+                "suggested_name": row["current_name"],
+                "score": _mojibake_score(row["current_name"]),
+                "encoding_pair": "",
+                "item_type": "file",
+                "needs_manual_input": True,
+                "forced_include": True,
+            })
+        repairs.extend(directory_rows.values())
+        repairs.sort(key=lambda item: (0 if item.get("item_type") == "dir" else 1, str(item.get("relative_path") or "").count("/"), str(item.get("relative_path") or "")))
+        return {
+            "folder_path": contents.get("folder_path") or path,
+            "folder_name": contents.get("folder_name") or os.path.basename(path),
+            "total_candidates": len(repairs),
+            "items": repairs,
+        }
+
     def _normalize_filter_rules(self, rules: Optional[list[Any]] = None) -> list[dict[str, str]]:
         source_rules = rules if rules is not None else (get_config().filter.rules or [])
         normalized_rules: list[dict[str, str]] = []
@@ -3893,6 +4286,10 @@ class LibraryManager:
             "code 1200",
             '"code": 1200',
             "信号灯超时时间已到",
+            "winerror 64",
+            "指定的网络名不再可用",
+            "connection lost",
+            "connection reset",
             "timeout",
         ])
 
@@ -4108,6 +4505,7 @@ class LibraryManager:
             for filename in files:
                 if self._should_skip_filter_preview_name(filename):
                     continue
+                file_path = os.path.join(root, filename)
                 matched_rules = self._match_filter_rule_names(
                     filename,
                     "file",
@@ -4117,7 +4515,6 @@ class LibraryManager:
                 )
                 if not matched_rules:
                     continue
-                file_path = os.path.join(root, filename)
                 stat = os.stat(file_path)
                 preview_items.append(
                     self._build_preview_item(
