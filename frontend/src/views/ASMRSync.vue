@@ -39,95 +39,32 @@
       <template #header>
         <div class="header-content">
           <span class="title">增强下载工作台</span>
-          <el-tag type="success">RJ 直输 / 缺失检测 / 文件勾选 / 自动上传</el-tag>
+          <el-tag type="success">仅保留 RJ 查询与下载</el-tag>
         </div>
       </template>
 
-      <div class="enhanced-dashboard">
-        <div v-for="card in enhancedMetricCards" :key="card.label" class="metric-card">
-          <div class="metric-label">{{ card.label }}</div>
-          <div class="metric-value">{{ card.value }}</div>
-          <div class="metric-help">{{ card.help }}</div>
-        </div>
+      <div class="enhanced-simple-intro">
+        社团补全已经覆盖缺失检测、批量增强下载和自动上传，这里只保留手动输入 RJ 号直接查询并下载。
       </div>
 
-      <el-form label-width="100px" class="enhanced-form">
-        <el-row :gutter="16">
-          <el-col :md="12" :sm="24">
-            <el-form-item label="RJ 号列表">
-              <el-input
-                v-model="enhancedInput"
-                type="textarea"
-                :rows="4"
-                placeholder="支持粘贴 RJ123456、RJ234567，空格/换行/逗号均可分隔"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :md="12" :sm="24">
-            <el-form-item label="本地目录">
-              <el-input v-model="enhancedFolderPath" placeholder="可选，用于缺失资源比对" clearable />
-            </el-form-item>
-            <el-form-item label="资源类型">
-              <el-select v-model="enhancedFilters.resourceTypes" multiple collapse-tags placeholder="默认全部" style="width: 100%">
-                <el-option label="音频" value="audio" />
-                <el-option label="字幕" value="subtitle" />
-                <el-option label="封面" value="cover" />
-                <el-option label="其他" value="other" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="音频格式">
-              <el-select v-model="enhancedFilters.audioFormats" multiple collapse-tags placeholder="默认全部" style="width: 100%">
-                <el-option label="MP3" value="mp3" />
-                <el-option label="WAV" value="wav" />
-                <el-option label="FLAC" value="flac" />
-                <el-option label="M4A" value="m4a" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="字幕语言">
-              <el-select v-model="enhancedFilters.subtitleLanguages" multiple collapse-tags placeholder="默认全部" style="width: 100%">
-                <el-option label="中文" value="zh" />
-                <el-option label="日文" value="ja" />
-                <el-option label="英文" value="en" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
+      <el-form label-width="88px" class="enhanced-form enhanced-form-simple">
+        <el-form-item label="RJ 列表">
+          <el-input
+            v-model="enhancedInput"
+            type="textarea"
+            :rows="4"
+            placeholder="支持粘贴 RJ123456、RJ234567，空格 / 换行 / 逗号分隔"
+          />
+        </el-form-item>
 
-        <el-row :gutter="16">
-          <el-col :md="8" :sm="24">
-            <el-form-item label="上传模式">
-              <el-select v-model="enhancedUpload.mode" style="width: 100%">
-                <el-option label="关闭自动上传" value="disabled" />
-                <el-option label="复制到本地目录" value="local" />
-                <el-option label="上传到群晖库存" value="synology" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :md="8" :sm="24">
-            <el-form-item label="目标路径">
-              <el-input v-model="enhancedUpload.targetPath" placeholder="自动上传目标目录或远程路径" clearable />
-            </el-form-item>
-          </el-col>
-          <el-col :md="8" :sm="24">
-            <el-form-item label="群晖库存ID">
-              <el-input v-model="enhancedUpload.libraryId" :disabled="enhancedUpload.mode !== 'synology'" placeholder="仅群晖模式需要" clearable />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <div class="enhanced-actions">
-          <el-checkbox v-model="enhancedFilters.includeExisting">包含已存在文件</el-checkbox>
+        <div class="enhanced-actions simple-actions">
           <el-button type="primary" @click="buildEnhancedPlans" :loading="enhancedPlanning">
             <el-icon><Search /></el-icon>
-            生成补档计划
+            查询 RJ
           </el-button>
-          <el-button type="success" @click="startEnhancedDownload" :loading="enhancedStarting" :disabled="!hasEnhancedSelections">
+          <el-button type="success" @click="startEnhancedDownload" :loading="enhancedStarting" :disabled="!enhancedPlans.length">
             <el-icon><Download /></el-icon>
-            启动勾选资源下载
-          </el-button>
-          <el-button @click="loadEnhancedDashboard" :loading="enhancedDashboardLoading">
-            <el-icon><Refresh /></el-icon>
-            刷新看板
+            下载已查询 RJ
           </el-button>
         </div>
       </el-form>
@@ -140,31 +77,15 @@
               <div class="plan-title">{{ plan.title || '未命名作品' }}</div>
             </div>
             <div class="plan-summary">
-              <el-tag type="danger">缺失 {{ plan.summary?.missing_total || 0 }}</el-tag>
-              <el-tag type="success">可选 {{ plan.summary?.selectable_total || 0 }}</el-tag>
-              <el-tag type="info">本地仅有 {{ plan.summary?.local_only_total || 0 }}</el-tag>
+              <el-tag type="success">可下载 {{ plan.summary?.selectable_total || 0 }}</el-tag>
+              <el-tag type="info">资源 {{ plan.grouped_resources?.length || 0 }} 组</el-tag>
             </div>
           </div>
 
-          <div class="plan-issues" v-if="(plan.local_pair_issues?.missing_subtitles_for_audio?.length || 0) > 0 || (plan.local_pair_issues?.orphan_subtitles_without_audio?.length || 0) > 0">
-            <el-alert
-              type="warning"
-              show-icon
-              :closable="false"
-              :title="`检测到音频缺字幕 ${plan.local_pair_issues?.missing_subtitles_for_audio?.length || 0} 项，孤立字幕 ${plan.local_pair_issues?.orphan_subtitles_without_audio?.length || 0} 项`"
-            />
-          </div>
-
-          <div class="plan-toolbar">
-            <el-checkbox :model-value="plan.selectable_resources.every(item => item.selected)" @change="togglePlanSelection(plan, $event)">
-              全选当前计划
-            </el-checkbox>
-            <div class="plan-toolbar-actions">
-              <span class="plan-selected-count">已选 {{ getSelectedResourceCount(plan) }} / {{ plan.selectable_resources.length }}</span>
-              <el-button size="small" @click="applyPlanPreset(plan, 'missing_audio')">只选缺音频</el-button>
-              <el-button size="small" @click="applyPlanPreset(plan, 'missing_subtitle')">只选缺字幕</el-button>
-              <el-button size="small" @click="applyPlanPreset(plan, 'covers')">只选封面</el-button>
-            </div>
+          <div class="plan-toolbar plan-toolbar-simple">
+            <span class="plan-selected-count">
+              将下载 {{ plan.selectable_resources.length }} 个资源
+            </span>
           </div>
 
           <div v-if="plan.grouped_resources?.length" class="plan-group-list">
@@ -172,79 +93,8 @@
               {{ getResourceTypeLabel(group.resource_type) }} / {{ group.language || '未标注' }} / {{ group.extension.toUpperCase() }} / {{ group.count }}
             </el-tag>
           </div>
-
-          <div v-if="plan.match_conflicts?.length" class="plan-issues">
-            <el-alert
-              type="error"
-              show-icon
-              :closable="false"
-              :title="`检测到匹配冲突 ${plan.match_conflicts.length} 项，建议打开会话详情复核`"
-            />
-          </div>
-
-          <div class="plan-resource-grid">
-            <label v-for="item in plan.selectable_resources" :key="`${plan.rjcode}-${item.relative_path}`" class="resource-chip">
-              <el-checkbox v-model="item.selected" />
-              <div class="resource-chip-body">
-                <div class="resource-name">{{ item.file_name }}</div>
-                <div class="resource-meta">
-                  <span>{{ getResourceTypeLabel(item.resource_type) }}</span>
-                  <span>{{ item.language || '未标注' }}</span>
-                  <span>{{ formatSize(item.size_bytes) }}</span>
-                  <span v-if="item.exists_locally">本地已有</span>
-                  <span v-if="item.match_basis?.length">匹配: {{ item.match_basis.join(' / ') }}</span>
-                </div>
-              </div>
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <div v-if="enhancedSessions.length > 0" class="session-board">
-        <div class="session-board-header">
-          <div>
-            <div class="title">下载队列</div>
-            <div class="session-board-help">按会话聚合，支持优先级、暂停、恢复、失败资源重试</div>
-          </div>
-          <el-button @click="loadEnhancedSessions" :loading="enhancedSessionsLoading">
-            <el-icon><Refresh /></el-icon>
-            刷新队列
-          </el-button>
-        </div>
-
-        <div class="session-grid">
-          <div v-for="session in enhancedSessions" :key="session.id" class="session-card">
-            <div class="session-card-header">
-              <div>
-                <div class="session-rj">{{ session.rjcode }}</div>
-                <div class="session-title">{{ session.source_label || '未命名会话' }}</div>
-              </div>
-              <div class="session-header-tags">
-                <el-tag size="small">{{ getSessionStatusLabel(session.status) }}</el-tag>
-                <el-tag size="small" type="info">P{{ session.queue_priority }}</el-tag>
-              </div>
-            </div>
-
-            <div class="session-metrics">
-              <span>资源 {{ session.statistics?.selected_resource_count || 0 }}</span>
-              <span>成功 {{ session.statistics?.success_count || 0 }}</span>
-              <span>失败 {{ session.statistics?.failed_count || 0 }}</span>
-              <span>上传 {{ session.statistics?.uploaded_count || 0 }}</span>
-            </div>
-
-            <div class="session-meta">
-              <span>{{ getUploadModeLabel(session.upload_mode) }}</span>
-              <span>{{ session.target_path || '未设置目标路径' }}</span>
-            </div>
-
-            <div class="session-actions">
-              <el-button size="small" @click="changeSessionPriority(session, -10)">上移</el-button>
-              <el-button size="small" @click="changeSessionPriority(session, 10)">下移</el-button>
-              <el-button v-if="session.status === 'paused'" size="small" type="primary" @click="resumeEnhancedSession(session)">恢复</el-button>
-              <el-button v-else-if="session.status === 'queued' || session.status === 'downloading' || session.status === 'uploading' || session.status === 'verifying'" size="small" @click="pauseEnhancedSession(session)">暂停</el-button>
-              <el-button v-if="session.status === 'failed' || session.status === 'partial_failed'" size="small" type="warning" @click="retryEnhancedSession(session)">重试失败项</el-button>
-              <el-button size="small" type="primary" plain @click="openEnhancedSession(session)">详情</el-button>
-            </div>
+          <div v-if="plan.selectable_resources?.length" class="simple-resource-summary">
+            {{ summarizePlanResources(plan.selectable_resources) }}
           </div>
         </div>
       </div>
@@ -292,10 +142,7 @@
     <!-- 预览对话框 -->
     <el-dialog v-model="previewDialogVisible" title="下载预览" width="900px">
       <div v-if="previewLoading" class="preview-loading">
-        <el-icon class="is-loading">
-          <Loading />
-        </el-icon>
-        <span>正在获取作品信息...</span>
+        <AppLoadingAnimation label="正在获取作品信息..." :size="132" :min-height="180" />
       </div>
       <div v-else-if="previewData" class="preview-content">
         <el-descriptions :column="3" border>
@@ -454,9 +301,7 @@
             :status="task.status === 'completed' ? 'success' : task.status === 'failed' ? 'exception' : ''"
             :stroke-width="10" style="margin: 12px 0;" />
           <div class="task-step">
-            <el-icon v-if="task.status === 'processing'">
-              <Loading />
-            </el-icon>
+            <AppLoadingAnimation v-if="task.status === 'processing'" variant="inline" :size="28" />
             <span>{{ task.current_step }}</span>
           </div>
           <div v-if="task.error_message" class="task-error">
@@ -550,7 +395,7 @@
     </el-card>
 
     <el-drawer v-model="enhancedSessionDrawerVisible" size="55%" :title="enhancedSessionDetail?.rjcode ? `${enhancedSessionDetail.rjcode} 会话详情` : '会话详情'">
-      <div v-loading="enhancedSessionDetailLoading">
+      <div v-app-loading="{ loading: enhancedSessionDetailLoading, text: '正在加载增强下载详情...', size: 124 }">
         <template v-if="enhancedSessionDetail">
           <div class="session-detail-summary">
             <el-tag>{{ getSessionStatusLabel(enhancedSessionDetail.status) }}</el-tag>
@@ -589,8 +434,9 @@
 <script setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Search, Download, Folder, Loading, Refresh, Document, WarningFilled, Clock } from '@element-plus/icons-vue'
+import { Search, Download, Folder, Refresh, Document, WarningFilled, Clock } from '@element-plus/icons-vue'
 import { asmrSyncApi, configApi } from '../api'
+import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 
 const subtitleFolder = ref('')
 const scanning = ref(false)
@@ -737,6 +583,17 @@ const getSelectedResourceCount = (plan) => {
   return (plan?.selectable_resources || []).filter(item => item.selected).length
 }
 
+const summarizePlanResources = (resources = []) => {
+  const summary = {}
+  for (const item of Array.isArray(resources) ? resources : []) {
+    const key = getResourceTypeLabel(item?.resource_type)
+    summary[key] = (summary[key] || 0) + 1
+  }
+  return Object.entries(summary)
+    .map(([label, count]) => `${label} ${count}`)
+    .join(' / ')
+}
+
 const getUploadModeLabel = (mode) => {
   const map = { disabled: '仅下载', local: '本地复制', synology: '群晖上传' }
   return map[mode] || mode || '未设置'
@@ -801,17 +658,17 @@ const buildEnhancedPlans = async () => {
   try {
     const result = await asmrSyncApi.planEnhanced({
       rjcodes,
-      folder_path: enhancedFolderPath.value || '',
-      resource_types: enhancedFilters.value.resourceTypes,
-      audio_formats: enhancedFilters.value.audioFormats,
-      subtitle_languages: enhancedFilters.value.subtitleLanguages,
-      include_existing: enhancedFilters.value.includeExisting
+      folder_path: '',
+      resource_types: ['audio', 'subtitle', 'cover'],
+      audio_formats: [],
+      subtitle_languages: [],
+      include_existing: false
     })
     enhancedPlans.value = (result.plans || []).map(plan => ({
       ...plan,
       selectable_resources: (plan.selectable_resources || []).map(item => ({
         ...item,
-        selected: Boolean(item.selected)
+        selected: true
       }))
     }))
     if (result.errors?.length) {
@@ -833,21 +690,21 @@ const startEnhancedDownload = async () => {
       session_id: plan.session_id,
       rjcode: plan.rjcode,
       work_title: plan.title,
-      folder_path: plan.folder_path || enhancedFolderPath.value || '',
+      folder_path: '',
       selected_resources: (plan.selectable_resources || []).filter(item => item.selected),
       queue_priority: 100,
       upload_options: {
-        enabled: enhancedUpload.value.mode !== 'disabled',
-        mode: enhancedUpload.value.mode,
-        target_path: enhancedUpload.value.targetPath,
-        library_id: enhancedUpload.value.libraryId
+        enabled: false,
+        mode: 'disabled',
+        target_path: '',
+        library_id: ''
       },
       verify_md5_after_download: true,
       resource_filter_snapshot: {
-        resource_types: enhancedFilters.value.resourceTypes,
-        audio_formats: enhancedFilters.value.audioFormats,
-        subtitle_languages: enhancedFilters.value.subtitleLanguages,
-        include_existing: enhancedFilters.value.includeExisting
+        resource_types: ['audio', 'subtitle', 'cover'],
+        audio_formats: [],
+        subtitle_languages: [],
+        include_existing: false
       }
     }))
     .filter(item => item.selected_resources.length > 0)
@@ -1102,8 +959,6 @@ const refreshStatus = async () => {
       const item = scanResults.value.find(i => i.rjcode === task.rjcode)
       if (item) item.status = task.status === 'processing' ? 'downloading' : task.status
     })
-    await loadEnhancedDashboard()
-    await loadEnhancedSessions()
   } catch (error) {
     console.error('获取状态失败:', error)
   } finally {
@@ -1136,7 +991,6 @@ async function initializeASMRSyncPage () {
   await loadSavedFolder()
   await loadWaitingRetryTasks()
   await refreshStatus()
-  await loadEnhancedSessions()
   if (subtitleFolder.value) {
     await scanFolder()
   }
@@ -1206,6 +1060,12 @@ onUnmounted(() => {
   margin-bottom: 20px;
 }
 
+.enhanced-simple-intro {
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: #606266;
+}
+
 .metric-card {
   padding: 18px;
   border-radius: 18px;
@@ -1236,12 +1096,20 @@ onUnmounted(() => {
   margin-bottom: 16px;
 }
 
+.enhanced-form-simple {
+  max-width: 920px;
+}
+
 .enhanced-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 8px;
+}
+
+.simple-actions {
+  margin-top: 0;
 }
 
 .enhanced-plan-list {
@@ -1296,6 +1164,11 @@ onUnmounted(() => {
   margin-bottom: 14px;
 }
 
+.plan-toolbar-simple {
+  justify-content: flex-start;
+  margin-bottom: 10px;
+}
+
 .plan-toolbar-actions {
   display: flex;
   align-items: center;
@@ -1305,6 +1178,11 @@ onUnmounted(() => {
 }
 
 .plan-selected-count {
+  font-size: 12px;
+  color: #606266;
+}
+
+.simple-resource-summary {
   font-size: 12px;
   color: #606266;
 }

@@ -1,117 +1,328 @@
 <template>
-  <el-dialog v-model="visible" width="1100px" class="fm-dialog folder-dialog" destroy-on-close>
-    <template #header>
-      <div class="fm-header">
-        <div class="fm-title">
-          <span>{{ folderContentsInfo.folderName || '文件管理' }}</span>
-          <span class="fm-badge">{{ formatFileSize(folderContentsInfo.totalSize) }}</span>
+  <el-dialog
+    v-model="visible"
+    :show-close="false"
+    destroy-on-close
+    class="custom-preview-modal folder-dialog"
+    align-center
+    modal-class="custom-preview-overlay"
+  >
+    <div
+      class="window panel-enter glass-shell relative flex w-full max-w-[1280px] aspect-[16/10] flex-col overflow-hidden rounded-3xl"
+      v-app-loading="{ loading: folderLoading, text: '正在读取目录内容...', size: 120 }"
+      element-loading-text="正在加载目录内容..."
+    >
+      <div class="window-header flex items-center justify-between px-6 py-4">
+        <div class="fm-header-main min-w-0">
+          <div class="fm-title-row">
+            <h1 class="title truncate text-lg font-bold tracking-tight text-slate-900">
+              {{ getDialogFolderName() }}
+            </h1>
+            <span class="fm-badge">{{ formatFileSize(folderContentsInfo.totalSize) }}</span>
+          </div>
+          <p class="mt-1 truncate text-sm text-slate-500">
+            {{ getDialogFolderPath() }}
+          </p>
         </div>
-        <div class="fm-count">{{ visibleFileCount }} / {{ folderContentsInfo.totalFiles }} 个文件</div>
-      </div>
-    </template>
-
-    <div class="fm-body" v-loading="folderLoading" element-loading-text="正在加载目录内容...">
-      <div class="fm-toolbar">
-        <div class="fm-toolbar-left">
-          <button
-            class="fm-btn fm-btn-danger"
-            :disabled="!folderSelectedDeletePaths.length || folderDeleting"
-            @click="batchDeleteSubFiles"
-          >
-            批量删除
-          </button>
-          <button class="fm-btn fm-btn-ghost" :disabled="folderLoading || folderDeleting" @click="reload">刷新</button>
-          <button class="fm-btn fm-btn-ghost" :disabled="folderLoading" @click="expandAll">展开全部</button>
-          <button class="fm-btn fm-btn-ghost" :disabled="folderLoading" @click="collapseAll">折叠全部</button>
+        <div class="fm-count-pill">
+          {{ visibleFileCount }} / {{ folderContentsInfo.totalFiles }} 个文件
         </div>
-        <div class="fm-search">
-          <input
-            v-model="folderSearch"
-            class="fm-search-input"
-            placeholder="搜索文件名或路径..."
-            :disabled="folderLoading || folderDeleting"
-            @input="onSearchInput"
-          >
-        </div>
-      </div>
-
-      <div v-if="folderSelectedDeleteRoots.length" class="fm-selection-bar">
-        <span>已选 {{ folderSelectedDeleteRoots.length }} 项待删</span>
-        <span>预计大小 {{ formatFileSize(folderSelectedDeleteSize) }}</span>
+        <button
+          type="button"
+          class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
+          @click="visible = false"
+        >
+          <X :size="20" :stroke-width="2" />
+        </button>
       </div>
 
-      <div class="fm-head">
-        <div class="fm-col-name fm-col-name-head">
-          <div class="fm-name-cell fm-name-cell-head">
-            <input
-              type="checkbox"
-              class="fm-check"
-              :checked="allFilesSelected"
-              :indeterminate.prop="someFilesSelected"
-              :disabled="folderLoading || folderDeleting"
-              @click="toggleAllFiles"
+      <div class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5">
+        <div class="toolbar-row flex items-center justify-between gap-3 border-b border-slate-200/70 py-3">
+          <div class="toolbar-actions flex items-center gap-2">
+            <button
+              type="button"
+              class="action-card action-card-danger"
+              :disabled="!folderSelectedDeletePaths.length || folderDeleting"
+              @click="batchDeleteSubFiles"
             >
-            <span>文件名</span>
+              <Trash2 :size="15" />
+              <span>批量删除</span>
+            </button>
+            <button
+              type="button"
+              class="action-card"
+              :disabled="folderLoading || folderDeleting"
+              @click="reload"
+            >
+              <RefreshCw :size="15" class="action-icon action-icon-refresh" :class="{ 'is-spinning': folderLoading }" />
+              <span>刷新</span>
+            </button>
+            <button
+              type="button"
+              class="action-card"
+              :disabled="folderLoading"
+              @click="toggleExpandAll"
+            >
+              <ChevronDown :size="15" class="toolbar-toggle-icon" :class="{ 'is-collapsed': !isAllExpanded }" />
+              <span>{{ isAllExpanded ? '全部收起' : '展开全部' }}</span>
+            </button>
+          </div>
+
+          <div class="toolbar-search-group flex min-w-0 items-center gap-2">
+            <label class="search-shell flex w-[320px] min-w-0 items-center gap-2 rounded-xl border px-3 py-2">
+              <Search :size="16" class="text-slate-400" />
+              <input
+                v-model="folderSearch"
+                class="search-input"
+                placeholder="搜索文件名或路径..."
+                :disabled="folderLoading || folderDeleting"
+                @input="onSearchInput"
+              >
+            </label>
+            <button
+              type="button"
+              class="action-card action-card-ghost shrink-0"
+              :disabled="folderLoading || folderDeleting || !folderItems.length"
+              @click="openMojibakeRepairPreview"
+            >
+              <Languages :size="15" />
+              <span>修复乱码文件名</span>
+            </button>
           </div>
         </div>
-        <div class="fm-col-size">大小</div>
-        <div class="fm-col-time">修改时间</div>
-        <div class="fm-col-action">操作</div>
-      </div>
 
-      <div class="fm-scroll">
-        <div v-if="!folderLoading && flatTree.length === 0" class="fm-empty">
-          {{ folderSearch ? '没有匹配项' : '当前目录为空' }}
+        <div v-if="folderSelectedDeleteRoots.length" class="selection-card selection-inline mt-3 flex items-center gap-5 text-sm text-slate-600">
+          <span>已选 <span class="text-slate-900 font-semibold">{{ folderSelectedDeleteRoots.length }}</span> 项待删</span>
+          <span>预计释放 <span class="text-slate-900 font-semibold">{{ formatFileSize(folderSelectedDeleteSize) }}</span></span>
         </div>
 
-        <div
-          v-for="row in flatTree"
-          :key="row.id"
-          class="fm-row"
-          :class="{ 'fm-row-dir': row.type === 'dir', 'fm-row-selected': selectedFileIds.has(row.id) }"
-          @click="handleFolderRowClick(row, $event)"
-        >
-          <div class="fm-col-name">
-            <div class="fm-name-cell" :style="{ paddingLeft: `${row.depth * 18 + 4}px` }">
+        <section ref="treePanelRef" class="glass-panel glass-card tree-panel mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
+          <div class="tree-head tree-grid items-center gap-3 border-b border-slate-200/70 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400" :style="{ paddingRight: `calc(16px + ${treeScrollbarWidth}px)` }">
+            <div class="flex items-center gap-2">
               <button
-                v-if="row.type === 'dir'"
                 type="button"
-                class="fm-arrow-btn"
-                :class="{ open: expandedIds.has(row.id) }"
-                @click.stop="toggleExpand(row)"
+                class="tree-checkbox relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
+                :class="selectionState === 'all' ? 'tree-checkbox-on' : (selectionState === 'partial' ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
+                :disabled="folderLoading || folderDeleting"
+                @click="toggleAllFiles"
               >
-                &gt;
+                <Check v-if="selectionState === 'all'" :size="13" />
+                <span v-else-if="selectionState === 'partial'" class="checkbox-minus" />
               </button>
-              <span v-else class="fm-arrow-placeholder"></span>
-              <input
-                type="checkbox"
-                class="fm-check"
-                :checked="isRowChecked(row)"
-                :indeterminate.prop="isRowIndeterminate(row)"
-                :disabled="folderDeleting"
-                @click.stop="toggleFileSelect(row, $event)"
-              >
-              <span class="fm-file-icon">
-                <el-icon><component :is="resolveTreeIcon(row)" /></el-icon>
-              </span>
-              <span class="fm-name-text">{{ row.name }}</span>
+              <span>文件名</span>
+            </div>
+            <span class="tree-col-size">大小</span>
+            <span class="tree-col-time">修改时间</span>
+            <span class="tree-col-action">操作</span>
+          </div>
+
+          <div ref="treeScrollRef" class="tree-scroll flex-1 overflow-auto px-4 py-2 no-scrollbar">
+            <div v-if="!folderLoading && flatTree.length === 0" class="preview-empty">
+              {{ folderSearch ? '没有匹配项' : '当前目录为空' }}
+            </div>
+
+            <div v-else class="tree-list space-y-0.5">
+              <div v-for="row in flatTree" :key="row.id" class="tree-node">
+                <div
+                  class="tree-row tree-grid items-center gap-3 rounded-md px-3 py-1"
+                  :class="isRowChecked(row) || isRowIndeterminate(row) ? 'tree-row-selected' : ''"
+                  @click="handleFolderRowClick(row, $event)"
+                >
+                  <div class="tree-main flex min-w-0 items-center gap-2" :style="{ paddingLeft: `${row.depth * 16}px` }">
+                    <button
+                      v-if="row.type === 'dir'"
+                      type="button"
+                      class="tree-expander rounded p-0.5"
+                      @click.stop="toggleExpand(row)"
+                    >
+                      <ChevronDown v-if="expandedIds.has(row.id)" :size="17" class="text-slate-400" />
+                      <ChevronRight v-else :size="17" class="text-slate-400" />
+                    </button>
+                    <span v-else class="expander-spacer" />
+
+                    <button
+                      type="button"
+                      class="tree-checkbox relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
+                      :class="isRowChecked(row) ? 'tree-checkbox-on' : (isRowIndeterminate(row) ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
+                      :disabled="folderDeleting"
+                      @click.stop="toggleFileSelect(row, $event)"
+                    >
+                      <Check v-if="isRowChecked(row)" :size="13" />
+                      <span v-else-if="isRowIndeterminate(row)" class="checkbox-minus" />
+                    </button>
+
+                    <component :is="resolveTreeIcon(row)" :size="17" class="tree-icon" :class="row.type === 'dir' ? 'icon-folder' : ''" />
+
+                    <div class="min-w-0 flex-1">
+                      <div class="tree-name truncate text-[13px] font-medium text-slate-800">{{ getRowDisplayName(row) }}</div>
+                      <div class="tree-sub truncate text-[11px] text-slate-400">{{ getRowSubtitle(row) }}</div>
+                    </div>
+                  </div>
+
+                  <span class="tree-size text-[12px] tabular-nums text-slate-400">{{ formatFileSize(row.size) }}</span>
+                  <span class="tree-time text-[12px] text-slate-400">{{ formatDate(row.modified_time) }}</span>
+
+                  <div class="tree-action-wrap" @click.stop>
+                    <button
+                      type="button"
+                      class="row-action inline-flex size-[22px] items-center justify-center rounded-full"
+                      :disabled="folderDeleting"
+                      @click="deleteEntry(row)"
+                    >
+                      <Trash2 :size="12" />
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          <div class="fm-col-size">{{ formatFileSize(row.size) }}</div>
-          <div class="fm-col-time">{{ formatDate(row.modified_time) }}</div>
-          <div class="fm-col-action" @click.stop>
-            <button class="fm-link-danger" :disabled="folderDeleting" @click="deleteEntry(row)">删除</button>
+        </section>
+      </div>
+    </div>
+  </el-dialog>
+
+  <el-dialog
+    v-model="repairPreviewVisible"
+    :show-close="false"
+    width="min(1120px, calc(100vw - 32px))"
+    modal-class="custom-preview-overlay"
+    append-to-body
+    destroy-on-close
+    class="custom-preview-modal mojibake-preview-dialog"
+  >
+    <div class="window panel-enter glass-shell relative flex w-full max-w-[1120px] flex-col overflow-hidden rounded-3xl">
+      <div class="window-header flex items-center justify-between px-6 py-4">
+        <div class="fm-header-main min-w-0">
+          <div class="fm-title-row">
+            <h1 class="title truncate text-lg font-bold tracking-tight text-slate-900">
+              乱码文件名修复预览
+            </h1>
+            <span class="fm-badge">{{ repairPreviewRows.length }} 项候选</span>
+          </div>
+          <p class="mt-1 truncate text-sm text-slate-500">
+            {{ getDialogFolderPath() }}
+          </p>
+        </div>
+        <div class="fm-count-pill">
+          已选 {{ selectedRepairRows.length }} / {{ repairPreviewRows.length }} 项
+        </div>
+        <button
+          type="button"
+          class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
+          @click="repairPreviewVisible = false"
+        >
+          <X :size="20" :stroke-width="2" />
+        </button>
+      </div>
+
+      <div class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5">
+        <div class="toolbar-row flex items-center justify-between gap-3 border-b border-slate-200/70 py-3">
+          <div class="toolbar-actions flex items-center gap-2">
+            <button
+              v-if="repairPreviewRows.length"
+              type="button"
+              class="action-card action-card-ghost group"
+              @click="toggleAllRepairRows"
+            >
+              <Check :size="15" class="action-icon" />
+              <span>{{ isAllRepairRowsSelected ? '取消全选' : '全选候选' }}</span>
+            </button>
+          </div>
+          <el-tooltip
+            content="预览确认后才会真正重命名，目录和文件都支持勾选"
+            placement="top"
+            effect="dark"
+          >
+            <div class="flex items-center justify-center size-7 rounded-full bg-slate-100/60 text-slate-400 hover:bg-slate-200/80 hover:text-slate-600 transition-colors cursor-help">
+              <Info :size="14" />
+            </div>
+          </el-tooltip>
+        </div>
+
+      <div class="repair-preview-body">
+        <div v-if="!repairPreviewRows.length" class="repair-preview-empty">
+          <Search :size="32" class="text-slate-300 mb-3" />
+          <span>没找到可安全修复的乱码文件名</span>
+        </div>
+
+        <div v-else class="repair-preview-list">
+          <div v-for="row in repairPreviewRows" :key="row.path" class="repair-preview-card">
+            <button
+              type="button"
+              class="tree-checkbox relative mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
+              :class="row.selected ? 'tree-checkbox-on' : 'tree-checkbox-off'"
+              @click="toggleRepairRow(row)"
+            >
+              <Check v-if="row.selected" :size="13" />
+            </button>
+            <div class="repair-preview-type" :class="row.itemType === 'dir' ? 'is-dir' : 'is-file'">
+              {{ row.itemType === 'dir' ? '目录' : '文件' }}
+            </div>
+            <div class="repair-preview-label">原名</div>
+            <div class="repair-preview-value">{{ row.currentName }}</div>
+            <div class="repair-preview-arrow">→</div>
+            <div class="repair-preview-label">修复后</div>
+            <div v-if="!row.needsManualInput" class="repair-preview-value is-next">{{ row.nextName }}</div>
+            <input
+              v-else
+              v-model="row.nextName"
+              class="repair-preview-input"
+              placeholder="手动输入修复后的文件名"
+            >
+            <div class="repair-preview-path">{{ row.relativePath }}</div>
+            <div v-if="row.forcedInclude" class="repair-preview-encoding is-manual">已按勾选强制带入预览</div>
+            <div v-else-if="row.encodingPair" class="repair-preview-encoding">{{ row.encodingPair }}</div>
+            <div v-else-if="row.needsManualInput" class="repair-preview-encoding is-manual">未能自动推断，需手动填写</div>
           </div>
         </div>
+      </div>
+
+      <div class="repair-preview-footer border-t border-slate-200/70 pt-4">
+        <button
+          type="button"
+          class="action-card"
+          :disabled="repairApplying"
+          @click="repairPreviewVisible = false"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          class="action-card action-card-primary"
+          :disabled="repairApplying || !selectedRepairRows.length"
+          @click="applyMojibakeRepair"
+        >
+          <RefreshCw :size="15" class="action-icon action-icon-refresh" :class="{ 'is-spinning': repairApplying }" />
+          <span>{{ repairApplying ? '正在修复...' : `确认修复 ${selectedRepairRows.length} 项` }}</span>
+        </button>
+      </div>
       </div>
     </div>
   </el-dialog>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, Folder, FolderOpened, Headset, Picture, Tickets, VideoPlay } from '@element-plus/icons-vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { showSystemConfirm } from '../../composables/useSystemPrompt'
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  File,
+  FileText,
+  FileVideo,
+  Folder,
+  FolderOpen,
+  Image,
+  Info,
+  Music,
+  RefreshCw,
+  Search,
+  Trash2,
+  Languages,
+  X,
+} from 'lucide-vue-next'
 import { libraryApi } from '../../api'
 
 const props = defineProps({
@@ -131,6 +342,9 @@ const visible = computed({
 const folderLoading = ref(false)
 const folderDeleting = ref(false)
 const folderSearch = ref('')
+const repairPreviewVisible = ref(false)
+const repairApplying = ref(false)
+const repairPreviewRows = ref([])
 const folderContentsInfo = ref({
   folderName: '',
   folderPath: '',
@@ -141,6 +355,9 @@ const folderItems = ref([])
 const selectedFileIds = ref(new Set())
 const expandedIds = ref(new Set())
 const folderLastSelectedId = ref('')
+const treePanelRef = ref(null)
+const treeScrollRef = ref(null)
+const treeScrollbarWidth = ref(0)
 
 const treeRoot = computed(() => buildTree(folderItems.value, folderContentsInfo.value.folderPath))
 const folderNodeById = computed(() => {
@@ -163,6 +380,16 @@ const visibleFileCount = computed(() => flatTree.value.filter(item => item.type 
 const allSelectableIds = computed(() => collectNodeIds(filteredRoot.value))
 const allFilesSelected = computed(() => allSelectableIds.value.length > 0 && allSelectableIds.value.every(id => selectedFileIds.value.has(id)))
 const someFilesSelected = computed(() => !allFilesSelected.value && allSelectableIds.value.some(id => selectedFileIds.value.has(id)))
+const selectionState = computed(() => {
+  if (allFilesSelected.value) return 'all'
+  if (someFilesSelected.value) return 'partial'
+  return 'none'
+})
+const allDirectoryIds = computed(() => collectDirectoryIds(filteredRoot.value))
+const isAllExpanded = computed(() => {
+  if (!allDirectoryIds.value.length) return false
+  return allDirectoryIds.value.every(id => expandedIds.value.has(id))
+})
 const folderSelectedRows = computed(() => [...selectedFileIds.value].map(id => folderNodeById.value.get(id)).filter(Boolean))
 const folderSelectedDeleteRoots = computed(() => {
   const rows = [...folderSelectedRows.value].sort((left, right) => String(left.relative_path || '').length - String(right.relative_path || '').length)
@@ -177,14 +404,18 @@ const folderSelectedDeleteRoots = computed(() => {
 })
 const folderSelectedDeletePaths = computed(() => folderSelectedDeleteRoots.value.map(row => resolveNodePath(row)).filter(Boolean))
 const folderSelectedDeleteSize = computed(() => folderSelectedDeleteRoots.value.reduce((sum, row) => sum + Number(row?.size || 0), 0))
+const selectedRepairRows = computed(() => repairPreviewRows.value.filter(row => row.selected))
+const isAllRepairRowsSelected = computed(() => repairPreviewRows.value.length > 0 && repairPreviewRows.value.every(row => row.selected))
 
 watch(visible, async value => {
   if (value) {
     window.addEventListener('keydown', handleDialogKeydown)
+    window.addEventListener('resize', syncTreeScrollbarWidth)
     await reload()
     return
   }
   window.removeEventListener('keydown', handleDialogKeydown)
+  window.removeEventListener('resize', syncTreeScrollbarWidth)
 })
 
 watch(() => props.folderPath, async (nextPath, prevPath) => {
@@ -238,12 +469,49 @@ async function reload () {
     if (folderLastSelectedId.value && !validIds.has(folderLastSelectedId.value)) {
       folderLastSelectedId.value = ''
     }
+    await nextTick()
+    syncTreeScrollbarWidth()
   } catch (error) {
     visible.value = false
     ElMessage.error('加载文件夹内容失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     folderLoading.value = false
   }
+}
+
+async function openMojibakeRepairPreview () {
+  try {
+    const forcedRows = folderSelectedRows.value.filter(row => row?.type === 'file')
+    const forcedPaths = [...new Set(forcedRows.map(row => resolveNodePath(row)).filter(Boolean))]
+    const preview = await libraryApi.browserMojibakePreview(props.libraryId, props.folderPath, {
+      selectedPaths: forcedPaths
+    })
+    repairPreviewRows.value = Array.isArray(preview?.items)
+      ? preview.items.map(item => ({
+        path: item.path,
+        currentName: item.current_name,
+        nextName: item.suggested_name,
+        relativePath: item.relative_path,
+        encodingPair: item.encoding_pair || '',
+        itemType: item.item_type || 'file',
+        selected: item.forced_include ? true : !Boolean(item.needs_manual_input),
+        needsManualInput: Boolean(item.needs_manual_input),
+        forcedInclude: Boolean(item.forced_include),
+      }))
+      : []
+    repairPreviewVisible.value = true
+  } catch (error) {
+    ElMessage.error('生成乱码修复预览失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
+function syncTreeScrollbarWidth () {
+  const el = treeScrollRef.value
+  if (!el) {
+    treeScrollbarWidth.value = 0
+    return
+  }
+  treeScrollbarWidth.value = Math.max(0, el.offsetWidth - el.clientWidth)
 }
 
 async function deleteEntry (row) {
@@ -264,16 +532,13 @@ async function deletePaths (paths, options = {}) {
   try {
     if (paths.length === 1) {
       const preview = await libraryApi.browserDelete(props.libraryId, paths[0], false)
-      await ElMessageBox.confirm(
-        buildDeletePreviewMessage(preview, effectivePreviewRow),
-        '删除确认',
-        {
-          confirmButtonText: '确定删除',
-          cancelButtonText: '取消',
-          type: 'warning',
-          confirmButtonClass: 'el-button--danger'
-        }
-      )
+      await showSystemConfirm({
+        title: '删除确认',
+        message: buildDeletePreviewMessage(preview, effectivePreviewRow),
+        confirmText: '确定删除',
+        cancelText: '取消',
+        tone: 'danger'
+      })
       await libraryApi.browserDelete(props.libraryId, paths[0], true)
       ElMessage.success('删除成功')
       const previewCounts = getRowDeleteCounts(effectivePreviewRow)
@@ -283,16 +548,13 @@ async function deletePaths (paths, options = {}) {
       })
     } else {
       const preview = await libraryApi.browserBatchDelete(props.libraryId, paths, false)
-      await ElMessageBox.confirm(
-        buildBatchDeletePreviewMessage(preview, previewRows),
-        '批量删除确认',
-        {
-          confirmButtonText: '确定删除',
-          cancelButtonText: '取消',
-          type: 'warning',
-          confirmButtonClass: 'el-button--danger'
-        }
-      )
+      await showSystemConfirm({
+        title: '批量删除确认',
+        message: buildBatchDeletePreviewMessage(preview, previewRows),
+        confirmText: '确定删除',
+        cancelText: '取消',
+        tone: 'danger'
+      })
       const result = await libraryApi.browserBatchDelete(props.libraryId, paths, true)
       const failedCount = Number(result?.failed_paths?.length || 0)
       if (failedCount) {
@@ -377,7 +639,10 @@ function buildTree (items, basePath) {
 function filterTree (nodes, keyword) {
   const result = []
   for (const node of nodes) {
-    const matched = String(node.name || '').toLowerCase().includes(keyword) || String(node.relative_path || '').toLowerCase().includes(keyword)
+    const searchFields = [node.name, node.relative_path]
+      .map(value => String(value || '').toLowerCase())
+      .filter(Boolean)
+    const matched = searchFields.some(value => value.includes(keyword))
     if (node.type === 'file') {
       if (matched) result.push(node)
       continue
@@ -423,6 +688,14 @@ function collapseAll () {
   expandedIds.value = new Set()
 }
 
+function toggleExpandAll () {
+  if (isAllExpanded.value) {
+    collapseAll()
+    return
+  }
+  expandAll()
+}
+
 function onSearchInput () {
   if (folderSearch.value.trim()) expandAll()
 }
@@ -435,6 +708,19 @@ function collectNodeIds (nodes = []) {
   const ids = []
   const walk = list => {
     for (const node of list || []) {
+      ids.push(node.id)
+      if (node.children?.length) walk(node.children)
+    }
+  }
+  walk(nodes)
+  return ids
+}
+
+function collectDirectoryIds (nodes = []) {
+  const ids = []
+  const walk = list => {
+    for (const node of list || []) {
+      if (node?.type !== 'dir') continue
       ids.push(node.id)
       if (node.children?.length) walk(node.children)
     }
@@ -524,16 +810,150 @@ function isDescendantPath (candidate, parent) {
 
 function fileIcon (name = '') {
   const lower = String(name || '').toLowerCase()
-  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(lower)) return Headset
-  if (/\.(png|jpg|jpeg|webp|bmp|gif)$/i.test(lower)) return Picture
-  if (/\.(mp4|mkv|avi|mov|wmv|webm)$/i.test(lower)) return VideoPlay
-  if (/\.(lrc|srt|ass|ssa|vtt)$/i.test(lower)) return Tickets
-  return Document
+  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(lower)) return Music
+  if (/\.(png|jpg|jpeg|webp|bmp|gif)$/i.test(lower)) return Image
+  if (/\.(mp4|mkv|avi|mov|wmv|webm)$/i.test(lower)) return FileVideo
+  if (/\.(lrc|srt|ass|ssa|vtt|txt)$/i.test(lower)) return FileText
+  return File
 }
 
 function resolveTreeIcon (row) {
-  if (row?.type === 'dir') return expandedIds.value.has(row.id) ? FolderOpened : Folder
+  if (row?.type === 'dir') return expandedIds.value.has(row.id) ? FolderOpen : Folder
   return fileIcon(row?.name || '')
+}
+
+function getRowSubtitle (row) {
+  if (!row) return '-'
+  if (row.type === 'dir') {
+    const counts = getRowDeleteCounts(row)
+    if (!counts.folderCount && !counts.fileCount) return '空目录'
+    const parts = []
+    if (counts.folderCount > 1) parts.push(`${counts.folderCount - 1} 个子目录`)
+    parts.push(`${counts.fileCount} 个文件`)
+    return parts.join(' · ')
+  }
+  return row.relative_path || row.name || '-'
+}
+
+function getRowDisplayName (row) {
+  return row?.name || '-'
+}
+
+function getRowDisplayRelativePath (row) {
+  return row?.relative_path || row?.name || '-'
+}
+
+function getDialogFolderName () {
+  return folderContentsInfo.value.folderName || props.folderName || '文件管理'
+}
+
+function getDialogFolderPath () {
+  return folderContentsInfo.value.folderPath || props.folderPath || '当前目录'
+}
+
+async function applyMojibakeRepair () {
+  if (!selectedRepairRows.value.length) return
+  repairApplying.value = true
+  try {
+    let successCount = 0
+    const failed = []
+    const pathReplacements = []
+    const operations = [...selectedRepairRows.value].sort(compareRepairRowsForApply)
+    for (const row of operations) {
+      const effectivePath = remapRepairPath(row.path, pathReplacements)
+      try {
+        const nextName = String(row.nextName || '').trim()
+        if (!nextName || nextName === row.currentName) {
+          failed.push({
+            name: `${row.itemType === 'dir' ? '目录' : '文件'} ${row.currentName}`,
+            reason: row.needsManualInput ? '未填写新的名称' : '目标名称无变化'
+          })
+          continue
+        }
+        const result = await libraryApi.browserRename(props.libraryId, effectivePath, nextName, {
+          renameContext: 'folder_contents_mojibake_repair'
+        })
+        const nextPath = String(result?.new_path || '').trim()
+        if (nextPath && nextPath !== effectivePath) {
+          pathReplacements.push({
+            oldPath: effectivePath,
+            newPath: nextPath
+          })
+        }
+        successCount += 1
+      } catch (error) {
+        failed.push({
+          name: `${row.itemType === 'dir' ? '目录' : '文件'} ${row.currentName}`,
+          reason: error.response?.data?.detail || error.message
+        })
+      }
+    }
+
+    repairPreviewVisible.value = false
+    await reload()
+
+    if (!failed.length) {
+      ElMessage.success(`已修复 ${successCount} 个文件名`)
+      return
+    }
+
+    ElMessage.warning(`已修复 ${successCount} 个文件名，失败 ${failed.length} 个`)
+  } finally {
+    repairApplying.value = false
+  }
+}
+
+function toggleRepairRow (row) {
+  row.selected = !row.selected
+}
+
+function toggleAllRepairRows () {
+  const next = !isAllRepairRowsSelected.value
+  repairPreviewRows.value.forEach(row => {
+    row.selected = next
+  })
+}
+
+function compareRepairRowsForApply (left, right) {
+  const leftTypeOrder = left?.itemType === 'dir' ? 0 : 1
+  const rightTypeOrder = right?.itemType === 'dir' ? 0 : 1
+  if (leftTypeOrder !== rightTypeOrder) return leftTypeOrder - rightTypeOrder
+  const leftDepth = String(left?.path || '').replace(/\\/g, '/').split('/').filter(Boolean).length
+  const rightDepth = String(right?.path || '').replace(/\\/g, '/').split('/').filter(Boolean).length
+  if (leftDepth !== rightDepth) return leftDepth - rightDepth
+  return String(left?.relativePath || '').localeCompare(String(right?.relativePath || ''))
+}
+
+function remapRepairPath (sourcePath, replacements = []) {
+  const normalizedSource = normalizeAnyPath(sourcePath)
+  let current = normalizedSource
+  for (const replacement of replacements) {
+    const oldPath = normalizeAnyPath(replacement.oldPath)
+    const newPath = normalizeAnyPath(replacement.newPath)
+    if (!oldPath || !newPath) continue
+    if (current === oldPath) {
+      current = newPath
+      continue
+    }
+    if (current.startsWith(`${oldPath}/`)) {
+      current = `${newPath}${current.slice(oldPath.length)}`
+    }
+  }
+  return current
+}
+
+function scoreDecodedText (text) {
+  if (!text) return -999
+  let score = 0
+  if (/\uFFFD/.test(text)) score -= 12
+  if (/[ÃÂÐæçéèêïîöôåäüë鈥鐩鍙彇瀛侀濂彂鍥犺诲悕浜嬩负澶ф湰]/.test(text)) score -= 8
+  if (/[一-龥]{6,}/.test(text) && !/[\u3040-\u30ff]/.test(text)) score -= 6
+  if (/[\u3040-\u30ff]/.test(text)) score += 10
+  if (/[\u4e00-\u9fff]/.test(text)) score += 8
+  if (/[\uac00-\ud7af]/.test(text)) score += 6
+  if (/[\x20-\x7e]/.test(text)) score += 2
+  if (/[^\x09\x0a\x0d\x20-\x7e\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uff01-\uff60]/.test(text)) score -= 3
+  return score
 }
 
 function joinFolderPath (basePath, relativePath) {
@@ -640,46 +1060,695 @@ defineExpose({ reload })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleDialogKeydown)
+  window.removeEventListener('resize', syncTreeScrollbarWidth)
+})
+
+onMounted(() => {
+  if (visible.value) {
+    syncTreeScrollbarWidth()
+    window.addEventListener('resize', syncTreeScrollbarWidth)
+  }
 })
 </script>
 
 <style scoped>
-.folder-dialog :deep(.el-dialog) { border-radius: 8px; overflow: hidden; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18); }
-.folder-dialog :deep(.el-dialog__header) { padding: 0; margin: 0; }
-.folder-dialog :deep(.el-dialog__body) { padding: 0; }
-.fm-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px 12px 20px; border-bottom: 1px solid #e4e7ed; }
-.fm-title { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; color: #303133; min-width: 0; }
-.fm-badge { font-size: 12px; color: #909399; background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 10px; padding: 2px 8px; }
-.fm-count { font-size: 12px; color: #606266; background: #f0f7ff; border: 1px solid #c6e2ff; border-radius: 12px; padding: 2px 10px; }
-.fm-body { display: flex; flex-direction: column; height: 540px; background: #fff; }
-.fm-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 9px 16px; background: #f8f9fa; border-bottom: 1px solid #e4e7ed; }
-.fm-toolbar-left { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.fm-btn { padding: 4px 11px; font-size: 12px; border-radius: 5px; border: 1px solid #dcdfe6; background: #fff; cursor: pointer; transition: color .18s ease, border-color .18s ease, background-color .18s ease, box-shadow .18s ease, transform .12s ease; }
-.fm-btn:disabled { opacity: .55; cursor: not-allowed; box-shadow: none; transform: none; }
-.fm-btn-danger { color: #f56c6c; background: #fff0f0; border-color: #fbc4c4; }
-.fm-btn-danger:hover:not(:disabled) { color: #fff; background: #f56c6c; border-color: #f56c6c; box-shadow: 0 8px 18px rgba(245, 108, 108, 0.22); }
-.fm-btn-danger:active:not(:disabled) { transform: translateY(1px); background: #e25757; border-color: #e25757; }
-.fm-btn-ghost:hover:not(:disabled) { color: #409eff; border-color: #a0cfff; background: #ecf5ff; box-shadow: 0 6px 14px rgba(64, 158, 255, 0.12); }
-.fm-btn-ghost:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
-.fm-search-input { width: 260px; height: 30px; padding: 0 10px; font-size: 12px; border: 1px solid #dcdfe6; border-radius: 5px; outline: none; }
-.fm-selection-bar { display: flex; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid #f1d4d0; background: #fff7f6; font-size: 12px; color: #a14d47; }
-.fm-head, .fm-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 190px 90px; align-items: center; padding: 0 16px; }
-.fm-head { height: 36px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; font-size: 12px; font-weight: 600; color: #606266; }
-.fm-scroll { flex: 1; overflow: auto; contain: strict; }
-.fm-row { min-height: 36px; border-bottom: 1px solid #ebeef5; font-size: 13px; contain: layout paint style; }
-.fm-row-dir { background: #fafbfc; }
-.fm-row-selected { background: #ecf5ff !important; }
-.fm-empty { display: flex; align-items: center; justify-content: center; height: 180px; color: #c0c4cc; font-size: 13px; }
-.fm-name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.fm-name-cell-head { padding-left: 4px; }
-.fm-arrow-btn { width: 16px; height: 16px; border: none; background: transparent; color: #909399; cursor: pointer; padding: 0; transition: transform .16s; }
-.fm-arrow-btn.open { transform: rotate(90deg); color: #409eff; }
-.fm-arrow-placeholder { width: 16px; flex: 0 0 16px; }
-.fm-file-icon { width: 22px; flex: 0 0 22px; display: inline-flex; align-items: center; justify-content: center; color: #409eff; }
-.fm-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fm-link-danger { background: #fff0f0; color: #f56c6c; border: 1px solid #fbc4c4; border-radius: 4px; padding: 2px 8px; cursor: pointer; transition: color .18s ease, border-color .18s ease, background-color .18s ease, box-shadow .18s ease, transform .12s ease; }
-.fm-link-danger:hover:not(:disabled) { color: #fff; background: #f56c6c; border-color: #f56c6c; box-shadow: 0 6px 14px rgba(245, 108, 108, 0.2); }
-.fm-link-danger:active:not(:disabled) { transform: translateY(1px); background: #e25757; border-color: #e25757; box-shadow: none; }
-.fm-link-danger:disabled { opacity: .55; cursor: not-allowed; box-shadow: none; transform: none; }
-.fm-check { width: 14px; height: 14px; cursor: pointer; accent-color: #409eff; }
+.custom-preview-modal :deep(.el-dialog__header) {
+  display: none;
+}
+
+.custom-preview-modal :deep(.el-dialog) {
+  background: transparent;
+  box-shadow: none;
+  width: min(1280px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  margin: 0 auto;
+}
+
+.custom-preview-modal :deep(.el-dialog__body) {
+  padding: 0;
+}
+
+.custom-preview-overlay {
+  background:
+    radial-gradient(circle at 18% 16%, rgba(191, 219, 254, 0.26), transparent 28%),
+    radial-gradient(circle at 82% 14%, rgba(186, 230, 253, 0.22), transparent 24%),
+    radial-gradient(circle at 82% 82%, rgba(221, 239, 255, 0.2), transparent 26%),
+    rgba(241, 245, 249, 0.34);
+  backdrop-filter: blur(20px) saturate(130%);
+}
+
+.glass-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.26));
+  border: 1px solid rgba(255, 255, 255, 0.54);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 22px 60px rgba(15, 23, 42, 0.09);
+  backdrop-filter: blur(22px) saturate(145%);
+}
+
+.glass-shell {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.34)),
+    radial-gradient(circle at top left, rgba(191, 219, 254, 0.18), transparent 34%),
+    radial-gradient(circle at top right, rgba(186, 230, 253, 0.14), transparent 28%);
+  backdrop-filter: blur(28px) saturate(155%);
+  -webkit-backdrop-filter: blur(28px) saturate(155%);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.56),
+    0 28px 80px rgba(15, 23, 42, 0.14);
+}
+
+.glass-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 30%, rgba(255, 255, 255, 0.08) 65%, transparent 100%);
+  opacity: 0.9;
+}
+
+.window-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.4);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.06));
+}
+
+.fm-header-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.fm-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.fm-badge {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.56);
+  background: rgba(255, 255, 255, 0.46);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38);
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.fm-count-pill {
+  flex: 0 0 auto;
+  margin-right: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(147, 197, 253, 0.56);
+  background: rgba(239, 246, 255, 0.4);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.44),
+    0 10px 28px rgba(59, 130, 246, 0.12);
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
+.info-card,
+.selection-card {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.24));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 12px 32px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(18px) saturate(135%);
+  padding: 12px 14px;
+}
+
+.info-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.info-value {
+  display: block;
+  color: #0f172a;
+  line-height: 1.55;
+  font-weight: 600;
+}
+
+.action-card {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  background: rgba(255, 255, 255, 0.42);
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 6px 18px rgba(15, 23, 42, 0.05);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.action-icon {
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.action-card:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.action-card:hover:not(:disabled) .action-icon {
+  transform: scale(1.08);
+}
+
+.action-card:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
+}
+
+.action-card-danger {
+  border-color: rgba(252, 165, 165, 0.38);
+  background: rgba(254, 242, 242, 0.42);
+  color: #b91c1c;
+}
+
+.action-card-danger:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.48);
+  background: rgba(254, 226, 226, 0.56);
+  box-shadow: 0 10px 24px rgba(239, 68, 68, 0.16);
+}
+
+.action-card-ghost {
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.action-card-primary {
+  border-color: rgba(59, 130, 246, 0.26);
+  background: rgba(59, 130, 246, 0.9);
+  color: #fff;
+  box-shadow: 0 12px 30px rgba(59, 130, 246, 0.24);
+}
+
+.action-card-primary:hover:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.32);
+  background: rgba(37, 99, 235, 0.94);
+  box-shadow: 0 14px 34px rgba(37, 99, 235, 0.3);
+}
+
+.action-card:disabled,
+.row-action:disabled,
+.tree-expander:disabled,
+.close-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.toolbar-toggle-icon {
+  transition: transform 0.18s ease;
+}
+
+.toolbar-toggle-icon.is-collapsed {
+  transform: rotate(-90deg);
+}
+
+.action-icon-refresh.is-spinning {
+  animation: fm-spin 0.9s linear infinite;
+}
+
+.action-card:hover:not(:disabled) .action-icon-refresh:not(.is-spinning) {
+  transform: rotate(180deg) scale(1.06);
+}
+
+.search-shell {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 8px 24px rgba(15, 23, 42, 0.04);
+  backdrop-filter: blur(18px) saturate(135%);
+  height: 36px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.toolbar-search-group {
+  justify-content: flex-end;
+  flex: 0 1 auto;
+}
+
+.repair-preview-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 14px;
+}
+
+.repair-preview-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.repair-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 56vh;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.32) rgba(255, 255, 255, 0.14);
+}
+
+.repair-preview-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.repair-preview-list::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.repair-preview-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0.9), rgba(100, 116, 139, 0.88));
+  border: 2px solid rgba(255, 255, 255, 0.18);
+}
+
+.repair-preview-list::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(100, 116, 139, 0.95), rgba(71, 85, 105, 0.92));
+}
+
+.repair-preview-list::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.repair-preview-card {
+  display: grid;
+  grid-template-columns: 18px 44px 52px minmax(0, 1fr) 24px 52px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.24));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 12px 32px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(18px) saturate(135%);
+  padding: 14px 16px;
+}
+
+.repair-preview-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.repair-preview-type.is-dir {
+  background: rgba(219, 234, 254, 0.8);
+  color: #1d4ed8;
+}
+
+.repair-preview-type.is-file {
+  background: rgba(241, 245, 249, 0.96);
+  color: #475569;
+}
+
+.repair-preview-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.repair-preview-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: #475569;
+}
+
+.repair-preview-value.is-next {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.repair-preview-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  background: rgba(255, 255, 255, 0.78);
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 10px;
+  padding: 8px 10px;
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.46);
+}
+
+.repair-preview-input:focus {
+  border-color: rgba(96, 165, 250, 0.56);
+  box-shadow:
+    0 0 0 3px rgba(191, 219, 254, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.56);
+}
+
+.repair-preview-arrow {
+  text-align: center;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.repair-preview-path {
+  grid-column: 4 / 8;
+  font-size: 12px;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repair-preview-encoding {
+  grid-column: 4 / 8;
+  font-size: 11px;
+  color: #3b82f6;
+}
+
+.repair-preview-encoding.is-manual {
+  color: #f59e0b;
+}
+
+.repair-preview-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.search-shell:focus-within {
+  border-color: rgba(148, 163, 184, 0.34);
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.2),
+    0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.search-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: #0f172a;
+  font-size: 13px;
+  outline: none;
+}
+
+.selection-inline {
+  padding: 10px 14px;
+  border-radius: 12px;
+}
+
+.tree-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.18));
+  border: 1px solid rgba(255, 255, 255, 0.46);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 20px 48px rgba(15, 23, 42, 0.07);
+  backdrop-filter: blur(20px) saturate(140%);
+}
+
+.tree-head {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.12));
+  border-bottom-color: rgba(255, 255, 255, 0.34) !important;
+}
+
+.tree-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 156px 44px;
+  column-gap: 6px;
+}
+
+.tree-col-size,
+.tree-size {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 96px;
+  height: 100%;
+  justify-self: center;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tree-col-time,
+.tree-time {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 156px;
+  height: 100%;
+  justify-self: start;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tree-col-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  justify-self: start;
+  width: 44px;
+}
+
+.tree-row {
+  cursor: pointer;
+  min-height: 44px;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.tree-row:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.tree-row-selected {
+  background: rgba(191, 219, 254, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.2);
+}
+
+.tree-main {
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.tree-action-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 100%;
+  width: 44px;
+}
+
+.tree-name {
+  line-height: 1.2;
+}
+
+.tree-sub {
+  margin-top: 1px;
+  line-height: 1.15;
+}
+
+.checkbox-minus {
+  width: 9px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.expander-spacer {
+  width: 21px;
+  flex: 0 0 21px;
+}
+
+.tree-expander {
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.tree-expander:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.tree-expander:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.row-action {
+  cursor: pointer;
+  color: #ef4444;
+  background: rgba(254, 242, 242, 0.36);
+  justify-self: end;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 6px 16px rgba(239, 68, 68, 0.08);
+  transition: transform 0.15s ease, background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.row-action:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(239, 68, 68, 0.88);
+  box-shadow: 0 10px 20px rgba(239, 68, 68, 0.18);
+  transform: translateY(-1px);
+}
+
+.row-action:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 3px 8px rgba(239, 68, 68, 0.14);
+}
+
+.tree-checkbox,
+.close-button {
+  cursor: pointer;
+}
+
+.tree-scroll {
+  scrollbar-gutter: stable;
+}
+
+.tree-icon {
+  color: #64748b;
+}
+
+.icon-folder {
+  color: #64748b;
+}
+
+.tree-checkbox-on {
+  background: #111827;
+  color: #fff;
+  border-color: #111827;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+}
+
+.tree-checkbox-partial {
+  background: rgba(15, 23, 42, 0.08);
+  color: #111827;
+  border-color: rgba(15, 23, 42, 0.14);
+}
+
+.tree-checkbox-off {
+  background: rgba(255, 255, 255, 0.72);
+  color: transparent;
+  border-color: rgba(15, 23, 42, 0.12);
+}
+
+.preview-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #475569;
+  font-size: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.06));
+}
+
+.repair-preview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 200px;
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes fm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 1180px) {
+  .toolbar-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbar-actions {
+    flex-wrap: wrap;
+  }
+
+  .toolbar-search-group {
+    width: 100%;
+  }
+
+  .search-shell {
+    width: 100%;
+  }
+}
+
+@media (max-width: 860px) {
+  .window-header,
+  .fm-body {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .tree-head,
+  .tree-row {
+    grid-template-columns: minmax(0, 1fr) 88px 132px 64px;
+  }
+
+  .window-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .fm-count-pill {
+    margin-right: 0;
+  }
+
+  .repair-preview-card {
+    grid-template-columns: 1fr;
+  }
+
+  .repair-preview-path {
+    grid-column: auto;
+  }
+
+  .repair-preview-encoding {
+    grid-column: auto;
+  }
+}
 </style>

@@ -1,7 +1,11 @@
 import os
-import shutil
 import subprocess
 import sys
+
+APP_NAME = "Prekikoeru"
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+ICON_PATH = os.path.join(BACKEND_DIR, "app.ico")
 
 def check_build_dependencies():
     try:
@@ -14,22 +18,21 @@ def check_build_dependencies():
         return False
 
 def build(console_mode=True):
-    name = 'prekikoeru' if console_mode else 'prekikoeru-noconsole'
-    
-    icon_path = r'D:\Tool\0edba671-6c04-463c-9b4f-7f1cec565830.ico'
-    icon_option = [icon_path] if os.path.exists(icon_path) else []
+    name = APP_NAME if console_mode else f"{APP_NAME}-noconsole"
+
+    icon_option = [ICON_PATH] if os.path.exists(ICON_PATH) else []
     datas = [('../frontend/dist', 'frontend/dist'), ('config', 'backend/config')]
-    if os.path.exists(icon_path):
-        datas.append((icon_path, '.'))
+    if os.path.exists(ICON_PATH):
+        datas.append(('app.ico', 'backend'))
     
     spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
 
 a = Analysis(
     ['../desktop_app.py'],
-    pathex=['..'],
+    pathex=['{ROOT_DIR}'],
     binaries=[],
     datas={datas},
-    hiddenimports=['uvicorn', 'fastapi', 'sqlalchemy', 'yaml', 'watchdog', 'filetype', 'requests', 'aiohttp', 'pystray', 'PIL'],
+    hiddenimports=['uvicorn', 'fastapi', 'sqlalchemy', 'yaml', 'watchdog', 'filetype', 'requests', 'aiohttp', 'pystray', 'PIL', 'PIL.Image'],
     hookspath=[],
     hooksconfig={{}},
     runtime_hooks=[],
@@ -83,7 +86,7 @@ exe = EXE(
     return True
 
 def main():
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(BACKEND_DIR)
     if not check_build_dependencies():
         sys.exit(1)
     

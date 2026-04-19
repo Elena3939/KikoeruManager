@@ -15,7 +15,7 @@
           刷新
         </el-button>
         <el-button type="danger" @click="clearLogs">
-          <el-icon><Delete /></el-icon>
+          <AppLottieIcon :src="deleteIconAnimation" :size="32" tone="danger" />
           清空视图
         </el-button>
       </div>
@@ -114,8 +114,11 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { Delete, Refresh, Search, VideoPause, VideoPlay } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { logApi } from '../api'
+import AppLottieIcon from '../components/common/AppLottieIcon.vue'
+import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const LOG_POLL_INTERVAL = 5000
 
@@ -290,9 +293,7 @@ async function refreshLogs(force = false) {
 
 async function clearLogs() {
   try {
-    await ElMessageBox.confirm('确定要清空当前页面的日志显示吗？这不会删除后端日志文件。', '确认', {
-      type: 'warning'
-    })
+    await showSystemConfirm({ title: '确认', message: '确定要清空当前页面的日志显示吗？这不会删除后端日志文件。', tone: 'warning' })
     logs.value = []
     lastLogSignature = ''
     ElMessage.success('日志视图已清空')

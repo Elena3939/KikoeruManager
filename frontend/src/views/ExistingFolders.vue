@@ -159,12 +159,12 @@
             </el-tag>
             <!-- 等待检查（初始状态） -->
             <el-tag v-else-if="!row.status || row.status === 'pending'" type="info" size="small">
-              <el-icon class="is-loading"><Loading /></el-icon>
+              <AppLoadingAnimation variant="inline" :size="28" />
               等待检查...
             </el-tag>
             <!-- 检查中 -->
             <el-tag v-else-if="row.status === 'checking'" type="warning" size="small">
-              <el-icon class="is-loading"><Loading /></el-icon>
+              <AppLoadingAnimation variant="inline" :size="28" />
               检查中...
             </el-tag>
             <!-- 无冲突（包括从缓存加载的无冲突数据） -->
@@ -206,7 +206,7 @@
                   size="small"
                   @click="handleDeleteFolder(row)"
                 >
-                  <el-icon><Delete /></el-icon>
+                  <AppLottieIcon :src="deleteIconAnimation" :size="48" tone="danger" />
                 </el-button>
               </el-tooltip>
               <el-tooltip content="强制刷新查重" placement="top">
@@ -376,10 +376,13 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { Refresh, RefreshRight, Search, Folder, VideoPlay, Warning, Check, InfoFilled, Loading, Clock, Delete } from '@element-plus/icons-vue'
+import { Refresh, RefreshRight, Search, Folder, VideoPlay, Warning, Check, InfoFilled, Clock, Delete } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { existingFolderApi } from '../api'
+import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
+import AppLottieIcon from '../components/common/AppLottieIcon.vue'
+import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const router = useRouter()
 

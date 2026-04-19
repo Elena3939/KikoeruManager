@@ -5,8 +5,8 @@ echo Prekikoeru Backend Server
 echo ========================================
 echo.
 echo Starting backend server...
-echo URL: http://localhost:8000
-echo Docs: http://localhost:8000/docs
+echo URL: http://localhost:5555
+echo Docs: http://localhost:5555/docs
 echo.
 echo Press Ctrl+C to stop
 echo.

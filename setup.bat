@@ -148,9 +148,9 @@ echo   1. Double-click start-all.bat (Recommended)
 echo   2. Or use backend\start.bat + frontend\start.bat
 echo.
 echo Access:
-echo   Frontend: http://localhost:5173
-echo   Backend:  http://localhost:8000
-echo   API Docs: http://localhost:8000/docs
+echo   Frontend: http://localhost:5556
+echo   Backend:  http://localhost:5555
+echo   API Docs: http://localhost:5555/docs
 echo.
 popd
 pause

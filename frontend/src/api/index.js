@@ -232,8 +232,8 @@ export const conflictApi = {
     return response.data
   },
 
-  retry: async (conflictId) => {
-    const response = await apiClient.post(`/conflicts/${conflictId}/retry`)
+  retry: async (conflictId, payload = {}) => {
+    const response = await apiClient.post(`/conflicts/${conflictId}/retry`, payload)
     return response.data
   },
 
@@ -362,6 +362,15 @@ export const libraryApi = {
     return response.data
   },
 
+  browserMojibakePreview: async (libraryId, path, options = {}) => {
+    const response = await apiClient.post('/library/browser/mojibake-preview', {
+      library_id: libraryId,
+      path,
+      selected_paths: options.selectedPaths || undefined
+    })
+    return response.data
+  },
+
   browserFilterDeletePreview: async (libraryId, path, options = {}) => {
     const response = await apiClient.post('/library/browser/filter-delete-preview', {
       library_id: libraryId,
@@ -403,6 +412,13 @@ export const libraryApi = {
   },
 
   folderContents: async (path) => {
+    const shouldTreatAsMissingEndpoint = (error) => {
+      if (error?.response?.status !== 404) return false
+      const detail = String(error?.response?.data?.detail || error?.response?.data?.message || '').trim().toLowerCase()
+      if (!detail) return true
+      return detail === 'not found'
+    }
+
     const localCandidates = [
       '/library/folder-contents',
       '/library/folder-content'
@@ -412,7 +428,7 @@ export const libraryApi = {
         const response = await apiClient.post(endpoint, { path })
         return response.data
       } catch (error) {
-        if (error?.response?.status !== 404) {
+        if (!shouldTreatAsMissingEndpoint(error)) {
           throw error
         }
       }
@@ -432,7 +448,7 @@ export const libraryApi = {
         })
         return response.data
       } catch (error) {
-        if (error?.response?.status !== 404) {
+        if (!shouldTreatAsMissingEndpoint(error)) {
           throw error
         }
       }
@@ -453,6 +469,16 @@ export const libraryApi = {
       path,
       new_name: newName,
       skip_activity_log: options.skipActivityLog ?? false,
+      batch_id: options.batchId || '',
+      rename_context: options.renameContext || ''
+    })
+    return response.data
+  },
+
+  browserBatchRename: async (libraryId, items, options = {}) => {
+    const response = await apiClient.post('/library/browser/batch-rename', {
+      library_id: libraryId,
+      items,
       rename_context: options.renameContext || ''
     })
     return response.data
@@ -1128,8 +1154,8 @@ export const localUploadApi = {
     return response.data
   },
 
-  status: async () => {
-    const response = await apiClient.get('/local-upload/status')
+  status: async (params = {}) => {
+    const response = await apiClient.get('/local-upload/status', { params })
     return response.data
   }
 }

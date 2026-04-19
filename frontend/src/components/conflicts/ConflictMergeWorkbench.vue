@@ -34,7 +34,7 @@
       </div>
     </template>
 
-    <div v-loading="loading" class="merge-workbench">
+    <div v-app-loading="{ loading, text: '正在生成合并预览...', description: '比对新旧文件并同步决策面板', size: 132 }" class="merge-workbench">
       <template v-if="preview">
         <div class="toolbar">
           <div class="toolbar-left">

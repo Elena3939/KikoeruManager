@@ -9,8 +9,7 @@
     @update:model-value="emit('update:visible', $event)"
   >
     <div v-if="previewLoading" class="window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden dialog-loading-overlay">
-      <el-icon class="is-loading loader-icon"><Loading /></el-icon>
-      <div class="loading-text">正在生成上传预览树...</div>
+      <AppLoadingAnimation label="正在生成上传预览树..." description="同步目录结构、目标库存和上传计划" :size="168" :min-height="260" />
     </div>
 
     <div v-else class="window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
@@ -21,11 +20,11 @@
         </button>
       </div>
 
-      <div class="tabs-row px-8 pt-1 pb-3 flex items-center justify-between gap-4">
-        <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar flex-1 mask-edge-right">
+      <div class="tabs-row px-8 pt-1 pb-3 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+        <div class="preview-chip-scroll flex min-w-0 items-center gap-1.5 overflow-x-auto no-scrollbar py-0">
           <button
             type="button"
-            class="tab-chip px-2.5 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center border"
+            class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
             :class="allPreviewSelectionState === 'all' ? 'tab-chip-active' : (allPreviewSelectionState === 'partial' ? 'tab-chip-partial' : 'tab-chip-idle')"
             @click="toggleAllPreviewSelection"
           >
@@ -35,16 +34,14 @@
             v-for="chip in previewFileTypeChips"
             :key="chip.key"
             type="button"
-            class="tab-chip px-2.5 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center border"
+            class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
             :class="chip.state === 'all' ? 'tab-chip-active' : (chip.state === 'partial' ? 'tab-chip-partial' : 'tab-chip-idle')"
             @click="togglePreviewFileType(chip)"
           >
             <span>{{ chip.label }}</span>
           </button>
         </div>
-        <div class="flex items-center gap-1.5 shrink-0">
-          <button type="button" class="tab-chip tab-chip-idle px-2.5 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border" @click="toggleExpandAll">{{ isAllExpanded ? '全部收起' : '全部展开' }}</button>
-        </div>
+        <button type="button" class="tab-chip tab-chip-idle restore-button ml-auto px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border" @click="toggleExpandAll">{{ isAllExpanded ? '全部收起' : '全部展开' }}</button>
       </div>
 
       <div class="content-grid flex-1 flex gap-6 px-8 py-2 min-h-0">
@@ -141,8 +138,8 @@
                       </button>
                       <Folder :size="20" class="tree-icon icon-folder" />
                       <span class="tree-name node-rjcode text-sm text-slate-800 truncate font-medium">
-                        {{ group.name }}
-                        <span class="node-title-muted">{{ group.path }}</span>
+                        {{ getDisplayText(group.name) }}
+                        <span class="node-title-muted">{{ getDisplayText(group.path) }}</span>
                       </span>
                     </div>
                     <span class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(group.total_size_bytes) }}</span>
@@ -177,7 +174,7 @@
                         <span v-else-if="row.indeterminate" class="checkbox-minus" />
                       </button>
                       <component :is="resolveTreeIcon(row, group)" :size="20" class="tree-icon" :class="row.type === 'dir' ? 'icon-folder' : getTreeRowIconClass(row)" />
-                      <span class="tree-name text-sm text-slate-800 truncate font-medium">{{ row.name }}</span>
+                      <span class="tree-name text-sm text-slate-800 truncate font-medium">{{ getDisplayText(row.name) }}</span>
                     </div>
                     <span v-if="row.size_bytes" class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(row.size_bytes) }}</span>
                   </div>
@@ -193,7 +190,7 @@
 
         <div class="footer-actions flex items-center gap-3">
           <button type="button" class="primary-cta px-10 h-11 rounded-xl font-bold text-white" :disabled="selectedGroupCount === 0 || starting || !settings.targetLibraryId" @click="emitSubmit">
-            <span v-if="starting"><el-icon class="is-loading" style="margin-right:6px"><Loading /></el-icon>处理中</span>
+            <span v-if="starting" class="inline-flex items-center"><AppLoadingAnimation variant="inline" :size="30" class="mr-1" />处理中</span>
             <span v-else>开始上传</span>
           </button>
           <button type="button" class="secondary-cta interactive-button px-10 h-11 rounded-xl font-bold" @click="emit('update:visible', false)">取消</button>
@@ -205,10 +202,10 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { Loading } from '@element-plus/icons-vue'
 import { Check, ChevronDown, ChevronRight, File as FileIcon, FileText, Folder, Music, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { libraryApi } from '../../api'
+import AppLoadingAnimation from './AppLoadingAnimation.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -341,11 +338,22 @@ const finalPathPreview = computed(() => {
 })
 
 watch(() => props.visible, async (visible) => {
-  if (!visible) return
+  if (!visible) {
+    previewLoading.value = false
+    return
+  }
   settings.targetLibraryId = props.initialTargetLibraryId || settings.targetLibraryId || targetLibraries.value[0]?.id || ''
-  settings.targetSubdir = ''
-  await loadStorageInfo()
-  await loadPreviewGroups()
+  settings.targetSubdir = props.initialTargetSubdir || ''
+  previewGroups.value = []
+  previewLoading.value = true
+  try {
+    await Promise.all([
+      loadStorageInfo(),
+      loadPreviewGroups(),
+    ])
+  } finally {
+    previewLoading.value = false
+  }
 }, { immediate: true })
 
 watch(() => props.libraries, () => {
@@ -392,16 +400,17 @@ onBeforeUnmount(() => {
 
 async function loadPreviewGroups() {
   const sourceItems = (Array.isArray(props.sourceItems) ? props.sourceItems : []).filter(item => item?.path)
-  if (!props.sourceLibraryId || !sourceItems.length) {
+  if (!sourceItems.length) {
     previewGroups.value = []
     return
   }
-  previewLoading.value = true
   try {
     const groups = await Promise.all(sourceItems.map(async (item, index) => {
       const path = String(item.path || '').trim()
       const name = String(item.name || getFileName(path) || `目录 ${index + 1}`).trim()
-      const data = await libraryApi.browserFolderContents(props.sourceLibraryId, path)
+      const data = props.sourceLibraryId
+        ? await libraryApi.browserFolderContents(props.sourceLibraryId, path)
+        : await libraryApi.folderContents(path)
       const items = Array.isArray(data?.items) ? data.items : []
       const resources = items.map(item => ({ ...item, selected: true }))
       const groupId = `group:${index}:${path}`
@@ -424,8 +433,6 @@ async function loadPreviewGroups() {
   } catch (error) {
     previewGroups.value = []
     ElMessage.error(error?.response?.data?.detail || error?.message || '生成上传预览失败')
-  } finally {
-    previewLoading.value = false
   }
 }
 
@@ -652,6 +659,14 @@ function getFileName(path) {
   return String(path || '').split(/[\\/]/).pop()
 }
 
+function getDisplayText(value) {
+  const text = String(value || '')
+  return text
+    .replace(/\u0000/g, '')
+    .replace(/\r/g, '')
+    .trim()
+}
+
 function joinFolderPath(basePath, relativePath) {
   const base = String(basePath || '').replace(/[\\/]+$/, '')
   const relative = String(relativePath || '').replace(/^\/+|^\\+/, '')
@@ -682,32 +697,42 @@ function getTreeRowIconClass(row) {
 </script>
 
 <style scoped>
-.custom-preview-modal :deep(.el-dialog__header) { display: none; }
-.loader-icon { font-size: 28px; color: #64748b; }
-.loading-text { margin-top: 12px; color: #334155; font-weight: 600; letter-spacing: .2px; }
-.glass-shell { background: rgba(255,255,255,.7); backdrop-filter: blur(8px); border: 1px solid rgba(15,23,42,.06); }
 .dropdown-menu { backdrop-filter: blur(8px); }
-.tab-chip { transition: all .15s ease; color: #475569; }
 
-.mask-edge-right {
-  -webkit-mask-image: linear-gradient(to right, black calc(100% - 16px), transparent 100%);
-  mask-image: linear-gradient(to right, black calc(100% - 16px), transparent 100%);
+.preview-chip-scroll {
+  flex: 0 1 auto;
+  max-width: 100%;
+  overflow-y: visible;
+  padding-top: 2px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
-.tab-chip-active { background: #1e293b; border-color: #1e293b; color: #f8fafc; box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16); }
-.tab-chip-partial { background: #e2e8f0; border-color: #cbd5e1; color: #0f172a; }
-.tab-chip-idle { background: rgba(255,255,255,.92); border-color: #cbd5e1; color: #475569; }
+.preview-chip-scroll::-webkit-scrollbar {
+  display: none;
+}
 .tree-row-selected { background: rgba(15,23,42,.04); }
-.primary-cta { background: #111827; transition: background-color .18s ease, box-shadow .18s ease, transform .18s ease; box-shadow: 0 12px 24px rgba(15, 23, 42, 0.16); }
-.primary-cta:hover:not(:disabled) { background: #0f172a; box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22); transform: translateY(-1px); }
-.primary-cta:active:not(:disabled) { transform: translateY(0); }
-.primary-cta:disabled { cursor: not-allowed; opacity: .55; box-shadow: none; }
-.secondary-cta { background: rgba(17,24,39,.06); color: #334155; transition: background-color .18s ease, color .18s ease, transform .18s ease; }
-.secondary-cta:hover { background: rgba(15,23,42,.1); color: #0f172a; transform: translateY(-1px); }
 .field-input { transition: border-color .15s ease; }
 .field-input:focus { border-color: rgba(17,24,39,.45); }
 .tree-icon { color: #64748b; }
-.node-title-muted { color: #94a3b8; font-weight: 500; margin-left: 8px; }
+.tree-name,
+.node-title-muted {
+  font-family:
+    "SF Pro Text",
+    "SF Pro Rounded",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Hiragino Kaku Gothic ProN",
+    "Yu Gothic UI",
+    "Meiryo",
+    "Microsoft YaHei",
+    sans-serif;
+}
+.node-title-muted {
+  color: #94a3b8;
+  font-weight: 500;
+  margin-left: 8px;
+}
 .icon-folder { color: #64748b; }
 .preview-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: #64748b; font-size: 14px; }
 .tree-checkbox-on { background: #111827; color: #fff; border-color: #111827; }

@@ -1,25 +1,47 @@
 <template>
   <div class="circle-page">
-    <section class="circle-hero">
-      <div class="hero-copy">
-        <div class="hero-eyebrow">Circle Completion</div>
-        <h1>社团补全</h1>
-        <p>按社团建立索引，以 Kikoeru 服务器是否已收录作为缺失判断，再结合 DLsite 关联链和 asmr.one 下载能力，把真正缺的作品批量送进下载队列。</p>
-        <div class="hero-inline-metrics">
-          <span class="hero-inline-pill">索引优先复用现有社团</span>
-          <span class="hero-inline-pill">下载后自动按社团入库</span>
-          <span class="hero-inline-pill">仅蓝色操作可交互</span>
+    <section class="circle-hero relative overflow-hidden bg-gradient-to-br from-blue-50 via-indigo-50 to-white border-b border-blue-100/50">
+      <!-- Background Decorations (Optimized with radial gradients instead of expensive CSS blur) -->
+      <div class="absolute top-0 right-0 -mt-20 -mr-20 w-96 h-96 pointer-events-none" style="background: radial-gradient(circle, rgba(96, 165, 250, 0.15) 0%, transparent 70%);"></div>
+      <div class="absolute bottom-0 left-10 -mb-20 w-72 h-72 pointer-events-none" style="background: radial-gradient(circle, rgba(129, 140, 248, 0.15) 0%, transparent 70%);"></div>
+
+      <div class="hero-copy relative z-10">
+        <div class="hero-eyebrow inline-flex items-center px-3 py-1 rounded-full bg-blue-100/90 text-blue-700 text-xs font-bold tracking-wider mb-4 border border-blue-200/50 shadow-sm">
+          <span class="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2 animate-pulse"></span>
+          Circle Completion
+        </div>
+        <h1 class="text-4xl md:text-5xl font-extrabold text-slate-800 tracking-tight mb-4 drop-shadow-sm">社团补全</h1>
+        <p class="text-slate-600 text-base md:text-lg leading-relaxed max-w-2xl mb-6">
+          按社团建立索引，以 <span class="font-semibold text-slate-700">Kikoeru 服务器是否已收录</span>作为缺失判断，再结合 <span class="font-semibold text-blue-600">DLsite 关联链</span>和 <span class="font-semibold text-emerald-600">asmr.one 下载能力</span>，把真正缺的作品批量送进下载队列。
+        </p>
+        <div class="hero-inline-metrics flex flex-wrap gap-3">
+          <span class="hero-inline-pill flex items-center px-3 py-1.5 bg-white/95 border border-slate-200/60 rounded-lg text-xs font-medium text-slate-600 shadow-sm hover:shadow hover:-translate-y-0.5 transition-all cursor-default">
+            <LibraryBig :size="14" class="mr-1.5 text-blue-500" />
+            索引优先复用现有社团
+          </span>
+          <span class="hero-inline-pill flex items-center px-3 py-1.5 bg-white/95 border border-slate-200/60 rounded-lg text-xs font-medium text-slate-600 shadow-sm hover:shadow hover:-translate-y-0.5 transition-all cursor-default">
+            <CheckCircle2 :size="14" class="mr-1.5 text-emerald-500" />
+            下载后自动按社团入库
+          </span>
+          <span class="hero-inline-pill flex items-center px-3 py-1.5 bg-white/95 border border-slate-200/60 rounded-lg text-xs font-medium text-slate-600 shadow-sm hover:shadow hover:-translate-y-0.5 transition-all cursor-default">
+            <PlayCircle :size="14" class="mr-1.5 text-indigo-500" />
+            仅蓝色操作可交互
+          </span>
         </div>
       </div>
-      <div class="hero-actions">
-        <el-input
-          v-model="circleQuery"
-          class="hero-search-input"
-          placeholder="输入社团名，例如 こぐま座 / C_Realization"
-          clearable
-          @keyup.enter="handleIndexCircle"
-        />
-        <el-button class="hero-search-button" type="primary" :loading="indexing" @click="handleIndexCircle">建立 / 刷新索引</el-button>
+      <div class="hero-actions relative z-10 bg-white/90 p-3 rounded-2xl shadow-sm border border-white/60 flex items-center gap-3">
+        <div class="relative flex-1">
+          <Search :size="18" class="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <el-input
+            v-model="circleQuery"
+            class="hero-search-input !bg-transparent"
+            placeholder="输入社团名，例如 こぐま座 / C_Realization"
+            clearable
+            @keyup.enter="handleIndexCircle"
+          />
+        </div>
+        <el-button class="hero-search-button !h-11 !rounded-xl !px-6 !font-bold shadow-md hover:shadow-lg transition-all" type="primary" :loading="indexing" @click="handleIndexCircle">建立 / 刷新索引</el-button>
+        <el-button class="batch-action-button !h-11 !rounded-xl !px-5 !font-bold" :disabled="indexing" @click="openBatchIndexPrompt">批量建立</el-button>
       </div>
     </section>
 
@@ -53,6 +75,8 @@
 
       <div class="index-progress-meta">
         <span class="progress-meta-pill">耗时 {{ formatElapsed(indexJob.elapsed_seconds) }}</span>
+        <span v-if="indexJob.meta?.is_batch" class="progress-meta-pill">{{ indexJob.meta.completed_queries || 0 }}/{{ indexJob.meta.batch_total || 0 }} 已完成</span>
+        <span v-if="indexJob.meta?.is_batch && indexJob.meta.failed_queries" class="progress-meta-pill warn">失败 {{ indexJob.meta.failed_queries }}</span>
         <span class="progress-meta-pill">本地 {{ indexJob.meta.local_candidates_count || 0 }}</span>
         <span class="progress-meta-pill">Kikoeru {{ indexJob.meta.kikoeru_candidates_count || 0 }}</span>
         <span class="progress-meta-pill">DLsite {{ indexJob.meta.dlsite_candidates_count || 0 }}</span>
@@ -89,7 +113,6 @@
               <div class="circle-list-name">{{ circle.circle_name || circle.circle_id }}</div>
               <div class="circle-list-meta">
                 <span>{{ formatDateTime(circle.last_indexed_at) }}</span>
-                <span>{{ circle.source_mask || '未标记来源' }}</span>
               </div>
             </button>
           </div>
@@ -100,51 +123,55 @@
       <main class="circle-main">
         <section class="toolbar-card">
           <div class="toolbar-main">
-            <div class="toolbar-copy">
-              <div class="toolbar-overline">当前社团</div>
-              <div class="toolbar-title">{{ detail.circle_name || '未选择社团' }}</div>
-              <div class="toolbar-subtitle">
-                <span>{{ detail.source_mask || '等待建立索引' }}</span>
-                <span v-if="detail.last_indexed_at">最近刷新 {{ formatDateTime(detail.last_indexed_at) }}</span>
+            <div class="toolbar-copy flex-1">
+              <div class="flex items-center justify-between mb-1">
+                <div class="flex items-center gap-3">
+                  <div class="toolbar-title !text-xl">{{ detail.circle_name || '未选择社团' }}</div>
+                  <div class="toolbar-subtitle flex items-center gap-2">
+                    <span v-if="detail.last_indexed_at" class="text-xs text-slate-400">上次刷新 {{ formatDateTime(detail.last_indexed_at) }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="toolbar-metrics mt-3">
+                <span class="metric-pill owned">服务器已有 {{ detail.owned_count || 0 }}</span>
+                <span class="metric-pill warn">服务器缺失 {{ detail.missing_count || 0 }}</span>
+                <span class="metric-pill ok">可下载 {{ detail.downloadable_count || 0 }}</span>
+                <span class="metric-pill muted">暂不可下载 {{ detail.dl_only_count || 0 }}</span>
               </div>
             </div>
-            <div class="toolbar-metrics">
-              <span class="metric-pill owned">服务器已有 {{ detail.owned_count || 0 }}</span>
-              <span class="metric-pill warn">服务器缺失 {{ detail.missing_count || 0 }}</span>
-              <span class="metric-pill ok">可下载 {{ detail.downloadable_count || 0 }}</span>
-              <span class="metric-pill muted">暂不可下载 {{ detail.dl_only_count || 0 }}</span>
+            <div v-if="detail.works?.length" class="toolbar-actions shrink-0 pl-6 flex flex-col gap-2">
+              <div class="flex items-center gap-2 mt-auto">
+                <el-button
+                  class="batch-action-button"
+                  :disabled="!activeCircleId || indexing || isRefreshJobActive"
+                  :loading="indexing"
+                  @click="handleIndexOnlyNewWorks"
+                >
+                  仅索引新作
+                </el-button>
+                <el-button
+                  class="batch-action-button refresh"
+                  :disabled="!activeCircleId || indexing || isRefreshJobActive"
+                  :loading="refreshingCurrentCircle"
+                  @click="refreshSelectedCircleIndex"
+                >
+                  批量刷新状态
+                </el-button>
+              </div>
+              <div v-if="refreshForceRefreshHint" class="toolbar-subtext">{{ refreshForceRefreshHint }}</div>
             </div>
           </div>
 
-          <div class="toolbar-filters">
-            <el-checkbox v-model="filters.onlyMissing" @change="refreshActiveCircle">仅看缺失</el-checkbox>
-            <el-checkbox v-model="filters.onlyDownloadable" @change="refreshActiveCircle">仅看可下载</el-checkbox>
-            <el-checkbox v-model="filters.includeDlOnly" @change="refreshActiveCircle">包含仅DL</el-checkbox>
+          <div class="toolbar-filters mt-2 pt-1 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+              <el-checkbox v-model="filters.onlyMissing" @change="refreshActiveCircle">仅看缺失</el-checkbox>
+              <el-checkbox v-model="filters.onlyDownloadable" @change="refreshActiveCircle">仅看可下载</el-checkbox>
+              <el-checkbox v-model="filters.includeDlOnly" @change="refreshActiveCircle">包含仅DL</el-checkbox>
+            </div>
           </div>
         </section>
 
-        <section v-if="detail.works?.length" class="works-card">
-          <div class="batch-bar">
-            <div class="batch-bar-copy">
-              <div class="batch-overline">批量下载</div>
-              <div class="batch-count">已选 {{ selectedCanonicalRJCodes.length }} 个作品，可下载 {{ selectedDownloadableRJCodes.length }} 个</div>
-              <div class="batch-hint">支持单选 / 多选 / 全选。批量刷新会更新选中作品的索引状态，创建下载任务仍只会使用其中 asmr.one 可下载的作品。</div>
-            </div>
-            <div class="batch-bar-actions">
-              <el-button class="batch-action-button" @click="selectAllVisibleWorks">全选当前列表</el-button>
-              <el-button class="batch-action-button ghost" @click="clearSelection">清空</el-button>
-              <el-button
-                class="batch-action-button refresh"
-                :disabled="!activeCircleId || indexing || selectedCanonicalRJCodes.length === 0 || isRefreshJobActive"
-                :loading="refreshingCurrentCircle"
-                @click="refreshSelectedCircleIndex"
-              >
-                批量刷新选中
-              </el-button>
-              <el-button class="batch-action-button primary" type="primary" :disabled="selectedDownloadableRJCodes.length === 0" :loading="previewing" @click="openBatchPreview()">创建下载任务</el-button>
-            </div>
-          </div>
-
+        <section v-if="activeCircleId" class="works-card">
           <section v-if="refreshJob.visible" class="index-progress-card refresh-progress-card">
             <div class="index-progress-head">
               <div>
@@ -178,6 +205,7 @@
               <span class="progress-meta-pill">总数 {{ refreshJob.selected_count || refreshJob.meta.total_count || 0 }}</span>
               <span class="progress-meta-pill">已处理 {{ refreshJob.meta.processed_count || 0 }}</span>
               <span class="progress-meta-pill ok">有变化 {{ refreshJob.meta.changed_count || 0 }}</span>
+              <span v-if="refreshJob.meta.force_refresh" class="progress-meta-pill warn">强制刷新</span>
               <span class="progress-meta-pill">Kikoeru {{ refreshJob.meta.kikoeru_owned_count || 0 }}</span>
               <span class="progress-meta-pill">asmr.one {{ refreshJob.meta.asmr_available_count || 0 }}</span>
               <span v-if="refreshJob.meta.current_rjcode" class="progress-meta-pill">当前 {{ refreshJob.meta.current_rjcode }}</span>
@@ -200,68 +228,246 @@
 
           <el-tabs v-model="activeTab" class="circle-tabs">
             <el-tab-pane label="缺失作品" name="missing">
-              <div class="work-grid">
+              <div v-if="missingWorks.length > 0" class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 mb-4 mt-2 shadow-sm backdrop-blur-sm">
+                <div class="flex items-center gap-3">
+                  <span class="text-sm font-bold text-slate-700 tracking-wide">批量操作</span>
+                  <span class="text-xs font-semibold text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200 shadow-sm">已选 {{ selectedCanonicalRJCodes.length }} / {{ missingWorks.length }}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <el-button class="batch-action-button" size="small" @click="selectAllVisibleWorks">全选</el-button>
+                  <el-button class="batch-action-button ghost" size="small" @click="clearSelection">清空</el-button>
+                  <el-button class="batch-action-button primary ml-2" type="primary" size="small" :disabled="selectedDownloadableRJCodes.length === 0" :loading="previewing" @click="openBatchPreview()">下载选中项</el-button>
+                </div>
+              </div>
+
+              <div v-if="showMissingWorksCompleteState" class="circle-complete-state">
+                <div class="circle-complete-visual">
+                  <Transition name="complete-confetti">
+                    <div v-if="showCompleteConfetti" class="circle-complete-confetti" aria-hidden="true">
+                      <DotLottieVue
+                        class="circle-complete-confetti-player"
+                        :src="confettiAnimation"
+                        autoplay
+                      />
+                    </div>
+                  </Transition>
+                  <img
+                    :src="celebrateImg"
+                    class="circle-complete-image"
+                    :class="{ 'is-revealed': revealCompletePoster }"
+                    alt="已全部收集完成"
+                  />
+                </div>
+                <div class="circle-complete-copy">
+                  <div class="circle-complete-stats">
+                    <span class="circle-complete-pill owned">服务器已收录 {{ detail.owned_count || 0 }}</span>
+                  </div>
+                </div>
+              </div>
+              <div v-else-if="circleDetailLoading" class="circle-works-loading-state">
+                <AppLoadingAnimation
+                  label="正在刷新社团作品状态"
+                  description="正在同步缺失作品、服务器拥有态和可下载信息"
+                  :size="176"
+                  :min-height="280"
+                />
+              </div>
+              <template v-else>
+                <div class="work-grid">
                 <article
                   v-for="item in pagedMissingWorks"
                   :key="item.canonical_rjcode"
-                  class="work-card"
+                  class="work-card group flex flex-col"
                   :class="{ selected: selectedCanonicals.has(item.canonical_rjcode), 'is-downloaded': item.local_download_ready, 'status-flash': flashedWorkCodes.has(item.canonical_rjcode) }"
                   @click="toggleSelection(item)"
                 >
-                  <div class="work-card-head">
-                    <div v-if="item.local_download_ready" class="work-corner-flag">已下载</div>
-                    <div class="work-card-copy">
-                      <div class="work-rj">{{ item.source_compare?.work_rjcode || item.canonical_rjcode }}</div>
-                      <div class="work-title">{{ item.title || '未命名作品' }}</div>
+                  <div class="work-cover-wrapper relative w-full aspect-[4/3] bg-slate-50 flex items-center justify-center border-b border-slate-100">
+                    <img v-if="item.image_url" :src="item.image_url" class="work-cover w-full h-full object-contain bg-white transition-transform duration-500 group-hover:scale-105" referrerpolicy="no-referrer" />
+                    <div v-else class="work-cover-placeholder w-full h-full flex items-center justify-center text-slate-300 bg-slate-50">
+                      <LibraryBig :size="32" class="opacity-50" />
                     </div>
+                    <div v-if="item.local_download_ready" class="work-corner-flag">已下载</div>
+                    <div class="absolute inset-0 bg-gradient-to-t from-slate-900/10 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"></div>
                   </div>
 
-                  <div class="work-linked">优先版本 {{ item.preferred_variant?.group_short_label || '原作' }} · {{ item.download_plan?.rjcode || item.display_rjcode || item.canonical_rjcode }}</div>
+                  <div class="flex flex-col flex-1 p-3 gap-2.5">
+                    <div class="work-card-head">
+                      <div class="work-card-copy">
+                        <div class="work-rj">{{ item.source_compare?.work_rjcode || item.canonical_rjcode }}</div>
+                        <div class="work-title group-hover:text-blue-600 transition-colors" :title="item.title">{{ item.title || '未命名作品' }}</div>
+                      </div>
+                    </div>
 
-                  <div class="work-tags">
-                    <span v-if="item.local_download_ready" class="tag-chip local-ready">本地已下载</span>
-                    <span class="tag-chip" :class="{ owned: item.server_owned }">{{ formatServerOwnedLabel(item) }}</span>
-                    <span class="tag-chip">DLsite {{ item.has_dlsite ? '有' : '未知' }}</span>
-                    <span class="tag-chip" :class="{ ok: item.has_asmr_one }">asmr.one {{ item.has_asmr_one ? '可下载' : '无资源' }}</span>
-                  </div>
+                    <div class="work-linked">优先版本 {{ item.preferred_variant?.group_short_label || '原作' }} · {{ item.download_plan?.rjcode || item.display_rjcode || item.canonical_rjcode }}</div>
 
-                  <div v-if="item.has_asmr_one || item.local_download_ready" class="work-actions">
-                    <el-button v-if="item.local_download_ready" size="small" class="work-action-button upload" @click.stop="openReimportDialogForWork(item)">直接入库</el-button>
-                    <el-button size="small" class="work-action-button" @click.stop="openBatchPreview(item.canonical_rjcode)">预览下载</el-button>
+                    <div class="work-tags mt-auto pt-1">
+                      <span v-if="item.local_download_ready" class="tag-chip is-success">已下载</span>
+                      <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ formatServerOwnedLabel(item) }}</span>
+                      <span class="tag-chip is-info">DLsite {{ item.has_dlsite ? '有' : '未知' }}</span>
+                      <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">asmr.one {{ item.has_asmr_one ? '可下载' : '无资源' }}</span>
+                    </div>
+
+                    <div v-if="item.has_asmr_one || item.local_download_ready" class="work-actions mt-2">
+                      <el-button v-if="item.local_download_ready" size="small" class="work-action-button upload" @click.stop="openReimportDialogForWork(item)">直接入库</el-button>
+                      <el-button size="small" class="work-action-button" @click.stop="openBatchPreview(item.canonical_rjcode)">预览下载</el-button>
+                    </div>
                   </div>
                 </article>
               </div>
               <div class="works-pager">
                 <el-pagination
                   v-model:current-page="missingPage"
-                  :page-size="worksPageSize"
-                  layout="total, prev, pager, next"
+                  v-model:page-size="worksPageSize"
+                  :page-sizes="worksPageSizes"
+                  layout="total, sizes, prev, pager, next, jumper"
                   :total="missingWorks.length"
                   background
                 />
               </div>
+              </template>
             </el-tab-pane>
 
             <el-tab-pane label="服务器已拥有" name="owned">
-              <div class="owned-list">
-                <article v-for="item in pagedOwnedWorks" :key="item.canonical_rjcode" class="owned-card">
-                  <div class="owned-card-top">
-                    <span class="owned-state-pill">已收录</span>
-                    <span class="owned-rj-pill">{{ item.source_compare?.work_rjcode || item.canonical_rjcode }}</span>
+              <!-- Header Stats & Actions -->
+              <div class="mb-4 space-y-4">
+                <div class="flex items-center justify-between bg-white rounded-xl border border-slate-200/60 p-1.5 shadow-sm">
+                  <div class="flex items-center divide-x divide-slate-200/60">
+                    <div class="px-4 py-2 flex items-center gap-2.5">
+                      <div class="w-7 h-7 rounded-full bg-slate-50 border border-slate-100/50 flex items-center justify-center text-slate-500">
+                        <LibraryBig :size="14" stroke-width="2.5" />
+                      </div>
+                      <div class="flex flex-col">
+                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">总收录</span>
+                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.total }}</span>
+                      </div>
+                    </div>
+                    <div class="px-4 py-2 flex items-center gap-2.5">
+                      <div class="w-7 h-7 rounded-full bg-sky-50 border border-sky-100/50 flex items-center justify-center text-sky-500">
+                        <Languages :size="14" stroke-width="2.5" />
+                      </div>
+                      <div class="flex flex-col">
+                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">简中</span>
+                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.simplified }}</span>
+                      </div>
+                    </div>
+                    <div class="px-4 py-2 flex items-center gap-2.5">
+                      <div class="w-7 h-7 rounded-full bg-violet-50 border border-violet-100/50 flex items-center justify-center text-violet-500">
+                        <Languages :size="14" stroke-width="2.5" />
+                      </div>
+                      <div class="flex flex-col">
+                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">繁中</span>
+                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.traditional }}</span>
+                      </div>
+                    </div>
+                    <div class="px-4 py-2 flex items-center gap-2.5">
+                      <div class="w-7 h-7 rounded-full bg-slate-100 border border-slate-200/50 flex items-center justify-center text-slate-600">
+                        <PlayCircle :size="14" stroke-width="2.5" />
+                      </div>
+                      <div class="flex flex-col">
+                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">原作</span>
+                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.original }}</span>
+                      </div>
+                    </div>
+                    <div class="px-4 py-2 flex items-center gap-2.5">
+                      <div class="w-7 h-7 rounded-full bg-indigo-50 border border-indigo-100/50 flex items-center justify-center text-indigo-500">
+                        <Subtitles :size="14" stroke-width="2.5" />
+                      </div>
+                      <div class="flex flex-col">
+                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">含字幕</span>
+                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.subtitle }}</span>
+                      </div>
+                    </div>
                   </div>
-                  <div class="owned-title">{{ item.title || item.canonical_rjcode }}</div>
-                  <div class="owned-card-bottom">
-                    <span class="owned-meta">{{ item.preferred_variant?.group_short_label || '原作' }}</span>
-                    <span class="owned-separator">·</span>
-                    <span class="owned-path">服务器已收录</span>
+                </div>
+
+                <div class="flex items-center justify-between gap-4">
+                  <div class="flex bg-white rounded-lg border border-slate-200/60 p-1 shadow-sm">
+                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'all' ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'all'">全部</button>
+                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'original' ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'original'">仅原作</button>
+                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'simplified' ? 'bg-sky-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'simplified'">简中</button>
+                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'traditional' ? 'bg-violet-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'traditional'">繁中</button>
+                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5" :class="ownedWorksFilterType === 'subtitle' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'subtitle'">
+                      <MessageSquareText :size="14" stroke-width="2.5" />
+                      字幕
+                    </button>
+                  </div>
+                  
+                  <div class="relative w-64">
+                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <Search :size="16" class="text-slate-400" />
+                    </div>
+                    <input 
+                      v-model="ownedWorksSearchQuery" 
+                      type="text" 
+                      class="block w-full pl-9 pr-3 py-2 border border-slate-200/60 rounded-lg text-sm bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400/20 focus:border-slate-400 transition-all shadow-sm" 
+                      placeholder="搜索作品名或 RJ 号..." 
+                    />
+                    <button 
+                      v-if="ownedWorksSearchQuery" 
+                      @click="ownedWorksSearchQuery = ''" 
+                      class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                    >
+                      <X :size="14" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- List -->
+              <div v-auto-animate class="grid grid-cols-1 xl:grid-cols-2 gap-3 pb-2 min-h-[300px] content-start">
+                <div v-if="pagedOwnedWorks.length === 0" class="col-span-full flex flex-col items-center justify-center py-12 text-slate-400 bg-white/50 rounded-xl border border-slate-200/50 border-dashed">
+                  <LibraryBig :size="32" class="mb-3 opacity-40" />
+                  <p class="text-sm font-medium">没有找到符合条件的作品</p>
+                </div>
+                
+                <article v-for="item in pagedOwnedWorks" :key="item.canonical_rjcode" class="group flex items-center justify-between p-3.5 rounded-xl border border-slate-200/60 bg-white hover:border-slate-300 hover:shadow-sm transition-all duration-200">
+                  <div class="flex items-center gap-3.5 min-w-0">
+                    <div class="flex-shrink-0 w-8 h-8 rounded-full bg-emerald-50/80 border border-emerald-100/50 flex items-center justify-center text-emerald-500">
+                      <CheckCircle2 :size="16" stroke-width="2" />
+                    </div>
+                    <div class="flex flex-col gap-0.5 min-w-0">
+                      <h3 class="text-[14px] font-semibold text-slate-800 truncate" :title="item.title || item.canonical_rjcode">
+                        {{ item.title || item.canonical_rjcode }}
+                      </h3>
+                      <div class="flex items-center gap-2 text-xs text-slate-500">
+                        <span class="font-mono text-slate-500">{{ item.source_compare?.work_rjcode || item.canonical_rjcode }}</span>
+                        <template v-if="true">
+                          <span class="text-slate-300">•</span>
+                          <span
+                            class="inline-flex items-center px-1.5 py-0.5 rounded-md font-medium border"
+                            :class="[
+                              (item.preferred_variant?.group_short_label || '原作') === '简中' ? 'text-sky-600 bg-sky-50/80 border-sky-100/50' :
+                              (item.preferred_variant?.group_short_label || '原作') === '繁中' ? 'text-violet-600 bg-violet-50/80 border-violet-100/50' :
+                              (item.preferred_variant?.group_short_label || '原作') === '英' || (item.preferred_variant?.group_short_label || '原作') === '英文' ? 'text-rose-600 bg-rose-50/80 border-rose-100/50' :
+                              'text-slate-500 bg-slate-100/50 border-slate-200/50'
+                            ]"
+                          >
+                            {{ item.preferred_variant?.group_short_label || '原作' }}
+                          </span>
+                        </template>
+                        <template v-if="(!item.preferred_variant?.group_short_label || item.preferred_variant?.group_short_label === '原作') && item.subtitle_present">
+                          <span class="text-slate-300">•</span>
+                          <span class="inline-flex items-center gap-1 text-indigo-600 bg-indigo-50/80 px-1.5 py-0.5 rounded-md font-medium border border-indigo-100/50">
+                            <MessageSquareText :size="12" stroke-width="2.5" />
+                            字幕
+                          </span>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex-shrink-0 ml-4 flex items-center">
+                    <span class="inline-flex items-center px-2 py-1 rounded-md bg-emerald-50 text-emerald-600 text-[11px] font-medium border border-emerald-100/50">
+                      已收录
+                    </span>
                   </div>
                 </article>
               </div>
               <div class="works-pager">
                 <el-pagination
                   v-model:current-page="ownedPage"
-                  :page-size="worksPageSize"
-                  layout="total, prev, pager, next"
+                  v-model:page-size="worksPageSize"
+                  :page-sizes="worksPageSizes"
+                  layout="total, sizes, prev, pager, next, jumper"
                   :total="ownedWorks.length"
                   background
                 />
@@ -269,59 +475,196 @@
             </el-tab-pane>
 
             <el-tab-pane label="来源对比" name="compare">
-              <div class="compare-board">
-                <div class="compare-head">
-                  <div class="compare-col work">作品</div>
-                  <div class="compare-col source kikoeru">Kikoeru</div>
-                  <div class="compare-col source dlsite">DLsite</div>
-                  <div class="compare-col source asmr">asmr.one</div>
+              <!-- Stats Row -->
+              <div class="mb-4">
+                <div class="bg-white rounded-xl border border-slate-200/60 shadow-sm overflow-hidden flex flex-wrap divide-x divide-slate-100">
+                  <div class="px-4 py-2 flex items-center gap-2.5">
+                    <div class="w-7 h-7 rounded-full bg-slate-50 border border-slate-100/50 flex items-center justify-center text-slate-500">
+                      <LibraryBig :size="14" stroke-width="2.5" />
+                    </div>
+                    <div class="flex flex-col">
+                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">总数</span>
+                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.total }}</span>
+                    </div>
+                  </div>
+                  <div class="px-4 py-2 flex items-center gap-2.5">
+                    <div class="w-7 h-7 rounded-full bg-emerald-50 border border-emerald-100/50 flex items-center justify-center text-emerald-500">
+                      <CheckCircle2 :size="14" stroke-width="2.5" />
+                    </div>
+                    <div class="flex flex-col">
+                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Kikoeru</span>
+                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.kikoeru }}</span>
+                    </div>
+                  </div>
+                  <div class="px-4 py-2 flex items-center gap-2.5">
+                    <div class="w-7 h-7 rounded-full bg-blue-50 border border-blue-100/50 flex items-center justify-center text-blue-500">
+                      <CheckCircle2 :size="14" stroke-width="2.5" />
+                    </div>
+                    <div class="flex flex-col">
+                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">DLsite</span>
+                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.dlsite }}</span>
+                    </div>
+                  </div>
+                  <div class="px-4 py-2 flex items-center gap-2.5">
+                    <div class="w-7 h-7 rounded-full bg-violet-50 border border-violet-100/50 flex items-center justify-center text-violet-500">
+                      <CheckCircle2 :size="14" stroke-width="2.5" />
+                    </div>
+                    <div class="flex flex-col">
+                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">ASMR.ONE</span>
+                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.asmr_one }}</span>
+                    </div>
+                  </div>
+                  <div class="px-4 py-2 flex items-center gap-2.5">
+                    <div class="w-7 h-7 rounded-full bg-rose-50 border border-rose-100/50 flex items-center justify-center text-rose-500">
+                      <XCircle :size="14" stroke-width="2.5" />
+                    </div>
+                    <div class="flex flex-col">
+                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">暂无来源</span>
+                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.missing }}</span>
+                    </div>
+                  </div>
                 </div>
-                <div
-                  v-for="item in pagedCompareWorks"
-                  :key="`compare-${item.workRjcode}`"
-                  class="compare-row"
-                >
-                  <div class="compare-col work">
-                    <div class="compare-work-top">
-                      <span class="compare-work-rj">{{ item.workRjcode || '—' }}</span>
-                      <span :class="['compare-status-pill', `is-${item.statusKey}`]">{{ item.statusLabel }}</span>
-                    </div>
-                    <div class="compare-work-title">{{ item.title || item.workRjcode || '未命名作品' }}</div>
+              </div>
+
+              <!-- Actions Toolbar -->
+              <div class="flex items-center justify-between mb-4">
+                <div class="flex bg-white rounded-lg border border-slate-200/60 p-1 shadow-sm">
+                  <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'all' ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'all'; comparePage = 1">全部</button>
+                  <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'kikoeru' ? 'bg-emerald-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'kikoeru'; comparePage = 1">已拥有(Kikoeru)</button>
+                  <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'asmr_one' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'asmr_one'; comparePage = 1">可下载(ASMR.ONE)</button>
+                </div>
+                
+                <div class="relative w-64">
+                  <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Search :size="16" class="text-slate-400" />
                   </div>
-                  <div class="compare-col source kikoeru">
-                    <div v-if="item.sourceCompare.kikoeru.primary_rjcode" class="compare-chip-list">
-                      <span class="compare-chip">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
-                      <span v-for="badge in item.sourceCompare.kikoeru.variantBadges" :key="`kb-${item.workRjcode}-${badge}`" class="compare-chip is-kikoeru-tag">{{ badge }}</span>
-                      <span v-for="tag in normalizeKikoeruTags(item.sourceCompare.kikoeru.tags)" :key="`k-${item.workRjcode}-${tag}`" class="compare-chip is-kikoeru-tag" :class="{ 'has-icon': tag === '字幕' }">
-                        <svg v-if="tag === '字幕'" class="kikoeru-tag-icon" viewBox="0 0 16 16" aria-hidden="true">
-                          <path d="M6.5 11.2 3.7 8.4l-1.1 1.1 3.9 3.9 7-7-1.1-1.1z" />
-                        </svg>
-                        <span>{{ tag }}</span>
-                      </span>
+                  <input 
+                    v-model="compareSearchQuery" 
+                    type="text" 
+                    @input="comparePage = 1"
+                    class="block w-full pl-9 pr-3 py-2 border border-slate-200/60 rounded-lg text-sm bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400/20 focus:border-slate-400 transition-all shadow-sm" 
+                    placeholder="搜索作品名或 RJ 号..." 
+                  />
+                  <button 
+                    v-if="compareSearchQuery" 
+                    @click="compareSearchQuery = ''; comparePage = 1" 
+                    class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                  >
+                    <X :size="14" />
+                  </button>
+                </div>
+              </div>
+
+              <!-- Header -->
+              <div class="flex items-center gap-4 px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border border-slate-200/60 rounded-t-lg">
+                <div class="flex-1">资源信息</div>
+                <div class="flex items-center gap-4 shrink-0 text-center">
+                  <div class="w-20">Kikoeru</div>
+                  <div class="w-px h-4 bg-transparent"></div>
+                  <div class="w-20">DLsite</div>
+                  <div class="w-px h-4 bg-transparent"></div>
+                  <div class="w-20">ASMR.ONE</div>
+                </div>
+              </div>
+
+              <!-- List -->
+              <div class="border-x border-b border-slate-200/60 rounded-b-lg mb-4 divide-y divide-slate-100/80 bg-white" v-auto-animate>
+                <div v-for="item in pagedCompareWorks" :key="`compare-${item.workRjcode}`" class="p-4 hover:bg-slate-50/50 transition-colors">
+                  <div class="flex items-start justify-between gap-4">
+                    <!-- Title & Badges -->
+                    <div class="flex-1 min-w-0">
+                      <h4 class="text-[14px] font-semibold text-slate-800 truncate mb-1.5" :title="item.title || item.workRjcode || '未命名作品'">{{ item.title || item.workRjcode || '未命名作品' }}</h4>
+                      <div class="flex items-center gap-2">
+                        <!-- Status Badge -->
+                        <span v-if="item.statusKey === 'owned'" class="inline-flex items-center gap-1 text-emerald-600 text-xs font-medium" title="服务器已拥有">
+                          <CheckCircle2 :size="14" stroke-width="2.5" />
+                          已拥有
+                        </span>
+                        <span v-else-if="item.statusKey === 'missing'" class="inline-flex items-center gap-1 text-rose-500 text-xs font-medium" title="未拥有">
+                          <XCircle :size="14" stroke-width="2.5" />
+                          未拥有
+                        </span>
+                        <span v-else-if="item.statusKey === 'partial'" class="inline-flex items-center gap-1 text-amber-500 text-xs font-medium" title="部分拥有">
+                          <AlertCircle :size="14" stroke-width="2.5" />
+                          部分拥有
+                        </span>
+                        <span v-else class="inline-flex items-center gap-1 text-slate-500 text-xs font-medium">
+                          <MinusCircle :size="14" stroke-width="2.5" />
+                          {{ item.statusLabel }}
+                        </span>
+
+                        <span class="text-xs font-mono font-medium text-slate-600">{{ item.workRjcode || '—' }}</span>
+
+                        <!-- Variant Tags -->
+                        <span v-if="item.preferredVariantLabel && item.preferredVariantLabel !== '—'" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold" :class="[
+                          item.preferredVariantLabel === '简中' ? 'text-sky-600 bg-sky-50 border border-sky-100' :
+                          item.preferredVariantLabel === '繁中' ? 'text-violet-600 bg-violet-50 border border-violet-100' :
+                          item.preferredVariantLabel === '原作' ? 'text-slate-600 bg-slate-100 border border-slate-200' :
+                          'text-slate-600 bg-slate-50 border border-slate-200'
+                        ]">
+                          {{ item.preferredVariantLabel }}
+                        </span>
+
+                        <!-- Subtitle Icon (if kikoeru tags contain 字幕) -->
+                        <span v-if="normalizeKikoeruTags(item.sourceCompare.kikoeru.tags).includes('字幕')" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100">
+                          <MessageSquareText :size="12" stroke-width="2.5" />
+                          字幕
+                        </span>
+                      </div>
                     </div>
-                    <span v-else class="compare-empty">未收录</span>
-                  </div>
-                  <div class="compare-col source dlsite">
-                    <div v-if="item.sourceCompare.dlsite.all_rjcodes.length" class="compare-chip-list">
-                      <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="compare-chip">{{ code }}</span>
+
+                    <!-- Source Info -->
+                    <div class="flex items-center gap-4 text-xs shrink-0 mt-0.5">
+                      <!-- Kikoeru -->
+                      <div class="flex flex-col items-center gap-1 w-20">
+                        <span v-if="item.sourceCompare.kikoeru.primary_rjcode" class="font-mono text-slate-700">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
+                        <span v-else class="text-slate-400 scale-90">—</span>
+                        <div v-if="item.sourceCompare.kikoeru.variantBadges.length || normalizeKikoeruTags(item.sourceCompare.kikoeru.tags).length" class="flex flex-wrap items-center justify-center gap-1 mt-0.5">
+                          <span v-for="badge in item.sourceCompare.kikoeru.variantBadges" :key="`kb-${item.workRjcode}-${badge}`" class="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold leading-none" :class="[
+                            badge === '简中' ? 'text-sky-600 bg-sky-50 border border-sky-100' :
+                            badge === '繁中' ? 'text-violet-600 bg-violet-50 border border-violet-100' :
+                            badge === '原作' ? 'text-slate-600 bg-slate-100 border border-slate-200' :
+                            'text-slate-500 bg-slate-50 border border-slate-200'
+                          ]">{{ badge }}</span>
+                        </div>
+                      </div>
+                      
+                      <div class="w-px h-6 bg-slate-200/60"></div>
+                      
+                      <!-- DLsite -->
+                      <div class="flex flex-col items-center gap-1 w-20">
+                        <div v-if="item.sourceCompare.dlsite.all_rjcodes.length" class="flex flex-col items-center gap-0.5">
+                          <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="font-mono text-slate-700">{{ code }}</span>
+                        </div>
+                        <span v-else class="text-slate-400 scale-90">—</span>
+                      </div>
+                      
+                      <div class="w-px h-6 bg-slate-200/60"></div>
+
+                      <!-- ASMR.ONE -->
+                      <div class="flex flex-col items-center gap-1 w-20">
+                        <div v-if="item.sourceCompare.asmr_one.primary_rjcode" class="flex flex-col items-center">
+                          <span class="font-mono text-slate-700">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
+                          <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold leading-none mt-0.5" :class="[
+                            item.sourceCompare.asmr_one.primaryBadge === '简中' ? 'text-sky-600 bg-sky-50 border border-sky-100' :
+                            item.sourceCompare.asmr_one.primaryBadge === '繁中' ? 'text-violet-600 bg-violet-50 border border-violet-100' :
+                            item.sourceCompare.asmr_one.primaryBadge === '原作' ? 'text-slate-600 bg-slate-100 border border-slate-200' :
+                            'text-slate-500 bg-slate-50 border border-slate-200'
+                          ]">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
+                        </div>
+                        <span v-else class="text-slate-400 scale-90">—</span>
+                      </div>
                     </div>
-                    <span v-else class="compare-empty">未发现</span>
-                  </div>
-                  <div class="compare-col source asmr">
-                    <div v-if="item.sourceCompare.asmr_one.primary_rjcode" class="compare-chip-list">
-                      <span class="compare-chip is-asmr">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
-                      <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="compare-chip is-asmr-badge">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
-                    </div>
-                    <span v-else class="compare-empty">暂无来源</span>
                   </div>
                 </div>
               </div>
               <div class="works-pager">
                 <el-pagination
                   v-model:current-page="comparePage"
-                  :page-size="comparePageSize"
-                  layout="total, prev, pager, next"
-                  :total="compareWorks.length"
+                  v-model:page-size="comparePageSize"
+                  :page-sizes="comparePageSizes"
+                  layout="total, sizes, prev, pager, next, jumper"
+                  :total="compareWorksFilteredCount"
                   background
                 />
               </div>
@@ -366,6 +709,20 @@
       @submit="startBatchDownload"
     />
 
+    <ServerUploadPreviewDialog
+      :visible="localUploadDialogVisible"
+      :starting="localUploadSubmitting"
+      title="直接入库"
+      :source-library-id="''"
+      :source-library-name="detail.circle_name || ''"
+      :source-items="localUploadSourceItems"
+      :libraries="libraries"
+      :initial-target-library-id="localUploadForm.targetLibraryId"
+      :initial-target-subdir="localUploadForm.targetSubdir"
+      @update:visible="value => localUploadDialogVisible = value"
+      @submit="submitLocalUpload"
+    />
+
     <DownloadTaskWorkbenchDialog
       v-model:visible="downloadWorkbenchVisible"
       :tasks="trackedDownloadTasks"
@@ -377,138 +734,17 @@
       @retry-task="retryDownloadTask"
       @retry-waiting="retryWaitingDownloadTask"
       @retry-file="handleRetrySingleFailedFile"
-      @reimport-task="openReimportDialog"
+      @reimport-task="openLocalUploadDialogForTask"
     />
 
-    <el-dialog
-      v-model="reimportDialogVisible"
-      width="860px"
-      title="从已下载内容直接入库"
-      class="circle-reimport-dialog"
-      :show-close="false"
-      :before-close="handleReimportDialogBeforeClose"
-    >
-      <div class="reimport-dialog-body">
-          <div v-if="reimportTrackedTask" class="reimport-progress-card">
-            <div class="reimport-progress-head">
-              <span class="reimport-progress-title">入库进度</span>
-              <span class="reimport-progress-status">{{ getDownloadTaskStatusLabel(reimportTrackedTask) }}</span>
-            </div>
-            <div class="reimport-progress-metrics">
-              <span class="reimport-progress-metric">资源 {{ getTaskResourceCount(reimportTrackedTask) }} 个</span>
-              <span class="reimport-progress-metric">{{ getTaskTransferLabel(reimportTrackedTask) }} {{ formatSize(getTaskTransferBytes(reimportTrackedTask)) }}</span>
-              <span class="reimport-progress-metric">已上传 {{ getUploadedCount(reimportTrackedTask) }} 个</span>
-              <span class="reimport-progress-metric">上传速度 {{ formatSpeed(getUploadSpeedBytes(reimportTrackedTask)) }}</span>
-              <span class="reimport-progress-metric">预计剩余 {{ formatTaskEta(reimportTrackedTask) }}</span>
-            </div>
-            <el-progress
-              :percentage="getReimportOverallPercent(reimportTrackedTask)"
-              :status="getDownloadTaskProgressStatus(reimportTrackedTask)"
-              :stroke-width="10"
-              :show-text="false"
-            />
-            <div class="reimport-progress-step">{{ reimportTrackedTask.current_step || '处理中' }}</div>
-            <div class="reimport-summary-grid">
-              <div class="reimport-summary-item">
-                <span class="reimport-summary-label">字节进度</span>
-                <span class="reimport-summary-value">{{ formatSize(getUploadTransferredBytes(reimportTrackedTask)) }} / {{ formatSize(getUploadTotalBytes(reimportTrackedTask)) }}</span>
-              </div>
-              <div class="reimport-summary-item">
-                <span class="reimport-summary-label">上传阶段</span>
-                <span class="reimport-summary-value">{{ getUploadStageLabel(reimportTrackedTask) }}</span>
-              </div>
-              <div class="reimport-summary-item">
-                <span class="reimport-summary-label">已运行</span>
-                <span class="reimport-summary-value">{{ formatDurationMs(getTaskElapsedMs(reimportTrackedTask)) }}</span>
-              </div>
-              <div class="reimport-summary-item">
-                <span class="reimport-summary-label">当前文件</span>
-                <span class="reimport-summary-value">{{ getCurrentUploadSequenceLabel(reimportTrackedTask) }}</span>
-              </div>
-            </div>
-            <div v-if="reimportTrackedTask.upload_files?.length" class="reimport-file-progress-list">
-              <div class="reimport-file-progress-title">单文件上传进度</div>
-              <div
-                v-for="file in reimportTrackedTask.upload_files.slice(0, 12)"
-                :key="`reimport-upload-${file.name}`"
-                class="reimport-file-progress-item"
-              >
-                <div class="reimport-file-progress-row">
-                  <div class="reimport-file-progress-name">{{ file.name }}</div>
-                  <div class="reimport-file-progress-size">{{ formatSize(file.uploaded) }} / {{ formatSize(file.total) }}</div>
-                </div>
-                <div class="reimport-file-progress-meta">
-                  <span>{{ formatSpeed(file.speed_bytes_per_sec) }}</span>
-                  <span>剩余 {{ formatFileEta(file) }}</span>
-                  <span>{{ Number(file.progress || 0) }}%</span>
-                </div>
-                <el-progress
-                  :percentage="Number(file.progress || 0)"
-                  :stroke-width="6"
-                  :show-text="false"
-                  color="#31b26d"
-                />
-              </div>
-            </div>
-            <div v-if="reimportTrackedTask.uploaded_files?.length" class="reimport-file-result-list">
-              <div class="reimport-file-progress-title">已完成上传</div>
-              <div
-                v-for="file in reimportTrackedTask.uploaded_files.slice(-8)"
-                :key="`reimport-uploaded-${file.name}`"
-                class="reimport-file-result-item"
-              >
-                <div class="reimport-file-result-copy">
-                  <span class="reimport-file-result-name">{{ file.name }}</span>
-                  <span class="reimport-file-result-path">{{ file.upload_path }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        <label class="setting-field">
-          <span class="setting-label">目标库存</span>
-          <el-select v-model="reimportForm.targetLibraryId" placeholder="选择目标库存" clearable filterable>
-            <el-option
-              v-for="library in targetLibraries"
-              :key="library.id"
-              :label="`${library.name} (${library.type === 'local' ? '本地' : '远程'})`"
-              :value="library.id"
-            />
-          </el-select>
-        </label>
-        <label class="setting-field">
-          <span class="setting-label">库存内前缀目录</span>
-          <el-select v-model="reimportForm.targetSubdir" placeholder="选择库存内前缀目录" clearable filterable>
-            <el-option label="直接按社团名入库 / API 命名后的文件" value="" />
-            <el-option
-              v-for="option in targetSubdirOptions"
-              :key="option"
-              :label="option"
-              :value="option"
-            />
-          </el-select>
-        </label>
-      </div>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="closeReimportDialog">取消</el-button>
-          <el-button
-            v-if="reimportTrackedTask && ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(reimportTrackedTask.status || ''))"
-            @click="hideReimportDialogToBackground"
-          >
-            挂到后台
-          </el-button>
-          <el-button
-            v-if="!isReimportTaskActive(reimportTrackedTask)"
-            type="primary"
-            :loading="reimportSubmitting"
-            :disabled="!reimportForm.targetLibraryId"
-            @click="submitReimportDownloaded"
-          >
-            开始入库
-          </el-button>
-        </span>
-      </template>
-    </el-dialog>
+    <UploadTaskWorkbenchDialog
+      v-model:visible="uploadWorkbenchVisible"
+      :tasks="trackedUploadTasks"
+      :refreshing="uploadWorkbenchRefreshing"
+      @refresh="refreshUploadWorkbench"
+      @background="hideUploadWorkbenchToBackground"
+      @close="closeUploadWorkbench"
+    />
 
     <div v-if="showDownloadBackgroundCard" class="circle-download-floating-card">
       <div class="circle-download-floating-head">
@@ -518,7 +754,7 @@
             {{ activeBackgroundDownloadTask ? `${activeBackgroundDownloadTask.rjcode || 'RJ'} · ${activeBackgroundDownloadTask.work_title || activeBackgroundDownloadTask.source_label || '-'}` : '保留当前下载队列与进度状态' }}
           </div>
         </div>
-        <div class="circle-download-floating-count">{{ trackedDownloadTasks.length }}</div>
+        <div class="circle-download-floating-count">{{ backgroundDownloadPercent }}%</div>
       </div>
       <el-progress
         :percentage="backgroundDownloadPercent"
@@ -531,6 +767,8 @@
         <span class="circle-download-floating-chip">等待中 {{ pendingDownloadTasks.length }}</span>
         <span class="circle-download-floating-chip">完成 {{ completedDownloadTasks.length }}</span>
         <span class="circle-download-floating-chip danger">失败 {{ failedDownloadTasks.length }}</span>
+        <span class="circle-download-floating-chip">速度 {{ formatSpeed(getDownloadSpeedBytes(activeBackgroundDownloadTask)) }}</span>
+        <span class="circle-download-floating-chip">剩余 {{ formatDownloadTaskEta(activeBackgroundDownloadTask) }}</span>
       </div>
       <div class="circle-download-floating-text">
         {{ activeBackgroundDownloadTask?.current_step || '隐藏后继续保留下载队列和进度。' }}
@@ -541,51 +779,61 @@
       </div>
     </div>
 
-    <div v-if="showReimportBackgroundCard" class="circle-download-floating-card reimport-floating-card">
+    <div v-if="showUploadBackgroundCard" class="circle-download-floating-card reimport-floating-card">
       <div class="circle-download-floating-head">
         <div>
-          <div class="circle-download-floating-title">直接入库正在后台运行</div>
+          <div class="circle-download-floating-title">直接入库上传正在后台运行</div>
           <div class="circle-download-floating-mode">
-            {{ reimportTrackedTask ? `${reimportTrackedTask.rjcode || 'RJ'} · ${reimportTrackedTask.work_title || reimportTrackedTask.source_label || '-'}` : '保留当前入库进度与单文件上传状态' }}
+            {{ activeBackgroundUploadTask ? `${activeBackgroundUploadTask.work_title || activeBackgroundUploadTask.source_label || '-'} · ${getUploadBackgroundTargetLabel(activeBackgroundUploadTask)}` : '保留当前上传队列与进度状态' }}
           </div>
         </div>
-        <div class="circle-download-floating-count">{{ getReimportOverallPercent(reimportTrackedTask) }}%</div>
+        <div class="circle-download-floating-count">{{ uploadBackgroundPercent }}%</div>
       </div>
       <el-progress
-        :percentage="getReimportOverallPercent(reimportTrackedTask)"
-        :status="getDownloadTaskProgressStatus(reimportTrackedTask)"
+        :percentage="uploadBackgroundPercent"
         :stroke-width="8"
         :show-text="false"
       />
       <div class="circle-download-floating-chip-row">
-        <span class="circle-download-floating-chip">资源 {{ getTaskResourceCount(reimportTrackedTask) }}</span>
-        <span class="circle-download-floating-chip">已上传 {{ getUploadedCount(reimportTrackedTask) }}</span>
-        <span class="circle-download-floating-chip">速度 {{ formatSpeed(getUploadSpeedBytes(reimportTrackedTask)) }}</span>
-        <span class="circle-download-floating-chip">剩余 {{ formatTaskEta(reimportTrackedTask) }}</span>
-        <span class="circle-download-floating-chip">{{ getDownloadTaskStatusLabel(reimportTrackedTask) }}</span>
+        <span class="circle-download-floating-chip">进行中 {{ processingUploadTasks.length }}</span>
+        <span class="circle-download-floating-chip">等待中 {{ pendingUploadTasks.length }}</span>
+        <span class="circle-download-floating-chip">完成 {{ completedUploadTasks.length }}</span>
+        <span class="circle-download-floating-chip danger">失败 {{ failedUploadTasks.length }}</span>
+        <span class="circle-download-floating-chip">速度 {{ formatSpeed(getUploadBackgroundSpeed(activeBackgroundUploadTask)) }}</span>
+        <span class="circle-download-floating-chip">剩余 {{ formatTaskEta(activeBackgroundUploadTask) }}</span>
       </div>
       <div class="circle-download-floating-text">
-        {{ reimportTrackedTask?.current_step || '隐藏后继续保留入库进度。' }}
+        {{ activeBackgroundUploadTask?.current_step || '隐藏后继续保留上传队列和进度。' }}
       </div>
       <div class="circle-download-floating-actions">
-        <el-button size="small" type="primary" @click="resumeReimportDialogFromBackground">恢复面板</el-button>
-        <el-button size="small" @click="closeReimportBackgroundCard">关闭</el-button>
+        <el-button size="small" type="primary" @click="resumeUploadWorkbenchFromBackground">恢复工作台</el-button>
+        <el-button size="small" @click="closeUploadWorkbench">关闭</el-button>
       </div>
     </div>
+
   </div>
 </template>
 
 <script setup>
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
+import celebrateImg from '../assets/celebrate.png'
+import confettiAnimation from '../assets/anime/Confetti.lottie'
+import { CheckCircle2, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
-import api, { asmrSyncApi, circleCompletionApi, libraryApi } from '../api'
+import api, { asmrSyncApi, circleCompletionApi, libraryApi, localUploadApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
+import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
+import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchDialog.vue'
+import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
+import { showSystemPrompt } from '../composables/useSystemPrompt'
 
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'prekikoeru.circleCompletion.targetSubdirs'
 const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.downloadWorkbench'
 const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'prekikoeru.circleCompletion.refreshJob'
 const CIRCLE_COMPLETION_INDEX_JOB_KEY = 'prekikoeru.circleCompletion.indexJob'
+const CIRCLE_COMPLETION_UPLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.uploadWorkbench'
 
 const circleQuery = ref('')
 const circleSearch = ref('')
@@ -594,6 +842,8 @@ const previewing = ref(false)
 const previewLoading = ref(false)
 const starting = ref(false)
 const activeCircleId = ref('')
+const circleDetailLoading = ref(false)
+const circleDetailLoaded = ref(false)
 const circleList = ref([])
 const detail = reactive({
   circle_id: '',
@@ -623,20 +873,30 @@ const downloadWorkbenchBackgroundActive = ref(false)
 const downloadWorkbenchRefreshing = ref(false)
 const trackedDownloadTasks = ref([])
 const retryingTaskIds = ref(new Set())
-const reimportDialogVisible = ref(false)
-const reimportSubmitting = ref(false)
-const reimportTargetTask = ref(null)
-const reimportTrackingTaskId = ref('')
-const reimportBackgroundActive = ref(false)
-const reimportForm = reactive({
-  targetLibraryId: '',
-  targetSubdir: '',
-})
-const worksPageSize = 24
-const comparePageSize = 10
+const localUploadDialogVisible = ref(false)
+const localUploadSubmitting = ref(false)
+const localUploadSourceItems = ref([])
+const localUploadForm = ref({ targetLibraryId: '', targetSubdir: '' })
+const trackedUploadTaskIds = ref([])
+const trackedUploadTasks = ref([])
+const uploadWorkbenchVisible = ref(false)
+const uploadWorkbenchBackgroundActive = ref(false)
+const uploadWorkbenchRefreshing = ref(false)
+const worksPageSizes = [12, 24, 48, 96]
+const comparePageSizes = [10, 20, 50, 100]
+const worksPageSize = ref(24)
+const comparePageSize = ref(10)
 const missingPage = ref(1)
 const ownedPage = ref(1)
 const comparePage = ref(1)
+const refreshForceRefreshHint = computed(() => {
+  if (refreshJob.meta?.force_refresh) {
+    return refreshJob.meta.force_refresh_reason === 'auto_threshold'
+      ? '1 分钟内连续刷新达到 3 次，当前已自动切换为强制刷新。'
+      : '当前已启用强制刷新，不走缓存。'
+  }
+  return ''
+})
 const indexJob = reactive({
   visible: false,
   job_id: '',
@@ -680,6 +940,9 @@ const downloadSettings = reactive({
 })
 const cachedTargetSubdirs = ref([])
 let flashedWorkTimer = null
+let completeConfettiTimer = null
+const showCompleteConfetti = ref(false)
+const revealCompletePoster = ref(false)
 
 function isPreferredMissingWorkVisible(item) {
   if (item?.owned) return false
@@ -688,19 +951,100 @@ function isPreferredMissingWorkVisible(item) {
 }
 
 const missingWorks = computed(() => (detail.works || []).filter(item => isPreferredMissingWorkVisible(item)))
-const ownedWorks = computed(() => (detail.works || []).filter(item => item.owned))
+const showMissingWorksCompleteState = computed(() =>
+  Boolean(activeCircleId.value)
+  && circleDetailLoaded.value
+  && !circleDetailLoading.value
+  && missingWorks.value.length === 0
+)
+
+watch(showMissingWorksCompleteState, value => {
+  if (completeConfettiTimer) {
+    clearTimeout(completeConfettiTimer)
+    completeConfettiTimer = null
+  }
+
+  if (!value) {
+    showCompleteConfetti.value = false
+    revealCompletePoster.value = false
+    return
+  }
+
+  showCompleteConfetti.value = true
+  revealCompletePoster.value = false
+
+  completeConfettiTimer = setTimeout(() => {
+    showCompleteConfetti.value = false
+    revealCompletePoster.value = true
+    completeConfettiTimer = null
+  }, 1450)
+}, { immediate: true })
+const ownedWorksSearchQuery = ref('')
+const ownedWorksFilterType = ref('all') // 'all', 'original', 'simplified', 'traditional', 'subtitle'
+const compareSearchQuery = ref('')
+const compareSourceFilter = ref('all') // 'all', 'kikoeru', 'dlsite', 'asmr_one', 'missing'
+
+const ownedWorks = computed(() => {
+  let list = (detail.works || []).filter(item => item.owned)
+
+  // Filter
+  if (ownedWorksFilterType.value !== 'all') {
+    list = list.filter(item => {
+      const groupLabel = item.preferred_variant?.group_short_label || '原作'
+      const hasSubtitle = (!item.preferred_variant?.group_short_label || item.preferred_variant?.group_short_label === '原作') && item.subtitle_present
+
+      switch (ownedWorksFilterType.value) {
+        case 'original': return groupLabel === '原作' && !hasSubtitle
+        case 'simplified': return groupLabel === '简中'
+        case 'traditional': return groupLabel === '繁中'
+        case 'subtitle': return hasSubtitle
+        default: return true
+      }
+    })
+  }
+
+  // Search
+  const query = ownedWorksSearchQuery.value.trim().toLowerCase()
+  if (query) {
+    list = list.filter(item => {
+      const rjcode = (item.source_compare?.work_rjcode || item.canonical_rjcode || '').toLowerCase()
+      const title = (item.title || item.canonical_rjcode || '').toLowerCase()
+      return rjcode.includes(query) || title.includes(query)
+    })
+  }
+
+  return list
+})
+
+const ownedWorksStats = computed(() => {
+  const all = (detail.works || []).filter(item => item.owned)
+  return {
+    total: all.length,
+    original: all.filter(item => {
+      const groupLabel = item.preferred_variant?.group_short_label || '原作'
+      const hasSubtitle = (!item.preferred_variant?.group_short_label || item.preferred_variant?.group_short_label === '原作') && item.subtitle_present
+      return groupLabel === '原作' && !hasSubtitle
+    }).length,
+    simplified: all.filter(item => (item.preferred_variant?.group_short_label || '原作') === '简中').length,
+    traditional: all.filter(item => (item.preferred_variant?.group_short_label || '原作') === '繁中').length,
+    subtitle: all.filter(item => (!item.preferred_variant?.group_short_label || item.preferred_variant?.group_short_label === '原作') && item.subtitle_present).length,
+  }
+})
+
 const pagedMissingWorks = computed(() => {
-  const start = (missingPage.value - 1) * worksPageSize
-  return missingWorks.value.slice(start, start + worksPageSize)
+  const size = Number(worksPageSize.value || 24)
+  const start = (missingPage.value - 1) * size
+  return missingWorks.value.slice(start, start + size)
 })
 const pagedOwnedWorks = computed(() => {
-  const start = (ownedPage.value - 1) * worksPageSize
-  return ownedWorks.value.slice(start, start + worksPageSize)
+  const size = Number(worksPageSize.value || 24)
+  const start = (ownedPage.value - 1) * size
+  return ownedWorks.value.slice(start, start + size)
 })
 const compareWorks = computed(() => (detail.works || []).map(item => ({
   workRjcode: String(item?.source_compare?.work_rjcode || item?.canonical_rjcode || '').trim(),
   title: String(item?.title || '').trim(),
-  preferredVariantLabel: String(item?.preferred_variant?.label || '优先版本 未标记').trim(),
+  preferredVariantLabel: String(item?.preferred_variant?.group_short_label || item?.preferred_variant?.label || '').trim(),
   statusLabel: item?.server_owned
     ? formatServerOwnedLabel(item)
     : (item?.has_asmr_one ? '可下载' : '暂无来源'),
@@ -737,6 +1081,82 @@ function formatServerOwnedLabel(item) {
     ''
   ).trim()
   return matched ? `服务器已有 · ${matched}` : '服务器已有'
+}
+
+function normalizeRjcode(value) {
+  const text = String(value || '').trim().toUpperCase()
+  const match = text.match(/[RVB]J(\d{6}|\d{8})(?!\d)/i)
+  return match ? match[0].toUpperCase() : text
+}
+
+function inferCanonicalRjcodesFromUploadTask(task) {
+  const metadata = task?.task_metadata || {}
+  const explicit = [
+    metadata?.canonical_rjcode,
+    metadata?.rjcode,
+    task?.rjcode
+  ]
+    .map(value => normalizeRjcode(value))
+    .filter(Boolean)
+  if (explicit.length) return [...new Set(explicit)]
+
+  const candidates = []
+  const selectedPaths = Array.isArray(metadata?.selected_paths) ? metadata.selected_paths : []
+  const uploaded = Array.isArray(task?.uploaded_files) ? task.uploaded_files : []
+  const selectedItems = Array.isArray(metadata?.selected_items) ? metadata.selected_items : []
+
+  for (const value of selectedPaths) {
+    const normalized = normalizeRjcode(value)
+    if (normalized) candidates.push(normalized)
+  }
+  for (const item of selectedItems) {
+    const normalized = normalizeRjcode(item?.source_path)
+    if (normalized) candidates.push(normalized)
+  }
+  for (const item of uploaded) {
+    const normalized = normalizeRjcode(item?.name || item?.relative_path || item?.upload_path)
+    if (normalized) candidates.push(normalized)
+  }
+  return [...new Set(candidates.filter(Boolean))]
+}
+
+function applyOptimisticOwnedStateForUploadTask(task) {
+  if (!task || String(task?.task_metadata?.source_action || '').trim() !== 'direct_reimport_upload') return
+  if (!Array.isArray(detail.works) || !detail.works.length) return
+  const targetCodes = new Set(inferCanonicalRjcodesFromUploadTask(task))
+  if (!targetCodes.size) return
+
+  let changed = false
+  detail.works = detail.works.map(item => {
+    const canonical = normalizeRjcode(item?.canonical_rjcode)
+    const display = normalizeRjcode(item?.display_rjcode)
+    const linked = Array.isArray(item?.linked_rjcodes) ? item.linked_rjcodes.map(code => normalizeRjcode(code)).filter(Boolean) : []
+    const matched = targetCodes.has(canonical) || targetCodes.has(display) || linked.some(code => targetCodes.has(code))
+    if (!matched) return item
+    changed = true
+    return {
+      ...item,
+      owned: true,
+      completion_owned: true,
+      local_download_ready: false,
+      local_download_root: '',
+      local_download_session_id: '',
+      local_downloaded_count: 0,
+      server_owned: true,
+      server_match_rjcodes: item.server_match_rjcodes?.length ? item.server_match_rjcodes : [display || canonical].filter(Boolean),
+      server_match_primary_rjcode: String(item.server_match_primary_rjcode || display || canonical || '').trim(),
+      status_tags: [
+        ...(item.local_owned ? ['库存已收录'] : []),
+        '服务器已有',
+        ...(item.has_asmr_one ? ['可下载'] : ['暂不可下载']),
+      ]
+    }
+  })
+  if (!changed) return
+  detail.owned_count = (detail.works || []).filter(item => item?.server_owned).length
+  detail.missing_count = (detail.works || []).filter(item => !item?.owned).length
+  detail.downloadable_count = (detail.works || []).filter(item => !item?.owned && item?.has_asmr_one).length
+  detail.dl_only_count = (detail.works || []).filter(item => !item?.owned && !item?.has_asmr_one).length
 }
 
 function normalizeKikoeruTags(tags) {
@@ -778,8 +1198,68 @@ function prioritizeChangedWorks(codes = []) {
 }
 
 const pagedCompareWorks = computed(() => {
-  const start = (comparePage.value - 1) * comparePageSize
-  return compareWorks.value.slice(start, start + comparePageSize)
+  let list = compareWorks.value
+
+  if (compareSourceFilter.value !== 'all') {
+    list = list.filter(item => {
+      switch (compareSourceFilter.value) {
+        case 'kikoeru': return item.statusKey === 'owned'
+        case 'dlsite': return !!item.sourceCompare.dlsite.all_rjcodes.length
+        case 'asmr_one': return !!item.sourceCompare.asmr_one.primary_rjcode
+        case 'missing': return !item.sourceCompare.kikoeru.primary_rjcode && !item.sourceCompare.dlsite.all_rjcodes.length && !item.sourceCompare.asmr_one.primary_rjcode
+        default: return true
+      }
+    })
+  }
+
+  const query = compareSearchQuery.value.trim().toLowerCase()
+  if (query) {
+    list = list.filter(item => {
+      const rjcode = item.workRjcode.toLowerCase()
+      const title = item.title.toLowerCase()
+      return rjcode.includes(query) || title.includes(query)
+    })
+  }
+
+  const size = Number(comparePageSize.value || 10)
+  const start = (comparePage.value - 1) * size
+  return list.slice(start, start + size)
+})
+
+const compareWorksFilteredCount = computed(() => {
+  let list = compareWorks.value
+  if (compareSourceFilter.value !== 'all') {
+    list = list.filter(item => {
+      switch (compareSourceFilter.value) {
+        case 'kikoeru': return item.statusKey === 'owned'
+        case 'dlsite': return !!item.sourceCompare.dlsite.all_rjcodes.length
+        case 'asmr_one': return !!item.sourceCompare.asmr_one.primary_rjcode
+        case 'missing': return !item.sourceCompare.kikoeru.primary_rjcode && !item.sourceCompare.dlsite.all_rjcodes.length && !item.sourceCompare.asmr_one.primary_rjcode
+        default: return true
+      }
+    })
+  }
+  const query = compareSearchQuery.value.trim().toLowerCase()
+  if (query) {
+    list = list.filter(item => {
+      const rjcode = item.workRjcode.toLowerCase()
+      const title = item.title.toLowerCase()
+      return rjcode.includes(query) || title.includes(query)
+    })
+  }
+  return list.length
+})
+
+const compareWorksStats = computed(() => {
+  const all = compareWorks.value
+
+  return {
+    total: all.length,
+    kikoeru: all.filter(item => item.statusKey === 'owned').length,
+    dlsite: all.filter(item => !!item.sourceCompare.dlsite.all_rjcodes.length).length,
+    asmr_one: all.filter(item => !!item.sourceCompare.asmr_one.primary_rjcode).length,
+    missing: all.filter(item => !item.sourceCompare.kikoeru.primary_rjcode && !item.sourceCompare.dlsite.all_rjcodes.length && !item.sourceCompare.asmr_one.primary_rjcode).length
+  }
 })
 const selectedCanonicalRJCodes = computed(() => [...selectedCanonicals.value])
 const selectedDownloadableRJCodes = computed(() => selectedCanonicalRJCodes.value.filter(code => {
@@ -815,13 +1295,26 @@ const completedDownloadTasks = computed(() => trackedDownloadTasks.value.filter(
 const failedDownloadTasks = computed(() => trackedDownloadTasks.value.filter(task => String(task.status || '') === 'failed'))
 const showDownloadBackgroundCard = computed(() => downloadWorkbenchBackgroundActive.value && !downloadWorkbenchVisible.value && trackedDownloadTaskIds.value.length > 0)
 const activeBackgroundDownloadTask = computed(() => processingDownloadTasks.value[0] || pendingDownloadTasks.value[0] || trackedDownloadTasks.value[0] || null)
-const reimportTrackedTask = computed(() => trackedDownloadTasks.value.find(task => String(task.id || '') === String(reimportTrackingTaskId.value || '').trim()) || null)
-const showReimportBackgroundCard = computed(() =>
-  reimportBackgroundActive.value
-  && !reimportDialogVisible.value
-  && Boolean(reimportTrackedTask.value)
-  && ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(reimportTrackedTask.value?.status || ''))
-)
+const processingUploadTasks = computed(() => trackedUploadTasks.value.filter(task => ['processing'].includes(String(task?.status || ''))))
+const pendingUploadTasks = computed(() => trackedUploadTasks.value.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))))
+const completedUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'completed'))
+const failedUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'failed'))
+const showUploadBackgroundCard = computed(() => uploadWorkbenchBackgroundActive.value && !uploadWorkbenchVisible.value && trackedUploadTaskIds.value.length > 0)
+const activeBackgroundUploadTask = computed(() => processingUploadTasks.value[0] || pendingUploadTasks.value[0] || trackedUploadTasks.value[0] || null)
+const uploadBackgroundPercent = computed(() => {
+  if (!trackedUploadTasks.value.length) return 0
+  const aggregate = trackedUploadTasks.value.reduce((sum, task) => {
+    const runtime = task?.upload_runtime || {}
+    sum.transferred += Number(runtime?.transferred_bytes || 0)
+    sum.total += Number(runtime?.total_bytes || 0)
+    return sum
+  }, { transferred: 0, total: 0 })
+  if (aggregate.total > 0) {
+    return Math.max(0, Math.min(100, Math.round((aggregate.transferred / aggregate.total) * 100)))
+  }
+  const total = trackedUploadTasks.value.reduce((sum, task) => sum + Number(task?.progress || 0), 0)
+  return Math.max(0, Math.min(100, Math.round(total / trackedUploadTasks.value.length)))
+})
 const backgroundDownloadPercent = computed(() => {
   if (!trackedDownloadTasks.value.length) return 0
   const aggregate = trackedDownloadTasks.value.reduce((sum, task) => {
@@ -861,9 +1354,11 @@ onMounted(async () => {
   hydrateIndexJobState()
   hydrateRefreshJobState()
   hydrateDownloadWorkbenchState()
+  restoreUploadWorkbenchState()
   loadCachedTargetSubdirs()
   await Promise.all([loadRecentCircles(), loadLibraries()])
   if (trackedDownloadTaskIds.value.length) await refreshDownloadWorkbench()
+  if (trackedUploadTaskIds.value.length) await refreshUploadWorkbench({ silent: true })
   if (indexJob.job_id && ['pending', 'processing'].includes(String(indexJob.status || ''))) {
     await pollIndexJob(indexJob.job_id)
   }
@@ -898,13 +1393,21 @@ onActivated(() => {
   if (trackedDownloadTaskIds.value.length) {
     refreshDownloadWorkbench()
   }
+  if (trackedUploadTaskIds.value.length) {
+    refreshUploadWorkbench({ silent: true })
+  }
 })
 
 onBeforeUnmount(() => {
+  if (completeConfettiTimer) {
+    clearTimeout(completeConfettiTimer)
+    completeConfettiTimer = null
+  }
   stopIndexJobPolling()
   stopRefreshJobPolling()
   stopRefreshJobAutoHide()
   stopDownloadWorkbenchPolling()
+  stopUploadWorkbenchPolling()
 })
 
 watch(activeTab, (tab) => {
@@ -935,6 +1438,22 @@ watch(trackedDownloadTaskIds, () => {
   persistDownloadWorkbenchState()
 }, { deep: true })
 
+watch(uploadWorkbenchVisible, () => {
+  persistUploadWorkbenchState()
+  if (uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
+  else stopUploadWorkbenchPolling()
+})
+
+watch(uploadWorkbenchBackgroundActive, () => {
+  persistUploadWorkbenchState()
+  if (uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
+  else stopUploadWorkbenchPolling()
+})
+
+watch(trackedUploadTaskIds, () => {
+  persistUploadWorkbenchState()
+}, { deep: true })
+
 watch(
   () => [refreshJob.job_id, refreshJob.status, refreshJob.progress, refreshJob.current_step, refreshJob.elapsed_seconds].join(':'),
   () => {
@@ -945,20 +1464,6 @@ watch(
 watch(() => downloadSettings.targetSubdir, (value) => {
   if (value) rememberTargetSubdir(value)
 })
-
-watch(
-  () => [reimportTrackedTask.value?.id, reimportTrackedTask.value?.status, reimportTrackedTask.value?.completed_at].join(':'),
-  async (value, previousValue) => {
-    if (!value || value === previousValue) return
-    if (!reimportTrackedTask.value || !isTaskFinished(reimportTrackedTask.value)) return
-    try {
-      await Promise.all([
-        refreshDownloadWorkbench({ silent: true }),
-        activeCircleId.value ? refreshActiveCircle() : Promise.resolve()
-      ])
-    } catch (_) {}
-  }
-)
 
 watch(
   () => trackedDownloadTasks.value.map(task => [task?.id, task?.status, task?.completed_at].join(':')).join('|'),
@@ -972,6 +1477,28 @@ watch(
       return !previousText.includes(taskId) || !previousText.includes(`${taskId}:${task.status}:${task.completed_at || ''}`)
     })
     if (!justFinished || !activeCircleId.value) return
+    try {
+      await refreshActiveCircle()
+    } catch (_) {}
+  }
+)
+
+watch(
+  () => trackedUploadTasks.value.map(task => [task?.id, task?.status, task?.completed_at].join(':')).join('|'),
+  async (value, previousValue) => {
+    if (!value || value === previousValue) return
+    const justCompletedTasks = trackedUploadTasks.value.filter(task => {
+      if (!task || String(task?.status || '') !== 'completed') return false
+      const taskId = String(task?.id || '').trim()
+      const previousText = String(previousValue || '')
+      if (!taskId) return false
+      return !previousText.includes(taskId) || !previousText.includes(`${taskId}:${task.status}:${task.completed_at || ''}`)
+    })
+    if (!justCompletedTasks.length) return
+    for (const task of justCompletedTasks) {
+      applyOptimisticOwnedStateForUploadTask(task)
+    }
+    if (!activeCircleId.value) return
     try {
       await refreshActiveCircle()
     } catch (_) {}
@@ -1039,8 +1566,15 @@ function isTaskFinished(task) {
 }
 
 function formatTaskEta(task) {
+  if (!task) return '—'
   if (isTaskFinished(task) || getReimportOverallPercent(task) >= 100) return '完成'
   return formatEtaSeconds(getUploadEtaSeconds(task))
+}
+
+function formatDownloadTaskEta(task) {
+  if (!task) return '—'
+  if (isTaskFinished(task) || backgroundDownloadPercent.value >= 100) return '完成'
+  return formatEtaSeconds(getDownloadEtaSeconds(task))
 }
 
 function formatFileEta(file) {
@@ -1341,9 +1875,18 @@ function persistIndexJobState() {
   } catch (_) {}
 }
 
+function isCancelledJobState(raw = {}) {
+  return String(raw?.error_message || '').trim() === '用户取消'
+    || String(raw?.current_step || '').trim() === '已取消'
+}
+
 function hydrateIndexJobState() {
   try {
     const raw = JSON.parse(localStorage.getItem(CIRCLE_COMPLETION_INDEX_JOB_KEY) || '{}')
+    if (isCancelledJobState(raw)) {
+      clearIndexJobState()
+      return
+    }
     indexJob.visible = Boolean(raw.job_id && raw.visible !== false)
     indexJob.job_id = String(raw.job_id || '').trim()
     indexJob.status = String(raw.status || '').trim()
@@ -1421,6 +1964,10 @@ function persistRefreshJobState() {
 function hydrateRefreshJobState() {
   try {
     const raw = JSON.parse(localStorage.getItem(CIRCLE_COMPLETION_REFRESH_JOB_KEY) || '{}')
+    if (String(raw.status || '').trim() === 'failed') {
+      clearRefreshJobState()
+      return
+    }
     refreshJob.visible = Boolean(raw.job_id)
     refreshJob.job_id = String(raw.job_id || '').trim()
     refreshJob.status = String(raw.status || '').trim()
@@ -1628,93 +2175,67 @@ function handleRetrySingleFailedFile(payload) {
   retrySingleFailedFile(payload?.task, payload?.file)
 }
 
-function openReimportDialog(task) {
-  reimportTargetTask.value = task
-  reimportTrackingTaskId.value = ''
-  reimportBackgroundActive.value = false
-  reimportForm.targetLibraryId = downloadSettings.targetLibraryId || ''
-  reimportForm.targetSubdir = downloadSettings.targetSubdir || ''
-  reimportDialogVisible.value = true
-}
-
-async function submitReimportDownloaded() {
-  const task = reimportTargetTask.value
-  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
-  const downloadRoot = String(task?.task_metadata?.local_download_root || '').trim()
-  const rjcode = String(task?.rjcode || task?.task_metadata?.rjcode || '').trim()
-  const circleName = String(task?.circle_name || task?.task_metadata?.circle_name || detail.circle_name || '').trim()
-  if (!sessionId && !downloadRoot) return ElMessage.error('当前任务缺少可复用来源')
-  if (!reimportForm.targetLibraryId) return ElMessage.warning('先选目标库存')
-  reimportSubmitting.value = true
-  try {
-    const targetLibrary = targetLibraries.value.find(item => item.id === reimportForm.targetLibraryId)
-    if (targetLibrary?.type === 'synology_filestation') {
-      const connection = await libraryApi.testConnection(targetLibrary)
-      if (!connection?.ok) {
-        throw new Error(connection?.message || '目标远程库存连接失败')
-      }
-    }
-    let nextTaskId = ''
-    if (sessionId) {
-      const response = await asmrSyncApi.reimportDownloadedSession(sessionId, {
-        targetLibraryId: reimportForm.targetLibraryId,
-        targetSubdir: reimportForm.targetSubdir,
-      })
-      nextTaskId = String(response?.session?.task_id || '').trim()
-    } else {
-      const response = await asmrSyncApi.reimportLocalDownload({
-        downloadRoot,
-        rjcode,
-        circleName,
-        targetLibraryId: reimportForm.targetLibraryId,
-        targetSubdir: reimportForm.targetSubdir,
-      })
-      nextTaskId = String(response?.result?.task_id || '').trim()
-    }
-    if (nextTaskId && !trackedDownloadTaskIds.value.includes(nextTaskId)) {
-      trackedDownloadTaskIds.value = [...trackedDownloadTaskIds.value, nextTaskId]
-    }
-    reimportTrackingTaskId.value = nextTaskId
-    reimportBackgroundActive.value = false
-    ElMessage.success('已提交直接入库任务')
-    await Promise.all([
-      refreshDownloadWorkbench({ silent: true }),
-      activeCircleId.value ? refreshActiveCircle() : Promise.resolve()
-    ])
-  } catch (error) {
-    ElMessage.error(error.response?.data?.detail || error.message || '重新入库失败')
-  } finally {
-    reimportSubmitting.value = false
+function buildReimportSourceFromWork(item) {
+  const canonicalRjcode = String(item?.canonical_rjcode || item?.display_rjcode || '').trim().toUpperCase()
+  const downloadRoot = String(item?.local_download_root || '').trim()
+  return {
+    canonical_rjcode: canonicalRjcode,
+    session_id: String(item?.local_download_session_id || '').trim(),
+    download_root: downloadRoot,
+    rjcode: String(item?.display_rjcode || item?.canonical_rjcode || '').trim().toUpperCase(),
+    circle_name: String(item?.circle_name || detail.circle_name || '').trim(),
+    name: downloadRoot ? downloadRoot.split(/[\\/]/).filter(Boolean).pop() || canonicalRjcode : canonicalRjcode,
   }
 }
 
-function hideReimportDialogToBackground() {
-  if (!reimportTrackedTask.value) return
-  reimportDialogVisible.value = false
-  reimportBackgroundActive.value = true
+function getDownloadSpeedBytes(task) {
+  const runtimeSpeed = Number(getDownloadRuntime(task)?.speed_bytes_per_sec || 0)
+  if (runtimeSpeed > 0) return runtimeSpeed
+  if (isTaskFinished(task)) {
+    const details = task?.performance_metrics || task?.task_metadata?.performance_metrics || {}
+    return Number(details?.average_download_speed_bytes || 0)
+  }
+  return 0
 }
 
-function handleReimportDialogBeforeClose(done) {
-  if (isReimportTaskActive(reimportTrackedTask.value)) {
-    hideReimportDialogToBackground()
+function getDownloadEtaSeconds(task) {
+  return Number(getDownloadRuntime(task)?.eta_seconds || 0)
+}
+
+function buildReimportSourceFromTask(task) {
+  const metadata = task?.task_metadata || {}
+  const downloadRoot = String(metadata?.local_download_root || '').trim()
+  return {
+    canonical_rjcode: String(metadata?.canonical_rjcode || task?.rjcode || metadata?.rjcode || '').trim().toUpperCase(),
+    session_id: String(metadata?.session_id || task?.session_id || '').trim(),
+    download_root: downloadRoot,
+    rjcode: String(task?.rjcode || metadata?.rjcode || '').trim().toUpperCase(),
+    circle_name: String(task?.circle_name || metadata?.circle_name || detail.circle_name || '').trim(),
+    name: downloadRoot ? downloadRoot.split(/[\\/]/).filter(Boolean).pop() || String(task?.rjcode || metadata?.rjcode || '').trim().toUpperCase() : String(task?.rjcode || metadata?.rjcode || '').trim().toUpperCase(),
+  }
+}
+
+function openLocalUploadDialogWithSources(sources = []) {
+  const normalized = sources
+    .filter(source => String(source?.download_root || '').trim())
+    .map(source => ({
+      ...source,
+      path: String(source.download_root || '').trim(),
+      name: String(source.name || '').trim() || String(source.rjcode || source.canonical_rjcode || '').trim(),
+    }))
+  if (!normalized.length) {
+    ElMessage.error('当前任务缺少可复用的下载目录')
     return
   }
-  done()
-}
-
-function closeReimportDialog() {
-  reimportDialogVisible.value = false
-  reimportBackgroundActive.value = false
-}
-
-function resumeReimportDialogFromBackground() {
-  if (!reimportTrackedTask.value) return
-  reimportDialogVisible.value = true
-  reimportBackgroundActive.value = false
-}
-
-function closeReimportBackgroundCard() {
-  reimportBackgroundActive.value = false
+  localUploadSourceItems.value = normalized.map(source => ({
+    name: source.name,
+    path: source.path,
+  }))
+  localUploadForm.value = {
+    targetLibraryId: localUploadForm.value.targetLibraryId || downloadSettings.targetLibraryId || targetLibraries.value.find(item => item?.type === 'synology_filestation')?.id || '',
+    targetSubdir: localUploadForm.value.targetSubdir || downloadSettings.targetSubdir || ''
+  }
+  localUploadDialogVisible.value = true
 }
 
 function hideDownloadWorkbenchToBackground() {
@@ -1790,15 +2311,22 @@ async function pollIndexJob(jobId) {
       clearIndexJobState()
       activeCircleId.value = result.circle_id || result.result?.circle_id || ''
       await Promise.all([loadRecentCircles(), refreshActiveCircle()])
-      ElMessage.success('社团索引已刷新')
+      const onlyNewWorks = Boolean(result.meta?.only_new_works)
+      const newlyIndexedCount = Number(result.result?.incremental?.newly_indexed_count || result.meta?.newly_indexed_count || 0)
+      if (result.meta?.is_batch) {
+        ElMessage.success(`批量建立完成，成功 ${result.meta.completed_queries || 0} 个，失败 ${result.meta.failed_queries || 0} 个`)
+      } else {
+        ElMessage.success(onlyNewWorks ? `新作索引完成，新增 ${newlyIndexedCount} 个作品` : '社团索引已刷新')
+      }
       return
     }
     if (result.status === 'failed') {
-      persistIndexJobState()
       indexing.value = false
       if (result.error_message === '用户取消' || result.current_step === '已取消') {
+        clearIndexJobState()
         ElMessage.info('社团索引已取消')
       } else {
+        persistIndexJobState()
         ElMessage.error(result.error_message || '社团索引失败')
       }
       return
@@ -1871,12 +2399,7 @@ async function cancelIndexJob() {
   cancellingIndexJob.value = true
   try {
     await api.task.cancel(indexJob.job_id)
-    stopIndexJobPolling()
-    indexJob.status = 'failed'
-    indexJob.current_step = '已取消'
-    indexJob.error_message = '用户取消'
-    indexing.value = false
-    persistIndexJobState()
+    clearIndexJobState()
     ElMessage.success('已发送取消请求')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '取消社团索引失败')
@@ -1890,12 +2413,8 @@ async function cancelRefreshJob() {
   cancellingRefreshJob.value = true
   try {
     await api.task.cancel(refreshJob.job_id)
-    stopRefreshJobPolling()
-    refreshJob.status = 'failed'
-    refreshJob.current_step = '已取消'
-    refreshJob.error_message = '用户取消'
     refreshingCurrentCircle.value = false
-    persistRefreshJobState()
+    clearRefreshJobState()
     ElMessage.success('已发送取消请求')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '取消批量刷新失败')
@@ -1928,17 +2447,76 @@ async function searchCachedCircles() {
 }
 
 async function handleIndexCircle() {
-  if (!circleQuery.value.trim()) {
+  await startIndexCircleJob({
+    circleQuery: circleQuery.value.trim(),
+    onlyNewWorks: false
+  })
+}
+
+function normalizeBatchCircleQueries(text = '') {
+  const seen = new Set()
+  return String(text || '')
+    .split(/\r?\n/)
+    .map(item => item.trim())
+    .filter(item => {
+      if (!item || seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
+}
+
+async function openBatchIndexPrompt() {
+  try {
+    const value = await showSystemPrompt({
+      title: '批量建立社团索引',
+      description: '一行一个社团名，提交后会按顺序批量建立或刷新索引。',
+      badge: '社团补全',
+      mode: 'prompt',
+      inputType: 'textarea',
+      placeholder: '例如：\nリリムワークス/兎月りりむ。\n耳かき屋\nしろくまだんご',
+      confirmText: '开始批量建立',
+      cancelText: '取消',
+      validator: value => {
+        const queries = normalizeBatchCircleQueries(value)
+        if (!queries.length) return '至少输入一个社团名'
+        if (queries.length > 100) return '一次最多提交 100 个社团'
+        return true
+      }
+    })
+    const circleQueries = normalizeBatchCircleQueries(value)
+    await startIndexCircleJob({
+      circleQueries,
+      onlyNewWorks: false
+    })
+  } catch (_) {}
+}
+
+async function handleIndexOnlyNewWorks() {
+  const targetQuery = String(detail.circle_name || circleQuery.value || '').trim()
+  await startIndexCircleJob({
+    circleQuery: targetQuery,
+    onlyNewWorks: true
+  })
+}
+
+async function startIndexCircleJob({ circleQuery: targetQuery, circleQueries: rawCircleQueries = [], onlyNewWorks = false } = {}) {
+  const normalizedQueries = Array.isArray(rawCircleQueries)
+    ? rawCircleQueries.map(item => String(item || '').trim()).filter(Boolean)
+    : []
+  if (!normalizedQueries.length && !String(targetQuery || '').trim()) {
     ElMessage.warning('先输入社团名')
     return
   }
+  const finalCircleQueries = normalizedQueries.length ? normalizedQueries : [String(targetQuery || '').trim()]
   indexing.value = true
   try {
     const result = await circleCompletionApi.startIndexCircle({
-      circle_query: circleQuery.value.trim(),
+      circle_query: finalCircleQueries[0],
+      circle_queries: finalCircleQueries,
       force_refresh: true,
       include_dlsite: true,
-      include_kikoeru: true
+      include_kikoeru: true,
+      only_new_works: Boolean(onlyNewWorks)
     })
     applyIndexJob(result)
     await pollIndexJob(result.job_id)
@@ -1969,9 +2547,15 @@ async function refreshSelectedCircleIndex() {
     const result = await circleCompletionApi.startRefreshSelectedWorks({
       circle_id: circleId,
       circle_name: detail.circle_name || '',
-      canonical_rjcodes: codes
+      canonical_rjcodes: codes,
+      force_refresh: false
     })
     applyRefreshJob(result)
+    if (result.meta?.force_refresh) {
+      ElMessage.info(result.meta.force_refresh_reason === 'auto_threshold'
+        ? '1 分钟内连续刷新达到 3 次，本次已自动强制刷新并跳过缓存'
+        : '本次已使用强制刷新')
+    }
     await pollRefreshJob(result.job_id)
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '批量刷新选中作品失败')
@@ -1984,12 +2568,14 @@ async function refreshSelectedCircleIndex() {
 
 async function selectCircle(circleId) {
   activeCircleId.value = circleId
+  circleDetailLoaded.value = false
   selectedCanonicals.value = new Set()
   await refreshActiveCircle()
 }
 
 async function refreshActiveCircle() {
   if (!activeCircleId.value) return
+  circleDetailLoading.value = true
   try {
     const result = await circleCompletionApi.getCircleDetail(activeCircleId.value, {
       onlyMissing: filters.onlyMissing,
@@ -2007,11 +2593,14 @@ async function refreshActiveCircle() {
       dl_only_count: result.dl_only_count || 0,
       works: result.works || []
     })
+    circleDetailLoaded.value = true
     selectedCanonicals.value = new Set(
       [...selectedCanonicals.value].filter(code => (result.works || []).some(item => item.canonical_rjcode === code))
     )
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '加载社团详情失败')
+  } finally {
+    circleDetailLoading.value = false
   }
 }
 
@@ -2034,28 +2623,17 @@ function clearSelection() {
 }
 
 function openReimportDialogForWork(item) {
-  const sessionId = String(item?.local_download_session_id || '').trim()
-  const downloadRoot = String(item?.local_download_root || '').trim()
-  if (!sessionId && !downloadRoot) {
-    ElMessage.error('当前作品缺少可复用的下载目录')
+  if (!String(item?.local_download_root || '').trim()) {
+    ElMessage.error('本地下载目录不存在，无法直接入库')
     return
   }
-  reimportTargetTask.value = {
-    id: `work:${item?.canonical_rjcode || sessionId}`,
-    session_id: sessionId,
-    rjcode: String(item?.canonical_rjcode || item?.display_rjcode || '').trim(),
-    circle_name: String(item?.circle_name || detail.circle_name || '').trim(),
-    task_metadata: {
-      session_id: sessionId,
-      local_download_root: downloadRoot,
-      local_download_ready: Boolean(item?.local_download_ready),
-      local_downloaded_count: Number(item?.local_downloaded_count || 0),
-    },
-  }
-  reimportTrackingTaskId.value = ''
-  reimportForm.targetLibraryId = downloadSettings.targetLibraryId || ''
-  reimportForm.targetSubdir = downloadSettings.targetSubdir || ''
-  reimportDialogVisible.value = true
+  const source = buildReimportSourceFromWork(item)
+  openLocalUploadDialogWithSources([source])
+}
+
+function openLocalUploadDialogForTask(task) {
+  const source = buildReimportSourceFromTask(task)
+  openLocalUploadDialogWithSources([source])
 }
 
 async function openBatchPreview(singleCanonical = '') {
@@ -2120,6 +2698,178 @@ async function startBatchDownload(payload = {}) {
     starting.value = false
   }
 }
+
+async function submitLocalUpload(payload = {}) {
+  const selectedPaths = Array.isArray(payload?.selected_paths) ? payload.selected_paths.filter(Boolean) : []
+  const targetLibraryId = String(payload?.target_library_id || localUploadForm.value.targetLibraryId || '').trim()
+  const targetSubdir = String(payload?.target_subdir || localUploadForm.value.targetSubdir || '').trim()
+  const sourceBasePath = localUploadSourceItems.value.length === 1
+    ? String(localUploadSourceItems.value[0]?.path || '').trim()
+    : String(commonAncestorPath(selectedPaths) || '').trim()
+
+  if (!selectedPaths.length) return ElMessage.warning('请先选中要上传的目录')
+  if (!targetLibraryId) return ElMessage.warning('请选择目标服务器库存')
+  if (!sourceBasePath) return ElMessage.warning('缺少来源目录')
+
+  localUploadForm.value = { targetLibraryId, targetSubdir }
+  localUploadSubmitting.value = true
+  try {
+    const createdTaskIds = []
+    for (const selectedPath of selectedPaths) {
+      const result = await localUploadApi.start({
+        source_library_id: '',
+        source_base_path: sourceBasePath,
+        selected_paths: [selectedPath],
+        target_library_id: targetLibraryId,
+        target_subdir: targetSubdir,
+        circle_name: detail.circle_name || ''
+      })
+      if (result?.task_id) rememberUploadTaskId(result.task_id)
+      if (result?.task_id) createdTaskIds.push(result.task_id)
+    }
+    rememberTargetSubdir(targetSubdir || '')
+    downloadSettings.targetLibraryId = targetLibraryId
+    downloadSettings.targetSubdir = targetSubdir
+    uploadWorkbenchVisible.value = true
+    uploadWorkbenchBackgroundActive.value = false
+    localUploadDialogVisible.value = false
+    persistUploadWorkbenchState()
+    await refreshUploadWorkbench({ silent: true })
+    ElMessage.success(`已创建 ${createdTaskIds.length || selectedPaths.length} 个直接入库上传任务`)
+    await refreshActiveCircle()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '直接入库上传失败')
+  } finally {
+    localUploadSubmitting.value = false
+  }
+}
+
+function commonAncestorPath(paths = []) {
+  const normalized = paths.map(path => String(path || '').trim()).filter(Boolean)
+  if (!normalized.length) return ''
+  const splitPaths = normalized.map(path => path.replace(/\\/g, '/').split('/'))
+  const first = splitPaths[0]
+  const shared = []
+  for (let index = 0; index < first.length; index += 1) {
+    const segment = first[index]
+    if (splitPaths.every(parts => parts[index] === segment)) shared.push(segment)
+    else break
+  }
+  return shared.join('/').replace(/^([A-Za-z]:)$/, '$1/')
+}
+
+function persistUploadWorkbenchState() {
+  try {
+    localStorage.setItem(CIRCLE_COMPLETION_UPLOAD_WORKBENCH_KEY, JSON.stringify({
+      taskIds: trackedUploadTaskIds.value,
+      visible: uploadWorkbenchVisible.value,
+      background: uploadWorkbenchBackgroundActive.value
+    }))
+  } catch (_) {}
+}
+
+function restoreUploadWorkbenchState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CIRCLE_COMPLETION_UPLOAD_WORKBENCH_KEY) || '{}')
+    trackedUploadTaskIds.value = Array.isArray(raw.taskIds) ? raw.taskIds.filter(Boolean) : []
+    uploadWorkbenchVisible.value = Boolean(raw.visible && trackedUploadTaskIds.value.length)
+    uploadWorkbenchBackgroundActive.value = Boolean(raw.background && trackedUploadTaskIds.value.length)
+  } catch (_) {
+    trackedUploadTaskIds.value = []
+    uploadWorkbenchVisible.value = false
+    uploadWorkbenchBackgroundActive.value = false
+  }
+}
+
+let uploadWorkbenchTimer = null
+function stopUploadWorkbenchPolling() {
+  if (uploadWorkbenchTimer) {
+    window.clearTimeout(uploadWorkbenchTimer)
+    uploadWorkbenchTimer = null
+  }
+}
+
+function startUploadWorkbenchPolling() {
+  if (!trackedUploadTaskIds.value.length) return
+  stopUploadWorkbenchPolling()
+  uploadWorkbenchTimer = window.setTimeout(() => {
+    refreshUploadWorkbench({ silent: true })
+  }, 2000)
+}
+
+function rememberUploadTaskId(nextTaskId) {
+  const normalized = String(nextTaskId || '').trim()
+  if (!normalized || trackedUploadTaskIds.value.includes(normalized)) return
+  trackedUploadTaskIds.value = [normalized, ...trackedUploadTaskIds.value]
+}
+
+async function refreshUploadWorkbench(options = {}) {
+  const silent = Boolean(options?.silent)
+  if (!trackedUploadTaskIds.value.length) {
+    trackedUploadTasks.value = []
+    stopUploadWorkbenchPolling()
+    persistUploadWorkbenchState()
+    return
+  }
+  if (!silent) uploadWorkbenchRefreshing.value = true
+  try {
+    const result = await localUploadApi.status({
+      task_ids: trackedUploadTaskIds.value.join(','),
+      include_hidden: true
+    })
+    const allTasks = Array.isArray(result.tasks) ? result.tasks : []
+    const nextTrackedTasks = trackedUploadTaskIds.value
+      .map(id => allTasks.find(task => String(task?.id || '') === String(id || '')))
+      .filter(Boolean)
+    trackedUploadTasks.value = nextTrackedTasks
+    if (nextTrackedTasks.length) {
+      trackedUploadTaskIds.value = nextTrackedTasks.map(task => task.id)
+    }
+    const justCompleted = trackedUploadTasks.value.some(task => ['completed', 'failed'].includes(String(task?.status || '')))
+    if (justCompleted && activeCircleId.value) {
+      await refreshActiveCircle()
+    }
+    const stillActive = trackedUploadTasks.value.some(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
+    if (stillActive || uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
+    else stopUploadWorkbenchPolling()
+    persistUploadWorkbenchState()
+  } catch (error) {
+    if (!silent) ElMessage.error(error.response?.data?.detail || error.message || '获取上传任务失败')
+    if (uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
+  } finally {
+    if (!silent) uploadWorkbenchRefreshing.value = false
+  }
+}
+
+function hideUploadWorkbenchToBackground() {
+  uploadWorkbenchVisible.value = false
+  uploadWorkbenchBackgroundActive.value = true
+  persistUploadWorkbenchState()
+}
+
+function resumeUploadWorkbenchFromBackground() {
+  uploadWorkbenchBackgroundActive.value = false
+  uploadWorkbenchVisible.value = true
+  persistUploadWorkbenchState()
+}
+
+async function closeUploadWorkbench() {
+  uploadWorkbenchVisible.value = false
+  uploadWorkbenchBackgroundActive.value = false
+  trackedUploadTaskIds.value = []
+  trackedUploadTasks.value = []
+  stopUploadWorkbenchPolling()
+  persistUploadWorkbenchState()
+}
+
+function getUploadBackgroundSpeed(task) {
+  const runtime = task?.upload_runtime || {}
+  return Number(runtime?.speed_bytes_per_sec || runtime?.last_non_zero_speed_bytes_per_sec || 0)
+}
+
+function getUploadBackgroundTargetLabel(task) {
+  return String(task?.task_metadata?.final_output_path || task?.task_metadata?.target_path || task?.output_path || '目标路径处理中').trim()
+}
 </script>
 
 <style scoped>
@@ -2128,6 +2878,21 @@ async function startBatchDownload(payload = {}) {
   gap: 16px;
   padding: 6px;
 }
+
+.circle-works-loading-state {
+  position: relative;
+  display: grid;
+  place-items: center;
+  gap: 18px;
+  min-height: 430px;
+  margin-top: 8px;
+  overflow: hidden;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .download-settings-card {
   display: grid;
   gap: 14px;
@@ -2886,11 +3651,12 @@ async function startBatchDownload(payload = {}) {
 .hero-search-input :deep(.el-input__wrapper) {
   min-height: 46px;
   border-radius: 14px;
-  box-shadow: 0 0 0 1px rgba(29, 29, 31, 0.08) inset;
-  background: rgba(255, 255, 255, 0.96);
+  box-shadow: none;
+  background: transparent;
+  padding-left: 32px;
 }
 .hero-search-input :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.18) inset;
+  box-shadow: none;
 }
 .hero-search-button,
 .batch-action-button,
@@ -3068,12 +3834,18 @@ async function startBatchDownload(payload = {}) {
   min-height: 0;
 }
 .sidebar-card,
-.toolbar-card,
-.works-card {
+.circle-main {
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid #e3edf9;
   box-shadow: 0 14px 30px rgba(46, 74, 120, 0.07);
+}
+.circle-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .sidebar-card {
   padding: 22px 20px;
@@ -3280,8 +4052,8 @@ async function startBatchDownload(payload = {}) {
 }
 .work-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
 }
 .work-card,
 .owned-card,
@@ -3294,13 +4066,14 @@ async function startBatchDownload(payload = {}) {
 .work-card {
   position: relative;
   overflow: hidden;
-  padding: 12px 12px 11px;
-  display: grid;
-  gap: 8px;
-  align-content: start;
-  min-height: 164px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 240px;
   cursor: pointer;
-  transition: border-color .18s ease, box-shadow .22s ease, transform .18s ease, background .18s ease, filter .18s ease, opacity .18s ease;
+  transition: border-color .18s ease, box-shadow .22s ease, transform .18s ease, background-color .18s ease;
+  will-change: transform;
+  transform: translateZ(0);
 }
 .work-card.is-downloaded {
   border-color: rgba(67, 160, 94, 0.22);
@@ -3393,27 +4166,29 @@ async function startBatchDownload(payload = {}) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 78px;
-  height: 26px;
-  padding: 0 12px;
-  border-bottom-left-radius: 14px;
-  background: linear-gradient(180deg, #57c271 0%, #309e57 100%);
+  min-width: 68px;
+  height: 24px;
+  padding: 0 10px;
+  border-bottom-left-radius: 12px;
+  background: rgba(34, 197, 94, 0.95);
+  backdrop-filter: blur(8px);
   color: #fff;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: .04em;
-  box-shadow: 0 8px 16px rgba(48, 158, 87, 0.22);
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.25);
+  z-index: 10;
 }
 .work-corner-flag::after {
   content: '';
   position: absolute;
-  left: -10px;
+  left: -8px;
   top: 0;
-  width: 16px;
+  width: 14px;
   height: 100%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.34) 0%, rgba(255, 255, 255, 0.02) 100%);
-  transform: skewX(-28deg);
-  opacity: 0.72;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.05) 100%);
+  transform: skewX(-24deg);
+  opacity: 0.8;
 }
 .work-card-copy {
   min-height: 72px;
@@ -3464,7 +4239,7 @@ async function startBatchDownload(payload = {}) {
 }
 .work-tags {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   align-items: center;
   flex-wrap: wrap;
 }
@@ -3472,95 +4247,54 @@ async function startBatchDownload(payload = {}) {
   display: flex;
   justify-content: flex-end;
   align-items: flex-end;
-  gap: 0;
-  flex-wrap: nowrap;
+  gap: 6px;
+  flex-wrap: wrap;
   width: 100%;
-  margin-top: auto;
 }
 .tag-chip {
-  height: 20px;
-  min-height: 20px;
-  width: auto;
-  max-width: 100%;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
   padding: 0 8px;
-  background: #f5f7fa;
-  color: #62748a;
-  border: 1px solid #dbe3ee;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  box-sizing: border-box;
-  border-radius: 999px;
-  font-size: 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
   line-height: 1;
-  letter-spacing: 0;
-  flex: 0 0 auto;
+  letter-spacing: 0.02em;
 }
-.tag-chip.accent {
+.tag-chip.is-primary {
   background: #edf4ff;
-  color: #4c7ed0;
-  border-color: #d3e1fb;
+  color: #3b70c4;
+  border: 1px solid #cce0ff;
 }
-.tag-chip.owned {
-  background: #eef6ff;
-  color: #5a7698;
-  border-color: #d8e1ef;
-}
-.tag-chip.local-ready {
-  background: #edf8f1;
-  color: #2f8b54;
-  border-color: #cfe7d7;
-}
-.work-tags .tag-chip:nth-child(1) {
-  background: #fff4f2;
-  color: #b86a5e;
-  border-color: #f3ddd8;
-}
-.work-tags .tag-chip.local-ready:nth-child(1) {
-  background: #edf8f1;
-  color: #2f8b54;
-  border-color: #cfe7d7;
-}
-.work-tags .tag-chip:nth-child(1).owned {
-  background: #edf8f1;
-  color: #458467;
-  border-color: #d2e8da;
-}
-.work-tags .tag-chip:nth-child(2) {
-  background: #edf4ff;
-  color: #557fc1;
-  border-color: #d4e0f8;
-}
-.work-tags .tag-chip:nth-child(3) {
-  background: #f4f6f9;
-  color: #7f8c9b;
-  border-color: #e1e6ed;
-}
-.work-tags .tag-chip:nth-child(3).ok {
+.tag-chip.is-success {
   background: #edf9f1;
-  color: #468568;
-  border-color: #d0e8d8;
+  color: #2b804e;
+  border: 1px solid #cdeedb;
 }
-.work-card.disabled .work-tags .tag-chip:nth-child(3) {
-  background: #edf1f5;
-  color: #97a2af;
-  border-color: #dbe2ea;
+.tag-chip.is-danger {
+  background: #fff4f2;
+  color: #c44733;
+  border: 1px solid #fbd8d3;
 }
-.work-card.disabled .work-tags .tag-chip:nth-child(1) {
-  background: #f4efee;
-  color: #9d8c88;
-  border-color: #e8dfdc;
+.tag-chip.is-warning {
+  background: #fff8eb;
+  color: #b06f13;
+  border: 1px solid #fbe6c4;
 }
-.work-card.disabled .work-tags .tag-chip:nth-child(2) {
-  background: #eef1f5;
-  color: #92a0b1;
-  border-color: #dde3eb;
+.tag-chip.is-info {
+  background: #f4f6f9;
+  color: #5d6d81;
+  border: 1px solid #e2e8f0;
 }
-.work-card.disabled .work-tags .tag-chip.local-ready {
-  background: #eef3ef;
-  color: #7f9b87;
-  border-color: #dde7df;
+.tag-chip.is-disabled {
+  background: #fafafa;
+  color: #94a3b8;
+  border: 1px solid #e2e8f0;
 }
 .work-action-button {
   border: 1px solid #b9d7ff;
@@ -3595,7 +4329,10 @@ async function startBatchDownload(payload = {}) {
   color: #fff;
   box-shadow: 0 8px 16px rgba(35, 120, 73, 0.18);
 }
-.owned-list,
+.info-card,
+.preview-plan {
+  padding: 14px;
+}
 .info-grid,
 .preview-plan-list {
   display: grid;
@@ -3606,10 +4343,101 @@ async function startBatchDownload(payload = {}) {
   justify-content: flex-end;
   margin-top: 6px;
 }
-.owned-card,
-.info-card,
-.preview-plan {
-  padding: 14px;
+.circle-complete-state {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  min-height: 360px;
+  margin: 10px 2px 4px;
+  padding: 34px 24px 30px;
+  border-radius: 24px;
+}
+.circle-complete-visual {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 320px;
+  height: 320px;
+}
+.circle-complete-confetti {
+  position: absolute;
+  inset: -22px;
+  z-index: 2;
+  pointer-events: none;
+}
+.circle-complete-confetti-player {
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 12px 30px rgba(96, 165, 250, 0.12));
+}
+.circle-complete-image {
+  position: relative;
+  z-index: 1;
+  width: 320px;
+  height: 320px;
+  object-fit: contain;
+  filter: drop-shadow(0 16px 24px rgba(20, 83, 45, 0.12));
+  opacity: 0;
+  transform: translateY(14px) scale(0.94);
+  transition:
+    opacity 0.5s ease,
+    transform 0.7s cubic-bezier(.22, 1, .36, 1),
+    filter 0.4s ease;
+}
+.circle-complete-image.is-revealed {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  animation: completeFloat 3.6s ease-in-out 0.28s infinite;
+}
+.circle-complete-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 0;
+  text-align: center;
+}
+.circle-complete-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: -6px;
+}
+.circle-complete-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  border: 1px solid transparent;
+}
+.circle-complete-pill.owned {
+  background: rgba(239, 246, 255, 0.96);
+  border-color: rgba(191, 219, 254, 0.95);
+  color: #2563eb;
+}
+.circle-complete-pill.success {
+  background: rgba(236, 253, 245, 0.96);
+  border-color: rgba(167, 243, 208, 0.95);
+  color: #059669;
+}
+.complete-confetti-enter-active,
+.complete-confetti-leave-active {
+  transition: opacity 0.32s ease, transform 0.42s ease;
+}
+.complete-confetti-enter-from,
+.complete-confetti-leave-to {
+  opacity: 0;
+  transform: scale(0.96);
+}
+@keyframes completeFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
 }
 .owned-list {
   grid-template-columns: 1fr;
@@ -3624,6 +4452,8 @@ async function startBatchDownload(payload = {}) {
     linear-gradient(180deg, #fbfdff 0%, #f5f9ff 100%);
   border: 1px solid rgba(184, 207, 235, 0.62);
   box-shadow: 0 8px 18px rgba(44, 88, 147, 0.06);
+  will-change: transform;
+  transform: translateZ(0);
 }
 .owned-card-top,
 .owned-card-bottom {
@@ -3694,7 +4524,7 @@ async function startBatchDownload(payload = {}) {
   padding-top: 2px;
 }
 .circle-tabs :deep(.el-tabs__nav-wrap::after) {
-  background-color: #e7eef8;
+  display: none;
 }
 .circle-tabs :deep(.el-tabs__item) {
   height: 38px;

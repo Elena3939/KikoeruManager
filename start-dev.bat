@@ -84,12 +84,12 @@ echo [OK] Directories created
 
 echo.
 echo [0/4] Cleaning old processes on required ports...
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING"') do (
-    echo [INFO] Stop process on 8000: %%P
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5555" ^| findstr "LISTENING"') do (
+    echo [INFO] Stop process on 5555: %%P
     taskkill /PID %%P /F >nul 2>&1
 )
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING"') do (
-    echo [INFO] Stop process on 5173: %%P
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5556" ^| findstr "LISTENING"') do (
+    echo [INFO] Stop process on 5556: %%P
     taskkill /PID %%P /F >nul 2>&1
 )
 echo [OK] Ports cleaned
@@ -149,9 +149,9 @@ echo [OK] Frontend ready
 echo.
 echo [3/4] Starting services...
 echo.
-echo Backend: http://localhost:8000
-echo Frontend: http://localhost:5173
-echo API Docs: http://localhost:8000/docs
+echo Backend: http://localhost:5555
+echo Frontend: http://localhost:5556
+echo API Docs: http://localhost:5555/docs
 echo.
 echo Press Ctrl+C to stop
 echo.

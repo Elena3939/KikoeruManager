@@ -26,7 +26,7 @@
       <div class="subtitle-empty-tip">任务完成后会进入上方任务队列，点击对应卡片再进入这里做筛选和配对。</div>
     </div>
 
-    <div v-else class="subtitle-tree-shell" v-loading="view.subtitleInspectorBusy" element-loading-text="正在处理字幕目录...">
+    <div v-else class="subtitle-tree-shell" v-app-loading="{ loading: view.subtitleInspectorBusy, text: '正在处理字幕目录...', size: 124 }">
       <div class="subtitle-tree-info">
         <div class="subtitle-tree-title">{{ view.activeSubtitleInspectTask?.folder_name || view.getFileName(view.subtitleInspectorInfo.folderPath) }}</div>
         <div class="subtitle-tree-path">{{ view.subtitleInspectorInfo.folderPath || view.subtitleInspectorInfo.subtitleDir }}</div>

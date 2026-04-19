@@ -161,17 +161,19 @@
       </div>
     </section>
 
-    <section class="ios-panel table-panel">
+    <section
+      class="ios-panel table-panel activity-table-loading-shell"
+      v-app-loading="{ loading, text: '正在加载操作记录...', description: '同步树形记录、状态聚合和详情索引', size: 176, minHeight: 360, delay: 0, minVisible: 360, maskClass: 'activity-history-loading-mask' }"
+    >
       <el-table
         :data="displayItems"
-        v-loading="loading"
         class="ios-table"
         stripe
         size="small"
         empty-text="暂无记录"
         :row-class-name="rowClassName"
         table-layout="fixed"
-        row-key="id"
+        :row-key="resolveActivityTableRowKey"
         @row-click="openDetail"
       >
         <el-table-column prop="created_at" label="时间" width="168">
@@ -437,121 +439,119 @@
             <div class="ev">{{ displaySummary(selectedRow) }}</div>
           </div>
           <div v-if="selectedCircleCompletionIndexModel" class="expand-item span-2">
-            <div class="compare-layout-shell">
-              <div class="compare-table-shell">
-                <div class="compare-table-head" @click="compareExpanded = !compareExpanded">
-                  <div class="compare-table-title-wrap">
-                    <div class="compare-table-icon">
-                      <LayoutGrid :size="18" :stroke-width="2.4" />
-                    </div>
-                    <div>
-                      <div class="compare-table-title">社团概括</div>
-                      <div class="compare-table-subtitle">{{ circleIndexSummaryText }}</div>
-                    </div>
+            <div class="compare-table-shell">
+              <div class="compare-table-head" @click="compareExpanded = !compareExpanded">
+                <div class="compare-table-title-wrap">
+                  <div class="compare-table-icon">
+                    <LayoutGrid :size="18" :stroke-width="2.4" />
                   </div>
-                  <div class="compare-table-toolbar">
-                    <label class="compare-search" @click.stop>
-                      <Search :size="14" :stroke-width="2.4" />
-                      <input v-model.trim="compareSearchQuery" type="text" placeholder="Filter resources...">
-                    </label>
-                    <label class="compare-filter" @click.stop>
-                      <SlidersHorizontal :size="13" :stroke-width="2.4" />
-                      <el-select
-                        v-model="compareSourceFilter"
-                        size="small"
-                        popper-class="compare-filter-popper"
-                        placeholder="全部来源"
-                        @click.stop
-                      >
-                        <el-option value="all" label="全部来源" />
-                        <el-option value="kikoeru" label="Kikoeru" />
-                        <el-option value="dlsite" label="DLsite" />
-                        <el-option value="asmr_one" label="asmr.one" />
-                        <el-option value="missing" label="暂无来源" />
-                      </el-select>
-                    </label>
+                  <div>
+                    <div class="compare-table-title">社团概括</div>
+                    <div class="compare-table-subtitle">{{ circleIndexSummaryText }}</div>
                   </div>
                 </div>
+                <div class="compare-table-toolbar">
+                  <label class="compare-search" @click.stop>
+                    <Search :size="14" :stroke-width="2.4" />
+                    <input v-model.trim="compareSearchQuery" type="text" placeholder="Filter resources...">
+                  </label>
+                  <label class="compare-filter" @click.stop>
+                    <SlidersHorizontal :size="13" :stroke-width="2.4" />
+                    <el-select
+                      v-model="compareSourceFilter"
+                      size="small"
+                      popper-class="compare-filter-popper"
+                      placeholder="全部来源"
+                      @click.stop
+                    >
+                      <el-option value="all" label="全部来源" />
+                      <el-option value="kikoeru" label="Kikoeru" />
+                      <el-option value="dlsite" label="DLsite" />
+                      <el-option value="asmr_one" label="asmr.one" />
+                      <el-option value="missing" label="暂无来源" />
+                    </el-select>
+                  </label>
+                </div>
+              </div>
 
-                <transition
-                  enter-active-class="transition-[max-height,opacity] duration-300 ease-out overflow-hidden"
-                  enter-from-class="max-h-0 opacity-0"
-                  enter-to-class="max-h-[1200px] opacity-100"
-                  leave-active-class="transition-[max-height,opacity] duration-200 ease-in overflow-hidden"
-                  leave-from-class="max-h-[1200px] opacity-100"
-                  leave-to-class="max-h-0 opacity-0"
-                >
-                  <div v-if="compareExpanded">
-                    <div class="compare-column-head">
-                      <div class="compare-col-meta">RESOURCE METADATA</div>
-                      <div class="compare-col-source">KIKOERU</div>
-                      <div class="compare-col-source">DLSITE</div>
-                      <div class="compare-col-source">ASMR.ONE</div>
-                    </div>
+              <transition
+                enter-active-class="transition-[max-height,opacity] duration-300 ease-out overflow-hidden"
+                enter-from-class="max-h-0 opacity-0"
+                enter-to-class="max-h-[1200px] opacity-100"
+                leave-active-class="transition-[max-height,opacity] duration-200 ease-in overflow-hidden"
+                leave-from-class="max-h-[1200px] opacity-100"
+                leave-to-class="max-h-0 opacity-0"
+              >
+                <div v-if="compareExpanded">
+                  <div class="compare-column-head">
+                    <div class="compare-col-meta">RESOURCE METADATA</div>
+                    <div class="compare-col-source">KIKOERU</div>
+                    <div class="compare-col-source">DLSITE</div>
+                    <div class="compare-col-source">ASMR.ONE</div>
+                  </div>
 
-                    <div class="compare-rows-wrap">
-                      <div
-                        v-for="item in filteredCircleIndexRows"
-                        :key="item.workRjcode"
-                        class="compare-row"
-                      >
-                        <div class="compare-meta-cell">
-                          <div class="compare-thumb compare-thumb-empty">
-                            <FileText :size="18" :stroke-width="2.2" />
-                          </div>
-                          <div class="compare-meta-copy">
-                            <div class="compare-meta-title">{{ item.title || item.workRjcode || '未命名作品' }}</div>
-                            <div class="compare-meta-tags">
-                              <span class="compare-rj-badge mono">{{ item.workRjcode || '—' }}</span>
-                              <span :class="['circle-index-status-pill', `is-${item.statusKey}`]">{{ item.statusLabel }}</span>
-                              <span v-if="item.preferred_variant_label" class="compare-meta-tag">{{ item.preferred_variant_label }}</span>
-                            </div>
+                  <div class="compare-rows-wrap">
+                    <div
+                      v-for="item in filteredCircleIndexRows"
+                      :key="item.workRjcode"
+                      class="compare-row"
+                    >
+                      <div class="compare-meta-cell">
+                        <div class="compare-thumb compare-thumb-empty">
+                          <FileText :size="18" :stroke-width="2.2" />
+                        </div>
+                        <div class="compare-meta-copy">
+                          <div class="compare-meta-title">{{ item.title || item.workRjcode || '未命名作品' }}</div>
+                          <div class="compare-meta-tags">
+                            <span class="compare-rj-badge mono">{{ item.workRjcode || '—' }}</span>
+                            <span :class="['circle-index-status-pill', `is-${item.statusKey}`]">{{ item.statusLabel }}</span>
+                            <span v-if="item.preferred_variant_label" class="compare-meta-tag">{{ item.preferred_variant_label }}</span>
                           </div>
                         </div>
+                      </div>
 
-                        <div class="compare-source-cell">
-                          <div class="compare-source-status" :class="`is-${circleIndexSourceTone('kikoeru', item)}`">
-                            <component :is="circleIndexSourceIcon('kikoeru', item)" :size="14" :stroke-width="2.6" />
-                          </div>
-                          <div class="compare-source-meta">
-                            <div v-if="item.sourceCompare.kikoeru.primary_rjcode" class="compare-source-code mono">{{ item.sourceCompare.kikoeru.primary_rjcode }}</div>
-                            <div v-if="item.sourceCompare.kikoeru.variantBadges.length || normalizeKikoeruTags(item.sourceCompare.kikoeru.tags).length" class="compare-source-tags">
-                              <span v-for="badge in item.sourceCompare.kikoeru.variantBadges" :key="`kb-${item.workRjcode}-${badge}`" class="compare-meta-tag">{{ badge }}</span>
-                              <span v-for="tag in normalizeKikoeruTags(item.sourceCompare.kikoeru.tags)" :key="`kt-${item.workRjcode}-${tag}`" class="compare-meta-tag">{{ tag }}</span>
-                            </div>
-                            <span v-else-if="!item.sourceCompare.kikoeru.primary_rjcode" class="circle-index-empty">未收录</span>
-                          </div>
+                      <div class="compare-source-cell">
+                        <div class="compare-source-status" :class="`is-${circleIndexSourceTone('kikoeru', item)}`">
+                          <component :is="circleIndexSourceIcon('kikoeru', item)" :size="14" :stroke-width="2.6" />
                         </div>
-
-                        <div class="compare-source-cell">
-                          <div class="compare-source-status" :class="`is-${circleIndexSourceTone('dlsite', item)}`">
-                            <component :is="circleIndexSourceIcon('dlsite', item)" :size="14" :stroke-width="2.6" />
+                        <div class="compare-source-meta">
+                          <div v-if="item.sourceCompare.kikoeru.primary_rjcode" class="compare-source-code mono">{{ item.sourceCompare.kikoeru.primary_rjcode }}</div>
+                          <div v-if="item.sourceCompare.kikoeru.variantBadges.length || normalizeKikoeruTags(item.sourceCompare.kikoeru.tags).length" class="compare-source-tags">
+                            <span v-for="badge in item.sourceCompare.kikoeru.variantBadges" :key="`kb-${item.workRjcode}-${badge}`" class="compare-meta-tag">{{ badge }}</span>
+                            <span v-for="tag in normalizeKikoeruTags(item.sourceCompare.kikoeru.tags)" :key="`kt-${item.workRjcode}-${tag}`" class="compare-meta-tag">{{ tag }}</span>
                           </div>
-                          <div class="compare-source-meta">
-                            <div v-if="item.sourceCompare.dlsite.all_rjcodes.length" class="compare-source-tags">
-                              <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="compare-meta-tag mono">{{ code }}</span>
-                            </div>
-                            <span v-else class="circle-index-empty">未发现</span>
-                          </div>
+                          <span v-else-if="!item.sourceCompare.kikoeru.primary_rjcode" class="circle-index-empty">未收录</span>
                         </div>
+                      </div>
 
-                        <div class="compare-source-cell">
-                          <div class="compare-source-status" :class="`is-${circleIndexSourceTone('asmr_one', item)}`">
-                            <component :is="circleIndexSourceIcon('asmr_one', item)" :size="14" :stroke-width="2.6" />
+                      <div class="compare-source-cell">
+                        <div class="compare-source-status" :class="`is-${circleIndexSourceTone('dlsite', item)}`">
+                          <component :is="circleIndexSourceIcon('dlsite', item)" :size="14" :stroke-width="2.6" />
+                        </div>
+                        <div class="compare-source-meta">
+                          <div v-if="item.sourceCompare.dlsite.all_rjcodes.length" class="compare-source-tags">
+                            <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="compare-meta-tag mono">{{ code }}</span>
                           </div>
-                          <div class="compare-source-meta">
-                            <div v-if="item.sourceCompare.asmr_one.primary_rjcode" class="compare-source-tags">
-                              <span class="compare-meta-tag mono">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
-                              <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="compare-meta-tag">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
-                            </div>
-                            <span v-else class="circle-index-empty">暂无来源</span>
+                          <span v-else class="circle-index-empty">未发现</span>
+                        </div>
+                      </div>
+
+                      <div class="compare-source-cell">
+                        <div class="compare-source-status" :class="`is-${circleIndexSourceTone('asmr_one', item)}`">
+                          <component :is="circleIndexSourceIcon('asmr_one', item)" :size="14" :stroke-width="2.6" />
+                        </div>
+                        <div class="compare-source-meta">
+                          <div v-if="item.sourceCompare.asmr_one.primary_rjcode" class="compare-source-tags">
+                            <span class="compare-meta-tag mono">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
+                            <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="compare-meta-tag">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
                           </div>
+                          <span v-else class="circle-index-empty">暂无来源</span>
                         </div>
                       </div>
                     </div>
                   </div>
-                </transition>
-              </div>
+                </div>
+              </transition>
             </div>
           </div>
           <div v-if="selectedCircleCompletionRefreshModel" class="expand-item span-2">
@@ -850,27 +850,45 @@
                   <button
                     type="button"
                     class="entry-section-toggle"
-                    @click="toggleEntrySection(section.key)"
+                    @click.stop="toggleEntrySection(section.key)"
                   >
                     {{ isEntrySectionExpanded(section.key) ? '收起' : '展开' }}
                   </button>
                 </div>
                 <div v-show="isEntrySectionExpanded(section.key)" class="entry-tree-box">
                   <div
-                    v-for="item in section.rows"
+                    v-for="item in flattenEntryRows(section.rows)"
                     :key="`${section.key}-${item.key}`"
-                    class="tree-row"
-                    :style="{ paddingLeft: `${12 + item.depth * 18}px` }"
+                    class="tree-row-shell"
                   >
-                    <div class="tree-main">
-                      <span class="tree-branch" aria-hidden="true">{{ item.depth ? '└' : '•' }}</span>
-                      <span :class="['entry-icon', entryIconClass(item)]">
-                        <component :is="resolveEntryIcon(item)" :size="14" />
-                      </span>
-                      <span class="entry-name">{{ item.label }}</span>
+                    <div
+                      class="tree-row"
+                      :class="{ 'is-expandable': item.expandable }"
+                      :style="{ paddingLeft: `${12 + item.depth * 18}px` }"
+                    >
+                      <div class="tree-main">
+                        <button
+                          v-if="item.expandable"
+                          type="button"
+                          class="tree-inline-toggle"
+                          :class="{ expanded: isEntryTreeRowExpanded(item.key) }"
+                          @click.stop="toggleEntryTreeRow(item.key)"
+                          :aria-label="isEntryTreeRowExpanded(item.key) ? '收起' : '展开'"
+                        >
+                          <ChevronRight :size="12" :stroke-width="2.6" />
+                        </button>
+                        <span v-else class="tree-branch" aria-hidden="true">{{ item.depth ? '└' : '•' }}</span>
+                        <span :class="['entry-icon', entryIconClass(item), { 'is-deleted': item.variant === 'deleted' }]">
+                          <component :is="resolveEntryIcon(item)" :size="14" />
+                        </span>
+                        <div class="entry-main-copy">
+                          <span :class="['entry-name', { 'is-deleted': item.variant === 'deleted', 'is-failed': item.variant === 'failed' }]">{{ item.label }}</span>
+                          <span v-if="item.metaText" class="entry-meta-text">{{ item.metaText }}</span>
+                        </div>
+                      </div>
+                      <span v-if="item.sizeText" class="entry-size">{{ item.sizeText }}</span>
+                      <span v-if="item.error" class="entry-error">{{ item.error }}</span>
                     </div>
-                    <span v-if="item.sizeText" class="entry-size">{{ item.sizeText }}</span>
-                    <span v-if="item.error" class="entry-error">{{ item.error }}</span>
                   </div>
                 </div>
               </div>
@@ -899,13 +917,17 @@ import {
   Box,
   Check,
   CheckCircle2,
+  ChevronRight,
   Clock,
   Database,
   Download,
   File as FileIcon,
+  FileArchive,
   FileDown,
   FileText,
+  Film,
   Folder,
+  Image as ImageIcon,
   LayoutGrid,
   Link,
   MinusCircle,
@@ -925,7 +947,7 @@ import api from '../api'
 import ActivityLogDetailDialog from '../components/activity/ActivityLogDetailDialog.vue'
 
 const router = useRouter()
-const loading = ref(false)
+const loading = ref(true)
 
 const categoryConfigs = {
   subtitle_crawl: { icon: Search, color: 'text-indigo-600', bg: 'bg-indigo-50/80', border: 'border-indigo-100/50' },
@@ -958,6 +980,10 @@ function getStatusConfig(s) {
   return statusConfigs[s] || statusConfigs.default
 }
 
+function statusLabel(status) {
+  return getStatusConfig(status).label || '—'
+}
+
 const items = ref([])
 const total = ref(0)
 const page = ref(1)
@@ -971,6 +997,7 @@ const expandedTreeRowIds = ref(new Set())
 const selectedBatchWorkbenchKeys = ref([])
 const batchWorkbenchAwaitingOnly = ref(false)
 const collapsedEntrySectionKeys = ref(new Set())
+const collapsedEntryTreeRowKeys = ref(new Set())
 const compareSearchQuery = ref('')
 const compareSourceFilter = ref('all')
 const compareExpanded = ref(true)
@@ -1411,6 +1438,12 @@ function humanAction(row) {
       if (status === 'partial_success') return '批量 API 重命名部分成功'
       if (status === 'failed') return '批量 API 重命名失败'
       return '批量 API 重命名'
+    }
+    if (action === 'batch_manual_rename') {
+      if (status === 'success') return '批量乱码修复完成'
+      if (status === 'partial_success') return '批量乱码修复部分成功'
+      if (status === 'failed') return '批量乱码修复失败'
+      return '批量乱码修复'
     }
     if (isApiRenameAction(row)) {
       if (status === 'success') return 'API重命名完成'
@@ -1968,6 +2001,12 @@ function subtitleImportSourceSuffix(row) {
 }
 
 function displaySummary(row) {
+  if (row?.category === 'pipeline_rename' && row?.action === 'batch_manual_rename') {
+    const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+    const successCount = Number(detail.success_count || 0)
+    const failedCount = Number(detail.failed_count || 0)
+    return `修复 ${successCount} 项，失败 ${failedCount} 项`
+  }
   if (isSubtitleBatchRootRow(row)) {
     const rollup = batchPairRollup(row)
     const base = String(row?.summary || '—').trim() || '—'
@@ -2172,6 +2211,23 @@ function setCircleRefreshPage(nextPage) {
 
 function treeRowId(row) {
   return String(row?.id || '')
+}
+
+function resolveActivityTableRowKey(row) {
+  if (!row || typeof row !== 'object') return ''
+  const baseId = String(row.id || '')
+  if (row.is_tree_child) {
+    return [
+      'child',
+      String(row.parent_id || row.parent_row?.id || ''),
+      String(row.relation || row.category || ''),
+      String(row.tree_depth || 0),
+      baseId,
+      String(row.task_id || ''),
+      String(row.source_path || ''),
+    ].join(':')
+  }
+  return ['parent', baseId, String(row.category || ''), String(row.task_id || '')].join(':')
 }
 
 function rowHasChildren(row) {
@@ -2799,12 +2855,24 @@ function buildFilterDeleteTreeRows(items) {
         node.type = item.type
         node.sizeText = item.sizeText || ''
         node.error = item.error || ''
+        node.variant = item.variant || ''
       }
       parentKey = joined
     })
   }
 
   const rows = []
+  const markParentVariant = (node) => {
+    if (!Array.isArray(node.children) || !node.children.length) return node.variant || ''
+    const childVariants = node.children.map(child => markParentVariant(child)).filter(Boolean)
+    if (!childVariants.length) return node.variant || ''
+    if (childVariants.every(variant => variant === 'deleted')) return 'deleted'
+    if (childVariants.every(variant => variant === 'failed')) return 'failed'
+    return node.variant || ''
+  }
+
+  roots.forEach(root => markParentVariant(root))
+
   const walk = (nodes, depth = 0) => {
     const sorted = [...nodes].sort((a, b) => {
       if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
@@ -2817,14 +2885,67 @@ function buildFilterDeleteTreeRows(items) {
         type: node.type,
         sizeText: node.sizeText,
         error: node.error,
-        depth
+        variant: node.variant || '',
+        depth,
+        children: node.children.length ? [...node.children] : [],
+        expandable: node.children.length > 0
       })
-      if (node.children.length) walk(node.children, depth + 1)
     }
   }
 
   walk(roots)
   return rows
+}
+
+function commonPathPrefix(paths) {
+  const normalized = (Array.isArray(paths) ? paths : [])
+    .map(path => String(path || '').trim().replace(/\\/g, '/'))
+    .filter(Boolean)
+  if (!normalized.length) return ''
+  const splitPaths = normalized.map(path => path.split('/').filter(Boolean))
+  const first = splitPaths[0]
+  const prefix = []
+  for (let index = 0; index < first.length; index += 1) {
+    const segment = first[index]
+    if (splitPaths.every(parts => parts[index] === segment)) prefix.push(segment)
+    else break
+  }
+  const driveMatch = normalized[0].match(/^[A-Za-z]:/)
+  const drive = driveMatch ? driveMatch[0] : ''
+  const joined = prefix.join('/')
+  if (!joined) return drive
+  return drive && !joined.toLowerCase().startsWith(drive.toLowerCase()) ? `${drive}/${joined}` : joined
+}
+
+function getFileName(path) {
+  const normalized = String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  if (!normalized) return ''
+  const parts = normalized.split('/').filter(Boolean)
+  return parts[parts.length - 1] || normalized
+}
+
+function buildDeleteTreeRows(items) {
+  const list = Array.isArray(items) ? items.filter(item => String(item?.path || '').trim()) : []
+  if (!list.length) return []
+  const rootPath = commonPathPrefix(list.map(item => item.path))
+  const rootLabel = getFileName(rootPath) || rootPath || '删除目标'
+  const normalizedItems = list.map((item) => {
+    const fullPath = String(item.path || '').trim().replace(/\\/g, '/')
+    const normalizedRoot = String(rootPath || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+    let relativePath = fullPath
+    if (normalizedRoot && fullPath.toLowerCase().startsWith(`${normalizedRoot.toLowerCase()}/`)) {
+      relativePath = fullPath.slice(normalizedRoot.length + 1)
+    } else if (normalizedRoot && fullPath.toLowerCase() === normalizedRoot.toLowerCase()) {
+      relativePath = ''
+    }
+    const displayRelative = [rootLabel, relativePath].filter(Boolean).join('/')
+    return {
+      ...item,
+      relative_path: displayRelative || rootLabel,
+    }
+  })
+
+  return buildFilterDeleteTreeRows(normalizedItems)
 }
 
 function filterDeleteEntrySections(row) {
@@ -2836,11 +2957,11 @@ function filterDeleteEntrySections(row) {
     sections.push({ key: 'preview-items', title: `预审命中项（${d.item_total_count || d.items.length}）`, rows: buildFilterDeleteTreeRows(items) })
   }
   if (Array.isArray(d.succeeded_items) && d.succeeded_items.length) {
-    const items = mapFilterDeleteItems(d.succeeded_items)
+    const items = mapFilterDeleteItems(d.succeeded_items).map(item => ({ ...item, variant: 'deleted' }))
     sections.push({ key: 'success-items', title: `已删除项（${d.success_count || d.succeeded_items.length}）`, rows: buildFilterDeleteTreeRows(items) })
   }
   if (Array.isArray(d.failed_items) && d.failed_items.length) {
-    const items = mapFilterDeleteItems(d.failed_items)
+    const items = mapFilterDeleteItems(d.failed_items).map(item => ({ ...item, variant: 'failed' }))
     sections.push({ key: 'failed-items', title: `失败项（${d.failed_count || d.failed_items.length}）`, rows: buildFilterDeleteTreeRows(items) })
   }
   if (Array.isArray(d.retry_targets) && d.retry_targets.length) {
@@ -2879,90 +3000,141 @@ function asmrSyncEntrySections(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
   if (String(row?.category || '').trim() !== 'asmr_sync') return []
-  const uploadedFiles = Array.isArray(d.uploaded_files) ? d.uploaded_files : []
-  if (!uploadedFiles.length) return []
-  const items = uploadedFiles.slice(0, 200).map((item, index) => ({
-    key: String(item?.relative_path || item?.name || item?.upload_path || `${index}`),
-    path: String(item?.relative_path || item?.name || item?.upload_path || ''),
-    relative_path: String(item?.relative_path || item?.name || item?.upload_path || ''),
-    name: String(item?.name || item?.relative_path || item?.upload_path || '未命名文件'),
-    type: 'file',
-    sizeText: item?.size_bytes !== undefined && item?.size_bytes !== null ? formatBytes(item.size_bytes) : '',
-    error: '',
-  }))
-  return [{
-    key: 'asmr-uploaded-files',
-    title: `上传文件（${d.uploaded_count || uploadedFiles.length}）`,
-    rows: buildFilterDeleteTreeRows(items)
-  }]
+  const sections = []
+
+  const downloadFiles = collectAsmrSyncFiles(row, 'download')
+  if (downloadFiles.length) {
+    const totalBytes = sumAsmrSyncFileBytes(downloadFiles)
+    sections.push({
+      key: 'asmr-downloaded-files',
+      title: `下载文件（${Number(d.success_count || downloadFiles.length)} / ${formatBytes(totalBytes)}）`,
+      rows: buildFilterDeleteTreeRows(downloadFiles)
+    })
+  }
+
+  const uploadFiles = collectAsmrSyncFiles(row, 'upload')
+  if (uploadFiles.length) {
+    const totalBytes = sumAsmrSyncFileBytes(uploadFiles)
+    sections.push({
+      key: 'asmr-upload-files',
+      title: `上传清单（${uploadFiles.length} / ${formatBytes(totalBytes)}）`,
+      rows: buildFilterDeleteTreeRows(uploadFiles)
+    })
+  }
+
+  const uploadedFiles = collectAsmrSyncFiles(row, 'uploaded')
+  if (uploadedFiles.length) {
+    const totalBytes = sumAsmrSyncFileBytes(uploadedFiles)
+    sections.push({
+      key: 'asmr-uploaded-files',
+      title: `已上传文件（${Number(d.uploaded_count || uploadedFiles.length)} / ${formatBytes(totalBytes)}）`,
+      rows: buildFilterDeleteTreeRows(uploadedFiles)
+    })
+  }
+
+  return sections
 }
 
-function subtitleBatchEntrySections(row) {
+function deleteEntrySections(row) {
   const d = row?.detail
-  if (!d || typeof d !== 'object' || d.mode !== 'subtitle_batch_start') return []
+  if (!d || typeof d !== 'object') return []
+  if (String(row?.category || '').trim() !== 'pipeline_delete') return []
+
+  const succeededItems = []
+  const failedItems = []
+
+  if (Array.isArray(d.results) && d.results.length) {
+    for (const item of d.results) {
+      const path = String(item?.path || '').trim()
+      if (!path) continue
+      const mapped = {
+        key: path,
+        path,
+        relative_path: path,
+        name: getFileName(path) || path,
+        type: inferDeleteTreeItemType(path, ''),
+        sizeText: '',
+        error: String(item?.error || '').trim(),
+        variant: item?.success === false || String(item?.error || '').trim() ? 'failed' : 'deleted',
+      }
+      if (item?.success === false || mapped.error) failedItems.push(mapped)
+      else succeededItems.push(mapped)
+    }
+  }
+
+  if (!succeededItems.length && !failedItems.length && Array.isArray(d.child_rows) && d.child_rows.length) {
+    for (const item of d.child_rows) {
+      const childDetail = item?.detail && typeof item.detail === 'object' ? item.detail : {}
+      const path = String(item?.source_path || childDetail.path || '').trim()
+      if (!path) continue
+      const mapped = {
+        key: `${item?.id || path}`,
+        path,
+        relative_path: path,
+        name: String(childDetail.item_name || getFileName(path) || path),
+        type: inferDeleteTreeItemType(path, childDetail.item_type || ''),
+        sizeText: '',
+        error: String(childDetail.error || '').trim(),
+        variant: String(item?.status || '').trim() === 'failed' || String(childDetail.error || '').trim() ? 'failed' : 'deleted',
+      }
+      if (String(item?.status || '').trim() === 'failed' || mapped.error) failedItems.push(mapped)
+      else succeededItems.push(mapped)
+    }
+  }
+
+  if (!succeededItems.length && !failedItems.length && String(row?.action || '').trim() === 'delete') {
+    const path = String(row?.source_path || d.path || '').trim()
+    if (path) {
+      const mapped = {
+        key: path,
+        path,
+        relative_path: path,
+        name: String(d.item_name || getFileName(path) || path),
+        type: inferDeleteTreeItemType(path, d.item_type || ''),
+        sizeText: '',
+        error: String(d.error || '').trim(),
+        variant: String(row?.status || '').trim() === 'failed' || String(d.error || '').trim() ? 'failed' : 'deleted',
+      }
+      if (String(row?.status || '').trim() === 'failed' || mapped.error) failedItems.push(mapped)
+      else succeededItems.push(mapped)
+    }
+  }
+
   const sections = []
-  if (Array.isArray(d.source_directories) && d.source_directories.length) {
+  if (succeededItems.length) {
+    const titleSuffix = d.deleted_bytes ? ` / ${formatBytes(d.deleted_bytes)}` : ''
     sections.push({
-      key: 'batch-source-directories',
-      title: `扫描目录（${d.source_directories.length}）`,
-      rows: d.source_directories.slice(0, 120).map((item, index) => ({
-        key: `${index}-${item.folder_path || item.path || item.folder_name || ''}`,
-        label: item.folder_name || item.name || item.folder_path || item.path || '未命名目录',
-        type: 'dir',
-        sizeText: item.folder_path || item.path || '',
-        error: '',
-        depth: 0
-      }))
+      key: 'delete-succeeded-items',
+      title: `删除文件（${succeededItems.length}${titleSuffix}）`,
+      rows: buildDeleteTreeRows(succeededItems)
     })
   }
-  if (Array.isArray(d.scan_targets) && d.scan_targets.length) {
+  if (failedItems.length) {
     sections.push({
-      key: 'batch-scan-targets',
-      title: `扫描结果（${d.scan_targets.length}）`,
-      rows: d.scan_targets.slice(0, 160).map((item, index) => ({
-        key: `${index}-${item.path || item.name || ''}`,
-        label: `${item.name || item.path || '未命名目录'}${item.message ? ` · ${item.message}` : ''}`,
-        type: 'dir',
-        sizeText: item.path || '',
-        error: '',
-        depth: 0
-      }))
-    })
-  }
-  if (Array.isArray(d.created_tasks) && d.created_tasks.length) {
-    sections.push({
-      key: 'batch-created-tasks',
-      title: `已创建爬取（${d.created_tasks.length}）`,
-      rows: d.created_tasks.slice(0, 160).map((item, index) => ({
-        key: `${index}-${item.task_id || item.folder_path || item.rjcode || ''}`,
-        label: `${item.rjcode ? `[${item.rjcode}] ` : ''}${item.folder_name || item.folder_path || '未命名目录'}`,
-        type: 'dir',
-        sizeText: item.folder_path || '',
-        error: '',
-        depth: 0
-      }))
-    })
-  }
-  if (Array.isArray(d.skipped_items) && d.skipped_items.length) {
-    sections.push({
-      key: 'batch-skipped-items',
-      title: `跳过项（${d.skipped_items.length}）`,
-      rows: d.skipped_items.slice(0, 160).map((item, index) => ({
-        key: `${index}-${item.folder_path || item.rjcode || item.folder_name || ''}`,
-        label: `${item.rjcode ? `[${item.rjcode}] ` : ''}${item.folder_name || item.folder_path || '未命名目录'}`,
-        type: 'dir',
-        sizeText: item.folder_path || '',
-        error: item.queue_message || '',
-        depth: 0
-      }))
+      key: 'delete-failed-items',
+      title: `删除失败（${failedItems.length}）`,
+      rows: buildDeleteTreeRows(failedItems)
     })
   }
   return sections
 }
 
+function subtitleBatchEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object' || d.mode !== 'subtitle_batch_start') return []
+  const rows = buildSubtitleBatchDirectoryRows(d)
+  if (!rows.length) return []
+  return [{
+    key: 'batch-directory-tree',
+    title: `扫描详情（${rows.length}）`,
+    rows
+  }]
+}
+
 function activityEntrySections(row) {
   return [
     ...asmrSyncEntrySections(row),
+    ...deleteEntrySections(row),
     ...importFilteredEntrySections(row),
     ...subtitleBatchEntrySections(row),
     ...filterDeleteEntrySections(row)
@@ -2972,26 +3144,144 @@ function activityEntrySections(row) {
 function activityEntrySectionTitle(row) {
   const d = row?.detail
   if (d && typeof d === 'object' && d.mode === 'subtitle_batch_start') return '批量详情'
-  if (String(row?.category || '').trim() === 'asmr_sync') return '文件清单'
+  if (String(row?.category || '').trim() === 'asmr_sync') return '文件树'
+  if (String(row?.category || '').trim() === 'pipeline_delete') return '文件树'
   if (['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return '处理清单'
   return '删除清单'
 }
 
+function inferDeleteTreeItemType(path, itemType) {
+  const normalizedType = String(itemType || '').trim().toLowerCase()
+  if (normalizedType === 'dir' || normalizedType === 'folder') return 'dir'
+  const normalizedPath = String(path || '').trim().replace(/\\/g, '/')
+  const base = normalizedPath.split('/').pop() || ''
+  return /\.[^./]+$/.test(base) ? 'file' : 'dir'
+}
+
+function mapAsmrSyncFileItems(items, mode) {
+  return (Array.isArray(items) ? items : []).slice(0, 200).map((item, index) => {
+    const path = String(
+      item?.relative_path
+      || item?.path
+      || item?.upload_path
+      || item?.resource_path
+      || item?.name
+      || ''
+    )
+    const fallbackName = path.split('/').pop() || path.split('\\').pop() || '未命名文件'
+    return {
+      key: `${mode}-${index}-${path || fallbackName}`,
+      path,
+      relative_path: path,
+      name: String(item?.name || fallbackName),
+      type: 'file',
+      sizeText: item?.size_bytes !== undefined && item?.size_bytes !== null
+        ? formatBytes(item.size_bytes)
+        : (item?.size !== undefined && item?.size !== null ? formatBytes(item.size) : ''),
+      error: String(item?.error || item?.failure_reason || '').trim(),
+    }
+  }).filter(item => item.relative_path || item.name)
+}
+
+function collectAsmrSyncFiles(row, mode) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (mode === 'download') {
+    const direct = mapAsmrSyncFileItems(d.download_files, mode)
+    if (direct.length) return direct
+    return mapAsmrSyncFileItems(
+      (Array.isArray(d.child_rows) ? d.child_rows : [])
+        .filter(item => String(item?.relation || item?.action || '').trim() === 'asmr_resource' || String(item?.action || '').trim() === 'resource_downloaded')
+        .map(item => {
+          const detail = item?.detail && typeof item.detail === 'object' ? item.detail : {}
+          return {
+            name: detail.resource_name || detail.relative_path || extractAsmrSummaryResourceName(item?.summary),
+            relative_path: detail.relative_path || detail.resource_path || detail.resource_name || extractAsmrSummaryResourceName(item?.summary),
+            size_bytes: detail.size_bytes,
+            error: item?.status === 'failed' ? (detail.failure_reason || item?.summary || '') : '',
+          }
+        }),
+      mode
+    )
+  }
+  if (mode === 'upload') {
+    const direct = mapAsmrSyncFileItems(d.upload_files, mode)
+    if (direct.length) return direct
+    return []
+  }
+  const direct = mapAsmrSyncFileItems(d.uploaded_files, mode)
+  if (direct.length) return direct
+  return mapAsmrSyncFileItems(
+    (Array.isArray(d.child_rows) ? d.child_rows : [])
+      .filter(item => String(item?.relation || item?.action || '').trim() === 'asmr_upload' || String(item?.action || '').trim() === 'resource_uploaded')
+      .map(item => {
+        const detail = item?.detail && typeof item.detail === 'object' ? item.detail : {}
+        return {
+          name: detail.relative_path || detail.upload_path || detail.target_path || extractAsmrSummaryResourceName(item?.summary),
+          relative_path: detail.relative_path || detail.upload_path || detail.target_path || extractAsmrSummaryResourceName(item?.summary),
+          size_bytes: detail.size_bytes,
+          error: item?.status === 'failed' ? (detail.failure_reason || item?.summary || '') : '',
+        }
+      }),
+    mode
+  )
+}
+
+function sumAsmrSyncFileBytes(items) {
+  return (Array.isArray(items) ? items : []).reduce((sum, item) => {
+    const text = String(item?.sizeText || '').trim()
+    if (!text) return sum
+    const matched = text.match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i)
+    if (!matched) return sum
+    const value = Number(matched[1] || 0)
+    const unit = matched[2].toUpperCase()
+    const power = { B: 0, KB: 1, MB: 2, GB: 3, TB: 4 }[unit] ?? 0
+    return sum + value * (1024 ** power)
+  }, 0)
+}
+
 function resolveEntryIcon(item) {
+  if (item?.icon) return item.icon
+  if (String(item?.variant || '').trim() === 'warning') return AlertCircle
+  if (String(item?.variant || '').trim() === 'success') return CheckCircle2
   if (String(item?.type || '').trim() === 'dir') return Folder
   const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
   if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(name)) return Music
+  if (/\.(jpg|jpeg|png|webp|gif|bmp|avif)$/i.test(name)) return ImageIcon
+  if (/\.(mp4|mkv|avi|mov|wmv|webm|m4v)$/i.test(name)) return Film
+  if (/\.(zip|7z|rar|tar|gz|bz2|xz)$/i.test(name)) return FileArchive
   if (/\.(srt|ass|ssa|vtt|lrc|txt|md|json)$/i.test(name)) return FileText
   return FileIcon
 }
 
 function entryIconClass(item) {
+  if (String(item?.variant || '').trim() === 'warning') return 'is-warning'
+  if (String(item?.variant || '').trim() === 'success') return 'is-success'
   if (String(item?.type || '').trim() === 'dir') return 'is-dir'
   const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
   if (/\.(wav|flac)$/i.test(name)) return 'is-audio-blue'
   if (/\.(mp3|m4a|ogg|aac|wma|opus|cue)$/i.test(name)) return 'is-audio-purple'
+  if (/\.(jpg|jpeg|png|webp|gif|bmp|avif)$/i.test(name)) return 'is-image'
+  if (/\.(mp4|mkv|avi|mov|wmv|webm|m4v)$/i.test(name)) return 'is-video'
+  if (/\.(pdf)$/i.test(name)) return 'is-pdf'
+  if (/\.(zip|7z|rar|tar|gz|bz2|xz)$/i.test(name)) return 'is-archive'
   if (/\.(srt|ass|ssa|vtt|lrc|txt|md|json)$/i.test(name)) return 'is-text'
   return 'is-file'
+}
+
+function flattenEntryRows(rows) {
+  const flattened = []
+  const visit = (items, depth = 0) => {
+    for (const item of Array.isArray(items) ? items : []) {
+      const current = { ...item, depth }
+      flattened.push(current)
+      if (current.expandable && isEntryTreeRowExpanded(current.key) && current.children?.length) {
+        visit(current.children, depth + 1)
+      }
+    }
+  }
+  visit(rows, 0)
+  return flattened
 }
 
 function isEntrySectionExpanded(sectionKey) {
@@ -3005,6 +3295,150 @@ function toggleEntrySection(sectionKey) {
   if (next.has(key)) next.delete(key)
   else next.add(key)
   collapsedEntrySectionKeys.value = next
+}
+
+function isEntryTreeRowExpanded(rowKey) {
+  return !collapsedEntryTreeRowKeys.value.has(String(rowKey || ''))
+}
+
+function toggleEntryTreeRow(rowKey) {
+  const key = String(rowKey || '')
+  if (!key) return
+  const next = new Set(collapsedEntryTreeRowKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedEntryTreeRowKeys.value = next
+}
+
+function normalizePathForCompare(path) {
+  return String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+function findSubtitleBatchSourceDirectory(folderPath, directories) {
+  const normalizedFolder = normalizePathForCompare(folderPath)
+  if (!normalizedFolder) return null
+  let matched = null
+  let matchedLength = -1
+  for (const item of directories) {
+    const basePath = String(item?.folder_path || item?.path || '').trim()
+    const normalizedBase = normalizePathForCompare(basePath)
+    if (!normalizedBase) continue
+    const isSame = normalizedFolder === normalizedBase
+    const isChild = normalizedFolder.startsWith(`${normalizedBase}/`)
+    if ((isSame || isChild) && normalizedBase.length > matchedLength) {
+      matched = item
+      matchedLength = normalizedBase.length
+    }
+  }
+  return matched
+}
+
+function buildSubtitleBatchDirectoryRows(detail) {
+  const sourceDirectories = Array.isArray(detail?.source_directories) ? detail.source_directories : []
+  const scanTargets = Array.isArray(detail?.scan_targets) ? detail.scan_targets : []
+  const createdTasks = Array.isArray(detail?.created_tasks) ? detail.created_tasks : []
+  const skippedItems = Array.isArray(detail?.skipped_items) ? detail.skipped_items : []
+  const directoryMap = new Map()
+
+  for (const [index, item] of sourceDirectories.slice(0, 120).entries()) {
+    const path = String(item?.folder_path || item?.path || '').trim()
+    const key = path || `source-${index}`
+    directoryMap.set(key, {
+      key: `subtitle-dir-${key}`,
+      path,
+      label: String(item?.folder_name || item?.name || path || '未命名目录'),
+      type: 'dir',
+      variant: 'dir',
+      sizeText: path,
+      metaText: '',
+      error: '',
+      depth: 0,
+      expandable: true,
+      children: [],
+      createdCount: 0,
+      failedCount: 0
+    })
+  }
+
+  for (const target of scanTargets.slice(0, 160)) {
+    const path = String(target?.path || '').trim()
+    const existing = directoryMap.get(path)
+    if (existing) {
+      existing.metaText = target?.message || ''
+      if (String(target?.status || '').trim() === 'failed') {
+        existing.variant = 'warning'
+      }
+    }
+  }
+
+  const ensureDirectory = (folderPath, fallbackName = '') => {
+    const matchedSource = findSubtitleBatchSourceDirectory(folderPath, sourceDirectories)
+    const sourcePath = String(matchedSource?.folder_path || matchedSource?.path || folderPath || '').trim()
+    const key = sourcePath || folderPath || fallbackName || `other-${directoryMap.size}`
+    if (!directoryMap.has(key)) {
+      directoryMap.set(key, {
+        key: `subtitle-dir-${key}`,
+        path: sourcePath,
+        label: String(matchedSource?.folder_name || matchedSource?.name || fallbackName || sourcePath || '未命名目录'),
+        type: 'dir',
+        variant: 'dir',
+        sizeText: sourcePath,
+        metaText: '',
+        error: '',
+        depth: 0,
+        expandable: true,
+        children: [],
+        createdCount: 0,
+        failedCount: 0
+      })
+    }
+    return directoryMap.get(key)
+  }
+
+  for (const [index, item] of createdTasks.slice(0, 200).entries()) {
+    const folderPath = String(item?.folder_path || '').trim()
+    const parent = ensureDirectory(folderPath, item?.folder_name || '')
+    parent.createdCount += 1
+    parent.children.push({
+      key: `created-${index}-${item?.task_id || folderPath || item?.rjcode || ''}`,
+      label: `${item?.rjcode ? `[${item.rjcode}] ` : ''}${item?.folder_name || folderPath || '未命名 RJ'}`,
+      type: 'rj',
+      variant: 'success',
+      depth: 1,
+      metaText: '已创建爬取任务',
+      sizeText: folderPath,
+      error: ''
+    })
+  }
+
+  for (const [index, item] of skippedItems.slice(0, 200).entries()) {
+    const folderPath = String(item?.folder_path || '').trim()
+    const parent = ensureDirectory(folderPath, item?.folder_name || '')
+    parent.failedCount += 1
+    parent.variant = 'warning'
+    parent.children.push({
+      key: `skipped-${index}-${folderPath || item?.rjcode || item?.folder_name || ''}`,
+      label: `${item?.rjcode ? `[${item.rjcode}] ` : ''}${item?.folder_name || folderPath || '未命名 RJ'}`,
+      type: 'rj',
+      variant: 'warning',
+      depth: 1,
+      metaText: item?.queue_state === 'existing_task' ? '加入失败：任务已存在' : '加入失败',
+      sizeText: folderPath,
+      error: String(item?.queue_message || '').trim()
+    })
+  }
+
+  return Array.from(directoryMap.values()).map(item => {
+    const summaryParts = []
+    if (item.metaText) summaryParts.push(item.metaText)
+    if (item.createdCount) summaryParts.push(`成功 ${item.createdCount}`)
+    if (item.failedCount) summaryParts.push(`失败 ${item.failedCount}`)
+    return {
+      ...item,
+      metaText: summaryParts.join(' · '),
+      children: item.children
+    }
+  })
 }
 
 function formatDateTime(iso) {
@@ -3421,6 +3855,19 @@ watch(selectedRow, (row) => {
 .table-panel {
   padding-bottom: 8px;
   overflow-x: hidden;
+}
+
+.activity-table-loading-shell {
+  position: relative;
+  min-height: 520px;
+}
+
+:deep(.activity-history-loading-mask) {
+  inset: 18px;
+  border-radius: 22px;
+  background: rgba(250, 251, 255, 0.84);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
 }
 
 .pager-wrap {
@@ -3957,20 +4404,10 @@ watch(selectedRow, (row) => {
   padding-top: 10px;
 }
 
-.compare-layout-shell {
-  display: grid;
-  gap: 0;
-}
-
 .compare-table-shell {
   display: flex;
   flex-direction: column;
-  border-radius: 28px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow:
-    0 16px 40px rgba(15, 23, 42, 0.05),
-    inset 0 0 0 1px rgba(226, 232, 240, 0.88);
+  min-width: 0;
 }
 
 .compare-table-head {
@@ -3978,7 +4415,7 @@ watch(selectedRow, (row) => {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  padding: 20px 22px 14px;
+  padding: 0 0 14px;
   cursor: pointer;
 }
 
@@ -4131,8 +4568,8 @@ watch(selectedRow, (row) => {
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) repeat(3, minmax(120px, 1fr));
   gap: 12px;
-  padding: 12px 22px 10px;
-  border-top: 1px solid rgba(241, 245, 249, 0.9);
+  padding: 12px 0 10px;
+  border-top: 1px solid rgba(226, 232, 240, 0.72);
   color: #94a3b8;
   font-size: 10px;
   font-weight: 800;
@@ -4147,7 +4584,7 @@ watch(selectedRow, (row) => {
 .compare-rows-wrap {
   max-height: 580px;
   overflow-y: auto;
-  padding: 0 10px 10px;
+  padding: 0 0 4px;
   scrollbar-width: thin;
   scrollbar-color: rgba(203, 213, 225, 0.95) rgba(241, 245, 249, 0.92);
 }
@@ -4172,8 +4609,7 @@ watch(selectedRow, (row) => {
   grid-template-columns: minmax(0, 2.2fr) repeat(3, minmax(120px, 1fr));
   gap: 12px;
   align-items: center;
-  padding: 14px 12px;
-  margin: 0 8px;
+  padding: 14px 0;
   border-top: 1px solid rgba(241, 245, 249, 0.9);
 }
 
@@ -5387,6 +5823,9 @@ watch(selectedRow, (row) => {
   color: #64748b;
   font-size: 11px;
   font-weight: 700;
+  cursor: pointer;
+  position: relative;
+  z-index: 2;
   transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 
@@ -5406,6 +5845,14 @@ watch(selectedRow, (row) => {
   box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.06);
 }
 
+.tree-row-shell {
+  border-bottom: 1px solid rgba(29, 29, 31, 0.05);
+}
+
+.tree-row-shell:last-child {
+  border-bottom: none;
+}
+
 .tree-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -5413,13 +5860,23 @@ watch(selectedRow, (row) => {
   align-items: start;
   padding-top: 6px;
   padding-bottom: 6px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.05);
   cursor: default;
   transition: none;
 }
 
-.tree-row:last-child {
-  border-bottom: none;
+.tree-row.is-expandable {
+  align-items: center;
+}
+
+.tree-row-child {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.tree-row:hover,
+.tree-row-child:hover,
+.tree-row-shell:hover {
+  background: transparent;
 }
 
 .tree-main {
@@ -5433,6 +5890,38 @@ watch(selectedRow, (row) => {
   color: rgba(29, 29, 31, 0.35);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   flex: 0 0 auto;
+}
+
+.tree-inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.9);
+  color: #64748b;
+  flex: 0 0 auto;
+  cursor: pointer;
+  position: relative;
+  z-index: 2;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.tree-inline-toggle:hover {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(148, 163, 184, 0.32);
+  color: #334155;
+}
+
+.tree-inline-toggle.expanded svg {
+  transform: rotate(90deg);
+}
+
+.tree-inline-toggle svg {
+  transition: transform 0.18s ease;
 }
 
 .entry-icon {
@@ -5450,9 +5939,24 @@ watch(selectedRow, (row) => {
   color: #60a5fa;
 }
 
+.entry-icon.is-success {
+  background: rgba(236, 253, 245, 0.95);
+  color: #059669;
+}
+
+.entry-icon.is-warning {
+  background: rgba(255, 241, 242, 0.98);
+  color: #e11d48;
+}
+
 .entry-icon.is-file {
   background: rgba(248, 250, 252, 0.92);
   color: #64748b;
+}
+
+.entry-icon.is-deleted {
+  background: rgba(241, 245, 249, 0.9);
+  color: rgba(71, 85, 105, 0.72);
 }
 
 .entry-icon.is-audio-blue {
@@ -5465,6 +5969,26 @@ watch(selectedRow, (row) => {
   color: #8b5cf6;
 }
 
+.entry-icon.is-image {
+  background: rgba(254, 242, 242, 0.96);
+  color: #f97316;
+}
+
+.entry-icon.is-video {
+  background: rgba(238, 242, 255, 0.96);
+  color: #6366f1;
+}
+
+.entry-icon.is-pdf {
+  background: rgba(254, 242, 242, 0.96);
+  color: #dc2626;
+}
+
+.entry-icon.is-archive {
+  background: rgba(255, 247, 237, 0.96);
+  color: #d97706;
+}
+
 .entry-icon.is-text {
   background: rgba(241, 245, 249, 0.96);
   color: #475569;
@@ -5473,15 +5997,40 @@ watch(selectedRow, (row) => {
 .entry-name {
   min-width: 0;
   color: #1d1d1f;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
+}
+
+.entry-name.is-deleted {
+  color: rgba(29, 29, 31, 0.5);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: rgba(29, 29, 31, 0.72);
+}
+
+.entry-name.is-failed {
+  color: #b91c1c;
+}
+
+.entry-main-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.entry-meta-text {
+  font-size: 11px;
+  color: rgba(29, 29, 31, 0.48);
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .entry-size {
   color: rgba(29, 29, 31, 0.55);
   font-size: 12px;
-  white-space: nowrap;
+  white-space: normal;
+  text-align: right;
+  word-break: break-word;
 }
 
 .entry-error {
@@ -5490,6 +6039,12 @@ watch(selectedRow, (row) => {
   font-size: 12px;
   word-break: break-word;
   padding-left: 56px;
+}
+
+.tree-children {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 4px;
 }
 
 .detail-drawer-head {

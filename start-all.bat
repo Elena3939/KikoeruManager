@@ -79,12 +79,12 @@ popd
 echo Starting all services...
 echo.
 
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING"') do (
-    echo [INFO] Stop process on 8000: %%P
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5555" ^| findstr "LISTENING"') do (
+    echo [INFO] Stop process on 5555: %%P
     taskkill /PID %%P /F >nul 2>&1
 )
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING"') do (
-    echo [INFO] Stop process on 5173: %%P
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5556" ^| findstr "LISTENING"') do (
+    echo [INFO] Stop process on 5556: %%P
     taskkill /PID %%P /F >nul 2>&1
 )
 
@@ -120,9 +120,9 @@ echo ========================================
 echo Services started!
 echo ========================================
 echo.
-echo Backend:  http://localhost:8000
-echo Frontend: http://localhost:5173
-echo Docs:     http://localhost:8000/docs
+echo Backend:  http://localhost:5555
+echo Frontend: http://localhost:5556
+echo Docs:     http://localhost:5555/docs
 echo.
 echo Close the popup windows to stop services
 echo.

@@ -10,8 +10,8 @@
         <div class="v1-shell">
           <header class="v1-header">
             <div class="v1-header-copy">
-              <div class="v1-title">Download Manager</div>
-              <div class="v1-subtitle">社团补全下载任务</div>
+              <div class="v1-title">{{ titleText }}</div>
+              <div class="v1-subtitle">{{ subtitleText }}</div>
 
               <div class="v1-tabs">
                 <button
@@ -61,7 +61,18 @@
             >
               <div class="v1-task-summary">
                 <div class="v1-task-icon" :class="iconToneClass(task)">
-                  <component :is="getTaskIcon(task)" :size="24" />
+                  <DotLottieVue
+                    v-if="getTaskLottie(task)"
+                    class="v1-task-icon-lottie"
+                    :src="getTaskLottie(task)"
+                    autoplay
+                    loop
+                    :speed="1"
+                    mode="forward"
+                    :use-frame-interpolation="true"
+                    :render-config="{ autoResize: true }"
+                  />
+                  <component :is="getTaskIcon(task)" v-else :size="24" />
                 </div>
 
                 <div class="v1-task-main">
@@ -95,7 +106,7 @@
                     </span>
                     <span>{{ getPrimarySizeText(task) }}</span>
                     <span>{{ getPrimaryFileProgressLabel(task) }}</span>
-                    <span v-if="getVisibleDownloadSpeed(task) > 0" class="v1-speed-line">
+                    <span v-if="showDownloadMetrics && getVisibleDownloadSpeed(task) > 0" class="v1-speed-line">
                       <Zap :size="12" />
                       下载 {{ formatSpeed(getVisibleDownloadSpeed(task)) }}
                     </span>
@@ -103,7 +114,29 @@
                       <Zap :size="12" />
                       上传 {{ formatSpeed(getVisibleUploadSpeed(task)) }}
                     </span>
+                    <span v-if="showUploadEta && getVisibleUploadSpeed(task) > 0" class="v1-eta-line">
+                      预计剩余 {{ formatEtaSeconds(getUploadEtaSeconds(task)) }}
+                    </span>
                     <span v-if="task.current_step">{{ task.current_step }}</span>
+                  </div>
+
+                  <div v-if="!expandedTaskIds.has(task.id)" class="v1-summary-progress">
+                    <div class="v1-summary-progress-track">
+                      <div class="v1-summary-progress-fill" :style="{ width: `${getTaskOverallPercent(task)}%` }">
+                        <DotLottieVue
+                          :ref="el => setTaskProgressPlayerRef(task.id, el)"
+                          class="v1-summary-progress-lottie"
+                          :src="progressBarAnimation"
+                          :autoplay="false"
+                          :loop="false"
+                          :speed="1"
+                          mode="forward"
+                          :use-frame-interpolation="true"
+                          :render-config="{ autoResize: true }"
+                        />
+                      </div>
+                    </div>
+                    <span class="v1-summary-progress-text">{{ getTaskOverallPercent(task) }}%</span>
                   </div>
 
                 </div>
@@ -130,7 +163,7 @@
 
                       <div class="v1-path-grid">
                         <div class="v1-path-card">
-                          <div class="v1-path-label">下载目录</div>
+                          <div class="v1-path-label">{{ sourcePathLabel }}</div>
                           <div class="v1-path-value">{{ getDownloadRoot(task) }}</div>
                         </div>
                         <div class="v1-path-card">
@@ -154,7 +187,7 @@
                               </div>
                               <div class="v1-file-row-side">
                                 <span>{{ file.progress }}% • {{ file.sizeText }}</span>
-                                <span v-if="file.downloadSpeedVisible">下载 {{ formatSpeed(file.downloadSpeed) }}</span>
+                                <span v-if="showDownloadMetrics && file.downloadSpeedVisible">下载 {{ formatSpeed(file.downloadSpeed) }}</span>
                                 <span v-if="file.uploadSpeedVisible">上传 {{ formatSpeed(file.uploadSpeed) }}</span>
                                 <button
                                   v-if="file.retryable"
@@ -196,21 +229,31 @@
 
             <div v-if="!filteredTasks.length" class="v1-empty-state">
               <Archive :size="36" />
-              <div class="v1-empty-title">暂无符合筛选的下载任务</div>
+              <div class="v1-empty-title">{{ emptyTitleText }}</div>
               <div class="v1-empty-text">切换标签或修改搜索词后再试。</div>
             </div>
           </main>
 
           <footer class="v1-footer">
             <div class="v1-footer-metrics">
-              <div class="v1-footer-block">
+              <div v-if="showDownloadMetrics" class="v1-footer-block">
                 <span class="v1-footer-label">下载速度</span>
                 <span class="v1-footer-value">{{ totalDownloadSpeed }}</span>
               </div>
-              <div class="v1-footer-divider"></div>
+              <div v-if="showDownloadMetrics" class="v1-footer-divider"></div>
               <div class="v1-footer-block">
                 <span class="v1-footer-label">上传速度</span>
                 <span class="v1-footer-value">{{ totalUploadSpeed }}</span>
+              </div>
+              <div class="v1-footer-divider"></div>
+              <div class="v1-footer-block">
+                <span class="v1-footer-label">剩余大小</span>
+                <span class="v1-footer-value">{{ remainingTransferSize }}</span>
+              </div>
+              <div class="v1-footer-divider"></div>
+              <div class="v1-footer-block">
+                <span class="v1-footer-label">预计时间</span>
+                <span class="v1-footer-value">{{ aggregatedUploadEta }}</span>
               </div>
               <div class="v1-footer-divider"></div>
               <div class="v1-footer-block">
@@ -232,14 +275,28 @@
 </template>
 
 <script setup>
-import { Archive, AlertCircle, CheckCircle2, Clock3, Download, HardDriveUpload, Minimize2, RefreshCw, Search, TriangleAlert, X, Zap } from 'lucide-vue-next'
-import { computed, ref, watch } from 'vue'
+import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
+import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Download, HardDriveUpload, Minimize2, RefreshCw, Search, TriangleAlert, X, Zap } from 'lucide-vue-next'
+import { computed, nextTick, ref, watch } from 'vue'
+import downloadIconAnimation from '../../assets/anime/download-icon-clean.json?url'
+import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
+import progressBarAnimation from '../../assets/anime/progress bar.lottie'
+
+const PROGRESS_BAR_START_FRAME = 45
+const PROGRESS_BAR_END_FRAME = 706
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   tasks: { type: Array, default: () => [] },
   refreshing: { type: Boolean, default: false },
   retryingKeys: { type: Array, default: () => [] },
+  title: { type: String, default: 'Download Manager' },
+  subtitle: { type: String, default: '社团补全下载任务' },
+  emptyTitle: { type: String, default: '暂无符合筛选的下载任务' },
+  sourcePathLabel: { type: String, default: '下载目录' },
+  showDownloadMetrics: { type: Boolean, default: true },
+  showUploadEta: { type: Boolean, default: false },
+  preferUploadIcon: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -257,6 +314,8 @@ const activeFilter = ref('all')
 const searchQuery = ref('')
 const expandedTaskIds = ref(new Set())
 const localSpinning = ref(false)
+const taskProgressPlayerRefs = ref({})
+const taskProgressPlayerReady = ref({})
 
 function handleRefresh() {
   emit('refresh')
@@ -264,8 +323,46 @@ function handleRefresh() {
   setTimeout(() => { localSpinning.value = false }, 900)
 }
 
+function getTaskProgressPlayerInstance(taskId) {
+  return taskProgressPlayerRefs.value[String(taskId)]?.getDotLottieInstance?.() || null
+}
+
+function handleTaskProgressPlayerReady(taskId) {
+  taskProgressPlayerReady.value[String(taskId)] = true
+  syncTaskProgressFrame(taskId)
+}
+
+function bindTaskProgressPlayer(taskId) {
+  const instance = getTaskProgressPlayerInstance(taskId)
+  if (!instance) return false
+  const key = String(taskId)
+  if (taskProgressPlayerReady.value[key] === 'binding') return true
+  taskProgressPlayerReady.value[key] = 'binding'
+  instance.addEventListener('ready', () => handleTaskProgressPlayerReady(taskId))
+  instance.addEventListener('load', () => handleTaskProgressPlayerReady(taskId))
+  return true
+}
+
+function setTaskProgressPlayerRef(taskId, el) {
+  const key = String(taskId)
+  if (el) {
+    taskProgressPlayerRefs.value[key] = el
+    bindTaskProgressPlayer(taskId)
+    window.setTimeout(() => {
+      bindTaskProgressPlayer(taskId)
+      syncTaskProgressFrame(taskId)
+    }, 60)
+    return
+  }
+  delete taskProgressPlayerRefs.value[key]
+  delete taskProgressPlayerReady.value[key]
+}
+
 const retryingSet = computed(() => new Set((props.retryingKeys || []).map(item => String(item || ''))))
 const mergedTasks = computed(() => buildMergedTasks(props.tasks || []))
+const titleText = computed(() => String(props.title || 'Download Manager'))
+const subtitleText = computed(() => String(props.subtitle || '社团补全下载任务'))
+const emptyTitleText = computed(() => String(props.emptyTitle || '暂无符合筛选的下载任务'))
 const processingTasks = computed(() => mergedTasks.value.filter(task => String(task?.status || '') === 'processing'))
 const pendingTasks = computed(() => mergedTasks.value.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))))
 const partialFailedTasks = computed(() => mergedTasks.value.filter(task => getTaskTone(task) === 'warning'))
@@ -298,6 +395,20 @@ const filteredTasks = computed(() => {
 
 const totalDownloadSpeed = computed(() => formatSpeed(processingTasks.value.reduce((sum, task) => sum + getVisibleDownloadSpeed(task), 0)))
 const totalUploadSpeed = computed(() => formatSpeed(processingTasks.value.reduce((sum, task) => sum + getVisibleUploadSpeed(task), 0)))
+const totalRemainingUploadBytes = computed(() => {
+  return processingTasks.value.reduce((sum, task) => {
+    if (!isUploadEnabled(task)) return sum
+    return sum + getUploadRemainingBytes(task)
+  }, 0)
+})
+const remainingTransferSize = computed(() => formatSize(totalRemainingUploadBytes.value))
+const aggregatedUploadEta = computed(() => {
+  const speed = processingTasks.value.reduce((sum, task) => sum + getVisibleUploadSpeed(task), 0)
+  const remainingBytes = totalRemainingUploadBytes.value
+  if (speed > 0 && remainingBytes > 0) return formatEtaSeconds(Math.ceil(remainingBytes / speed))
+  if (remainingBytes <= 0 && processingTasks.value.some(task => isUploadEnabled(task))) return '已接近完成'
+  return '—'
+})
 const remainingTaskSummary = computed(() => {
   const remaining = processingTasks.value.length + pendingTasks.value.length
   return remaining ? `${remaining} 个` : '已全部完成'
@@ -310,6 +421,12 @@ watch(() => mergedTasks.value.map(task => task.id).join(':'), () => {
   if (taskIds.length === 1) nextExpanded.add(taskIds[0])
   expandedTaskIds.value = nextExpanded
 }, { immediate: true })
+
+watch(
+  () => filteredTasks.value.map(task => `${task.id}:${getTaskOverallPercent(task)}:${expandedTaskIds.value.has(task.id) ? 'x' : 'c'}`).join('|'),
+  () => { syncAllTaskProgressFrames() },
+  { immediate: true }
+)
 
 function toggleExpanded(taskId) {
   const next = new Set(expandedTaskIds.value)
@@ -337,6 +454,29 @@ function statusToneClass(task) {
   return 'processing'
 }
 
+async function syncTaskProgressFrame(taskId) {
+  const task = mergedTasks.value.find(item => String(item?.id) === String(taskId))
+  if (!task) return
+
+  const instance = getTaskProgressPlayerInstance(taskId)
+  if (!instance) return
+  if (taskProgressPlayerReady.value[String(taskId)] !== true) return
+
+  const percent = Math.max(0, Math.min(100, Number(getTaskOverallPercent(task) || 0)))
+  const frameSpan = PROGRESS_BAR_END_FRAME - PROGRESS_BAR_START_FRAME
+  const targetFrame = PROGRESS_BAR_START_FRAME + Math.round((percent / 100) * frameSpan)
+
+  await instance.unfreeze()
+  await instance.pause()
+  await instance.setFrame(targetFrame)
+  await instance.freeze()
+}
+
+async function syncAllTaskProgressFrames() {
+  await nextTick()
+  await Promise.all((filteredTasks.value || []).map(task => syncTaskProgressFrame(task.id)))
+}
+
 function fileToneClass(file) {
   if (file.tone === 'success') return 'success'
   if (file.tone === 'upload-success') return 'upload-success'
@@ -355,9 +495,19 @@ function getTaskIcon(task) {
   const tone = getTaskTone(task)
   if (tone === 'success') return CheckCircle2
   if (tone === 'warning' || tone === 'danger') return TriangleAlert
+  if (props.preferUploadIcon && isUploadEnabled(task)) return ArrowUpToLine
   if (getTaskStageLabel(task).includes('上传')) return HardDriveUpload
   if (['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))) return Clock3
   return Download
+}
+
+function getTaskLottie(task) {
+  const tone = getTaskTone(task)
+  if (tone === 'success' || tone === 'warning' || tone === 'danger') return ''
+  const stage = getTaskStageLabel(task)
+  if (props.preferUploadIcon && isUploadEnabled(task)) return uploadToCloudAnimation
+  if (stage.includes('上传')) return uploadToCloudAnimation
+  return downloadIconAnimation
 }
 
 function getTaskStatusMetaIcon(task) {
@@ -566,6 +716,20 @@ function mergeLatestFileCollections(tasks) {
   return merged
 }
 
+function formatEtaSeconds(value) {
+  const seconds = Math.max(0, Number(value || 0))
+  if (!seconds) return '—'
+  if (seconds < 60) return `${Math.round(seconds)}秒`
+  if (seconds < 3600) {
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.round(seconds % 60)
+    return secs > 0 ? `${mins}分${secs}秒` : `${mins}分`
+  }
+  const hours = Math.floor(seconds / 3600)
+  const mins = Math.floor((seconds % 3600) / 60)
+  return mins > 0 ? `${hours}时${mins}分` : `${hours}时`
+}
+
 function isSuccessfulFileTone(tone) {
   return ['success', 'upload-success'].includes(String(tone || ''))
 }
@@ -613,8 +777,32 @@ function getVisibleDownloadSpeed(task) {
 
 function getVisibleUploadSpeed(task) {
   const runtime = getUploadRuntime(task)
-  const runtimeSpeed = Number(runtime?.speed_bytes_per_sec || 0)
-  return isTaskProcessing(task) && hasActiveUploadRuntime(task) && runtimeSpeed > 0 ? runtimeSpeed : 0
+  const runtimeSpeed = Number(runtime?.speed_bytes_per_sec || runtime?.last_non_zero_speed_bytes_per_sec || 0)
+  const hasActiveUploadHint = hasActiveUploadRuntime(task) || Boolean(String(runtime?.current_relative_path || '').trim())
+  return isTaskProcessing(task) && hasActiveUploadHint && runtimeSpeed > 0 ? runtimeSpeed : 0
+}
+
+function getUploadEtaSeconds(task) {
+  const runtime = getUploadRuntime(task)
+  const runtimeEta = Number(runtime?.eta_seconds || 0)
+  if (runtimeEta > 0) return runtimeEta
+  const speed = getVisibleUploadSpeed(task) || Number(runtime?.last_non_zero_speed_bytes_per_sec || 0)
+  const remainingBytes = getUploadRemainingBytes(task)
+  if (speed > 0 && remainingBytes > 0) return Math.ceil(remainingBytes / speed)
+  return 0
+}
+
+function getUploadRemainingBytes(task) {
+  return Math.max(0, getUploadTotalBytes(task) - getTaskUploadedBytes(task))
+}
+
+function getUploadTotalBytes(task) {
+  const runtimeBytes = Number(getUploadRuntime(task)?.total_bytes || 0)
+  if (runtimeBytes > 0) return runtimeBytes
+  const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []
+  const totalBytes = uploadFiles.reduce((sum, item) => sum + Number(item?.size_bytes || item?.total || 0), 0)
+  if (totalBytes > 0) return totalBytes
+  return getTaskTransferBytes(task)
 }
 
 function getTaskTransferBytes(task) {
@@ -921,8 +1109,8 @@ function getUnifiedFileRows(task) {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 1122px;
-  height: min(88vh, 870px);
+  max-width: 1320px;
+  height: min(90vh, 920px);
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.42);
   border-radius: 38px;
@@ -1001,12 +1189,13 @@ function getUnifiedFileRows(task) {
 .v1-task-card:hover { transform: translateY(-2px); box-shadow: 0 16px 28px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,.38), inset 0 0 0 1px rgba(255,255,255,.06); border-color: rgba(255,255,255,.46); background: linear-gradient(180deg, rgba(255,255,255,.38), rgba(255,255,255,.16)); }
 .v1-task-card.expanded { box-shadow: 0 18px 34px rgba(15, 23, 42, 0.1), inset 0 1px 0 rgba(255,255,255,.4), inset 0 0 0 1px rgba(255,255,255,.08); }
 .v1-task-summary { display: flex; align-items: center; gap: 16px; padding: 18px 22px; min-height: 92px; }
-.v1-task-icon { display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 999px; flex-shrink: 0; box-shadow: inset 0 1px 0 rgba(255,255,255,.42); }
-.v1-task-icon.processing { background: linear-gradient(180deg, #9fccff 0%, #8ec0f6 100%); color: #123f67; }
-.v1-task-icon.pending { background: #e1e9f0; color: #566167; }
-.v1-task-icon.success { background: linear-gradient(180deg, #d5ecfb 0%, #c6e0f1 100%); color: #415866; }
-.v1-task-icon.warning { background: #fce7c7; color: #9a5b00; }
-.v1-task-icon.danger { background: #fde2e2; color: #b91c1c; }
+.v1-task-icon { display: inline-flex; align-items: center; justify-content: center; width: 88px; height: 88px; flex-shrink: 0; overflow: visible; }
+.v1-task-icon-lottie { width: 72px; height: 72px; pointer-events: none; filter: drop-shadow(0 10px 24px rgba(59,130,246,.12)); background: transparent; }
+.v1-task-icon.processing { color: #123f67; }
+.v1-task-icon.pending { color: #566167; }
+.v1-task-icon.success { color: #415866; }
+.v1-task-icon.warning { color: #9a5b00; }
+.v1-task-icon.danger { color: #b91c1c; }
 .v1-task-main { flex: 1; min-width: 0; }
 .v1-task-head { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
 .v1-task-name-wrap { min-width: 0; flex: 1; }
@@ -1019,9 +1208,15 @@ function getUnifiedFileRows(task) {
 .v1-inline-action:hover { transform: translateY(-1px); opacity: .95; background: rgba(255,255,255,.38); box-shadow: 0 8px 16px rgba(148, 163, 184, 0.12), inset 0 1px 0 rgba(255,255,255,.34); }
 .v1-inline-action:active { transform: translateY(0); }
 .v1-task-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; color: #556474; font-size: 12px; line-height: 1.1; }
-.v1-status-line,.v1-speed-line { display: inline-flex; align-items: center; gap: 5px; }
+.v1-summary-progress { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.v1-summary-progress-track { position: relative; flex: 1; height: 34px; overflow: hidden; border-radius: 999px; background: linear-gradient(180deg, rgba(255,255,255,.72), rgba(255,255,255,.42)); box-shadow: inset 0 0 0 1px rgba(148,163,184,.18), inset 0 10px 18px rgba(255,255,255,.35); }
+.v1-summary-progress-fill { position: absolute; left: 0; top: 0; bottom: 0; overflow: hidden; border-radius: 999px; transition: width .28s ease; box-shadow: 0 8px 20px rgba(59,130,246,.14); }
+.v1-summary-progress-lottie { display: block; width: 100%; height: 100%; min-width: 100%; pointer-events: none; transform: scale(1.02, 1.18); transform-origin: center; }
+.v1-summary-progress-text { color: #456074; font-size: 12px; font-weight: 800; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+.v1-status-line,.v1-speed-line,.v1-eta-line { display: inline-flex; align-items: center; gap: 5px; }
 .v1-status-line.processing,.v1-speed-line { color: #2563eb; }
 .v1-speed-line.upload { color: #4f8f96; }
+.v1-eta-line { color: #667788; }
 .v1-status-line.pending { color: #7c8b96; }
 .v1-status-line.success { color: #3e5560; }
 .v1-status-line.upload-success { color: #4f8f96; }

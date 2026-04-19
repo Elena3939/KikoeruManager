@@ -57,7 +57,7 @@
 
           <button type="button" class="stat-chip stat-chip-clickable" @click="$router.push('/library')">
             <span class="stat-chip-icon stat-icon stat-icon-rj-subtitle">
-              <el-icon :size="18"><Loading /></el-icon>
+              <el-icon :size="18"><Search /></el-icon>
             </span>
             <span class="stat-chip-body">
               <span class="stat-chip-label">RJ 字幕</span>
@@ -118,7 +118,7 @@
         </div>
       </template>
 
-      <el-table :data="recentTasks" v-loading="loading" style="width: 100%" row-key="id">
+      <el-table :data="recentTasks" v-app-loading="{ loading, text: '正在加载近期任务...', size: 124 }" style="width: 100%" row-key="id">
 
         <el-table-column prop="title" label="源文件" show-overflow-tooltip min-width="260">
           <template #default="{ row }">
@@ -244,7 +244,7 @@
 
       <el-table
         :data="displayedArchives"
-        v-loading="archivesLoading"
+        v-app-loading="{ loading: archivesLoading, text: '正在加载最近入库...', size: 124 }"
         style="width: 100%"
         empty-text="暂无已处理压缩包"
         row-key="id"
@@ -326,7 +326,7 @@
 <script setup>
 import { ref, onActivated, onDeactivated, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { Document, Loading, CircleCheck, CircleCheckFilled, Warning, Search, VideoPlay, VideoPause, Refresh, SortDown, SortUp } from '@element-plus/icons-vue'
+import { Document, CircleCheck, CircleCheckFilled, Warning, Search, VideoPlay, VideoPause, Refresh, SortDown, SortUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { conflictApi, scanApi, watcherApi, processedArchiveApi, taskCenterApi } from '../api'
 import FileUploader from '../components/FileUploader.vue'

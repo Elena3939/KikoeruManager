@@ -12,7 +12,7 @@ import shutil
 IS_FROZEN = getattr(sys, 'frozen', False)
 
 # 全局变量存储实际使用的端口
-ACTUAL_PORT = 8000
+ACTUAL_PORT = 5555
 
 def configure_stdio():
     """Force UTF-8 stdio on Windows so DLsite metadata logs render correctly."""
@@ -107,7 +107,7 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
         # 绑定失败说明端口被占用
         return False
 
-def find_available_port(start_port: int = 8000, max_attempts: int = 100) -> int:
+def find_available_port(start_port: int = 5555, max_attempts: int = 100) -> int:
     """从指定端口开始查找可用端口"""
     global ACTUAL_PORT
     for port in range(start_port, start_port + max_attempts):
@@ -199,10 +199,10 @@ def main():
 
     # 查找可用端口
     try:
-        port = find_available_port(8000)
-        if port != 8000:
-            logger.warning(f"端口 8000 已被占用，自动切换到端口 {port}")
-            print(f"\n⚠️  端口 8000 已被占用，自动切换到端口 {port}")
+        port = find_available_port(5555)
+        if port != 5555:
+            logger.warning(f"端口 5555 已被占用，自动切换到端口 {port}")
+            print(f"\n⚠️  端口 5555 已被占用，自动切换到端口 {port}")
         logger.info(f"使用端口：{port}")
         server_url = get_server_url()
         print(f"\n🌐 服务地址：{server_url}")

@@ -161,9 +161,9 @@ Write-Host ""
 Write-Host "[4/4] 正在启动服务..." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "服务地址:" -ForegroundColor Cyan
-Write-Host "  后端API: http://localhost:8000" -ForegroundColor Green
-Write-Host "  前端界面: http://localhost:5173" -ForegroundColor Green
-Write-Host "  API文档: http://localhost:8000/docs" -ForegroundColor Green
+Write-Host "  后端API: http://localhost:5555" -ForegroundColor Green
+Write-Host "  前端界面: http://localhost:5556" -ForegroundColor Green
+Write-Host "  API文档: http://localhost:5555/docs" -ForegroundColor Green
 Write-Host ""
 Write-Host "按 Ctrl+C 停止服务" -ForegroundColor Yellow
 Write-Host ""

@@ -43,7 +43,7 @@ class DesktopApp:
         self.stop_event = threading.Event()
         self.backend_thread = None
         self.icon = None
-        self.port = 8000
+        self.port = 5555
         self.lock_port = 29173  # 专门用于单实例锁定的端口
         self.host = "127.0.0.1"
         self.url = f"http://{self.host}:{self.port}"
@@ -68,28 +68,25 @@ class DesktopApp:
 
     def _find_icon(self):
         """查找图标文件路径"""
-        user_icon = r"D:\Tool\0edba671-6c04-463c-9b4f-7f1cec565830.ico"
-        logger.info(f"检查主图标路径: {user_icon}")
-        if os.path.exists(user_icon):
-            logger.info(f"找到主图标: {user_icon}")
-            return user_icon
-
-        # 打包后的资源路径
+        candidate_paths = []
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
-            icon_filename = os.path.basename(user_icon)
-            path = os.path.join(base_path, icon_filename)
-            logger.info(f"检查打包内图标路径: {path}")
+            candidate_paths.extend([
+                os.path.join(base_path, "backend", "app.ico"),
+                os.path.join(base_path, "app.ico"),
+            ])
+        else:
+            project_root = os.path.dirname(os.path.abspath(__file__))
+            candidate_paths.extend([
+                os.path.join(project_root, "backend", "app.ico"),
+                os.path.join(project_root, "app.ico"),
+            ])
+
+        for path in candidate_paths:
+            logger.info(f"检查图标路径: {path}")
             if os.path.exists(path):
-                logger.info(f"找到打包内图标: {path}")
+                logger.info(f"找到图标: {path}")
                 return path
-        
-        # 尝试项目根目录下的 fallback 图标
-        project_icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "app.ico")
-        logger.info(f"检查备用图标路径: {project_icon}")
-        if os.path.exists(project_icon):
-            logger.info(f"找到备用图标: {project_icon}")
-            return project_icon
             
         logger.warning("未找到任何图标，将使用默认占位图")
         return None

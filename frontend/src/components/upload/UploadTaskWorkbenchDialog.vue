@@ -4,6 +4,13 @@
     :tasks="mappedTasks"
     :refreshing="refreshing"
     :retrying-keys="[]"
+    title="Upload Manager"
+    subtitle="库存上传任务"
+    empty-title="暂无符合筛选的上传任务"
+    source-path-label="来源目录"
+    :show-download-metrics="false"
+    :show-upload-eta="true"
+    :prefer-upload-icon="true"
     @update:visible="emit('update:visible', $event)"
     @refresh="emit('refresh')"
     @background="emit('background')"
@@ -35,6 +42,8 @@ const mappedTasks = computed(() => {
     const currentRelativePath = String(uploadRuntime.current_relative_path || '').trim()
     const currentSpeed = Number(uploadRuntime.speed_bytes_per_sec || uploadRuntime.last_non_zero_speed_bytes_per_sec || 0)
     const currentUploadedBytes = Number(uploadRuntime.current_file_uploaded_bytes || 0)
+    const totalBytes = Number(uploadRuntime.total_bytes || 0)
+    const transferredBytes = Number(uploadRuntime.transferred_bytes || 0)
 
     const uploadFiles = (Array.isArray(task?.upload_files) ? task.upload_files : []).map((file) => {
       const relativePath = String(file?.relative_path || '').trim()
@@ -73,7 +82,9 @@ const mappedTasks = computed(() => {
       id: task?.id,
       status: task?.status,
       display_status: task?.display_status || task?.status,
-      progress: task?.progress,
+      progress: totalBytes > 0
+        ? Math.max(0, Math.min(100, Math.round((transferredBytes / totalBytes) * 100)))
+        : Number(task?.progress || 0),
       current_step: task?.current_step,
       error_message: task?.error_message,
       created_at: task?.created_at,

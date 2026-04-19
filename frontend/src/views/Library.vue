@@ -71,7 +71,7 @@
               <el-option label="文件夹" value="folder" />
               <el-option label="文件" value="file" />
             </el-select>
-            <el-switch v-model="searchExact" inline-prompt active-text="精确" inactive-text="模糊" />
+            <AppLottieSwitch v-model="searchExact" :show-text="true" active-text="精确" inactive-text="模糊" />
             <el-button class="toolbar-action-btn" type="primary" plain @click="handleSearch">查询</el-button>
           </div>
         </div>
@@ -162,7 +162,7 @@
         :key="libraryTableKey"
         ref="tableRef"
         :data="files"
-        v-loading="loading"
+        v-app-loading="{ loading, text: '正在刷新库存内容...', description: '同步目录、搜索结果和当前作用域', size: 132 }"
         :row-key="libraryRowKey"
         :row-class-name="libraryRowClassName"
         empty-text="暂无文件"
@@ -283,7 +283,8 @@
             :disabled="!selectedFilterDeleteRows.length || !isWritableCurrentLibrary"
             @click="openSelectedFilterDeleteDialog"
           >
-            <el-icon><Delete /></el-icon>批量删过滤预审
+            <AppLottieIcon :src="deleteIconAnimation" :size="32" tone="danger" />
+            <span>批量删过滤预审</span>
           </el-button>
           <el-button
             v-if="!isRemoteCurrentLibrary"
@@ -296,8 +297,8 @@
           >
             上传到服务器
           </el-button>
-          <el-button class="batch-action-btn batch-action-btn-danger" size="small" type="danger" plain :disabled="!isWritableCurrentLibrary" :loading="batchDeleting" @click="handleBatchDelete"><el-icon><Delete /></el-icon>批量删除</el-button>
-          <el-button class="batch-action-btn batch-action-btn-neutral" size="small" type="warning" plain :disabled="!selectedApiRenameRows.length || apiRenameBusy" :loading="batchRenaming" @click="handleBatchApiRename"><el-icon><Edit /></el-icon>批量 API重命名</el-button>
+          <el-button class="batch-action-btn batch-action-btn-danger" size="small" type="danger" plain :disabled="!isWritableCurrentLibrary" :loading="batchDeleting" @click="handleBatchDelete"><AppLottieIcon :src="deleteIconAnimation" :size="32" tone="danger" :disabled="!isWritableCurrentLibrary" /><span>批量删除</span></el-button>
+          <el-button class="batch-action-btn batch-action-btn-neutral" size="small" type="warning" plain :disabled="!selectedApiRenameRows.length || apiRenameBusy" :loading="batchRenaming" @click="handleBatchApiRename"><AppLottieIcon :src="clipboardIconAnimation" :size="40" tone="primary" :disabled="!selectedApiRenameRows.length || apiRenameBusy" /><span>批量 API重命名</span></el-button>
           <el-button class="batch-action-btn batch-action-btn-neutral" size="small" @click="clearSelection">取消选择</el-button>
         </div>
       </div>
@@ -350,7 +351,7 @@
             {{ activeBackgroundUploadTask ? `${activeBackgroundUploadTask.work_title || activeBackgroundUploadTask.source_label || '-'} · ${getUploadBackgroundTargetLabel(activeBackgroundUploadTask)}` : '保留当前上传队列与进度状态' }}
           </div>
         </div>
-        <div class="subtitle-floating-count">{{ trackedUploadTasks.length }}</div>
+        <div class="subtitle-floating-count">{{ uploadBackgroundPercent }}%</div>
       </div>
       <el-progress
         :percentage="uploadBackgroundPercent"
@@ -363,6 +364,7 @@
         <span class="subtitle-floating-chip">完成 {{ completedUploadTasks.length }}</span>
         <span class="subtitle-floating-chip" :class="{ 'subtitle-mini-chip-danger': failedUploadTasks.length > 0 }">失败 {{ failedUploadTasks.length }}</span>
         <span class="subtitle-floating-chip">速度 {{ formatSpeed(getUploadBackgroundSpeed(activeBackgroundUploadTask)) }}</span>
+        <span class="subtitle-floating-chip">剩余 {{ formatUploadBackgroundEta(activeBackgroundUploadTask) }}</span>
       </div>
       <div class="subtitle-floating-text">
         {{ activeBackgroundUploadTask?.current_step || '隐藏后继续保留上传队列和进度。' }}
@@ -431,7 +433,7 @@
                     <div class="subtitle-option-title">覆盖已有字幕</div>
                     <div class="subtitle-card-tip">已存在同名字幕时直接覆盖，适合重新抓取和修正。</div>
                   </div>
-                  <el-switch v-model="subtitleOptions.overwriteExisting" />
+                  <AppLottieSwitch v-model="subtitleOptions.overwriteExisting" />
                 </div>
                 <div class="subtitle-switch-row">
                   <div>
@@ -445,14 +447,14 @@
                     <div class="subtitle-option-title">启用 metadata 匹配</div>
                     <div class="subtitle-card-tip">尝试读取音频 track/title 标签，提升字幕文件名匹配准确度。</div>
                   </div>
-                  <el-switch v-model="subtitleOptions.enableMetadataMatch" />
+                  <AppLottieSwitch v-model="subtitleOptions.enableMetadataMatch" />
                 </div>
                 <div class="subtitle-switch-row">
                   <div>
                     <div class="subtitle-option-title">已有字幕时跳过</div>
                     <div class="subtitle-card-tip">待处理目录如果已经存在字幕，创建任务时直接跳过，不再进入抓取队列。</div>
                   </div>
-                  <el-switch v-model="subtitleOptions.skipIfExistingSubtitles" />
+                  <AppLottieSwitch v-model="subtitleOptions.skipIfExistingSubtitles" />
                 </div>
                 <div class="subtitle-switch-row subtitle-switch-row-wrap">
                   <div>
@@ -469,7 +471,7 @@
                     <div class="subtitle-option-title">启用字幕过滤</div>
                     <div class="subtitle-card-tip">使用 RJ 工作台自己的字幕过滤规则筛候选，和解压过滤配置分开维护。</div>
                   </div>
-                  <el-switch v-model="subtitleOptions.useFilterRules" />
+                  <AppLottieSwitch v-model="subtitleOptions.useFilterRules" />
                 </div>
                 <div v-if="subtitleOptions.useFilterRules" class="subtitle-filter-editor">
                   <div class="subtitle-filter-editor-head">
@@ -489,7 +491,7 @@
                       </el-select>
                       <el-input v-model="rule.name" size="small" class="subtitle-filter-name" placeholder="规则名称" />
                       <el-input v-model="rule.pattern" size="small" class="subtitle-filter-pattern" placeholder="正则，例如 (反转|reverse|无SE)" />
-                      <el-switch v-model="rule.enabled" />
+                      <AppLottieSwitch v-model="rule.enabled" compact />
                       <el-button size="small" text type="danger" @click="removeSubtitleFilterRule(rule.id)">删除</el-button>
                     </div>
                   </div>
@@ -529,7 +531,7 @@
                   <span v-for="item in subtitleScanSessionSummary" :key="item.key" class="subtitle-mini-chip">{{ item.label }} {{ item.value }}</span>
                 </div>
                 <div v-if="subtitleSelectionLoading && !subtitleDialogSelection.length" class="subtitle-selection-loading">
-                  <el-icon class="is-loading"><Loading /></el-icon>
+                  <AppLoadingAnimation variant="inline" :size="36" />
                   <span>{{ subtitleSelectionProgressText || '正在扫描目录…' }}</span>
                 </div>
                 <el-empty v-else-if="!subtitleDialogSelection.length" description="没有识别到 RJ 文件夹" />
@@ -1229,9 +1231,15 @@
 <script setup>
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, Search, Folder, FolderOpened, Delete, Edit, Files, Document, Picture, VideoPlay, Headset, Tickets, ArrowDown, Loading } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { configApi, libraryApi, localUploadApi, rjSubtitleApi } from '../api'
+import { Refresh, Search, Folder, FolderOpened, Delete, Edit, Files, Document, Picture, VideoPlay, Headset, Tickets, ArrowDown } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi } from '../api'
+import { showSystemAlert, showSystemConfirm } from '../composables/useSystemPrompt'
+import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
+import AppLottieIcon from '../components/common/AppLottieIcon.vue'
+import AppLottieSwitch from '../components/common/AppLottieSwitch.vue'
+import clipboardIconAnimation from '../assets/anime/Clipboard.lottie'
+import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
 import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchDialog.vue'
 import FilterDeleteDialog from '../components/library/FilterDeleteDialog.vue'
@@ -2928,6 +2936,16 @@ function formatSpeed (bytesPerSec) {
   return value > 0 ? `${formatSize(value)}/s` : '—'
 }
 
+function formatEtaSeconds (seconds) {
+  const totalSeconds = Math.max(0, Math.round(Number(seconds || 0)))
+  if (!totalSeconds) return '—'
+  const hours = Math.floor(totalSeconds / 3600)
+  const mins = Math.floor(totalSeconds / 60)
+  const secs = totalSeconds % 60
+  if (hours > 0) return `${hours}时${Math.floor((totalSeconds % 3600) / 60)}分`
+  return mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`
+}
+
 function canFetchRJSubtitle (row) {
   return !!row?.is_directory && isWritableCurrentLibrary.value
 }
@@ -2996,22 +3014,31 @@ async function submitLocalUpload () {
   }
   localUploadSubmitting.value = true
   try {
-    const requestPayload = {
-      source_library_id: selectedLibraryId.value,
-      source_base_path: currentPath.value || browseRootPath.value || currentLibrary.value?.path || '',
-      selected_paths: selectedPaths,
-      target_library_id: targetLibraryId,
-      target_subdir: targetSubdir,
-      circle_name: ''
+    const sourceBasePath = currentPath.value || browseRootPath.value || currentLibrary.value?.path || ''
+    const createdTaskIds = []
+
+    for (const selectedPath of selectedPaths) {
+      const requestPayload = {
+        source_library_id: selectedLibraryId.value,
+        source_base_path: sourceBasePath,
+        selected_paths: [selectedPath],
+        target_library_id: targetLibraryId,
+        target_subdir: targetSubdir,
+        circle_name: ''
+      }
+      const result = await localUploadApi.start(requestPayload)
+      if (result?.task_id) {
+        createdTaskIds.push(result.task_id)
+        rememberUploadTaskId(result.task_id)
+      }
     }
-    const result = await localUploadApi.start(requestPayload)
-    rememberUploadTaskId(result.task_id)
+
     uploadWorkbenchVisible.value = true
     uploadWorkbenchBackgroundActive.value = false
     localUploadDialogVisible.value = false
     persistUploadWorkbenchState()
     await refreshUploadWorkbench()
-    ElMessage.success(`已创建 ${result.count || selectedPaths.length} 个目录上传任务`)
+    ElMessage.success(`已创建 ${createdTaskIds.length || selectedPaths.length} 个目录上传任务`)
     clearSelection()
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || error.message || '上传失败')
@@ -3075,12 +3102,18 @@ async function refreshUploadWorkbench (options = {}) {
   }
   if (!silent) uploadWorkbenchRefreshing.value = true
   try {
-    const result = await localUploadApi.status()
+    const result = await localUploadApi.status({
+      task_ids: trackedUploadTaskIds.value.join(','),
+      include_hidden: true
+    })
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    trackedUploadTasks.value = trackedUploadTaskIds.value
+    const nextTrackedTasks = trackedUploadTaskIds.value
       .map(id => allTasks.find(task => String(task?.id || '') === String(id || '')))
       .filter(Boolean)
-    trackedUploadTaskIds.value = trackedUploadTasks.value.map(task => task.id)
+    trackedUploadTasks.value = nextTrackedTasks
+    if (nextTrackedTasks.length) {
+      trackedUploadTaskIds.value = nextTrackedTasks.map(task => task.id)
+    }
 
     const justCompleted = trackedUploadTasks.value.some(task => {
       const status = String(task?.status || '')
@@ -3114,7 +3147,16 @@ function resumeUploadWorkbenchFromBackground () {
   persistUploadWorkbenchState()
 }
 
-function closeUploadWorkbench () {
+async function closeUploadWorkbench () {
+  const cancellableTaskIds = trackedUploadTasks.value
+    .filter(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
+    .map(task => String(task?.id || '').trim())
+    .filter(Boolean)
+
+  if (cancellableTaskIds.length) {
+    await Promise.allSettled(cancellableTaskIds.map(taskId => taskApi.cancel(taskId)))
+  }
+
   uploadWorkbenchVisible.value = false
   uploadWorkbenchBackgroundActive.value = false
   trackedUploadTaskIds.value = []
@@ -3126,6 +3168,13 @@ function closeUploadWorkbench () {
 function getUploadBackgroundSpeed (task) {
   const runtime = task?.upload_runtime || {}
   return Number(runtime?.speed_bytes_per_sec || runtime?.last_non_zero_speed_bytes_per_sec || 0)
+}
+
+function formatUploadBackgroundEta (task) {
+  if (!task) return '—'
+  const status = String(task?.status || '')
+  if (['completed', 'failed'].includes(status) || uploadBackgroundPercent.value >= 100) return '完成'
+  return formatEtaSeconds(task?.upload_runtime?.eta_seconds || 0)
 }
 
 function getUploadBackgroundTargetLabel (task) {
@@ -5199,11 +5248,13 @@ async function applySubtitleManualPairs () {
   const namingStrategyLabel = subtitleOptions.value.namingStrategy === 'subtitle' ? '以字幕名为准' : '以音频名为准'
   const applyActionLabel = isLinkedImport ? '重命名并导入' : '确定应用'
   try {
-    await ElMessageBox.confirm(
-      `确定处理 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${unusedSubtitleRows.length ? `\n当前未使用的 ${unusedSubtitleRows.length} 个原始字幕会一并删除。` : ''}${isLinkedImport ? '\n确认后会先在本地工作区完成重命名，再导入目标库存。' : ''}`,
-      '应用配对确认',
-      { confirmButtonText: applyActionLabel, cancelButtonText: '取消', type: 'warning' }
-    )
+    await showSystemConfirm({
+      title: '应用配对确认',
+      message: `确定处理 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${unusedSubtitleRows.length ? `\n当前未使用的 ${unusedSubtitleRows.length} 个原始字幕会一并删除。` : ''}${isLinkedImport ? '\n确认后会先在本地工作区完成重命名，再导入目标库存。' : ''}`,
+      tone: 'warning',
+      confirmText: applyActionLabel,
+      cancelText: '取消'
+    })
   } catch (_) {
     return
   }
@@ -5594,11 +5645,13 @@ async function clearSubtitleTasksByScope (scope) {
 
   const label = scope === 'completed' ? '成功任务' : scope === 'failed' ? '失败任务' : '已结束任务'
   try {
-    await ElMessageBox.confirm(
-      `确定清空 ${targets.length} 个${label}吗？运行中的任务不会被清掉。`,
-      '批量清空任务确认',
-      { confirmButtonText: '确定清空', cancelButtonText: '取消', type: 'warning' }
-    )
+    await showSystemConfirm({
+      title: '批量清空任务确认',
+      message: `确定清空 ${targets.length} 个${label}吗？运行中的任务不会被清掉。`,
+      tone: 'warning',
+      confirmText: '确定清空',
+      cancelText: '取消'
+    })
   } catch (_) {
     return
   }
@@ -5998,9 +6051,11 @@ async function checkRJSubtitleAvailability () {
       : '<div>没有返回作品检测结果</div>'
     const html = `${summaryBlock}${listHtml}`
 
-    await ElMessageBox.alert(html, '作品字幕检测结果', {
-      confirmButtonText: '知道了',
-      dangerouslyUseHTMLString: true
+    await showSystemAlert({
+      title: '作品字幕检测结果',
+      message: html,
+      html: true,
+      confirmText: '知道了'
     })
   } catch (error) {
     ElMessage.error('字幕检测失败: ' + (error.response?.data?.detail || error.message))
@@ -6012,11 +6067,13 @@ async function checkRJSubtitleAvailability () {
 async function cancelRJSubtitleTask (task) {
   if (!canCancelRJSubtitleTask(task)) return
   try {
-    await ElMessageBox.confirm(
-      `确定取消任务 ${task.actual_rjcode || task.rjcode || '未知RJ'} 吗？`,
-      '取消任务确认',
-      { confirmButtonText: '确定取消', cancelButtonText: '继续执行', type: 'warning' }
-    )
+    await showSystemConfirm({
+      title: '取消任务确认',
+      message: `确定取消任务 ${task.actual_rjcode || task.rjcode || '未知RJ'} 吗？`,
+      tone: 'warning',
+      confirmText: '确定取消',
+      cancelText: '继续执行'
+    })
   } catch (_) {
     return
   }
@@ -6153,7 +6210,12 @@ async function openFolder (row) {
   }
   if (isRemoteCurrentLibrary.value) {
     const data = await libraryApi.browserOpenFolder(selectedLibraryId.value, row.path)
-    await ElMessageBox.alert(`请在群晖 FileStation 中打开以下路径：<br><br>${data.path || row.path}<br><br>${data.remote_url || ''}`, '远程库存', { confirmButtonText: '知道了', dangerouslyUseHTMLString: true })
+    await showSystemAlert({
+      title: '远程库存',
+      message: `请在群晖 FileStation 中打开以下路径：<br><br>${escapeHtml(data.path || row.path)}<br><br>${escapeHtml(data.remote_url || '')}`,
+      html: true,
+      confirmText: '知道了'
+    })
     return
   }
   const data = await libraryApi.openFolder(row.path)
@@ -6174,7 +6236,12 @@ async function openFolderDirect (row) {
         ElMessage.success('已打开群晖目录')
         return
       }
-      await ElMessageBox.alert(`请在群晖 FileStation 中打开以下路径：<br><br>${data.path || row.path}`, '远程库存', { confirmButtonText: '知道了', dangerouslyUseHTMLString: true })
+      await showSystemAlert({
+        title: '远程库存',
+        message: `请在群晖 FileStation 中打开以下路径：<br><br>${escapeHtml(data.path || row.path)}`,
+        html: true,
+        confirmText: '知道了'
+      })
     } catch (error) {
       ElMessage.error(error.response?.data?.detail || error.message || '打开群晖目录失败')
     }
@@ -6482,20 +6549,28 @@ async function batchDeleteSubtitleTreeEntries () {
   }
   const sortedRows = rows.sort((left, right) => (right.path || right.relative_path || '').length - (left.path || left.relative_path || '').length)
   try {
-    await ElMessageBox.confirm(
-      `确定批量删除 ${sortedRows.length} 项字幕文件/目录吗？此操作不可恢复。`,
-      '批量删除确认',
-      { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' }
-    )
+    await showSystemConfirm({
+      title: '批量删除确认',
+      message: `确定批量删除 ${sortedRows.length} 项字幕文件/目录吗？此操作不可恢复。`,
+      tone: 'danger',
+      confirmText: '确定删除',
+      cancelText: '取消'
+    })
   } catch (_) {
     return
   }
 
   subtitleInspectorDeleting.value = true
   try {
+    const batchId = `subtitle-delete-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     for (const row of sortedRows) {
       const path = resolveSubtitleEntryPath(row)
-      await libraryApi.browserDelete(subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value, path, true)
+      await libraryApi.browserDelete(
+        subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
+        path,
+        true,
+        { batchId }
+      )
     }
 
     clearSubtitleInspectorSelection()
@@ -6577,7 +6652,13 @@ async function deleteSubtitleTreeEntry (row) {
   const inspectorLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
   try {
     const preview = await libraryApi.browserDelete(inspectorLibraryId, path, false)
-    await ElMessageBox.confirm(buildDeletePreviewMessage(preview), '删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
+    await showSystemConfirm({
+      title: '删除确认',
+      message: buildDeletePreviewMessage(preview),
+      tone: 'danger',
+      confirmText: '确定删除',
+      cancelText: '取消'
+    })
     subtitleInspectorDeleting.value = true
     try {
       await libraryApi.browserDelete(inspectorLibraryId, path, true)
@@ -6658,7 +6739,14 @@ async function confirmRename () {
 async function apiRenameItem (row) {
   if (apiRenameBusy.value) return
   try {
-    await ElMessageBox.confirm(`确定重新获取 DLsite 元数据并重命名吗？\n\n当前: ${row.name}`, 'API重命名确认', { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' })
+    await showSystemConfirm({
+      title: 'API重命名确认',
+      badge: '单项',
+      message: '重新获取 DLsite 元数据，并按最新结果重命名当前作品。',
+      currentLabel: '当前目录',
+      currentValue: row.name,
+      confirmText: '确认重命名'
+    })
   } catch (_) { return }
   apiRenamingId.value = row.id
   try {
@@ -6678,7 +6766,13 @@ async function apiRenameItem (row) {
 async function deleteItem (row) {
   try {
     const preview = await libraryApi.browserDelete(selectedLibraryId.value, row.path, false)
-    await ElMessageBox.confirm(buildDeleteItemMessage(preview), '删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
+    await showSystemConfirm({
+      title: '删除确认',
+      message: buildDeleteItemMessage(preview),
+      tone: 'danger',
+      confirmText: '确定删除',
+      cancelText: '取消'
+    })
     await libraryApi.browserDelete(selectedLibraryId.value, row.path, true)
     ElMessage.success('删除成功')
     await Promise.all([
@@ -6701,7 +6795,13 @@ async function handleBatchDelete () {
   try {
     const paths = selectedRows.value.map(row => row.path)
     const preview = await libraryApi.browserBatchDelete(selectedLibraryId.value, paths, false)
-    await ElMessageBox.confirm(buildBatchDeletePreviewMessage(preview, paths.length), '批量删除确认', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
+    await showSystemConfirm({
+      title: '批量删除确认',
+      message: buildBatchDeletePreviewMessage(preview, paths.length),
+      tone: 'danger',
+      confirmText: '确定删除',
+      cancelText: '取消'
+    })
     const result = await libraryApi.browserBatchDelete(selectedLibraryId.value, paths, true)
     ElMessage.success(`批量删除完成：成功 ${result.success_count || 0} 项`)
     clearSelection()
@@ -6726,13 +6826,16 @@ async function handleBatchApiRename () {
   const targetRows = selectedApiRenameRows.value
   const skippedCount = selectedRows.value.length - targetRows.length
   try {
-    await ElMessageBox.confirm(
-      skippedCount > 0
-        ? `确定对已选 ${targetRows.length} 个目录执行批量 API 重命名吗？\n将跳过 ${skippedCount} 个非目录项。`
-        : `确定对已选 ${targetRows.length} 个目录执行批量 API 重命名吗？`,
-      '批量 API重命名确认',
-      { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' }
-    )
+    await showSystemConfirm({
+      title: '批量 API重命名确认',
+      badge: `${targetRows.length} 项`,
+      message: skippedCount > 0
+        ? `将对已选 ${targetRows.length} 个目录执行批量 API 重命名，并跳过 ${skippedCount} 个非目录项。`
+        : `将对已选 ${targetRows.length} 个目录执行批量 API 重命名。`,
+      currentLabel: '执行范围',
+      currentValue: targetRows.map(row => row.name).slice(0, 3).join(' / ') + (targetRows.length > 3 ? ` 等 ${targetRows.length} 项` : ''),
+      confirmText: '确认批量重命名'
+    })
   } catch (_) {
     return
   }
@@ -8367,7 +8470,3 @@ function statsStatusTextDisplay (stats) {
   .filter-delete-floating-card { left: 12px; right: 12px; bottom: 12px; width: auto; }
 }
 </style>
-
-
-
-

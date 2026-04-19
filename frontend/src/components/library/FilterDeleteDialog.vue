@@ -1,210 +1,318 @@
 <template>
-  <el-dialog v-model="visible" width="1240px" class="fm-dialog filter-delete-dialog" :show-close="false">
-    <template #header>
-      <div class="fm-header">
-        <div class="fm-title">
-          <span>{{ text.title }}</span>
-          <span class="fm-badge">{{ scopeLabel || getFileName(currentPath) || filterDeletePreviewInfo.folderName || text.currentFolder }}</span>
-        </div>
-        <div class="fd-header-actions">
-          <button v-if="filterDeleteBusy" type="button" class="fm-btn fm-btn-primary" @click="hideFilterDeleteToBackground">{{ text.hideBackground }}</button>
-          <div class="fm-count">{{ filterDeleteSelectedRoots.length }} / {{ filterDeleteSelectableCount }} {{ text.pendingDeleteSuffix }}</div>
-          <button type="button" class="fd-close-btn" :aria-label="text.close" @click="closeFilterDeleteDialog">×</button>
-        </div>
-      </div>
-    </template>
-
-    <div class="fm-body" v-loading="filterDeleteBusy" :element-loading-text="filterDeleteLoadingText">
-      <el-alert type="warning" :closable="false" show-icon class="filter-delete-alert" :title="text.tipReview" />
-      <el-alert
-        v-if="filterDeletePreviewInfo.truncated"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="filter-delete-alert"
-        :title="filterDeletePreviewInfo.truncatedReason || text.tipTruncated"
-      />
-      <el-alert v-if="filterDeletePreviewInfo.warning" type="warning" :closable="false" show-icon class="filter-delete-alert" :title="filterDeletePreviewInfo.warning" />
-      <el-alert v-if="filterDeletePreviewInfo.error" type="error" :closable="false" show-icon class="filter-delete-alert" :title="filterDeletePreviewInfo.error" />
-
-      <div class="filter-delete-summary">
-        <span class="fd-chip">{{ text.statusLabel }} {{ filterDeletePreviewInfo.status || 'idle' }}</span>
-        <span class="fd-chip">{{ text.hitLabel }} {{ filterDeletePreviewInfo.selectedCount }} {{ text.itemSuffix }}</span>
-        <span class="fd-chip">{{ filterDeleteScanText }}</span>
-        <span v-if="filterDeletePreviewInfo.pendingDirectories" class="fd-chip">{{ text.pendingDirectoryLabel }} {{ filterDeletePreviewInfo.pendingDirectories }}</span>
-        <span v-if="filterDeleteBasicTreeOnly" class="fd-chip">{{ text.basicTreeOnly }}</span>
-        <template v-else>
-          <span class="fd-chip">{{ text.estimatedDelete }} {{ formatFileSize(filterDeleteSelectedSize) }}</span>
-          <span class="fd-chip">{{ filterDeletePreviewInfo.selectedSizeExact ? text.sizeExact : text.sizePartial }}</span>
-          <span class="fd-chip">{{ text.ruleCount }} {{ filterDeletePreviewInfo.ruleCount }}</span>
-        </template>
-      </div>
-
-      <div v-if="filterDeletePreviewInfo.progressMessage || filterDeletePreviewInfo.currentPath" class="fd-progress">
-        {{ filterDeletePreviewInfo.progressMessage || text.loadingPreview }}
-        <span v-if="filterDeletePreviewInfo.discoveredEntries"> | {{ filterDeleteScanText }}</span>
-        <span v-if="filterDeletePreviewInfo.currentPath"> | {{ displayFilterDeletePath(filterDeletePreviewInfo.currentPath) }}</span>
-        <span v-if="filterDeletePreviewInfo.deleteTotal">
-          | {{ text.deleteProgress }} {{ filterDeletePreviewInfo.deleteDone }} / {{ filterDeletePreviewInfo.deleteTotal }} / {{ text.failedLabel }} {{ filterDeletePreviewInfo.deleteFailed || 0 }}
-        </span>
-      </div>
-      <div v-if="showFilterDeleteProgressBar" class="fd-progress-bar">
-        <el-progress :percentage="filterDeleteProgressPercent" :status="filterDeleteProgressStatus" :stroke-width="8" :show-text="false" />
-      </div>
-      <div v-if="filterDeleteBusy" class="fd-background-tip">
-        {{ text.backgroundHint }}
-      </div>
-
-      <div class="fm-toolbar">
-        <div class="fm-toolbar-left">
-          <button v-if="filterDeleteLoading" class="fm-btn fm-btn-ghost" @click="cancelFilterDeletePreview()">{{ text.cancelPreview }}</button>
-          <button v-if="filterDeleteDeleting" class="fm-btn fm-btn-ghost" @click="requestCancelFilterDeleteDeletion()">{{ text.stopDelete }}</button>
-          <button v-if="!filterDeleteBusy && filterDeleteFailedTargets.length" class="fm-btn fm-btn-warning" @click="retryFailedFilterDeleteTargets">{{ text.retryFailedTargets }}</button>
-          <button class="fm-btn fm-btn-ghost" :disabled="!filterDeleteTreeHasDirectories || filterDeleteBusy" @click="expandFilterDeleteTree">{{ text.expandAll }}</button>
-          <button class="fm-btn fm-btn-ghost" :disabled="!filterDeleteTreeHasDirectories || filterDeleteBusy" @click="collapseFilterDeleteTree">{{ text.collapseAll }}</button>
-          <button class="fm-btn fm-btn-ghost" :disabled="filterDeleteBusy || !filterDeleteSelectedRoots.length" @click="clearFilterDeleteSelection">{{ text.clearSelection }}</button>
-        </div>
-        <div v-if="filterDeleteTypeOptions.length" class="fd-type-filter-bar">
-          <span class="fd-type-filter-label">{{ text.fileTypeLabel }}</span>
-          <button
-            v-for="option in filterDeleteTypeOptions"
-            :key="option.key"
-            type="button"
-            class="fd-type-chip"
-            :class="{ active: isFilterDeleteTypeFullySelected(option.key), partial: isFilterDeleteTypePartiallySelected(option.key) }"
-            :disabled="filterDeleteBusy"
-            @click="toggleFilterDeleteType(option.key)"
-          >
-            <span v-if="isFilterDeleteTypePartiallySelected(option.key)" class="fd-type-chip-indicator" aria-hidden="true">-</span>
-            <span>{{ option.label }}</span>
-            <span class="fd-type-chip-count">{{ option.count }}</span>
-          </button>
-        </div>
-        <div class="fm-search">
-          <input
-            v-model="filterDeleteSearch"
-            class="fm-search-input"
-            :placeholder="filterDeleteBasicTreeOnly ? text.searchBasic : text.searchFull"
-            :disabled="filterDeleteBusy"
-            @input="onFilterDeleteSearchInput"
-          />
-        </div>
-      </div>
-
-      <div v-if="filterDeleteSelectedRoots.length" class="fd-selection-bar">
-        <span class="fd-selection-count">{{ text.selectedLabel }} {{ filterDeleteSelectedRoots.length }} {{ text.pendingDeleteSuffix }}</span>
-        <span class="fd-selection-tip">{{ text.selectionTip }}</span>
-      </div>
-
-      <div class="fm-head" :class="{ 'fd-head-basic': filterDeleteBasicTreeOnly }">
-        <div class="fm-col-check">
-          <input type="checkbox" class="fm-check" :checked="filterDeleteAllSelected" :indeterminate.prop="filterDeleteSomeSelected" :disabled="filterDeleteBusy" @click="toggleAllFilterDeleteRows" />
-        </div>
-        <div class="fm-col-name">
-          <button type="button" class="fd-sort-btn" :class="{ active: filterDeleteSortBy === 'name' }" @click="toggleFilterDeleteSort('name')">
-            <span>{{ text.fileName }}</span>
-            <span class="fd-sort-mark">{{ getFilterDeleteSortMark('name') }}</span>
-          </button>
-        </div>
-        <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-size">
-          <button type="button" class="fd-sort-btn fd-sort-btn-end" :class="{ active: filterDeleteSortBy === 'size' }" @click="toggleFilterDeleteSort('size')">
-            <span>{{ text.size }}</span>
-            <span class="fd-sort-mark">{{ getFilterDeleteSortMark('size') }}</span>
-          </button>
-        </div>
-        <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-time">
-          <button type="button" class="fd-sort-btn" :class="{ active: filterDeleteSortBy === 'modified_time' }" @click="toggleFilterDeleteSort('modified_time')">
-            <span>{{ text.timeAndRule }}</span>
-            <span class="fd-sort-mark">{{ getFilterDeleteSortMark('modified_time') }}</span>
-          </button>
-        </div>
-        <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-action">{{ text.state }}</div>
-      </div>
-
-      <div ref="filterDeleteScrollRef" class="fm-scroll" @scroll="onFilterDeleteScroll">
-        <div v-if="!filterDeleteLoading && filterDeleteFlatTree.length === 0" class="fm-empty">
-          {{ filterDeleteSearch ? text.noMatchedItems : text.noFilterHits }}
-        </div>
-        <div v-else-if="filterDeleteVirtualTopPadding" class="fm-virtual-spacer" :style="{ height: `${filterDeleteVirtualTopPadding}px` }"></div>
-        <div
-          v-for="row in filterDeleteVisibleRows"
-          :key="row.id"
-          v-memo="[row.id, filterDeleteSelectedIds.has(row.id), filterDeleteExpandedIds.has(row.id), row.selectable]"
-          class="fm-row"
-          :class="{
-            'fm-row-dir': row.type === 'dir',
-            'fm-row-selected': filterDeleteSelectedIds.has(row.id),
-            'fm-row-disabled': !canFilterDeleteSelectRow(row),
-            'fd-row-basic': filterDeleteBasicTreeOnly
-          }"
-          @click="handleFilterDeleteRowClick(row, $event)"
-        >
-          <div class="fm-col-check" :style="getFilterDeleteCheckCellStyle(row)" @click.stop>
-            <input
-              v-if="canFilterDeleteSelectRow(row)"
-              type="checkbox"
-              class="fm-check"
-              :checked="isFilterDeleteRowFullySelected(row)"
-              :indeterminate.prop="isFilterDeleteRowPartiallySelected(row)"
-              :disabled="filterDeleteBusy"
-              @click.stop="toggleFilterDeleteSelect(row, $event)"
-            />
+  <el-dialog
+    v-model="visible"
+    :show-close="false"
+    destroy-on-close
+    class="custom-preview-modal folder-dialog filter-delete-dialog"
+    align-center
+    modal-class="custom-preview-overlay"
+  >
+    <div
+      class="window panel-enter glass-shell relative flex w-full max-w-[1280px] aspect-[16/10] flex-col overflow-hidden rounded-3xl"
+      v-app-loading="{ loading: filterDeleteBusy, text: '正在处理删除预审...', size: 120 }"
+      :element-loading-text="filterDeleteLoadingText"
+    >
+      <div class="window-header flex items-center justify-between px-6 py-4">
+        <div class="fm-header-main min-w-0">
+          <div class="fm-title-row">
+            <h1 class="title truncate text-lg font-bold tracking-tight text-slate-900">
+              {{ text.title }}
+            </h1>
+            <span class="fm-badge">{{ scopeLabel || getFileName(currentPath) || filterDeletePreviewInfo.folderName || text.currentFolder }}</span>
           </div>
-          <div class="fm-col-name">
-            <div class="fm-name-cell" :style="getFilterDeleteNameCellStyle(row)">
+          <p class="mt-1 truncate text-sm text-slate-500">
+            {{ filterDeleteSelectedRoots.length }} / {{ filterDeleteSelectableCount }} {{ text.pendingDeleteSuffix }}
+          </p>
+        </div>
+        <div class="flex items-center gap-3">
+          <button v-if="filterDeleteBusy" type="button" class="action-card action-card-primary" @click="hideFilterDeleteToBackground">
+            {{ text.hideBackground }}
+          </button>
+          <button
+            type="button"
+            class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
+            @click="closeFilterDeleteDialog"
+          >
+            <X :size="20" :stroke-width="2" />
+          </button>
+        </div>
+      </div>
+
+      <div class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5">
+        <div class="space-y-2 mb-3">
+          <el-alert type="warning" :closable="false" show-icon class="filter-delete-alert !rounded-xl !border !border-amber-200/60 !bg-amber-50/50" :title="text.tipReview" />
+          <el-alert
+            v-if="filterDeletePreviewInfo.truncated"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="filter-delete-alert !rounded-xl !border !border-amber-200/60 !bg-amber-50/50"
+            :title="filterDeletePreviewInfo.truncatedReason || text.tipTruncated"
+          />
+          <el-alert v-if="filterDeletePreviewInfo.warning" type="warning" :closable="false" show-icon class="filter-delete-alert !rounded-xl !border !border-amber-200/60 !bg-amber-50/50" :title="filterDeletePreviewInfo.warning" />
+          <el-alert v-if="filterDeletePreviewInfo.error" type="error" :closable="false" show-icon class="filter-delete-alert !rounded-xl !border !border-red-200/60 !bg-red-50/50" :title="filterDeletePreviewInfo.error" />
+        </div>
+
+        <div class="filter-delete-summary flex flex-wrap gap-2 mb-3">
+          <span class="fd-chip">{{ text.statusLabel }} {{ filterDeletePreviewInfo.status || 'idle' }}</span>
+          <span class="fd-chip">{{ text.hitLabel }} {{ filterDeletePreviewInfo.selectedCount }} {{ text.itemSuffix }}</span>
+          <span class="fd-chip">{{ filterDeleteScanText }}</span>
+          <span v-if="filterDeletePreviewInfo.pendingDirectories" class="fd-chip">{{ text.pendingDirectoryLabel }} {{ filterDeletePreviewInfo.pendingDirectories }}</span>
+          <span v-if="filterDeleteBasicTreeOnly" class="fd-chip">{{ text.basicTreeOnly }}</span>
+          <template v-else>
+            <span class="fd-chip">{{ text.estimatedDelete }} {{ formatFileSize(filterDeleteSelectedSize) }}</span>
+            <span class="fd-chip">{{ filterDeletePreviewInfo.selectedSizeExact ? text.sizeExact : text.sizePartial }}</span>
+            <span class="fd-chip">{{ text.ruleCount }} {{ filterDeletePreviewInfo.ruleCount }}</span>
+          </template>
+        </div>
+
+        <div v-if="filterDeletePreviewInfo.progressMessage || filterDeletePreviewInfo.currentPath" class="fd-progress text-[12px] text-slate-500 mb-2">
+          {{ filterDeletePreviewInfo.progressMessage || text.loadingPreview }}
+          <span v-if="filterDeletePreviewInfo.discoveredEntries"> | {{ filterDeleteScanText }}</span>
+          <span v-if="filterDeletePreviewInfo.currentPath"> | {{ displayFilterDeletePath(filterDeletePreviewInfo.currentPath) }}</span>
+          <span v-if="filterDeletePreviewInfo.deleteTotal">
+            | {{ text.deleteProgress }} {{ filterDeletePreviewInfo.deleteDone }} / {{ filterDeletePreviewInfo.deleteTotal }} / {{ text.failedLabel }} {{ filterDeletePreviewInfo.deleteFailed || 0 }}
+          </span>
+        </div>
+        <div v-if="showFilterDeleteProgressBar" class="fd-progress-bar mb-3">
+          <el-progress :percentage="filterDeleteProgressPercent" :status="filterDeleteProgressStatus" :stroke-width="8" :show-text="false" />
+        </div>
+        <div v-if="filterDeleteBusy" class="fd-background-tip text-[12px] text-slate-400 italic mb-3">
+          {{ text.backgroundHint }}
+        </div>
+
+        <div class="toolbar-row flex items-center justify-between gap-3 border-b border-slate-200/70 py-3">
+          <div class="toolbar-actions flex flex-wrap items-center gap-2">
+            <button v-if="filterDeleteLoading" class="action-card group" @click="cancelFilterDeletePreview()">
+              <XCircle :size="15" class="action-icon" />
+              <span>{{ text.cancelPreview }}</span>
+            </button>
+            <button v-if="filterDeleteDeleting" class="action-card action-card-danger group" @click="requestCancelFilterDeleteDeletion()">
+              <StopCircle :size="15" class="action-icon" />
+              <span>{{ text.stopDelete }}</span>
+            </button>
+            <button v-if="!filterDeleteBusy && filterDeleteFailedTargets.length" class="action-card action-card-warning group" @click="retryFailedFilterDeleteTargets">
+              <RotateCcw :size="15" class="action-icon" />
+              <span>{{ text.retryFailedTargets }}</span>
+            </button>
+            <button class="action-card group" :disabled="!filterDeleteTreeHasDirectories || filterDeleteBusy" @click="expandFilterDeleteTree">
+              <ChevronsDown :size="15" class="action-icon" />
+              <span>{{ text.expandAll }}</span>
+            </button>
+            <button class="action-card group" :disabled="!filterDeleteTreeHasDirectories || filterDeleteBusy" @click="collapseFilterDeleteTree">
+              <ChevronsUp :size="15" class="action-icon" />
+              <span>{{ text.collapseAll }}</span>
+            </button>
+            <button class="action-card group" :disabled="filterDeleteBusy || !filterDeleteSelectedRoots.length" @click="clearFilterDeleteSelection">
+              <XSquare :size="15" class="action-icon" />
+              <span>{{ text.clearSelection }}</span>
+            </button>
+            
+            <div class="h-4 w-px bg-slate-200 mx-1"></div>
+            
+            <div v-if="filterDeleteTypeOptions.length" class="fd-type-filter-bar flex items-center gap-1.5">
+              <span class="text-[12px] font-medium text-slate-500 mr-1">{{ text.fileTypeLabel }}</span>
               <button
-                v-if="row.type === 'dir'"
+                v-for="option in filterDeleteTypeOptions"
+                :key="option.key"
                 type="button"
-                class="fm-arrow fm-arrow-toggle"
-                :class="{ open: filterDeleteExpandedIds.has(row.id) }"
-                @click.stop="toggleFilterDeleteExpand(row)"
+                class="fd-type-tag inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium transition-all border group"
+                :class="isFilterDeleteTypeFullySelected(option.key) ? 'fd-type-tag-active' : (isFilterDeleteTypePartiallySelected(option.key) ? 'fd-type-tag-partial' : 'fd-type-tag-inactive')"
+                :disabled="filterDeleteBusy"
+                @click="toggleFilterDeleteType(option.key)"
               >
-                &gt;
+                <span v-if="isFilterDeleteTypePartiallySelected(option.key)" class="font-bold">-</span>
+                <span>{{ option.label }}</span>
+                <span class="fd-type-count">{{ option.count }}</span>
               </button>
-              <span v-else class="fm-arrow-placeholder"></span>
-              <span class="fm-file-icon">
-                <el-icon><component :is="resolveFilterDeleteTreeIcon(row)" /></el-icon>
-              </span>
-              <div class="fd-name-block">
-                <span class="fm-name-text">{{ row.name }}</span>
-                <span class="fd-subtext">{{ row.relative_path }}</span>
+            </div>
+          </div>
+
+          <div class="toolbar-search-group flex min-w-0 items-center gap-2 shrink-0">
+            <label class="search-shell flex w-[280px] min-w-0 items-center gap-2 rounded-xl border px-3 py-2">
+              <Search :size="16" class="text-slate-400" />
+              <input
+                v-model="filterDeleteSearch"
+                class="search-input"
+                :placeholder="filterDeleteBasicTreeOnly ? text.searchBasic : text.searchFull"
+                :disabled="filterDeleteBusy"
+                @input="onFilterDeleteSearchInput"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div v-if="filterDeleteSelectedRoots.length" class="selection-card selection-inline mt-3 flex items-center gap-5 text-sm text-slate-600">
+          <span>{{ text.selectedLabel }} <span class="text-slate-900 font-semibold">{{ filterDeleteSelectedRoots.length }}</span> {{ text.pendingDeleteSuffix }}</span>
+          <span class="text-xs text-slate-400">{{ text.selectionTip }}</span>
+        </div>
+
+        <section class="glass-panel glass-card tree-panel mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
+          <div class="tree-head fd-tree-grid items-center gap-3 border-b border-slate-200/70 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400" :style="{ paddingRight: `calc(16px + ${filterDeleteScrollbarWidth}px)` }">
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="tree-checkbox relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-all"
+                :class="filterDeleteAllSelected ? 'tree-checkbox-on' : (filterDeleteSomeSelected ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
+                :disabled="filterDeleteBusy"
+                @click="toggleAllFilterDeleteRows"
+              >
+                <Check v-if="filterDeleteAllSelected" :size="13" />
+                <span v-else-if="filterDeleteSomeSelected" class="checkbox-minus" />
+              </button>
+              <button type="button" class="flex items-center gap-1 hover:text-slate-700 transition-colors cursor-pointer" @click="toggleFilterDeleteSort('name')">
+                <span>{{ text.fileName }}</span>
+                <span class="text-[10px]">{{ getFilterDeleteSortMark('name') }}</span>
+              </button>
+            </div>
+            
+            <button v-if="!filterDeleteBasicTreeOnly" type="button" class="tree-col-size flex items-center justify-end gap-1 hover:text-slate-700 transition-colors cursor-pointer" @click="toggleFilterDeleteSort('size')">
+              <span>{{ text.size }}</span>
+              <span class="text-[10px]">{{ getFilterDeleteSortMark('size') }}</span>
+            </button>
+            
+            <button v-if="!filterDeleteBasicTreeOnly" type="button" class="tree-col-time flex items-center gap-1 hover:text-slate-700 transition-colors cursor-pointer" @click="toggleFilterDeleteSort('modified_time')">
+              <span>{{ text.timeAndRule }}</span>
+              <span class="text-[10px]">{{ getFilterDeleteSortMark('modified_time') }}</span>
+            </button>
+            
+            <div v-if="!filterDeleteBasicTreeOnly" class="tree-col-state">{{ text.state }}</div>
+          </div>
+
+          <div ref="filterDeleteScrollRef" class="tree-scroll flex-1 overflow-auto px-4 py-2 no-scrollbar" @scroll="onFilterDeleteScroll">
+            <div v-if="!filterDeleteLoading && filterDeleteFlatTree.length === 0" class="preview-empty">
+              {{ filterDeleteSearch ? text.noMatchedItems : text.noFilterHits }}
+            </div>
+            <div v-else-if="filterDeleteVirtualTopPadding" class="fm-virtual-spacer" :style="{ height: `${filterDeleteVirtualTopPadding}px` }"></div>
+            
+            <div v-else class="tree-list space-y-0.5">
+              <div
+                v-for="row in filterDeleteVisibleRows"
+                :key="row.id"
+                v-memo="[row.id, filterDeleteSelectedIds.has(row.id), filterDeleteExpandedIds.has(row.id), row.selectable]"
+                class="tree-node"
+              >
+                <div
+                  class="tree-row fd-tree-grid items-center gap-3 rounded-md px-4 py-1"
+                  :class="{
+                    'tree-row-selected': filterDeleteSelectedIds.has(row.id),
+                    'opacity-50': !canFilterDeleteSelectRow(row)
+                  }"
+                  @click="handleFilterDeleteRowClick(row, $event)"
+                >
+                  <div class="tree-main flex min-w-0 items-center gap-2" :style="{ paddingLeft: `${row.depth * 16}px` }">
+                    <button
+                      v-if="row.type === 'dir'"
+                      type="button"
+                      class="tree-expander rounded p-0.5 transition-colors cursor-pointer"
+                      @click.stop="toggleFilterDeleteExpand(row)"
+                    >
+                      <ChevronDown v-if="filterDeleteExpandedIds.has(row.id)" :size="17" class="text-slate-400" />
+                      <ChevronRight v-else :size="17" class="text-slate-400" />
+                    </button>
+                    <span v-else class="expander-spacer" />
+
+                    <button
+                      v-if="canFilterDeleteSelectRow(row)"
+                      type="button"
+                      class="tree-checkbox relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-all cursor-pointer"
+                      :class="isFilterDeleteRowFullySelected(row) ? 'tree-checkbox-on' : (isFilterDeleteRowPartiallySelected(row) ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
+                      :disabled="filterDeleteBusy"
+                      @click.stop="toggleFilterDeleteSelect(row, $event)"
+                    >
+                      <Check v-if="isFilterDeleteRowFullySelected(row)" :size="13" />
+                      <span v-else-if="isFilterDeleteRowPartiallySelected(row)" class="checkbox-minus" />
+                    </button>
+                    <span v-else class="tree-checkbox-placeholder" />
+
+                    <component :is="resolveFilterDeleteTreeIcon(row)" :size="17" class="tree-icon" :class="row.type === 'dir' ? 'icon-folder' : ''" />
+
+                    <div class="min-w-0 flex-1">
+                      <div class="tree-name truncate text-[13px] font-medium text-slate-800">{{ row.name }}</div>
+                      <div class="tree-sub truncate text-[11px] text-slate-400">{{ row.relative_path }}</div>
+                    </div>
+                  </div>
+
+                  <span v-if="!filterDeleteBasicTreeOnly" class="tree-size text-[12px] tabular-nums text-slate-400 text-right">{{ formatFileSize(row.size) }}</span>
+                  
+                  <div v-if="!filterDeleteBasicTreeOnly" class="tree-time flex flex-col justify-center min-w-0">
+                    <span class="text-[12px] text-slate-600 truncate font-medium">{{ formatDate(row.modified_time) }}</span>
+                    <span class="text-[10px] text-slate-400 truncate opacity-80" :title="row.selectable ? (row.matched_rules || []).join(' / ') : `${text.coveredByPrefix}${getFileName(row.covered_by)}`">
+                      {{ row.selectable ? (row.matched_rules || []).join(' / ') : `${text.coveredByPrefix}${getFileName(row.covered_by)}` }}
+                    </span>
+                  </div>
+
+                  <div v-if="!filterDeleteBasicTreeOnly" class="tree-state flex items-center">
+                    <span v-if="hasFilterDeleteSelectedAncestor(row)" class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-50/60 text-rose-600 border border-rose-100/50">{{ text.coveredBySelected }}</span>
+                    <span v-else-if="isFilterDeleteRowFullySelected(row)" class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50/60 text-red-600 border border-red-100/50">{{ text.waitConfirm }}</span>
+                    <span v-else-if="isFilterDeleteRowPartiallySelected(row)" class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-50/60 text-orange-600 border border-orange-100/50">部分已选</span>
+                    <span v-else class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100/60 text-slate-500 border border-slate-200/50">{{ text.individualSelectable }}</span>
+                  </div>
+                </div>
               </div>
             </div>
+            
+            <div v-if="filterDeleteVirtualBottomPadding" class="fm-virtual-spacer" :style="{ height: `${filterDeleteVirtualBottomPadding}px` }"></div>
           </div>
-          <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-size">{{ formatFileSize(row.size) }}</div>
-          <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-time">
-            <div class="fd-meta-block">
-              <span>{{ formatDate(row.modified_time) }}</span>
-              <span class="fd-rules">
-                {{ row.selectable ? (row.matched_rules || []).join(' / ') : `${text.coveredByPrefix}${getFileName(row.covered_by)}` }}
-              </span>
-            </div>
-          </div>
-          <div v-if="!filterDeleteBasicTreeOnly" class="fm-col-action">
-            <span v-if="hasFilterDeleteSelectedAncestor(row)" class="fd-status delete-covered">{{ text.coveredBySelected }}</span>
-            <span v-else-if="isFilterDeleteRowFullySelected(row)" class="fd-status delete-root">{{ text.waitConfirm }}</span>
-            <span v-else-if="isFilterDeleteRowPartiallySelected(row)" class="fd-status delete-partial">部分已选</span>
-            <span v-else class="fd-status delete-optional">{{ text.individualSelectable }}</span>
-          </div>
-        </div>
-        <div v-if="filterDeleteVirtualBottomPadding" class="fm-virtual-spacer" :style="{ height: `${filterDeleteVirtualBottomPadding}px` }"></div>
+        </section>
+      </div>
+      
+      <div class="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-200/70 bg-slate-50/50">
+        <button v-if="filterDeleteLoading" type="button" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all cursor-pointer shadow-sm active:scale-[0.98]" @click="cancelFilterDeletePreview()">
+          {{ text.cancelPreview }}
+        </button>
+        <button v-if="filterDeleteDeleting" type="button" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all cursor-pointer shadow-sm active:scale-[0.98]" @click="requestCancelFilterDeleteDeletion()">
+          {{ text.stopDelete }}
+        </button>
+        <button v-if="filterDeleteBusy" type="button" class="px-4 py-2 rounded-xl text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 transition-all cursor-pointer shadow-md shadow-indigo-200 active:scale-[0.98]" @click="hideFilterDeleteToBackground">
+          {{ text.hideBackground }}
+        </button>
+        <button v-else type="button" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all cursor-pointer shadow-sm active:scale-[0.98]" @click="closeFilterDeleteDialog">
+          {{ text.close }}
+        </button>
+        <button 
+          type="button" 
+          class="px-4 py-2 rounded-xl text-sm font-medium text-white bg-rose-600 hover:bg-rose-700 transition-all cursor-pointer shadow-md shadow-rose-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none active:scale-[0.98]" 
+          :disabled="!canConfirmFilterDelete || filterDeleteDeleting" 
+          @click="confirmFilterDeleteSelection"
+        >
+          <span v-if="filterDeleteDeleting" class="flex items-center gap-2">
+            <RefreshCw :size="14" class="animate-spin" />
+            删除中...
+          </span>
+          <span v-else>{{ text.confirmDelete }}</span>
+        </button>
       </div>
     </div>
-
-    <template #footer>
-      <el-button v-if="filterDeleteLoading" @click="cancelFilterDeletePreview()">{{ text.cancelPreview }}</el-button>
-      <el-button v-if="filterDeleteDeleting" @click="requestCancelFilterDeleteDeletion()">{{ text.stopDelete }}</el-button>
-      <el-button v-if="filterDeleteBusy" type="primary" plain @click="hideFilterDeleteToBackground">{{ text.hideBackground }}</el-button>
-      <el-button v-else @click="closeFilterDeleteDialog">{{ text.close }}</el-button>
-      <el-button type="danger" :disabled="!canConfirmFilterDelete" :loading="filterDeleteDeleting" @click="confirmFilterDeleteSelection">{{ text.confirmDelete }}</el-button>
-    </template>
   </el-dialog>
 </template>
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, Folder, FolderOpened, Headset, Picture, Tickets, VideoPlay } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { showSystemConfirm } from '../../composables/useSystemPrompt'
+import { 
+  Check, 
+  ChevronDown, 
+  ChevronRight, 
+  File, 
+  FileText, 
+  FileVideo, 
+  Folder, 
+  FolderOpen, 
+  Image, 
+  Music, 
+  RefreshCw, 
+  Search, 
+  Trash2, 
+  X,
+  XCircle,
+  StopCircle,
+  RotateCcw,
+  ChevronsDown,
+  ChevronsUp,
+  XSquare
+} from 'lucide-vue-next'
 import { activityLogApi, libraryApi } from '../../api'
 
 const text = {
@@ -1217,7 +1325,7 @@ function isFilterDeleteTypePartiallySelected(typeKey) {
 }
 
 function resolveFilterDeleteTreeIcon (row) {
-  if (row?.type === 'dir') return filterDeleteExpandedIds.value.has(row.id) ? FolderOpened : Folder
+  if (row?.type === 'dir') return filterDeleteExpandedIds.value.has(row.id) ? FolderOpen : Folder
   return fileIcon(row?.name || '')
 }
 
@@ -1284,13 +1392,15 @@ async function confirmFilterDeleteSelection () {
     return
   }
   try {
-    await ElMessageBox.confirm(
-      filterDeleteBasicTreeOnly.value
+    await showSystemConfirm({
+      title: '\u786e\u8ba4\u5220\u9664\u8fc7\u6ee4\u6587\u4ef6',
+      message: filterDeleteBasicTreeOnly.value
         ? `\u786e\u5b9a\u5220\u9664\u5df2\u9009 ${filterDeleteSelectedRoots.value.length} \u9879\u5417\uff1f\n\n\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\uff0c\u8bf7\u786e\u8ba4\u5df2\u7ecf\u5ba1\u9605\u65e0\u8bef\u3002`
         : `\u786e\u5b9a\u5220\u9664\u5df2\u9009 ${filterDeleteSelectedRoots.value.length} \u9879\u5417\uff1f\u9884\u8ba1\u5220\u9664 ${formatFileSize(filterDeleteSelectedSize.value)}\u3002\n\n\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\uff0c\u8bf7\u786e\u8ba4\u5df2\u7ecf\u5ba1\u9605\u65e0\u8bef\u3002`,
-      '\u786e\u8ba4\u5220\u9664\u8fc7\u6ee4\u6587\u4ef6',
-      { confirmButtonText: '\u786e\u5b9a\u5220\u9664', cancelButtonText: '\u53d6\u6d88', type: 'warning', confirmButtonClass: 'el-button--danger' }
-    )
+      confirmText: '\u786e\u5b9a\u5220\u9664',
+      cancelText: '\u53d6\u6d88',
+      tone: 'danger'
+    })
   } catch (_) {
     return
   }
@@ -1746,11 +1856,11 @@ function flattenTree (nodes, depth, openIds) {
 
 function fileIcon (name = '') {
   const lower = name.toLowerCase()
-  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(lower)) return Headset
-  if (/\.(png|jpg|jpeg|webp|bmp|gif)$/i.test(lower)) return Picture
-  if (/\.(mp4|mkv|avi|mov|wmv|webm)$/i.test(lower)) return VideoPlay
-  if (/\.(lrc|srt|ass|ssa|vtt)$/i.test(lower)) return Tickets
-  return Document
+  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(lower)) return Music
+  if (/\.(png|jpg|jpeg|webp|bmp|gif)$/i.test(lower)) return Image
+  if (/\.(mp4|mkv|avi|mov|wmv|webm)$/i.test(lower)) return FileVideo
+  if (/\.(lrc|srt|ass|ssa|vtt)$/i.test(lower)) return FileText
+  return File
 }
 
 function formatFileSize (bytes) {
@@ -1791,750 +1901,437 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-:global(:root) {
-  --fd-apple-bg: #f5f5f7;
-  --fd-apple-surface: rgba(255, 255, 255, 0.96);
-  --fd-apple-surface-strong: #ffffff;
-  --fd-apple-border: rgba(0, 0, 0, 0.08);
-  --fd-apple-border-soft: rgba(0, 0, 0, 0.05);
-  --fd-apple-text: #1d1d1f;
-  --fd-apple-text-soft: rgba(29, 29, 31, 0.72);
-  --fd-apple-text-muted: rgba(29, 29, 31, 0.52);
-  --fd-apple-blue: #0071e3;
-  --fd-apple-blue-soft: rgba(0, 113, 227, 0.1);
-  --fd-apple-red: #d92d20;
-  --fd-apple-red-soft: rgba(217, 45, 32, 0.08);
-  --fd-apple-orange: #b86a12;
-  --fd-apple-orange-soft: #fff3e8;
-  --fd-apple-shadow: 0 24px 60px rgba(15, 23, 42, 0.14);
-  --fd-apple-card-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
-}
-
-.filter-delete-dialog :deep(.el-dialog) {
-  border-radius: 24px;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  background: var(--fd-apple-bg);
-  box-shadow: var(--fd-apple-shadow);
-}
-
-.filter-delete-dialog :deep(.el-dialog__header) {
-  padding: 0;
-  margin: 0;
-}
-
-.filter-delete-dialog :deep(.el-dialog__body) {
+.custom-preview-modal :deep(.el-dialog__body) {
   padding: 0;
 }
 
-.filter-delete-dialog :deep(.el-dialog__footer) {
-  padding: 12px 18px 18px;
-  background: linear-gradient(180deg, rgba(245, 245, 247, 0.2), rgba(245, 245, 247, 0.92));
-  border-top: 1px solid rgba(0, 0, 0, 0.04);
-}
-
-.filter-delete-dialog :deep(.el-dialog__footer .el-button) {
-  min-height: 38px;
-  padding: 0 16px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: -0.12px;
-  transition: transform 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
-}
-
-.filter-delete-dialog :deep(.el-dialog__footer .el-button:hover) {
-  transform: translateY(-1px);
-}
-
-.filter-delete-dialog :deep(.el-dialog__footer .el-button--default) {
-  border-color: var(--fd-apple-border);
-  background: rgba(255, 255, 255, 0.92);
-  color: var(--fd-apple-text);
-}
-
-.filter-delete-dialog :deep(.el-dialog__footer .el-button--default:hover) {
-  border-color: rgba(0, 113, 227, 0.24);
-  color: var(--fd-apple-blue);
-  background: #ffffff;
-}
-
-.filter-delete-dialog :deep(.el-dialog__footer .el-button--primary.is-plain) {
-  border-color: rgba(0, 113, 227, 0.18);
-  background: var(--fd-apple-blue-soft);
-  color: var(--fd-apple-blue);
-}
-
-.filter-delete-dialog :deep(.el-dialog__footer .el-button--primary.is-plain:hover) {
-  border-color: rgba(0, 113, 227, 0.3);
-  background: rgba(0, 113, 227, 0.16);
-}
-
-.filter-delete-dialog :deep(.el-dialog__footer .el-button--danger) {
-  border-color: transparent;
-  background: var(--fd-apple-red);
-  color: #ffffff;
-  box-shadow: 0 10px 24px rgba(217, 45, 32, 0.2);
-}
-
-.filter-delete-dialog :deep(.el-dialog__footer .el-button--danger:hover) {
-  background: #bf261b;
-  box-shadow: 0 14px 28px rgba(217, 45, 32, 0.24);
-}
-
-.filter-delete-dialog :deep(.el-alert) {
-  border-radius: 16px;
-  border: 1px solid rgba(0, 0, 0, 0.04);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
-}
-
-.filter-delete-dialog :deep(.el-alert--warning) {
-  background: #fff8e8;
-}
-
-.filter-delete-dialog :deep(.el-alert--error) {
-  background: #fff2f1;
-}
-
-.filter-delete-dialog :deep(.el-progress-bar__outer) {
-  background: rgba(0, 0, 0, 0.06);
-}
-
-.filter-delete-dialog :deep(.el-progress-bar__inner) {
-  background: linear-gradient(90deg, #0071e3, #4a9dff);
-}
-
-.fm-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 18px 10px 20px;
+.custom-preview-overlay {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.78)),
-    linear-gradient(135deg, rgba(0, 113, 227, 0.08), rgba(255, 255, 255, 0) 48%);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  backdrop-filter: blur(18px) saturate(180%);
+    radial-gradient(circle at 18% 16%, rgba(191, 219, 254, 0.26), transparent 28%),
+    radial-gradient(circle at 82% 14%, rgba(186, 230, 253, 0.22), transparent 24%),
+    radial-gradient(circle at 82% 82%, rgba(221, 239, 255, 0.2), transparent 26%),
+    rgba(241, 245, 249, 0.34);
+  backdrop-filter: blur(20px) saturate(130%);
 }
 
-.fm-title {
+.glass-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.26));
+  border: 1px solid rgba(255, 255, 255, 0.54);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 22px 60px rgba(15, 23, 42, 0.09);
+  backdrop-filter: blur(22px) saturate(145%);
+}
+
+.glass-shell {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.34)),
+    radial-gradient(circle at top left, rgba(191, 219, 254, 0.18), transparent 34%),
+    radial-gradient(circle at top right, rgba(186, 230, 253, 0.14), transparent 28%);
+  backdrop-filter: blur(28px) saturate(155%);
+  -webkit-backdrop-filter: blur(28px) saturate(155%);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.56),
+    0 28px 80px rgba(15, 23, 42, 0.14);
+}
+
+.glass-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 30%, rgba(255, 255, 255, 0.08) 65%, transparent 100%);
+  opacity: 0.9;
+}
+
+.window-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.4);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.06));
+}
+
+.fm-header-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.fm-title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: -0.16px;
-  color: var(--fd-apple-text);
-}
-
-.fm-title > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .fm-badge {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  padding: 4px 10px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  flex: 0 0 auto;
   border-radius: 999px;
-  background: rgba(250, 250, 252, 0.92);
-  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.56);
+  background: rgba(255, 255, 255, 0.46);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38);
+  padding: 3px 12px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 1.2;
-  color: var(--fd-apple-text-soft);
-}
-
-.fm-count {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 10px;
-  border: 1px solid rgba(0, 113, 227, 0.14);
-  border-radius: 999px;
-  background: var(--fd-apple-blue-soft);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--fd-apple-blue);
-}
-
-.fm-body {
-  display: flex;
-  flex-direction: column;
-  height: 540px;
-  background:
-    radial-gradient(circle at top left, rgba(0, 113, 227, 0.05), transparent 30%),
-    var(--fd-apple-bg);
-}
-
-.filter-delete-alert,
-.filter-delete-summary,
-.fd-selection-bar {
-  margin: 0 14px 8px;
-}
-
-.filter-delete-alert:first-child {
-  margin-top: 10px;
-}
-
-.filter-delete-summary {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  color: #475569;
 }
 
 .fd-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+  padding: 4px 10px;
+  border-radius: 8px;
   font-size: 11px;
   font-weight: 600;
-  line-height: 1;
-  color: var(--fd-apple-text-soft);
+  color: #64748b;
+  background: rgba(241, 245, 249, 0.5);
+  border: 1px solid rgba(226, 232, 240, 0.6);
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.02);
+  transition: all 0.2s ease;
 }
 
-.fd-progress {
-  margin: 0 14px 8px;
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--fd-apple-text-soft);
+.fd-chip:hover {
+  background: rgba(241, 245, 249, 0.8);
+  border-color: rgba(203, 213, 225, 0.8);
+  color: #475569;
+  transform: translateY(-0.5px);
 }
 
-.fd-header-actions {
-  display: flex;
+.fd-type-tag {
+  box-shadow: 0 2px 5px rgba(15, 23, 42, 0.03);
+}
+
+.fd-type-tag-active {
+  background: rgba(238, 242, 255, 0.8);
+  border-color: rgba(199, 210, 254, 0.8);
+  color: #4338ca;
+}
+
+.fd-type-tag-active:hover {
+  background: rgba(238, 242, 255, 1);
+  border-color: rgba(165, 180, 252, 1);
+}
+
+.fd-type-tag-partial {
+  background: rgba(245, 243, 255, 0.6);
+  border-color: rgba(221, 214, 254, 0.6);
+  color: #6d28d9;
+}
+
+.fd-type-tag-inactive {
+  background: rgba(255, 255, 255, 0.5);
+  border-color: rgba(226, 232, 240, 0.8);
+  color: #64748b;
+}
+
+.fd-type-tag-inactive:hover {
+  background: rgba(255, 255, 255, 0.8);
+  border-color: rgba(203, 213, 225, 1);
+  color: #475569;
+}
+
+.fd-type-count {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.6);
+  color: #94a3b8;
+  border: 1px solid rgba(0, 0, 0, 0.03);
+}
+
+.action-card {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.fd-close-btn {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.04);
-  font-size: 18px;
-  line-height: 1;
-  color: var(--fd-apple-text-soft);
-  cursor: pointer;
-  transition: transform 0.16s ease, background-color 0.16s ease, color 0.16s ease;
-}
-
-.fd-close-btn:hover {
-  transform: translateY(-1px);
-  background: rgba(0, 0, 0, 0.08);
-  color: var(--fd-apple-text);
-}
-
-.fd-progress-bar {
-  margin: 0 14px 8px;
-}
-
-.fd-background-tip {
-  margin: 0 14px 8px;
-  padding: 8px 12px;
-  border: 1px dashed rgba(0, 113, 227, 0.22);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.7);
-  font-size: 11px;
-  color: #325f99;
-}
-
-.fm-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  margin: 0 14px 8px;
-  padding: 8px 10px;
-  border: 1px solid rgba(0, 0, 0, 0.04);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: var(--fd-apple-card-shadow);
-}
-
-.fm-toolbar-left {
-  display: flex;
-  align-items: center;
+  justify-content: center;
   gap: 8px;
-  flex-wrap: wrap;
-}
-
-.fd-type-filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  padding: 0 4px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-.fd-type-filter-bar::-webkit-scrollbar {
-  display: none;
-}
-
-.fd-type-filter-label {
-  flex: 0 0 auto;
+  cursor: pointer;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  background: rgba(255, 255, 255, 0.42);
+  color: #0f172a;
   font-size: 12px;
   font-weight: 600;
-  color: var(--fd-apple-text-muted);
-  letter-spacing: -0.12px;
-}
-
-.fd-type-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-  min-height: 22px;
-  padding: 0 7px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 999px;
-  background: #fafafc;
-  color: var(--fd-apple-text);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: -0.12px;
-  line-height: 1;
-  cursor: pointer;
-  transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
-}
-
-.fd-type-chip:hover:not(:disabled) {
-  transform: translateY(-1px);
-  border-color: rgba(0, 113, 227, 0.22);
-  color: var(--fd-apple-blue);
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
-}
-
-.fd-type-chip.active {
-  background: var(--fd-apple-blue);
-  border-color: var(--fd-apple-blue);
-  color: #ffffff;
-  box-shadow: 0 10px 22px rgba(0, 113, 227, 0.2);
-}
-
-.fd-type-chip.partial {
-  border-color: rgba(0, 113, 227, 0.22);
-  background: rgba(0, 113, 227, 0.08);
-  color: var(--fd-apple-blue);
-}
-
-.fd-type-chip:disabled {
-  opacity: 0.52;
-  cursor: not-allowed;
-}
-
-.fd-type-chip-indicator {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 10px;
-  color: currentColor;
-  font-size: 11px;
-  font-weight: 900;
-  line-height: 1;
-}
-
-.fd-type-chip-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: rgba(29, 29, 31, 0.08);
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.fd-type-chip.active .fd-type-chip-count {
-  background: rgba(255, 255, 255, 0.22);
-}
-
-.fd-type-chip.partial .fd-type-chip-count {
-  background: rgba(0, 113, 227, 0.1);
-}
-
-.fm-btn {
-  min-height: 30px;
-  padding: 0 11px;
-  border: 1px solid var(--fd-apple-border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.96);
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--fd-apple-text);
-  letter-spacing: -0.12px;
-  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 6px 18px rgba(15, 23, 42, 0.05);
   transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
 }
 
-.fm-btn:hover:not(:disabled) {
+.action-icon {
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.action-card:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
   transform: translateY(-1px);
-  border-color: rgba(0, 113, 227, 0.18);
-  color: var(--fd-apple-blue);
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
 }
 
-.fm-btn:disabled {
+.action-card:hover:not(:disabled) .action-icon {
+  transform: scale(1.08);
+}
+
+.action-card:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
+}
+
+.action-card-danger {
+  border-color: rgba(252, 165, 165, 0.38);
+  background: rgba(254, 242, 242, 0.42);
+  color: #b91c1c;
+}
+
+.action-card-danger:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.48);
+  background: rgba(254, 226, 226, 0.56);
+  box-shadow: 0 10px 24px rgba(239, 68, 68, 0.16);
+}
+
+.action-card-ghost {
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.action-card-primary {
+  border-color: rgba(59, 130, 246, 0.26);
+  background: rgba(59, 130, 246, 0.9);
+  color: #fff;
+  box-shadow: 0 12px 30px rgba(59, 130, 246, 0.24);
+}
+
+.action-card-primary:hover:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.32);
+  background: rgba(37, 99, 235, 0.94);
+  box-shadow: 0 14px 34px rgba(37, 99, 235, 0.3);
+}
+
+.action-card-warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #d97706;
+}
+
+.action-card-warning:hover:not(:disabled) {
+  background: #fef3c7;
+  border-color: #fcd34d;
+  color: #b45309;
+}
+
+.action-card:disabled,
+.tree-expander:disabled,
+.close-button:disabled {
+  opacity: 0.55;
   cursor: not-allowed;
-  opacity: 0.56;
-  box-shadow: none;
 }
 
-.fm-btn-primary {
-  color: var(--fd-apple-blue);
-  border-color: rgba(0, 113, 227, 0.14);
-  background: var(--fd-apple-blue-soft);
-}
-
-.fm-btn-primary:hover:not(:disabled) {
-  color: #ffffff;
-  border-color: var(--fd-apple-blue);
-  background: var(--fd-apple-blue);
-}
-
-.fm-btn-danger {
-  color: var(--fd-apple-red);
-  border-color: rgba(217, 45, 32, 0.16);
-  background: var(--fd-apple-red-soft);
-}
-
-.fm-btn-danger:hover:not(:disabled) {
-  color: #ffffff;
-  border-color: var(--fd-apple-red);
-  background: var(--fd-apple-red);
-  box-shadow: 0 10px 20px rgba(217, 45, 32, 0.18);
-}
-
-.fm-btn-warning {
-  color: var(--fd-apple-orange);
-  border-color: rgba(184, 106, 18, 0.16);
-  background: var(--fd-apple-orange-soft);
-}
-
-.fm-btn-warning:hover:not(:disabled) {
-  color: #ffffff;
-  border-color: #b86a12;
-  background: #b86a12;
-  box-shadow: 0 10px 20px rgba(184, 106, 18, 0.18);
-}
-
-.fm-btn-ghost:hover:not(:disabled) {
-  color: var(--fd-apple-blue);
-  border-color: rgba(0, 113, 227, 0.2);
-  background: rgba(0, 113, 227, 0.06);
-}
-
-.fm-search {
-  flex: 0 0 auto;
-}
-
-.fm-search-input {
-  width: 280px;
-  height: 30px;
-  padding: 0 12px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 999px;
-  background: rgba(250, 250, 252, 0.96);
-  font-size: 11px;
-  color: var(--fd-apple-text);
-  outline: none;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
-}
-
-.fm-search-input:focus {
-  border-color: rgba(0, 113, 227, 0.3);
-  background: #ffffff;
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
-}
-
-.fm-search-input::placeholder {
-  color: var(--fd-apple-text-muted);
-}
-
-.fd-selection-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border: 1px solid rgba(217, 45, 32, 0.12);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: var(--fd-apple-card-shadow);
-}
-
-.fd-selection-count {
-  font-size: 12px;
-  font-weight: 700;
-  color: #b3473d;
-}
-
-.fd-selection-tip {
-  font-size: 11px;
-  color: var(--fd-apple-text-muted);
-}
-
-.fm-head,
-.fm-row {
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 120px 190px 90px;
-  align-items: center;
-  padding: 0 16px;
-}
-
-.fm-head {
+.search-shell {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 8px 24px rgba(15, 23, 42, 0.04);
+  backdrop-filter: blur(18px) saturate(135%);
   height: 36px;
-  margin: 0 14px;
-  border: 1px solid rgba(0, 0, 0, 0.04);
-  border-bottom: 0;
-  border-radius: 16px 16px 0 0;
-  background: rgba(255, 255, 255, 0.88);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--fd-apple-text-soft);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.fd-sort-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  transition: color 0.16s ease;
+.search-shell:focus-within {
+  border-color: rgba(148, 163, 184, 0.34);
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.2),
+    0 12px 28px rgba(15, 23, 42, 0.06);
 }
 
-.fd-sort-btn:hover {
-  color: var(--fd-apple-blue);
-}
-
-.fd-sort-btn-end {
-  margin-left: auto;
-}
-
-.fd-sort-btn.active {
-  color: var(--fd-apple-blue);
-}
-
-.fd-sort-mark {
-  font-size: 11px;
-  color: rgba(29, 29, 31, 0.34);
-}
-
-.fd-sort-btn.active .fd-sort-mark {
-  color: var(--fd-apple-blue);
-}
-
-.fd-head-basic,
-.fd-row-basic {
-  grid-template-columns: 38px minmax(0, 1fr);
-}
-
-.fm-scroll {
-  flex: 1;
-  margin: 0 14px 0;
-  overflow: auto;
-  contain: strict;
-  border: 1px solid rgba(0, 0, 0, 0.04);
-  border-top: 0;
-  border-radius: 0 0 18px 18px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: var(--fd-apple-card-shadow);
-}
-
-.fm-virtual-spacer {
+.search-input {
   width: 100%;
-  pointer-events: none;
-}
-
-.fm-row {
-  min-height: 44px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  border: none;
+  background: transparent;
+  color: #0f172a;
   font-size: 13px;
-  color: var(--fd-apple-text);
-  contain: layout paint style;
-  transition: background-color 0.16s ease;
+  outline: none;
 }
 
-.fm-row:hover {
-  background: rgba(0, 113, 227, 0.04);
+.tree-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.18));
+  border: 1px solid rgba(255, 255, 255, 0.46);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 20px 48px rgba(15, 23, 42, 0.07);
+  backdrop-filter: blur(20px) saturate(140%);
 }
 
-.fm-row-dir {
-  background: rgba(245, 245, 247, 0.92);
+.tree-head {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.12));
+  border-bottom-color: rgba(255, 255, 255, 0.34) !important;
+}
+
+.fd-tree-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 140px 72px;
+  column-gap: 6px;
+}
+
+.fd-head-basic .fd-tree-grid,
+.fd-row-basic .fd-tree-grid {
+  grid-template-columns: minmax(0, 1fr) 72px;
+}
+
+.tree-col-size,
+.tree-size {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 96px;
+  height: 100%;
+  justify-self: center;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tree-col-time,
+.tree-time {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-width: 140px;
+  height: 100%;
+  justify-self: start;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tree-col-state {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  justify-self: end;
+  min-width: 72px;
+}
+
+.tree-state {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  justify-self: end;
+  min-width: 72px;
+  height: 100%;
+}
+
+.tree-row {
+  cursor: pointer;
+  min-height: 44px;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.tree-row:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.tree-row-selected {
+  background: rgba(191, 219, 254, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.2);
+}
+
+.tree-main {
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.tree-name {
+  line-height: 1.2;
+}
+
+.tree-sub {
+  margin-top: 1px;
+  line-height: 1.15;
+}
+
+.checkbox-minus {
+  width: 9px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.expander-spacer {
+  width: 21px;
+  flex: 0 0 21px;
+}
+
+.tree-expander {
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.tree-expander:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.tree-expander:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.tree-checkbox,
+.close-button {
   cursor: pointer;
 }
 
-.fm-row-selected {
-  background: rgba(0, 113, 227, 0.08) !important;
+.tree-scroll {
+  scrollbar-gutter: stable;
 }
 
-.fm-row-disabled {
-  background: rgba(250, 250, 252, 0.88);
-  color: rgba(29, 29, 31, 0.34);
+.tree-icon {
+  color: #64748b;
 }
 
-.fm-empty {
+.icon-folder {
+  color: #64748b;
+  fill: #eff6ff;
+}
+
+.tree-checkbox-on {
+  background: #111827;
+  color: #fff;
+  border-color: #111827;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+}
+
+.tree-checkbox-partial {
+  background: rgba(15, 23, 42, 0.08);
+  color: #111827;
+  border-color: rgba(15, 23, 42, 0.14);
+}
+
+.tree-checkbox-off {
+  background: white;
+  border-color: #cbd5e1;
+}
+
+.tree-checkbox-off:hover:not(:disabled) {
+  border-color: #94a3b8;
+}
+
+.preview-empty {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 220px;
-  color: var(--fd-apple-text-muted);
+  color: #94a3b8;
   font-size: 13px;
 }
 
-.fm-name-cell {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  min-width: 0;
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
-
-.fm-col-check {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  min-width: 0;
-  transition: padding-left 0.16s ease;
-}
-
-.fm-arrow {
-  width: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(29, 29, 31, 0.46);
-  white-space: nowrap;
-  transition: transform 0.16s ease, color 0.16s ease;
-}
-
-.fm-arrow.open {
-  transform: rotate(90deg);
-  color: var(--fd-apple-blue);
-}
-
-.fm-arrow-toggle {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-}
-
-.fm-arrow-placeholder {
-  width: 12px;
-  flex: 0 0 12px;
-}
-
-.fm-file-icon {
-  width: 18px;
-  flex: 0 0 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fd-apple-blue);
-}
-
-.fm-name-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  line-height: 1.25;
-}
-
-.fm-check {
-  width: 14px;
-  height: 14px;
-  cursor: pointer;
-  accent-color: var(--fd-apple-blue);
-}
-
-.fd-name-block,
-.fd-meta-block {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.fd-subtext,
-.fd-rules {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--fd-apple-text-muted);
-}
-
-.fd-status {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-}
-
-.fd-status.delete-root {
-  border: 1px solid rgba(184, 106, 18, 0.14);
-  background: var(--fd-apple-orange-soft);
-  color: var(--fd-apple-orange);
-}
-
-.fd-status.delete-covered {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--fd-apple-text-muted);
-  font-weight: 500;
-}
-
-.fd-status.delete-optional {
-  border: 1px solid rgba(0, 113, 227, 0.14);
-  background: rgba(0, 113, 227, 0.08);
-  color: #0f5fc5;
-}
-@media (max-width: 1280px) {
-  .filter-delete-summary,
-  .fd-selection-bar {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .fm-toolbar {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
-  }
-
-  .fm-search { width: 100%; }
-  .fm-search-input { width: 100%; }
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 </style>
 

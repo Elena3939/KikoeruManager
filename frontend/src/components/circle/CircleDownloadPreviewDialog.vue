@@ -9,8 +9,7 @@
     @update:model-value="emit('update:visible', $event)"
   >
     <div v-if="loading" class="window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden dialog-loading-overlay">
-      <el-icon class="is-loading loader-icon"><Loading /></el-icon>
-      <div class="loading-text">正在分析资源结构并生成下载计划...</div>
+      <AppLoadingAnimation label="正在分析资源结构并生成下载计划..." description="聚合资源分组、语言版本和推荐项" :size="168" :min-height="260" />
     </div>
     
     <div v-else class="window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
@@ -246,9 +245,9 @@
         <div class="summary text-sm text-slate-500 font-medium"><span class="summary-strong text-slate-900">{{ selectedFileCount }}</span> 已选，共 <span class="summary-strong text-slate-900">{{ formatSize(selectedTotalBytes) }}</span></div>
 
         <div class="footer-actions flex items-center gap-3">
-          <button type="button" class="primary-cta px-10 h-11 rounded-xl font-bold text-white" :disabled="selectedFileCount === 0 || starting" @click="emitSubmit">
-            <span v-if="starting"><el-icon class="is-loading" style="margin-right:6px"><Loading /></el-icon>处理中</span>
-            <span v-else>下载</span>
+          <button type="button" class="primary-cta px-10 h-11 rounded-xl font-bold text-white" :disabled="selectedFileCount === 0 || starting || (requiresTargetLibrary && !props.settings.targetLibraryId)" @click="emitSubmit">
+            <span v-if="starting" class="inline-flex items-center"><AppLoadingAnimation variant="inline" :size="30" class="mr-1" />处理中</span>
+            <span v-else>{{ primaryActionLabel }}</span>
           </button>
           <button type="button" class="secondary-cta interactive-button px-10 h-11 rounded-xl font-bold" @click="emit('update:visible', false)">取消</button>
         </div>
@@ -259,7 +258,6 @@
 
 <script setup>
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
-import { Loading } from '@element-plus/icons-vue'
 import {
   Check,
   ChevronDown,
@@ -270,11 +268,13 @@ import {
   Music,
   X,
 } from 'lucide-vue-next'
+import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
   starting: { type: Boolean, default: false },
+  actionMode: { type: String, default: 'download' },
   plans: { type: Array, default: () => [] },
   libraries: { type: Array, default: () => [] },
   targetSubdirOptions: { type: Array, default: () => [] },
@@ -346,6 +346,8 @@ const inventoryLabel = computed(() => {
 const prefixLabel = computed(() => {
   return props.settings.targetSubdir || ''
 })
+const requiresTargetLibrary = computed(() => props.actionMode === 'reimport')
+const primaryActionLabel = computed(() => props.actionMode === 'reimport' ? '跳过下载直接入库' : '下载')
 
 const openSelect = ref(null)
 const selectRoot = ref(null)
@@ -382,6 +384,7 @@ watch(() => props.plans, (plans) => {
 }, { deep: true, immediate: true })
 
 function emitSubmit() {
+  const action = props.actionMode === 'reimport' ? 'reimport' : 'download'
   const useImmediateSynologyUpload = selectedTargetLibrary.value?.type === 'synology_filestation' && String(props.settings.targetLibraryId || '').trim()
   const items = planStates.value
     .map(plan => ({
@@ -412,6 +415,7 @@ function emitSubmit() {
     .filter(item => item.selected_resources.length > 0)
 
   emit('submit', {
+    action,
     items,
     batchOptions: {
       download_base_path: props.settings.downloadBasePath || '',
@@ -637,185 +641,6 @@ function formatSize(bytes) {
 </script>
 
 <style>
-.custom-preview-overlay {
-  background: transparent !important;
-  padding: 12px !important;
-}
-
-.custom-preview-overlay .el-overlay-dialog {
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  min-height: 100vh !important;
-}
-
-.custom-preview-modal.el-dialog {
-  position: relative !important;
-  width: min(1210px, calc(100vw - 32px), calc((100vh - 32px) * 16 / 9)) !important;
-  max-width: min(1210px, calc(100vw - 32px), calc((100vh - 32px) * 16 / 9)) !important;
-  margin: auto !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  border: none !important;
-  overflow: visible !important;
-  --el-dialog-bg-color: transparent;
-}
-
-.custom-preview-modal .el-dialog__header {
-  display: none;
-}
-
-.custom-preview-modal .el-dialog__body {
-  padding: 0 !important;
-  background: transparent !important;
-  overflow: visible !important;
-}
-
-.dialog-loading-overlay {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  color: rgb(100, 116, 139);
-}
-
-.loader-icon {
-  font-size: 24px;
-  opacity: 0.8;
-}
-
-.loading-text {
-  font-size: 15px;
-  font-weight: 700;
-  color: rgb(100, 116, 139);
-}
-
-.window {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  min-height: 0;
-  border-radius: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.15);
-  box-shadow:
-    0 30px 80px rgba(15, 23, 42, 0.15),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
-  backdrop-filter: blur(16px) saturate(200%);
-  -webkit-backdrop-filter: blur(16px) saturate(200%);
-  display: flex;
-  flex-direction: column;
-  isolation: isolate;
-  overflow: hidden;
-}
-
-.window::before,
-.window::after {
-  display: none;
-}
-
-.window-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 24px 32px;
-}
-
-.title {
-  margin: 0;
-  font-size: 24px;
-  line-height: 1;
-  font-weight: 800;
-  color: rgb(15, 23, 42);
-  letter-spacing: -0.02em;
-}
-
-.close-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: rgb(148, 163, 184);
-  cursor: pointer;
-  transition: transform 0.18s ease, opacity 0.18s ease, background-color 0.18s ease;
-}
-
-.close-button:hover {
-  color: rgb(51, 65, 85);
-}
-
-.tabs-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow-x: auto;
-  padding: 4px 32px 12px;
-}
-
-.tab-chip {
-  min-height: 30px;
-  padding: 4px 12px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.25);
-  box-shadow:
-    0 2px 8px rgba(15, 23, 42, 0.045),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.005em;
-  color: rgb(71, 85, 105);
-  white-space: nowrap;
-  cursor: pointer;
-  backdrop-filter: blur(16px) saturate(140%);
-  transition: transform 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
-}
-
-.tab-chip:hover {
-  transform: translateY(-1px);
-}
-
-.tab-chip-active {
-  border-color: rgba(59, 130, 246, 0.8);
-  background: #3b82f6;
-  color: #ffffff;
-  box-shadow:
-    0 4px 10px rgba(59, 130, 246, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
-
-.tab-chip-partial {
-  border-color: rgba(147, 197, 253, 0.6);
-  background: rgba(219, 234, 254, 0.45);
-  color: #2563eb;
-}
-
-.tab-chip-partial:hover {
-  background: rgba(219, 234, 254, 0.65);
-  border-color: rgba(96, 165, 250, 0.8);
-  color: #1d4ed8;
-}
-
-.tab-chip-idle {
-  border-color: rgba(226, 232, 240, 0.6);
-  background: rgba(255, 255, 255, 0.3);
-  color: rgb(100, 116, 139);
-}
-
-.tab-chip-idle:hover {
-  background: rgba(255, 255, 255, 0.5);
-  border-color: rgba(203, 213, 225, 0.7);
-  color: rgb(51, 65, 85);
-}
-
 .tab-count {
   padding: 2px 5px;
   border-radius: 999px;
@@ -835,10 +660,6 @@ function formatSize(bytes) {
 .tab-chip-partial .tab-count {
   background: rgba(59, 130, 246, 0.15);
   color: #2563eb;
-}
-
-.restore-button {
-  margin-left: auto;
 }
 
 .content-grid {
@@ -1005,8 +826,7 @@ function formatSize(bytes) {
   gap: 12px;
 }
 
-.soft-button,
-.secondary-cta {
+.soft-button {
   border: 1px solid rgba(226, 232, 240, 0.7);
   background: rgba(255, 255, 255, 0.55);
   box-shadow:
@@ -1031,8 +851,7 @@ function formatSize(bytes) {
   box-shadow: 0 8px 16px rgba(148, 163, 184, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.98);
 }
 
-.soft-button:hover,
-.secondary-cta:hover {
+.soft-button:hover {
   transform: translateY(-1px);
   box-shadow:
     0 8px 16px rgba(148, 163, 184, 0.12),
@@ -1238,92 +1057,7 @@ function formatSize(bytes) {
   font-variant-numeric: tabular-nums;
 }
 
-.footer-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 24px 32px;
-  margin-top: auto;
-}
-
-.summary {
-  margin: 0;
-  font-size: 14px;
-  color: rgb(100, 116, 139);
-  font-weight: 500;
-  text-align: left;
-}
-
-.summary-strong {
-  color: rgb(15, 23, 42);
-}
-
-.footer-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.primary-cta,
-.secondary-cta {
-  min-width: 132px;
-  height: 44px;
-  padding: 0 40px;
-  border-radius: 12px;
-  font-size: 16px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: transform 0.16s ease, box-shadow 0.16s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.primary-cta {
-  border: none;
-  background: #3b82f6;
-  color: white;
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
-}
-
-.primary-cta:hover,
-.secondary-cta:hover {
-  transform: translateY(-1px);
-}
-
-.primary-cta:disabled {
-  cursor: not-allowed;
-  background: #94a3b8;
-  opacity: 0.7;
-  transform: none;
-  box-shadow: none;
-}
-
-.primary-cta:hover:not(:disabled) {
-  background: #2563eb;
-  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
-}
-
-.secondary-cta {
-  border: 1px solid #e2e8f0;
-  background: #ffffff;
-  color: #475569;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
-}
-
-.secondary-cta:hover {
-  background: #f8fafc;
-  border-color: #cbd5e1;
-  color: #0f172a;
-  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.06);
-}
-
-.primary-cta:active,
-.secondary-cta:active,
-.soft-button:active,
-.tab-chip:active,
-.close-button:active {
+.soft-button:active {
   transform: scale(0.98);
 }
 

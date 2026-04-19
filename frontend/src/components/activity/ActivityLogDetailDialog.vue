@@ -6,7 +6,7 @@
     class="custom-preview-modal activity-detail-dialog"
     align-center
     modal-class="custom-preview-overlay activity-detail-overlay"
-    @update:model-value="emit('close')"
+    @update:model-value="handleDialogModelValueChange"
   >
       <div
       v-if="row"
@@ -14,7 +14,7 @@
     >
       <div class="window-header flex items-center justify-between px-8 py-6">
         <div class="activity-header-main">
-          <div class="activity-header-icon">
+          <div class="activity-header-icon" :class="headerIconClass">
             <component :is="statusConfig.icon" :size="20" :stroke-width="2.6" />
           </div>
           <div class="min-w-0">
@@ -45,7 +45,7 @@
             </div>
           </div>
           <div class="meta-pill-card">
-            <div class="meta-pill-icon">
+            <div class="meta-pill-icon" :class="statusMetaIconClass">
               <component :is="statusConfig.icon" :size="14" :stroke-width="2.5" />
             </div>
             <div>
@@ -67,88 +67,6 @@
 
       <div class="activity-scroll-shell no-scrollbar">
         <div class="content-stack flex flex-col gap-6 px-8 py-2">
-            <section class="glass-panel glass-card summary-panel rounded-2xl p-5">
-          <div class="space-y-4">
-            <section class="space-y-4">
-              <div class="summary-callout">
-                <div class="summary-callout-text">
-                  {{ summaryText || '—' }}
-                </div>
-              </div>
-
-              <div class="summary-meta-grid">
-                <div class="meta-pill-card">
-                  <div class="meta-pill-label">分类</div>
-                  <div class="meta-pill-value">{{ row.category_label || '—' }}</div>
-                </div>
-                <div class="meta-pill-card">
-                  <div class="meta-pill-label">时间</div>
-                  <div class="meta-pill-value">{{ formatDateTime(row.created_at) }}</div>
-                </div>
-                <div class="info-block summary-span-2">
-                  <div class="info-label">源路径</div>
-                  <div class="info-value mono">{{ row.source_path || '—' }}</div>
-                </div>
-                <div class="info-block">
-                  <div class="info-label">任务 ID</div>
-                  <div class="info-value mono">{{ row.task_id || '—' }}</div>
-                </div>
-                <div class="info-block">
-                  <div class="info-label">RJ</div>
-                  <div class="info-value mono">{{ displayRjcode(row) }}</div>
-                </div>
-              </div>
-
-              <div class="summary-tag-row">
-                <span
-                  v-for="tag in rowTags"
-                  :key="`${row.id}-${tag}`"
-                  class="tab-chip px-2.5 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center border"
-                  :class="tagClass(tag)"
-                >
-                  {{ tag }}
-                </span>
-                <span v-if="isRerun" class="tab-chip px-2.5 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center border tab-chip-warn">
-                  重新爬取
-                </span>
-                <span
-                  v-if="finalStatusLabel"
-                  class="tab-chip px-2.5 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center border"
-                  :class="finalStatusChipClass"
-                >
-                  {{ finalStatusLabel }}
-                </span>
-                <span v-if="isRecoveredFailure" class="tab-chip px-2.5 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center border tab-chip-success">
-                  已修复
-                </span>
-                <span class="detail-rj-chip">{{ displayRjcode(row) }}</span>
-              </div>
-            </section>
-
-            <section v-if="pathCompare" class="space-y-4">
-              <div class="section-head compact-head">
-                <h2>{{ pathCompare.title }}</h2>
-                <p>{{ pathCompare.reason || pathCompareDefaultReason }}</p>
-              </div>
-              <div class="path-board">
-                <div class="path-card">
-                  <div class="path-card-label">OLD PATH</div>
-                  <div class="path-card-value mono">{{ pathCompare.beforePath || '—' }}</div>
-                </div>
-                <div class="path-arrow">→</div>
-                <div class="path-card">
-                  <div class="path-card-label">NEW PATH</div>
-                  <div class="path-card-value mono">{{ pathCompare.afterPath || '—' }}</div>
-                </div>
-              </div>
-            </section>
-
-            <section v-if="$slots.sidebar" class="space-y-4">
-              <slot name="sidebar" />
-            </section>
-          </div>
-            </section>
-
             <section class="glass-panel glass-card tree-panel flex flex-col overflow-hidden">
               <div class="detail-main-head">
                 <div>
@@ -191,40 +109,31 @@ const props = defineProps({
   finalStatusLabel: { type: String, default: '' },
   finalStatusClass: { type: String, default: '' },
   isRecoveredFailure: { type: Boolean, default: false },
-  pathCompare: { type: Object, default: null },
-  pathCompareReasonClass: { type: String, default: '' },
-  pathCompareDefaultReason: { type: String, default: '' },
-  summaryText: { type: String, default: '' },
 })
 
 const emit = defineEmits(['close'])
 
+function handleDialogModelValueChange(nextVisible) {
+  if (nextVisible === false) emit('close')
+}
+
 const categoryConfig = computed(() => props.getCategoryConfig(props.row?.category))
 const statusConfig = computed(() => props.getStatusConfig(props.row?.status))
 
-const statusChipClass = computed(() => {
-  if (props.row?.status === 'success') return 'tab-chip-success'
-  if (props.row?.status === 'partial_success') return 'tab-chip-warn'
-  if (props.row?.status === 'failed') return 'tab-chip-danger'
-  return 'tab-chip-idle'
+const headerIconClass = computed(() => {
+  if (props.row?.status === 'failed') return 'is-danger'
+  if (props.row?.status === 'partial_success') return 'is-warn'
+  if (props.row?.status === 'success') return 'is-success'
+  return 'is-idle'
 })
 
-const finalStatusChipClass = computed(() => {
-  if (props.finalStatusClass === 'is-final-success') return 'tab-chip-success'
-  if (props.finalStatusClass === 'is-final-failed') return 'tab-chip-danger'
-  return 'tab-chip-warn'
+const statusMetaIconClass = computed(() => {
+  if (props.row?.status === 'failed') return 'is-danger'
+  if (props.row?.status === 'partial_success') return 'is-warn'
+  if (props.row?.status === 'success') return 'is-success'
+  return 'is-idle'
 })
 
-function tagClass(tag) {
-  const actionClass = props.actionTagClass(props.row, tag)
-  if (actionClass === 'is-api-rename') return 'tab-chip-blue'
-  if (actionClass === 'is-manual-rename') return 'tab-chip-violet'
-  if (actionClass === 'is-delete') return 'tab-chip-danger'
-  if (actionClass === 'is-updated') return 'tab-chip-warn'
-  if (actionClass === 'is-unchanged') return 'tab-chip-idle'
-  if (tag === '未命中') return 'tab-chip-idle'
-  return 'tab-chip-success'
-}
 </script>
 
 <style scoped>
@@ -296,6 +205,26 @@ function tagClass(tag) {
   background: #eef5ff;
   color: #3b82f6;
   flex: 0 0 auto;
+}
+
+.activity-header-icon.is-success {
+  background: #ecfdf5;
+  color: #059669;
+}
+
+.activity-header-icon.is-warn {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.activity-header-icon.is-danger {
+  background: #fff1f2;
+  color: #e11d48;
+}
+
+.activity-header-icon.is-idle {
+  background: #eef5ff;
+  color: #3b82f6;
 }
 
 .activity-title {
@@ -468,6 +397,30 @@ function tagClass(tag) {
   box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.9);
   color: #94a3b8;
   flex: 0 0 auto;
+}
+
+.meta-pill-icon.is-success {
+  background: rgba(236, 253, 245, 0.98);
+  color: #059669;
+  box-shadow: inset 0 0 0 1px rgba(167, 243, 208, 0.9);
+}
+
+.meta-pill-icon.is-warn {
+  background: rgba(255, 251, 235, 0.98);
+  color: #d97706;
+  box-shadow: inset 0 0 0 1px rgba(253, 230, 138, 0.9);
+}
+
+.meta-pill-icon.is-danger {
+  background: rgba(255, 241, 242, 0.98);
+  color: #e11d48;
+  box-shadow: inset 0 0 0 1px rgba(254, 205, 211, 0.95);
+}
+
+.meta-pill-icon.is-idle {
+  background: rgba(255, 255, 255, 0.92);
+  color: #94a3b8;
+  box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.9);
 }
 
 .summary-callout {

@@ -5,7 +5,7 @@ echo Prekikoeru Frontend Server
 echo ========================================
 echo.
 echo Starting frontend server...
-echo URL: http://localhost:5173
+echo URL: http://localhost:5556
 echo.
 echo Press Ctrl+C to stop
 echo.
