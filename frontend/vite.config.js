@@ -3,12 +3,13 @@ import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
+  assetsInclude: ['**/*.lottie'],
   plugins: [vue(), tailwindcss()],
   server: {
-    port: 5173,
+    port: 5556,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:5555',
         changeOrigin: true
       }
     }

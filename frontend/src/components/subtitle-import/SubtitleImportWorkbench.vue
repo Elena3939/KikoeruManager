@@ -1,5 +1,5 @@
 <template>
-  <div class="import-workbench-modal" v-loading="workbenchLoading">
+  <div class="import-workbench-modal" v-app-loading="{ loading: workbenchLoading, text: '正在整理字幕工作台...', description: '同步批次、候选字幕和配对状态', size: 136 }">
     <div class="import-workbench-head">
       <div>
         <div class="import-workbench-title">字幕补配工作台</div>
@@ -310,7 +310,8 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import { Folder, FolderOpened, Document, Picture, VideoPlay, Headset, Tickets } from '@element-plus/icons-vue'
 import { libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
 import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
@@ -903,11 +904,13 @@ async function clearFinishedTasks() {
   }
 
   try {
-    await ElMessageBox.confirm(
-      `确定清空 ${targets.length} 条已完成或已失败任务吗？进行中的任务会保留。`,
-      '清空队列确认',
-      { confirmButtonText: '清空队列', cancelButtonText: '取消', type: 'warning' }
-    )
+    await showSystemConfirm({
+      title: '清空队列确认',
+      message: `确定清空 ${targets.length} 条已完成或已失败任务吗？进行中的任务会保留。`,
+      confirmText: '清空队列',
+      cancelText: '取消',
+      tone: 'warning'
+    })
   } catch (_) {
     return
   }
@@ -1359,11 +1362,12 @@ async function deleteSubtitleTreeEntry(row) {
   const inspectorLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId
   try {
     const preview = await libraryApi.browserDelete(inspectorLibraryId, path, false)
-    await ElMessageBox.confirm(buildDeletePreviewMessage(preview), '删除确认', {
-      confirmButtonText: '确定删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-      confirmButtonClass: 'el-button--danger'
+    await showSystemConfirm({
+      title: '删除确认',
+      message: buildDeletePreviewMessage(preview),
+      confirmText: '确定删除',
+      cancelText: '取消',
+      tone: 'danger'
     })
     subtitleInspectorDeleting.value = true
     try {
@@ -1387,11 +1391,13 @@ async function batchDeleteSubtitleTreeEntries() {
   }
   const sortedRows = rows.sort((left, right) => (right.path || right.relative_path || '').length - (left.path || left.relative_path || '').length)
   try {
-    await ElMessageBox.confirm(
-      `确定批量删除 ${sortedRows.length} 项字幕文件/目录吗？此操作不可恢复。`,
-      '批量删除确认',
-      { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' }
-    )
+    await showSystemConfirm({
+      title: '批量删除确认',
+      message: `确定批量删除 ${sortedRows.length} 项字幕文件/目录吗？此操作不可恢复。`,
+      confirmText: '确定删除',
+      cancelText: '取消',
+      tone: 'danger'
+    })
   } catch (_) {
     return
   }
@@ -1781,11 +1787,13 @@ async function applySubtitleManualPairs() {
 
   const namingStrategyLabel = subtitleOptions.value.namingStrategy === 'subtitle' ? '以字幕名为准' : '以音频名为准'
   try {
-    await ElMessageBox.confirm(
-      `确定处理 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${unusedSubtitleRows.length ? `\n当前未使用的 ${unusedSubtitleRows.length} 个原始字幕会一并删除。` : ''}\n确认后会先在工作区完成重命名，再导入目标库存。`,
-      '应用配对确认',
-      { confirmButtonText: '重命名并导入', cancelButtonText: '取消', type: 'warning' }
-    )
+    await showSystemConfirm({
+      title: '应用配对确认',
+      message: `确定处理 ${subtitleManualPairs.value.length} 组配对结果吗？\n\n同名依据：${namingStrategyLabel}${unusedSubtitleRows.length ? `\n当前未使用的 ${unusedSubtitleRows.length} 个原始字幕会一并删除。` : ''}\n确认后会先在工作区完成重命名，再导入目标库存。`,
+      confirmText: '重命名并导入',
+      cancelText: '取消',
+      tone: 'warning'
+    })
   } catch (_) {
     return
   }

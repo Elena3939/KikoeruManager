@@ -1,0 +1,341 @@
+import { ref, computed, watch, reactive, onMounted, onActivated, onDeactivated, onUnmounted } from 'vue'
+import { ElMessage } from 'element-plus'
+import { showSystemConfirm } from './useSystemPrompt'
+import { subtitleImportApi } from '../api'
+
+const PENDING_REFRESH_INTERVAL_MS = 4000
+const AUTO_IMPORT_POLL_INTERVAL_MS = 2500
+
+export function useSubtitleImportArchive({ 
+  workbenchDialogVisible, 
+  workbenchBackgroundActive, 
+  getSubtitleWorkbenchFilterOptions,
+  openImportedTask,
+  route
+}) {
+  const pendingLoading = ref(false)
+  const pendingRefreshing = ref(false)
+  const pendingLoadedOnce = ref(false)
+  const pendingItems = ref([])
+  const activePendingId = ref('')
+  const executingPendingId = ref('')
+  const retryingPendingId = ref('')
+  const pendingClearLoading = ref(false)
+  const pendingClearMode = ref('')
+  const archiveCandidateSelection = reactive({})
+  
+  const autoImportingPendingId = ref('')
+  const autoImportBlockedIds = ref(new Set())
+  let autoImportTimer = null
+  let pendingRefreshTimer = null
+
+  const activePendingItem = computed(() => {
+    return pendingItems.value.find(item => item.id === activePendingId.value) || null
+  })
+
+  const selectedArchiveCandidate = computed(() => {
+    const item = activePendingItem.value
+    if (!item) return null
+    const key = archiveCandidateSelection[item.id]
+    return (item.preview?.candidates || []).find(candidate => candidateKey(candidate) === key) || null
+  })
+
+  const canRetryActivePendingPreview = computed(() => {
+    const item = activePendingItem.value
+    if (!item || retryingPendingId.value) return false
+    return !item.can_execute || Number(item.preview?.candidate_count || 0) <= 0
+  })
+
+  watch(activePendingItem, (item) => {
+    if (!item) return
+    const selected = item.preview?.selected_candidate
+    if (selected) {
+      archiveCandidateSelection[item.id] = candidateKey(selected)
+      return
+    }
+    const readyCandidates = (item.preview?.candidates || []).filter(candidate => candidate?.ready_for_import)
+    if (!archiveCandidateSelection[item.id] && readyCandidates.length === 1) {
+      archiveCandidateSelection[item.id] = candidateKey(readyCandidates[0])
+    }
+  }, { immediate: true })
+
+  watch(pendingItems, () => {
+    pruneAutoImportBlockedIds()
+    if (workbenchDialogVisible.value || workbenchBackgroundActive.value) {
+      queueAutoImportProcessing()
+    }
+  }, { deep: false })
+
+  watch(() => route.path, (path) => {
+    if (path === '/subtitle-import') {
+      startPendingRefreshPolling()
+      queuePendingRefresh({ silent: true })
+      return
+    }
+    stopPendingRefreshPolling()
+  }, { immediate: true })
+
+  watch(() => [workbenchDialogVisible.value, workbenchBackgroundActive.value], ([visible, backgroundActive]) => {
+    if (!visible && !backgroundActive) {
+      stopAutoImportPolling()
+      return
+    }
+    startAutoImportPolling()
+    queuePendingRefresh({ silent: true })
+    queueAutoImportProcessing()
+  })
+
+  onMounted(() => {
+    startPendingRefreshPolling()
+  })
+
+  onActivated(() => {
+    startPendingRefreshPolling()
+  })
+
+  onDeactivated(() => {
+    stopPendingRefreshPolling()
+  })
+
+  onUnmounted(() => {
+    stopAutoImportPolling()
+    stopPendingRefreshPolling()
+  })
+
+  async function loadPendingImports(options = {}) {
+    const { silent = false } = options
+    if (pendingLoading.value || pendingRefreshing.value) return
+    if (silent) pendingRefreshing.value = true
+    else pendingLoading.value = true
+    try {
+      const data = await subtitleImportApi.listPending()
+      pendingItems.value = data.items || []
+      pendingLoadedOnce.value = true
+      if (!pendingItems.value.some(item => item.id === activePendingId.value)) {
+        activePendingId.value = pendingItems.value[0]?.id || ''
+      }
+    } catch (error) {
+      if (!silent) {
+        ElMessage.error('加载字幕补配预检单失败: ' + (error.response?.data?.detail || error.message))
+      }
+    } finally {
+      if (silent) pendingRefreshing.value = false
+      else pendingLoading.value = false
+    }
+  }
+
+  async function clearPendingImports(clearAll = false) {
+    const targetItem = activePendingItem.value
+    const targetIds = clearAll ? (pendingItems.value || []).map(item => String(item.id || '')).filter(Boolean) : [String(targetItem?.id || '')].filter(Boolean)
+    if (!targetIds.length) {
+      ElMessage.warning(clearAll ? '当前没有可清除的预检单' : '请先选择一条预检单')
+      return
+    }
+
+    try {
+      await showSystemConfirm({
+        title: clearAll ? '清空预检单' : '清除当前预检单',
+        message: clearAll
+          ? `确定清空当前 ${targetIds.length} 条字幕补配预检单吗？清除后需要重新导入或重新等待自动检测。`
+          : '确定清除当前这条字幕补配预检单吗？清除后需要重新导入或重新等待自动检测。',
+        confirmText: clearAll ? '清空' : '清除',
+        cancelText: '取消',
+        tone: 'warning'
+      })
+    } catch (_) {
+      return
+    }
+
+    pendingClearLoading.value = true
+    pendingClearMode.value = clearAll ? 'all' : 'single'
+    try {
+      const result = await subtitleImportApi.clearPending({
+        recordIds: targetIds,
+        clearAll
+      })
+      await loadPendingImports()
+      ElMessage.success(
+        clearAll
+          ? `已清空 ${Number(result.cleared_count || 0)} 条预检单`
+          : '当前预检单已清除'
+      )
+    } catch (error) {
+      ElMessage.error('清除字幕补配预检单失败: ' + (error.response?.data?.detail || error.message))
+    } finally {
+      pendingClearLoading.value = false
+      pendingClearMode.value = ''
+    }
+  }
+
+  function getSelectedArchiveCandidateForItem(item) {
+    if (!item) return null
+    const key = archiveCandidateSelection[item.id]
+    if (key) {
+      const matched = (item.preview?.candidates || []).find(candidate => candidateKey(candidate) === key)
+      if (matched) return matched
+    }
+    const selected = item.preview?.selected_candidate
+    if (selected) return selected
+    const readyCandidates = (item.preview?.candidates || []).filter(candidate => candidate?.ready_for_import)
+    return readyCandidates.length === 1 ? readyCandidates[0] : null
+  }
+
+  function pruneAutoImportBlockedIds() {
+    const currentIds = new Set((pendingItems.value || []).map(item => String(item.id || '')))
+    autoImportBlockedIds.value = new Set(
+      [...autoImportBlockedIds.value].filter(id => currentIds.has(String(id || '')))
+    )
+  }
+
+  function findNextAutoImportItem() {
+    return (pendingItems.value || []).find(item => (
+      item?.can_execute &&
+      getSelectedArchiveCandidateForItem(item) &&
+      !autoImportBlockedIds.value.has(String(item.id || ''))
+    )) || null
+  }
+
+  function stopAutoImportPolling() {
+    if (autoImportTimer) {
+      clearInterval(autoImportTimer)
+      autoImportTimer = null
+    }
+  }
+
+  function stopPendingRefreshPolling() {
+    if (pendingRefreshTimer) {
+      clearInterval(pendingRefreshTimer)
+      pendingRefreshTimer = null
+    }
+  }
+
+  function startPendingRefreshPolling() {
+    if (pendingRefreshTimer) return
+    pendingRefreshTimer = setInterval(() => {
+      queuePendingRefresh({ silent: true })
+    }, PENDING_REFRESH_INTERVAL_MS)
+  }
+
+  function queuePendingRefresh(options = {}) {
+    if (route.path !== '/subtitle-import') return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    if (pendingLoading.value || pendingRefreshing.value || executingPendingId.value || pendingClearLoading.value) return
+    void loadPendingImports(options)
+  }
+
+  function startAutoImportPolling() {
+    if (autoImportTimer) return
+    autoImportTimer = setInterval(() => {
+      queueAutoImportProcessing()
+    }, AUTO_IMPORT_POLL_INTERVAL_MS)
+  }
+
+  function queueAutoImportProcessing() {
+    if (!workbenchDialogVisible.value && !workbenchBackgroundActive.value) return
+    void processAutoImportQueue()
+  }
+
+  async function processAutoImportQueue() {
+    if (!workbenchDialogVisible.value && !workbenchBackgroundActive.value) return
+    if (pendingLoading.value || pendingRefreshing.value || executingPendingId.value || autoImportingPendingId.value) return
+    const item = findNextAutoImportItem()
+    if (!item) return
+    const candidate = getSelectedArchiveCandidateForItem(item)
+    if (!candidate) return
+
+    autoImportingPendingId.value = String(item.id || '')
+    try {
+      await executePendingImportRecord(item, candidate, { autoTriggered: true })
+    } catch (error) {
+      autoImportBlockedIds.value = new Set([
+        ...autoImportBlockedIds.value,
+        String(item.id || '')
+      ])
+      ElMessage.error(`自动导入 ${item.preview?.source_label || getFileName(item.source_path)} 失败: ${error.response?.data?.detail || error.message}`)
+    } finally {
+      autoImportingPendingId.value = ''
+    }
+  }
+
+  async function retryActivePendingPreview() {
+    const item = activePendingItem.value
+    if (!item?.id) return
+
+    retryingPendingId.value = item.id
+    try {
+      await loadPendingImports()
+      ElMessage.success('已重新检查当前预检单的目标目录候选')
+    } catch (error) {
+      ElMessage.error('重试候选检查失败: ' + (error.response?.data?.detail || error.message))
+    } finally {
+      retryingPendingId.value = ''
+    }
+  }
+
+  async function executePendingImportRecord(item, candidate, options = {}) {
+    if (!item || !candidate) return null
+    const { autoTriggered = false } = options
+    executingPendingId.value = item.id
+    try {
+      const filterOptions = getSubtitleWorkbenchFilterOptions()
+      const data = await subtitleImportApi.executePending(item.id, {
+        targetLibraryId: candidate.library_id,
+        targetFolderPath: candidate.folder_path,
+        useFilterRules: filterOptions.useFilterRules,
+        subtitleFilterRules: filterOptions.subtitleFilterRules
+      })
+      if (!autoTriggered) {
+        ElMessage.success(data.import_result?.awaiting_manual_match ? '字幕补配导入成功，已自动加入工作台' : '字幕补配导入成功')
+      }
+      await loadPendingImports()
+      if (data.task?.id) {
+        openImportedTask(data.task.id)
+      }
+      return data
+    } finally {
+      executingPendingId.value = ''
+    }
+  }
+
+  async function executePendingImport() {
+    const item = activePendingItem.value
+    const candidate = selectedArchiveCandidate.value
+    if (!item || !candidate) return
+
+    try {
+      await executePendingImportRecord(item, candidate, { autoTriggered: false })
+    } catch (error) {
+      ElMessage.error('执行字幕补配失败: ' + (error.response?.data?.detail || error.message))
+    }
+  }
+
+  function candidateKey(candidate) {
+    return `${candidate.library_id || ''}::${candidate.folder_path || ''}`
+  }
+
+  function getFileName(path) {
+    if (!path) return ''
+    return String(path).split(/[\\/]/).pop()
+  }
+
+  return {
+    pendingLoading,
+    pendingLoadedOnce,
+    pendingItems,
+    activePendingId,
+    executingPendingId,
+    retryingPendingId,
+    pendingClearLoading,
+    archiveCandidateSelection,
+    activePendingItem,
+    selectedArchiveCandidate,
+    canRetryActivePendingPreview,
+    
+    loadPendingImports,
+    clearPendingImports,
+    retryActivePendingPreview,
+    executePendingImport,
+    candidateKey,
+    getFileName
+  }
+}

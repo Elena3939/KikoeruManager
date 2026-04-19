@@ -126,6 +126,7 @@
       </el-main>
     </el-container>
     <BackgroundWorkbenchHost />
+    <SystemPromptHost />
   </el-container>
 </template>
 
@@ -162,6 +163,7 @@ import SubtitleImport from './views/SubtitleImport.vue'
 import ActivityHistory from './views/ActivityHistory.vue'
 import CircleCompletion from './views/CircleCompletion.vue'
 import BackgroundWorkbenchHost from './components/workbench/BackgroundWorkbenchHost.vue'
+import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import router from './router'
 
 const appVersion = '1.0.2'
@@ -401,6 +403,7 @@ async function toggleWatcher() {
   height: 100%;
   overflow-y: auto;
   padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 :deep(.sidebar-menu .el-menu) {
