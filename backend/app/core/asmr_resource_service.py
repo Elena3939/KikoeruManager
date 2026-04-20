@@ -1024,17 +1024,52 @@ class ASMRResourceService:
                 engine.pause_task(task.id)
             elif action == "resume":
                 engine.resume_task(task.id)
+            elif action == "cancel":
+                engine.cancel_task(task.id)
             else:
                 raise ValueError("不支持的会话操作")
-        next_status = "paused" if action == "pause" else "downloading"
+        if action == "cancel":
+            next_status = "failed"
+            event_type = "task_cancelled"
+            label = "已取消"
+        elif action == "pause":
+            next_status = "paused"
+            event_type = "task_paused"
+            label = "已暂停"
+        else:
+            next_status = "downloading"
+            event_type = "task_resumed"
+            label = "已恢复"
         updated = self._update_session(session_id, status=next_status)
         log_asmr_sync_event(
-            "task_paused" if action == "pause" else "task_resumed",
-            summary=f"{updated.get('rjcode') or session_id} 已{'暂停' if action == 'pause' else '恢复'}",
+            event_type,
+            summary=f"{updated.get('rjcode') or session_id} {label}",
             session_id=session_id,
             rjcode=updated.get("rjcode"),
         )
         return updated
+
+    async def cancel_session_with_cleanup(self, session_id: str) -> Dict[str, Any]:
+        """取消会话并清理已下载的临时文件。"""
+        import shutil
+
+        session = await self.control_session(session_id, "cancel")
+        cleaned = False
+        download_root = ""
+        statistics = dict(session.get("statistics") or {})
+        download_root = str(
+            session.get("local_download_root")
+            or statistics.get("download_root")
+            or ""
+        ).strip()
+        if download_root and os.path.isdir(download_root):
+            try:
+                shutil.rmtree(download_root, ignore_errors=True)
+                cleaned = True
+                logger.info("已清理会话下载目录: %s", download_root)
+            except Exception:
+                logger.warning("清理会话下载目录失败: %s", download_root)
+        return {**session, "cleaned": cleaned, "cleaned_path": download_root if cleaned else ""}
 
     def _get_latest_session_task_metadata(self, session_id: str, fallback_task_id: str = "") -> Dict[str, Any]:
         from .task_engine import get_task_engine
@@ -1485,6 +1520,7 @@ class ASMRResourceService:
                 "session_id": session_id,
                 "rjcode": normalized_rjcode,
                 "title": str(work_info.get("title") or ""),
+                "cover_url": str(work_info.get("mainCoverUrl") or ""),
                 "source_provider": "asmr.one",
                 "folder_path": folder_path,
                 "summary": summary,
@@ -1526,13 +1562,17 @@ class ASMRResourceService:
                 )
             raise
 
-    async def _upload_to_local(self, source_path: str, target_root: str, relative_path: str, progress_callback=None) -> str:
+    async def _upload_to_local(self, source_path: str, target_root: str, relative_path: str, progress_callback=None, cancel_check=None, pause_wait=None) -> str:
         destination = os.path.join(target_root, self._sanitize_relative_path(relative_path))
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         uploaded = 0
         total_size = os.path.getsize(source_path) if os.path.exists(source_path) else 0
         with open(source_path, "rb") as src, open(destination, "wb") as dst:
             while True:
+                if cancel_check and cancel_check():
+                    return ""
+                if pause_wait:
+                    await pause_wait()
                 chunk = src.read(1024 * 256)
                 if not chunk:
                     break
@@ -1987,8 +2027,12 @@ class ASMRResourceService:
                             log_callback=lambda message, level="info", current_task=task: self._append_task_log(current_task, message, level),
                             max_retries=max_retries,
                             timeout=timeout,
+                            cancel_check=task.is_cancelled,
+                            pause_wait=task.wait_if_paused,
                         )
                         if not ok:
+                            if task.is_cancelled():
+                                raise RuntimeError("用户取消")
                             return {"name": display_name, "relative_path": relative_path, "reason": "下载失败", "resource": resource, "stage": "download", "local_path": destination if os.path.exists(destination) else ""}
                         self._append_task_log(task, f"{display_name} 下载完成")
 
@@ -2025,6 +2069,10 @@ class ASMRResourceService:
 
                     uploaded_path = ""
                     upload_status = "skipped" if not upload_options["enabled"] else "pending"
+                    # 上传前再次检查暂停/取消信号
+                    await task.wait_if_paused()
+                    if task.is_cancelled():
+                        raise RuntimeError("用户取消")
                     if upload_options["enabled"]:
                         self._mark_upload_waiting(
                             task,
@@ -2067,6 +2115,8 @@ class ASMRResourceService:
                                     upload_options["target_path"],
                                     relative_path,
                                     progress_callback=upload_progress_callback,
+                                    cancel_check=task.is_cancelled,
+                                    pause_wait=task.wait_if_paused,
                                 )
                         upload_status = "uploaded" if uploaded_path else "failed"
                         if uploaded_path and session_id:

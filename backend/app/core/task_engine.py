@@ -445,7 +445,7 @@ class TaskEngine:
         try:
             query = db.query(ConflictWork).filter(
                 ConflictWork.conflict_type.in_(["EXTRACT_FAILED", "PROCESS_FAILED"]),
-                ConflictWork.status == "PENDING",
+                ConflictWork.status.in_(["PENDING", "PROCESSING"]),
             )
             conflict = None
             if conflict_id:
@@ -480,6 +480,76 @@ class TaskEngine:
         finally:
             db.close()
 
+    def _finalize_conflict_resolution_task(self, task: Task):
+        """处理由问题作品页提交的后台冲突解决任务收尾。"""
+        metadata = dict(task.task_metadata or {})
+        conflict_id = str(metadata.get("conflict_resolution_conflict_id") or "").strip()
+        action = str(metadata.get("conflict_resolution_action") or "").strip().upper()
+        if not conflict_id or not action:
+            return
+
+        from ..models.database import ConflictWork, ProcessedArchive, get_db
+
+        db = next(get_db())
+        try:
+            conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+            if not conflict:
+                return
+
+            next_metadata = dict(conflict.new_metadata or {})
+            next_metadata["resolution_task_id"] = task.id
+            next_metadata["resolution_action"] = action
+            next_metadata["resolution_updated_at"] = datetime.now().isoformat()
+
+            if action == "RETRY":
+                if task.status == TaskStatus.COMPLETED:
+                    next_metadata["retry_result"] = "completed"
+                    next_metadata["retry_completed_at"] = datetime.now().isoformat()
+                    next_metadata["retry_task_id"] = task.id
+                    if task.output_path:
+                        next_metadata["retry_output_path"] = task.output_path
+                    conflict.new_metadata = next_metadata
+                    db.delete(conflict)
+                    db.commit()
+                    logger.info(
+                        "重试冲突任务完成后兜底清理问题项: conflict_id=%s task_id=%s",
+                        conflict_id,
+                        task.id,
+                    )
+                    return
+                if task.status == TaskStatus.FAILED:
+                    conflict.status = "PENDING"
+                    next_metadata["resolution_error"] = str(task.error_message or "重试失败")
+                    conflict.new_metadata = next_metadata
+                    db.commit()
+                return
+
+            if task.status == TaskStatus.COMPLETED:
+                conflict.status = action
+                next_metadata.pop("resolution_error", None)
+                if task.output_path:
+                    next_metadata["resolution_output_path"] = task.output_path
+                if conflict.new_path:
+                    archive_record = db.query(ProcessedArchive).filter(
+                        ProcessedArchive.filename == os.path.basename(str(conflict.new_path))
+                    ).first()
+                    if archive_record:
+                        archive_record.status = "completed"
+                        archive_record.processed_at = datetime.now()
+            elif task.status == TaskStatus.FAILED:
+                conflict.status = "PENDING"
+                next_metadata["resolution_error"] = str(task.error_message or "冲突处理失败")
+            else:
+                return
+
+            conflict.new_metadata = next_metadata
+            db.commit()
+        except Exception:
+            logger.warning("冲突解决任务收尾失败: task_id=%s conflict_id=%s", task.id, conflict_id, exc_info=True)
+            db.rollback()
+        finally:
+            db.close()
+
     def _is_hidden_task(self, task: Task) -> bool:
         metadata = dict(task.task_metadata or {})
         return bool(metadata.get("hidden_in_task_lists"))
@@ -502,6 +572,56 @@ class TaskEngine:
             task.completed_at = task.completed_at or datetime.now()
         task.error_message = None
         task.current_step = f"已由后续成功任务覆盖: {superseded_by_task_id}"
+
+    def cleanup_retry_output_artifacts(self, failed_task_id: str, source_path: str = "") -> list[str]:
+        """在失败任务重试前，主动清掉上次失败留下的产物目录，避免被新的重复检测命中。"""
+        target_task = self.get_task(str(failed_task_id or "").strip())
+        if not target_task:
+            return []
+
+        candidate_paths = []
+        output_path = str(getattr(target_task, "output_path", "") or "").strip()
+        source_path = str(source_path or "").strip()
+        if output_path:
+            candidate_paths.append(output_path)
+        superseded_output = str((target_task.task_metadata or {}).get("superseded_output_path") or "").strip()
+        if superseded_output:
+            candidate_paths.append(superseded_output)
+
+        from ..config.settings import get_config
+        config = get_config()
+        allowed_roots = [
+            os.path.abspath(str(config.storage.temp_path or "").strip()),
+            os.path.abspath(str(config.storage.library_path or "").strip()),
+            os.path.abspath(str(config.storage.existing_folders_path or "").strip()),
+        ]
+
+        cleaned_paths: list[str] = []
+        normalized_source = os.path.abspath(source_path) if source_path and os.path.exists(source_path) else ""
+
+        for raw_path in candidate_paths:
+            try:
+                abs_path = os.path.abspath(raw_path)
+            except Exception:
+                continue
+            if not abs_path or not os.path.exists(abs_path):
+                continue
+            if normalized_source and abs_path == normalized_source:
+                continue
+            if not any(abs_path == root or abs_path.startswith(root + os.sep) for root in allowed_roots if root):
+                logger.warning("跳过清理重试产物，路径不在允许范围内: %s", abs_path)
+                continue
+            try:
+                if os.path.isdir(abs_path):
+                    shutil.rmtree(abs_path)
+                else:
+                    os.remove(abs_path)
+                cleaned_paths.append(abs_path)
+                logger.info("重试前已清理失败产物: failed_task_id=%s path=%s", failed_task_id, abs_path)
+            except Exception as exc:
+                logger.warning("清理失败产物失败: failed_task_id=%s path=%s error=%s", failed_task_id, abs_path, exc, exc_info=True)
+
+        return cleaned_paths
 
     def _task_matches_recovered_success(self, candidate: Task, source_path: str, rjcode: str, recovered_task_id: str) -> bool:
         if not candidate or candidate.id == recovered_task_id:
@@ -1226,6 +1346,7 @@ class TaskEngine:
             # 清理任务产生的临时文件（无论成功还是失败）
             self._resolve_retry_extract_conflict(task)
             self._resolve_completed_failure_followups(task)
+            self._finalize_conflict_resolution_task(task)
             await self._cleanup_failed_task(task)
             self.processing.discard(task.id)
             # 清除RJ号处理标记

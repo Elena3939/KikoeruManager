@@ -1738,6 +1738,7 @@ async def list_activity_logs(
             "queue_reordered": ("asmr_session", "队列调整"),
             "task_paused": ("asmr_session", "任务暂停"),
             "task_resumed": ("asmr_session", "任务恢复"),
+            "task_cancelled": ("asmr_session", "任务取消"),
             "task_retried": ("asmr_session", "任务重试"),
         }
 
@@ -2582,6 +2583,39 @@ async def cancel_task(task_id: str):
     engine.cancel_task(task_id)
     return {"message": "任务已取消"}
 
+@app.post("/api/tasks/batch-cancel-cleanup", summary="批量取消任务并清理已下载文件")
+async def batch_cancel_cleanup(request: Request):
+    """批量取消任务并删除对应的已下载临时文件。"""
+    import shutil
+    from ..core.task_engine import TaskStatus
+    body = await request.json()
+    task_ids = body.get("task_ids") or []
+    if not task_ids:
+        return {"cancelled": 0, "cleaned": 0}
+    engine = get_task_engine()
+    cancelled = 0
+    cleaned = 0
+    for tid in task_ids:
+        task = engine.get_task(str(tid))
+        if not task:
+            continue
+        if task.status in (TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED):
+            engine.cancel_task(str(tid))
+            cancelled += 1
+        download_root = str(
+            getattr(task, "task_metadata", {}).get("download_root")
+            or getattr(task, "source_path", "")
+            or ""
+        ).strip()
+        if download_root and os.path.isdir(download_root):
+            try:
+                shutil.rmtree(download_root, ignore_errors=True)
+                cleaned += 1
+                logger.info(f"已清理下载目录: {download_root}")
+            except Exception:
+                logger.warning(f"清理下载目录失败: {download_root}")
+    return {"cancelled": cancelled, "cleaned": cleaned, "message": f"已取消 {cancelled} 个任务，清理 {cleaned} 个下载目录"}
+
 @app.get("/api/config", response_model=ConfigResponse)
 async def get_configuration():
     """获取配置"""
@@ -3287,12 +3321,34 @@ async def get_conflicts():
     db = next(get_db())
     try:
         resolution_service = get_conflict_resolution_service()
+        engine = get_task_engine()
         conflicts = db.query(ConflictWork).filter(
-            ConflictWork.status == "PENDING",
+            ConflictWork.status.in_(["PENDING", "PROCESSING"]),
             ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
         ).all()
-        return {
-            "conflicts": [
+        conflict_items = []
+        for conflict in conflicts:
+            normalized_status = str(conflict.status or "").strip().upper()
+            if normalized_status == "PROCESSING":
+                linked_task = engine.get_task(str(conflict.task_id or "").strip()) if conflict.task_id else None
+                linked_task_status = str(getattr(linked_task, "status", "") or "").strip().lower()
+                if linked_task_status not in {
+                    TaskStatus.PENDING.value,
+                    TaskStatus.PROCESSING.value,
+                    TaskStatus.PAUSED.value,
+                    TaskStatus.WAITING_MANUAL.value,
+                    TaskStatus.WAITING_RETRY.value,
+                }:
+                    fallback_status = "PENDING"
+                    if str(conflict.conflict_type or "").strip().upper() == "DUPLICATE":
+                        fallback_status = "PENDING"
+                    conflict.status = fallback_status
+                    next_metadata = dict(conflict.new_metadata or {})
+                    next_metadata["resolution_task_state"] = "stale_processing_recovered"
+                    next_metadata["resolution_recovered_at"] = datetime.now().isoformat()
+                    conflict.new_metadata = next_metadata
+                    db.commit()
+            conflict_items.append(
                 {
                     "id": conflict.id,
                     "task_id": conflict.task_id,
@@ -3304,10 +3360,11 @@ async def get_conflicts():
                     "status": conflict.status,
                     "created_at": conflict.created_at.isoformat() if conflict.created_at else None,
                     "available_actions": resolution_service.get_available_actions(conflict),
-                    "context": resolution_service.describe_conflict(conflict),
+                    "context": await resolution_service.describe_conflict_async(conflict),
                 }
-                for conflict in conflicts
-            ]
+            )
+        return {
+            "conflicts": conflict_items
         }
     finally:
         db.close()
@@ -3347,6 +3404,13 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             None,
         )
         if existing_task:
+            conflict.status = "PROCESSING"
+            next_metadata = dict(conflict.new_metadata or {})
+            next_metadata["resolution_task_state"] = "running"
+            next_metadata["resolution_action"] = "RETRY"
+            next_metadata["resolution_requested_at"] = datetime.now().isoformat()
+            next_metadata["resolution_task_id"] = existing_task.id
+            conflict.new_metadata = next_metadata
             existing_task.task_metadata["retry_conflict_id"] = conflict.id
             existing_task.task_metadata["retry_conflict_source_path"] = source_path
             if specified_password:
@@ -3354,6 +3418,7 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
                 existing_task.task_metadata["manual_retry_password_only"] = True
             if conflict.task_id:
                 existing_task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
+            db.commit()
             return {
                 "success": True,
                 "message": "已存在同源重试任务，继续跟踪当前任务",
@@ -3364,6 +3429,9 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         source_task_type = str((conflict.new_metadata or {}).get("source_task_type") or TaskType.AUTO_PROCESS.value).strip()
         retry_task_type = TaskType(source_task_type) if source_task_type in {task_type.value for task_type in TaskType} else TaskType.AUTO_PROCESS
 
+        if conflict.task_id:
+            engine.cleanup_retry_output_artifacts(str(conflict.task_id), source_path)
+
         task = Task(
             task_type=retry_task_type,
             source_path=source_path,
@@ -3372,6 +3440,8 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         task.task_metadata["retry_conflict_id"] = conflict.id
         task.task_metadata["retry_conflict_source_path"] = source_path
         task.task_metadata["retry_from_conflicts"] = True
+        task.task_metadata["conflict_resolution_conflict_id"] = conflict.id
+        task.task_metadata["conflict_resolution_action"] = "RETRY"
         if specified_password:
             task.task_metadata["manual_retry_password"] = specified_password
             task.task_metadata["manual_retry_password_only"] = True
@@ -3380,7 +3450,19 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         if conflict.rjcode:
             task.task_metadata["inferred_rjcode"] = conflict.rjcode
 
+        conflict.status = "PROCESSING"
+        next_metadata = dict(conflict.new_metadata or {})
+        next_metadata["resolution_task_state"] = "queued"
+        next_metadata["resolution_action"] = "RETRY"
+        next_metadata["resolution_requested_at"] = datetime.now().isoformat()
+        conflict.new_metadata = next_metadata
         await engine.submit(task)
+        conflict.task_id = task.id
+        conflict.new_metadata = {
+            **dict(conflict.new_metadata or {}),
+            "resolution_task_id": task.id,
+        }
+        db.commit()
         return {
             "success": True,
             "message": "已开始使用指定密码重试失败问题项" if specified_password else "已开始重试失败问题项",
@@ -3440,7 +3522,7 @@ async def preview_conflict_resolution(conflict_id: str, payload: dict):
 async def resolve_conflict(conflict_id: str, action: dict):
     """处理问题作品"""
     from ..core.conflict_resolution_service import get_conflict_resolution_service
-    from ..core.task_engine import TaskStatus, get_task_engine
+    from ..core.task_engine import Task, TaskStatus, TaskType, get_task_engine
     from ..models.database import ConflictWork, ProcessedArchive, get_db
 
     db = next(get_db())
@@ -3454,25 +3536,112 @@ async def resolve_conflict(conflict_id: str, action: dict):
         if action_type not in service.get_available_actions(conflict):
             raise HTTPException(status_code=400, detail="当前问题项不支持该操作")
         confirmed = bool(action.get("confirmed"))
-
-        if action_type == "KEEP_NEW":
-            if not confirmed:
-                raise HTTPException(status_code=400, detail="保留新版前必须先完成删除审查确认")
-            result = await service.resolve_keep_new(conflict)
-        elif action_type == "MERGE":
-            result = await service.resolve_merge(
-                conflict,
-                action.get("merge_session_id"),
-                action.get("merge_decisions") or {},
-            )
-        else:
-            result = await service.resolve_skip(conflict)
-
-        conflict.status = action_type
-
         engine = get_task_engine()
-        if conflict.task_id:
-            engine.update_task_status(str(conflict.task_id), TaskStatus.COMPLETED, f"冲突已处理: {action_type}")
+
+        try:
+            if action_type == "KEEP_NEW":
+                if not confirmed:
+                    raise HTTPException(status_code=400, detail="保留新版前必须先完成删除审查确认")
+                source_path = str(conflict.new_path or "").strip()
+                existing_path = str(conflict.existing_path or "").strip()
+                if not source_path:
+                    raise HTTPException(status_code=400, detail="缺少待处理源路径")
+                if not existing_path:
+                    raise HTTPException(status_code=400, detail="缺少待替换目标路径")
+                if not os.path.exists(source_path):
+                    raise HTTPException(status_code=404, detail="待处理源文件不存在")
+
+                existing_task = None
+                if conflict.task_id:
+                    existing_task = engine.get_task(str(conflict.task_id))
+                if existing_task and existing_task.status == TaskStatus.PROCESSING:
+                    return {
+                        "success": True,
+                        "conflict_id": conflict.id,
+                        "action": action_type,
+                        "task_id": existing_task.id,
+                        "already_running": True,
+                        "message": "保留新版任务已在执行中",
+                    }
+
+                conflict.status = "PROCESSING"
+                next_metadata = dict(conflict.new_metadata or {})
+                next_metadata["resolution_task_state"] = "queued"
+                next_metadata["resolution_action"] = action_type
+                next_metadata["resolution_requested_at"] = datetime.now().isoformat()
+                conflict.new_metadata = next_metadata
+
+                task_type = TaskType.AUTO_PROCESS if os.path.isfile(source_path) else TaskType.PROCESS_EXISTING_FOLDER
+                task = Task(
+                    task_type=task_type,
+                    source_path=source_path,
+                    auto_classify=True,
+                    metadata={
+                        **next_metadata,
+                        "existing_folder_resolution": "KEEP_NEW",
+                        "existing_path": existing_path,
+                        "conflict_resolution_conflict_id": conflict.id,
+                        "conflict_resolution_action": "KEEP_NEW",
+                        "source_page": "conflicts",
+                        "source_action": "keep_new",
+                        "source_label": conflict.rjcode or os.path.basename(source_path),
+                        "business_key": conflict.rjcode or conflict.id,
+                        "target_library_id": next_metadata.get("existing_library_id") or next_metadata.get("target_library_id") or "",
+                    },
+                    rjcode=conflict.rjcode or None,
+                )
+                if conflict.task_id:
+                    task.task_metadata["parent_conflict_task_id"] = str(conflict.task_id)
+                await engine.submit(task)
+                conflict.task_id = task.id
+                db.commit()
+                return {
+                    "success": True,
+                    "conflict_id": conflict.id,
+                    "action": action_type,
+                    "task_id": task.id,
+                    "already_running": False,
+                    "message": "已提交保留新版后台任务，任务状态已切换为解压中",
+                }
+            elif action_type == "MERGE":
+                previous_conflict_status = str(conflict.status or "PENDING").strip() or "PENDING"
+                previous_task_status = None
+                previous_task_step = None
+                conflict_task = None
+                if conflict.task_id:
+                    conflict_task = engine.get_task(str(conflict.task_id))
+                    if conflict_task:
+                        previous_task_status = conflict_task.status
+                        previous_task_step = conflict_task.current_step
+                conflict.status = "PROCESSING"
+                if conflict_task:
+                    conflict_task.status = TaskStatus.PROCESSING
+                    conflict_task.started_at = conflict_task.started_at or datetime.now()
+                    conflict_task.update_progress(max(int(conflict_task.progress or 0), 10), "合并中")
+                db.commit()
+                result = await service.resolve_merge(
+                    conflict,
+                    action.get("merge_session_id"),
+                    action.get("merge_decisions") or {},
+                )
+                conflict.status = action_type
+                if conflict_task:
+                    conflict_task.update_progress(100, "合并完成")
+                    conflict_task.complete()
+            else:
+                result = await service.resolve_skip(conflict)
+                conflict.status = action_type
+                if conflict.task_id:
+                    engine.update_task_status(str(conflict.task_id), TaskStatus.COMPLETED, "跳过完成")
+        except Exception:
+            if action_type == "MERGE":
+                conflict.status = previous_conflict_status
+                if conflict_task and previous_task_status:
+                    conflict_task.status = previous_task_status
+                    if previous_task_step:
+                        conflict_task.current_step = previous_task_step
+            db.commit()
+            raise
 
         if conflict.new_path:
             archive_record = db.query(ProcessedArchive).filter(
@@ -8691,6 +8860,30 @@ async def asmr_sync_enhanced_session_resume(session_id: str):
     except Exception as exc:
         logger.error("恢复增强下载会话失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"恢复会话失败: {str(exc)}")
+
+
+@app.post("/api/asmr-sync/enhanced/sessions/{session_id}/cancel", summary="取消增强下载会话")
+async def asmr_sync_enhanced_session_cancel(session_id: str, request: Request):
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    try:
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+        cleanup = bool(body.get("cleanup", False))
+        service = get_asmr_resource_service()
+        if cleanup:
+            session = await service.cancel_session_with_cleanup(session_id)
+        else:
+            session = await service.control_session(session_id, "cancel")
+        return {"success": True, "session": session}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("取消增强下载会话失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"取消会话失败: {str(exc)}")
 
 
 @app.post("/api/asmr-sync/enhanced/sessions/{session_id}/retry-failed")

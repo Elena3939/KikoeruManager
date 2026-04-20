@@ -543,7 +543,9 @@ class ASMRDownloadService:
         progress_callback: Optional[Callable[[int, int], None]] = None,
         log_callback: Optional[Callable[[str, str], None]] = None,
         max_retries: int = 10,
-        timeout: int = 60
+        timeout: int = 60,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        pause_wait: Optional[Callable[[], Any]] = None,
     ) -> bool:
         """
         下载单个文件（支持断点续传和重试）
@@ -555,6 +557,8 @@ class ASMRDownloadService:
             log_callback: 日志回调函数 (message, level)
             max_retries: 最大重试次数（默认10次）
             timeout: 单次请求超时时间（秒，默认60秒）
+            cancel_check: 取消检查回调，返回 True 表示已取消
+            pause_wait: 暂停等待回调，调用后会阻塞直到恢复
 
         Returns:
             是否成功
@@ -668,8 +672,19 @@ class ASMRDownloadService:
 
                     last_progress_reported = downloaded
                     last_progress_reported_at = time.monotonic()
+                    last_signal_check_at = last_progress_reported_at
                     with open(write_path, mode) as f:
                         async for chunk in response.content.iter_chunked(8192):
+                            # ── 暂停 / 取消信号检查 ──
+                            now_monotonic = time.monotonic()
+                            if now_monotonic - last_signal_check_at >= 0.25:
+                                last_signal_check_at = now_monotonic
+                                if cancel_check and cancel_check():
+                                    push_log(f"{os.path.basename(dest_path)} 下载已被用户取消", "warning")
+                                    return False
+                                if pause_wait:
+                                    await pause_wait()
+
                             f.write(chunk)
                             downloaded += len(chunk)
                             if progress_callback and total_size > 0:

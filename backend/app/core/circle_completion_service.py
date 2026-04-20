@@ -1983,6 +1983,7 @@ class CircleCompletionService:
             rows = db.query(CircleCatalog).order_by(CircleCatalog.last_indexed_at.desc()).all()
             out = []
             seen_keys = set()
+            collected_ids = []
             for row in rows:
                 if normalized:
                     haystack = f"{row.circle_name or ''} {row.circle_id or ''} {row.circle_name_normalized or ''}".lower()
@@ -1993,8 +1994,42 @@ class CircleCompletionService:
                     continue
                 seen_keys.add(dedupe_key)
                 out.append(row.to_dict())
+                collected_ids.append(row.circle_id)
                 if len(out) >= max(1, int(limit)):
                     break
+
+            # 批量查询每个社团的作品计数
+            if collected_ids:
+                from sqlalchemy import func as sa_func, Integer
+                count_rows = (
+                    db.query(
+                        CircleWork.circle_id,
+                        sa_func.count(CircleWork.id).label("total"),
+                        sa_func.sum(sa_func.cast(CircleWork.has_kikoeru, Integer)).label("kikoeru"),
+                        sa_func.sum(sa_func.cast(CircleWork.has_asmr_one, Integer)).label("asmr"),
+                        sa_func.sum(sa_func.cast(CircleWork.has_dlsite, Integer)).label("dlsite"),
+                    )
+                    .filter(CircleWork.circle_id.in_(collected_ids))
+                    .group_by(CircleWork.circle_id)
+                    .all()
+                )
+                counts_map = {
+                    r.circle_id: {
+                        "total_works": int(r.total or 0),
+                        "server_owned": int(r.kikoeru or 0),
+                        "asmr_available": int(r.asmr or 0),
+                        "dl_works": int(r.dlsite or 0),
+                    }
+                    for r in count_rows
+                }
+                for item in out:
+                    stats = counts_map.get(item["circle_id"], {})
+                    item["total_works"] = stats.get("total_works", 0)
+                    item["server_owned"] = stats.get("server_owned", 0)
+                    item["missing"] = item["total_works"] - item["server_owned"]
+                    item["asmr_available"] = stats.get("asmr_available", 0)
+                    item["dl_works"] = stats.get("dl_works", 0)
+
             return out
         finally:
             db.close()
