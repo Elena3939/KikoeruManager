@@ -174,7 +174,10 @@
                         <span v-else-if="row.indeterminate" class="checkbox-minus" />
                       </button>
                       <component :is="resolveTreeIcon(row, group)" :size="20" class="tree-icon" :class="row.type === 'dir' ? 'icon-folder' : getTreeRowIconClass(row)" />
-                      <span class="tree-name text-sm text-slate-800 truncate font-medium">{{ getDisplayText(row.name) }}</span>
+                      <span
+                        class="tree-name text-sm truncate font-medium"
+                        :class="row.indeterminate ? 'tree-name-partial' : 'text-slate-800'"
+                      >{{ getDisplayText(row.name) }}</span>
                     </div>
                     <span v-if="row.size_bytes" class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(row.size_bytes) }}</span>
                   </div>
@@ -201,7 +204,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, toRaw, watch } from 'vue'
 import { Check, ChevronDown, ChevronRight, File as FileIcon, FileText, Folder, Music, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { libraryApi } from '../../api'
@@ -462,8 +465,7 @@ function toggleExpand(group, row) {
 
 function emitSubmit() {
   const selectedPaths = previewGroups.value
-    .filter(group => isGroupAllSelected(group) || isGroupPartiallySelected(group))
-    .map(group => group.path)
+    .flatMap(group => collectSubmitPaths(group))
     .filter(Boolean)
   if (!selectedPaths.length) {
     ElMessage.warning('请选择要上传的目录')
@@ -584,9 +586,9 @@ function toggleGroupAll(group) {
 }
 
 function updateResourceSelection(group, row, nextSelected) {
-  const targetPaths = new Set(collectLeafResources(row).map(item => item.relative_path || item.name))
+  const leafResources = new Set(collectLeafResources(row).map(item => toRaw(item)))
   group.selectable_resources.forEach(item => {
-    if (targetPaths.has(item.relative_path || item.name)) item.selected = nextSelected
+    if (leafResources.has(toRaw(item))) item.selected = nextSelected
   })
   refreshPlanTree(group)
 }
@@ -594,6 +596,38 @@ function updateResourceSelection(group, row, nextSelected) {
 function toggleTreeRow(group, row) {
   const nextSelected = row.indeterminate ? true : !row.checked
   updateResourceSelection(group, row, nextSelected)
+}
+
+function collectCheckedDirectoryPaths(nodes = [], ancestorChecked = false) {
+  const paths = []
+  for (const node of nodes || []) {
+    if (node.type !== 'dir') continue
+    const currentPath = String(node.resolved_path || '').trim()
+    if (!ancestorChecked && node.checked && currentPath) {
+      paths.push(currentPath)
+      continue
+    }
+    paths.push(...collectCheckedDirectoryPaths(node.children || [], ancestorChecked || Boolean(node.checked)))
+  }
+  return paths
+}
+
+function normalizeSelectedPaths(paths = []) {
+  const sorted = [...new Set(paths.map(item => String(item || '').trim()).filter(Boolean))]
+    .sort((left, right) => left.length - right.length)
+  const normalized = []
+  for (const current of sorted) {
+    const covered = normalized.some(existing => current === existing || current.startsWith(`${existing.replace(/\/+$/g, '')}/`))
+    if (!covered) normalized.push(current)
+  }
+  return normalized
+}
+
+function collectSubmitPaths(group) {
+  if (!group) return []
+  if (isGroupAllSelected(group)) return group.path ? [group.path] : []
+  if (!isGroupPartiallySelected(group)) return []
+  return normalizeSelectedPaths(collectCheckedDirectoryPaths(group.tree || []))
 }
 
 function handleTreeRowClick(group, row) {
@@ -714,6 +748,8 @@ function getTreeRowIconClass(row) {
 .tree-row-selected { background: rgba(15,23,42,.04); }
 .field-input { transition: border-color .15s ease; }
 .field-input:focus { border-color: rgba(17,24,39,.45); }
+.tree-checkbox { cursor: pointer; transition: border-color .15s ease, background-color .15s ease, transform .15s ease; }
+.tree-checkbox:hover { transform: scale(1.04); }
 .tree-icon { color: #64748b; }
 .tree-name,
 .node-title-muted {
@@ -728,6 +764,7 @@ function getTreeRowIconClass(row) {
     "Microsoft YaHei",
     sans-serif;
 }
+.tree-name-partial { color: #111827; }
 .node-title-muted {
   color: #94a3b8;
   font-weight: 500;
@@ -736,6 +773,9 @@ function getTreeRowIconClass(row) {
 .icon-folder { color: #64748b; }
 .preview-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: #64748b; font-size: 14px; }
 .tree-checkbox-on { background: #111827; color: #fff; border-color: #111827; }
+.tree-checkbox-partial { background: #111827; color: #fff; border-color: #111827; }
 .tree-checkbox-off { background: rgba(255,255,255,.7); border-color: rgba(15,23,42,.12); color: transparent; }
+.tree-row:hover .tree-checkbox-off { border-color: rgba(15,23,42,.3); background: rgba(255,255,255,.92); }
+.checkbox-minus { width: 10px; height: 2px; background: #fff; display: inline-block; border-radius: 999px; }
 .expander-spacer { width: 21px; flex: 0 0 21px; }
 </style>
