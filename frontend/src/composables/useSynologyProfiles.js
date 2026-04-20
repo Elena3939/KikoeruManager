@@ -16,6 +16,25 @@ function pickProfileFields(source = {}) {
   }, {})
 }
 
+function mergeSynologyFields(profile = {}, local = {}) {
+  const merged = {}
+  for (const key of SYNOLOGY_PROFILE_FIELDS) {
+    const profileValue = profile?.[key]
+    const localValue = local?.[key]
+    if (typeof profileValue === 'boolean' || typeof localValue === 'boolean') {
+      merged[key] = profileValue ?? localValue
+      continue
+    }
+    const normalizedProfile = String(profileValue ?? '').trim()
+    if (normalizedProfile) {
+      merged[key] = profileValue
+      continue
+    }
+    merged[key] = localValue
+  }
+  return merged
+}
+
 export function useSynologyProfiles(config) {
   const testingProfileId = ref('')
   const testingLibraryId = ref('')
@@ -82,13 +101,13 @@ export function useSynologyProfiles(config) {
   function getEffectiveSynologyConfig(library) {
     const normalized = normalizeLibraryConfig(library)
     const profile = normalized.synology_profile_id ? getSynologyProfileById(normalized.synology_profile_id) : null
+    const localSynology = normalized.synology || {}
     const merged = {
       ...createDefaultLibrary('synology_filestation', 1).synology,
-      ...(profile ? pickProfileFields(profile) : {}),
-      ...(normalized.synology || {})
+      ...mergeSynologyFields(profile ? pickProfileFields(profile) : {}, localSynology)
     }
-    merged.root_path = normalized.synology?.root_path || normalized.path || '/'
-    if (!merged.device_name) merged.device_name = normalized.name || normalized.id || 'Prekikoeru'
+    merged.root_path = localSynology.root_path || normalized.path || '/'
+    if (!merged.device_name) merged.device_name = localSynology.device_name || normalized.name || normalized.id || 'Prekikoeru'
     return merged
   }
 
@@ -105,12 +124,7 @@ export function useSynologyProfiles(config) {
   function syncRemoteLibraryPath(library) {
     if (library?.type !== 'synology_filestation') return
     library.synology = {
-      ...createDefaultLibrary('synology_filestation', 1).synology,
-      ...(library.synology || {})
-    }
-    library.synology.root_path = library.synology.root_path || library.path || '/'
-    if (!library.synology_profile_id) {
-      library.synology.device_name = library.synology.device_name || library.name || library.id
+      root_path: library?.synology?.root_path || library.path || '/'
     }
     library.path = library.synology.root_path
   }
@@ -310,8 +324,8 @@ export function useSynologyProfiles(config) {
   }
 
   const primaryProfile = computed(() => {
-    const current = profiles.value[0]
-    return current ? normalizeSynologyProfile(current, 1) : null
+    ensurePrimaryProfile()
+    return profiles.value[0] || null
   })
 
   const profileSummaries = computed(() => profiles.value.map((profile, index) => {

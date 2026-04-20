@@ -59,6 +59,11 @@ export const taskApi = {
   cancel: async (taskId) => {
     const response = await apiClient.post(`/tasks/${taskId}/cancel`)
     return response.data
+  },
+
+  batchCancelCleanup: async (taskIds) => {
+    const response = await apiClient.post('/tasks/batch-cancel-cleanup', { task_ids: taskIds })
+    return response.data
   }
 }
 
@@ -795,6 +800,11 @@ export const asmrSyncApi = {
 
   resumeSession: async (sessionId) => {
     const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/resume`)
+    return response.data
+  },
+
+  cancelSession: async (sessionId, { cleanup = false } = {}) => {
+    const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/cancel`, { cleanup })
     return response.data
   },
 

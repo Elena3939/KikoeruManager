@@ -205,11 +205,15 @@ class DesktopApp:
             bundle_dir = base_dir
 
         data_dir = os.path.join(base_dir, 'data')
-        config_dir = os.path.join(data_dir, 'config')
-        os.makedirs(config_dir, exist_ok=True)
-
         os.environ['DATA_PATH'] = data_dir
-        config_path = os.path.join(config_dir, 'config.yaml')
+
+        if getattr(sys, 'frozen', False):
+            config_dir = os.path.join(data_dir, 'config')
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, 'config.yaml')
+        else:
+            config_path = os.path.join(base_dir, 'config', 'config.yaml')
+
         os.environ['CONFIG_PATH'] = config_path
         log_path = os.path.join(data_dir, 'app.log')
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -224,17 +228,22 @@ class DesktopApp:
             console_handler.setFormatter(formatter)
             root_logger.addHandler(console_handler)
 
+        logger.info(f"当前数据目录: {data_dir}")
+        logger.info(f"当前配置文件: {config_path}")
+
         # 如果外部配置文件不存在，则从包内复制
         if not os.path.exists(config_path):
             import shutil
             bundled_config = os.path.join(bundle_dir, 'backend', 'config', 'config.yaml')
             if os.path.exists(bundled_config):
+                os.makedirs(os.path.dirname(config_path), exist_ok=True)
                 shutil.copy2(bundled_config, config_path)
                 logger.info(f"已从包内复制默认配置到: {config_path}")
             else:
                 # 尝试另一个可能的路径
                 bundled_config = os.path.join(bundle_dir, 'config', 'config.yaml')
                 if os.path.exists(bundled_config):
+                    os.makedirs(os.path.dirname(config_path), exist_ok=True)
                     shutil.copy2(bundled_config, config_path)
                     logger.info(f"已从包内复制默认配置到: {config_path}")
 
