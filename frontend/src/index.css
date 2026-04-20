@@ -605,6 +605,15 @@ body.el-popup-parent--hidden {
     border: 1px solid transparent;
   }
 
+  .system-prompt-icon.is-lottie {
+    width: 58px;
+    height: 58px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    overflow: visible;
+  }
+
   .system-prompt-icon.is-info {
     background: rgba(219, 234, 254, 0.85);
     color: #31599b;

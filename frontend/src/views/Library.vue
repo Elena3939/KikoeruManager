@@ -1,6 +1,9 @@
 <template>
-  <div class="library">
-            <h1 class="page-title">{{ labels.pageTitle }}</h1>
+  <div
+    class="library library-page-loading-shell"
+    v-app-loading="{ loading, text: '正在刷新库存内容...', description: '同步目录、搜索结果和当前作用域', size: 176, minHeight: 360, delay: 0, minVisible: 360, maskClass: 'library-page-loading-mask' }"
+  >
+    <h1 class="page-title">{{ labels.pageTitle }}</h1>
 
     <div class="summary-grid">
       <el-card shadow="never" class="summary-card">
@@ -162,7 +165,6 @@
         :key="libraryTableKey"
         ref="tableRef"
         :data="files"
-        v-app-loading="{ loading, text: '正在刷新库存内容...', description: '同步目录、搜索结果和当前作用域', size: 132 }"
         :row-key="libraryRowKey"
         :row-class-name="libraryRowClassName"
         empty-text="暂无文件"
@@ -7307,6 +7309,20 @@ function statsStatusTextDisplay (stats) {
 </script>
 
 <style scoped>
+.library-page-loading-shell {
+  position: relative;
+  min-height: 100vh;
+}
+
+:deep(.library-page-loading-mask) {
+  inset: 0;
+  border-radius: 0;
+  background: rgba(250, 251, 255, 0.84);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  z-index: 50;
+}
+
 .library {
   max-width: 1480px;
   margin: 0 auto;

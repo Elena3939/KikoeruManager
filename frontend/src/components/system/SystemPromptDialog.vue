@@ -20,7 +20,13 @@
 
       <div class="system-prompt-panel">
         <div class="system-prompt-head">
-          <div class="system-prompt-icon" :class="`is-${options.tone}`">
+          <div
+            class="system-prompt-icon"
+            :class="{
+              [`is-${options.tone}`]: !usesLottieTone,
+              'is-lottie': usesLottieTone
+            }"
+          >
             <DotLottieVue
               v-if="options.tone === 'success'"
               :key="props.prompt?.id || 'system-prompt-success'"
@@ -150,6 +156,7 @@ const options = computed(() => props.prompt?.options || {})
 const titleId = computed(() => `${props.prompt?.id || 'system-prompt'}-title`)
 const descriptionId = computed(() => `${props.prompt?.id || 'system-prompt'}-description`)
 const draftValue = ref('')
+const usesLottieTone = computed(() => options.value.tone === 'success' || options.value.tone === 'danger')
 const fallbackTitle = computed(() => {
   if (options.value.mode === 'alert') return '系统提示'
   if (options.value.mode === 'prompt') return '请输入'
@@ -211,8 +218,9 @@ function handleConfirm() {
 
 <style scoped>
 .system-prompt-state-lottie {
-  width: 48px;
-  height: 48px;
+  width: 58px;
+  height: 58px;
   pointer-events: none;
+  flex-shrink: 0;
 }
 </style>

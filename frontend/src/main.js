@@ -1,5 +1,6 @@
 import { createApp, isVNode } from 'vue'
 import { createPinia } from 'pinia'
+import { autoAnimatePlugin } from '@formkit/auto-animate/vue'
 import ElementPlus, { ElMessage } from 'element-plus'
 import 'element-plus/dist/index.css'
 import './index.css'
@@ -50,6 +51,7 @@ app.directive('app-loading', appLoadingDirective)
 
 app.use(pinia)
 app.use(router)
+app.use(autoAnimatePlugin)
 app.use(ElementPlus)
 
 router.isReady().finally(() => {

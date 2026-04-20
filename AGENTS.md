@@ -406,8 +406,7 @@
 - 空值语义是“直接按社团名入库”
 - 下载工作台有自己的状态缓存和后台悬浮卡，不要删恢复逻辑
 - 下载工作台摘要进度条当前是：
-  - 外层轨道 + 内层按百分比裁剪宽度
-  - 已完成区域内部铺 `frontend/src/assets/anime/progress bar.lottie`
+  -  `frontend/src/assets/anime/progress bar.lottie`
   - 下载 / 上传图标优先复用 `frontend/src/assets/anime/download-icon-clean.json`、`frontend/src/assets/anime/Uploading to cloud.lottie`
 - 如果后续有人改下载工作台进度表现，不要把它退回普通纯色条，也不要让 `.lottie` 独自承担进度宽度计算
 - 社团补全索引任务支持取消；新增长循环时记得补 `cancel_callback`
@@ -530,7 +529,7 @@
   6. `frontend/src/components/common/ServerUploadPreviewDialog.vue`
   7. `frontend/src/components/circle/CircleLocalUploadDialog.vue`
   8. `frontend/src/views/ActivityHistory.vue`
-  9. `frontend/src/components/download/DownloadTaskWorkbenchDialog.vue` 的摘要进度条是否仍按百分比裁剪 `progress bar.lottie`
+  9. `frontend/src/components/download/DownloadTaskWorkbenchDialog.vue` 的摘进度条是不是这个动画 `progress bar.lottie`
 
 ### 用户说“推送仓库”
 
@@ -559,6 +558,8 @@
   - 禁用态
   - 完成态
   - 错误态
+  - 重试态
+  - 人机交互
   都闭环
 - 不要把“能跑”当“可维护”，这个项目已经进入多工作台状态同步复杂期
 

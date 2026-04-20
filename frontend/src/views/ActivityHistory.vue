@@ -1,5 +1,8 @@
 <template>
-  <div class="activity-page">
+  <div
+    class="activity-page activity-page-loading-shell"
+    v-app-loading="{ loading, text: '正在加载操作记录...', description: '同步树形记录、状态聚合和详情索引', size: 176, minHeight: 360, delay: 0, minVisible: 360, maskClass: 'activity-history-loading-mask' }"
+  >
     <div class="activity-hero">
       <div class="hero-copy">
         <h1 class="hero-title">操作记录</h1>
@@ -161,10 +164,7 @@
       </div>
     </section>
 
-    <section
-      class="ios-panel table-panel activity-table-loading-shell"
-      v-app-loading="{ loading, text: '正在加载操作记录...', description: '同步树形记录、状态聚合和详情索引', size: 176, minHeight: 360, delay: 0, minVisible: 360, maskClass: 'activity-history-loading-mask' }"
-    >
+    <section class="ios-panel table-panel">
       <el-table
         :data="displayItems"
         class="ios-table"
@@ -846,7 +846,10 @@
                 class="entry-section"
               >
                 <div class="entry-section-head">
-                  <div class="entry-section-title">{{ section.title }}</div>
+                  <div class="entry-section-head-copy">
+                    <div class="entry-section-title">{{ section.title }}</div>
+                    <div v-if="section.description" class="entry-section-desc mono">{{ section.description }}</div>
+                  </div>
                   <button
                     type="button"
                     class="entry-section-toggle"
@@ -882,7 +885,14 @@
                           <component :is="resolveEntryIcon(item)" :size="14" />
                         </span>
                         <div class="entry-main-copy">
-                          <span :class="['entry-name', { 'is-deleted': item.variant === 'deleted', 'is-failed': item.variant === 'failed' }]">{{ item.label }}</span>
+                          <div class="entry-title-row">
+                            <span :class="['entry-name', { 'is-deleted': item.variant === 'deleted', 'is-failed': item.variant === 'failed' }]">{{ item.label }}</span>
+                            <span
+                              v-for="badge in item.badges || []"
+                              :key="`${item.key}-${badge}`"
+                              class="entry-inline-badge"
+                            >{{ badge }}</span>
+                          </div>
                           <span v-if="item.metaText" class="entry-meta-text">{{ item.metaText }}</span>
                         </div>
                       </div>
@@ -2832,7 +2842,9 @@ function buildFilterDeleteTreeRows(items) {
       label,
       type,
       sizeText: '',
+      metaText: '',
       error: '',
+      badges: [],
       children: []
     }
     nodeMap.set(key, node)
@@ -2854,7 +2866,9 @@ function buildFilterDeleteTreeRows(items) {
       if (isLeaf) {
         node.type = item.type
         node.sizeText = item.sizeText || ''
+        node.metaText = item.metaText || ''
         node.error = item.error || ''
+        node.badges = Array.isArray(item.badges) ? [...item.badges] : []
         node.variant = item.variant || ''
       }
       parentKey = joined
@@ -2884,7 +2898,9 @@ function buildFilterDeleteTreeRows(items) {
         label: node.label,
         type: node.type,
         sizeText: node.sizeText,
+        metaText: node.metaText,
         error: node.error,
+        badges: node.badges,
         variant: node.variant || '',
         depth,
         children: node.children.length ? [...node.children] : [],
@@ -3000,39 +3016,20 @@ function asmrSyncEntrySections(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
   if (String(row?.category || '').trim() !== 'asmr_sync') return []
-  const sections = []
-
-  const downloadFiles = collectAsmrSyncFiles(row, 'download')
-  if (downloadFiles.length) {
-    const totalBytes = sumAsmrSyncFileBytes(downloadFiles)
-    sections.push({
-      key: 'asmr-downloaded-files',
-      title: `下载文件（${Number(d.success_count || downloadFiles.length)} / ${formatBytes(totalBytes)}）`,
-      rows: buildFilterDeleteTreeRows(downloadFiles)
-    })
-  }
-
-  const uploadFiles = collectAsmrSyncFiles(row, 'upload')
-  if (uploadFiles.length) {
-    const totalBytes = sumAsmrSyncFileBytes(uploadFiles)
-    sections.push({
-      key: 'asmr-upload-files',
-      title: `上传清单（${uploadFiles.length} / ${formatBytes(totalBytes)}）`,
-      rows: buildFilterDeleteTreeRows(uploadFiles)
-    })
-  }
-
-  const uploadedFiles = collectAsmrSyncFiles(row, 'uploaded')
-  if (uploadedFiles.length) {
-    const totalBytes = sumAsmrSyncFileBytes(uploadedFiles)
-    sections.push({
-      key: 'asmr-uploaded-files',
-      title: `已上传文件（${Number(d.uploaded_count || uploadedFiles.length)} / ${formatBytes(totalBytes)}）`,
-      rows: buildFilterDeleteTreeRows(uploadedFiles)
-    })
-  }
-
-  return sections
+  const mergedFiles = buildMergedAsmrSyncFileItems(row)
+  if (!mergedFiles.length) return []
+  const totalBytes = sumAsmrSyncFileBytes(mergedFiles)
+  const uploadedCount = mergedFiles.filter(item => Array.isArray(item.badges) && item.badges.includes('已上传')).length
+  const countValue = Number(d.success_count || mergedFiles.length)
+  const titleParts = [String(countValue)]
+  if (totalBytes > 0) titleParts.push(formatBytes(totalBytes))
+  if (uploadedCount > 0) titleParts.push(`已上传 ${uploadedCount}`)
+  return [{
+    key: 'asmr-file-tree',
+    title: `文件清单（${titleParts.join(' / ')}）`,
+    description: resolveAsmrSyncSectionDescription(d),
+    rows: buildFilterDeleteTreeRows(mergedFiles)
+  }]
 }
 
 function deleteEntrySections(row) {
@@ -3181,6 +3178,74 @@ function mapAsmrSyncFileItems(items, mode) {
       error: String(item?.error || item?.failure_reason || '').trim(),
     }
   }).filter(item => item.relative_path || item.name)
+}
+
+function normalizeAsmrMatchPath(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.\/+/, '')
+    .replace(/\/+/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase()
+}
+
+function collectAsmrMatchInfo(item) {
+  const rawValues = [
+    item?.relative_path,
+    item?.path,
+    item?.name
+  ]
+  const normalizedValues = rawValues
+    .map(normalizeAsmrMatchPath)
+    .filter(Boolean)
+  const exact = Array.from(new Set(normalizedValues.filter(value => value.includes('/'))))
+  const basenames = Array.from(new Set(normalizedValues.map(value => getFileName(value)).filter(Boolean)))
+  return { exact, basenames }
+}
+
+function buildAsmrUploadedMatchIndex(items) {
+  const exact = new Set()
+  const basenameCount = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    const info = collectAsmrMatchInfo(item)
+    info.exact.forEach(value => exact.add(value))
+    info.basenames.forEach((value) => {
+      basenameCount.set(value, (basenameCount.get(value) || 0) + 1)
+    })
+  }
+  return { exact, basenameCount }
+}
+
+function isAsmrFileUploaded(item, uploadedMatchIndex) {
+  const info = collectAsmrMatchInfo(item)
+  if (info.exact.some(value => uploadedMatchIndex.exact.has(value))) return true
+  return info.basenames.some(value => uploadedMatchIndex.basenameCount.get(value) === 1)
+}
+
+function buildMergedAsmrSyncFileItems(row) {
+  const downloadFiles = collectAsmrSyncFiles(row, 'download')
+  const uploadedFiles = collectAsmrSyncFiles(row, 'uploaded')
+  const uploadFiles = collectAsmrSyncFiles(row, 'upload')
+  const baseFiles = downloadFiles.length ? downloadFiles : (uploadedFiles.length ? uploadedFiles : uploadFiles)
+  if (!baseFiles.length) return []
+
+  const uploadedMatchIndex = buildAsmrUploadedMatchIndex(uploadedFiles)
+  const shouldMarkUploaded = uploadedFiles.length > 0
+
+  return baseFiles.map((item, index) => {
+    const uploaded = shouldMarkUploaded && (baseFiles === uploadedFiles || isAsmrFileUploaded(item, uploadedMatchIndex))
+    return {
+      ...item,
+      key: item?.key || `asmr-file-${index}`,
+      badges: uploaded ? ['已上传'] : [],
+    }
+  })
+}
+
+function resolveAsmrSyncSectionDescription(detail) {
+  const finalPath = String(detail?.final_output_path || detail?.target_path || '').trim()
+  return finalPath ? `最终上传目录：${finalPath}` : ''
 }
 
 function collectAsmrSyncFiles(row, mode) {
@@ -3857,17 +3922,18 @@ watch(selectedRow, (row) => {
   overflow-x: hidden;
 }
 
-.activity-table-loading-shell {
+.activity-page-loading-shell {
   position: relative;
-  min-height: 520px;
+  min-height: 100vh;
 }
 
 :deep(.activity-history-loading-mask) {
-  inset: 18px;
-  border-radius: 22px;
+  inset: 0;
+  border-radius: 0;
   background: rgba(250, 251, 255, 0.84);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
+  z-index: 50;
 }
 
 .pager-wrap {
@@ -5802,6 +5868,20 @@ watch(selectedRow, (row) => {
   color: rgba(29, 29, 31, 0.56);
 }
 
+.entry-section-head-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.entry-section-desc {
+  font-size: 11px;
+  color: rgba(29, 29, 31, 0.46);
+  line-height: 1.45;
+  word-break: break-all;
+}
+
 .entry-section-head {
   display: flex;
   align-items: center;
@@ -6018,11 +6098,37 @@ watch(selectedRow, (row) => {
   min-width: 0;
 }
 
+.entry-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .entry-meta-text {
   font-size: 11px;
   color: rgba(29, 29, 31, 0.48);
   line-height: 1.4;
   word-break: break-word;
+}
+
+.entry-inline-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.18);
+  background: rgba(236, 253, 245, 0.92);
+  color: #047857;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .entry-size {

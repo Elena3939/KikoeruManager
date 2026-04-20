@@ -4,7 +4,7 @@
       <div class="sidebar-shell">
         <div class="logo">
           <div class="logo-mark">
-            <el-icon :size="22"><Box /></el-icon>
+            <Package2 :size="22" :stroke-width="2.2" />
           </div>
         <div class="logo-copy">
           <span class="logo-text">Prekikoeru</span>
@@ -20,68 +20,68 @@
           class="sidebar-menu"
         >
           <el-menu-item index="/">
-            <el-icon><HomeFilled /></el-icon>
+            <House :size="18" :stroke-width="2.2" />
             <span>概览</span>
           </el-menu-item>
 
           <el-menu-item index="/tasks">
-            <el-icon><List /></el-icon>
+            <ListTodo :size="18" :stroke-width="2.2" />
             <span>任务队列</span>
           </el-menu-item>
 
           <el-menu-item index="/conflicts">
-            <el-icon><WarningFilled /></el-icon>
+            <TriangleAlert :size="18" :stroke-width="2.2" />
             <span>问题作品</span>
             <el-badge v-if="conflictCount > 0" :value="conflictCount" class="conflict-badge" />
           </el-menu-item>
 
           <el-menu-item index="/library">
-            <el-icon><Box /></el-icon>
+            <Boxes :size="18" :stroke-width="2.2" />
             <span>库存管理</span>
           </el-menu-item>
 
           <el-menu-item index="/subtitle-import">
-            <el-icon><Tickets /></el-icon>
+            <Captions :size="18" :stroke-width="2.2" />
             <span>字幕补配</span>
           </el-menu-item>
 
           <el-menu-item index="/passwords">
-            <el-icon><Lock /></el-icon>
+            <KeyRound :size="18" :stroke-width="2.2" />
             <span>密码库</span>
           </el-menu-item>
 
           <el-menu-item index="/existing-folders">
-            <el-icon><Folder /></el-icon>
+            <FolderTree :size="18" :stroke-width="2.2" />
             <span>已有文件夹</span>
           </el-menu-item>
 
           <el-menu-item index="/asmr-sync">
-            <el-icon><Download /></el-icon>
+            <Download :size="18" :stroke-width="2.2" />
             <span>ASMR 同步下载</span>
           </el-menu-item>
 
           <el-menu-item index="/circle-completion">
-            <el-icon><CollectionTag /></el-icon>
+            <Tags :size="18" :stroke-width="2.2" />
             <span>社团补全</span>
           </el-menu-item>
 
           <el-menu-item index="/library-backup">
-            <el-icon><FolderOpened /></el-icon>
+            <Archive :size="18" :stroke-width="2.2" />
             <span>库存打包</span>
           </el-menu-item>
 
           <el-menu-item index="/settings">
-            <el-icon><Setting /></el-icon>
+            <Settings2 :size="18" :stroke-width="2.2" />
             <span>设置</span>
           </el-menu-item>
 
           <el-menu-item index="/logs">
-            <el-icon><Document /></el-icon>
+            <ScrollText :size="18" :stroke-width="2.2" />
             <span>日志</span>
           </el-menu-item>
 
           <el-menu-item index="/activity-history">
-            <el-icon><DataLine /></el-icon>
+            <History :size="18" :stroke-width="2.2" />
             <span>操作记录</span>
           </el-menu-item>
         </el-menu>
@@ -134,20 +134,21 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  Box,
-  CollectionTag,
-  Document,
+  Archive,
+  Boxes,
+  Captions,
   Download,
-  Folder,
-  FolderOpened,
-  HomeFilled,
-  List,
-  Lock,
-  Setting,
-  Tickets,
-  WarningFilled,
-  DataLine
-} from '@element-plus/icons-vue'
+  FolderTree,
+  History,
+  House,
+  KeyRound,
+  ListTodo,
+  Package2,
+  ScrollText,
+  Settings2,
+  Tags,
+  TriangleAlert
+} from 'lucide-vue-next'
 import { useWatcherStore } from './stores'
 import Dashboard from './views/Dashboard.vue'
 import Tasks from './views/Tasks.vue'
@@ -273,6 +274,10 @@ async function toggleWatcher() {
   background: #f3f7ff;
   color: #0071e3;
   box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.08);
+}
+
+.logo-mark > svg {
+  flex-shrink: 0;
 }
 
 .logo-copy {
@@ -411,6 +416,9 @@ async function toggleWatcher() {
 }
 
 :deep(.sidebar-menu .el-menu-item) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   height: 46px;
   margin: 4px 0;
   border-radius: 16px;
@@ -418,7 +426,8 @@ async function toggleWatcher() {
   font-size: 14px;
 }
 
-:deep(.sidebar-menu .el-menu-item .el-icon) {
+:deep(.sidebar-menu .el-menu-item > svg) {
+  flex: 0 0 auto;
   color: rgba(29, 29, 31, 0.56);
 }
 
@@ -427,7 +436,7 @@ async function toggleWatcher() {
   color: #1d1d1f;
 }
 
-:deep(.sidebar-menu .el-menu-item:hover .el-icon) {
+:deep(.sidebar-menu .el-menu-item:hover > svg) {
   color: #1d1d1f;
 }
 
@@ -437,7 +446,7 @@ async function toggleWatcher() {
   font-weight: 600;
 }
 
-:deep(.sidebar-menu .el-menu-item.is-active .el-icon) {
+:deep(.sidebar-menu .el-menu-item.is-active > svg) {
   color: #0071e3;
 }
 

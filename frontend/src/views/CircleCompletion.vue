@@ -67,11 +67,7 @@
         </div>
       </div>
 
-      <el-progress
-        :percentage="indexJob.progress || 0"
-        :status="indexJob.status === 'failed' ? 'exception' : (indexJob.status === 'completed' ? 'success' : '')"
-        :stroke-width="12"
-      />
+      <AppLottieProgressBar :percentage="getJobProgressPercent(indexJob)" />
 
       <div class="index-progress-meta">
         <span class="progress-meta-pill">耗时 {{ formatElapsed(indexJob.elapsed_seconds) }}</span>
@@ -194,11 +190,7 @@
               </div>
             </div>
 
-            <el-progress
-              :percentage="refreshJob.progress || 0"
-              :status="refreshJob.status === 'failed' ? 'exception' : (refreshJob.status === 'completed' ? 'success' : '')"
-              :stroke-width="12"
-            />
+            <AppLottieProgressBar :percentage="getJobProgressPercent(refreshJob)" />
 
             <div class="index-progress-meta">
               <span class="progress-meta-pill">耗时 {{ formatElapsed(refreshJob.elapsed_seconds) }}</span>
@@ -819,7 +811,7 @@ import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { CheckCircle2, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText } from 'lucide-vue-next'
+import { CheckCircle2, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api, { asmrSyncApi, circleCompletionApi, libraryApi, localUploadApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
@@ -827,6 +819,7 @@ import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWork
 import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
 import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchDialog.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
+import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import { showSystemPrompt } from '../composables/useSystemPrompt'
 
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'prekikoeru.circleCompletion.targetSubdirs'
@@ -834,6 +827,11 @@ const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.do
 const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'prekikoeru.circleCompletion.refreshJob'
 const CIRCLE_COMPLETION_INDEX_JOB_KEY = 'prekikoeru.circleCompletion.indexJob'
 const CIRCLE_COMPLETION_UPLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.uploadWorkbench'
+function getJobProgressPercent(job) {
+  const value = Number(job?.progress || 0)
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
 
 const circleQuery = ref('')
 const circleSearch = ref('')
@@ -979,6 +977,7 @@ watch(showMissingWorksCompleteState, value => {
     completeConfettiTimer = null
   }, 1450)
 }, { immediate: true })
+
 const ownedWorksSearchQuery = ref('')
 const ownedWorksFilterType = ref('all') // 'all', 'original', 'simplified', 'traditional', 'subtitle'
 const compareSearchQuery = ref('')
