@@ -341,11 +341,16 @@ def load_library_config() -> dict[str, Any]:
         synology_raw = copy.deepcopy(item.get("synology") or {})
         if (item.get("type") or "local").lower() == "synology_filestation":
             root_path = synology_raw.get("root_path") or item.get("path") or "/"
-            synology_raw = {
+            merged = {
                 **profile_raw,
                 **synology_raw,
                 "root_path": root_path,
             }
+            # Profile base_url takes precedence when available
+            profile_base_url = str(profile_raw.get("base_url") or "").strip()
+            if profile_base_url:
+                merged["base_url"] = profile_base_url
+            synology_raw = merged
         else:
             synology_raw = None
         synology = SynologyConfig(**synology_raw) if synology_raw else None
@@ -1417,6 +1422,10 @@ class LibraryManager:
                 **profile_payload,
                 **synology_payload,
             }
+            # Profile base_url takes precedence when available
+            profile_base_url = str(profile_payload.get("base_url") or "").strip()
+            if profile_base_url:
+                synology_payload["base_url"] = profile_base_url
         if library_type == "synology_filestation":
             root_path = synology_payload.get("root_path") or payload.get("path") or "/"
             synology_payload = {
