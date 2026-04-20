@@ -121,7 +121,22 @@
                   </div>
 
                   <div v-if="!expandedTaskIds.has(task.id)" class="v1-summary-progress">
-                    <AppLottieProgressBar :percentage="getTaskOverallPercent(task)" />
+                    <div class="v1-summary-progress-track">
+                      <div class="v1-summary-progress-fill" :style="{ width: `${getTaskOverallPercent(task)}%` }">
+                        <DotLottieVue
+                          :ref="el => setTaskProgressPlayerRef(task.id, el)"
+                          class="v1-summary-progress-lottie"
+                          :src="progressBarAnimation"
+                          :autoplay="false"
+                          :loop="false"
+                          :speed="1"
+                          mode="forward"
+                          :use-frame-interpolation="true"
+                          :render-config="{ autoResize: true }"
+                        />
+                      </div>
+                    </div>
+                    <span class="v1-summary-progress-text">{{ getTaskOverallPercent(task) }}%</span>
                   </div>
 
                 </div>
@@ -262,10 +277,13 @@
 <script setup>
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Download, HardDriveUpload, Minimize2, RefreshCw, Search, TriangleAlert, X, Zap } from 'lucide-vue-next'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import downloadIconAnimation from '../../assets/anime/download-icon-clean.json?url'
 import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
-import AppLottieProgressBar from '../common/AppLottieProgressBar.vue'
+import progressBarAnimation from '../../assets/anime/progress bar.lottie'
+
+const PROGRESS_BAR_START_FRAME = 45
+const PROGRESS_BAR_END_FRAME = 706
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -296,11 +314,48 @@ const activeFilter = ref('all')
 const searchQuery = ref('')
 const expandedTaskIds = ref(new Set())
 const localSpinning = ref(false)
+const taskProgressPlayerRefs = ref({})
+const taskProgressPlayerReady = ref({})
 
 function handleRefresh() {
   emit('refresh')
   localSpinning.value = true
   setTimeout(() => { localSpinning.value = false }, 900)
+}
+
+function getTaskProgressPlayerInstance(taskId) {
+  return taskProgressPlayerRefs.value[String(taskId)]?.getDotLottieInstance?.() || null
+}
+
+function handleTaskProgressPlayerReady(taskId) {
+  taskProgressPlayerReady.value[String(taskId)] = true
+  syncTaskProgressFrame(taskId)
+}
+
+function bindTaskProgressPlayer(taskId) {
+  const instance = getTaskProgressPlayerInstance(taskId)
+  if (!instance) return false
+  const key = String(taskId)
+  if (taskProgressPlayerReady.value[key] === 'binding') return true
+  taskProgressPlayerReady.value[key] = 'binding'
+  instance.addEventListener('ready', () => handleTaskProgressPlayerReady(taskId))
+  instance.addEventListener('load', () => handleTaskProgressPlayerReady(taskId))
+  return true
+}
+
+function setTaskProgressPlayerRef(taskId, el) {
+  const key = String(taskId)
+  if (el) {
+    taskProgressPlayerRefs.value[key] = el
+    bindTaskProgressPlayer(taskId)
+    window.setTimeout(() => {
+      bindTaskProgressPlayer(taskId)
+      syncTaskProgressFrame(taskId)
+    }, 60)
+    return
+  }
+  delete taskProgressPlayerRefs.value[key]
+  delete taskProgressPlayerReady.value[key]
 }
 
 const retryingSet = computed(() => new Set((props.retryingKeys || []).map(item => String(item || ''))))
@@ -367,6 +422,12 @@ watch(() => mergedTasks.value.map(task => task.id).join(':'), () => {
   expandedTaskIds.value = nextExpanded
 }, { immediate: true })
 
+watch(
+  () => filteredTasks.value.map(task => `${task.id}:${getTaskOverallPercent(task)}:${expandedTaskIds.value.has(task.id) ? 'x' : 'c'}`).join('|'),
+  () => { syncAllTaskProgressFrames() },
+  { immediate: true }
+)
+
 function toggleExpanded(taskId) {
   const next = new Set(expandedTaskIds.value)
   if (next.has(taskId)) next.delete(taskId)
@@ -391,6 +452,29 @@ function statusToneClass(task) {
   if (tone === 'danger') return 'danger'
   if (['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))) return 'pending'
   return 'processing'
+}
+
+async function syncTaskProgressFrame(taskId) {
+  const task = mergedTasks.value.find(item => String(item?.id) === String(taskId))
+  if (!task) return
+
+  const instance = getTaskProgressPlayerInstance(taskId)
+  if (!instance) return
+  if (taskProgressPlayerReady.value[String(taskId)] !== true) return
+
+  const percent = Math.max(0, Math.min(100, Number(getTaskOverallPercent(task) || 0)))
+  const frameSpan = PROGRESS_BAR_END_FRAME - PROGRESS_BAR_START_FRAME
+  const targetFrame = PROGRESS_BAR_START_FRAME + Math.round((percent / 100) * frameSpan)
+
+  await instance.unfreeze()
+  await instance.pause()
+  await instance.setFrame(targetFrame)
+  await instance.freeze()
+}
+
+async function syncAllTaskProgressFrames() {
+  await nextTick()
+  await Promise.all((filteredTasks.value || []).map(task => syncTaskProgressFrame(task.id)))
 }
 
 function fileToneClass(file) {
@@ -1125,6 +1209,10 @@ function getUnifiedFileRows(task) {
 .v1-inline-action:active { transform: translateY(0); }
 .v1-task-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; color: #556474; font-size: 12px; line-height: 1.1; }
 .v1-summary-progress { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.v1-summary-progress-track { position: relative; flex: 1; height: 34px; overflow: hidden; border-radius: 999px; background: linear-gradient(180deg, rgba(255,255,255,.72), rgba(255,255,255,.42)); box-shadow: inset 0 0 0 1px rgba(148,163,184,.18), inset 0 10px 18px rgba(255,255,255,.35); }
+.v1-summary-progress-fill { position: absolute; left: 0; top: 0; bottom: 0; overflow: hidden; border-radius: 999px; transition: width .28s ease; box-shadow: 0 8px 20px rgba(59,130,246,.14); }
+.v1-summary-progress-lottie { display: block; width: 100%; height: 100%; min-width: 100%; pointer-events: none; transform: scale(1.02, 1.18); transform-origin: center; }
+.v1-summary-progress-text { color: #456074; font-size: 12px; font-weight: 800; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
 .v1-status-line,.v1-speed-line,.v1-eta-line { display: inline-flex; align-items: center; gap: 5px; }
 .v1-status-line.processing,.v1-speed-line { color: #2563eb; }
 .v1-speed-line.upload { color: #4f8f96; }

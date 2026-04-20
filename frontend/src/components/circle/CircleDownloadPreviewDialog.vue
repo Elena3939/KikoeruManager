@@ -41,7 +41,13 @@
           <span>{{ chip.label }}</span>
           <span class="tab-count">{{ chip.selected }}/{{ chip.total }}</span>
         </button>
-        <button type="button" class="tab-chip tab-chip-idle restore-button ml-auto px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border" @click="resetRecommended">恢复推荐</button>
+        <button
+          type="button"
+          class="tab-chip tab-chip-idle ml-auto px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border cursor-pointer relative z-10 transition-all duration-200"
+          @click.stop="toggleFilterSelection"
+        >
+          <span>{{ filterApplied ? '过滤文件' : '全部' }}</span>
+        </button>
       </div>
 
       <div class="content-grid flex-1 flex gap-6 px-8 py-2 min-h-0">
@@ -173,8 +179,8 @@
                         class="tree-expander p-0.5 rounded"
                         @click.stop="togglePlanExpand(plan)"
                       >
-                        <ChevronDown v-if="plan.rootExpanded !== false" :size="17" class="text-slate-400" />
-                        <ChevronRight v-else :size="17" class="text-slate-400" />
+                        <ChevronDown v-if="plan.rootExpanded !== false" :size="17" class="text-blue-400" />
+                        <ChevronRight v-else :size="17" class="text-blue-400" />
                       </button>
                       <button
                         type="button"
@@ -210,8 +216,8 @@
                         class="tree-expander p-0.5 rounded"
                         @click.stop="toggleExpand(plan, row)"
                       >
-                        <ChevronDown v-if="plan.expandedIds.has(row.id)" :size="17" class="text-slate-400" />
-                        <ChevronRight v-else :size="17" class="text-slate-400" />
+                        <ChevronDown v-if="plan.expandedIds.has(row.id)" :size="17" class="text-blue-400" />
+                        <ChevronRight v-else :size="17" class="text-blue-400" />
                       </button>
                       <span v-else class="expander-spacer" />
 
@@ -257,7 +263,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount, toRaw } from 'vue'
 import {
   Check,
   ChevronDown,
@@ -269,6 +275,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
+import { configApi } from '../../api'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -285,6 +292,8 @@ const props = defineProps({
 const emit = defineEmits(['submit', 'update:visible'])
 
 const planStates = ref([])
+const filterApplied = ref(false)
+const cachedFilterRules = ref(null)
 
 const targetLibraries = computed(() => (props.libraries || []).filter(item => item?.enabled !== false))
 const selectedTargetLibrary = computed(() => targetLibraries.value.find(item => item.id === props.settings.targetLibraryId) || null)
@@ -380,7 +389,15 @@ onBeforeUnmount(() => {
 })
 
 watch(() => props.plans, (plans) => {
+  filterApplied.value = false
   planStates.value = Array.isArray(plans) ? plans.map(buildPlanState) : []
+  // Preload filter rules
+  if (!cachedFilterRules.value) {
+    configApi.get().then(config => {
+      const rules = config?.filter?.rules
+      if (Array.isArray(rules)) cachedFilterRules.value = rules.filter(r => r.enabled !== false && r.action === 'exclude')
+    }).catch(() => {})
+  }
 }, { deep: true, immediate: true })
 
 function emitSubmit() {
@@ -529,9 +546,9 @@ function getPlanFinalPath(plan) {
 }
 
 function updateResourceSelection(plan, row, nextSelected) {
-  const targetIds = new Set(collectLeafResources(row).map(item => item.relative_path))
+  const leafResources = new Set(collectLeafResources(row).map(item => toRaw(item)))
   plan.selectable_resources.forEach(item => {
-    if (targetIds.has(item.relative_path)) item.selected = nextSelected
+    if (leafResources.has(toRaw(item))) item.selected = nextSelected
   })
   refreshPlanTree(plan)
 }
@@ -609,6 +626,43 @@ function resetRecommended() {
       item.selected = Boolean(item.recommended)
     })
     refreshPlanTree(plan)
+  })
+}
+
+function toggleFilterSelection() {
+  filterApplied.value = !filterApplied.value
+  const applyFilter = filterApplied.value
+  let compiledRules = null
+  if (applyFilter) {
+    compiledRules = (cachedFilterRules.value || []).map(rule => {
+      try { return { regex: new RegExp(rule.pattern, 'i'), target: rule.target || 'all' } }
+      catch { return null }
+    }).filter(Boolean)
+  }
+  requestAnimationFrame(() => {
+    planStates.value.forEach(plan => {
+      let changed = false
+      plan.selectable_resources.forEach(item => {
+        let newVal
+        if (!applyFilter) {
+          newVal = Boolean(item.recommended)
+        } else {
+          newVal = Boolean(item.recommended)
+          if (newVal && compiledRules.length > 0) {
+            const fileName = String(item.file_name || '')
+            const relativePath = String(item.relative_path || '')
+            const folderPath = relativePath.includes('/') ? relativePath.substring(0, relativePath.lastIndexOf('/')) : ''
+            for (const { regex, target } of compiledRules) {
+              if (target === 'file' && regex.test(fileName)) { newVal = false; break }
+              if (target === 'folder' && folderPath && regex.test(folderPath)) { newVal = false; break }
+              if (target === 'all' && (regex.test(fileName) || regex.test(relativePath))) { newVal = false; break }
+            }
+          }
+        }
+        if (item.selected !== newVal) { item.selected = newVal; changed = true }
+      })
+      if (changed) refreshPlanTree(plan)
+    })
   })
 }
 
