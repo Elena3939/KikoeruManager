@@ -10,10 +10,10 @@
     <div class="app-loading-animation__player" :style="playerStyle">
       <DotLottieVue
         class="app-loading-animation__dotlottie"
-        :src="loadingCatAnimation"
+        :src="animationSource"
         autoplay
         loop
-        :speed="0.9"
+        :speed="animationSpeed"
         mode="forward"
         :use-frame-interpolation="true"
         :render-config="renderConfig"
@@ -30,6 +30,7 @@
 import { computed } from 'vue'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import loadingCatAnimation from '../../assets/anime/Loading Cat.lottie'
+import insiderLoadingAnimation from '../../assets/anime/Insider-loading.lottie'
 
 const props = defineProps({
   label: {
@@ -73,4 +74,12 @@ const renderConfig = computed(() => ({
     ? Math.min(window.devicePixelRatio || 1, 1.5)
     : 1,
 }))
+
+const animationSource = computed(() => (
+  props.variant === 'inline' ? insiderLoadingAnimation : loadingCatAnimation
+))
+
+const animationSpeed = computed(() => (
+  props.variant === 'inline' ? 1 : 0.9
+))
 </script>

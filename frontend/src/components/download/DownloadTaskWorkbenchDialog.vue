@@ -83,8 +83,31 @@
                     </div>
 
                     <div class="v1-task-actions" @click.stop>
-                      <template v-if="['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))">
-                        <button type="button" class="v1-inline-action" @click="toggleExpanded(task.id)">等待中</button>
+                      <template v-if="String(task?.status || '') === 'processing'">
+                        <button type="button" class="v1-inline-action" @click="emit('pause-task', task)" title="暂停">
+                          <Pause :size="13" />
+                          暂停
+                        </button>
+                        <button type="button" class="v1-inline-action danger" @click="emit('cancel-task', task)" title="取消">
+                          <XCircle :size="13" />
+                          取消
+                        </button>
+                      </template>
+                      <template v-else-if="String(task?.status || '') === 'paused'">
+                        <button type="button" class="v1-inline-action primary" @click="emit('resume-task', task)" title="恢复">
+                          <Play :size="13" />
+                          恢复
+                        </button>
+                        <button type="button" class="v1-inline-action danger" @click="emit('cancel-task', task)" title="取消">
+                          <XCircle :size="13" />
+                          取消
+                        </button>
+                      </template>
+                      <template v-else-if="['pending', 'waiting_retry'].includes(String(task?.status || ''))">
+                        <button type="button" class="v1-inline-action danger" @click="emit('cancel-task', task)" title="取消">
+                          <XCircle :size="13" />
+                          取消
+                        </button>
                       </template>
                       <template v-else-if="canRetryDownloadTask(task)">
                         <button
@@ -276,7 +299,7 @@
 
 <script setup>
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
-import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Download, HardDriveUpload, Minimize2, RefreshCw, Search, TriangleAlert, X, Zap } from 'lucide-vue-next'
+import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Download, HardDriveUpload, Minimize2, Pause, Play, RefreshCw, Search, TriangleAlert, X, XCircle, Zap } from 'lucide-vue-next'
 import { computed, nextTick, ref, watch } from 'vue'
 import downloadIconAnimation from '../../assets/anime/download-icon-clean.json?url'
 import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
@@ -308,6 +331,9 @@ const emit = defineEmits([
   'retry-waiting',
   'retry-file',
   'reimport-task',
+  'pause-task',
+  'resume-task',
+  'cancel-task',
 ])
 
 const activeFilter = ref('all')
