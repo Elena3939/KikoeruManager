@@ -741,6 +741,28 @@ def _count_password_entries(db_path):
     except Exception:
         return 0
 
+def _count_table_rows(db_path, table_name):
+    if not os.path.exists(db_path):
+        return 0
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,)
+            )
+            exists_row = cursor.fetchone()
+            if not exists_row or int(exists_row[0] or 0) <= 0:
+                return 0
+            cursor.execute(f"SELECT count(*) FROM {table_name}")
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
 def _migrate_legacy_db_if_needed(target_db_path):
     project_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..', '..', '..')
@@ -755,8 +777,23 @@ def _migrate_legacy_db_if_needed(target_db_path):
 
     legacy_password_count = _count_password_entries(legacy_db_path)
     target_password_count = _count_password_entries(target_db_path)
+    legacy_activity_count = _count_table_rows(legacy_db_path, 'activity_logs')
+    target_activity_count = _count_table_rows(target_db_path, 'activity_logs')
+    legacy_task_count = _count_table_rows(legacy_db_path, 'tasks')
+    target_task_count = _count_table_rows(target_db_path, 'tasks')
 
-    if legacy_password_count <= 0 or target_password_count > 0:
+    legacy_score = (
+        legacy_password_count * 1000000
+        + legacy_activity_count * 1000
+        + legacy_task_count
+    )
+    target_score = (
+        target_password_count * 1000000
+        + target_activity_count * 1000
+        + target_task_count
+    )
+
+    if legacy_score <= 0 or legacy_score <= target_score:
         return
 
     os.makedirs(os.path.dirname(target_db_path), exist_ok=True)
@@ -769,10 +806,12 @@ def _migrate_legacy_db_if_needed(target_db_path):
 
     shutil.copy2(legacy_db_path, target_db_path)
     _db_logger.warning(
-        "[数据库] 检测到旧数据库并完成迁移: %s -> %s (password_entries: %s)",
+        "[数据库] 检测到旧数据库并完成迁移: %s -> %s (password_entries: %s, activity_logs: %s, tasks: %s)",
         legacy_db_path,
         target_db_path,
         legacy_password_count,
+        legacy_activity_count,
+        legacy_task_count,
     )
 
 def get_db_path():

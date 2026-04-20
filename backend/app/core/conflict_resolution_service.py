@@ -12,7 +12,7 @@ from ..config.settings import get_config
 from ..core.extract_service import ExtractService
 from ..core.filter_service import FilterService
 from ..core.folder_compare_service import get_folder_compare_service
-from ..core.library_manager import get_library_manager
+from ..core.library_manager import SynologyFileStationClient, get_library_manager
 from ..core.task_engine import Task, TaskType
 
 logger = logging.getLogger(__name__)
@@ -169,6 +169,83 @@ class ConflictResolutionService:
             "folder_count": folder_count,
         }
 
+    async def _describe_remote_path_stats(
+        self,
+        library_id: Optional[str],
+        path: Optional[str],
+    ) -> dict[str, Any]:
+        normalized_path = str(path or "").strip()
+        if not library_id or not normalized_path:
+            return {
+                "exists": False,
+                "kind": "missing",
+                "size": None,
+                "created_at": None,
+                "modified_at": None,
+                "file_count": None,
+                "folder_count": None,
+            }
+
+        manager = get_library_manager()
+        library = manager._find_library(library_id)
+        if not library or library.type != "synology_filestation" or not library.synology:
+            return {
+                "exists": False,
+                "kind": "missing",
+                "size": None,
+                "created_at": None,
+                "modified_at": None,
+                "file_count": None,
+                "folder_count": None,
+            }
+
+        client = SynologyFileStationClient(library.synology)
+        try:
+            info = await client.stat(manager._normalize_remote_path(normalized_path))
+            item = manager._first_remote_info_item(info) or {}
+            if not item:
+                return {
+                    "exists": False,
+                    "kind": "missing",
+                    "size": None,
+                    "created_at": None,
+                    "modified_at": None,
+                    "file_count": None,
+                    "folder_count": None,
+                }
+
+            additional = item.get("additional", {}) or {}
+            timestamps = additional.get("time", {}) or {}
+            is_directory = bool(item.get("isdir"))
+            size = await manager._remote_path_size(
+                client,
+                normalized_path,
+                is_directory,
+                timestamps.get("mtime"),
+                initial_size=additional.get("size") or item.get("size"),
+                max_wait_seconds=max(int(client.config.timeout) * 10, 300),
+            )
+            return {
+                "exists": True,
+                "kind": "folder" if is_directory else "file",
+                "size": int(size or 0),
+                "created_at": timestamps.get("crtime") or timestamps.get("ctime"),
+                "modified_at": timestamps.get("mtime"),
+                "file_count": None,
+                "folder_count": None,
+            }
+        except Exception as exc:
+            logger.warning("读取远程冲突路径统计失败 path=%s error=%s", normalized_path, exc)
+            return {
+                "exists": False,
+                "kind": "missing",
+                "size": None,
+                "created_at": None,
+                "modified_at": None,
+                "file_count": None,
+                "folder_count": None,
+            }
+
     def describe_conflict(self, conflict) -> dict[str, Any]:
         metadata = dict(conflict.new_metadata or {})
         existing_context = self.infer_library_context(
@@ -191,6 +268,23 @@ class ConflictResolutionService:
             "new_path_kind": "archive" if os.path.isfile(str(conflict.new_path or "")) else "folder",
             "metadata": metadata,
         }
+
+    async def describe_conflict_async(self, conflict) -> dict[str, Any]:
+        description = self.describe_conflict(conflict)
+        existing = description.get("existing") or {}
+        source = description.get("source") or {}
+
+        if existing.get("is_remote"):
+            existing["stats"] = await self._describe_remote_path_stats(
+                existing.get("library_id"),
+                existing.get("path"),
+            )
+        if source.get("is_remote"):
+            source["stats"] = await self._describe_remote_path_stats(
+                source.get("library_id"),
+                source.get("path"),
+            )
+        return description
 
     def get_available_actions(self, conflict) -> list[str]:
         metadata = dict(conflict.new_metadata or {})
