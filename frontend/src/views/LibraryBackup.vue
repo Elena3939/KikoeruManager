@@ -56,173 +56,107 @@
       </div>
     </div>
 
-    <!-- Main Layout -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+    <!-- Main Layout: 上下流式 -->
+    <div class="flex flex-col gap-6">
       
-      <!-- Left Column: Config & History -->
-      <div class="lg:col-span-8 xl:col-span-8 flex flex-col gap-6">
-        
-        <!-- Config Card -->
-        <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden transition-all duration-300">
-          <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-            <h2 class="text-base font-semibold text-slate-900">打包配置</h2>
-            <div class="flex items-center gap-2">
-              <span class="text-sm font-medium text-slate-600">启用功能</span>
-              <el-switch v-model="backupConfig.enabled" />
-            </div>
+      <!-- Config Card -->
+      <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden transition-all duration-300">
+        <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+          <h2 class="text-base font-semibold text-slate-900">打包配置</h2>
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-medium text-slate-600">启用功能</span>
+            <el-switch v-model="backupConfig.enabled" />
           </div>
-          <div class="p-6 transition-opacity duration-300" :class="{ 'opacity-50 pointer-events-none grayscale-[0.5]': !backupConfig.enabled }">
-            <el-form :model="backupConfig" label-position="top" class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2">
-              <el-form-item label="库存源路径">
-                <el-input v-model="backupConfig.source_path" placeholder="留空时默认使用库存目录">
-                  <template #prefix><el-icon><Folder /></el-icon></template>
-                </el-input>
-              </el-form-item>
-              
-              <el-form-item label="压缩包输出路径">
-                <el-input v-model="backupConfig.output_dir" placeholder="留空时默认输出到库存目录">
-                  <template #prefix><el-icon><FolderOpened /></el-icon></template>
-                </el-input>
-              </el-form-item>
-
-              <el-form-item label="目录结构复制目标路径">
-                <el-input v-model="backupConfig.path_copy_target" placeholder="不再创建日期子目录，直接复制到此目录">
-                  <template #prefix><el-icon><Folder /></el-icon></template>
-                </el-input>
-              </el-form-item>
-              
-              <el-form-item label="压缩密码">
-                <el-input v-model="backupConfig.password" show-password placeholder="必填，压缩时启用加密">
-                  <template #prefix><el-icon><Key /></el-icon></template>
-                </el-input>
-              </el-form-item>
-
-              <el-form-item label="压缩后缀格式">
-                <el-select v-model="backupConfig.archive_format" class="w-full">
-                  <el-option label=".zip" value="zip" />
-                  <el-option label=".7z" value="7z" />
-                </el-select>
-              </el-form-item>
-              
-              <el-form-item label="压缩强度">
-                <el-slider v-model="backupConfig.compression_level" :min="1" :max="9" :step="1" show-input />
-              </el-form-item>
-              
-              <el-form-item label="压缩线程数">
-                <div class="w-full">
-                  <el-input-number v-model="backupConfig.compression_threads" :min="0" :max="64" class="w-full" />
-                  <div class="text-[13px] text-slate-500 mt-1.5 leading-tight">0 表示自动线程数</div>
-                </div>
-              </el-form-item>
-              
-              <el-form-item label="先复制目录结构">
-                <div class="w-full flex flex-col items-start gap-1">
-                  <el-switch v-model="backupConfig.copy_structure_before_zip" />
-                  <div class="text-[13px] text-slate-500 mt-1 leading-tight">复制时直接把目录层级还原到目标目录，不创建 ASMR_日期_PATHS 子目录</div>
-                </div>
-              </el-form-item>
-            </el-form>
-          </div>
-        </section>
-
-        <!-- History Card -->
-        <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[400px]">
-          <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
-            <h2 class="text-base font-semibold text-slate-900">历史记录</h2>
-            <button 
-              class="group relative inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 hover:text-slate-900 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-200"
-              @click="fetchBackupHistory"
-            >
-              <svg class="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-500 group-hover:-rotate-180 transition-all duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-              刷新历史
-            </button>
-          </div>
-          <div class="flex-1 overflow-hidden p-0">
-            <el-table :data="backupHistory" stripe style="width: 100%; height: 100%" class="custom-table">
-              <el-table-column prop="filename" label="文件名" min-width="200" show-overflow-tooltip>
-                <template #default="{ row }">
-                  <span class="font-mono text-[13px] text-slate-700">{{ row.filename }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="大小变化" width="160">
-                <template #default="{ row }">
-                  <div class="flex items-center gap-1.5">
-                    <span class="text-[13px] text-slate-500">{{ formatSize(row.pre_size_bytes) }}</span>
-                    <span class="text-slate-300 text-xs">→</span>
-                    <span class="text-[13px] font-medium text-slate-700">{{ formatSize(row.post_size_bytes) }}</span>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="压缩率" width="80" align="right">
-                <template #default="{ row }">
-                  <span class="text-[13px] font-medium text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">{{ (row.compression_ratio * 100).toFixed(1) }}%</span>
-                </template>
-              </el-table-column>
-              <el-table-column prop="speed_avg" label="平均速度" width="100">
-                <template #default="{ row }">
-                  <span class="text-[13px] text-slate-600">{{ row.speed_avg }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="耗时" width="90">
-                <template #default="{ row }">
-                  <span class="text-[13px] text-slate-500">{{ formatDuration(row.duration_seconds) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column prop="created_at" label="备份日期" width="150">
-                <template #default="{ row }">
-                  <span class="text-[13px] text-slate-500">{{ formatDate(row.created_at) }}</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </section>
-      </div>
-
-      <!-- Right Column: Status Panel -->
-      <div class="lg:col-span-4 xl:col-span-4">
-        <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col sticky top-6">
-          <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-            <h2 class="text-base font-semibold text-slate-900">任务状态</h2>
-            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border" :class="{
-              'bg-amber-50 text-amber-700 border-amber-200': status.running,
-              'bg-emerald-50 text-emerald-700 border-emerald-200': status.state === 'completed',
-              'bg-red-50 text-red-700 border-red-200': status.state === 'failed',
-              'bg-slate-50 text-slate-700 border-slate-200': !status.running && status.state !== 'completed' && status.state !== 'failed'
-            }">
-              <span v-if="status.running" class="w-1.5 h-1.5 bg-amber-500 rounded-full mr-1.5 animate-pulse"></span>
-              {{ status.step || '待机' }}
-            </span>
-          </div>
-          
-          <div class="p-6 flex flex-col gap-6">
-            <!-- Progress -->
-            <div>
-              <div class="flex justify-between text-[13px] mb-2">
-                <span class="text-slate-500 font-medium">总进度</span>
-                <span class="text-slate-700 font-semibold">{{ (status.progress || 0).toFixed(1) }}%</span>
+        </div>
+        <div class="p-6 transition-opacity duration-300" :class="{ 'opacity-50 pointer-events-none grayscale-[0.5]': !backupConfig.enabled }">
+          <el-form :model="backupConfig" label-position="top" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-2">
+            <el-form-item label="库存源路径">
+              <div class="flex items-center gap-2 w-full">
+                <Folder class="w-[18px] h-[18px] text-slate-500 shrink-0" />
+                <el-input v-model="backupConfig.source_path" placeholder="留空时默认使用库存目录" />
               </div>
-              <el-progress 
-                :percentage="status.progress || 0" 
-                :status="status.state === 'failed' ? 'exception' : status.state === 'completed' ? 'success' : ''" 
-                :stroke-width="10" 
-                :show-text="false" 
-                striped
-                :striped-flow="status.running"
-              />
+            </el-form-item>
+            
+            <el-form-item label="压缩包输出路径">
+              <div class="flex items-center gap-2 w-full">
+                <FolderOpen class="w-[18px] h-[18px] text-slate-500 shrink-0" />
+                <el-input v-model="backupConfig.output_dir" placeholder="留空时默认输出到库存目录" />
+              </div>
+            </el-form-item>
+
+            <el-form-item label="目录结构复制目标路径">
+              <div class="flex items-center gap-2 w-full">
+                <Folder class="w-[18px] h-[18px] text-slate-500 shrink-0" />
+                <el-input v-model="backupConfig.path_copy_target" placeholder="不再创建日期子目录，直接复制到此目录" />
+              </div>
+            </el-form-item>
+            
+            <el-form-item label="压缩密码">
+              <div class="flex items-center gap-2 w-full">
+                <KeyRound class="w-[18px] h-[18px] text-slate-500 shrink-0" />
+                <el-input v-model="backupConfig.password" show-password placeholder="必填，压缩时启用加密" />
+              </div>
+            </el-form-item>
+
+            <el-form-item label="压缩后缀格式">
+              <el-select v-model="backupConfig.archive_format" class="w-full">
+                <el-option label=".zip" value="zip" />
+                <el-option label=".7z" value="7z" />
+              </el-select>
+            </el-form-item>
+            
+            <el-form-item label="压缩强度">
+              <el-slider v-model="backupConfig.compression_level" :min="1" :max="9" :step="1" show-input />
+            </el-form-item>
+            
+            <el-form-item label="压缩线程数">
+              <div class="w-full">
+                <el-input-number v-model="backupConfig.compression_threads" :min="0" :max="64" class="w-full" />
+                <div class="text-[13px] text-slate-500 mt-1.5 leading-tight">0 表示自动线程数</div>
+              </div>
+            </el-form-item>
+            
+            <el-form-item label="先复制目录结构">
+              <div class="w-full flex flex-col items-start gap-1">
+                <el-switch v-model="backupConfig.copy_structure_before_zip" />
+                <div class="text-[13px] text-slate-500 mt-1 leading-tight">复制时直接把目录层级还原到目标目录</div>
+              </div>
+            </el-form-item>
+          </el-form>
+        </div>
+      </section>
+
+      <!-- Status Card -->
+      <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+          <h2 class="text-base font-semibold text-slate-900">任务状态</h2>
+          <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border" :class="{
+            'bg-amber-50 text-amber-700 border-amber-200': status.running,
+            'bg-emerald-50 text-emerald-700 border-emerald-200': status.state === 'completed',
+            'bg-red-50 text-red-700 border-red-200': status.state === 'failed',
+            'bg-slate-50 text-slate-700 border-slate-200': !status.running && status.state !== 'completed' && status.state !== 'failed'
+          }">
+            <span v-if="status.running" class="w-1.5 h-1.5 bg-amber-500 rounded-full mr-1.5 animate-pulse"></span>
+            {{ status.step || '待机' }}
+          </span>
+        </div>
+        
+        <div class="p-6">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <!-- Progress -->
+            <div class="md:col-span-2 lg:col-span-4">
+              <AppLottieProgressBar :percentage="status.progress || 0" size="sm" />
             </div>
 
             <!-- Metrics -->
-            <div class="grid grid-cols-2 gap-3" v-if="status.running && (status.speed || status.eta)">
-              <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
-                <div class="text-xs text-slate-500 mb-1">速度</div>
-                <div class="text-[13px] font-semibold text-slate-700 font-mono">{{ status.speed || '-' }}</div>
-              </div>
-              <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
-                <div class="text-xs text-slate-500 mb-1">剩余时间</div>
-                <div class="text-[13px] font-semibold text-slate-700 font-mono">{{ status.eta || '-' }}</div>
-              </div>
+            <div class="bg-slate-50 rounded-xl p-3 border border-slate-100" v-if="status.running && status.speed">
+              <div class="text-xs text-slate-500 mb-1">速度</div>
+              <div class="text-[13px] font-semibold text-slate-700 font-mono">{{ status.speed || '-' }}</div>
             </div>
-            
+            <div class="bg-slate-50 rounded-xl p-3 border border-slate-100" v-if="status.running && status.eta">
+              <div class="text-xs text-slate-500 mb-1">剩余时间</div>
+              <div class="text-[13px] font-semibold text-slate-700 font-mono">{{ status.eta || '-' }}</div>
+            </div>
             <div class="bg-slate-50 rounded-xl p-3 border border-slate-100" v-if="status.running && status.total_bytes > 0">
               <div class="text-xs text-slate-500 mb-1">数据量</div>
               <div class="text-[13px] font-semibold text-slate-700 font-mono flex items-baseline gap-1.5">
@@ -233,23 +167,73 @@
             </div>
 
             <!-- Meta Info -->
-            <div class="space-y-3">
-              <div v-if="status.output_zip_path" class="flex flex-col gap-1.5">
-                <span class="text-xs text-slate-500 font-medium">输出文件</span>
-                <div class="text-slate-700 break-all bg-slate-50 px-3 py-2 rounded-lg border border-slate-100 font-mono text-[11px] leading-relaxed">{{ status.output_zip_path }}</div>
-              </div>
-              <div v-if="status.path_snapshot_dir" class="flex flex-col gap-1.5">
-                <span class="text-xs text-slate-500 font-medium">目录结构复制目标</span>
-                <div class="text-slate-700 break-all bg-slate-50 px-3 py-2 rounded-lg border border-slate-100 font-mono text-[11px] leading-relaxed">{{ status.path_snapshot_dir }}</div>
-              </div>
-              <div v-if="status.error" class="flex flex-col gap-1.5">
-                <span class="text-xs text-red-500 font-medium">错误</span>
-                <div class="text-red-700 break-all bg-red-50 px-3 py-2 rounded-lg border border-red-100 text-[12px]">{{ status.error }}</div>
-              </div>
+            <div v-if="status.output_zip_path" class="md:col-span-2 lg:col-span-4 flex flex-col gap-1.5">
+              <span class="text-xs text-slate-500 font-medium">输出文件</span>
+              <div class="text-slate-700 break-all bg-slate-50 px-3 py-2 rounded-lg border border-slate-100 font-mono text-[11px] leading-relaxed">{{ status.output_zip_path }}</div>
+            </div>
+            <div v-if="status.path_snapshot_dir" class="md:col-span-2 lg:col-span-4 flex flex-col gap-1.5">
+              <span class="text-xs text-slate-500 font-medium">目录结构复制目标</span>
+              <div class="text-slate-700 break-all bg-slate-50 px-3 py-2 rounded-lg border border-slate-100 font-mono text-[11px] leading-relaxed">{{ status.path_snapshot_dir }}</div>
+            </div>
+            <div v-if="status.error" class="md:col-span-2 lg:col-span-4 flex flex-col gap-1.5">
+              <span class="text-xs text-red-500 font-medium">错误</span>
+              <div class="text-red-700 break-all bg-red-50 px-3 py-2 rounded-lg border border-red-100 text-[12px]">{{ status.error }}</div>
             </div>
           </div>
-        </section>
-      </div>
+        </div>
+      </section>
+
+      <!-- History Card -->
+      <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+        <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
+          <h2 class="text-base font-semibold text-slate-900">历史记录</h2>
+          <button 
+            class="group relative inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 hover:text-slate-900 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-200"
+            @click="fetchBackupHistory"
+          >
+            <svg class="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-500 group-hover:-rotate-180 transition-all duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            刷新历史
+          </button>
+        </div>
+        <div class="overflow-hidden p-0" style="min-height: 280px; max-height: 400px;">
+          <el-table :data="backupHistory" style="width: 100%" class="custom-table" :row-class-name="() => ''" empty-text="暂无备份记录">>
+            <el-table-column prop="filename" label="文件名" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="font-mono text-[13px] text-slate-700">{{ row.filename }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="大小变化" width="160">
+              <template #default="{ row }">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-[13px] text-slate-500">{{ formatSize(row.pre_size_bytes) }}</span>
+                  <span class="text-slate-300 text-xs">→</span>
+                  <span class="text-[13px] font-medium text-slate-700">{{ formatSize(row.post_size_bytes) }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="压缩率" width="80" align="right">
+              <template #default="{ row }">
+                <span class="text-[13px] font-medium text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">{{ (row.compression_ratio * 100).toFixed(1) }}%</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="speed_avg" label="平均速度" width="100">
+              <template #default="{ row }">
+                <span class="text-[13px] text-slate-600">{{ row.speed_avg }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="耗时" width="90">
+              <template #default="{ row }">
+                <span class="text-[13px] text-slate-500">{{ formatDuration(row.duration_seconds) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="created_at" label="备份日期" width="150">
+              <template #default="{ row }">
+                <span class="text-[13px] text-slate-500">{{ formatDate(row.created_at) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -257,8 +241,9 @@
 <script setup>
 import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Folder, FolderOpened, Key } from '@element-plus/icons-vue'
+import { Folder, FolderOpen, KeyRound } from 'lucide-vue-next'
 import { configApi, backupApi } from '../api'
+import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 
 const saving = ref(false)
 const actionLoading = ref(false)
@@ -287,6 +272,8 @@ const backupConfig = ref({
   compression_threads: 0
 })
 const backupHistory = ref([])
+
+
 
 let timer = null
 let libraryBackupInitialized = false
@@ -500,6 +487,14 @@ onBeforeUnmount(() => {
   box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
   transition: all 0.3s ease !important;
   border-radius: 8px !important;
+}
+:deep(.el-input__inner) {
+  color: rgb(30 41 59) !important;
+  font-weight: 500 !important;
+}
+:deep(.el-input__inner::placeholder) {
+  color: rgb(148 163 184) !important;
+  font-weight: 400 !important;
 }
 
 :deep(.el-input__wrapper:hover),
