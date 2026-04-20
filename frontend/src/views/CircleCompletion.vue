@@ -1,47 +1,29 @@
 <template>
   <div class="circle-page">
-    <section class="circle-hero relative overflow-hidden bg-gradient-to-br from-blue-50 via-indigo-50 to-white border-b border-blue-100/50">
-      <!-- Background Decorations (Optimized with radial gradients instead of expensive CSS blur) -->
-      <div class="absolute top-0 right-0 -mt-20 -mr-20 w-96 h-96 pointer-events-none" style="background: radial-gradient(circle, rgba(96, 165, 250, 0.15) 0%, transparent 70%);"></div>
-      <div class="absolute bottom-0 left-10 -mb-20 w-72 h-72 pointer-events-none" style="background: radial-gradient(circle, rgba(129, 140, 248, 0.15) 0%, transparent 70%);"></div>
-
-      <div class="hero-copy relative z-10">
-        <div class="hero-eyebrow inline-flex items-center px-3 py-1 rounded-full bg-blue-100/90 text-blue-700 text-xs font-bold tracking-wider mb-4 border border-blue-200/50 shadow-sm">
-          <span class="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2 animate-pulse"></span>
+    <section class="circle-hero">
+      <div class="hero-copy">
+        <div class="hero-eyebrow">
+          <span class="hero-eyebrow-dot"></span>
           Circle Completion
         </div>
-        <h1 class="text-4xl md:text-5xl font-extrabold text-slate-800 tracking-tight mb-4 drop-shadow-sm">社团补全</h1>
-        <p class="text-slate-600 text-base md:text-lg leading-relaxed max-w-2xl mb-6">
-          按社团建立索引，以 <span class="font-semibold text-slate-700">Kikoeru 服务器是否已收录</span>作为缺失判断，再结合 <span class="font-semibold text-blue-600">DLsite 关联链</span>和 <span class="font-semibold text-emerald-600">asmr.one 下载能力</span>，把真正缺的作品批量送进下载队列。
+        <h1>社团补全</h1>
+        <p class="hero-desc">
+          按社团建立索引，以 Kikoeru 服务器收录状态判定缺失，结合 DLsite 关联链和 asmr.one 下载能力，批量补全缺失作品。
         </p>
-        <div class="hero-inline-metrics flex flex-wrap gap-3">
-          <span class="hero-inline-pill flex items-center px-3 py-1.5 bg-white/95 border border-slate-200/60 rounded-lg text-xs font-medium text-slate-600 shadow-sm hover:shadow hover:-translate-y-0.5 transition-all cursor-default">
-            <LibraryBig :size="14" class="mr-1.5 text-blue-500" />
-            索引优先复用现有社团
-          </span>
-          <span class="hero-inline-pill flex items-center px-3 py-1.5 bg-white/95 border border-slate-200/60 rounded-lg text-xs font-medium text-slate-600 shadow-sm hover:shadow hover:-translate-y-0.5 transition-all cursor-default">
-            <CheckCircle2 :size="14" class="mr-1.5 text-emerald-500" />
-            下载后自动按社团入库
-          </span>
-          <span class="hero-inline-pill flex items-center px-3 py-1.5 bg-white/95 border border-slate-200/60 rounded-lg text-xs font-medium text-slate-600 shadow-sm hover:shadow hover:-translate-y-0.5 transition-all cursor-default">
-            <PlayCircle :size="14" class="mr-1.5 text-indigo-500" />
-            仅蓝色操作可交互
-          </span>
-        </div>
       </div>
-      <div class="hero-actions relative z-10 bg-white/90 p-3 rounded-2xl shadow-sm border border-white/60 flex items-center gap-3">
-        <div class="relative flex-1">
-          <Search :size="18" class="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+      <div class="hero-actions">
+        <div class="hero-search-wrap">
+          <Search :size="16" class="hero-search-icon" />
           <el-input
             v-model="circleQuery"
-            class="hero-search-input !bg-transparent"
+            class="hero-search-input"
             placeholder="输入社团名，例如 こぐま座 / C_Realization"
             clearable
             @keyup.enter="handleIndexCircle"
           />
         </div>
-        <el-button class="hero-search-button !h-11 !rounded-xl !px-6 !font-bold shadow-md hover:shadow-lg transition-all" type="primary" :loading="indexing" @click="handleIndexCircle">建立 / 刷新索引</el-button>
-        <el-button class="batch-action-button !h-11 !rounded-xl !px-5 !font-bold" :disabled="indexing" @click="openBatchIndexPrompt">批量建立</el-button>
+        <el-button class="hero-btn hero-btn-primary" :loading="indexing" @click="handleIndexCircle">建立 / 刷新索引</el-button>
+        <el-button class="hero-btn hero-btn-secondary" :disabled="indexing" @click="openBatchIndexPrompt">批量建立</el-button>
       </div>
     </section>
 
@@ -107,6 +89,11 @@
             >
               <div class="circle-list-topline">{{ circle.circle_id }}</div>
               <div class="circle-list-name">{{ circle.circle_name || circle.circle_id }}</div>
+              <div class="circle-list-counts">
+                <span class="circle-count-pill dl">DL {{ circle.dl_works || circle.total_works || 0 }}</span>
+                <span class="circle-count-pill owned">服务器 {{ circle.server_owned || 0 }}</span>
+                <span v-if="(circle.missing || 0) > 0" class="circle-count-pill warn">缺 {{ circle.missing }}</span>
+              </div>
               <div class="circle-list-meta">
                 <span>{{ formatDateTime(circle.last_indexed_at) }}</span>
               </div>
@@ -119,52 +106,44 @@
       <main class="circle-main">
         <section class="toolbar-card">
           <div class="toolbar-main">
-            <div class="toolbar-copy flex-1">
-              <div class="flex items-center justify-between mb-1">
-                <div class="flex items-center gap-3">
-                  <div class="toolbar-title !text-xl">{{ detail.circle_name || '未选择社团' }}</div>
-                  <div class="toolbar-subtitle flex items-center gap-2">
-                    <span v-if="detail.last_indexed_at" class="text-xs text-slate-400">上次刷新 {{ formatDateTime(detail.last_indexed_at) }}</span>
-                  </div>
-                </div>
-              </div>
-              <div class="toolbar-metrics mt-3">
-                <span class="metric-pill owned">服务器已有 {{ detail.owned_count || 0 }}</span>
-                <span class="metric-pill warn">服务器缺失 {{ detail.missing_count || 0 }}</span>
-                <span class="metric-pill ok">可下载 {{ detail.downloadable_count || 0 }}</span>
-                <span class="metric-pill muted">暂不可下载 {{ detail.dl_only_count || 0 }}</span>
-              </div>
+            <div class="toolbar-copy">
+              <div class="toolbar-title">{{ detail.circle_name || '未选择社团' }}</div>
+              <div v-if="detail.last_indexed_at" class="toolbar-subtitle">上次刷新 {{ formatDateTime(detail.last_indexed_at) }}</div>
             </div>
-            <div v-if="detail.works?.length" class="toolbar-actions shrink-0 pl-6 flex flex-col gap-2">
-              <div class="flex items-center gap-2 mt-auto">
-                <el-button
-                  class="batch-action-button"
-                  :disabled="!activeCircleId || indexing || isRefreshJobActive"
-                  :loading="indexing"
-                  @click="handleIndexOnlyNewWorks"
-                >
-                  仅索引新作
-                </el-button>
-                <el-button
-                  class="batch-action-button refresh"
-                  :disabled="!activeCircleId || indexing || isRefreshJobActive"
-                  :loading="refreshingCurrentCircle"
-                  @click="refreshSelectedCircleIndex"
-                >
-                  批量刷新状态
-                </el-button>
-              </div>
-              <div v-if="refreshForceRefreshHint" class="toolbar-subtext">{{ refreshForceRefreshHint }}</div>
+            <div v-if="detail.works?.length" class="toolbar-actions">
+              <el-button
+                class="batch-action-button"
+                :disabled="!activeCircleId || indexing || isRefreshJobActive"
+                :loading="indexing"
+                @click="handleIndexOnlyNewWorks"
+              >
+                仅索引新作
+              </el-button>
+              <el-button
+                class="batch-action-button refresh"
+                :disabled="!activeCircleId || indexing || isRefreshJobActive"
+                :loading="refreshingCurrentCircle"
+                @click="refreshSelectedCircleIndex"
+              >
+                批量刷新状态
+              </el-button>
             </div>
           </div>
 
-          <div class="toolbar-filters mt-2 pt-1 flex items-center justify-between">
-            <div class="flex items-center gap-4">
+          <div class="toolbar-stats-row">
+            <div class="toolbar-metrics">
+              <span class="metric-pill owned">已有 {{ detail.owned_count || 0 }}</span>
+              <span class="metric-pill warn">缺失 {{ detail.missing_count || 0 }}</span>
+              <span class="metric-pill ok">可下载 {{ detail.downloadable_count || 0 }}</span>
+              <span class="metric-pill muted">暂不可下载 {{ detail.dl_only_count || 0 }}</span>
+            </div>
+            <div class="toolbar-filters">
               <el-checkbox v-model="filters.onlyMissing" @change="refreshActiveCircle">仅看缺失</el-checkbox>
               <el-checkbox v-model="filters.onlyDownloadable" @change="refreshActiveCircle">仅看可下载</el-checkbox>
               <el-checkbox v-model="filters.includeDlOnly" @change="refreshActiveCircle">包含仅DL</el-checkbox>
             </div>
           </div>
+          <div v-if="refreshForceRefreshHint" class="toolbar-subtext">{{ refreshForceRefreshHint }}</div>
         </section>
 
         <section v-if="activeCircleId" class="works-card">
@@ -266,45 +245,17 @@
               </div>
               <template v-else>
                 <div class="work-grid">
-                <article
-                  v-for="item in pagedMissingWorks"
+                <WorkCard
+                  v-for="(item, cardIdx) in pagedMissingWorks"
                   :key="item.canonical_rjcode"
-                  class="work-card group flex flex-col"
-                  :class="{ selected: selectedCanonicals.has(item.canonical_rjcode), 'is-downloaded': item.local_download_ready, 'status-flash': flashedWorkCodes.has(item.canonical_rjcode) }"
-                  @click="toggleSelection(item)"
-                >
-                  <div class="work-cover-wrapper relative w-full aspect-[4/3] bg-slate-50 flex items-center justify-center border-b border-slate-100">
-                    <img v-if="item.image_url" :src="item.image_url" class="work-cover w-full h-full object-contain bg-white transition-transform duration-500 group-hover:scale-105" referrerpolicy="no-referrer" />
-                    <div v-else class="work-cover-placeholder w-full h-full flex items-center justify-center text-slate-300 bg-slate-50">
-                      <LibraryBig :size="32" class="opacity-50" />
-                    </div>
-                    <div v-if="item.local_download_ready" class="work-corner-flag">已下载</div>
-                    <div class="absolute inset-0 bg-gradient-to-t from-slate-900/10 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"></div>
-                  </div>
-
-                  <div class="flex flex-col flex-1 p-3 gap-2.5">
-                    <div class="work-card-head">
-                      <div class="work-card-copy">
-                        <div class="work-rj">{{ item.source_compare?.work_rjcode || item.canonical_rjcode }}</div>
-                        <div class="work-title group-hover:text-blue-600 transition-colors" :title="item.title">{{ item.title || '未命名作品' }}</div>
-                      </div>
-                    </div>
-
-                    <div class="work-linked">优先版本 {{ item.preferred_variant?.group_short_label || '原作' }} · {{ item.download_plan?.rjcode || item.display_rjcode || item.canonical_rjcode }}</div>
-
-                    <div class="work-tags mt-auto pt-1">
-                      <span v-if="item.local_download_ready" class="tag-chip is-success">已下载</span>
-                      <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ formatServerOwnedLabel(item) }}</span>
-                      <span class="tag-chip is-info">DLsite {{ item.has_dlsite ? '有' : '未知' }}</span>
-                      <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">asmr.one {{ item.has_asmr_one ? '可下载' : '无资源' }}</span>
-                    </div>
-
-                    <div v-if="item.has_asmr_one || item.local_download_ready" class="work-actions mt-2">
-                      <el-button v-if="item.local_download_ready" size="small" class="work-action-button upload" @click.stop="openReimportDialogForWork(item)">直接入库</el-button>
-                      <el-button size="small" class="work-action-button" @click.stop="openBatchPreview(item.canonical_rjcode)">预览下载</el-button>
-                    </div>
-                  </div>
-                </article>
+                  :item="item"
+                  :card-index="cardIdx"
+                  :selected="selectedCanonicals.has(item.canonical_rjcode)"
+                  :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
+                  @select="toggleSelection"
+                  @preview="openBatchPreview"
+                  @reimport="openReimportDialogForWork"
+                />
               </div>
               <div class="works-pager">
                 <el-pagination
@@ -727,6 +678,9 @@
       @retry-waiting="retryWaitingDownloadTask"
       @retry-file="handleRetrySingleFailedFile"
       @reimport-task="openLocalUploadDialogForTask"
+      @pause-task="handlePauseDownloadTask"
+      @resume-task="handleResumeDownloadTask"
+      @cancel-task="handleCancelDownloadTask"
     />
 
     <UploadTaskWorkbenchDialog
@@ -813,14 +767,15 @@ import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
 import { CheckCircle2, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
-import api, { asmrSyncApi, circleCompletionApi, libraryApi, localUploadApi } from '../api'
+import api, { asmrSyncApi, circleCompletionApi, libraryApi, localUploadApi, taskApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
 import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchDialog.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
-import { showSystemPrompt } from '../composables/useSystemPrompt'
+import WorkCard from '../components/circle/WorkCard.vue'
+import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'prekikoeru.circleCompletion.targetSubdirs'
 const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.downloadWorkbench'
@@ -2174,6 +2129,67 @@ function handleRetrySingleFailedFile(payload) {
   retrySingleFailedFile(payload?.task, payload?.file)
 }
 
+async function handlePauseDownloadTask(task) {
+  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  try {
+    if (sessionId) {
+      await asmrSyncApi.pauseSession(sessionId)
+    } else {
+      const taskId = String(task?.active_task_id || task?.id || '').trim()
+      if (taskId) await taskApi.pause(taskId)
+    }
+    ElMessage.success('已暂停')
+    await refreshDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '暂停失败')
+  }
+}
+
+async function handleResumeDownloadTask(task) {
+  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  try {
+    if (sessionId) {
+      await asmrSyncApi.resumeSession(sessionId)
+    } else {
+      const taskId = String(task?.active_task_id || task?.id || '').trim()
+      if (taskId) await taskApi.resume(taskId)
+    }
+    ElMessage.success('已恢复')
+    await refreshDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '恢复失败')
+  }
+}
+
+async function handleCancelDownloadTask(task) {
+  const rjcode = String(task?.rjcode || '').trim()
+  const title = String(task?.work_title || task?.source_label || '').trim()
+  try {
+    await showSystemConfirm({
+      title: '取消下载任务',
+      message: `确定要取消 ${rjcode || title || '此任务'} 的下载吗？`,
+      description: '取消后将停止下载并清理已下载的临时文件，此操作不可撤销。',
+      tone: 'danger',
+      confirmText: '取消下载',
+    })
+  } catch {
+    return
+  }
+  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  try {
+    if (sessionId) {
+      await asmrSyncApi.cancelSession(sessionId, { cleanup: true })
+    } else {
+      const taskIds = (task?.source_task_ids || [task?.active_task_id || task?.id]).filter(Boolean).map(String)
+      if (taskIds.length) await taskApi.batchCancelCleanup(taskIds)
+    }
+    ElMessage.success('已取消并清理')
+    await refreshDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '取消失败')
+  }
+}
+
 function buildReimportSourceFromWork(item) {
   const canonicalRjcode = String(item?.canonical_rjcode || item?.display_rjcode || '').trim().toUpperCase()
   const downloadRoot = String(item?.local_download_root || '').trim()
@@ -2874,8 +2890,10 @@ function getUploadBackgroundTargetLabel(task) {
 <style scoped>
 .circle-page {
   display: grid;
-  gap: 16px;
-  padding: 6px;
+  gap: 0;
+  padding: 0;
+  background: #fafafa;
+  min-height: 100vh;
 }
 
 .circle-works-loading-state {
@@ -3609,111 +3627,122 @@ function getUploadBackgroundTargetLabel(task) {
   text-align: left;
 }
 .circle-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 420px);
-  gap: 20px;
-  padding: 30px 34px;
-  border-radius: 28px;
-  background: linear-gradient(180deg, #fbfcfe 0%, #f5f6f8 100%);
-  border: 1px solid rgba(29, 29, 31, 0.08);
-  box-shadow: 0 12px 28px rgba(29, 29, 31, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 28px 32px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+}
+.hero-copy {
+  flex: 1;
+  min-width: 0;
 }
 .hero-eyebrow {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: .14em;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
   text-transform: uppercase;
-  color: #0071e3;
+  color: #6b7280;
+  margin-bottom: 8px;
+}
+.hero-eyebrow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3b82f6;
 }
 .circle-hero h1 {
-  margin: 6px 0 8px;
-  font-size: 34px;
-  line-height: 1.08;
-  letter-spacing: -0.03em;
-  color: #1d1d1f;
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #111827;
+  line-height: 1.2;
 }
-.circle-hero p {
+.hero-desc {
   margin: 0;
-  max-width: 720px;
-  color: rgba(29, 29, 31, 0.7);
-  line-height: 1.62;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #6b7280;
+  max-width: 560px;
 }
 .hero-actions {
-  display: grid;
-  gap: 12px;
-  align-content: center;
-  padding: 16px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(29, 29, 31, 0.06);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
-.hero-search-input :deep(.el-input__wrapper) {
-  min-height: 46px;
-  border-radius: 14px;
-  box-shadow: none;
-  background: transparent;
-  padding-left: 32px;
-}
-.hero-search-input :deep(.el-input__wrapper.is-focus) {
-  box-shadow: none;
-}
-.hero-search-button,
-.batch-action-button,
-.work-action-button {
-  border-radius: 12px;
-  font-weight: 800;
+.hero-search-wrap {
   position: relative;
-  overflow: hidden;
-  transition: transform .18s ease, box-shadow .22s ease, border-color .18s ease, background .22s ease, color .22s ease, filter .18s ease;
 }
-.hero-search-button {
-  min-height: 46px;
-  border: 1px solid #0071e3;
-  background: linear-gradient(135deg, #0a84ff 0%, #0071e3 100%);
-  box-shadow: 0 10px 22px rgba(0, 113, 227, 0.24);
-}
-.hero-search-button::after,
-.batch-action-button::after,
-.work-action-button::after {
-  content: "";
+.hero-search-icon {
   position: absolute;
-  inset: 0;
-  background: linear-gradient(120deg, rgba(255,255,255,0) 20%, rgba(255,255,255,0.22) 50%, rgba(255,255,255,0) 80%);
-  opacity: 0;
-  transform: translateX(-18%);
-  transition: opacity .2s ease, transform .28s ease;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #9ca3af;
+  z-index: 1;
   pointer-events: none;
 }
-.hero-search-button:hover,
-.batch-action-button:hover,
-.work-action-button:hover {
-  transform: translateY(-2px);
-  filter: saturate(1.05);
+.hero-search-input :deep(.el-input__wrapper) {
+  min-height: 36px;
+  min-width: 280px;
+  border-radius: 8px;
+  box-shadow: none;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  padding-left: 30px;
+  transition: border-color .15s;
 }
-.hero-search-button:hover::after,
-.batch-action-button:hover::after,
-.work-action-button:hover::after {
-  opacity: 1;
-  transform: translateX(12%);
+.hero-search-input :deep(.el-input__wrapper:hover),
+.hero-search-input :deep(.el-input__wrapper.is-focus) {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
 }
-.hero-search-button:active,
-.batch-action-button:active,
-.work-action-button:active {
-  transform: translateY(0) scale(0.985);
-  box-shadow: 0 6px 14px rgba(0, 113, 227, 0.14);
+.hero-btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+}
+.hero-btn-primary {
+  background: #111827;
+  color: #fff;
+  border: 1px solid #111827;
+}
+.hero-btn-primary:hover {
+  background: #1f2937;
+}
+.hero-btn-secondary {
+  background: #fff;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
+.hero-btn-secondary:hover {
+  background: #f9fafb;
+  border-color: #9ca3af;
 }
 .sidebar-refresh-button {
-  font-weight: 800;
-  color: #4f73ab;
+  font-weight: 600;
+  color: #6b7280;
+  font-size: 12px;
 }
 .index-progress-card {
   display: grid;
-  gap: 12px;
-  padding: 16px 18px;
-  border-radius: 20px;
-  border: 1px solid #d8e6fb;
-  background: linear-gradient(135deg, rgba(244, 249, 255, 0.96) 0%, rgba(255, 254, 250, 0.96) 100%);
-  box-shadow: 0 14px 28px rgba(55, 93, 152, 0.08);
+  gap: 10px;
+  padding: 16px 20px;
+  margin: 16px 24px 0;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
 }
 .index-progress-head {
   display: flex;
@@ -3724,102 +3753,108 @@ function getUploadBackgroundTargetLabel(task) {
 .index-progress-head-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 .refresh-progress-card {
-  margin: 0 20px 18px;
+  margin: 0 0 12px;
 }
 .index-cancel-button {
-  border-radius: 999px;
+  border-radius: 6px;
+  font-size: 12px;
 }
 .index-progress-title {
-  font-size: 16px;
-  font-weight: 800;
-  color: #1f3759;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
 }
 .index-progress-subtitle {
-  margin-top: 4px;
-  font-size: 13px;
-  color: #637892;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #6b7280;
 }
 .index-progress-status,
 .progress-meta-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 24px;
-  padding: 0 9px;
-  border-radius: 999px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
 }
 .index-progress-status {
-  background: #edf4ff;
-  color: #265aa7;
-  border: 1px solid #d4e5ff;
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #dbeafe;
 }
 .index-progress-status.completed {
-  background: #ecfaf1;
-  color: #19744b;
-  border-color: #cdeedb;
+  background: #ecfdf5;
+  color: #059669;
+  border-color: #d1fae5;
 }
 .index-progress-status.failed {
-  background: #fff1f0;
-  color: #c0392b;
-  border-color: #ffd4d1;
+  background: #fef2f2;
+  color: #dc2626;
+  border-color: #fecaca;
 }
 .index-progress-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 .progress-meta-pill {
-  background: rgba(255, 255, 255, 0.82);
-  color: #556b86;
-  border: 1px solid #e0e8f4;
+  background: #f3f4f6;
+  color: #4b5563;
+  border: 1px solid #e5e7eb;
 }
 .progress-meta-pill.ok {
-  background: #ecfaf1;
-  color: #19744b;
-  border-color: #cdeedb;
+  background: #ecfdf5;
+  color: #059669;
+  border-color: #d1fae5;
+}
+.progress-meta-pill.warn {
+  background: #fffbeb;
+  color: #d97706;
+  border-color: #fde68a;
 }
 .index-progress-error {
-  font-size: 13px;
-  color: #bb3f33;
-  line-height: 1.6;
+  font-size: 12px;
+  color: #dc2626;
+  line-height: 1.5;
 }
 .refresh-progress-log-list {
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 .refresh-progress-log-item {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-start;
-  padding: 9px 12px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid #dfe8f4;
-  color: #506784;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #f9fafb;
+  border: 1px solid #f3f4f6;
+  color: #4b5563;
   font-size: 12px;
 }
 .refresh-progress-log-item.success {
-  background: rgba(236, 250, 241, 0.9);
-  border-color: #cdeedb;
-  color: #1f7a52;
+  background: #ecfdf5;
+  border-color: #d1fae5;
+  color: #065f46;
 }
 .refresh-progress-log-item.warning {
-  background: rgba(255, 248, 233, 0.9);
-  border-color: #f3dfb0;
-  color: #8c641a;
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
 }
 .refresh-progress-log-item.error {
-  background: rgba(255, 241, 240, 0.9);
-  border-color: #ffd4d1;
-  color: #b74237;
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
 }
 .refresh-progress-log-time {
   flex: 0 0 auto;
-  color: #8092a9;
+  color: #9ca3af;
   font-variant-numeric: tabular-nums;
 }
 .refresh-progress-log-message {
@@ -3828,16 +3863,16 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .circle-shell {
   display: grid;
-  grid-template-columns: 290px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 0;
   min-height: 0;
 }
 .sidebar-card,
 .circle-main {
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #e3edf9;
-  box-shadow: 0 14px 30px rgba(46, 74, 120, 0.07);
+  background: #fff;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 .circle-main {
   flex: 1;
@@ -3845,135 +3880,201 @@ function getUploadBackgroundTargetLabel(task) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-left: 1px solid #e5e7eb;
 }
 .sidebar-card {
-  padding: 22px 20px;
+  padding: 20px 16px;
   display: grid;
-  gap: 14px;
+  gap: 12px;
+  border-right: none;
 }
 .sidebar-head,
-.toolbar-main,
-.batch-bar,
-.preview-toolbar,
-.preview-plan-head {
+.toolbar-main {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
-.sidebar-title,
+.sidebar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
 .toolbar-title {
-  font-size: 18px;
-  font-weight: 800;
-  color: #1d1d1f;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
 }
 .toolbar-card {
-  padding: 20px 20px 16px;
+  padding: 14px 18px 10px;
   display: grid;
-  gap: 14px;
+  gap: 6px;
+  border-bottom: 1px solid #f3f4f6;
 }
 .toolbar-subtitle {
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.58);
-  margin-top: 4px;
+  color: #9ca3af;
+  margin-top: 2px;
 }
 .toolbar-metrics {
   display: flex;
   flex-wrap: wrap;
+  gap: 6px;
+}
+.toolbar-stats-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
+}
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .metric-pill,
 .tag-chip,
 .reason-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 20px;
-  padding: 0 7px;
+  height: 22px;
+  padding: 0 8px;
   border-radius: 4px;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 500;
   line-height: 1;
 }
 .metric-pill {
-  min-height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #ffffff 0%, #f6faff 100%);
-  color: #48617d;
-  border: 1px solid rgba(72, 97, 125, 0.16);
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  background: #f3f4f6;
+  color: #4b5563;
+  border: 1px solid #e5e7eb;
 }
 .metric-pill.owned {
-  background: linear-gradient(180deg, #f7fbff 0%, #eef5ff 100%);
-  color: #245ea6;
-  border-color: rgba(0, 113, 227, 0.2);
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #dbeafe;
 }
 .metric-pill.warn {
-  background: linear-gradient(180deg, #fff9f0 0%, #fff2df 100%);
-  color: #9a5809;
-  border-color: rgba(214, 145, 31, 0.26);
+  background: #fffbeb;
+  color: #d97706;
+  border-color: #fde68a;
 }
 .metric-pill.ok,
 .tag-chip.ok,
 .reason-pill.ok {
-  background: linear-gradient(180deg, #f3fcf6 0%, #e8f7ee 100%);
-  color: #1c7a4d;
-  border: 1px solid rgba(68, 162, 104, 0.24);
+  background: #ecfdf5;
+  color: #059669;
+  border: 1px solid #d1fae5;
 }
 .metric-pill.muted {
-  background: linear-gradient(180deg, #fbfcfe 0%, #f3f6fa 100%);
-  color: #5f6f83;
-  border-color: rgba(95, 111, 131, 0.16);
+  background: #f9fafb;
+  color: #6b7280;
+  border-color: #e5e7eb;
 }
 .toolbar-filters {
   display: flex;
   flex-wrap: wrap;
   gap: 16px;
-  padding-top: 2px;
+  flex-shrink: 0;
 }
 .toolbar-filters :deep(.el-checkbox__label) {
-  font-weight: 700;
-  color: #546b87;
+  font-weight: 500;
+  font-size: 13px;
+  color: #4b5563;
 }
 .circle-list {
   display: grid;
-  gap: 8px;
-  padding: 4px 2px 2px;
-  max-height: calc(100vh - 320px);
-  overflow: auto;
+  gap: 6px;
+  padding: 4px 2px;
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  /* 顶部底部渐隐遮罩，暗示可滚动 */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+}
+.circle-list::-webkit-scrollbar {
+  display: none;
 }
 .circle-list-item {
   width: 100%;
-  padding: 14px 12px;
-  border: 1px solid rgba(29, 29, 31, 0.07);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.84);
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: #fff;
   text-align: left;
   cursor: pointer;
-  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease, transform .18s ease;
+  transition: all .18s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .circle-list-item:hover {
-  border-color: rgba(0, 113, 227, 0.16);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 8px 18px rgba(29, 29, 31, 0.05);
+  background: #fafbfc;
+  border-color: rgba(0,0,0,0.06);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   transform: translateY(-1px);
 }
 .circle-list-item.active {
-  border-color: rgba(0, 113, 227, 0.18);
-  background: linear-gradient(180deg, #f8fbff 0%, #eff5fc 100%);
-  box-shadow: 0 0 0 1px rgba(0, 113, 227, 0.12), 0 8px 18px rgba(29, 29, 31, 0.04);
-  transform: none;
+  background: #f0f4ff;
+  border-color: rgba(37,99,235,0.15);
+  box-shadow: 0 2px 8px rgba(37,99,235,0.08);
+}
+.circle-list-item:active {
+  transform: scale(0.98);
+  transition-duration: .08s;
 }
 .circle-list-name {
-  font-size: 15px;
-  font-weight: 700;
-  color: #1d1d1f;
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  line-height: 1.4;
+}
+.circle-list-topline {
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 500;
+  margin-bottom: 1px;
+}
+.circle-list-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.circle-count-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.6;
+  background: #f3f4f6;
+  color: #6b7280;
+  border: none;
+}
+.circle-count-pill.owned {
+  background: #eff6ff;
+  color: #2563eb;
+}
+.circle-count-pill.dl {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+.circle-count-pill.warn {
+  background: #fef2f2;
+  color: #dc2626;
 }
 .circle-list-meta {
   margin-top: 4px;
-  display: grid;
-  gap: 2px;
   font-size: 11px;
-  color: rgba(29, 29, 31, 0.5);
+  color: #9ca3af;
 }
 .works-card {
   padding: 18px;
@@ -4002,11 +4103,16 @@ function getUploadBackgroundTargetLabel(task) {
   flex-wrap: wrap;
 }
 .batch-action-button {
-  min-width: 112px;
-  min-height: 38px;
+  min-width: 90px;
+  min-height: 32px;
+  padding: 0 12px;
   border: 1px solid rgba(0, 113, 227, 0.16);
   background: linear-gradient(180deg, #ffffff 0%, #f6faff 100%);
   color: #235ea8;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 13px;
+  transition: all .2s ease;
 }
 .batch-action-button.ghost {
   border-color: rgba(29, 29, 31, 0.08);
@@ -4028,16 +4134,35 @@ function getUploadBackgroundTargetLabel(task) {
   background: linear-gradient(180deg, #f3f8ff 0%, #e7f1ff 100%);
   border-color: rgba(0, 113, 227, 0.24);
   color: #0c5ec2;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.12);
+}
+.batch-action-button:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: none;
+  transition-duration: .08s;
 }
 .batch-action-button.primary:hover {
   background: linear-gradient(135deg, #2997ff 0%, #0077ed 100%);
   border-color: #0077ed;
   color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 113, 227, 0.25);
+}
+.batch-action-button.primary:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: 0 4px 10px rgba(0, 113, 227, 0.15);
 }
 .batch-action-button.refresh:hover {
   background: linear-gradient(180deg, #eaf8ff 0%, #dceff7 100%);
   border-color: rgba(31, 106, 134, 0.26);
   color: #155a73;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(31, 106, 134, 0.1);
+}
+.batch-action-button.refresh:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: none;
 }
 .work-action-button:hover {
   background: linear-gradient(180deg, #f2f7ff 0%, #e9f2ff 100%);
@@ -4051,282 +4176,34 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .work-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
+  gap: 10px;
 }
-.work-card,
 .owned-card,
 .info-card,
 .preview-plan {
-  border-radius: 18px;
-  border: 1px solid rgba(29, 29, 31, 0.07);
+  border-radius: 14px;
+  border: 1px solid rgba(29, 29, 31, 0.06);
   background: #fcfcfd;
 }
-.work-card {
-  position: relative;
-  overflow: hidden;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 240px;
-  cursor: pointer;
-  transition: border-color .18s ease, box-shadow .22s ease, transform .18s ease, background-color .18s ease;
-  will-change: transform;
-  transform: translateZ(0);
-}
-.work-card.is-downloaded {
-  border-color: rgba(67, 160, 94, 0.22);
-  background:
-    radial-gradient(circle at top right, rgba(93, 193, 122, 0.16), transparent 28%),
-    linear-gradient(180deg, #fbfefb 0%, #f3fbf5 100%);
-  box-shadow:
-    0 14px 28px rgba(53, 102, 72, 0.08),
-    inset 0 0 0 1px rgba(93, 193, 122, 0.08);
-}
-.work-card.is-downloaded:hover {
-  border-color: rgba(67, 160, 94, 0.3);
-  box-shadow:
-    0 18px 30px rgba(53, 102, 72, 0.10),
-    inset 0 0 0 1px rgba(93, 193, 122, 0.1);
-  background:
-    radial-gradient(circle at top right, rgba(93, 193, 122, 0.2), transparent 30%),
-    linear-gradient(180deg, #ffffff 0%, #f1fbf4 100%);
-}
-.work-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(52, 120, 246, 0.16);
-  box-shadow: 0 12px 24px rgba(38, 74, 134, 0.08);
-  background: #ffffff;
-}
-.work-card.selected {
-  border-color: rgba(52, 120, 246, 0.36);
-  box-shadow: 0 0 0 2px rgba(52, 120, 246, 0.14), 0 16px 30px rgba(52, 120, 246, 0.12);
-  background: linear-gradient(180deg, #f8fbff 0%, #eef5ff 100%);
-}
-.work-card.status-flash {
-  animation: workStatusFlash 2.4s ease;
-  border-color: rgba(82, 170, 103, 0.54);
-  box-shadow:
-    0 0 0 2px rgba(82, 170, 103, 0.18),
-    0 18px 32px rgba(73, 137, 91, 0.16);
-  background:
-    radial-gradient(circle at top right, rgba(115, 205, 134, 0.22), transparent 32%),
-    linear-gradient(180deg, #fcfffb 0%, #eefaf0 100%);
-}
-.work-card.status-flash.selected {
-  border-color: rgba(82, 170, 103, 0.6);
-  box-shadow:
-    0 0 0 2px rgba(82, 170, 103, 0.22),
-    0 18px 32px rgba(73, 137, 91, 0.18);
-}
-.work-card.disabled {
-  opacity: .96;
-  filter: saturate(0.56) grayscale(0.12);
-  background: linear-gradient(180deg, #fafbfd 0%, #f1f3f6 100%);
-  border-color: rgba(29, 29, 31, 0.07);
-  cursor: default;
-}
-.work-card.disabled:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 8px 16px rgba(29, 29, 31, 0.05);
-  background: linear-gradient(180deg, #fafbfd 0%, #f1f3f6 100%);
-  border-color: rgba(29, 29, 31, 0.08);
-}
-@keyframes workStatusFlash {
-  0% {
-    transform: translateY(0) scale(0.992);
-    box-shadow:
-      0 0 0 0 rgba(82, 170, 103, 0.34),
-      0 8px 18px rgba(73, 137, 91, 0.10);
-  }
-  18% {
-    transform: translateY(-2px) scale(1.008);
-    box-shadow:
-      0 0 0 6px rgba(82, 170, 103, 0.16),
-      0 18px 30px rgba(73, 137, 91, 0.18);
-  }
-  100% {
-    transform: translateY(0) scale(1);
-    box-shadow:
-      0 0 0 0 rgba(82, 170, 103, 0),
-      0 12px 22px rgba(73, 137, 91, 0.10);
-  }
-}
-.work-card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: flex-start;
-}
-.work-corner-flag {
-  position: absolute;
-  top: 0;
-  right: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 68px;
-  height: 24px;
-  padding: 0 10px;
-  border-bottom-left-radius: 12px;
-  background: rgba(34, 197, 94, 0.95);
-  backdrop-filter: blur(8px);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .04em;
-  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.25);
-  z-index: 10;
-}
-.work-corner-flag::after {
-  content: '';
-  position: absolute;
-  left: -8px;
-  top: 0;
-  width: 14px;
-  height: 100%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.05) 100%);
-  transform: skewX(-24deg);
-  opacity: 0.8;
-}
-.work-card-copy {
-  min-height: 72px;
-}
-.work-rj {
-  font-size: 11px;
-  font-weight: 700;
-  color: #5d7caa;
-}
-.work-card.disabled .work-rj,
-.work-card.disabled .work-title,
-.work-card.disabled .work-linked {
-  color: rgba(29, 29, 31, 0.4);
-}
-.work-title,
 .owned-title {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 800;
   color: #1f3554;
-  line-height: 1.42;
+  line-height: 1.38;
 }
-.work-title {
-  display: -webkit-box;
-  min-height: calc(1.42em * 3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-}
-.work-linked,
 .owned-meta,
 .owned-path {
-  font-size: 11px;
-  color: rgba(29, 29, 31, 0.46);
-  line-height: 1.5;
+  font-size: 9px;
+  color: rgba(29, 29, 31, 0.40);
+  line-height: 1.4;
   word-break: break-word;
 }
-.work-linked {
-  min-height: 17px;
-}
-.work-tags,
-.work-actions,
 .preview-presets,
 .preview-plan-meta {
   display: flex;
-  gap: 8px;
+  gap: 4px;
   flex-wrap: wrap;
-}
-.work-tags {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-.work-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: flex-end;
-  gap: 6px;
-  flex-wrap: wrap;
-  width: 100%;
-}
-.tag-chip {
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: 0.02em;
-}
-.tag-chip.is-primary {
-  background: #edf4ff;
-  color: #3b70c4;
-  border: 1px solid #cce0ff;
-}
-.tag-chip.is-success {
-  background: #edf9f1;
-  color: #2b804e;
-  border: 1px solid #cdeedb;
-}
-.tag-chip.is-danger {
-  background: #fff4f2;
-  color: #c44733;
-  border: 1px solid #fbd8d3;
-}
-.tag-chip.is-warning {
-  background: #fff8eb;
-  color: #b06f13;
-  border: 1px solid #fbe6c4;
-}
-.tag-chip.is-info {
-  background: #f4f6f9;
-  color: #5d6d81;
-  border: 1px solid #e2e8f0;
-}
-.tag-chip.is-disabled {
-  background: #fafafa;
-  color: #94a3b8;
-  border: 1px solid #e2e8f0;
-}
-.work-action-button {
-  border: 1px solid #b9d7ff;
-  background: #ffffff;
-  color: #1f6fd6;
-  width: auto;
-  min-width: 84px;
-  min-height: 26px;
-  padding: 0 12px;
-  justify-content: center;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  box-shadow: 0 2px 6px rgba(31, 111, 214, 0.08);
-}
-.work-action-button:hover {
-  background: linear-gradient(180deg, #2997ff 0%, #0077ed 100%);
-  border-color: #0077ed;
-  color: #fff;
-  box-shadow: 0 8px 16px rgba(31, 111, 214, 0.18);
-}
-.work-action-button.upload {
-  border-color: #cde4d4;
-  background: #edf8f1;
-  color: #237849;
-  box-shadow: 0 2px 6px rgba(35, 120, 73, 0.08);
-}
-.work-action-button.upload:hover {
-  background: linear-gradient(180deg, #45b36a 0%, #2f8b54 100%);
-  border-color: #2f8b54;
-  color: #fff;
-  box-shadow: 0 8px 16px rgba(35, 120, 73, 0.18);
 }
 .info-card,
 .preview-plan {
@@ -4340,7 +4217,8 @@ function getUploadBackgroundTargetLabel(task) {
 .works-pager {
   display: flex;
   justify-content: flex-end;
-  margin-top: 6px;
+  margin-top: auto;
+  padding-top: 16px;
 }
 .circle-complete-state {
   position: relative;
@@ -4535,6 +4413,11 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .circle-tabs :deep(.el-tabs__content) {
   padding-top: 2px;
+}
+.circle-tabs :deep(.el-tab-pane) {
+  display: flex;
+  flex-direction: column;
+  min-height: 640px;
 }
 .preview-dialog-shell {
   display: grid;
