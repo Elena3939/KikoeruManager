@@ -1,418 +1,509 @@
 <template>
-  <div class="asmr-sync-page">
-    <el-card class="page-header">
-      <template #header>
-        <div class="header-content">
-          <span class="title">ASMR 同步下载</span>
-          <el-tag type="info">根据字幕文件自动下载并匹配</el-tag>
-        </div>
-      </template>
-
-      <div class="scan-section">
-        <el-form :inline="true">
-          <el-form-item label="字幕文件夹">
-            <el-input v-model="subtitleFolder" placeholder="选择包含字幕文件的文件夹" style="width: 400px" clearable>
-              <template #append>
-                <el-button @click="selectFolder">选择</el-button>
-              </template>
-            </el-input>
-          </el-form-item>
-          <el-form-item>
-            <el-button type="primary" @click="scanFolder" :loading="scanning">
-              <el-icon>
-                <Search />
-              </el-icon>
-              扫描
-            </el-button>
-            <el-button type="success" @click="startSync" :loading="syncing" :disabled="selectedItems.length === 0">
-              <el-icon>
-                <Download />
-              </el-icon>
-              开始同步下载
-            </el-button>
-          </el-form-item>
-        </el-form>
+  <div class="min-h-0 p-6 space-y-6">
+    <!-- Page Header -->
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-xl font-bold text-slate-900 tracking-tight">ASMR 同步下载</h1>
+        <p class="text-sm text-slate-500 mt-1">根据字幕文件自动下载并匹配，或手动输入 RJ 号查询下载</p>
       </div>
-    </el-card>
-
-    <el-card class="enhanced-card">
-      <template #header>
-        <div class="header-content">
-          <span class="title">增强下载工作台</span>
-          <el-tag type="success">仅保留 RJ 查询与下载</el-tag>
-        </div>
-      </template>
-
-      <div class="enhanced-simple-intro">
-        社团补全已经覆盖缺失检测、批量增强下载和自动上传，这里只保留手动输入 RJ 号直接查询并下载。
+      <div class="flex items-center gap-2">
+        <button
+          class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none"
+          @click="scanFolder" :disabled="scanning || !subtitleFolder"
+        >
+          <Search class="w-4 h-4" />
+          {{ scanning ? '扫描中...' : '扫描' }}
+        </button>
+        <button
+          class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none"
+          @click="startSync" :disabled="syncing || selectedItems.length === 0"
+        >
+          <DownloadIcon class="w-4 h-4" />
+          {{ syncing ? '同步中...' : '开始同步下载' }}
+        </button>
+        <button
+          class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:border-slate-300 active:scale-95 transition-all duration-200"
+          @click="refreshStatus" :disabled="refreshing"
+        >
+          <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': refreshing }" />
+        </button>
       </div>
+    </div>
 
-      <el-form label-width="88px" class="enhanced-form enhanced-form-simple">
-        <el-form-item label="RJ 列表">
-          <el-input
-            v-model="enhancedInput"
-            type="textarea"
-            :rows="4"
-            placeholder="支持粘贴 RJ123456、RJ234567，空格 / 换行 / 逗号分隔"
-          />
-        </el-form-item>
-
-        <div class="enhanced-actions simple-actions">
-          <el-button type="primary" @click="buildEnhancedPlans" :loading="enhancedPlanning">
-            <el-icon><Search /></el-icon>
-            查询 RJ
-          </el-button>
-          <el-button type="success" @click="startEnhancedDownload" :loading="enhancedStarting" :disabled="!enhancedPlans.length">
-            <el-icon><Download /></el-icon>
-            下载已查询 RJ
-          </el-button>
+    <!-- Scan Input -->
+    <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+        <h2 class="text-base font-semibold text-slate-900">字幕文件夹扫描</h2>
+      </div>
+      <div class="p-6">
+        <div class="flex items-center gap-3">
+          <FolderSearch class="w-5 h-5 text-slate-400 shrink-0" />
+          <el-input v-model="subtitleFolder" placeholder="输入包含字幕文件的文件夹路径" clearable class="flex-1" />
         </div>
-      </el-form>
+      </div>
+    </section>
 
-      <div v-if="enhancedPlans.length > 0" class="enhanced-plan-list">
-        <div v-for="plan in enhancedPlans" :key="plan.rjcode" class="enhanced-plan-item">
-          <div class="enhanced-plan-header">
-            <div>
-              <div class="plan-rj">{{ plan.rjcode }}</div>
-              <div class="plan-title">{{ plan.title || '未命名作品' }}</div>
+    <!-- Enhanced Download Workbench -->
+    <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+        <div>
+          <h2 class="text-base font-semibold text-slate-900">增强下载工作台</h2>
+          <p class="text-xs text-slate-500 mt-0.5">手动输入 RJ 号直接查询并下载</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            class="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 active:scale-95 transition-all duration-200 disabled:opacity-50"
+            @click="buildEnhancedPlans" :disabled="enhancedPlanning"
+          >
+            <Search class="w-3.5 h-3.5" />
+            {{ enhancedPlanning ? '查询中...' : '查询 RJ' }}
+          </button>
+          <button
+            v-if="enhancedDownloadWorkbenchTaskIds.length"
+            class="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all duration-200"
+            @click="enhancedDownloadWorkbenchVisible = true"
+          >
+            <DownloadIcon class="w-3.5 h-3.5" />
+            下载工作台
+          </button>
+        </div>
+      </div>
+      <div class="p-6">
+        <el-input
+          v-model="enhancedInput"
+          type="textarea"
+          :rows="3"
+          placeholder="支持粘贴 RJ123456、RJ234567，空格 / 换行 / 逗号分隔"
+          class="mb-4"
+        />
+
+        <!-- Enhanced Plans -->
+        <div v-if="enhancedPlans.length > 0" class="space-y-4">
+          <!-- Batch Toolbar -->
+          <div class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 shadow-sm backdrop-blur-sm">
+            <div class="flex items-center gap-3">
+              <span class="text-sm font-bold text-slate-700 tracking-wide">批量操作</span>
+              <span class="text-xs font-semibold text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200 shadow-sm">已选 {{ selectedPlanRjcodes.length }} / {{ enhancedPlans.length }}</span>
             </div>
-            <div class="plan-summary">
-              <el-tag type="success">可下载 {{ plan.summary?.selectable_total || 0 }}</el-tag>
-              <el-tag type="info">资源 {{ plan.grouped_resources?.length || 0 }} 组</el-tag>
+            <div class="flex items-center gap-2">
+              <button class="px-2.5 py-1 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="selectAllPlans">全选</button>
+              <button class="px-2.5 py-1 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="clearPlanSelection">清空</button>
+              <button
+                class="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 active:scale-95 transition-all duration-200 disabled:opacity-50 ml-2"
+                @click="openEnhancedPreview" :disabled="enhancedStarting || selectedPlanRjcodes.length === 0"
+              >
+                <DownloadIcon class="w-3.5 h-3.5" />
+                {{ enhancedStarting ? '创建中...' : `下载选中 (${selectedPlanRjcodes.length})` }}
+              </button>
             </div>
           </div>
 
-          <div class="plan-toolbar plan-toolbar-simple">
-            <span class="plan-selected-count">
-              将下载 {{ plan.selectable_resources.length }} 个资源
-            </span>
-          </div>
-
-          <div v-if="plan.grouped_resources?.length" class="plan-group-list">
-            <el-tag v-for="group in plan.grouped_resources" :key="group.group_key" effect="plain">
-              {{ getResourceTypeLabel(group.resource_type) }} / {{ group.language || '未标注' }} / {{ group.extension.toUpperCase() }} / {{ group.count }}
-            </el-tag>
-          </div>
-          <div v-if="plan.selectable_resources?.length" class="simple-resource-summary">
-            {{ summarizePlanResources(plan.selectable_resources) }}
-          </div>
-        </div>
-      </div>
-    </el-card>
-
-    <!-- 扫描结果 -->
-    <el-card v-if="scanResults.length > 0" class="results-card">
-      <template #header>
-        <div class="results-header">
-          <span>扫描结果 ({{ scanResults.length }} 个作品)</span>
-          <el-checkbox v-model="selectAll" @change="handleSelectAll">全选</el-checkbox>
-        </div>
-      </template>
-
-      <el-table :data="scanResults" style="width: 100%" row-key="rjcode" @selection-change="handleSelectionChange">
-        <el-table-column type="selection" width="55" />
-        <el-table-column prop="rjcode" label="RJ号" width="120" />
-        <el-table-column prop="folder_name" label="文件夹名称" min-width="250">
-          <template #default="{ row }">
-            <div class="folder-name">
-              <el-icon>
-                <Folder />
-              </el-icon>
-              <span>{{ row.folder_name }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="subtitle_count" label="字幕数" width="80" align="center" />
-        <el-table-column label="预览" width="80" align="center">
-          <template #default="{ row }">
-            <el-button size="small" @click="previewDownload(row)" :loading="row.previewing">预览</el-button>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.status === 'pending'" type="info">待下载</el-tag>
-            <el-tag v-else-if="row.status === 'downloading'" type="warning">下载中</el-tag>
-            <el-tag v-else-if="row.status === 'completed'" type="success">已完成</el-tag>
-            <el-tag v-else-if="row.status === 'failed'" type="danger">失败</el-tag>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <!-- 预览对话框 -->
-    <el-dialog v-model="previewDialogVisible" title="下载预览" width="900px">
-      <div v-if="previewLoading" class="preview-loading">
-        <AppLoadingAnimation label="正在获取作品信息..." :size="132" :min-height="180" />
-      </div>
-      <div v-else-if="previewData" class="preview-content">
-        <el-descriptions :column="3" border>
-          <el-descriptions-item label="请求RJ号">{{ previewData.rjcode }}</el-descriptions-item>
-          <el-descriptions-item label="实际下载">
-            <el-tag :type="previewData.actual_rjcode !== previewData.rjcode ? 'warning' : 'success'">
-              {{ previewData.actual_rjcode || '未找到' }}
-            </el-tag>
-            <span v-if="previewData.lang" style="margin-left: 8px;">({{ previewData.lang }})</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="标题">{{ previewData.title }}</el-descriptions-item>
-          <el-descriptions-item label="总文件数">{{ previewData.total_files }}</el-descriptions-item>
-          <el-descriptions-item label="筛选后">
-            <el-tag type="success">{{ previewData.filtered_files }} 个</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="预计大小">
-            <span style="font-weight: bold; color: #409EFF;">{{ formatSize(previewData.total_size) }}</span>
-          </el-descriptions-item>
-        </el-descriptions>
-
-        <!-- 可用版本列表 -->
-        <div v-if="previewData.available_versions && previewData.available_versions.length > 0" class="version-list">
-          <h4>可用版本</h4>
-          <el-table :data="previewData.available_versions" size="small">
-            <el-table-column prop="rjcode" label="RJ号" width="120" />
-            <el-table-column prop="lang" label="语言" width="100">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.priority <= 1 ? 'success' : row.priority <= 2 ? 'warning' : 'info'">
-                  {{ getLangName(row.lang) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="file_count" label="文件数" width="80" />
-            <el-table-column label="可用" width="80">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.available ? 'success' : 'danger'">{{ row.available ? '是' : '否'
-                }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
-          </el-table>
-        </div>
-
-        <!-- 文件列表 -->
-        <div class="file-list">
-          <h4>下载文件列表 ({{ previewData.filtered_files }} 个)</h4>
-          <el-table :data="previewData.files" max-height="400" size="small">
-            <el-table-column type="index" label="#" width="50" />
-            <el-table-column label="文件路径" min-width="300">
-              <template #default="{ row }">
-                <div class="file-path">
-                  <el-icon>
-                    <Document />
-                  </el-icon>
-                  <span :title="row.path || row.title">{{ row.title }}</span>
+          <!-- Plan Cards Grid -->
+          <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+            <WorkCard
+              v-for="(plan, idx) in enhancedPlans"
+              :key="plan.rjcode"
+              :item="plan"
+              :card-index="idx"
+              :selected="selectedPlanSet.has(plan.rjcode)"
+              image-field="cover_url"
+              code-field="rjcode"
+              size="default"
+              class="enhanced-plan-card"
+              @select="(p) => togglePlanSelect(p.rjcode)"
+            >
+              <template #cover-placeholder>
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow">
+                  <DownloadIcon class="w-5 h-5 text-white" />
                 </div>
               </template>
-            </el-table-column>
-            <el-table-column prop="type" label="类型" width="80">
-              <template #default="{ row }">
-                <el-tag size="small" type="info">{{ row.type || '文件' }}</el-tag>
+              <template #meta>
+                <div class="enhanced-plan-meta">
+                  <span class="enhanced-plan-meta-pill is-code">RJ {{ plan.rjcode }}</span>
+                  <span class="enhanced-plan-meta-pill is-downloadable">{{ plan.summary?.selectable_total || 0 }} 个可下载</span>
+                </div>
               </template>
-            </el-table-column>
-            <el-table-column label="大小" width="100">
-              <template #default="{ row }">{{ formatSize(row.size) }}</template>
-            </el-table-column>
-          </el-table>
+              <template #tags>
+                <div class="enhanced-plan-tags">
+                  <span class="enhanced-plan-tag is-primary">资源构成</span>
+                  <span v-for="group in (plan.grouped_resources || []).slice(0, 3)" :key="group.group_key" class="enhanced-plan-tag is-soft">
+                    {{ getResourceTypeLabel(group.resource_type) }} ×{{ group.count }}
+                  </span>
+                  <span v-if="(plan.grouped_resources || []).length > 3" class="enhanced-plan-tag is-muted">
+                    +{{ (plan.grouped_resources || []).length - 3 }}
+                  </span>
+                </div>
+              </template>
+              <template #actions><span /></template>
+            </WorkCard>
+          </div>
         </div>
       </div>
-      <div v-else class="preview-error">
+    </section>
+
+    <!-- Enhanced Download Workbench Dialog -->
+    <DownloadTaskWorkbenchDialog
+      v-model:visible="enhancedDownloadWorkbenchVisible"
+      :tasks="enhancedDownloadWorkbenchTasks"
+      :refreshing="enhancedDownloadWorkbenchRefreshing"
+      :retrying-keys="[...enhancedRetryingTaskIds]"
+      title="ASMR 增强下载"
+      subtitle="增强下载任务进度"
+      @refresh="refreshEnhancedDownloadWorkbench({ silent: true })"
+      @background="hideEnhancedDownloadWorkbenchToBackground"
+      @close="closeEnhancedDownloadWorkbench"
+      @retry-task="retryEnhancedDownloadTask"
+      @pause-task="handlePauseEnhancedDownloadTask"
+      @resume-task="handleResumeEnhancedDownloadTask"
+      @cancel-task="handleCancelEnhancedDownloadTask"
+    />
+
+    <!-- Enhanced Download Preview Dialog -->
+    <CircleDownloadPreviewDialog
+      v-model:visible="enhancedPreviewVisible"
+      :starting="previewStarting"
+      :plans="previewPlans"
+      :libraries="libraries"
+      :target-subdir-options="[]"
+      :settings="downloadSettings"
+      circle-name=""
+      @submit="handlePreviewSubmit"
+    />
+
+    <!-- Enhanced Download Background Card -->
+    <div v-if="showEnhancedDownloadBackgroundCard" class="fixed bottom-6 right-6 z-50 w-80 bg-white/95 backdrop-blur-sm rounded-2xl border border-slate-200 shadow-xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="text-sm font-semibold text-slate-800">增强下载正在后台运行</div>
+          <div class="text-xs text-slate-500 mt-0.5">
+            {{ enhancedActiveBackgroundTask ? `${enhancedActiveBackgroundTask.rjcode || 'RJ'} · ${enhancedActiveBackgroundTask.work_title || '-'}` : '保留下载队列与进度' }}
+          </div>
+        </div>
+        <div class="text-lg font-bold text-blue-600">{{ enhancedBackgroundPercent }}%</div>
+      </div>
+      <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+        <div class="h-full bg-blue-500 rounded-full transition-all duration-500" :style="{ width: enhancedBackgroundPercent + '%' }" />
+      </div>
+      <div class="flex flex-wrap gap-1.5">
+        <span class="text-[11px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">进行中 {{ enhancedProcessingTasks.length }}</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full bg-slate-50 text-slate-600 border border-slate-200">等待 {{ enhancedPendingTasks.length }}</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100">完成 {{ enhancedCompletedTasks.length }}</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-100">失败 {{ enhancedFailedTasks.length }}</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="flex-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 active:scale-95 transition-all" @click="resumeEnhancedDownloadWorkbench">恢复工作台</button>
+        <button class="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="closeEnhancedDownloadWorkbench">关闭</button>
+      </div>
+    </div>
+
+    <!-- Scan Results -->
+    <section v-if="scanResults.length > 0" class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+        <h2 class="text-base font-semibold text-slate-900">扫描结果 <span class="text-sm font-normal text-slate-500">({{ scanResults.length }} 个作品)</span></h2>
+        <label class="inline-flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
+          <input type="checkbox" v-model="selectAll" @change="handleSelectAll($event.target.checked)" class="rounded border-slate-300" />
+          全选
+        </label>
+      </div>
+      <div class="overflow-auto" style="max-height: 400px;">
+        <el-table :data="scanResults" style="width: 100%" row-key="rjcode" @selection-change="handleSelectionChange">
+          <el-table-column type="selection" width="50" />
+          <el-table-column prop="rjcode" label="RJ号" width="120">
+            <template #default="{ row }">
+              <span class="font-mono font-semibold text-blue-600 text-sm">{{ row.rjcode }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="folder_name" label="文件夹名称" min-width="250">
+            <template #default="{ row }">
+              <div class="flex items-center gap-2">
+                <FolderIcon class="w-4 h-4 text-slate-400 shrink-0" />
+                <span class="text-sm text-slate-700 truncate">{{ row.folder_name }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="subtitle_count" label="字幕数" width="80" align="center">
+            <template #default="{ row }">
+              <span class="text-sm text-slate-600">{{ row.subtitle_count }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="预览" width="80" align="center">
+            <template #default="{ row }">
+              <button class="text-xs text-blue-600 hover:text-blue-800 hover:underline transition-colors" @click="previewDownload(row)" :disabled="row.previewing">
+                {{ row.previewing ? '...' : '预览' }}
+              </button>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="100" align="center">
+            <template #default="{ row }">
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border" :class="{
+                'bg-slate-50 text-slate-600 border-slate-200': row.status === 'pending',
+                'bg-amber-50 text-amber-700 border-amber-200': row.status === 'downloading',
+                'bg-emerald-50 text-emerald-700 border-emerald-200': row.status === 'completed',
+                'bg-red-50 text-red-700 border-red-200': row.status === 'failed',
+              }">{{ { pending: '待下载', downloading: '下载中', completed: '已完成', failed: '失败' }[row.status] || row.status }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </section>
+
+    <!-- Waiting Retry Tasks -->
+    <section v-if="waitingRetryTasks.length > 0" class="bg-amber-50/50 rounded-2xl border border-amber-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-3 border-b border-amber-100 flex items-center justify-between bg-amber-50">
+        <div class="flex items-center gap-2">
+          <Clock class="w-4 h-4 text-amber-600" />
+          <h2 class="text-sm font-semibold text-amber-800">等待重试 ({{ waitingRetryTasks.length }})</h2>
+        </div>
+        <span v-if="nextRetryTime" class="text-xs text-slate-500">下次: {{ formatNextRetryTime(nextRetryTime) }}</span>
+      </div>
+      <div class="p-4 space-y-2">
+        <div v-for="task in waitingRetryTasks" :key="task.id"
+          class="flex items-center justify-between gap-3 p-3 bg-white rounded-xl border border-amber-100"
+        >
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="font-mono font-semibold text-sm text-blue-600">{{ task.rjcode }}</span>
+              <span class="text-sm text-slate-600 truncate">{{ task.work_title || task.task_metadata?.work_title }}</span>
+            </div>
+            <div class="flex items-center gap-3 mt-1 text-xs text-slate-500">
+              <span class="text-amber-600">{{ task.task_metadata?.retry_reason || task.current_step || '未找到版本' }}</span>
+              <span>已重试 {{ task.task_metadata?.retry_count || 0 }} 次</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button class="px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 active:scale-95 transition-all" @click="retryWaitingTask(task.id)">重试</button>
+            <button class="px-2.5 py-1 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="cancelWaitingTask(task.id)">取消</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Active Tasks -->
+    <section v-if="activeTasks.length > 0" class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+        <h2 class="text-base font-semibold text-slate-900">下载任务</h2>
+      </div>
+      <div class="p-4 space-y-3">
+        <div v-for="task in activeTasks" :key="task.id"
+          class="rounded-xl border p-4 transition-colors" :class="{
+            'border-emerald-200 bg-emerald-50/30': task.status === 'completed',
+            'border-red-200 bg-red-50/30': task.status === 'failed',
+            'border-slate-200 bg-slate-50/30': task.status === 'paused',
+            'border-blue-200 bg-blue-50/20': task.status === 'processing',
+            'border-slate-200': !['completed','failed','paused','processing'].includes(task.status),
+          }"
+        >
+          <!-- Task Header -->
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="font-mono font-bold text-sm text-blue-600">{{ task.actual_rjcode || task.rjcode }}</span>
+              <span v-if="task.actual_rjcode && task.actual_rjcode !== task.rjcode" class="text-xs text-slate-400">(原: {{ task.rjcode }})</span>
+              <span class="text-sm text-slate-600 truncate">{{ task.work_title }}</span>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border" :class="{
+                'bg-emerald-50 text-emerald-700 border-emerald-200': task.status === 'completed',
+                'bg-red-50 text-red-700 border-red-200': task.status === 'failed',
+                'bg-slate-100 text-slate-600 border-slate-200': task.status === 'paused',
+                'bg-amber-50 text-amber-700 border-amber-200': task.status === 'waiting_retry',
+                'bg-blue-50 text-blue-700 border-blue-200': task.status === 'processing',
+                'bg-slate-50 text-slate-600 border-slate-200': task.status === 'pending',
+              }">{{ getStatusText(task.status) }}</span>
+              <button v-if="task.status === 'processing'" class="px-2 py-0.5 text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="pauseTask(task.id)">暂停</button>
+              <button v-if="task.status === 'paused'" class="px-2 py-0.5 text-[11px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 active:scale-95 transition-all" @click="resumeTask(task.id)">继续</button>
+              <button v-if="task.status === 'waiting_retry'" class="px-2 py-0.5 text-[11px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 active:scale-95 transition-all" @click="retryWaitingTask(task.id)">立即重试</button>
+              <button v-if="task.failed_files && task.failed_files.length > 0" class="px-2 py-0.5 text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 active:scale-95 transition-all" @click="retryFailed(task.id)">
+                重试失败 ({{ task.failed_files.length }})
+              </button>
+            </div>
+          </div>
+
+          <!-- Progress -->
+          <div class="mt-3">
+            <AppLottieProgressBar :percentage="task.progress" size="sm" />
+          </div>
+
+          <!-- Step -->
+          <div class="flex items-center gap-1.5 mt-2 text-xs text-slate-500">
+            <AppLoadingAnimation v-if="task.status === 'processing'" variant="inline" :size="20" />
+            <span>{{ task.current_step }}</span>
+          </div>
+
+          <!-- Error -->
+          <div v-if="task.error_message" class="flex items-center gap-1.5 mt-2 px-3 py-2 bg-red-50 rounded-lg border border-red-100">
+            <AlertTriangle class="w-3.5 h-3.5 text-red-500 shrink-0" />
+            <span class="text-xs text-red-700">{{ task.error_message }}</span>
+          </div>
+
+          <!-- Subtitle Sync Result (collapsible) -->
+          <details v-if="task.sync_result?.renamed_files?.length" class="mt-3">
+            <summary class="flex items-center gap-1.5 text-xs font-medium text-emerald-700 cursor-pointer select-none hover:text-emerald-800">
+              <FileText class="w-3.5 h-3.5" />
+              字幕同步映射 ({{ task.sync_result.renamed_files.length }} 对)
+            </summary>
+            <div class="mt-2 space-y-2">
+              <div v-for="(item, idx) in task.sync_result.renamed_files" :key="idx" class="p-2.5 bg-emerald-50/50 rounded-lg border border-emerald-100 text-xs space-y-1">
+                <div class="flex items-baseline gap-2"><span class="text-slate-400 w-14 shrink-0">原音频</span><span class="text-amber-600 font-medium truncate">{{ item.original }}</span></div>
+                <div class="text-center text-emerald-500 font-bold">↓</div>
+                <div class="flex items-baseline gap-2"><span class="text-slate-400 w-14 shrink-0">重命名</span><span class="text-blue-600 font-medium truncate">{{ item.new }}</span></div>
+                <div class="flex items-baseline gap-2"><span class="text-slate-400 w-14 shrink-0">字幕</span><span class="text-emerald-600 font-medium truncate">{{ item.subtitle }}</span></div>
+              </div>
+            </div>
+          </details>
+
+          <!-- Failed Files (collapsible) -->
+          <details v-if="task.failed_files?.length" class="mt-3">
+            <summary class="flex items-center gap-1.5 text-xs font-medium text-red-600 cursor-pointer select-none hover:text-red-700">
+              <AlertTriangle class="w-3.5 h-3.5" />
+              失败文件 ({{ task.failed_files.length }})
+            </summary>
+            <div class="mt-2 space-y-1">
+              <div v-for="(file, idx) in task.failed_files" :key="idx" class="flex items-center justify-between px-2.5 py-1.5 bg-red-50/50 rounded-lg text-xs">
+                <span class="text-slate-600 truncate">{{ file.title || file.path }}</span>
+                <span class="text-red-600 shrink-0 ml-2">{{ file.reason }}</span>
+              </div>
+            </div>
+          </details>
+
+          <!-- Download Files (collapsible) -->
+          <details v-if="task.download_files?.length" class="mt-3">
+            <summary class="flex items-center gap-1.5 text-xs font-medium text-slate-700 cursor-pointer select-none hover:text-slate-900">
+              <FolderIcon class="w-3.5 h-3.5" />
+              文件下载进度 ({{ task.download_files.length }})
+            </summary>
+            <div class="mt-2 space-y-1.5">
+              <div v-for="file in task.download_files" :key="file.name" class="flex items-center gap-2 px-2.5 py-1.5 bg-slate-50 rounded-lg text-xs">
+                <span class="flex-1 truncate text-slate-700">{{ file.name }}</span>
+                <div class="w-20 shrink-0">
+                  <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                    <div class="h-full bg-blue-500 rounded-full transition-all" :style="{ width: file.progress + '%' }" />
+                  </div>
+                </div>
+                <span class="text-slate-400 shrink-0 font-mono text-[11px] w-28 text-right">{{ formatSize(file.downloaded) }} / {{ formatSize(file.total) }}</span>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- Preview Dialog -->
+    <el-dialog v-model="previewDialogVisible" title="下载预览" width="900px" class="rounded-2xl">
+      <div v-if="previewLoading" class="flex items-center justify-center py-10">
+        <AppLoadingAnimation label="正在获取作品信息..." :size="132" :min-height="180" />
+      </div>
+      <div v-else-if="previewData" class="space-y-5">
+        <div class="grid grid-cols-3 gap-4">
+          <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
+            <div class="text-xs text-slate-500 mb-1">请求 RJ 号</div>
+            <div class="font-mono font-semibold text-slate-900">{{ previewData.rjcode }}</div>
+          </div>
+          <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
+            <div class="text-xs text-slate-500 mb-1">实际下载</div>
+            <div class="flex items-center gap-2">
+              <span class="font-mono font-semibold" :class="previewData.actual_rjcode !== previewData.rjcode ? 'text-amber-600' : 'text-emerald-600'">{{ previewData.actual_rjcode || '未找到' }}</span>
+              <span v-if="previewData.lang" class="text-xs text-slate-500">({{ previewData.lang }})</span>
+            </div>
+          </div>
+          <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
+            <div class="text-xs text-slate-500 mb-1">预计大小</div>
+            <div class="font-semibold text-blue-600">{{ formatSize(previewData.total_size) }}</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-4 text-sm text-slate-600">
+          <span>标题: <strong class="text-slate-900">{{ previewData.title }}</strong></span>
+          <span>文件: {{ previewData.total_files }} → <strong class="text-emerald-600">{{ previewData.filtered_files }}</strong></span>
+        </div>
+
+        <!-- Available Versions -->
+        <div v-if="previewData.available_versions?.length">
+          <h4 class="text-sm font-semibold text-slate-700 mb-2">可用版本</h4>
+          <div class="space-y-1.5">
+            <div v-for="ver in previewData.available_versions" :key="ver.rjcode"
+              class="flex items-center gap-3 px-3 py-2 bg-slate-50 rounded-lg border border-slate-100 text-sm"
+            >
+              <span class="font-mono font-semibold text-slate-900 w-24">{{ ver.rjcode }}</span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border" :class="{
+                'bg-emerald-50 text-emerald-700 border-emerald-200': ver.priority <= 1,
+                'bg-amber-50 text-amber-700 border-amber-200': ver.priority === 2,
+                'bg-slate-100 text-slate-600 border-slate-200': ver.priority > 2,
+              }">{{ getLangName(ver.lang) }}</span>
+              <span class="text-slate-500">{{ ver.file_count }} 文件</span>
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px]" :class="ver.available ? 'text-emerald-600 bg-emerald-50' : 'text-red-600 bg-red-50'">{{ ver.available ? '可用' : '不可用' }}</span>
+              <span class="text-slate-500 truncate flex-1">{{ ver.title }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- File List -->
+        <div>
+          <h4 class="text-sm font-semibold text-slate-700 mb-2">下载文件 ({{ previewData.filtered_files }})</h4>
+          <div class="overflow-auto" style="max-height: 350px;">
+            <el-table :data="previewData.files" size="small">
+              <el-table-column type="index" label="#" width="50" />
+              <el-table-column label="文件路径" min-width="300">
+                <template #default="{ row }">
+                  <div class="flex items-center gap-1.5 text-sm">
+                    <FileIcon class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <span class="truncate" :title="row.path || row.title">{{ row.title }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="type" label="类型" width="80">
+                <template #default="{ row }">
+                  <span class="text-xs text-slate-500">{{ row.type || '文件' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="大小" width="100">
+                <template #default="{ row }">
+                  <span class="text-xs font-mono text-slate-600">{{ formatSize(row.size) }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+      </div>
+      <div v-else class="py-10">
         <el-empty description="无法获取预览信息" />
       </div>
     </el-dialog>
 
-    <!-- 任务详情 -->
-    <el-card v-if="tasks.length > 0" class="tasks-card">
-      <template #header>
-        <div class="results-header">
-          <span>下载任务</span>
-          <div class="header-actions">
-            <el-button size="small" @click="refreshStatus" :loading="refreshing">
-              <el-icon>
-                <Refresh />
-              </el-icon>刷新
-            </el-button>
-          </div>
-        </div>
-      </template>
-
-      <!-- 等待重试的任务 -->
-      <div v-if="waitingRetryTasks.length > 0" class="waiting-section">
-        <div class="section-title">
-          <el-icon>
-            <Clock />
-          </el-icon>
-          <span>等待重试 ({{ waitingRetryTasks.length }} 个)</span>
-          <span v-if="nextRetryTime" class="next-retry-time">
-            下次自动重试: {{ formatNextRetryTime(nextRetryTime) }}
-          </span>
-        </div>
-        <div class="waiting-list">
-          <el-card v-for="task in waitingRetryTasks" :key="task.id" class="waiting-item">
-            <div class="waiting-header">
-              <span class="task-rjcode">{{ task.rjcode }}</span>
-              <span class="task-title">{{ task.work_title || task.task_metadata?.work_title }}</span>
-            </div>
-            <div class="waiting-info">
-              <span class="retry-reason">{{ task.task_metadata?.retry_reason || task.current_step || '未找到版本' }}</span>
-              <span class="retry-count">已重试 {{ task.task_metadata?.retry_count || 0 }} 次</span>
-            </div>
-            <div class="waiting-actions">
-              <el-button type="primary" size="small" @click="retryWaitingTask(task.id)">立即重试</el-button>
-              <el-button size="small" @click="cancelWaitingTask(task.id)">取消</el-button>
-            </div>
-          </el-card>
-        </div>
-      </div>
-
-      <!-- 正在处理/已完成/失败的任务 -->
-      <div v-if="activeTasks.length > 0" class="task-list">
-        <el-card v-for="task in activeTasks" :key="task.id" class="task-item" :class="task.status">
-          <div class="task-header">
-            <div class="task-info">
-              <span class="task-rjcode">{{ task.actual_rjcode || task.rjcode }}</span>
-              <span v-if="task.actual_rjcode && task.actual_rjcode !== task.rjcode" class="task-original-rj">
-                (原: {{ task.rjcode }})
-              </span>
-              <span class="task-title">{{ task.work_title }}</span>
-            </div>
-            <div class="task-actions">
-              <el-tag
-                :type="task.status === 'completed' ? 'success' : task.status === 'failed' ? 'danger' : task.status === 'paused' ? 'info' : task.status === 'waiting_retry' ? 'warning' : 'warning'"
-                size="small">
-                {{ getStatusText(task.status) }}
-              </el-tag>
-              <!-- 暂停/继续按钮 -->
-              <el-button-group v-if="task.status === 'processing'" size="small">
-                <el-button @click="pauseTask(task.id)" :loading="task.pausing">暂停</el-button>
-              </el-button-group>
-              <el-button-group v-if="task.status === 'paused'" size="small">
-                <el-button type="primary" @click="resumeTask(task.id)" :loading="task.resuming">继续</el-button>
-              </el-button-group>
-              <!-- 等待重试任务的手动重试按钮 -->
-              <el-button v-if="task.status === 'waiting_retry'" size="small" type="primary"
-                @click="retryWaitingTask(task.id)" :loading="task.retrying">
-                立即重试
-              </el-button>
-              <!-- 重试失败文件按钮 -->
-              <el-button v-if="task.failed_files && task.failed_files.length > 0" size="small" type="warning"
-                @click="retryFailed(task.id)" :loading="task.retrying">
-                重试失败文件 ({{ task.failed_files.length }})
-              </el-button>
-            </div>
-          </div>
-          <el-progress :percentage="task.progress"
-            :status="task.status === 'completed' ? 'success' : task.status === 'failed' ? 'exception' : ''"
-            :stroke-width="10" style="margin: 12px 0;" />
-          <div class="task-step">
-            <AppLoadingAnimation v-if="task.status === 'processing'" variant="inline" :size="28" />
-            <span>{{ task.current_step }}</span>
-          </div>
-          <div v-if="task.error_message" class="task-error">
-            <el-icon>
-              <WarningFilled />
-            </el-icon>
-            {{ task.error_message }}
-          </div>
-
-          <!-- 字幕同步结果 -->
-          <div v-if="task.sync_result && task.sync_result.renamed_files && task.sync_result.renamed_files.length > 0"
-            class="sync-result">
-            <el-collapse>
-              <el-collapse-item>
-                <template #title>
-                  <span class="sync-list-title">
-                    <el-icon>
-                      <Document />
-                    </el-icon>
-                    字幕同步映射 ({{ task.sync_result.renamed_files.length }} 对)
-                  </span>
-                </template>
-                <div class="sync-items">
-                  <div v-for="(item, idx) in task.sync_result.renamed_files" :key="idx" class="sync-item">
-                    <div class="sync-row">
-                      <span class="sync-label">原始音频:</span>
-                      <span class="sync-original">{{ item.original }}</span>
-                    </div>
-                    <div class="sync-arrow-down">↓</div>
-                    <div class="sync-row">
-                      <span class="sync-label">重命名为:</span>
-                      <span class="sync-new">{{ item.new }}</span>
-                    </div>
-                    <div class="sync-row">
-                      <span class="sync-label">匹配字幕:</span>
-                      <span class="sync-subtitle">{{ item.subtitle }}</span>
-                    </div>
-                  </div>
-                </div>
-              </el-collapse-item>
-            </el-collapse>
-          </div>
-
-          <!-- 失败文件列表 -->
-          <div v-if="task.failed_files && task.failed_files.length > 0" class="failed-files">
-            <el-collapse>
-              <el-collapse-item>
-                <template #title>
-                  <span class="failed-list-title">
-                    <el-icon>
-                      <WarningFilled />
-                    </el-icon>
-                    失败文件 ({{ task.failed_files.length }} 个)
-                  </span>
-                </template>
-                <div class="failed-items">
-                  <div v-for="(file, idx) in task.failed_files" :key="idx" class="failed-item">
-                    <span class="failed-name">{{ file.title || file.path }}</span>
-                    <span class="failed-reason">{{ file.reason }}</span>
-                  </div>
-                </div>
-              </el-collapse-item>
-            </el-collapse>
-          </div>
-
-          <!-- 文件下载列表 -->
-          <div v-if="task.download_files && task.download_files.length > 0" class="file-download-list">
-            <el-collapse>
-              <el-collapse-item>
-                <template #title>
-                  <span class="file-list-title">
-                    <el-icon>
-                      <Folder />
-                    </el-icon>
-                    文件下载进度 ({{ task.download_files.length }} 个文件)
-                  </span>
-                </template>
-                <div class="file-items">
-                  <div v-for="file in task.download_files" :key="file.name" class="file-item">
-                    <div class="file-name">{{ file.name }}</div>
-                    <el-progress :percentage="file.progress" :stroke-width="6" :show-text="false"
-                      style="width: 100px; margin: 0 8px;" />
-                    <span class="file-size">{{ formatSize(file.downloaded) }} / {{ formatSize(file.total) }}</span>
-                  </div>
-                </div>
-              </el-collapse-item>
-            </el-collapse>
-          </div>
-        </el-card>
-      </div>
-    </el-card>
-
+    <!-- Enhanced Session Drawer -->
     <el-drawer v-model="enhancedSessionDrawerVisible" size="55%" :title="enhancedSessionDetail?.rjcode ? `${enhancedSessionDetail.rjcode} 会话详情` : '会话详情'">
       <div v-app-loading="{ loading: enhancedSessionDetailLoading, text: '正在加载增强下载详情...', size: 124 }">
         <template v-if="enhancedSessionDetail">
-          <div class="session-detail-summary">
-            <el-tag>{{ getSessionStatusLabel(enhancedSessionDetail.status) }}</el-tag>
-            <el-tag type="info">优先级 {{ enhancedSessionDetail.queue_priority }}</el-tag>
-            <el-tag>{{ getUploadModeLabel(enhancedSessionDetail.upload_mode) }}</el-tag>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">{{ getSessionStatusLabel(enhancedSessionDetail.status) }}</span>
+            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">优先级 {{ enhancedSessionDetail.queue_priority }}</span>
+            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">{{ getUploadModeLabel(enhancedSessionDetail.upload_mode) }}</span>
           </div>
 
-          <el-descriptions :column="2" border class="session-detail-descriptions">
-            <el-descriptions-item label="标题">{{ enhancedSessionDetail.source_label || '未命名会话' }}</el-descriptions-item>
-            <el-descriptions-item label="目标路径">{{ enhancedSessionDetail.target_path || '未设置' }}</el-descriptions-item>
-            <el-descriptions-item label="已选资源">{{ enhancedSessionDetail.statistics?.selected_resource_count || 0 }}</el-descriptions-item>
-            <el-descriptions-item label="已上传">{{ enhancedSessionDetail.statistics?.uploaded_count || 0 }}</el-descriptions-item>
-            <el-descriptions-item label="成功/失败">{{ enhancedSessionDetail.statistics?.success_count || 0 }} / {{ enhancedSessionDetail.statistics?.failed_count || 0 }}</el-descriptions-item>
-            <el-descriptions-item label="MD5 失败">{{ enhancedSessionDetail.statistics?.verify_summary?.failed || 0 }}</el-descriptions-item>
-          </el-descriptions>
+          <div class="grid grid-cols-2 gap-3 mb-4">
+            <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
+              <div class="text-xs text-slate-500">标题</div>
+              <div class="text-sm text-slate-900 font-medium mt-0.5">{{ enhancedSessionDetail.source_label || '未命名会话' }}</div>
+            </div>
+            <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
+              <div class="text-xs text-slate-500">目标路径</div>
+              <div class="text-sm text-slate-900 font-mono mt-0.5 break-all">{{ enhancedSessionDetail.target_path || '未设置' }}</div>
+            </div>
+            <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
+              <div class="text-xs text-slate-500">已选/已上传</div>
+              <div class="text-sm text-slate-900 font-medium mt-0.5">{{ enhancedSessionDetail.statistics?.selected_resource_count || 0 }} / {{ enhancedSessionDetail.statistics?.uploaded_count || 0 }}</div>
+            </div>
+            <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
+              <div class="text-xs text-slate-500">成功/失败/MD5失败</div>
+              <div class="text-sm font-medium mt-0.5">
+                <span class="text-emerald-600">{{ enhancedSessionDetail.statistics?.success_count || 0 }}</span>
+                <span class="text-slate-400 mx-1">/</span>
+                <span class="text-red-600">{{ enhancedSessionDetail.statistics?.failed_count || 0 }}</span>
+                <span class="text-slate-400 mx-1">/</span>
+                <span class="text-amber-600">{{ enhancedSessionDetail.statistics?.verify_summary?.failed || 0 }}</span>
+              </div>
+            </div>
+          </div>
 
-          <el-table v-if="enhancedSessionDetail.resources?.length" :data="enhancedSessionDetail.resources" max-height="420" size="small" class="session-resource-table">
+          <el-table v-if="enhancedSessionDetail.resources?.length" :data="enhancedSessionDetail.resources" max-height="420" size="small">
             <el-table-column prop="file_name" label="文件" min-width="240" show-overflow-tooltip />
             <el-table-column prop="resource_type" label="类型" width="90" />
             <el-table-column prop="download_status" label="下载" width="100" />
@@ -432,11 +523,18 @@
 </template>
 
 <script setup>
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Search, Download, Folder, Refresh, Document, WarningFilled, Clock } from '@element-plus/icons-vue'
-import { asmrSyncApi, configApi } from '../api'
+import { Search, Download as DownloadIcon, Folder as FolderIcon, RefreshCw, FolderSearch, Clock, AlertTriangle, FileText, File as FileIcon, CheckCircle2 } from 'lucide-vue-next'
+import { asmrSyncApi, configApi, libraryApi, taskApi } from '../api'
+import { showSystemConfirm } from '../composables/useSystemPrompt'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
+import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
+import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
+import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
+import WorkCard from '../components/circle/WorkCard.vue'
+
+const ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY = 'prekikoeru.asmrSync.downloadWorkbench'
 
 const subtitleFolder = ref('')
 const scanning = ref(false)
@@ -461,6 +559,27 @@ const enhancedSessionDetailLoading = ref(false)
 const enhancedSessionDetail = ref(null)
 const enhancedPlans = ref([])
 const enhancedSessions = ref([])
+const selectedPlanSet = ref(new Set())
+const enhancedDownloadWorkbenchTaskIds = ref([])
+const enhancedDownloadWorkbenchTasks = ref([])
+const enhancedDownloadWorkbenchVisible = ref(false)
+const enhancedDownloadWorkbenchBackgroundActive = ref(false)
+const enhancedDownloadWorkbenchRefreshing = ref(false)
+const enhancedRetryingTaskIds = ref(new Set())
+let enhancedDownloadWorkbenchTimer = null
+
+// Enhanced preview dialog state
+const enhancedPreviewVisible = ref(false)
+const previewStarting = ref(false)
+const previewPlans = ref([])
+const libraries = ref([])
+const downloadSettings = ref({
+  targetLibraryId: '',
+  targetSubdir: '',
+  namingMode: 'api',
+  classifyMode: 'none',
+  downloadBasePath: ''
+})
 const enhancedDashboard = ref({
   total_rj: 0,
   total_resources: 0,
@@ -532,6 +651,19 @@ const enhancedMetricCards = computed(() => {
 
 const hasEnhancedSelections = computed(() => {
   return enhancedPlans.value.some(plan => (plan.selectable_resources || []).some(item => item.selected))
+})
+
+const selectedPlanRjcodes = computed(() => [...selectedPlanSet.value])
+const enhancedProcessingTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'processing'))
+const enhancedPendingTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
+const enhancedCompletedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'completed'))
+const enhancedFailedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'failed'))
+const showEnhancedDownloadBackgroundCard = computed(() => enhancedDownloadWorkbenchBackgroundActive.value && !enhancedDownloadWorkbenchVisible.value && enhancedDownloadWorkbenchTaskIds.value.length > 0)
+const enhancedActiveBackgroundTask = computed(() => enhancedProcessingTasks.value[0] || enhancedPendingTasks.value[0] || enhancedDownloadWorkbenchTasks.value[0] || null)
+const enhancedBackgroundPercent = computed(() => {
+  if (!enhancedDownloadWorkbenchTasks.value.length) return 0
+  const total = enhancedDownloadWorkbenchTasks.value.reduce((sum, t) => sum + Number(t.progress || 0), 0)
+  return Math.max(0, Math.min(100, Math.round(total / enhancedDownloadWorkbenchTasks.value.length)))
 })
 
 // 格式化下次重试时间
@@ -668,7 +800,7 @@ const buildEnhancedPlans = async () => {
       ...plan,
       selectable_resources: (plan.selectable_resources || []).map(item => ({
         ...item,
-        selected: true
+        selected: item.selected !== false
       }))
     }))
     if (result.errors?.length) {
@@ -677,6 +809,8 @@ const buildEnhancedPlans = async () => {
       ElMessage.success(`已生成 ${result.planned_count} 个增强下载计划`)
     }
     await loadEnhancedDashboard()
+    // Auto-select all plans after query
+    selectedPlanSet.value = new Set(enhancedPlans.value.map(p => p.rjcode))
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '生成下载计划失败')
   } finally {
@@ -684,42 +818,251 @@ const buildEnhancedPlans = async () => {
   }
 }
 
-const startEnhancedDownload = async () => {
-  const items = enhancedPlans.value
-    .map(plan => ({
-      session_id: plan.session_id,
-      rjcode: plan.rjcode,
-      work_title: plan.title,
-      folder_path: '',
-      selected_resources: (plan.selectable_resources || []).filter(item => item.selected),
-      queue_priority: 100,
-      upload_options: {
-        enabled: false,
-        mode: 'disabled',
-        target_path: '',
-        library_id: ''
-      },
-      verify_md5_after_download: true,
-      resource_filter_snapshot: {
-        resource_types: ['audio', 'subtitle', 'cover'],
-        audio_formats: [],
-        subtitle_languages: [],
-        include_existing: false
-      }
-    }))
-    .filter(item => item.selected_resources.length > 0)
+function togglePlanSelect(rjcode) {
+  const next = new Set(selectedPlanSet.value)
+  if (next.has(rjcode)) next.delete(rjcode)
+  else next.add(rjcode)
+  selectedPlanSet.value = next
+}
 
-  if (items.length === 0) return ElMessage.warning('请先勾选需要补充下载的资源')
+function selectAllPlans() {
+  selectedPlanSet.value = new Set(enhancedPlans.value.map(p => p.rjcode))
+}
+
+function clearPlanSelection() {
+  selectedPlanSet.value = new Set()
+}
+
+async function loadLibraries() {
+  try {
+    const result = await libraryApi.listLibraries()
+    libraries.value = result.libraries || result || []
+  } catch { /* ignore */ }
+}
+
+function openEnhancedPreview() {
+  const selectedRjs = selectedPlanSet.value
+  const plans = enhancedPlans.value.filter(plan => selectedRjs.has(plan.rjcode))
+  if (!plans.length) return ElMessage.warning('请先选中至少一个计划')
+  previewPlans.value = plans
+  enhancedPreviewVisible.value = true
+  loadLibraries()
+}
+
+async function handlePreviewSubmit(payload) {
+  const items = Array.isArray(payload.items) ? payload.items : []
+  if (!items.length) return ElMessage.warning('没有选中任何文件')
+  previewStarting.value = true
   enhancedStarting.value = true
   try {
     const result = await asmrSyncApi.startEnhanced(items)
+    const newTaskIds = (result.tasks || []).map(t => t.task_id).filter(Boolean)
+    enhancedDownloadWorkbenchTaskIds.value = [
+      ...newTaskIds,
+      ...enhancedDownloadWorkbenchTaskIds.value.filter(id => !newTaskIds.includes(id))
+    ]
+    enhancedDownloadWorkbenchVisible.value = newTaskIds.length > 0
+    enhancedDownloadWorkbenchBackgroundActive.value = false
+    persistEnhancedDownloadWorkbenchState()
+    await refreshEnhancedDownloadWorkbench()
     ElMessage.success(result.message || '增强下载任务已创建')
+    enhancedPreviewVisible.value = false
     await refreshStatus()
     await loadEnhancedSessions()
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '启动增强下载失败')
   } finally {
     enhancedStarting.value = false
+    previewStarting.value = false
+  }
+}
+
+// --- Enhanced Download Workbench Management ---
+
+function persistEnhancedDownloadWorkbenchState() {
+  try {
+    localStorage.setItem(ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY, JSON.stringify({
+      taskIds: enhancedDownloadWorkbenchTaskIds.value,
+      visible: enhancedDownloadWorkbenchVisible.value,
+      background: enhancedDownloadWorkbenchBackgroundActive.value
+    }))
+  } catch (_) {}
+}
+
+function hydrateEnhancedDownloadWorkbenchState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY) || '{}')
+    enhancedDownloadWorkbenchTaskIds.value = Array.isArray(raw.taskIds) ? raw.taskIds.filter(Boolean) : []
+    enhancedDownloadWorkbenchVisible.value = Boolean(raw.visible && enhancedDownloadWorkbenchTaskIds.value.length)
+    enhancedDownloadWorkbenchBackgroundActive.value = Boolean(raw.background && enhancedDownloadWorkbenchTaskIds.value.length)
+  } catch (_) {
+    enhancedDownloadWorkbenchTaskIds.value = []
+    enhancedDownloadWorkbenchVisible.value = false
+    enhancedDownloadWorkbenchBackgroundActive.value = false
+  }
+}
+
+function clearEnhancedDownloadWorkbenchState() {
+  enhancedDownloadWorkbenchTaskIds.value = []
+  enhancedDownloadWorkbenchTasks.value = []
+  enhancedDownloadWorkbenchVisible.value = false
+  enhancedDownloadWorkbenchBackgroundActive.value = false
+  stopEnhancedDownloadWorkbenchPolling()
+  try { localStorage.removeItem(ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY) } catch (_) {}
+}
+
+function stopEnhancedDownloadWorkbenchPolling() {
+  if (enhancedDownloadWorkbenchTimer) {
+    window.clearTimeout(enhancedDownloadWorkbenchTimer)
+    enhancedDownloadWorkbenchTimer = null
+  }
+}
+
+function startEnhancedDownloadWorkbenchPolling() {
+  if (!enhancedDownloadWorkbenchTaskIds.value.length) return
+  stopEnhancedDownloadWorkbenchPolling()
+  enhancedDownloadWorkbenchTimer = window.setTimeout(() => {
+    refreshEnhancedDownloadWorkbench()
+  }, 2000)
+}
+
+async function refreshEnhancedDownloadWorkbench(options = {}) {
+  const silent = Boolean(options?.silent)
+  if (!enhancedDownloadWorkbenchTaskIds.value.length) {
+    enhancedDownloadWorkbenchTasks.value = []
+    stopEnhancedDownloadWorkbenchPolling()
+    return
+  }
+  if (!silent) enhancedDownloadWorkbenchRefreshing.value = true
+  try {
+    const result = await asmrSyncApi.status()
+    const allTasks = Array.isArray(result.tasks) ? result.tasks : []
+    enhancedDownloadWorkbenchTasks.value = enhancedDownloadWorkbenchTaskIds.value
+      .map(id => allTasks.find(t => t.id === id))
+      .filter(Boolean)
+    enhancedDownloadWorkbenchTaskIds.value = enhancedDownloadWorkbenchTasks.value.map(t => t.id)
+    const stillActive = enhancedDownloadWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
+    if (stillActive || enhancedDownloadWorkbenchVisible.value || enhancedDownloadWorkbenchBackgroundActive.value) startEnhancedDownloadWorkbenchPolling()
+    else stopEnhancedDownloadWorkbenchPolling()
+  } catch (error) {
+    console.error('刷新增强下载工作台失败:', error)
+    startEnhancedDownloadWorkbenchPolling()
+  } finally {
+    if (!silent) enhancedDownloadWorkbenchRefreshing.value = false
+  }
+}
+
+function hideEnhancedDownloadWorkbenchToBackground() {
+  enhancedDownloadWorkbenchVisible.value = false
+  enhancedDownloadWorkbenchBackgroundActive.value = true
+}
+
+function resumeEnhancedDownloadWorkbench() {
+  enhancedDownloadWorkbenchVisible.value = true
+  enhancedDownloadWorkbenchBackgroundActive.value = false
+}
+
+function closeEnhancedDownloadWorkbench() {
+  clearEnhancedDownloadWorkbenchState()
+}
+
+async function retryEnhancedDownloadTask(task) {
+  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  const taskId = String(task?.id || '').trim()
+  const next = new Set(enhancedRetryingTaskIds.value)
+  next.add(taskId)
+  enhancedRetryingTaskIds.value = next
+  try {
+    if (sessionId) {
+      const response = await asmrSyncApi.retryFailedSession(sessionId)
+      const nextTaskId = String(response?.session?.task_id || '').trim()
+      if (nextTaskId && nextTaskId !== taskId) {
+        enhancedDownloadWorkbenchTaskIds.value = [
+          nextTaskId,
+          ...enhancedDownloadWorkbenchTaskIds.value.filter(id => id !== nextTaskId && id !== taskId)
+        ]
+      }
+    } else if (taskId) {
+      await asmrSyncApi.retry(taskId)
+    }
+    ElMessage.success('已提交重试')
+    await refreshEnhancedDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '提交重试失败')
+  } finally {
+    const done = new Set(enhancedRetryingTaskIds.value)
+    done.delete(taskId)
+    enhancedRetryingTaskIds.value = done
+  }
+}
+
+async function handlePauseEnhancedDownloadTask(task) {
+  const sessionId = String(task?.session_id || task?.task_metadata?.session_id || '').trim()
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  try {
+    if (sessionId) {
+      await asmrSyncApi.pauseSession(sessionId)
+    } else if (taskId) {
+      await taskApi.pause(taskId)
+    } else {
+      return ElMessage.warning('无法识别任务，缺少会话或任务 ID')
+    }
+    ElMessage.success('已暂停')
+    await refreshEnhancedDownloadWorkbench({ silent: true })
+  } catch (error) {
+    console.error('[ASMR] pause failed', { sessionId, taskId, error })
+    ElMessage.error(error.response?.data?.detail || error.message || '暂停失败')
+  }
+}
+
+async function handleResumeEnhancedDownloadTask(task) {
+  const sessionId = String(task?.session_id || task?.task_metadata?.session_id || '').trim()
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  try {
+    if (sessionId) {
+      await asmrSyncApi.resumeSession(sessionId)
+    } else if (taskId) {
+      await taskApi.resume(taskId)
+    } else {
+      return ElMessage.warning('无法识别任务，缺少会话或任务 ID')
+    }
+    ElMessage.success('已恢复')
+    await refreshEnhancedDownloadWorkbench({ silent: true })
+  } catch (error) {
+    console.error('[ASMR] resume failed', { sessionId, taskId, error })
+    ElMessage.error(error.response?.data?.detail || error.message || '恢复失败')
+  }
+}
+
+async function handleCancelEnhancedDownloadTask(task) {
+  const rjcode = String(task?.rjcode || '').trim()
+  const title = String(task?.work_title || task?.source_label || '').trim()
+  try {
+    await showSystemConfirm({
+      title: '取消下载任务',
+      message: `确定要取消 ${rjcode || title || '此任务'} 的下载吗？`,
+      description: '取消后将停止下载并清理已下载的临时文件，此操作不可撤销。',
+      tone: 'danger',
+      confirmText: '取消下载',
+    })
+  } catch {
+    return
+  }
+  const sessionId = String(task?.session_id || task?.task_metadata?.session_id || '').trim()
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  try {
+    if (sessionId) {
+      await asmrSyncApi.cancelSession(sessionId, { cleanup: true })
+    } else if (taskId) {
+      await taskApi.batchCancelCleanup([taskId])
+    } else {
+      return ElMessage.warning('无法识别任务，缺少会话或任务 ID')
+    }
+    ElMessage.success('已取消并清理')
+    await refreshEnhancedDownloadWorkbench({ silent: true })
+  } catch (error) {
+    console.error('[ASMR] cancel failed', { sessionId, taskId, error })
+    ElMessage.error(error.response?.data?.detail || error.message || '取消失败')
   }
 }
 
@@ -837,6 +1180,9 @@ const loadSavedFolder = async () => {
     const config = await configApi.get()
     if (config.storage?.asmr_subtitle_path) {
       subtitleFolder.value = config.storage.asmr_subtitle_path
+    }
+    if (config.storage?.temp_path && !downloadSettings.value.downloadBasePath) {
+      downloadSettings.value.downloadBasePath = config.storage.temp_path.replace(/[\\/]$/, '') + '/asmr_enhanced'
     }
     enhancedUpload.value = {
       mode: config.asmr_sync?.auto_upload_enabled ? (config.asmr_sync?.auto_upload_mode || 'local') : 'disabled',
@@ -988,9 +1334,11 @@ function startStatusPolling () {
 
 async function initializeASMRSyncPage () {
   if (asmrSyncInitialized) return
+  hydrateEnhancedDownloadWorkbenchState()
   await loadSavedFolder()
   await loadWaitingRetryTasks()
   await refreshStatus()
+  if (enhancedDownloadWorkbenchTaskIds.value.length) await refreshEnhancedDownloadWorkbench()
   if (subtitleFolder.value) {
     await scanFolder()
   }
@@ -1001,7 +1349,6 @@ onMounted(async () => {
   await initializeASMRSyncPage()
   asmrSyncViewActive = true
   startStatusPolling()
-  // 自动扫描字幕文件夹
 })
 
 onActivated(async () => {
@@ -1010,6 +1357,7 @@ onActivated(async () => {
   await loadWaitingRetryTasks()
   await refreshStatus()
   await loadEnhancedSessions()
+  if (enhancedDownloadWorkbenchTaskIds.value.length) refreshEnhancedDownloadWorkbench()
   startStatusPolling()
 })
 
@@ -1018,672 +1366,113 @@ onDeactivated(() => {
   stopStatusPolling()
 })
 
+onBeforeUnmount(() => {
+  stopEnhancedDownloadWorkbenchPolling()
+})
+
 onUnmounted(() => {
   asmrSyncViewActive = false
   stopStatusPolling()
+  stopEnhancedDownloadWorkbenchPolling()
 })
+
+watch(enhancedDownloadWorkbenchVisible, (visible) => {
+  persistEnhancedDownloadWorkbenchState()
+  if (visible || enhancedDownloadWorkbenchBackgroundActive.value) startEnhancedDownloadWorkbenchPolling()
+  else stopEnhancedDownloadWorkbenchPolling()
+})
+
+watch(enhancedDownloadWorkbenchBackgroundActive, () => {
+  persistEnhancedDownloadWorkbenchState()
+  if (enhancedDownloadWorkbenchVisible.value || enhancedDownloadWorkbenchBackgroundActive.value) startEnhancedDownloadWorkbenchPolling()
+  else stopEnhancedDownloadWorkbenchPolling()
+})
+
+watch(enhancedDownloadWorkbenchTaskIds, () => {
+  persistEnhancedDownloadWorkbenchState()
+}, { deep: true })
 </script>
 
 <style scoped>
-.asmr-sync-page {
-  padding: 20px;
+/* Minimal overrides — Tailwind handles most styling */
+:deep(.el-dialog) {
+  border-radius: 16px !important;
 }
-
-.page-header {
-  margin-bottom: 20px;
+.enhanced-plan-card {
+  max-width: 248px;
 }
-
-.enhanced-card {
-  margin-bottom: 20px;
+.enhanced-plan-card :deep(.work-cover-wrapper) {
+  aspect-ratio: 1 / 0.82;
 }
-
-.header-content {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.header-content .title {
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.scan-section {
-  margin-top: 16px;
-}
-
-.enhanced-dashboard {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 14px;
-  margin-bottom: 20px;
-}
-
-.enhanced-simple-intro {
-  margin-bottom: 14px;
-  font-size: 13px;
-  color: #606266;
-}
-
-.metric-card {
-  padding: 18px;
-  border-radius: 18px;
-  background: linear-gradient(180deg, #ffffff 0%, #f5f8ff 100%);
-  border: 1px solid rgba(64, 158, 255, 0.12);
-  box-shadow: 0 10px 30px rgba(31, 35, 41, 0.06);
-}
-
-.metric-label {
-  font-size: 12px;
-  color: #909399;
-  margin-bottom: 8px;
-}
-
-.metric-value {
-  font-size: 28px;
-  font-weight: 700;
-  color: #303133;
-}
-
-.metric-help {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #606266;
-}
-
-.enhanced-form {
-  margin-bottom: 16px;
-}
-
-.enhanced-form-simple {
-  max-width: 920px;
-}
-
-.enhanced-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.simple-actions {
-  margin-top: 0;
-}
-
-.enhanced-plan-list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.enhanced-plan-item {
-  padding: 18px;
-  border-radius: 20px;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
-  border: 1px solid rgba(64, 158, 255, 0.08);
-  box-shadow: 0 12px 36px rgba(31, 35, 41, 0.06);
-}
-
-.enhanced-plan-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.plan-rj {
-  font-size: 20px;
-  font-weight: 700;
-  color: #303133;
-}
-
-.plan-title {
-  margin-top: 4px;
-  color: #606266;
-  font-size: 13px;
-}
-
-.plan-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.plan-issues {
-  margin-bottom: 12px;
-}
-
-.plan-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.plan-toolbar-simple {
-  justify-content: flex-start;
-  margin-bottom: 10px;
-}
-
-.plan-toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.plan-selected-count {
-  font-size: 12px;
-  color: #606266;
-}
-
-.simple-resource-summary {
-  font-size: 12px;
-  color: #606266;
-}
-
-.plan-group-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.plan-resource-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 10px;
-}
-
-.resource-chip {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 12px;
-  border-radius: 14px;
-  background: #f8fafc;
-  border: 1px solid rgba(144, 147, 153, 0.16);
-}
-
-.resource-chip-body {
-  min-width: 0;
-  flex: 1;
-}
-
-.resource-name {
-  font-size: 13px;
-  color: #303133;
-  font-weight: 600;
-  word-break: break-all;
-}
-
-.resource-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 6px;
-  font-size: 12px;
-  color: #909399;
-}
-
-.session-board {
-  margin-top: 24px;
-  padding-top: 20px;
-  border-top: 1px solid rgba(64, 158, 255, 0.12);
-}
-
-.session-board-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.session-board-help {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #909399;
-}
-
-.session-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 14px;
-}
-
-.session-card {
-  padding: 16px;
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(245, 248, 255, 0.98) 100%);
-  border: 1px solid rgba(64, 158, 255, 0.12);
-  box-shadow: 0 8px 24px rgba(31, 35, 41, 0.06);
-}
-
-.session-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.session-rj {
-  font-size: 18px;
-  font-weight: 700;
-  color: #303133;
-}
-
-.session-title {
-  margin-top: 4px;
-  font-size: 13px;
-  color: #606266;
-}
-
-.session-header-tags {
-  display: flex;
+.enhanced-plan-card :deep(.work-card-body) {
   gap: 6px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  padding: 10px 10px 12px;
 }
-
-.session-metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  margin-top: 12px;
+.enhanced-plan-card :deep(.work-title) {
   font-size: 12px;
-  color: #606266;
+  line-height: 1.45;
 }
-
-.session-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 12px;
-  font-size: 12px;
-  color: #909399;
-  word-break: break-all;
+.enhanced-plan-card :deep(.work-rj) {
+  display: none;
 }
-
-.session-actions {
+.enhanced-plan-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-.session-detail-summary {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
-}
-
-.session-detail-descriptions {
-  margin-bottom: 16px;
-}
-
-.session-resource-table {
-  margin-top: 12px;
-}
-
-.results-card {
-  margin-bottom: 20px;
-}
-
-.results-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.folder-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.preview-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 40px;
-  gap: 12px;
-}
-
-.preview-content {
-  padding: 16px 0;
-}
-
-.version-list,
-.file-list {
-  margin-top: 20px;
-}
-
-.version-list h4,
-.file-list h4 {
-  margin-bottom: 12px;
-  color: #606266;
-  font-size: 14px;
-}
-
-.file-path {
-  display: flex;
-  align-items: center;
   gap: 6px;
 }
-
-.file-path span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.preview-error {
-  padding: 40px;
-}
-
-.tasks-card {
-  margin-top: 20px;
-}
-
-.task-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.task-item {
-  border-left: 4px solid #409EFF;
-}
-
-.task-item.completed {
-  border-left-color: #67C23A;
-}
-
-.task-item.failed {
-  border-left-color: #F56C6C;
-}
-
-.task-item.paused {
-  border-left-color: #909399;
-}
-
-.task-header {
-  display: flex;
-  justify-content: space-between;
+.enhanced-plan-meta-pill,
+.enhanced-plan-tag {
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  border: 1px solid transparent;
+}
+.enhanced-plan-meta-pill.is-code {
+  color: #4f6b95;
+  background: #f8fbff;
+  border-color: #d8e6fb;
+}
+.enhanced-plan-meta-pill.is-downloadable {
+  color: #216e56;
+  background: #edf9f3;
+  border-color: #cbeedd;
+}
+.enhanced-plan-tags {
+  display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-}
-
-.task-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.task-rjcode {
-  font-weight: bold;
-  color: #409EFF;
-}
-
-.task-original-rj {
-  color: #909399;
-  font-size: 12px;
-}
-
-.task-title {
-  color: #606266;
-  font-size: 13px;
-}
-
-.task-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.task-step {
-  display: flex;
-  align-items: center;
   gap: 6px;
-  color: #909399;
-  font-size: 12px;
+  margin-top: auto;
 }
-
-.task-error {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #F56C6C;
-  font-size: 12px;
-  margin-top: 8px;
-  padding: 8px;
-  background: #fef0f0;
-  border-radius: 4px;
+.enhanced-plan-tag.is-primary {
+  color: #2b63c8;
+  background: #edf4ff;
+  border-color: #cadeff;
 }
-
-.file-download-list {
-  margin-top: 12px;
+.enhanced-plan-tag.is-soft {
+  color: #5d6d81;
+  background: #f6f8fb;
+  border-color: #e2e8f0;
 }
-
-.file-list-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
+.enhanced-plan-tag.is-muted {
+  color: #7b8797;
+  background: #fafafa;
+  border-color: #e5e7eb;
 }
-
-.file-items {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+button {
+  cursor: pointer;
 }
-
-.file-item {
-  display: flex;
-  align-items: center;
-  padding: 8px;
-  background: #f5f7fa;
-  border-radius: 4px;
+button:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
-
-.file-name {
-  flex: 1;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-size {
-  font-size: 11px;
-  color: #909399;
-  min-width: 120px;
-  text-align: right;
-}
-
-.failed-files {
-  margin-top: 12px;
-}
-
-.failed-list-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #F56C6C;
-}
-
-.failed-items {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.failed-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 6px 8px;
-  background: #fef0f0;
-  border-radius: 4px;
-  font-size: 12px;
-}
-
-.failed-name {
-  color: #606266;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-
-.failed-reason {
-  color: #F56C6C;
-  margin-left: 8px;
-}
-
-.sync-result {
-  margin-top: 12px;
-}
-
-.sync-list-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #67C23A;
-}
-
-.sync-items {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.sync-item {
-  display: flex;
-  flex-direction: column;
-  padding: 10px;
-  background: #f0f9eb;
-  border-radius: 4px;
-  gap: 4px;
-}
-
-.sync-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.sync-label {
-  color: #909399;
-  font-size: 11px;
-  white-space: nowrap;
-  min-width: 70px;
-}
-
-.sync-original {
-  font-size: 12px;
-  color: #E6A23C;
-  font-weight: 500;
-}
-
-.sync-new {
-  font-size: 12px;
-  color: #409EFF;
-  font-weight: 500;
-}
-
-.sync-subtitle {
-  font-size: 12px;
-  color: #67C23A;
-  font-weight: 500;
-}
-
-.sync-arrow-down {
-  color: #67C23A;
-  font-weight: bold;
-  font-size: 14px;
-  text-align: center;
-}
-
-.waiting-section {
-  margin-bottom: 16px;
-  padding: 12px;
-  background: #fdf6ec;
-  border-radius: 8px;
-}
-
-.section-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #E6A23C;
-  margin-bottom: 12px;
-}
-
-.next-retry-time {
-  margin-left: auto;
-  font-size: 12px;
-  font-weight: normal;
-  color: #909399;
-}
-
-.waiting-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.waiting-item {
-  padding: 12px;
-}
-
-.waiting-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.waiting-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-  font-size: 12px;
-}
-
-.retry-reason {
-  color: #E6A23C;
-}
-
-.retry-count {
-  color: #909399;
-}
-
-.retry-after {
-  color: #409EFF;
-  margin-left: 8px;
-}
-
-.waiting-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.header-actions {
-  display: flex;
-  gap: 8px;
+button:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: none;
 }
 </style>
