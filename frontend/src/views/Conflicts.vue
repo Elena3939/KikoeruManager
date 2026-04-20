@@ -6,7 +6,10 @@
         <h1 class="text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-3">
           问题作品
           <span v-if="conflicts.length > 0" class="px-2.5 py-0.5 bg-slate-100 text-slate-600 text-sm font-medium border border-slate-200 rounded-md">
-            {{ conflicts.length }} 项待处理
+            {{ pendingConflicts.length }} 项待处理
+          </span>
+          <span v-if="processingConflicts.length > 0" class="px-2.5 py-0.5 bg-blue-50 text-blue-600 text-sm font-medium border border-blue-200 rounded-md">
+            {{ processingConflicts.length }} 项处理中
           </span>
         </h1>
         <p class="text-sm text-slate-500 mt-1">重复作品以及解压或处理失败作品的集中处理站</p>
@@ -39,11 +42,11 @@
 
     <!-- Main Content Area -->
     <div class="flex-1 min-h-0 p-6 lg:p-8 flex gap-6 overflow-hidden" v-if="!loading || conflicts.length > 0">
-      <template v-if="conflicts.length === 0">
+      <template v-if="filteredConflicts.length === 0">
         <div class="flex-1 flex flex-col items-center justify-center text-slate-400 bg-white border border-slate-200/60 shadow-sm border-dashed rounded-3xl">
           <CheckCircle2 class="w-16 h-16 mb-4 text-emerald-400" stroke-width="1.5" />
-          <p class="text-lg font-medium text-slate-600">当前没有待处理的问题作品</p>
-          <p class="text-sm mt-1">所有作品都在正常导入或库中已处于良好状态</p>
+          <p class="text-lg font-medium text-slate-600">{{ conflictFilter === 'processing' ? '当前没有处理中问题项' : '当前没有待处理的问题作品' }}</p>
+          <p class="text-sm mt-1">{{ conflictFilter === 'processing' ? '新提交的保留新版或指定密码重试会在这里短暂显示。' : '所有作品都在正常导入或库中已处于良好状态' }}</p>
         </div>
       </template>
 
@@ -54,8 +57,20 @@
             <div class="flex items-center justify-between mb-3">
               <h3 class="font-medium text-slate-800">待处理列表</h3>
               <span class="text-xs font-medium px-2 py-1 bg-white border border-slate-200 text-slate-500 shadow-sm rounded-md">
-                已选 {{ selectedCount }} / {{ conflicts.length }}
+                已选 {{ selectedCount }} / {{ filteredConflicts.length }}
               </span>
+            </div>
+            <div class="flex gap-2 mb-3">
+              <button
+                v-for="option in filterOptions"
+                :key="option.value"
+                type="button"
+                class="px-3 py-1.5 text-xs font-medium transition-all duration-300 border shadow-sm flex-1 rounded-xl"
+                :class="conflictFilter === option.value ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400'"
+                @click="conflictFilter = option.value"
+              >
+                {{ option.label }}
+              </button>
             </div>
             <div class="flex flex-wrap gap-2 mb-2">
               <button
@@ -102,14 +117,15 @@
 
           <div class="flex-1 overflow-y-auto p-3 space-y-2 no-scrollbar">
             <button
-              v-for="conflict in conflicts"
+              v-for="conflict in filteredConflicts"
               :key="conflict.id"
               class="w-full text-left p-3.5 border transition-all duration-300 relative group overflow-hidden rounded-2xl"
               :class="[
                 isConflictSelected(conflict.id)
                   ? 'bg-indigo-50/50 border-indigo-300 shadow-sm ring-1 ring-indigo-500/20'
                   : 'bg-white border-slate-200 hover:border-indigo-400 hover:shadow-md hover:-translate-y-0.5',
-                conflict.id === activeConflictId ? 'before:absolute before:left-0 before:top-0 before:bottom-0 before:w-1 before:bg-indigo-500 pl-4.5' : ''
+                conflict.id === activeConflictId ? 'before:absolute before:left-0 before:top-0 before:bottom-0 before:w-1 before:bg-indigo-500 pl-4.5' : '',
+                isConflictProcessing(conflict) ? 'processing-conflict-card' : ''
               ]"
               @click="handleConflictCardClick(conflict, $event)"
             >
@@ -133,7 +149,15 @@
                   <Copy v-else class="w-3.5 h-3.5 text-indigo-400" />
                   {{ getConflictTypeLabel(conflict.conflict_type) }}
                 </span>
-                <span class="text-slate-400">{{ formatDate(conflict.created_at).split(' ')[0] }}</span>
+                <div class="flex items-center gap-2">
+                  <span
+                    class="px-1.5 py-0.5 text-[10px] font-semibold border rounded-md"
+                    :class="isConflictProcessing(conflict) ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-slate-100 text-slate-500 border-slate-200'"
+                  >
+                    {{ isConflictProcessing(conflict) ? '处理中' : '待处理' }}
+                  </span>
+                  <span class="text-slate-400">{{ formatDate(conflict.created_at).split(' ')[0] }}</span>
+                </div>
               </div>
             </button>
           </div>
@@ -170,7 +194,7 @@
                 >
                   <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'KEEP_NEW')" variant="inline" :size="32" />
                   <Save v-else class="w-4 h-4 transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:scale-110" />
-                  保留新版
+                  {{ isActionLoading(activeConflict.id, 'KEEP_NEW') ? '保留新版中' : '保留新版' }}
                 </button>
                 <button
                   v-if="canUseAction(activeConflict, 'RETRY')"
@@ -178,9 +202,9 @@
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleRetry(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'RETRY')" variant="inline" :size="32" />
+                  <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'RETRY') || isRetryProcessing(activeConflict)" variant="inline" :size="32" />
                   <RotateCcw v-else class="w-4 h-4 transition-transform duration-300 group-hover:-rotate-90" />
-                  重试
+                  {{ isRetryProcessing(activeConflict) ? '重试中' : '重试' }}
                 </button>
                 <button
                   v-if="canUseAction(activeConflict, 'SKIP')"
@@ -406,13 +430,26 @@ const mergePreview = ref(null)
 const mergeDecisions = ref({})
 const mergePreviewCache = reactive({})
 const mergeDecisionCache = reactive({})
+const conflictFilter = ref('all')
 
 const activeConflict = computed(() => conflicts.value.find(conflict => conflict.id === activeConflictId.value) || null)
 const mergeConflict = computed(() => conflicts.value.find(conflict => conflict.id === mergeConflictId.value) || null)
-const selectedConflicts = computed(() => conflicts.value.filter(conflict => selectedConflictIds.value.includes(conflict.id)))
+const pendingConflicts = computed(() => conflicts.value.filter(conflict => !isConflictProcessing(conflict)))
+const processingConflicts = computed(() => conflicts.value.filter(conflict => isConflictProcessing(conflict)))
+const filterOptions = computed(() => ([
+  { value: 'all', label: `全部 ${conflicts.value.length}` },
+  { value: 'pending', label: `待处理 ${pendingConflicts.value.length}` },
+  { value: 'processing', label: `处理中 ${processingConflicts.value.length}` }
+]))
+const filteredConflicts = computed(() => {
+  if (conflictFilter.value === 'pending') return pendingConflicts.value
+  if (conflictFilter.value === 'processing') return processingConflicts.value
+  return conflicts.value
+})
+const selectedConflicts = computed(() => filteredConflicts.value.filter(conflict => selectedConflictIds.value.includes(conflict.id)))
 const selectedCount = computed(() => selectedConflicts.value.length)
 const hasSelection = computed(() => selectedCount.value > 0)
-const isAllSelected = computed(() => conflicts.value.length > 0 && selectedCount.value === conflicts.value.length)
+const isAllSelected = computed(() => filteredConflicts.value.length > 0 && selectedCount.value === filteredConflicts.value.length)
 
 watch(activeConflictId, value => {
   if (value) {
@@ -420,6 +457,11 @@ watch(activeConflictId, value => {
   } else {
     localStorage.removeItem(ACTIVE_CONFLICT_STORAGE_KEY)
   }
+})
+
+watch(conflictFilter, () => {
+  syncSelectedConflicts()
+  syncActiveConflict()
 })
 
 onMounted(() => {
@@ -443,17 +485,17 @@ async function fetchConflicts() {
 }
 
 function syncActiveConflict() {
-  if (!conflicts.value.length) {
+  if (!filteredConflicts.value.length) {
     activeConflictId.value = ''
     return
   }
-  if (!conflicts.value.some(conflict => conflict.id === activeConflictId.value)) {
-    activeConflictId.value = conflicts.value[0].id
+  if (!filteredConflicts.value.some(conflict => conflict.id === activeConflictId.value)) {
+    activeConflictId.value = filteredConflicts.value[0].id
   }
 }
 
 function syncSelectedConflicts() {
-  const existingIds = new Set(conflicts.value.map(conflict => conflict.id))
+  const existingIds = new Set(filteredConflicts.value.map(conflict => conflict.id))
   selectedConflictIds.value = selectedConflictIds.value.filter(id => existingIds.has(id))
 }
 
@@ -471,7 +513,9 @@ function isActionLoading(conflictId, action) {
 }
 
 function isConflictBusy(conflictId) {
-  return Object.keys(actionState).some(key => key.startsWith(`${conflictId}:`)) ||
+  const conflict = conflicts.value.find(item => item.id === conflictId)
+  return isConflictProcessing(conflict) ||
+    Object.keys(actionState).some(key => key.startsWith(`${conflictId}:`)) ||
     (mergeSubmitting.value && mergeConflictId.value === conflictId)
 }
 
@@ -485,6 +529,14 @@ function isExtractFailed(conflict) {
 
 function isFailureConflict(conflict) {
   return ['EXTRACT_FAILED', 'PROCESS_FAILED'].includes(conflict?.conflict_type)
+}
+
+function isConflictProcessing(conflict) {
+  return String(conflict?.status || '').trim().toUpperCase() === 'PROCESSING'
+}
+
+function isRetryProcessing(conflict) {
+  return isConflictProcessing(conflict) && String(conflict?.new_metadata?.resolution_action || '').trim().toUpperCase() === 'RETRY'
 }
 
 function isConflictSelected(conflictId) {
@@ -512,7 +564,7 @@ function handleConflictCardClick(conflict, event) {
   const toggleMode = Boolean(event?.ctrlKey || event?.metaKey)
 
   if (useRange) {
-    const ids = conflicts.value.map(item => item.id)
+    const ids = filteredConflicts.value.map(item => item.id)
     const startIndex = ids.indexOf(selectionAnchorId.value)
     const endIndex = ids.indexOf(conflictId)
     if (startIndex !== -1 && endIndex !== -1) {
@@ -540,7 +592,7 @@ function toggleSelectAll() {
     clearSelection()
     return
   }
-  selectedConflictIds.value = conflicts.value.map(conflict => conflict.id)
+  selectedConflictIds.value = filteredConflicts.value.map(conflict => conflict.id)
   selectionAnchorId.value = selectedConflictIds.value[selectedConflictIds.value.length - 1] || ''
 }
 
@@ -627,12 +679,14 @@ function buildKeepNewSummary(conflict, preview) {
 
 async function resolveKeepNew(conflict, preview = null) {
   const effectivePreview = preview || await loadKeepNewPreview(conflict)
-  await conflictApi.resolve(conflict.id, {
+  const result = await conflictApi.resolve(conflict.id, {
     action: 'KEEP_NEW',
     confirmed: true
   })
-  removeConflict(conflict.id)
-  return effectivePreview
+  return {
+    ...effectivePreview,
+    ...result
+  }
 }
 
 async function resolveSkip(conflict) {
@@ -650,11 +704,11 @@ async function askRetryPassword(conflict) {
   try {
     const value = await showSystemPrompt({
       title: `重试 ${conflict.rjcode || '当前问题项'}`,
-      message: '可选：指定一个密码只用这一条来重试；留空则按原逻辑继续走密码库、RJ 推导和默认密码。',
+      message: '可选：指定一个密码只用这一条来重试；这里直接明文输入，留空则按原逻辑继续走密码库、RJ 推导和默认密码。',
       confirmText: '开始重试',
       cancelText: '取消',
-      inputType: 'password',
-      placeholder: '留空表示正常重试；输入则仅用该密码',
+      inputType: 'text',
+      placeholder: '直接输入明文密码；留空表示正常重试',
       closeOnClickModal: false
     })
     return {
@@ -760,8 +814,9 @@ async function handleKeepNew(conflict) {
       cancelText: '取消'
     })
 
-    await resolveKeepNew(conflict, preview)
-    ElMessage.success('已完成保留新版')
+    const result = await resolveKeepNew(conflict, preview)
+    await fetchConflicts()
+    ElMessage.success(result?.message || '已提交保留新版后台任务')
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
       console.error('保留新版失败:', error)
@@ -1114,5 +1169,60 @@ function formatFileSize(size) {
 </script>
 
 <style scoped>
-/* Scoped styles are no longer needed as we use Tailwind CSS utility classes */
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+.processing-conflict-card {
+  border-color: rgba(74, 222, 128, 0.72) !important;
+  box-shadow:
+    0 0 0 1px rgba(74, 222, 128, 0.26),
+    0 0 18px rgba(74, 222, 128, 0.18),
+    0 0 32px rgba(34, 197, 94, 0.12);
+  animation: processing-conflict-glow 1.9s ease-in-out infinite;
+}
+
+.processing-conflict-card::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 18px;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 1px rgba(134, 239, 172, 0.28),
+    0 0 22px rgba(74, 222, 128, 0.22),
+    0 0 42px rgba(34, 197, 94, 0.18);
+  opacity: 0.78;
+  animation: processing-conflict-aura 1.9s ease-in-out infinite;
+}
+
+@keyframes processing-conflict-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(74, 222, 128, 0.22),
+      0 0 14px rgba(74, 222, 128, 0.12),
+      0 0 26px rgba(34, 197, 94, 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(74, 222, 128, 0.34),
+      0 0 24px rgba(74, 222, 128, 0.22),
+      0 0 44px rgba(34, 197, 94, 0.16);
+  }
+}
+
+@keyframes processing-conflict-aura {
+  0%, 100% {
+    opacity: 0.48;
+    transform: scale(0.995);
+  }
+  50% {
+    opacity: 0.92;
+    transform: scale(1.01);
+  }
+}
 </style>

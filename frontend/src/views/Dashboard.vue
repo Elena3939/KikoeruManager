@@ -118,7 +118,7 @@
         </div>
       </template>
 
-      <el-table :data="recentTasks" v-app-loading="{ loading, text: '正在加载近期任务...', size: 124 }" style="width: 100%" row-key="id">
+      <el-table :data="recentTasks" v-app-loading="{ loading, text: '正在加载近期任务...', size: 96 }" style="width: 100%" row-key="id">
 
         <el-table-column prop="title" label="源文件" show-overflow-tooltip min-width="260">
           <template #default="{ row }">
