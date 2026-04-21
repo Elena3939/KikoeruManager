@@ -30,7 +30,7 @@ from ..core.password_cleanup import get_cleanup_service
 from ..core.processed_archive_cleanup import get_processed_archive_cleanup_service
 from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
-from ..core.library_manager import get_library_manager, SynologyFileStationClient
+from ..core.library_manager import get_library_manager
 from ..core.password_utils import (
     normalize_filename_value,
     normalize_optional_text,
@@ -45,6 +45,19 @@ app = FastAPI(
     description="DLsite作品整理工具API",
     version="1.0.0"
 )
+
+# ========== 工具函数 ==========
+def _synology_http_status(exc: Exception) -> int:
+    """将群晖 API 错误码映射到合适的 HTTP 状态码。
+    119: SID 过期/无效路径; 121: 无效参数; 401: 无权限; 408: 操作超时
+    以上均视为上游服务（群晖）异常，返回 502 Bad Gateway。
+    """
+    msg = str(exc)
+    for code in (119, 121, 401, 408):
+        if re.search(rf'"code"\s*:\s*{code}\b', msg) or re.search(rf"'code'\s*:\s*{code}\b", msg):
+            return 502
+    return 500
+
 
 # ========== 健康检查 API ==========
 @app.get("/api/health")
@@ -2327,8 +2340,13 @@ async def upload_files(files: List[UploadFile] = File(...), target_library_id: O
         # 保存文件到输入目录
         file_path = os.path.join(input_path, file.filename)
 
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        _file_obj = file.file
+
+        def _write_upload():
+            with open(file_path, "wb") as _buf:
+                shutil.copyfileobj(_file_obj, _buf)
+
+        await asyncio.to_thread(_write_upload)
 
         uploaded_files.append(file_path)
         logger.info(f"上传文件: {file.filename} -> {file_path}")
@@ -2646,6 +2664,13 @@ async def get_configuration():
         rj_subtitle=config.rj_subtitle.model_dump() if hasattr(config, 'rj_subtitle') else None,
         backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None
     )
+
+@app.get("/api/config/state")
+async def get_configuration_state():
+    """获取配置运行态，便于排查首屏配置抖动。"""
+    from ..config.settings import get_config_runtime_state
+
+    return get_config_runtime_state()
 
 @app.post("/api/config")
 async def update_configuration(request: Request):
@@ -3306,9 +3331,11 @@ async def get_logs(lines: int = 100):
     
     try:
         line_limit = max(50, min(int(lines or 100), 5000))
-        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-            recent_lines = deque((line.strip() for line in f if line.strip()), maxlen=line_limit)
-            return {"logs": list(recent_lines)}
+        _log_file = log_file
+        def _read_log():
+            with open(_log_file, 'r', encoding='utf-8', errors='ignore') as _f:
+                return list(deque((_l.strip() for _l in _f if _l.strip()), maxlen=line_limit))
+        return {"logs": await asyncio.to_thread(_read_log)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
 
@@ -3317,6 +3344,23 @@ async def get_conflicts():
     """获取问题作品列表"""
     from ..core.conflict_resolution_service import get_conflict_resolution_service
     from ..models.database import ConflictWork, get_db
+
+    def _normalize_conflict_metadata(raw_metadata):
+        if isinstance(raw_metadata, dict):
+            return dict(raw_metadata)
+        if raw_metadata in (None, "", []):
+            return {}
+        if isinstance(raw_metadata, str):
+            with contextlib.suppress(Exception):
+                parsed = json.loads(raw_metadata)
+                if isinstance(parsed, dict):
+                    return parsed
+            return {"raw_metadata": raw_metadata}
+        if isinstance(raw_metadata, list):
+            return {"raw_metadata": raw_metadata}
+        with contextlib.suppress(Exception):
+            return dict(raw_metadata)
+        return {"raw_metadata": str(raw_metadata)}
 
     db = next(get_db())
     try:
@@ -3328,26 +3372,78 @@ async def get_conflicts():
         ).all()
         conflict_items = []
         for conflict in conflicts:
-            normalized_status = str(conflict.status or "").strip().upper()
-            if normalized_status == "PROCESSING":
-                linked_task = engine.get_task(str(conflict.task_id or "").strip()) if conflict.task_id else None
-                linked_task_status = str(getattr(linked_task, "status", "") or "").strip().lower()
-                if linked_task_status not in {
-                    TaskStatus.PENDING.value,
-                    TaskStatus.PROCESSING.value,
-                    TaskStatus.PAUSED.value,
-                    TaskStatus.WAITING_MANUAL.value,
-                    TaskStatus.WAITING_RETRY.value,
-                }:
-                    fallback_status = "PENDING"
-                    if str(conflict.conflict_type or "").strip().upper() == "DUPLICATE":
-                        fallback_status = "PENDING"
-                    conflict.status = fallback_status
-                    next_metadata = dict(conflict.new_metadata or {})
-                    next_metadata["resolution_task_state"] = "stale_processing_recovered"
-                    next_metadata["resolution_recovered_at"] = datetime.now().isoformat()
-                    conflict.new_metadata = next_metadata
-                    db.commit()
+            try:
+                conflict.new_metadata = _normalize_conflict_metadata(conflict.new_metadata)
+                normalized_status = str(conflict.status or "").strip().upper()
+                if normalized_status == "PROCESSING":
+                    linked_task = engine.get_task(str(conflict.task_id or "").strip()) if conflict.task_id else None
+                    linked_task_status = str(getattr(linked_task, "status", "") or "").strip().lower()
+                    if linked_task_status not in {
+                        TaskStatus.PENDING.value,
+                        TaskStatus.PROCESSING.value,
+                        TaskStatus.PAUSED.value,
+                        TaskStatus.WAITING_MANUAL.value,
+                        TaskStatus.WAITING_RETRY.value,
+                    }:
+                        conflict.status = "PENDING"
+                        next_metadata = _normalize_conflict_metadata(conflict.new_metadata)
+                        next_metadata["resolution_task_state"] = "stale_processing_recovered"
+                        next_metadata["resolution_recovered_at"] = datetime.now().isoformat()
+                        conflict.new_metadata = next_metadata
+                        db.commit()
+            except Exception as exc:
+                logger.error(
+                    "恢复问题作品状态失败 conflict_id=%s task_id=%s error=%s",
+                    getattr(conflict, "id", None),
+                    getattr(conflict, "task_id", None),
+                    exc,
+                    exc_info=True,
+                )
+                db.rollback()
+                conflict.new_metadata = _normalize_conflict_metadata(getattr(conflict, "new_metadata", None))
+
+            try:
+                available_actions = resolution_service.get_available_actions(conflict)
+            except Exception as exc:
+                logger.error(
+                    "计算问题作品可用操作失败 conflict_id=%s error=%s",
+                    getattr(conflict, "id", None),
+                    exc,
+                    exc_info=True,
+                )
+                available_actions = ["SKIP"]
+
+            try:
+                context = await resolution_service.describe_conflict_async(conflict)
+            except Exception as exc:
+                logger.error(
+                    "构建问题作品上下文失败 conflict_id=%s error=%s",
+                    getattr(conflict, "id", None),
+                    exc,
+                    exc_info=True,
+                )
+                context = {
+                    "existing": {
+                        "library_id": None,
+                        "library_type": "local",
+                        "library_name": "",
+                        "path": str(conflict.existing_path or "").strip(),
+                        "is_remote": False,
+                        "stats": None,
+                    },
+                    "source": {
+                        "library_id": None,
+                        "library_type": "local",
+                        "library_name": "",
+                        "path": str(conflict.new_path or "").strip(),
+                        "is_remote": False,
+                        "stats": None,
+                    },
+                    "new_path_kind": "archive" if os.path.isfile(str(conflict.new_path or "")) else "folder",
+                    "metadata": _normalize_conflict_metadata(conflict.new_metadata),
+                    "context_error": str(exc),
+                }
+
             conflict_items.append(
                 {
                     "id": conflict.id,
@@ -3356,16 +3452,19 @@ async def get_conflicts():
                     "conflict_type": conflict.conflict_type,
                     "existing_path": conflict.existing_path,
                     "new_path": conflict.new_path,
-                    "new_metadata": conflict.new_metadata,
+                    "new_metadata": _normalize_conflict_metadata(conflict.new_metadata),
                     "status": conflict.status,
                     "created_at": conflict.created_at.isoformat() if conflict.created_at else None,
-                    "available_actions": resolution_service.get_available_actions(conflict),
-                    "context": await resolution_service.describe_conflict_async(conflict),
+                    "available_actions": available_actions,
+                    "context": context,
                 }
             )
         return {
             "conflicts": conflict_items
         }
+    except Exception as exc:
+        logger.error("获取问题作品列表失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取问题作品失败: {str(exc)}")
     finally:
         db.close()
 
@@ -3833,7 +3932,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 # 如果是已解压的文件夹，直接移动
                 if os.path.exists(conflict.new_path):
                     target_path = os.path.join(config.storage.library_path, os.path.basename(conflict.new_path))
-                    shutil.move(conflict.new_path, target_path)
+                    await asyncio.to_thread(shutil.move, conflict.new_path, target_path)
                     logger.info(f"保留新版完成：已移动到 {target_path}")
             
             conflict.status = "KEEP_NEW"
@@ -4017,7 +4116,7 @@ async def scan_processed_archives():
         
         # 扫描目录中的文件
         found_files = []
-        for filename in os.listdir(processed_dir):
+        for filename in await asyncio.to_thread(os.listdir, processed_dir):
             file_path = os.path.join(processed_dir, filename)
             if os.path.isfile(file_path):
                 found_files.append(filename)
@@ -4213,13 +4312,20 @@ async def get_library_definitions():
 @app.post("/api/library/test-connection")
 async def test_library_connection(request: Request):
     try:
-        data = await request.json()
+        try:
+            data = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="请求体必须为有效 JSON")
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail="请求体必须为 JSON 对象")
         library = data.get("library") or data
         manager = get_library_manager()
         return await manager.test_connection(library)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"库存连接测试失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"库存连接测试失败: {str(e)}")
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"库存连接测试失败: {str(e)}")
 
 
 @app.get("/api/library/storage-info")
@@ -4229,7 +4335,7 @@ async def get_library_storage_info(library_id: str):
         library = manager.get_library_definition(library_id)
         if library.type != "synology_filestation" or not library.synology:
             raise HTTPException(status_code=400, detail="目标库存不是群晖库存")
-        client = SynologyFileStationClient(library.synology)
+        client = manager.get_cached_synology_client(library.synology)
         storage_info = await client.get_storage_info()
         return {
             "library_id": library.id,
@@ -4240,7 +4346,7 @@ async def get_library_storage_info(library_id: str):
         raise
     except Exception as e:
         logger.error(f"获取库存空间失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"获取库存空间失败: {str(e)}")
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"获取库存空间失败: {str(e)}")
 
 
 @app.get("/api/library/browser/files")
@@ -4304,9 +4410,11 @@ async def browse_library_files(
         data["libraries"] = manager.list_libraries()
         data["library_id"] = data.get("library_id") or current_library.id
         return data
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"库存浏览失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"库存浏览失败: {str(e)}")
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"库存浏览失败: {str(e)}")
 
 
 @app.get("/api/library/browser/stats")
@@ -4314,9 +4422,11 @@ async def get_library_browser_stats(force_refresh: bool = False, library_id: Opt
     try:
         manager = get_library_manager()
         return await manager.ensure_stats(force=force_refresh, library_id=library_id)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"库存统计失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"库存统计失败: {str(e)}")
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"库存统计失败: {str(e)}")
 
 
 @app.post("/api/library/browser/stats/cancel")
@@ -4365,7 +4475,7 @@ async def get_library_browser_folder_contents(request: Request):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"获取库存文件夹内容失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"获取库存文件夹内容失败: {str(e)}")
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"获取库存文件夹内容失败: {str(e)}")
 
 
 @app.post("/api/library/browser/mojibake-preview")
@@ -4556,7 +4666,7 @@ async def rename_library_browser_item(request: Request):
                 )
         except Exception:
             logger.debug("[操作记录] 库存重命名异常记录失败", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"库存重命名失败: {str(e)}")
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"库存重命名失败: {str(e)}")
 
 
 @app.post("/api/library/browser/batch-rename")
@@ -4675,7 +4785,7 @@ async def batch_rename_library_browser_items(request: Request):
         raise
     except Exception as e:
         logger.error(f"库存批量重命名失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"库存批量重命名失败: {str(e)}")
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"库存批量重命名失败: {str(e)}")
 
 
 @app.post("/api/library/browser/delete")
@@ -4747,7 +4857,7 @@ async def delete_library_browser_item(request: Request):
                 )
         except Exception:
             logger.debug("[操作记录] 库存删除异常记录失败", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"库存删除失败: {str(e)}")
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"库存删除失败: {str(e)}")
 
 
 @app.post("/api/library/browser/batch-delete")
@@ -4829,7 +4939,7 @@ async def batch_delete_library_browser_items(request: Request):
                 )
         except Exception:
             logger.debug("[操作记录] 库存批量删除异常记录失败", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"库存批量删除失败: {str(e)}")
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"库存批量删除失败: {str(e)}")
 
 
 @app.post("/api/library/browser/open-folder")
@@ -5117,14 +5227,16 @@ async def api_rename_library_file(request: Request):
             
             metadata = await metadata_service.fetch(file_path, temp_task)
             logger.info(f"获取到元数据: {metadata}")
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"获取元数据失败: {e}")
-            raise HTTPException(status_code=500, detail=f"获取元数据失败: {str(e)}")
+            raise HTTPException(status_code=_synology_http_status(e), detail=f"获取元数据失败: {str(e)}")
         
         # 生成新名称
         work_name = metadata.get('work_name', '')
         if not work_name:
-            raise HTTPException(status_code=500, detail="获取到的作品名称为空")
+            raise HTTPException(status_code=422, detail="获取到的作品名称为空，请检查 DLsite 元数据是否可用")
         
         config = get_config()
         logger.info(f"[API RENAME] 读取到的模板: '{config.rename.template}' (长度: {len(config.rename.template)})")
@@ -5329,11 +5441,17 @@ async def delete_library_file(request: Request):
             import shutil
             if os.path.isdir(file_path):
                 # 计算文件夹大小
-                total_size = 0
-                for dirpath, dirnames, filenames in os.walk(file_path):
-                    for f in filenames:
-                        fp = os.path.join(dirpath, f)
-                        total_size += os.path.getsize(fp)
+                _fp_for_size = file_path
+                def _calc_dir_size():
+                    _sz = 0
+                    for _dp, _dn, _fn in os.walk(_fp_for_size):
+                        for _f in _fn:
+                            try:
+                                _sz += os.path.getsize(os.path.join(_dp, _f))
+                            except Exception:
+                                pass
+                    return _sz
+                total_size = await asyncio.to_thread(_calc_dir_size)
                 return {
                     "need_confirm": True,
                     "type": "folder",
@@ -5392,16 +5510,26 @@ async def batch_delete_library_items(request: Request):
         if not confirmed:
             # 返回需要确认的信息
             import shutil
-            total_size = 0
             total_count = len(paths)
-            
-            for path in paths:
-                if os.path.isdir(path):
-                    for dirpath, dirnames, filenames in os.walk(path):
-                        for f in filenames:
-                            total_size += os.path.getsize(os.path.join(dirpath, f))
-                else:
-                    total_size += os.path.getsize(path)
+
+            _paths_snap = list(paths)
+            def _calc_total_size():
+                _sz = 0
+                for _path in _paths_snap:
+                    if os.path.isdir(_path):
+                        for _dp, _dn, _fn in os.walk(_path):
+                            for _f in _fn:
+                                try:
+                                    _sz += os.path.getsize(os.path.join(_dp, _f))
+                                except Exception:
+                                    pass
+                    else:
+                        try:
+                            _sz += os.path.getsize(_path)
+                        except Exception:
+                            pass
+                return _sz
+            total_size = await asyncio.to_thread(_calc_total_size)
             
             return {
                 "need_confirm": True,

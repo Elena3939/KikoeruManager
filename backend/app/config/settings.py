@@ -3,6 +3,7 @@ import yaml
 import logging
 import threading
 import time
+import tempfile
 from typing import Optional, List, List, Callable
 from pydantic import BaseModel, Field
 from watchdog.observers import Observer
@@ -331,332 +332,327 @@ class AppConfig(BaseModel):
 _config: Optional[AppConfig] = None
 _config_loaded_path: str = ""
 _config_loaded_mtime: float = 0.0
+_config_last_error: str = ""
+_config_write_in_progress: bool = False
+_config_reload_in_progress: bool = False
 
-def load_config(config_path: str = None) -> AppConfig:
-    """加载配置"""
-    global _config, _config_loaded_path, _config_loaded_mtime
-    logger = logging.getLogger(__name__)
 
+def _resolve_config_path(config_path: str = None) -> str:
     if config_path is None:
-        # 优先从环境变量读取配置路径
         env_config_path = os.environ.get('CONFIG_PATH')
         if env_config_path:
             config_path = env_config_path
-            logger.info(f"从环境变量 CONFIG_PATH 读取配置路径: {config_path}")
         else:
-            # 根据当前文件位置确定配置路径
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            # 从 backend/app/config/settings.py 到项目根目录
             project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
             config_path = os.path.join(project_root, 'config', 'config.yaml')
+    return os.path.abspath(config_path)
 
-    config_path = os.path.abspath(config_path)
-    _config_loaded_path = config_path
-    logger.info(f"[CONFIG] 尝试加载配置文件: {config_path}")
-    logger.info(f"[CONFIG] 配置文件是否存在: {os.path.exists(config_path)}")
 
-    if os.path.exists(config_path):
+def _write_yaml_atomically(config_path: str, payload: dict) -> float:
+    config_dir = os.path.dirname(config_path)
+    os.makedirs(config_dir, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix='.config.', suffix='.yaml.tmp', dir=config_dir)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            yaml.dump(payload, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, config_path)
+    except Exception:
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config_data = yaml.safe_load(f)
-            
-            logger.info(f"YAML 加载的原始数据: {config_data}")
-            logger.info(f"YAML 中的 classification: {config_data.get('classification')}")
-            logger.info(f"YAML 中的 classification 数量: {len(config_data.get('classification', []))}")
-            if 'classification' in config_data and config_data['classification']:
-                validated_rules = []
-                for rule_data in config_data['classification']:
-                    try:
-                        # 确保所有必需字段都有值
-                        rule_data_cleaned = dict(rule_data)  # 复制原始数据
-                        
-                        # path_template 可以是空字符串，不要转为 None
-                        if 'path_template' not in rule_data_cleaned or rule_data_cleaned['path_template'] is None:
-                            rule_data_cleaned['path_template'] = ''
-                        
-                        # 其他 None 值处理
-                        for k, v in rule_data_cleaned.items():
-                            if v is None and k not in ['path_template', 'custom_name', 'fallback', 'rjcode_range']:
-                                # 这些字段允许为 None
-                                pass
-                        
-                        rule = ClassificationRule(**rule_data_cleaned)
-                        validated_rules.append(rule)
-                    except Exception as e:
-                        logger.warning(f"分类规则加载失败: {rule_data}, 错误: {e}, 使用默认规则")
-                if validated_rules:
-                    config_data['classification'] = [r.model_dump() for r in validated_rules]
-                else:
-                    config_data['classification'] = [
-                        ClassificationRule(type="none", enabled=True, path_template="", custom_name=None, fallback=None, max_tags=None, rjcode_range=None).model_dump()
-                    ]
-            
-            # 确保 filter.rules 字段格式正确
-            if 'filter' in config_data and config_data['filter'] and 'rules' in config_data['filter'] and config_data['filter']['rules']:
-                validated_filter_rules = []
-                for rule_data in config_data['filter']['rules']:
-                    try:
-                        # 确保 target 字段存在
-                        if 'target' not in rule_data or not rule_data['target']:
-                            rule_data['target'] = 'file'
-                        rule = FilterRule(**rule_data)
-                        validated_filter_rules.append(rule)
-                    except Exception as e:
-                        logger.warning(f"过滤规则加载失败: {rule_data}, 错误: {e}, 跳过此规则")
-                if validated_filter_rules:
-                    config_data['filter']['rules'] = [r.model_dump() for r in validated_filter_rules]
-            
-            # 确保 rename 配置完整（兼容旧配置）
-            if 'rename' in config_data:
-                # 如果 flatten_single_subfolder 未设置，默认为 True
-                if 'flatten_single_subfolder' not in config_data['rename']:
-                    config_data['rename']['flatten_single_subfolder'] = True
-                    logger.info("添加缺失的 flatten_single_subfolder 配置，默认为 True")
-                # 如果 flatten_depth 未设置，默认为 3
-                if 'flatten_depth' not in config_data['rename']:
-                    config_data['rename']['flatten_depth'] = 3
-                    logger.info("添加缺失的 flatten_depth 配置，默认为 3")
-                # 如果 remove_empty_folders 未设置，默认为 True
-                if 'remove_empty_folders' not in config_data['rename']:
-                    config_data['rename']['remove_empty_folders'] = True
-                    logger.info("添加缺失的 remove_empty_folders 配置，默认为 True")
-                # 如果 api_rename_follow_template 未设置，默认为 False
-                if 'api_rename_follow_template' not in config_data['rename']:
-                    config_data['rename']['api_rename_follow_template'] = False
-                    logger.info("添加缺失的 api_rename_follow_template 配置，默认为 False")
-                # 如果 use_japanese_metadata 未设置，默认为 False
-                if 'use_japanese_metadata' not in config_data['rename']:
-                    config_data['rename']['use_japanese_metadata'] = False
-                    logger.info("添加缺失的 use_japanese_metadata 配置，默认为 False")
-                # 记录模板值用于调试
-                logger.info(f"[CONFIG] rename.template = '{config_data['rename'].get('template', 'NOT SET')}'")
-
-            # 确保 password_cleanup 配置完整（兼容旧配置）
-            if 'password_cleanup' not in config_data or not config_data['password_cleanup']:
-                config_data['password_cleanup'] = {
-                    'enabled': False,
-                    'max_use_count': 1,
-                    'cron_expression': '0 0 * * 0',
-                    'preserve_days': 30,
-                    'exclude_sources': []
-                }
-                logger.info("添加缺失的 password_cleanup 配置，使用默认值")
-            else:
-                # 确保所有字段都存在
-                if 'enabled' not in config_data['password_cleanup']:
-                    config_data['password_cleanup']['enabled'] = False
-                if 'max_use_count' not in config_data['password_cleanup']:
-                    config_data['password_cleanup']['max_use_count'] = 1
-                if 'cron_expression' not in config_data['password_cleanup']:
-                    config_data['password_cleanup']['cron_expression'] = '0 0 * * 0'
-                if 'preserve_days' not in config_data['password_cleanup']:
-                    config_data['password_cleanup']['preserve_days'] = 30
-                if 'exclude_sources' not in config_data['password_cleanup']:
-                    config_data['password_cleanup']['exclude_sources'] = []
-
-            # 确保 processed_archive_cleanup 配置完整（兼容旧配置）
-            if 'processed_archive_cleanup' not in config_data or not config_data['processed_archive_cleanup']:
-                config_data['processed_archive_cleanup'] = {
-                    'enabled': False,
-                    'strategy': 'age',
-                    'cron_expression': '0 1 * * 0',
-                    'preserve_days': 30,
-                    'max_count': 1000,
-                    'max_size_gb': 50,
-                    'exclude_reprocessing': True
-                }
-                logger.info("添加缺失的 processed_archive_cleanup 配置，使用默认值")
-            else:
-                # 确保所有字段都存在
-                if 'enabled' not in config_data['processed_archive_cleanup']:
-                    config_data['processed_archive_cleanup']['enabled'] = False
-                if 'strategy' not in config_data['processed_archive_cleanup']:
-                    config_data['processed_archive_cleanup']['strategy'] = 'age'
-                if 'cron_expression' not in config_data['processed_archive_cleanup']:
-                    config_data['processed_archive_cleanup']['cron_expression'] = '0 1 * * 0'
-                if 'preserve_days' not in config_data['processed_archive_cleanup']:
-                    config_data['processed_archive_cleanup']['preserve_days'] = 30
-                if 'max_count' not in config_data['processed_archive_cleanup']:
-                    config_data['processed_archive_cleanup']['max_count'] = 1000
-                if 'max_size_gb' not in config_data['processed_archive_cleanup']:
-                    config_data['processed_archive_cleanup']['max_size_gb'] = 50
-                if 'exclude_reprocessing' not in config_data['processed_archive_cleanup']:
-                    config_data['processed_archive_cleanup']['exclude_reprocessing'] = True
-
-            # 确保 auto_process 配置完整（兼容旧配置）
-            if 'auto_process' not in config_data or not config_data['auto_process']:
-                config_data['auto_process'] = {
-                    'check_duplicate': True,
-                    'import_linked_translation_subtitles': True,
-                    'extract': True,
-                    'fetch_metadata': True,
-                    'rename': True,
-                    'filter': True,
-                    'classify': True,
-                    'archive': True
-                }
-                logger.info("添加缺失的 auto_process 配置，使用默认值")
-            else:
-                # 确保所有字段都存在
-                defaults = {
-                    'check_duplicate': True,
-                    'import_linked_translation_subtitles': True,
-                    'extract': True,
-                    'fetch_metadata': True,
-                    'rename': True,
-                    'filter': True,
-                    'classify': True,
-                    'archive': True
-                }
-                for key, value in defaults.items():
-                    if key not in config_data['auto_process']:
-                        config_data['auto_process'][key] = value
-
-            # 确保 process_existing 配置完整（兼容旧配置）
-            if 'process_existing' not in config_data or not config_data['process_existing']:
-                config_data['process_existing'] = {
-                    'check_duplicate': True,
-                    'fetch_metadata': True,
-                    'rename': True,
-                    'filter': True,
-                    'import_lrc': True,
-                    'classify': True
-                }
-                logger.info("添加缺失的 process_existing 配置，使用默认值")
-            else:
-                # 确保所有字段都存在
-                defaults = {
-                    'check_duplicate': True,
-                    'fetch_metadata': True,
-                    'rename': True,
-                    'filter': True,
-                    'import_lrc': True,
-                    'classify': True
-                }
-                for key, value in defaults.items():
-                    if key not in config_data['process_existing']:
-                        config_data['process_existing'][key] = value
-
-            # 确保 asmr_sync_step 配置完整（兼容旧配置）
-            if 'asmr_sync_step' not in config_data or not config_data['asmr_sync_step']:
-                config_data['asmr_sync_step'] = {
-                    'download': True,
-                    'sync_subtitle': True,
-                    'rename': True,
-                    'classify': True,
-                    'move_subtitle_folder': True
-                }
-                logger.info("添加缺失的 asmr_sync_step 配置，使用默认值")
-            else:
-                # 确保所有字段都存在
-                defaults = {
-                    'download': True,
-                    'sync_subtitle': True,
-                    'rename': True,
-                    'classify': True,
-                    'move_subtitle_folder': True
-                }
-                for key, value in defaults.items():
-                    if key not in config_data['asmr_sync_step']:
-                        config_data['asmr_sync_step'][key] = value
-
-            if 'rj_subtitle' not in config_data or not config_data['rj_subtitle']:
-                config_data['rj_subtitle'] = {
-                    'overwrite_existing': False,
-                    'scan_one_level_only': True,
-                    'enable_metadata_match': True,
-                    'naming_strategy': 'audio',
-                    'use_filter_rules': False,
-                    'show_source_search': True,
-                    'show_written_files': True,
-                    'show_download_progress': True,
-                    'show_issues': True
-                }
-                logger.info("添加缺失的 rj_subtitle 配置，使用默认值")
-            else:
-                defaults = {
-                    'overwrite_existing': False,
-                    'scan_one_level_only': True,
-                    'enable_metadata_match': True,
-                    'naming_strategy': 'audio',
-                    'use_filter_rules': False,
-                    'show_source_search': True,
-                    'show_written_files': True,
-                    'show_download_progress': True,
-                    'show_issues': True
-                }
-                for key, value in defaults.items():
-                    if key not in config_data['rj_subtitle']:
-                        config_data['rj_subtitle'][key] = value
-
-            if 'backup_zip' not in config_data or not config_data['backup_zip']:
-                config_data['backup_zip'] = {
-                    'enabled': False,
-                    'source_path': '',
-                    'output_dir': '',
-                    'path_copy_target': '',
-                    'copy_structure_before_zip': True,
-                    'password': '',
-                    'archive_format': 'zip',
-                    'compression_level': 9,
-                    'compression_threads': 0
-                }
-            else:
-                defaults = {
-                    'enabled': False,
-                    'source_path': '',
-                    'output_dir': '',
-                    'path_copy_target': '',
-                    'copy_structure_before_zip': True,
-                    'password': '',
-                    'archive_format': 'zip',
-                    'compression_level': 9,
-                    'compression_threads': 0
-                }
-                for key, value in defaults.items():
-                    if key not in config_data['backup_zip']:
-                        config_data['backup_zip'][key] = value
-
-            _config = AppConfig(**config_data)
-            try:
-                _config_loaded_mtime = os.path.getmtime(config_path)
-            except OSError:
-                _config_loaded_mtime = 0.0
-            logger.info(f"[CONFIG] 加载后 template = '{_config.rename.template}'")
-            logger.info(f"[CONFIG] storage.input_path = '{_config.storage.input_path}'")
-            logger.info(f"[CONFIG] storage.library_path = '{_config.storage.library_path}'")
-            logger.info(f"[CONFIG] storage.temp_path = '{_config.storage.temp_path}'")
-            logger.info(f"[CONFIG] storage.processed_archives_path = '{_config.storage.processed_archives_path}'")
-            logger.info(f"AppConfig 创建成功")
-            logger.info(f"AppConfig 中的 classification: {_config.classification}")
-            logger.info(f"AppConfig 中的 classification 数量: {len(_config.classification)}")
-            for i, rule in enumerate(_config.classification):
-                logger.info(f"规则 {i}: type={rule.type}, enabled={rule.enabled}, custom_name={rule.custom_name}")
-        except Exception as e:
-            logger.error(f"配置文件加载失败，使用默认配置: {e}")
-            _config = AppConfig()
-            _config_loaded_mtime = 0.0
-    else:
-        logger.info("配置文件不存在，使用默认配置")
-        _config = AppConfig()
-        _config_loaded_mtime = 0.0
-        # 保存默认配置
-        config_dir = os.path.dirname(config_path)
-        os.makedirs(config_dir, exist_ok=True)
-        with open(config_path, 'w', encoding='utf-8') as f:
-            yaml.dump(_config.model_dump(), f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-        logger.info(f"默认配置已保存到: {config_path}")
-        try:
-            _config_loaded_mtime = os.path.getmtime(config_path)
+            os.remove(temp_path)
         except OSError:
-            _config_loaded_mtime = 0.0
-    
-    return _config
+            pass
+        raise
+    try:
+        return os.path.getmtime(config_path)
+    except OSError:
+        return 0.0
+
+def load_config(config_path: str = None) -> AppConfig:
+    """加载配置"""
+    global _config, _config_loaded_path, _config_loaded_mtime, _config_last_error, _config_reload_in_progress
+    logger = logging.getLogger(__name__)
+    with _config_lock:
+        _config_reload_in_progress = True
+        try:
+            config_path = _resolve_config_path(config_path)
+            if os.environ.get('CONFIG_PATH'):
+                logger.info(f"从环境变量 CONFIG_PATH 读取配置路径: {config_path}")
+
+            _config_loaded_path = config_path
+            logger.info(f"[CONFIG] 尝试加载配置文件: {config_path}")
+            logger.info(f"[CONFIG] 配置文件是否存在: {os.path.exists(config_path)}")
+
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config_data = yaml.safe_load(f) or {}
+
+                    logger.info(f"YAML 加载的原始数据: {config_data}")
+                    logger.info(f"YAML 中的 classification: {config_data.get('classification')}")
+                    logger.info(f"YAML 中的 classification 数量: {len(config_data.get('classification', []))}")
+
+                    if 'classification' in config_data and config_data['classification']:
+                        validated_rules = []
+                        for rule_data in config_data['classification']:
+                            try:
+                                rule_data_cleaned = dict(rule_data)
+                                if 'path_template' not in rule_data_cleaned or rule_data_cleaned['path_template'] is None:
+                                    rule_data_cleaned['path_template'] = ''
+                                rule = ClassificationRule(**rule_data_cleaned)
+                                validated_rules.append(rule)
+                            except Exception as e:
+                                logger.warning(f"分类规则加载失败: {rule_data}, 错误: {e}, 使用默认规则")
+                        if validated_rules:
+                            config_data['classification'] = [r.model_dump() for r in validated_rules]
+                        else:
+                            config_data['classification'] = [
+                                ClassificationRule(type="none", enabled=True, path_template="", custom_name=None, fallback=None, max_tags=None, rjcode_range=None).model_dump()
+                            ]
+
+                    if 'filter' in config_data and config_data['filter'] and 'rules' in config_data['filter'] and config_data['filter']['rules']:
+                        validated_filter_rules = []
+                        for rule_data in config_data['filter']['rules']:
+                            try:
+                                if 'target' not in rule_data or not rule_data['target']:
+                                    rule_data['target'] = 'file'
+                                rule = FilterRule(**rule_data)
+                                validated_filter_rules.append(rule)
+                            except Exception as e:
+                                logger.warning(f"过滤规则加载失败: {rule_data}, 错误: {e}, 跳过此规则")
+                        if validated_filter_rules:
+                            config_data['filter']['rules'] = [r.model_dump() for r in validated_filter_rules]
+
+                    if 'rename' in config_data:
+                        if 'flatten_single_subfolder' not in config_data['rename']:
+                            config_data['rename']['flatten_single_subfolder'] = True
+                            logger.info("添加缺失的 flatten_single_subfolder 配置，默认为 True")
+                        if 'flatten_depth' not in config_data['rename']:
+                            config_data['rename']['flatten_depth'] = 3
+                            logger.info("添加缺失的 flatten_depth 配置，默认为 3")
+                        if 'remove_empty_folders' not in config_data['rename']:
+                            config_data['rename']['remove_empty_folders'] = True
+                            logger.info("添加缺失的 remove_empty_folders 配置，默认为 True")
+                        if 'api_rename_follow_template' not in config_data['rename']:
+                            config_data['rename']['api_rename_follow_template'] = False
+                            logger.info("添加缺失的 api_rename_follow_template 配置，默认为 False")
+                        if 'use_japanese_metadata' not in config_data['rename']:
+                            config_data['rename']['use_japanese_metadata'] = False
+                            logger.info("添加缺失的 use_japanese_metadata 配置，默认为 False")
+                        logger.info(f"[CONFIG] rename.template = '{config_data['rename'].get('template', 'NOT SET')}'")
+
+                    if 'password_cleanup' not in config_data or not config_data['password_cleanup']:
+                        config_data['password_cleanup'] = {
+                            'enabled': False,
+                            'max_use_count': 1,
+                            'cron_expression': '0 0 * * 0',
+                            'preserve_days': 30,
+                            'exclude_sources': []
+                        }
+                        logger.info("添加缺失的 password_cleanup 配置，使用默认值")
+                    else:
+                        if 'enabled' not in config_data['password_cleanup']:
+                            config_data['password_cleanup']['enabled'] = False
+                        if 'max_use_count' not in config_data['password_cleanup']:
+                            config_data['password_cleanup']['max_use_count'] = 1
+                        if 'cron_expression' not in config_data['password_cleanup']:
+                            config_data['password_cleanup']['cron_expression'] = '0 0 * * 0'
+                        if 'preserve_days' not in config_data['password_cleanup']:
+                            config_data['password_cleanup']['preserve_days'] = 30
+                        if 'exclude_sources' not in config_data['password_cleanup']:
+                            config_data['password_cleanup']['exclude_sources'] = []
+
+                    if 'processed_archive_cleanup' not in config_data or not config_data['processed_archive_cleanup']:
+                        config_data['processed_archive_cleanup'] = {
+                            'enabled': False,
+                            'strategy': 'age',
+                            'cron_expression': '0 1 * * 0',
+                            'preserve_days': 30,
+                            'max_count': 1000,
+                            'max_size_gb': 50,
+                            'exclude_reprocessing': True
+                        }
+                        logger.info("添加缺失的 processed_archive_cleanup 配置，使用默认值")
+                    else:
+                        if 'enabled' not in config_data['processed_archive_cleanup']:
+                            config_data['processed_archive_cleanup']['enabled'] = False
+                        if 'strategy' not in config_data['processed_archive_cleanup']:
+                            config_data['processed_archive_cleanup']['strategy'] = 'age'
+                        if 'cron_expression' not in config_data['processed_archive_cleanup']:
+                            config_data['processed_archive_cleanup']['cron_expression'] = '0 1 * * 0'
+                        if 'preserve_days' not in config_data['processed_archive_cleanup']:
+                            config_data['processed_archive_cleanup']['preserve_days'] = 30
+                        if 'max_count' not in config_data['processed_archive_cleanup']:
+                            config_data['processed_archive_cleanup']['max_count'] = 1000
+                        if 'max_size_gb' not in config_data['processed_archive_cleanup']:
+                            config_data['processed_archive_cleanup']['max_size_gb'] = 50
+                        if 'exclude_reprocessing' not in config_data['processed_archive_cleanup']:
+                            config_data['processed_archive_cleanup']['exclude_reprocessing'] = True
+
+                    if 'auto_process' not in config_data or not config_data['auto_process']:
+                        config_data['auto_process'] = {
+                            'check_duplicate': True,
+                            'import_linked_translation_subtitles': True,
+                            'extract': True,
+                            'fetch_metadata': True,
+                            'rename': True,
+                            'filter': True,
+                            'classify': True,
+                            'archive': True
+                        }
+                        logger.info("添加缺失的 auto_process 配置，使用默认值")
+                    else:
+                        defaults = {
+                            'check_duplicate': True,
+                            'import_linked_translation_subtitles': True,
+                            'extract': True,
+                            'fetch_metadata': True,
+                            'rename': True,
+                            'filter': True,
+                            'classify': True,
+                            'archive': True
+                        }
+                        for key, value in defaults.items():
+                            if key not in config_data['auto_process']:
+                                config_data['auto_process'][key] = value
+
+                    if 'process_existing' not in config_data or not config_data['process_existing']:
+                        config_data['process_existing'] = {
+                            'check_duplicate': True,
+                            'fetch_metadata': True,
+                            'rename': True,
+                            'filter': True,
+                            'import_lrc': True,
+                            'classify': True
+                        }
+                        logger.info("添加缺失的 process_existing 配置，使用默认值")
+                    else:
+                        defaults = {
+                            'check_duplicate': True,
+                            'fetch_metadata': True,
+                            'rename': True,
+                            'filter': True,
+                            'import_lrc': True,
+                            'classify': True
+                        }
+                        for key, value in defaults.items():
+                            if key not in config_data['process_existing']:
+                                config_data['process_existing'][key] = value
+
+                    if 'asmr_sync_step' not in config_data or not config_data['asmr_sync_step']:
+                        config_data['asmr_sync_step'] = {
+                            'download': True,
+                            'sync_subtitle': True,
+                            'rename': True,
+                            'classify': True,
+                            'move_subtitle_folder': True
+                        }
+                        logger.info("添加缺失的 asmr_sync_step 配置，使用默认值")
+                    else:
+                        defaults = {
+                            'download': True,
+                            'sync_subtitle': True,
+                            'rename': True,
+                            'classify': True,
+                            'move_subtitle_folder': True
+                        }
+                        for key, value in defaults.items():
+                            if key not in config_data['asmr_sync_step']:
+                                config_data['asmr_sync_step'][key] = value
+
+                    if 'rj_subtitle' not in config_data or not config_data['rj_subtitle']:
+                        config_data['rj_subtitle'] = {
+                            'overwrite_existing': False,
+                            'scan_one_level_only': True,
+                            'enable_metadata_match': True,
+                            'naming_strategy': 'audio',
+                            'use_filter_rules': False,
+                            'show_source_search': True,
+                            'show_written_files': True,
+                            'show_download_progress': True,
+                            'show_issues': True
+                        }
+                        logger.info("添加缺失的 rj_subtitle 配置，使用默认值")
+                    else:
+                        defaults = {
+                            'overwrite_existing': False,
+                            'scan_one_level_only': True,
+                            'enable_metadata_match': True,
+                            'naming_strategy': 'audio',
+                            'use_filter_rules': False,
+                            'show_source_search': True,
+                            'show_written_files': True,
+                            'show_download_progress': True,
+                            'show_issues': True
+                        }
+                        for key, value in defaults.items():
+                            if key not in config_data['rj_subtitle']:
+                                config_data['rj_subtitle'][key] = value
+
+                    if 'backup_zip' not in config_data or not config_data['backup_zip']:
+                        config_data['backup_zip'] = {
+                            'enabled': False,
+                            'source_path': '',
+                            'output_dir': '',
+                            'path_copy_target': '',
+                            'copy_structure_before_zip': True,
+                            'password': '',
+                            'archive_format': 'zip',
+                            'compression_level': 9,
+                            'compression_threads': 0
+                        }
+                    else:
+                        defaults = {
+                            'enabled': False,
+                            'source_path': '',
+                            'output_dir': '',
+                            'path_copy_target': '',
+                            'copy_structure_before_zip': True,
+                            'password': '',
+                            'archive_format': 'zip',
+                            'compression_level': 9,
+                            'compression_threads': 0
+                        }
+                        for key, value in defaults.items():
+                            if key not in config_data['backup_zip']:
+                                config_data['backup_zip'][key] = value
+
+                    _config = AppConfig(**config_data)
+                    _config_loaded_mtime = os.path.getmtime(config_path) if os.path.exists(config_path) else 0.0
+                    _config_last_error = ""
+                    logger.info(f"[CONFIG] 加载后 template = '{_config.rename.template}'")
+                    logger.info(f"[CONFIG] storage.input_path = '{_config.storage.input_path}'")
+                    logger.info(f"[CONFIG] storage.library_path = '{_config.storage.library_path}'")
+                    logger.info(f"[CONFIG] storage.temp_path = '{_config.storage.temp_path}'")
+                    logger.info(f"[CONFIG] storage.processed_archives_path = '{_config.storage.processed_archives_path}'")
+                    logger.info(f"AppConfig 创建成功")
+                    logger.info(f"AppConfig 中的 classification: {_config.classification}")
+                    logger.info(f"AppConfig 中的 classification 数量: {len(_config.classification)}")
+                    for i, rule in enumerate(_config.classification):
+                        logger.info(f"规则 {i}: type={rule.type}, enabled={rule.enabled}, custom_name={rule.custom_name}")
+                except Exception as e:
+                    _config_last_error = str(e)
+                    logger.error(f"配置文件加载失败，使用默认配置: {e}")
+                    _config = AppConfig()
+                    _config_loaded_mtime = 0.0
+            else:
+                logger.info("配置文件不存在，使用默认配置")
+                _config = AppConfig()
+                _config_last_error = ""
+                _config_loaded_mtime = _write_yaml_atomically(config_path, _config.model_dump())
+                logger.info(f"默认配置已保存到: {config_path}")
+            return _config
+        finally:
+            _config_reload_in_progress = False
 
 def get_config() -> AppConfig:
     """获取配置"""
     if _config is None:
         return load_config()
+    if _config_write_in_progress or _config_reload_in_progress:
+        return _config
     config_path = _config_loaded_path or os.path.abspath(get_config_file_path())
     try:
         current_mtime = os.path.getmtime(config_path)
@@ -679,130 +675,123 @@ def deep_merge(base: dict, update: dict) -> dict:
 
 def save_config(config_data: dict, config_path: str = None) -> AppConfig:
     """保存配置到文件（支持部分更新）"""
-    global _config
+    global _config, _config_loaded_path, _config_loaded_mtime, _config_last_error, _config_write_in_progress
     
     logger = logging.getLogger(__name__)
-    
-    if config_path is None:
-        env_config_path = os.environ.get('CONFIG_PATH')
-        if env_config_path:
-            config_path = env_config_path
-        else:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
-            config_path = os.path.join(project_root, 'config', 'config.yaml')
-    
-    config_path = os.path.abspath(config_path)
+    config_path = _resolve_config_path(config_path)
     logger.info(f"保存配置到: {config_path}")
-    
-    # 确保目录存在
-    config_dir = os.path.dirname(config_path)
-    os.makedirs(config_dir, exist_ok=True)
-    
-    try:
-        # 读取现有配置（如果存在）
-        existing_config = {}
-        if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                existing_config = yaml.safe_load(f) or {}
-                logger.info(f"读取现有配置: {len(existing_config)} 个顶层键")
-        
-        # 深度合并配置
-        merged_config = deep_merge(existing_config, config_data)
-        logger.info(f"合并后配置: {len(merged_config)} 个顶层键")
-        
-        # 验证配置有效性（尝试创建 AppConfig）
+
+    with _config_lock:
+        _config_write_in_progress = True
         try:
-            test_config = AppConfig(**merged_config)
-            logger.info("配置验证通过")
-        except Exception as e:
-            logger.error(f"配置验证失败: {e}")
-            # 如果验证失败，尝试使用当前内存中的配置作为基础
-            if _config:
-                current_dict = _config.model_dump()
-                merged_config = deep_merge(current_dict, config_data)
+            existing_config = {}
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    existing_config = yaml.safe_load(f) or {}
+                    logger.info(f"读取现有配置: {len(existing_config)} 个顶层键")
+
+            merged_config = deep_merge(existing_config, config_data)
+            logger.info(f"合并后配置: {len(merged_config)} 个顶层键")
+
+            try:
                 test_config = AppConfig(**merged_config)
-                logger.info("使用内存配置作为基础后验证通过")
-        
-        # 写入文件
-        with open(config_path, 'w', encoding='utf-8') as f:
-            yaml.dump(merged_config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-        
-        # 更新内存中的配置
-        _config = AppConfig(**merged_config)
-        logger.info("配置已成功保存并更新")
-        
-        return _config
-        
-    except Exception as e:
-        logger.error(f"保存配置失败: {e}")
-        raise
+                logger.info("配置验证通过")
+            except Exception as e:
+                logger.error(f"配置验证失败: {e}")
+                if _config:
+                    current_dict = _config.model_dump()
+                    merged_config = deep_merge(current_dict, config_data)
+                    test_config = AppConfig(**merged_config)
+                    logger.info("使用内存配置作为基础后验证通过")
+                else:
+                    raise
+
+            next_mtime = _write_yaml_atomically(config_path, merged_config)
+            _config = test_config
+            _config_loaded_path = config_path
+            _config_loaded_mtime = next_mtime
+            _config_last_error = ""
+            logger.info("配置已成功保存并原子更新")
+            return _config
+        except Exception as e:
+            _config_last_error = str(e)
+            logger.error(f"保存配置失败: {e}")
+            raise
+        finally:
+            _config_write_in_progress = False
 
 def reload_config() -> AppConfig:
     """重新加载配置（用于配置变更后）"""
-    global _config
+    global _config, _config_loaded_mtime, _config_loaded_path, _config_last_error, _config_reload_in_progress
     
     logger = logging.getLogger(__name__)
-    
-    # 使用与 load_config 相同的路径解析逻辑
-    config_path = os.environ.get('CONFIG_PATH')
-    if config_path is None:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
-        config_path = os.path.join(project_root, 'config', 'config.yaml')
-    
-    config_path = os.path.abspath(config_path)
+    config_path = _resolve_config_path()
     logger.info(f"[RELOAD] 重新加载配置文件：{config_path}")
-    
+
     if not os.path.exists(config_path):
         logger.warning(f"[RELOAD] 配置文件不存在：{config_path}")
         return _config if _config else load_config()
-    
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config_data = yaml.safe_load(f)
-        
-        # 使用与 load_config 相同的验证逻辑
-        if 'classification' in config_data and config_data['classification']:
-            validated_rules = []
-            for rule_data in config_data['classification']:
-                try:
-                    rule_data_cleaned = dict(rule_data)
-                    if 'path_template' not in rule_data_cleaned or rule_data_cleaned['path_template'] is None:
-                        rule_data_cleaned['path_template'] = ''
-                    rule = ClassificationRule(**rule_data_cleaned)
-                    validated_rules.append(rule)
-                except Exception as e:
-                    logger.warning(f"分类规则加载失败: {rule_data}, 错误: {e}")
-            if validated_rules:
-                config_data['classification'] = [r.model_dump() for r in validated_rules]
-        
-        # 确保 filter.rules 字段格式正确
-        if 'filter' in config_data and config_data['filter'] and 'rules' in config_data['filter'] and config_data['filter']['rules']:
-            validated_filter_rules = []
-            for rule_data in config_data['filter']['rules']:
-                try:
-                    if 'target' not in rule_data or not rule_data['target']:
-                        rule_data['target'] = 'file'
-                    rule = FilterRule(**rule_data)
-                    validated_filter_rules.append(rule)
-                except Exception as e:
-                    logger.warning(f"过滤规则加载失败: {rule_data}, 错误: {e}")
-            if validated_filter_rules:
-                config_data['filter']['rules'] = [r.model_dump() for r in validated_filter_rules]
-        
-        _config = AppConfig(**config_data)
-        logger.info(f"[RELOAD] 配置重新加载成功")
-        logger.info(f"[RELOAD] storage.input_path = {_config.storage.input_path}")
-        logger.info(f"[RELOAD] rename.template = '{_config.rename.template}'")
-        
-    except Exception as e:
-        logger.error(f"[RELOAD] 配置重新加载失败：{e}", exc_info=True)
-        # 如果加载失败，保持现有配置
-        if _config is None:
-            _config = AppConfig()
-    
+
+    with _config_lock:
+        _config_reload_in_progress = True
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = yaml.safe_load(f) or {}
+
+            if 'classification' in config_data and config_data['classification']:
+                validated_rules = []
+                for rule_data in config_data['classification']:
+                    try:
+                        rule_data_cleaned = dict(rule_data)
+                        if 'path_template' not in rule_data_cleaned or rule_data_cleaned['path_template'] is None:
+                            rule_data_cleaned['path_template'] = ''
+                        rule = ClassificationRule(**rule_data_cleaned)
+                        validated_rules.append(rule)
+                    except Exception as e:
+                        logger.warning(f"分类规则加载失败: {rule_data}, 错误: {e}")
+                if validated_rules:
+                    config_data['classification'] = [r.model_dump() for r in validated_rules]
+
+            if 'filter' in config_data and config_data['filter'] and 'rules' in config_data['filter'] and config_data['filter']['rules']:
+                validated_filter_rules = []
+                for rule_data in config_data['filter']['rules']:
+                    try:
+                        if 'target' not in rule_data or not rule_data['target']:
+                            rule_data['target'] = 'file'
+                        rule = FilterRule(**rule_data)
+                        validated_filter_rules.append(rule)
+                    except Exception as e:
+                        logger.warning(f"过滤规则加载失败: {rule_data}, 错误: {e}")
+                if validated_filter_rules:
+                    config_data['filter']['rules'] = [r.model_dump() for r in validated_filter_rules]
+
+            _config = AppConfig(**config_data)
+            _config_loaded_path = config_path
+            _config_loaded_mtime = os.path.getmtime(config_path) if os.path.exists(config_path) else 0.0
+            _config_last_error = ""
+            logger.info(f"[RELOAD] 配置重新加载成功")
+            logger.info(f"[RELOAD] storage.input_path = {_config.storage.input_path}")
+            logger.info(f"[RELOAD] rename.template = '{_config.rename.template}'")
+        except Exception as e:
+            _config_last_error = str(e)
+            logger.error(f"[RELOAD] 配置重新加载失败：{e}", exc_info=True)
+            if _config is None:
+                _config = AppConfig()
+        finally:
+            _config_reload_in_progress = False
+
     return _config
+
+
+def get_config_runtime_state() -> dict:
+    return {
+        "path": _config_loaded_path or _resolve_config_path(),
+        "loaded_mtime": _config_loaded_mtime,
+        "write_in_progress": _config_write_in_progress,
+        "reload_in_progress": _config_reload_in_progress,
+        "last_error": _config_last_error,
+        "loaded": _config is not None,
+    }
 
 
 # ========== 配置文件热重载功能 ==========

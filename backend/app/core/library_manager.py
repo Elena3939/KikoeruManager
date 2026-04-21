@@ -403,6 +403,22 @@ class SynologyFileStationClient:
         self._device_id: str = config.device_id or ""
         self._api_info_cache: dict[str, tuple[str, int]] = {}
         self._preferred_upload_variant_name: Optional[str] = "minimal_form"
+        # 持久化 HTTP session，避免每次请求重建 TCP 连接
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    def _ensure_session(self) -> aiohttp.ClientSession:
+        """返回持久化 HTTP session，不存在或已关闭时重建。"""
+        if self._session is None or self._session.closed:
+            timeout_value = int(self.config.timeout or 0)
+            timeout = aiohttp.ClientTimeout(total=None if timeout_value <= 0 else timeout_value)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+        return self._session
+
+    async def close(self) -> None:
+        """关闭持久化 HTTP session（可选，进程退出时 GC 会处理）。"""
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
 
     async def _read_response_payload(self, response: aiohttp.ClientResponse, api: str) -> dict[str, Any]:
         try:
@@ -420,9 +436,9 @@ class SynologyFileStationClient:
                 ) from decode_exc
 
     async def _request(self, api: str, method: str, version: int, params: dict[str, Any], files=None):
-        timeout_value = int(self.config.timeout or 0)
-        timeout = aiohttp.ClientTimeout(total=None if timeout_value <= 0 else timeout_value)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        # 最多重试一次：第一次如遇 SID 过期（code 119）自动重登录后重试
+        for _attempt in range(2):
+            session = self._ensure_session()
             if not self._sid and api != "SYNO.API.Auth":
                 await self._login(session)
 
@@ -451,8 +467,15 @@ class SynologyFileStationClient:
                     data = await self._read_response_payload(response, api)
 
             if not data.get("success"):
+                error_code = int((data.get("error") or {}).get("code") or 0)
+                if _attempt == 0 and error_code == 119:
+                    # SID 过期 — 清除 SID，下一轮循环重新登录
+                    logger.info("群晖 SID 过期（code 119），自动重新登录: api=%s", api)
+                    self._sid = None
+                    continue
                 raise RuntimeError(_format_synology_error(api, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
             return data.get("data") or {}
+        return {}  # 不可达，仅供类型检查器
 
     def _is_error_code(self, exc: Exception, code: int) -> bool:
         message = str(exc)
@@ -618,80 +641,78 @@ class SynologyFileStationClient:
         return self._device_id
 
     async def get_storage_info(self) -> dict[str, Any]:
-        timeout_value = int(self.config.timeout or 0)
-        timeout = aiohttp.ClientTimeout(total=None if timeout_value <= 0 else timeout_value)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            if not self._sid:
-                await self._login(session)
-            api_name = "SYNO.Core.System"
-            path, version = await self._resolve_api_route(session, api_name, default_path="entry.cgi", default_version=1)
-            url = f"{self.config.base_url.rstrip('/')}/webapi/{path.lstrip('/')}"
-            params = {
-                "api": api_name,
-                "method": "info",
-                "version": str(version),
-                "type": "storage",
-                "_sid": self._sid,
-            }
-            async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
-                data = await self._read_response_payload(response, api_name)
-            if not data.get("success"):
-                raise RuntimeError(_format_synology_error(api_name, "查询群晖存储信息", data))
-            storage = data.get("data") or {}
-            volumes = (
-                storage.get("vol_info")
-                or storage.get("volume_info")
-                or storage.get("volumes")
-                or []
-            )
-            if isinstance(volumes, dict):
-                volumes = list(volumes.values())
+        session = self._ensure_session()
+        if not self._sid:
+            await self._login(session)
+        api_name = "SYNO.Core.System"
+        path, version = await self._resolve_api_route(session, api_name, default_path="entry.cgi", default_version=1)
+        url = f"{self.config.base_url.rstrip('/')}/webapi/{path.lstrip('/')}"
+        params = {
+            "api": api_name,
+            "method": "info",
+            "version": str(version),
+            "type": "storage",
+            "_sid": self._sid,
+        }
+        async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+            data = await self._read_response_payload(response, api_name)
+        if not data.get("success"):
+            raise RuntimeError(_format_synology_error(api_name, "查询群晖存储信息", data))
+        storage = data.get("data") or {}
+        volumes = (
+            storage.get("vol_info")
+            or storage.get("volume_info")
+            or storage.get("volumes")
+            or []
+        )
+        if isinstance(volumes, dict):
+            volumes = list(volumes.values())
 
-            total_size = 0
-            used_size = 0
-            normalized_volumes: list[dict[str, Any]] = []
-            for item in volumes:
-                if not isinstance(item, dict):
-                    continue
-                total_value = int(
-                    item.get("total_size")
-                    or item.get("size_total")
-                    or item.get("total")
-                    or 0
-                )
-                used_value = int(
-                    item.get("used_size")
-                    or item.get("size_used")
-                    or item.get("used")
-                    or 0
-                )
-                free_value = int(
-                    item.get("free_size")
-                    or item.get("size_free")
-                    or item.get("free")
-                    or max(0, total_value - used_value)
-                    or 0
-                )
-                if total_value <= 0 and free_value > 0 and used_value > 0:
-                    total_value = free_value + used_value
-                if used_value <= 0 and total_value > 0 and free_value > 0:
-                    used_value = max(0, total_value - free_value)
-                total_size += max(0, total_value)
-                used_size += max(0, used_value)
-                normalized_volumes.append({
-                    **item,
-                    "total_size": max(0, total_value),
-                    "used_size": max(0, used_value),
-                    "free_size": max(0, free_value),
-                })
-            free_size = max(0, total_size - used_size)
-            return {
-                "total_size_bytes": total_size,
-                "used_size_bytes": used_size,
-                "free_size_bytes": free_size,
-                "free_space_gb": round(free_size / (1024 ** 3), 2) if free_size > 0 else 0,
-                "volumes": normalized_volumes,
-            }
+        total_size = 0
+        used_size = 0
+        normalized_volumes: list[dict[str, Any]] = []
+        for item in volumes:
+            if not isinstance(item, dict):
+                continue
+            total_value = int(
+                item.get("total_size")
+                or item.get("size_total")
+                or item.get("total")
+                or 0
+            )
+            used_value = int(
+                item.get("used_size")
+                or item.get("size_used")
+                or item.get("used")
+                or 0
+            )
+            free_value = int(
+                item.get("free_size")
+                or item.get("size_free")
+                or item.get("free")
+                or max(0, total_value - used_value)
+                or 0
+            )
+            if total_value <= 0 and free_value > 0 and used_value > 0:
+                total_value = free_value + used_value
+            if used_value <= 0 and total_value > 0 and free_value > 0:
+                used_value = max(0, total_value - free_value)
+            total_size += max(0, total_value)
+            used_size += max(0, used_value)
+            normalized_volumes.append({
+                **item,
+                "total_size": max(0, total_value),
+                "used_size": max(0, used_value),
+                "free_size": max(0, free_value),
+            })
+        free_size = max(0, total_size - used_size)
+        return {
+            "total_size_bytes": total_size,
+            "used_size_bytes": used_size,
+            "free_size_bytes": free_size,
+            "free_space_gb": round(free_size / (1024 ** 3), 2) if free_size > 0 else 0,
+            "volumes": normalized_volumes,
+        }
 
     async def test_connection(self, folder_path: str) -> dict[str, Any]:
         if folder_path in ("", "/"):
@@ -835,30 +856,30 @@ class SynologyFileStationClient:
         ]
         last_error: Optional[Exception] = None
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            if not self._sid:
-                await self._login(session)
-            api_path, api_version = await self._resolve_api_route(session, "SYNO.FileStation.CreateFolder", default_path="entry.cgi", default_version=2)
-            url = f"{self.config.base_url.rstrip('/')}/webapi/{api_path.lstrip('/')}"
-            for variant in variants:
-                params = {
-                    "api": "SYNO.FileStation.CreateFolder",
-                    "method": "create",
-                    "version": str(api_version),
-                    **variant,
-                }
-                if self._sid:
-                    params["_sid"] = self._sid
-                try:
-                    async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
-                        data = await self._read_response_payload(response, "SYNO.FileStation.CreateFolder")
-                    if not data.get("success"):
-                        raise RuntimeError(_format_synology_error("SYNO.FileStation.CreateFolder", "create folder", data))
-                    return data.get("data") or {}
-                except Exception as exc:
-                    last_error = exc
-                    if not (self._is_error_code(exc, 101) or self._is_error_code(exc, 119)):
-                        continue
+        session = self._ensure_session()
+        if not self._sid:
+            await self._login(session)
+        api_path, api_version = await self._resolve_api_route(session, "SYNO.FileStation.CreateFolder", default_path="entry.cgi", default_version=2)
+        url = f"{self.config.base_url.rstrip('/')}/webapi/{api_path.lstrip('/')}"
+        for variant in variants:
+            params = {
+                "api": "SYNO.FileStation.CreateFolder",
+                "method": "create",
+                "version": str(api_version),
+                **variant,
+            }
+            if self._sid:
+                params["_sid"] = self._sid
+            try:
+                async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+                    data = await self._read_response_payload(response, "SYNO.FileStation.CreateFolder")
+                if not data.get("success"):
+                    raise RuntimeError(_format_synology_error("SYNO.FileStation.CreateFolder", "create folder", data))
+                return data.get("data") or {}
+            except Exception as exc:
+                last_error = exc
+                if not (self._is_error_code(exc, 101) or self._is_error_code(exc, 119)):
+                    continue
 
         if last_error:
             raise last_error
@@ -1189,7 +1210,16 @@ class LibraryManager:
         self._filter_preview_cancel_flags: dict[str, bool] = {}
         self._filter_preview_jobs: dict[str, dict[str, Any]] = {}
         self._filter_preview_tasks: dict[str, asyncio.Task] = {}
+        # 全局 Synology client 缓存：避免每次操作重复登录（key = base_url::username）
+        self._synology_client_cache: dict[str, SynologyFileStationClient] = {}
         self._load_persisted_stats()
+
+    def get_cached_synology_client(self, config: SynologyConfig) -> SynologyFileStationClient:
+        """返回长期缓存的 SynologyFileStationClient（同一账号复用同一 session+sid）。"""
+        key = f"{(config.base_url or '').rstrip('/')}::{config.username or ''}"
+        if key not in self._synology_client_cache:
+            self._synology_client_cache[key] = SynologyFileStationClient(config)
+        return self._synology_client_cache[key]
 
     def load_config(self) -> dict[str, Any]:
         return load_library_config()
@@ -1966,7 +1996,7 @@ class LibraryManager:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
 
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         offset = max(0, (page - 1) * page_size)
         if library.root_path in ("", "/"):
             data = await client.list_share(offset=offset, limit=page_size, sort_by="name", sort_direction="asc")
@@ -2052,7 +2082,7 @@ class LibraryManager:
         task_id: str,
         *,
         timeout_seconds: float = 30.0,
-        initial_delay: float = 0.5,
+        initial_delay: float = 0.15,
         max_delay: float = 3.0,
     ) -> dict[str, Any]:
         """轮询 search_status 直到搜索完成或超时，使用指数退避。"""
@@ -2348,7 +2378,7 @@ class LibraryManager:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
 
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         cache_key = self._build_remote_search_cache_key(
             library_id=library.id,
             current_path=current_path,
@@ -2443,34 +2473,76 @@ class LibraryManager:
         files: list[dict[str, Any]] = []
         seen_paths: set[str] = set()
         remote_stat_cache: dict[str, dict[str, Any]] = {}
+
+        # 第一遍：过滤并收集需要 stat() 的唯一 RJ 目录路径（不发任何请求）
+        pre_filtered: list[tuple[int, dict, str, str | None]] = []
+        paths_needing_stat: set[str] = set()
         for index, item in enumerate(collected_raw_items):
             item_name = item.get("name") or ""
             if self._should_skip_entry(item_name):
                 continue
-
-            target_item = item
             target_path = self._normalize_remote_path(item.get("path") or item.get("real_path") or item_name)
             if not self._remote_path_is_within_root(target_path, browse_root):
                 continue
+            rj_dir_path: str | None = None
             if rj_only_search and self._normalize_search_result_kind(search_result_kind) != "file":
                 nearest_rj_dir = self._find_nearest_remote_rj_directory(target_path, browse_root)
                 if not nearest_rj_dir:
                     continue
-                target_path = nearest_rj_dir
-                if not self._remote_path_is_within_root(target_path, browse_root):
+                if not self._remote_path_is_within_root(nearest_rj_dir, browse_root):
                     continue
-                cached_info = remote_stat_cache.get(target_path)
-                if not cached_info:
-                    info = await client.stat(target_path)
-                    cached_info = self._first_remote_info_item(info) or {
-                        "name": PurePosixPath(target_path).name,
-                        "path": target_path,
-                        "real_path": target_path,
-                        "isdir": True,
-                        "additional": {},
-                    }
-                    remote_stat_cache[target_path] = cached_info
-                target_item = cached_info
+                rj_dir_path = nearest_rj_dir
+                if nearest_rj_dir not in remote_stat_cache:
+                    paths_needing_stat.add(nearest_rj_dir)
+            pre_filtered.append((index, item, target_path, rj_dir_path))
+
+        # 第二遍：批量并发 stat()（最多 5 路），把结果写入 remote_stat_cache
+        if paths_needing_stat:
+            _stat_sem = asyncio.Semaphore(5)
+
+            async def _fetch_stat(path: str):
+                async with _stat_sem:
+                    try:
+                        info = await client.stat(path)
+                        return path, self._first_remote_info_item(info) or {
+                            "name": PurePosixPath(path).name,
+                            "path": path,
+                            "real_path": path,
+                            "isdir": True,
+                            "additional": {},
+                        }
+                    except Exception as exc:
+                        logger.debug("stat 查询失败，使用默认信息: path=%s error=%s", path, exc)
+                        return path, {
+                            "name": PurePosixPath(path).name,
+                            "path": path,
+                            "real_path": path,
+                            "isdir": True,
+                            "additional": {},
+                        }
+
+            _stat_results = await asyncio.gather(
+                *[_fetch_stat(p) for p in paths_needing_stat],
+                return_exceptions=True,
+            )
+            for _res in _stat_results:
+                if isinstance(_res, tuple):
+                    _path, _info = _res
+                    remote_stat_cache[_path] = _info
+
+        # 第三遍：用缓存的 stat 结果构建最终文件列表
+        for index, item, target_path, rj_dir_path in pre_filtered:
+            if rj_dir_path is not None:
+                target_path = rj_dir_path
+                target_item = remote_stat_cache.get(rj_dir_path) or {
+                    "name": PurePosixPath(rj_dir_path).name,
+                    "path": rj_dir_path,
+                    "real_path": rj_dir_path,
+                    "isdir": True,
+                    "additional": {},
+                }
+            else:
+                target_item = item
 
             normalized_target_path = self._normalize_remote_path(target_path)
             if normalized_target_path in seen_paths:
@@ -2530,7 +2602,7 @@ class LibraryManager:
             action="库存重命名",
             new_name=new_name,
         )
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         try:
             if not await self._remote_path_exists(client, target_path):
                 raise FileNotFoundError("目标路径不存在")
@@ -2573,18 +2645,6 @@ class LibraryManager:
         os.rename(path, new_path)
         self._append_stats_log(library, "INFO", f"重命名 path={path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
-
-    async def delete(self, library_id: str, path: str, confirmed: bool = False) -> dict[str, Any]:
-        library = self.get_library_definition(library_id)
-        if library.type == "local":
-            return await asyncio.to_thread(self._local_delete, library, path, confirmed)
-        if not confirmed:
-            self._append_stats_log(library, "INFO", f"删除预检 path={path}")
-            return {"need_confirm": True, "type": "remote", "name": PurePosixPath(path).name, "path": path, "size": None}
-        client = SynologyFileStationClient(library.synology)
-        await client.delete(path)
-        self._append_stats_log(library, "INFO", f"删除完成 path={path}")
-        return {"message": "删除成功", "path": path}
 
     def _local_delete(self, library: LibraryDefinition, path: str, confirmed: bool) -> dict[str, Any]:
         self._assert_local_path_in_library(library, path)
@@ -2666,7 +2726,7 @@ class LibraryManager:
 
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接参数")
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         result = await client.test_connection(library.root_path)
         return {
             "ok": True,
@@ -2823,7 +2883,7 @@ class LibraryManager:
 
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         target_root = PurePosixPath(library.root_path)
         if relative_target_dir:
             target_root = target_root / relative_target_dir
@@ -2891,22 +2951,32 @@ class LibraryManager:
         for root, dirs, files in os.walk(source_dir):
             relative = os.path.relpath(root, source_dir)
             remote_dir = remote_root if relative == "." else f"{remote_root}/{relative.replace(os.sep, '/')}"
-            for directory in dirs:
+            if dirs:
                 if progress_callback:
-                    progress_callback({
-                        "phase": "preparing",
-                        "current_file_name": directory,
-                        "current_relative_path": os.path.join(relative if relative != "." else "", directory).replace(os.sep, "/"),
-                        "current_source_dir": source_dir,
-                        "current_file_total_bytes": 0,
-                        "current_file_uploaded_bytes": 0,
-                        "completed_files": 0,
-                        "total_files": len(file_rows),
-                        "transferred_bytes": 0,
-                        "total_bytes": 0,
-                        "speed_bytes_per_sec": 0,
-                    })
-                await client.create_folder(remote_dir, directory)
+                    for directory in dirs:
+                        progress_callback({
+                            "phase": "preparing",
+                            "current_file_name": directory,
+                            "current_relative_path": os.path.join(relative if relative != "." else "", directory).replace(os.sep, "/"),
+                            "current_source_dir": source_dir,
+                            "current_file_total_bytes": 0,
+                            "current_file_uploaded_bytes": 0,
+                            "completed_files": 0,
+                            "total_files": len(file_rows),
+                            "transferred_bytes": 0,
+                            "total_bytes": 0,
+                            "speed_bytes_per_sec": 0,
+                        })
+                # U4: 同层目录并发创建，父目录由 os.walk 自顶向下保证先于子目录
+                # 容忍 error 117 / "already exists"（重传场景目录可能已存在）
+                async def _create_folder_safe(parent: str, name: str) -> None:
+                    try:
+                        await client.create_folder(parent, name)
+                    except Exception as _exc:
+                        if "already exists" in str(_exc).lower() or client._is_error_code(_exc, 117):
+                            return
+                        raise
+                await asyncio.gather(*[_create_folder_safe(remote_dir, directory) for directory in dirs])
             for filename in files:
                 local_path = os.path.join(root, filename)
                 relative_path = os.path.relpath(local_path, source_dir).replace(os.sep, "/")
@@ -2924,14 +2994,17 @@ class LibraryManager:
                 })
 
         total_bytes = sum(int(item.get("size") or 0) for item in file_rows)
-        transferred_before_current = 0
         started_at = time.monotonic()
+        # U5: 并发上传状态（asyncio 单线程，无竞争）
         completed_files = 0
+        completed_bytes = 0
+        in_flight_bytes: dict[str, int] = {row["local_path"]: 0 for row in file_rows}
+        _upload_semaphore = asyncio.Semaphore(4)
 
         def emit_progress(current_row: dict, uploaded_bytes: int):
             if not progress_callback:
                 return
-            transferred_bytes = min(total_bytes, transferred_before_current + max(0, int(uploaded_bytes or 0)))
+            transferred_bytes = min(total_bytes, completed_bytes + sum(in_flight_bytes.values()))
             elapsed = max(0.001, time.monotonic() - started_at)
             progress_callback({
                 "phase": "uploading",
@@ -2947,29 +3020,36 @@ class LibraryManager:
                 "speed_bytes_per_sec": int(transferred_bytes / elapsed) if transferred_bytes > 0 else 0,
             })
 
-        for row in file_rows:
-            def on_file_progress(uploaded: int, _total: int, current_row=row):
-                emit_progress(current_row, uploaded)
+        async def upload_one(row: dict):
+            nonlocal completed_files, completed_bytes
+            key = row["local_path"]
+            async with _upload_semaphore:
+                def on_file_progress(uploaded: int, _total: int, _row=row, _key=key):
+                    in_flight_bytes[_key] = uploaded
+                    emit_progress(_row, uploaded)
 
-            await client.upload_file(
-                row["remote_dir"],
-                row["local_path"],
-                progress_callback=on_file_progress,
-            )
-            completed_files += 1
-            transferred_before_current += int(row.get("size") or 0)
-            emit_progress(row, int(row.get("size") or 0))
-            if file_completed_callback:
-                file_completed_callback({
-                    "name": row.get("name") or "",
-                    "relative_path": row.get("relative_path") or "",
-                    "size": int(row.get("size") or 0),
-                    "uploaded_bytes": int(row.get("size") or 0),
-                    "progress": 100,
-                    "status": "completed",
-                    "source_dir": row.get("source_dir") or "",
-                    "remote_dir": row.get("remote_dir") or "",
-                })
+                await client.upload_file(
+                    row["remote_dir"],
+                    row["local_path"],
+                    progress_callback=on_file_progress,
+                )
+                in_flight_bytes[key] = 0
+                completed_files += 1
+                completed_bytes += int(row.get("size") or 0)
+                emit_progress(row, int(row.get("size") or 0))
+                if file_completed_callback:
+                    file_completed_callback({
+                        "name": row.get("name") or "",
+                        "relative_path": row.get("relative_path") or "",
+                        "size": int(row.get("size") or 0),
+                        "uploaded_bytes": int(row.get("size") or 0),
+                        "progress": 100,
+                        "status": "completed",
+                        "source_dir": row.get("source_dir") or "",
+                        "remote_dir": row.get("remote_dir") or "",
+                    })
+
+        await asyncio.gather(*[upload_one(row) for row in file_rows])
 
     async def _ensure_remote_directory(self, client: SynologyFileStationClient, remote_dir: str):
         normalized = self._normalize_remote_path(remote_dir)
@@ -2995,7 +3075,7 @@ class LibraryManager:
         if library.type != "synology_filestation" or not library.synology:
             raise RuntimeError("目标库存不是群晖远程库存")
 
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         target = self._normalize_remote_path(target_path)
         parent = str(PurePosixPath(target).parent)
         target_name = PurePosixPath(target).name
@@ -3037,7 +3117,7 @@ class LibraryManager:
         if library.type != "synology_filestation" or not library.synology:
             raise RuntimeError("目标库存不是群晖远程库存")
 
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         target = self._normalize_remote_path(target_path)
         parent = str(PurePosixPath(target).parent)
         target_name = PurePosixPath(target).name
@@ -3688,7 +3768,7 @@ class LibraryManager:
         try:
             if not library.synology:
                 return
-            client = SynologyFileStationClient(library.synology)
+            client = self.get_cached_synology_client(library.synology)
             await self._remote_path_size(client, path, True, modified_ts)
         except Exception:
             pass
@@ -3745,7 +3825,7 @@ class LibraryManager:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
 
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         browse_root, target_path = self._resolve_remote_target_path(library, current_path)
         search_lower = search.lower().strip()
         normalized_sort_by = self._normalize_library_sort_by(sort_by)
@@ -3820,7 +3900,7 @@ class LibraryManager:
             "parent_path": None if target_path == browse_root else self._remote_parent_path(target_path),
         }
 
-    async def _remote_folder_contents(self, library: LibraryDefinition, path: str) -> dict[str, Any]:
+    async def _remote_folder_contents(self, library: LibraryDefinition, path: str, *, client: Optional[SynologyFileStationClient] = None) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
         browse_root, target_path = self._resolve_remote_operation_path(
@@ -3829,7 +3909,9 @@ class LibraryManager:
             action="获取库存文件夹内容",
         )
 
-        client = SynologyFileStationClient(library.synology)
+        # 优先复用传入的 client（避免重复登录），否则使用全局缓存 client
+        if client is None:
+            client = self.get_cached_synology_client(library.synology)
         info_item: Optional[dict[str, Any]] = None
         try:
             info = await client.stat(target_path)
@@ -3872,6 +3954,7 @@ class LibraryManager:
         async def walk(folder_path: str):
             nonlocal counter
             children = await self._list_remote_directory(client, folder_path)
+            subdirs: list[str] = []
             for child in children:
                 name = child.get("name") or ""
                 if self._should_skip_entry(name):
@@ -3880,7 +3963,7 @@ class LibraryManager:
                 additional = child.get("additional", {}) or {}
                 timestamp = additional.get("time", {}).get("mtime", int(time.time()))
                 if child.get("isdir", False):
-                    await walk(child_path)
+                    subdirs.append(child_path)
                     continue
                 relative_path = str(PurePosixPath(child_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
                 items.append(
@@ -3894,6 +3977,9 @@ class LibraryManager:
                     }
                 )
                 counter += 1
+            # 并发递归子目录，消除串行等待
+            if subdirs:
+                await asyncio.gather(*[walk(sd) for sd in subdirs], return_exceptions=True)
 
         await walk(target_path)
         items.sort(key=lambda item: item["relative_path"])
@@ -3906,11 +3992,11 @@ class LibraryManager:
         self._append_stats_log(library, "INFO", f"文件树读取 path={target_path} total={len(items)}")
         return result
 
-    async def folder_contents(self, library_id: str, path: str) -> dict[str, Any]:
+    async def folder_contents(self, library_id: str, path: str, *, client: Optional[SynologyFileStationClient] = None) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
             return await asyncio.to_thread(self._local_folder_contents, library, path)
-        return await self._remote_folder_contents(library, path)
+        return await self._remote_folder_contents(library, path, client=client)
 
     async def preview_mojibake_repairs(self, library_id: str, path: str, selected_paths: Optional[list[str]] = None) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
@@ -5259,7 +5345,7 @@ class LibraryManager:
             path,
             action="删除",
         )
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         if not confirmed:
             preview = await self._remote_delete_preview(client, target_path)
             preview["need_confirm"] = True
@@ -5285,7 +5371,7 @@ class LibraryManager:
         return {"message": "删除成功", "path": target_path}
 
     async def _remote_batch_delete(self, library: LibraryDefinition, paths: list[str], confirmed: bool) -> dict[str, Any]:
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         if not confirmed:
             previews = await asyncio.gather(
                 *(self._remote_delete_preview(client, path) for path in paths),
@@ -5398,7 +5484,7 @@ class LibraryManager:
     async def _collect_remote_stats(self, library: LibraryDefinition) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
-        client = SynologyFileStationClient(library.synology)
+        client = self.get_cached_synology_client(library.synology)
         start_path = self._normalize_remote_path(library.browse_root_path or library.root_path)
         top_level_items = [
             item for item in await self._list_remote_directory(client, start_path)

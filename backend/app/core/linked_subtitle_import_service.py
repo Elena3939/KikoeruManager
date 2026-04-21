@@ -698,8 +698,10 @@ class LinkedSubtitleImportService:
             raise FileNotFoundError(f"字幕工作台目录不存在: {workbench_subtitle_dir}")
 
         if library.type == "synology_filestation":
+            if not library.synology:
+                raise RuntimeError(f"远程库存 {library_id} 缺少群晖连接配置")
             target_subtitle_dir = f"{normalized_target_folder.rstrip('/')}/subtitles"
-            client = SynologyFileStationClient(library.synology)
+            client = self.library_manager.get_cached_synology_client(library.synology)
             await self.library_manager._ensure_remote_directory(client, normalized_target_folder)
             await self.library_manager.replace_remote_directory_with_local(
                 library_id=library_id,
@@ -1071,7 +1073,7 @@ class LinkedSubtitleImportService:
             direct_path = self.library_manager._normalize_remote_path(
                 f"{browse_root.rstrip('/')}/{target_rjcode}" if browse_root != "/" else f"/{target_rjcode}"
             )
-            client = SynologyFileStationClient(library.synology)
+            client = self.library_manager.get_cached_synology_client(library.synology)
             try:
                 info = await client.stat(direct_path)
                 item = self.library_manager._first_remote_info_item(info)

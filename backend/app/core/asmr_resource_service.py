@@ -1731,7 +1731,7 @@ class ASMRResourceService:
         postprocess_options: Dict[str, Any],
     ) -> str:
         from .classifier import SmartClassifier
-        from .library_manager import SynologyFileStationClient, get_library_manager
+        from .library_manager import get_library_manager
         from .metadata_service import MetadataService
         from .task_engine import Task, TaskType
 
@@ -1770,59 +1770,88 @@ class ASMRResourceService:
             if target_library and target_library.type != "local":
                 relative_parts = [part for part in [target_subdir, circle_dir] if part]
                 relative_target_dir = "/".join(relative_parts)
-                client = SynologyFileStationClient(target_library.synology)
+                client = manager.get_cached_synology_client(target_library.synology)
                 target_root = PurePosixPath(target_library.root_path)
                 if relative_target_dir:
                     target_root = target_root / relative_target_dir
                 remote_root = str(target_root / os.path.basename(renamed_root))
                 await manager._ensure_remote_directory(client, str(target_root))
-                await client.create_folder(str(target_root), os.path.basename(renamed_root))
-                file_paths = []
+                # 容忍目录已存在（error 117），支持重试场景
+                try:
+                    await client.create_folder(str(target_root), os.path.basename(renamed_root))
+                except Exception as _ce:
+                    if "already exists" not in str(_ce).lower() and not client._is_error_code(_ce, 117):
+                        raise
+
+                # 预走目录树，收集文件列表
+                file_rows_lib = []
                 for root, _, files in os.walk(renamed_root):
                     for filename in files:
-                        file_paths.append(os.path.join(root, filename))
-                total_upload_files = max(len(file_paths), 1)
-                upload_index = 0
+                        local_file = os.path.join(root, filename)
+                        relative_file = os.path.relpath(local_file, renamed_root).replace("\\", "/")
+                        remote_dir_for_file = str(PurePosixPath(remote_root) / PurePosixPath(relative_file).parent)
+                        file_rows_lib.append({
+                            "local": local_file,
+                            "name": filename,
+                            "relative": relative_file,
+                            "remote_dir": remote_dir_for_file,
+                            "remote_path": str(PurePosixPath(remote_root) / PurePosixPath(relative_file)),
+                            "size": os.path.getsize(local_file) if os.path.exists(local_file) else 0,
+                        })
+
+                total_upload_files = max(len(file_rows_lib), 1)
                 upload_progress_state = {}
-                for local_file in file_paths:
-                    upload_index += 1
-                    relative_file = os.path.relpath(local_file, renamed_root).replace("\\", "/")
-                    remote_dir = str(PurePosixPath(remote_root) / PurePosixPath(relative_file).parent)
-                    file_name = os.path.basename(local_file)
-                    remote_file_path = str(PurePosixPath(remote_root) / PurePosixPath(relative_file))
-                    self._append_task_log(task, f"入库上传 {upload_index}/{total_upload_files}: {relative_file}")
-                    def sync_progress(uploaded_bytes: int, total_bytes: int, name=relative_file, index=upload_index):
-                        self._update_upload_runtime(
-                            task,
-                            upload_progress_state,
-                            file_key=name,
-                            file_name=name,
-                            relative_path=name,
-                            uploaded_bytes=uploaded_bytes,
-                            total_bytes=total_bytes,
-                            index=index,
-                            total_files=total_upload_files,
-                            stage="library_upload",
-                            target_path=remote_file_path,
-                        )
-                        task.current_step = f"入库上传 {index}/{total_upload_files}: {file_name}"
-                    try:
-                        await manager._ensure_remote_directory(client, remote_dir)
-                        await client.upload_file(remote_dir, local_file, overwrite=True, remote_name=file_name, progress_callback=sync_progress)
-                    except Exception as exc:
-                        base_url = str(getattr(target_library.synology, "base_url", "") or "").strip()
-                        raise RuntimeError(
-                            f"直接入库上传失败: 库={target_library.name}({target_library.id}) 地址={base_url} 目录={remote_dir} 文件={file_name} 原因={exc}"
-                        ) from exc
-                    uploaded_files = list(task.task_metadata.get("uploaded_files") or [])
-                    uploaded_files.append({
-                        "name": relative_file,
-                        "upload_path": remote_file_path,
-                        "relative_path": relative_file,
-                        "size_bytes": os.path.getsize(local_file) if os.path.exists(local_file) else 0,
-                    })
-                    task.task_metadata["uploaded_files"] = uploaded_files[-200:]
-                    self._append_task_log(task, f"入库完成: {relative_file}")
+
+                # Phase 1: 并发创建所有需要的远程子目录（保序去重）
+                unique_remote_dirs = list(dict.fromkeys(row["remote_dir"] for row in file_rows_lib))
+                await asyncio.gather(*[manager._ensure_remote_directory(client, d) for d in unique_remote_dirs])
+
+                # Phase 2: 并发上传所有文件，Semaphore(4) 控速
+                _lib_upload_sem = asyncio.Semaphore(4)
+
+                async def upload_lib_file(row: dict, index: int) -> None:
+                    async with _lib_upload_sem:
+                        self._append_task_log(task, f"入库上传 {index}/{total_upload_files}: {row['relative']}")
+
+                        def sync_progress(uploaded_bytes: int, total_bytes: int, _row=row, _idx=index):
+                            self._update_upload_runtime(
+                                task,
+                                upload_progress_state,
+                                file_key=_row["relative"],
+                                file_name=_row["name"],
+                                relative_path=_row["relative"],
+                                uploaded_bytes=uploaded_bytes,
+                                total_bytes=total_bytes,
+                                index=_idx,
+                                total_files=total_upload_files,
+                                stage="library_upload",
+                                target_path=_row["remote_path"],
+                            )
+                            task.current_step = f"入库上传 {_idx}/{total_upload_files}: {_row['name']}"
+
+                        try:
+                            await client.upload_file(
+                                row["remote_dir"], row["local"],
+                                overwrite=True, remote_name=row["name"],
+                                progress_callback=sync_progress,
+                            )
+                        except Exception as exc:
+                            base_url = str(getattr(target_library.synology, "base_url", "") or "").strip()
+                            raise RuntimeError(
+                                f"直接入库上传失败: 库={target_library.name}({target_library.id}) 地址={base_url} 目录={row['remote_dir']} 文件={row['name']} 原因={exc}"
+                            ) from exc
+                        # asyncio 单线程，以下三行无并发竞争
+                        all_uploaded = list(task.task_metadata.get("uploaded_files") or [])
+                        all_uploaded.append({
+                            "name": row["relative"],
+                            "upload_path": row["remote_path"],
+                            "relative_path": row["relative"],
+                            "size_bytes": row["size"],
+                        })
+                        task.task_metadata["uploaded_files"] = all_uploaded[-200:]
+                        self._append_task_log(task, f"入库完成: {row['relative']}")
+
+                await asyncio.gather(*[upload_lib_file(row, idx + 1) for idx, row in enumerate(file_rows_lib)])
                 self._finalize_upload_runtime(task, "completed")
                 final_path = remote_root
                 shutil.rmtree(renamed_root, ignore_errors=True)

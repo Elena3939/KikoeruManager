@@ -1431,6 +1431,10 @@ class TaskEngine:
                     continue
 
                 # cron调度器触发，直接重试所有等待中的任务
+                # 重入保护：若任务已在处理中或已是 PENDING，跳过
+                if task_id in self.processing or task.status == TaskStatus.PROCESSING:
+                    logger.debug(f"[Cron重试] 任务 {task_id} 已在执行中，跳过")
+                    continue
                 logger.info(f"[Cron重试] 重试任务 {task_id}: {task.rjcode}")
                 task.status = TaskStatus.PENDING
                 task.current_step = "等待重试"
@@ -1457,6 +1461,10 @@ class TaskEngine:
             task = self.tasks[task_id]
             logger.info(f"[重试] 找到任务 {task_id}, 状态: {task.status}, RJ号: {task.rjcode}")
             if task.status == TaskStatus.WAITING_RETRY:
+                # 重入保护：若任务已在处理中则不重复入队
+                if task_id in self.processing:
+                    logger.warning(f"[重试] 任务 {task_id} 已在处理中，跳过")
+                    return False
                 task.status = TaskStatus.PENDING
                 task.current_step = "等待重试"
                 asyncio.create_task(self.queue.put(task))

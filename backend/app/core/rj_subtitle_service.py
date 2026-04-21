@@ -28,10 +28,12 @@ class RJSubtitleService:
     SUBTITLE_EXTENSIONS = {'.lrc', '.vtt', '.srt', '.ass', '.ssa'}
     AUDIO_EXTENSIONS = {'.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac'}
     CHINESE_LANGS = {'CHI_HANS', 'CHI_SIMP', 'CHI_HANT', 'CHI_TRAD'}
-    CHINESE_MARKERS = [
+    # CJK 字符标记：子串匹配即可（几乎不会出现误命中）
+    _CHINESE_MARKERS_CJK = frozenset([
         '中文', '汉化', '字幕', '中字', '简中', '简体', '繁中', '繁體', '繁体',
-        'chs', 'cht', 'chi', 'zh', 'chinese'
-    ]
+    ])
+    # 短英文标记：词边界匹配，避免 'chi' 命中 'achi'、'zh' 命中 'zhang' 等误识别
+    _CHINESE_MARKER_EN_RE = re.compile(r'(?<![a-z0-9])(chinese|chs|cht|chi|zh)(?![a-z0-9])', re.IGNORECASE)
 
     def __init__(self):
         from .asmr_download_service import get_asmr_download_service
@@ -348,7 +350,7 @@ class RJSubtitleService:
         return discovered
 
     async def scan_remote(self, library_id: str, folder_path: str, scan_depth: int = 3) -> List[Dict]:
-        from .library_manager import SynologyFileStationClient, get_library_manager
+        from .library_manager import get_library_manager
 
         manager = get_library_manager()
         library = manager.get_library_definition(library_id)
@@ -362,7 +364,7 @@ class RJSubtitleService:
         if not manager._remote_path_is_within_root(normalized_path, browse_root):
             raise PermissionError('目标路径不在当前库存范围内')
 
-        client = SynologyFileStationClient(library.synology)
+        client = manager.get_cached_synology_client(library.synology)
         info = await client.stat(normalized_path)
         info_item = manager._first_remote_info_item(info)
         if not info_item or not info_item.get('isdir', False):
@@ -382,7 +384,7 @@ class RJSubtitleService:
         results = []
         for candidate in candidates:
             try:
-                folder_info = await manager.folder_contents(library_id, candidate)
+                folder_info = await manager.folder_contents(library_id, candidate, client=client)
             except Exception as exc:
                 logger.warning('[RJ字幕] 跳过不可访问的远程候选目录: %s (%s)', candidate, exc)
                 continue
@@ -420,17 +422,21 @@ class RJSubtitleService:
         scan_depth: int,
         progress_callback: Optional[Callable[[str], None]] = None,
     ):
+        """并发版目录发现：同级目录并行探索，然后逐个 yield 结果。"""
         seen: set[str] = set()
 
-        async def walk(current_path: str, depth_left: int):
+        async def collect(current_path: str, depth_left: int) -> List[str]:
+            """递归并发收集 current_path 下所有 RJ 目录路径。"""
             if depth_left <= 0:
-                return
+                return []
             if progress_callback:
                 try:
                     progress_callback(current_path)
                 except Exception:
                     logger.debug('[RJ字幕] 远程扫描进度回调失败: %s', current_path, exc_info=True)
             children = await manager._list_remote_directory(client, current_path)
+            rj_paths: List[str] = []
+            recurse_paths: List[str] = []
             for child in sorted(children, key=lambda item: str(item.get('name') or '').lower()):
                 name = child.get('name') or ''
                 if manager._should_skip_entry(name) or name.lower() == 'subtitles':
@@ -445,16 +451,26 @@ class RJSubtitleService:
                     logger.warning('[RJ字幕] 跳过异常远程目录路径: parent=%s name=%s raw=%s normalized=%s', current_path, name, raw_child_path, child_path)
                     continue
                 if self.extract_rjcode(name):
-                    if child_path in seen:
-                        continue
-                    seen.add(child_path)
-                    yield child_path
-                    continue
-                async for nested in walk(child_path, depth_left - 1):
-                    yield nested
+                    if child_path not in seen:
+                        seen.add(child_path)
+                        rj_paths.append(child_path)
+                else:
+                    recurse_paths.append(child_path)
+            # 对非 RJ 子目录并发递归
+            if recurse_paths and depth_left > 1:
+                sub_results = await asyncio.gather(
+                    *[collect(p, depth_left - 1) for p in recurse_paths],
+                    return_exceptions=True,
+                )
+                for result in sub_results:
+                    if isinstance(result, list):
+                        rj_paths.extend(result)
+            return rj_paths
 
-        async for discovered in walk(folder_path, self._normalize_scan_depth(scan_depth)):
-            yield discovered
+        all_paths = await collect(folder_path, self._normalize_scan_depth(scan_depth))
+        for path in all_paths:
+            yield path
+
 
     async def _discover_remote_rj_folders(
         self,
@@ -468,9 +484,9 @@ class RJSubtitleService:
             discovered.append(candidate)
         return discovered
 
-    async def _build_remote_scan_result(self, manager, library_id: str, candidate: str) -> Optional[Dict]:
+    async def _build_remote_scan_result(self, manager, library_id: str, candidate: str, *, client=None) -> Optional[Dict]:
         try:
-            folder_info = await manager.folder_contents(library_id, candidate)
+            folder_info = await manager.folder_contents(library_id, candidate, client=client)
         except Exception as exc:
             logger.warning('[RJ字幕] 跳过不可访问的远程候选目录: %s (%s)', candidate, exc)
             return None
@@ -490,7 +506,7 @@ class RJSubtitleService:
         }
 
     async def scan_remote_iter(self, library_id: str, folder_path: str, scan_depth: int = 3, progress_callback: Optional[Callable[[str], None]] = None):
-        from .library_manager import SynologyFileStationClient, get_library_manager
+        from .library_manager import get_library_manager
 
         manager = get_library_manager()
         library = manager.get_library_definition(library_id)
@@ -504,7 +520,8 @@ class RJSubtitleService:
         if not manager._remote_path_is_within_root(normalized_path, browse_root):
             raise PermissionError('目标路径不在当前库存范围内')
 
-        client = SynologyFileStationClient(library.synology)
+        # 使用全局缓存 client，避免重复登录
+        client = manager.get_cached_synology_client(library.synology)
         info = await client.stat(normalized_path)
         info_item = manager._first_remote_info_item(info)
         if not info_item or not info_item.get('isdir', False):
@@ -512,11 +529,13 @@ class RJSubtitleService:
 
         folder_name = PurePosixPath(normalized_path).name or normalized_path
         if self.extract_rjcode(folder_name):
-            result = await self._build_remote_scan_result(manager, library_id, normalized_path)
+            result = await self._build_remote_scan_result(manager, library_id, normalized_path, client=client)
             if result:
                 yield result
             return
 
+        # 阶段一：并发发现所有 RJ 候选目录
+        candidates: List[str] = []
         async for candidate in self._iter_discover_remote_rj_folders(
             manager,
             client,
@@ -524,8 +543,24 @@ class RJSubtitleService:
             scan_depth=self._normalize_scan_depth(scan_depth),
             progress_callback=progress_callback,
         ):
-            result = await self._build_remote_scan_result(manager, library_id, candidate)
-            if result:
+            candidates.append(candidate)
+
+        if not candidates:
+            return
+
+        # 阶段二：并发读取各候选目录内容（最多 8 路并发，避免压垮 NAS）
+        semaphore = asyncio.Semaphore(8)
+
+        async def bounded_build(cand: str) -> Optional[Dict]:
+            async with semaphore:
+                return await self._build_remote_scan_result(manager, library_id, cand, client=client)
+
+        build_results = await asyncio.gather(
+            *[bounded_build(c) for c in candidates],
+            return_exceptions=True,
+        )
+        for result in build_results:
+            if isinstance(result, dict):
                 yield result
 
     async def scan_remote(self, library_id: str, folder_path: str, scan_depth: int = 3) -> List[Dict]:
@@ -549,7 +584,11 @@ class RJSubtitleService:
 
     def _has_chinese_marker(self, text: str) -> bool:
         lowered = text.lower()
-        return any(marker in lowered for marker in self.CHINESE_MARKERS)
+        # 先检 CJK 标记（快速路径）
+        if any(marker in lowered for marker in self._CHINESE_MARKERS_CJK):
+            return True
+        # 再用词边界 regex 检英文标记，避免 'chi' 命中 'achi' 等误识别
+        return bool(self._CHINESE_MARKER_EN_RE.search(lowered))
 
     def _strip_trailing_audio_extension(self, name: str) -> str:
         stripped = name or ''
@@ -798,7 +837,7 @@ class RJSubtitleService:
         rjcode: str,
         progress_callback: Optional[Callable[[int, str], None]] = None,
     ) -> Tuple[Optional[Dict], List[Dict]]:
-        """查找最合适的中文字幕来源"""
+        """查找最合适的中文字幕来源（并发搜索所有候选版本，按优先级选最优）"""
         initial_work_info = None
         if progress_callback:
             progress_callback(12, f"获取 ASMR 作品信息 {rjcode}")
@@ -810,7 +849,7 @@ class RJSubtitleService:
                 progress_callback(12, f"查询 DLsite 关联版本 {rjcode}")
             linked_works = await self.asmr_service.get_linked_works_from_dlsite(rjcode)
             ordered_works = self._build_work_search_order(rjcode, linked_works)
-        attempts = []
+
         logger.info(
             "[RJ字幕] %s 候选版本顺序: %s",
             rjcode,
@@ -818,48 +857,72 @@ class RJSubtitleService:
         )
 
         if progress_callback:
-            progress_callback(16, f"已发现 {len(ordered_works)} 个候选版本")
+            progress_callback(16, f"已发现 {len(ordered_works)} 个候选版本，并发搜索字幕...")
 
-        total_candidates = max(len(ordered_works), 1)
-        for index, work in enumerate(ordered_works, start=1):
-            if progress_callback:
-                progress_callback(18, f"获取作品信息 {index}/{total_candidates}: {work.workno}")
-            work_info = initial_work_info if initial_work_info and work.workno.upper() == rjcode.upper() else await self.asmr_service.fetch_work_info(work.workno)
-            if not work_info:
+        # 并发搜索所有候选版本（限 3 路并发，避免对 asmr.one 过度请求）
+        semaphore = asyncio.Semaphore(3)
+
+        async def fetch_one(work):
+            """Fetch work info + track list for one candidate."""
+            async with semaphore:
+                is_initial = (initial_work_info is not None and work.workno.upper() == rjcode.upper())
+                work_info = initial_work_info if is_initial else await self.asmr_service.fetch_work_info(work.workno)
+                if not work_info:
+                    return None, None
+                tracks = await self.asmr_service.fetch_track_list(work.workno)
+                flat_files = self.asmr_service._flatten_tracks(tracks or [])
+                subtitle_files = self._collect_subtitle_candidates(work, flat_files)
+                return subtitle_files, work_info
+
+        tasks = [asyncio.create_task(fetch_one(work)) for work in ordered_works]
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        if progress_callback:
+            progress_callback(26, "并发搜索完成，选择最优来源...")
+
+        # 按原始优先级顺序评估结果，取最高优先级且有字幕的版本
+        attempts: List[Dict] = []
+        best_source: Optional[Dict] = None
+        for work, raw in zip(ordered_works, raw_results):
+            if isinstance(raw, BaseException):
+                logger.warning("[RJ字幕] 候选版本查询异常: rj=%s error=%s", work.workno, raw)
                 attempts.append({
                     'rjcode': work.workno,
-                    'lang': work.lang,
-                    'work_type': work.work_type,
+                    'lang': getattr(work, 'lang', ''),
+                    'work_type': getattr(work, 'work_type', ''),
+                    'subtitle_count': 0,
+                    'reason': f'查询异常: {raw}',
+                })
+                continue
+            subtitle_files, work_info = raw
+            if work_info is None:
+                attempts.append({
+                    'rjcode': work.workno,
+                    'lang': getattr(work, 'lang', ''),
+                    'work_type': getattr(work, 'work_type', ''),
                     'subtitle_count': 0,
                     'reason': '作品不存在或不可访问',
                 })
                 continue
-
-            if progress_callback:
-                progress_callback(24, f"获取轨道列表 {work.workno}")
-            tracks = await self.asmr_service.fetch_track_list(work.workno)
-            flat_files = self.asmr_service._flatten_tracks(tracks or [])
-            subtitle_files = self._collect_subtitle_candidates(work, flat_files)
+            subtitle_files = subtitle_files or []
             attempts.append({
                 'rjcode': work.workno,
-                'lang': work.lang,
-                'work_type': work.work_type,
+                'lang': getattr(work, 'lang', ''),
+                'work_type': getattr(work, 'work_type', ''),
                 'subtitle_count': len(subtitle_files),
                 'title': work_info.get('title', ''),
             })
-
-            if subtitle_files:
-                return {
+            if subtitle_files and best_source is None:
+                # 取最先遇到的（即最高优先级）有字幕版本
+                best_source = {
                     'rjcode': work.workno,
-                    'lang': work.lang,
-                    'work_type': work.work_type,
+                    'lang': getattr(work, 'lang', ''),
+                    'work_type': getattr(work, 'work_type', ''),
                     'title': work_info.get('title', ''),
                     'subtitle_files': subtitle_files,
-                }, attempts
+                }
 
-            await asyncio.sleep(0.2)
-
-        return None, attempts
+        return best_source, attempts
 
     def _build_audio_index(self, audio_files: List[Any], enable_metadata_match: bool = True) -> List[Dict]:
         audio_index = []
@@ -1462,31 +1525,6 @@ class RJSubtitleService:
                 return subtitle_dir
             raise
 
-    async def _get_remote_existing_subtitle_names(self, client, subtitle_dir: str) -> set[str]:
-        offset = 0
-        limit = 500
-        names: set[str] = set()
-        while True:
-            try:
-                data = await client.list(subtitle_dir, offset=offset, limit=limit, sort_by='name', sort_direction='asc')
-            except Exception as exc:
-                if self._is_synology_error_codes(exc, 118, 119, 408):
-                    logger.warning('[RJ字幕] 读取远程已有字幕失败，按空结果继续: %s', exc)
-                    return names
-                raise
-            raw_items = data.get('files') or []
-            for item in raw_items:
-                if item.get('isdir', False):
-                    continue
-                name = item.get('name') or ''
-                if os.path.splitext(name)[1].lower() in self.SUBTITLE_EXTENSIONS:
-                    names.add(name)
-            total = int(data.get('total', len(raw_items)) or len(raw_items))
-            offset += len(raw_items)
-            if not raw_items or offset >= total:
-                break
-        return names
-
     def _annotate_download_display_names(self, downloaded_files: List[Dict], match_result: Optional[Dict]) -> None:
         if not downloaded_files:
             return
@@ -1602,6 +1640,18 @@ class RJSubtitleService:
             return names
         return names
 
+    async def _cleanup_stranded_upload_temps(self, client, subtitle_dir: str, existing_names: set[str]) -> None:
+        """清理上次写入中断遗留的临时上传文件（__prekikoeru_upload_* 前缀），保证幂等。"""
+        _TEMP_PREFIX = "__prekikoeru_upload_"
+        stranded = [name for name in existing_names if name.startswith(_TEMP_PREFIX)]
+        for name in stranded:
+            try:
+                await client.delete(str(PurePosixPath(subtitle_dir) / name))
+                existing_names.discard(name)
+                logger.info('[RJ字幕] 已清理遗留临时上传文件: %s', name)
+            except Exception as _ce:
+                logger.debug('[RJ字幕] 清理遗留临时文件失败（忽略）: %s error=%s', name, _ce)
+
     async def clear_existing_subtitles_for_folder(
         self,
         folder_path: str,
@@ -1622,7 +1672,7 @@ class RJSubtitleService:
                 remote_items = folder_info.get('items') or []
                 deleted_subtitles = self._count_remote_existing_subtitles(remote_items)
                 subtitle_dir = manager._normalize_remote_path(str(PurePosixPath(folder_path) / 'subtitles'))
-                client = SynologyFileStationClient(library.synology)
+                client = manager.get_cached_synology_client(library.synology)
                 try:
                     await client.delete(subtitle_dir)
                 except Exception as exc:
@@ -1803,9 +1853,11 @@ class RJSubtitleService:
         if not library.synology:
             raise RuntimeError('远程库存未配置群晖连接参数')
 
-        client = SynologyFileStationClient(library.synology)
+        client = manager.get_cached_synology_client(library.synology)
         subtitle_dir = await self._ensure_remote_subtitle_dir(client, folder_path)
         existing_names = await self._get_remote_existing_subtitle_names(client, subtitle_dir)
+        # 清理上次中断遗留的临时上传文件，保证写入幂等
+        await self._cleanup_stranded_upload_temps(client, subtitle_dir, existing_names)
         used_names: set[str] = set()
         written_files: List[Dict] = []
         skipped_files: List[str] = []
@@ -1815,6 +1867,8 @@ class RJSubtitleService:
         upload_stage_dir = os.path.join(temp_dir, '_remote_upload_raw')
         os.makedirs(upload_stage_dir, exist_ok=True)
 
+        # --- Phase 1（串行）: 预计算名称 + 旧名迁移，保证 existing_names/used_names 状态一致 ---
+        work_items: List[Dict] = []
         for index, item in enumerate(downloaded_files, start=1):
             if should_cancel and should_cancel():
                 raise asyncio.CancelledError()
@@ -1828,8 +1882,8 @@ class RJSubtitleService:
             final_remote_path = str(PurePosixPath(subtitle_dir) / output_name)
             staged_path = os.path.join(upload_stage_dir, output_name)
             if progress_callback:
-                progress = 72 + int((index - 1) / total_files * 24)
-                progress_callback(progress, f"写入原始字幕 {index}/{total_files}: {output_name}")
+                progress = 72 + int((index - 1) / total_files * 12)
+                progress_callback(progress, f"预处理字幕 {index}/{total_files}: {output_name}")
             try:
                 migrated = await self._migrate_remote_equivalent_subtitles(
                     client=client,
@@ -1847,38 +1901,70 @@ class RJSubtitleService:
                         'match_type': '旧名迁移',
                         'match_score': 0,
                     })
-                    continue
-                shutil.copy2(item['path'], staged_path)
-                await client.upload_file(subtitle_dir, staged_path, overwrite=True, remote_name=temp_remote_name)
-                if overwrite and output_name in existing_names:
-                    try:
-                        await client.delete(final_remote_path)
-                    except Exception as exc:
-                        if not self._is_synology_error_code(exc, 118):
-                            raise
-                await client.rename(temp_remote_path, output_name)
-                existing_names.add(output_name)
-                item['output_name'] = output_name
-                item['display_name'] = output_name
-                written_files.append({
-                    'subtitle_name': item.get('name') or output_name,
-                    'output_name': output_name,
-                    'match_type': '原始抓取',
-                    'match_score': 0,
-                })
+                else:
+                    work_items.append({
+                        'item': item,
+                        'output_name': output_name,
+                        'temp_remote_name': temp_remote_name,
+                        'temp_remote_path': temp_remote_path,
+                        'final_remote_path': final_remote_path,
+                        'staged_path': staged_path,
+                    })
             except Exception as exc:
-                if await self._remote_subtitle_exists(client, subtitle_dir, output_name):
+                write_errors.append(f"{output_name}: {exc}")
+
+        # --- Phase 2（并发）: 独立文件上传，Semaphore(3) 控速 ---
+        upload_count = len(work_items)
+        completed_uploads = 0
+        _upload_semaphore = asyncio.Semaphore(3)
+
+        async def do_upload(work: dict):
+            nonlocal completed_uploads
+            w_item = work['item']
+            output_name = work['output_name']
+            temp_remote_name = work['temp_remote_name']
+            temp_remote_path = work['temp_remote_path']
+            final_remote_path = work['final_remote_path']
+            staged_path = work['staged_path']
+            async with _upload_semaphore:
+                if progress_callback:
+                    progress = 84 + int(completed_uploads / max(upload_count, 1) * 14)
+                    progress_callback(progress, f"上传字幕: {output_name}")
+                try:
+                    shutil.copy2(w_item['path'], staged_path)
+                    await client.upload_file(subtitle_dir, staged_path, overwrite=True, remote_name=temp_remote_name)
+                    if overwrite and output_name in existing_names:
+                        try:
+                            await client.delete(final_remote_path)
+                        except Exception as exc:
+                            if not self._is_synology_error_code(exc, 118):
+                                raise
+                    await client.rename(temp_remote_path, output_name)
                     existing_names.add(output_name)
-                    item['output_name'] = output_name
-                    item['display_name'] = output_name
+                    w_item['output_name'] = output_name
+                    w_item['display_name'] = output_name
                     written_files.append({
-                        'subtitle_name': item.get('name') or output_name,
+                        'subtitle_name': w_item.get('name') or output_name,
                         'output_name': output_name,
                         'match_type': '原始抓取',
                         'match_score': 0,
                     })
-                    continue
-                write_errors.append(f"{output_name}: {exc}")
+                except Exception as exc:
+                    if await self._remote_subtitle_exists(client, subtitle_dir, output_name):
+                        existing_names.add(output_name)
+                        w_item['output_name'] = output_name
+                        w_item['display_name'] = output_name
+                        written_files.append({
+                            'subtitle_name': w_item.get('name') or output_name,
+                            'output_name': output_name,
+                            'match_type': '原始抓取',
+                            'match_score': 0,
+                        })
+                    else:
+                        write_errors.append(f"{output_name}: {exc}")
+                completed_uploads += 1
+
+        await asyncio.gather(*[do_upload(work) for work in work_items])
 
         if progress_callback:
             progress_callback(98, f"原始字幕写入完成，保留 {len(written_files)}，跳过 {len(skipped_files)}")
@@ -2090,11 +2176,13 @@ class RJSubtitleService:
         if not library.synology:
             raise RuntimeError('远程库存未配置群晖连接参数')
 
-        client = SynologyFileStationClient(library.synology)
+        client = manager.get_cached_synology_client(library.synology)
         subtitle_dir = await self._ensure_remote_subtitle_dir(client, folder_path)
         existing_names = set()
         if not overwrite:
             existing_names = await self._get_remote_existing_subtitle_names(client, subtitle_dir)
+        # 清理上次中断遗留的临时上传文件，保证写入幂等
+        await self._cleanup_stranded_upload_temps(client, subtitle_dir, existing_names)
 
         upload_stage_dir = os.path.join(temp_dir, '_remote_upload')
         os.makedirs(upload_stage_dir, exist_ok=True)
@@ -2104,44 +2192,60 @@ class RJSubtitleService:
         write_errors = []
         total_matches = max(len(match_result['matches']), 1)
 
+        # --- Phase 1（串行）: 预检跳过 / 构造任务列表（保持 existing_names 状态一致）---
+        work_items: List[Dict] = []
         for index, match in enumerate(match_result['matches'], start=1):
             if should_cancel and should_cancel():
                 raise asyncio.CancelledError()
             output_name = match['output_subtitle_name']
             if progress_callback:
-                progress = 92 + int((index - 1) / total_matches * 6)
-                progress_callback(progress, f"回写远程 subtitles {index}/{total_matches}: {output_name}")
+                progress = 92 + int((index - 1) / total_matches * 3)
+                progress_callback(progress, f"预处理字幕 {index}/{total_matches}: {output_name}")
             if output_name in existing_names and not overwrite:
                 logger.info('[RJ字幕] 远程字幕已存在，跳过写入: %s', output_name)
                 skipped_files.append(output_name)
                 continue
-
             staged_path = os.path.join(upload_stage_dir, output_name)
             temp_remote_name = self._build_remote_upload_temp_name(index, output_name)
             temp_remote_path = str(PurePosixPath(subtitle_dir) / temp_remote_name)
             final_remote_path = str(PurePosixPath(subtitle_dir) / output_name)
-            try:
-                shutil.copy2(match['subtitle_path'], staged_path)
-                logger.info('[RJ字幕] 开始回写远程字幕 %s (%s/%s), 临时名=%s', output_name, index, total_matches, temp_remote_name)
-                await client.upload_file(subtitle_dir, staged_path, overwrite=True, remote_name=temp_remote_name)
-                if overwrite and output_name in existing_names:
-                    try:
-                        await client.delete(final_remote_path)
-                    except Exception as exc:
-                        if not self._is_synology_error_code(exc, 118):
-                            raise
-                await client.rename(temp_remote_path, output_name)
-                existing_names.add(output_name)
-                written_files.append({
-                    'audio_name': match['audio_name'],
-                    'subtitle_name': match['subtitle_name'],
-                    'output_name': output_name,
-                    'match_type': match['match_type'],
-                    'match_score': match['match_score'],
-                })
-            except Exception as exc:
-                logger.warning('[RJ字幕] 远程字幕回写失败 %s (%s/%s): %s', output_name, index, total_matches, exc)
-                if await self._remote_subtitle_exists(client, subtitle_dir, output_name):
+            work_items.append({
+                'match': match,
+                'output_name': output_name,
+                'staged_path': staged_path,
+                'temp_remote_name': temp_remote_name,
+                'temp_remote_path': temp_remote_path,
+                'final_remote_path': final_remote_path,
+            })
+
+        # --- Phase 2（并发）: 上传写入，Semaphore(3) 控速 ---
+        upload_count = len(work_items)
+        completed_uploads = 0
+        _upload_semaphore = asyncio.Semaphore(3)
+
+        async def do_upload(work: dict):
+            nonlocal completed_uploads
+            match = work['match']
+            output_name = work['output_name']
+            staged_path = work['staged_path']
+            temp_remote_name = work['temp_remote_name']
+            temp_remote_path = work['temp_remote_path']
+            final_remote_path = work['final_remote_path']
+            async with _upload_semaphore:
+                if progress_callback:
+                    progress = 95 + int(completed_uploads / max(upload_count, 1) * 3)
+                    progress_callback(progress, f"回写远程 subtitles: {output_name}")
+                try:
+                    shutil.copy2(match['subtitle_path'], staged_path)
+                    logger.info('[RJ字幕] 开始回写远程字幕 %s 临时名=%s', output_name, temp_remote_name)
+                    await client.upload_file(subtitle_dir, staged_path, overwrite=True, remote_name=temp_remote_name)
+                    if overwrite and output_name in existing_names:
+                        try:
+                            await client.delete(final_remote_path)
+                        except Exception as exc:
+                            if not self._is_synology_error_code(exc, 118):
+                                raise
+                    await client.rename(temp_remote_path, output_name)
                     existing_names.add(output_name)
                     written_files.append({
                         'audio_name': match['audio_name'],
@@ -2150,16 +2254,9 @@ class RJSubtitleService:
                         'match_type': match['match_type'],
                         'match_score': match['match_score'],
                     })
-                    continue
-                if await self._remote_subtitle_exists(client, subtitle_dir, temp_remote_name):
-                    try:
-                        if overwrite and output_name in existing_names:
-                            try:
-                                await client.delete(final_remote_path)
-                            except Exception as delete_exc:
-                                if not self._is_synology_error_code(delete_exc, 118):
-                                    raise
-                        await client.rename(temp_remote_path, output_name)
+                except Exception as exc:
+                    logger.warning('[RJ字幕] 远程字幕回写失败 %s: %s', output_name, exc)
+                    if await self._remote_subtitle_exists(client, subtitle_dir, output_name):
                         existing_names.add(output_name)
                         written_files.append({
                             'audio_name': match['audio_name'],
@@ -2168,10 +2265,31 @@ class RJSubtitleService:
                             'match_type': match['match_type'],
                             'match_score': match['match_score'],
                         })
-                        continue
-                    except Exception as rename_exc:
-                        logger.warning('[RJ字幕] 临时远程字幕重命名失败 %s -> %s: %s', temp_remote_name, output_name, rename_exc)
-                write_errors.append(f"{output_name}: {exc}")
+                    elif await self._remote_subtitle_exists(client, subtitle_dir, temp_remote_name):
+                        try:
+                            if overwrite and output_name in existing_names:
+                                try:
+                                    await client.delete(final_remote_path)
+                                except Exception as delete_exc:
+                                    if not self._is_synology_error_code(delete_exc, 118):
+                                        raise
+                            await client.rename(temp_remote_path, output_name)
+                            existing_names.add(output_name)
+                            written_files.append({
+                                'audio_name': match['audio_name'],
+                                'subtitle_name': match['subtitle_name'],
+                                'output_name': output_name,
+                                'match_type': match['match_type'],
+                                'match_score': match['match_score'],
+                            })
+                        except Exception as rename_exc:
+                            logger.warning('[RJ字幕] 临时远程字幕重命名失败 %s -> %s: %s', temp_remote_name, output_name, rename_exc)
+                            write_errors.append(f"{output_name}: {exc}")
+                    else:
+                        write_errors.append(f"{output_name}: {exc}")
+                completed_uploads += 1
+
+        await asyncio.gather(*[do_upload(work) for work in work_items])
 
         if progress_callback:
             progress_callback(98, f"远程 subtitles 回写完成，写入 {len(written_files)}，跳过 {len(skipped_files)}")
@@ -2204,6 +2322,8 @@ class RJSubtitleService:
 
         if library.type != 'synology_filestation':
             raise ValueError('指定库存不是远程库存')
+        if not library.synology:
+            raise ValueError('远程库存缺少群晖连接配置')
         if not library.writable:
             raise PermissionError('当前远程库存为只读，无法写入 subtitles 目录')
 
@@ -2218,7 +2338,9 @@ class RJSubtitleService:
         if progress_callback:
             progress_callback(8, '读取远程音频清单')
 
-        folder_info = await manager.folder_contents(library_id, folder_path)
+        # 使用全局缓存 client，避免重复登录
+        cached_client = manager.get_cached_synology_client(library.synology)
+        folder_info = await manager.folder_contents(library_id, folder_path, client=cached_client)
         remote_items = folder_info.get('items') or []
         audio_entries = self._collect_remote_audio_entries(remote_items)
         if not audio_entries:

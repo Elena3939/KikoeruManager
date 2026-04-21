@@ -12,7 +12,7 @@ from ..config.settings import get_config
 from ..core.extract_service import ExtractService
 from ..core.filter_service import FilterService
 from ..core.folder_compare_service import get_folder_compare_service
-from ..core.library_manager import SynologyFileStationClient, get_library_manager
+from ..core.library_manager import get_library_manager
 from ..core.task_engine import Task, TaskType
 
 logger = logging.getLogger(__name__)
@@ -199,7 +199,7 @@ class ConflictResolutionService:
                 "folder_count": None,
             }
 
-        client = SynologyFileStationClient(library.synology)
+        client = manager.get_cached_synology_client(library.synology)
         try:
             info = await client.stat(manager._normalize_remote_path(normalized_path))
             item = manager._first_remote_info_item(info) or {}
