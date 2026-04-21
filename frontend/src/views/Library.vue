@@ -435,7 +435,7 @@
                     <div class="subtitle-option-title">覆盖已有字幕</div>
                     <div class="subtitle-card-tip">已存在同名字幕时直接覆盖，适合重新抓取和修正。</div>
                   </div>
-                  <AppLottieSwitch v-model="subtitleOptions.overwriteExisting" />
+                  <el-switch v-model="subtitleOptions.overwriteExisting" />
                 </div>
                 <div class="subtitle-switch-row">
                   <div>
@@ -449,14 +449,14 @@
                     <div class="subtitle-option-title">启用 metadata 匹配</div>
                     <div class="subtitle-card-tip">尝试读取音频 track/title 标签，提升字幕文件名匹配准确度。</div>
                   </div>
-                  <AppLottieSwitch v-model="subtitleOptions.enableMetadataMatch" />
+                  <el-switch v-model="subtitleOptions.enableMetadataMatch" />
                 </div>
                 <div class="subtitle-switch-row">
                   <div>
                     <div class="subtitle-option-title">已有字幕时跳过</div>
                     <div class="subtitle-card-tip">待处理目录如果已经存在字幕，创建任务时直接跳过，不再进入抓取队列。</div>
                   </div>
-                  <AppLottieSwitch v-model="subtitleOptions.skipIfExistingSubtitles" />
+                  <el-switch v-model="subtitleOptions.skipIfExistingSubtitles" />
                 </div>
                 <div class="subtitle-switch-row subtitle-switch-row-wrap">
                   <div>
@@ -473,7 +473,7 @@
                     <div class="subtitle-option-title">启用字幕过滤</div>
                     <div class="subtitle-card-tip">使用 RJ 工作台自己的字幕过滤规则筛候选，和解压过滤配置分开维护。</div>
                   </div>
-                  <AppLottieSwitch v-model="subtitleOptions.useFilterRules" />
+                  <el-switch v-model="subtitleOptions.useFilterRules" />
                 </div>
                 <div v-if="subtitleOptions.useFilterRules" class="subtitle-filter-editor">
                   <div class="subtitle-filter-editor-head">
@@ -493,7 +493,7 @@
                       </el-select>
                       <el-input v-model="rule.name" size="small" class="subtitle-filter-name" placeholder="规则名称" />
                       <el-input v-model="rule.pattern" size="small" class="subtitle-filter-pattern" placeholder="正则，例如 (反转|reverse|无SE)" />
-                      <AppLottieSwitch v-model="rule.enabled" compact />
+                      <el-switch v-model="rule.enabled" size="small" />
                       <el-button size="small" text type="danger" @click="removeSubtitleFilterRule(rule.id)">删除</el-button>
                     </div>
                   </div>

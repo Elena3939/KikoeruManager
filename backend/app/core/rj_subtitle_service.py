@@ -1913,10 +1913,10 @@ class RJSubtitleService:
             except Exception as exc:
                 write_errors.append(f"{output_name}: {exc}")
 
-        # --- Phase 2（并发）: 独立文件上传，Semaphore(3) 控速 ---
+        # --- Phase 2（串行上传）: 群晖写同一 subtitles/ 目录时存在目录锁，并发会导致 sock_read 超时，改为串行 ---
         upload_count = len(work_items)
         completed_uploads = 0
-        _upload_semaphore = asyncio.Semaphore(3)
+        _upload_semaphore = asyncio.Semaphore(1)
 
         async def do_upload(work: dict):
             nonlocal completed_uploads
@@ -2218,10 +2218,10 @@ class RJSubtitleService:
                 'final_remote_path': final_remote_path,
             })
 
-        # --- Phase 2（并发）: 上传写入，Semaphore(3) 控速 ---
+        # --- Phase 2（串行上传）: 群晖写同一 subtitles/ 目录时存在目录锁，并发会导致 sock_read 超时，改为串行 ---
         upload_count = len(work_items)
         completed_uploads = 0
-        _upload_semaphore = asyncio.Semaphore(3)
+        _upload_semaphore = asyncio.Semaphore(1)
 
         async def do_upload(work: dict):
             nonlocal completed_uploads
