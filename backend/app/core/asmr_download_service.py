@@ -9,7 +9,7 @@ import aiohttp
 import asyncio
 import logging
 import time
-from typing import Optional, List, Dict, Callable, Tuple
+from typing import Any, Optional, List, Dict, Callable, Tuple
 from pathlib import Path
 from datetime import datetime
 from yarl import URL

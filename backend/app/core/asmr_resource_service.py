@@ -6,6 +6,7 @@ import re
 import shutil
 import uuid
 from collections import defaultdict
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,14 +42,33 @@ class ASMRResourceService:
         self._global_upload_lock = asyncio.Lock()
         self._synology_clients: Dict[str, Any] = {}
 
+    def _build_synology_config_signature(self, synology_config: Any) -> str:
+        if synology_config is None:
+            return ""
+        if is_dataclass(synology_config):
+            payload = asdict(synology_config)
+        elif hasattr(synology_config, "model_dump"):
+            payload = synology_config.model_dump()
+        elif hasattr(synology_config, "__dict__"):
+            payload = dict(vars(synology_config))
+        else:
+            payload = {"value": str(synology_config)}
+        return hashlib.sha1(repr(sorted(payload.items())).encode("utf-8")).hexdigest()
+
     def _get_synology_client(self, library_id: str, synology_config: Any):
         from .library_manager import SynologyFileStationClient
 
         cache_key = str(library_id or "").strip() or str(getattr(synology_config, "base_url", "") or "").strip()
-        client = self._synology_clients.get(cache_key)
-        if client is None:
+        config_signature = self._build_synology_config_signature(synology_config)
+        cached = self._synology_clients.get(cache_key)
+        client = cached.get("client") if isinstance(cached, dict) else cached
+        cached_signature = cached.get("signature") if isinstance(cached, dict) else ""
+        if client is None or cached_signature != config_signature:
             client = SynologyFileStationClient(synology_config)
-            self._synology_clients[cache_key] = client
+            self._synology_clients[cache_key] = {
+                "client": client,
+                "signature": config_signature,
+            }
         return client
 
     def normalize_rjcode(self, value: Any) -> str:
@@ -208,10 +228,12 @@ class ASMRResourceService:
         now = datetime.now()
         runtime["updated_at"] = now.isoformat()
         runtime["status"] = status
+        runtime["active_file_count"] = 0
+        runtime["speed_bytes_per_sec"] = 0
+        runtime["eta_seconds"] = 0
         if status in {"completed", "failed"}:
             runtime["ended_at"] = now.isoformat()
         if status == "completed":
-            runtime["eta_seconds"] = 0
             if int(runtime.get("total_bytes") or 0) > 0:
                 runtime["progress"] = 100
         task.task_metadata["download_runtime"] = runtime
@@ -327,13 +349,29 @@ class ASMRResourceService:
         now = datetime.now()
         runtime["updated_at"] = now.isoformat()
         runtime["status"] = status
+        runtime["active_file_count"] = 0
+        runtime["speed_bytes_per_sec"] = 0
+        runtime["eta_seconds"] = 0
+        runtime["is_waiting_turn"] = False
         if status in {"completed", "failed"}:
             runtime["ended_at"] = now.isoformat()
         if status == "completed":
-            runtime["eta_seconds"] = 0
             if int(runtime.get("total_bytes") or 0) > 0:
                 runtime["progress"] = 100
         task.task_metadata["upload_runtime"] = runtime
+
+    def _set_runtime_paused(self, task) -> None:
+        for key in ("download_runtime", "upload_runtime"):
+            runtime = dict(task.task_metadata.get(key) or {})
+            if not runtime:
+                continue
+            runtime["updated_at"] = datetime.now().isoformat()
+            runtime["status"] = "paused"
+            runtime["active_file_count"] = 0
+            runtime["speed_bytes_per_sec"] = 0
+            runtime["eta_seconds"] = 0
+            runtime["is_waiting_turn"] = False
+            task.task_metadata[key] = runtime
 
     def _mark_upload_waiting(
         self,
@@ -925,6 +963,7 @@ class ASMRResourceService:
             session = record.to_dict()
             statistics = dict(session.get("statistics") or {})
             local_root = str(session.get("local_download_root") or statistics.get("download_root") or "").strip()
+            # 只读取 DB 中的明确标志，不用文件计数升级 ready 状态
             local_ready = bool(session.get("local_download_ready"))
             local_count = int(session.get("local_downloaded_count") or 0)
             if local_root and os.path.isdir(local_root):
@@ -934,7 +973,7 @@ class ASMRResourceService:
                         for item in (session.get("selected_resources") or [])
                         if os.path.exists(os.path.join(local_root, self._sanitize_relative_path(str(item.get("relative_path") or item.get("file_name") or ""))))
                     )
-                local_ready = local_ready or local_count > 0
+                # 不再用 local_count > 0 升级 local_ready，避免半程下载被误判为可入库
             else:
                 local_ready = False
                 local_count = 0
@@ -1022,8 +1061,11 @@ class ASMRResourceService:
                 continue
             if action == "pause":
                 engine.pause_task(task.id)
+                self._set_runtime_paused(task)
+                task.current_step = "已暂停"
             elif action == "resume":
                 engine.resume_task(task.id)
+                task.current_step = "恢复中"
             elif action == "cancel":
                 engine.cancel_task(task.id)
             else:
@@ -2026,7 +2068,9 @@ class ASMRResourceService:
                             total_files=total_files,
                             stage="download",
                         )
-                        task.current_step = f"{'资源检查中' if reimport_only else '下载中'} {file_index}/{total_files}: {name}"
+                        runtime = dict(task.task_metadata.get("download_runtime") or {})
+                        completed_files = int(runtime.get("completed_files") or 0)
+                        task.current_step = f"{'资源检查中' if reimport_only else '下载中'} {completed_files}/{total_files}: {name}"
 
                     file_exists = os.path.exists(destination) and os.path.getsize(destination) > 0
                     if file_exists:
@@ -2128,7 +2172,9 @@ class ASMRResourceService:
                                     stage="upload",
                                     target_path=uploaded_path or upload_options["target_path"],
                                 )
-                                task.current_step = f"上传中 {file_index}/{total_files}: {name}"
+                                runtime = dict(task.task_metadata.get("upload_runtime") or {})
+                                completed_files = int(runtime.get("completed_files") or 0)
+                                task.current_step = f"上传中 {completed_files}/{total_files}: {name}"
 
                             if upload_options["mode"] == "synology" and upload_options["library_id"] and upload_options["target_path"]:
                                 uploaded_path = await self._upload_to_synology(
@@ -2396,7 +2442,7 @@ class ASMRResourceService:
                     status=final_status,
                     statistics={**(task.task_metadata.get("performance_metrics") or {}), "verify_summary": verify_summary, "upload_summary": upload_summary, "download_root": download_root},
                     failure_summary={"failed_resources": failed_files, "verification_failures": verification_failures},
-                    local_download_ready=bool(persisted_local_root and persisted_local_count > 0),
+                    local_download_ready=bool(final_status == "completed" and persisted_local_root and persisted_local_count > 0),
                     local_download_root=persisted_local_root,
                     local_downloaded_count=persisted_local_count,
                 )
@@ -2452,7 +2498,7 @@ class ASMRResourceService:
                     status="failed",
                     statistics=task.task_metadata.get("performance_metrics") or {},
                     failure_summary={"failed_resources": failed_files, "verification_failures": verification_failures},
-                    local_download_ready=bool(success_files and os.path.isdir(download_root)),
+                    local_download_ready=False,  # 下载失败/异常，不标记为可入库
                     local_download_root=download_root if os.path.isdir(download_root) else "",
                     local_downloaded_count=len(success_files),
                 )

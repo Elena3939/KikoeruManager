@@ -676,7 +676,9 @@ class CircleCompletionService:
             # 详情页切换频繁，这里优先使用数据库中已持久化的下载状态，
             # 避免每次点击社团都触发大量磁盘 exists / walk 检查。
             local_root_exists = bool(local_root and os.path.isdir(local_root))
-            local_ready = bool(local_root_exists and (session.get("local_download_ready") or local_count > 0))
+            # 只有明确的 local_download_ready 标志才视为「已下载可入库」，
+            # 不能用 local_count > 0 兜底，避免下载了一半的临时文件被误判为完成。
+            local_ready = bool(local_root_exists and session.get("local_download_ready"))
             if not local_root_exists and (
                 bool(session.get("local_download_ready"))
                 or local_count > 0
@@ -2152,6 +2154,9 @@ class CircleCompletionService:
                 item["linked_rjcodes"] = list(row.linked_rjcodes or [stored_display_rjcode or row.canonical_rjcode])
                 if not str(item.get("title") or "").strip():
                     item["title"] = str((metadata_map.get(stored_display_rjcode) or {}).get("work_name") or row.title or "").strip()
+                # 补充 CV 名列表（来自 work_metadata.cvs）
+                if not item.get("cvs"):
+                    item["cvs"] = list((metadata_map.get(stored_display_rjcode) or {}).get("cvs") or [])
                 view_canonical_info = {
                     **canonical_info,
                     "linked_rjcodes": item["linked_rjcodes"],
