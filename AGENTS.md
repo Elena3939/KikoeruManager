@@ -66,6 +66,7 @@
 - 下载任务工作台：`frontend/src/components/download/DownloadTaskWorkbenchDialog.vue`
 - 上传任务工作台：`frontend/src/components/upload/UploadTaskWorkbenchDialog.vue`
 - 社团下载预览：`frontend/src/components/circle/CircleDownloadPreviewDialog.vue`
+- 社团作品卡片基座：`frontend/src/components/circle/WorkCard.vue`
 - 本地上传预览：`frontend/src/components/circle/CircleLocalUploadDialog.vue`
 - 服务端上传预览：`frontend/src/components/common/ServerUploadPreviewDialog.vue`
 - 操作历史详情：`frontend/src/components/activity/ActivityLogDetailDialog.vue`
@@ -85,6 +86,11 @@
   - `frontend/src/components/common/AppLoadingAnimation.vue`
   - `frontend/src/components/common/AppLottieIcon.vue`
   - `frontend/src/components/common/AppLottieSwitch.vue`
+  - `frontend/src/components/common/AppLottieProgressBar.vue`
+- 统一空态组件：
+  - `frontend/src/components/common/AppEmptyState.vue`（全站统一空态，替代各处散落的 `el-empty`，支持 `size` 属性和默认插槽）
+- 社团作品行视图：
+  - `frontend/src/components/circle/WorkListRow.vue`（社团补全作品列表行模式渲染基座，和 `WorkCard.vue` 并列供视图切换）
 
 ### 桌面 / 发布
 
@@ -216,6 +222,25 @@
   - `meta-pill`
   - `detail-grid`
   - `log-list`
+
+### 3.8 按钮与标签动画规范 (Interaction & Animation)
+
+- **核心原则**：所有交互元素（按钮、标签、卡片）必须具备物理感、弹性感和明确的视觉反馈。
+- **状态反馈规范**：
+  - **Hover (悬停)**：
+    - 使用 `translateY(-2px)` 配合 `scale(1.02)` 营造浮起感。
+    - 增加柔和阴影 (`box-shadow`)，模拟光源变化。
+    - 内部图标 (`svg`) 应同步进行微小的缩放 (`scale(1.2)`) 或旋转 (`rotate(5deg)`)。
+  - **Active (点击)**：
+    - 使用 `scale(0.96)` 模拟真实的物理压感。
+    - 颜色或边框应有瞬时的加深/变亮反馈。
+- **动画曲线**：
+  - 统一使用贝塞尔曲线：`transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)`。
+  - 这种曲线具有自然的弹性效果，避免生硬的线性过渡。
+- **视觉风格**：
+  - **标签 (Pills)**：采用微圆角矩形 (`border-radius: 8px`)，而非纯胶囊或直角。
+  - **按钮 (Buttons)**：优先使用渐变色 (`linear-gradient`) 提升品质感，特别是核心操作按钮。
+  - **边框与阴影**：使用弱化边框 (`border: 1px solid #e2e8f0`) 配合精致的小阴影，营造“现代工作台”的精致感。
 
 ## 4. 当前真实业务链路
 
@@ -358,6 +383,10 @@
 - 失败项重试成功后，要同步清理 / 标记恢复，别留下脏状态
 - 重复作品 / 正在处理中 / 需要人工判断这类状态，必须落 `waiting_manual`
 - 不要把重复冲突写成 `completed / success`
+- `KEEP_NEW` 现在不是同步直接改库，而是转成后台任务继续处理；前后端都要把它当成带状态恢复的任务链，不要再按一次性按钮理解
+- 冲突项现在允许出现 `PROCESSING`；列表页如果发现关联任务已经结束但冲突还卡在处理中，接口会回退并补记恢复元数据，相关逻辑不要删回去
+- `get_conflicts()` 的 `context` 已经改成异步描述，后续补字段优先沿这条链扩展，不要再退回同步阻塞查询
+- 失败问题项重试前会清理上一次重试产物；如果调整重试链路，记得一起看 `cleanup_retry_output_artifacts()`
 
 #### 查重额外注意
 
@@ -408,11 +437,15 @@
 - 预览弹窗里的“库存内前缀目录”是下拉缓存，不是自由输入
 - 空值语义是“直接按社团名入库”
 - 下载工作台有自己的状态缓存和后台悬浮卡，不要删恢复逻辑
-- 下载工作台摘要进度条当前是：
-  -  `frontend/src/assets/anime/progress bar.lottie`
+- 社团作品展示已经开始抽到 `WorkCard.vue`，同类作品卡优先复用这个基座，不要再把视觉和状态判断散回 `CircleCompletion.vue` / `ASMRSync.vue`
+- `WorkCard.vue` 现在展示 CV 名列表（来自后端 `cvs` 字段），改作品卡时注意保留 `.work-cv` 样式块
+- 社团补全作品列表支持卡片 / 行列表双视图切换（`viewMode: 'card' | 'list'`），`WorkListRow.vue` 是行模式渲染基座
+- 下载工作台摘要进度条已替换为 `AppLottieProgressBar` 组件（不再直接引 `progress bar.lottie` 并手动控制帧），如果修改进度展示优先在组件内改
   - 下载 / 上传图标优先复用 `frontend/src/assets/anime/download-icon-clean.json`、`frontend/src/assets/anime/Uploading to cloud.lottie`
+- 下载工作台每个任务卡的 Lottie 图标现在按任务状态独立控制（处理中自动播放、暂停时停帧、完成后播放一次成功动画）；不要把所有任务 Lottie 合并成单一 ref 管理
 - 如果后续有人改下载工作台进度表现，不要把它退回普通纯色条，也不要让 `.lottie` 独自承担进度宽度计算
 - 社团补全索引任务支持取消；新增长循环时记得补 `cancel_callback`
+- 社团下载预览弹窗现在支持按仓库过滤规则切换“全部 / 过滤文件”；如果改预览选择逻辑，要同时确认推荐态和过滤态能双向切换
 
 #### 当前依赖细节
 
@@ -450,6 +483,9 @@
 - 不能再把整文件 `read()` 进内存再拼 multipart
 - 必须保持分块流式上传
 - 本地复制入库同样走分块，不要退回 `shutil.copy2` 这种无进度粗放写法
+- 批量取消下载任务现在有单独接口 `/api/tasks/batch-cancel-cleanup`，会同时取消任务并清理下载根目录；改任务取消时要一起考虑文件清理和历史语义
+- Synology 客户端现在按配置签名缓存，配置有变化时自动重建客户端（`_build_synology_config_signature()`），改群晖配置后不需要重启服务
+- `local_download_ready` 只认数据库中的明确标志，不再用 `local_count > 0` 兜底，避免半程下载的临时文件被误判为「可入库」；只有任务状态为 `completed` 时才写 `True`，失败 / 异常分支一律写 `False`
 
 #### 当前工作台依赖的运行态字段
 
@@ -459,6 +495,7 @@
 - `progress_log`
 - `failure_reason`
 - `final_output_path`
+- `download_root`
 
 #### 改下载 / 上传链路时同步检查
 
@@ -532,7 +569,8 @@
   6. `frontend/src/components/common/ServerUploadPreviewDialog.vue`
   7. `frontend/src/components/circle/CircleLocalUploadDialog.vue`
   8. `frontend/src/views/ActivityHistory.vue`
-  9. `frontend/src/components/download/DownloadTaskWorkbenchDialog.vue` 的摘进度条是不是这个动画 `progress bar.lottie`
+  9. `frontend/src/components/download/DownloadTaskWorkbenchDialog.vue` 的摘要进度条是不是这个动画 `progress bar.lottie`
+  10. 批量取消后有没有把 `download_root` 对应临时目录一起清干净
 
 ### 用户说“推送仓库”
 
