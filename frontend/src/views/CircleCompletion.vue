@@ -80,9 +80,26 @@
           <div class="sidebar-search">
             <el-input v-model="circleSearch" placeholder="筛选已缓存社团" clearable @input="searchCachedCircles" />
           </div>
-          <div v-if="circleList.length" class="circle-list">
+          <div class="sidebar-filter-stack">
+            <div class="sidebar-filter-group">
+              <button type="button" class="sidebar-filter-chip" :class="{ active: circleCompletionFilter === 'all' }" @click="circleCompletionFilter = 'all'">全部</button>
+              <button type="button" class="sidebar-filter-chip" :class="{ active: circleCompletionFilter === 'completed' }" @click="circleCompletionFilter = 'completed'">已补全</button>
+              <button type="button" class="sidebar-filter-chip" :class="{ active: circleCompletionFilter === 'incomplete' }" @click="circleCompletionFilter = 'incomplete'">未补全</button>
+            </div>
+            <div class="sidebar-sort-row">
+              <span class="sidebar-sort-label">排序</span>
+              <el-select v-model="circleSortKey" class="sidebar-sort-select" size="small">
+                <el-option label="收集程度" value="completion" />
+                <el-option label="刷新时间" value="refreshed_at" />
+                <el-option label="作品数量" value="works" />
+                <el-option label="缺失数量" value="missing" />
+                <el-option label="服务器拥有数量" value="owned" />
+              </el-select>
+            </div>
+          </div>
+          <div v-if="displayCircleList.length" class="circle-list">
             <button
-              v-for="circle in circleList"
+              v-for="circle in displayCircleList"
               :key="circle.circle_id"
               type="button"
               class="circle-list-item"
@@ -99,6 +116,9 @@
                   <span class="circle-stat-item owned" title="服务器已拥有"><Server :size="10" /> {{ circle.server_owned || 0 }}</span>
                   <span v-if="(circle.missing || 0) > 0" class="circle-stat-item missing" title="缺失"><XCircle :size="10" /> {{ circle.missing }}</span>
                 </div>
+                <span class="circle-list-status-pill" :class="getCircleCompletionState(circle)">
+                  {{ getCircleCompletionState(circle) === 'completed' ? '已补全' : '未补全' }}
+                </span>
               </div>
               <div class="circle-list-progress-container">
                 <div class="circle-list-progress">
@@ -110,7 +130,7 @@
               </div>
             </button>
           </div>
-          <AppEmptyState v-else description="还没有社团索引" size="sm" />
+          <AppEmptyState v-else :description="circleList.length ? '当前筛选条件下没有社团' : '还没有社团索引'" size="sm" />
         </div>
       </aside>
 
@@ -394,7 +414,7 @@
               </div>
 
               <!-- List -->
-              <div v-auto-animate class="grid grid-cols-1 xl:grid-cols-2 gap-3 pb-2 min-h-[300px] content-start">
+              <div v-auto-animate class="owned-works-list grid grid-cols-1 xl:grid-cols-2 gap-3 pb-2 min-h-[300px] content-start">
                 <div v-if="pagedOwnedWorks.length === 0" class="col-span-full flex flex-col items-center justify-center py-12 text-slate-400 bg-white/50 rounded-xl border border-slate-200/50 border-dashed">
                   <LibraryBig :size="32" class="mb-3 opacity-40" />
                   <p class="text-sm font-medium">没有找到符合条件的作品</p>
@@ -551,7 +571,7 @@
               </div>
 
               <!-- List -->
-              <div class="border-x border-b border-slate-200/60 rounded-b-lg mb-4 divide-y divide-slate-100/80 bg-white" v-auto-animate>
+              <div class="compare-works-list border-x border-b border-slate-200/60 rounded-b-lg mb-4 divide-y divide-slate-100/80 bg-white" v-auto-animate>
                 <div v-for="item in pagedCompareWorks" :key="`compare-${item.workRjcode}`" class="p-4 hover:bg-slate-50/50 transition-colors">
                   <div class="flex items-start justify-between gap-4">
                     <!-- Title & Badges -->
@@ -836,6 +856,9 @@ function getJobProgressPercent(job) {
 
 const circleQuery = ref('')
 const circleSearch = ref('')
+const circleSearchRequestSeq = ref(0)
+const circleCompletionFilter = ref('all')
+const circleSortKey = ref('refreshed_at')
 const indexing = ref(false)
 const previewing = ref(false)
 const previewLoading = ref(false)
@@ -860,6 +883,48 @@ const filters = reactive({
   onlyDownloadable: false,
   includeDlOnly: false
 })
+
+function resetCircleDetail() {
+  Object.assign(detail, {
+    circle_id: '',
+    circle_name: '',
+    source_mask: '',
+    last_indexed_at: '',
+    owned_count: 0,
+    missing_count: 0,
+    downloadable_count: 0,
+    dl_only_count: 0,
+    works: []
+  })
+  circleDetailLoaded.value = false
+  circleDetailLoading.value = false
+  selectedCanonicals.value = new Set()
+}
+
+async function syncActiveCircleWithList(options = {}) {
+  const { preserveActiveWhenEmpty = false } = options
+  const list = Array.isArray(displayCircleList.value) ? displayCircleList.value : []
+  if (!list.length) {
+    if (preserveActiveWhenEmpty && activeCircleId.value) {
+      return
+    }
+    activeCircleId.value = ''
+    resetCircleDetail()
+    return
+  }
+
+  const hasActiveCircle = list.some(circle => circle?.circle_id === activeCircleId.value)
+  if (hasActiveCircle) return
+
+  const nextCircleId = String(list[0]?.circle_id || '').trim()
+  if (!nextCircleId) {
+    activeCircleId.value = ''
+    resetCircleDetail()
+    return
+  }
+
+  await selectCircle(nextCircleId)
+}
 const activeTab = ref('missing')
 const selectedCanonicals = ref(new Set())
 const flashedWorkCodes = ref(new Set())
@@ -889,6 +954,9 @@ const missingPage = ref(1)
 const missingSort = ref('default') // 'default' | 'downloadable' | 'title'
 const viewMode = ref('card') // 'card' | 'list'
 watch(missingSort, () => { missingPage.value = 1 })
+watch([circleCompletionFilter, circleSortKey], () => {
+  syncActiveCircleWithList({ preserveActiveWhenEmpty: true })
+})
 const ownedPage = ref(1)
 const comparePage = ref(1)
 const refreshForceRefreshHint = computed(() => {
@@ -960,6 +1028,75 @@ const missingWorks = computed(() => {
   if (missingSort.value === 'title') {
     return [...list].sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN'))
   }
+  return list
+})
+
+function getCircleWorksCount(circle) {
+  return Number(circle?.dl_works || circle?.total_works || 0)
+}
+
+function getCircleOwnedCount(circle) {
+  return Number(circle?.server_owned || 0)
+}
+
+function getCircleMissingCount(circle) {
+  return Math.max(0, Number(circle?.missing || 0))
+}
+
+function getCircleCompletionState(circle) {
+  const works = getCircleWorksCount(circle)
+  const missing = getCircleMissingCount(circle)
+  if (works > 0 && missing === 0) return 'completed'
+  return 'incomplete'
+}
+
+function getCircleRefreshTimestamp(circle) {
+  const raw = circle?.last_indexed_at || circle?.updated_at || circle?.refreshed_at || circle?.created_at || ''
+  const timestamp = new Date(raw).getTime()
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+const displayCircleList = computed(() => {
+  let list = Array.isArray(circleList.value) ? [...circleList.value] : []
+
+  if (circleCompletionFilter.value === 'completed') {
+    list = list.filter(circle => getCircleCompletionState(circle) === 'completed')
+  } else if (circleCompletionFilter.value === 'incomplete') {
+    list = list.filter(circle => getCircleCompletionState(circle) === 'incomplete')
+  }
+
+  list.sort((left, right) => {
+    switch (circleSortKey.value) {
+      case 'completion': {
+        const diff = getCircleOwnedPercent(right) - getCircleOwnedPercent(left)
+        if (diff !== 0) return diff
+        break
+      }
+      case 'works': {
+        const diff = getCircleWorksCount(right) - getCircleWorksCount(left)
+        if (diff !== 0) return diff
+        break
+      }
+      case 'missing': {
+        const diff = getCircleMissingCount(right) - getCircleMissingCount(left)
+        if (diff !== 0) return diff
+        break
+      }
+      case 'owned': {
+        const diff = getCircleOwnedCount(right) - getCircleOwnedCount(left)
+        if (diff !== 0) return diff
+        break
+      }
+      case 'refreshed_at':
+      default: {
+        const diff = getCircleRefreshTimestamp(right) - getCircleRefreshTimestamp(left)
+        if (diff !== 0) return diff
+      }
+    }
+
+    return String(left?.circle_name || left?.circle_id || '').localeCompare(String(right?.circle_name || right?.circle_id || ''), 'zh-CN')
+  })
+
   return list
 })
 const showMissingWorksCompleteState = computed(() =>
@@ -2527,6 +2664,7 @@ async function cancelRefreshJob() {
 async function loadRecentCircles() {
   const result = await circleCompletionApi.listRecentIndexes(24)
   circleList.value = result.circles || []
+  await syncActiveCircleWithList()
 }
 
 async function loadLibraries() {
@@ -2543,8 +2681,14 @@ async function loadLibraries() {
 }
 
 async function searchCachedCircles() {
-  const result = await circleCompletionApi.searchCircles(circleSearch.value || '', 24)
+  const requestSeq = ++circleSearchRequestSeq.value
+  const keyword = String(circleSearch.value || '').trim()
+  const result = await circleCompletionApi.searchCircles(keyword, 24)
+  if (requestSeq !== circleSearchRequestSeq.value) {
+    return
+  }
   circleList.value = result.circles || []
+  await syncActiveCircleWithList({ preserveActiveWhenEmpty: Boolean(keyword) })
 }
 
 async function handleIndexCircle() {
@@ -2976,10 +3120,13 @@ function getUploadBackgroundTargetLabel(task) {
 <style scoped>
 .circle-page {
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 0;
   padding: 0;
   background: #fafafa;
-  min-height: 100%;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .circle-works-loading-state {
@@ -3718,6 +3865,7 @@ function getUploadBackgroundTargetLabel(task) {
   justify-content: space-between;
   gap: 32px;
   padding: 28px 32px;
+  min-height: 136px;
   background: #fff;
   border-bottom: 1px solid #e5e7eb;
 }
@@ -3820,6 +3968,58 @@ function getUploadBackgroundTargetLabel(task) {
   font-weight: 600;
   color: #6b7280;
   font-size: 12px;
+}
+
+.sidebar-filter-stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.sidebar-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sidebar-filter-chip {
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(248, 250, 252, 0.96);
+  color: #475569;
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.sidebar-filter-chip:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 10px 18px rgba(148, 163, 184, 0.16);
+}
+
+.sidebar-filter-chip.active {
+  border-color: rgba(96, 165, 250, 0.55);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(224, 242, 254, 0.94));
+  color: #0f172a;
+}
+
+.sidebar-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sidebar-sort-label {
+  flex-shrink: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sidebar-sort-select {
+  flex: 1;
 }
 .index-progress-card {
   display: grid;
@@ -3965,7 +4165,8 @@ function getUploadBackgroundTargetLabel(task) {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 0;
-  min-height: 0;
+  min-height: clamp(640px, calc(100vh - 220px), 980px);
+  overflow: hidden;
 }
 .sidebar-card,
 .circle-main {
@@ -3977,6 +4178,7 @@ function getUploadBackgroundTargetLabel(task) {
 .circle-main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3994,8 +4196,15 @@ function getUploadBackgroundTargetLabel(task) {
 .sidebar-card {
   padding: 20px 16px;
   display: grid;
+  grid-template-rows: auto auto auto 1fr;
   gap: 12px;
   border-right: none;
+  min-height: 100%;
+}
+
+.sidebar-card > .app-empty-state {
+  align-self: stretch;
+  min-height: 100%;
 }
 .sidebar-head,
 .toolbar-main {
@@ -4017,7 +4226,9 @@ function getUploadBackgroundTargetLabel(task) {
 .toolbar-card {
   padding: 14px 18px 10px;
   display: grid;
+  align-content: start;
   gap: 6px;
+  min-height: 94px;
   border-bottom: 1px solid #f3f4f6;
 }
 .toolbar-subtitle {
@@ -4320,8 +4531,35 @@ function getUploadBackgroundTargetLabel(task) {
 .circle-list-stats-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   margin-top: 6px;
+}
+
+.circle-list-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 52px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  border: 1px solid transparent;
+}
+
+.circle-list-status-pill.completed {
+  color: #047857;
+  background: rgba(236, 253, 245, 0.95);
+  border-color: rgba(110, 231, 183, 0.9);
+}
+
+.circle-list-status-pill.incomplete {
+  color: #b91c1c;
+  background: rgba(254, 242, 242, 0.95);
+  border-color: rgba(252, 165, 165, 0.9);
 }
 
 .circle-list-counts {
@@ -4462,7 +4700,10 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .works-card {
   padding: 18px;
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   gap: 14px;
 }
 .batch-bar {
@@ -4558,13 +4799,28 @@ function getUploadBackgroundTargetLabel(task) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(152px, 1fr));
   gap: 10px;
+  flex: 1;
+  align-content: start;
+  min-height: 0;
+  overflow: auto;
 }
 
 /* ── 列表视图 ── */
 .work-list {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
   gap: 6px;
+  overflow: auto;
+}
+
+.owned-works-list,
+.compare-works-list {
+  flex: 1;
+  min-height: 0;
+  align-content: start;
+  overflow: auto;
 }
 
 
@@ -4648,6 +4904,7 @@ function getUploadBackgroundTargetLabel(task) {
 .works-pager {
   display: flex;
   justify-content: flex-end;
+  flex-shrink: 0;
   margin-top: auto;
   padding-top: 16px;
 }
@@ -4829,6 +5086,16 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .circle-tabs-wrapper {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.circle-tabs {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 .circle-tabs-wrapper .toolbar-right-actions {
   position: absolute;
@@ -4858,12 +5125,18 @@ function getUploadBackgroundTargetLabel(task) {
   color: #2d6ec0;
 }
 .circle-tabs :deep(.el-tabs__content) {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   padding-top: 2px;
 }
 .circle-tabs :deep(.el-tab-pane) {
   display: flex;
   flex-direction: column;
-  min-height: 640px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 .preview-dialog-shell {
   display: grid;
