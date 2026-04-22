@@ -94,7 +94,7 @@
             <el-form-item label="压缩密码">
               <div class="flex items-center gap-2 w-full">
                 <KeyRound class="w-[18px] h-[18px] text-slate-500 shrink-0" />
-                <el-input v-model="backupConfig.password" show-password placeholder="必填，压缩时启用加密" />
+                <AnimatedPasswordInput v-model="backupConfig.password" placeholder="必填，压缩时启用加密" autocomplete="new-password" />
               </div>
             </el-form-item>
 
@@ -196,7 +196,10 @@
           </button>
         </div>
         <div class="overflow-hidden p-0" style="min-height: 280px; max-height: 400px;">
-          <el-table :data="backupHistory" style="width: 100%" class="custom-table" :row-class-name="() => ''" empty-text="暂无备份记录">>
+          <div v-if="!backupHistory.length" class="flex min-h-[280px] items-center justify-center px-6 py-8">
+            <AppEmptyState description="暂无备份记录" size="default" />
+          </div>
+          <el-table v-else :data="backupHistory" style="width: 100%" class="custom-table" :row-class-name="() => ''">
             <el-table-column prop="filename" label="文件名" min-width="200" show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="font-mono text-[13px] text-slate-700">{{ row.filename }}</span>
@@ -243,7 +246,9 @@ import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue
 import { ElMessage } from 'element-plus'
 import { Folder, FolderOpen, KeyRound } from 'lucide-vue-next'
 import { configApi, backupApi } from '../api'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
+import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 
 const saving = ref(false)
 const actionLoading = ref(false)

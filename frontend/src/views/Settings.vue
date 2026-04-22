@@ -216,7 +216,7 @@
               <label class="toggle-card"><span><strong>启用 Kikoeru 查重</strong><small>预检时同时查询远端服务器。</small></span><el-switch v-model="config.kikoeru_server.enabled" /></label>
               <label class="field-card"><span class="field-label">服务器地址</span><input v-model="config.kikoeru_server.server_url" class="field-input" type="text" placeholder="http://192.168.1.100:8088"></label>
               <label class="field-card"><span class="field-label">用户名</span><input v-model="config.kikoeru_server.username" class="field-input" type="text" placeholder="登录用户名"></label>
-              <label class="field-card"><span class="field-label">密码</span><input v-model="config.kikoeru_server.password" class="field-input" type="password" placeholder="登录密码"></label>
+              <label class="field-card"><span class="field-label">密码</span><AnimatedPasswordInput v-model="config.kikoeru_server.password" placeholder="登录密码" autocomplete="current-password" /></label>
               <div class="mini-grid two">
                 <label class="field-card"><span class="field-label">请求超时</span><el-input-number v-model="config.kikoeru_server.timeout" :min="1" :max="60" class="field-number" /></label>
                 <label class="field-card"><span class="field-label">缓存秒数</span><el-input-number v-model="config.kikoeru_server.cache_ttl" :min="0" :max="3600" class="field-number" /></label>
@@ -395,6 +395,7 @@ import { Boxes, HardDrive, LifeBuoy, ScanSearch, Workflow, Plus, Trash2 } from '
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
+import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 import { useSettingsDraft } from '../composables/useSettingsDraft'
 import { useSynologyProfiles } from '../composables/useSynologyProfiles'
 import { kikoeruApi } from '../api'

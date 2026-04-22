@@ -42,7 +42,7 @@
       </label>
       <label class="field-card">
         <span class="field-label">密码</span>
-        <input v-model="profile.password" class="field-input" type="password" placeholder="DSM 密码">
+        <AnimatedPasswordInput v-model="profile.password" placeholder="DSM 密码" autocomplete="current-password" />
       </label>
       <label class="field-card">
         <span class="field-label">OTP 动态码</span>
@@ -105,6 +105,7 @@
 <script setup>
 import { computed } from 'vue'
 import { LoaderCircle, PlugZap } from 'lucide-vue-next'
+import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
 
 const props = defineProps({
   profile: { type: Object, required: true },

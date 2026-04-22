@@ -153,7 +153,7 @@
 
         <div class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5">
           <el-form class="vault-form" :model="form" label-width="100px" :rules="rules" ref="formRef">
-            <el-form-item label="密码" prop="password"><el-input v-model="form.password" placeholder="输入解压密码" show-password /><div class="form-tip">必填：解压密码</div></el-form-item>
+            <el-form-item label="密码" prop="password"><AnimatedPasswordInput v-model="form.password" placeholder="输入解压密码" autocomplete="new-password" /><div class="form-tip">必填：解压密码</div></el-form-item>
             <el-form-item label="RJ号"><el-input v-model="form.rjcode" placeholder="例如: RJ123456（可选）" /><div class="form-tip">可选：如果密码与特定作品关联，请填写RJ号</div></el-form-item>
             <el-form-item label="文件名"><el-input v-model="form.filename" placeholder="例如: RJ123456.zip（可选）" /><div class="form-tip">可选：如果密码与特定文件关联，请填写文件名</div></el-form-item>
             <el-form-item label="备注"><el-input v-model="form.description" type="textarea" :rows="2" placeholder="可选：添加描述信息，如来源、适用范围等" /></el-form-item>
@@ -272,6 +272,7 @@ import { passwordApi, cleanupApi } from '../api'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 import clipboardIconAnimation from '../assets/anime/Clipboard.lottie'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
