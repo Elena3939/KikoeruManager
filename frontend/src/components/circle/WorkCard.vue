@@ -35,6 +35,11 @@ const showCorner = computed(() => {
   return props.item.local_download_ready
 })
 const cornerText = computed(() => props.cornerLabel || '已下载')
+const cvLabel = computed(() => {
+  const cvs = props.item.cvs
+  if (!Array.isArray(cvs) || cvs.length === 0) return ''
+  return cvs.join(' / ')
+})
 </script>
 
 <template>
@@ -70,6 +75,7 @@ const cornerText = computed(() => props.cornerLabel || '已下载')
       <slot name="meta">
         <div class="work-linked">{{ item.preferred_variant?.group_short_label || '原作' }} · {{ item.download_plan?.rjcode || item.display_rjcode || item.canonical_rjcode }}</div>
       </slot>
+      <div v-if="cvLabel" class="work-cv">{{ cvLabel }}</div>
 
       <slot name="tags">
         <div class="work-tags">
@@ -356,6 +362,17 @@ const cornerText = computed(() => props.cornerLabel || '已下载')
   line-height: 1.4;
   word-break: break-word;
   min-height: 13px;
+}
+
+/* ── CV 名 ── */
+.work-cv {
+  font-size: 9px;
+  color: #0ea5e9;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
 }
 
 /* ── 标签区 ── */

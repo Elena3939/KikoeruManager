@@ -49,17 +49,19 @@
         </div>
       </div>
 
-      <AppLottieProgressBar :percentage="getJobProgressPercent(indexJob)" />
+      <div class="index-progress-bar-wrap">
+        <AppLottieProgressBar :percentage="getJobProgressPercent(indexJob)" />
+      </div>
 
       <div class="index-progress-meta">
-        <span class="progress-meta-pill">耗时 {{ formatElapsed(indexJob.elapsed_seconds) }}</span>
+        <span class="progress-meta-pill" title="耗时"><Clock :size="10" /> {{ formatElapsed(indexJob.elapsed_seconds) }}</span>
         <span v-if="indexJob.meta?.is_batch" class="progress-meta-pill">{{ indexJob.meta.completed_queries || 0 }}/{{ indexJob.meta.batch_total || 0 }} 已完成</span>
-        <span v-if="indexJob.meta?.is_batch && indexJob.meta.failed_queries" class="progress-meta-pill warn">失败 {{ indexJob.meta.failed_queries }}</span>
-        <span class="progress-meta-pill">本地 {{ indexJob.meta.local_candidates_count || 0 }}</span>
-        <span class="progress-meta-pill">Kikoeru {{ indexJob.meta.kikoeru_candidates_count || 0 }}</span>
-        <span class="progress-meta-pill">DLsite {{ indexJob.meta.dlsite_candidates_count || 0 }}</span>
-        <span class="progress-meta-pill">候选 {{ indexJob.meta.combined_candidates_count || indexJob.meta.aggregated_count || 0 }}</span>
-        <span class="progress-meta-pill ok">可下载 {{ indexJob.meta.asmr_available_count || 0 }}</span>
+        <span v-if="indexJob.meta?.is_batch && indexJob.meta.failed_queries" class="progress-meta-pill warn" title="失败数"><AlertCircle :size="10" /> {{ indexJob.meta.failed_queries }}</span>
+        <span class="progress-meta-pill" title="本地候选"><HardDrive :size="10" /> {{ indexJob.meta.local_candidates_count || 0 }}</span>
+        <span class="progress-meta-pill" title="Kikoeru候选"><Headphones :size="10" /> {{ indexJob.meta.kikoeru_candidates_count || 0 }}</span>
+        <span class="progress-meta-pill" title="DLsite候选"><Globe :size="10" /> {{ indexJob.meta.dlsite_candidates_count || 0 }}</span>
+        <span class="progress-meta-pill" title="合并候选"><List :size="10" /> {{ indexJob.meta.combined_candidates_count || indexJob.meta.aggregated_count || 0 }}</span>
+        <span class="progress-meta-pill ok" title="可下载"><Download :size="10" /> {{ indexJob.meta.asmr_available_count || 0 }}</span>
       </div>
 
       <div v-if="indexJob.error_message" class="index-progress-error">{{ indexJob.error_message }}</div>
@@ -87,19 +89,28 @@
               :class="{ active: activeCircleId === circle.circle_id }"
               @click="selectCircle(circle.circle_id)"
             >
-              <div class="circle-list-topline">{{ circle.circle_id }}</div>
-              <div class="circle-list-name">{{ circle.circle_name || circle.circle_id }}</div>
-              <div class="circle-list-counts">
-                <span class="circle-count-pill dl">DL {{ circle.dl_works || circle.total_works || 0 }}</span>
-                <span class="circle-count-pill owned">服务器 {{ circle.server_owned || 0 }}</span>
-                <span v-if="(circle.missing || 0) > 0" class="circle-count-pill warn">缺 {{ circle.missing }}</span>
+              <div class="circle-list-header">
+                <div class="circle-list-name">{{ circle.circle_name || circle.circle_id }}</div>
+                <div class="circle-list-id">{{ circle.circle_id }}</div>
               </div>
-              <div class="circle-list-meta">
-                <span>{{ formatDateTime(circle.last_indexed_at) }}</span>
+              <div class="circle-list-stats-row">
+                <div class="circle-list-counts">
+                  <span class="circle-stat-item total" title="DLsite作品数"><LibraryBig :size="10" /> {{ circle.dl_works || circle.total_works || 0 }}</span>
+                  <span class="circle-stat-item owned" title="服务器已拥有"><Server :size="10" /> {{ circle.server_owned || 0 }}</span>
+                  <span v-if="(circle.missing || 0) > 0" class="circle-stat-item missing" title="缺失"><XCircle :size="10" /> {{ circle.missing }}</span>
+                </div>
+              </div>
+              <div class="circle-list-progress-container">
+                <div class="circle-list-progress">
+                  <div class="circle-list-progress-track">
+                    <div class="circle-list-progress-fill" :style="{ width: `${getCircleOwnedPercent(circle)}%` }"></div>
+                  </div>
+                </div>
+                <span class="circle-list-percent">{{ getCircleOwnedPercent(circle) }}%</span>
               </div>
             </button>
           </div>
-          <el-empty v-else description="还没有社团索引" :image-size="74" />
+          <AppEmptyState v-else description="还没有社团索引" size="sm" />
         </div>
       </aside>
 
@@ -132,15 +143,10 @@
 
           <div class="toolbar-stats-row">
             <div class="toolbar-metrics">
-              <span class="metric-pill owned">已有 {{ detail.owned_count || 0 }}</span>
-              <span class="metric-pill warn">缺失 {{ detail.missing_count || 0 }}</span>
-              <span class="metric-pill ok">可下载 {{ detail.downloadable_count || 0 }}</span>
-              <span class="metric-pill muted">暂不可下载 {{ detail.dl_only_count || 0 }}</span>
-            </div>
-            <div class="toolbar-filters">
-              <el-checkbox v-model="filters.onlyMissing" @change="refreshActiveCircle">仅看缺失</el-checkbox>
-              <el-checkbox v-model="filters.onlyDownloadable" @change="refreshActiveCircle">仅看可下载</el-checkbox>
-              <el-checkbox v-model="filters.includeDlOnly" @change="refreshActiveCircle">包含仅DL</el-checkbox>
+              <span class="metric-pill owned"><CheckCircle2 :size="12" /> 已有 {{ detail.owned_count || 0 }}</span>
+              <span class="metric-pill warn"><XCircle :size="12" /> 缺失 {{ detail.missing_count || 0 }}</span>
+              <span class="metric-pill ok"><Download :size="12" /> 可下载 {{ detail.downloadable_count || 0 }}</span>
+              <span class="metric-pill muted"><MinusCircle :size="12" /> 暂不可下载 {{ detail.dl_only_count || 0 }}</span>
             </div>
           </div>
           <div v-if="refreshForceRefreshHint" class="toolbar-subtext">{{ refreshForceRefreshHint }}</div>
@@ -169,16 +175,18 @@
               </div>
             </div>
 
-            <AppLottieProgressBar :percentage="getJobProgressPercent(refreshJob)" />
+            <div class="index-progress-bar-wrap">
+              <AppLottieProgressBar :percentage="getJobProgressPercent(refreshJob)" />
+            </div>
 
             <div class="index-progress-meta">
-              <span class="progress-meta-pill">耗时 {{ formatElapsed(refreshJob.elapsed_seconds) }}</span>
-              <span class="progress-meta-pill">总数 {{ refreshJob.selected_count || refreshJob.meta.total_count || 0 }}</span>
-              <span class="progress-meta-pill">已处理 {{ refreshJob.meta.processed_count || 0 }}</span>
-              <span class="progress-meta-pill ok">有变化 {{ refreshJob.meta.changed_count || 0 }}</span>
+              <span class="progress-meta-pill" title="耗时"><Clock :size="10" /> {{ formatElapsed(refreshJob.elapsed_seconds) }}</span>
+              <span class="progress-meta-pill" title="总数"><Hash :size="10" /> {{ refreshJob.selected_count || refreshJob.meta.total_count || 0 }}</span>
+              <span class="progress-meta-pill" title="已处理"><CheckCircle2 :size="10" /> {{ refreshJob.meta.processed_count || 0 }}</span>
+              <span class="progress-meta-pill ok" title="有变化"><Shuffle :size="10" /> {{ refreshJob.meta.changed_count || 0 }}</span>
               <span v-if="refreshJob.meta.force_refresh" class="progress-meta-pill warn">强制刷新</span>
-              <span class="progress-meta-pill">Kikoeru {{ refreshJob.meta.kikoeru_owned_count || 0 }}</span>
-              <span class="progress-meta-pill">asmr.one {{ refreshJob.meta.asmr_available_count || 0 }}</span>
+              <span class="progress-meta-pill" title="Kikoeru已拥有"><Headphones :size="10" /> {{ refreshJob.meta.kikoeru_owned_count || 0 }}</span>
+              <span class="progress-meta-pill" title="asmr.one可下载"><Globe :size="10" /> {{ refreshJob.meta.asmr_available_count || 0 }}</span>
               <span v-if="refreshJob.meta.current_rjcode" class="progress-meta-pill">当前 {{ refreshJob.meta.current_rjcode }}</span>
             </div>
 
@@ -193,12 +201,25 @@
                 <span class="refresh-progress-log-message">{{ entry.message }}</span>
               </div>
             </div>
-
-            <div v-if="refreshJob.error_message" class="index-progress-error">{{ refreshJob.error_message }}</div>
           </section>
 
-          <el-tabs v-model="activeTab" class="circle-tabs">
-            <el-tab-pane label="缺失作品" name="missing">
+          <div class="circle-tabs-wrapper">
+            <div class="toolbar-right-actions">
+              <div class="filter-toggles">
+                <button type="button" class="filter-toggle-btn" :class="{ active: filters.onlyMissing }" @click="filters.onlyMissing = !filters.onlyMissing; if(filters.onlyMissing) filters.onlyDownloadable = false; refreshActiveCircle()">仅看缺失</button>
+                <button type="button" class="filter-toggle-btn" :class="{ active: filters.onlyDownloadable }" @click="filters.onlyDownloadable = !filters.onlyDownloadable; if(filters.onlyDownloadable) filters.onlyMissing = false; refreshActiveCircle()">仅看可下载</button>
+              </div>
+              <div class="view-toggle-group">
+                <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'card' }" title="卡片视图" @click="viewMode = 'card'"><LayoutGrid :size="14" /></button>
+                <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'list' }" title="列表视图" @click="viewMode = 'list'"><List :size="14" /></button>
+              </div>
+            </div>
+            <el-tabs v-model="activeTab" class="circle-tabs">
+            <el-tab-pane name="missing">
+              <template #label>
+                <span class="circle-tab-label"><XCircle :size="13" class="circle-tab-icon missing" /> 缺失作品 <em class="circle-tab-badge missing">{{ missingWorks.length }}</em></span>
+              </template>
+
               <div v-if="missingWorks.length > 0" class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 mb-4 mt-2 shadow-sm backdrop-blur-sm">
                 <div class="flex items-center gap-3">
                   <span class="text-sm font-bold text-slate-700 tracking-wide">批量操作</span>
@@ -244,19 +265,32 @@
                 />
               </div>
               <template v-else>
-                <div class="work-grid">
-                <WorkCard
-                  v-for="(item, cardIdx) in pagedMissingWorks"
-                  :key="item.canonical_rjcode"
-                  :item="item"
-                  :card-index="cardIdx"
-                  :selected="selectedCanonicals.has(item.canonical_rjcode)"
-                  :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
-                  @select="toggleSelection"
-                  @preview="openBatchPreview"
-                  @reimport="openReimportDialogForWork"
-                />
-              </div>
+                <div v-if="viewMode === 'card'" class="work-grid">
+                  <WorkCard
+                    v-for="(item, cardIdx) in pagedMissingWorks"
+                    :key="item.canonical_rjcode"
+                    :item="item"
+                    :card-index="cardIdx"
+                    :selected="selectedCanonicals.has(item.canonical_rjcode)"
+                    :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
+                    @select="toggleSelection"
+                    @preview="openBatchPreview"
+                    @reimport="openReimportDialogForWork"
+                  />
+                </div>
+                <div v-else class="work-list">
+                  <WorkListRow
+                    v-for="(item, rowIdx) in pagedMissingWorks"
+                    :key="item.canonical_rjcode"
+                    :item="item"
+                    :row-index="rowIdx"
+                    :selected="selectedCanonicals.has(item.canonical_rjcode)"
+                    :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
+                    @select="toggleSelection"
+                    @preview="openBatchPreview"
+                    @reimport="openReimportDialogForWork"
+                  />
+                </div>
               <div class="works-pager">
                 <el-pagination
                   v-model:current-page="missingPage"
@@ -270,7 +304,10 @@
               </template>
             </el-tab-pane>
 
-            <el-tab-pane label="服务器已拥有" name="owned">
+            <el-tab-pane name="owned">
+              <template #label>
+                <span class="circle-tab-label"><CheckCircle2 :size="13" class="circle-tab-icon owned" /> 服务器已拥有 <em class="circle-tab-badge owned">{{ detail.owned_count || 0 }}</em></span>
+              </template>
               <!-- Header Stats & Actions -->
               <div class="mb-4 space-y-4">
                 <div class="flex items-center justify-between bg-white rounded-xl border border-slate-200/60 p-1.5 shadow-sm">
@@ -417,7 +454,10 @@
               </div>
             </el-tab-pane>
 
-            <el-tab-pane label="来源对比" name="compare">
+            <el-tab-pane name="compare">
+              <template #label>
+                <span class="circle-tab-label"><Layers :size="13" class="circle-tab-icon" /> 来源对比</span>
+              </template>
               <!-- Stats Row -->
               <div class="mb-4">
                 <div class="bg-white rounded-xl border border-slate-200/60 shadow-sm overflow-hidden flex flex-wrap divide-x divide-slate-100">
@@ -613,7 +653,10 @@
               </div>
             </el-tab-pane>
 
-            <el-tab-pane label="索引信息" name="info">
+            <el-tab-pane name="info">
+              <template #label>
+                <span class="circle-tab-label"><Info :size="13" class="circle-tab-icon" /> 索引信息</span>
+              </template>
               <div class="info-grid">
                 <div class="info-card">
                   <div class="info-label">社团ID</div>
@@ -634,9 +677,10 @@
               </div>
             </el-tab-pane>
           </el-tabs>
+        </div>
         </section>
 
-        <el-empty v-else description="先建立一个社团索引" :image-size="86" />
+        <AppEmptyState v-else description="先建立一个社团索引" size="lg" class="circle-empty-state" />
       </main>
     </section>
 
@@ -765,7 +809,7 @@ import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { CheckCircle2, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle } from 'lucide-vue-next'
+import { CheckCircle2, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api, { asmrSyncApi, circleCompletionApi, libraryApi, localUploadApi, taskApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
@@ -774,7 +818,9 @@ import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewD
 import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchDialog.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 import WorkCard from '../components/circle/WorkCard.vue'
+import WorkListRow from '../components/circle/WorkListRow.vue'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'prekikoeru.circleCompletion.targetSubdirs'
@@ -840,6 +886,9 @@ const comparePageSizes = [10, 20, 50, 100]
 const worksPageSize = ref(24)
 const comparePageSize = ref(10)
 const missingPage = ref(1)
+const missingSort = ref('default') // 'default' | 'downloadable' | 'title'
+const viewMode = ref('card') // 'card' | 'list'
+watch(missingSort, () => { missingPage.value = 1 })
 const ownedPage = ref(1)
 const comparePage = ref(1)
 const refreshForceRefreshHint = computed(() => {
@@ -903,7 +952,16 @@ function isPreferredMissingWorkVisible(item) {
   return ['original', 'simplified', 'traditional'].includes(groupKey || 'original')
 }
 
-const missingWorks = computed(() => (detail.works || []).filter(item => isPreferredMissingWorkVisible(item)))
+const missingWorks = computed(() => {
+  const list = (detail.works || []).filter(item => isPreferredMissingWorkVisible(item))
+  if (missingSort.value === 'downloadable') {
+    return [...list].sort((a, b) => (b.has_asmr_one ? 1 : 0) - (a.has_asmr_one ? 1 : 0))
+  }
+  if (missingSort.value === 'title') {
+    return [...list].sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN'))
+  }
+  return list
+})
 const showMissingWorksCompleteState = computed(() =>
   Boolean(activeCircleId.value)
   && circleDetailLoaded.value
@@ -1473,6 +1531,13 @@ function formatSize(bytes) {
   return `${(value / (1024 ** index)).toFixed(index === 0 ? 0 : 2)} ${units[index]}`
 }
 
+function getCircleOwnedPercent(circle) {
+  const total = Number(circle?.dl_works || circle?.total_works || 0)
+  const owned = Number(circle?.server_owned || 0)
+  if (!total) return 0
+  return Math.min(100, Math.round((owned / total) * 100))
+}
+
 function formatElapsed(seconds) {
   const total = Math.max(0, Math.round(Number(seconds || 0)))
   const mins = Math.floor(total / 60)
@@ -1837,7 +1902,9 @@ function isCancelledJobState(raw = {}) {
 function hydrateIndexJobState() {
   try {
     const raw = JSON.parse(localStorage.getItem(CIRCLE_COMPLETION_INDEX_JOB_KEY) || '{}')
-    if (isCancelledJobState(raw)) {
+    const status = String(raw.status || '').trim()
+    // 终态或取消态：启动时直接清除，不常驻进度卡
+    if (isCancelledJobState(raw) || ['completed', 'failed'].includes(status)) {
       clearIndexJobState()
       return
     }
@@ -1918,7 +1985,9 @@ function persistRefreshJobState() {
 function hydrateRefreshJobState() {
   try {
     const raw = JSON.parse(localStorage.getItem(CIRCLE_COMPLETION_REFRESH_JOB_KEY) || '{}')
-    if (String(raw.status || '').trim() === 'failed') {
+    const status = String(raw.status || '').trim()
+    // 终态：启动时直接清除，不常驻进度卡
+    if (['completed', 'failed', 'cancelled'].includes(status) || isCancelledJobState(raw)) {
       clearRefreshJobState()
       return
     }
@@ -2296,6 +2365,7 @@ function applyIndexJob(payload = {}) {
 
 function applyRefreshJob(payload = {}) {
   refreshJob.visible = true
+  refreshJob._retryCount = 0
   refreshJob.job_id = payload.job_id || refreshJob.job_id || ''
   refreshJob.status = payload.status || ''
   refreshJob.progress = Number(payload.progress || 0)
@@ -2351,6 +2421,11 @@ async function pollIndexJob(jobId) {
     }, 800)
   } catch (error) {
     indexing.value = false
+    // 404 说明任务已不存在（后端重启），直接清除进度卡
+    if (error?.response?.status === 404) {
+      clearIndexJobState()
+      return
+    }
     persistIndexJobState()
     ElMessage.error(error.response?.data?.detail || '查询社团索引进度失败')
   }
@@ -2400,6 +2475,17 @@ async function pollRefreshJob(jobId, options = {}) {
     }, 1000)
   } catch (error) {
     refreshingCurrentCircle.value = false
+    // 404 说明任务已不存在（后端重启），直接清除进度卡
+    if (error?.response?.status === 404) {
+      clearRefreshJobState()
+      return
+    }
+    refreshJob._retryCount = (refreshJob._retryCount || 0) + 1
+    if (refreshJob._retryCount >= 10) {
+      // 连续10次失败（约20秒），放弃轮询，清除进度卡
+      clearRefreshJobState()
+      return
+    }
     if (!silentFinish) {
       ElMessage.error(error.response?.data?.detail || '查询批量刷新进度失败')
     }
@@ -2893,7 +2979,7 @@ function getUploadBackgroundTargetLabel(task) {
   gap: 0;
   padding: 0;
   background: #fafafa;
-  min-height: 100vh;
+  min-height: 100%;
 }
 
 .circle-works-loading-state {
@@ -3737,26 +3823,39 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .index-progress-card {
   display: grid;
-  gap: 10px;
-  padding: 16px 20px;
-  margin: 16px 24px 0;
+  gap: 0;
+  padding: 14px 20px 12px;
+  margin: 12px 24px;
   border-radius: 10px;
   border: 1px solid #e5e7eb;
   background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
 }
 .index-progress-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  margin-bottom: 0;
 }
 .index-progress-head-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+.index-progress-bar-wrap {
+  padding-top: 48px;
+  margin-bottom: 8px;
+}
+.index-progress-meta {
+  margin-top: 2px;
+}
 .refresh-progress-card {
-  margin: 0 0 12px;
+  margin: -1px -1px 12px;
+  border-radius: 8px 8px 0 0;
+  border: 1px solid #e5e7eb;
+  background: #fafafa;
+  padding: 14px 20px 12px;
 }
 .index-cancel-button {
   border-radius: 6px;
@@ -3776,6 +3875,7 @@ function getUploadBackgroundTargetLabel(task) {
 .progress-meta-pill {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   height: 22px;
   padding: 0 8px;
   border-radius: 4px;
@@ -3882,6 +3982,15 @@ function getUploadBackgroundTargetLabel(task) {
   overflow: hidden;
   border-left: 1px solid #e5e7eb;
 }
+.circle-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-top: 0;
+  color: #94a3b8;
+}
 .sidebar-card {
   padding: 20px 16px;
   display: grid;
@@ -3940,59 +4049,163 @@ function getUploadBackgroundTargetLabel(task) {
   display: inline-flex;
   align-items: center;
   height: 22px;
-  padding: 0 8px;
-  border-radius: 4px;
+  padding: 0 10px;
+  border-radius: 999px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .metric-pill {
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 8px;
   font-size: 11px;
-  background: #f3f4f6;
-  color: #4b5563;
-  border: 1px solid #e5e7eb;
+  font-weight: 700;
+  background: #ffffff;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  cursor: default;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.metric-pill:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  border-color: #cbd5e1;
+}
+.metric-pill svg {
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.metric-pill:hover svg {
+  transform: scale(1.2) rotate(5deg);
 }
 .metric-pill.owned {
-  background: #eff6ff;
+  background: #f0f7ff;
   color: #2563eb;
   border-color: #dbeafe;
+}
+.metric-pill.owned:hover {
+  background: #e0efff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
 }
 .metric-pill.warn {
   background: #fffbeb;
   color: #d97706;
-  border-color: #fde68a;
+  border-color: #fef3c7;
 }
-.metric-pill.ok,
-.tag-chip.ok,
-.reason-pill.ok {
-  background: #ecfdf5;
-  color: #059669;
-  border: 1px solid #d1fae5;
+.metric-pill.warn:hover {
+  background: #fef3c7;
+  border-color: #fde68a;
+  color: #b45309;
+}
+.metric-pill.ok {
+  background: #f0fdf4;
+  color: #16a34a;
+  border-color: #dcfce7;
+}
+.metric-pill.ok:hover {
+  background: #dcfce7;
+  border-color: #bbf7d0;
+  color: #15803d;
 }
 .metric-pill.muted {
-  background: #f9fafb;
-  color: #6b7280;
-  border-color: #e5e7eb;
+  background: #f8fafc;
+  color: #64748b;
+  border-color: #f1f5f9;
 }
-.toolbar-filters {
+.metric-pill.muted:hover {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #475569;
+}
+.toolbar-right-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
+  align-items: center;
+  gap: 12px;
   flex-shrink: 0;
 }
-.toolbar-filters :deep(.el-checkbox__label) {
-  font-weight: 500;
-  font-size: 13px;
-  color: #4b5563;
+.filter-toggles {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #f1f5f9;
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+}
+.filter-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 10px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.filter-toggle-btn:hover {
+  color: #1e293b;
+  background: rgba(255, 255, 255, 0.5);
+}
+.filter-toggle-btn:active {
+  transform: scale(0.96);
+}
+.filter-toggle-btn.active {
+  color: #1e293b;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+.filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+.filter-toggle:hover {
+  border-color: #cbd5e1;
+  color: #334155;
+  background: #f8fafc;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+}
+
+.filter-toggle:active {
+  transform: translateY(0);
+}
+
+.filter-toggle.active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.15);
 }
 .circle-list {
   display: grid;
   gap: 6px;
   padding: 4px 2px;
-  max-height: calc(100vh - 280px);
+  max-height: min(calc(9 * 92px), calc(100vh - 280px));
   overflow-y: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -4011,35 +4224,58 @@ function getUploadBackgroundTargetLabel(task) {
   background: #fff;
   text-align: left;
   cursor: pointer;
-  transition: all .18s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .circle-list-item:hover {
-  background: #fafbfc;
-  border-color: rgba(0,0,0,0.06);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-  transform: translateY(-1px);
+  background: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: 0 8px 16px rgba(0,0,0,0.08);
+  transform: translateY(-3px);
 }
 .circle-list-item.active {
-  background: #f0f4ff;
-  border-color: rgba(37,99,235,0.15);
-  box-shadow: 0 2px 8px rgba(37,99,235,0.08);
+  background: #eff6ff;
+  border-color: #3b82f6;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+  transform: translateY(-1px);
 }
 .circle-list-item:active {
-  transform: scale(0.98);
-  transition-duration: .08s;
+  transform: scale(0.97) translateY(0);
+  transition-duration: 0.1s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.circle-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  gap: 8px;
 }
 .circle-list-name {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 700;
   color: #111827;
   line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
 }
-.circle-list-topline {
+.circle-list-id {
   font-size: 11px;
-  color: #9ca3af;
-  font-weight: 500;
-  margin-bottom: 1px;
+  font-weight: 600;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.circle-list-progress-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
 }
 .circle-list-counts {
   display: flex;
@@ -4050,6 +4286,7 @@ function getUploadBackgroundTargetLabel(task) {
 .circle-count-pill {
   display: inline-flex;
   align-items: center;
+  gap: 3px;
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 10px;
@@ -4072,9 +4309,156 @@ function getUploadBackgroundTargetLabel(task) {
   color: #dc2626;
 }
 .circle-list-meta {
-  margin-top: 4px;
+  margin-top: 6px;
+  font-size: 10px;
+  color: #94a3b8;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---- 侧边栏社团统计行（设计图新布局） ---- */
+.circle-list-stats-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.circle-list-counts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.circle-stat-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 11px;
+  font-weight: 600;
+  color: #374151;
+  line-height: 1;
+}
+
+.circle-stat-dot::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.circle-stat-dot.total::before { background: #3b82f6; }
+.circle-stat-dot.owned::before { background: #10b981; }
+.circle-stat-dot.missing::before { background: #ef4444; }
+.circle-stat-dot.missing { color: #ef4444; }
+
+/* icon 版侧边栏统计（当前使用） */
+.circle-stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.circle-stat-item:hover {
+  transform: translateY(-1px);
+}
+.circle-stat-item svg {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.circle-stat-item:hover svg {
+  transform: scale(1.15) rotate(-3deg);
+}
+.circle-stat-item.total { 
+  color: #2563eb; 
+  background: #eff6ff;
+}
+.circle-stat-item.owned { 
+  color: #059669; 
+  background: #ecfdf5;
+}
+.circle-stat-item.missing { 
+  color: #dc2626; 
+  background: #fef2f2;
+}
+
+.circle-list-progress {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.circle-list-progress-track {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+
+.circle-list-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #10b981;
+  transition: width 0.4s ease;
+}
+
+.circle-list-percent {
+  font-size: 11px;
+  font-weight: 700;
   color: #9ca3af;
+  white-space: nowrap;
+  min-width: 28px;
+  text-align: right;
+}
+
+/* ---- Tab 标签自定义样式 ---- */
+.circle-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.circle-tab-icon {
+  opacity: 0.7;
+}
+
+.circle-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1;
+  background: #f3f4f6;
+  color: #6b7280;
+  border: 1px solid #e5e7eb;
+}
+
+.circle-tab-badge.missing {
+  background: #fef2f2;
+  color: #dc2626;
+  border-color: #fecaca;
+}
+
+.circle-tab-badge.owned {
+  background: #ecfdf5;
+  color: #059669;
+  border-color: #d1fae5;
 }
 .works-card {
   padding: 18px;
@@ -4103,66 +4487,62 @@ function getUploadBackgroundTargetLabel(task) {
   flex-wrap: wrap;
 }
 .batch-action-button {
-  min-width: 90px;
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid rgba(0, 113, 227, 0.16);
-  background: linear-gradient(180deg, #ffffff 0%, #f6faff 100%);
-  color: #235ea8;
-  border-radius: 10px;
-  font-weight: 600;
+  min-width: 100px;
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+  border-radius: 8px;
+  font-weight: 700;
   font-size: 13px;
-  transition: all .2s ease;
-}
-.batch-action-button.ghost {
-  border-color: rgba(29, 29, 31, 0.08);
-  background: #fff;
-  color: rgba(29, 29, 31, 0.6);
-}
-.batch-action-button.refresh {
-  border-color: rgba(35, 93, 126, 0.18);
-  background: linear-gradient(180deg, #f3fbff 0%, #e7f5fb 100%);
-  color: #1f6a86;
-}
-.batch-action-button.primary {
-  border-color: #0071e3;
-  background: linear-gradient(135deg, #0a84ff 0%, #0071e3 100%);
-  color: #fff;
-  box-shadow: 0 10px 20px rgba(0, 113, 227, 0.18);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 .batch-action-button:hover {
-  background: linear-gradient(180deg, #f3f8ff 0%, #e7f1ff 100%);
-  border-color: rgba(0, 113, 227, 0.24);
-  color: #0c5ec2;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.12);
+  transform: translateY(-2px) scale(1.02);
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e293b;
+  box-shadow: 0 6px 15px rgba(0, 0, 0, 0.08);
 }
 .batch-action-button:active {
-  transform: translateY(0) scale(0.97);
-  box-shadow: none;
-  transition-duration: .08s;
+  transform: translateY(0) scale(0.96);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  transition-duration: 0.1s;
+}
+.batch-action-button.primary {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
 }
 .batch-action-button.primary:hover {
-  background: linear-gradient(135deg, #2997ff 0%, #0077ed 100%);
-  border-color: #0077ed;
-  color: #fff;
-  transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(0, 113, 227, 0.25);
+  background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.3);
 }
-.batch-action-button.primary:active {
-  transform: translateY(0) scale(0.97);
-  box-shadow: 0 4px 10px rgba(0, 113, 227, 0.15);
+.batch-action-button.refresh {
+  background: linear-gradient(135deg, #334155 0%, #0f172a 100%);
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
 }
 .batch-action-button.refresh:hover {
-  background: linear-gradient(180deg, #eaf8ff 0%, #dceff7 100%);
-  border-color: rgba(31, 106, 134, 0.26);
-  color: #155a73;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(31, 106, 134, 0.1);
+  background: linear-gradient(135deg, #475569 0%, #1e293b 100%);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.3);
 }
-.batch-action-button.refresh:active {
-  transform: translateY(0) scale(0.97);
+.batch-action-button.ghost {
+  background: transparent;
+  border: 1px dashed #cbd5e1;
+  color: #64748b;
   box-shadow: none;
+}
+.batch-action-button.ghost:hover {
+  background: #f1f5f9;
+  border-style: solid;
+  border-color: #94a3b8;
+  color: #334155;
 }
 .work-action-button:hover {
   background: linear-gradient(180deg, #f2f7ff 0%, #e9f2ff 100%);
@@ -4176,8 +4556,59 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .work-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(152px, 1fr));
   gap: 10px;
+}
+
+/* ── 列表视图 ── */
+.work-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+
+
+/* ── 卡片/列表视图切换 ── */
+.view-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #f1f5f9;
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+}
+.view-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  color: #64748b;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.view-toggle-btn svg {
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.view-toggle-btn:hover {
+  color: #1e293b;
+  background: rgba(255, 255, 255, 0.5);
+}
+.view-toggle-btn:hover svg {
+  transform: scale(1.1);
+}
+.view-toggle-btn:active {
+  transform: scale(0.96);
+}
+.view-toggle-btn.active {
+  color: #1e293b;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
 }
 .owned-card,
 .info-card,
@@ -4395,6 +4826,21 @@ function getUploadBackgroundTargetLabel(task) {
   color: #233d60;
   line-height: 1.6;
   word-break: break-all;
+}
+.circle-tabs-wrapper {
+  position: relative;
+}
+.circle-tabs-wrapper .toolbar-right-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 10;
+  height: 38px; /* 对齐 .el-tabs__item 的高度 */
+  display: flex;
+  align-items: center;
+}
+.circle-tabs :deep(.el-tabs__nav-wrap) {
+  padding-right: 220px; /* 为右侧按钮留出空间 */
 }
 .circle-tabs :deep(.el-tabs__header) {
   margin: 0 0 12px;

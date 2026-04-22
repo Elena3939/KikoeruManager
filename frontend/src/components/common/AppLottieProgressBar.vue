@@ -119,8 +119,8 @@ onBeforeUnmount(() => {
 .app-lottie-progress-track {
   position: relative;
   flex: 1;
-  height: 10px;
-  border-radius: 5px;
+  height: 8px;
+  border-radius: 4px;
   background: #fffc00;
   overflow: visible;
 }
@@ -139,7 +139,7 @@ onBeforeUnmount(() => {
 
 .app-lottie-progress-fill {
   height: 100%;
-  border-radius: 5px;
+  border-radius: 4px;
   background: #7bbbd5;
   transition: width 0.3s ease-out;
 }
@@ -148,8 +148,8 @@ onBeforeUnmount(() => {
   position: absolute;
   bottom: 0;
   left: 0;
-  width: 92px;
-  height: 70px;
+  width: 76px;
+  height: 58px;
   overflow: visible;
   pointer-events: none;
   transition: left 0.3s ease-out;
