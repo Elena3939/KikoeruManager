@@ -246,9 +246,11 @@
         :data="displayedArchives"
         v-app-loading="{ loading: archivesLoading, text: '正在加载最近入库...', size: 124 }"
         style="width: 100%"
-        empty-text="暂无已处理压缩包"
         row-key="id"
       >
+        <template #empty>
+          <AppEmptyState description="暂无已处理压缩包" size="default" />
+        </template>
         <el-table-column type="expand" width="40" v-if="displayedArchives.some(a => a.isVolumeGroup)">
           <template #default="{ row }">
             <div v-if="row.isVolumeGroup && row.volumes" class="volume-list">
@@ -330,6 +332,7 @@ import { Document, CircleCheck, CircleCheckFilled, Warning, Search, VideoPlay, V
 import { ElMessage } from 'element-plus'
 import { conflictApi, scanApi, watcherApi, processedArchiveApi, taskCenterApi } from '../api'
 import FileUploader from '../components/FileUploader.vue'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 
 const router = useRouter()
 const loading = ref(false)

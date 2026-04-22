@@ -22,8 +22,9 @@
     </template>
 
     <div v-if="!view.subtitleInspectorInfo.subtitleDir" class="subtitle-inspector-empty">
-      <el-empty description="从左侧任务里选择一个已生成字幕目录的任务进行检查" />
-      <div class="subtitle-empty-tip">任务完成后会进入上方任务队列，点击对应卡片再进入这里做筛选和配对。</div>
+      <AppEmptyState description="从左侧任务里选择一个已生成字幕目录的任务进行检查" size="default">
+        <div class="subtitle-empty-tip">任务完成后会进入上方任务队列，点击对应卡片再进入这里做筛选和配对。</div>
+      </AppEmptyState>
     </div>
 
     <div v-else class="subtitle-tree-shell" v-app-loading="{ loading: view.subtitleInspectorBusy, text: '正在处理字幕目录...', size: 124 }">
@@ -319,6 +320,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import AppEmptyState from '../common/AppEmptyState.vue'
 
 const props = defineProps({
   ctx: {

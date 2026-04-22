@@ -32,7 +32,7 @@
           <el-tag size="small" type="info">分页 {{ queuePage }} / {{ totalQueuePages }}</el-tag>
         </div>
 
-        <el-empty v-if="!linkedTasks.length && !workbenchLoading" description="当前没有字幕补配任务，打开工作台后新任务会继续留在这里。" />
+        <AppEmptyState v-if="!linkedTasks.length && !workbenchLoading" description="当前没有字幕补配任务，打开工作台后新任务会继续留在这里。" size="sm" />
 
         <div v-else class="import-task-list-body">
           <button
@@ -118,7 +118,7 @@
       </section>
 
       <section class="import-task-detail">
-        <el-empty v-if="!workbenchLoading && !linkedTasks.length" description="当前工作台没有可展示的字幕补配任务。" />
+        <AppEmptyState v-if="!workbenchLoading && !linkedTasks.length" description="当前工作台没有可展示的字幕补配任务。" size="sm" />
 
         <template v-else-if="activeTask">
           <el-card shadow="never" class="import-config-card">
@@ -212,9 +212,10 @@
                   <div v-if="activeTask.target_folder_path" class="import-retarget-path">{{ activeTask.target_folder_path }}</div>
                 </div>
 
-                <el-empty
+                <AppEmptyState
                   v-if="!retargetPreviewLoading && !retargetCandidates.length"
                   description="当前没有可切换的目标目录候选"
+                  size="sm"
                 />
 
                 <el-radio-group v-else v-model="retargetCandidateSelection" class="candidate-list">
@@ -279,7 +280,7 @@
           </div>
         </template>
 
-        <el-empty v-else description="请选择一条补配任务查看详情。" />
+        <AppEmptyState v-else description="请选择一条补配任务查看详情。" size="sm" />
       </section>
     </div>
 
@@ -316,6 +317,7 @@ import { Folder, FolderOpened, Document, Picture, VideoPlay, Headset, Tickets } 
 import { libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
 import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
 import SubtitleInspectorWorkbench from '../library/SubtitleInspectorWorkbench.vue'
+import AppEmptyState from '../common/AppEmptyState.vue'
 
 const props = defineProps({
   taskId: {

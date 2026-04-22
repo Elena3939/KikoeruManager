@@ -536,7 +536,7 @@
                   <AppLoadingAnimation variant="inline" :size="36" />
                   <span>{{ subtitleSelectionProgressText || '正在扫描目录…' }}</span>
                 </div>
-                <el-empty v-else-if="!subtitleDialogSelection.length" description="没有识别到 RJ 文件夹" />
+                <AppEmptyState v-else-if="!subtitleDialogSelection.length" description="没有识别到 RJ 文件夹" size="sm" />
                 <template v-else>
                   <div class="subtitle-selection-section">
                     <div class="subtitle-selection-subhead">
@@ -563,7 +563,7 @@
                         </button>
                       </div>
                     </div>
-                    <el-empty v-if="!subtitleExecutableCollapsed && !subtitleExecutableDisplayItems.length" description="当前没有可执行或已入任务的 RJ 目录" />
+                    <AppEmptyState v-if="!subtitleExecutableCollapsed && !subtitleExecutableDisplayItems.length" description="当前没有可执行或已入任务的 RJ 目录" size="sm" />
                     <transition-group v-else-if="!subtitleExecutableCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-selection-list">
                       <button
                         v-for="item in pagedSubtitleSelectionItems"
@@ -835,7 +835,7 @@
                   </div>
                 </div>
               </template>
-              <el-empty v-if="!visibleSubtitleTasks.length" description="暂无字幕任务" />
+              <AppEmptyState v-if="!visibleSubtitleTasks.length" description="暂无字幕任务" size="sm" />
               <div v-else class="subtitle-task-list">
                 <div
                   v-if="activeSubtitleTask"
@@ -1240,6 +1240,7 @@ import { showSystemAlert, showSystemConfirm } from '../composables/useSystemProm
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppLottieSwitch from '../components/common/AppLottieSwitch.vue'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 import clipboardIconAnimation from '../assets/anime/Clipboard.lottie'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
@@ -7311,7 +7312,7 @@ function statsStatusTextDisplay (stats) {
 <style scoped>
 .library-page-loading-shell {
   position: relative;
-  min-height: 100vh;
+  min-height: 100%;
 }
 
 :deep(.library-page-loading-mask) {

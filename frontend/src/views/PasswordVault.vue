@@ -69,17 +69,16 @@
         <div v-else-if="!loading && totalCount === 0" class="vault-state-panel vault-state-empty">
           <div class="empty-orb empty-orb-left"></div>
           <div class="empty-orb empty-orb-right"></div>
-          <div class="empty-icon-wrap">
-            <el-icon class="empty-icon"><Document /></el-icon>
-          </div>
-          <div class="empty-copy">
-            <div class="empty-title">密码库还是空的</div>
-            <div class="empty-subtitle">先录入常用解压密码，后面解压、匹配和清理链路才会真正串起来。</div>
-          </div>
-          <div class="empty-actions">
-            <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg shadow-sm hover:bg-blue-500 hover:shadow-blue-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showAddDialog = true"><el-icon class="group-hover:rotate-90 group-hover:scale-110 transition-transform duration-300"><Plus /></el-icon>添加第一个密码</el-button>
-            <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-500 border border-transparent rounded-lg shadow-sm hover:bg-emerald-400 hover:shadow-emerald-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showImportDialog = true"><el-icon class="group-hover:-translate-y-0.5 group-hover:scale-110 transition-transform duration-300"><Document /></el-icon>批量导入</el-button>
-          </div>
+          <AppEmptyState size="lg">
+            <div class="empty-copy">
+              <div class="empty-title">密码库还是空的</div>
+              <div class="empty-subtitle">先录入常用解压密码，后面解压、匹配和清理链路才会真正串起来。</div>
+            </div>
+            <div class="empty-actions">
+              <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg shadow-sm hover:bg-blue-500 hover:shadow-blue-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showAddDialog = true"><el-icon class="group-hover:rotate-90 group-hover:scale-110 transition-transform duration-300"><Plus /></el-icon>添加第一个密码</el-button>
+              <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-500 border border-transparent rounded-lg shadow-sm hover:bg-emerald-400 hover:shadow-emerald-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showImportDialog = true"><el-icon class="group-hover:-translate-y-0.5 group-hover:scale-110 transition-transform duration-300"><Document /></el-icon>批量导入</el-button>
+            </div>
+          </AppEmptyState>
         </div>
 
         <template v-else>
@@ -213,7 +212,7 @@
               <el-table-column prop="config_snapshot" label="配置快照"><template #default="{ row }"><div class="history-meta">使用次数≤{{ row.config_snapshot?.max_use_count }}, 保留{{ row.config_snapshot?.preserve_days }}天</div></template></el-table-column>
               <el-table-column prop="deleted_passwords_summary" label="删除详情" min-width="200"><template #default="{ row }"><div v-if="row.deleted_passwords_summary && row.deleted_passwords_summary.length > 0" class="history-list"><div v-for="(pwd, idx) in row.deleted_passwords_summary.slice(0, 3)" :key="idx">{{ pwd.rjcode || pwd.filename || '通用密码' }} ({{ pwd.use_count }}次)</div><div v-if="row.deleted_passwords_summary.length > 3" class="muted">等 {{ row.deleted_passwords_summary.length }} 个密码...</div></div><span v-else class="muted">-</span></template></el-table-column>
             </el-table>
-            <el-empty v-if="cleanupHistory.length === 0" description="暂无清理记录" />
+            <AppEmptyState v-if="cleanupHistory.length === 0" description="暂无清理记录" size="default" />
           </div>
         </div>
       </div>
@@ -272,6 +271,7 @@ import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { passwordApi, cleanupApi } from '../api'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 import clipboardIconAnimation from '../assets/anime/Clipboard.lottie'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 

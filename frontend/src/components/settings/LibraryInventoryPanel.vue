@@ -137,11 +137,9 @@
         </div>
       </template>
 
-      <div v-else class="empty-state">
-        <Box :size="28" :stroke-width="2.2" />
-        <div class="empty-title">先选一个库存</div>
-        <div class="empty-desc">本地库存和群晖共享目录都在这里统一管理。</div>
-      </div>
+      <AppEmptyState v-else description="先选一个库存" size="default">
+        <p class="text-xs text-slate-400 mt-1">本地库存和群晖共享目录都在这里统一管理。</p>
+      </AppEmptyState>
     </div>
   </div>
 </template>
@@ -149,6 +147,7 @@
 <script setup>
 import { computed } from 'vue'
 import { Box, FolderPlus, HardDriveDownload, LoaderCircle, PlugZap } from 'lucide-vue-next'
+import AppEmptyState from '../common/AppEmptyState.vue'
 
 const props = defineProps({
   libraries: { type: Array, default: () => [] },

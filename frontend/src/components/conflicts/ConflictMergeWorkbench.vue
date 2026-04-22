@@ -242,7 +242,7 @@
         </div>
       </template>
 
-      <el-empty v-else description="暂无合并预览数据" />
+      <AppEmptyState v-else description="暂无合并预览数据" size="default" />
     </div>
 
     <template #footer>
@@ -264,6 +264,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { Document, Folder } from '@element-plus/icons-vue'
+import AppEmptyState from '../common/AppEmptyState.vue'
 
 const props = defineProps({
   modelValue: {

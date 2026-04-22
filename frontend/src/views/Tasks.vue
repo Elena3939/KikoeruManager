@@ -141,7 +141,7 @@
           </button>
         </div>
 
-        <el-empty v-else description="当前筛选条件下没有任务" />
+        <AppEmptyState v-else description="当前筛选条件下没有任务" size="default" />
       </el-card>
 
       <el-card class="task-detail-card" shadow="never">
@@ -305,7 +305,7 @@
           </div>
         </template>
 
-        <el-empty v-else description="选择左侧任务查看详情" />
+        <AppEmptyState v-else description="选择左侧任务查看详情" size="sm" />
       </el-card>
     </div>
   </div>
@@ -317,6 +317,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CircleCheckFilled, Refresh, Search, Folder, Document } from '@element-plus/icons-vue'
 import { taskCenterApi } from '../api'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 
 const router = useRouter()
 

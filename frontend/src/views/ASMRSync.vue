@@ -372,14 +372,14 @@
               文件下载进度 ({{ task.download_files.length }})
             </summary>
             <div class="mt-2 space-y-1.5">
-              <div v-for="file in task.download_files" :key="file.name" class="flex items-center gap-2 px-2.5 py-1.5 bg-slate-50 rounded-lg text-xs">
-                <span class="flex-1 truncate text-slate-700">{{ file.name }}</span>
+              <div v-for="file in task.download_files" :key="file.name" class="flex items-center gap-2 px-2.5 py-1.5 bg-slate-50 rounded-lg text-xs min-w-0">
+                <span class="flex-1 min-w-0 truncate text-slate-700">{{ file.name }}</span>
                 <div class="w-20 shrink-0">
                   <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden">
                     <div class="h-full bg-blue-500 rounded-full transition-all" :style="{ width: file.progress + '%' }" />
                   </div>
                 </div>
-                <span class="text-slate-400 shrink-0 font-mono text-[11px] w-28 text-right">{{ formatSize(file.downloaded) }} / {{ formatSize(file.total) }}</span>
+                <span class="text-slate-400 shrink-0 whitespace-nowrap font-mono text-[11px] min-w-[132px] text-right">{{ formatSize(file.downloaded) }} / {{ formatSize(file.total) }}</span>
               </div>
             </div>
           </details>
@@ -464,7 +464,7 @@
         </div>
       </div>
       <div v-else class="py-10">
-        <el-empty description="无法获取预览信息" />
+        <AppEmptyState description="无法获取预览信息" size="sm" />
       </div>
     </el-dialog>
 
@@ -515,7 +515,7 @@
             <el-table-column prop="upload_path" label="上传目标" min-width="220" show-overflow-tooltip />
             <el-table-column prop="last_error" label="异常" min-width="180" show-overflow-tooltip />
           </el-table>
-          <el-empty v-else description="暂无资源详情" />
+          <AppEmptyState v-else description="暂无资源详情" size="sm" />
         </template>
       </div>
     </el-drawer>
@@ -530,6 +530,7 @@ import { asmrSyncApi, configApi, libraryApi, taskApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import WorkCard from '../components/circle/WorkCard.vue'

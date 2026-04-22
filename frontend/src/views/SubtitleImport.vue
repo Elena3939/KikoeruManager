@@ -87,7 +87,7 @@
             </div>
 
             <div class="p-4 flex-1 flex flex-col">
-              <el-empty v-if="pendingLoadedOnce && !pendingItems.length" description="当前没有待处理的字幕补配预检单" class="my-auto" />
+              <AppEmptyState v-if="pendingLoadedOnce && !pendingItems.length" description="当前没有待处理的字幕补配预检单" size="sm" class="my-auto" />
               
               <div v-else class="flex flex-col h-full">
                 <div class="flex justify-end gap-2 mb-3">
@@ -151,7 +151,7 @@
             </div>
 
             <div class="p-6 flex-1">
-              <el-empty v-if="!activePendingItem" description="先从左侧选择一条自动检测到的预检单" class="mt-12" />
+              <AppEmptyState v-if="!activePendingItem" description="先从左侧选择一条自动检测到的预检单" size="sm" class="mt-12" />
 
               <div v-else :key="activePendingItem.id" class="flex flex-col gap-6">
                 <div class="rounded-2xl p-5 border relative overflow-hidden" :class="activePendingItem.can_execute ? 'bg-emerald-50/50 border-emerald-100' : 'bg-amber-50/50 border-amber-100'">
@@ -225,7 +225,7 @@
                     <span class="px-2.5 py-1 rounded-md bg-indigo-50 text-indigo-600 text-[11px] font-bold border border-indigo-100">候选 {{ activePendingItem.preview?.candidate_count ?? 0 }}</span>
                   </div>
 
-                  <el-empty v-if="!activePendingItem.preview?.candidates?.length" description="没有可用的目标目录候选" :image-size="60" />
+                  <AppEmptyState v-if="!activePendingItem.preview?.candidates?.length" description="没有可用的目标目录候选" size="sm" />
 
                   <div v-else class="flex flex-col gap-3.5 w-full">
                     <div v-for="candidate in activePendingItem.preview.candidates" :key="candidateKey(candidate)" class="flex items-start p-4 rounded-2xl border cursor-pointer transition-all hover:shadow-md" :class="archiveCandidateSelection[activePendingItem.id] === candidateKey(candidate) ? 'border-indigo-400 bg-indigo-50/40 ring-2 ring-indigo-500/20' : 'border-slate-200 bg-white hover:border-indigo-300'" @click="archiveCandidateSelection[activePendingItem.id] = candidateKey(candidate)">
@@ -319,7 +319,7 @@
             </div>
 
             <div class="p-6 flex-1">
-              <el-empty v-if="!folderPreview && !folderPreviewLoading" description="输入字幕文件夹路径后做一次预检" class="mt-12" />
+              <AppEmptyState v-if="!folderPreview && !folderPreviewLoading" description="输入字幕文件夹路径后做一次预检" size="sm" class="mt-12" />
 
               <div v-else-if="folderPreview" :key="`${folderPreview.source_path || folderPreview.source_label || 'folder-preview'}`" class="flex flex-col gap-6">
                 <div class="rounded-2xl p-5 border relative overflow-hidden" :class="canExecuteFolderImport ? 'bg-emerald-50/50 border-emerald-100' : 'bg-amber-50/50 border-amber-100'">
@@ -385,7 +385,7 @@
                     <span class="px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 text-[11px] font-bold border border-slate-200">候选 {{ folderPreview.candidate_count ?? 0 }}</span>
                   </div>
 
-                  <el-empty v-if="!folderPreview.candidates?.length" description="没有找到目标目录候选" :image-size="60" />
+                  <AppEmptyState v-if="!folderPreview.candidates?.length" description="没有找到目标目录候选" size="sm" />
 
                   <div v-else class="flex flex-col gap-3.5 w-full">
                     <div v-for="candidate in folderPreview.candidates" :key="candidateKey(candidate)" class="flex items-start p-4 rounded-2xl border cursor-pointer transition-all hover:shadow-md" :class="folderCandidateSelection === candidateKey(candidate) ? 'border-indigo-400 bg-indigo-50/40 ring-2 ring-indigo-500/20' : 'border-slate-200 bg-white hover:border-indigo-300'" @click="folderCandidateSelection = candidateKey(candidate)">
@@ -449,6 +449,7 @@ import { useBackgroundWorkbenchManager } from '../composables/useBackgroundWorkb
 import { useSubtitleImportArchive } from '../composables/useSubtitleImportArchive'
 import { useSubtitleImportFolder } from '../composables/useSubtitleImportFolder'
 import { useSubtitleImportWorkbench } from '../composables/useSubtitleImportWorkbench'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 
 const route = useRoute()
 const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'

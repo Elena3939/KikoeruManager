@@ -105,8 +105,8 @@
         </div>
       </div>
 
-      <el-empty v-if="filteredLogs.length === 0 && logs.length > 0" description="没有匹配的日志" />
-      <el-empty v-if="logs.length === 0" description="暂无日志" />
+      <AppEmptyState v-if="filteredLogs.length === 0 && logs.length > 0" description="没有匹配的日志" size="default" />
+      <AppEmptyState v-if="logs.length === 0" description="暂无日志" size="default" />
     </el-card>
   </div>
 </template>
@@ -118,6 +118,7 @@ import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { logApi } from '../api'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const LOG_POLL_INTERVAL = 5000

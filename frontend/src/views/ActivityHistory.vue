@@ -71,7 +71,7 @@
           <span class="panel-title">每日操作量</span>
           <span class="panel-caption">{{ statsRangeText }}</span>
         </header>
-        <div v-if="!byDay.length" class="empty-hint">暂无数据</div>
+        <AppEmptyState v-if="!byDay.length" description="暂无数据" size="sm" />
         <div v-else class="bar-chart">
           <div
             v-for="row in byDayWithPct"
@@ -95,7 +95,7 @@
           <span class="panel-title">分类分布</span>
           <span class="panel-caption">{{ statsRangeText }}</span>
         </header>
-        <div v-if="!stats.by_category.length" class="empty-hint">暂无数据</div>
+        <AppEmptyState v-if="!stats.by_category.length" description="暂无数据" size="sm" />
         <div v-else class="category-list">
           <div
             v-for="(row, idx) in categoryWithPct"
@@ -955,6 +955,7 @@ import {
 import dayjs from 'dayjs'
 import api from '../api'
 import ActivityLogDetailDialog from '../components/activity/ActivityLogDetailDialog.vue'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
 
 const router = useRouter()
 const loading = ref(true)
@@ -3924,7 +3925,7 @@ watch(selectedRow, (row) => {
 
 .activity-page-loading-shell {
   position: relative;
-  min-height: 100vh;
+  min-height: 100%;
 }
 
 :deep(.activity-history-loading-mask) {
