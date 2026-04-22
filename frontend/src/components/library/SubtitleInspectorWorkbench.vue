@@ -21,7 +21,12 @@
       </div>
     </template>
 
-    <div v-if="!view.subtitleInspectorInfo.subtitleDir" class="subtitle-inspector-empty">
+    <div
+      v-if="!view.subtitleInspectorInfo.subtitleDir && pendingInProgressTask"
+      class="subtitle-inspector-empty subtitle-inspector-empty--loading"
+      v-app-loading="{ loading: true, text: pendingLoadingText, size: 124 }"
+    ></div>
+    <div v-else-if="!view.subtitleInspectorInfo.subtitleDir" class="subtitle-inspector-empty">
       <AppEmptyState description="从左侧任务里选择一个已生成字幕目录的任务进行检查" size="default">
         <div class="subtitle-empty-tip">任务完成后会进入上方任务队列，点击对应卡片再进入这里做筛选和配对。</div>
       </AppEmptyState>
@@ -331,6 +336,24 @@ const props = defineProps({
 
 const view = computed(() => props.ctx || {})
 
+const pendingInProgressTask = computed(() => {
+  const candidates = [view.value.activeSubtitleTask, view.value.subtitleBackgroundActiveTask]
+  for (const task of candidates) {
+    if (!task) continue
+    if (['pending', 'processing'].includes(task.status)) return task
+  }
+  const tasks = Array.isArray(view.value.inspectableSubtitleTasks) ? view.value.inspectableSubtitleTasks : []
+  return tasks.find(task => ['pending', 'processing'].includes(task?.status)) || null
+})
+
+const pendingLoadingText = computed(() => {
+  const task = pendingInProgressTask.value
+  if (!task) return '正在执行字幕任务...'
+  const step = task.current_step || '正在执行字幕任务'
+  const rjcode = task.actual_rjcode || task.rjcode || ''
+  return rjcode ? `${rjcode} · ${step}` : step
+})
+
 function stripTrailingAudioExtension(value = '') {
   let current = String(value || '')
   while (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(current)) {
@@ -409,6 +432,7 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-tree-action-tip { font-size: 12px; color: var(--apple-text-faint); }
 .subtitle-tree-shell { display: flex; flex-direction: column; gap: 12px; min-height: 780px; }
 .subtitle-inspector-empty { display: grid; gap: 10px; padding: 18px 0 8px; }
+.subtitle-inspector-empty--loading { min-height: 320px; padding: 40px 0; position: relative; }
 .subtitle-empty-tip { text-align: center; font-size: 12px; color: var(--apple-text-faint); }
 .subtitle-tree-info {
   display: grid;
