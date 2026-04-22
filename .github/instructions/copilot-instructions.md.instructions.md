@@ -33,3 +33,10 @@ Provide project context and coding guidelines that AI should follow when generat
 - 问题必须与当前任务上下文直接相关
 - 问题必须具体、可操作，不要问泛泛的“还需要什么帮助”
 - 可以提供选项供用户选择，降低用户输入成本
+
+# commit推送规则
+
+不添加前缀（如 feat/fix 等）
+按「功能点」或「代码变更点」,「优化点」拆分提交
+每个 commit 只做一件事
+永远只用中文描述 commit 内容，且内容必须具体、清晰
