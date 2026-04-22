@@ -341,15 +341,19 @@ def load_library_config() -> dict[str, Any]:
         synology_raw = copy.deepcopy(item.get("synology") or {})
         if (item.get("type") or "local").lower() == "synology_filestation":
             root_path = synology_raw.get("root_path") or item.get("path") or "/"
-            merged = {
-                **profile_raw,
-                **synology_raw,
-                "root_path": root_path,
-            }
-            # Profile base_url takes precedence when available
-            profile_base_url = str(profile_raw.get("base_url") or "").strip()
-            if profile_base_url:
-                merged["base_url"] = profile_base_url
+            if synology_profile_id:
+                # 绑定模板的远程库存只允许库存自身覆盖目录路径。
+                # 认证相关字段统一以模板为准，避免库存条目残留旧密码 / 旧 OTP / 旧 device_id。
+                merged = {
+                    **synology_raw,
+                    **profile_raw,
+                    "root_path": root_path,
+                }
+            else:
+                merged = {
+                    **synology_raw,
+                    "root_path": root_path,
+                }
             synology_raw = merged
         else:
             synology_raw = None
@@ -405,6 +409,17 @@ class SynologyFileStationClient:
         self._preferred_upload_variant_name: Optional[str] = "minimal_form"
         # 持久化 HTTP session，避免每次请求重建 TCP 连接
         self._session: Optional[aiohttp.ClientSession] = None
+
+    @staticmethod
+    def build_cache_auth_signature(config: SynologyConfig) -> str:
+        return "|".join([
+            str(config.password or ""),
+            str(config.otp_code or ""),
+            str(config.device_id or ""),
+            str(config.device_name or ""),
+            str(config.session_name or ""),
+            "1" if bool(config.enable_device_token) else "0",
+        ])
 
     def _ensure_session(self) -> aiohttp.ClientSession:
         """返回持久化 HTTP session，不存在或已关闭时重建。"""
@@ -1210,16 +1225,29 @@ class LibraryManager:
         self._filter_preview_cancel_flags: dict[str, bool] = {}
         self._filter_preview_jobs: dict[str, dict[str, Any]] = {}
         self._filter_preview_tasks: dict[str, asyncio.Task] = {}
-        # 全局 Synology client 缓存：避免每次操作重复登录（key = base_url::username）
+        # 全局 Synology client 缓存：避免每次操作重复登录（key = base_url::username::auth_sig）
         self._synology_client_cache: dict[str, SynologyFileStationClient] = {}
         self._load_persisted_stats()
 
     def get_cached_synology_client(self, config: SynologyConfig) -> SynologyFileStationClient:
         """返回长期缓存的 SynologyFileStationClient（同一账号复用同一 session+sid）。"""
-        key = f"{(config.base_url or '').rstrip('/')}::{config.username or ''}"
-        if key not in self._synology_client_cache:
-            self._synology_client_cache[key] = SynologyFileStationClient(config)
-        return self._synology_client_cache[key]
+        base_key = f"{(config.base_url or '').rstrip('/')}::{config.username or ''}"
+        auth_sig = SynologyFileStationClient.build_cache_auth_signature(config)
+        full_key = f"{base_key}::{auth_sig}"
+        if full_key not in self._synology_client_cache:
+            # 清理同一账号但认证参数已变化的旧缓存条目
+            stale_keys = [k for k in self._synology_client_cache if k.startswith(f"{base_key}::")]
+            for stale_key in stale_keys:
+                stale_client = self._synology_client_cache.pop(stale_key, None)
+                if stale_client:
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        loop = None
+                    if loop and not loop.is_closed():
+                        loop.create_task(stale_client.close())
+            self._synology_client_cache[full_key] = SynologyFileStationClient(config)
+        return self._synology_client_cache[full_key]
 
     def load_config(self) -> dict[str, Any]:
         return load_library_config()
@@ -1449,13 +1477,9 @@ class LibraryManager:
             profile_payload.pop("id", None)
             profile_payload.pop("name", None)
             synology_payload = {
-                **profile_payload,
                 **synology_payload,
+                **profile_payload,
             }
-            # Profile base_url takes precedence when available
-            profile_base_url = str(profile_payload.get("base_url") or "").strip()
-            if profile_base_url:
-                synology_payload["base_url"] = profile_base_url
         if library_type == "synology_filestation":
             root_path = synology_payload.get("root_path") or payload.get("path") or "/"
             synology_payload = {
