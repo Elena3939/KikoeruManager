@@ -379,7 +379,7 @@
 
     <el-dialog
       v-model="subtitleDialogVisible"
-      width="1560px"
+      width="1720px"
       class="subtitle-task-dialog"
       :destroy-on-close="false"
       :close-on-click-modal="true"
@@ -389,713 +389,21 @@
     >
       <template #header>
         <div class="subtitle-dialog-header">
-          <div class="subtitle-dialog-title">RJ 字幕抓取</div>
+          <div class="subtitle-dialog-title-block">
+            <div class="subtitle-dialog-title">
+              <span class="subtitle-dialog-title-dot"></span>
+              RJ 字幕抓取
+            </div>
+            <div class="subtitle-dialog-subtitle">沉浸式单舞台工作台，焦点只保留当前阶段、当前任务和当前操作。</div>
+          </div>
           <div class="subtitle-dialog-header-actions">
-            <el-button size="small" @click="hideSubtitleTaskPanelToBackground">隐藏到后台</el-button>
-            <el-button size="small" @click="closeSubtitleTaskPanel">关闭</el-button>
+            <button class="subtitle-dialog-action-btn" @click="hideSubtitleTaskPanelToBackground">隐藏到后台</button>
+            <button class="subtitle-dialog-action-btn subtitle-dialog-action-close" @click="closeSubtitleTaskPanel">关闭</button>
           </div>
         </div>
       </template>
-      <div class="subtitle-workbench">
-        <section class="subtitle-hero">
-          <div>
-            <div class="subtitle-panel-title">库存内字幕工作台</div>
-            <div class="subtitle-panel-desc">直接从库存目录识别 RJ 文件夹并创建字幕任务。扫描命中后会立即尝试入任务；已有字幕的目录会保留在左侧，方便直接进入字幕检查和匹配工作台。</div>
-            <div class="subtitle-hero-meta">
-              <span class="subtitle-hero-chip">扫描命中 {{ subtitleDialogSelection.length }}</span>
-              <span class="subtitle-hero-chip" v-if="subtitleScanSession.existingSubtitles">已有字幕跳过 {{ subtitleScanSession.existingSubtitles }}</span>
-              <span class="subtitle-hero-chip" v-if="subtitleScanSession.noSubtitleTargets">远程无字幕跳过 {{ subtitleScanSession.noSubtitleTargets }}</span>
-              <span class="subtitle-hero-chip" v-if="subtitleScanSession.createdTasks">加入任务成功 {{ subtitleScanSession.createdTasks }}</span>
-              <span class="subtitle-hero-chip" v-if="subtitleScanSession.existingTasks">任务已存在 {{ subtitleScanSession.existingTasks }}</span>
-              <span class="subtitle-hero-chip" v-if="subtitleScanSession.createFailed">加入失败 {{ subtitleScanSession.createFailed }}</span>
-              <button
-                v-for="item in subtitleTaskOverview"
-                :key="item.key"
-                type="button"
-                class="subtitle-hero-chip subtitle-hero-chip-button"
-                :class="{ active: subtitleTaskFilter === item.key }"
-                @click="setSubtitleTaskFilter(item.key)"
-              >
-                {{ item.label }} {{ item.value }}
-              </button>
-            </div>
-          </div>
-          <div class="subtitle-panel-actions">
-            <el-button :loading="subtitleTasksLoading" @click="refreshRJSubtitleStatus(true)">刷新状态</el-button>
-          </div>
-        </section>
-
-        <div class="subtitle-layout">
-          <div class="subtitle-side-column">
-            <el-card shadow="never" class="subtitle-config-card subtitle-config-card-strong">
-              <template #header>执行选项</template>
-              <div class="subtitle-option-stack">
-                <div class="subtitle-switch-row">
-                  <div>
-                    <div class="subtitle-option-title">覆盖已有字幕</div>
-                    <div class="subtitle-card-tip">已存在同名字幕时直接覆盖，适合重新抓取和修正。</div>
-                  </div>
-                  <el-switch v-model="subtitleOptions.overwriteExisting" />
-                </div>
-                <div class="subtitle-switch-row">
-                  <div>
-                    <div class="subtitle-option-title">扫描深度</div>
-                    <div class="subtitle-card-tip">点击目录时递归查找 RJ 文件夹，默认 3 层，可按目录结构调整。</div>
-                  </div>
-                  <el-input-number v-model="subtitleOptions.scanDepth" :min="1" :max="10" :step="1" controls-position="right" />
-                </div>
-                <div class="subtitle-switch-row">
-                  <div>
-                    <div class="subtitle-option-title">启用 metadata 匹配</div>
-                    <div class="subtitle-card-tip">尝试读取音频 track/title 标签，提升字幕文件名匹配准确度。</div>
-                  </div>
-                  <el-switch v-model="subtitleOptions.enableMetadataMatch" />
-                </div>
-                <div class="subtitle-switch-row">
-                  <div>
-                    <div class="subtitle-option-title">已有字幕时跳过</div>
-                    <div class="subtitle-card-tip">待处理目录如果已经存在字幕，创建任务时直接跳过，不再进入抓取队列。</div>
-                  </div>
-                  <el-switch v-model="subtitleOptions.skipIfExistingSubtitles" />
-                </div>
-                <div class="subtitle-switch-row subtitle-switch-row-wrap">
-                  <div>
-                    <div class="subtitle-option-title">同名依据</div>
-                    <div class="subtitle-card-tip">配对应用后，音频和字幕会保持同名，只保留各自后缀。这里选择最终以谁的名字为准。</div>
-                  </div>
-                  <el-radio-group v-model="subtitleOptions.namingStrategy" size="small">
-                    <el-radio-button label="audio">以音频名为准</el-radio-button>
-                    <el-radio-button label="subtitle">以字幕名为准</el-radio-button>
-                  </el-radio-group>
-                </div>
-                <div class="subtitle-switch-row">
-                  <div>
-                    <div class="subtitle-option-title">启用字幕过滤</div>
-                    <div class="subtitle-card-tip">使用 RJ 工作台自己的字幕过滤规则筛候选，和解压过滤配置分开维护。</div>
-                  </div>
-                  <el-switch v-model="subtitleOptions.useFilterRules" />
-                </div>
-                <div v-if="subtitleOptions.useFilterRules" class="subtitle-filter-editor">
-                  <div class="subtitle-filter-editor-head">
-                    <div>
-                      <div class="subtitle-option-title">字幕过滤规则</div>
-                      <div class="subtitle-card-tip">规则只作用于字幕候选。可按文件名、路径或全部文本匹配，筛掉反转、无 SE 等不需要的字幕。</div>
-                    </div>
-                    <el-button size="small" @click="addSubtitleFilterRule">添加规则</el-button>
-                  </div>
-                  <div v-if="!subtitleOptions.subtitleFilterRules.length" class="subtitle-filter-empty">当前还没有字幕过滤规则，点右侧按钮添加。</div>
-                  <div v-else class="subtitle-filter-list">
-                    <div v-for="rule in subtitleOptions.subtitleFilterRules" :key="rule.id" class="subtitle-filter-row">
-                      <el-select v-model="rule.target" size="small" class="subtitle-filter-target">
-                        <el-option label="文件名" value="name" />
-                        <el-option label="路径" value="path" />
-                        <el-option label="全部" value="all" />
-                      </el-select>
-                      <el-input v-model="rule.name" size="small" class="subtitle-filter-name" placeholder="规则名称" />
-                      <el-input v-model="rule.pattern" size="small" class="subtitle-filter-pattern" placeholder="正则，例如 (反转|reverse|无SE)" />
-                      <el-switch v-model="rule.enabled" size="small" />
-                      <el-button size="small" text type="danger" @click="removeSubtitleFilterRule(rule.id)">删除</el-button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="subtitle-divider-label">任务展示</div>
-              <div class="subtitle-pill-grid">
-                <button type="button" class="subtitle-toggle-pill" :class="{ active: subtitleOptions.showSourceSearch }" @click="subtitleOptions.showSourceSearch = !subtitleOptions.showSourceSearch">来源搜索</button>
-                <button type="button" class="subtitle-toggle-pill" :class="{ active: subtitleOptions.showWrittenFiles }" @click="subtitleOptions.showWrittenFiles = !subtitleOptions.showWrittenFiles">写入结果</button>
-                <button type="button" class="subtitle-toggle-pill" :class="{ active: subtitleOptions.showDownloadedFiles }" @click="subtitleOptions.showDownloadedFiles = !subtitleOptions.showDownloadedFiles">下载进度</button>
-                <button type="button" class="subtitle-toggle-pill" :class="{ active: subtitleOptions.showIssues }" @click="subtitleOptions.showIssues = !subtitleOptions.showIssues">问题项</button>
-              </div>
-            </el-card>
-
-            <el-card shadow="never" class="subtitle-selection-card">
-              <template #header>
-                <div class="subtitle-selection-header">
-                  <div class="subtitle-selection-header-main">
-                    <div class="subtitle-selection-header-top">
-                      <div class="subtitle-selection-header-title">
-                        <span>扫描命中目录</span>
-                        <span class="subtitle-selection-count-pill">{{ subtitleDialogSelection.length }}</span>
-                      </div>
-                      <span v-if="subtitleSelectionLoading && subtitleSelectionProgressText" class="subtitle-selection-progress">{{ subtitleSelectionProgressText }}</span>
-                    </div>
-                  </div>
-                  <div v-if="subtitleSelectionTotalPages > 1" class="subtitle-selection-pager">
-                    <el-button size="small" text :disabled="subtitleSelectionPage <= 1" @click="subtitleSelectionPage--">上一页</el-button>
-                    <span>{{ subtitleSelectionPage }} / {{ subtitleSelectionTotalPages }}</span>
-                    <el-button size="small" text :disabled="subtitleSelectionPage >= subtitleSelectionTotalPages" @click="subtitleSelectionPage++">下一页</el-button>
-                  </div>
-                </div>
-              </template>
-              <div class="subtitle-selection-live">
-                <div v-if="subtitleScanSessionSummary.length" class="subtitle-scan-result-summary subtitle-scan-result-summary-compact">
-                  <span v-for="item in subtitleScanSessionSummary" :key="item.key" class="subtitle-mini-chip">{{ item.label }} {{ item.value }}</span>
-                </div>
-                <div v-if="subtitleSelectionLoading && !subtitleDialogSelection.length" class="subtitle-selection-loading">
-                  <AppLoadingAnimation variant="inline" :size="36" />
-                  <span>{{ subtitleSelectionProgressText || '正在扫描目录…' }}</span>
-                </div>
-                <AppEmptyState v-else-if="!subtitleDialogSelection.length" description="没有识别到 RJ 文件夹" size="sm" />
-                <template v-else>
-                  <div class="subtitle-selection-section">
-                    <div class="subtitle-selection-subhead">
-                      <div class="subtitle-selection-subhead-main">
-                        <div class="subtitle-selection-subtitle">可执行与已入任务</div>
-                        <span class="subtitle-selection-count-pill">{{ subtitleExecutableSelectionItems.length }}</span>
-                      </div>
-                      <div class="subtitle-selection-subhead-actions">
-                        <div v-if="subtitleSelectionFilterOptions.length" class="subtitle-selection-filter-row">
-                          <button
-                            v-for="item in subtitleSelectionFilterOptions"
-                            :key="item.key"
-                            type="button"
-                            class="subtitle-mini-chip subtitle-chip-button"
-                            :class="{ active: subtitleSelectionFilter === item.key }"
-                            @click="subtitleSelectionFilter = item.key"
-                          >
-                            {{ item.label }} {{ item.value }}
-                          </button>
-                        </div>
-                        <button type="button" class="subtitle-section-toggle" @click="subtitleExecutableCollapsed = !subtitleExecutableCollapsed">
-                          <span>{{ subtitleExecutableCollapsed ? '展开' : '收起' }}</span>
-                          <el-icon :class="{ 'is-collapsed': subtitleExecutableCollapsed }"><ArrowDown /></el-icon>
-                        </button>
-                      </div>
-                    </div>
-                    <AppEmptyState v-if="!subtitleExecutableCollapsed && !subtitleExecutableDisplayItems.length" description="当前没有可执行或已入任务的 RJ 目录" size="sm" />
-                    <transition-group v-else-if="!subtitleExecutableCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-selection-list">
-                      <button
-                        v-for="item in pagedSubtitleSelectionItems"
-                        :key="buildSubtitleSelectionKey(item)"
-                        type="button"
-                        class="subtitle-selection-item"
-                        :class="{ active: isSubtitleSelectionActive(item) }"
-                        :title="item.folder_path"
-                        @click="focusSubtitleSelectionItem(item)"
-                      >
-                        <div class="subtitle-selection-body">
-                          <div class="subtitle-selection-name">{{ item.folder_name }}</div>
-                          <div class="subtitle-selection-submeta">
-                            <span v-if="getLibraryLabelById(item.library_id)" class="subtitle-selection-library">来源库：{{ getLibraryLabelById(item.library_id) }}</span>
-                            <span class="subtitle-selection-path">{{ item.folder_path }}</span>
-                          </div>
-                          <div class="subtitle-selection-stats">
-                            <span class="subtitle-mini-chip" :class="getSubtitleSelectionQueueClass(item)">{{ getSubtitleSelectionQueueLabel(item) }}</span>
-                            <span class="subtitle-mini-chip">{{ item.rjcode || '未识别 RJ' }}</span>
-                            <span class="subtitle-mini-chip">音频 {{ item.audio_count ?? '-' }}</span>
-                            <span
-                              v-for="chip in getSubtitleSelectionExistingChips(item)"
-                              :key="`${buildSubtitleSelectionKey(item)}-${chip.key}`"
-                              class="subtitle-mini-chip"
-                            >
-                              {{ chip.label }}
-                            </span>
-                          </div>
-                          <div v-if="item.queue_message" class="subtitle-selection-note">{{ item.queue_message }}</div>
-                          <div v-if="item.queue_state === 'existing_task' || canInspectSubtitleSelectionFolder(item) || canRetryCreateSubtitleTaskForSelection(item)" class="subtitle-selection-actions">
-                            <el-button
-                              size="small"
-                              text
-                              type="primary"
-                              v-if="item.queue_state === 'existing_task' || canInspectSubtitleSelectionFolder(item)"
-                              @click.stop="focusSubtitleSelectionItem(item)"
-                            >
-                              {{ item.queue_state === 'existing_task' ? '打开现有任务' : '检查字幕树' }}
-                            </el-button>
-                            <el-button
-                              v-if="canRetryCreateSubtitleTaskForSelection(item)"
-                              size="small"
-                              text
-                              type="danger"
-                              :loading="subtitleForceQueueKey === buildSubtitleSelectionKey(item)"
-                              :disabled="Boolean(subtitleForceQueueKey)"
-                              @click.stop="forceCreateSubtitleTaskForSelection(item)"
-                            >
-                              重试加入
-                            </el-button>
-                            <el-button
-                              v-if="canForceCreateSubtitleTaskForSelection(item)"
-                              size="small"
-                              text
-                              type="success"
-                              :loading="subtitleForceQueueKey === buildSubtitleSelectionKey(item)"
-                              :disabled="Boolean(subtitleForceQueueKey)"
-                              @click.stop="forceCreateSubtitleTaskForSelection(item)"
-                            >
-                              创建一次任务
-                            </el-button>
-                          </div>
-                        </div>
-                      </button>
-                    </transition-group>
-                  </div>
-
-                  <div v-if="subtitleSkippedSelectionItems.length" class="subtitle-selection-section subtitle-selection-section-split">
-                    <div class="subtitle-selection-subhead">
-                      <div class="subtitle-selection-subhead-main">
-                        <div class="subtitle-selection-subtitle">被跳过</div>
-                        <span class="subtitle-selection-count-pill">{{ filteredSubtitleSkippedSelectionItems.length }}</span>
-                      </div>
-                      <div class="subtitle-selection-subhead-actions">
-                        <div v-if="subtitleSkippedSelectionFilterOptions.length" class="subtitle-selection-filter-row">
-                          <button
-                            v-for="item in subtitleSkippedSelectionFilterOptions"
-                            :key="item.key"
-                            type="button"
-                            class="subtitle-mini-chip subtitle-chip-button"
-                            :class="{ active: isSubtitleSkippedSelectionFilterActive(item.key) }"
-                            @click="toggleSubtitleSkippedSelectionFilter(item.key)"
-                          >
-                            {{ item.label }} {{ item.value }}
-                          </button>
-                        </div>
-                        <button type="button" class="subtitle-section-toggle" @click="subtitleSkippedCollapsed = !subtitleSkippedCollapsed">
-                          <span>{{ subtitleSkippedCollapsed ? '展开' : '收起' }}</span>
-                          <el-icon :class="{ 'is-collapsed': subtitleSkippedCollapsed }"><ArrowDown /></el-icon>
-                        </button>
-                      </div>
-                    </div>
-                    <transition-group v-if="!subtitleSkippedCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-selection-list subtitle-selection-list-skipped">
-                      <button
-                        v-for="item in filteredSubtitleSkippedSelectionItems"
-                        :key="`${buildSubtitleSelectionKey(item)}-skipped`"
-                        type="button"
-                        class="subtitle-selection-item skipped"
-                        :class="{ active: isSubtitleSelectionActive(item) }"
-                        :title="item.folder_path"
-                        @click="focusSubtitleSelectionItem(item)"
-                      >
-                        <div class="subtitle-selection-body">
-                          <div class="subtitle-selection-name">{{ item.folder_name }}</div>
-                          <div class="subtitle-selection-submeta">
-                            <span v-if="getLibraryLabelById(item.library_id)" class="subtitle-selection-library">来源库：{{ getLibraryLabelById(item.library_id) }}</span>
-                            <span class="subtitle-selection-path">{{ item.folder_path }}</span>
-                          </div>
-                          <div class="subtitle-selection-stats">
-                            <span class="subtitle-mini-chip" :class="getSubtitleSelectionQueueClass(item)">{{ getSubtitleSelectionQueueLabel(item) }}</span>
-                            <span class="subtitle-mini-chip">{{ item.rjcode || '未识别 RJ' }}</span>
-                            <span class="subtitle-mini-chip">音频 {{ item.audio_count ?? '-' }}</span>
-                            <span
-                              v-for="chip in getSubtitleSelectionExistingChips(item)"
-                              :key="`${buildSubtitleSelectionKey(item)}-${chip.key}`"
-                              class="subtitle-mini-chip"
-                            >
-                              {{ chip.label }}
-                            </span>
-                          </div>
-                          <div v-if="item.queue_message" class="subtitle-selection-note">{{ item.queue_message }}</div>
-                          <div class="subtitle-selection-actions">
-                            <el-button
-                              v-if="canInspectSubtitleSelectionFolder(item)"
-                              size="small"
-                              text
-                              @click.stop="inspectSubtitleSelectionFolder(item)"
-                            >
-                              检查字幕树
-                            </el-button>
-                            <el-button
-                              v-if="canForceCreateSubtitleTaskForSelection(item)"
-                              size="small"
-                              text
-                              type="success"
-                              :loading="subtitleForceQueueKey === buildSubtitleSelectionKey(item)"
-                              :disabled="Boolean(subtitleForceQueueKey)"
-                              @click.stop="forceCreateSubtitleTaskForSelection(item)"
-                            >
-                              创建一次任务
-                            </el-button>
-                          </div>
-                        </div>
-                      </button>
-                    </transition-group>
-                  </div>
-                </template>
-              </div>
-              <div v-if="subtitleScanTargetResults.length" class="subtitle-scan-result-wrap">
-                <div class="subtitle-scan-skip-head">
-                  <div class="subtitle-selection-subhead-main">
-                    <div class="subtitle-scan-skip-title">扫描目标</div>
-                    <span class="subtitle-selection-count-pill">{{ subtitleScanTargetResults.length }}</span>
-                  </div>
-                  <button type="button" class="subtitle-section-toggle" @click="subtitleScanTargetsCollapsed = !subtitleScanTargetsCollapsed">
-                    <span>{{ subtitleScanTargetsCollapsed ? '展开' : '收起' }}</span>
-                    <el-icon :class="{ 'is-collapsed': subtitleScanTargetsCollapsed }"><ArrowDown /></el-icon>
-                  </button>
-                </div>
-                <div class="subtitle-scan-result-summary">
-                  <span v-if="subtitleScanSummary.pending" class="subtitle-mini-chip">扫描中 {{ subtitleScanSummary.pending }}</span>
-                  <span class="subtitle-mini-chip">成功 {{ subtitleScanSummary.success }}</span>
-                  <span v-if="subtitleScanSummary.noAudio" class="subtitle-mini-chip">无音频 {{ subtitleScanSummary.noAudio }}</span>
-                  <span v-if="subtitleScanSummary.noMatch" class="subtitle-mini-chip">未识别 {{ subtitleScanSummary.noMatch }}</span>
-                  <span v-if="subtitleScanSummary.failed" class="subtitle-mini-chip">失败 {{ subtitleScanSummary.failed }}</span>
-                </div>
-                <transition-group v-if="!subtitleScanTargetsCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-scan-result-list">
-                  <div v-for="item in subtitleScanTargetResults" :key="buildSubtitleScanTargetResultKey(item)" class="subtitle-scan-result-row" :class="`status-${item.status}`">
-                    <div class="subtitle-scan-result-main" :title="item.path">
-                      <span class="subtitle-scan-result-name">{{ item.name }}</span>
-                      <div class="subtitle-scan-result-submeta">
-                        <span v-if="getLibraryLabelById(item.library_id)" class="subtitle-scan-result-library">{{ getLibraryLabelById(item.library_id) }}</span>
-                        <span class="subtitle-scan-result-path">{{ item.path }}</span>
-                      </div>
-                    </div>
-                    <div class="subtitle-scan-result-meta">
-                      <span class="subtitle-scan-result-status" :class="`status-${item.status}`">{{ getSubtitleScanResultLabel(item.status) }}</span>
-                      <span class="subtitle-scan-result-message">{{ item.message }}</span>
-                      <el-button
-                        v-if="canRetrySubtitleScanResult(item)"
-                        size="small"
-                        plain
-                        :loading="subtitleScanRetryingPath === buildSubtitleScanTargetResultKey(item)"
-                        :disabled="Boolean(subtitleScanRetryingPath) && subtitleScanRetryingPath !== buildSubtitleScanTargetResultKey(item)"
-                        @click="rescanSubtitleSelectionTarget(item)"
-                      >
-                        重新扫描此项
-                      </el-button>
-                    </div>
-                  </div>
-                </transition-group>
-              </div>
-                <div v-if="subtitleSkippedScanResults.length" class="subtitle-scan-skip-wrap">
-                  <div class="subtitle-scan-skip-head">
-                    <div class="subtitle-selection-subhead-main">
-                      <div class="subtitle-scan-skip-title">跳过结果</div>
-                      <span class="subtitle-selection-count-pill">{{ filteredSubtitleSkippedScanResults.length }}</span>
-                    </div>
-                    <div v-if="subtitleSkippedScanFilterOptions.length" class="subtitle-selection-filter-row">
-                      <button
-                        v-for="item in subtitleSkippedScanFilterOptions"
-                        :key="item.key"
-                      type="button"
-                      class="subtitle-mini-chip subtitle-chip-button"
-                      :class="{ active: subtitleScanSkipFilter === item.key }"
-                      @click="subtitleScanSkipFilter = item.key"
-                    >
-                      {{ item.label }} {{ item.value }}
-                    </button>
-                  </div>
-                </div>
-                <transition-group name="subtitle-card-fade" tag="div" class="subtitle-scan-skip-list">
-                  <div v-for="item in filteredSubtitleSkippedScanResults" :key="`${buildSubtitleScanTargetResultKey(item)}-skipped`" class="subtitle-scan-result-row skipped" :class="`status-${item.status}`">
-                    <div class="subtitle-scan-result-main">
-                      <span class="subtitle-scan-result-name">{{ item.name }}</span>
-                      <div class="subtitle-scan-result-submeta">
-                        <span v-if="getLibraryLabelById(item.library_id)" class="subtitle-scan-result-library">{{ getLibraryLabelById(item.library_id) }}</span>
-                        <span class="subtitle-scan-result-path">{{ item.path }}</span>
-                      </div>
-                    </div>
-                    <div class="subtitle-scan-result-meta">
-                      <span class="subtitle-scan-result-status" :class="`status-${item.status}`">{{ getSubtitleScanResultLabel(item.status) }}</span>
-                      <span class="subtitle-scan-result-message">{{ item.message }}</span>
-                      <el-button
-                        v-if="canRetrySubtitleScanResult(item)"
-                        size="small"
-                        plain
-                        :loading="subtitleScanRetryingPath === buildSubtitleScanTargetResultKey(item)"
-                        :disabled="Boolean(subtitleScanRetryingPath) && subtitleScanRetryingPath !== buildSubtitleScanTargetResultKey(item)"
-                        @click="rescanSubtitleSelectionTarget(item)"
-                      >
-                        重新扫描此项
-                      </el-button>
-                    </div>
-                  </div>
-                </transition-group>
-              </div>
-            </el-card>
-          </div>
-
-          <div class="subtitle-main-column">
-            <el-card shadow="never" class="subtitle-task-card">
-              <template #header>
-                <div class="subtitle-section-header">
-                  <div>
-                    <div>最近字幕任务</div>
-                    <div class="subtitle-section-tip">上面展示当前选中任务的详情，下面保留完整任务队列。运行中任务也会留在队列里，当前查看项会高亮。</div>
-                  </div>
-                  <div class="subtitle-task-toolbar">
-                    <span class="subtitle-mini-chip">总任务 {{ subtitleQueueTasks.length }}</span>
-                    <span class="subtitle-mini-chip">可清理 {{ subtitleClearableTaskCounts.finished }}</span>
-                    <el-dropdown
-                      trigger="click"
-                      :disabled="!subtitleClearableTaskCounts.finished || Boolean(subtitleBulkClearingScope)"
-                      @command="clearSubtitleTasksByScope"
-                    >
-                      <el-button size="small" plain :loading="Boolean(subtitleBulkClearingScope)">
-                        一键清空任务
-                        <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-                      </el-button>
-                      <template #dropdown>
-                        <el-dropdown-menu>
-                          <el-dropdown-item command="completed" :disabled="!subtitleClearableTaskCounts.completed">清空成功 {{ subtitleClearableTaskCounts.completed }}</el-dropdown-item>
-                          <el-dropdown-item command="failed" :disabled="!subtitleClearableTaskCounts.failed">清空失败 {{ subtitleClearableTaskCounts.failed }}</el-dropdown-item>
-                          <el-dropdown-item command="finished" :disabled="!subtitleClearableTaskCounts.finished">清空全部已结束 {{ subtitleClearableTaskCounts.finished }}</el-dropdown-item>
-                        </el-dropdown-menu>
-                      </template>
-                    </el-dropdown>
-                  </div>
-                </div>
-              </template>
-              <AppEmptyState v-if="!visibleSubtitleTasks.length" description="暂无字幕任务" size="sm" />
-              <div v-else class="subtitle-task-list">
-                <div
-                  v-if="activeSubtitleTask"
-                  :key="activeSubtitleTask.id"
-                  class="subtitle-task-detail"
-                  :class="{ active: isSubtitleTaskSelected(activeSubtitleTask) }"
-                >
-                  <div class="subtitle-task-head">
-                    <div>
-                      <div class="subtitle-task-rj">{{ getTaskDisplayRJCode(activeSubtitleTask) }}</div>
-                      <div class="subtitle-task-folder">{{ activeSubtitleTask.folder_name || getFileName(activeSubtitleTask.folder_path) }}</div>
-                      <div v-if="getTaskSourceRJCode(activeSubtitleTask)" class="subtitle-task-source">来源字幕 {{ getTaskSourceRJCode(activeSubtitleTask) }}</div>
-                    </div>
-                    <div class="subtitle-task-meta">
-                      <el-tag :type="getRJSubtitleTaskBaseStatusType(activeSubtitleTask)">{{ getRJSubtitleTaskBaseStatusLabel(activeSubtitleTask) }}</el-tag>
-                      <span v-if="activeSubtitleTask.source_lang" class="subtitle-task-lang">{{ getRJSubtitleLangLabel(activeSubtitleTask.source_lang) }}</span>
-                      <el-button
-                        v-if="canCancelRJSubtitleTask(activeSubtitleTask)"
-                        size="small"
-                        plain
-                        type="danger"
-                        :loading="subtitleCancelingId === activeSubtitleTask.id"
-                        @click="cancelRJSubtitleTask(activeSubtitleTask)"
-                      >
-                        取消任务
-                      </el-button>
-                      <el-button
-                        size="small"
-                        plain
-                        :disabled="!canClearCurrentSubtitleTask(activeSubtitleTask)"
-                        @click="clearCurrentSubtitleTask(activeSubtitleTask)"
-                      >
-                        清空当前任务
-                      </el-button>
-                      <el-button
-                        size="small"
-                        plain
-                        type="warning"
-                        :loading="subtitleTaskRerunId === activeSubtitleTask.id"
-                        :disabled="!canRerunSubtitleTask(activeSubtitleTask)"
-                        @click="rerunSubtitleTask(activeSubtitleTask)"
-                      >
-                        重新执行爬取字幕
-                      </el-button>
-                      <el-button size="small" plain :disabled="!activeSubtitleTask.subtitle_dir" @click="inspectSubtitleTask(activeSubtitleTask)">{{ getSubtitleTaskInspectLabel(activeSubtitleTask) }}</el-button>
-                    </div>
-                  </div>
-
-                  <el-progress
-                    :percentage="activeSubtitleTask.progress"
-                    :status="getRJSubtitleProgressStatus(activeSubtitleTask)"
-                    :stroke-width="8"
-                  />
-
-                  <div class="subtitle-task-step">{{ activeSubtitleTask.current_step }}</div>
-                  <div class="subtitle-task-inline-meta">
-                    <span class="subtitle-inline-chip">下载 {{ activeSubtitleTask.downloaded_count || getSubtitleDownloadFiles(activeSubtitleTask).length }}</span>
-                    <span class="subtitle-inline-chip">匹配组 {{ activeSubtitleTask.match_result?.matched_group_count || 0 }}</span>
-                    <span class="subtitle-inline-chip">写入 {{ activeSubtitleTask.written_files?.length || 0 }}</span>
-                    <span class="subtitle-inline-chip">跳过 {{ activeSubtitleTask.skipped_files?.length || 0 }}</span>
-                    <span class="subtitle-inline-chip">未匹配 {{ activeSubtitleTask.match_result?.unmatched_audio?.length || 0 }}</span>
-                    <span class="subtitle-inline-chip" v-if="activeSubtitleTask.subtitle_dir">字幕目录已生成</span>
-                  </div>
-                  <div v-if="activeSubtitleTask.error_message" class="subtitle-task-error">{{ activeSubtitleTask.error_message }}</div>
-                  <el-alert
-                    v-if="activeSubtitleTask.manual_match_completed"
-                    type="success"
-                    :closable="false"
-                    show-icon
-                    class="subtitle-task-finish-alert"
-                    :title="`筛选和匹配已完成，已应用 ${activeSubtitleTask.manual_match_applied_pairs || 0} 组配对`"
-                  />
-
-                  <el-collapse v-model="subtitleTaskDetailPanels" class="subtitle-task-detail-collapse">
-                    <el-collapse-item v-if="subtitleOptions.showSourceSearch && activeSubtitleTask.search_attempts?.length" name="source">
-                      <template #title>
-                        <div class="subtitle-collapse-title">
-                          <span>来源搜索</span>
-                          <span class="subtitle-box-meta">{{ activeSubtitleTask.search_attempts.length }} 项</span>
-                        </div>
-                      </template>
-                      <div class="subtitle-task-box">
-                        <div v-for="attempt in activeSubtitleTask.search_attempts" :key="`${activeSubtitleTask.id}-${attempt.rjcode}`" class="subtitle-inline-row">
-                          <span>{{ attempt.rjcode }}</span>
-                          <span>{{ getRJSubtitleLangLabel(attempt.lang) }}</span>
-                          <span>{{ formatRJSubtitleAttempt(attempt) }}</span>
-                        </div>
-                      </div>
-                    </el-collapse-item>
-
-                    <el-collapse-item v-if="subtitleOptions.showWrittenFiles && activeSubtitleTask.written_files?.length" name="written">
-                      <template #title>
-                        <div class="subtitle-collapse-title">
-                          <span>写入结果</span>
-                          <span class="subtitle-box-meta">{{ activeSubtitleTask.written_files.length }} 项</span>
-                        </div>
-                      </template>
-                      <div class="subtitle-task-box">
-                        <div class="subtitle-written-list">
-                          <div v-for="(item, idx) in activeSubtitleTask.written_files.slice(0, 8)" :key="`${activeSubtitleTask.id}-write-${idx}`" class="subtitle-written-row">
-                            <span class="subtitle-inline-primary subtitle-written-name">{{ item.output_name }}</span>
-                            <span class="subtitle-written-type">{{ item.match_type }}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </el-collapse-item>
-
-                    <el-collapse-item v-if="subtitleOptions.showDownloadedFiles && getSubtitleDownloadFiles(activeSubtitleTask).length" name="download">
-                      <template #title>
-                        <div class="subtitle-collapse-title">
-                          <span>下载进度</span>
-                          <span class="subtitle-box-meta">
-                            {{ getSubtitleDownloadFiles(activeSubtitleTask).length }} 项
-                            <template v-if="allSubtitleDownloadsCompleted(activeSubtitleTask)"> · 已全部完成</template>
-                          </span>
-                        </div>
-                      </template>
-                      <div class="subtitle-task-box">
-                        <div class="subtitle-box-head">
-                          <div class="subtitle-box-meta">下载文件列表</div>
-                          <el-button
-                            v-if="hiddenSubtitleDownloadCount(activeSubtitleTask) > 0 || isSubtitleDownloadExpanded(activeSubtitleTask.id)"
-                            size="small"
-                            text
-                            @click="toggleSubtitleDownloadExpanded(activeSubtitleTask.id)"
-                          >
-                            {{ isSubtitleDownloadExpanded(activeSubtitleTask.id) ? '收起' : `展开其余 ${hiddenSubtitleDownloadCount(activeSubtitleTask)} 项` }}
-                          </el-button>
-                        </div>
-                        <div class="subtitle-download-list">
-                          <div v-for="file in visibleSubtitleDownloadFiles(activeSubtitleTask)" :key="`${activeSubtitleTask.id}-${file.display_name || file.name}-${file.index || 0}`" class="subtitle-download-row">
-                            <div class="subtitle-download-head">
-                              <span class="subtitle-inline-primary subtitle-download-name">{{ getSubtitleDownloadDisplayName(file) }}</span>
-                              <span class="subtitle-download-percent">{{ Math.round(file.progress || 0) }}%</span>
-                            </div>
-                            <el-progress :percentage="file.progress || 0" :stroke-width="8" :show-text="false" />
-                          </div>
-                        </div>
-                      </div>
-                    </el-collapse-item>
-
-                    <el-collapse-item v-if="activeSubtitleTask.progress_log?.length" name="log">
-                      <template #title>
-                        <div class="subtitle-collapse-title">
-                          <span>过程日志</span>
-                          <span class="subtitle-box-meta">{{ activeSubtitleTask.progress_log.length }} 条</span>
-                        </div>
-                      </template>
-                      <div class="subtitle-task-box subtitle-task-box-log">
-                        <div class="subtitle-log-list">
-                          <div v-for="(entry, idx) in activeSubtitleTaskProgressLogs" :key="`${activeSubtitleTask.id}-progress-log-${idx}`" class="subtitle-log-row">
-                            <span class="subtitle-log-time">{{ formatProgressLogTime(entry.time) }}</span>
-                            <span class="subtitle-log-level" :class="`level-${entry.level || 'info'}`">{{ getProgressLogLevelLabel(entry.level) }}</span>
-                            <span class="subtitle-inline-primary">{{ entry.message }}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </el-collapse-item>
-
-                    <el-collapse-item v-if="subtitleOptions.showIssues && (activeSubtitleTask.error_message || activeSubtitleTask.match_result?.unmatched_audio?.length || activeSubtitleTask.write_errors?.length || activeSubtitleTask.failed_files?.length)" name="issues">
-                      <template #title>
-                        <div class="subtitle-collapse-title">
-                          <span>问题项</span>
-                          <span class="subtitle-box-meta">
-                            <template v-if="(activeSubtitleTask.write_errors?.length || 0) > 0">写入失败 {{ activeSubtitleTask.write_errors.length }}</template>
-                            <template v-else-if="(activeSubtitleTask.failed_files?.length || 0) > 0">下载失败 {{ activeSubtitleTask.failed_files.length }}</template>
-                            <template v-else>未匹配 {{ activeSubtitleTask.match_result?.unmatched_audio?.length || 0 }}</template>
-                          </span>
-                        </div>
-                      </template>
-                      <div class="subtitle-task-box">
-                        <div class="subtitle-box-head">
-                          <div class="subtitle-box-meta">问题详情</div>
-                          <el-button
-                            v-if="hiddenSubtitleIssueCount(activeSubtitleTask) > 0 || isSubtitleIssueExpanded(activeSubtitleTask.id)"
-                            size="small"
-                            text
-                            @click="toggleSubtitleIssueExpanded(activeSubtitleTask.id)"
-                          >
-                            {{ isSubtitleIssueExpanded(activeSubtitleTask.id) ? '收起' : `展开其余 ${hiddenSubtitleIssueCount(activeSubtitleTask)} 项` }}
-                          </el-button>
-                        </div>
-                        <div class="subtitle-issue-list">
-                          <div v-if="activeSubtitleTask.error_message" class="subtitle-issue-item issue-error">
-                            <div class="subtitle-issue-kind">任务错误</div>
-                            <div class="subtitle-issue-content">{{ activeSubtitleTask.error_message }}</div>
-                          </div>
-                          <div v-for="audio in activeSubtitleTask.match_result?.unmatched_audio || []" :key="`${activeSubtitleTask.id}-audio-${audio}`" class="subtitle-issue-item">
-                            <div class="subtitle-issue-kind">未匹配音频</div>
-                            <div class="subtitle-issue-content">{{ audio }}</div>
-                          </div>
-                          <div v-for="(error, idx) in visibleSubtitleWriteErrors(activeSubtitleTask)" :key="`${activeSubtitleTask.id}-write-error-${idx}`" class="subtitle-issue-item issue-warning">
-                            <div class="subtitle-issue-kind">写入失败</div>
-                            <div class="subtitle-issue-title">{{ error.name }}</div>
-                            <div v-if="error.detail" class="subtitle-issue-detail">{{ error.detail }}</div>
-                          </div>
-                          <div v-for="(file, idx) in visibleSubtitleFailedFiles(activeSubtitleTask)" :key="`${activeSubtitleTask.id}-download-failed-${idx}`" class="subtitle-issue-item issue-warning">
-                            <div class="subtitle-issue-kind">下载失败</div>
-                            <div class="subtitle-issue-title">{{ file.name || file.title || '字幕文件' }}</div>
-                            <div class="subtitle-issue-detail">{{ file.reason || '下载失败' }}</div>
-                          </div>
-                        </div>
-                      </div>
-                    </el-collapse-item>
-                  </el-collapse>
-                </div>
-
-                <div class="subtitle-task-queue-head">
-                  <div>
-                    <div class="subtitle-task-box-title">任务队列</div>
-                    <div class="subtitle-card-tip">包含正在处理中的任务和历史任务，当前查看项会高亮。</div>
-                  </div>
-                  <div class="subtitle-task-queue-filters">
-                    <button
-                      v-for="item in subtitleTaskManualOverview"
-                      :key="`manual-${item.key}`"
-                      type="button"
-                      class="subtitle-mini-chip subtitle-chip-button"
-                      :class="{ active: subtitleTaskManualFilter === item.key }"
-                      @click="setSubtitleTaskManualFilter(item.key)"
-                    >
-                      {{ item.label }} {{ item.value }}
-                    </button>
-                  </div>
-                </div>
-
-                <div v-if="subtitleQueueTasks.length" class="subtitle-task-rail subtitle-task-queue-rail">
-                  <button
-                    v-for="task in subtitleQueueTasks"
-                    :key="`queue-${task.id}`"
-                    type="button"
-                    class="subtitle-task-compact"
-                    :class="{ active: isSubtitleTaskSelected(task), processing: task.status === 'processing', finished: task.manual_match_completed }"
-                    @click="selectSubtitleTask(task)"
-                  >
-                    <div class="subtitle-task-compact-head">
-                      <span class="subtitle-task-compact-rj">{{ getTaskDisplayRJCode(task) }}</span>
-                      <span class="subtitle-task-compact-status" :class="`status-${getRJSubtitleTaskStatusClass(task)}`">{{ getRJSubtitleTaskStatusLabel(task) }}</span>
-                    </div>
-                    <div class="subtitle-task-compact-folder">{{ task.folder_name || getFileName(task.folder_path) }}</div>
-                    <div v-if="getTaskSourceRJCode(task)" class="subtitle-task-compact-source">来源 {{ getTaskSourceRJCode(task) }}</div>
-                    <div class="subtitle-task-compact-step">{{ task.current_step || task.error_message || '等待中' }}</div>
-                    <div class="subtitle-task-compact-meta">
-                      <span>下载 {{ task.downloaded_count || getSubtitleDownloadFiles(task).length }}</span>
-                      <span>匹配组 {{ task.match_result?.matched_group_count || 0 }}</span>
-                      <span>写入 {{ task.written_files?.length || 0 }}</span>
-                      <span v-if="task.manual_match_completed" class="subtitle-task-meta-chip is-success">已匹配完成 {{ task.manual_match_applied_pairs || 0 }}</span>
-                      <span v-else >未匹配 {{ task.match_result?.unmatched_audio?.length || 0 }}</span>
-                    </div>
-                    <div class="subtitle-task-compact-actions">
-                      <el-button size="small" text :disabled="!task.subtitle_dir" @click.stop="inspectSubtitleTask(task)">{{ getSubtitleTaskInspectLabel(task) }}</el-button>
-                    </div>
-                  </button>
-                </div>
-              </div>
-            </el-card>
-
-            <SubtitleInspectorWorkbench :ctx="subtitleWorkbenchCtx" />
-          </div>
-        </div>
+      <div class="subtitle-workbench-shell">
+        <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
       </div>
     </el-dialog>
 
@@ -1110,6 +418,7 @@
         <el-button type="primary" :loading="subtitleRenameLoading" @click="confirmSubtitleRename">确认重命名</el-button>
       </template>
     </el-dialog>
+
 
     <el-dialog v-model="mappedPathDialogVisible" title="跨设备访问 - 路径映射" width="620px">
       <el-alert title="检测到跨设备部署环境" type="info" :closable="false" show-icon style="margin-bottom: 16px">
@@ -1248,7 +557,7 @@ import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewD
 import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchDialog.vue'
 import FilterDeleteDialog from '../components/library/FilterDeleteDialog.vue'
 import FolderContentsDialog from '../components/library/FolderContentsDialog.vue'
-import SubtitleInspectorWorkbench from '../components/library/SubtitleInspectorWorkbench.vue'
+import SubtitleWorkbenchStage from '../components/library/subtitle-workbench/SubtitleWorkbenchStage.vue'
 
 const PAGE_SIZES = [10, 20, 50, 100]
 const PAGE_SIZE_KEY = 'kikoeru.ui.library.pageSize'
@@ -1561,6 +870,10 @@ const subtitleSkippedSelectionFilter = ref([])
 const subtitleForceQueueKey = ref('')
 const subtitleAudioFilterMode = ref('all')
 const subtitleSubtitleFilterMode = ref('all')
+const activeSubtitleWorkbenchStage = ref('overview')
+const subtitleWorkbenchRailMode = ref('scan')
+const subtitleWorkbenchContextMode = ref('settings')
+const subtitleWorkbenchDrawerCollapsed = ref(false)
 
 const {
   sortSubtitleTasksByCreatedAt,
@@ -2003,6 +1316,43 @@ const focusedSubtitleSelectionItem = computed(() => {
   if (!subtitleSelectionDisplayItems.value.length) return null
   return subtitleSelectionDisplayItems.value.find(item => buildSubtitleSelectionKey(item) === subtitlePreferredSelectionKey.value) || subtitleSelectionDisplayItems.value[0]
 })
+const activeSubtitleWorkbenchStageLabel = computed(() => ({
+  overview: '任务概览',
+  pairing: '字幕筛选与配对',
+  tree: '字幕树'
+}[activeSubtitleWorkbenchStage.value] || '任务概览'))
+const subtitleWorkbenchFocusTask = computed(() => activeSubtitleTask.value || activeSubtitleInspectTask.value || null)
+const subtitleWorkbenchFocusSelection = computed(() => focusedSubtitleSelectionItem.value || currentFolderSubtitleItem.value || null)
+const subtitleWorkbenchFocusTitle = computed(() => {
+  const task = subtitleWorkbenchFocusTask.value
+  if (task) return getTaskDisplayRJCode(task)
+  return subtitleWorkbenchFocusSelection.value?.rjcode || '等待焦点任务'
+})
+const subtitleWorkbenchFocusSubtitle = computed(() => {
+  const task = subtitleWorkbenchFocusTask.value
+  if (task) return task.folder_name || getFileName(task.folder_path)
+  const selection = subtitleWorkbenchFocusSelection.value
+  if (selection) return selection.folder_name || getFileName(selection.folder_path)
+  return '从左侧扫描结果或任务队列里选一个焦点项'
+})
+const subtitleWorkbenchFocusStep = computed(() => {
+  const task = subtitleWorkbenchFocusTask.value
+  if (task?.current_step) return task.current_step
+  const selection = subtitleWorkbenchFocusSelection.value
+  if (selection?.queue_message) return selection.queue_message
+  return '当前还没有进行中的字幕处理步骤'
+})
+const subtitleWorkbenchFocusChips = computed(() => {
+  const task = subtitleWorkbenchFocusTask.value
+  const chips = []
+  if (task?.awaiting_manual_match) chips.push({ key: 'manual', label: '待手动配对', class: 'is-warning' })
+  if (task?.manual_match_completed) chips.push({ key: 'done', label: `已匹配 ${task.manual_match_applied_pairs || 0}`, class: 'is-success' })
+  if (task?.subtitle_dir) chips.push({ key: 'tree', label: '可进入字幕树' })
+  if (!chips.length && subtitleWorkbenchFocusSelection.value?.queue_state) {
+    chips.push({ key: 'selection', label: getSubtitleSelectionQueueLabel(subtitleWorkbenchFocusSelection.value) })
+  }
+  return chips
+})
 const subtitleInspectorRoot = computed(() => buildTree(subtitleInspectorItems.value))
 const subtitleInspectorFilteredRoot = computed(() => {
   const keyword = subtitleInspectorSearch.value.trim().toLowerCase()
@@ -2060,6 +1410,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   subtitleInspectorSelectedRows: subtitleInspectorSelectedRows.value,
   subtitleInspectorSelectedIds: subtitleInspectorSelectedIds.value,
   subtitleInspectorExpandedIds: subtitleInspectorExpandedIds.value,
+  activeSubtitleTaskProgressLogs: activeSubtitleTaskProgressLogs.value,
   subtitleInspectorSearch: subtitleInspectorSearch.value,
   subtitleInspectorAudioSearch: subtitleInspectorAudioSearch.value,
   subtitleInspectorSubtitleSearch: subtitleInspectorSubtitleSearch.value,
@@ -2077,6 +1428,8 @@ const subtitleWorkbenchCtx = computed(() => ({
   subtitleManualApplyLabel: subtitleManualApplyLabel.value,
   isLinkedSubtitleImportWorkbench: isLinkedSubtitleImportWorkbench.value,
   canOpenSubtitleInspectorFilterDeleteDialog: canOpenSubtitleInspectorFilterDeleteDialog.value,
+  subtitleCancelingId: subtitleCancelingId.value,
+  subtitleTaskRerunId: subtitleTaskRerunId.value,
   subtitleAudioFilterMode: subtitleAudioFilterMode.value,
   subtitleSubtitleFilterMode: subtitleSubtitleFilterMode.value,
   subtitleMatchSelection: subtitleMatchSelection.value,
@@ -2084,18 +1437,28 @@ const subtitleWorkbenchCtx = computed(() => ({
   filteredSubtitleInspectorSubtitleFiles: filteredSubtitleInspectorSubtitleFiles.value,
   canBuildSequenceSubtitlePairs: canBuildSequenceSubtitlePairs.value,
   canAddSubtitleManualPair: canAddSubtitleManualPair.value,
+  pairingAudioSelectedCount: subtitleSequenceSelection.value.audioPaths.length,
+  pairingSubtitleSelectedCount: subtitleSequenceSelection.value.subtitlePaths.length,
+  pairingPairCount: subtitleManualPairs.value.length,
   reloadSubtitleInspector,
   expandSubtitleInspectorTree,
   collapseSubtitleInspectorTree,
-  inspectSubtitleTask,
+  inspectSubtitleTask: handleSubtitleWorkbenchInspectTask,
   getTaskDisplayRJCode,
   getTaskSourceRJCode,
+  getSubtitleTaskInspectLabel,
   getFileName,
   formatFileSize,
+  canCancelRJSubtitleTask,
+  canClearCurrentSubtitleTask,
+  canRerunSubtitleTask,
   buildAutoSubtitlePairs,
   buildSequenceOrOrderedSubtitlePairs,
   applySubtitleManualPairs,
   openSubtitleInspectorFilterDeleteDialog,
+  cancelRJSubtitleTask,
+  clearCurrentSubtitleTask,
+  rerunSubtitleTask,
   setSubtitleSequenceMode: value => { subtitleSequenceMode.value = value },
   setSubtitleAudioFilterMode: value => { subtitleAudioFilterMode.value = value },
   setSubtitleSubtitleFilterMode: value => { subtitleSubtitleFilterMode.value = value },
@@ -2126,9 +1489,177 @@ const subtitleWorkbenchCtx = computed(() => ({
   toggleSubtitleInspectorExpand,
   resolveSubtitleTreeIcon,
   formatDate,
+  formatProgressLogTime,
+  getProgressLogLevelLabel,
   openSubtitleRenameDialog,
   deleteSubtitleTreeEntry
 }))
+
+const subtitleScanCtx = computed(() => ({
+  subtitleDialogSelection: subtitleDialogSelection.value,
+  subtitleExecutableSelectionItems: subtitleExecutableSelectionItems.value,
+  subtitleSkippedSelectionItems: subtitleSkippedSelectionItems.value,
+  subtitleExecutableDisplayItems: subtitleExecutableDisplayItems.value,
+  filteredSubtitleSkippedSelectionItems: filteredSubtitleSkippedSelectionItems.value,
+  pagedSubtitleSelectionItems: pagedSubtitleSelectionItems.value,
+  subtitleScanTargetResults: subtitleScanTargetResults.value,
+  subtitleSkippedScanResults: subtitleSkippedScanResults.value,
+  filteredSubtitleSkippedScanResults: filteredSubtitleSkippedScanResults.value,
+  subtitleScanSessionSummary: subtitleScanSessionSummary.value,
+  subtitleScanSummary: subtitleScanSummary.value,
+  subtitleSelectionFilterOptions: subtitleSelectionFilterOptions.value,
+  subtitleSkippedSelectionFilterOptions: subtitleSkippedSelectionFilterOptions.value,
+  subtitleSkippedScanFilterOptions: subtitleSkippedScanFilterOptions.value,
+  subtitleSelectionLoading: subtitleSelectionLoading.value,
+  subtitleSelectionProgressText: subtitleSelectionProgressText.value,
+  subtitleSelectionTotalPages: subtitleSelectionTotalPages.value,
+  subtitleSelectionPage: subtitleSelectionPage.value,
+  subtitleSelectionFilter: subtitleSelectionFilter.value,
+  subtitleScanSkipFilter: subtitleScanSkipFilter.value,
+  subtitleExecutableCollapsed: subtitleExecutableCollapsed.value,
+  subtitleSkippedCollapsed: subtitleSkippedCollapsed.value,
+  subtitleScanTargetsCollapsed: subtitleScanTargetsCollapsed.value,
+  subtitleForceQueueKey: subtitleForceQueueKey.value,
+  subtitleScanRetryingPath: subtitleScanRetryingPath.value,
+  buildSubtitleSelectionKey,
+  buildSubtitleScanTargetResultKey,
+  isSubtitleSelectionActive,
+  isSubtitleSkippedSelectionFilterActive,
+  toggleSubtitleSkippedSelectionFilter,
+  getSubtitleSelectionQueueLabel,
+  getSubtitleSelectionQueueClass,
+  getSubtitleSelectionExistingChips,
+  getLibraryLabelById,
+  canInspectSubtitleSelectionFolder,
+  canRetryCreateSubtitleTaskForSelection,
+  canForceCreateSubtitleTaskForSelection,
+  focusSubtitleSelectionItem: handleSubtitleWorkbenchSelectSelection,
+  inspectSubtitleSelectionFolder: handleSubtitleWorkbenchInspectSelectionFolder,
+  forceCreateSubtitleTaskForSelection,
+  rescanSubtitleSelectionTarget,
+  canRetrySubtitleScanResult,
+  getSubtitleScanResultLabel,
+  setSubtitleSelectionPage: (v) => { subtitleSelectionPage.value = v },
+  setSubtitleSelectionFilter: (v) => { subtitleSelectionFilter.value = v },
+  setSubtitleScanSkipFilter: (v) => { subtitleScanSkipFilter.value = v },
+  setSubtitleExecutableCollapsed: (v) => { subtitleExecutableCollapsed.value = v },
+  setSubtitleSkippedCollapsed: (v) => { subtitleSkippedCollapsed.value = v },
+  setSubtitleScanTargetsCollapsed: (v) => { subtitleScanTargetsCollapsed.value = v }
+}))
+
+const subtitleConfigCtx = computed(() => ({
+  subtitleOptions: subtitleOptions.value,
+  canOpenSubtitleInspectorFilterDeleteDialog: canOpenSubtitleInspectorFilterDeleteDialog.value,
+  pairingAudioSelectedCount: subtitleSequenceSelection.value.audioPaths.length,
+  pairingSubtitleSelectedCount: subtitleSequenceSelection.value.subtitlePaths.length,
+  pairingPairCount: subtitleManualPairs.value.length,
+  canClearSequenceSelection: Boolean(subtitleSequenceSelection.value.audioPaths.length || subtitleSequenceSelection.value.subtitlePaths.length),
+  canClearManualPairs: Boolean(subtitleManualPairs.value.length),
+  treeSelectedCount: subtitleInspectorSelectedRows.value.length,
+  treeVisibleCount: subtitleInspectorFlatTree.value.length,
+  treeSearchText: subtitleInspectorSearch.value.trim(),
+  addSubtitleFilterRule,
+  removeSubtitleFilterRule,
+  setSubtitleOption: (key, value) => { subtitleOptions.value[key] = value },
+  clearSubtitleSequenceSelection,
+  clearSubtitleManualPairs,
+  openSubtitleInspectorFilterDeleteDialog
+}))
+
+const subtitleTaskStageCtx = computed(() => ({
+  subtitleQueueTasks: subtitleQueueTasks.value,
+  visibleSubtitleTasks: visibleSubtitleTasks.value,
+  activeSubtitleTask: activeSubtitleTask.value,
+  subtitleClearableTaskCounts: subtitleClearableTaskCounts.value,
+  subtitleBulkClearingScope: subtitleBulkClearingScope.value,
+  subtitleTaskDetailPanels: subtitleTaskDetailPanels.value,
+  subtitleOptions: subtitleOptions.value,
+  subtitleCancelingId: subtitleCancelingId.value,
+  subtitleTaskRerunId: subtitleTaskRerunId.value,
+  subtitleTaskManualOverview: subtitleTaskManualOverview.value,
+  subtitleTaskManualFilter: subtitleTaskManualFilter.value,
+  activeSubtitleTaskProgressLogs: activeSubtitleTaskProgressLogs.value,
+  getTaskDisplayRJCode,
+  getTaskSourceRJCode,
+  getRJSubtitleTaskBaseStatusType,
+  getRJSubtitleTaskBaseStatusLabel,
+  getRJSubtitleTaskStatusLabel,
+  getRJSubtitleTaskStatusClass,
+  getRJSubtitleProgressStatus,
+  getRJSubtitleLangLabel,
+  getFileName,
+  isHistoryRestoredSubtitleTask,
+  isSubtitleTaskSelected,
+  canCancelRJSubtitleTask,
+  canClearCurrentSubtitleTask,
+  canRerunSubtitleTask,
+  getSubtitleTaskInspectLabel,
+  cancelRJSubtitleTask,
+  clearCurrentSubtitleTask,
+  rerunSubtitleTask,
+  clearSubtitleTasksByScope,
+  inspectSubtitleTask: handleSubtitleWorkbenchInspectTask,
+  selectSubtitleTask: handleSubtitleWorkbenchSelectTask,
+  setSubtitleTaskManualFilter,
+  getSubtitleDownloadFiles,
+  getSubtitleDownloadDisplayName,
+  allSubtitleDownloadsCompleted,
+  isSubtitleDownloadExpanded,
+  toggleSubtitleDownloadExpanded,
+  visibleSubtitleDownloadFiles,
+  hiddenSubtitleDownloadCount,
+  isSubtitleIssueExpanded,
+  toggleSubtitleIssueExpanded,
+  visibleSubtitleWriteErrors,
+  visibleSubtitleFailedFiles,
+  hiddenSubtitleIssueCount,
+  formatRJSubtitleAttempt,
+  formatProgressLogTime,
+  getProgressLogLevelLabel
+}))
+const subtitleWorkbenchStageCtx = computed(() => ({
+  railModes: [
+    { key: 'scan', label: '扫描命中' },
+    { key: 'tasks', label: '执行队列' }
+  ],
+  railMode: subtitleWorkbenchRailMode.value,
+  setRailMode: setSubtitleWorkbenchRailMode,
+  stageTabs: [
+    { key: 'overview', label: '任务总览', tip: '阶段进度、下载写入和异常回看' },
+    { key: 'pairing', label: '筛选与配对', tip: '音频轨、字幕轨和预配对工位' },
+    { key: 'tree', label: '字幕文件树', tip: '检索、改名与批量清理' }
+  ],
+  activeStage: activeSubtitleWorkbenchStage.value,
+  setActiveStage: setActiveSubtitleWorkbenchStage,
+  contextMode: subtitleWorkbenchContextMode.value,
+  scanCtx: subtitleScanCtx.value,
+  taskNavigatorCtx: subtitleTaskStageCtx.value,
+  taskOverviewCtx: subtitleTaskStageCtx.value,
+  workbenchCtx: subtitleWorkbenchCtx.value,
+  configCtx: subtitleConfigCtx.value,
+  contextDrawerCtx: {
+    modeTitle: ({
+      settings: '参数面板',
+      pairing: '配对助手',
+      tree: '文件工具'
+    })[subtitleWorkbenchContextMode.value] || '参数面板',
+    modeTip: ({
+      settings: '执行策略、过滤规则和任务展示都在这里统一控制。',
+      pairing: '顺序点选、配对数量和关键动作提示都集中在右侧。',
+      tree: '搜索范围、选中规模和删除风险提示在这里查看。'
+    })[subtitleWorkbenchContextMode.value] || '',
+    drawerCollapsed: subtitleWorkbenchDrawerCollapsed.value,
+    contextMode: subtitleWorkbenchContextMode.value,
+    modeOptions: [
+      { key: 'settings', label: '参数', shortLabel: '参' },
+      { key: 'pairing', label: '配对', shortLabel: '配' },
+      { key: 'tree', label: '文件', shortLabel: '文' }
+    ],
+    setContextMode: setSubtitleWorkbenchContextMode,
+    toggleDrawer: toggleSubtitleWorkbenchDrawer
+  }
+}))
+
 const currentFolderSubtitleItem = computed(() => {
   if (!canProcessCurrentFolder.value || !currentFolderRJCode.value) return null
   return {
@@ -3140,11 +2671,14 @@ function mergeSubtitleSelectionRuntimeState (items, previousItems = subtitleDial
       folder_path: item.folder_path || previous.folder_path || '',
       library_id: item.library_id || previous.library_id || selectedLibraryId.value,
       audio_count: item.audio_count ?? previous.audio_count ?? null,
+      downloaded_count: Math.max(Number(item.downloaded_count || 0), Number(previous.downloaded_count || 0)),
       existing_subtitle_count: Math.max(Number(item.existing_subtitle_count || 0), Number(previous.existing_subtitle_count || 0)),
       status: item.status || previous.status || '',
       queue_state: item.queue_state || previous.queue_state || '',
       queue_message: item.queue_message || previous.queue_message || '',
       task_id: item.task_id || previous.task_id || '',
+      task_created_at: item.task_created_at || previous.task_created_at || '',
+      awaiting_manual_match: Boolean(item.awaiting_manual_match ?? previous.awaiting_manual_match),
       manual_match_completed: Boolean(item.manual_match_completed ?? previous.manual_match_completed),
       manual_match_applied_pairs: Math.max(0, Number(item.manual_match_applied_pairs ?? (previous.manual_match_applied_pairs || 0))),
       manual_match_deleted_subtitles: Math.max(0, Number(item.manual_match_deleted_subtitles ?? (previous.manual_match_deleted_subtitles || 0)))
@@ -3173,14 +2707,19 @@ function buildSubtitleSelectionItemsFromTasks (tasks = subtitleTasks.value) {
         Number(baseItem.existing_subtitle_count || 0),
         Number(estimateSubtitleTaskExistingCount(task) || 0)
       )
+      const awaitingManualMatch = Boolean(task.awaiting_manual_match) && !task.manual_match_completed
       return {
         ...baseItem,
         task_id: task.id || '',
-        queue_state: task.manual_match_completed ? 'manual_match_completed' : 'queued',
+        queue_state: task.manual_match_completed
+          ? 'manual_match_completed'
+          : (awaitingManualMatch ? 'awaiting_manual_match' : 'queued'),
         queue_message: task.current_step || getRJSubtitleTaskStatusLabel(task),
+        downloaded_count: Number(task.downloaded_count || 0),
         existing_subtitle_count: existingSubtitleCount,
         audio_count: baseItem.audio_count ?? estimateSubtitleTaskAudioCount(task),
         status: existingSubtitleCount > 0 ? 'existing' : (baseItem.status || 'ready'),
+        awaiting_manual_match: awaitingManualMatch,
         manual_match_completed: Boolean(task.manual_match_completed),
         manual_match_applied_pairs: Math.max(0, Number(task.manual_match_applied_pairs || 0)),
         manual_match_deleted_subtitles: Math.max(0, Number(task.manual_match_deleted_subtitles || 0))
@@ -3391,6 +2930,8 @@ function getSubtitleSelectionStatusLabel (status) {
 
 function getSubtitleSelectionQueueLabel (item) {
   switch (item?.queue_state) {
+    case 'awaiting_manual_match':
+      return '待手动配对'
     case 'manual_match_completed':
       return '已匹配完成'
     case 'checking_subtitle':
@@ -3418,12 +2959,13 @@ function getSubtitleSelectionQueueClass (item) {
   switch (item?.queue_state) {
     case 'manual_match_completed':
       return 'subtitle-mini-chip-success'
-    case 'queued':
-    case 'existing_task':
-      return 'subtitle-mini-chip-primary'
+    case 'awaiting_manual_match':
     case 'checking_subtitle':
     case 'creating':
       return 'subtitle-mini-chip-warning'
+    case 'queued':
+    case 'existing_task':
+      return 'subtitle-mini-chip-primary'
     case 'create_failed':
       return 'subtitle-mini-chip-danger'
     case 'skipped_existing':
@@ -3440,10 +2982,13 @@ function canRetrySubtitleScanResult (item) {
 }
 
 function canInspectSubtitleSelectionFolder(item) {
-  if (!item?.folder_path || item?.task_id) return false
+  if (!item?.folder_path) return false
+  const matchedTask = findSubtitleTaskBySelection(item)
+  if (item?.task_id && matchedTask?.subtitle_dir) return false
   if (item?.status === 'existing') return true
   if (Number(item?.existing_subtitle_count || 0) > 0) return true
-  return ['skipped_existing', 'manual_match_completed'].includes(String(item?.queue_state || ''))
+  if (Boolean(item?.awaiting_manual_match)) return true
+  return ['skipped_existing', 'manual_match_completed', 'awaiting_manual_match'].includes(String(item?.queue_state || ''))
 }
 
 function canForceCreateSubtitleTaskForSelection(item) {
@@ -3452,6 +2997,10 @@ function canForceCreateSubtitleTaskForSelection(item) {
 
 function canRetryCreateSubtitleTaskForSelection(item) {
   return Boolean(item?.folder_path) && String(item?.queue_state || '') === 'create_failed'
+}
+
+function isHistoryRestoredSubtitleTask(task) {
+  return Boolean(task?.history_restored)
 }
 
 async function ensureRJSubtitleAvailabilityForItem (item) {
@@ -3706,9 +3255,14 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
     }
     incrementSubtitleScanSession('createdTasks')
     incrementSubtitleScanTargetCounter(item, 'queued', 1)
-    upsertSubtitleTaskLocal(createOptimisticSubtitleTask(item, createdTask.task_id))
+    const taskCreatedAt = new Date().toISOString()
+    upsertSubtitleTaskLocal({
+      ...createOptimisticSubtitleTask(item, createdTask.task_id),
+      created_at: taskCreatedAt
+    })
     upsertSubtitleSelectionEntry(item, {
       task_id: createdTask.task_id,
+      task_created_at: taskCreatedAt,
       queue_state: 'queued',
       queue_message: '已加入任务'
     })
@@ -3753,6 +3307,9 @@ function closeSubtitleTaskPanel () {
   subtitleActiveTaskId.value = ''
   subtitleScanRetryingPath.value = ''
   subtitleSelectionScanCurrent.value = ''
+  setSubtitleWorkbenchRailMode('scan')
+  setActiveSubtitleWorkbenchStage('overview')
+  subtitleWorkbenchDrawerCollapsed.value = false
   clearSubtitleScanWorkspace()
   clearSubtitleInspectorState()
   persistSubtitleScanWorkspace()
@@ -3762,6 +3319,8 @@ async function openSubtitleTaskPanel () {
   subtitleSelectionRequestToken.value += 1
   subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
+  setSubtitleWorkbenchRailMode('tasks')
+  setActiveSubtitleWorkbenchStage(activeSubtitleTask.value ? resolvePreferredSubtitleWorkbenchStageForTask(activeSubtitleTask.value) : 'overview')
   clearSubtitleScanWorkspace()
   await nextTick()
   await refreshRJSubtitleStatus(false, { silent: true })
@@ -3841,7 +3400,11 @@ async function openSubtitleDialogWithPresetSelection (items = [], preferredKey =
       folder_name: item.folder_name || getFileName(item.folder_path),
       rjcode: item.rjcode || extractRJCode(item.folder_path || '') || '',
       task_id: item.task_id || '',
+        queue_state: String(item.queue_state || ''),
       queue_message: item.queue_message || '',
+        downloaded_count: Number(item.downloaded_count || 0),
+        existing_subtitle_count: Number(item.existing_subtitle_count || 0),
+        awaiting_manual_match: Boolean(item.awaiting_manual_match),
       manual_match_completed: Boolean(item.manual_match_completed),
       manual_match_applied_pairs: Number(item.manual_match_applied_pairs || 0),
       manual_match_deleted_subtitles: Number(item.manual_match_deleted_subtitles || 0)
@@ -3856,6 +3419,8 @@ async function openSubtitleDialogWithPresetSelection (items = [], preferredKey =
 
   subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
+  setSubtitleWorkbenchRailMode('scan')
+  setActiveSubtitleWorkbenchStage(resolvePreferredSubtitleWorkbenchStageForSelection(normalizedItems[0]))
   clearSubtitleScanWorkspace()
   subtitleSelectionLoading.value = false
   subtitleSelectionSourceItems.value = normalizedItems
@@ -3865,6 +3430,28 @@ async function openSubtitleDialogWithPresetSelection (items = [], preferredKey =
   clearSubtitleInspectorState()
   await nextTick()
   await refreshRJSubtitleStatus(false, { silent: true })
+
+  normalizedItems
+    .filter(item => item.task_id && !findSubtitleTaskBySelection(item))
+    .forEach(item => {
+      const optimisticTask = {
+        ...createOptimisticSubtitleTask(item, item.task_id),
+        status: item.awaiting_manual_match || item.manual_match_completed ? 'completed' : 'pending',
+        progress: item.awaiting_manual_match || item.manual_match_completed ? 100 : 0,
+        current_step: item.queue_message || (item.awaiting_manual_match ? '等待手动配对' : '等待字幕生成'),
+        downloaded_count: 0,
+        existing_subtitle_count: Math.max(Number(item.existing_subtitle_count || 0), Number(item.downloaded_count || 0)),
+        subtitle_dir: item.awaiting_manual_match || item.manual_match_completed || Number(item.downloaded_count || 0) > 0 || Number(item.existing_subtitle_count || 0) > 0
+          ? joinFolderPath(item.folder_path, 'subtitles')
+          : '',
+        awaiting_manual_match: Boolean(item.awaiting_manual_match),
+        manual_match_completed: Boolean(item.manual_match_completed),
+        manual_match_applied_pairs: Number(item.manual_match_applied_pairs || 0),
+        manual_match_deleted_subtitles: Number(item.manual_match_deleted_subtitles || 0),
+        history_restored: true
+      }
+      upsertSubtitleTaskLocal(optimisticTask)
+    })
 }
 
 async function consumeSubtitleBatchSelectionRoute () {
@@ -3891,22 +3478,25 @@ async function consumeSubtitleRouteFocus () {
   }
   subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
+  setSubtitleWorkbenchRailMode(taskId ? 'tasks' : 'scan')
   await nextTick()
   await refreshRJSubtitleStatus(false, { silent: true })
 
   const matchedTask = subtitleTasks.value.find(item => item.id === taskId)
   if (matchedTask) {
     if (matchedTask.subtitle_dir) {
-      await inspectSubtitleTask(matchedTask)
+      await handleSubtitleWorkbenchInspectTask(matchedTask)
     } else {
       focusSubtitleTask(matchedTask.id)
+      setSubtitleWorkbenchRailMode('tasks')
+      setActiveSubtitleWorkbenchStage(resolvePreferredSubtitleWorkbenchStageForTask(matchedTask))
     }
     await clearSubtitleRouteFocusQuery()
     return
   }
 
   if (folderPath) {
-    await inspectSubtitleSelectionFolder({
+    await handleSubtitleWorkbenchInspectSelectionFolder({
       library_id: resolvedLibraryId || selectedLibraryId.value,
       folder_path: folderPath,
       folder_name: getFileName(folderPath),
@@ -3938,6 +3528,8 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
   }
   subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = true
+  setSubtitleWorkbenchRailMode('scan')
+  setActiveSubtitleWorkbenchStage('overview')
   clearSubtitleScanWorkspace()
   subtitleSelectionLoading.value = true
   subtitleSelectionSourceItems.value = uniqueSubtitleItems(directItems)
@@ -4156,6 +3748,11 @@ async function submitRJSubtitleTasks (items, options = {}) {
       ? skipIfExistingSubtitlesOverride
       : subtitleOptions.value.skipIfExistingSubtitles
   const executableItems = [...rawItems]
+  const executableItemByPath = new Map(
+    executableItems
+      .filter(item => String(item?.folder_path || '').trim())
+      .map(item => [normalizeLibraryPathKey(item.folder_path), item])
+  )
 
   subtitleSubmitting.value = true
   try {
@@ -4168,6 +3765,36 @@ async function submitRJSubtitleTasks (items, options = {}) {
       useFilterRules: subtitleOptions.value.useFilterRules,
       subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules),
       batchContext
+    })
+    ;(Array.isArray(data?.tasks) ? data.tasks : []).forEach(createdTask => {
+      const taskId = String(createdTask?.task_id || '').trim()
+      if (!taskId) return
+      const sourcePath = normalizeLibraryPathKey(createdTask?.source_path || '')
+      const matchedItem = executableItemByPath.get(sourcePath)
+      if (!matchedItem) return
+      const taskCreatedAt = new Date().toISOString()
+      upsertSubtitleTaskLocal({
+        ...createOptimisticSubtitleTask(matchedItem, taskId),
+        created_at: taskCreatedAt
+      })
+      upsertSubtitleSelectionEntry(matchedItem, {
+        task_id: taskId,
+        task_created_at: taskCreatedAt,
+        queue_state: 'queued',
+        queue_message: '已加入任务'
+      })
+    })
+    ;(Array.isArray(data?.skipped_items) ? data.skipped_items : []).forEach(skippedItem => {
+      const queueState = String(skippedItem?.queue_state || '').trim()
+      if (!queueState) return
+      const sourcePath = normalizeLibraryPathKey(skippedItem?.source_path || '')
+      const matchedItem = executableItemByPath.get(sourcePath)
+      if (!matchedItem) return
+      upsertSubtitleSelectionEntry(matchedItem, {
+        task_id: String(skippedItem?.task_id || '').trim(),
+        queue_state: queueState,
+        queue_message: skippedItem?.queue_message || matchedItem.queue_message || ''
+      })
     })
     if (refresh) await refreshRJSubtitleStatus(false, { silent: true })
     const firstCreatedTaskId = data.tasks?.[0]?.task_id
@@ -4983,6 +4610,43 @@ async function refreshStatsAfterMutation (options = {}) {
   await refreshStats(true, { refreshLibraryId: libraryId })
 }
 
+function resolvePreferredSubtitleWorkbenchStageForTask (task) {
+  if (!task) return 'overview'
+  if (task.awaiting_manual_match) return 'pairing'
+  if (task.manual_match_completed && task.subtitle_dir) return 'tree'
+  if (task.subtitle_dir) return 'pairing'
+  return 'overview'
+}
+
+function resolvePreferredSubtitleWorkbenchStageForSelection (item) {
+  if (!item) return 'overview'
+  const matchedTask = findSubtitleTaskBySelection(item)
+  if (matchedTask) return resolvePreferredSubtitleWorkbenchStageForTask(matchedTask)
+  if (canInspectSubtitleSelectionFolder(item)) return 'pairing'
+  return 'overview'
+}
+
+function setSubtitleWorkbenchContextMode (mode) {
+  subtitleWorkbenchContextMode.value = ['settings', 'pairing', 'tree'].includes(mode) ? mode : 'settings'
+}
+
+function setActiveSubtitleWorkbenchStage (stage, options = {}) {
+  const nextStage = ['overview', 'pairing', 'tree'].includes(stage) ? stage : 'overview'
+  activeSubtitleWorkbenchStage.value = nextStage
+  if (options.syncContext === false) return
+  if (nextStage === 'pairing') setSubtitleWorkbenchContextMode('pairing')
+  else if (nextStage === 'tree') setSubtitleWorkbenchContextMode('tree')
+  else setSubtitleWorkbenchContextMode('settings')
+}
+
+function setSubtitleWorkbenchRailMode (mode) {
+  subtitleWorkbenchRailMode.value = mode === 'tasks' ? 'tasks' : 'scan'
+}
+
+function toggleSubtitleWorkbenchDrawer () {
+  subtitleWorkbenchDrawerCollapsed.value = !subtitleWorkbenchDrawerCollapsed.value
+}
+
 async function focusSubtitleSelectionItem (item) {
   if (!item?.folder_path) return
   subtitlePreferredSelectionKey.value = buildSubtitleSelectionKey(item)
@@ -5092,6 +4756,18 @@ async function forceCreateSubtitleTaskForSelection (item) {
   }
 }
 
+async function handleSubtitleWorkbenchSelectSelection (item, options = {}) {
+  await focusSubtitleSelectionItem(item)
+  setSubtitleWorkbenchRailMode('scan')
+  setActiveSubtitleWorkbenchStage(options.stage || resolvePreferredSubtitleWorkbenchStageForSelection(item))
+}
+
+async function handleSubtitleWorkbenchInspectSelectionFolder (item, options = {}) {
+  await inspectSubtitleSelectionFolder(item, options)
+  setSubtitleWorkbenchRailMode('scan')
+  setActiveSubtitleWorkbenchStage(options.stage || 'tree')
+}
+
 function isSubtitleSelectionActive (item) {
   return buildSubtitleSelectionKey(item) === buildSubtitleSelectionKey(focusedSubtitleSelectionItem.value)
 }
@@ -5105,6 +4781,18 @@ async function selectSubtitleTask (task) {
     return
   }
   clearSubtitleInspectorState()
+}
+
+async function handleSubtitleWorkbenchSelectTask (task, options = {}) {
+  await selectSubtitleTask(task)
+  setSubtitleWorkbenchRailMode('tasks')
+  setActiveSubtitleWorkbenchStage(options.stage || resolvePreferredSubtitleWorkbenchStageForTask(task))
+}
+
+async function handleSubtitleWorkbenchInspectTask (task, options = {}) {
+  await inspectSubtitleTask(task, options)
+  setSubtitleWorkbenchRailMode('tasks')
+  setActiveSubtitleWorkbenchStage(options.stage || resolvePreferredSubtitleWorkbenchStageForTask(task))
 }
 
 async function refreshCurrentView () {
@@ -5410,6 +5098,9 @@ function syncSubtitleInspectorTaskState () {
   if (!subtitleInspectorInfo.value.taskId) return
   const task = subtitleTasks.value.find(item => item.id === subtitleInspectorInfo.value.taskId)
   if (!task?.subtitle_dir) {
+    if (subtitleInspectorInfo.value.subtitleDir && subtitleInspectorInfo.value.folderPath) {
+      return
+    }
     clearSubtitleInspectorState()
     return
   }
@@ -5438,6 +5129,27 @@ async function ensureSubtitleInspectorFocus () {
     await inspectSubtitleTask(preferredTask)
     return
   }
+
+  const preferredSelectionItem = subtitleDialogSelection.value.find(
+    item => buildSubtitleSelectionKey(item) === subtitlePreferredSelectionKey.value
+  ) || null
+  if (preferredSelectionItem && canInspectSubtitleSelectionFolder(preferredSelectionItem)) {
+    await inspectSubtitleSelectionFolder(preferredSelectionItem, {
+      force: true,
+      preferredTaskId: preferredSelectionItem.task_id || ''
+    })
+    return
+  }
+
+  const inspectableSelectionItem = subtitleDialogSelection.value.find(item => canInspectSubtitleSelectionFolder(item)) || null
+  if (inspectableSelectionItem) {
+    await inspectSubtitleSelectionFolder(inspectableSelectionItem, {
+      force: true,
+      preferredTaskId: inspectableSelectionItem.task_id || ''
+    })
+    return
+  }
+
   const nextTask = sortSubtitleTasksByCreatedAt(subtitleTasks.value.filter(task => task.subtitle_dir && isSubtitleTaskAwaitingManualWork(task)))[0]
     || sortSubtitleTasksByCreatedAt(subtitleTasks.value.filter(task => task.subtitle_dir))[0]
   if (nextTask?.subtitle_dir) {
@@ -7089,9 +6801,114 @@ function statsStatusTextDisplay (stats) {
 .filter-delete-floating-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .name-preview, .path-code { font-family: monospace; font-size: 13px; word-break: break-all; }
 .name-preview { padding: 8px 12px; background: #f8f9fa; border: 1px solid #e4e7ed; border-radius: 4px; color: #606266; }
-.subtitle-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.subtitle-dialog-title { font-size: 18px; font-weight: 700; color: #1f2d3d; }
-.subtitle-dialog-header-actions { display: flex; align-items: center; gap: 8px; }
+.subtitle-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 2px 2px 0;
+}
+
+.subtitle-dialog-title-block {
+  display: grid;
+  gap: 5px;
+}
+
+.subtitle-dialog-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+}
+
+.subtitle-dialog-title-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.subtitle-dialog-subtitle {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #64748b;
+}
+
+.subtitle-dialog-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.subtitle-dialog-action-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  line-height: 1;
+}
+
+.subtitle-dialog-action-btn:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+.subtitle-dialog-action-btn:active {
+  transform: scale(0.97);
+}
+
+.subtitle-dialog-action-close {
+  border-color: #fecaca;
+  background: #fff5f5;
+  color: #dc2626;
+}
+
+.subtitle-dialog-action-close:hover {
+  border-color: #f87171;
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.subtitle-task-dialog :deep(.el-dialog) {
+  width: min(1720px, calc(100vw - 28px)) !important;
+  max-width: calc(100vw - 28px);
+  margin-top: 3vh !important;
+  border-radius: 22px;
+  border: 1px solid #dbe5ef;
+  overflow: hidden;
+  box-shadow: 0 28px 60px rgba(15, 23, 42, 0.18);
+}
+
+.subtitle-task-dialog :deep(.el-dialog__header) {
+  margin-right: 0;
+  padding: 16px 18px 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  background: radial-gradient(circle at 92% -16%, rgba(148, 163, 184, 0.18), transparent 36%), linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.subtitle-task-dialog :deep(.el-dialog__body) {
+  padding: 14px 18px 18px;
+  max-height: 90vh;
+  overflow: auto;
+  background: linear-gradient(180deg, #f7fafd 0%, #f3f7fb 100%);
+}
 .subtitle-floating-card {
   position: fixed;
   right: 22px;
@@ -7115,437 +6932,16 @@ function statsStatusTextDisplay (stats) {
 .subtitle-floating-chip { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 999px; border: 1px solid #d8e5f8; background: #f5f9ff; font-size: 11px; font-weight: 600; color: #4f6787; }
 .subtitle-floating-text { font-size: 12px; line-height: 1.5; color: #51657f; word-break: break-all; }
 .subtitle-floating-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.subtitle-workbench {
-  --apple-bg: #f5f5f7;
-  --apple-surface: #ffffff;
-  --apple-surface-soft: #fafafc;
-  --apple-text: #1d1d1f;
-  --apple-text-soft: rgba(29, 29, 31, .78);
-  --apple-text-faint: rgba(29, 29, 31, .5);
-  --apple-blue: #0071e3;
-  --apple-blue-hover: #0077ed;
-  --apple-blue-soft: rgba(0, 113, 227, .08);
-  --apple-border: rgba(29, 29, 31, .08);
-  --apple-border-strong: rgba(29, 29, 31, .14);
-  --apple-shadow: 0 18px 44px rgba(0, 0, 0, .08);
-  display: grid;
-  gap: 16px;
+.subtitle-workbench-shell {
+  padding: 4px 0;
+  border-radius: 20px;
 }
-.subtitle-hero {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
-  padding: 22px 24px;
-  border: 1px solid rgba(255, 255, 255, .78);
-  border-radius: 22px;
-  background:
-    radial-gradient(circle at top right, rgba(0, 113, 227, .09), transparent 28%),
-    linear-gradient(180deg, #fbfbfd 0%, var(--apple-bg) 100%);
-  box-shadow: var(--apple-shadow);
+
+.subtitle-floating-chip.subtitle-mini-chip-danger {
+  color: #c53030;
+  background: #fff1f0;
+  border-color: #ffc8c2;
 }
-.subtitle-panel-title {
-  font-family: 'SF Pro Display', 'Helvetica Neue', 'PingFang SC', sans-serif;
-  font-size: 32px;
-  font-weight: 600;
-  color: var(--apple-text);
-  line-height: 1.08;
-  letter-spacing: -0.28px;
-}
-.subtitle-panel-desc {
-  margin-top: 8px;
-  color: var(--apple-text-soft);
-  line-height: 1.7;
-  max-width: 820px;
-  font-family: 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', sans-serif;
-  font-size: 14px;
-  font-weight: 400;
-  letter-spacing: -0.224px;
-}
-.subtitle-hero-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
-.subtitle-hero-chip, .subtitle-mini-chip, .subtitle-inline-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 11px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-  letter-spacing: -0.12px;
-}
-.subtitle-hero-chip { background: rgba(255, 255, 255, .92); color: var(--apple-text-soft); border: 1px solid rgba(255, 255, 255, .88); box-shadow: inset 0 0 0 1px rgba(29, 29, 31, .04); }
-.subtitle-hero-chip-button { cursor: pointer; transition: all .18s ease; }
-.subtitle-hero-chip-button:hover { border-color: rgba(0, 113, 227, .18); background: #f4f8ff; color: var(--apple-blue); transform: translateY(-1px); }
-.subtitle-hero-chip-button.active { border-color: rgba(0, 113, 227, .18); background: var(--apple-blue); color: #ffffff; box-shadow: 0 10px 22px rgba(0, 113, 227, .18); }
-.subtitle-mini-chip { background: #f4f6f9; color: #59697f; border: 1px solid #e6ebf2; }
-.subtitle-mini-chip-primary { color: var(--apple-blue); background: #edf4ff; border-color: #cfe0ff; }
-.subtitle-mini-chip-warning { color: #a76518; background: #fff7e6; border-color: #f5d3a2; }
-.subtitle-mini-chip-danger { color: #c53030; background: #fff1f0; border-color: #ffc8c2; }
-.subtitle-mini-chip-muted { color: #66778f; background: #f4f6f9; border-color: #dfe6ef; }
-.subtitle-inline-chip { background: #eef4ff; color: #31599b; border: 1px solid #d6e4ff; }
-.subtitle-inline-chip.is-success { color: #2f855a; background: #ecfdf3; border-color: #bfe3ca; }
-.subtitle-inline-chip.is-warning { color: #b7791f; background: #fff7e6; border-color: #f4d58d; }
-.subtitle-panel-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.subtitle-layout { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 14px; align-items: start; }
-.subtitle-side-column, .subtitle-main-column { display: grid; gap: 14px; min-width: 0; }
-.subtitle-config-card, .subtitle-selection-card, .subtitle-task-card, .subtitle-tree-card {
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, .78);
-  min-width: 0;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfbfd 100%);
-  box-shadow: var(--apple-shadow) !important;
-}
-.subtitle-config-card-strong { background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%); }
-.subtitle-workbench :deep(.el-card__header) { border-bottom: 1px solid rgba(29, 29, 31, .06); }
-.subtitle-workbench :deep(.el-card__body) { background: transparent; }
-.subtitle-workbench :deep(.el-button) {
-  border-radius: 999px;
-  font-family: 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', sans-serif;
-  font-weight: 500;
-  letter-spacing: -0.224px;
-}
-.subtitle-workbench :deep(.el-button--default) {
-  border-color: rgba(29, 29, 31, .08);
-  background: var(--apple-surface-soft);
-  color: var(--apple-text);
-}
-.subtitle-workbench :deep(.el-button--default:hover) {
-  border-color: rgba(0, 113, 227, .18);
-  background: #f4f8ff;
-  color: var(--apple-blue);
-}
-.subtitle-workbench :deep(.el-button--primary) {
-  border-color: var(--apple-blue);
-  background: var(--apple-blue);
-  color: #ffffff;
-}
-.subtitle-workbench :deep(.el-button--primary:hover) {
-  border-color: var(--apple-blue-hover);
-  background: var(--apple-blue-hover);
-  color: #ffffff;
-}
-.subtitle-workbench :deep(.el-button--success),
-.subtitle-workbench :deep(.el-button--warning),
-.subtitle-workbench :deep(.el-button--danger),
-.subtitle-workbench :deep(.el-button.is-plain) {
-  border-color: rgba(29, 29, 31, .08);
-  background: var(--apple-surface-soft);
-  color: var(--apple-text);
-}
-.subtitle-workbench :deep(.el-button--success:hover),
-.subtitle-workbench :deep(.el-button--warning:hover),
-.subtitle-workbench :deep(.el-button.is-plain:hover) {
-  border-color: rgba(0, 113, 227, .18);
-  background: #f4f8ff;
-  color: var(--apple-blue);
-}
-.subtitle-workbench :deep(.el-button--danger),
-.subtitle-workbench :deep(.el-button--danger.is-plain) {
-  border-color: rgba(215, 0, 21, .18);
-  background: #fff5f5;
-  color: #d70015;
-}
-.subtitle-workbench :deep(.el-button--danger:hover),
-.subtitle-workbench :deep(.el-button--danger.is-plain:hover) {
-  border-color: rgba(215, 0, 21, .28);
-  background: #fff0f0;
-  color: #c40017;
-}
-.subtitle-workbench :deep(.el-input__wrapper),
-.subtitle-workbench :deep(.el-select__wrapper),
-.subtitle-workbench :deep(.el-textarea__inner),
-.subtitle-workbench :deep(.el-input-number) {
-  border-radius: 12px;
-  background: var(--apple-surface-soft);
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, .06);
-}
-.subtitle-workbench :deep(.el-switch__core) {
-  border-color: rgba(29, 29, 31, .08);
-  background: #e9e9ed;
-}
-.subtitle-workbench :deep(.el-switch.is-checked .el-switch__core) {
-  background: var(--apple-blue);
-  border-color: var(--apple-blue);
-}
-.subtitle-workbench :deep(.el-button:focus-visible),
-.subtitle-workbench :deep(.el-select__wrapper.is-focused),
-.subtitle-workbench :deep(.el-input__wrapper.is-focus),
-.subtitle-workbench :deep(.el-textarea__inner:focus) {
-  outline: 2px solid var(--apple-blue);
-  outline-offset: 2px;
-}
-.subtitle-task-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; min-width: 0; }
-.subtitle-option-stack { display: grid; gap: 14px; min-width: 0; }
-.subtitle-switch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 14px; padding: 12px 0; border-bottom: 1px dashed #e9eef5; }
-.subtitle-switch-row-wrap { grid-template-columns: 1fr; }
-.subtitle-switch-row:last-of-type { border-bottom: none; }
-.subtitle-switch-row > div:first-child { min-width: 0; }
-.subtitle-switch-row :deep(.el-input-number) { width: 96px; }
-.subtitle-switch-row :deep(.el-radio-group) { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
-.subtitle-option-title { font-size: 14px; font-weight: 700; color: var(--apple-text); letter-spacing: -0.224px; }
-.subtitle-filter-editor { display: grid; gap: 10px; margin-top: 4px; padding: 12px; border-radius: 12px; background: #f8fbff; border: 1px solid #e2ebfb; }
-.subtitle-filter-editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.subtitle-filter-empty { padding: 10px 12px; border-radius: 10px; border: 1px dashed #cfdcf2; color: #6a7d97; font-size: 12px; background: #fff; }
-.subtitle-filter-list { display: grid; gap: 8px; }
-.subtitle-filter-row { display: grid; grid-template-columns: minmax(0, 108px) minmax(0, 1fr); gap: 8px; align-items: center; }
-.subtitle-filter-row > :nth-child(3) { grid-column: 1 / -1; }
-.subtitle-filter-row > :nth-child(4) { justify-self: start; }
-.subtitle-filter-row > :nth-child(5) { justify-self: end; }
-.subtitle-filter-target { width: 100%; }
-.subtitle-filter-name { min-width: 0; }
-.subtitle-filter-pattern { min-width: 0; }
-.subtitle-divider-label { margin: 16px 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .04em; color: #7f8da3; text-transform: uppercase; }
-.subtitle-pill-grid { display: flex; gap: 8px; flex-wrap: wrap; }
-.subtitle-toggle-pill { padding: 8px 12px; border-radius: 999px; border: 1px solid rgba(29, 29, 31, .08); background: #fff; color: rgba(29, 29, 31, .72); cursor: pointer; font-size: 12px; font-weight: 600; transition: all .18s ease; }
-.subtitle-toggle-pill.active { background: var(--apple-blue); border-color: var(--apple-blue); color: #ffffff; box-shadow: 0 8px 20px rgba(0, 113, 227, .16); }
-.subtitle-card-tip { font-size: 12px; color: #7b8797; line-height: 1.6; }
-.subtitle-selection-live { display: grid; gap: 8px; min-height: 120px; }
-.subtitle-selection-section { display: grid; gap: 8px; }
-.subtitle-selection-section-split { margin-top: 2px; padding-top: 12px; border-top: 1px dashed #e7edf6; }
-.subtitle-selection-subhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.subtitle-selection-subhead-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.subtitle-selection-subhead-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 1; min-width: 0; flex-wrap: wrap; }
-.subtitle-selection-subtitle { font-size: 13px; font-weight: 700; color: #2f3f56; }
-.subtitle-selection-loading { display: flex; align-items: center; gap: 8px; min-height: 64px; color: #6d7c91; font-size: 13px; }
-.subtitle-selection-list, .subtitle-task-list { display: grid; gap: 10px; }
-.subtitle-selection-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; min-height: 32px; }
-.subtitle-selection-header-main { display: flex; align-items: center; min-width: 0; flex: 1; }
-.subtitle-selection-header-top { display: flex; align-items: center; gap: 10px; min-width: 0; justify-content: space-between; width: 100%; }
-.subtitle-selection-header-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; font-weight: 700; color: #263a57; }
-.subtitle-selection-count-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 8px; border-radius: 999px; background: #edf4ff; color: #2458a6; border: 1px solid #d3e2ff; font-size: 11px; font-weight: 700; line-height: 1; }
-.subtitle-selection-progress { margin-left: auto; font-size: 12px; color: #7b8ba5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; display: inline-flex; align-items: center; min-height: 24px; }
-.subtitle-selection-pager { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-height: 24px; font-size: 12px; color: #6c7d93; white-space: nowrap; flex-shrink: 0; }
-.subtitle-selection-filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
-.subtitle-chip-button { cursor: pointer; transition: border-color .18s ease, background .18s ease, color .18s ease, box-shadow .18s ease; }
-.subtitle-chip-button:hover {
-  border-color: rgba(0, 113, 227, .18);
-  background: #f4f8ff;
-  color: var(--apple-blue);
-}
-.subtitle-chip-button.active { color: #2458a8; background: #eef5ff; border-color: #bfd4ff; box-shadow: 0 0 0 2px rgba(64, 158, 255, .08); }
-.subtitle-section-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: none; background: transparent; color: #6a7d97; font-size: 12px; font-weight: 600; cursor: pointer; }
-.subtitle-section-toggle .el-icon { transition: transform .18s ease; }
-.subtitle-section-toggle .el-icon.is-collapsed { transform: rotate(-90deg); }
-.subtitle-selection-item { width: 100%; padding: 11px 12px; border: 1px solid #e9eef5; border-radius: 12px; background: #fbfcfe; text-align: left; cursor: pointer; transition: border-color .18s ease, box-shadow .18s ease, background .18s ease; }
-.subtitle-selection-item:hover { border-color: #bfd4f6; box-shadow: 0 8px 18px rgba(59, 88, 135, .08); background: #fff; }
-.subtitle-selection-item.active { border-color: #9fc4ff; box-shadow: 0 0 0 3px rgba(64, 158, 255, .08); background: #f6faff; }
-.subtitle-selection-item.skipped { border-style: dashed; background: #fcfdff; }
-.subtitle-selection-body { display: grid; gap: 6px; }
-.subtitle-selection-name { font-size: 13px; font-weight: 700; color: #24364f; line-height: 1.45; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.subtitle-selection-submeta { display: grid; gap: 2px; min-width: 0; }
-.subtitle-selection-library { font-size: 11px; font-weight: 600; color: #4d678b; }
-.subtitle-selection-path { font-size: 11px; color: #7a8ba3; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.subtitle-selection-stats { display: flex; gap: 6px; flex-wrap: wrap; }
-.subtitle-selection-note { font-size: 11px; color: #66788f; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
-.subtitle-selection-actions { display: flex; gap: 6px; flex-wrap: wrap; padding-top: 1px; }
-.subtitle-scan-result-summary-compact { margin-bottom: 12px; }
-.subtitle-mini-chip-success { color: #2f855a; background: #ecfdf3; border: 1px solid #bfe3ca; }
-.subtitle-scan-result-wrap,
-.subtitle-scan-skip-wrap { margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf1f6; }
-.subtitle-scan-skip-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
-.subtitle-scan-result-summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-.subtitle-scan-result-list,
-.subtitle-scan-skip-list { display: grid; gap: 8px; max-height: 220px; overflow: auto; padding-right: 4px; }
-.subtitle-scan-skip-title { margin-bottom: 0; font-size: 13px; font-weight: 700; color: #516176; }
-.subtitle-scan-result-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 10px 11px; border: 1px solid #e8edf5; border-radius: 12px; background: #fbfcfe; }
-.subtitle-scan-result-row.skipped { background: #fffdf8; }
-.subtitle-scan-result-main { min-width: 0; display: grid; gap: 4px; align-content: start; }
-.subtitle-scan-result-name { font-size: 13px; font-weight: 700; color: #24364f; line-height: 1.45; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.subtitle-scan-result-submeta { display: grid; gap: 2px; min-width: 0; }
-.subtitle-scan-result-library { font-size: 11px; font-weight: 600; color: #4d678b; }
-.subtitle-scan-result-path { font-size: 11px; color: #7a8ba3; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.subtitle-scan-result-meta { flex-shrink: 0; display: grid; gap: 5px; justify-items: end; align-content: start; max-width: 260px; }
-.subtitle-scan-result-status { display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
-.subtitle-scan-result-status.status-pending { color: #5f7390; background: #eef2f7; }
-.subtitle-scan-result-status.status-success { color: #2f855a; background: #ecfdf3; }
-.subtitle-scan-result-status.status-no_audio { color: #b7791f; background: #fff7e6; }
-.subtitle-scan-result-status.status-no_match { color: #7b8797; background: #f5f7fa; }
-.subtitle-scan-result-status.status-failed { color: #c53030; background: #fff1f0; }
-.subtitle-scan-result-message { font-size: 11px; color: #6d7c91; text-align: right; line-height: 1.45; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 260px; }
-.subtitle-card-fade-enter-active,
-.subtitle-card-fade-leave-active { transition: opacity .22s ease, transform .22s ease; }
-.subtitle-card-fade-enter-from,
-.subtitle-card-fade-leave-to { opacity: 0; transform: translateY(10px); }
-.subtitle-section-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
-.subtitle-section-tip { font-size: 12px; color: #7c8ba1; line-height: 1.5; }
-.subtitle-task-detail { padding: 14px; border: 1px solid #e9eef5; border-radius: 16px; background: linear-gradient(180deg, #fbfcfe 0%, #ffffff 100%); transition: border-color .18s ease, box-shadow .18s ease; min-width: 0; overflow: hidden; }
-.subtitle-task-detail.active { border-color: #9fc4ff; box-shadow: 0 0 0 3px rgba(64, 158, 255, .08); }
-.subtitle-task-finish-alert { margin-top: 12px; }
-.subtitle-task-detail-collapse { margin-top: 12px; border-top: 1px solid #eef2f7; }
-.subtitle-task-detail-collapse :deep(.el-collapse-item__wrap) { border-bottom: none; background: transparent; }
-.subtitle-task-detail-collapse :deep(.el-collapse-item__header) { padding: 2px 4px; font-weight: 600; color: #2d405e; background: transparent; border-bottom: 1px solid #eef2f7; }
-.subtitle-task-detail-collapse :deep(.el-collapse-item__content) { padding: 12px 0 4px; }
-.subtitle-collapse-title { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; padding-right: 10px; }
-.subtitle-task-queue-head {
-  position: relative;
-  z-index: 3;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-top: 2px;
-  min-width: 0;
-}
-.subtitle-task-queue-filters {
-  position: relative;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-  pointer-events: auto;
-}
-.subtitle-task-queue-filters > * {
-  position: relative;
-  z-index: 5;
-  pointer-events: auto;
-}
-.subtitle-task-rail {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-.subtitle-task-queue-rail { padding-top: 2px; }
-.subtitle-task-rail::-webkit-scrollbar { height: 8px; }
-.subtitle-task-rail::-webkit-scrollbar-thumb { background: #d8e2f0; border-radius: 999px; }
-.subtitle-task-compact { min-width: 240px; max-width: 280px; padding: 12px 14px; border-radius: 14px; border: 1px solid #e4ebf5; background: #fff; text-align: left; cursor: pointer; transition: all .18s ease; box-shadow: 0 1px 2px rgba(31, 46, 67, .04); }
-.subtitle-task-compact:hover { border-color: #bfd4f6; box-shadow: 0 8px 18px rgba(59, 88, 135, .08); transform: translateY(-1px); }
-.subtitle-task-compact.active { border-color: #9fc4ff; box-shadow: 0 0 0 3px rgba(64, 158, 255, .08); }
-.subtitle-task-compact.processing { background: linear-gradient(180deg, #fffdf7 0%, #ffffff 100%); border-color: #f1d59d; }
-.subtitle-task-compact.finished { background: linear-gradient(180deg, #f6fcf8 0%, #ffffff 100%); border-color: #bfe3ca; }
-.subtitle-task-compact-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
-.subtitle-task-compact-rj { font-size: 16px; font-weight: 700; color: #23406f; }
-.subtitle-task-compact-status { display: inline-flex; align-items: center; justify-content: center; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-.subtitle-task-compact-status.status-pending { color: #606266; background: #f2f3f5; }
-.subtitle-task-compact-status.status-processing { color: #b7791f; background: #fff7e6; }
-.subtitle-task-compact-status.status-completed { color: #2f855a; background: #ecfdf3; }
-.subtitle-task-compact-status.status-awaiting_manual_match { color: #b7791f; background: #fff7e6; }
-.subtitle-task-compact-status.status-manual_match_completed { color: #2f855a; background: #ecfdf3; }
-.subtitle-task-compact-status.status-failed { color: #c53030; background: #fff1f0; }
-.subtitle-task-compact-status.status-cancelled { color: #5e718c; background: #eef2f7; }
-.subtitle-task-compact-folder { margin-top: 8px; color: #42556d; font-weight: 600; line-height: 1.5; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.subtitle-task-compact-step { margin-top: 8px; font-size: 12px; color: #6d7c91; line-height: 1.5; min-height: 36px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.subtitle-task-compact-meta { margin-top: 10px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; font-size: 12px; color: #5e718c; }
-.subtitle-task-meta-chip { display: inline-flex; align-items: center; justify-content: center; width: fit-content; padding: 2px 8px; border-radius: 999px; font-weight: 700; }
-.subtitle-task-meta-chip.is-success { color: #2f855a; background: #ecfdf3; }
-.subtitle-task-meta-chip.is-warning { color: #b7791f; background: #fff7e6; }
-.subtitle-task-compact-actions { margin-top: 8px; display: flex; justify-content: flex-end; }
-.subtitle-task-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; min-width: 0; }
-.subtitle-task-head > div:first-child { min-width: 0; flex: 1; }
-.subtitle-task-rj { font-size: 18px; font-weight: 700; color: #23406f; }
-.subtitle-task-folder { margin-top: 4px; color: #42556d; font-weight: 600; word-break: break-all; min-width: 0; }
-.subtitle-task-source,
-.subtitle-task-compact-source { margin-top: 4px; font-size: 12px; color: #7b8797; line-height: 1.5; word-break: break-all; min-width: 0; }
-.subtitle-task-meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; min-width: 0; flex-shrink: 1; }
-.subtitle-task-lang { font-size: 12px; color: #7b8797; }
-.subtitle-task-step { margin-top: 10px; color: #516176; font-size: 13px; min-width: 0; word-break: break-word; }
-.subtitle-task-inline-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; min-width: 0; }
-.subtitle-task-error { margin-top: 10px; padding: 8px 10px; border-radius: 10px; background: #fff1f0; border: 1px solid #ffd7d4; color: #ca4e4a; font-size: 13px; }
-.subtitle-task-grid { margin-top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
-.subtitle-task-box { padding: 10px 12px; border-radius: 12px; border: 1px solid #edf1f6; background: #fff; min-width: 0; }
-.subtitle-task-box-wide { grid-column: 1 / -1; }
-.subtitle-task-box-title { margin-bottom: 8px; font-size: 13px; font-weight: 700; color: #24364f; }
-.subtitle-written-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 176px; overflow: auto; padding-right: 4px; }
-.subtitle-written-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid #edf1f6; border-radius: 10px; background: #fbfcfe; }
-.subtitle-written-name { flex: 1; min-width: 0; line-height: 1.45; word-break: break-all; }
-.subtitle-written-type { flex-shrink: 0; font-size: 12px; color: #5f7390; background: #eef4ff; border: 1px solid #d6e4ff; border-radius: 999px; padding: 2px 8px; }
-.subtitle-box-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-.subtitle-box-meta { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; font-size: 12px; color: #7c8ba1; }
-.subtitle-inline-row { display: grid; grid-template-columns: 120px 80px 1fr; gap: 8px; font-size: 13px; color: #607084; padding: 3px 0; }
-.subtitle-inline-primary { color: #24364f; font-weight: 600; word-break: break-all; }
-.subtitle-log-list { display: grid; gap: 6px; width: 100%; max-height: 260px; overflow: auto; padding-right: 4px; }
-.subtitle-log-row { display: grid; grid-template-columns: 72px 64px minmax(0, 1fr); gap: 8px; width: 100%; align-items: start; font-size: 13px; color: #607084; padding: 4px 0; }
-.subtitle-log-time { color: #8a97aa; font-variant-numeric: tabular-nums; }
-.subtitle-log-level { display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 700; }
-.subtitle-log-level.level-info { color: #31599b; background: #eef4ff; }
-.subtitle-log-level.level-success { color: #2f855a; background: #ecfdf3; }
-.subtitle-log-level.level-warning { color: #b7791f; background: #fff7e6; }
-.subtitle-log-level.level-error { color: #c53030; background: #fff1f0; }
-.subtitle-download-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; max-height: 180px; overflow: auto; padding-right: 4px; }
-.subtitle-download-row { display: grid; gap: 6px; padding: 8px 10px; border-radius: 10px; border: 1px solid #edf1f6; background: #fbfcfe; min-width: 0; }
-.subtitle-download-head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
-.subtitle-download-name { flex: 1; line-height: 1.4; word-break: break-all; font-size: 12px; }
-.subtitle-download-percent { flex-shrink: 0; font-size: 12px; font-weight: 700; color: #5a6f8f; }
-.subtitle-issue-list { display: grid; gap: 8px; max-height: 240px; overflow: auto; padding-right: 4px; }
-.subtitle-issue-item { padding: 10px 12px; border-radius: 12px; border: 1px solid #edf1f6; background: #fbfcfe; }
-.subtitle-issue-item.issue-warning { background: #fffaf2; border-color: #f5dfb0; }
-.subtitle-issue-item.issue-error { background: #fff4f3; border-color: #ffd7d4; }
-.subtitle-issue-kind { font-size: 12px; font-weight: 700; color: #6f8098; letter-spacing: .04em; }
-.subtitle-issue-title { margin-top: 6px; font-size: 14px; font-weight: 700; color: #24364f; word-break: break-all; line-height: 1.5; }
-.subtitle-issue-content, .subtitle-issue-detail { margin-top: 6px; font-size: 13px; color: #516176; line-height: 1.7; word-break: break-word; white-space: pre-wrap; }
-.subtitle-tree-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
-.subtitle-tree-action-tip { font-size: 12px; color: #7c8ba1; }
-.subtitle-tree-shell { display: grid; gap: 12px; min-height: 520px; }
-.subtitle-inspector-empty { display: grid; gap: 10px; padding: 18px 0 8px; }
-.subtitle-empty-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
-.subtitle-tree-info { display: grid; gap: 8px; padding: 14px; border-radius: 14px; background: #f8fbff; border: 1px solid #e5eefb; }
-.subtitle-tree-title { font-size: 15px; font-weight: 700; color: #223754; }
-.subtitle-tree-path { font-size: 12px; color: #75859b; word-break: break-all; line-height: 1.6; }
-.subtitle-tree-meta { display: flex; gap: 8px; flex-wrap: wrap; }
-.subtitle-match-shell { display: grid; gap: 10px; padding: 12px; border: 1px solid #e7edf6; border-radius: 14px; background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%); }
-.subtitle-match-header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
-.subtitle-sequence-hint { margin-top: 6px; font-size: 12px; line-height: 1.55; color: #5a6f8f; }
-.subtitle-match-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px minmax(0, 1fr); gap: 10px; align-items: start; }
-.subtitle-match-panel, .subtitle-match-center { border: 1px solid #edf1f6; border-radius: 12px; background: #fff; padding: 10px; min-width: 0; }
-.subtitle-match-panel-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-bottom: 8px; }
-.subtitle-match-panel-tools { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
-.subtitle-match-filter-select { width: 96px; }
-.subtitle-match-search { width: 100%; margin-bottom: 8px; }
-.subtitle-match-list, .subtitle-match-pair-list { display: grid; gap: 8px; max-height: 280px; overflow: auto; padding-right: 2px; }
-.subtitle-match-item, .subtitle-match-pair { width: 100%; text-align: left; border: 1px solid #e7edf6; border-radius: 10px; background: #fbfcfe; padding: 8px 9px; cursor: pointer; transition: border-color .18s ease, background .18s ease, box-shadow .18s ease; }
-.subtitle-match-item:hover, .subtitle-match-pair:hover { border-color: #bfd4f6; background: #f6faff; }
-.subtitle-match-item.active, .subtitle-match-pair.active { border-color: #9fc4ff; box-shadow: 0 0 0 3px rgba(64, 158, 255, .08); background: #f3f8ff; }
-.subtitle-match-item.paired { opacity: .62; }
-.subtitle-match-item.queued { border-color: #7bb4ff; background: #f4f9ff; }
-.subtitle-match-item.suspicious, .subtitle-match-pair.suspicious { border-color: #f4c56d; background: #fffaf0; }
-.subtitle-match-name { font-size: 11px; font-weight: 700; color: #24364f; line-height: 1.35; word-break: break-word; }
-.subtitle-match-badge { display: inline-flex; align-items: center; margin-left: 6px; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; vertical-align: middle; }
-.subtitle-match-badge.badge-paired { color: #2f855a; background: #ecfdf3; }
-.subtitle-match-badge.badge-low { color: #b7791f; background: #fff7e6; }
-.subtitle-match-badge.badge-seq { color: #245b96; background: #e8f2ff; }
-.subtitle-match-meta { margin-top: 3px; font-size: 10px; color: #7b8797; line-height: 1.45; word-break: break-all; }
-.subtitle-match-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-.subtitle-match-preview-head { margin-bottom: 10px; }
-.subtitle-match-preview-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-.subtitle-match-pair { display: grid; gap: 4px; padding: 7px 8px; }
-.subtitle-match-pair-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; }
-.subtitle-match-pair-confidence { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px; font-weight: 700; }
-.subtitle-match-pair-confidence.confidence-high { color: #2f855a; background: #ecfdf3; }
-.subtitle-match-pair-confidence.confidence-medium { color: #31599b; background: #eef4ff; }
-.subtitle-match-pair-confidence.confidence-low { color: #b7791f; background: #fff7e6; }
-.subtitle-match-pair-reason { color: #7b8797; }
-.subtitle-match-pair-audio, .subtitle-match-pair-subtitle, .subtitle-match-pair-target { font-size: 12px; line-height: 1.5; word-break: break-all; }
-.subtitle-match-pair-audio { color: #23406f; font-weight: 700; }
-.subtitle-match-pair-arrow { color: #8da0bb; font-size: 12px; }
-.subtitle-match-pair-subtitle { color: #516176; }
-.subtitle-match-pair-target { color: #2f855a; font-weight: 700; }
-.subtitle-match-preview-line { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 8px; align-items: start; font-size: 11px; line-height: 1.4; }
-.subtitle-match-preview-result { grid-template-columns: 42px minmax(0, 1fr) auto minmax(0, 1fr); }
-.subtitle-match-preview-label { color: #8a97aa; font-size: 10px; font-weight: 700; letter-spacing: .02em; }
-.subtitle-match-preview-audio,
-.subtitle-match-preview-subtitle,
-.subtitle-match-preview-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.subtitle-match-preview-audio { color: #23406f; font-weight: 700; }
-.subtitle-match-preview-subtitle { color: #4f6f96; }
-.subtitle-match-preview-target { color: #2f855a; font-weight: 700; }
-.subtitle-match-preview-target-sep { color: #9ba9bd; font-size: 10px; align-self: center; }
-.subtitle-match-row-actions { display: flex; justify-content: flex-end; }
-.subtitle-match-empty { padding: 16px 12px; border: 1px dashed #d8e2f0; border-radius: 10px; background: #fbfcfe; color: #6e7f95; display: grid; gap: 6px; text-align: center; }
-.subtitle-tree-toolbar { display: flex; justify-content: flex-end; }
-.subtitle-tree-selection-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #f2d6d2; border-radius: 12px; background: #fff8f7; }
-.subtitle-tree-selection-count { font-size: 13px; font-weight: 700; color: #a24a43; }
-.subtitle-tree-selection-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.subtitle-tree-selection-tip { font-size: 12px; color: #8a97aa; }
-.subtitle-tree-head { padding-right: 10px; }
-.subtitle-tree-scroll { max-height: 420px; border: 1px solid #e9eef5; border-radius: 12px; }
-.subtitle-tree-row-actions { display: flex; gap: 8px; flex-wrap: nowrap; align-items: center; }
-.subtitle-tree-head,
-.subtitle-tree-scroll .fm-row { grid-template-columns: 42px minmax(0, 1fr) 110px 170px 124px; }
 .mapped-path-box { display: flex; flex-direction: column; gap: 10px; }
 .path-actions { display: flex; gap: 8px; }
 :deep(.fm-dialog .el-dialog) { border-radius: 8px; overflow: hidden; box-shadow: 0 16px 48px rgba(0,0,0,.18); }
@@ -7567,7 +6963,7 @@ function statsStatusTextDisplay (stats) {
 .fm-scroll { flex: 1; overflow: auto; contain: strict; }
 .fm-row { min-height: 36px; border-bottom: 1px solid #ebeef5; font-size: 13px; contain: layout paint style; }
 .fm-row-dir { background: #fafbfc; cursor: pointer; }
-.fm-row-selected { background: #ecf5ff !important; }
+.fm-row-selected { background: linear-gradient(90deg, rgba(226, 232, 240, 0.72), rgba(248, 250, 252, 0.96)) !important; }
 .fm-row-disabled { background: #fbfbfc; color: #a5afbc; }
 .fm-empty { display: flex; align-items: center; justify-content: center; height: 180px; color: #c0c4cc; font-size: 13px; }
 .fm-name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -7577,38 +6973,18 @@ function statsStatusTextDisplay (stats) {
 .fm-arrow-placeholder { width: 14px; flex: 0 0 14px; }
 .fm-file-icon { width: 22px; flex: 0 0 22px; display: inline-flex; align-items: center; justify-content: center; color: #409eff; }
 .fm-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fm-link-edit { background: #eef6ff; color: #3b6db3; border: 1px solid #bfd7ff; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+.fm-link-edit { background: #ffffff; color: #475569; border: 1px solid #d7dfec; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
 .fm-link-danger { background: #fff0f0; color: #f56c6c; border: 1px solid #fbc4c4; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
 .fm-check { width: 14px; height: 14px; cursor: pointer; accent-color: #409eff; }
 @media (max-width: 1280px) {
   .summary-grid { grid-template-columns: 1fr; }
   .card-header { flex-direction: column; align-items: flex-start; }
   .header-actions { width: 100%; justify-content: flex-start; }
-  .subtitle-layout,
-  .subtitle-task-grid,
-  .subtitle-match-layout { grid-template-columns: 1fr; }
-  .subtitle-task-box-wide { grid-column: auto; }
-  .subtitle-written-list { grid-template-columns: 1fr; }
-  .subtitle-switch-row { grid-template-columns: 1fr; }
-  .subtitle-switch-row :deep(.el-radio-group) { justify-content: flex-start; }
-  .subtitle-filter-row { grid-template-columns: 1fr; }
-  .subtitle-filter-row > :nth-child(3) { grid-column: auto; }
-  .subtitle-filter-row > :nth-child(4),
-  .subtitle-filter-row > :nth-child(5) { justify-self: stretch; }
-  .subtitle-download-list { grid-template-columns: 1fr; max-height: 220px; }
-  .subtitle-hero,
   .batch-bar,
   .path-toolbar { flex-direction: column; align-items: flex-start; }
   .batch-actions,
-  .path-toolbar-right,
-  .subtitle-panel-actions,
-  .subtitle-tree-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
-  .subtitle-task-compact { min-width: 220px; }
-  .subtitle-selection-header,
-  .subtitle-match-panel-tools { width: 100%; justify-content: space-between; flex-wrap: wrap; }
-  .subtitle-scan-result-row { grid-template-columns: 1fr; }
-  .subtitle-scan-result-meta { justify-items: start; max-width: none; }
-  .subtitle-scan-result-message { text-align: left; max-width: none; }
+  .path-toolbar-right { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   .filter-delete-floating-card { left: 12px; right: 12px; bottom: 12px; width: auto; }
 }
 </style>
+

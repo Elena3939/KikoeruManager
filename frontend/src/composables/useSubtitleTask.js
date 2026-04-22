@@ -263,10 +263,58 @@ export function useSubtitleTask ({
     }
   }
 
+  function buildRestoredSubtitleTaskFromInspector () {
+    if (!subtitleInspectorInfo.value?.taskId || !subtitleInspectorInfo.value?.folderPath || !subtitleInspectorInfo.value?.subtitleDir) {
+      return null
+    }
+    const matchedSelection = subtitleDialogSelection.value.find(item => (
+      buildSubtitleSelectionKey(item) === `${subtitleInspectorInfo.value.libraryId || selectedLibraryId.value || ''}::${String(subtitleInspectorInfo.value.folderPath).replace(/\\/g, '/')}`
+    )) || null
+    const restoredRJ = (
+      matchedSelection?.rjcode
+      || extractRJCode(subtitleInspectorInfo.value.folderPath || '')
+      || extractRJCode(subtitleInspectorInfo.value.manualMatchMessage || '')
+      || ''
+    )
+    return {
+      id: subtitleInspectorInfo.value.taskId,
+      library_id: subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
+      subtitle_library_id: subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
+      folder_path: subtitleInspectorInfo.value.folderPath,
+      folder_name: getFileName(subtitleInspectorInfo.value.folderPath),
+      rjcode: restoredRJ,
+      actual_rjcode: restoredRJ,
+      subtitle_dir: subtitleInspectorInfo.value.subtitleDir,
+      source_mode: subtitleInspectorInfo.value.sourceMode || '',
+      status: subtitleInspectorInfo.value.manualMatchCompleted ? 'completed' : 'pending',
+      current_step: subtitleInspectorInfo.value.manualMatchMessage || '字幕树已恢复',
+      error_message: '',
+      progress: subtitleInspectorInfo.value.manualMatchCompleted ? 100 : 0,
+      created_at: matchedSelection?.task_created_at || matchedSelection?.created_at || '',
+      written_files: [],
+      skipped_files: [],
+      write_errors: [],
+      failed_files: [],
+      match_result: {},
+      search_attempts: [],
+      download_files: [],
+      progress_log: [],
+      awaiting_manual_match: !subtitleInspectorInfo.value.manualMatchCompleted,
+      manual_match_completed: Boolean(subtitleInspectorInfo.value.manualMatchCompleted),
+      manual_match_applied_pairs: Number(subtitleInspectorInfo.value.manualMatchAppliedPairs || 0),
+      manual_match_deleted_subtitles: Number(subtitleInspectorInfo.value.manualMatchDeletedSubtitles || 0),
+      is_restored_from_inspector: true
+    }
+  }
+
   function getTaskDisplayRJCode (task) {
     return (
       task?.rjcode ||
       task?.actual_rjcode ||
+      extractRJCode(task?.source_title || '') ||
+      extractRJCode(task?.title || '') ||
+      extractRJCode(task?.current_step || '') ||
+      extractRJCode(task?.manual_match_message || '') ||
       extractRJCode(task?.folder_path || '') ||
       extractRJCode(task?.folder_name || '') ||
       '未知RJ'
@@ -359,7 +407,8 @@ export function useSubtitleTask ({
 
   function canRerunSubtitleTask (task) {
     if (!task?.folder_path || !task?.id) return false
-    if (['pending', 'processing'].includes(task.status)) return false
+    if (task.status === 'processing') return false
+    if (task.status === 'pending' && !isSubtitleTaskAwaitingManualWork(task) && !task.subtitle_dir) return false
     return !subtitleTaskRerunId.value && !subtitleForceQueueKey.value
   }
 
@@ -581,7 +630,51 @@ export function useSubtitleTask ({
   const subtitleDialogSessionActive = computed(() => subtitleDialogVisible.value || subtitleDialogBackgroundActive.value)
   const showSubtitleBackgroundCard = computed(() => subtitleDialogBackgroundActive.value && !subtitleDialogVisible.value)
 
-  const visibleSubtitleTasks = computed(() => subtitleTasks.value.filter(task => matchesSubtitleTaskFilter(task) && matchesSubtitleTaskManualFilter(task)))
+  const selectionBackfilledTasks = computed(() => {
+    const currentTasks = Array.isArray(subtitleTasks.value) ? subtitleTasks.value : []
+    const currentTaskIds = new Set(currentTasks.map(task => String(task?.id || '').trim()).filter(Boolean))
+    return uniqueSubtitleItems(Array.isArray(subtitleDialogSelection.value) ? subtitleDialogSelection.value : [])
+      .filter(item => {
+        const taskId = String(item?.task_id || '').trim()
+        if (!taskId || currentTaskIds.has(taskId)) return false
+        return ['queued', 'existing_task', 'awaiting_manual_match', 'manual_match_completed'].includes(String(item?.queue_state || '').trim())
+      })
+      .map(item => {
+        const taskId = String(item.task_id || '').trim()
+        const queueState = String(item.queue_state || '').trim()
+        const awaitingManualMatch = Boolean(item.awaiting_manual_match) || queueState === 'awaiting_manual_match'
+        const manualMatchCompleted = Boolean(item.manual_match_completed) || queueState === 'manual_match_completed'
+      return {
+        ...createOptimisticSubtitleTask(item, taskId),
+        created_at: String(item.task_created_at || item.created_at || ''),
+        status: awaitingManualMatch || manualMatchCompleted ? 'completed' : 'pending',
+        progress: awaitingManualMatch || manualMatchCompleted ? 100 : 0,
+          current_step: item.queue_message || (awaitingManualMatch ? '等待手动配对' : '等待字幕生成'),
+          downloaded_count: Number(item.downloaded_count || 0),
+          existing_subtitle_count: Math.max(Number(item.existing_subtitle_count || 0), Number(item.downloaded_count || 0)),
+          subtitle_dir: awaitingManualMatch || manualMatchCompleted || Number(item.downloaded_count || 0) > 0 || Number(item.existing_subtitle_count || 0) > 0
+            ? `${String(item.folder_path || '').replace(/[\\/]+$/, '')}/subtitles`
+            : '',
+          awaiting_manual_match: awaitingManualMatch,
+          manual_match_completed: manualMatchCompleted,
+          manual_match_applied_pairs: Math.max(0, Number(item.manual_match_applied_pairs || 0)),
+          manual_match_deleted_subtitles: Math.max(0, Number(item.manual_match_deleted_subtitles || 0)),
+          history_restored: true
+        }
+      })
+  })
+
+  const effectiveSubtitleTasks = computed(() => {
+    const restoredTask = buildRestoredSubtitleTaskFromInspector()
+    const mergedTasks = selectionBackfilledTasks.value.length
+      ? sortSubtitleTasksForWorkbench([...selectionBackfilledTasks.value, ...subtitleTasks.value])
+      : subtitleTasks.value
+    if (!restoredTask) return mergedTasks
+    if (mergedTasks.some(task => task.id === restoredTask.id)) return mergedTasks
+    return sortSubtitleTasksForWorkbench([restoredTask, ...mergedTasks])
+  })
+
+  const visibleSubtitleTasks = computed(() => effectiveSubtitleTasks.value.filter(task => matchesSubtitleTaskFilter(task) && matchesSubtitleTaskManualFilter(task)))
 
   const subtitleTaskSummary = computed(() => ({
     total: visibleSubtitleTasks.value.length,
@@ -592,21 +685,21 @@ export function useSubtitleTask ({
   }))
 
   const subtitleTaskOverview = computed(() => ([
-    { key: 'all', label: '任务', value: subtitleTasks.value.length },
-    { key: 'processing', label: '执行中', value: subtitleTasks.value.filter(task => task.status === 'processing').length },
-    { key: 'pending', label: '等待中', value: subtitleTasks.value.filter(task => task.status === 'pending').length },
-    { key: 'completed', label: '已完成', value: subtitleTasks.value.filter(task => task.status === 'completed' && !task.manual_match_completed).length },
-    { key: 'matched', label: '已匹配完成', value: subtitleTasks.value.filter(task => task.manual_match_completed).length },
-    { key: 'failed', label: '失败', value: subtitleTasks.value.filter(task => task.status === 'failed' || isRJSubtitleTaskCancelled(task)).length }
+    { key: 'all', label: '任务', value: effectiveSubtitleTasks.value.length },
+    { key: 'processing', label: '执行中', value: effectiveSubtitleTasks.value.filter(task => task.status === 'processing').length },
+    { key: 'pending', label: '等待中', value: effectiveSubtitleTasks.value.filter(task => task.status === 'pending').length },
+    { key: 'completed', label: '已完成', value: effectiveSubtitleTasks.value.filter(task => task.status === 'completed' && !task.manual_match_completed).length },
+    { key: 'matched', label: '已匹配完成', value: effectiveSubtitleTasks.value.filter(task => task.manual_match_completed).length },
+    { key: 'failed', label: '失败', value: effectiveSubtitleTasks.value.filter(task => task.status === 'failed' || isRJSubtitleTaskCancelled(task)).length }
   ]).filter(item => item.key === 'all' || item.value > 0))
 
   const subtitleTaskManualOverview = computed(() => ([
-    { key: 'all', label: '全部', value: subtitleTasks.value.length },
-    { key: 'awaiting_manual_match', label: '待处理', value: subtitleTasks.value.filter(task => isSubtitleTaskAwaitingManualWork(task)).length },
-    { key: 'processing', label: '执行中', value: subtitleTasks.value.filter(task => task.status === 'processing').length },
-    { key: 'pending', label: '等待中', value: subtitleTasks.value.filter(task => task.status === 'pending').length },
-    { key: 'manual_match_completed', label: '已匹配完成', value: subtitleTasks.value.filter(task => task.manual_match_completed).length },
-    { key: 'failed', label: '失败', value: subtitleTasks.value.filter(task => task.status === 'failed' || isRJSubtitleTaskCancelled(task)).length }
+    { key: 'all', label: '全部', value: effectiveSubtitleTasks.value.length },
+    { key: 'awaiting_manual_match', label: '待处理', value: effectiveSubtitleTasks.value.filter(task => isSubtitleTaskAwaitingManualWork(task)).length },
+    { key: 'processing', label: '执行中', value: effectiveSubtitleTasks.value.filter(task => task.status === 'processing').length },
+    { key: 'pending', label: '等待中', value: effectiveSubtitleTasks.value.filter(task => task.status === 'pending').length },
+    { key: 'manual_match_completed', label: '已匹配完成', value: effectiveSubtitleTasks.value.filter(task => task.manual_match_completed).length },
+    { key: 'failed', label: '失败', value: effectiveSubtitleTasks.value.filter(task => task.status === 'failed' || isRJSubtitleTaskCancelled(task)).length }
   ]))
 
   const orderedSubtitleTasks = computed(() => sortSubtitleTasksForWorkbench(visibleSubtitleTasks.value))
@@ -639,12 +732,12 @@ export function useSubtitleTask ({
     }
   })
 
-  const activeSubtitleInspectTask = computed(() => subtitleTasks.value.find(task => task.id === subtitleInspectorInfo.value.taskId) || null)
+  const activeSubtitleInspectTask = computed(() => effectiveSubtitleTasks.value.find(task => task.id === subtitleInspectorInfo.value.taskId) || null)
 
   const subtitleBackgroundActiveTask = computed(() => (
     activeSubtitleTask.value
-    || sortSubtitleTasksForWorkbench(subtitleTasks.value).find(task => ['processing', 'pending'].includes(task?.status))
-    || sortSubtitleTasksForWorkbench(subtitleTasks.value)[0]
+    || sortSubtitleTasksForWorkbench(effectiveSubtitleTasks.value).find(task => ['processing', 'pending'].includes(task?.status))
+    || sortSubtitleTasksForWorkbench(effectiveSubtitleTasks.value)[0]
     || null
   ))
 
@@ -787,7 +880,7 @@ export function useSubtitleTask ({
 
   function syncSubtitleSelectionState () {
     if (!subtitleDialogSelection.value.length) return
-    const tasksBySelectionKey = new Map(sortSubtitleTasksByCreatedAt(subtitleTasks.value).map(task => [buildSubtitleTaskSelectionKey(task), task]))
+    const tasksBySelectionKey = new Map(sortSubtitleTasksByCreatedAt(effectiveSubtitleTasks.value).map(task => [buildSubtitleTaskSelectionKey(task), task]))
     subtitleDialogSelection.value = subtitleDialogSelection.value
       .map(item => {
         const task = tasksBySelectionKey.get(buildSubtitleSelectionKey(item))
@@ -927,16 +1020,19 @@ export function useSubtitleTask ({
           preserveDetail: detailTaskIds.has(task.id)
         }))
       subtitleTasks.value = mergeSubtitleTasksWithOptimistic(remoteTasks)
-      if (!subtitleTasks.value.length) {
-        clearSubtitleInspectorState()
-      }
       syncSubtitleInspectorTaskState()
       syncSubtitleSelectionState()
-      if (subtitleInspectorInfo.value.taskId && !subtitleTasks.value.some(task => task.id === subtitleInspectorInfo.value.taskId && task.subtitle_dir)) {
+      if (
+        subtitleInspectorInfo.value.taskId &&
+        subtitleInspectorInfo.value.subtitleDir &&
+        !effectiveSubtitleTasks.value.some(task => task.id === subtitleInspectorInfo.value.taskId && task.subtitle_dir)
+      ) {
+        scheduleSubtitleStatusPoll(effectiveSubtitleTasks.value)
+      } else if (subtitleInspectorInfo.value.taskId && !effectiveSubtitleTasks.value.some(task => task.id === subtitleInspectorInfo.value.taskId && task.subtitle_dir)) {
         clearSubtitleInspectorState()
       }
       await ensureSubtitleInspectorFocus()
-      scheduleSubtitleStatusPoll(subtitleTasks.value)
+      scheduleSubtitleStatusPoll(effectiveSubtitleTasks.value)
       if (showMessage) ElMessage.success('字幕任务状态已刷新')
     } catch (error) {
       if (!silent) {

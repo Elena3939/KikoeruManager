@@ -1860,6 +1860,8 @@ function subtitleBatchWorkbenchItems(row) {
       const key = String(item?.id || item?.task_id || item?.source_path || '')
       const paired = isPairCompletedRow(item)
       const awaiting = isAwaitingManualPair(item)
+      const detail = item?.detail && typeof item.detail === 'object' ? item.detail : {}
+      const pairDetail = pairDetailPayload(item)
       return {
         key,
         taskId: resolveSubtitleTaskId(item),
@@ -1868,6 +1870,11 @@ function subtitleBatchWorkbenchItems(row) {
         rjcode: displayRjcode(item),
         folderName: String(item?.detail?.folder_name || '').trim() || compactPath(item?.source_path || ''),
         summary: displaySummary(item),
+        awaiting,
+        paired,
+        queueState: paired ? 'manual_match_completed' : (awaiting ? 'awaiting_manual_match' : 'queued'),
+        downloadedCount: Number(detail.downloaded_count || pairDetail.downloaded_count || 0),
+        existingSubtitleCount: Number(detail.existing_subtitle_count || pairDetail.existing_subtitle_count || 0),
         stateLabel: paired ? '配对✔' : (awaiting ? '待配对' : '已抓取'),
         stateClass: paired ? 'success' : (awaiting ? 'warning' : 'default')
       }
@@ -1939,7 +1946,12 @@ async function openSubtitleBatchWorkbench(row) {
         folder_path: item.folderPath || '',
         folder_name: item.folderName || '',
         rjcode: item.rjcode || '',
-        queue_message: item.summary || ''
+        queue_message: item.summary || '',
+        queue_state: item.queueState || '',
+        awaiting_manual_match: Boolean(item.awaiting),
+        manual_match_completed: Boolean(item.paired),
+        downloaded_count: Number(item.downloadedCount || 0),
+        existing_subtitle_count: Number(item.existingSubtitleCount || 0)
       })),
       preferred_key: `${pickedItems[0]?.libraryId || ''}::${String(pickedItems[0]?.folderPath || '').replace(/\\/g, '/')}`
     }))
