@@ -40,10 +40,30 @@ def fetch_counts(conn: sqlite3.Connection) -> dict[str, int]:
     ).fetchall():
         if is_temp_like_path(existing_path):
             temp_conflicts += 1
+    stale_processing_conflicts = cur.execute(
+        """
+        select count(*)
+          from conflict_works c
+          left join tasks t on t.id = c.task_id
+         where c.status='PROCESSING'
+           and (
+                ifnull(c.task_id, '') = ''
+                or t.id is null
+                or lower(ifnull(t.status, '')) not in (
+                    'pending',
+                    'processing',
+                    'paused',
+                    'waiting_manual',
+                    'waiting_retry'
+                )
+           )
+        """
+    ).fetchone()[0]
     return {
         "pending_execute_logs": int(pending_execute_logs or 0),
         "duplicate_success_logs": int(duplicate_success_logs or 0),
         "temp_conflicts": int(temp_conflicts or 0),
+        "stale_processing_conflicts": int(stale_processing_conflicts or 0),
     }
 
 
@@ -94,11 +114,50 @@ def apply_cleanup(conn: sqlite3.Connection) -> dict[str, int]:
     for conflict_id in deleted_conflict_ids:
         cur.execute("delete from conflict_works where id=?", (conflict_id,))
 
+    stale_processing_conflict_ids = [
+        row[0]
+        for row in cur.execute(
+            """
+            select c.id
+              from conflict_works c
+              left join tasks t on t.id = c.task_id
+             where c.status='PROCESSING'
+               and (
+                    ifnull(c.task_id, '') = ''
+                    or t.id is null
+                    or lower(ifnull(t.status, '')) not in (
+                        'pending',
+                        'processing',
+                        'paused',
+                        'waiting_manual',
+                        'waiting_retry'
+                    )
+               )
+            """
+        ).fetchall()
+    ]
+    for conflict_id in stale_processing_conflict_ids:
+        cur.execute(
+            """
+            update conflict_works
+               set status='PENDING',
+                   new_metadata=json_set(
+                       coalesce(new_metadata, '{}'),
+                       '$.resolution_task_state', 'stale_processing_recovered',
+                       '$.resolution_recovered_by', 'cleanup_dirty_activity_logs',
+                       '$.resolution_recovered_at', datetime('now', 'localtime')
+                   )
+             where id=?
+            """,
+            (conflict_id,),
+        )
+
     conn.commit()
     return {
         "deleted_pending_execute_logs": len(pending_ids),
         "updated_duplicate_success_logs": len(duplicate_ids),
         "deleted_temp_conflicts": len(deleted_conflict_ids),
+        "recovered_stale_processing_conflicts": len(stale_processing_conflict_ids),
     }
 
 

@@ -1811,7 +1811,8 @@ async def get_logs(lines: int = 100):
 async def get_conflicts():
     """获取问题作品列表"""
     from ..core.conflict_resolution_service import get_conflict_resolution_service
-    from ..models.database import ConflictWork, get_db
+    from ..core.task_engine import TaskStatus
+    from ..models.database import ConflictWork, Task as TaskRecord, get_db
 
     def _normalize_conflict_metadata(raw_metadata):
         if isinstance(raw_metadata, dict):
@@ -1830,6 +1831,26 @@ async def get_conflicts():
             return dict(raw_metadata)
         return {"raw_metadata": str(raw_metadata)}
 
+    active_task_statuses = {
+        TaskStatus.PENDING.value,
+        TaskStatus.PROCESSING.value,
+        TaskStatus.PAUSED.value,
+        TaskStatus.WAITING_MANUAL.value,
+        TaskStatus.WAITING_RETRY.value,
+    }
+
+    def _get_linked_task_status(task_id: Any) -> str:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            return ""
+
+        linked_task = engine.get_task(normalized_task_id)
+        if linked_task is not None:
+            return str(getattr(linked_task, "status", "") or "").strip().lower()
+
+        db_task = db.query(TaskRecord.status).filter(TaskRecord.id == normalized_task_id).first()
+        return str((db_task[0] if db_task else "") or "").strip().lower()
+
     db = next(get_db())
     try:
         resolution_service = get_conflict_resolution_service()
@@ -1844,15 +1865,8 @@ async def get_conflicts():
                 conflict.new_metadata = _normalize_conflict_metadata(conflict.new_metadata)
                 normalized_status = str(conflict.status or "").strip().upper()
                 if normalized_status == "PROCESSING":
-                    linked_task = engine.get_task(str(conflict.task_id or "").strip()) if conflict.task_id else None
-                    linked_task_status = str(getattr(linked_task, "status", "") or "").strip().lower()
-                    if linked_task_status not in {
-                        TaskStatus.PENDING.value,
-                        TaskStatus.PROCESSING.value,
-                        TaskStatus.PAUSED.value,
-                        TaskStatus.WAITING_MANUAL.value,
-                        TaskStatus.WAITING_RETRY.value,
-                    }:
+                    linked_task_status = _get_linked_task_status(conflict.task_id)
+                    if linked_task_status not in active_task_statuses:
                         conflict.status = "PENDING"
                         next_metadata = _normalize_conflict_metadata(conflict.new_metadata)
                         next_metadata["resolution_task_state"] = "stale_processing_recovered"
@@ -1935,6 +1949,25 @@ async def get_conflicts():
         raise HTTPException(status_code=500, detail=f"获取问题作品失败: {str(exc)}")
     finally:
         db.close()
+
+@app.get("/api/conflicts/count")
+async def get_conflicts_count(db: Session = Depends(get_db)):
+    """获取问题作品数量（轻量接口，供首页轮询使用）。"""
+    from ..models.database import ConflictWork
+
+    try:
+        total = (
+            db.query(func.count(ConflictWork.id))
+            .filter(
+                ConflictWork.status.in_(["PENDING", "PROCESSING"]),
+                ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
+            )
+            .scalar()
+        )
+        return {"count": int(total or 0)}
+    except Exception as exc:
+        logger.error("获取问题作品数量失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取问题作品数量失败: {exc}")
 
 @app.post("/api/conflicts/{conflict_id}/retry")
 async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[ConflictRetryRequest] = None):

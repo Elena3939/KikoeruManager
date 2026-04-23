@@ -539,6 +539,9 @@ onUnmounted(() => {
 
 let previousCompletedCount = 0
 let lastRefreshTime = 0
+let lastConflictRefreshTime = 0
+let cachedConflictCount = 0
+const CONFLICT_REFRESH_INTERVAL = 30000
 
 function stopDashboardPolling() {
   if (intervalId) {
@@ -581,13 +584,13 @@ async function initializeDashboardPage() {
 }
 
 async function refreshDashboardOnResume(silent = true) {
-  await refreshData({ silent })
+  await refreshData({ silent, forceConflictRefresh: true })
   await fetchWatcherStatus()
   await fetchProcessedArchivesSilently()
 }
 
 async function refreshData(options = {}) {
-  const { silent = false } = options
+  const { silent = false, forceConflictRefresh = false } = options
   if (refreshRunning) {
     refreshPending = true
     return
@@ -628,19 +631,26 @@ async function refreshData(options = {}) {
     previousCompletedCount = currentCompletedCount
 
     // 获取问题作品数量
-    let conflictCount = 0
-    try {
-      const data = await conflictApi.list()
-      conflictCount = data.conflicts?.length || 0
-    } catch (error) {
-      console.error('获取问题作品数量失败:', error)
+    const shouldRefreshConflicts =
+      forceConflictRefresh ||
+      !lastConflictRefreshTime ||
+      (now - lastConflictRefreshTime >= CONFLICT_REFRESH_INTERVAL)
+
+    if (shouldRefreshConflicts) {
+      try {
+        const data = await conflictApi.count()
+        cachedConflictCount = Number(data?.count || 0)
+        lastConflictRefreshTime = now
+      } catch (error) {
+        console.error('获取问题作品数量失败:', error)
+      }
     }
 
     stats.value = {
       pending: Number(derivedOverview?.counts_by_status?.pending || 0),
       processing: Number(derivedOverview?.counts_by_status?.processing || 0),
       completed: Number(derivedOverview?.counts_by_status?.completed || 0),
-      conflicts: conflictCount
+      conflicts: cachedConflictCount
     }
   } catch (error) {
     console.error('获取任务中心概览失败:', error)
@@ -900,7 +910,6 @@ function toggleArchiveSortOrder() {
 // 重新处理压缩包
 async function fetchProcessedArchivesSilently() {
   try {
-    await processedArchiveApi.scan()
     const params = {
       sort_by: archiveSortBy.value,
       sort_order: archiveSortOrder.value

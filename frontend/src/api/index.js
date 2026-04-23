@@ -242,6 +242,11 @@ export const conflictApi = {
     return response.data
   },
 
+  count: async () => {
+    const response = await apiClient.get('/conflicts/count')
+    return response.data
+  },
+
   retry: async (conflictId, payload = {}) => {
     const response = await apiClient.post(`/conflicts/${conflictId}/retry`, payload)
     return response.data
