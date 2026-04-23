@@ -407,6 +407,7 @@ export function useSettingsDraft() {
   const hasChanges = computed(() => serializedDraft.value !== serializedSnapshot.value)
 
   async function loadConfig() {
+    const hadLoadedConfig = !!(snapshot.value && Object.keys(snapshot.value || {}).length)
     try {
       loading.value = true
       const data = await configStore.fetchConfig()
@@ -416,8 +417,10 @@ export function useSettingsDraft() {
     } catch (error) {
       console.error('加载配置失败:', error)
       ElMessage.error('加载配置失败：' + (error.response?.data?.detail || error.message))
-      config.value = deepClone(defaultConfig)
-      snapshot.value = deepClone(defaultConfig)
+      if (!hadLoadedConfig) {
+        config.value = deepClone(defaultConfig)
+        snapshot.value = deepClone(defaultConfig)
+      }
     } finally {
       loading.value = false
     }

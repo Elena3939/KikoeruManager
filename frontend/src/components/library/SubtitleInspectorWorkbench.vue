@@ -319,66 +319,156 @@
         </div>
       </div>
 
-      <div v-if="showTree" class="subtitle-tree-toolbar">
-        <input :value="view.subtitleInspectorSearch" class="fm-search-input" placeholder="搜索字幕文件名或路径..." :disabled="view.subtitleInspectorBusy" @input="view.setSubtitleInspectorSearch($event.target.value)">
-      </div>
-
-      <div v-if="showTree && view.subtitleInspectorSelectedRows.length" class="subtitle-tree-selection-bar">
-        <span class="subtitle-tree-selection-count">已选 {{ view.subtitleInspectorSelectedRows.length }} 项</span>
-        <div class="subtitle-tree-selection-actions">
-          <span class="subtitle-tree-selection-tip">支持 Ctrl+A、Ctrl/Command + 点击多选、Shift + 点击范围选择</span>
-          <el-button size="small" type="danger" plain :loading="view.subtitleInspectorDeleting" :disabled="view.subtitleInspectorBusy && !view.subtitleInspectorDeleting" @click="view.batchDeleteSubtitleTreeEntries">删除选中</el-button>
-          <el-button size="small" :disabled="view.subtitleInspectorBusy" @click="view.clearSubtitleInspectorSelection">取消选择</el-button>
+      <div v-if="showTree" class="grid gap-3">
+        <div class="group/search flex items-center gap-2 rounded-[12px] border border-slate-200 bg-slate-50/60 px-3 py-2 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-within:border-sky-400 focus-within:bg-white focus-within:shadow-[0_0_0_3px_rgba(56,189,248,0.15)] hover:border-slate-300">
+          <Search :size="14" :stroke-width="2.2" class="shrink-0 text-slate-400 transition-all duration-300 group-focus-within/search:rotate-[-8deg] group-focus-within/search:scale-110 group-focus-within/search:text-sky-600" />
+          <input
+            :value="view.subtitleInspectorSearch"
+            type="text"
+            placeholder="搜索字幕文件名或路径..."
+            :disabled="view.subtitleInspectorBusy"
+            class="min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-0 disabled:cursor-not-allowed disabled:opacity-60"
+            @input="view.setSubtitleInspectorSearch($event.target.value)"
+          >
+          <button
+            v-if="view.subtitleInspectorSearch"
+            type="button"
+            class="group/clear inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-slate-400 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-110 hover:bg-slate-200 hover:text-slate-700 active:scale-90"
+            title="清空搜索"
+            @click="view.setSubtitleInspectorSearch('')"
+          >
+            <X :size="12" :stroke-width="2.6" class="transition-transform duration-300 group-hover/clear:rotate-90" />
+          </button>
         </div>
-      </div>
 
-      <div v-if="showTree" class="fm-head subtitle-tree-head">
-        <div class="fm-col-check">
-          <input type="checkbox" class="fm-check" :checked="view.subtitleInspectorAllSelected" :indeterminate.prop="view.subtitleInspectorSomeSelected" :disabled="view.subtitleInspectorBusy" @click="view.toggleAllSubtitleInspectorRows">
-        </div>
-        <div class="fm-col-name">文件名</div>
-        <div class="fm-col-size">大小</div>
-        <div class="fm-col-time">修改时间</div>
-        <div class="fm-col-action">操作</div>
-      </div>
-
-      <div v-if="showTree" class="fm-scroll subtitle-tree-scroll">
-        <div v-if="!view.subtitleInspectorLoading && view.subtitleInspectorFlatTree.length === 0" class="fm-empty">
-          {{ view.subtitleInspectorSearch ? '没有匹配的字幕文件' : '字幕目录为空' }}
-        </div>
-        <div
-          v-for="row in view.subtitleInspectorFlatTree"
-          :key="row.id"
-          class="fm-row"
-          :class="{ 'fm-row-dir': row.type === 'dir', 'fm-row-selected': view.subtitleInspectorSelectedIds.has(row.id) }"
-          @click="view.handleSubtitleInspectorRowClick(row, $event)"
-        >
-          <div class="fm-col-check" @click.stop>
-            <input type="checkbox" class="fm-check" :checked="view.subtitleInspectorSelectedIds.has(row.id)" :disabled="view.subtitleInspectorBusy" @click.stop="view.toggleSubtitleInspectorSelect(row, $event)">
-          </div>
-          <div class="fm-col-name">
-            <div class="fm-name-cell" :style="{ paddingLeft: `${row.depth * 18 + 4}px` }">
-              <button
-                v-if="row.type === 'dir'"
-                type="button"
-                class="fm-arrow-toggle"
-                :class="{ open: view.subtitleInspectorExpandedIds.has(row.id) }"
-                @click.stop="view.toggleSubtitleInspectorExpand(row)"
-              >
-                &gt;
-              </button>
-              <span v-else class="fm-arrow-placeholder"></span>
-              <span class="fm-file-icon">
-                <el-icon><component :is="view.resolveSubtitleTreeIcon(row)" /></el-icon>
+        <Transition name="sub-stage-fade">
+          <div v-if="view.subtitleInspectorSelectedRows.length" class="flex items-center justify-between gap-3 rounded-[12px] border border-indigo-200 bg-gradient-to-br from-indigo-50/70 via-white to-white px-3.5 py-2.5 shadow-[0_2px_8px_rgba(79,70,229,0.05)]">
+            <div class="flex items-center gap-2">
+              <span class="inline-flex h-6 w-6 items-center justify-center rounded-[7px] bg-indigo-500 text-white">
+                <CheckSquare :size="12" :stroke-width="2.4" />
               </span>
-              <span class="fm-name-text">{{ row.name }}</span>
+              <span class="text-[12.5px] font-semibold text-indigo-700">已选 {{ view.subtitleInspectorSelectedRows.length }} 项</span>
+              <span class="hidden text-[11px] text-indigo-600/70 md:inline">支持 Ctrl+A · Ctrl/Cmd 点击 · Shift 范围</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <button
+                type="button"
+                class="group/btn inline-flex items-center gap-1 rounded-[8px] border border-rose-300 bg-white px-3 py-1.5 text-[12px] font-medium text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-500 hover:bg-rose-500 hover:text-white hover:shadow-[0_4px_12px_rgba(244,63,94,0.25)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:scale-100"
+                :disabled="view.subtitleInspectorBusy && !view.subtitleInspectorDeleting"
+                @click="view.batchDeleteSubtitleTreeEntries"
+              >
+                <Trash2 :size="12" :stroke-width="2.2" :class="['transition-transform duration-300 group-hover/btn:rotate-[-8deg] group-hover/btn:scale-110', view.subtitleInspectorDeleting ? 'is-spinning' : '']" />
+                <span>删除选中</span>
+              </button>
+              <button
+                type="button"
+                class="group/btn inline-flex items-center gap-1 rounded-[8px] border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40"
+                :disabled="view.subtitleInspectorBusy"
+                @click="view.clearSubtitleInspectorSelection"
+              >
+                <XCircle :size="12" :stroke-width="2.2" class="transition-transform duration-300 group-hover/btn:rotate-90" />
+                <span>取消选择</span>
+              </button>
             </div>
           </div>
-          <div class="fm-col-size">{{ view.formatFileSize(row.size) }}</div>
-          <div class="fm-col-time">{{ view.formatDate(row.modified_time) }}</div>
-          <div class="fm-col-action subtitle-tree-row-actions" @click.stop>
-            <button v-if="row.type === 'file'" class="fm-link-edit" :disabled="view.subtitleInspectorBusy" @click="view.openSubtitleRenameDialog(row)">重命名</button>
-            <button class="fm-link-danger" :disabled="view.subtitleInspectorBusy" @click="view.deleteSubtitleTreeEntry(row)">删除</button>
+        </Transition>
+
+        <div class="overflow-hidden rounded-[14px] border border-slate-200 bg-white shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
+          <div class="grid grid-cols-[40px_minmax(0,1fr)_96px_156px_112px] items-center gap-2 border-b border-slate-100 bg-slate-50/60 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-slate-500">
+            <div class="flex items-center justify-center">
+              <input
+                type="checkbox"
+                class="h-3.5 w-3.5 cursor-pointer accent-slate-900"
+                :checked="view.subtitleInspectorAllSelected"
+                :indeterminate.prop="view.subtitleInspectorSomeSelected"
+                :disabled="view.subtitleInspectorBusy"
+                @click="view.toggleAllSubtitleInspectorRows"
+              >
+            </div>
+            <div>文件名</div>
+            <div>大小</div>
+            <div>修改时间</div>
+            <div class="text-right">操作</div>
+          </div>
+
+          <div class="max-h-[560px] overflow-auto [scrollbar-gutter:stable]">
+            <div v-if="!view.subtitleInspectorLoading && view.subtitleInspectorFlatTree.length === 0" class="flex items-center justify-center gap-2 px-4 py-10 text-[12px] text-slate-500">
+              <FileSearch :size="14" :stroke-width="2.2" class="text-slate-400" />
+              <span>{{ view.subtitleInspectorSearch ? '没有匹配的字幕文件' : '字幕目录为空' }}</span>
+            </div>
+            <div
+              v-for="row in view.subtitleInspectorFlatTree"
+              :key="row.id"
+              class="group/row grid cursor-pointer grid-cols-[40px_minmax(0,1fr)_96px_156px_112px] items-center gap-2 border-b border-slate-50 px-3 py-2 transition-all duration-200 ease-out last:border-b-0 hover:bg-slate-50/60"
+              :class="[
+                row.type === 'dir' ? 'bg-slate-50/30' : '',
+                view.subtitleInspectorSelectedIds.has(row.id) ? '!bg-indigo-50/70 ring-1 ring-inset ring-indigo-200' : ''
+              ]"
+              @click="view.handleSubtitleInspectorRowClick(row, $event)"
+            >
+              <div class="flex items-center justify-center" @click.stop>
+                <input
+                  type="checkbox"
+                  class="h-3.5 w-3.5 cursor-pointer accent-slate-900"
+                  :checked="view.subtitleInspectorSelectedIds.has(row.id)"
+                  :disabled="view.subtitleInspectorBusy"
+                  @click.stop="view.toggleSubtitleInspectorSelect(row, $event)"
+                >
+              </div>
+              <div class="min-w-0">
+                <div class="flex items-center gap-1.5" :style="{ paddingLeft: `${row.depth * 16}px` }">
+                  <button
+                    v-if="row.type === 'dir'"
+                    type="button"
+                    class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] text-slate-400 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:bg-slate-100 hover:text-slate-900 active:scale-90"
+                    @click.stop="view.toggleSubtitleInspectorExpand(row)"
+                  >
+                    <ChevronRight
+                      :size="12"
+                      :stroke-width="2.4"
+                      class="transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                      :class="view.subtitleInspectorExpandedIds.has(row.id) ? 'rotate-90' : ''"
+                    />
+                  </button>
+                  <span v-else class="inline-block h-5 w-5 shrink-0"></span>
+                  <span
+                    class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/row:rotate-[6deg] group-hover/row:scale-110"
+                    :class="row.type === 'dir'
+                      ? 'bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-100'
+                      : 'bg-sky-50 text-sky-600 ring-1 ring-inset ring-sky-100'"
+                  >
+                    <FolderClosed v-if="row.type === 'dir' && !view.subtitleInspectorExpandedIds.has(row.id)" :size="12" :stroke-width="2.2" />
+                    <FolderOpen v-else-if="row.type === 'dir'" :size="12" :stroke-width="2.2" />
+                    <FileText v-else :size="12" :stroke-width="2.2" />
+                  </span>
+                  <span class="truncate text-[13px] font-medium text-slate-900" :title="row.name">{{ row.name }}</span>
+                </div>
+              </div>
+              <div class="text-[12px] font-medium tabular-nums text-slate-600">{{ view.formatFileSize(row.size) }}</div>
+              <div class="text-[12px] tabular-nums text-slate-500">{{ view.formatDate(row.modified_time) }}</div>
+              <div class="flex items-center justify-end gap-1" @click.stop>
+                <el-tooltip v-if="row.type === 'file'" effect="light" placement="top" content="重命名">
+                  <button
+                    type="button"
+                    class="group/act inline-flex h-7 w-7 items-center justify-center rounded-[7px] border border-slate-200 bg-white text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.08] hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 hover:shadow-[0_4px_10px_rgba(79,70,229,0.15)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
+                    :disabled="view.subtitleInspectorBusy"
+                    @click="view.openSubtitleRenameDialog(row)"
+                  >
+                    <Pencil :size="12" :stroke-width="2.2" class="transition-transform duration-300 group-hover/act:rotate-[-12deg]" />
+                  </button>
+                </el-tooltip>
+                <el-tooltip effect="light" placement="top" content="删除">
+                  <button
+                    type="button"
+                    class="group/act inline-flex h-7 w-7 items-center justify-center rounded-[7px] border border-slate-200 bg-white text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.08] hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 hover:shadow-[0_4px_10px_rgba(244,63,94,0.15)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
+                    :disabled="view.subtitleInspectorBusy"
+                    @click="view.deleteSubtitleTreeEntry(row)"
+                  >
+                    <Trash2 :size="12" :stroke-width="2.2" class="transition-transform duration-300 group-hover/act:rotate-[-8deg] group-hover/act:scale-110" />
+                  </button>
+                </el-tooltip>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -394,21 +484,29 @@ import {
   RefreshCw,
   ChevronsDown,
   ChevronsUp,
+  ChevronRight,
   FolderOpen,
+  FolderClosed,
   Hash,
   Link,
   Link2,
   Music,
   FileText,
+  FileSearch,
   Database,
   CircleX,
   Wand2,
   MousePointerClick,
   ListOrdered,
   CheckCircle2,
+  CheckSquare,
   RotateCcw,
   Trash2,
-  ArrowRight
+  ArrowRight,
+  Search,
+  X,
+  XCircle,
+  Pencil
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -823,16 +921,15 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-tree-info-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .subtitle-tree-title {
   font-family: 'SF Pro Display', 'Helvetica Neue', 'PingFang SC', sans-serif;
-  font-size: 28px;
+  font-size: 22px;
   font-weight: 600;
   color: #1d1d1f;
-  line-height: 1.14;
-  letter-spacing: -0.28px;
-  word-break: break-all;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  line-height: 1.18;
+  letter-spacing: -0.22px;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
 }
 .subtitle-tree-title-md { font-size: 24px; font-weight: 600; line-height: 1.14; letter-spacing: -0.24px; }
 .subtitle-tree-meta { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1254,63 +1351,4 @@ function formatSubtitleItemName(item = {}) {
 }
 .fm-link-edit:active, .fm-link-danger:active { transform: scale(0.95); }
 .fm-check { width: 14px; height: 14px; accent-color: #64748b; cursor: pointer; }
-.fm-search-input {
-  width: 100%;
-  height: 42px;
-  padding: 0 16px;
-  border: 1px solid #d6e1ec;
-  border-radius: 14px;
-  outline: none;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-  font-size: 14px;
-  color: #23384f;
-  transition: border-color .2s ease, box-shadow .2s ease;
-}
-.fm-search-input:focus {
-  border-color: rgba(148, 163, 184, 0.84);
-  box-shadow: 0 0 0 4px rgba(226, 232, 240, 0.92);
-}
-.fm-search-input:disabled { background: #f5f6f8; color: var(--apple-text-faint); }
-.subtitle-tree-card :deep(.el-button:focus-visible),
-.fm-search-input:focus-visible,
-.fm-link-edit:focus-visible,
-.fm-link-danger:focus-visible,
-.subtitle-match-item:focus-visible,
-.subtitle-match-pair:focus-visible,
-.workbench-icon-btn:focus-visible,
-.workbench-pill-btn:focus-visible,
-.workbench-primary-btn:focus-visible,
-.workbench-text-btn:focus-visible,
-.subtitle-filter-chip:focus-visible,
-.fm-arrow-toggle:focus-visible {
-  outline: 2px solid #94a3b8;
-  outline-offset: 2px;
-}
-@media (max-width: 1200px) {
-  .subtitle-match-layout { grid-template-columns: 1fr; }
-}
-@media (max-width: 768px) {
-  .subtitle-section-header,
-  .subtitle-match-header,
-  .subtitle-tree-selection-bar { flex-direction: column; align-items: flex-start; }
-  .subtitle-match-preview-grid { grid-template-columns: 1fr; }
-}
-</style>
-
-<style>
-/* Tooltip 挂载到 body，需非 scoped；浅灰底替代默认深色气泡 */
-.subtitle-inspector-tooltip.el-popper {
-  background: #e8e8ec !important;
-  border: 1px solid rgba(29, 29, 31, 0.1) !important;
-  color: #1d1d1f !important;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08) !important;
-  padding: 8px 12px !important;
-  font-size: 13px !important;
-  line-height: 1.45 !important;
-  max-width: min(320px, calc(100vw - 24px));
-}
-.subtitle-inspector-tooltip.el-popper .el-popper__arrow::before {
-  background: #e8e8ec !important;
-  border: 1px solid rgba(29, 29, 31, 0.1) !important;
-}
 </style>

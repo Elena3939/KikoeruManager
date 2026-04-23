@@ -2,10 +2,16 @@
   <div class="subtitle-config-card">
     <template v-if="mode === 'settings'">
       <div class="subtitle-option-stack">
-        <section class="subtitle-settings-block">
-          <div class="subtitle-block-head">
-            <div class="subtitle-block-title">抓取行为</div>
-            <div class="subtitle-block-tip">建任务和扫描命中策略。</div>
+        <!-- 抓取行为 -->
+        <section class="subtitle-settings-block group/card">
+          <div class="flex items-center gap-3">
+            <span class="header-badge">
+              <SlidersHorizontal class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[8deg]" :stroke-width="2.4" />
+            </span>
+            <div class="min-w-0">
+              <div class="subtitle-block-title">抓取行为</div>
+              <div class="subtitle-block-tip">建任务和扫描命中策略。</div>
+            </div>
           </div>
 
           <div class="subtitle-setting-list">
@@ -50,10 +56,16 @@
           </div>
         </section>
 
-        <section class="subtitle-settings-block">
-          <div class="subtitle-block-head">
-            <div class="subtitle-block-title">命名与筛选</div>
-            <div class="subtitle-block-tip">配对后的命名口径和候选字幕过滤。</div>
+        <!-- 命名与筛选 -->
+        <section class="subtitle-settings-block group/card">
+          <div class="flex items-center gap-3">
+            <span class="header-badge">
+              <Filter class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[-8deg]" :stroke-width="2.4" />
+            </span>
+            <div class="min-w-0">
+              <div class="subtitle-block-title">命名与筛选</div>
+              <div class="subtitle-block-tip">配对后的命名口径和候选字幕过滤。</div>
+            </div>
           </div>
 
           <div class="subtitle-setting-list">
@@ -83,11 +95,19 @@
                 <div class="subtitle-option-title subtitle-option-title-sm">字幕过滤规则</div>
                 <div class="subtitle-card-tip">按文件名、路径或全文本匹配候选字幕。</div>
               </div>
-              <el-button size="small" class="subtitle-inline-btn" @click="ctx.addSubtitleFilterRule()">添加规则</el-button>
+              <button
+                type="button"
+                class="group/btn inline-flex shrink-0 items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-900 hover:bg-slate-900 hover:text-white hover:shadow-[0_8px_16px_rgba(15,23,42,0.18)] active:scale-[0.96]"
+                @click="ctx.addSubtitleFilterRule()"
+              >
+                <Plus class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:rotate-[90deg] group-hover/btn:scale-110" :stroke-width="2.4" />
+                <span>添加规则</span>
+              </button>
             </div>
 
             <div v-if="!ctx.subtitleOptions.subtitleFilterRules.length" class="subtitle-filter-empty">
-              还没有规则，先加一条。
+              <Inbox class="h-[14px] w-[14px] text-slate-400" :stroke-width="2.2" />
+              <span>还没有规则，先加一条。</span>
             </div>
 
             <div v-else class="subtitle-filter-list">
@@ -103,31 +123,47 @@
                 <el-input v-model="rule.name" size="small" placeholder="规则名称" />
                 <el-input v-model="rule.pattern" size="small" placeholder="正则，例如 (反转|reverse|无SE)" />
                 <div class="subtitle-filter-row-actions">
-                  <el-button size="small" text type="danger" @click="ctx.removeSubtitleFilterRule(rule.id)">删除</el-button>
+                  <button
+                    type="button"
+                    class="group/btn inline-flex items-center gap-1 rounded-[8px] border border-rose-200 bg-white px-2.5 py-1 text-[11.5px] font-semibold text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-500 hover:bg-rose-500 hover:text-white hover:shadow-[0_8px_16px_rgba(244,63,94,0.25)] active:scale-[0.96]"
+                    @click="ctx.removeSubtitleFilterRule(rule.id)"
+                  >
+                    <Trash2 class="h-[12px] w-[12px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:rotate-[-12deg] group-hover/btn:scale-110" :stroke-width="2.4" />
+                    <span>删除</span>
+                  </button>
                 </div>
               </div>
             </div>
           </div>
         </section>
 
-        <section class="subtitle-settings-block">
-          <div class="subtitle-block-head">
-            <div class="subtitle-block-title">任务展示</div>
-            <div class="subtitle-block-tip">只控制面板显示，不影响执行和日志写入。</div>
+        <!-- 任务展示 -->
+        <section class="subtitle-settings-block group/card">
+          <div class="flex items-center gap-3">
+            <span class="header-badge">
+              <LayoutPanelLeft class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[8deg]" :stroke-width="2.4" />
+            </span>
+            <div class="min-w-0">
+              <div class="subtitle-block-title">任务展示</div>
+              <div class="subtitle-block-tip">只控制面板显示，不影响执行和日志写入。</div>
+            </div>
           </div>
 
           <div class="subtitle-pill-grid">
-            <button type="button" class="subtitle-toggle-pill" :class="{ active: ctx.subtitleOptions.showSourceSearch }" @click="ctx.setSubtitleOption('showSourceSearch', !ctx.subtitleOptions.showSourceSearch)">
-              来源搜索
-            </button>
-            <button type="button" class="subtitle-toggle-pill" :class="{ active: ctx.subtitleOptions.showWrittenFiles }" @click="ctx.setSubtitleOption('showWrittenFiles', !ctx.subtitleOptions.showWrittenFiles)">
-              写入结果
-            </button>
-            <button type="button" class="subtitle-toggle-pill" :class="{ active: ctx.subtitleOptions.showDownloadedFiles }" @click="ctx.setSubtitleOption('showDownloadedFiles', !ctx.subtitleOptions.showDownloadedFiles)">
-              下载进度
-            </button>
-            <button type="button" class="subtitle-toggle-pill" :class="{ active: ctx.subtitleOptions.showIssues }" @click="ctx.setSubtitleOption('showIssues', !ctx.subtitleOptions.showIssues)">
-              问题项
+            <button
+              v-for="pill in displayPills"
+              :key="pill.key"
+              type="button"
+              class="group/pill subtitle-toggle-pill"
+              :class="{ active: ctx.subtitleOptions[pill.key] }"
+              @click="ctx.setSubtitleOption(pill.key, !ctx.subtitleOptions[pill.key])"
+            >
+              <component
+                :is="pill.icon"
+                :class="['h-[13px] w-[13px] shrink-0 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/pill:scale-110 group-hover/pill:rotate-[8deg]', ctx.subtitleOptions[pill.key] ? '' : pill.color]"
+                :stroke-width="2.4"
+              />
+              <span>{{ pill.label }}</span>
             </button>
           </div>
         </section>
@@ -135,89 +171,185 @@
     </template>
 
     <template v-else-if="mode === 'pairing'">
-      <div class="subtitle-config-mode-title">配对助手</div>
-      <div class="subtitle-config-mode-copy">顺序点选、配对数量和关键动作都集中在这里。</div>
       <div class="subtitle-option-stack">
-        <div class="subtitle-help-card">
-          <div class="subtitle-option-title">选中快照</div>
-          <div class="subtitle-help-stats">
-            <span class="subtitle-help-stat">
-              <em>音频轨</em>
-              <strong>{{ ctx.pairingAudioSelectedCount || 0 }}</strong>
+        <!-- 选中快照 -->
+        <section class="subtitle-settings-block group/card">
+          <div class="flex items-center gap-3">
+            <span class="header-badge">
+              <Gauge class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[8deg]" :stroke-width="2.4" />
             </span>
-            <span class="subtitle-help-stat">
-              <em>字幕轨</em>
-              <strong>{{ ctx.pairingSubtitleSelectedCount || 0 }}</strong>
-            </span>
-            <span class="subtitle-help-stat">
-              <em>配对组</em>
-              <strong>{{ ctx.pairingPairCount || 0 }}</strong>
-            </span>
-          </div>
-        </div>
-
-        <div class="subtitle-help-card">
-          <div class="subtitle-option-title">快捷动作</div>
-          <div class="subtitle-card-tip">先点音频，再点字幕，生成顺序预配对。</div>
-          <div class="subtitle-help-actions">
-            <el-button size="small" plain :disabled="!ctx.canClearSequenceSelection" @click="ctx.clearSubtitleSequenceSelection">清空顺序</el-button>
-            <el-button size="small" plain :disabled="!ctx.canClearManualPairs" @click="ctx.clearSubtitleManualPairs">清空配对</el-button>
-          </div>
-        </div>
-
-        <div class="subtitle-help-card subtitle-help-card-danger">
-          <div class="subtitle-danger-row">
-            <div>
-              <div class="subtitle-option-title">删除预审</div>
-              <div class="subtitle-card-tip">已移出主流程，避免和配对动作混用。</div>
+            <div class="min-w-0">
+              <div class="subtitle-block-title">选中快照</div>
+              <div class="subtitle-block-tip">顺序点选、配对数量，一目了然。</div>
             </div>
-            <el-button
-              size="small"
-              type="danger"
-              plain
+          </div>
+          <div class="stat-trio">
+            <div
+              v-for="row in pairingRows"
+              :key="row.key"
+              class="stat-cell group/stat"
+            >
+              <div class="flex items-center gap-1.5 text-slate-500">
+                <component
+                  :is="row.icon"
+                  :class="['h-[14px] w-[14px] shrink-0 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/stat:scale-110 group-hover/stat:rotate-[12deg]', row.color]"
+                  :stroke-width="2.2"
+                />
+                <span class="text-[11.5px] font-semibold tracking-[-0.005em] truncate">{{ row.label }}</span>
+              </div>
+              <div class="mt-1 text-[30px] font-black leading-none text-slate-900 tabular-nums tracking-[-0.04em] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/stat:-translate-y-0.5">{{ row.value }}</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 快捷动作 -->
+        <section class="subtitle-settings-block group/card">
+          <div class="flex items-center gap-3">
+            <span class="header-badge">
+              <Zap class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[-12deg]" :stroke-width="2.4" />
+            </span>
+            <div class="min-w-0">
+              <div class="subtitle-block-title">快捷动作</div>
+              <div class="subtitle-block-tip">先点音频，再点字幕，生成顺序预配对。</div>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              class="group/btn flex items-center justify-center gap-1.5 rounded-[12px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-semibold text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] enabled:hover:-translate-y-0.5 enabled:hover:scale-[1.02] enabled:hover:border-slate-300 enabled:hover:bg-slate-50 enabled:hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] enabled:active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-slate-50/40"
+              :disabled="!ctx.canClearSequenceSelection"
+              @click="ctx.clearSubtitleSequenceSelection"
+            >
+              <Eraser class="h-[14px] w-[14px] text-slate-500 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] enabled:group-hover/btn:rotate-[-12deg] enabled:group-hover/btn:scale-110" :stroke-width="2.2" />
+              <span>清空顺序</span>
+            </button>
+            <button
+              type="button"
+              class="group/btn flex items-center justify-center gap-1.5 rounded-[12px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-semibold text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] enabled:hover:-translate-y-0.5 enabled:hover:scale-[1.02] enabled:hover:border-slate-300 enabled:hover:bg-slate-50 enabled:hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] enabled:active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-slate-50/40"
+              :disabled="!ctx.canClearManualPairs"
+              @click="ctx.clearSubtitleManualPairs"
+            >
+              <Unlink class="h-[14px] w-[14px] text-slate-500 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] enabled:group-hover/btn:rotate-[12deg] enabled:group-hover/btn:scale-110" :stroke-width="2.2" />
+              <span>清空配对</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- 删除预审 -->
+        <section class="subtitle-settings-block subtitle-help-card-danger group/card">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-center gap-3 min-w-0">
+              <span class="header-badge header-badge-danger">
+                <ShieldAlert class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[8deg]" :stroke-width="2.4" />
+              </span>
+              <div class="min-w-0">
+                <div class="subtitle-block-title">删除预审</div>
+                <div class="subtitle-block-tip">已移出主流程，避免和配对动作混用。</div>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="group/btn inline-flex shrink-0 items-center gap-1.5 rounded-[10px] border border-rose-200 bg-white px-3 py-2 text-[12px] font-bold text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] enabled:hover:-translate-y-0.5 enabled:hover:scale-[1.02] enabled:hover:border-rose-500 enabled:hover:bg-rose-500 enabled:hover:text-white enabled:hover:shadow-[0_10px_18px_rgba(244,63,94,0.28)] enabled:active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed"
               :disabled="!ctx.canOpenSubtitleInspectorFilterDeleteDialog"
               @click="ctx.openSubtitleInspectorFilterDeleteDialog"
             >
-              执行
-            </el-button>
+              <Trash2 class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] enabled:group-hover/btn:rotate-[-12deg] enabled:group-hover/btn:scale-110" :stroke-width="2.4" />
+              <span>执行</span>
+            </button>
           </div>
-        </div>
+        </section>
       </div>
     </template>
 
     <template v-else>
-      <div class="subtitle-config-mode-title">文件工具</div>
-      <div class="subtitle-config-mode-copy">搜索范围、选中规模和删除风险集中查看。</div>
       <div class="subtitle-option-stack">
-        <div class="subtitle-help-card">
-          <div class="subtitle-option-title">文件快照</div>
-          <div class="subtitle-help-stats subtitle-help-stats-2">
-            <span class="subtitle-help-stat">
-              <em>已选</em>
-              <strong>{{ ctx.treeSelectedCount || 0 }}</strong>
+        <!-- 文件快照 -->
+        <section class="subtitle-settings-block group/card">
+          <div class="flex items-center gap-3">
+            <span class="header-badge">
+              <FolderTree class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[8deg]" :stroke-width="2.4" />
             </span>
-            <span class="subtitle-help-stat">
-              <em>可见</em>
-              <strong>{{ ctx.treeVisibleCount || 0 }}</strong>
+            <div class="min-w-0">
+              <div class="subtitle-block-title">文件快照</div>
+              <div class="subtitle-block-tip">搜索范围与选中规模一览。</div>
+            </div>
+          </div>
+          <div class="stat-trio stat-trio-2">
+            <div
+              v-for="row in treeRows"
+              :key="row.key"
+              class="stat-cell group/stat"
+            >
+              <div class="flex items-center gap-1.5 text-slate-500">
+                <component
+                  :is="row.icon"
+                  :class="['h-[14px] w-[14px] shrink-0 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/stat:scale-110 group-hover/stat:rotate-[12deg]', row.color]"
+                  :stroke-width="2.2"
+                />
+                <span class="text-[11.5px] font-semibold tracking-[-0.005em] truncate">{{ row.label }}</span>
+              </div>
+              <div class="mt-1 text-[30px] font-black leading-none text-slate-900 tabular-nums tracking-[-0.04em] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/stat:-translate-y-0.5">{{ row.value }}</div>
+            </div>
+          </div>
+          <div class="search-row group/search">
+            <span class="search-chip">
+              <Search class="h-[11px] w-[11px] shrink-0 text-slate-400 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/search:rotate-[-10deg] group-hover/search:scale-[1.18] group-hover/search:text-slate-700" :stroke-width="2.6" />
+              <span>搜索词</span>
             </span>
+            <span
+              class="min-w-0 flex-1 truncate text-[12px] font-semibold"
+              :class="ctx.treeSearchText ? 'text-slate-900' : 'text-slate-400'"
+              :title="ctx.treeSearchText || ''"
+            >{{ ctx.treeSearchText || '未搜索' }}</span>
           </div>
-          <div class="subtitle-tree-search-line">
-            <span class="subtitle-tree-search-label">搜索词</span>
-            <span class="subtitle-tree-search-val">{{ ctx.treeSearchText || '—' }}</span>
-          </div>
-        </div>
+        </section>
 
-        <div class="subtitle-help-card subtitle-help-card-danger">
-          <div class="subtitle-option-title">删除风险</div>
-          <div class="subtitle-card-tip">操作直接作用于字幕目录，批量前先确认范围。</div>
-        </div>
+        <!-- 删除风险 -->
+        <section class="subtitle-settings-block subtitle-help-card-danger group/card">
+          <div class="flex items-center gap-3">
+            <span class="header-badge header-badge-danger">
+              <AlertTriangle class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[8deg]" :stroke-width="2.4" />
+            </span>
+            <div class="min-w-0">
+              <div class="subtitle-block-title">删除风险</div>
+              <div class="subtitle-block-tip">操作直接作用于字幕目录，批量前先确认范围。</div>
+            </div>
+          </div>
+        </section>
       </div>
     </template>
   </div>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+import {
+  Gauge,
+  Zap,
+  Eraser,
+  Unlink,
+  Trash2,
+  ShieldAlert,
+  AlertTriangle,
+  FolderTree,
+  Search,
+  Music,
+  FileText,
+  Link2,
+  CheckSquare,
+  Eye,
+  SlidersHorizontal,
+  Filter,
+  LayoutPanelLeft,
+  Plus,
+  Inbox,
+  Globe,
+  PenLine,
+  Download,
+  AlertCircle
+} from 'lucide-vue-next'
+
+const props = defineProps({
   ctx: {
     type: Object,
     required: true
@@ -227,12 +359,31 @@ defineProps({
     default: 'settings'
   }
 })
+
+const pairingRows = computed(() => [
+  { key: 'audio', label: '音频轨', icon: Music, color: 'text-sky-600', value: props.ctx?.pairingAudioSelectedCount || 0 },
+  { key: 'subtitle', label: '字幕轨', icon: FileText, color: 'text-violet-600', value: props.ctx?.pairingSubtitleSelectedCount || 0 },
+  { key: 'pairs', label: '配对组', icon: Link2, color: 'text-emerald-600', value: props.ctx?.pairingPairCount || 0 }
+])
+
+const treeRows = computed(() => [
+  { key: 'selected', label: '已选', icon: CheckSquare, color: 'text-emerald-600', value: props.ctx?.treeSelectedCount || 0 },
+  { key: 'visible', label: '可见', icon: Eye, color: 'text-sky-600', value: props.ctx?.treeVisibleCount || 0 }
+])
+
+const displayPills = [
+  { key: 'showSourceSearch', label: '来源搜索', icon: Globe, color: 'text-sky-600' },
+  { key: 'showWrittenFiles', label: '写入结果', icon: PenLine, color: 'text-emerald-600' },
+  { key: 'showDownloadedFiles', label: '下载进度', icon: Download, color: 'text-indigo-600' },
+  { key: 'showIssues', label: '问题项', icon: AlertCircle, color: 'text-amber-600' }
+]
 </script>
 
 <style scoped>
 .subtitle-config-card {
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
 .subtitle-config-card :deep(.el-switch) {
@@ -241,8 +392,22 @@ defineProps({
 }
 
 .subtitle-config-card :deep(.el-switch__core) {
+  background-color: #e2e8f0 !important;
   border-color: #e2e8f0 !important;
   box-shadow: none;
+  transition: background-color 0.28s var(--ease-spring),
+              border-color 0.28s var(--ease-spring),
+              box-shadow 0.28s var(--ease-spring) !important;
+}
+
+.subtitle-config-card :deep(.el-switch__core .el-switch__action) {
+  background-color: #ffffff !important;
+}
+
+.subtitle-config-card :deep(.el-switch.is-checked .el-switch__core) {
+  background-color: #0f172a !important;
+  border-color: #0f172a !important;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.22) !important;
 }
 
 .subtitle-config-card :deep(.el-input-number) {
@@ -252,47 +417,54 @@ defineProps({
 .subtitle-config-card :deep(.el-input-number .el-input__wrapper),
 .subtitle-config-card :deep(.el-select__wrapper),
 .subtitle-config-card :deep(.el-input__wrapper) {
-  border-radius: 8px;
+  border-radius: 12px;
   background: #fff;
-  box-shadow: 0 0 0 1px #e2e8f0;
-  transition: all 0.2s ease;
+  box-shadow: inset 0 0 0 1px #d8e1ec;
+  transition: all 0.28s var(--ease-spring);
 }
 
 .subtitle-config-card :deep(.el-input-number .el-input__wrapper:hover),
 .subtitle-config-card :deep(.el-select__wrapper:hover),
 .subtitle-config-card :deep(.el-input__wrapper:hover) {
-  box-shadow: 0 0 0 1px #cbd5e1;
+  box-shadow: inset 0 0 0 1px #c3d4e5;
 }
 
 .subtitle-config-card :deep(.el-input-number .el-input__wrapper.is-focus),
 .subtitle-config-card :deep(.el-select__wrapper.is-focused),
 .subtitle-config-card :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 1.5px #0f172a;
+  box-shadow: inset 0 0 0 1px #7ea8d8, 0 0 0 3px rgba(114, 157, 208, 0.16);
 }
 
 .subtitle-config-card :deep(.el-radio-group) {
-  display: inline-flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  display: flex;
+  width: 100%;
+  gap: 0;
+  padding: 4px;
+  border-radius: 12px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+}
+
+.subtitle-config-card :deep(.el-radio-button) {
+  flex: 1;
 }
 
 .subtitle-config-card :deep(.el-radio-button__inner) {
-  min-width: 118px;
+  width: 100%;
   border-radius: 8px !important;
-  border: 1px solid #e2e8f0 !important;
-  background: #ffffff !important;
-  color: #0f172a !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: #64748b !important;
   box-shadow: none !important;
-  padding: 7px 12px !important;
+  padding: 7px 10px !important;
   font-size: 12px !important;
-  font-weight: 500;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  font-weight: 600;
+  transition: all 0.28s var(--ease-spring);
 }
 
 .subtitle-config-card :deep(.el-radio-button__inner:hover) {
-  border-color: #cbd5e1 !important;
-  background: #f8fafc !important;
-  transform: translateY(-1px);
+  color: #0f172a !important;
+  background: rgba(255, 255, 255, 0.5) !important;
 }
 
 .subtitle-config-card :deep(.el-radio-button:first-child .el-radio-button__inner),
@@ -301,21 +473,25 @@ defineProps({
 }
 
 .subtitle-config-card :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: #0f172a !important;
-  border-color: #0f172a !important;
-  color: #ffffff !important;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18) !important;
+  background: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #0f172a !important;
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08) !important;
+  transform: none;
 }
 
 .subtitle-config-card :deep(.el-button) {
-  border-radius: 8px;
+  border-radius: 12px;
   font-size: 12px;
-  font-weight: 500;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  font-weight: 800;
+  transition: all 0.28s var(--ease-spring);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
-.subtitle-config-card :deep(.el-button:hover) {
-  transform: translateY(-1px) scale(1.02);
+.subtitle-config-card :deep(.el-button:not(.is-disabled):not(:disabled):not(.is-loading):hover) {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 12px 22px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
 .subtitle-config-card :deep(.el-button:active) {
@@ -323,22 +499,23 @@ defineProps({
 }
 
 .subtitle-config-mode-title {
-  font-size: 14px;
-  line-height: 1.2;
-  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.1;
+  font-weight: 800;
   color: #0f172a;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
 }
 
 .subtitle-config-mode-copy {
   font-size: 11px;
   line-height: 1.6;
   color: #64748b;
+  max-width: 24ch;
 }
 
 .subtitle-option-stack {
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
 .subtitle-settings-block,
@@ -347,14 +524,97 @@ defineProps({
   gap: 12px;
   padding: 14px;
   border: 1px solid #e2e8f0;
-  border-radius: 14px;
+  border-radius: 18px;
   background: #ffffff;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
+  transition: all 0.28s var(--ease-spring);
+}
+
+.subtitle-settings-block:hover,
+.subtitle-help-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
 }
 
 .subtitle-help-card-danger {
-  background: linear-gradient(180deg, #fef2f2 0%, #ffffff 100%);
+  background: linear-gradient(180deg, #fff5f5 0%, #ffffff 60%);
   border-color: #fecaca;
+}
+
+.subtitle-help-card-danger:hover {
+  border-color: #fca5a5;
+  box-shadow: 0 8px 20px rgba(244, 63, 94, 0.08);
+}
+
+.stat-trio {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+}
+
+.stat-trio-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.stat-cell {
+  position: relative;
+  min-width: 0;
+  padding: 0 12px;
+}
+
+.stat-cell:first-child {
+  padding-left: 0;
+}
+
+.stat-cell:last-child {
+  padding-right: 0;
+}
+
+.stat-cell + .stat-cell::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12%;
+  bottom: 12%;
+  width: 1px;
+  background: linear-gradient(180deg, transparent 0%, #e2e8f0 28%, #e2e8f0 72%, transparent 100%);
+}
+
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  transition: all 0.28s var(--ease-spring);
+}
+
+.search-row:hover {
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+}
+
+.search-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+  transition: all 0.28s var(--ease-spring);
+}
+
+.search-row:hover .search-chip {
+  border-color: #cbd5e1;
+  color: #0f172a;
 }
 
 .subtitle-block-head {
@@ -363,17 +623,16 @@ defineProps({
 }
 
 .subtitle-block-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: #0f172a;
-  text-transform: uppercase;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #1f2d3d;
 }
 
 .subtitle-block-tip {
   font-size: 11px;
   line-height: 1.55;
-  color: #64748b;
+  color: #74869d;
 }
 
 .subtitle-setting-list,
@@ -412,9 +671,9 @@ defineProps({
 
 .subtitle-option-title {
   font-size: 13px;
-  font-weight: 500;
-  color: #0f172a;
-  letter-spacing: -0.005em;
+  font-weight: 800;
+  color: #1f2d3d;
+  letter-spacing: -0.01em;
 }
 
 .subtitle-option-title-sm {
@@ -430,16 +689,16 @@ defineProps({
 .subtitle-filter-editor {
   display: grid;
   gap: 10px;
-  margin-top: 2px;
+  margin-top: 4px;
   padding: 12px;
   border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  border-radius: 14px;
   background: #f8fafc;
 }
 
 .subtitle-filter-editor-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
@@ -452,15 +711,17 @@ defineProps({
   display: grid;
   gap: 8px;
   padding: 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #ffffff;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  border: 1px solid #dbe4ee;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbfe 100%);
+  transition: all 0.28s var(--ease-spring);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
 .subtitle-filter-row:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+  border-color: #c3d3e4;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
 .subtitle-filter-row-top,
@@ -477,128 +738,103 @@ defineProps({
 }
 
 .subtitle-filter-empty {
-  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 12px;
   border: 1px dashed #cbd5e1;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #f8fafc;
-  font-size: 11px;
+  font-size: 11.5px;
+  font-weight: 600;
   color: #64748b;
-  text-align: center;
 }
 
 .subtitle-pill-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
 }
 
 .subtitle-toggle-pill {
-  min-height: 34px;
-  padding: 7px 11px;
-  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 12px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  color: #0f172a;
+  color: #475569;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: all 0.28s var(--ease-spring);
 }
 
 .subtitle-toggle-pill:hover {
-  transform: translateY(-1px) scale(1.02);
+  transform: translateY(-2px) scale(1.02);
   border-color: #cbd5e1;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.06);
+}
+
+.subtitle-toggle-pill:active {
+  transform: scale(0.96);
 }
 
 .subtitle-toggle-pill.active {
+  border-color: #0f172a;
   background: #0f172a;
   color: #ffffff;
-  border-color: #0f172a;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.22);
 }
 
-.subtitle-help-stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.subtitle-help-stats-2 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.subtitle-help-stat {
-  display: grid;
-  gap: 2px;
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #ffffff;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.subtitle-help-stat:hover {
-  border-color: #cbd5e1;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
-}
-
-.subtitle-help-stat em {
-  font-style: normal;
-  font-size: 10px;
-  font-weight: 500;
-  color: #64748b;
-  letter-spacing: 0.02em;
-}
-
-.subtitle-help-stat strong {
-  font-size: 22px;
-  line-height: 1;
-  font-weight: 600;
-  color: #0f172a;
-  letter-spacing: -0.03em;
-  font-variant-numeric: tabular-nums;
-}
-
-.subtitle-help-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.subtitle-danger-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.subtitle-tree-search-line {
-  display: flex;
+.header-badge {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
   border-radius: 10px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-}
-
-.subtitle-tree-search-label {
   flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 600;
-  color: #64748b;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  color: #ffffff;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  border: 1px solid #0b1324;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: all 0.3s var(--ease-spring);
 }
 
-.subtitle-tree-search-val {
-  min-width: 0;
-  font-size: 11px;
-  font-weight: 500;
-  color: #0f172a;
-  word-break: break-all;
+.header-badge-amber {
+  background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%);
+  border-color: #b45309;
+  box-shadow: 0 6px 14px rgba(217, 119, 6, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.header-badge-danger {
+  background: linear-gradient(180deg, #f43f5e 0%, #e11d48 100%);
+  border-color: #be123c;
+  box-shadow: 0 6px 14px rgba(244, 63, 94, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.group\/card:hover .header-badge {
+  transform: scale(1.06);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.group\/card:hover .header-badge-amber {
+  box-shadow: 0 10px 20px rgba(217, 119, 6, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.group\/card:hover .header-badge-danger {
+  box-shadow: 0 10px 20px rgba(244, 63, 94, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+@keyframes danger-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
 }
 
 @media (max-width: 960px) {
@@ -607,12 +843,10 @@ defineProps({
     align-items: start;
   }
 
-  .subtitle-help-stats,
   .subtitle-pill-grid {
     grid-template-columns: 1fr;
   }
 
-  .subtitle-danger-row,
   .subtitle-filter-editor-head {
     flex-direction: column;
     align-items: stretch;
