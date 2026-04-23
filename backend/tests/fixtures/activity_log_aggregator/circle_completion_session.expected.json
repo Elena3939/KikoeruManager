@@ -1,0 +1,50 @@
+[
+  {
+    "action": "index_completed",
+    "batch_id": null,
+    "category": "circle_completion",
+    "category_label": "社团补全",
+    "created_at": "2026-04-23T15:00:00",
+    "detail": {
+      "child_row_count": 1,
+      "child_rows": [
+        {
+          "action": "download_batch_start",
+          "category": "circle_completion",
+          "category_label": "下载任务",
+          "child_rows": [],
+          "created_at": "2026-04-23T15:05:00",
+          "detail": {
+            "batch_task_count": 0,
+            "circle_id": "RG12345",
+            "circle_name": "Test Circle",
+            "requested_count": 3
+          },
+          "id": "cc-download-01",
+          "relation": "download_batch",
+          "rjcode": null,
+          "source_path": "Test Circle",
+          "status": "success",
+          "summary": "开始下载社团缺漏作品：RG12345 共 3 项",
+          "task_id": "cc-task-01"
+        }
+      ],
+      "circle_id": "RG12345",
+      "circle_name": "Test Circle",
+      "latest_activity_at": "2026-04-23T15:05:00",
+      "work_count": 50
+    },
+    "has_child_rows": true,
+    "id": "cc-index-01",
+    "latest_activity_at": "2026-04-23T15:05:00",
+    "merged_circle_completion_download": true,
+    "merged_circle_completion_download_status": "success",
+    "parent_id": null,
+    "rjcode": null,
+    "session_key": "circle-sess-001",
+    "source_path": "Test Circle",
+    "status": "success",
+    "summary": "社团索引完成：RG12345 作品数 50",
+    "task_id": "cc-task-00"
+  }
+]

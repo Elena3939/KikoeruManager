@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -166,7 +167,12 @@ def _resolve_filter_scope_label(payload: Dict[str, Any]) -> tuple[str, str]:
     return base_label, rjcode
 
 
+_SAFE_PATH_SIZE_MAX_ENTRIES = 50000  # 保护上限：超过则停止统计，返回已累计值
+_SAFE_PATH_SIZE_MAX_SECONDS = 3.0    # 保护上限：单次 walk 最长耗时
+
+
 def _safe_path_size(path: Any) -> int:
+    """计算文件或目录的字节数，带硬上限防止卡死后台线程。"""
     try:
         target = str(path or "").strip()
         if not target or not os.path.exists(target):
@@ -174,8 +180,16 @@ def _safe_path_size(path: Any) -> int:
         if os.path.isfile(target):
             return int(os.path.getsize(target))
         total = 0
+        scanned = 0
+        deadline = time.monotonic() + _SAFE_PATH_SIZE_MAX_SECONDS
         for root, _, files in os.walk(target):
+            if scanned >= _SAFE_PATH_SIZE_MAX_ENTRIES or time.monotonic() > deadline:
+                logger.debug("[操作记录] _safe_path_size 触发保护上限，已扫描 %d 项：%s", scanned, target)
+                break
             for name in files:
+                scanned += 1
+                if scanned >= _SAFE_PATH_SIZE_MAX_ENTRIES or time.monotonic() > deadline:
+                    break
                 file_path = os.path.join(root, name)
                 try:
                     total += int(os.path.getsize(file_path))
@@ -303,33 +317,45 @@ def write_activity_log(
     task_id: Optional[str] = None,
     source_path: Optional[str] = None,
 ) -> None:
-    from ..models.database import ActivityLog, SessionLocal
+    """入队一条操作记录（Phase 1：异步批量写）。
 
-    db = SessionLocal()
-    try:
-        rc = (rjcode or "").strip().upper() or None
-        sp = source_path[:4000] if source_path else None
-        detail_clean = _sanitize_for_db_json(detail) if detail else {}
-        if not isinstance(detail_clean, dict):
-            detail_clean = {"_raw": detail_clean}
-        row = ActivityLog(
-            id=str(uuid.uuid4()),
-            category=category[:40],
-            action=(action or "")[:80],
-            status=(status or "")[:20],
-            summary=(summary or "")[:4000],
-            detail=detail_clean,
-            rjcode=rc[:32] if rc else None,
-            task_id=(task_id or "")[:36] or None,
-            source_path=sp,
-        )
-        db.add(row)
-        db.commit()
-    except Exception:
-        db.rollback()
-        logger.warning("[操作记录] 写入失败", exc_info=True)
-    finally:
-        db.close()
+    之前每次调用都 open/commit/close 一个独立 SQLAlchemy 会话，在任务结束 finally、
+    批量删除等高频场景会和 SQLite writer lock 串行竞争。现在统一交给
+    ActivityLogWriter 后台线程批量 flush，调用方仅做字段裁剪和 sanitize，无 IO。
+    """
+    from .activity_log_writer import get_activity_log_writer
+
+    rc = (rjcode or "").strip().upper() or None
+    sp = source_path[:4000] if source_path else None
+    detail_clean = _sanitize_for_db_json(detail) if detail else {}
+    if not isinstance(detail_clean, dict):
+        detail_clean = {"_raw": detail_clean}
+
+    # Phase 2：在写入点就把 detail 里的常用索引字段提升到独立列，
+    # 避免查询时再通过 json_extract 扫描 detail。
+    batch_id_value = str(detail_clean.get("batch_id") or "").strip()[:80] or None
+    session_key_value = str(
+        detail_clean.get("session_key")
+        or detail_clean.get("session_id")
+        or ""
+    ).strip()[:120] or None
+    parent_id_value = str(detail_clean.get("parent_id") or "").strip()[:36] or None
+
+    payload = {
+        "id": str(uuid.uuid4()),
+        "category": category[:40],
+        "action": (action or "")[:80],
+        "status": (status or "")[:20],
+        "summary": (summary or "")[:4000],
+        "detail": detail_clean,
+        "rjcode": rc[:32] if rc else None,
+        "task_id": (task_id or "")[:36] or None,
+        "source_path": sp,
+        "batch_id": batch_id_value,
+        "session_key": session_key_value,
+        "parent_id": parent_id_value,
+    }
+    get_activity_log_writer().enqueue(payload)
 
 
 def log_asmr_sync_event(
@@ -362,10 +388,76 @@ def log_asmr_sync_event(
     )
 
 
+class _TaskSnapshotProxy:
+    """让 _build_task_lifecycle_detail 等函数可以像访问原 task 一样访问快照。"""
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data: Dict[str, Any]) -> None:
+        self._data = data
+
+    def __getattr__(self, name: str) -> Any:
+        data = object.__getattribute__(self, "_data")
+        if name in data:
+            return data[name]
+        raise AttributeError(name)
+
+    def is_cancelled(self) -> bool:
+        return bool(self._data.get("is_cancelled"))
+
+
+def _snapshot_task_for_lifecycle(task: Any) -> Optional[Dict[str, Any]]:
+    """把任务对象里日志需要的字段一次性拷到普通 dict，避免后台线程读到被清理后的状态。"""
+    try:
+        task_metadata = getattr(task, "task_metadata", None)
+        if isinstance(task_metadata, dict):
+            task_metadata = dict(task_metadata)
+        else:
+            task_metadata = {}
+        is_cancelled = False
+        try:
+            is_cancelled = bool(task.is_cancelled()) if hasattr(task, "is_cancelled") else False
+        except Exception:
+            is_cancelled = False
+        return {
+            "id": getattr(task, "id", None),
+            "status": getattr(task, "status", None),
+            "type": getattr(task, "type", None),
+            "current_step": str(getattr(task, "current_step", "") or ""),
+            "error_message": str(getattr(task, "error_message", "") or ""),
+            "task_metadata": task_metadata,
+            "source_path": getattr(task, "source_path", "") or "",
+            "output_path": getattr(task, "output_path", "") or "",
+            "rjcode": (getattr(task, "rjcode", "") or ""),
+            "is_cancelled": is_cancelled,
+            "started_at": getattr(task, "started_at", None),
+            "created_at": getattr(task, "created_at", None),
+            "completed_at": getattr(task, "completed_at", None),
+        }
+    except Exception:
+        logger.debug("[操作记录] 任务快照失败", exc_info=True)
+        return None
+
+
 def log_task_lifecycle_event(task) -> None:
-    """任务线程结束时记录一条（成功 / 失败 / 取消 / 等待）。"""
+    """任务线程结束时记录一条（成功 / 失败 / 取消 / 等待）。
+
+    Phase 1：任务 finally 只做一次属性快照，然后把昂贵的 detail 构造
+    （os.walk / ProcessedArchive 回查）丢到后台线程池；任务线程立刻返回。
+    """
+    from .activity_log_writer import submit_lifecycle_prep
+
+    snapshot = _snapshot_task_for_lifecycle(task)
+    if snapshot is None or snapshot.get("status") is None:
+        return
+    submit_lifecycle_prep(_build_and_write_task_lifecycle_log, snapshot)
+
+
+def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
+    """真正构造 detail 并入队的函数，运行在 lifecycle 线程池里。"""
     from .task_engine import TaskStatus, TaskType
 
+    task = _TaskSnapshotProxy(snapshot)
     try:
         st = task.status
     except Exception:
@@ -1318,99 +1410,165 @@ def log_filter_delete_apply_result(payload: Dict[str, Any]) -> None:
     )
 
 
-def backfill_auto_import_extract_fields() -> Dict[str, int]:
-    """一次性回填旧 auto_import 记录中的压缩包大小、解压标记与解压产物大小。"""
+def backfill_auto_import_extract_fields(
+    *,
+    chunk_size: int = 200,
+    start_offset: int = 0,
+    max_rows: Optional[int] = None,
+    time_budget_seconds: float = 8.0,
+) -> Dict[str, Any]:
+    """分片回填旧 auto_import 记录中的压缩包大小、解压标记与解压产物大小。
+
+    原实现把全表 auto_import 行一次加载到内存并逐行 os.walk，大库存会直接卡死事件循环。
+    Phase 1：改成按 offset 分片扫描 + 时间预算 + 可恢复 cursor。调用方（API 或 TaskEngine）
+    可多次调用，接着上次的 offset 继续。
+
+    参数：
+    - chunk_size: 每批加载行数，默认 200
+    - start_offset: 起始偏移（断点续跑用）
+    - max_rows: 本次最多扫描多少行，None=直到耗尽 time_budget
+    - time_budget_seconds: 单次调用的软时间上限；到点则返回 next_offset
+
+    返回：scanned/updated/skipped/failed/next_offset/done
+    """
     from ..models.database import ActivityLog, ProcessedArchive, SessionLocal
 
-    db = SessionLocal()
     scanned = 0
     updated = 0
     skipped = 0
     failed = 0
-    try:
-        rows = (
-            db.query(ActivityLog)
-            .filter(ActivityLog.category == CATEGORY_AUTO_IMPORT)
-            .all()
-        )
-        for row in rows:
-            scanned += 1
-            try:
-                detail = row.detail if isinstance(row.detail, dict) else {}
-                source_path = str(row.source_path or "").strip()
-                output_path = str(detail.get("output_path") or "").strip()
-                is_archive = _looks_like_archive_path(source_path)
-                current_archive_input = detail.get("archive_input")
-                current_extract_performed = detail.get("extract_performed")
-                current_extract_output_bytes = detail.get("extract_output_bytes")
-                current_archive_size_bytes = detail.get("archive_size_bytes")
+    offset = max(0, int(start_offset or 0))
+    chunk_size = max(20, min(1000, int(chunk_size or 200)))
+    deadline = time.monotonic() + max(1.0, float(time_budget_seconds))
+    remaining_budget = int(max_rows) if max_rows is not None else None
 
-                next_archive_input = bool(is_archive)
-                next_extract_performed = bool(is_archive and row.status == "success")
-                next_extract_output_bytes = (
-                    _safe_path_size(output_path)
-                    if next_extract_performed and output_path
-                    else int(current_extract_output_bytes or 0)
-                )
-                next_archive_size_bytes = int(current_archive_size_bytes or 0)
-                archive_path = source_path
-                if next_archive_input:
-                    next_archive_size_bytes = _safe_path_size(source_path)
-                    if next_archive_size_bytes <= 0 and row.task_id:
-                        archive_record = (
-                            db.query(ProcessedArchive)
-                            .filter(ProcessedArchive.task_id == row.task_id)
-                            .order_by(ProcessedArchive.processed_at.desc())
-                            .first()
-                        )
-                        if archive_record is not None:
-                            next_archive_size_bytes = int(archive_record.file_size or 0)
-                            archive_path = str(archive_record.current_path or archive_record.original_path or source_path or "").strip()
+    while True:
+        if remaining_budget is not None and remaining_budget <= 0:
+            break
+        if time.monotonic() > deadline:
+            break
 
-                needs_update = False
-                if current_archive_input is None:
-                    detail["archive_input"] = next_archive_input
-                    needs_update = True
-                if current_extract_performed is None and next_archive_input:
-                    detail["extract_performed"] = next_extract_performed
-                    needs_update = True
-                if (current_extract_output_bytes is None or int(current_extract_output_bytes or 0) <= 0) and next_extract_performed:
-                    detail["extract_output_bytes"] = int(next_extract_output_bytes or 0)
-                    needs_update = True
-                if (current_archive_size_bytes is None or int(current_archive_size_bytes or 0) <= 0) and next_archive_input:
-                    detail["archive_size_bytes"] = int(next_archive_size_bytes or 0)
-                    needs_update = True
-                if archive_path and archive_path != str(detail.get("archive_path") or "").strip():
-                    detail["archive_path"] = archive_path
-                    needs_update = True
+        this_chunk = chunk_size
+        if remaining_budget is not None:
+            this_chunk = min(this_chunk, remaining_budget)
 
-                if needs_update:
-                    row.detail = _sanitize_for_db_json(detail)
-                    if row.status == "success" and next_archive_input:
-                        duration_ms = int(detail.get("duration_ms") or 0)
-                        extract_output_bytes = int(detail.get("extract_output_bytes") or 0)
-                        extract_label = "预检解包" if str(detail.get("source_mode") or "").strip() == "linked_translation_archive_pending" and not output_path else "解压产物"
-                        row.summary = (
-                            f"{str(row.summary or '解压入库完成').split('，压缩包 ')[0]}，"
-                            f"压缩包 {_format_bytes(next_archive_size_bytes)}，"
-                            f"{extract_label} {_format_bytes(extract_output_bytes)}，"
-                            f"耗时 {_format_duration_ms(duration_ms)}"
-                        )[:4000]
-                    updated += 1
-                else:
-                    skipped += 1
-            except Exception:
-                failed += 1
-                logger.warning("[操作记录] 回填 auto_import 解压字段失败: id=%s", getattr(row, "id", None), exc_info=True)
-        db.commit()
-        return {
-            "scanned": scanned,
-            "updated": updated,
-            "skipped": skipped,
-            "failed": failed,
-        }
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(ActivityLog)
+                .filter(ActivityLog.category == CATEGORY_AUTO_IMPORT)
+                .order_by(ActivityLog.created_at.asc(), ActivityLog.id.asc())
+                .offset(offset)
+                .limit(this_chunk)
+                .all()
+            )
+            if not rows:
+                db.close()
+                return {
+                    "scanned": scanned,
+                    "updated": updated,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "next_offset": offset,
+                    "done": True,
+                }
+
+            for row in rows:
+                scanned += 1
+                if remaining_budget is not None:
+                    remaining_budget -= 1
+                try:
+                    detail = row.detail if isinstance(row.detail, dict) else {}
+                    source_path = str(row.source_path or "").strip()
+                    output_path = str(detail.get("output_path") or "").strip()
+                    is_archive = _looks_like_archive_path(source_path)
+                    current_archive_input = detail.get("archive_input")
+                    current_extract_performed = detail.get("extract_performed")
+                    current_extract_output_bytes = detail.get("extract_output_bytes")
+                    current_archive_size_bytes = detail.get("archive_size_bytes")
+
+                    next_archive_input = bool(is_archive)
+                    next_extract_performed = bool(is_archive and row.status == "success")
+                    next_extract_output_bytes = (
+                        _safe_path_size(output_path)
+                        if next_extract_performed and output_path
+                        else int(current_extract_output_bytes or 0)
+                    )
+                    next_archive_size_bytes = int(current_archive_size_bytes or 0)
+                    archive_path = source_path
+                    if next_archive_input:
+                        next_archive_size_bytes = _safe_path_size(source_path)
+                        if next_archive_size_bytes <= 0 and row.task_id:
+                            archive_record = (
+                                db.query(ProcessedArchive)
+                                .filter(ProcessedArchive.task_id == row.task_id)
+                                .order_by(ProcessedArchive.processed_at.desc())
+                                .first()
+                            )
+                            if archive_record is not None:
+                                next_archive_size_bytes = int(archive_record.file_size or 0)
+                                archive_path = str(archive_record.current_path or archive_record.original_path or source_path or "").strip()
+
+                    needs_update = False
+                    if current_archive_input is None:
+                        detail["archive_input"] = next_archive_input
+                        needs_update = True
+                    if current_extract_performed is None and next_archive_input:
+                        detail["extract_performed"] = next_extract_performed
+                        needs_update = True
+                    if (current_extract_output_bytes is None or int(current_extract_output_bytes or 0) <= 0) and next_extract_performed:
+                        detail["extract_output_bytes"] = int(next_extract_output_bytes or 0)
+                        needs_update = True
+                    if (current_archive_size_bytes is None or int(current_archive_size_bytes or 0) <= 0) and next_archive_input:
+                        detail["archive_size_bytes"] = int(next_archive_size_bytes or 0)
+                        needs_update = True
+                    if archive_path and archive_path != str(detail.get("archive_path") or "").strip():
+                        detail["archive_path"] = archive_path
+                        needs_update = True
+
+                    if needs_update:
+                        row.detail = _sanitize_for_db_json(detail)
+                        if row.status == "success" and next_archive_input:
+                            duration_ms = int(detail.get("duration_ms") or 0)
+                            extract_output_bytes = int(detail.get("extract_output_bytes") or 0)
+                            extract_label = "预检解包" if str(detail.get("source_mode") or "").strip() == "linked_translation_archive_pending" and not output_path else "解压产物"
+                            row.summary = (
+                                f"{str(row.summary or '解压入库完成').split('，压缩包 ')[0]}，"
+                                f"压缩包 {_format_bytes(next_archive_size_bytes)}，"
+                                f"{extract_label} {_format_bytes(extract_output_bytes)}，"
+                                f"耗时 {_format_duration_ms(duration_ms)}"
+                            )[:4000]
+                        updated += 1
+                    else:
+                        skipped += 1
+                except Exception:
+                    failed += 1
+                    logger.warning("[操作记录] 回填 auto_import 解压字段失败: id=%s", getattr(row, "id", None), exc_info=True)
+
+            db.commit()
+            offset += len(rows)
+            # 若本批加载不足 chunk_size，视作表已扫完
+            if len(rows) < this_chunk:
+                return {
+                    "scanned": scanned,
+                    "updated": updated,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "next_offset": offset,
+                    "done": True,
+                }
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    # 时间预算或 max_rows 用完，返回断点供下一次继续
+    return {
+        "scanned": scanned,
+        "updated": updated,
+        "skipped": skipped,
+        "failed": failed,
+        "next_offset": offset,
+        "done": False,
+    }

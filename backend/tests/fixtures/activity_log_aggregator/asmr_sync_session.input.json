@@ -1,0 +1,81 @@
+[
+  {
+    "id": "as-complete-01",
+    "category": "asmr_sync",
+    "action": "session_completed",
+    "status": "success",
+    "summary": "ASMR 同步会话完成：下载 3 项，320 MB，耗时 45s",
+    "detail": {
+      "session_id": "asmr-sess-001",
+      "success_count": 3,
+      "failed_count": 0,
+      "downloaded_bytes": 335544320,
+      "duration_ms": 45000,
+      "download_root": "D:/asmr-downloads/sess-001"
+    },
+    "rjcode": null,
+    "task_id": "asmr-task-01",
+    "source_path": "D:/asmr-downloads/sess-001",
+    "created_at": "2026-04-23T16:00:45",
+    "batch_id": null,
+    "session_key": "asmr-sess-001",
+    "parent_id": null
+  },
+  {
+    "id": "as-res-02",
+    "category": "asmr_sync",
+    "action": "resource_downloaded",
+    "status": "success",
+    "summary": "ASMR 资源下载：RJ900002 100 MB",
+    "detail": {
+      "session_id": "asmr-sess-001",
+      "size_bytes": 104857600,
+      "rjcode": "RJ900002"
+    },
+    "rjcode": "RJ900002",
+    "task_id": "asmr-task-01",
+    "source_path": "D:/asmr-downloads/sess-001/RJ900002",
+    "created_at": "2026-04-23T16:00:30",
+    "batch_id": null,
+    "session_key": "asmr-sess-001",
+    "parent_id": null
+  },
+  {
+    "id": "as-res-01",
+    "category": "asmr_sync",
+    "action": "resource_downloaded",
+    "status": "success",
+    "summary": "ASMR 资源下载：RJ900001 220 MB",
+    "detail": {
+      "session_id": "asmr-sess-001",
+      "size_bytes": 230686720,
+      "rjcode": "RJ900001"
+    },
+    "rjcode": "RJ900001",
+    "task_id": "asmr-task-01",
+    "source_path": "D:/asmr-downloads/sess-001/RJ900001",
+    "created_at": "2026-04-23T16:00:15",
+    "batch_id": null,
+    "session_key": "asmr-sess-001",
+    "parent_id": null
+  },
+  {
+    "id": "as-start-01",
+    "category": "asmr_sync",
+    "action": "session_started",
+    "status": "success",
+    "summary": "ASMR 同步会话开始：asmr-sess-001",
+    "detail": {
+      "session_id": "asmr-sess-001",
+      "requested_count": 3,
+      "download_root": "D:/asmr-downloads/sess-001"
+    },
+    "rjcode": null,
+    "task_id": "asmr-task-01",
+    "source_path": "D:/asmr-downloads/sess-001",
+    "created_at": "2026-04-23T16:00:00",
+    "batch_id": null,
+    "session_key": "asmr-sess-001",
+    "parent_id": null
+  }
+]

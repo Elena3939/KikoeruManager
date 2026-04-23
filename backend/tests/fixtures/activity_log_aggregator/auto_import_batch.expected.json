@@ -1,0 +1,111 @@
+[
+  {
+    "action": "batch_start",
+    "category": "auto_import",
+    "category_label": "解压入库",
+    "created_at": "2026-04-23T10:05:03",
+    "detail": {
+      "aggregate_archive_size_bytes": 262144000,
+      "aggregate_extract_output_bytes": 859832320,
+      "archive_count": 0,
+      "batch_duration_ms": 5200,
+      "batch_id": "batch-2026-04-23-001",
+      "child_row_count": 3,
+      "child_rows": [
+        {
+          "action": "extract_archive",
+          "category": "auto_import",
+          "category_label": "子解压任务",
+          "child_rows": [],
+          "created_at": "2026-04-23T10:05:01",
+          "detail": {
+            "archive_input": true,
+            "archive_size_bytes": 52428800,
+            "batch_id": "batch-2026-04-23-001",
+            "duration_ms": 1000,
+            "error": "unzip failed: bad crc",
+            "extract_performed": false,
+            "recovered_by_success": false
+          },
+          "id": "aaaaaaaa-0000-0000-0000-000000000001",
+          "relation": "import_item",
+          "rjcode": "RJ111111",
+          "source_path": "D:/incoming/RJ111111.zip",
+          "status": "failed",
+          "summary": "解压入库失败：RJ111111.zip，压缩包 50.0 MB，耗时 1.0s",
+          "task_id": "task-1"
+        },
+        {
+          "action": "extract_archive",
+          "category": "auto_import",
+          "category_label": "子解压任务",
+          "child_rows": [],
+          "created_at": "2026-04-23T10:05:02",
+          "detail": {
+            "archive_input": true,
+            "archive_size_bytes": 83886080,
+            "batch_id": "batch-2026-04-23-001",
+            "duration_ms": 2100,
+            "extract_output_bytes": 335544320,
+            "extract_performed": true,
+            "output_path": "D:/library/RJ222222",
+            "recovered_by_success": false
+          },
+          "id": "aaaaaaaa-0000-0000-0000-000000000002",
+          "relation": "import_item",
+          "rjcode": "RJ222222",
+          "source_path": "D:/incoming/RJ222222.zip",
+          "status": "success",
+          "summary": "解压入库完成：RJ222222.zip，压缩包 80.0 MB，解压产物 320.0 MB，耗时 2.1s",
+          "task_id": "task-2"
+        },
+        {
+          "action": "extract_archive",
+          "category": "auto_import",
+          "category_label": "子解压任务",
+          "child_rows": [],
+          "created_at": "2026-04-23T10:05:03",
+          "detail": {
+            "archive_input": true,
+            "archive_size_bytes": 125829120,
+            "batch_id": "batch-2026-04-23-001",
+            "duration_ms": 3200,
+            "extract_output_bytes": 524288000,
+            "extract_performed": true,
+            "output_path": "D:/library/RJ333333",
+            "recovered_by_success": false
+          },
+          "id": "aaaaaaaa-0000-0000-0000-000000000003",
+          "relation": "import_item",
+          "rjcode": "RJ333333",
+          "source_path": "D:/incoming/RJ333333.zip",
+          "status": "success",
+          "summary": "解压入库完成：RJ333333.zip，压缩包 120.0 MB，解压产物 500.0 MB，耗时 3.2s",
+          "task_id": "task-3"
+        }
+      ],
+      "created_count": 0,
+      "created_tasks": [],
+      "extract_completed_count": 2,
+      "extracted_count": 0,
+      "failed_child_count": 1,
+      "latest_activity_at": "2026-04-23T10:05:03",
+      "mode": "import_batch_start_synthetic",
+      "partial_child_count": 0,
+      "requested_count": 0,
+      "source_action": null,
+      "source_label": null,
+      "source_page": null,
+      "source_paths": [],
+      "synthetic_parent": true
+    },
+    "has_child_rows": true,
+    "id": "synthetic-import-batch:auto_import:batch-2026-04-23-001",
+    "latest_activity_at": "2026-04-23T10:05:03",
+    "rjcode": null,
+    "source_path": "D:/incoming/RJ333333.zip",
+    "status": "partial_success",
+    "summary": "批量创建解压任务，候选 3 个，压缩包 3 个，已提交解压 2 个，失败 1 个，耗时 5 秒",
+    "task_id": "batch-2026-04-23-001"
+  }
+]

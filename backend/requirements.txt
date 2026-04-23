@@ -16,6 +16,10 @@ aiohttp>=3.9.0
 mutagen>=1.47.0
 opencc-python-reimplemented==0.1.7
 croniter>=1.3.0
+# orjson：给 SA engine 的 json_serializer / json_deserializer 用，替换 stdlib json 后
+# ActivityLog.detail 等 JSON 列的反序列化从 ~110ms/762 行降到 ~20ms，端到端 list 接口
+# 首屏延迟显著下降。
+orjson>=3.9.0
 pystray>=0.19.5
 Pillow>=10.1.0
 pyinstaller>=5.0.0

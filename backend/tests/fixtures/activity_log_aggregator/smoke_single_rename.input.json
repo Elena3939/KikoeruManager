@@ -1,0 +1,21 @@
+[
+  {
+    "id": "11111111-1111-1111-1111-111111111111",
+    "category": "pipeline_rename",
+    "action": "rename_file",
+    "status": "success",
+    "summary": "重命名：旧名.mp3 → 新名.mp3",
+    "detail": {
+      "old_name": "旧名.mp3",
+      "new_name": "新名.mp3",
+      "duration_ms": 123
+    },
+    "rjcode": "RJ123456",
+    "task_id": null,
+    "source_path": "D:/library/RJ123456/旧名.mp3",
+    "created_at": "2026-04-23T10:00:00",
+    "batch_id": null,
+    "session_key": null,
+    "parent_id": null
+  }
+]

@@ -6,6 +6,22 @@ import os
 import shutil
 import sqlite3
 
+import orjson
+
+# 自定义 JSON 序列化/反序列化钩子：
+# SQLAlchemy 默认的 JSON 列类型会在物化 ORM 对象时对每行调用 stdlib json.loads，
+# 对 activity_logs 这种 detail 较大的表 (~148μs/row) 在 5000 行窗口下能吃掉 ~700ms。
+# orjson 实测比 stdlib json 快 3~5×，换上去后 list / children 接口的 JSON 反序列化
+# 开销直接降到可忽略水平。
+def _orjson_dumps(obj) -> str:
+    # SA json_serializer 约定返回 str；orjson 返回 bytes，这里再 decode 一次
+    return orjson.dumps(obj, default=str).decode('utf-8')
+
+
+def _orjson_loads(value):
+    # sqlite3 JSON 列读出来是 str；orjson.loads 同时接收 str 与 bytes
+    return orjson.loads(value)
+
 def get_local_now():
     """获取当前本地时间（用于数据库默认值）"""
     return datetime.now()
@@ -542,9 +558,15 @@ class ActivityLog(Base):
     task_id = Column(String(36), index=True)
     source_path = Column(Text)
     created_at = Column(DateTime, default=get_local_now, index=True)
+    # Phase 2：从 detail JSON 提升上来的高频查询字段，建索引后替换掉合并时 O(B·N) 扫描
+    batch_id = Column(String(80), index=True)
+    session_key = Column(String(120), index=True)
+    parent_id = Column(String(36), index=True)
 
     __table_args__ = (
         Index('idx_activity_created_category', 'created_at', 'category'),
+        Index('idx_activity_category_batch', 'category', 'batch_id'),
+        Index('idx_activity_category_session', 'category', 'session_key'),
     )
 
     def to_dict(self):
@@ -559,7 +581,33 @@ class ActivityLog(Base):
             'task_id': self.task_id,
             'source_path': self.source_path,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'batch_id': self.batch_id,
+            'session_key': self.session_key,
+            'parent_id': self.parent_id,
         }
+
+
+class ActivityLogDailyStats(Base):
+    """操作审计日聚合表（Phase 4A）。
+
+    每条 activity_logs 写入时，Writer 会按 (date, category, status) 在这张表上做 UPSERT，
+    把 count + 1 累加上去。图表接口不再需要在全表跑 GROUP BY。
+
+    复合主键 (date, category, status)：date 为 'YYYY-MM-DD' 字符串，
+    和 `strftime('%Y-%m-%d', created_at)` 一致。
+    """
+    __tablename__ = 'activity_log_daily_stats'
+
+    date = Column(String(10), primary_key=True)
+    category = Column(String(40), primary_key=True)
+    status = Column(String(20), primary_key=True)
+    count = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_activity_daily_date', 'date'),
+        Index('idx_activity_daily_category', 'category'),
+    )
 
 
 class ASMRWork(Base):
@@ -835,6 +883,8 @@ engine = create_engine(
     connect_args={
         'check_same_thread': False,
     },
+    json_serializer=_orjson_dumps,
+    json_deserializer=_orjson_loads,
     echo=False
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -919,7 +969,220 @@ def init_db():
                     f"ALTER TABLE asmr_download_sessions ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
                 )
             )
+
+        # === Phase 2: activity_logs 迁移 ===
+        _migrate_activity_logs_phase2(conn)
+
+        # === Phase 4A: activity_log_daily_stats 初次回填 ===
+        _migrate_activity_log_daily_stats(conn)
+
     _db_logger.info(f"[数据库] 表创建完成")
+
+
+def _migrate_activity_log_daily_stats(conn) -> None:
+    """Phase 4A 日聚合表迁移：
+    - Base.metadata.create_all 已负责建表
+    - 若聚合表为空，一次性从 activity_logs GROUP BY 回填历史数据
+    - 之后由 ActivityLogWriter 在批量 flush 后增量维护
+    """
+    try:
+        row_count = conn.execute(text("SELECT count(*) FROM activity_log_daily_stats")).scalar() or 0
+        activity_total = conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0
+        if row_count == 0 and activity_total > 0:
+            conn.execute(text(
+                """
+                INSERT INTO activity_log_daily_stats(date, category, status, count, updated_at)
+                SELECT
+                    strftime('%Y-%m-%d', created_at) AS date,
+                    COALESCE(category, '') AS category,
+                    COALESCE(status, '') AS status,
+                    count(*) AS cnt,
+                    CURRENT_TIMESTAMP
+                  FROM activity_logs
+                 WHERE created_at IS NOT NULL
+                 GROUP BY strftime('%Y-%m-%d', created_at), category, status
+                """
+            ))
+            _db_logger.info("[数据库] activity_log_daily_stats 初次回填完成")
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    except Exception:
+        _db_logger.warning("[数据库] activity_log_daily_stats 迁移/回填失败（非致命）", exc_info=True)
+
+
+def _migrate_activity_logs_phase2(conn) -> None:
+    """Phase 2 审计表迁移：
+    - 新增 batch_id / session_key / parent_id 三列（带索引）
+    - 用 json_extract 一次性 SQL 回填老数据（无 Python 循环）
+    - 创建 FTS5 虚表 + 触发器；不支持 FTS5 的极少数构建上降级为无 FTS
+    """
+    activity_info = conn.execute(text("PRAGMA table_info(activity_logs)"))
+    existing_cols = {row[1] for row in activity_info.fetchall()}
+    missing_cols = []
+    if 'batch_id' not in existing_cols:
+        missing_cols.append(("batch_id", "VARCHAR(80)"))
+    if 'session_key' not in existing_cols:
+        missing_cols.append(("session_key", "VARCHAR(120)"))
+    if 'parent_id' not in existing_cols:
+        missing_cols.append(("parent_id", "VARCHAR(36)"))
+    for column_name, column_type in missing_cols:
+        try:
+            conn.execute(text(f"ALTER TABLE activity_logs ADD COLUMN {column_name} {column_type}"))
+            _db_logger.info(f"[数据库] activity_logs 新增列: {column_name}")
+        except Exception:
+            _db_logger.warning(f"[数据库] activity_logs 新增列失败: {column_name}", exc_info=True)
+
+    # 索引（CREATE INDEX IF NOT EXISTS 是 SQLite 原生支持的）
+    for index_sql in (
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_batch_id ON activity_logs(batch_id)",
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_session_key ON activity_logs(session_key)",
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_parent_id ON activity_logs(parent_id)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_category_batch ON activity_logs(category, batch_id)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_category_session ON activity_logs(category, session_key)",
+    ):
+        try:
+            conn.execute(text(index_sql))
+        except Exception:
+            _db_logger.debug(f"[数据库] 建索引失败: {index_sql}", exc_info=True)
+
+    # 一次性回填：从 detail JSON 提升到新列；纯 SQL，大表也快。
+    try:
+        conn.execute(text(
+            """
+            UPDATE activity_logs
+               SET batch_id = substr(COALESCE(json_extract(detail, '$.batch_id'), ''), 1, 80)
+             WHERE batch_id IS NULL
+               AND json_extract(detail, '$.batch_id') IS NOT NULL
+            """
+        ))
+    except Exception:
+        _db_logger.warning("[数据库] activity_logs.batch_id 回填失败（非致命）", exc_info=True)
+    try:
+        conn.execute(text(
+            """
+            UPDATE activity_logs
+               SET session_key = substr(COALESCE(
+                       json_extract(detail, '$.session_key'),
+                       json_extract(detail, '$.session_id')
+                   ), 1, 120)
+             WHERE session_key IS NULL
+               AND (
+                   json_extract(detail, '$.session_key') IS NOT NULL
+                OR json_extract(detail, '$.session_id') IS NOT NULL
+               )
+            """
+        ))
+    except Exception:
+        _db_logger.warning("[数据库] activity_logs.session_key 回填失败（非致命）", exc_info=True)
+
+    # === FTS5 虚表 + 触发器 ===
+    fts_available = True
+    try:
+        conn.execute(text(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS activity_logs_fts USING fts5(
+                id UNINDEXED,
+                summary,
+                source_path,
+                rjcode,
+                task_id,
+                batch_id,
+                tokenize='unicode61 remove_diacritics 2'
+            )
+            """
+        ))
+    except Exception:
+        fts_available = False
+        _db_logger.warning("[数据库] 当前 SQLite 不支持 FTS5，将回退为 LIKE 搜索", exc_info=True)
+
+    if fts_available:
+        # 仅当 FTS 表为空时回填，避免每次启动都做全量重建
+        try:
+            existing_fts_count = conn.execute(text("SELECT count(*) FROM activity_logs_fts")).scalar() or 0
+            activity_count = conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0
+            if existing_fts_count < activity_count:
+                conn.execute(text(
+                    """
+                    INSERT INTO activity_logs_fts(id, summary, source_path, rjcode, task_id, batch_id)
+                    SELECT id,
+                           COALESCE(summary, ''),
+                           COALESCE(source_path, ''),
+                           COALESCE(rjcode, ''),
+                           COALESCE(task_id, ''),
+                           COALESCE(batch_id, '')
+                      FROM activity_logs
+                     WHERE id NOT IN (SELECT id FROM activity_logs_fts)
+                    """
+                ))
+                _db_logger.info("[数据库] activity_logs_fts 初次回填完成")
+        except Exception:
+            _db_logger.warning("[数据库] activity_logs_fts 回填失败（非致命）", exc_info=True)
+
+        for trigger_sql in (
+            """
+            CREATE TRIGGER IF NOT EXISTS activity_logs_fts_ai
+            AFTER INSERT ON activity_logs BEGIN
+              INSERT INTO activity_logs_fts(id, summary, source_path, rjcode, task_id, batch_id)
+              VALUES (
+                NEW.id,
+                COALESCE(NEW.summary, ''),
+                COALESCE(NEW.source_path, ''),
+                COALESCE(NEW.rjcode, ''),
+                COALESCE(NEW.task_id, ''),
+                COALESCE(NEW.batch_id, '')
+              );
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS activity_logs_fts_ad
+            AFTER DELETE ON activity_logs BEGIN
+              DELETE FROM activity_logs_fts WHERE id = OLD.id;
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS activity_logs_fts_au
+            AFTER UPDATE ON activity_logs BEGIN
+              DELETE FROM activity_logs_fts WHERE id = OLD.id;
+              INSERT INTO activity_logs_fts(id, summary, source_path, rjcode, task_id, batch_id)
+              VALUES (
+                NEW.id,
+                COALESCE(NEW.summary, ''),
+                COALESCE(NEW.source_path, ''),
+                COALESCE(NEW.rjcode, ''),
+                COALESCE(NEW.task_id, ''),
+                COALESCE(NEW.batch_id, '')
+              );
+            END
+            """,
+        ):
+            try:
+                conn.execute(text(trigger_sql))
+            except Exception:
+                _db_logger.warning("[数据库] 创建 activity_logs_fts 触发器失败", exc_info=True)
+
+    # SQLAlchemy 2.0 下 engine.connect() 不会自动提交 DML/DQL 事务，
+    # 这里的 UPDATE / INSERT SELECT 需要显式 commit 才会持久化。
+    # DDL (ALTER / CREATE INDEX / CREATE VIRTUAL TABLE / CREATE TRIGGER) 在 SQLite 上
+    # 会触发隐式提交，可以不加。为保险把两类都一起 flush。
+    try:
+        conn.commit()
+    except Exception:
+        # 某些连接实现可能没有 commit()（例如已经自动提交的场景），忽略即可
+        _db_logger.debug("[数据库] activity_logs 迁移 commit 非必要", exc_info=True)
+
+
+def activity_logs_fts_enabled() -> bool:
+    """运行时查询当前 SQLite 是否加载了 FTS5 虚表（供查询层决定是否走 FTS）。"""
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='activity_logs_fts'"
+            )).fetchone()
+            return row is not None
+    except Exception:
+        return False
 
 def get_db():
     """获取数据库会话"""
