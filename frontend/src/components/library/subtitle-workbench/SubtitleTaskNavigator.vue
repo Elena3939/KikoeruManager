@@ -113,6 +113,34 @@
         </div>
 
         <div class="flex flex-wrap gap-0.5 text-[9px]">
+          <template v-if="ctx.isHistoryRestoredSubtitleTask?.(task) || ctx.isSelectionBackfillSubtitleTask?.(task)">
+            <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-700">
+              <Clock class="h-2 w-2 text-violet-500" :stroke-width="2.4" />
+              {{ ctx.isHistoryRestoredSubtitleTask?.(task) ? '历史恢复' : '结果回填' }}
+            </span>
+            <span
+              v-if="task.manual_match_completed"
+              class="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1 py-0.5 font-medium text-emerald-700"
+            >
+              <CheckCheck class="h-2 w-2" :stroke-width="2.4" />
+              已匹配 {{ task.manual_match_applied_pairs || 0 }}
+            </span>
+            <span
+              v-else-if="task.awaiting_manual_match || task.status === 'awaiting_manual_match' || task.status === 'waiting_manual'"
+              class="inline-flex items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1 py-0.5 font-medium text-amber-700"
+            >
+              <Link2 class="h-2 w-2" :stroke-width="2.4" />
+              待配对
+            </span>
+            <span
+              v-else
+              class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-700"
+            >
+              <Folder class="h-2 w-2 text-sky-500" :stroke-width="2.4" />
+              结果回看
+            </span>
+          </template>
+          <template v-else>
           <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-900">
             <Download class="h-2 w-2 text-sky-500" :stroke-width="2.4" />
             下载 {{ task.downloaded_count || ctx.getSubtitleDownloadFiles(task).length }}
@@ -135,6 +163,7 @@
             <Link2 class="h-2 w-2" :stroke-width="2.4" />
             待配对
           </span>
+          </template>
         </div>
       </button>
     </TransitionGroup>
@@ -267,6 +296,8 @@ function getStatusLabel(task) {
   if (task?.manual_match_completed || ['completed', 'manual_match_completed'].includes(status)) return '已匹配完成'
   if (['processing'].includes(status)) return '执行中'
   if (['awaiting_manual_match', 'waiting_manual'].includes(status)) return '待手动配对'
+  if (status === 'view_restored') return '恢复查看'
+  if (status === 'view_backfilled') return '已回填'
   if (status === 'failed') return '失败'
   if (status === 'cancelled') return '已取消'
   return '待处理'
@@ -277,6 +308,8 @@ function getStatusClass(task) {
   if (task?.manual_match_completed || ['completed', 'manual_match_completed'].includes(status)) {
     return 'border-emerald-200 bg-emerald-50 text-emerald-700 [animation:subtitleStatusGlow_1.6s_ease-in-out_infinite]'
   }
+  if (status === 'view_restored') return 'border-violet-200 bg-violet-50 text-violet-700'
+  if (status === 'view_backfilled') return 'border-slate-200 bg-slate-50 text-slate-700'
   if (['processing', 'awaiting_manual_match', 'waiting_manual'].includes(status)) {
     return 'border-sky-200 bg-sky-50 text-sky-700 [animation:subtitleStatusPulse_1.4s_ease-in-out_infinite]'
   }
@@ -290,6 +323,7 @@ function getStatusIcon(task) {
   if (status === 'processing') return Loader2
   if (['awaiting_manual_match', 'waiting_manual'].includes(status)) return Link2
   if (status === 'failed') return XCircle
+  if (status === 'view_backfilled') return ListTodo
   return Clock
 }
 
@@ -300,6 +334,12 @@ function getCardClass(task) {
   }
   if (task?.manual_match_completed || ['completed', 'manual_match_completed'].includes(status)) {
     return 'border-emerald-200/70 hover:border-emerald-300'
+  }
+  if (status === 'view_restored') {
+    return 'border-violet-200/70 hover:border-violet-300'
+  }
+  if (status === 'view_backfilled') {
+    return 'border-slate-200/80 hover:border-slate-300'
   }
   if (status === 'processing') {
     return 'border-sky-200/70 hover:border-sky-300'

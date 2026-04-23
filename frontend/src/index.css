@@ -59,6 +59,36 @@ body.el-popup-parent--hidden {
     background: #727c83;
   }
 
+  .subtitle-workbench-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(203, 213, 225, 0.96) rgba(241, 245, 249, 0.9);
+    scrollbar-gutter: stable;
+  }
+
+  .subtitle-workbench-scrollbar::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .subtitle-workbench-scrollbar::-webkit-scrollbar-track {
+    background: rgba(241, 245, 249, 0.88);
+    border-radius: 999px;
+  }
+
+  .subtitle-workbench-scrollbar::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(203, 213, 225, 0.98) 0%, rgba(148, 163, 184, 0.94) 100%);
+    border-radius: 999px;
+    border: 2px solid rgba(241, 245, 249, 0.88);
+  }
+
+  .subtitle-workbench-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgba(148, 163, 184, 0.98) 0%, rgba(100, 116, 139, 0.96) 100%);
+  }
+
+  .subtitle-workbench-scrollbar::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
   .material-symbols-outlined {
     font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
     vertical-align: middle;

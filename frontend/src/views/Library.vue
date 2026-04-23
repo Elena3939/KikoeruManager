@@ -381,7 +381,7 @@
       v-model="subtitleDialogVisible"
       :show-close="false"
       :destroy-on-close="false"
-      :close-on-click-modal="true"
+      :close-on-click-modal="false"
       :close-on-press-escape="false"
       :before-close="handleSubtitleDialogBeforeClose"
       class="subtitle-workbench-dialog"
@@ -423,7 +423,7 @@
             </button>
           </div>
         </header>
-        <div class="subtitle-workbench-body flex-1 min-h-0 overflow-auto bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-4">
+        <div class="subtitle-workbench-body subtitle-workbench-scrollbar flex-1 min-h-0 overflow-auto bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-4">
           <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
         </div>
       </div>
@@ -856,6 +856,9 @@ const subtitleInspectorInfo = ref({
   folderPath: '',
   subtitleDir: '',
   sourceMode: '',
+  sourceLabel: '',
+  restoredAt: '',
+  activityContext: null,
   manualMatchCompleted: false,
   manualMatchAppliedPairs: 0,
   manualMatchDeletedSubtitles: 0,
@@ -948,6 +951,8 @@ const {
   buildSubtitleSelectionItemFromTask,
   getTaskDisplayRJCode,
   getTaskSourceRJCode,
+  isHistoryRestoredSubtitleTask,
+  isSelectionBackfillSubtitleTask,
   getRJSubtitleTaskStatusLabel,
   getRJSubtitleTaskBaseStatusLabel,
   getRJSubtitleTaskStatusType,
@@ -1230,6 +1235,9 @@ function clearSubtitleInspectorState () {
     folderPath: '',
     subtitleDir: '',
     sourceMode: '',
+    sourceLabel: '',
+    restoredAt: '',
+    activityContext: null,
     manualMatchCompleted: false,
     manualMatchAppliedPairs: 0,
     manualMatchDeletedSubtitles: 0,
@@ -1371,6 +1379,8 @@ const subtitleWorkbenchFocusStep = computed(() => {
 const subtitleWorkbenchFocusChips = computed(() => {
   const task = subtitleWorkbenchFocusTask.value
   const chips = []
+  if (isHistoryRestoredSubtitleTask(task)) chips.push({ key: 'restored', label: '历史恢复', class: 'is-info' })
+  if (isSelectionBackfillSubtitleTask(task)) chips.push({ key: 'backfill', label: '结果回填', class: 'is-info' })
   if (task?.awaiting_manual_match) chips.push({ key: 'manual', label: '待手动配对', class: 'is-warning' })
   if (task?.manual_match_completed) chips.push({ key: 'done', label: `已匹配 ${task.manual_match_applied_pairs || 0}`, class: 'is-success' })
   if (task?.subtitle_dir) chips.push({ key: 'tree', label: '可进入字幕树' })
@@ -1378,6 +1388,49 @@ const subtitleWorkbenchFocusChips = computed(() => {
     chips.push({ key: 'selection', label: getSubtitleSelectionQueueLabel(subtitleWorkbenchFocusSelection.value) })
   }
   return chips
+})
+const subtitleRestoredContextCard = computed(() => {
+  const task = activeSubtitleInspectTask.value || subtitleWorkbenchFocusTask.value
+  if (!task || (!isHistoryRestoredSubtitleTask(task) && !isSelectionBackfillSubtitleTask(task))) return null
+  const normalizedMode = normalizeSubtitleTaskSourceMode(task.source_mode || '')
+  const sourceModeLabel = ({
+    linked_translation_archive_import: '关联字幕压缩包导入',
+    subtitle_folder_import: '字幕目录导入',
+    activity_history_restore: '操作记录恢复'
+  })[normalizedMode] || (normalizedMode ? normalizedMode.replace(/[_-]+/g, ' / ') : '')
+  const restoredAtValue = String(task.restored_at || task.activity_context?.restored_at || task.activity_context?.created_at || task.created_at || '').trim()
+  const restoredAtDate = restoredAtValue ? new Date(restoredAtValue) : null
+  const restoredAt = restoredAtDate && !Number.isNaN(restoredAtDate.getTime())
+    ? restoredAtDate.toLocaleString('zh-CN', { hour12: false })
+    : restoredAtValue
+  const parseTime = (value) => {
+    const ts = Date.parse(String(value || '').trim())
+    return Number.isFinite(ts) ? ts : 0
+  }
+  const start = parseTime(task.started_at || task.activity_context?.started_at || task.created_at || task.restored_at || task.activity_context?.created_at)
+  const end = parseTime(task.completed_at || task.activity_context?.completed_at)
+  const totalSeconds = start ? Math.max(0, Math.floor(((end || Date.now()) - start) / 1000)) : 0
+  const duration = totalSeconds <= 0
+    ? (end ? '0秒' : '')
+    : totalSeconds >= 3600
+      ? `${Math.floor(totalSeconds / 3600)}时${Math.floor((totalSeconds % 3600) / 60)}分${totalSeconds % 60}秒`
+      : totalSeconds >= 60
+        ? `${Math.floor(totalSeconds / 60)}分${totalSeconds % 60}秒`
+        : `${totalSeconds}秒`
+  return {
+    title: isHistoryRestoredSubtitleTask(task) ? '恢复任务上下文' : '回填任务上下文',
+    badge: isHistoryRestoredSubtitleTask(task) ? '操作记录恢复' : '扫描命中回填',
+    badgeTone: isHistoryRestoredSubtitleTask(task) ? 'violet' : 'slate',
+    statusLabel: getRJSubtitleTaskStatusLabel(task),
+    inspectLabel: getSubtitleTaskInspectLabel(task),
+    sourceLabel: String(task.source_label || task.activity_context?.source_label || task.snapshot?.source_label || '').trim(),
+    sourceModeLabel,
+    restoredAt,
+    duration,
+    folderPath: String(task.folder_path || '').trim(),
+    subtitleDir: String(task.subtitle_dir || '').trim(),
+    step: String(task.current_step || task.activity_context?.summary || '').trim()
+  }
 })
 const subtitleInspectorRoot = computed(() => buildTree(subtitleInspectorItems.value))
 const subtitleInspectorFilteredRoot = computed(() => {
@@ -1575,6 +1628,7 @@ const subtitleScanCtx = computed(() => ({
 
 const subtitleConfigCtx = computed(() => ({
   subtitleOptions: subtitleOptions.value,
+  restoredContext: subtitleRestoredContextCard.value,
   canOpenSubtitleInspectorFilterDeleteDialog: canOpenSubtitleInspectorFilterDeleteDialog.value,
   pairingAudioSelectedCount: subtitleSequenceSelection.value.audioPaths.length,
   pairingSubtitleSelectedCount: subtitleSequenceSelection.value.subtitlePaths.length,
@@ -1619,7 +1673,9 @@ const subtitleTaskStageCtx = computed(() => ({
   getRJSubtitleProgressStatus,
   getRJSubtitleLangLabel,
   getFileName,
+  getLibraryLabelById,
   isHistoryRestoredSubtitleTask,
+  isSelectionBackfillSubtitleTask,
   isSubtitleTaskSelected,
   canCancelRJSubtitleTask,
   canClearCurrentSubtitleTask,
@@ -1661,7 +1717,12 @@ const subtitleWorkbenchStageCtx = computed(() => ({
     { key: 'tree', label: '字幕文件树', tip: '检索、改名与批量清理' }
   ],
   activeStage: activeSubtitleWorkbenchStage.value,
+  activeStageLabel: activeSubtitleWorkbenchStageLabel.value,
   setActiveStage: setActiveSubtitleWorkbenchStage,
+  focusTitle: subtitleWorkbenchFocusTitle.value,
+  focusSubtitle: subtitleWorkbenchFocusSubtitle.value,
+  focusStep: subtitleWorkbenchFocusStep.value,
+  focusChips: subtitleWorkbenchFocusChips.value,
   contextMode: subtitleWorkbenchContextMode.value,
   scanCtx: subtitleScanCtx.value,
   taskNavigatorCtx: subtitleTaskStageCtx.value,
@@ -3080,10 +3141,6 @@ function canRetryCreateSubtitleTaskForSelection(item) {
   return Boolean(item?.folder_path) && String(item?.queue_state || '') === 'create_failed'
 }
 
-function isHistoryRestoredSubtitleTask(task) {
-  return Boolean(task?.history_restored)
-}
-
 async function ensureRJSubtitleAvailabilityForItem (item) {
   const rjcode = String(item?.rjcode || '').trim().toUpperCase()
   if (!rjcode) {
@@ -3378,7 +3435,7 @@ function hideSubtitleTaskPanelToBackground () {
 }
 
 function handleSubtitleDialogBeforeClose () {
-  closeSubtitleTaskPanel()
+  hideSubtitleTaskPanelToBackground()
 }
 
 function closeSubtitleTaskPanel () {
@@ -3413,17 +3470,26 @@ function getSubtitleRouteFocusPayload () {
   const subtitleFolderPath = route.query.subtitleFolderPath
   const subtitleLibraryId = route.query.subtitleLibraryId
   const subtitleRjcode = route.query.subtitleRjcode
+  const subtitleSourceLabel = route.query.subtitleSourceLabel
+  const subtitleSummary = route.query.subtitleSummary
+  const subtitleRestoredAt = route.query.subtitleRestoredAt
   const shouldOpen = subtitleDialog === '1'
   const taskId = typeof subtitleTaskId === 'string' ? subtitleTaskId.trim() : ''
   const folderPath = typeof subtitleFolderPath === 'string' ? subtitleFolderPath.trim() : ''
   const libraryId = typeof subtitleLibraryId === 'string' ? subtitleLibraryId.trim() : ''
   const rjcode = typeof subtitleRjcode === 'string' ? subtitleRjcode.trim().toUpperCase() : ''
+  const sourceLabel = typeof subtitleSourceLabel === 'string' ? subtitleSourceLabel.trim() : ''
+  const summary = typeof subtitleSummary === 'string' ? subtitleSummary.trim() : ''
+  const restoredAt = typeof subtitleRestoredAt === 'string' ? subtitleRestoredAt.trim() : ''
   return {
     shouldOpen,
     taskId,
     folderPath,
     libraryId,
     rjcode,
+    sourceLabel,
+    summary,
+    restoredAt,
     focusKey: shouldOpen ? `${subtitleDialog}:${taskId}:${libraryId}:${folderPath}` : ''
   }
 }
@@ -3465,6 +3531,9 @@ async function clearSubtitleRouteFocusQuery () {
   delete nextQuery.subtitleFolderPath
   delete nextQuery.subtitleLibraryId
   delete nextQuery.subtitleRjcode
+  delete nextQuery.subtitleSourceLabel
+  delete nextQuery.subtitleSummary
+  delete nextQuery.subtitleRestoredAt
   delete nextQuery.subtitleBatchSelection
   delete nextQuery.subtitleImport
   await router.replace({
@@ -3481,14 +3550,20 @@ async function openSubtitleDialogWithPresetSelection (items = [], preferredKey =
       folder_name: item.folder_name || getFileName(item.folder_path),
       rjcode: item.rjcode || extractRJCode(item.folder_path || '') || '',
       task_id: item.task_id || '',
-        queue_state: String(item.queue_state || ''),
+      queue_state: String(item.queue_state || ''),
       queue_message: item.queue_message || '',
-        downloaded_count: Number(item.downloaded_count || 0),
-        existing_subtitle_count: Number(item.existing_subtitle_count || 0),
-        awaiting_manual_match: Boolean(item.awaiting_manual_match),
+      downloaded_count: Number(item.downloaded_count || 0),
+      existing_subtitle_count: Number(item.existing_subtitle_count || 0),
+      awaiting_manual_match: Boolean(item.awaiting_manual_match),
       manual_match_completed: Boolean(item.manual_match_completed),
       manual_match_applied_pairs: Number(item.manual_match_applied_pairs || 0),
-      manual_match_deleted_subtitles: Number(item.manual_match_deleted_subtitles || 0)
+      manual_match_deleted_subtitles: Number(item.manual_match_deleted_subtitles || 0),
+      source_label: String(item.source_label || '').trim(),
+      source_mode: String(item.source_mode || '').trim(),
+      restored_at: String(item.restored_at || '').trim(),
+      activity_context: item.activity_context && typeof item.activity_context === 'object'
+        ? { ...item.activity_context }
+        : null
     }))
     .filter(item => item.folder_path))
   if (!normalizedItems.length) return
@@ -3515,21 +3590,46 @@ async function openSubtitleDialogWithPresetSelection (items = [], preferredKey =
   normalizedItems
     .filter(item => item.task_id && !findSubtitleTaskBySelection(item))
     .forEach(item => {
+      const awaitingManualMatch = Boolean(item.awaiting_manual_match)
+      const manualMatchCompleted = Boolean(item.manual_match_completed)
+      const downloadedCount = Number(item.downloaded_count || 0)
+      const existingSubtitleCount = Math.max(Number(item.existing_subtitle_count || 0), downloadedCount)
+      const subtitleDir = awaitingManualMatch || manualMatchCompleted || downloadedCount > 0 || existingSubtitleCount > 0
+        ? joinFolderPath(item.folder_path, 'subtitles')
+        : ''
       const optimisticTask = {
         ...createOptimisticSubtitleTask(item, item.task_id),
-        status: item.awaiting_manual_match || item.manual_match_completed ? 'completed' : 'pending',
-        progress: item.awaiting_manual_match || item.manual_match_completed ? 100 : 0,
-        current_step: item.queue_message || (item.awaiting_manual_match ? '等待手动配对' : '等待字幕生成'),
-        downloaded_count: 0,
-        existing_subtitle_count: Math.max(Number(item.existing_subtitle_count || 0), Number(item.downloaded_count || 0)),
-        subtitle_dir: item.awaiting_manual_match || item.manual_match_completed || Number(item.downloaded_count || 0) > 0 || Number(item.existing_subtitle_count || 0) > 0
-          ? joinFolderPath(item.folder_path, 'subtitles')
-          : '',
-        awaiting_manual_match: Boolean(item.awaiting_manual_match),
-        manual_match_completed: Boolean(item.manual_match_completed),
+        task_view_mode: 'selection_backfill',
+        live_task: null,
+        snapshot: {
+          task_id: String(item.task_id || '').trim(),
+          queue_state: String(item.queue_state || '').trim(),
+          queue_message: item.queue_message || '',
+          source_label: String(item.source_label || '').trim(),
+          downloaded_count: downloadedCount,
+          existing_subtitle_count: existingSubtitleCount,
+          subtitle_dir: subtitleDir,
+          awaiting_manual_match: awaitingManualMatch,
+          manual_match_completed: manualMatchCompleted,
+          manual_match_applied_pairs: Number(item.manual_match_applied_pairs || 0),
+          manual_match_deleted_subtitles: Number(item.manual_match_deleted_subtitles || 0)
+        },
+        source_label: String(item.source_label || '').trim(),
+        source_mode: String(item.source_mode || '').trim(),
+        restored_at: String(item.restored_at || '').trim(),
+        activity_context: item.activity_context && typeof item.activity_context === 'object'
+          ? { ...item.activity_context }
+          : null,
+        status: 'selection_backfill',
+        progress: 0,
+        current_step: item.queue_message || (awaitingManualMatch ? '待继续配对' : '已回填'),
+        downloaded_count: downloadedCount,
+        existing_subtitle_count: existingSubtitleCount,
+        subtitle_dir: subtitleDir,
+        awaiting_manual_match: awaitingManualMatch,
+        manual_match_completed: manualMatchCompleted,
         manual_match_applied_pairs: Number(item.manual_match_applied_pairs || 0),
-        manual_match_deleted_subtitles: Number(item.manual_match_deleted_subtitles || 0),
-        history_restored: true
+        manual_match_deleted_subtitles: Number(item.manual_match_deleted_subtitles || 0)
       }
       upsertSubtitleTaskLocal(optimisticTask)
     })
@@ -3548,7 +3648,7 @@ async function consumeSubtitleBatchSelectionRoute () {
 }
 
 async function consumeSubtitleRouteFocus () {
-  const { shouldOpen, taskId, folderPath, libraryId, rjcode, focusKey } = getSubtitleRouteFocusPayload()
+  const { shouldOpen, taskId, folderPath, libraryId, rjcode, sourceLabel, summary, restoredAt, focusKey } = getSubtitleRouteFocusPayload()
   if (!shouldOpen || (!taskId && !folderPath)) return
   if (subtitleRouteFocusKey.value === focusKey && subtitleDialogVisible.value) return
 
@@ -3566,6 +3666,19 @@ async function consumeSubtitleRouteFocus () {
   const matchedTask = subtitleTasks.value.find(item => item.id === taskId)
   if (matchedTask) {
     if (matchedTask.subtitle_dir) {
+      if (sourceLabel || restoredAt) {
+        subtitleInspectorInfo.value = {
+          ...subtitleInspectorInfo.value,
+          sourceLabel: sourceLabel || matchedTask.source_label || subtitleInspectorInfo.value.sourceLabel || '',
+          restoredAt: restoredAt || subtitleInspectorInfo.value.restoredAt || '',
+          activityContext: {
+            ...(subtitleInspectorInfo.value.activityContext || {}),
+            source_label: sourceLabel || matchedTask.source_label || '',
+            summary: summary || matchedTask.current_step || '',
+            created_at: restoredAt || ''
+          }
+        }
+      }
       await handleSubtitleWorkbenchInspectTask(matchedTask)
     } else {
       focusSubtitleTask(matchedTask.id)
@@ -3582,7 +3695,15 @@ async function consumeSubtitleRouteFocus () {
       folder_path: folderPath,
       folder_name: getFileName(folderPath),
       rjcode: rjcode || extractRJCode(folderPath) || '',
-      queue_message: '来自操作记录'
+      queue_message: summary || '来自操作记录',
+      source_label: sourceLabel || '操作记录',
+      source_mode: 'activity_history_restore',
+      restored_at: restoredAt || '',
+      activity_context: {
+        source_label: sourceLabel || '操作记录',
+        summary: summary || '',
+        created_at: restoredAt || ''
+      }
     }, { force: true, preferredTaskId: taskId })
   }
 
@@ -4540,7 +4661,11 @@ async function applySubtitleManualPairs () {
       library_id: subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
       folder_path: subtitleInspectorInfo.value.folderPath,
       folder_name: getFileName(subtitleInspectorInfo.value.folderPath),
-      rjcode: extractRJCode(subtitleInspectorInfo.value.folderPath || '') || ''
+      rjcode: extractRJCode(subtitleInspectorInfo.value.folderPath || '') || '',
+      source_label: subtitleInspectorInfo.value.sourceLabel || '',
+      source_mode: subtitleInspectorInfo.value.sourceMode || '',
+      restored_at: subtitleInspectorInfo.value.restoredAt || '',
+      activity_context: subtitleInspectorInfo.value.activityContext || null
     }
     const fallbackTask = currentTaskId
       ? null
@@ -5194,6 +5319,9 @@ function syncSubtitleInspectorTaskState () {
     folderPath: task.folder_path,
     subtitleDir: task.subtitle_dir,
     sourceMode: task.source_mode || subtitleInspectorInfo.value.sourceMode || '',
+    sourceLabel: task.source_label || subtitleInspectorInfo.value.sourceLabel || '',
+    restoredAt: task.restored_at || subtitleInspectorInfo.value.restoredAt || '',
+    activityContext: task.activity_context || subtitleInspectorInfo.value.activityContext || null,
     manualMatchCompleted: Boolean(task.manual_match_completed),
     manualMatchAppliedPairs: Number(task.manual_match_applied_pairs || 0),
     manualMatchDeletedSubtitles: Number(task.manual_match_deleted_subtitles || 0),
@@ -5290,6 +5418,9 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
       folderPath: item.folder_path || '',
       subtitleDir: subtitleData.folder_path || subtitleDir,
       sourceMode: matchedTask?.source_mode || '',
+      sourceLabel: matchedTask?.source_label || item.source_label || '',
+      restoredAt: matchedTask?.restored_at || item.restored_at || '',
+      activityContext: matchedTask?.activity_context || item.activity_context || null,
       manualMatchCompleted: Boolean(matchedTask?.manual_match_completed ?? item.manual_match_completed),
       manualMatchAppliedPairs: Number(matchedTask?.manual_match_applied_pairs ?? item.manual_match_applied_pairs ?? 0),
       manualMatchDeletedSubtitles: Number(matchedTask?.manual_match_deleted_subtitles ?? item.manual_match_deleted_subtitles ?? 0),
@@ -5353,6 +5484,9 @@ async function inspectSubtitleTask (task, options = {}) {
       folderPath: task.folder_path || '',
       subtitleDir: subtitleData.folder_path || task.subtitle_dir,
       sourceMode: task.source_mode || '',
+      sourceLabel: task.source_label || subtitleInspectorInfo.value.sourceLabel || '',
+      restoredAt: task.restored_at || subtitleInspectorInfo.value.restoredAt || '',
+      activityContext: task.activity_context || subtitleInspectorInfo.value.activityContext || null,
       manualMatchCompleted: Boolean(task.manual_match_completed),
       manualMatchAppliedPairs: Number(task.manual_match_applied_pairs || 0),
       manualMatchDeletedSubtitles: Number(task.manual_match_deleted_subtitles || 0),
@@ -5391,6 +5525,10 @@ async function reloadSubtitleInspector () {
       folder_path: matchedItem?.folder_path || subtitleInspectorInfo.value.folderPath,
       folder_name: matchedItem?.folder_name || getFileName(subtitleInspectorInfo.value.folderPath),
       rjcode: matchedItem?.rjcode || extractRJCode(subtitleInspectorInfo.value.folderPath || '') || '',
+      source_label: matchedItem?.source_label || subtitleInspectorInfo.value.sourceLabel || '',
+      source_mode: matchedItem?.source_mode || subtitleInspectorInfo.value.sourceMode || '',
+      restored_at: matchedItem?.restored_at || subtitleInspectorInfo.value.restoredAt || '',
+      activity_context: matchedItem?.activity_context || subtitleInspectorInfo.value.activityContext || null,
       manual_match_completed: matchedItem?.manual_match_completed || subtitleInspectorInfo.value.manualMatchCompleted,
       manual_match_applied_pairs: matchedItem?.manual_match_applied_pairs || subtitleInspectorInfo.value.manualMatchAppliedPairs,
       manual_match_deleted_subtitles: matchedItem?.manual_match_deleted_subtitles || subtitleInspectorInfo.value.manualMatchDeletedSubtitles,

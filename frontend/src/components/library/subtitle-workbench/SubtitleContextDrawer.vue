@@ -38,8 +38,10 @@
         >
           <component
             :is="iconMap[item.icon]"
-            class="h-4 w-4 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-            :class="ctx.contextMode === item.key ? '' : 'group-hover:rotate-[8deg] group-hover:scale-110'"
+            class="h-4 w-4 shrink-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+            :class="ctx.contextMode === item.key
+              ? 'opacity-100 group-hover:-translate-y-0.5 group-hover:scale-[1.14] group-hover:rotate-[10deg]'
+              : 'opacity-85 group-hover:opacity-100 group-hover:-translate-y-0.5 group-hover:rotate-[8deg] group-hover:scale-110'"
             :stroke-width="2.2"
           />
           <span
@@ -62,18 +64,22 @@
           v-for="item in ctx.modeOptions"
           :key="item.key"
           type="button"
-          class="group flex flex-1 items-center justify-center gap-1.5 rounded-[8px] px-3 py-1.5 text-[12px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+          class="group flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-[8px] px-3 py-1.5 text-[12px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
           :class="ctx.contextMode === item.key
             ? 'bg-slate-900 text-white shadow-[0_4px_12px_rgba(15,23,42,0.22)] scale-[1.02]'
             : 'text-slate-600 hover:bg-white hover:text-slate-900 hover:shadow-[0_2px_6px_rgba(15,23,42,0.06)]'"
           @click="ctx.setContextMode(item.key)"
         >
-          <component :is="iconMap[item.icon]" class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:rotate-[12deg] group-hover:scale-[1.18]" :stroke-width="2.4" />
+          <component
+            :is="iconMap[item.icon]"
+            class="h-[13px] w-[13px] shrink-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] opacity-90 group-hover:opacity-100 group-hover:-translate-y-0.5 group-hover:rotate-[12deg] group-hover:scale-[1.18]"
+            :stroke-width="2.4"
+          />
           <span>{{ item.label }}</span>
         </button>
       </div>
 
-      <div class="min-h-0 overflow-auto pt-0.5">
+      <div class="subtitle-workbench-scrollbar min-h-0 overflow-auto pt-0.5">
         <slot />
       </div>
     </template>

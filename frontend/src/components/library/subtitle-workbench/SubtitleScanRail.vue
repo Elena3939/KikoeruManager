@@ -56,11 +56,18 @@
                   v-for="item in ctx.subtitleSelectionFilterOptions"
                   :key="item.key"
                   type="button"
-                  class="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded-[8px] border border-slate-200 bg-white px-3 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
+                  class="scan-rail-segment group"
                   :class="{ active: ctx.subtitleSelectionFilter === item.key }"
                   @click="ctx.setSubtitleSelectionFilter(item.key)"
                 >
-                  {{ item.label }} {{ item.value }}
+                  <component
+                    :is="getSelectionFilterIcon(item.key)"
+                    class="h-3.5 w-3.5 shrink-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                    :class="getSelectionFilterIconClass(item.key, ctx.subtitleSelectionFilter === item.key)"
+                    :stroke-width="2.2"
+                  />
+                  <span>{{ item.label }}</span>
+                  <span class="scan-rail-segment-count">{{ item.value }}</span>
                 </button>
               </div>
             </div>
@@ -304,7 +311,7 @@
 </template>
 
 <script setup>
-import { ChevronDown, Eye, FolderSearch, FileAudio2, ListTodo, Plus, RotateCcw } from 'lucide-vue-next'
+import { ChevronDown, Eye, FolderSearch, FileAudio2, ListTodo, Plus, RotateCcw, Search } from 'lucide-vue-next'
 import AppLoadingAnimation from '../../common/AppLoadingAnimation.vue'
 import AppEmptyState from '../../common/AppEmptyState.vue'
 
@@ -346,13 +353,30 @@ function getExistingChipIconClass(chip) {
   if (label.includes('已入任务')) return 'text-sky-600'
   return 'text-slate-500'
 }
+
+function getSelectionFilterIcon(key) {
+  return key === 'queued' ? ListTodo : Search
+}
+
+function getSelectionFilterIconClass(key, active) {
+  if (key === 'queued') {
+    return active
+      ? 'text-sky-200 group-hover:text-white group-hover:-translate-y-0.5 group-hover:rotate-[10deg] group-hover:scale-110'
+      : 'text-sky-600 group-hover:text-sky-700 group-hover:-translate-y-0.5 group-hover:rotate-[10deg] group-hover:scale-110'
+  }
+  return active
+    ? 'text-slate-200 group-hover:text-white group-hover:-translate-y-0.5 group-hover:rotate-[-8deg] group-hover:scale-110'
+    : 'text-slate-500 group-hover:text-slate-700 group-hover:-translate-y-0.5 group-hover:rotate-[-8deg] group-hover:scale-110'
+}
 </script>
 
 <style scoped>
 .scan-rail-chip,
 .scan-rail-filter-pill,
 .scan-rail-btn,
-.scan-rail-toggle {
+.scan-rail-toggle,
+.scan-rail-segment,
+.scan-rail-segment-count {
   font: inherit;
 }
 
@@ -397,6 +421,70 @@ function getExistingChipIconClass(chip) {
   border-color: #e2e8f0;
   background: #f8fafc;
   color: #475569;
+}
+
+.scan-rail-segment {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 9px 0 10px;
+  border-radius: 10px;
+  border: 1px solid #dbe3ee;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  color: #334155;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.scan-rail-segment:hover {
+  transform: translateY(-1px) scale(1.02);
+  border-color: #cbd5e1;
+  color: #0f172a;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+}
+
+.scan-rail-segment:active {
+  transform: scale(0.96);
+}
+
+.scan-rail-segment.active {
+  border-color: #0f172a;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  color: #f8fafc;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+}
+
+.scan-rail-segment-count {
+  display: inline-flex;
+  min-width: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(241, 245, 249, 0.9);
+  padding: 0 6px;
+  min-height: 18px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #475569;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.scan-rail-segment:hover .scan-rail-segment-count {
+  border-color: rgba(148, 163, 184, 0.34);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.scan-rail-segment.active .scan-rail-segment-count {
+  border-color: rgba(226, 232, 240, 0.18);
+  background: rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
 }
 
 .scan-rail-filter-pill:hover,

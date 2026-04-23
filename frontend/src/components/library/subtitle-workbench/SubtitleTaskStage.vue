@@ -73,6 +73,49 @@
         </div>
 
         <div class="mt-3 rounded-[12px] border border-slate-100 bg-gradient-to-b from-[#fafcff] to-white">
+          <div
+            v-if="shouldShowMetaPanel(ctx.activeSubtitleTask)"
+            class="border-b border-slate-100 px-3 py-3"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5 text-[12px] font-semibold text-slate-900">
+                <History class="h-3.5 w-3.5 text-violet-500" :stroke-width="2.2" />
+                <span>{{ getMetaPanelTitle(ctx.activeSubtitleTask) }}</span>
+              </div>
+              <div class="flex flex-wrap items-center justify-end gap-1">
+                <span
+                  v-for="chip in getTaskMetaChips(ctx.activeSubtitleTask)"
+                  :key="`${ctx.activeSubtitleTask.id}-${chip.key}`"
+                  class="inline-flex items-center gap-1 rounded-[8px] border px-2 py-0.5 text-[10.5px] font-medium"
+                  :class="chip.class"
+                >
+                  <component :is="chip.icon" class="h-2.5 w-2.5" :stroke-width="2.3" />
+                  <span>{{ chip.label }}</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="mt-3 grid gap-2 md:grid-cols-2">
+              <div
+                v-for="item in getTaskMetaItems(ctx.activeSubtitleTask)"
+                :key="`${ctx.activeSubtitleTask.id}-${item.key}`"
+                class="rounded-[10px] border border-slate-200/80 bg-white/80 px-2.5 py-2 shadow-[0_1px_4px_rgba(15,23,42,0.03)]"
+                :class="item.layout === 'full' ? 'md:col-span-2' : ''"
+              >
+                <div class="flex items-start gap-2">
+                  <div class="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[8px] border border-slate-200 bg-slate-50">
+                    <component :is="item.icon" class="h-3 w-3" :class="item.iconClass" :stroke-width="2.2" />
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[10.5px] font-medium uppercase tracking-[0.08em] text-slate-400">{{ item.label }}</div>
+                    <div class="mt-0.5 break-words text-[11.5px] font-medium leading-relaxed text-slate-800">{{ item.value }}</div>
+                    <div v-if="item.tip" class="mt-0.5 text-[10.5px] leading-relaxed text-slate-500">{{ item.tip }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2">
             <div class="flex items-center gap-1.5 text-[12px] font-semibold text-slate-900">
               <Activity class="h-3.5 w-3.5 text-emerald-500" :stroke-width="2.2" />
@@ -82,7 +125,7 @@
               {{ ctx.activeSubtitleTask.progress_log?.length || 0 }} 条
             </span>
           </div>
-          <div v-if="ctx.activeSubtitleTaskProgressLogs.length" class="max-h-[260px] overflow-auto px-3 py-2">
+          <div v-if="ctx.activeSubtitleTaskProgressLogs.length" class="subtitle-workbench-scrollbar max-h-[260px] overflow-auto px-3 py-2">
             <TransitionGroup tag="div" name="sub-log-item" class="grid gap-1.5">
               <div
                 v-for="(entry, idx) in ctx.activeSubtitleTaskProgressLogs"
@@ -98,7 +141,15 @@
               </div>
             </TransitionGroup>
           </div>
-          <AppEmptyState v-else description="当前任务还没有日志" size="sm" />
+          <div v-else class="px-3 py-2">
+            <AppEmptyState :description="getTaskLogEmptyTitle(ctx.activeSubtitleTask)" size="sm">
+              <template #default>
+                <div class="mt-1 text-center text-[11px] leading-relaxed text-slate-500">
+                  {{ getTaskLogEmptyDescription(ctx.activeSubtitleTask) }}
+                </div>
+              </template>
+            </AppEmptyState>
+          </div>
         </div>
       </div>
 
@@ -186,15 +237,18 @@
           </div>
 
           <div class="flex flex-wrap gap-1">
-            <template v-if="ctx.isHistoryRestoredSubtitleTask(task)">
+            <template v-if="ctx.isHistoryRestoredSubtitleTask(task) || ctx.isSelectionBackfillSubtitleTask(task)">
               <span class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-900">
-                <History class="h-2.5 w-2.5 text-violet-500" :stroke-width="2.4" />历史恢复
+                <History class="h-2.5 w-2.5 text-violet-500" :stroke-width="2.4" />{{ ctx.isHistoryRestoredSubtitleTask(task) ? '历史恢复' : '结果回填' }}
               </span>
               <span v-if="task.manual_match_completed" class="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10.5px] font-medium text-emerald-700">
                 <CheckCheck class="h-2.5 w-2.5" :stroke-width="2.4" />已匹配 {{ task.manual_match_applied_pairs || 0 }}
               </span>
               <span v-else-if="task.awaiting_manual_match" class="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-700">
                 <Hand class="h-2.5 w-2.5" :stroke-width="2.4" />待配对
+              </span>
+              <span v-else class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-700">
+                <ScrollText class="h-2.5 w-2.5 text-slate-500" :stroke-width="2.4" />结果回看
               </span>
               <span v-if="task.subtitle_dir" class="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10.5px] font-medium text-sky-700">
                 <FolderOpen class="h-2.5 w-2.5" :stroke-width="2.4" />字幕树
@@ -300,6 +354,8 @@ function statusPillClass(key) {
   if (['completed', 'manual_match_completed'].includes(k)) return 'border border-emerald-200 bg-emerald-50 text-emerald-700'
   if (k === 'failed') return 'border border-rose-200 bg-rose-50 text-rose-700'
   if (['processing', 'awaiting_manual_match'].includes(k)) return 'border border-sky-200 bg-sky-50 text-sky-700'
+  if (k === 'view_restored') return 'border border-violet-200 bg-violet-50 text-violet-700'
+  if (k === 'view_backfilled') return 'border border-slate-200 bg-slate-50 text-slate-700'
   return 'border border-slate-200 bg-slate-50 text-slate-600'
 }
 
@@ -309,6 +365,8 @@ function statusIcon(key) {
   if (k === 'failed') return XCircle
   if (k === 'processing') return Loader2
   if (k === 'awaiting_manual_match') return Hand
+  if (k === 'view_restored') return History
+  if (k === 'view_backfilled') return Layers
   return Clock
 }
 
@@ -317,6 +375,8 @@ function statusIconColor(key) {
   if (['completed', 'manual_match_completed'].includes(k)) return 'text-emerald-500'
   if (k === 'failed') return 'text-rose-500'
   if (['processing', 'awaiting_manual_match'].includes(k)) return 'text-sky-500'
+  if (k === 'view_restored') return 'text-violet-500'
+  if (k === 'view_backfilled') return 'text-slate-500'
   return 'text-slate-400'
 }
 
@@ -335,6 +395,257 @@ function getDisplayFolderName(task) {
     return parts[parts.length - 1] || folderName
   }
   return props.ctx?.getFileName?.(task?.folder_path) || '-'
+}
+
+function getSourceModeLabel(mode) {
+  const normalized = String(mode || '').trim().toLowerCase()
+  const labels = {
+    linked_translation_archive_import: '关联字幕压缩包导入',
+    subtitle_folder_import: '字幕目录导入',
+    activity_history_restore: '操作记录恢复',
+    subtitle_workbench_scan: '字幕工作台扫描'
+  }
+  if (labels[normalized]) return labels[normalized]
+  return normalized ? normalized.replace(/[_-]+/g, ' / ') : ''
+}
+
+function getQueueStateLabel(queueState) {
+  switch (String(queueState || '').trim()) {
+    case 'awaiting_manual_match':
+      return '待继续配对'
+    case 'manual_match_completed':
+      return '已匹配完成'
+    case 'existing_task':
+      return '任务已存在'
+    case 'queued':
+      return '已入任务'
+    case 'create_failed':
+      return '加入失败'
+    default:
+      return ''
+  }
+}
+
+function formatMetaTime(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const date = new Date(text)
+  if (Number.isNaN(date.getTime())) return text
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatTaskDuration(task) {
+  if (!task) return ''
+  const parseTime = (value) => {
+    const ts = Date.parse(String(value || '').trim())
+    return Number.isFinite(ts) ? ts : 0
+  }
+  const start = parseTime(task.started_at || task.activity_context?.started_at || task.created_at || task.restored_at || task.activity_context?.created_at)
+  const end = parseTime(task.completed_at || task.activity_context?.completed_at)
+  if (!start) return ''
+  const diff = Math.max(0, (end || Date.now()) - start)
+  const totalSeconds = Math.floor(diff / 1000)
+  if (!totalSeconds) return end ? '0秒' : ''
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}时${minutes}分${seconds}秒`
+  if (minutes > 0) return `${minutes}分${seconds}秒`
+  return `${seconds}秒`
+}
+
+function getTaskMetaSourceLabel(task) {
+  return String(
+    task?.source_label
+    || task?.task_metadata?.source_label
+    || task?.activity_context?.source_label
+    || task?.restore_payload?.source_label
+    || task?.snapshot?.source_label
+    || ''
+  ).trim()
+}
+
+function getTaskMetaPrimaryMessage(task) {
+  return String(
+    task?.snapshot?.queue_message
+    || task?.activity_context?.summary
+    || task?.activity_context?.message
+    || task?.restore_payload?.message
+    || task?.current_step
+    || ''
+  ).trim()
+}
+
+function getTaskLogEmptyTitle(task) {
+  if (props.ctx?.isHistoryRestoredSubtitleTask?.(task)) return '这是一份恢复快照'
+  if (props.ctx?.isSelectionBackfillSubtitleTask?.(task)) return '这是一份回填快照'
+  return '当前任务还没有日志'
+}
+
+function getTaskLogEmptyDescription(task) {
+  if (props.ctx?.isHistoryRestoredSubtitleTask?.(task)) {
+    return '当前展示的是从操作记录恢复出来的历史上下文，没有实时进度日志并不代表这条任务从未执行过。'
+  }
+  if (props.ctx?.isSelectionBackfillSubtitleTask?.(task)) {
+    return '当前展示的是扫描命中回填结果，日志要等实时任务状态同步回来后才会继续补齐。'
+  }
+  return '当前任务还没有产生可展示的执行日志。'
+}
+
+function shouldShowMetaPanel(task) {
+  return Boolean(
+    task &&
+    props.ctx?.subtitleTaskDetailPanels?.includes('meta') &&
+    (props.ctx?.isHistoryRestoredSubtitleTask?.(task) || props.ctx?.isSelectionBackfillSubtitleTask?.(task))
+  )
+}
+
+function getMetaPanelTitle(task) {
+  if (props.ctx?.isHistoryRestoredSubtitleTask?.(task)) return '恢复任务上下文'
+  if (props.ctx?.isSelectionBackfillSubtitleTask?.(task)) return '回填任务上下文'
+  return '任务上下文'
+}
+
+function getTaskMetaChips(task) {
+  const chips = []
+  if (props.ctx?.isHistoryRestoredSubtitleTask?.(task)) {
+    chips.push({
+      key: 'mode',
+      label: '操作记录恢复',
+      icon: History,
+      class: 'border-violet-200 bg-violet-50 text-violet-700'
+    })
+  } else if (props.ctx?.isSelectionBackfillSubtitleTask?.(task)) {
+    chips.push({
+      key: 'mode',
+      label: '扫描命中回填',
+      icon: Layers,
+      class: 'border-slate-200 bg-slate-50 text-slate-700'
+    })
+  }
+  if (task?.manual_match_completed) {
+    chips.push({
+      key: 'manual-done',
+      label: `已匹配 ${task.manual_match_applied_pairs || 0}`,
+      icon: CheckCircle2,
+      class: 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    })
+  } else if (task?.awaiting_manual_match) {
+    chips.push({
+      key: 'manual-wait',
+      label: '待继续配对',
+      icon: Hand,
+      class: 'border-amber-200 bg-amber-50 text-amber-700'
+    })
+  }
+  if (task?.subtitle_dir) {
+    chips.push({
+      key: 'tree',
+      label: '可查看字幕树',
+      icon: FolderOpen,
+      class: 'border-sky-200 bg-sky-50 text-sky-700'
+    })
+  }
+  return chips
+}
+
+function getTaskMetaItems(task) {
+  if (!task) return []
+  const items = []
+  const queueState = String(task?.snapshot?.queue_state || '').trim()
+  const queueLabel = getQueueStateLabel(queueState)
+  const sourceLabel = getTaskMetaSourceLabel(task)
+  const sourceModeLabel = getSourceModeLabel(task?.source_mode)
+  const libraryLabel = props.ctx?.getLibraryLabelById?.(task?.library_id || task?.subtitle_library_id || '')
+  const createdAt = formatMetaTime(task?.restored_at || task?.activity_context?.restored_at || task?.activity_context?.created_at || task?.restore_payload?.restored_at || task?.created_at)
+  const durationText = formatTaskDuration(task)
+  const currentMessage = getTaskMetaPrimaryMessage(task)
+
+  if (sourceLabel) {
+    items.push({
+      key: 'source-label',
+      label: '来源动作',
+      value: sourceLabel,
+      tip: '优先使用任务快照或恢复记录里自带的来源标签。',
+      icon: Link2,
+      iconClass: 'text-sky-500'
+    })
+  }
+
+  if (sourceModeLabel) {
+    items.push({
+      key: 'source-mode',
+      label: '来源模式',
+      value: sourceModeLabel,
+      icon: Layers,
+      iconClass: 'text-indigo-500'
+    })
+  }
+
+  if (libraryLabel) {
+    items.push({
+      key: 'library',
+      label: '来源库',
+      value: libraryLabel,
+      icon: CircleDot,
+      iconClass: 'text-slate-500'
+    })
+  }
+
+  if (queueLabel || currentMessage) {
+    items.push({
+      key: 'snapshot-state',
+      label: '快照状态',
+      value: queueLabel || currentMessage,
+      tip: queueLabel && currentMessage && queueLabel !== currentMessage ? currentMessage : '',
+      icon: ScrollText,
+      iconClass: 'text-violet-500'
+    })
+  }
+
+  if (createdAt) {
+    items.push({
+      key: 'created-at',
+      label: '记录时间',
+      value: createdAt,
+      icon: Clock,
+      iconClass: 'text-amber-500'
+    })
+  }
+
+  if (durationText) {
+    items.push({
+      key: 'duration',
+      label: '处理时间',
+      value: durationText,
+      icon: Activity,
+      iconClass: 'text-emerald-500'
+    })
+  }
+
+  if (task?.folder_path) {
+    items.push({
+      key: 'folder-path',
+      label: '作品目录',
+      value: String(task.folder_path),
+      icon: Folder,
+      iconClass: 'text-amber-500',
+      layout: 'full'
+    })
+  }
+
+  if (task?.subtitle_dir) {
+    items.push({
+      key: 'subtitle-dir',
+      label: '字幕目录',
+      value: String(task.subtitle_dir),
+      icon: FolderOpen,
+      iconClass: 'text-sky-500',
+      layout: 'full'
+    })
+  }
+
+  return items
 }
 </script>
 

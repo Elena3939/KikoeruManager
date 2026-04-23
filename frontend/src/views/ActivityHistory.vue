@@ -1847,7 +1847,10 @@ async function openSubtitlePairWorkbench(row) {
       ...(taskId ? { subtitleTaskId: taskId } : {}),
       ...(folderPath ? { subtitleFolderPath: folderPath } : {}),
       ...(libraryId ? { subtitleLibraryId: libraryId } : {}),
-      ...(rjcode && rjcode !== '—' ? { subtitleRjcode: rjcode } : {})
+      ...(rjcode && rjcode !== '—' ? { subtitleRjcode: rjcode } : {}),
+      subtitleSourceLabel: String(row?.source_label || row?.detail?.source_label || humanAction(row) || '操作记录').trim(),
+      subtitleSummary: String(displaySummary(row) || '').trim(),
+      subtitleRestoredAt: String(row?.created_at || '').trim()
     }
   })
 }
@@ -1864,11 +1867,14 @@ function subtitleBatchWorkbenchItems(row) {
       const pairDetail = pairDetailPayload(item)
       return {
         key,
+        activityId: String(item?.id || ''),
         taskId: resolveSubtitleTaskId(item),
         folderPath: resolveSubtitleFolderPath(item),
         libraryId: resolveSubtitleLibraryId(item),
         rjcode: displayRjcode(item),
         folderName: String(item?.detail?.folder_name || '').trim() || compactPath(item?.source_path || ''),
+        createdAt: String(item?.created_at || '').trim(),
+        sourceLabel: String(item?.source_label || item?.detail?.source_label || humanAction(item) || '操作记录').trim(),
         summary: displaySummary(item),
         awaiting,
         paired,
@@ -1951,7 +1957,16 @@ async function openSubtitleBatchWorkbench(row) {
         awaiting_manual_match: Boolean(item.awaiting),
         manual_match_completed: Boolean(item.paired),
         downloaded_count: Number(item.downloadedCount || 0),
-        existing_subtitle_count: Number(item.existingSubtitleCount || 0)
+        existing_subtitle_count: Number(item.existingSubtitleCount || 0),
+        source_label: String(item.sourceLabel || '操作记录').trim(),
+        source_mode: 'activity_history_restore',
+        restored_at: String(item.createdAt || '').trim(),
+        activity_context: {
+          activity_id: String(item.activityId || '').trim(),
+          source_label: String(item.sourceLabel || '操作记录').trim(),
+          summary: String(item.summary || '').trim(),
+          created_at: String(item.createdAt || '').trim()
+        }
       })),
       preferred_key: `${pickedItems[0]?.libraryId || ''}::${String(pickedItems[0]?.folderPath || '').replace(/\\/g, '/')}`
     }))

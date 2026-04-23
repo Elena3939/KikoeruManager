@@ -546,6 +546,7 @@ const displayPills = [
   box-shadow: 0 8px 20px rgba(244, 63, 94, 0.08);
 }
 
+
 .stat-trio {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
