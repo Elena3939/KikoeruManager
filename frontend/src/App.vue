@@ -454,10 +454,6 @@ async function toggleWatcher() {
   overflow: visible;
 }
 
-:deep(.el-card__body) {
-  overflow-x: auto;
-}
-
 :deep(.el-tag.el-tag--info.el-tag--plain) {
   color: rgba(29, 29, 31, 0.72);
   border-color: rgba(29, 29, 31, 0.08);

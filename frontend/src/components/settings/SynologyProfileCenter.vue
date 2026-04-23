@@ -73,7 +73,13 @@
           <small>保存设备令牌，减少重复 OTP 验证。</small>
         </span>
         <div class="toggle-control" @click.stop>
-          <el-switch :model-value="profile.enable_device_token" @update:model-value="emitProfileFlag('enable_device_token', $event)" />
+          <AppLottieTextButton
+            :src="rememberDeviceAnimation"
+            :label="profile.enable_device_token ? '已记住' : '记住设备'"
+            :active="profile.enable_device_token"
+            compact
+            @click="emitProfileFlag('enable_device_token', !profile.enable_device_token)"
+          />
         </div>
       </div>
       <div class="toggle-card" @click="emitProfileFlag('verify_ssl', !profile.verify_ssl)">
@@ -106,6 +112,8 @@
 import { computed } from 'vue'
 import { LoaderCircle, PlugZap } from 'lucide-vue-next'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
+import AppLottieTextButton from '../common/AppLottieTextButton.vue'
+import rememberDeviceAnimation from '../../assets/anime/1111.lottie'
 
 const props = defineProps({
   profile: { type: Object, required: true },
