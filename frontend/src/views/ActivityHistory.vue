@@ -919,9 +919,10 @@
 </template>
 
 <script setup>
-import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { useActivityHistory } from '../composables/useActivityHistory'
 import {
   AlertCircle,
   Box,
@@ -953,12 +954,32 @@ import {
   XCircle
 } from 'lucide-vue-next'
 import dayjs from 'dayjs'
-import api from '../api'
 import ActivityLogDetailDialog from '../components/activity/ActivityLogDetailDialog.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 
 const router = useRouter()
-const loading = ref(true)
+
+// Phase 4C: 列表 / 统计 / 过滤 / 子行懒加载 等数据层全部迁入 useActivityHistory，
+// 页面本身只留 UI 装饰 + domain-specific 展示函数（树形展开、行元数据、弹窗等）。
+const {
+  loading,
+  items,
+  total,
+  page,
+  limit,
+  lastLoadedAt,
+  stats,
+  statsDays,
+  filters,
+  loadStats,
+  loadList,
+  loadAll,
+  loadChildren,
+  applyFilters,
+  onPageSizeChange,
+  shouldSoftRefresh,
+  handleVisibilityRefresh
+} = useActivityHistory()
 
 const categoryConfigs = {
   subtitle_crawl: { icon: Search, color: 'text-indigo-600', bg: 'bg-indigo-50/80', border: 'border-indigo-100/50' },
@@ -995,15 +1016,11 @@ function statusLabel(status) {
   return getStatusConfig(status).label || '—'
 }
 
-const items = ref([])
-const total = ref(0)
-const page = ref(1)
-const limit = ref(30)
+// 只留 UI 装饰态；items / total / page / limit / stats / filters / statsDays / lastLoadedAt 已迁入 composable
 const detailDialogVisible = ref(false)
 const selectedRow = ref(null)
 const circleRefreshFilter = ref('all')
 const circleRefreshPage = ref(1)
-const statsDays = ref(14)
 const expandedTreeRowIds = ref(new Set())
 const selectedBatchWorkbenchKeys = ref([])
 const batchWorkbenchAwaitingOnly = ref(false)
@@ -1012,23 +1029,6 @@ const collapsedEntryTreeRowKeys = ref(new Set())
 const compareSearchQuery = ref('')
 const compareSourceFilter = ref('all')
 const compareExpanded = ref(true)
-const lastLoadedAt = ref(0)
-const ACTIVITY_AUTO_REFRESH_STALE_MS = 3 * 60 * 1000
-const stats = reactive({
-  days: 14,
-  total_in_range: 0,
-  by_day: [],
-  by_category: [],
-  by_status: {},
-  metrics: {},
-  db_path: ''
-})
-
-const filters = reactive({
-  q: '',
-  category: '',
-  status: ''
-})
 
 const categoryOptions = [
   { value: 'subtitle_crawl', label: '字幕爬取' },
@@ -2264,10 +2264,23 @@ function isTreeRowExpanded(row) {
 
 function toggleTreeRow(row) {
   const id = treeRowId(row)
-  if (!id || !rowHasChildren(row)) return
+  if (!id) return
   const next = new Set(expandedTreeRowIds.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
+  const expanding = !next.has(id)
+
+  if (expanding) {
+    // Phase 4C：后端 list 接口未来可能只返回 has_child_rows 提示、不再内联 child_rows；
+    // 这里兼容两种形态 —— 内联有子行就走老路径，未内联但有提示就懒拉。
+    const inlineChildren = Array.isArray(row?.detail?.child_rows) ? row.detail.child_rows : []
+    if (row?.has_child_rows === true && inlineChildren.length === 0) {
+      loadChildren(row)
+    } else if (!rowHasChildren(row)) {
+      return
+    }
+    next.add(id)
+  } else {
+    next.delete(id)
+  }
   expandedTreeRowIds.value = next
 }
 
@@ -3534,78 +3547,27 @@ function formatShortDate(d) {
   return dayjs(d).format('MM-DD')
 }
 
-async function loadStats() {
-  const data = await api.activityLog.stats({ days: statsDays.value })
-  stats.days = data.days
-  stats.total_in_range = data.total_in_range || 0
-  stats.by_day = data.by_day || []
-  stats.by_category = data.by_category || []
-  stats.by_status = data.by_status || {}
-  stats.metrics = data.metrics || {}
-  stats.db_path = data.db_path || ''
-}
-
-async function loadList() {
-  loading.value = true
-  try {
-    const data = await api.activityLog.list({
-      page: page.value,
-      limit: limit.value,
-      category: filters.category || undefined,
-      status: filters.status || undefined,
-      q: filters.q.trim() || undefined
-    })
-    items.value = data.items || []
-    total.value = data.total || 0
-    if (selectedRow.value) {
-      const nextSelected = items.value.find((item) => String(item.id) === String(selectedRow.value.id))
-      if (nextSelected) selectedRow.value = nextSelected
-      else detailDialogVisible.value = false
-    }
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadAll() {
-  await Promise.all([loadStats(), loadList()])
-  lastLoadedAt.value = Date.now()
-}
-
-function shouldSoftRefreshActivityPage() {
-  const lastLoaded = Number(lastLoadedAt.value || 0)
-  if (!lastLoaded) return true
-  return Date.now() - lastLoaded >= ACTIVITY_AUTO_REFRESH_STALE_MS
-}
-
-function handleActivityPageVisibilityRefresh() {
-  if (document.visibilityState !== 'visible') return
-  if (!shouldSoftRefreshActivityPage()) return
-  loadAll()
-}
-
-function applyFilters() {
-  page.value = 1
-  loadList()
-}
-
-function onPageSizeChange() {
-  page.value = 1
-  loadList()
-}
-
 onMounted(() => {
   loadAll()
-  document.addEventListener('visibilitychange', handleActivityPageVisibilityRefresh)
+  document.addEventListener('visibilitychange', handleVisibilityRefresh)
 })
 
 onActivated(() => {
-  if (!shouldSoftRefreshActivityPage()) return
+  if (!shouldSoftRefresh()) return
   loadAll()
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('visibilitychange', handleActivityPageVisibilityRefresh)
+  document.removeEventListener('visibilitychange', handleVisibilityRefresh)
+})
+
+// loadList 刷新后，如果当前选中的 detail dialog 对应行已经从新列表里消失，就关掉弹窗；
+// 还在的话把引用指向新的 row（保持弹窗内容与列表同步）。
+watch(items, (nextItems) => {
+  if (!selectedRow.value) return
+  const next = nextItems.find((item) => String(item.id) === String(selectedRow.value.id))
+  if (next) selectedRow.value = next
+  else detailDialogVisible.value = false
 })
 
 watch(items, (nextItems) => {

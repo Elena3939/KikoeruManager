@@ -117,6 +117,11 @@ export const activityLogApi = {
     return response.data
   },
 
+  children: async (logId, params = {}) => {
+    const response = await apiClient.get(`/activity-logs/${logId}/children`, { params })
+    return response.data
+  },
+
   logFilterDelete: async (payload = {}) => {
     const response = await apiClient.post('/activity-logs/filter-delete', payload)
     return response.data
