@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func, or_
+from sqlalchemy import desc, func, or_, text
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
@@ -78,1888 +78,52 @@ async def list_activity_logs(
     category: Optional[str] = None,
     status: Optional[str] = None,
     q: Optional[str] = None,
+    since_days: Optional[int] = None,
+    batch_id: Optional[str] = None,
+    session_key: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """分页查询操作审计记录。"""
+    """分页查询操作审计记录。
+
+    Phase 1/2 优化：
+    - 原始查询强制加载上限（MAX_MERGE_WINDOW），避免随审计表无界增长拖慢接口。
+    - 支持 since_days 指定仅合并最近 N 天；0/None=仅按 MAX 窗口截取。
+    - 结果按 (筛选条件, 页码, writer.last_write_ts) TTL 缓存；有新审计写入时自动失效。
+    - Phase 2：q 参数在存在 FTS5 虚表时优先走全文索引，命中后再按主键回查；
+      不存在 FTS5 时回退为原来的 LIKE 多列匹配。
+    - Phase 2：新增 batch_id / session_key 查询参数，用于 workbench 里
+      "拉取某批次全部子任务"这种精准场景，直接走新索引。
+    """
     from ..core.activity_log_service import CATEGORY_LABELS
-
-    def _merge_activity_rows(raw_rows: List[ActivityLog]) -> List[Dict[str, Any]]:
-        rows = [row.to_dict() for row in raw_rows]
-        for row in rows:
-            row["category_label"] = CATEGORY_LABELS.get(row.get("category"), row.get("category"))
-
-        def _coerce_dt(value: Any) -> Optional[datetime]:
-            try:
-                if not value:
-                    return None
-                return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            except Exception:
-                return None
-
-        def _format_bytes_short(size: Any) -> str:
-            try:
-                value = float(size or 0)
-            except Exception:
-                value = 0.0
-            units = ["B", "KB", "MB", "GB", "TB"]
-            idx = 0
-            while value >= 1024 and idx < len(units) - 1:
-                value /= 1024
-                idx += 1
-            if idx == 0:
-                return f"{int(value)} {units[idx]}"
-            return f"{value:.2f} {units[idx]}"
-
-        def _format_duration_short(duration_ms: Any) -> str:
-            try:
-                total_seconds = max(0, int(round(float(duration_ms or 0) / 1000)))
-            except Exception:
-                total_seconds = 0
-            minutes = total_seconds // 60
-            seconds = total_seconds % 60
-            return f"{minutes}分{seconds}秒" if minutes else f"{seconds}秒"
-
-        crawl_by_task: dict[str, dict[str, Any]] = {}
-        crawl_rows_by_task: dict[str, list[dict[str, Any]]] = {}
-        pair_rows_by_task: dict[str, list[dict[str, Any]]] = {}
-        merged_pair_ids: set[str] = set()
-        merged_filter_preview_ids: set[str] = set()
-        merged_filter_retry_ids: set[str] = set()
-        merged_subtitle_import_ids: set[str] = set()
-        merged_import_batch_child_ids: set[str] = set()
-        import_batch_child_rows_by_source_id: dict[str, dict[str, Any]] = {}
-
-        def _make_tree_child(
-            row: dict[str, Any],
-            *,
-            relation: str,
-            category_label: str,
-            detail: Optional[dict[str, Any]] = None,
-            child_rows: Optional[list[dict[str, Any]]] = None,
-            fallback_id: str = "",
-        ) -> dict[str, Any]:
-            return {
-                "id": str(row.get("id") or fallback_id),
-                "relation": relation,
-                "category": row.get("category"),
-                "category_label": category_label,
-                "action": row.get("action"),
-                "status": row.get("status"),
-                "summary": row.get("summary"),
-                "task_id": row.get("task_id"),
-                "created_at": row.get("created_at"),
-                "source_path": row.get("source_path"),
-                "rjcode": row.get("rjcode"),
-                "detail": detail if isinstance(detail, dict) else (row.get("detail") if isinstance(row.get("detail"), dict) else {}),
-                "child_rows": child_rows if isinstance(child_rows, list) else [],
-            }
-
-        def _append_tree_child(parent_row: dict[str, Any], child_row: dict[str, Any]) -> None:
-            parent_detail = parent_row.get("detail") if isinstance(parent_row.get("detail"), dict) else {}
-            child_rows = list(parent_detail.get("child_rows") or [])
-            child_rows.append(child_row)
-            deduped_child_rows: list[dict[str, Any]] = []
-            dedupe_index: dict[str, int] = {}
-            for item in child_rows:
-                item_detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
-                dedupe_key = "|".join([
-                    str(item.get("relation") or item.get("category") or "").strip(),
-                    str(item.get("task_id") or item_detail.get("task_id") or "").strip(),
-                    str(item.get("source_path") or item_detail.get("preview_source_path") or "").strip(),
-                    str(item.get("rjcode") or item_detail.get("target_rjcode") or item_detail.get("source_rjcode") or "").strip().upper(),
-                    str(item.get("action") or "").strip(),
-                ])
-                current_dt = _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
-                if dedupe_key in dedupe_index:
-                    previous_index = dedupe_index[dedupe_key]
-                    previous_item = deduped_child_rows[previous_index]
-                    previous_dt = _coerce_dt(previous_item.get("latest_activity_at") or previous_item.get("created_at")) or datetime.min
-                    if current_dt >= previous_dt:
-                        deduped_child_rows[previous_index] = item
-                    continue
-                dedupe_index[dedupe_key] = len(deduped_child_rows)
-                deduped_child_rows.append(item)
-            child_rows = deduped_child_rows
-            child_rows = sorted(
-                child_rows,
-                key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
-            )
-            latest_activity = _coerce_dt(parent_row.get("created_at")) or datetime.min
-            for item in child_rows:
-                latest_activity = max(latest_activity, _coerce_dt(item.get("created_at")) or datetime.min)
-            parent_row["detail"] = {
-                **parent_detail,
-                "child_rows": child_rows,
-                "child_row_count": len(child_rows),
-                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at"),
-            }
-            parent_row["has_child_rows"] = True
-            parent_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at")
-
-        def _walk_tree_rows(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            out: list[dict[str, Any]] = []
-            for node in nodes or []:
-                if not isinstance(node, dict):
-                    continue
-                out.append(node)
-                child_nodes = node.get("child_rows") if isinstance(node.get("child_rows"), list) else []
-                if child_nodes:
-                    out.extend(_walk_tree_rows(child_nodes))
-            return out
-
-        def _max_tree_activity(node: dict[str, Any]) -> datetime:
-            latest = _coerce_dt(node.get("created_at")) or datetime.min
-            for child in node.get("child_rows") if isinstance(node.get("child_rows"), list) else []:
-                if not isinstance(child, dict):
-                    continue
-                latest = max(latest, _max_tree_activity(child))
-            detail = node.get("detail") if isinstance(node.get("detail"), dict) else {}
-            for child in detail.get("child_rows") if isinstance(detail.get("child_rows"), list) else []:
-                if not isinstance(child, dict):
-                    continue
-                latest = max(latest, _max_tree_activity(child))
-            return latest
-
-        def _is_success_status(value: Any) -> bool:
-            return str(value or "").strip() in {"success", "completed"}
-
-        def _is_failed_status(value: Any) -> bool:
-            return str(value or "").strip() in {"failed", "cancelled"}
-
-        def _common_path_prefix(paths: list[str]) -> str:
-            normalized = [str(path or "").strip() for path in paths if str(path or "").strip()]
-            if not normalized:
-                return ""
-            try:
-                return os.path.commonpath(normalized)
-            except Exception:
-                return ""
-
-        def _coalesce_import_batch_rows(children: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            if not children:
-                return []
-            latest_success_by_key: dict[str, datetime] = {}
-            for child in children:
-                key = str(child.get("source_path") or child.get("rjcode") or "").strip()
-                if not key or not _is_success_status(child.get("status")):
-                    continue
-                child_dt = _coerce_dt(child.get("latest_activity_at") or child.get("created_at")) or datetime.min
-                previous = latest_success_by_key.get(key)
-                if previous is None or child_dt >= previous:
-                    latest_success_by_key[key] = child_dt
-
-            normalized: list[dict[str, Any]] = []
-            for child in children:
-                key = str(child.get("source_path") or child.get("rjcode") or "").strip()
-                child_dt = _coerce_dt(child.get("latest_activity_at") or child.get("created_at")) or datetime.min
-                child_detail = child.get("detail") if isinstance(child.get("detail"), dict) else {}
-                recovered_by_success = False
-                if key and _is_failed_status(child.get("status")):
-                    recovered_dt = latest_success_by_key.get(key)
-                    if recovered_dt and recovered_dt >= child_dt:
-                        recovered_by_success = True
-                next_child = dict(child)
-                next_detail = dict(child_detail)
-                next_detail["recovered_by_success"] = recovered_by_success
-                if recovered_by_success:
-                    next_detail["recovered_badge"] = "已覆盖"
-                    next_child["recovered_badge"] = "已覆盖"
-                next_child["detail"] = next_detail
-                normalized.append(next_child)
-            return normalized
-
-        def _import_row_match_key(row: dict[str, Any]) -> str:
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            rj_candidates = [
-                row.get("rjcode"),
-                detail.get("rjcode"),
-                detail.get("linked_source_rjcode"),
-                detail.get("linked_target_rjcode"),
-                detail.get("source_basename"),
-                row.get("source_path"),
-                detail.get("archive_path"),
-                row.get("summary"),
-                row.get("task_id"),
-            ]
-            rjcode = ""
-            for candidate in rj_candidates:
-                text = str(candidate or "").strip().upper()
-                if not text:
-                    continue
-                repeated = re.search(r"(?:RJ)+(\d{4,})", text, re.IGNORECASE)
-                if repeated:
-                    rjcode = f"RJ{repeated.group(1)}"
-                    break
-                matched = re.search(r"RJ\d{4,}", text, re.IGNORECASE)
-                if matched:
-                    rjcode = matched.group(0).upper()
-                    break
-            if rjcode:
-                return rjcode
-            source_path = str(
-                row.get("source_path")
-                or detail.get("archive_path")
-                or detail.get("source_path")
-                or ""
-            ).strip()
-            if source_path:
-                return os.path.normcase(os.path.abspath(source_path))
-            return ""
-
-        def _build_latest_import_success_map(raw_rows: list[dict[str, Any]]) -> dict[str, datetime]:
-            latest_success_by_key: dict[str, datetime] = {}
-            for row in raw_rows:
-                if str(row.get("category") or "").strip() not in {"auto_import", "process_existing"}:
-                    continue
-                if not _is_success_status(row.get("status")):
-                    continue
-                key = _import_row_match_key(row)
-                if not key:
-                    continue
-                row_dt = _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min
-                previous = latest_success_by_key.get(key)
-                if previous is None or row_dt >= previous:
-                    latest_success_by_key[key] = row_dt
-            return latest_success_by_key
-
-        def _is_recovered_import_failure(row: dict[str, Any], latest_success_by_key: dict[str, datetime]) -> bool:
-            if str(row.get("category") or "").strip() not in {"auto_import", "process_existing"}:
-                return False
-            if not _is_failed_status(row.get("status")):
-                return False
-            key = _import_row_match_key(row)
-            if not key:
-                return False
-            row_dt = _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min
-            recovered_dt = latest_success_by_key.get(key)
-            return bool(recovered_dt and recovered_dt >= row_dt)
-
-        latest_import_success_by_key = _build_latest_import_success_map(rows)
-
-        for row in rows:
-            if str(row.get("category") or "").strip() not in {"auto_import", "process_existing"}:
-                continue
-            if not _is_failed_status(row.get("status")):
-                continue
-            if not _is_recovered_import_failure(row, latest_import_success_by_key):
-                continue
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            row["detail"] = {
-                **detail,
-                "recovered_by_success": True,
-                "recovered_badge": "已覆盖",
-            }
-            row["recovered_badge"] = "已覆盖"
-
-        def _is_successful_pair_state(row: dict[str, Any]) -> bool:
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            pair_status = str(
-                row.get("merged_pair_status")
-                or detail.get("pair_status")
-                or ""
-            ).strip()
-            if pair_status == "success":
-                return True
-            return bool(detail.get("manual_match_completed"))
-
-        def _recompute_subtitle_batch_rollup(batch_row: dict[str, Any]) -> None:
-            batch_detail = batch_row.get("detail") if isinstance(batch_row.get("detail"), dict) else {}
-            child_rows = sorted(
-                [
-                    child for child in (batch_detail.get("child_rows") or [])
-                    if isinstance(child, dict)
-                ],
-                key=lambda item: _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
-            )
-            if not child_rows:
-                return
-
-            descendant_rows = _walk_tree_rows(child_rows)
-            crawl_descendants = [
-                item for item in descendant_rows
-                if str(item.get("category") or "").strip() == "subtitle_crawl"
-            ]
-            pair_descendants = [
-                item for item in descendant_rows
-                if str(item.get("relation") or "").strip() == "pair"
-                or str(item.get("category") or "").strip() == "subtitle_pair"
-            ]
-
-            paired_child_count = sum(
-                1
-                for item in crawl_descendants
-                if _is_successful_pair_state(item)
-                or any(
-                    str(pair_item.get("status") or "").strip() == "success"
-                    and (
-                        str(pair_item.get("rjcode") or "").strip().upper()
-                        == str(item.get("rjcode") or "").strip().upper()
-                        or (
-                            str(pair_item.get("source_path") or "").strip()
-                            and str(pair_item.get("source_path") or "").strip()
-                            == str(item.get("source_path") or "").strip()
-                        )
-                    )
-                    for pair_item in pair_descendants
-                )
-            )
-            awaiting_manual_child_count = sum(
-                1
-                for item in crawl_descendants
-                if not _is_successful_pair_state(item)
-                and bool((item.get("detail") if isinstance(item.get("detail"), dict) else {}).get("awaiting_manual_match"))
-            )
-            unpaired_child_count = max(0, len(crawl_descendants) - paired_child_count)
-
-            latest_pair_row = None
-            latest_pair_dt = datetime.min
-            for pair_item in pair_descendants:
-                if str(pair_item.get("status") or "").strip() != "success":
-                    continue
-                pair_dt = _coerce_dt(pair_item.get("created_at")) or datetime.min
-                if pair_dt >= latest_pair_dt:
-                    latest_pair_row = pair_item
-                    latest_pair_dt = pair_dt
-            if not latest_pair_row:
-                for crawl_item in crawl_descendants:
-                    if not _is_successful_pair_state(crawl_item):
-                        continue
-                    crawl_detail = crawl_item.get("detail") if isinstance(crawl_item.get("detail"), dict) else {}
-                    pair_dt = _coerce_dt(crawl_detail.get("pair_created_at") or crawl_item.get("latest_activity_at") or crawl_item.get("created_at")) or datetime.min
-                    if pair_dt >= latest_pair_dt:
-                        latest_pair_row = crawl_item
-                        latest_pair_dt = pair_dt
-
-            latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
-            for child in child_rows:
-                latest_activity = max(latest_activity, _max_tree_activity(child))
-
-            pair_detail = latest_pair_row.get("detail") if isinstance(latest_pair_row, dict) and isinstance(latest_pair_row.get("detail"), dict) else {}
-            batch_row["detail"] = {
-                **batch_detail,
-                "child_rows": child_rows,
-                "child_row_count": len(child_rows),
-                "paired_child_count": paired_child_count,
-                "awaiting_manual_child_count": awaiting_manual_child_count,
-                "unpaired_child_count": unpaired_child_count,
-                "pair_linked": bool(latest_pair_row),
-                "pair_status": str(
-                    (latest_pair_row or {}).get("status")
-                    or pair_detail.get("pair_status")
-                    or ""
-                ).strip() if latest_pair_row else "",
-                "pair_summary": str(
-                    (latest_pair_row or {}).get("summary")
-                    or pair_detail.get("pair_summary")
-                    or ""
-                ).strip() if latest_pair_row else "",
-                "pair_created_at": (
-                    (latest_pair_row or {}).get("created_at")
-                    or pair_detail.get("pair_created_at")
-                    or ""
-                ) if latest_pair_row else "",
-                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
-            }
-            batch_row["has_child_rows"] = True
-            batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
-            if latest_pair_row:
-                batch_row["merged_pair"] = True
-                batch_row["merged_pair_status"] = str(
-                    latest_pair_row.get("status")
-                    or pair_detail.get("pair_status")
-                    or ""
-                ).strip()
-        for row in rows:
-            if row.get("category") == "subtitle_crawl" and row.get("task_id"):
-                task_id = str(row["task_id"])
-                crawl_by_task.setdefault(task_id, row)
-                crawl_rows_by_task.setdefault(task_id, []).append(row)
-            elif row.get("category") == "subtitle_pair" and row.get("task_id"):
-                task_id = str(row["task_id"])
-                pair_rows_by_task.setdefault(task_id, []).append(row)
-
-        superseded_crawl_ids: set[str] = set()
-        for task_id, crawl_rows in crawl_rows_by_task.items():
-            ordered_crawls = sorted(crawl_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
-            if not ordered_crawls:
-                continue
-            root_row = ordered_crawls[0]
-            root_detail = root_row.get("detail") if isinstance(root_row.get("detail"), dict) else {}
-            latest_activity = _coerce_dt(root_row.get("created_at")) or datetime.min
-            child_rows: list[dict[str, Any]] = []
-            rerun_child_map: dict[str, dict[str, Any]] = {}
-
-            for rerun_index, crawl_row in enumerate(ordered_crawls[1:], start=1):
-                child = {
-                    "id": str(crawl_row.get("id") or f"{task_id}-rerun-{rerun_index}"),
-                    "relation": "rerun",
-                    "category": crawl_row.get("category"),
-                    "category_label": "字幕爬取",
-                    "action": crawl_row.get("action"),
-                    "status": crawl_row.get("status"),
-                    "summary": crawl_row.get("summary"),
-                    "created_at": crawl_row.get("created_at"),
-                    "source_path": crawl_row.get("source_path"),
-                    "rjcode": crawl_row.get("rjcode"),
-                    "detail": crawl_row.get("detail") if isinstance(crawl_row.get("detail"), dict) else {},
-                    "child_rows": [],
-                }
-                child_rows.append(child)
-                rerun_child_map[str(crawl_row.get("id") or "")] = child
-                superseded_crawl_ids.add(str(crawl_row.get("id") or ""))
-                latest_activity = max(latest_activity, _coerce_dt(crawl_row.get("created_at")) or datetime.min)
-
-            for pair_row in sorted(pair_rows_by_task.get(task_id, []), key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min):
-                pair_dt = _coerce_dt(pair_row.get("created_at")) or datetime.min
-                attach_child_list = child_rows
-                attach_crawl = root_row
-                for crawl_row in ordered_crawls[1:]:
-                    crawl_dt = _coerce_dt(crawl_row.get("created_at")) or datetime.min
-                    if crawl_dt <= pair_dt:
-                        attach_crawl = crawl_row
-                if attach_crawl is not root_row:
-                    attach_child_list = rerun_child_map.get(str(attach_crawl.get("id") or ""), {}).get("child_rows", child_rows)
-                attach_child_list.append({
-                    "id": str(pair_row.get("id") or f"{task_id}-pair-{pair_dt.isoformat()}"),
-                    "relation": "pair",
-                    "category": pair_row.get("category"),
-                    "category_label": "字幕配对",
-                    "action": pair_row.get("action"),
-                    "status": pair_row.get("status"),
-                    "summary": pair_row.get("summary"),
-                    "created_at": pair_row.get("created_at"),
-                    "source_path": pair_row.get("source_path"),
-                    "rjcode": pair_row.get("rjcode"),
-                    "detail": pair_row.get("detail") if isinstance(pair_row.get("detail"), dict) else {},
-                    "child_rows": [],
-                })
-                merged_pair_ids.add(str(pair_row.get("id") or ""))
-                latest_activity = max(latest_activity, pair_dt)
-
-            if child_rows:
-                root_row["detail"] = {
-                    **root_detail,
-                    "child_rows": child_rows,
-                    "child_row_count": len(child_rows),
-                    "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at"),
-                }
-                root_row["has_child_rows"] = True
-                root_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at")
-                root_row["rerun"] = len(ordered_crawls) > 1
-
-        merged_batch_child_ids: set[str] = set()
-        batch_rows_by_id: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            if row.get("category") == "subtitle_crawl" and row.get("action") == "batch_start":
-                batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
-                if batch_id:
-                    batch_rows_by_id[batch_id] = row
-
-        for batch_id, batch_row in batch_rows_by_id.items():
-            batch_detail = batch_row.get("detail") if isinstance(batch_row.get("detail"), dict) else {}
-            child_rows: list[dict[str, Any]] = []
-            latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
-            for row in rows:
-                row_id = str(row.get("id") or "")
-                if row_id == str(batch_row.get("id") or ""):
-                    continue
-                if row_id in superseded_crawl_ids or row_id in merged_pair_ids:
-                    continue
-                if row.get("category") != "subtitle_crawl":
-                    continue
-                if row.get("action") == "batch_start":
-                    continue
-                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-                if str(detail.get("batch_id") or "").strip() != batch_id:
-                    continue
-                child_rows.append(row)
-                merged_batch_child_ids.add(row_id)
-                latest_activity = max(
-                    latest_activity,
-                    _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min,
-                )
-            if child_rows:
-                ordered_child_rows = sorted(
-                    child_rows,
-                    key=lambda item: _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
-                )
-                descendant_rows = _walk_tree_rows(ordered_child_rows)
-                crawl_descendants = [
-                    item for item in descendant_rows
-                    if str(item.get("category") or "").strip() == "subtitle_crawl"
-                ]
-                pair_descendants = [
-                    item for item in descendant_rows
-                    if str(item.get("relation") or "").strip() == "pair"
-                    or str(item.get("category") or "").strip() == "subtitle_pair"
-                ]
-                paired_child_count = sum(
-                    1
-                    for item in crawl_descendants
-                    if any(
-                        str(pair_item.get("status") or "").strip() == "success"
-                        and (
-                            str(pair_item.get("rjcode") or "").strip().upper()
-                            == str(item.get("rjcode") or "").strip().upper()
-                            or (
-                                str(pair_item.get("source_path") or "").strip()
-                                and str(pair_item.get("source_path") or "").strip()
-                                == str(item.get("source_path") or "").strip()
-                            )
-                        )
-                        for pair_item in pair_descendants
-                    )
-                )
-                awaiting_manual_child_count = sum(
-                    1
-                    for item in crawl_descendants
-                    if bool((item.get("detail") if isinstance(item.get("detail"), dict) else {}).get("awaiting_manual_match"))
-                )
-                unpaired_child_count = max(0, len(crawl_descendants) - paired_child_count)
-                latest_pair_row = None
-                for pair_item in sorted(pair_descendants, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min):
-                    if str(pair_item.get("status") or "").strip() == "success":
-                        latest_pair_row = pair_item
-                batch_row["detail"] = {
-                    **batch_detail,
-                    "child_rows": ordered_child_rows,
-                    "child_row_count": len(child_rows),
-                    "paired_child_count": paired_child_count,
-                    "awaiting_manual_child_count": awaiting_manual_child_count,
-                    "unpaired_child_count": unpaired_child_count,
-                    "pair_linked": bool(latest_pair_row),
-                    "pair_status": str(latest_pair_row.get("status") or "").strip() if latest_pair_row else "",
-                    "pair_summary": str(latest_pair_row.get("summary") or "").strip() if latest_pair_row else "",
-                    "pair_created_at": latest_pair_row.get("created_at") if latest_pair_row else "",
-                    "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
-                }
-                batch_row["has_child_rows"] = True
-                batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
-                if latest_pair_row:
-                    batch_row["merged_pair"] = True
-                    batch_row["merged_pair_status"] = str(latest_pair_row.get("status") or "").strip()
-
-        import_batch_rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-        for row in rows:
-            if row.get("action") != "batch_start":
-                continue
-            if row.get("category") not in {"auto_import", "process_existing"}:
-                continue
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
-            if batch_id:
-                import_batch_rows_by_key[(str(row.get("category") or "").strip(), batch_id)] = row
-
-        synthetic_import_batch_keys: set[tuple[str, str]] = set()
-        for row in rows:
-            category_key = str(row.get("category") or "").strip()
-            if category_key not in {"auto_import", "process_existing"}:
-                continue
-            if str(row.get("action") or "").strip() == "batch_start":
-                continue
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            batch_id = str(detail.get("batch_id") or detail.get("session_id") or "").strip()
-            if not batch_id:
-                continue
-            batch_key = (category_key, batch_id)
-            if batch_key in import_batch_rows_by_key:
-                continue
-
-            source_action = str(
-                detail.get("batch_source_action")
-                or detail.get("source_action")
-                or ""
-            ).strip()
-            source_label = str(
-                detail.get("batch_source_label")
-                or detail.get("source_label")
-                or ""
-            ).strip()
-            source_page = str(
-                detail.get("batch_source_page")
-                or detail.get("source_page")
-                or ""
-            ).strip()
-
-            synthetic_row = {
-                "id": f"synthetic-import-batch:{category_key}:{batch_id}",
-                "category": category_key,
-                "category_label": CATEGORY_LABELS.get(category_key, category_key),
-                "action": "batch_start",
-                "status": "incomplete",
-                "summary": "批量任务自动聚合",
-                "task_id": batch_id,
-                "source_path": str(row.get("source_path") or "").strip() or None,
-                "rjcode": None,
-                "created_at": row.get("created_at"),
-                "latest_activity_at": row.get("created_at"),
-                "detail": {
-                    "mode": "import_batch_start_synthetic",
-                    "batch_id": batch_id,
-                    "requested_count": 0,
-                    "created_count": 0,
-                    "archive_count": 0,
-                    "extracted_count": 0,
-                    "source_action": source_action or None,
-                    "source_label": source_label or None,
-                    "source_page": source_page or None,
-                    "source_paths": [],
-                    "created_tasks": [],
-                    "synthetic_parent": True,
-                },
-            }
-            import_batch_rows_by_key[batch_key] = synthetic_row
-            synthetic_import_batch_keys.add(batch_key)
-
-        for (category_key, batch_id), batch_row in import_batch_rows_by_key.items():
-            batch_detail = batch_row.get("detail") if isinstance(batch_row.get("detail"), dict) else {}
-            child_rows: list[dict[str, Any]] = []
-            latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
-            batch_created_at = _coerce_dt(batch_row.get("created_at")) or datetime.min
-            extract_completed_count = 0
-            extract_output_total = 0
-            archive_size_total = 0
-            batch_created_task_ids = {
-                str(item.get("task_id") or "").strip()
-                for item in (batch_detail.get("created_tasks") or [])
-                if isinstance(item, dict) and str(item.get("task_id") or "").strip()
-            }
-            batch_source_paths = {
-                str(path).strip()
-                for path in (batch_detail.get("source_paths") or [])
-                if str(path).strip()
-            }
-            for row in rows:
-                row_id = str(row.get("id") or "")
-                if row_id == str(batch_row.get("id") or ""):
-                    continue
-                if str(row.get("category") or "").strip() != category_key:
-                    continue
-                if str(row.get("action") or "").strip() == "batch_start":
-                    continue
-                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-                row_batch_id = str(detail.get("batch_id") or "").strip()
-                row_task_id = str(row.get("task_id") or "").strip()
-                row_source_path = str(row.get("source_path") or "").strip()
-                row_created_at = _coerce_dt(row.get("created_at")) or datetime.min
-                matched_by_batch_id = bool(row_batch_id) and row_batch_id == batch_id
-                matched_by_created_task = bool(row_task_id) and row_task_id in batch_created_task_ids
-                matched_by_source_path_fallback = False
-                if (
-                    not matched_by_batch_id
-                    and not matched_by_created_task
-                    and not batch_created_task_ids
-                    and row_source_path
-                    and row_source_path in batch_source_paths
-                    and batch_created_at != datetime.min
-                    and row_created_at != datetime.min
-                ):
-                    fallback_seconds = abs((row_created_at - batch_created_at).total_seconds())
-                    matched_by_source_path_fallback = fallback_seconds <= 1800
-                matched_by_parent_manifest = matched_by_created_task or matched_by_source_path_fallback
-                if not matched_by_batch_id and not matched_by_parent_manifest:
-                    continue
-                merged_import_batch_child_ids.add(row_id)
-                child_row = _make_tree_child(
-                    row,
-                    relation="import_item",
-                    category_label="子解压任务" if category_key == "auto_import" else "子处理任务",
-                )
-                child_rows.append(child_row)
-                import_batch_child_rows_by_source_id[row_id] = child_rows[-1]
-                if str(row.get("status") or "").strip() in {"success", "completed"}:
-                    extract_completed_count += 1
-                extract_output_total += int(detail.get("extract_output_bytes") or 0)
-                archive_size_total += int(detail.get("archive_size_bytes") or 0)
-                latest_activity = max(
-                    latest_activity,
-                    _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min,
-                )
-            if child_rows:
-                child_rows = _coalesce_import_batch_rows(child_rows)
-                extract_completed_count = sum(1 for item in child_rows if _is_success_status(item.get("status")))
-                failed_child_count = sum(
-                    1 for item in child_rows
-                    if _is_failed_status(item.get("status"))
-                    and not bool(((item.get("detail") if isinstance(item.get("detail"), dict) else {}) or {}).get("recovered_by_success"))
-                )
-                partial_child_count = sum(1 for item in child_rows if str(item.get("status") or "").strip() == "partial_success")
-                latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
-                earliest_child_activity = datetime.max
-                max_child_duration_ms = 0
-                latest_child_completed_at = datetime.min
-                for item in child_rows:
-                    item_created_at = _coerce_dt(item.get("created_at"))
-                    item_latest_at = _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
-                    latest_activity = max(latest_activity, item_latest_at)
-                    if item_created_at:
-                        earliest_child_activity = min(earliest_child_activity, item_created_at)
-                    item_detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
-                    item_duration_ms = int(item_detail.get("duration_ms") or 0)
-                    max_child_duration_ms = max(max_child_duration_ms, item_duration_ms)
-                    if item_created_at and item_duration_ms > 0:
-                        item_completed_at = item_created_at + timedelta(milliseconds=item_duration_ms)
-                        latest_child_completed_at = max(latest_child_completed_at, item_completed_at)
-                batch_duration_ms = 0
-                duration_end_at = latest_child_completed_at if latest_child_completed_at != datetime.min else latest_activity
-                if earliest_child_activity != datetime.max and duration_end_at != datetime.min and duration_end_at >= earliest_child_activity:
-                    batch_duration_ms = int((duration_end_at - earliest_child_activity).total_seconds() * 1000)
-                batch_duration_ms = max(batch_duration_ms, max_child_duration_ms)
-
-                if failed_child_count > 0 and extract_completed_count > 0:
-                    batch_row["status"] = "partial_success"
-                elif failed_child_count > 0:
-                    batch_row["status"] = "failed"
-                elif partial_child_count > 0:
-                    batch_row["status"] = "partial_success"
-                else:
-                    batch_row["status"] = "success"
-
-                summary_parts = []
-                requested_count = int(batch_detail.get("requested_count") or len(child_rows) or 0)
-                archive_count = int(batch_detail.get("archive_count") or requested_count or 0)
-                if (category_key, batch_id) in synthetic_import_batch_keys:
-                    requested_count = max(requested_count, len(child_rows))
-                    archive_count = max(archive_count, len(child_rows))
-                if requested_count > 0:
-                    summary_parts.append(f"候选 {requested_count} 个")
-                if archive_count > 0:
-                    summary_parts.append(f"压缩包 {archive_count} 个")
-                if extract_completed_count > 0:
-                    summary_parts.append(f"已提交解压 {extract_completed_count} 个")
-                if failed_child_count > 0:
-                    summary_parts.append(f"失败 {failed_child_count} 个")
-                if batch_duration_ms > 0:
-                    total_seconds = max(0, int(round(batch_duration_ms / 1000)))
-                    minutes = total_seconds // 60
-                    seconds = total_seconds % 60
-                    summary_parts.append(f"耗时 {minutes} 分 {seconds} 秒" if minutes else f"耗时 {seconds} 秒")
-                batch_row["summary"] = f"{'批量创建解压任务' if category_key == 'auto_import' else '批量创建已有目录处理任务'}，{'，'.join(summary_parts)}"
-                batch_row["detail"] = {
-                    **batch_detail,
-                    "child_rows": sorted(
-                        child_rows,
-                        key=lambda item: _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
-                    ),
-                    "child_row_count": len(child_rows),
-                    "extract_completed_count": extract_completed_count,
-                    "failed_child_count": failed_child_count,
-                    "partial_child_count": partial_child_count,
-                    "aggregate_extract_output_bytes": extract_output_total,
-                    "aggregate_archive_size_bytes": archive_size_total,
-                    "batch_duration_ms": batch_duration_ms,
-                    "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
-                }
-                batch_row["has_child_rows"] = True
-                batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
-
-        auto_import_rows: list[dict[str, Any]] = []
-        for row in rows:
-            if row.get("category") == "auto_import":
-                auto_import_rows.append(row)
-
-        subtitle_import_rows: list[dict[str, Any]] = []
-        subtitle_import_by_task: dict[str, dict[str, Any]] = {}
-        subtitle_import_rows_by_rj: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            if row.get("category") != "subtitle_import":
-                continue
-            subtitle_import_rows.append(row)
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            import_task_id = str(detail.get("task_id") or row.get("task_id") or "").strip()
-            if import_task_id:
-                subtitle_import_by_task.setdefault(import_task_id, row)
-            import_rj = str(
-                row.get("rjcode")
-                or detail.get("target_rjcode")
-                or detail.get("source_rjcode")
-                or ""
-            ).strip().upper()
-            if import_rj:
-                subtitle_import_rows_by_rj.setdefault(import_rj, []).append(row)
-
-        preview_by_session: dict[str, dict[str, Any]] = {}
-        preview_rows: list[dict[str, Any]] = []
-        retry_rows_by_session: dict[str, list[dict[str, Any]]] = {}
-        rename_rows_by_key: dict[str, list[dict[str, Any]]] = {}
-        rename_batch_rows_by_id: dict[str, dict[str, Any]] = {}
-        delete_rows_by_key: dict[str, list[dict[str, Any]]] = {}
-        delete_batch_rows_by_id: dict[str, dict[str, Any]] = {}
-        merged_rename_ids: set[str] = set()
-        merged_rename_batch_child_ids: set[str] = set()
-        merged_delete_ids: set[str] = set()
-        merged_delete_batch_child_ids: set[str] = set()
-        merged_circle_completion_ids: set[str] = set()
-        merged_asmr_sync_ids: set[str] = set()
-        for row in rows:
-            if row.get("category") == "pipeline_rename":
-                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-                batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
-                rename_key = str(detail.get("rename_key") or row.get("source_path") or "").strip()
-                if row.get("action") in {"batch_api_rename", "batch_manual_rename"}:
-                    if batch_id:
-                        rename_batch_rows_by_id[batch_id] = row
-                    continue
-                if batch_id:
-                    continue
-                if rename_key:
-                    rename_rows_by_key.setdefault(rename_key, []).append(row)
-            if row.get("category") == "pipeline_delete":
-                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-                batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
-                delete_key = str(detail.get("delete_key") or row.get("source_path") or "").strip()
-                if row.get("action") == "batch_api_delete":
-                    if batch_id:
-                        delete_batch_rows_by_id[batch_id] = row
-                    continue
-                if batch_id:
-                    continue
-                if delete_key:
-                    delete_rows_by_key.setdefault(delete_key, []).append(row)
-            if row.get("category") != "pipeline_filter" or row.get("action") != "filter_delete_preview":
-                if row.get("category") == "pipeline_filter" and row.get("action") == "filter_delete_preview_retry":
-                    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-                    session_key = str(detail.get("session_key") or "").strip()
-                    if session_key:
-                        retry_rows_by_session.setdefault(session_key, []).append(row)
-                continue
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            session_key = str(detail.get("session_key") or "").strip()
-            if session_key:
-                preview_by_session.setdefault(session_key, row)
-            preview_rows.append(row)
-
-        for row in rows:
-            if row.get("category") != "subtitle_pair":
-                continue
-            if str(row.get("id") or "") in merged_pair_ids:
-                continue
-            task_id = str(row.get("task_id") or "").strip()
-            pair_dt = _coerce_dt(row.get("created_at"))
-            import_row = subtitle_import_by_task.get(task_id) if task_id else None
-            if not import_row:
-                pair_rj = str(row.get("rjcode") or "").strip().upper()
-                best_import_row = None
-                best_import_seconds = None
-                for candidate in subtitle_import_rows_by_rj.get(pair_rj, []):
-                    if str(candidate.get("id") or "") in merged_subtitle_import_ids:
-                        continue
-                    candidate_dt = _coerce_dt(candidate.get("created_at"))
-                    if not pair_dt or not candidate_dt or candidate_dt > pair_dt:
-                        continue
-                    seconds = (pair_dt - candidate_dt).total_seconds()
-                    if seconds < 0 or seconds > 7 * 24 * 3600:
-                        continue
-                    if best_import_seconds is None or seconds < best_import_seconds:
-                        best_import_seconds = seconds
-                        best_import_row = candidate
-                import_row = best_import_row
-            if import_row:
-                import_detail = import_row.get("detail") if isinstance(import_row.get("detail"), dict) else {}
-                pair_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-                import_row["detail"] = {
-                    **import_detail,
-                    "pair_summary": row.get("summary") or "",
-                    "pair_status": row.get("status") or "",
-                    "pair_action": row.get("action") or "",
-                    "pair_applied_pairs": int(pair_detail.get("applied_pairs") or pair_detail.get("manual_match_applied_pairs") or 0),
-                    "pair_deleted_subtitles": int(pair_detail.get("deleted_subtitles") or 0),
-                    "pair_final_file_count": int(pair_detail.get("final_file_count") or 0),
-                    "pair_linked": True,
-                    "pair_created_at": row.get("created_at") or "",
-                }
-                _append_tree_child(
-                    import_row,
-                    _make_tree_child(
-                        row,
-                        relation="pair",
-                        category_label="字幕配对",
-                        detail=pair_detail,
-                        fallback_id=f"{task_id}-pair-{pair_detail.get('final_file_count') or row.get('created_at') or '0'}",
-                    ),
-                )
-                import_row["merged_pair"] = True
-                import_row["merged_pair_status"] = row.get("status") or ""
-                merged_pair_ids.add(str(row.get("id") or ""))
-                continue
-            if not task_id:
-                continue
-            crawl_row = crawl_by_task.get(task_id)
-            if not crawl_row:
-                continue
-            crawl_detail = crawl_row.get("detail") if isinstance(crawl_row.get("detail"), dict) else {}
-            pair_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            crawl_detail = {
-                **crawl_detail,
-                "awaiting_manual_match": False,
-                "manual_match_completed": str(row.get("status") or "").strip() == "success",
-                "pair_summary": row.get("summary") or "",
-                "pair_status": row.get("status") or "",
-                "pair_action": row.get("action") or "",
-                "pair_applied_pairs": int(pair_detail.get("applied_pairs") or pair_detail.get("manual_match_applied_pairs") or 0),
-                "pair_deleted_subtitles": int(pair_detail.get("deleted_subtitles") or 0),
-                "pair_final_file_count": int(pair_detail.get("final_file_count") or 0),
-                "pair_linked": True,
-                "pair_created_at": row.get("created_at") or "",
-                "manual_match_applied_pairs": int(pair_detail.get("applied_pairs") or pair_detail.get("manual_match_applied_pairs") or 0),
-                "manual_match_deleted_subtitles": int(pair_detail.get("deleted_subtitles") or 0),
-            }
-            crawl_row["detail"] = crawl_detail
-            crawl_row["summary"] = f"{crawl_row.get('summary') or '字幕爬取完成'}，{row.get('summary') or '已完成手动配对'}"
-            crawl_row["merged_pair"] = True
-            crawl_row["merged_pair_status"] = row.get("status") or ""
-            merged_pair_ids.add(str(row.get("id") or ""))
-
-        for batch_row in batch_rows_by_id.values():
-            _recompute_subtitle_batch_rollup(batch_row)
-
-        for row in subtitle_import_rows:
-            if str(row.get("action") or "").strip() not in {"archive_import", "folder_import"}:
-                continue
-            row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            detail = row_detail
-            if not _is_success_status(row.get("status")) and int(row_detail.get("final_file_count") or 0) <= 0:
-                continue
-            import_source_path = str(
-                row.get("source_path")
-                or detail.get("preview_source_path")
-                or ""
-            ).strip()
-            import_rj = str(
-                row.get("rjcode")
-                or detail.get("target_rjcode")
-                or detail.get("source_rjcode")
-                or ""
-            ).strip().upper()
-            import_dt = _coerce_dt(row.get("created_at"))
-            best_auto_row = None
-            best_seconds = None
-            for candidate in auto_import_rows:
-                candidate_detail = candidate.get("detail") if isinstance(candidate.get("detail"), dict) else {}
-                candidate_source_mode = str(candidate_detail.get("source_mode") or "").strip()
-                if candidate_source_mode != "linked_translation_archive_pending":
-                    continue
-                candidate_source_path = str(candidate.get("source_path") or "").strip()
-                if import_source_path and candidate_source_path != import_source_path:
-                    continue
-                candidate_target_rj = str(
-                    candidate_detail.get("linked_target_rjcode")
-                    or candidate.get("rjcode")
-                    or ""
-                ).strip().upper()
-                candidate_source_rj = str(
-                    candidate_detail.get("linked_source_rjcode")
-                    or candidate.get("rjcode")
-                    or ""
-                ).strip().upper()
-                if import_rj and candidate_target_rj and candidate_target_rj != import_rj:
-                    continue
-                import_source_rj = str(detail.get("source_rjcode") or "").strip().upper()
-                if import_source_rj and candidate_source_rj and candidate_source_rj != import_source_rj:
-                    continue
-                candidate_dt = _coerce_dt(candidate.get("created_at"))
-                if not import_dt or not candidate_dt or candidate_dt > import_dt:
-                    continue
-                seconds = (import_dt - candidate_dt).total_seconds()
-                if seconds < 0 or seconds > 1800:
-                    continue
-                if best_seconds is None or seconds < best_seconds:
-                    best_seconds = seconds
-                    best_auto_row = candidate
-            if not best_auto_row:
-                continue
-
-            import_child_rows = list(row_detail.get("child_rows") or [])
-            import_child_detail = {
-                **row_detail,
-                "import_task_id": str(row_detail.get("task_id") or row.get("task_id") or "").strip() or None,
-                "import_final_file_count": int(row_detail.get("final_file_count") or 0),
-                "import_record_id": row_detail.get("record_id"),
-            }
-            target_import_row = import_batch_child_rows_by_source_id.get(str(best_auto_row.get("id") or "")) or best_auto_row
-            _append_tree_child(
-                target_import_row,
-                _make_tree_child(
-                    row,
-                    relation="subtitle_import",
-                    category_label="字幕补配",
-                    detail=import_child_detail,
-                    child_rows=import_child_rows,
-                    fallback_id=f"{str(target_import_row.get('id') or best_auto_row.get('id') or 'auto')}-subtitle-import",
-                ),
-            )
-            target_import_row["merged_subtitle_import"] = True
-            target_import_row["merged_subtitle_import_status"] = row.get("status") or ""
-            target_import_row["detail"] = {
-                **(target_import_row.get("detail") if isinstance(target_import_row.get("detail"), dict) else {}),
-                "import_linked": True,
-                "import_status": row.get("status") or "",
-                "import_summary": row.get("summary") or "",
-                "import_target_rjcode": str(row.get("rjcode") or row_detail.get("target_rjcode") or "").strip().upper() or None,
-            }
-            if target_import_row is not best_auto_row:
-                best_auto_row["merged_subtitle_import"] = True
-                best_auto_row["merged_subtitle_import_status"] = row.get("status") or ""
-            merged_subtitle_import_ids.add(str(row.get("id") or ""))
-
-        for rename_key, rename_rows in rename_rows_by_key.items():
-            ordered_rows = sorted(rename_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
-            if len(ordered_rows) <= 1:
-                continue
-            root_row = ordered_rows[0]
-            root_detail = root_row.get("detail") if isinstance(root_row.get("detail"), dict) else {}
-            latest_activity = _coerce_dt(root_row.get("created_at")) or datetime.min
-            child_rows: list[dict[str, Any]] = []
-            for rerun_index, rename_row in enumerate(ordered_rows[1:], start=1):
-                child_rows.append(
-                    _make_tree_child(
-                        rename_row,
-                        relation="rerun",
-                        category_label="API 重命名",
-                        fallback_id=f"{rename_key}-rename-rerun-{rerun_index}",
-                    )
-                )
-                merged_rename_ids.add(str(rename_row.get("id") or ""))
-                latest_activity = max(latest_activity, _coerce_dt(rename_row.get("created_at")) or datetime.min)
-            root_row["detail"] = {
-                **root_detail,
-                "child_rows": child_rows,
-                "child_row_count": len(child_rows),
-                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at"),
-            }
-            root_row["has_child_rows"] = True
-            root_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at")
-            root_row["rerun"] = True
-
-        for batch_id, batch_row in rename_batch_rows_by_id.items():
-            batch_detail = batch_row.get("detail") if isinstance(batch_row.get("detail"), dict) else {}
-            child_rows: list[dict[str, Any]] = []
-            latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
-            for row in rows:
-                row_id = str(row.get("id") or "")
-                if row_id == str(batch_row.get("id") or ""):
-                    continue
-                if row.get("category") != "pipeline_rename":
-                    continue
-                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-                if str(detail.get("batch_id") or "").strip() != batch_id:
-                    continue
-                child_rows.append(
-                    _make_tree_child(
-                        row,
-                        relation="rename_item",
-                        category_label="子重命名",
-                    )
-                )
-                merged_rename_batch_child_ids.add(row_id)
-                latest_activity = max(latest_activity, _coerce_dt(row.get("created_at")) or datetime.min)
-            if child_rows:
-                batch_row["detail"] = {
-                    **batch_detail,
-                    "child_rows": sorted(
-                        child_rows,
-                        key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
-                    ),
-                    "child_row_count": len(child_rows),
-                    "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
-                }
-                batch_row["has_child_rows"] = True
-                batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
-
-        for delete_key, delete_rows in delete_rows_by_key.items():
-            ordered_rows = sorted(delete_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
-            if len(ordered_rows) <= 1:
-                continue
-            root_row = ordered_rows[0]
-            root_detail = root_row.get("detail") if isinstance(root_row.get("detail"), dict) else {}
-            latest_activity = _coerce_dt(root_row.get("created_at")) or datetime.min
-            child_rows: list[dict[str, Any]] = []
-            for rerun_index, delete_row in enumerate(ordered_rows[1:], start=1):
-                child_rows.append(
-                    _make_tree_child(
-                        delete_row,
-                        relation="delete_item",
-                        category_label="子删除",
-                        fallback_id=f"{delete_key}-delete-rerun-{rerun_index}",
-                    )
-                )
-                merged_delete_ids.add(str(delete_row.get("id") or ""))
-                latest_activity = max(latest_activity, _coerce_dt(delete_row.get("created_at")) or datetime.min)
-            root_row["detail"] = {
-                **root_detail,
-                "child_rows": child_rows,
-                "child_row_count": len(child_rows),
-                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at"),
-            }
-            root_row["has_child_rows"] = True
-            root_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at")
-            root_row["rerun"] = True
-
-        for batch_id, batch_row in delete_batch_rows_by_id.items():
-            batch_detail = batch_row.get("detail") if isinstance(batch_row.get("detail"), dict) else {}
-            child_rows: list[dict[str, Any]] = []
-            latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
-            for row in rows:
-                row_id = str(row.get("id") or "")
-                if row_id == str(batch_row.get("id") or ""):
-                    continue
-                if row.get("category") != "pipeline_delete":
-                    continue
-                detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-                if str(detail.get("batch_id") or "").strip() != batch_id:
-                    continue
-                child_rows.append(
-                    _make_tree_child(
-                        row,
-                        relation="delete_item",
-                        category_label="子删除",
-                    )
-                )
-                merged_delete_batch_child_ids.add(row_id)
-                latest_activity = max(latest_activity, _coerce_dt(row.get("created_at")) or datetime.min)
-            if child_rows:
-                batch_row["detail"] = {
-                    **batch_detail,
-                    "child_rows": sorted(
-                        child_rows,
-                        key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
-                    ),
-                    "child_row_count": len(child_rows),
-                    "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
-                }
-                batch_row["has_child_rows"] = True
-                batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
-                if (category_key, batch_id) in synthetic_import_batch_keys:
-                    rows.append(batch_row)
-
-        delete_time_clusters: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            row_id = str(row.get("id") or "")
-            if row.get("category") != "pipeline_delete":
-                continue
-            if str(row.get("action") or "").strip() != "delete":
-                continue
-            if row_id in merged_delete_ids or row_id in merged_delete_batch_child_ids:
-                continue
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            if str(detail.get("batch_id") or "").strip():
-                continue
-            source_path = str(row.get("source_path") or "").strip()
-            created_at = str(row.get("created_at") or "").strip()
-            if not source_path or not created_at:
-                continue
-            second_key = created_at[:19]
-            cluster_key = f"{second_key}|{str(row.get('status') or '').strip()}|{str(detail.get('library_id') or '').strip()}"
-            delete_time_clusters.setdefault(cluster_key, []).append(row)
-
-        for cluster_rows in delete_time_clusters.values():
-            ordered_rows = sorted(cluster_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
-            if len(ordered_rows) <= 1:
-                continue
-            source_paths = [str(item.get("source_path") or "").strip() for item in ordered_rows if str(item.get("source_path") or "").strip()]
-            common_root = _common_path_prefix(source_paths)
-            if not common_root:
-                continue
-            path_depth = len([part for part in re.split(r"[\\/]+", common_root) if part])
-            if path_depth < 3:
-                continue
-
-            root_row = ordered_rows[0]
-            root_detail = root_row.get("detail") if isinstance(root_row.get("detail"), dict) else {}
-            latest_activity = _coerce_dt(root_row.get("created_at")) or datetime.min
-            child_rows: list[dict[str, Any]] = []
-            success_count = 0
-            failed_count = 0
-            for cluster_index, delete_row in enumerate(ordered_rows, start=1):
-                if str(delete_row.get("status") or "").strip() in {"success", "completed"}:
-                    success_count += 1
-                else:
-                    failed_count += 1
-                child_rows.append(
-                    _make_tree_child(
-                        delete_row,
-                        relation="delete_item",
-                        category_label="子删除",
-                        fallback_id=f"{str(root_row.get('id') or 'delete-cluster')}-delete-item-{cluster_index}",
-                    )
-                )
-                latest_activity = max(latest_activity, _coerce_dt(delete_row.get("created_at")) or datetime.min)
-
-            root_row["summary"] = f"批量删除完成，成功 {success_count} 项，失败 {failed_count} 项"
-            root_row["source_path"] = common_root
-            root_row["action"] = "batch_delete_item"
-            root_row["detail"] = {
-                **root_detail,
-                "child_rows": child_rows,
-                "child_row_count": len(child_rows),
-                "success_count": success_count,
-                "failed_count": failed_count,
-                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at"),
-                "derived_batch_group": True,
-                "derived_batch_root": common_root,
-            }
-            root_row["has_child_rows"] = True
-            root_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else root_row.get("created_at")
-
-            for delete_row in ordered_rows[1:]:
-                merged_delete_ids.add(str(delete_row.get("id") or ""))
-
-        for row in rows:
-            if row.get("category") != "pipeline_filter" or row.get("action") != "filter_delete_apply":
-                continue
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            session_key = str(detail.get("session_key") or "").strip()
-            preview_row = preview_by_session.get(session_key) if session_key else None
-            if not preview_row:
-                apply_path = str(row.get("source_path") or "").strip()
-                apply_dt = _coerce_dt(row.get("created_at"))
-                closest_row = None
-                closest_seconds = None
-                for candidate in preview_rows:
-                    if str(candidate.get("id") or "") in merged_filter_preview_ids:
-                        continue
-                    if str(candidate.get("source_path") or "").strip() != apply_path:
-                        continue
-                    candidate_dt = _coerce_dt(candidate.get("created_at"))
-                    if not apply_dt or not candidate_dt or candidate_dt > apply_dt:
-                        continue
-                    seconds = (apply_dt - candidate_dt).total_seconds()
-                    if seconds < 0 or seconds > 1800:
-                        continue
-                    if closest_seconds is None or seconds < closest_seconds:
-                        closest_seconds = seconds
-                        closest_row = candidate
-                preview_row = closest_row
-            if not preview_row:
-                continue
-
-            preview_detail = preview_row.get("detail") if isinstance(preview_row.get("detail"), dict) else {}
-            preview_child_list = list(preview_detail.get("child_rows") or [])
-            apply_child = {
-                "id": str(row.get("id") or f"{session_key}-apply"),
-                "relation": "delete_apply",
-                "category": row.get("category"),
-                "category_label": "删除执行",
-                "action": row.get("action"),
-                "status": row.get("status"),
-                "summary": row.get("summary"),
-                "created_at": row.get("created_at"),
-                "source_path": row.get("source_path"),
-                "rjcode": row.get("rjcode"),
-                "detail": detail,
-                "child_rows": [],
-            }
-            preview_child_list.append(apply_child)
-            preview_selected_count = int(preview_detail.get("selected_count") or 0)
-            preview_selected_size = int(preview_detail.get("selected_size") or 0)
-            success_count = int(detail.get("success_count") or 0)
-            failed_count = int(detail.get("failed_count") or 0)
-            deleted_bytes = int(detail.get("deleted_bytes") or 0)
-            latest_activity = _coerce_dt(row.get("created_at")) or _coerce_dt(preview_row.get("created_at")) or datetime.min
-            preview_row["detail"] = {
-                **preview_detail,
-                "preview_linked": True,
-                "preview_status": preview_row.get("status") or "",
-                "preview_action": preview_row.get("action") or "",
-                "preview_created_at": preview_row.get("created_at") or "",
-                "delete_status": row.get("status") or "",
-                "delete_action": row.get("action") or "",
-                "delete_created_at": row.get("created_at") or "",
-                "delete_success_count": success_count,
-                "delete_failed_count": failed_count,
-                "delete_deleted_bytes": deleted_bytes,
-                "child_rows": sorted(
-                    preview_child_list,
-                    key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
-                ),
-                "child_row_count": len(preview_child_list),
-                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else preview_row.get("created_at"),
-            }
-            preview_row["has_child_rows"] = True
-            preview_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else preview_row.get("created_at")
-            preview_row["merged_filter_delete"] = True
-            preview_row["merged_filter_delete_status"] = row.get("status") or ""
-            merged_filter_retry_ids.add(str(row.get("id") or ""))
-
-        for session_key, retry_rows in retry_rows_by_session.items():
-            if not retry_rows:
-                continue
-            parent_row = preview_by_session.get(session_key)
-            if not parent_row:
-                continue
-            ordered_retry_rows = sorted(retry_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
-            latest_retry_row = ordered_retry_rows[-1]
-            latest_retry_detail = latest_retry_row.get("detail") if isinstance(latest_retry_row.get("detail"), dict) else {}
-            parent_detail = parent_row.get("detail") if isinstance(parent_row.get("detail"), dict) else {}
-            child_rows = list(parent_detail.get("child_rows") or [])
-            target_apply_child = None
-            for child in sorted(child_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min):
-                if str(child.get("relation") or "").strip() != "delete_apply":
-                    continue
-                child_detail = child.get("detail") if isinstance(child.get("detail"), dict) else {}
-                child_session_key = str(child_detail.get("session_key") or "").strip()
-                if child_session_key and child_session_key == session_key:
-                    target_apply_child = child
-            if not target_apply_child:
-                latest_retry_path = str(latest_retry_row.get("source_path") or parent_row.get("source_path") or "").strip()
-                latest_retry_dt = _coerce_dt(latest_retry_row.get("created_at"))
-                closest_child = None
-                closest_seconds = None
-                for child in sorted(child_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min):
-                    if str(child.get("relation") or "").strip() != "delete_apply":
-                        continue
-                    child_path = str(child.get("source_path") or "").strip()
-                    child_dt = _coerce_dt(child.get("created_at"))
-                    if latest_retry_path and child_path and child_path != latest_retry_path:
-                        continue
-                    if not latest_retry_dt or not child_dt or child_dt > latest_retry_dt:
-                        continue
-                    seconds = (latest_retry_dt - child_dt).total_seconds()
-                    if seconds < 0 or seconds > 1800:
-                        continue
-                    if closest_seconds is None or seconds < closest_seconds:
-                        closest_seconds = seconds
-                        closest_child = child
-                target_apply_child = closest_child
-            retry_children = []
-            for retry_row in ordered_retry_rows:
-                retry_children.append({
-                    "id": str(retry_row.get("id") or f"{session_key}-retry"),
-                    "relation": "retry_preview",
-                    "category": retry_row.get("category"),
-                    "category_label": "补充删除",
-                    "action": retry_row.get("action"),
-                    "status": retry_row.get("status"),
-                    "summary": retry_row.get("summary"),
-                    "created_at": retry_row.get("created_at"),
-                    "source_path": retry_row.get("source_path"),
-                    "rjcode": retry_row.get("rjcode"),
-                    "detail": retry_row.get("detail") if isinstance(retry_row.get("detail"), dict) else {},
-                    "child_rows": [],
-                })
-            latest_activity = _coerce_dt(latest_retry_row.get("created_at")) or _coerce_dt(parent_row.get("created_at")) or datetime.min
-            retry_status = str(latest_retry_detail.get("retry_status") or latest_retry_row.get("status") or "").strip()
-            if target_apply_child:
-                apply_detail = target_apply_child.get("detail") if isinstance(target_apply_child.get("detail"), dict) else {}
-                apply_child_rows = list(target_apply_child.get("child_rows") or [])
-                apply_child_rows.extend(retry_children)
-                target_apply_child["detail"] = {
-                    **apply_detail,
-                    "retry_linked": True,
-                    "retry_status": retry_status,
-                    "retry_summary": latest_retry_row.get("summary") or "",
-                    "retry_target_count": int(latest_retry_detail.get("retry_target_count") or apply_detail.get("retry_target_count") or 0),
-                    "retry_success_count": int(latest_retry_detail.get("retry_success_count") or apply_detail.get("retry_success_count") or 0),
-                    "retry_failed_count": int(latest_retry_detail.get("retry_failed_count") or apply_detail.get("retry_failed_count") or 0),
-                    "recovered_item_count": int(latest_retry_detail.get("recovered_item_count") or apply_detail.get("recovered_item_count") or 0),
-                    "recovered_selected_size": int(latest_retry_detail.get("recovered_selected_size") or apply_detail.get("recovered_selected_size") or 0),
-                }
-                target_apply_child["child_rows"] = sorted(
-                    apply_child_rows,
-                    key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
-                )
-            else:
-                child_rows.extend(retry_children)
-            parent_row["detail"] = {
-                **parent_detail,
-                "retry_linked": True,
-                "retry_summary": latest_retry_row.get("summary") or "",
-                "retry_action": latest_retry_row.get("action") or "",
-                "retry_row_status": latest_retry_row.get("status") or "",
-                "retry_created_at": latest_retry_row.get("created_at") or "",
-                "retry_target_count": int(latest_retry_detail.get("retry_target_count") or parent_detail.get("retry_target_count") or 0),
-                "retry_success_count": int(latest_retry_detail.get("retry_success_count") or parent_detail.get("retry_success_count") or 0),
-                "retry_failed_count": int(latest_retry_detail.get("retry_failed_count") or parent_detail.get("retry_failed_count") or 0),
-                "recovered_item_count": int(latest_retry_detail.get("recovered_item_count") or parent_detail.get("recovered_item_count") or 0),
-                "recovered_selected_size": int(latest_retry_detail.get("recovered_selected_size") or parent_detail.get("recovered_selected_size") or 0),
-                "retry_targets": latest_retry_detail.get("retry_targets") or parent_detail.get("retry_targets") or [],
-                "recovered_items": latest_retry_detail.get("recovered_items") or parent_detail.get("recovered_items") or [],
-                "failed_targets": latest_retry_detail.get("failed_targets") or parent_detail.get("failed_targets") or [],
-                "retry_status": latest_retry_detail.get("retry_status") or parent_detail.get("retry_status") or "",
-                "repair_status": retry_status,
-                "repair_summary": latest_retry_row.get("summary") or "",
-                "repair_completed_at": latest_retry_row.get("created_at") or "",
-                "child_rows": sorted(
-                    child_rows,
-                    key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
-                ),
-                "child_row_count": len(child_rows),
-                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at"),
-            }
-            if retry_status == "success":
-                parent_row["retry_badge"] = "已修复"
-            elif retry_status == "partial_success":
-                parent_row["retry_badge"] = "部分修复"
-            elif retry_status == "failed":
-                parent_row["retry_badge"] = "未修复"
-            parent_row["merged_filter_retry"] = True
-            parent_row["merged_filter_retry_status"] = retry_status
-            parent_row["has_child_rows"] = True
-            parent_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at")
-            for retry_row in retry_rows:
-                merged_filter_retry_ids.add(str(retry_row.get("id") or ""))
-
-        for preview_row in preview_rows:
-            parent_detail = preview_row.get("detail") if isinstance(preview_row.get("detail"), dict) else {}
-            original_children = sorted(
-                [
-                    child for child in (parent_detail.get("child_rows") or [])
-                    if isinstance(child, dict)
-                ],
-                key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
-            )
-            if not original_children:
-                continue
-
-            normalized_children: list[dict[str, Any]] = []
-            pending_apply_child: Optional[dict[str, Any]] = None
-            repair_status = str(parent_detail.get("repair_status") or "").strip()
-            repair_summary = str(parent_detail.get("repair_summary") or "").strip()
-            repair_completed_at = str(parent_detail.get("repair_completed_at") or "").strip()
-
-            for child in original_children:
-                relation = str(child.get("relation") or "").strip()
-                if relation != "delete_apply":
-                    normalized_children.append(child)
-                    continue
-
-                child_status = str(child.get("status") or "").strip()
-                if pending_apply_child and child_status:
-                    retry_apply_child = {
-                        **child,
-                        "relation": "retry_apply",
-                        "category_label": "补充删除",
-                    }
-                    pending_detail = pending_apply_child.get("detail") if isinstance(pending_apply_child.get("detail"), dict) else {}
-                    pending_child_rows = list(pending_apply_child.get("child_rows") or [])
-                    pending_child_rows.append(retry_apply_child)
-                    pending_apply_child["child_rows"] = sorted(
-                        pending_child_rows,
-                        key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min
-                    )
-                    pending_apply_child["detail"] = {
-                        **pending_detail,
-                        "retry_linked": True,
-                        "retry_status": "failed" if child_status == "cancelled" else child_status,
-                        "retry_summary": child.get("summary") or "",
-                        "repair_status": "failed" if child_status == "cancelled" else child_status,
-                        "repair_summary": child.get("summary") or "",
-                        "repair_completed_at": child.get("created_at") or "",
-                    }
-                    repair_status = "failed" if child_status == "cancelled" else child_status
-                    repair_summary = str(child.get("summary") or "").strip()
-                    repair_completed_at = str(child.get("created_at") or "").strip()
-                    if child_status == "success":
-                        pending_apply_child = None
-                    else:
-                        pending_apply_child = pending_apply_child
-                    continue
-
-                normalized_children.append(child)
-                if child_status in {"partial_success", "failed", "cancelled"}:
-                    pending_apply_child = child
-                else:
-                    pending_apply_child = None
-
-            latest_activity = _coerce_dt(preview_row.get("created_at")) or datetime.min
-            for child in normalized_children:
-                latest_activity = max(latest_activity, _max_tree_activity(child))
-
-            preview_row["detail"] = {
-                **parent_detail,
-                "child_rows": normalized_children,
-                "child_row_count": len(normalized_children),
-                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else preview_row.get("created_at"),
-                "repair_status": repair_status,
-                "repair_summary": repair_summary,
-                "repair_completed_at": repair_completed_at,
-                "retry_linked": bool(repair_status) or bool(parent_detail.get("retry_linked")),
-            }
-            if repair_status:
-                if repair_status == "success":
-                    preview_row["retry_badge"] = "已修复"
-                elif repair_status == "partial_success":
-                    preview_row["retry_badge"] = "部分修复"
-                elif repair_status == "failed":
-                    preview_row["retry_badge"] = "未修复"
-                preview_row["merged_filter_retry"] = True
-                preview_row["merged_filter_retry_status"] = repair_status
-            preview_row["has_child_rows"] = True
-            preview_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else preview_row.get("created_at")
-
-        circle_index_rows_by_circle: dict[str, list[dict[str, Any]]] = {}
-        circle_refresh_rows_by_circle: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            if str(row.get("category") or "").strip() != "circle_completion":
-                continue
-            action = str(row.get("action") or "").strip()
-            if action not in {"index_completed", "refresh_selected_works"}:
-                continue
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            circle_id = str(detail.get("circle_id") or "").strip()
-            if not circle_id:
-                continue
-            if action == "index_completed":
-                circle_index_rows_by_circle.setdefault(circle_id, []).append(row)
-            elif action == "refresh_selected_works":
-                circle_refresh_rows_by_circle.setdefault(circle_id, []).append(row)
-
-        for circle_id, circle_rows in circle_index_rows_by_circle.items():
-            circle_rows.sort(key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
-
-        for circle_id, circle_rows in circle_refresh_rows_by_circle.items():
-            circle_rows.sort(key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
-
-        for row in rows:
-            if str(row.get("category") or "").strip() != "circle_completion":
-                continue
-            if str(row.get("action") or "").strip() != "download_batch_start":
-                continue
-
-            row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            circle_id = str(row_detail.get("circle_id") or "").strip()
-            if not circle_id:
-                continue
-            parent_candidates = circle_index_rows_by_circle.get(circle_id) or []
-            if not parent_candidates:
-                continue
-
-            row_dt = _coerce_dt(row.get("created_at")) or datetime.min
-            parent_row = None
-            for candidate in parent_candidates:
-                candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
-                if candidate_dt <= row_dt:
-                    parent_row = candidate
-            if parent_row is None:
-                parent_row = parent_candidates[-1]
-
-            child_detail = {
-                **row_detail,
-                "batch_task_count": len(row_detail.get("items") or []),
-            }
-            child_row = _make_tree_child(
-                row,
-                relation="download_batch",
-                category_label="下载任务",
-                detail=child_detail,
-            )
-            _append_tree_child(parent_row, child_row)
-            parent_row["merged_circle_completion_download"] = True
-            parent_row["merged_circle_completion_download_status"] = row.get("status") or ""
-            merged_circle_completion_ids.add(str(row.get("id") or ""))
-
-        for row in rows:
-            if str(row.get("category") or "").strip() != "circle_completion":
-                continue
-            if str(row.get("action") or "").strip() not in {"task_finished", "task_finished_incomplete"}:
-                continue
-
-            row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            circle_id = str(row_detail.get("circle_id") or "").strip()
-            if not circle_id:
-                continue
-
-            source_action = str(row.get("source_action") or row_detail.get("source_action") or "").strip()
-            if source_action == "refresh_selected":
-                parent_candidates = circle_refresh_rows_by_circle.get(circle_id) or []
-                if parent_candidates:
-                    row_dt = _coerce_dt(row.get("created_at")) or datetime.min
-                    parent_row = None
-                    for candidate in parent_candidates:
-                        candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
-                        if candidate_dt <= row_dt:
-                            parent_row = candidate
-                    if parent_row is None:
-                        parent_row = parent_candidates[-1]
-                    parent_row["latest_activity_at"] = row.get("created_at") or parent_row.get("latest_activity_at") or parent_row.get("created_at")
-                merged_circle_completion_ids.add(str(row.get("id") or ""))
-                continue
-
-            # 兼容旧日志：早期 refresh_selected 的 task_finished 没带 source_action，
-            # 这里按同社团 + 时间邻近的 refresh_selected_works 父记录兜底归并。
-            refresh_parent_candidates = circle_refresh_rows_by_circle.get(circle_id) or []
-            if refresh_parent_candidates:
-                row_dt = _coerce_dt(row.get("created_at")) or datetime.min
-                fallback_parent = None
-                fallback_delta_seconds = None
-                for candidate in refresh_parent_candidates:
-                    candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
-                    delta_seconds = abs((row_dt - candidate_dt).total_seconds())
-                    if fallback_parent is None or delta_seconds < (fallback_delta_seconds or float("inf")):
-                        fallback_parent = candidate
-                        fallback_delta_seconds = delta_seconds
-                if fallback_parent is not None and (fallback_delta_seconds or 0) <= 120:
-                    fallback_parent["latest_activity_at"] = row.get("created_at") or fallback_parent.get("latest_activity_at") or fallback_parent.get("created_at")
-                    merged_circle_completion_ids.add(str(row.get("id") or ""))
-                    continue
-
-            # 兼容更老的 refresh_selected 收尾日志：没有 source_action，
-            # 但 source_path 往往就是社团名，且不会附着到 index_completed。
-            circle_name = str(row_detail.get("circle_name") or "").strip()
-            row_source_path = str(row.get("source_path") or "").strip()
-            if circle_name and row_source_path and row_source_path == circle_name:
-                merged_circle_completion_ids.add(str(row.get("id") or ""))
-                continue
-
-            parent_candidates = circle_index_rows_by_circle.get(circle_id) or []
-            if not parent_candidates:
-                continue
-
-            row_dt = _coerce_dt(row.get("created_at")) or datetime.min
-            parent_row = None
-            for candidate in parent_candidates:
-                candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
-                if candidate_dt <= row_dt:
-                    parent_row = candidate
-            if parent_row is None:
-                parent_row = parent_candidates[-1]
-
-            child_row = _make_tree_child(
-                row,
-                relation="circle_task_finish",
-                category_label="任务收尾",
-                detail=row_detail,
-            )
-            _append_tree_child(parent_row, child_row)
-            merged_circle_completion_ids.add(str(row.get("id") or ""))
-
-        asmr_rows_by_session: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            if str(row.get("category") or "").strip() != "asmr_sync":
-                continue
-            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-            session_id = str(detail.get("session_id") or row.get("task_id") or "").strip()
-            if not session_id:
-                continue
-            asmr_rows_by_session.setdefault(session_id, []).append(row)
-
-        parent_action_priority = {
-            "session_completed": 90,
-            "session_partial_failed": 85,
-            "task_finished": 80,
-            "task_finished_incomplete": 75,
-            "session_started": 60,
-            "enhanced_plan_created": 40,
-        }
-        child_action_relations = {
-            "resource_downloaded": ("asmr_resource", "下载文件"),
-            "resource_uploaded": ("asmr_upload", "上传文件"),
-            "resource_verify_failed": ("asmr_verify_failed", "校验失败"),
-            "session_started": ("asmr_session", "下载开始"),
-            "enhanced_plan_created": ("asmr_plan", "下载计划"),
-            "queue_reordered": ("asmr_session", "队列调整"),
-            "task_paused": ("asmr_session", "任务暂停"),
-            "task_resumed": ("asmr_session", "任务恢复"),
-            "task_cancelled": ("asmr_session", "任务取消"),
-            "task_retried": ("asmr_session", "任务重试"),
-        }
-
-        for session_id, session_rows in asmr_rows_by_session.items():
-            if len(session_rows) <= 1:
-                continue
-            ordered_rows = sorted(session_rows, key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
-            parent_row = max(
-                ordered_rows,
-                key=lambda item: (
-                    parent_action_priority.get(str(item.get("action") or "").strip(), 0),
-                    _coerce_dt(item.get("created_at")) or datetime.min,
-                ),
-            )
-            parent_detail = parent_row.get("detail") if isinstance(parent_row.get("detail"), dict) else {}
-            task_finished_row = next(
-                (item for item in reversed(ordered_rows) if str(item.get("action") or "").strip() == "task_finished"),
-                None,
-            )
-            task_finished_detail = task_finished_row.get("detail") if isinstance(task_finished_row and task_finished_row.get("detail"), dict) else {}
-            session_complete_row = next(
-                (
-                    item for item in reversed(ordered_rows)
-                    if str(item.get("action") or "").strip() in {"session_completed", "session_partial_failed"}
-                ),
-                None,
-            )
-            session_complete_detail = session_complete_row.get("detail") if isinstance(session_complete_row and session_complete_row.get("detail"), dict) else {}
-            session_started_row = next(
-                (item for item in ordered_rows if str(item.get("action") or "").strip() == "session_started"),
-                None,
-            )
-            session_started_detail = session_started_row.get("detail") if isinstance(session_started_row and session_started_row.get("detail"), dict) else {}
-            resource_rows = [
-                item for item in ordered_rows
-                if str(item.get("action") or "").strip() == "resource_downloaded"
-            ]
-            success_count = int(
-                session_complete_detail.get("success_count")
-                or task_finished_detail.get("success_count")
-                or len(resource_rows)
-                or 0
-            )
-            failed_count = int(
-                session_complete_detail.get("failed_count")
-                or task_finished_detail.get("failed_count")
-                or 0
-            )
-            downloaded_bytes = int(
-                session_complete_detail.get("downloaded_bytes")
-                or task_finished_detail.get("downloaded_bytes")
-                or sum(int((item.get("detail") if isinstance(item.get("detail"), dict) else {}).get("size_bytes") or 0) for item in resource_rows)
-                or 0
-            )
-            duration_ms = int(
-                session_complete_detail.get("duration_ms")
-                or task_finished_detail.get("duration_ms")
-                or 0
-            )
-            download_root = str(
-                session_complete_detail.get("download_root")
-                or task_finished_detail.get("download_root")
-                or parent_detail.get("download_root")
-                or ""
-            ).strip()
-            target_path = str(
-                session_complete_detail.get("target_path")
-                or session_started_detail.get("target_path")
-                or task_finished_detail.get("target_path")
-                or parent_detail.get("target_path")
-                or ""
-            ).strip()
-            upload_mode = str(
-                session_complete_detail.get("upload_mode")
-                or session_started_detail.get("upload_mode")
-                or task_finished_detail.get("upload_mode")
-                or parent_detail.get("upload_mode")
-                or ""
-            ).strip()
-            uploaded_count = int(
-                session_complete_detail.get("uploaded_count")
-                or task_finished_detail.get("uploaded_count")
-                or 0
-            )
-            uploaded_files = list(
-                session_complete_detail.get("uploaded_files")
-                or task_finished_detail.get("uploaded_files")
-                or parent_detail.get("uploaded_files")
-                or []
-            )
-            uploaded_bytes = int(
-                session_complete_detail.get("uploaded_bytes")
-                or task_finished_detail.get("uploaded_bytes")
-                or sum(int((item or {}).get("size_bytes") or 0) for item in uploaded_files)
-                or 0
-            )
-            average_upload_speed_bytes = int(
-                session_complete_detail.get("average_upload_speed_bytes")
-                or task_finished_detail.get("average_upload_speed_bytes")
-                or (uploaded_bytes / max(duration_ms / 1000, 1) if uploaded_bytes > 0 and duration_ms > 0 else 0)
-                or 0
-            )
-            original_parent_status = str(parent_row.get("status") or "").strip() or "success"
-            rollup_status = original_parent_status
-            if success_count > 0 and failed_count <= 0:
-                rollup_status = "success"
-            elif success_count > 0 and failed_count > 0:
-                rollup_status = "partial_success"
-            elif failed_count > 0:
-                rollup_status = "failed"
-            elif upload_mode == "disabled" and (download_root or downloaded_bytes > 0):
-                rollup_status = "success"
-
-            child_rows: list[dict[str, Any]] = []
-            latest_activity = _coerce_dt(parent_row.get("created_at")) or datetime.min
-            for row in ordered_rows:
-                if row is parent_row:
-                    continue
-                action = str(row.get("action") or "").strip()
-                relation_info = child_action_relations.get(action)
-                if not relation_info:
-                    merged_asmr_sync_ids.add(str(row.get("id") or ""))
-                    continue
-                relation, category_label = relation_info
-                child_rows.append(
-                    _make_tree_child(
-                        row,
-                        relation=relation,
-                        category_label=category_label,
-                    )
-                )
-                merged_asmr_sync_ids.add(str(row.get("id") or ""))
-                latest_activity = max(latest_activity, _coerce_dt(row.get("created_at")) or datetime.min)
-
-            if success_count > 0 or downloaded_bytes > 0 or duration_ms > 0 or uploaded_count > 0:
-                summary_parts = [f"{'上传' if uploaded_count > 0 else '下载'} {uploaded_count if uploaded_count > 0 else success_count} 个文件"]
-                if uploaded_bytes > 0:
-                    summary_parts.append(_format_bytes_short(uploaded_bytes))
-                elif downloaded_bytes > 0:
-                    summary_parts.append(_format_bytes_short(downloaded_bytes))
-                if average_upload_speed_bytes > 0:
-                    summary_parts.append(f"平均 {_format_bytes_short(average_upload_speed_bytes)}/s")
-                if duration_ms > 0:
-                    summary_parts.append(f"耗时 {_format_duration_short(duration_ms)}")
-                parent_row["summary"] = " / ".join(summary_parts)
-
-            parent_row["status"] = rollup_status
-            if rollup_status == "success":
-                parent_row["action"] = "session_completed"
-            elif rollup_status == "partial_success":
-                parent_row["action"] = "session_partial_failed"
-
-            parent_row["detail"] = {
-                **parent_detail,
-                "session_id": session_id,
-                "success_count": success_count,
-                "failed_count": failed_count,
-                "downloaded_bytes": downloaded_bytes,
-                "duration_ms": duration_ms,
-                "download_root": download_root or None,
-                "target_path": target_path or None,
-                "upload_mode": upload_mode or None,
-                "uploaded_count": uploaded_count,
-                "uploaded_bytes": uploaded_bytes,
-                "average_upload_speed_bytes": average_upload_speed_bytes,
-                "uploaded_files": uploaded_files[:200],
-                "recovered_by_success": rollup_status == "success" and original_parent_status == "failed",
-                "child_rows": child_rows,
-                "child_row_count": len(child_rows),
-                "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at"),
-            }
-            parent_row["source_path"] = target_path or download_root or parent_row.get("source_path")
-            parent_row["has_child_rows"] = bool(child_rows)
-            parent_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at")
-
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            if str(row.get("id") or "") in merged_batch_child_ids:
-                continue
-            if str(row.get("id") or "") in superseded_crawl_ids:
-                continue
-            if str(row.get("id") or "") in merged_pair_ids:
-                continue
-            if str(row.get("id") or "") in merged_subtitle_import_ids:
-                continue
-            if str(row.get("category") or "").strip() == "subtitle_import" and str(row.get("action") or "").strip() == "pending_execute":
-                continue
-            if str(row.get("id") or "") in merged_import_batch_child_ids:
-                continue
-            if str(row.get("id") or "") in merged_rename_ids:
-                continue
-            if str(row.get("id") or "") in merged_rename_batch_child_ids:
-                continue
-            if str(row.get("id") or "") in merged_filter_preview_ids:
-                continue
-            if str(row.get("id") or "") in merged_filter_retry_ids:
-                continue
-            if str(row.get("id") or "") in merged_delete_ids:
-                continue
-            if str(row.get("id") or "") in merged_delete_batch_child_ids:
-                continue
-            if str(row.get("id") or "") in merged_circle_completion_ids:
-                continue
-            if str(row.get("id") or "") in merged_asmr_sync_ids:
-                continue
-            items.append(row)
-        items.sort(key=lambda item: str(item.get("latest_activity_at") or item.get("created_at") or ""), reverse=True)
-        return items
+    from ..core.activity_log_writer import (
+        get_activity_log_query_cache,
+        get_activity_log_row_dict_cache,
+        get_activity_log_writer,
+    )
+    from ..models.database import activity_logs_fts_enabled
+
+    MAX_MERGE_WINDOW = 5000
+    writer = get_activity_log_writer()
+    query_cache = get_activity_log_query_cache()
+    cache_key = (
+        "list",
+        int(page or 1),
+        int(limit or 50),
+        (category or "").strip(),
+        (status or "").strip(),
+        (q or "").strip(),
+        int(since_days) if since_days is not None else None,
+        (batch_id or "").strip(),
+        (session_key or "").strip(),
+    )
+    cached = query_cache.get(cache_key, writer.last_write_ts)
+    if cached is not None:
+        return cached
+
+    # Phase 3: 1800+ 行合并算法已搬到 activity_log_aggregator 模块
+    # Phase 4D: 用 merge_activity_rows_from_dicts 入口配合 row-dict 缓存，避免每请求重新
+    # orjson.loads 所有 detail
+    from ..core.activity_log_aggregator import merge_activity_rows_from_dicts
 
     page = max(1, page)
     limit = max(1, min(200, limit))
@@ -1968,22 +132,139 @@ async def list_activity_logs(
         query = query.filter(ActivityLog.category == category)
     if status:
         query = query.filter(ActivityLog.status == status)
-    if q and str(q).strip():
-        term = f"%{str(q).strip()}%"
-        query = query.filter(
-            or_(
-                ActivityLog.summary.like(term),
-                ActivityLog.rjcode.like(term),
-                ActivityLog.source_path.like(term),
-                ActivityLog.task_id.like(term),
+
+    # Phase 2：精准过滤走新索引列，跳过合并 / FTS 分支
+    batch_id_value = (batch_id or "").strip()
+    if batch_id_value:
+        query = query.filter(ActivityLog.batch_id == batch_id_value[:80])
+    session_key_value = (session_key or "").strip()
+    if session_key_value:
+        query = query.filter(ActivityLog.session_key == session_key_value[:120])
+
+    # Phase 2：q 参数的搜索路径
+    # - FTS5 可用：先在 activity_logs_fts 上做 MATCH，命中 id 集合后回查主表；
+    # - FTS5 不可用：退回到 Phase 1 的 LIKE 多列匹配
+    search_backend = "none"
+    search_text = (q or "").strip()
+    if search_text:
+        fts_ready = activity_logs_fts_enabled()
+        if fts_ready:
+            try:
+                # 转义 FTS 保留字符：把双引号替换掉，再把整个串用双引号包起来走 phrase match
+                safe = search_text.replace('"', ' ')
+                match_expr = f'"{safe}"'
+                fts_result = db.execute(
+                    text("SELECT id FROM activity_logs_fts WHERE activity_logs_fts MATCH :term LIMIT :cap"),
+                    {"term": match_expr, "cap": MAX_MERGE_WINDOW},
+                )
+                matched_ids = [row[0] for row in fts_result.fetchall() if row and row[0]]
+                if matched_ids:
+                    query = query.filter(ActivityLog.id.in_(matched_ids))
+                    search_backend = "fts5"
+                else:
+                    # FTS 没命中任何 id，直接返回空
+                    payload = {
+                        "total": 0,
+                        "page": page,
+                        "limit": limit,
+                        "items": [],
+                        "window": {
+                            "max_merge_window": MAX_MERGE_WINDOW,
+                            "raw_loaded": 0,
+                            "truncated": False,
+                            "since_days": None,
+                            "search_backend": "fts5",
+                        },
+                    }
+                    query_cache.set(cache_key, writer.last_write_ts, payload)
+                    return payload
+            except Exception:
+                logger.warning("[操作记录] FTS5 搜索失败，回退 LIKE", exc_info=True)
+                fts_ready = False
+        if not fts_ready:
+            term = f"%{search_text}%"
+            query = query.filter(
+                or_(
+                    ActivityLog.summary.like(term),
+                    ActivityLog.rjcode.like(term),
+                    ActivityLog.source_path.like(term),
+                    ActivityLog.task_id.like(term),
+                    ActivityLog.batch_id.like(term),
+                )
             )
+            search_backend = "like"
+
+    # since_days=None: 默认仅合并 MAX_MERGE_WINDOW 条（按 created_at 倒序）；
+    # since_days>0:   仅加载最近 N 天，配合上限兜底；
+    # since_days=0:   显式放开时间过滤，仍有 MAX_MERGE_WINDOW 上限保护。
+    effective_since_days = None
+    if since_days is not None:
+        try:
+            sd = int(since_days)
+        except (TypeError, ValueError):
+            sd = None
+        if sd is not None and sd > 0:
+            effective_since_days = max(1, min(365, sd))
+    if effective_since_days is not None:
+        cutoff = datetime.now() - timedelta(days=effective_since_days)
+        query = query.filter(ActivityLog.created_at >= cutoff)
+
+    # Phase 4D：ID 先筛 → 行缓存命中 → 只拉未命中行。以前是 `.all()` 整列物化把所有 detail
+    # JSON 都 orjson.loads 一遍（~90ms/762行，5000 行上 ~460ms）。现在稳态下 95%+ 请求
+    # 能从 LRU 直接拿 row dict，整段下来只剩 ID 扫描 + 合并算法的 ~20ms 开销。
+    ordered_id_rows = (
+        query.with_entities(ActivityLog.id)
+        .order_by(desc(ActivityLog.created_at))
+        .limit(MAX_MERGE_WINDOW)
+        .all()
+    )
+    ordered_ids = [row[0] for row in ordered_id_rows if row and row[0]]
+    truncated = len(ordered_ids) >= MAX_MERGE_WINDOW
+
+    row_cache = get_activity_log_row_dict_cache()
+    cache_hits = row_cache.get_many(ordered_ids)
+    missing_ids = [rid for rid in ordered_ids if str(rid) not in cache_hits]
+    fresh_dict_map: Dict[str, Dict[str, Any]] = {}
+    if missing_ids:
+        fresh_orm_rows = (
+            db.query(ActivityLog)
+            .filter(ActivityLog.id.in_(missing_ids))
+            .all()
         )
-    raw_rows = query.order_by(desc(ActivityLog.created_at)).all()
-    merged_items = _merge_activity_rows(raw_rows)
+        fresh_pairs = []
+        for orm_row in fresh_orm_rows:
+            rid = str(orm_row.id)
+            row_dict = orm_row.to_dict()
+            fresh_dict_map[rid] = row_dict
+            fresh_pairs.append((rid, row_dict))
+        row_cache.put_many(fresh_pairs)
+
+    rows_dict: List[Dict[str, Any]] = []
+    for rid in ordered_ids:
+        key = str(rid)
+        row_dict = cache_hits.get(key) or fresh_dict_map.get(key)
+        if row_dict is not None:
+            rows_dict.append(row_dict)
+
+    merged_items = merge_activity_rows_from_dicts(rows_dict)
     total = len(merged_items)
     start = (page - 1) * limit
     end = start + limit
-    return {"total": total, "page": page, "limit": limit, "items": merged_items[start:end]}
+    payload = {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": merged_items[start:end],
+        "window": {
+            "max_merge_window": MAX_MERGE_WINDOW,
+            "raw_loaded": len(ordered_ids),
+            "truncated": truncated,
+            "since_days": effective_since_days,
+            "search_backend": search_backend,
+        },
+    }
+    query_cache.set(cache_key, writer.last_write_ts, payload)
+    return payload
 
 
 @app.get("/api/activity-logs/stats")
@@ -1991,46 +272,118 @@ async def activity_logs_stats(
     days: int = 14,
     db: Session = Depends(get_db),
 ):
-    """按天、分类、状态聚合（用于图表）。"""
+    """按天、分类、状态聚合（用于图表）。
+
+    Phase 1 优化：
+    - 指标聚合不再整表读 detail JSON，改用 SQLite json_extract 只取用到的字段，
+      省去全列 deserialize 带来的 IO + 反序列化成本。
+    - 聚合结果按 (days, writer.last_write_ts) TTL 缓存（30s），读多写少场景命中率高。
+    """
     from ..core.activity_log_service import CATEGORY_LABELS
-    from datetime import timedelta
+    from ..core.activity_log_writer import (
+        get_activity_log_query_cache,
+        get_activity_log_writer,
+    )
 
     days = int(days)
     all_time = days <= 0
     days = 0 if all_time else max(1, min(90, days))
+
+    writer = get_activity_log_writer()
+    query_cache = get_activity_log_query_cache()
+    cache_key = ("stats", days, bool(all_time))
+    cached = query_cache.get(cache_key, writer.last_write_ts)
+    if cached is not None:
+        return cached
+
     cutoff = None if all_time else (datetime.now() - timedelta(days=days))
-    day_expr = func.strftime("%Y-%m-%d", ActivityLog.created_at)
+    cutoff_date_str = None if cutoff is None else cutoff.strftime("%Y-%m-%d")
 
-    day_query = db.query(day_expr.label("day"), func.count(ActivityLog.id))
-    if cutoff is not None:
-        day_query = day_query.filter(ActivityLog.created_at >= cutoff)
-    day_rows = day_query.group_by(day_expr).order_by(day_expr).all()
-    by_day = [{"date": a, "count": b} for a, b in day_rows if a]
+    # Phase 4A：by_day / by_category / by_status 改读 activity_log_daily_stats 聚合表，
+    # 不再扫 activity_logs 全表做 GROUP BY。聚合表由 Writer 增量维护 + 启动时回填。
+    from ..models.database import ActivityLogDailyStats
 
-    cat_query = db.query(ActivityLog.category, func.count(ActivityLog.id))
-    if cutoff is not None:
-        cat_query = cat_query.filter(ActivityLog.created_at >= cutoff)
-    cat_rows = cat_query.group_by(ActivityLog.category).all()
+    rollup_query = db.query(
+        ActivityLogDailyStats.date,
+        ActivityLogDailyStats.category,
+        ActivityLogDailyStats.status,
+        ActivityLogDailyStats.count,
+    )
+    if cutoff_date_str is not None:
+        rollup_query = rollup_query.filter(ActivityLogDailyStats.date >= cutoff_date_str)
+    rollup_rows = rollup_query.all()
+
+    by_day_map: Dict[str, int] = {}
+    cat_counter: Dict[str, int] = {}
+    by_status: Dict[str, int] = {}
+    for date_str, cat, st, cnt in rollup_rows:
+        if not date_str:
+            continue
+        n = int(cnt or 0)
+        by_day_map[date_str] = by_day_map.get(date_str, 0) + n
+        if cat:
+            cat_counter[cat] = cat_counter.get(cat, 0) + n
+        if st:
+            by_status[str(st)] = by_status.get(str(st), 0) + n
+    by_day = [{"date": d, "count": c} for d, c in sorted(by_day_map.items())]
     by_category = [
-        {
-            "category": c,
-            "label": CATEGORY_LABELS.get(c, c),
-            "count": n,
-        }
-        for c, n in sorted(cat_rows, key=lambda x: -x[1])
+        {"category": c, "label": CATEGORY_LABELS.get(c, c), "count": n}
+        for c, n in sorted(cat_counter.items(), key=lambda kv: -kv[1])
     ]
-
-    status_query = db.query(ActivityLog.status, func.count(ActivityLog.id))
-    if cutoff is not None:
-        status_query = status_query.filter(ActivityLog.created_at >= cutoff)
-    status_rows = status_query.group_by(ActivityLog.status).all()
-    by_status = {str(s): int(n) for s, n in status_rows if s}
     total_in_range = sum(by_status.values())
 
-    metric_query = db.query(ActivityLog.category, ActivityLog.action, ActivityLog.status, ActivityLog.detail)
+    # 只选指标计算用得上的字段（category/action/status + detail.* 单项），
+    # 避免把整个 detail JSON 拉回 Python 做反序列化。
+    def _jx(path: str):
+        return func.json_extract(ActivityLog.detail, f"$.{path}")
+
+    metric_query = db.query(
+        ActivityLog.category,
+        ActivityLog.action,
+        ActivityLog.status,
+        _jx("downloaded_count"),
+        _jx("applied_pairs"),
+        _jx("manual_match_applied_pairs"),
+        _jx("matched_group_count"),
+        _jx("final_file_count"),
+        _jx("extract_output_bytes"),
+        _jx("output_size_bytes"),
+        _jx("extract_performed"),
+        _jx("archive_input"),
+        _jx("success_count"),
+        _jx("deleted_bytes"),
+    )
     if cutoff is not None:
         metric_query = metric_query.filter(ActivityLog.created_at >= cutoff)
+    # 只对会贡献指标的 category 做过滤，进一步缩小扫描面
+    relevant_categories = {
+        "subtitle_crawl", "subtitle_pair", "subtitle_import",
+        "extract", "auto_import",
+        "pipeline_filter", "pipeline_delete",
+    }
+    metric_query = metric_query.filter(ActivityLog.category.in_(relevant_categories))
     metric_rows = metric_query.all()
+
+    def _int(value: Any) -> int:
+        if value is None:
+            return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return 0
+
+    def _truthy(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"", "0", "false", "null", "none"}
+        return bool(value)
+
     metrics = {
         "subtitle_download_count": 0,
         "subtitle_match_count": 0,
@@ -2041,48 +394,54 @@ async def activity_logs_stats(
         "delete_bytes": 0,
         "extract_bytes": 0,
     }
-    for category, action, status, detail in metric_rows:
+    for (
+        category,
+        action,
+        status,
+        downloaded_count,
+        applied_pairs,
+        manual_match_applied_pairs,
+        matched_group_count,
+        final_file_count,
+        extract_output_bytes,
+        output_size_bytes,
+        extract_performed,
+        archive_input,
+        success_count,
+        deleted_bytes,
+    ) in metric_rows:
         if status not in {"success", "completed", "partial_success"}:
             continue
-        payload = detail if isinstance(detail, dict) else {}
         if category == "subtitle_crawl":
             metrics["subtitle_crawl_count"] += 1
-            metrics["subtitle_download_count"] += int(payload.get("downloaded_count") or 0)
+            metrics["subtitle_download_count"] += _int(downloaded_count)
         elif category == "subtitle_pair":
-            metrics["subtitle_match_count"] += int(
-                payload.get("applied_pairs")
-                or payload.get("manual_match_applied_pairs")
-                or payload.get("matched_group_count")
-                or payload.get("final_file_count")
+            metrics["subtitle_match_count"] += (
+                _int(applied_pairs)
+                or _int(manual_match_applied_pairs)
+                or _int(matched_group_count)
+                or _int(final_file_count)
                 or 0
             )
         elif category == "subtitle_import":
-            metrics["subtitle_import_count"] += int(payload.get("final_file_count") or 1)
+            metrics["subtitle_import_count"] += _int(final_file_count) or 1
         elif category == "extract":
             metrics["extract_count"] += 1
-            metrics["extract_bytes"] += int(
-                payload.get("extract_output_bytes")
-                or payload.get("output_size_bytes")
-                or 0
-            )
+            metrics["extract_bytes"] += _int(extract_output_bytes) or _int(output_size_bytes)
         elif category == "auto_import":
-            if payload.get("extract_performed") or payload.get("archive_input"):
+            if _truthy(extract_performed) or _truthy(archive_input):
                 metrics["extract_count"] += 1
-                metrics["extract_bytes"] += int(
-                    payload.get("extract_output_bytes")
-                    or payload.get("output_size_bytes")
-                    or 0
-                )
+                metrics["extract_bytes"] += _int(extract_output_bytes) or _int(output_size_bytes)
         elif category == "pipeline_filter" and action == "filter_delete_apply":
-            metrics["delete_count"] += int(payload.get("success_count") or 0)
-            metrics["delete_bytes"] += int(payload.get("deleted_bytes") or 0)
+            metrics["delete_count"] += _int(success_count)
+            metrics["delete_bytes"] += _int(deleted_bytes)
         elif category == "pipeline_delete":
             if action == "batch_api_delete":
-                metrics["delete_count"] += int(payload.get("success_count") or 0)
+                metrics["delete_count"] += _int(success_count)
             elif action in {"delete", "batch_delete_item"} and status in {"success", "completed"}:
                 metrics["delete_count"] += 1
 
-    return {
+    payload = {
         "days": days,
         "total_in_range": total_in_range,
         "by_day": by_day,
@@ -2091,6 +450,8 @@ async def activity_logs_stats(
         "metrics": metrics,
         "db_path": get_db_path_info(),
     }
+    query_cache.set(cache_key, writer.last_write_ts, payload)
+    return payload
 
 
 @app.post("/api/activity-logs/filter-delete")
@@ -2121,15 +482,111 @@ async def create_filter_delete_activity_log(request: Request):
         raise HTTPException(status_code=500, detail=f"写入删除过滤操作记录失败: {str(e)}")
 
 
+@app.get("/api/activity-logs/{log_id}/children")
+async def get_activity_log_children(
+    log_id: str,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """懒拉取某条操作记录下挂的全部子记录。
+
+    Phase 3：前端查看批量任务（解压入库 / 社团下载 / 字幕抓取批次等）详情时，
+    不再需要把整窗口 5000 行一次性拉回来交给合并算法拆分；
+    直接按 Phase 2 新建的 ``batch_id`` / ``session_key`` 索引做单次 SQL 查询即可。
+
+    匹配策略（按优先级回退）：
+    1. 当前行自身的 ``batch_id`` 命中其他行的 ``batch_id``
+    2. 当前行的 ``id`` 命中其他行的 ``parent_id``
+    3. 当前行的 ``session_key`` 命中其他行的 ``session_key``
+    """
+    from ..core.activity_log_aggregator import merge_activity_rows
+
+    limit = max(1, min(1000, int(limit or 200)))
+    parent = db.query(ActivityLog).filter(ActivityLog.id == log_id).first()
+    if parent is None:
+        raise HTTPException(status_code=404, detail="未找到对应操作记录")
+
+    children: List[ActivityLog] = []
+    seen_ids = {parent.id}
+
+    def _extend(rows):
+        for row in rows:
+            if row.id in seen_ids:
+                continue
+            seen_ids.add(row.id)
+            children.append(row)
+
+    if parent.batch_id:
+        _extend(
+            db.query(ActivityLog)
+            .filter(ActivityLog.batch_id == parent.batch_id)
+            .order_by(desc(ActivityLog.created_at))
+            .limit(limit)
+            .all()
+        )
+
+    if len(children) < limit:
+        remaining = limit - len(children)
+        _extend(
+            db.query(ActivityLog)
+            .filter(ActivityLog.parent_id == parent.id)
+            .order_by(desc(ActivityLog.created_at))
+            .limit(remaining)
+            .all()
+        )
+
+    if len(children) < limit and parent.session_key:
+        remaining = limit - len(children)
+        _extend(
+            db.query(ActivityLog)
+            .filter(ActivityLog.session_key == parent.session_key)
+            .order_by(desc(ActivityLog.created_at))
+            .limit(remaining)
+            .all()
+        )
+
+    # 复用聚合器规范化 to_dict + category_label 等字段，保证和列表接口 item 结构一致
+    parent_item = merge_activity_rows([parent])
+    child_items = merge_activity_rows(children) if children else []
+    return {
+        "parent": parent_item[0] if parent_item else parent.to_dict(),
+        "total": len(child_items),
+        "items": child_items,
+        "match": {
+            "by_batch_id": parent.batch_id,
+            "by_parent_id": parent.id,
+            "by_session_key": parent.session_key,
+        },
+    }
+
+
 @app.post("/api/activity-logs/backfill-auto-import-extract")
-async def backfill_auto_import_extract_activity_logs():
-    """一次性回填旧 auto_import 操作记录中的解压字段。"""
+async def backfill_auto_import_extract_activity_logs(
+    start_offset: int = 0,
+    chunk_size: int = 200,
+    max_rows: Optional[int] = None,
+    time_budget_seconds: float = 8.0,
+):
+    """分片回填旧 auto_import 操作记录中的解压字段。
+
+    Phase 1：不再一次性全表扫描 + os.walk，改为 offset 分片 + 时间预算。
+    若返回 done=false，前端应带 next_offset 再次调用直到 done=true。
+    """
     from ..core.activity_log_service import backfill_auto_import_extract_fields
 
     try:
-        result = backfill_auto_import_extract_fields()
+        result = backfill_auto_import_extract_fields(
+            chunk_size=chunk_size,
+            start_offset=start_offset,
+            max_rows=max_rows,
+            time_budget_seconds=time_budget_seconds,
+        )
         return {
-            "message": "auto_import 解压字段回填完成",
+            "message": (
+                "auto_import 解压字段回填完成"
+                if result.get("done")
+                else f"本轮处理 {result.get('scanned')} 行，未完成，请带 next_offset 继续"
+            ),
             **result,
         }
     except Exception as e:
@@ -2197,6 +654,17 @@ async def shutdown_event():
     # 停止已处理压缩包智能清理服务
     archive_cleanup_service = get_processed_archive_cleanup_service()
     await archive_cleanup_service.stop()
+
+    # Flush 操作记录后台写入器，确保任务 finally 刚入队的审计不丢
+    try:
+        from ..core.activity_log_writer import (
+            shutdown_activity_log_writer,
+            shutdown_lifecycle_executor,
+        )
+        shutdown_lifecycle_executor(timeout=5.0)
+        shutdown_activity_log_writer(timeout=5.0)
+    except Exception:
+        logger.warning("关闭操作记录写入器失败", exc_info=True)
 
 # Pydantic模型
 class TaskCreate(BaseModel):
