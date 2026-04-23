@@ -98,7 +98,7 @@
               </div>
             </TransitionGroup>
           </div>
-          <div v-else class="px-3 py-6 text-center text-[12px] text-slate-400">当前任务还没有日志</div>
+          <AppEmptyState v-else description="当前任务还没有日志" size="sm" />
         </div>
       </div>
 
@@ -141,6 +141,7 @@
         <button
           v-for="task in ctx.subtitleQueueTasks"
           :key="`queue-${task.id}`"
+          :ref="el => registerRailRef(task.id, el)"
           type="button"
           class="group grid min-w-0 content-start gap-2 rounded-[14px] border bg-white p-3 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_8px_20px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.98]"
           :class="[
@@ -172,7 +173,7 @@
 
           <div class="flex items-start gap-1.5 text-[12px] text-slate-900 leading-relaxed">
             <Folder class="h-3 w-3 mt-0.5 flex-shrink-0 text-amber-500" :stroke-width="2.2" />
-            <span class="break-words line-clamp-2">{{ task.folder_name || ctx.getFileName(task.folder_path) }}</span>
+            <span class="break-words line-clamp-2">{{ getDisplayFolderName(task) }}</span>
           </div>
 
           <div v-if="ctx.getTaskSourceRJCode(task)" class="flex items-center gap-1 text-[11px] text-slate-900">
@@ -237,7 +238,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, watch } from 'vue'
 import {
   Activity, CheckCheck, CheckCircle2, ChevronDown, CircleDot, CircleSlash,
   Clock, Download, Eye, FileCheck, Folder, FolderOpen, Hand, History,
@@ -262,6 +263,37 @@ const props = defineProps({
 
 const showOverview = computed(() => ['full', 'overview'].includes(props.mode))
 const showQueue = computed(() => ['full', 'queue'].includes(props.mode))
+
+const railRefs = new Map()
+function registerRailRef(id, el) {
+  if (el) railRefs.set(id, el)
+  else railRefs.delete(id)
+}
+
+let scrollRafId = 0
+function scrollRailToTask(id) {
+  if (!id) return
+  if (scrollRafId) cancelAnimationFrame(scrollRafId)
+  scrollRafId = requestAnimationFrame(() => {
+    scrollRafId = 0
+    const el = railRefs.get(id)
+    if (!el || !el.isConnected) return
+    const container = el.closest('.subtitle-task-rail')
+    if (!container) return
+    const cRect = container.getBoundingClientRect()
+    const eRect = el.getBoundingClientRect()
+    const target = container.scrollLeft + (eRect.left - cRect.left) - (cRect.width - eRect.width) / 2
+    container.scrollTo({ left: Math.max(0, target), behavior: 'smooth' })
+  })
+}
+
+watch(
+  () => props.ctx?.selectedSubtitleTaskId || props.ctx?.activeSubtitleTask?.id || '',
+  (id) => {
+    if (!id) return
+    nextTick(() => scrollRailToTask(id))
+  }
+)
 
 function statusPillClass(key) {
   const k = String(key || '').toLowerCase()
@@ -294,6 +326,15 @@ function logLevelClass(level) {
   if (k === 'warning' || k === 'warn') return 'bg-amber-50 text-amber-700 border border-amber-200'
   if (k === 'success') return 'bg-emerald-50 text-emerald-700 border border-emerald-200'
   return 'bg-slate-100 text-slate-600 border border-slate-200'
+}
+
+function getDisplayFolderName(task) {
+  const folderName = String(task?.folder_name || '').trim().replace(/[\\/]+$/, '')
+  if (folderName) {
+    const parts = folderName.split(/[\\/]/).filter(Boolean)
+    return parts[parts.length - 1] || folderName
+  }
+  return props.ctx?.getFileName?.(task?.folder_path) || '-'
 }
 </script>
 
@@ -362,5 +403,9 @@ function logLevelClass(level) {
 
 .subtitle-task-rail::-webkit-scrollbar-thumb:hover {
   background: rgb(148 163 184);
+}
+
+.subtitle-task-rail > button {
+  cursor: pointer;
 }
 </style>

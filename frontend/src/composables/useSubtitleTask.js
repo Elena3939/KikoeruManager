@@ -396,7 +396,11 @@ export function useSubtitleTask ({
     if (!task?.id) return false
     if (subtitleCancelingId.value === task.id) return false
     if (isRJSubtitleTaskCancelled(task)) return false
-    return ['pending', 'processing'].includes(task.status)
+    if (['pending', 'processing'].includes(task.status)) return true
+    // 等待人工匹配 / 检查字幕树阶段也要允许取消，避免卡死
+    if (task.awaiting_manual_match) return true
+    if (isSubtitleTaskAwaitingManualWork?.(task)) return true
+    return false
   }
 
   function canClearCurrentSubtitleTask (task) {
@@ -439,7 +443,12 @@ export function useSubtitleTask ({
 
   function isSubtitleTaskSelected (task) {
     if (!task?.id) return false
-    return activeSubtitleTask.value?.id === task.id || subtitleInspectorInfo.value.taskId === task.id
+    const selectedTaskId = String(
+      subtitleInspectorInfo.value.taskId
+      || activeSubtitleTask.value?.id
+      || ''
+    ).trim()
+    return Boolean(selectedTaskId) && selectedTaskId === task.id
   }
 
   function buildDefaultSubtitleTaskDetailPanels (task) {
@@ -728,7 +737,8 @@ export function useSubtitleTask ({
     return {
       completed: clearable.filter(task => task.status === 'completed' && !isRJSubtitleTaskCancelled(task)).length,
       failed: clearable.filter(task => task.status === 'failed' || isRJSubtitleTaskCancelled(task)).length,
-      finished: clearable.length
+      finished: clearable.length,
+      all: subtitleQueueTasks.value.length
     }
   })
 
@@ -808,6 +818,9 @@ export function useSubtitleTask ({
   }
 
   function getSubtitleTasksByClearScope (scope) {
+    if (scope === 'all') {
+      return subtitleQueueTasks.value.slice()
+    }
     const clearable = subtitleQueueTasks.value.filter(task => canClearCurrentSubtitleTask(task))
     if (scope === 'completed') {
       return clearable.filter(task => task.status === 'completed' && !isRJSubtitleTaskCancelled(task))
@@ -1059,16 +1072,31 @@ export function useSubtitleTask ({
   async function clearSubtitleTasksByScope (scope) {
     const targets = getSubtitleTasksByClearScope(scope)
     if (!targets.length) {
-      ElMessage.warning(scope === 'completed' ? '没有可清理的成功任务' : scope === 'failed' ? '没有可清理的失败任务' : '没有可清理的已结束任务')
+      const emptyLabel = {
+        completed: '没有可清理的成功任务',
+        failed: '没有可清理的失败任务',
+        all: '队列里没有任务'
+      }[scope] || '没有可清理的已结束任务'
+      ElMessage.warning(emptyLabel)
       return
     }
-    const label = scope === 'completed' ? '成功任务' : scope === 'failed' ? '失败任务' : '已结束任务'
+    const label = {
+      completed: '成功任务',
+      failed: '失败任务',
+      all: '全部任务'
+    }[scope] || '已结束任务'
+    const runningTargets = scope === 'all'
+      ? targets.filter(task => ['pending', 'processing'].includes(task.status) && !isRJSubtitleTaskCancelled(task))
+      : []
+    const confirmMessage = scope === 'all'
+      ? `确定清空全部 ${targets.length} 个任务吗？${runningTargets.length ? `其中 ${runningTargets.length} 个正在运行，将一并取消。` : ''}`
+      : `确定清空 ${targets.length} 个${label}吗？运行中的任务不会被清掉。`
     try {
       await showSystemConfirm({
-        title: '批量清空任务确认',
-        message: `确定清空 ${targets.length} 个${label}吗？运行中的任务不会被清掉。`,
-        tone: 'warning',
-        confirmText: '确定清空',
+        title: scope === 'all' ? '清空全部任务确认' : '批量清空任务确认',
+        message: confirmMessage,
+        tone: scope === 'all' ? 'danger' : 'warning',
+        confirmText: scope === 'all' ? '全部清空' : '确定清空',
         cancelText: '取消'
       })
     } catch (_) {
@@ -1076,6 +1104,14 @@ export function useSubtitleTask ({
     }
     subtitleBulkClearingScope.value = scope
     try {
+      // 先取消运行中的
+      for (const task of runningTargets) {
+        try {
+          await rjSubtitleApi.cancel(task.id)
+        } catch (error) {
+          console.error('清空全部前取消任务失败:', task.id, error)
+        }
+      }
       let successCount = 0
       let failedCount = 0
       for (const task of targets) {

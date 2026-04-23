@@ -1347,7 +1347,7 @@ const activeSubtitleWorkbenchStageLabel = computed(() => ({
   pairing: '字幕筛选与配对',
   tree: '字幕树'
 }[activeSubtitleWorkbenchStage.value] || '任务概览'))
-const subtitleWorkbenchFocusTask = computed(() => activeSubtitleTask.value || activeSubtitleInspectTask.value || null)
+const subtitleWorkbenchFocusTask = computed(() => activeSubtitleInspectTask.value || activeSubtitleTask.value || null)
 const subtitleWorkbenchFocusSelection = computed(() => focusedSubtitleSelectionItem.value || currentFolderSubtitleItem.value || null)
 const subtitleWorkbenchFocusTitle = computed(() => {
   const task = subtitleWorkbenchFocusTask.value
@@ -1583,7 +1583,11 @@ const subtitleConfigCtx = computed(() => ({
   canClearManualPairs: Boolean(subtitleManualPairs.value.length),
   treeSelectedCount: subtitleInspectorSelectedRows.value.length,
   treeVisibleCount: subtitleInspectorFlatTree.value.length,
-  treeSearchText: subtitleInspectorSearch.value.trim(),
+  treeSearchText: subtitleInspectorSearch.value,
+  setTreeSearch: value => {
+    subtitleInspectorSearch.value = value
+    onSubtitleInspectorSearchInput()
+  },
   addSubtitleFilterRule,
   removeSubtitleFilterRule,
   setSubtitleOption: (key, value) => { subtitleOptions.value[key] = value },
@@ -1596,6 +1600,7 @@ const subtitleTaskStageCtx = computed(() => ({
   subtitleQueueTasks: subtitleQueueTasks.value,
   visibleSubtitleTasks: visibleSubtitleTasks.value,
   activeSubtitleTask: activeSubtitleTask.value,
+  selectedSubtitleTaskId: String(subtitleInspectorInfo.value.taskId || activeSubtitleTask.value?.id || ''),
   subtitleClearableTaskCounts: subtitleClearableTaskCounts.value,
   subtitleBulkClearingScope: subtitleBulkClearingScope.value,
   subtitleTaskDetailPanels: subtitleTaskDetailPanels.value,
@@ -5301,7 +5306,11 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
     await nextTick()
     buildAutoSubtitlePairs()
   } catch (error) {
-    ElMessage.error('加载现有字幕目录失败: ' + decodePossibleMojibake(error.response?.data?.detail || error.message))
+    if (error instanceof TypeError && /parentNode/.test(error.message || '')) {
+      console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误:', error.message)
+    } else {
+      ElMessage.error('加载现有字幕目录失败: ' + decodePossibleMojibake(error.response?.data?.detail || error.message))
+    }
   } finally {
     subtitleInspectorLoading.value = false
   }
@@ -5360,7 +5369,11 @@ async function inspectSubtitleTask (task, options = {}) {
     await nextTick()
     buildAutoSubtitlePairs()
   } catch (error) {
-    ElMessage.error('加载字幕目录失败: ' + decodePossibleMojibake(error.response?.data?.detail || error.message))
+    if (error instanceof TypeError && /parentNode/.test(error.message || '')) {
+      console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误:', error.message)
+    } else {
+      ElMessage.error('加载字幕目录失败: ' + decodePossibleMojibake(error.response?.data?.detail || error.message))
+    }
   } finally {
     subtitleInspectorLoading.value = false
   }
@@ -6953,7 +6966,7 @@ function statsStatusTextDisplay (stats) {
 .fm-btn-ghost:hover { color: #409eff; border-color: #a0cfff; background: #ecf5ff; }
 .fm-search-input { width: 260px; height: 30px; padding: 0 10px; font-size: 12px; border: 1px solid #dcdfe6; border-radius: 5px; outline: none; }
 .fm-head, .fm-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) 120px 190px 90px; align-items: center; padding: 0 16px; }
-.fm-head { height: 36px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; font-size: 12px; font-weight: 600; color: #606266; }
+.fm-head { display: grid; grid-template-columns: 42px minmax(0, 1fr) 120px 190px 90px; align-items: center; padding: 0 16px; height: 36px; background: #f4f5f7; border-bottom: 1px solid #e4e7ed; font-size: 12px; font-weight: 600; color: #606266; }
 .fm-scroll { flex: 1; overflow: auto; contain: strict; }
 .fm-row { min-height: 36px; border-bottom: 1px solid #ebeef5; font-size: 13px; contain: layout paint style; }
 .fm-row-dir { background: #fafbfc; cursor: pointer; }

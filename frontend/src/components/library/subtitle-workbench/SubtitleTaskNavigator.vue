@@ -82,13 +82,14 @@
       <button
         v-for="task in pagedTasks"
         :key="task.id"
+        :ref="el => registerTaskRef(task.id, el)"
         type="button"
-        class="group grid w-full gap-1.5 rounded-[14px] border bg-white px-3 py-2.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]"
+        class="group grid w-full gap-1 rounded-[12px] border bg-white px-2.5 py-1.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]"
         :class="getCardClass(task)"
         @click="ctx.selectSubtitleTask(task)"
       >
         <div class="flex items-center justify-between gap-2">
-          <span class="text-[13.5px] font-semibold tracking-[-0.02em] text-slate-900 truncate">{{ ctx.getTaskDisplayRJCode(task) }}</span>
+          <span class="text-[12.5px] font-semibold tracking-[-0.02em] text-slate-900 truncate">{{ ctx.getTaskDisplayRJCode(task) }}</span>
 
           <Transition name="subtitle-status-flip" mode="out-in">
             <span
@@ -102,36 +103,36 @@
           </Transition>
         </div>
 
-        <div class="flex items-start gap-1 break-all text-[11px] font-medium leading-snug text-slate-900">
-          <Folder class="mt-0.5 h-2.5 w-2.5 flex-shrink-0 text-amber-500" :stroke-width="2.4" />
-          <span class="line-clamp-2">{{ task.folder_name || ctx.getFileName(task.folder_path) }}</span>
+        <div class="flex items-start gap-1 break-all text-[10.5px] font-medium leading-tight text-slate-900">
+          <Folder class="mt-px h-2.5 w-2.5 flex-shrink-0 text-amber-500" :stroke-width="2.4" />
+          <span class="line-clamp-1">{{ getDisplayFolderName(task) }}</span>
         </div>
 
-        <div class="rounded-md bg-slate-50/80 px-1.5 py-1 text-[10.5px] leading-snug text-slate-500 line-clamp-2">
+        <div class="rounded-md bg-slate-50/80 px-1.5 py-0.5 text-[10px] leading-tight text-slate-500 line-clamp-1">
           {{ getCurrentStep(task) }}
         </div>
 
-        <div class="flex flex-wrap gap-1 text-[9.5px]">
-          <span class="inline-flex items-center gap-0.5 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-medium text-slate-900">
-            <Download class="h-2.5 w-2.5 text-sky-500" :stroke-width="2.4" />
+        <div class="flex flex-wrap gap-0.5 text-[9px]">
+          <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-900">
+            <Download class="h-2 w-2 text-sky-500" :stroke-width="2.4" />
             下载 {{ task.downloaded_count || ctx.getSubtitleDownloadFiles(task).length }}
           </span>
-          <span class="inline-flex items-center gap-0.5 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-medium text-slate-900">
-            <FilePenLine class="h-2.5 w-2.5 text-emerald-500" :stroke-width="2.4" />
+          <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-900">
+            <FilePenLine class="h-2 w-2 text-emerald-500" :stroke-width="2.4" />
             写入 {{ task.written_files?.length || 0 }}
           </span>
           <span
             v-if="task.manual_match_completed"
-            class="inline-flex items-center gap-0.5 rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700"
+            class="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1 py-0.5 font-medium text-emerald-700"
           >
-            <CheckCheck class="h-2.5 w-2.5" :stroke-width="2.4" />
+            <CheckCheck class="h-2 w-2" :stroke-width="2.4" />
             已匹配 {{ task.manual_match_applied_pairs || 0 }}
           </span>
           <span
             v-else-if="task.awaiting_manual_match || task.status === 'awaiting_manual_match' || task.status === 'waiting_manual'"
-            class="inline-flex items-center gap-0.5 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700"
+            class="inline-flex items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1 py-0.5 font-medium text-amber-700"
           >
-            <Link2 class="h-2.5 w-2.5" :stroke-width="2.4" />
+            <Link2 class="h-2 w-2" :stroke-width="2.4" />
             待配对
           </span>
         </div>
@@ -165,7 +166,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight,
   Clock, Download, FilePenLine, Folder, Link2, ListTodo,
@@ -186,6 +187,7 @@ const clearMenuOpen = ref(false)
 const rootRef = ref(null)
 
 const clearActions = computed(() => [
+  { key: 'all', label: '清理全部任务', count: props.ctx?.subtitleClearableTaskCounts?.all || 0 },
   { key: 'completed', label: '清理成功', count: props.ctx?.subtitleClearableTaskCounts?.completed || 0 },
   { key: 'failed', label: '清理失败', count: props.ctx?.subtitleClearableTaskCounts?.failed || 0 },
   { key: 'finished', label: '清理全部已结束', count: props.ctx?.subtitleClearableTaskCounts?.finished || 0 }
@@ -204,6 +206,37 @@ watch(() => props.ctx?.subtitleTaskManualFilter, () => {
 watch(() => props.ctx?.subtitleQueueTasks?.length, () => {
   if (currentPage.value > totalPages.value) currentPage.value = totalPages.value
 })
+
+const taskRefs = new Map()
+function registerTaskRef(id, el) {
+  if (el) taskRefs.set(id, el)
+  else taskRefs.delete(id)
+}
+
+let scrollRafId = 0
+function scrollToActiveTask(id) {
+  if (!id) return
+  if (scrollRafId) cancelAnimationFrame(scrollRafId)
+  scrollRafId = requestAnimationFrame(() => {
+    scrollRafId = 0
+    const el = taskRefs.get(id)
+    if (!el || !el.isConnected) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  })
+}
+
+watch(
+  () => props.ctx?.selectedSubtitleTaskId || props.ctx?.activeSubtitleTask?.id || props.ctx?.subtitleActiveTaskId || '',
+  (id) => {
+    if (!id) return
+    const tasks = props.ctx?.subtitleQueueTasks || []
+    const idx = tasks.findIndex(t => t.id === id)
+    if (idx < 0) return
+    const targetPage = Math.floor(idx / PAGE_SIZE) + 1
+    if (targetPage !== currentPage.value) currentPage.value = targetPage
+    nextTick(() => scrollToActiveTask(id))
+  }
+)
 
 function handleClear(scope) {
   clearMenuOpen.value = false
@@ -289,6 +322,15 @@ function statDotClass(key) {
 
 function getCurrentStep(task) {
   return task?.current_step || task?.error_message || '等待中'
+}
+
+function getDisplayFolderName(task) {
+  const folderName = String(task?.folder_name || '').trim().replace(/[\\/]+$/, '')
+  if (folderName) {
+    const parts = folderName.split(/[\\/]/).filter(Boolean)
+    return parts[parts.length - 1] || folderName
+  }
+  return props.ctx?.getFileName?.(task?.folder_path) || '-'
 }
 </script>
 
