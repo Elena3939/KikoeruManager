@@ -379,31 +379,53 @@
 
     <el-dialog
       v-model="subtitleDialogVisible"
-      width="1720px"
-      class="subtitle-task-dialog"
+      :show-close="false"
       :destroy-on-close="false"
       :close-on-click-modal="true"
       :close-on-press-escape="false"
-      :show-close="false"
       :before-close="handleSubtitleDialogBeforeClose"
+      class="subtitle-workbench-dialog"
+      align-center
+      modal-class="subtitle-workbench-overlay"
     >
-      <template #header>
-        <div class="subtitle-dialog-header">
-          <div class="subtitle-dialog-title-block">
-            <div class="subtitle-dialog-title">
-              <span class="subtitle-dialog-title-dot"></span>
-              RJ 字幕抓取
+      <div class="subtitle-workbench-shell relative flex w-full min-h-[78vh] max-h-[92vh] flex-col overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.1)]">
+        <header class="subtitle-workbench-header relative flex items-center justify-between gap-4 px-6 py-4 flex-shrink-0 border-b border-slate-100 bg-white">
+          <div class="flex items-center gap-3.5 min-w-0">
+            <div class="subtitle-workbench-brand group flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[12px] border border-slate-200 bg-slate-900 text-white shadow-[0_4px_12px_rgba(15,23,42,0.18)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(15,23,42,0.28)]">
+              <Captions class="h-[18px] w-[18px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-4deg]" :stroke-width="2.1" />
             </div>
-            <div class="subtitle-dialog-subtitle">沉浸式单舞台工作台，焦点只保留当前阶段、当前任务和当前操作。</div>
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <h2 class="text-[17px] font-semibold tracking-[-0.02em] leading-tight text-slate-900">RJ 字幕抓取工作台</h2>
+                <span class="inline-flex items-center gap-1 rounded-full border border-emerald-200/70 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-medium text-emerald-700">
+                  <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>Live
+                </span>
+              </div>
+              <p class="mt-0.5 text-[11.5px] leading-snug text-slate-500 truncate">沉浸式单舞台工作台，焦点只保留当前阶段、当前任务和当前操作。</p>
+            </div>
           </div>
-          <div class="subtitle-dialog-header-actions">
-            <button class="subtitle-dialog-action-btn" @click="hideSubtitleTaskPanelToBackground">隐藏到后台</button>
-            <button class="subtitle-dialog-action-btn subtitle-dialog-action-close" @click="closeSubtitleTaskPanel">关闭</button>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button
+              type="button"
+              class="subtitle-workbench-btn group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
+              @click="hideSubtitleTaskPanelToBackground"
+            >
+              <Minimize2 class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-8deg]" :stroke-width="2.2" />
+              <span>隐藏到后台</span>
+            </button>
+            <button
+              type="button"
+              class="subtitle-workbench-btn subtitle-workbench-btn-close group inline-flex items-center gap-1.5 rounded-[10px] border border-rose-200/70 bg-rose-50/70 px-3.5 py-2 text-[12.5px] font-medium text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 hover:shadow-[0_8px_16px_rgba(225,29,72,0.16)] active:translate-y-0 active:scale-[0.96]"
+              @click="closeSubtitleTaskPanel"
+            >
+              <X class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-90" :stroke-width="2.4" />
+              <span>关闭</span>
+            </button>
           </div>
+        </header>
+        <div class="subtitle-workbench-body flex-1 min-h-0 overflow-auto bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-4">
+          <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
         </div>
-      </template>
-      <div class="subtitle-workbench-shell">
-        <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
       </div>
     </el-dialog>
 
@@ -456,6 +478,7 @@
       :rules="filterDeleteDialogRules"
       :scope-label="filterDeleteDialogScopeLabel"
       :is-remote="filterDeleteDialogIsRemote"
+      :initial-job-id="filterDeleteDialogInitialJobId"
       @deleted="handleFilterDeleteDeleted"
       @dismiss-background="handleFilterDeleteDialogDismissBackground"
       @state-change="handleFilterDeleteDialogStateChange"
@@ -543,6 +566,7 @@
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Refresh, Search, Folder, FolderOpened, Delete, Edit, Files, Document, Picture, VideoPlay, Headset, Tickets, ArrowDown } from '@element-plus/icons-vue'
+import { Captions, Minimize2, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi } from '../api'
 import { showSystemAlert, showSystemConfirm } from '../composables/useSystemPrompt'
@@ -729,6 +753,7 @@ const folderDialogVisible = ref(false)
 const folderDialogLibraryId = ref('')
 const folderDialogPath = ref('')
 const folderDialogName = ref('')
+const FILTER_DELETE_BG_STORAGE_KEY = 'prekikoeru.library.filterDeleteBackground'
 const filterDeleteDialogVisible = ref(false)
 const filterDeleteDialogLibraryId = ref('')
 const filterDeleteDialogPath = ref('')
@@ -736,6 +761,7 @@ const filterDeleteDialogTargetPaths = ref([])
 const filterDeleteDialogRules = ref([])
 const filterDeleteDialogScopeLabel = ref('')
 const filterDeleteDialogIsRemote = ref(false)
+const filterDeleteDialogInitialJobId = ref('')
 const filterDeleteBackgroundState = ref({
   active: false,
   mode: 'preview',
@@ -1728,6 +1754,56 @@ async function resumeLibraryPage () {
 
 onMounted(async () => {
   bindLibraryKeydown()
+  // \u5148\u6062\u590d\u5220\u9664\u8fc7\u6ee4\u540e\u53f0\u72b6\u6001\uff0c\u907f\u514d\u9875\u9762\u521d\u59cb\u5316\u540e\u88ab\u8986\u76d6
+  try {
+    const raw = localStorage.getItem(FILTER_DELETE_BG_STORAGE_KEY)
+    if (raw) {
+      const saved = JSON.parse(raw)
+      // \u53ea\u6062\u590d 8 \u5c0f\u65f6\u5185\u7684\u672a\u7ed3\u675f\u72b6\u6001
+      const age = Date.now() - Number(saved.savedAt || 0)
+      const isStale = age > 8 * 60 * 60 * 1000
+      if (!isStale && saved.dialogConfig && (saved.backgroundState?.active || saved.backgroundState?.reviewable)) {
+        const cfg = saved.dialogConfig
+        filterDeleteDialogLibraryId.value = cfg.libraryId || ''
+        filterDeleteDialogPath.value = cfg.path || ''
+        filterDeleteDialogTargetPaths.value = cfg.targetPaths || []
+        filterDeleteDialogRules.value = cfg.rules || []
+        filterDeleteDialogScopeLabel.value = cfg.scopeLabel || ''
+        filterDeleteDialogIsRemote.value = !!cfg.isRemote
+        filterDeleteDialogInitialJobId.value = saved.jobId || ''
+        const bg = saved.backgroundState || {}
+        filterDeleteBackgroundState.value = {
+          active: Boolean(bg.active),
+          mode: bg.mode || 'preview',
+          status: bg.status || 'idle',
+          statusLabel: bg.status === 'running' ? '\u6267\u884c\u4e2d' : bg.status === 'completed' ? '\u5df2\u5b8c\u6210' : '\u7b49\u5f85\u4e2d',
+          scopeLabel: bg.scopeLabel || cfg.scopeLabel || '',
+          progressMessage: bg.progressMessage || '',
+          currentPath: cfg.path || '',
+          percentage: Number(bg.percentage || 0),
+          progressStatus: '',
+          startedAt: 0,
+          startedAtText: '',
+          previewTargetIndex: 0,
+          previewTargetTotal: 0,
+          reviewable: Boolean(bg.reviewable),
+          selectedCount: Number(bg.selectedCount || 0),
+          selectedSize: Number(bg.selectedSize || 0),
+          selectedSizeText: '',
+          scannedEntries: 0,
+          discoveredEntries: 0,
+          pendingDirectories: 0,
+          ruleCount: Number(bg.ruleCount || 0),
+          deleteDone: Number(bg.deleteDone || 0),
+          deleteTotal: Number(bg.deleteTotal || 0),
+          deleteFailed: 0,
+          canCancelPreview: false,
+          canStopDelete: false
+        }
+        filterDeleteBackgroundDismissed.value = false
+      }
+    }
+  } catch (_) {}
   await initializeLibraryPage()
   libraryViewActive = true
   await consumeSubtitleRouteFocus()
@@ -5905,8 +5981,39 @@ function handleFilterDeleteDialogStateChange (state = {}) {
       filterDeleteBackgroundDismissed.value = false
     }
     filterDeleteBackgroundSessionKey.value = nextSessionKey
+    // 持久化后台状态到 localStorage，页面刷新后恢复悬浮卡
+    try {
+      localStorage.setItem(FILTER_DELETE_BG_STORAGE_KEY, JSON.stringify({
+        backgroundState: {
+          active: Boolean(state.active),
+          mode: state.mode || 'preview',
+          status,
+          scopeLabel: state.scopeLabel || '',
+          percentage: Number(state.percentage || 0),
+          reviewable: Boolean(state.reviewable),
+          selectedCount: Number(state.selectedCount || 0),
+          selectedSize: Number(state.selectedSize || 0),
+          ruleCount: Number(state.ruleCount || 0),
+          deleteDone: Number(state.deleteDone || 0),
+          deleteTotal: Number(state.deleteTotal || 0),
+          progressMessage: state.progressMessage || ''
+        },
+        jobId: state.jobId || '',
+        dialogConfig: {
+          libraryId: filterDeleteDialogLibraryId.value || '',
+          path: filterDeleteDialogPath.value || '',
+          targetPaths: filterDeleteDialogTargetPaths.value || [],
+          rules: filterDeleteDialogRules.value || [],
+          scopeLabel: filterDeleteDialogScopeLabel.value || '',
+          isRemote: filterDeleteDialogIsRemote.value || false
+        },
+        savedAt: Date.now()
+      }))
+    } catch (_) {}
   } else {
     filterDeleteBackgroundSessionKey.value = ''
+    // 任务结束（非活跃且非可审阅）时清除持久化状态
+    try { localStorage.removeItem(FILTER_DELETE_BG_STORAGE_KEY) } catch (_) {}
   }
   filterDeleteBackgroundState.value = {
     active: Boolean(state.active),
@@ -6801,114 +6908,6 @@ function statsStatusTextDisplay (stats) {
 .filter-delete-floating-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .name-preview, .path-code { font-family: monospace; font-size: 13px; word-break: break-all; }
 .name-preview { padding: 8px 12px; background: #f8f9fa; border: 1px solid #e4e7ed; border-radius: 4px; color: #606266; }
-.subtitle-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 2px 2px 0;
-}
-
-.subtitle-dialog-title-block {
-  display: grid;
-  gap: 5px;
-}
-
-.subtitle-dialog-title {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  color: #0f172a;
-}
-
-.subtitle-dialog-title-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  flex-shrink: 0;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
-}
-
-.subtitle-dialog-subtitle {
-  font-size: 12px;
-  line-height: 1.55;
-  color: #64748b;
-}
-
-.subtitle-dialog-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.subtitle-dialog-action-btn {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 14px;
-  border-radius: 999px;
-  border: 1px solid #e2e8f0;
-  background: #ffffff;
-  color: #475569;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  line-height: 1;
-}
-
-.subtitle-dialog-action-btn:hover {
-  border-color: #cbd5e1;
-  background: #f8fafc;
-  color: #0f172a;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
-}
-
-.subtitle-dialog-action-btn:active {
-  transform: scale(0.97);
-}
-
-.subtitle-dialog-action-close {
-  border-color: #fecaca;
-  background: #fff5f5;
-  color: #dc2626;
-}
-
-.subtitle-dialog-action-close:hover {
-  border-color: #f87171;
-  background: #fee2e2;
-  color: #b91c1c;
-}
-
-.subtitle-task-dialog :deep(.el-dialog) {
-  width: min(1720px, calc(100vw - 28px)) !important;
-  max-width: calc(100vw - 28px);
-  margin-top: 3vh !important;
-  border-radius: 22px;
-  border: 1px solid #dbe5ef;
-  overflow: hidden;
-  box-shadow: 0 28px 60px rgba(15, 23, 42, 0.18);
-}
-
-.subtitle-task-dialog :deep(.el-dialog__header) {
-  margin-right: 0;
-  padding: 16px 18px 8px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
-  background: radial-gradient(circle at 92% -16%, rgba(148, 163, 184, 0.18), transparent 36%), linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-}
-
-.subtitle-task-dialog :deep(.el-dialog__body) {
-  padding: 14px 18px 18px;
-  max-height: 90vh;
-  overflow: auto;
-  background: linear-gradient(180deg, #f7fafd 0%, #f3f7fb 100%);
-}
 .subtitle-floating-card {
   position: fixed;
   right: 22px;
@@ -6918,29 +6917,24 @@ function statsStatusTextDisplay (stats) {
   display: grid;
   gap: 10px;
   padding: 14px 16px;
-  border: 1px solid rgba(121, 160, 255, .28);
-  border-radius: 18px;
-  background: radial-gradient(circle at top right, rgba(111, 155, 255, .16), transparent 34%), linear-gradient(180deg, rgba(255, 255, 255, .98) 0%, rgba(247, 250, 255, .98) 100%);
-  box-shadow: 0 18px 42px rgba(29, 47, 84, .18);
-  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(12px);
 }
 .subtitle-floating-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.subtitle-floating-title { font-size: 14px; font-weight: 700; color: #23426c; }
-.subtitle-floating-mode { margin-top: 2px; font-size: 12px; color: #71839d; line-height: 1.45; word-break: break-all; }
-.subtitle-floating-count { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 10px; border-radius: 999px; background: #edf4ff; color: #2458a6; border: 1px solid #d3e2ff; font-size: 13px; font-weight: 700; }
+.subtitle-floating-title { font-size: 14px; font-weight: 600; color: #1d1d1f; letter-spacing: -0.02em; }
+.subtitle-floating-mode { margin-top: 2px; font-size: 12px; color: #86868b; line-height: 1.45; word-break: break-all; letter-spacing: -0.01em; }
+.subtitle-floating-count { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 10px; border-radius: 8px; background: #f5f5f7; color: #1d1d1f; border: 1px solid #e2e2e8; font-size: 13px; font-weight: 700; }
 .subtitle-floating-chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
-.subtitle-floating-chip { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 999px; border: 1px solid #d8e5f8; background: #f5f9ff; font-size: 11px; font-weight: 600; color: #4f6787; }
-.subtitle-floating-text { font-size: 12px; line-height: 1.5; color: #51657f; word-break: break-all; }
+.subtitle-floating-chip { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 5px; border: 1px solid #e5e5ea; background: #f5f5f7; font-size: 11px; font-weight: 500; color: #3c3c43; letter-spacing: -0.01em; }
+.subtitle-floating-text { font-size: 12px; line-height: 1.5; color: #86868b; word-break: break-all; letter-spacing: -0.01em; }
 .subtitle-floating-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.subtitle-workbench-shell {
-  padding: 4px 0;
-  border-radius: 20px;
-}
-
 .subtitle-floating-chip.subtitle-mini-chip-danger {
-  color: #c53030;
-  background: #fff1f0;
-  border-color: #ffc8c2;
+  color: #aa0000;
+  background: #f8f0f0;
+  border-color: #e8c8c8;
 }
 .mapped-path-box { display: flex; flex-direction: column; gap: 10px; }
 .path-actions { display: flex; gap: 8px; }

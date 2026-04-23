@@ -8,8 +8,8 @@
     modal-class="custom-preview-overlay"
   >
     <div
-      class="window panel-enter glass-shell relative flex w-full max-w-[1280px] aspect-[16/10] flex-col overflow-hidden rounded-3xl"
-      v-app-loading="{ loading: filterDeleteBusy, text: '正在处理删除预审...', size: 120 }"
+      class="window panel-enter glass-shell relative flex w-full max-w-[1536px] aspect-[16/10] flex-col overflow-hidden rounded-3xl"
+      v-app-loading="{ loading: filterDeleteBusy, text: '正在生成删除预审...', size: 120 }"
       :element-loading-text="filterDeleteLoadingText"
     >
       <div class="window-header flex items-center justify-between px-6 py-4">
@@ -166,26 +166,30 @@
               </button>
             </div>
             
-            <button v-if="!filterDeleteBasicTreeOnly" type="button" class="tree-col-size flex items-center justify-end gap-1 hover:text-slate-700 transition-colors cursor-pointer" @click="toggleFilterDeleteSort('size')">
+            <button v-if="!filterDeleteBasicTreeOnly" type="button" class="tree-col-size tree-sort-button hover:text-slate-700 transition-colors cursor-pointer" @click="toggleFilterDeleteSort('size')">
               <span>{{ text.size }}</span>
-              <span class="text-[10px]">{{ getFilterDeleteSortMark('size') }}</span>
+              <span class="tree-sort-mark">{{ getFilterDeleteSortMark('size') }}</span>
             </button>
             
-            <button v-if="!filterDeleteBasicTreeOnly" type="button" class="tree-col-time flex items-center gap-1 hover:text-slate-700 transition-colors cursor-pointer" @click="toggleFilterDeleteSort('modified_time')">
-              <span>{{ text.timeAndRule }}</span>
-              <span class="text-[10px]">{{ getFilterDeleteSortMark('modified_time') }}</span>
+            <button v-if="!filterDeleteBasicTreeOnly" type="button" class="tree-col-time tree-col-time-button hover:text-slate-700 transition-colors cursor-pointer" @click="toggleFilterDeleteSort('modified_time')">
+              <span class="tree-col-time-label">{{ text.timeAndRule }}</span>
+              <span class="tree-col-time-sort">{{ getFilterDeleteSortMark('modified_time') }}</span>
             </button>
-            
-            <div v-if="!filterDeleteBasicTreeOnly" class="tree-col-state">{{ text.state }}</div>
           </div>
 
-          <div ref="filterDeleteScrollRef" class="tree-scroll flex-1 overflow-auto px-4 py-2 no-scrollbar" @scroll="onFilterDeleteScroll">
+          <div
+            ref="filterDeleteScrollRef"
+            v-memo="[filterDeleteFlatTree, filterDeleteSelectedIds, filterDeleteExpandedIds, filterDeleteBasicTreeOnly, filterDeleteBusy]"
+            class="tree-scroll flex-1 overflow-auto px-4 py-2 no-scrollbar"
+            @scroll="onFilterDeleteScroll"
+          >
             <div v-if="!filterDeleteLoading && filterDeleteFlatTree.length === 0" class="preview-empty">
               {{ filterDeleteSearch ? text.noMatchedItems : text.noFilterHits }}
             </div>
-            <div v-else-if="filterDeleteVirtualTopPadding" class="fm-virtual-spacer" :style="{ height: `${filterDeleteVirtualTopPadding}px` }"></div>
-            
-            <div v-else class="tree-list space-y-0.5">
+            <template v-else>
+              <div v-if="filterDeleteVirtualTopPadding" class="fm-virtual-spacer" :style="{ height: `${filterDeleteVirtualTopPadding}px` }"></div>
+
+              <div class="tree-list space-y-0.5">
               <div
                 v-for="row in filterDeleteVisibleRows"
                 :key="row.id"
@@ -235,24 +239,16 @@
 
                   <span v-if="!filterDeleteBasicTreeOnly" class="tree-size text-[12px] tabular-nums text-slate-400 text-right">{{ formatFileSize(row.size) }}</span>
                   
-                  <div v-if="!filterDeleteBasicTreeOnly" class="tree-time flex flex-col justify-center min-w-0">
-                    <span class="text-[12px] text-slate-600 truncate font-medium">{{ formatDate(row.modified_time) }}</span>
-                    <span class="text-[10px] text-slate-400 truncate opacity-80" :title="row.selectable ? (row.matched_rules || []).join(' / ') : `${text.coveredByPrefix}${getFileName(row.covered_by)}`">
-                      {{ row.selectable ? (row.matched_rules || []).join(' / ') : `${text.coveredByPrefix}${getFileName(row.covered_by)}` }}
-                    </span>
-                  </div>
-
-                  <div v-if="!filterDeleteBasicTreeOnly" class="tree-state flex items-center">
-                    <span v-if="hasFilterDeleteSelectedAncestor(row)" class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-50/60 text-rose-600 border border-rose-100/50">{{ text.coveredBySelected }}</span>
-                    <span v-else-if="isFilterDeleteRowFullySelected(row)" class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50/60 text-red-600 border border-red-100/50">{{ text.waitConfirm }}</span>
-                    <span v-else-if="isFilterDeleteRowPartiallySelected(row)" class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-50/60 text-orange-600 border border-orange-100/50">部分已选</span>
-                    <span v-else class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100/60 text-slate-500 border border-slate-200/50">{{ text.individualSelectable }}</span>
+                  <div v-if="!filterDeleteBasicTreeOnly" class="tree-time min-w-0" :title="row.selectable ? `${formatDate(row.modified_time)} / ${(row.matched_rules || []).join(' / ') || text.individualSelectable}` : `${formatDate(row.modified_time)} / ${text.coveredByPrefix}${getFileName(row.covered_by)}`">
+                    <span class="tree-time-date">{{ formatDate(row.modified_time) }}</span>
+                    <span class="tree-time-rule">{{ row.selectable ? ((row.matched_rules || []).join(' / ') || text.individualSelectable) : `${text.coveredByPrefix}${getFileName(row.covered_by)}` }}</span>
                   </div>
                 </div>
               </div>
-            </div>
-            
-            <div v-if="filterDeleteVirtualBottomPadding" class="fm-virtual-spacer" :style="{ height: `${filterDeleteVirtualBottomPadding}px` }"></div>
+              </div>
+
+              <div v-if="filterDeleteVirtualBottomPadding" class="fm-virtual-spacer" :style="{ height: `${filterDeleteVirtualBottomPadding}px` }"></div>
+            </template>
           </div>
         </section>
       </div>
@@ -372,7 +368,8 @@ const props = defineProps({
   targetPaths: { type: Array, default: () => [] },
   rules: { type: Array, default: () => [] },
   scopeLabel: { type: String, default: '' },
-  isRemote: { type: Boolean, default: false }
+  isRemote: { type: Boolean, default: false },
+  initialJobId: { type: String, default: '' }
 })
 
 const emit = defineEmits(['update:modelValue', 'deleted', 'state-change', 'dismiss-background'])
@@ -391,6 +388,7 @@ const filterDeleteDeleting = ref(false)
 const filterDeleteSearch = ref('')
 const filterDeleteItems = ref([])
 const filterDeleteScrollRef = ref(null)
+const filterDeleteScrollbarWidth = ref(0)
 const filterDeleteScrollTop = ref(0)
 const filterDeleteViewportHeight = ref(420)
 const filterDeleteExpandedIds = ref(new Set())
@@ -428,7 +426,7 @@ const filterDeletePreviewTargetTotal = ref(0)
 const filterDeletePreviewLoggedSessionKey = ref('')
 const filterDeleteApplyLoggedExecutionKey = ref('')
 
-const FILTER_DELETE_ROW_HEIGHT = 36
+const FILTER_DELETE_ROW_HEIGHT = 44
 const FILTER_DELETE_OVERSCAN = 12
 const FILTER_DELETE_VIRTUAL_THRESHOLD = 180
 const FILTER_DELETE_DEFAULT_SORT_BY = 'name'
@@ -583,7 +581,20 @@ watch(visible, async open => {
       filterDeleteLoadedSessionKey.value === filterDeleteSessionKey.value
       && (filterDeleteBusy.value || hasReviewState)
     )
-    if (!shouldResumeExisting) await loadFilterDeletePreview()
+    if (!shouldResumeExisting) {
+      const resumeId = String(props.initialJobId || '').trim()
+      if (resumeId) {
+        // 恢复已有后台 job，直接接管轮询，不重新发起
+        filterDeleteJobId.value = resumeId
+        filterDeleteLoadedSessionKey.value = filterDeleteSessionKey.value
+        filterDeleteStartedAt.value = Date.now()
+        filterDeleteLoading.value = true
+        filterDeletePreviewInfo.value = { ...filterDeletePreviewInfo.value, status: 'running' }
+        await pollFilterDeletePreviewStatus(resumeId)
+      } else {
+        await loadFilterDeletePreview()
+      }
+    }
     return
   }
   window.removeEventListener('keydown', handleDialogKeydown)
@@ -593,6 +604,7 @@ watch(visible, async open => {
 watchEffect(() => {
   emit('state-change', {
     active: filterDeleteBusy.value,
+    jobId: filterDeleteJobId.value || '',
     mode: filterDeleteDeleting.value ? 'delete' : 'preview',
     status: filterDeletePreviewInfo.value.status || 'idle',
     scopeLabel: props.scopeLabel || getFileName(props.currentPath) || filterDeletePreviewInfo.value.folderName || text.currentFolder,
@@ -711,8 +723,13 @@ function teardownFilterDeleteScrollObserver () {
 
 function syncFilterDeleteViewport () {
   const element = filterDeleteScrollRef.value
-  if (!element) return
+  if (!element) {
+    filterDeleteViewportHeight.value = 180
+    filterDeleteScrollbarWidth.value = 0
+    return
+  }
   filterDeleteViewportHeight.value = Math.max(Number(element.clientHeight || 0), 180)
+  filterDeleteScrollbarWidth.value = Math.max(0, Number(element.offsetWidth || 0) - Number(element.clientWidth || 0))
 }
 
 function setupFilterDeleteScrollObserver () {
@@ -744,10 +761,12 @@ function onFilterDeleteScroll (event) {
   if (!target) return
   const nextScrollTop = Number(target.scrollTop || 0)
   const nextViewportHeight = Math.max(Number(target.clientHeight || 0), 180)
+  const nextScrollbarWidth = Math.max(0, Number(target.offsetWidth || 0) - Number(target.clientWidth || 0))
   if (filterDeleteScrollRafId) cancelAnimationFrame(filterDeleteScrollRafId)
   filterDeleteScrollRafId = requestAnimationFrame(() => {
     filterDeleteScrollTop.value = nextScrollTop
     filterDeleteViewportHeight.value = nextViewportHeight
+    filterDeleteScrollbarWidth.value = nextScrollbarWidth
     filterDeleteScrollRafId = 0
   })
 }
@@ -2170,7 +2189,7 @@ onBeforeUnmount(() => {
 
 .fd-tree-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px 140px 72px;
+  grid-template-columns: minmax(0, 1fr) 96px minmax(220px, 280px);
   column-gap: 6px;
 }
 
@@ -2197,36 +2216,19 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  justify-content: center;
-  min-width: 140px;
+  justify-content: flex-start;
+  min-width: 220px;
   height: 100%;
   justify-self: start;
   width: 100%;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.tree-col-state {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  justify-self: end;
-  min-width: 72px;
-}
-
-.tree-state {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  justify-self: end;
-  min-width: 72px;
-  height: 100%;
+  text-align: left;
 }
 
 .tree-row {
   cursor: pointer;
   min-height: 44px;
-  transition: background-color 0.15s ease, transform 0.15s ease;
+  transition: background-color 0.15s ease;
 }
 
 .tree-row:hover {
@@ -2288,6 +2290,70 @@ onBeforeUnmount(() => {
 
 .tree-icon {
   color: #64748b;
+}
+
+.tree-sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.tree-sort-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  flex: 0 0 12px;
+  font-size: 10px;
+}
+
+.tree-col-time-button {
+  gap: 1px;
+  align-items: flex-start;
+  justify-content: flex-start;
+  white-space: normal;
+  text-transform: none;
+}
+
+.tree-col-time-label {
+  display: block;
+  width: 100%;
+  line-height: 1.2;
+  text-align: left;
+}
+
+.tree-col-time-sort {
+  display: block;
+  width: 100%;
+  min-height: 12px;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1;
+  text-align: left;
+}
+
+.tree-time-date {
+  color: #475569;
+  display: block;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.2;
+  width: 100%;
+  text-align: left;
+}
+
+.tree-time-rule {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1.2;
+  margin-top: 2px;
 }
 
 .icon-folder {

@@ -231,18 +231,17 @@ defineProps({
 
 <style scoped>
 .subtitle-config-card {
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   display: grid;
   gap: 12px;
 }
 
 .subtitle-config-card :deep(.el-switch) {
-  --el-switch-on-color: #1677d8;
-  --el-switch-off-color: #dbe3ee;
+  --el-switch-on-color: #0f172a;
+  --el-switch-off-color: #e2e8f0;
 }
 
 .subtitle-config-card :deep(.el-switch__core) {
-  border-color: #d6deea !important;
+  border-color: #e2e8f0 !important;
   box-shadow: none;
 }
 
@@ -253,56 +252,70 @@ defineProps({
 .subtitle-config-card :deep(.el-input-number .el-input__wrapper),
 .subtitle-config-card :deep(.el-select__wrapper),
 .subtitle-config-card :deep(.el-input__wrapper) {
-  border-radius: 12px;
+  border-radius: 8px;
   background: #fff;
-  box-shadow: inset 0 0 0 1px #d8e1ec;
+  box-shadow: 0 0 0 1px #e2e8f0;
+  transition: all 0.2s ease;
+}
+
+.subtitle-config-card :deep(.el-input-number .el-input__wrapper:hover),
+.subtitle-config-card :deep(.el-select__wrapper:hover),
+.subtitle-config-card :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #cbd5e1;
 }
 
 .subtitle-config-card :deep(.el-input-number .el-input__wrapper.is-focus),
 .subtitle-config-card :deep(.el-select__wrapper.is-focused),
 .subtitle-config-card :deep(.el-input__wrapper.is-focus) {
-  box-shadow: inset 0 0 0 1px #7ea8d8, 0 0 0 3px rgba(114, 157, 208, 0.16);
+  box-shadow: 0 0 0 1.5px #0f172a;
 }
 
 .subtitle-config-card :deep(.el-radio-group) {
   display: inline-flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .subtitle-config-card :deep(.el-radio-button__inner) {
   min-width: 118px;
-  border-radius: 12px !important;
-  border: 1px solid #d7e0ea !important;
-  background: #fff !important;
-  color: #44576d !important;
+  border-radius: 8px !important;
+  border: 1px solid #e2e8f0 !important;
+  background: #ffffff !important;
+  color: #0f172a !important;
   box-shadow: none !important;
-  padding: 8px 12px !important;
+  padding: 7px 12px !important;
   font-size: 12px !important;
-  font-weight: 700;
+  font-weight: 500;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-config-card :deep(.el-radio-button__inner:hover) {
+  border-color: #cbd5e1 !important;
+  background: #f8fafc !important;
+  transform: translateY(-1px);
 }
 
 .subtitle-config-card :deep(.el-radio-button:first-child .el-radio-button__inner),
 .subtitle-config-card :deep(.el-radio-button:last-child .el-radio-button__inner) {
-  border-radius: 12px !important;
+  border-radius: 8px !important;
 }
 
 .subtitle-config-card :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: linear-gradient(180deg, #1c2b43 0%, #101b2e 100%) !important;
-  border-color: #142238 !important;
+  background: #0f172a !important;
+  border-color: #0f172a !important;
   color: #ffffff !important;
-  box-shadow: 0 12px 24px rgba(16, 27, 46, 0.22) !important;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18) !important;
 }
 
 .subtitle-config-card :deep(.el-button) {
-  border-radius: 14px;
+  border-radius: 8px;
   font-size: 12px;
-  font-weight: 800;
-  transition: all 0.3s var(--ease-spring);
+  font-weight: 500;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .subtitle-config-card :deep(.el-button:hover) {
-  transform: translateY(-2px) scale(1.02);
+  transform: translateY(-1px) scale(1.02);
 }
 
 .subtitle-config-card :deep(.el-button:active) {
@@ -310,22 +323,22 @@ defineProps({
 }
 
 .subtitle-config-mode-title {
-  font-size: 15px;
-  line-height: 1.1;
-  font-weight: 900;
-  color: #132335;
-  letter-spacing: -0.03em;
+  font-size: 14px;
+  line-height: 1.2;
+  font-weight: 600;
+  color: #0f172a;
+  letter-spacing: -0.015em;
 }
 
 .subtitle-config-mode-copy {
   font-size: 11px;
   line-height: 1.6;
-  color: #70839a;
+  color: #64748b;
 }
 
 .subtitle-option-stack {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .subtitle-settings-block,
@@ -333,15 +346,15 @@ defineProps({
   display: grid;
   gap: 12px;
   padding: 14px;
-  border: 1px solid #e1e8f0;
-  border-radius: 18px;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
 }
 
 .subtitle-help-card-danger {
-  border-color: #f0d6d5;
-  background: linear-gradient(180deg, #fffafa 0%, #ffffff 100%);
+  background: linear-gradient(180deg, #fef2f2 0%, #ffffff 100%);
+  border-color: #fecaca;
 }
 
 .subtitle-block-head {
@@ -351,15 +364,16 @@ defineProps({
 
 .subtitle-block-title {
   font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.03em;
-  color: #5f738b;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #0f172a;
+  text-transform: uppercase;
 }
 
 .subtitle-block-tip {
   font-size: 11px;
   line-height: 1.55;
-  color: #8a9aad;
+  color: #64748b;
 }
 
 .subtitle-setting-list,
@@ -373,8 +387,8 @@ defineProps({
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  padding: 12px 0;
-  border-bottom: 1px solid #edf2f7;
+  padding: 10px 0;
+  border-bottom: 1px solid #f1f5f9;
 }
 
 .subtitle-setting-item:last-child {
@@ -398,9 +412,9 @@ defineProps({
 
 .subtitle-option-title {
   font-size: 13px;
-  font-weight: 800;
-  color: #213244;
-  letter-spacing: -0.02em;
+  font-weight: 500;
+  color: #0f172a;
+  letter-spacing: -0.005em;
 }
 
 .subtitle-option-title-sm {
@@ -410,7 +424,7 @@ defineProps({
 .subtitle-card-tip {
   font-size: 11px;
   line-height: 1.6;
-  color: #74869d;
+  color: #64748b;
 }
 
 .subtitle-filter-editor {
@@ -418,9 +432,9 @@ defineProps({
   gap: 10px;
   margin-top: 2px;
   padding: 12px;
-  border: 1px solid #e4ebf4;
-  border-radius: 16px;
-  background: #f8fbfe;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
 }
 
 .subtitle-filter-editor-head {
@@ -438,9 +452,15 @@ defineProps({
   display: grid;
   gap: 8px;
   padding: 10px;
-  border: 1px solid #e1e8f0;
-  border-radius: 14px;
-  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-filter-row:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
 
 .subtitle-filter-row-top,
@@ -458,52 +478,50 @@ defineProps({
 
 .subtitle-filter-empty {
   padding: 12px;
-  border: 1px dashed #d6e0ea;
-  border-radius: 14px;
-  background: #fff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
   font-size: 11px;
-  color: #7b8da2;
+  color: #64748b;
+  text-align: center;
 }
 
 .subtitle-pill-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .subtitle-toggle-pill {
-  min-height: 40px;
-  padding: 8px 12px;
-  border: 1px solid #d8e1ec;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
-  color: #41546b;
+  min-height: 34px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  color: #0f172a;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.3s var(--ease-spring);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .subtitle-toggle-pill:hover {
-  transform: translateY(-2px) scale(1.02);
-  border-color: #c4d2e0;
-  background: #ffffff;
-  color: #12273d;
-  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.06);
+  transform: translateY(-1px) scale(1.02);
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
 }
 
 .subtitle-toggle-pill.active {
-  border-color: #142238;
-  background: linear-gradient(180deg, #1c2b43 0%, #101b2e 100%);
+  background: #0f172a;
   color: #ffffff;
-  box-shadow: 0 12px 24px rgba(16, 27, 46, 0.22);
+  border-color: #0f172a;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18);
 }
 
 .subtitle-help-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .subtitle-help-stats-2 {
@@ -514,24 +532,33 @@ defineProps({
   display: grid;
   gap: 2px;
   padding: 12px;
-  border: 1px solid #e1e8f0;
-  border-radius: 16px;
-  background: #fbfcfe;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-help-stat:hover {
+  border-color: #cbd5e1;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
 }
 
 .subtitle-help-stat em {
   font-style: normal;
   font-size: 10px;
-  font-weight: 700;
-  color: #7b8ba0;
+  font-weight: 500;
+  color: #64748b;
+  letter-spacing: 0.02em;
 }
 
 .subtitle-help-stat strong {
-  font-size: 26px;
+  font-size: 22px;
   line-height: 1;
-  font-weight: 900;
-  color: #132335;
-  letter-spacing: -0.04em;
+  font-weight: 600;
+  color: #0f172a;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
 }
 
 .subtitle-help-actions {
@@ -552,23 +579,25 @@ defineProps({
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border-radius: 12px;
-  background: #f6f9fc;
-  border: 1px solid #e1e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
 }
 
 .subtitle-tree-search-label {
   flex-shrink: 0;
   font-size: 10px;
-  font-weight: 700;
-  color: #92a2b4;
+  font-weight: 600;
+  color: #64748b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .subtitle-tree-search-val {
   min-width: 0;
   font-size: 11px;
-  font-weight: 700;
-  color: #52667d;
+  font-weight: 500;
+  color: #0f172a;
   word-break: break-all;
 }
 

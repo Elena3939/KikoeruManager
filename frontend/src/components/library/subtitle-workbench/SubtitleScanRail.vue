@@ -1,269 +1,269 @@
 <template>
-  <component :is="embedded ? 'div' : 'el-card'" :shadow="embedded ? undefined : 'never'" :class="embedded ? 'subtitle-selection-card subtitle-selection-card-embedded' : 'subtitle-selection-card'">
-    <template v-if="!embedded" #header>
-      <div class="subtitle-selection-header">
-        <div class="subtitle-selection-header-main">
-          <div class="subtitle-selection-header-top">
-            <div class="subtitle-selection-header-title">
-              <span>扫描命中目录</span>
-              <span class="subtitle-selection-count-pill">{{ ctx.subtitleDialogSelection.length }}</span>
-            </div>
-            <span v-if="ctx.subtitleSelectionLoading && ctx.subtitleSelectionProgressText" class="subtitle-selection-progress">{{ ctx.subtitleSelectionProgressText }}</span>
+  <div :class="embedded ? 'grid min-w-0 gap-3' : 'grid min-w-0 gap-3 rounded-[20px] border border-slate-100 bg-white p-4 shadow-[0_4px_16px_rgba(15,23,42,0.04)]'">
+    <template v-if="!embedded">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="grid gap-1">
+          <div class="inline-flex items-center gap-2">
+            <span class="text-[14px] font-semibold text-slate-900">扫描命中目录</span>
+            <span class="inline-flex min-w-10 items-center justify-center rounded-[8px] border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-900">
+              {{ ctx.subtitleDialogSelection.length }}
+            </span>
           </div>
+          <span v-if="ctx.subtitleSelectionLoading && ctx.subtitleSelectionProgressText" class="text-[11px] leading-5 text-slate-500">
+            {{ ctx.subtitleSelectionProgressText }}
+          </span>
         </div>
-        <div v-if="ctx.subtitleSelectionTotalPages > 1" class="subtitle-selection-pager">
-          <el-button size="small" text :disabled="ctx.subtitleSelectionPage <= 1" @click="ctx.setSubtitleSelectionPage(ctx.subtitleSelectionPage - 1)">上一页</el-button>
+
+        <div v-if="ctx.subtitleSelectionTotalPages > 1" class="flex items-center gap-2 text-[11px] text-slate-500">
+          <button type="button" class="scan-rail-btn scan-rail-btn-ghost" :disabled="ctx.subtitleSelectionPage <= 1" @click="ctx.setSubtitleSelectionPage(ctx.subtitleSelectionPage - 1)">上一页</button>
           <span>{{ ctx.subtitleSelectionPage }} / {{ ctx.subtitleSelectionTotalPages }}</span>
-          <el-button size="small" text :disabled="ctx.subtitleSelectionPage >= ctx.subtitleSelectionTotalPages" @click="ctx.setSubtitleSelectionPage(ctx.subtitleSelectionPage + 1)">下一页</el-button>
+          <button type="button" class="scan-rail-btn scan-rail-btn-ghost" :disabled="ctx.subtitleSelectionPage >= ctx.subtitleSelectionTotalPages" @click="ctx.setSubtitleSelectionPage(ctx.subtitleSelectionPage + 1)">下一页</button>
         </div>
       </div>
     </template>
 
-    <div class="subtitle-selection-live">
-      <div v-if="ctx.subtitleScanSessionSummary.length" class="subtitle-scan-result-summary subtitle-scan-result-summary-compact">
-        <span v-for="item in ctx.subtitleScanSessionSummary" :key="item.key" class="subtitle-mini-chip">{{ item.label }} {{ item.value }}</span>
+    <div class="grid gap-3">
+      <div v-if="ctx.subtitleScanSessionSummary.length" class="flex flex-wrap gap-2">
+        <span v-for="item in ctx.subtitleScanSessionSummary" :key="item.key" class="scan-rail-chip">
+          {{ item.label }} {{ item.value }}
+        </span>
       </div>
-      <div v-if="ctx.subtitleSelectionLoading && !ctx.subtitleDialogSelection.length" class="subtitle-selection-loading">
+
+      <div v-if="ctx.subtitleSelectionLoading && !ctx.subtitleDialogSelection.length" class="inline-flex min-h-14 items-center gap-2.5">
         <AppLoadingAnimation variant="inline" :size="36" />
-        <span>{{ ctx.subtitleSelectionProgressText || '正在扫描目录…' }}</span>
+        <span class="text-[12px] text-slate-500">{{ ctx.subtitleSelectionProgressText || '正在扫描目录…' }}</span>
       </div>
+
       <AppEmptyState v-else-if="!ctx.subtitleDialogSelection.length" description="没有识别到 RJ 文件夹" size="sm" />
+
       <template v-else>
-        <div class="subtitle-selection-section">
-          <div class="subtitle-selection-subhead">
-            <div class="subtitle-selection-subhead-main">
-              <div class="subtitle-selection-subtitle">可执行与已入任务</div>
-              <span class="subtitle-selection-count-pill">{{ ctx.subtitleExecutableSelectionItems.length }}</span>
+        <section class="grid gap-3">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="inline-flex items-center gap-2">
+              <div class="text-[13px] font-semibold text-slate-900">可执行与已入任务</div>
+              <span class="inline-flex min-w-10 items-center justify-center rounded-[8px] border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-900">
+                {{ ctx.subtitleExecutableSelectionItems.length }}
+              </span>
             </div>
-          </div>
-          <div class="subtitle-selection-subhead-actions subtitle-selection-subhead-actions-separated">
-            <div v-if="ctx.subtitleSelectionFilterOptions.length" class="subtitle-selection-filter-row subtitle-selection-filter-row-workbench">
-              <button
-                v-for="item in ctx.subtitleSelectionFilterOptions"
-                :key="item.key"
-                type="button"
-                class="subtitle-mini-chip subtitle-chip-button subtitle-filter-pill"
-                :class="{ active: ctx.subtitleSelectionFilter === item.key }"
-                @click="ctx.setSubtitleSelectionFilter(item.key)"
-              >
-                {{ item.label }} {{ item.value }}
+
+            <div class="flex flex-wrap items-center justify-end gap-2">
+              <div v-if="ctx.subtitleSelectionFilterOptions.length" class="grid grid-cols-2 gap-1.5 max-[1280px]:grid-cols-1">
+                <button
+                  v-for="item in ctx.subtitleSelectionFilterOptions"
+                  :key="item.key"
+                  type="button"
+                  class="scan-rail-filter-pill"
+                  :class="{ active: ctx.subtitleSelectionFilter === item.key }"
+                  @click="ctx.setSubtitleSelectionFilter(item.key)"
+                >
+                  {{ item.label }} {{ item.value }}
+                </button>
+              </div>
+
+              <button type="button" class="scan-rail-toggle" @click="ctx.setSubtitleExecutableCollapsed(!ctx.subtitleExecutableCollapsed)">
+                <span>{{ ctx.subtitleExecutableCollapsed ? '展开' : '收起' }}</span>
+                <ChevronDown class="h-3.5 w-3.5 transition-transform duration-200" :class="{ '-rotate-90': ctx.subtitleExecutableCollapsed }" />
               </button>
             </div>
-            <button type="button" class="subtitle-section-toggle" @click="ctx.setSubtitleExecutableCollapsed(!ctx.subtitleExecutableCollapsed)">
-              <span>{{ ctx.subtitleExecutableCollapsed ? '展开' : '收起' }}</span>
-              <el-icon :class="{ 'is-collapsed': ctx.subtitleExecutableCollapsed }"><ArrowDown /></el-icon>
-            </button>
           </div>
-          <div v-if="ctx.subtitleSelectionTotalPages > 1 && !ctx.subtitleExecutableCollapsed" class="subtitle-selection-inline-pager">
-            <el-button size="small" text :disabled="ctx.subtitleSelectionPage <= 1" @click="ctx.setSubtitleSelectionPage(ctx.subtitleSelectionPage - 1)">
-              上一页
-            </el-button>
-            <span class="subtitle-selection-inline-pager-text">{{ ctx.subtitleSelectionPage }} / {{ ctx.subtitleSelectionTotalPages }}</span>
-            <el-button size="small" text :disabled="ctx.subtitleSelectionPage >= ctx.subtitleSelectionTotalPages" @click="ctx.setSubtitleSelectionPage(ctx.subtitleSelectionPage + 1)">
-              下一页
-            </el-button>
+
+          <div v-if="ctx.subtitleSelectionTotalPages > 1 && !ctx.subtitleExecutableCollapsed" class="flex flex-wrap items-center justify-end gap-2 text-[11px] text-slate-500">
+            <button type="button" class="scan-rail-btn scan-rail-btn-ghost" :disabled="ctx.subtitleSelectionPage <= 1" @click="ctx.setSubtitleSelectionPage(ctx.subtitleSelectionPage - 1)">上一页</button>
+            <span class="inline-flex min-h-[26px] items-center justify-center rounded-[6px] border border-slate-200 bg-slate-50 px-2.5">{{ ctx.subtitleSelectionPage }} / {{ ctx.subtitleSelectionTotalPages }}</span>
+            <button type="button" class="scan-rail-btn scan-rail-btn-ghost" :disabled="ctx.subtitleSelectionPage >= ctx.subtitleSelectionTotalPages" @click="ctx.setSubtitleSelectionPage(ctx.subtitleSelectionPage + 1)">下一页</button>
           </div>
+
           <AppEmptyState v-if="!ctx.subtitleExecutableCollapsed && !ctx.subtitleExecutableDisplayItems.length" description="当前没有可执行或已入任务的 RJ 目录" size="sm" />
-          <transition-group v-else-if="!ctx.subtitleExecutableCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-selection-list">
+
+          <transition-group v-else-if="!ctx.subtitleExecutableCollapsed" name="subtitle-card-fade" tag="div" class="grid gap-3">
             <button
               v-for="item in ctx.pagedSubtitleSelectionItems"
               :key="ctx.buildSubtitleSelectionKey(item)"
               type="button"
-              class="subtitle-selection-item"
-              :class="{ active: ctx.isSubtitleSelectionActive(item) }"
+              class="group relative w-full overflow-hidden rounded-[18px] border px-4 py-3 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01]"
+              :class="ctx.isSubtitleSelectionActive(item)
+                ? 'border-slate-900 bg-white shadow-[0_6px_20px_rgba(15,23,42,0.1)] ring-1 ring-slate-900/15'
+                : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50 hover:shadow-[0_4px_12px_rgba(15,23,42,0.06)]'"
               :title="item.folder_path"
               @click="ctx.focusSubtitleSelectionItem(item)"
             >
-              <div class="subtitle-selection-body">
-                <div class="subtitle-selection-name">{{ getDisplayFolderName(item) }}</div>
-                <div class="subtitle-selection-submeta">
-                  <span v-if="ctx.getLibraryLabelById(item.library_id)" class="subtitle-selection-library">来源库：{{ ctx.getLibraryLabelById(item.library_id) }}</span>
+              <div class="absolute inset-y-3 left-0 w-[3px] rounded-r-full bg-transparent transition-all duration-300 group-hover:bg-slate-300" :class="{ '!bg-slate-900': ctx.isSubtitleSelectionActive(item) }"></div>
+
+              <div class="ml-1.5 grid gap-2.5">
+                <div class="line-clamp-2 text-[14px] font-semibold leading-[1.35] tracking-[-0.01em] text-slate-900">
+                  {{ getDisplayFolderName(item) }}
                 </div>
-                <div class="subtitle-selection-stats">
-                  <span class="subtitle-mini-chip" :class="ctx.getSubtitleSelectionQueueClass(item)">{{ ctx.getSubtitleSelectionQueueLabel(item) }}</span>
+
+                <div class="text-[11px] text-slate-500">
+                  <span v-if="ctx.getLibraryLabelById(item.library_id)">来源库：{{ ctx.getLibraryLabelById(item.library_id) }}</span>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="scan-rail-chip" :class="ctx.getSubtitleSelectionQueueClass(item)">{{ ctx.getSubtitleSelectionQueueLabel(item) }}</span>
                   <span
                     v-for="chip in ctx.getSubtitleSelectionExistingChips(item)"
                     :key="`${ctx.buildSubtitleSelectionKey(item)}-${chip.key}`"
-                    class="subtitle-mini-chip"
+                    class="scan-rail-chip"
                   >
                     {{ chip.label }}
                   </span>
                 </div>
-                <div v-if="item.queue_message" class="subtitle-selection-note">{{ item.queue_message }}</div>
-                <div v-if="item.queue_state === 'existing_task' || ctx.canInspectSubtitleSelectionFolder(item) || ctx.canRetryCreateSubtitleTaskForSelection(item)" class="subtitle-selection-actions">
-                  <el-button
-                    size="small"
-                    text
-                    type="primary"
+
+                <div v-if="item.queue_message" class="text-[10px] leading-[1.45] text-slate-500">{{ item.queue_message }}</div>
+
+                <div v-if="item.queue_state === 'existing_task' || ctx.canInspectSubtitleSelectionFolder(item) || ctx.canRetryCreateSubtitleTaskForSelection(item) || ctx.canForceCreateSubtitleTaskForSelection(item)" class="flex flex-wrap items-center gap-2">
+                  <button
                     v-if="item.queue_state === 'existing_task' || ctx.canInspectSubtitleSelectionFolder(item)"
+                    type="button"
+                    class="scan-rail-btn scan-rail-btn-primary"
                     @click.stop="ctx.focusSubtitleSelectionItem(item)"
                   >
-                    {{ item.queue_state === 'existing_task' ? '打开现有任务' : '检查字幕树' }}
-                  </el-button>
-                  <el-button
+                    {{ item.queue_state === 'existing_task' ? '打开现有任务' : '检查字幕稿' }}
+                  </button>
+                  <button
                     v-if="ctx.canRetryCreateSubtitleTaskForSelection(item)"
-                    size="small"
-                    text
-                    type="danger"
-                    :loading="ctx.subtitleForceQueueKey === ctx.buildSubtitleSelectionKey(item)"
+                    type="button"
+                    class="scan-rail-btn scan-rail-btn-danger"
                     :disabled="Boolean(ctx.subtitleForceQueueKey)"
                     @click.stop="ctx.forceCreateSubtitleTaskForSelection(item)"
                   >
                     重试加入
-                  </el-button>
-                  <el-button
+                  </button>
+                  <button
                     v-if="ctx.canForceCreateSubtitleTaskForSelection(item)"
-                    size="small"
-                    text
-                    type="success"
-                    :loading="ctx.subtitleForceQueueKey === ctx.buildSubtitleSelectionKey(item)"
+                    type="button"
+                    class="scan-rail-btn scan-rail-btn-success"
                     :disabled="Boolean(ctx.subtitleForceQueueKey)"
                     @click.stop="ctx.forceCreateSubtitleTaskForSelection(item)"
                   >
                     创建一次任务
-                  </el-button>
+                  </button>
                 </div>
               </div>
             </button>
           </transition-group>
-        </div>
+        </section>
 
-        <div v-if="ctx.subtitleSkippedSelectionItems.length" class="subtitle-selection-section subtitle-selection-section-split">
-          <div class="subtitle-selection-subhead">
-            <div class="subtitle-selection-subhead-main">
-              <div class="subtitle-selection-subtitle">被跳过</div>
-              <span class="subtitle-selection-count-pill">{{ ctx.filteredSubtitleSkippedSelectionItems.length }}</span>
+        <section v-if="ctx.subtitleSkippedSelectionItems.length" class="grid gap-3 border-t border-slate-100 pt-3">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="inline-flex items-center gap-2">
+              <div class="text-[13px] font-semibold text-slate-900">被跳过</div>
+              <span class="inline-flex min-w-10 items-center justify-center rounded-[8px] border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-900">
+                {{ ctx.filteredSubtitleSkippedSelectionItems.length }}
+              </span>
             </div>
-            <div class="subtitle-selection-subhead-actions">
-              <div v-if="ctx.subtitleSkippedSelectionFilterOptions.length" class="subtitle-selection-filter-row">
+
+            <div class="flex flex-wrap items-center gap-2">
+              <div v-if="ctx.subtitleSkippedSelectionFilterOptions.length" class="flex flex-wrap gap-1.5">
                 <button
                   v-for="item in ctx.subtitleSkippedSelectionFilterOptions"
                   :key="item.key"
                   type="button"
-                  class="subtitle-mini-chip subtitle-chip-button"
+                  class="scan-rail-filter-pill"
                   :class="{ active: ctx.isSubtitleSkippedSelectionFilterActive(item.key) }"
                   @click="ctx.toggleSubtitleSkippedSelectionFilter(item.key)"
                 >
                   {{ item.label }} {{ item.value }}
                 </button>
               </div>
-              <button type="button" class="subtitle-section-toggle" @click="ctx.setSubtitleSkippedCollapsed(!ctx.subtitleSkippedCollapsed)">
+              <button type="button" class="scan-rail-toggle" @click="ctx.setSubtitleSkippedCollapsed(!ctx.subtitleSkippedCollapsed)">
                 <span>{{ ctx.subtitleSkippedCollapsed ? '展开' : '收起' }}</span>
-                <el-icon :class="{ 'is-collapsed': ctx.subtitleSkippedCollapsed }"><ArrowDown /></el-icon>
+                <ChevronDown class="h-3.5 w-3.5 transition-transform duration-200" :class="{ '-rotate-90': ctx.subtitleSkippedCollapsed }" />
               </button>
             </div>
           </div>
-          <transition-group v-if="!ctx.subtitleSkippedCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-selection-list subtitle-selection-list-skipped">
+
+          <transition-group v-if="!ctx.subtitleSkippedCollapsed" name="subtitle-card-fade" tag="div" class="grid gap-2.5">
             <button
               v-for="item in ctx.filteredSubtitleSkippedSelectionItems"
               :key="`${ctx.buildSubtitleSelectionKey(item)}-skipped`"
               type="button"
-              class="subtitle-selection-item skipped"
-              :class="{ active: ctx.isSubtitleSelectionActive(item) }"
+              class="w-full rounded-[16px] border border-slate-100 bg-slate-50/60 px-4 py-3 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] hover:border-slate-200 hover:bg-white hover:shadow-[0_4px_12px_rgba(15,23,42,0.06)]"
               :title="item.folder_path"
               @click="ctx.focusSubtitleSelectionItem(item)"
             >
-              <div class="subtitle-selection-body">
-                <div class="subtitle-selection-name">{{ getDisplayFolderName(item) }}</div>
-                <div class="subtitle-selection-submeta">
-                  <span v-if="ctx.getLibraryLabelById(item.library_id)" class="subtitle-selection-library">来源库：{{ ctx.getLibraryLabelById(item.library_id) }}</span>
+              <div class="grid gap-2">
+                <div class="text-[13px] font-semibold leading-[1.4] text-slate-900">{{ getDisplayFolderName(item) }}</div>
+                <div class="text-[10px] text-slate-500">
+                  <span v-if="ctx.getLibraryLabelById(item.library_id)">来源库：{{ ctx.getLibraryLabelById(item.library_id) }}</span>
                 </div>
-                <div class="subtitle-selection-stats">
-                  <span class="subtitle-mini-chip" :class="ctx.getSubtitleSelectionQueueClass(item)">{{ ctx.getSubtitleSelectionQueueLabel(item) }}</span>
+                <div class="flex flex-wrap gap-2">
+                  <span class="scan-rail-chip" :class="ctx.getSubtitleSelectionQueueClass(item)">{{ ctx.getSubtitleSelectionQueueLabel(item) }}</span>
                   <span
                     v-for="chip in ctx.getSubtitleSelectionExistingChips(item)"
                     :key="`${ctx.buildSubtitleSelectionKey(item)}-${chip.key}`"
-                    class="subtitle-mini-chip"
+                    class="scan-rail-chip"
                   >
                     {{ chip.label }}
                   </span>
                 </div>
-                <div v-if="item.queue_message" class="subtitle-selection-note">{{ item.queue_message }}</div>
-                <div class="subtitle-selection-actions">
-                  <el-button
-                    v-if="ctx.canInspectSubtitleSelectionFolder(item)"
-                    size="small"
-                    text
-                    @click.stop="ctx.inspectSubtitleSelectionFolder(item)"
-                  >
-                    检查字幕树
-                  </el-button>
-                  <el-button
-                    v-if="ctx.canForceCreateSubtitleTaskForSelection(item)"
-                    size="small"
-                    text
-                    type="success"
-                    :loading="ctx.subtitleForceQueueKey === ctx.buildSubtitleSelectionKey(item)"
-                    :disabled="Boolean(ctx.subtitleForceQueueKey)"
-                    @click.stop="ctx.forceCreateSubtitleTaskForSelection(item)"
-                  >
-                    创建一次任务
-                  </el-button>
+                <div v-if="item.queue_message" class="text-[10px] leading-[1.45] text-slate-500">{{ item.queue_message }}</div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <button v-if="ctx.canInspectSubtitleSelectionFolder(item)" type="button" class="scan-rail-btn scan-rail-btn-primary" @click.stop="ctx.inspectSubtitleSelectionFolder(item)">检查字幕稿</button>
+                  <button v-if="ctx.canForceCreateSubtitleTaskForSelection(item)" type="button" class="scan-rail-btn scan-rail-btn-success" :disabled="Boolean(ctx.subtitleForceQueueKey)" @click.stop="ctx.forceCreateSubtitleTaskForSelection(item)">创建一次任务</button>
                 </div>
               </div>
             </button>
           </transition-group>
-        </div>
+        </section>
       </template>
     </div>
 
-    <div v-if="ctx.subtitleScanTargetResults.length" class="subtitle-scan-result-wrap">
-      <div class="subtitle-scan-skip-head">
-        <div class="subtitle-selection-subhead-main">
-          <div class="subtitle-scan-skip-title">扫描目标</div>
-          <span class="subtitle-selection-count-pill">{{ ctx.subtitleScanTargetResults.length }}</span>
+    <section v-if="ctx.subtitleScanTargetResults.length" class="grid gap-3 border-t border-slate-100 pt-3">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="inline-flex items-center gap-2">
+          <div class="text-[13px] font-semibold text-slate-900">扫描目标</div>
+          <span class="inline-flex min-w-10 items-center justify-center rounded-[8px] border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-900">
+            {{ ctx.subtitleScanTargetResults.length }}
+          </span>
         </div>
-        <button type="button" class="subtitle-section-toggle" @click="ctx.setSubtitleScanTargetsCollapsed(!ctx.subtitleScanTargetsCollapsed)">
+        <button type="button" class="scan-rail-toggle" @click="ctx.setSubtitleScanTargetsCollapsed(!ctx.subtitleScanTargetsCollapsed)">
           <span>{{ ctx.subtitleScanTargetsCollapsed ? '展开' : '收起' }}</span>
-          <el-icon :class="{ 'is-collapsed': ctx.subtitleScanTargetsCollapsed }"><ArrowDown /></el-icon>
+          <ChevronDown class="h-3.5 w-3.5 transition-transform duration-200" :class="{ '-rotate-90': ctx.subtitleScanTargetsCollapsed }" />
         </button>
       </div>
-      <div class="subtitle-scan-result-summary">
-        <span v-if="ctx.subtitleScanSummary.pending" class="subtitle-mini-chip">扫描中 {{ ctx.subtitleScanSummary.pending }}</span>
-        <span class="subtitle-mini-chip">成功 {{ ctx.subtitleScanSummary.success }}</span>
-        <span v-if="ctx.subtitleScanSummary.noAudio" class="subtitle-mini-chip">无音频 {{ ctx.subtitleScanSummary.noAudio }}</span>
-        <span v-if="ctx.subtitleScanSummary.noMatch" class="subtitle-mini-chip">未识别 {{ ctx.subtitleScanSummary.noMatch }}</span>
-        <span v-if="ctx.subtitleScanSummary.failed" class="subtitle-mini-chip">失败 {{ ctx.subtitleScanSummary.failed }}</span>
+
+      <div class="flex flex-wrap gap-2">
+        <span v-if="ctx.subtitleScanSummary.pending" class="scan-rail-chip">扫描中 {{ ctx.subtitleScanSummary.pending }}</span>
+        <span class="scan-rail-chip">成功 {{ ctx.subtitleScanSummary.success }}</span>
+        <span v-if="ctx.subtitleScanSummary.noAudio" class="scan-rail-chip">无音频 {{ ctx.subtitleScanSummary.noAudio }}</span>
+        <span v-if="ctx.subtitleScanSummary.noMatch" class="scan-rail-chip">未识别 {{ ctx.subtitleScanSummary.noMatch }}</span>
+        <span v-if="ctx.subtitleScanSummary.failed" class="scan-rail-chip">失败 {{ ctx.subtitleScanSummary.failed }}</span>
       </div>
-      <transition-group v-if="!ctx.subtitleScanTargetsCollapsed" name="subtitle-card-fade" tag="div" class="subtitle-scan-result-list">
-        <div v-for="item in ctx.subtitleScanTargetResults" :key="ctx.buildSubtitleScanTargetResultKey(item)" class="subtitle-scan-result-row" :class="`status-${item.status}`">
-          <div class="subtitle-scan-result-main" :title="item.path">
-            <span class="subtitle-scan-result-name">{{ item.name }}</span>
-            <div class="subtitle-scan-result-submeta">
-              <span v-if="ctx.getLibraryLabelById(item.library_id)" class="subtitle-scan-result-library">{{ ctx.getLibraryLabelById(item.library_id) }}</span>
-              <span class="subtitle-scan-result-path">{{ item.path }}</span>
+
+      <transition-group v-if="!ctx.subtitleScanTargetsCollapsed" name="subtitle-card-fade" tag="div" class="grid gap-2.5">
+        <div v-for="item in ctx.subtitleScanTargetResults" :key="ctx.buildSubtitleScanTargetResultKey(item)" class="grid gap-3 rounded-[14px] border border-slate-200 bg-white px-3 py-3 shadow-[0_2px_8px_rgba(15,23,42,0.04)] md:grid-cols-[minmax(0,1fr)_auto]">
+          <div class="grid min-w-0 gap-1.5" :title="item.path">
+            <span class="text-[13px] font-semibold leading-[1.4] text-slate-900">{{ item.name }}</span>
+            <div class="grid gap-1 text-[10px] text-slate-500">
+              <span v-if="ctx.getLibraryLabelById(item.library_id)">{{ ctx.getLibraryLabelById(item.library_id) }}</span>
+              <span>{{ item.path }}</span>
             </div>
           </div>
-          <div class="subtitle-scan-result-meta">
-            <span class="subtitle-scan-result-status" :class="`status-${item.status}`">{{ ctx.getSubtitleScanResultLabel(item.status) }}</span>
-            <span class="subtitle-scan-result-message">{{ item.message }}</span>
-            <el-button
-              v-if="ctx.canRetrySubtitleScanResult(item)"
-              size="small"
-              plain
-              :loading="ctx.subtitleScanRetryingPath === ctx.buildSubtitleScanTargetResultKey(item)"
-              :disabled="Boolean(ctx.subtitleScanRetryingPath) && ctx.subtitleScanRetryingPath !== ctx.buildSubtitleScanTargetResultKey(item)"
-              @click="ctx.rescanSubtitleSelectionTarget(item)"
-            >
-              重新扫描此项
-            </el-button>
+          <div class="grid gap-1.5 md:justify-items-end">
+            <span class="scan-rail-status-pill" :class="`status-${item.status}`">{{ ctx.getSubtitleScanResultLabel(item.status) }}</span>
+            <span class="text-[11px] leading-5 text-slate-500">{{ item.message }}</span>
+            <button v-if="ctx.canRetrySubtitleScanResult(item)" type="button" class="scan-rail-btn scan-rail-btn-primary" :disabled="Boolean(ctx.subtitleScanRetryingPath) && ctx.subtitleScanRetryingPath !== ctx.buildSubtitleScanTargetResultKey(item)" @click="ctx.rescanSubtitleSelectionTarget(item)">重新扫描此项</button>
           </div>
         </div>
       </transition-group>
-    </div>
+    </section>
 
-    <div v-if="ctx.subtitleSkippedScanResults.length" class="subtitle-scan-skip-wrap">
-      <div class="subtitle-scan-skip-head">
-        <div class="subtitle-selection-subhead-main">
-          <div class="subtitle-scan-skip-title">跳过结果</div>
-          <span class="subtitle-selection-count-pill">{{ ctx.filteredSubtitleSkippedScanResults.length }}</span>
+    <section v-if="ctx.subtitleSkippedScanResults.length" class="grid gap-3 border-t border-slate-100 pt-3">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="inline-flex items-center gap-2">
+          <div class="text-[13px] font-semibold text-slate-900">跳过结果</div>
+          <span class="inline-flex min-w-10 items-center justify-center rounded-[8px] border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-900">
+            {{ ctx.filteredSubtitleSkippedScanResults.length }}
+          </span>
         </div>
-        <div v-if="ctx.subtitleSkippedScanFilterOptions.length" class="subtitle-selection-filter-row">
+
+        <div v-if="ctx.subtitleSkippedScanFilterOptions.length" class="flex flex-wrap gap-1.5">
           <button
             v-for="item in ctx.subtitleSkippedScanFilterOptions"
             :key="item.key"
             type="button"
-            class="subtitle-mini-chip subtitle-chip-button"
+            class="scan-rail-filter-pill"
             :class="{ active: ctx.subtitleScanSkipFilter === item.key }"
             @click="ctx.setSubtitleScanSkipFilter(item.key)"
           >
@@ -271,37 +271,29 @@
           </button>
         </div>
       </div>
-      <transition-group name="subtitle-card-fade" tag="div" class="subtitle-scan-skip-list">
-        <div v-for="item in ctx.filteredSubtitleSkippedScanResults" :key="`${ctx.buildSubtitleScanTargetResultKey(item)}-skipped`" class="subtitle-scan-result-row skipped" :class="`status-${item.status}`">
-          <div class="subtitle-scan-result-main">
-            <span class="subtitle-scan-result-name">{{ item.name }}</span>
-            <div class="subtitle-scan-result-submeta">
-              <span v-if="ctx.getLibraryLabelById(item.library_id)" class="subtitle-scan-result-library">{{ ctx.getLibraryLabelById(item.library_id) }}</span>
-              <span class="subtitle-scan-result-path">{{ item.path }}</span>
+
+      <transition-group name="subtitle-card-fade" tag="div" class="grid gap-2.5">
+        <div v-for="item in ctx.filteredSubtitleSkippedScanResults" :key="`${ctx.buildSubtitleScanTargetResultKey(item)}-skipped`" class="grid gap-3 rounded-[14px] border border-slate-100 bg-slate-50/60 px-3 py-3 md:grid-cols-[minmax(0,1fr)_auto]">
+          <div class="grid min-w-0 gap-1.5">
+            <span class="text-[13px] font-semibold leading-[1.4] text-slate-900">{{ item.name }}</span>
+            <div class="grid gap-1 text-[10px] text-slate-500">
+              <span v-if="ctx.getLibraryLabelById(item.library_id)">{{ ctx.getLibraryLabelById(item.library_id) }}</span>
+              <span>{{ item.path }}</span>
             </div>
           </div>
-          <div class="subtitle-scan-result-meta">
-            <span class="subtitle-scan-result-status" :class="`status-${item.status}`">{{ ctx.getSubtitleScanResultLabel(item.status) }}</span>
-            <span class="subtitle-scan-result-message">{{ item.message }}</span>
-            <el-button
-              v-if="ctx.canRetrySubtitleScanResult(item)"
-              size="small"
-              plain
-              :loading="ctx.subtitleScanRetryingPath === ctx.buildSubtitleScanTargetResultKey(item)"
-              :disabled="Boolean(ctx.subtitleScanRetryingPath) && ctx.subtitleScanRetryingPath !== ctx.buildSubtitleScanTargetResultKey(item)"
-              @click="ctx.rescanSubtitleSelectionTarget(item)"
-            >
-              重新扫描此项
-            </el-button>
+          <div class="grid gap-1.5 md:justify-items-end">
+            <span class="scan-rail-status-pill" :class="`status-${item.status}`">{{ ctx.getSubtitleScanResultLabel(item.status) }}</span>
+            <span class="text-[11px] leading-5 text-slate-500">{{ item.message }}</span>
+            <button v-if="ctx.canRetrySubtitleScanResult(item)" type="button" class="scan-rail-btn scan-rail-btn-primary" :disabled="Boolean(ctx.subtitleScanRetryingPath) && ctx.subtitleScanRetryingPath !== ctx.buildSubtitleScanTargetResultKey(item)" @click="ctx.rescanSubtitleSelectionTarget(item)">重新扫描此项</button>
           </div>
         </div>
       </transition-group>
-    </div>
-  </component>
+    </section>
+  </div>
 </template>
 
 <script setup>
-import { ArrowDown } from '@element-plus/icons-vue'
+import { ChevronDown } from 'lucide-vue-next'
 import AppLoadingAnimation from '../../common/AppLoadingAnimation.vue'
 import AppEmptyState from '../../common/AppEmptyState.vue'
 
@@ -329,462 +321,149 @@ function getDisplayFolderName(item) {
 </script>
 
 <style scoped>
-.subtitle-selection-card {
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  display: grid;
-  gap: 14px;
-  min-width: 0;
+.scan-rail-chip,
+.scan-rail-filter-pill,
+.scan-rail-btn,
+.scan-rail-toggle {
+  font: inherit;
 }
 
-.subtitle-selection-header,
-.subtitle-selection-subhead,
-.subtitle-scan-skip-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.subtitle-selection-header-title,
-.subtitle-selection-subhead-main {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.subtitle-selection-live,
-.subtitle-selection-section,
-.subtitle-selection-list,
-.subtitle-scan-result-list,
-.subtitle-scan-skip-list {
-  display: grid;
-  gap: 10px;
-}
-
-.subtitle-selection-count-pill,
-.subtitle-mini-chip {
+.scan-rail-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 6px 11px;
-  border: 1px solid #dbe4ee;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #ffffff 0%, #f6f9fc 100%);
-  color: #526277;
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  box-shadow: 0 8px 14px rgba(15, 23, 42, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  transition: all 0.3s var(--ease-spring);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  border: 1px solid #e2e8f0;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.subtitle-selection-count-pill {
-  min-width: 46px;
-  height: 28px;
-  padding-inline: 10px;
-  border-color: #cfdcf2;
-  background: linear-gradient(180deg, #f7fbff 0%, #edf4ff 100%);
-  color: #315f9f;
-}
-
-.subtitle-mini-chip:hover,
-.subtitle-selection-count-pill:hover {
-  transform: translateY(-2px) scale(1.02);
-}
-
-.subtitle-mini-chip:active,
-.subtitle-selection-count-pill:active {
-  transform: scale(0.96);
-}
-
-.subtitle-mini-chip-primary,
-.subtitle-mini-chip-success,
-.subtitle-mini-chip-warning,
-.subtitle-mini-chip-danger,
-.subtitle-mini-chip-muted {
-  border-width: 1px;
-}
-
-.subtitle-mini-chip-primary {
-  color: #2f5f9f;
-  border-color: #c8daf7;
-  background: linear-gradient(180deg, #f6faff 0%, #edf4ff 100%);
-}
-
-.subtitle-mini-chip-success {
-  color: #257548;
-  border-color: #bfe2cb;
-  background: linear-gradient(180deg, #f4fcf7 0%, #ebf8ef 100%);
-}
-
-.subtitle-mini-chip-warning {
-  color: #a76620;
-  border-color: #f0d7af;
-  background: linear-gradient(180deg, #fffaf0 0%, #fff5e6 100%);
-}
-
-.subtitle-mini-chip-danger {
-  color: #bb4141;
-  border-color: #f2c5c5;
-  background: linear-gradient(180deg, #fff7f7 0%, #fff0f0 100%);
-}
-
-.subtitle-mini-chip-muted {
-  color: #64748b;
-  border-color: #d7e0ea;
-  background: linear-gradient(180deg, #f9fbfd 0%, #f2f5f9 100%);
-}
-
-.subtitle-selection-subtitle,
-.subtitle-scan-skip-title {
-  font-size: 15px;
-  font-weight: 800;
-  color: #1f2d3d;
-  letter-spacing: -0.02em;
-}
-
-.subtitle-selection-progress,
-.subtitle-selection-pager,
-.subtitle-selection-note,
-.subtitle-scan-result-message,
-.subtitle-scan-result-path,
-.subtitle-selection-path {
-  font-size: 11px;
-  line-height: 1.5;
-  color: #64748b;
-}
-
-.subtitle-selection-filter-row,
-.subtitle-selection-subhead-actions,
-.subtitle-selection-stats,
-.subtitle-selection-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.subtitle-selection-filter-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, max-content));
-  gap: 8px;
-}
-
-.subtitle-selection-subhead-actions {
-  justify-content: flex-end;
-}
-
-.subtitle-selection-subhead-actions-separated {
-  justify-content: space-between;
-  align-items: center;
-}
-
-.subtitle-selection-inline-pager {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.subtitle-selection-inline-pager-text {
+.scan-rail-filter-pill,
+.scan-rail-btn,
+.scan-rail-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid #d8e1ec;
-  border-radius: 10px;
-  background: linear-gradient(180deg, #ffffff 0%, #f7fafd 100%);
-  color: #64748b;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 11px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #0f172a;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.subtitle-chip-button {
-  cursor: pointer;
-  transition: all 0.3s var(--ease-spring);
-  min-height: 34px;
-  padding-inline: 12px;
-}
-
-.subtitle-filter-pill {
-  min-height: 38px;
-  padding-inline: 14px;
-  border-radius: 12px;
-  border-color: #d9e4ef;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbfe 100%);
-  color: #445a73;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86), 0 6px 16px rgba(15, 23, 42, 0.04);
-}
-
-.subtitle-chip-button:hover {
-  transform: translateY(-2px) scale(1.02);
-  border-color: #c3d4e5;
-}
-
-.subtitle-chip-button.active {
-  border-color: #b8cbe1;
-  background: linear-gradient(180deg, #f7fbff 0%, #edf4fb 100%);
-  color: #1f3956;
-  box-shadow: 0 10px 18px rgba(36, 80, 138, 0.1);
-}
-
-.subtitle-section-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 34px;
-  padding: 0 2px;
+.scan-rail-toggle {
   border: none;
   background: transparent;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
+  color: #0f172a;
+  padding: 0 2px;
 }
 
-.subtitle-section-toggle .el-icon {
-  transition: transform 0.22s ease;
+.scan-rail-filter-pill:hover,
+.scan-rail-btn:hover,
+.scan-rail-toggle:hover {
+  transform: translateY(-1px) scale(1.02);
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
 }
 
-.subtitle-section-toggle .el-icon.is-collapsed {
-  transform: rotate(-90deg);
+.scan-rail-chip:hover {
+  border-color: #cbd5e1;
 }
 
-.subtitle-selection-item,
-.subtitle-scan-result-row {
-  width: 100%;
-  text-align: left;
-  border: 1px solid #d9e4ef;
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at top right, rgba(222, 233, 246, 0.24), transparent 42%),
-    linear-gradient(180deg, #ffffff 0%, #f8fbfe 100%);
-  padding: 12px;
-  transition: all 0.3s var(--ease-spring);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
-}
-
-.subtitle-selection-item {
-  cursor: pointer;
-}
-
-.subtitle-selection-item:hover,
-.subtitle-scan-result-row:hover {
-  transform: translateY(-2px) scale(1.02);
-  border-color: #c3d4e5;
-  box-shadow: 0 14px 22px rgba(15, 23, 42, 0.08);
-}
-
-.subtitle-selection-item:active {
+.scan-rail-filter-pill:active,
+.scan-rail-btn:active,
+.scan-rail-toggle:active,
+.scan-rail-chip:active {
   transform: scale(0.96);
 }
 
-.subtitle-selection-item.active {
-  border-color: #adc6e2;
-  box-shadow: 0 0 0 2px rgba(191, 213, 234, 0.72), 0 16px 28px rgba(52, 91, 145, 0.08);
+.scan-rail-filter-pill.active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18);
 }
 
-.subtitle-selection-item.skipped,
-.subtitle-scan-result-row.skipped {
-  background: linear-gradient(180deg, #fffdfa 0%, #ffffff 100%);
-  border-style: dashed;
+.scan-rail-btn:disabled,
+.scan-rail-filter-pill:disabled,
+.scan-rail-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
-.subtitle-selection-body,
-.subtitle-selection-submeta,
-.subtitle-scan-result-main,
-.subtitle-scan-result-submeta,
-.subtitle-scan-result-meta {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
+.scan-rail-btn-ghost {
+  background: #f8fafc;
 }
 
-.subtitle-selection-name,
-.subtitle-scan-result-name {
-  font-size: 13px;
-  font-weight: 800;
-  color: #1f2d3d;
-  line-height: 1.4;
-  word-break: break-word;
-  letter-spacing: -0.02em;
+.scan-rail-btn-primary {
+  color: #2563eb;
+  border-color: #bfdbfe;
 }
 
-.subtitle-selection-library,
-.subtitle-scan-result-library {
-  font-size: 10px;
-  color: #52708f;
-  font-weight: 700;
+.scan-rail-btn-primary:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
 }
 
-.subtitle-selection-stats {
-  gap: 6px;
+.scan-rail-btn-success {
+  color: #047857;
+  border-color: #bbf7d0;
 }
 
-.subtitle-selection-note {
-  font-size: 10px;
-  line-height: 1.45;
+.scan-rail-btn-success:hover {
+  background: #ecfdf5;
+  border-color: #86efac;
 }
 
-.subtitle-selection-actions {
-  gap: 6px;
-  padding-top: 0;
+.scan-rail-btn-danger {
+  color: #dc2626;
+  border-color: #fecaca;
 }
 
-.subtitle-scan-result-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: start;
+.scan-rail-btn-danger:hover {
+  background: #fef2f2;
+  border-color: #fca5a5;
 }
 
-.subtitle-scan-result-meta {
-  justify-items: end;
-}
-
-.subtitle-scan-result-status {
+.scan-rail-status-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 26px;
-  padding: 5px 11px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  border: 1px solid transparent;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  min-height: 24px;
+  padding: 3px 9px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 500;
+  box-shadow: 0 0 0 1px transparent;
 }
 
-.subtitle-scan-result-status.status-pending {
-  background: #f2f6fb;
-  border-color: #d8e1ec;
-  color: #475569;
-}
-
-.subtitle-scan-result-status.status-success {
-  background: #ecfdf3;
-  border-color: #bfe3ca;
-  color: #15803d;
-}
-
-.subtitle-scan-result-status.status-no_audio,
-.subtitle-scan-result-status.status-no_match {
-  background: #fff7ed;
-  border-color: #f2d4ad;
-  color: #c2410c;
-}
-
-.subtitle-scan-result-status.status-failed {
-  background: #fef2f2;
-  border-color: #f4c6c6;
-  color: #dc2626;
-}
-
-.subtitle-selection-loading {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 64px;
-}
+.scan-rail-status-pill.status-pending { background: #f5f5f7; box-shadow: 0 0 0 1px #e2e2e8; color: #70707a; }
+.scan-rail-status-pill.status-success { background: #f0f5f1; box-shadow: 0 0 0 1px #b8d0c0; color: #1a6b3a; }
+.scan-rail-status-pill.status-no_audio,
+.scan-rail-status-pill.status-no_match { background: #f5f5f7; box-shadow: 0 0 0 1px #d8d8e0; color: #505058; }
+.scan-rail-status-pill.status-failed { background: #f5f0f0; box-shadow: 0 0 0 1px #d8c0c0; color: #8a2020; }
 
 .subtitle-card-fade-enter-active,
 .subtitle-card-fade-leave-active {
-  transition: opacity 0.22s ease, transform 0.22s ease;
+  transition: opacity 0.18s ease, transform 0.18s ease;
 }
 
 .subtitle-card-fade-enter-from,
 .subtitle-card-fade-leave-to {
   opacity: 0;
-  transform: translateY(10px);
-}
-
-.subtitle-selection-card :deep(.el-button) {
-  min-height: 26px;
-  padding-inline: 10px;
-  border-radius: 12px;
-  border-color: #d7e3ef;
-  background: linear-gradient(180deg, #ffffff 0%, #f5f8fc 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.subtitle-selection-card :deep(.el-button--primary.is-text),
-.subtitle-selection-card :deep(.el-button--success.is-text),
-.subtitle-selection-card :deep(.el-button--danger.is-text) {
-  padding-left: 10px;
-  padding-right: 10px;
-  border-width: 1px;
-  border-style: solid;
-  background: #ffffff;
-}
-
-.subtitle-selection-card :deep(.el-button--primary.is-text) {
-  color: #2d6bc8;
-  border-color: #c9daf2;
-}
-
-.subtitle-selection-card :deep(.el-button--success.is-text) {
-  color: #3d8a35;
-  border-color: #cde6c8;
-}
-
-.subtitle-selection-card :deep(.el-button--danger.is-text) {
-  color: #c75353;
-  border-color: #efc8c8;
-}
-
-.subtitle-selection-card :deep(.el-button.is-text:not(.is-disabled):not(:disabled):hover) {
-  background: #ffffff;
-  box-shadow: 0 10px 16px rgba(15, 23, 42, 0.08);
-}
-
-.subtitle-selection-card :deep(.el-button--primary.is-text:not(.is-disabled):not(:disabled):hover) {
-  color: #1f5fbf;
-  border-color: #b8d0f0;
-}
-
-.subtitle-selection-card :deep(.el-button--success.is-text:not(.is-disabled):not(:disabled):hover) {
-  color: #2f7a29;
-  border-color: #bfe0b8;
-}
-
-@media (max-width: 1280px) {
-  .subtitle-selection-header,
-  .subtitle-selection-subhead,
-  .subtitle-scan-skip-head {
-    flex-direction: column;
-  }
-
-  .subtitle-selection-subhead-actions {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .subtitle-selection-subhead-actions-separated {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .subtitle-selection-inline-pager {
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .subtitle-selection-filter-row {
-    grid-template-columns: 1fr;
-    width: 100%;
-  }
-
-  .subtitle-scan-result-row {
-    grid-template-columns: 1fr;
-  }
-
-  .subtitle-scan-result-meta {
-    justify-items: start;
-  }
+  transform: translateY(6px);
 }
 </style>

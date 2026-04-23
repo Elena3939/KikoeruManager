@@ -90,6 +90,85 @@ body.el-popup-parent--hidden {
     --el-dialog-bg-color: transparent;
   }
 
+  /* filter-delete-dialog 专属尺寸：基准 120% */
+  .filter-delete-dialog.el-dialog {
+    width: min(1452px, calc(100vw - 32px), calc((100vh - 32px) * 16 / 10)) !important;
+    max-width: min(1452px, calc(100vw - 32px), calc((100vh - 32px) * 16 / 10)) !important;
+  }
+
+  /* subtitle-workbench-dialog：独立容器，不再复用 custom-preview-modal */
+  .subtitle-workbench-overlay {
+    background: rgba(15, 23, 42, 0.32) !important;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    padding: 12px !important;
+    box-sizing: border-box !important;
+    overflow-x: hidden !important;
+  }
+
+  .subtitle-workbench-overlay .el-overlay-dialog {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    min-height: 100vh !important;
+  }
+
+  .subtitle-workbench-dialog.el-dialog {
+    position: relative !important;
+    width: min(1720px, calc(100vw - 32px)) !important;
+    max-width: min(1720px, calc(100vw - 32px)) !important;
+    margin: auto !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+    --el-dialog-bg-color: transparent;
+  }
+
+  .subtitle-workbench-dialog .el-dialog__header {
+    display: none !important;
+  }
+
+  .subtitle-workbench-dialog .el-dialog__body {
+    padding: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+  }
+
+  /* 字幕工作台弹窗统一字体规范：iOS 系统字体 + 近黑正文 + 紧凑字距 */
+  .subtitle-workbench-dialog,
+  .subtitle-workbench-dialog .el-dialog,
+  .subtitle-workbench-shell,
+  .subtitle-workbench-shell * {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', 'Segoe UI', sans-serif !important;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .subtitle-workbench-shell {
+    letter-spacing: -0.005em;
+    color: #0f172a;
+    font-size: 13px;
+  }
+
+  /* 覆盖 Element Plus 残留灰字：让其表单控件跟随近黑正文色 */
+  .subtitle-workbench-shell :is(.el-button, .el-input__inner, .el-textarea__inner, .el-select__input, .el-form-item__label) {
+    color: #0f172a;
+    letter-spacing: -0.005em;
+  }
+
+  /* 图标默认去灰 + 完全不透明，具体颜色由模板上的 text-* 工具类决定 */
+  .subtitle-workbench-shell svg {
+    opacity: 1;
+  }
+
+  /* 深色按钮内默认图标跟随父级白字 */
+  .subtitle-workbench-shell .bg-slate-900 svg:not([class*="text-"]),
+  .subtitle-workbench-shell [class*="from-slate-900"] svg:not([class*="text-"]),
+  .subtitle-workbench-shell [class*="hover:bg-slate-900"]:hover svg:not([class*="text-"]) {
+    color: currentColor;
+  }
+
   .custom-preview-modal .el-dialog__header {
     display: none;
   }

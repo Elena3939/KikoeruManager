@@ -16,23 +16,23 @@
         <div class="subtitle-tree-actions">
           <el-tooltip effect="light" placement="top" content="刷新当前页">
             <span class="subtitle-btn-tooltip-wrap">
-              <el-button class="workbench-icon-btn" circle size="small" :disabled="!view.subtitleInspectorInfo.subtitleDir || view.subtitleInspectorBusy" :loading="view.subtitleInspectorLoading" @click="view.reloadSubtitleInspector">
-                <RefreshCw :size="14" :stroke-width="2.2" />
-              </el-button>
+              <button class="workbench-icon-btn" :disabled="!view.subtitleInspectorInfo.subtitleDir || view.subtitleInspectorBusy" @click="view.reloadSubtitleInspector">
+                <RefreshCw :size="14" :stroke-width="2.2" :class="{ 'is-spinning': view.subtitleInspectorLoading }" />
+              </button>
             </span>
           </el-tooltip>
           <el-tooltip effect="light" placement="top" content="展开所有子目录">
             <span class="subtitle-btn-tooltip-wrap">
-              <el-button class="workbench-icon-btn" circle size="small" :disabled="!view.subtitleInspectorInfo.subtitleDir || !view.subtitleInspectorHasDirectories || view.subtitleInspectorBusy" @click="view.expandSubtitleInspectorTree">
+              <button class="workbench-icon-btn" :disabled="!view.subtitleInspectorInfo.subtitleDir || !view.subtitleInspectorHasDirectories || view.subtitleInspectorBusy" @click="view.expandSubtitleInspectorTree">
                 <ChevronsDown :size="14" :stroke-width="2.2" />
-              </el-button>
+              </button>
             </span>
           </el-tooltip>
           <el-tooltip effect="light" placement="top" content="折叠所有子目录">
             <span class="subtitle-btn-tooltip-wrap">
-              <el-button class="workbench-icon-btn" circle size="small" :disabled="!view.subtitleInspectorInfo.subtitleDir || !view.subtitleInspectorHasDirectories || view.subtitleInspectorBusy" @click="view.collapseSubtitleInspectorTree">
+              <button class="workbench-icon-btn" :disabled="!view.subtitleInspectorInfo.subtitleDir || !view.subtitleInspectorHasDirectories || view.subtitleInspectorBusy" @click="view.collapseSubtitleInspectorTree">
                 <ChevronsUp :size="14" :stroke-width="2.2" />
-              </el-button>
+              </button>
             </span>
           </el-tooltip>
         </div>
@@ -69,32 +69,27 @@
             <span class="subtitle-mini-chip"><Database :size="11" :stroke-width="2.4" />{{ view.formatFileSize(view.subtitleInspectorInfo.totalSize) }}</span>
           </div>
           <div v-if="view.activeSubtitleInspectTask" class="subtitle-tree-actions subtitle-tree-info-actions subtitle-tree-info-actions-bottom">
-            <el-button
-              size="small"
+            <button
               class="workbench-pill-btn workbench-pill-danger"
               :disabled="!view.canCancelRJSubtitleTask?.(view.activeSubtitleInspectTask)"
-              :loading="view.subtitleCancelingId === view.activeSubtitleInspectTask.id"
               @click="view.cancelRJSubtitleTask(view.activeSubtitleInspectTask)"
             >
-              <CircleX :size="13" :stroke-width="2.2" /><span>取消任务</span>
-            </el-button>
-            <el-button
-              size="small"
+              <CircleX :size="13" :stroke-width="2.2" :class="{ 'is-spinning': view.subtitleCancelingId === view.activeSubtitleInspectTask.id }" /><span>取消任务</span>
+            </button>
+            <button
               class="workbench-pill-btn"
               :disabled="!view.canClearCurrentSubtitleTask?.(view.activeSubtitleInspectTask)"
               @click="view.clearCurrentSubtitleTask(view.activeSubtitleInspectTask)"
             >
               <Trash2 :size="13" :stroke-width="2.2" /><span>清空当前任务</span>
-            </el-button>
-            <el-button
-              size="small"
+            </button>
+            <button
               class="workbench-pill-btn workbench-pill-warn"
               :disabled="!view.canRerunSubtitleTask?.(view.activeSubtitleInspectTask)"
-              :loading="view.subtitleTaskRerunId === view.activeSubtitleInspectTask.id"
               @click="view.rerunSubtitleTask(view.activeSubtitleInspectTask)"
             >
-              <RotateCcw :size="13" :stroke-width="2.2" /><span>重新执行爬取字幕</span>
-            </el-button>
+              <RotateCcw :size="13" :stroke-width="2.2" :class="{ 'is-spinning': view.subtitleTaskRerunId === view.activeSubtitleInspectTask.id }" /><span>重新执行爬取字幕</span>
+            </button>
           </div>
         </div>
       </div>
@@ -113,20 +108,19 @@
             </div>
           </div>
           <div class="subtitle-match-header-actions">
-            <el-button size="small" class="workbench-pill-btn" @click="view.buildAutoSubtitlePairs">
+            <button class="workbench-pill-btn" @click="view.buildAutoSubtitlePairs">
               <Wand2 :size="13" :stroke-width="2.2" /><span>自动预配对</span>
-            </el-button>
-            <el-button size="small" :class="['workbench-pill-btn', view.subtitleSequenceMode ? 'workbench-pill-active' : '']" @click="view.setSubtitleSequenceMode(!view.subtitleSequenceMode)">
+            </button>
+            <button :class="['workbench-pill-btn', view.subtitleSequenceMode ? 'workbench-pill-active' : '']" @click="view.setSubtitleSequenceMode(!view.subtitleSequenceMode)">
               <MousePointerClick :size="13" :stroke-width="2.2" /><span>{{ view.subtitleSequenceMode ? '退出顺序点选' : '顺序点选配对' }}</span>
-            </el-button>
-            <el-button
-              size="small"
+            </button>
+            <button
               class="workbench-pill-btn"
               :disabled="view.subtitleSequenceMode ? !view.canBuildSequenceSubtitlePairs : !view.filteredSubtitleInspectorAudioFiles.length || !view.filteredSubtitleInspectorSubtitleFiles.length"
               @click="view.buildSequenceOrOrderedSubtitlePairs"
             >
               <ListOrdered :size="13" :stroke-width="2.2" /><span>{{ view.subtitleSequenceMode ? '生成顺序预配对' : '按当前列表预配对' }}</span>
-            </el-button>
+            </button>
             <el-tooltip
               effect="light"
               popper-class="subtitle-inspector-tooltip"
@@ -135,29 +129,22 @@
               content="请先在中间区域生成或添加至少一组配对，再执行应用。"
             >
               <span class="subtitle-btn-tooltip-wrap">
-                <el-button
-                  size="small"
-                  type="primary"
+                <button
                   class="workbench-primary-btn"
                   :disabled="!view.subtitleManualPairs.length"
-                  :loading="view.subtitlePairApplying"
                   @click="view.applySubtitleManualPairs"
                 >
-                  <CheckCircle2 :size="14" :stroke-width="2.2" /><span>{{ view.subtitleManualApplyLabel || '一键应用同名' }}</span>
-                </el-button>
+                  <CheckCircle2 :size="14" :stroke-width="2.2" :class="{ 'is-spinning': view.subtitlePairApplying }" /><span>{{ view.subtitleManualApplyLabel || '一键应用同名' }}</span>
+                </button>
               </span>
             </el-tooltip>
           </div>
         </div>
 
-        <el-alert
-          v-if="view.activeSubtitleInspectTask?.manual_match_completed || view.subtitleInspectorInfo.manualMatchCompleted"
-          type="success"
-          :closable="false"
-          show-icon
-          class="subtitle-match-done-alert"
-          :title="`已匹配完成，已应用 ${view.activeSubtitleInspectTask?.manual_match_applied_pairs || view.subtitleInspectorInfo.manualMatchAppliedPairs || 0} 组配对。若还要调整，可以继续重新筛选后再次应用。`"
-        />
+        <div v-if="view.activeSubtitleInspectTask?.manual_match_completed || view.subtitleInspectorInfo.manualMatchCompleted" class="subtitle-match-done-alert">
+          <CheckCircle2 :size="16" :stroke-width="2.2" />
+          <span>已匹配完成，已应用 {{ view.activeSubtitleInspectTask?.manual_match_applied_pairs || view.subtitleInspectorInfo.manualMatchAppliedPairs || 0 }} 组配对。若还要调整，可以继续重新筛选后再次应用。</span>
+        </div>
 
         <div class="subtitle-match-layout">
           <div class="subtitle-match-panel subtitle-match-panel-audio">
@@ -165,11 +152,11 @@
               <div class="subtitle-task-box-title subtitle-task-box-title-audio"><Music :size="14" :stroke-width="2.2" />原音频目录</div>
               <div class="subtitle-match-panel-tools">
                 <span class="subtitle-box-meta">{{ view.filteredSubtitleInspectorAudioFiles.length }} 项</span>
-                <el-select :model-value="view.subtitleAudioFilterMode" size="small" class="subtitle-match-filter-select" @update:model-value="view.setSubtitleAudioFilterMode">
-                  <el-option label="全部" value="all" />
-                  <el-option label="已配对" value="paired" />
-                  <el-option label="未配对" value="unpaired" />
-                </el-select>
+                <div class="subtitle-filter-segment" role="tablist" aria-label="音频筛选">
+                  <button type="button" class="subtitle-filter-chip" :class="{ active: view.subtitleAudioFilterMode === 'all' }" @click="view.setSubtitleAudioFilterMode('all')">全部</button>
+                  <button type="button" class="subtitle-filter-chip" :class="{ active: view.subtitleAudioFilterMode === 'paired' }" @click="view.setSubtitleAudioFilterMode('paired')">已配对</button>
+                  <button type="button" class="subtitle-filter-chip" :class="{ active: view.subtitleAudioFilterMode === 'unpaired' }" @click="view.setSubtitleAudioFilterMode('unpaired')">未配对</button>
+                </div>
               </div>
             </div>
             <input :value="view.subtitleInspectorAudioSearch" class="fm-search-input subtitle-match-search" placeholder="搜索音频名..." :disabled="view.subtitleInspectorBusy" @input="view.setSubtitleInspectorAudioSearch($event.target.value)">
@@ -210,18 +197,18 @@
                   content="请先在左侧选一条音频，再在右侧选一条字幕，然后点此加入配对。"
                 >
                   <span class="subtitle-btn-tooltip-wrap">
-                    <el-button
-                      size="small"
-                      type="primary"
+                    <button
+                      type="button"
+                      class="workbench-primary-btn workbench-primary-btn-inline"
                       :disabled="!view.canAddSubtitleManualPair || view.subtitleInspectorBusy"
                       @click="view.addSubtitleManualPair"
                     >
                       加入手动配对
-                    </el-button>
+                    </button>
                   </span>
                 </el-tooltip>
-                <el-button size="small" text :disabled="view.subtitleInspectorBusy || (!view.subtitleSequenceSelection.audioPaths.length && !view.subtitleSequenceSelection.subtitlePaths.length)" @click="view.clearSubtitleSequenceSelection">清空顺序</el-button>
-                <el-button size="small" text :disabled="view.subtitleInspectorBusy || !view.subtitleManualPairs.length" @click="view.clearSubtitleManualPairs">清空配对</el-button>
+                <button type="button" class="workbench-text-btn" :disabled="view.subtitleInspectorBusy || (!view.subtitleSequenceSelection.audioPaths.length && !view.subtitleSequenceSelection.subtitlePaths.length)" @click="view.clearSubtitleSequenceSelection">清空顺序</button>
+                <button type="button" class="workbench-text-btn" :disabled="view.subtitleInspectorBusy || !view.subtitleManualPairs.length" @click="view.clearSubtitleManualPairs">清空配对</button>
               </div>
             </div>
             <div class="subtitle-match-pair-list">
@@ -272,7 +259,7 @@
                   </div>
                 </div>
                 <div class="subtitle-match-row-actions">
-                  <el-button size="small" text type="danger" :disabled="view.subtitleInspectorBusy" @click.stop="view.removeSubtitleManualPair(pair.id)">移除</el-button>
+                  <button type="button" class="workbench-text-btn workbench-text-btn-danger" :disabled="view.subtitleInspectorBusy" @click.stop="view.removeSubtitleManualPair(pair.id)">移除</button>
                 </div>
               </button>
             </div>
@@ -283,11 +270,11 @@
               <div class="subtitle-task-box-title subtitle-task-box-title-subtitle"><FileText :size="14" :stroke-width="2.2" />字幕目录</div>
               <div class="subtitle-match-panel-tools">
                 <span class="subtitle-box-meta">{{ view.filteredSubtitleInspectorSubtitleFiles.length }} 项</span>
-                <el-select :model-value="view.subtitleSubtitleFilterMode" size="small" class="subtitle-match-filter-select" @update:model-value="view.setSubtitleSubtitleFilterMode">
-                  <el-option label="全部" value="all" />
-                  <el-option label="已配对" value="paired" />
-                  <el-option label="未配对" value="unpaired" />
-                </el-select>
+                <div class="subtitle-filter-segment" role="tablist" aria-label="字幕筛选">
+                  <button type="button" class="subtitle-filter-chip" :class="{ active: view.subtitleSubtitleFilterMode === 'all' }" @click="view.setSubtitleSubtitleFilterMode('all')">全部</button>
+                  <button type="button" class="subtitle-filter-chip" :class="{ active: view.subtitleSubtitleFilterMode === 'paired' }" @click="view.setSubtitleSubtitleFilterMode('paired')">已配对</button>
+                  <button type="button" class="subtitle-filter-chip" :class="{ active: view.subtitleSubtitleFilterMode === 'unpaired' }" @click="view.setSubtitleSubtitleFilterMode('unpaired')">未配对</button>
+                </div>
               </div>
             </div>
             <input :value="view.subtitleInspectorSubtitleSearch" class="fm-search-input subtitle-match-search" placeholder="搜索字幕名..." :disabled="view.subtitleInspectorBusy" @input="view.setSubtitleInspectorSubtitleSearch($event.target.value)">
@@ -495,31 +482,31 @@ function formatSubtitleItemName(item = {}) {
 
 <style scoped>
 .subtitle-tree-card {
-  --apple-bg: #f5f5f7;
+  --apple-bg: #f8fafc;
   --apple-surface: #ffffff;
-  --apple-surface-soft: #fafafc;
-  --apple-border: rgba(29, 29, 31, 0.08);
-  --apple-border-strong: rgba(29, 29, 31, 0.14);
-  --apple-text: #1d1d1f;
-  --apple-text-soft: rgba(29, 29, 31, 0.72);
-  --apple-text-faint: rgba(29, 29, 31, 0.48);
+  --apple-surface-soft: #f8fafc;
+  --apple-border: #e2e8f0;
+  --apple-border-strong: #cbd5e1;
+  --apple-text: #0f172a;
+  --apple-text-soft: #334155;
+  --apple-text-faint: #64748b;
   --apple-blue: #475569;
-  --apple-shadow: rgba(0, 0, 0, 0.12) 3px 5px 30px 0px;
+  --apple-shadow: rgba(15, 23, 42, 0.06) 0 4px 16px 0;
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --audio-accent: #94a3b8;
-  --subtitle-accent: #cbd5e1;
-  --pair-accent: #64748b;
+  --audio-accent: #0ea5e9;
+  --subtitle-accent: #8b5cf6;
+  --pair-accent: #10b981;
   display: flex;
   flex-direction: column;
   min-height: 0;
   border: 1px solid #e2e8f0;
   border-radius: 18px;
-  background: linear-gradient(180deg, #fcfdff 0%, #f7f9fc 100%);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.04);
+  background: #ffffff;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
 }
 .subtitle-tree-card :deep(.el-card__header) {
   padding: 0;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.06);
+  border-bottom: 1px solid #f1f5f9;
 }
 .subtitle-tree-card :deep(.el-card__body) { display: flex; flex-direction: column; min-height: 0; }
 /* --- Header ------------------------------------------------- */
@@ -558,105 +545,240 @@ function formatSubtitleItemName(item = {}) {
   gap: 5px;
   padding: 5px 10px;
   border-radius: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: -0.12px;
-  background: #f4f6f9;
-  color: #59697f;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: -0.1px;
+  background: #ffffff;
+  color: #475569;
   border: 1px solid #e2e8f0;
-  transition: transform .3s var(--ease-spring), box-shadow .3s var(--ease-spring);
+  transition: transform .3s var(--ease-spring), box-shadow .3s var(--ease-spring), border-color .3s var(--ease-spring), color .3s var(--ease-spring);
 }
 .subtitle-mini-chip :deep(svg),
-.subtitle-mini-chip svg { opacity: .85; }
-.subtitle-mini-chip:hover { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(31, 46, 67, 0.08); }
-.subtitle-mini-chip-accent {
-  background: linear-gradient(180deg, #ffffff 0%, #f3f6fb 100%);
-  color: #334155;
-  border-color: #d7e0ea;
+.subtitle-mini-chip svg {
+  opacity: .8;
+  color: #94a3b8;
+  transition: transform .3s var(--ease-spring), color .3s var(--ease-spring);
 }
+.subtitle-mini-chip:hover {
+  transform: translateY(-1px) scale(1.02);
+  border-color: #cbd5e1;
+  color: #0f172a;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
+}
+.subtitle-mini-chip:hover :deep(svg),
+.subtitle-mini-chip:hover svg {
+  color: #475569;
+  transform: scale(1.1);
+}
+.subtitle-mini-chip-accent {
+  background: #0f172a;
+  color: #ffffff;
+  border-color: #0f172a;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.14);
+}
+.subtitle-mini-chip-accent :deep(svg),
+.subtitle-mini-chip-accent svg { color: #cbd5e1; opacity: 1; }
+.subtitle-mini-chip-accent:hover {
+  background: #020617;
+  border-color: #020617;
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.22);
+}
+.subtitle-mini-chip-accent:hover :deep(svg),
+.subtitle-mini-chip-accent:hover svg { color: #f1f5f9; }
 
 /* --- Icon action buttons ------------------------------------ */
-.workbench-icon-btn.el-button {
+.workbench-icon-btn {
+  appearance: none;
   width: 34px;
   height: 34px;
-  border-radius: 12px !important;
+  padding: 0;
+  border-radius: 12px;
   border: 1px solid #e2e8f0;
   background: #ffffff;
   color: var(--apple-text-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
   transition: all .3s var(--ease-spring);
 }
-.workbench-icon-btn.el-button:hover:not(:disabled) {
+.workbench-icon-btn:hover:not(:disabled) {
   background: linear-gradient(180deg, #ffffff 0%, #edf2f7 100%) !important;
   border-color: #cbd5e1;
   color: #334155 !important;
   transform: translateY(-2px) scale(1.04);
   box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
 }
-.workbench-icon-btn.el-button:hover:not(:disabled) svg { transform: scale(1.15); }
-.workbench-icon-btn.el-button:active:not(:disabled) { transform: scale(0.94); }
-.workbench-icon-btn.el-button svg { transition: transform .3s var(--ease-spring); }
+.workbench-icon-btn:hover:not(:disabled) svg { transform: scale(1.15); }
+.workbench-icon-btn:active:not(:disabled) { transform: scale(0.94); }
+.workbench-icon-btn svg { transition: transform .3s var(--ease-spring); }
 
 /* --- Pill action buttons ----------------------------------- */
-.workbench-pill-btn.el-button {
-  height: 32px;
-  border-radius: 10px !important;
-  border: 1px solid #d7e0ea !important;
-  background: linear-gradient(180deg, #ffffff 0%, #f3f6fb 100%) !important;
-  color: #475569 !important;
-  font-weight: 600;
-  padding: 0 14px !important;
+.workbench-pill-btn,
+.workbench-primary-btn,
+.workbench-text-btn,
+.subtitle-filter-chip {
+  appearance: none;
+  font: inherit;
+}
+.workbench-pill-btn {
+  min-height: 36px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.1px;
+  padding: 0 12px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: all .3s var(--ease-spring) !important;
+  cursor: pointer;
+  transition: all .3s var(--ease-spring);
 }
-.workbench-pill-btn.el-button svg { transition: transform .3s var(--ease-spring); }
-.workbench-pill-btn.el-button:hover:not(:disabled) {
-  border-color: #c5d0dd !important;
-  color: #24364f !important;
-  background: linear-gradient(180deg, #ffffff 0%, #edf2f7 100%) !important;
+.workbench-pill-btn svg,
+.workbench-primary-btn svg { transition: transform .3s var(--ease-spring), color .3s var(--ease-spring); }
+.workbench-pill-btn > svg,
+.workbench-pill-btn :deep(> svg) { color: #94a3b8; }
+.workbench-pill-btn:hover:not(:disabled) {
+  border-color: #cbd5e1;
+  color: #0f172a;
+  background: #f8fafc;
   transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
 }
-.workbench-pill-btn.el-button:hover:not(:disabled) svg { transform: scale(1.15) rotate(-2deg); }
-.workbench-pill-btn.el-button:active:not(:disabled) { transform: scale(0.96); }
-.workbench-pill-btn.workbench-pill-active.el-button {
-  background: linear-gradient(180deg, #f8fbff 0%, #e9eff7 100%) !important;
-  border-color: #cfd8e3 !important;
-  color: #1f2d3d !important;
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.05);
+.workbench-pill-btn:hover:not(:disabled) svg { transform: scale(1.15) rotate(-4deg); color: #475569; }
+.workbench-pill-btn:active:not(:disabled) { transform: scale(0.96); }
+.workbench-pill-btn.workbench-pill-active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
 }
-.workbench-pill-btn.workbench-pill-danger.el-button { color: #c53030 !important; }
-.workbench-pill-btn.workbench-pill-danger.el-button:hover:not(:disabled) {
-  background: linear-gradient(180deg, #fff7f7, #ffffff) !important;
-  border-color: rgba(215, 0, 21, 0.35) !important;
-  color: #b92121 !important;
-  box-shadow: 0 10px 22px rgba(215, 0, 21, 0.14);
+.workbench-pill-btn.workbench-pill-active svg { color: #cbd5e1; }
+.workbench-pill-btn.workbench-pill-active:hover:not(:disabled) {
+  background: #020617;
+  border-color: #020617;
+  color: #ffffff;
 }
-.workbench-primary-btn.el-button {
-  height: 34px;
-  border-radius: 10px !important;
-  padding: 0 16px !important;
+.workbench-pill-btn.workbench-pill-active:hover:not(:disabled) svg { color: #f1f5f9; }
+.workbench-pill-btn.workbench-pill-danger {
+  color: #e11d48;
+  border-color: #fecdd3;
+  background: #fff1f2;
+}
+.workbench-pill-btn.workbench-pill-danger svg { color: #fb7185; }
+.workbench-pill-btn.workbench-pill-warn {
+  color: #b45309;
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.workbench-pill-btn.workbench-pill-warn svg { color: #f59e0b; }
+.workbench-pill-btn.workbench-pill-danger:hover:not(:disabled) {
+  background: #ffe4e6;
+  border-color: #fb7185;
+  color: #be123c;
+  box-shadow: 0 10px 22px rgba(225, 29, 72, 0.16);
+}
+.workbench-pill-btn.workbench-pill-danger:hover:not(:disabled) svg { color: #e11d48; }
+.workbench-pill-btn.workbench-pill-warn:hover:not(:disabled) {
+  background: #fef3c7;
+  border-color: #f59e0b;
+  color: #92400e;
+  box-shadow: 0 10px 22px rgba(245, 158, 11, 0.16);
+}
+.workbench-pill-btn.workbench-pill-warn:hover:not(:disabled) svg { color: #d97706; }
+.workbench-primary-btn {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 0 16px;
+  font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: -0.12px;
-  background: linear-gradient(180deg, #ffffff 0%, #edf2f7 100%) !important;
-  border: 1px solid #d7e0ea !important;
-  color: #1f2d3d !important;
+  letter-spacing: -0.1px;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  border: 1px solid #0f172a;
+  color: #ffffff;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
-  transition: all .3s var(--ease-spring) !important;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.16);
+  transition: all .3s var(--ease-spring);
 }
-.workbench-primary-btn.el-button svg { transition: transform .3s var(--ease-spring); }
-.workbench-primary-btn.el-button:hover:not(:disabled):not(.is-loading) {
+.workbench-primary-btn svg { color: #e2e8f0; }
+.workbench-primary-btn:hover:not(:disabled) {
   transform: translateY(-2px) scale(1.03);
-  border-color: #c5d0dd !important;
-  background: linear-gradient(180deg, #ffffff 0%, #e8edf4 100%) !important;
-  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.09);
+  background: linear-gradient(180deg, #0f172a 0%, #020617 100%);
+  border-color: #020617;
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.26);
 }
-.workbench-primary-btn.el-button:hover:not(:disabled):not(.is-loading) svg { transform: scale(1.2) rotate(-6deg); }
-.workbench-primary-btn.el-button:active:not(:disabled):not(.is-loading) { transform: scale(0.96); }
+.workbench-primary-btn:hover:not(:disabled) svg { transform: scale(1.2) rotate(-6deg); color: #ffffff; }
+.workbench-primary-btn:active:not(:disabled) { transform: scale(0.96); }
+.workbench-primary-btn-inline {
+  min-height: 34px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+.workbench-text-btn {
+  border: none;
+  background: transparent;
+  color: #6b7f98;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0 2px;
+  cursor: pointer;
+  transition: color .2s ease, transform .2s ease;
+}
+.workbench-text-btn:hover:not(:disabled) {
+  color: #17324c;
+  transform: translateY(-1px);
+}
+.workbench-text-btn-danger { color: #d14343; }
+.workbench-text-btn-danger:hover:not(:disabled) { color: #b82b2b; }
+.workbench-icon-btn:disabled,
+.workbench-pill-btn:disabled,
+.workbench-primary-btn:disabled,
+.workbench-text-btn:disabled,
+.subtitle-filter-chip:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+.is-spinning { animation: subtitle-spin 1s linear infinite; }
+@keyframes subtitle-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.subtitle-filter-segment {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 11px;
+  background: #fafafc;
+  border: 3px solid rgba(0, 0, 0, 0.04);
+}
+.subtitle-filter-chip {
+  min-height: 30px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(0, 0, 0, 0.8);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .25s var(--ease-spring);
+}
+.subtitle-filter-chip:hover:not(:disabled) {
+  color: #1d1d1f;
+  background: rgba(255, 255, 255, 0.82);
+}
+.subtitle-filter-chip.active {
+  background: #ffffff;
+  color: #1d1d1f;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
 
 /* --- Shell --------------------------------------------------- */
 .subtitle-tree-shell { display: flex; flex-direction: column; gap: 12px; min-height: 820px; padding: 0; }
@@ -667,62 +789,95 @@ function formatSubtitleItemName(item = {}) {
 /* --- Task info banner --------------------------------------- */
 .subtitle-tree-info {
   display: grid;
-  gap: 10px;
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 249, 252, 0.96));
-  border: 1px solid #e2e8f0;
+  gap: 12px;
+  padding: 18px 20px;
+  border-radius: 20px;
+  background: #f5f5f7;
+  border: 1px solid rgba(29, 29, 31, 0.08);
   box-shadow: none;
 }
 .subtitle-tree-info-top { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
-.subtitle-tree-info-bottom {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
+.subtitle-tree-info-bottom { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
 .subtitle-tree-info-head { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
 .subtitle-tree-info-icon {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #f8fafc, #eef2f7);
-  color: #64748b;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.8);
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #6e6e73;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
   transition: transform .3s var(--ease-spring);
 }
 .subtitle-tree-info:hover .subtitle-tree-info-icon { transform: rotate(-6deg) scale(1.05); }
-.subtitle-tree-info-main { min-width: 0; display: grid; gap: 4px; }
+.subtitle-tree-info-main { min-width: 0; display: grid; gap: 8px; }
+.subtitle-tree-info-desc {
+  max-width: 760px;
+  font-size: 14px;
+  line-height: 1.47;
+  color: rgba(29, 29, 31, 0.72);
+}
 .subtitle-tree-info-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.subtitle-tree-info-actions-bottom { justify-content: flex-end; margin-left: auto; }
 .subtitle-tree-title {
   font-family: 'SF Pro Display', 'Helvetica Neue', 'PingFang SC', sans-serif;
-  font-size: 19px;
-  font-weight: 700;
-  color: var(--apple-text);
-  line-height: 1.2;
-  letter-spacing: -0.24px;
+  font-size: 28px;
+  font-weight: 600;
+  color: #1d1d1f;
+  line-height: 1.14;
+  letter-spacing: -0.28px;
   word-break: break-all;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.subtitle-tree-title-md { font-size: 15px; font-weight: 700; line-height: 1.3; }
+.subtitle-tree-title-md { font-size: 24px; font-weight: 600; line-height: 1.14; letter-spacing: -0.24px; }
 .subtitle-tree-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+.subtitle-tree-info-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.subtitle-stat-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: none;
+  background: #ffffff;
+  box-shadow: none;
+  transition: transform .25s var(--ease-spring), background-color .25s ease;
+}
+.subtitle-stat-card:hover {
+  transform: translateY(-2px) scale(1.02);
+  background: #fbfbfd;
+}
+.subtitle-stat-card-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(29, 29, 31, 0.48);
+}
+.subtitle-stat-card-value {
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.19;
+  letter-spacing: 0.231px;
+  color: #1d1d1f;
+}
 
 /* --- Match shell -------------------------------------------- */
 .subtitle-match-shell {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   flex: 1;
-  padding: 8px 0 0;
+  padding: 12px 0 0;
   border-radius: 0;
   background: transparent;
   border: none;
@@ -738,59 +893,94 @@ function formatSubtitleItemName(item = {}) {
   box-shadow: none;
 }
 .subtitle-pairing-log-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
-.subtitle-match-header { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
-.subtitle-match-header-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.subtitle-match-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 16px 18px;
+  border: 1px solid rgba(29, 29, 31, 0.08);
+  border-radius: 18px;
+  background: #f5f5f7;
+  box-shadow: none;
+}
+.subtitle-match-header-title { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.subtitle-match-header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .subtitle-sequence-hint {
-  margin-top: 6px;
-  padding: 10px 12px;
+  margin-top: -2px;
+  padding: 12px 14px;
   display: inline-flex;
   gap: 8px;
   align-items: flex-start;
   border: 1px dashed rgba(148, 163, 184, 0.6);
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.92));
-  font-size: 12px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.94));
+  font-size: 13px;
   line-height: 1.6;
   color: #64748b;
 }
 .subtitle-sequence-hint svg { flex: 0 0 auto; margin-top: 2px; color: #64748b; }
-.subtitle-match-done-alert { margin-top: -2px; }
-.subtitle-match-done-alert :deep(.el-alert) { border-radius: 12px; }
+.subtitle-match-done-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: -2px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: none;
+  background: #f5f5f7;
+  color: #1d1d1f;
+  font-size: 13px;
+  line-height: 1.6;
+  box-shadow: none;
+}
+.subtitle-match-done-alert svg { flex: 0 0 auto; }
 
-.subtitle-match-layout { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 1.4fr) minmax(0, 1.08fr); gap: 16px; align-items: stretch; }
+.subtitle-match-layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.5fr) minmax(0, 1.05fr); gap: 18px; align-items: stretch; }
 .subtitle-match-panel, .subtitle-match-center {
   min-width: 0;
-  border: 1px solid #e2e8f0;
-  border-radius: 18px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  padding: 12px;
+  border: none;
+  border-radius: 20px;
+  background: #f5f5f7;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   box-shadow: none;
-  transition: border-color .3s var(--ease-spring), background .3s var(--ease-spring);
+  transition: transform .25s var(--ease-spring), background-color .25s ease;
 }
 .subtitle-match-panel:hover,
-.subtitle-match-center:hover { border-color: #cbd5e1; }
+.subtitle-match-center:hover {
+  transform: translateY(-2px);
+  background: #f0f0f2;
+}
 .subtitle-match-panel-audio,
 .subtitle-match-panel-subtitle,
-.subtitle-match-center { border-top: 1px solid #e2e8f0; }
-.subtitle-match-center { background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%); }
-
-.subtitle-match-panel-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
+.subtitle-match-center { border-top: none; }
+.subtitle-match-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(29, 29, 31, 0.08);
+}
 .subtitle-match-preview-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; }
 .subtitle-match-panel-tools, .subtitle-match-preview-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .subtitle-match-preview-actions { width: 100%; justify-content: flex-start; align-items: center; gap: 6px; }
+.subtitle-match-panel-heading { display: grid; gap: 5px; min-width: 0; }
 .subtitle-task-box-title {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-family: 'SF Pro Display', 'Helvetica Neue', 'PingFang SC', sans-serif;
-  font-size: 14px;
+  font-size: 21px;
   font-weight: 700;
-  color: var(--apple-text);
-  line-height: 1.2;
-  letter-spacing: -0.18px;
+  color: #1d1d1f;
+  line-height: 1.19;
+  letter-spacing: 0.231px;
 }
 .subtitle-task-box-title-audio { color: #334155; }
 .subtitle-task-box-title-audio svg { color: var(--audio-accent); }
@@ -798,16 +988,21 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-task-box-title-subtitle svg { color: var(--subtitle-accent); }
 .subtitle-task-box-title-center { color: #334155; }
 .subtitle-task-box-title-center svg { color: var(--pair-accent); }
-.subtitle-box-meta { font-size: 11px; color: var(--apple-text-faint); font-weight: 600; }
-.subtitle-match-filter-select { width: 108px; }
+.subtitle-match-panel-caption {
+  font-size: 14px;
+  line-height: 1.29;
+  letter-spacing: -0.224px;
+  color: rgba(0, 0, 0, 0.48);
+}
+.subtitle-box-meta { font-size: 12px; color: rgba(0, 0, 0, 0.48); font-weight: 600; }
 .subtitle-match-search { width: 100%; }
 .subtitle-match-list, .subtitle-match-pair-list {
   display: grid;
-  gap: 6px;
-  min-height: 360px;
+  gap: 10px;
+  min-height: 440px;
   max-height: 680px;
   overflow: auto;
-  padding-right: 4px;
+  padding-right: 6px;
   align-content: start;
   grid-auto-rows: max-content;
 }
@@ -819,22 +1014,22 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-match-item, .subtitle-match-pair {
   width: 100%;
   text-align: left;
-  border: 1px solid #dbe4ec;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  padding: 7px 9px;
+  border: none;
+  border-radius: 16px;
+  background: #ffffff;
+  padding: 10px 12px;
   cursor: pointer;
   transition: all .3s var(--ease-spring);
   position: relative;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  box-shadow: none;
 }
 .subtitle-match-item::before {
   content: '';
   position: absolute;
   left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
+  top: 12px;
+  bottom: 12px;
+  width: 4px;
   border-radius: 999px;
   background: transparent;
   transition: background .3s var(--ease-spring);
@@ -842,47 +1037,45 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-match-panel-audio .subtitle-match-item.active::before { background: var(--audio-accent); }
 .subtitle-match-panel-subtitle .subtitle-match-item.active::before { background: var(--subtitle-accent); }
 .subtitle-match-item:hover, .subtitle-match-pair:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 12px 22px rgba(15, 23, 42, 0.05);
+  background: #fbfbfd;
   transform: translateY(-2px) scale(1.02);
 }
 .subtitle-match-item:active, .subtitle-match-pair:active { transform: scale(0.98); }
 .subtitle-match-item.active, .subtitle-match-pair.active {
-  border-color: #b8c6d6;
-  box-shadow: 0 0 0 2px rgba(203, 213, 225, 0.8);
-  background: linear-gradient(180deg, #ffffff 0%, #f5f7fa 100%);
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.14), 0 8px 20px rgba(0, 113, 227, 0.08);
+  background: linear-gradient(180deg, #f7fbff 0%, #eef6ff 100%);
 }
-.subtitle-match-item.paired { border-color: #bfe3ca; background: linear-gradient(180deg, #f5fcf7 0%, #ffffff 100%); }
+.subtitle-match-item.paired { background: #ffffff; }
 .subtitle-match-item.suspicious,
-.subtitle-match-pair.suspicious { border-color: #f2cb90; background: linear-gradient(180deg, #fffaf1 0%, #ffffff 100%); }
-.subtitle-match-item.queued { border-color: #c5d0dd; background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%); box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.6); }
+.subtitle-match-pair.suspicious { background: #fffaf1; }
+.subtitle-match-item.queued { background: #fbfbfd; }
 .subtitle-match-name {
   display: flex;
-  gap: 5px;
+  gap: 8px;
   align-items: center;
   flex-wrap: wrap;
   font-family: 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', sans-serif;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  color: #1f2f46;
-  letter-spacing: -0.18px;
-  line-height: 1.28;
+  color: #1d1d1f;
+  letter-spacing: -0.224px;
+  line-height: 1.24;
 }
 .subtitle-match-meta {
-  margin-top: 2px;
+  margin-top: 6px;
   font-family: 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', sans-serif;
-  font-size: 9px;
-  line-height: 1.3;
-  color: #7b8797;
+  font-size: 10px;
+  line-height: 1.4;
+  color: rgba(0, 0, 0, 0.48);
   word-break: break-all;
   letter-spacing: -0.12px;
 }
 .subtitle-match-badge {
   display: inline-flex;
   align-items: center;
-  border-radius: 6px;
-  padding: 2px 7px;
-  font-size: 11px;
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 10px;
   font-weight: 700;
   border: 1px solid transparent;
   line-height: 1.3;
@@ -893,11 +1086,11 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-match-empty {
   min-height: 220px;
   border: 1px dashed #d5dfed;
-  border-radius: 14px;
+  border-radius: 18px;
   display: grid;
   place-items: center;
   gap: 6px;
-  padding: 18px 16px;
+  padding: 24px 20px;
   text-align: center;
   color: #6f8198;
   line-height: 1.55;
@@ -906,14 +1099,14 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-card-tip { font-size: 12px; color: #8394aa; }
 
 /* --- Pair card internal: confidence head + source->target flow --- */
-.subtitle-match-pair-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.subtitle-match-pair-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .subtitle-match-pair-head-left { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .subtitle-match-pair-confidence,
 .subtitle-match-pair-track {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  border-radius: 6px;
-  padding: 2px 7px;
+  border-radius: 8px;
+  padding: 4px 9px;
   border: 1px solid transparent;
   line-height: 1.35;
 }
@@ -921,38 +1114,38 @@ function formatSubtitleItemName(item = {}) {
 .confidence-medium { background: #eef2f7; color: #475569; border-color: #d7e0ea; }
 .confidence-low { background: #fff4de; color: #b97714; border-color: #f4d58d; }
 .subtitle-match-pair-track { color: #475569; background: #eef2f7; border-color: #d7e0ea; }
-.subtitle-match-pair-reason { font-size: 10px; color: var(--apple-text-faint); letter-spacing: -0.12px; }
+.subtitle-match-pair-reason { font-size: 11px; color: rgba(0, 0, 0, 0.48); letter-spacing: -0.12px; }
 
 .subtitle-match-pair-flow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr);
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
-  padding: 6px 8px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
-  border: 1px solid #e2e8f0;
+  padding: 10px;
+  border-radius: 14px;
+  background: #f5f5f7;
+  border: none;
 }
-.subtitle-match-flow-side { display: grid; gap: 3px; min-width: 0; }
+.subtitle-match-flow-side { display: grid; gap: 6px; min-width: 0; }
 .subtitle-match-flow-label {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #8a97aa;
+  color: rgba(0, 0, 0, 0.48);
 }
 .subtitle-match-flow-source .subtitle-match-flow-label { color: #8a97aa; }
 .subtitle-match-flow-target .subtitle-match-flow-label { color: #64748b; }
 .subtitle-match-flow-line {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  line-height: 1.2;
-  color: #2c3e5c;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #1d1d1f;
   min-width: 0;
 }
-.subtitle-match-flow-target .subtitle-match-flow-line { color: #334155; font-weight: 600; }
+.subtitle-match-flow-target .subtitle-match-flow-line { color: #1d1d1f; font-weight: 600; }
 .subtitle-match-flow-icon { flex: 0 0 auto; }
 .subtitle-match-flow-icon-audio { color: var(--audio-accent); }
 .subtitle-match-flow-icon-subtitle { color: var(--subtitle-accent); }
@@ -961,11 +1154,11 @@ function formatSubtitleItemName(item = {}) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   border-radius: 999px;
-  color: #64748b;
-  background: #eef2f7;
+  color: rgba(29, 29, 31, 0.72);
+  background: #ffffff;
   justify-self: center;
   align-self: center;
 }
@@ -1062,97 +1255,33 @@ function formatSubtitleItemName(item = {}) {
 .fm-link-edit:active, .fm-link-danger:active { transform: scale(0.95); }
 .fm-check { width: 14px; height: 14px; accent-color: #64748b; cursor: pointer; }
 .fm-search-input {
-  width: 260px;
-  height: 34px;
-  padding: 0 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  width: 100%;
+  height: 42px;
+  padding: 0 16px;
+  border: 1px solid #d6e1ec;
+  border-radius: 14px;
   outline: none;
-  background: #ffffff;
-  font-size: 13px;
-  color: var(--apple-text);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  font-size: 14px;
+  color: #23384f;
   transition: border-color .2s ease, box-shadow .2s ease;
 }
 .fm-search-input:focus {
-  border-color: rgba(148, 163, 184, 0.72);
-  box-shadow: 0 0 0 3px rgba(226, 232, 240, 0.9);
+  border-color: rgba(148, 163, 184, 0.84);
+  box-shadow: 0 0 0 4px rgba(226, 232, 240, 0.92);
 }
 .fm-search-input:disabled { background: #f5f6f8; color: var(--apple-text-faint); }
-.subtitle-tree-card :deep(.el-button) {
-  border-radius: 999px;
-  font-family: 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', sans-serif;
-  font-weight: 500;
-  letter-spacing: -0.224px;
-}
-.subtitle-tree-card :deep(.el-button--default) {
-  background: var(--apple-surface-soft);
-  color: var(--apple-text);
-  border-color: rgba(29, 29, 31, 0.08);
-}
-.subtitle-tree-card :deep(.el-button--default:hover) {
-  border-color: #cbd5e1;
-  background: #edf2f7;
-  color: #334155;
-}
-.subtitle-tree-card :deep(.el-button--primary) {
-  background: linear-gradient(180deg, #ffffff 0%, #edf2f7 100%);
-  border-color: #d7e0ea;
-  color: #1f2d3d;
-  transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease,
-    transform 0.2s ease,
-    box-shadow 0.2s ease;
-}
-.subtitle-tree-card :deep(.el-button--primary:hover:not(:disabled):not(.is-loading)) {
-  background: linear-gradient(180deg, #ffffff 0%, #e8edf4 100%) !important;
-  border-color: #c5d0dd !important;
-  color: #24364f !important;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
-}
-.subtitle-tree-card :deep(.el-button--primary:active:not(:disabled):not(.is-loading)) {
-  transform: translateY(0);
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.12);
-}
-/* 禁用态与旁侧 text 按钮一致：灰字、无蓝底（不可点一目了然） */
-.subtitle-tree-card :deep(.el-button--primary.is-disabled),
-.subtitle-tree-card :deep(.el-button--primary.is-disabled:hover),
-.subtitle-tree-card :deep(.el-button--primary:disabled) {
-  opacity: 1 !important;
-  background: transparent !important;
-  border-color: transparent !important;
-  color: var(--apple-text-faint) !important;
-  box-shadow: none !important;
-  transform: none !important;
-  filter: none !important;
-}
-.subtitle-tree-card :deep(.el-button--danger),
-.subtitle-tree-card :deep(.el-button--danger.is-plain) {
-  border-color: rgba(215, 0, 21, 0.18);
-  background: #fff5f5;
-  color: #d70015;
-}
-.subtitle-tree-card :deep(.el-button--danger:hover),
-.subtitle-tree-card :deep(.el-button--danger.is-plain:hover) {
-  border-color: rgba(215, 0, 21, 0.28);
-  background: #fff0f0;
-  color: #c40017;
-}
-.subtitle-tree-card :deep(.el-select__wrapper) {
-  min-height: 34px;
-  border-radius: 12px;
-  background: var(--apple-surface-soft);
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.06);
-}
 .subtitle-tree-card :deep(.el-button:focus-visible),
-.subtitle-tree-card :deep(.el-select__wrapper.is-focused),
 .fm-search-input:focus-visible,
 .fm-link-edit:focus-visible,
 .fm-link-danger:focus-visible,
 .subtitle-match-item:focus-visible,
 .subtitle-match-pair:focus-visible,
+.workbench-icon-btn:focus-visible,
+.workbench-pill-btn:focus-visible,
+.workbench-primary-btn:focus-visible,
+.workbench-text-btn:focus-visible,
+.subtitle-filter-chip:focus-visible,
 .fm-arrow-toggle:focus-visible {
   outline: 2px solid #94a3b8;
   outline-offset: 2px;
