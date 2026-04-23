@@ -67,7 +67,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "app.ico;backend" ..\desktop_app.py
+call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import orjson --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "app.ico;backend" ..\desktop_app.py
 if errorlevel 1 (
   popd
   echo 打包失败

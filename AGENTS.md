@@ -702,7 +702,112 @@
   - `.github/workflows/ghcr.yml`
   - 版本 tag 仍符合 semver
 
-## 10. 当前建议优先级
+## 10. 操作记录接口性能栈（Phase 4D 落地）
+
+### 10.1 修改总览
+
+`/api/activity-logs` 首屏从 ~170ms（762 行）降到热命中 **~11ms**，靠两层叠加的优化：
+
+1. **orjson 接管所有 JSON 列的反序列化**
+2. **append-only 行级 dict LRU 缓存，ID 先筛 → 命中 → miss 批取**
+
+### 10.2 涉及文件
+
+- `backend/requirements.txt`：新增 `orjson>=3.9.0`
+- `backend/app/models/database.py`：在 SA `create_engine` 上传入 `json_serializer=_orjson_dumps` / `json_deserializer=_orjson_loads`，对 **所有** `JSON` 列生效
+- `backend/app/core/activity_log_writer.py`：
+  - 新增 `_ActivityLogRowDictCache`（OrderedDict LRU，默认上限 10000 行，线程安全）
+  - 对外暴露 `get_activity_log_row_dict_cache()`
+- `backend/app/core/activity_log_aggregator/_main.py`：
+  - 新增入口 `merge_activity_rows_from_dicts(rows: list[dict])`
+  - 旧 `merge_activity_rows(raw_rows)` 保留为薄 wrapper
+  - from_dicts 入口内第一行做 `rows = [dict(row) for row in rows]` 防御性浅拷贝
+- `backend/app/core/activity_log_aggregator/__init__.py`：导出 `merge_activity_rows_from_dicts`
+- `backend/app/api/routes.py` `list_activity_logs`：
+  1. `db.query(ActivityLog.id)...limit(5000).all()` 只拉 ID
+  2. `row_cache.get_many(ordered_ids)` 批量命中
+  3. miss ID 再跑一次 `db.query(ActivityLog).filter(id.in_(...))`
+  4. 命中 dict + 新鲜 dict 按 ID 顺序装配 → `merge_activity_rows_from_dicts(rows_dict)`
+- `backend/tests/test_activity_log_aggregator.py`：新增 10 条 `test_from_dicts_does_not_mutate_input`，对每个 fixture 验证合并算法幂等 + 不污染入参
+
+### 10.3 前端配合（Phase 4C）
+
+不是本轮新做，但要一起记住，性能栈是前后端叠加起作用的：
+
+- `frontend/src/composables/useActivityHistory.js`：
+  - `items` / `total` / `page` / `limit` 用 `shallowRef`，大树形对象不装 reactive proxy
+  - `loadChildren(row, {limit, force})` 走 `/api/activity-logs/:id/children`，带 in-flight 去重 + WeakMap 已加载缓存 + `triggerRef(items)`
+- `frontend/src/views/ActivityHistory.vue`：
+  - 顶部一次 `useActivityHistory()` 解构出全部数据层能力
+  - `toggleTreeRow` 在 `row.has_child_rows === true && detail.child_rows 为空` 时懒拉（向后兼容未来 slim list 端点）
+
+### 10.4 后续优化空间
+
+按 **ROI 顺序** 排，不按直觉：
+
+1. **列表接口分页服务端化**（中）
+   现状：每次都 merge 全窗口 5000 行再 Python 切片。merge 为了保证跨 domain 关联必须看整窗口，但返回前端的只有 30 行。下一步可以：
+   - 前 N 条 items 就地算，后续 `page > 1` 的请求用游标分页绕过二次 merge
+   - 或者把合并结果 memoize 在 `_ActivityLogQueryCache` 里（目前已经在了，但一条审计写入就失效）
+
+2. **查询缓存失效策略细化**（高收益）
+   现在每条审计写入都 bump `writer.last_write_ts` → 所有 `/api/activity-logs` 查询缓存瞬间失效。活动任务期间几乎全走 cache-miss。可选：
+   - 把 `last_write_ts` 分桶到 500ms～1s，让连续批量写入只触发一次失效
+   - 或给 list 查询缓存加一个 `stale-while-revalidate` 语义：超时后先返回旧值再异步刷新
+   - 注意：任一改动都要先在 fixture 测试里验证新鲜度下限
+
+3. **按 domain 拆 aggregator（Phase 5）**（低，工程债）
+   1583 行的 `_main.py` 14-pass orchestrator 目前是性能黑盒但不是瓶颈（merge 只花 ~10ms）。拆分主要目的是可读 / 可测 / 可替换单个 pass，不是为了性能。
+   拆分前必须先建 `MergeContext` 共享状态 bag（见 `activity_log_aggregator/__init__.py` 里列的 7 个候选 domain 文件），后续在快照 + from_dicts 两套测试保护下逐 pass 迁移。
+
+4. **children 接口也接缓存**（低）
+   `/api/activity-logs/:id/children` 现在还是 ORM `.all()` + `merge_activity_rows`。访问频率低，单次数据量小，不着急。要做的话照 list_activity_logs 的模板切一遍就行。
+
+5. **前端 `ActivityHistory.vue` 继续拆 domain composable**（低）
+   主 view 还有 ~2100 行 script，其中 ~1500 行是 subtitle / circle / asmr / filter_delete 各自的展示函数。可以拆成 `useSubtitlePairRow.js` / `useCircleCompletionRow.js` / `useAsmrSyncRow.js` 等。纯 UI 关注点分离，不动协议。
+
+### 10.5 改算法 / 扩展时的硬约束
+
+动这片代码前把这几条读完：
+
+- **`merge_activity_rows_from_dicts` 的入参永远当不可变**
+  - 行级缓存里存的就是这些 dict。算法内要在每一处需要改 detail 的地方用 `{**detail, ...}` 或新建 list，禁止对入参做 `detail["x"] = y` / `list.append` 这种原地 mutate
+  - 防御网：`test_from_dicts_does_not_mutate_input` 对 10 个 scenario 都会对比字节序列化前后一致。改 aggregator 后必须跑通这组测试
+  - 内部 `rows = [dict(row) for row in rows]` 只是浅拷贝兜底；深层容器（detail / child_rows）的保护靠算法自己的写法，不要依赖这一行
+
+- **`row_cache` 不做内容变更时的 invalidation**
+  - 设计前提：`activity_logs` 表只有 INSERT、没有 UPDATE / DELETE
+  - 如果以后要做"编辑审计行"或"批量软删除"，必须同步调 `get_activity_log_row_dict_cache().invalidate()`
+  - 也就是说，**动了 activity_logs 的写入形态就要动这个缓存**
+
+- **orjson 作为新引入依赖，所有环境入口都已同步（新机器 / 重装 / 打包不会卡）**
+  - **pip 依赖** `backend/requirements.txt` 声明 `orjson>=3.9.0`
+  - **venv 自检** 五个入口的探针里都已加 `orjson`（老 venv 不更新 → 触发自动重装）：
+    - `setup.bat` / `start-all.bat` / `start-dev.bat` / `start-dev.ps1` / `backend/start.bat`
+    - 探针形态：`python -c "import click,uvicorn,fastapi,orjson"`
+  - **PyInstaller hiddenimports** 已加 orjson：
+    - `backend/build.py`（canonical spec 生成器）
+    - `build-release.bat` 的 `--hidden-import orjson` 命令行参数
+  - **Docker / CI**：`Dockerfile` / `backend/Dockerfile` / `.github/workflows/ghcr.yml` 全走 `pip install -r requirements.txt`，自动覆盖
+  - **`build_prekikoeru*.spec`** 是 gitignore 的构建产物，别手改；由 `backend/build.py` 运行时生成
+  - 新增任何后端运行时依赖（尤其是带二进制扩展的），**五个 .bat/.ps1 自检 + build.py + build-release.bat + requirements.txt 必须一起更新**。漏任一项就会有"我机器上能跑 / 别人装不上"的事故
+  - 打包失败时的降级：改 `database.py` 里 `_orjson_dumps` / `_orjson_loads` 回到 `json.dumps` / `json.loads`，接口仍能工作，只是回到 170ms 性能
+
+- **profile 脚本保留在 `.codex-backups/`，不要删**
+  - `_profile_activity_list.py`：单次端到端
+  - `_profile_sql_variants.py`：4 条 fetch 路径对照（ORM / Core / 原生+json / 原生+orjson / 原生-无 JSON）
+  - `_profile_cached_endpoint.py`：冷启动 vs 热命中对照
+  - 每次改 list 接口 / merge 算法 / writer 缓存后，至少跑一遍 `_profile_cached_endpoint.py` 看热命中是否仍在 ~10ms 量级
+
+- **行缓存尺寸**
+  - 默认 10000 行，按 ~1KB/dict 估算内存占用 ~10MB，Windows 桌面版能接受
+  - 生产库规模大量扩张后可以调大；不要调小到 5000 以下，会掉出 `MAX_MERGE_WINDOW` 窗口导致每次都 miss
+
+- **ID 列查询 (`db.query(ActivityLog.id)`) 命中的是 `created_at` 索引**
+  - `idx_activity_created_category` 覆盖了 `(created_at, category)`，当前 id-only 查询能走这个索引 → 只读 ~35ms
+  - 如果以后在 list 接口新增过滤条件，必须检查是否能继续走索引；否则 ID 扫描本身就会把热命中的 11ms 撑回去
+
+## 11. 当前建议优先级
 
 1. 稳定 RJ 工作台“原始抓取 -> 人工筛选 -> 自动预匹配 -> 手动配对 -> 最终写入”整条链
 2. 继续清理任务中心、操作日志、字幕工作台之间的状态串台
