@@ -2981,14 +2981,23 @@ function getFileName(path) {
   return parts[parts.length - 1] || normalized
 }
 
+function normalizeDeleteTreePath(path) {
+  return String(path || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+}
+
 function buildDeleteTreeRows(items) {
   const list = Array.isArray(items) ? items.filter(item => String(item?.path || '').trim()) : []
   if (!list.length) return []
-  const rootPath = commonPathPrefix(list.map(item => item.path))
+  const normalizedPaths = list.map(item => normalizeDeleteTreePath(item.path)).filter(Boolean)
+  const rootPath = commonPathPrefix(normalizedPaths)
   const rootLabel = getFileName(rootPath) || rootPath || '删除目标'
   const normalizedItems = list.map((item) => {
-    const fullPath = String(item.path || '').trim().replace(/\\/g, '/')
-    const normalizedRoot = String(rootPath || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+    const fullPath = normalizeDeleteTreePath(item.path)
+    const normalizedRoot = normalizeDeleteTreePath(rootPath)
     let relativePath = fullPath
     if (normalizedRoot && fullPath.toLowerCase().startsWith(`${normalizedRoot.toLowerCase()}/`)) {
       relativePath = fullPath.slice(normalizedRoot.length + 1)

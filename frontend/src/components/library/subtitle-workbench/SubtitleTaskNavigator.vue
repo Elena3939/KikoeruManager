@@ -84,9 +84,10 @@
         :key="task.id"
         :ref="el => registerTaskRef(task.id, el)"
         type="button"
-        class="group grid w-full gap-1 rounded-[12px] border bg-white px-2.5 py-1.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]"
+        class="group grid w-full gap-1 rounded-[12px] border bg-white px-2.5 py-1.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
         :class="getCardClass(task)"
-        @click="ctx.selectSubtitleTask(task)"
+        :disabled="isTaskInteractionLocked(task)"
+        @click="handleTaskClick(task)"
       >
         <div class="flex items-center justify-between gap-2">
           <span class="text-[12.5px] font-semibold tracking-[-0.02em] text-slate-900 truncate">{{ ctx.getTaskDisplayRJCode(task) }}</span>
@@ -155,6 +156,13 @@
           >
             <CheckCheck class="h-2 w-2" :stroke-width="2.4" />
             已匹配 {{ task.manual_match_applied_pairs || 0 }}
+          </span>
+          <span
+            v-if="isTaskInteractionLocked(task)"
+            class="inline-flex items-center gap-0.5 rounded border border-slate-300 bg-slate-100 px-1 py-0.5 font-medium text-slate-500"
+          >
+            <Clock class="h-2 w-2" :stroke-width="2.4" />
+            运行锁定
           </span>
           <span
             v-else-if="task.awaiting_manual_match || task.status === 'awaiting_manual_match' || task.status === 'waiting_manual'"
@@ -329,25 +337,43 @@ function getStatusIcon(task) {
 
 function getCardClass(task) {
   const status = getTaskStatusKey(task)
+  if (isTaskInteractionLocked(task)) {
+    return props.ctx?.isSubtitleTaskSelected?.(task)
+      ? 'cursor-not-allowed border-slate-300 bg-slate-100/95 opacity-75 shadow-[0_4px_14px_rgba(15,23,42,0.06)] ring-1 ring-slate-300/70'
+      : 'cursor-not-allowed border-slate-200 bg-slate-100/90 opacity-70 shadow-none'
+  }
   if (props.ctx?.isSubtitleTaskSelected?.(task)) {
-    return 'border-slate-900 bg-white shadow-[0_6px_20px_rgba(15,23,42,0.1)] ring-1 ring-slate-900/15'
+    return 'border-slate-900 bg-white shadow-[0_6px_20px_rgba(15,23,42,0.1)] ring-1 ring-slate-900/15 hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
   }
   if (task?.manual_match_completed || ['completed', 'manual_match_completed'].includes(status)) {
-    return 'border-emerald-200/70 hover:border-emerald-300'
+    return 'border-emerald-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-emerald-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
   }
   if (status === 'view_restored') {
-    return 'border-violet-200/70 hover:border-violet-300'
+    return 'border-violet-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-violet-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
   }
   if (status === 'view_backfilled') {
-    return 'border-slate-200/80 hover:border-slate-300'
+    return 'border-slate-200/80 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-slate-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
   }
   if (status === 'processing') {
-    return 'border-sky-200/70 hover:border-sky-300'
+    return 'border-sky-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-sky-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
   }
   if (status === 'failed') {
-    return 'border-rose-200/70 hover:border-rose-300'
+    return 'border-rose-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-rose-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
   }
-  return 'border-slate-100 hover:border-slate-300'
+  return 'border-slate-100 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-slate-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
+}
+
+function isTaskInteractionLocked(task) {
+  return Boolean(props.ctx?.isSubtitleTaskRerunLocked?.(task))
+}
+
+function handleTaskClick(task) {
+  if (isTaskInteractionLocked(task)) return
+  if (task.subtitle_dir) {
+    props.ctx?.inspectSubtitleTask?.(task)
+    return
+  }
+  props.ctx?.selectSubtitleTask?.(task)
 }
 
 function statDotClass(key) {

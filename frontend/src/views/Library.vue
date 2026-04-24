@@ -878,6 +878,9 @@ const subtitleRenameForm = ref({ currentName: '', newName: '', path: '' })
 const subtitleRenameLoading = ref(false)
 const subtitleInspectorLastSelectedId = ref('')
 const subtitleRouteFocusKey = ref('')
+const subtitleInspectorLoadSeq = ref(0)
+const subtitlePreferencesLoaded = ref(false)
+let subtitlePreferencesSaveTimer = null
 const subtitleOptions = ref({
   overwriteExisting: false,
   scanDepth: 3,
@@ -962,6 +965,7 @@ const {
   canCancelRJSubtitleTask,
   canClearCurrentSubtitleTask,
   canRerunSubtitleTask,
+  isSubtitleTaskRerunLocked,
   getSubtitleTaskInspectLabel,
   getSubtitleTaskManualStateText,
   getSubtitleTaskManualStateChipClass,
@@ -1207,6 +1211,16 @@ function createSubtitleFilterRule (overrides = {}) {
   }
 }
 
+function normalizeSubtitleFilterRule (rule = {}) {
+  return createSubtitleFilterRule({
+    id: rule.id || undefined,
+    target: ['name', 'path', 'all'].includes(rule.target) ? rule.target : 'name',
+    name: String(rule.name || ''),
+    pattern: String(rule.pattern || ''),
+    enabled: rule.enabled !== false
+  })
+}
+
 function addSubtitleFilterRule () {
   subtitleOptions.value.subtitleFilterRules = [
     ...(subtitleOptions.value.subtitleFilterRules || []),
@@ -1227,6 +1241,8 @@ function getSubtitleSelectionExistingChips (item) {
 }
 
 function clearSubtitleInspectorState () {
+  subtitleInspectorLoadSeq.value += 1
+  subtitleInspectorLoading.value = false
   subtitleInspectorInfo.value = {
     taskId: '',
     libraryId: '',
@@ -1502,6 +1518,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   subtitleSequenceMode: subtitleSequenceMode.value,
   subtitleSequenceSelection: subtitleSequenceSelection.value,
   subtitleManualPairs: subtitleManualPairs.value,
+  subtitleNamingStrategy: subtitleOptions.value.namingStrategy,
   subtitleSelectedManualPairId: subtitleSelectedManualPairId.value,
   subtitlePairApplying: subtitlePairApplying.value,
   subtitleManualApplyLabel: subtitleManualApplyLabel.value,
@@ -1795,7 +1812,7 @@ async function initializeLibraryPage () {
   if (libraryInitialized) return
   restoreUploadWorkbenchState()
   await loadLibraries()
-  loadRJSubtitlePreferences()
+  await loadRJSubtitlePreferences()
   restoreSubtitleScanWorkspace()
   if (selectedLibraryId.value) {
     await refreshStats(false, { silent: true })
@@ -1900,6 +1917,13 @@ onBeforeUnmount(() => {
   stopLibraryPolling()
   stopUploadWorkbenchPolling()
   unbindLibraryKeydown()
+  if (subtitlePreferencesSaveTimer) {
+    clearTimeout(subtitlePreferencesSaveTimer)
+    subtitlePreferencesSaveTimer = null
+    configApi.save({ rj_subtitle: buildRJSubtitleConfigPayload(subtitleOptions.value) }).catch(error => {
+      console.warn('卸载页面时保存 RJ 字幕设置失败', error)
+    })
+  }
   if (filterDeleteBackgroundTimer) {
     clearInterval(filterDeleteBackgroundTimer)
     filterDeleteBackgroundTimer = null
@@ -2005,7 +2029,9 @@ watch(subtitleExecutableDisplayItems, items => {
 })
 
 watch(subtitleOptions, value => {
+  if (!subtitlePreferencesLoaded.value) return
   storeJson(SUBTITLE_OPTIONS_KEY, value)
+  scheduleSaveRJSubtitlePreferences(value)
 }, { deep: true })
 
 watch([
@@ -2098,6 +2124,64 @@ function loadJson (key, fallback) {
 
 function storeJson (key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)) } catch (_) {}
+}
+
+function normalizeRJSubtitleOptions (source = {}) {
+  const scanDepth = source?.scanDepth ?? source?.scan_depth ?? (source?.scanOneLevelOnly === true || source?.scan_one_level_only === true ? 1 : 3)
+  const namingStrategy = source?.namingStrategy ?? source?.naming_strategy
+  const subtitleFilterRules = source?.subtitleFilterRules ?? source?.subtitle_filter_rules
+  return {
+    overwriteExisting: source?.overwriteExisting ?? source?.overwrite_existing ?? false,
+    scanDepth: normalizeRJSubtitleScanDepth(scanDepth),
+    enableMetadataMatch: source?.enableMetadataMatch ?? source?.enable_metadata_match ?? true,
+    skipIfExistingSubtitles: source?.skipIfExistingSubtitles ?? source?.skip_if_existing_subtitles ?? false,
+    namingStrategy: ['audio', 'subtitle'].includes(namingStrategy) ? namingStrategy : 'audio',
+    useFilterRules: source?.useFilterRules ?? source?.use_filter_rules ?? false,
+    subtitleFilterRules: Array.isArray(subtitleFilterRules) ? subtitleFilterRules.map(rule => normalizeSubtitleFilterRule(rule)) : [],
+    showSourceSearch: source?.showSourceSearch ?? source?.show_source_search ?? true,
+    showWrittenFiles: source?.showWrittenFiles ?? source?.show_written_files ?? true,
+    showDownloadedFiles: source?.showDownloadedFiles ?? source?.show_download_progress ?? true,
+    showIssues: source?.showIssues ?? source?.show_issues ?? true
+  }
+}
+
+function buildRJSubtitleConfigPayload (options = subtitleOptions.value) {
+  const scanDepth = normalizeRJSubtitleScanDepth(options.scanDepth)
+  return {
+    overwrite_existing: Boolean(options.overwriteExisting),
+    scan_one_level_only: scanDepth <= 1,
+    scan_depth: scanDepth,
+    enable_metadata_match: options.enableMetadataMatch !== false,
+    skip_if_existing_subtitles: Boolean(options.skipIfExistingSubtitles),
+    naming_strategy: options.namingStrategy === 'subtitle' ? 'subtitle' : 'audio',
+    use_filter_rules: Boolean(options.useFilterRules),
+    subtitle_filter_rules: (options.subtitleFilterRules || []).map(rule => {
+      const normalized = normalizeSubtitleFilterRule(rule)
+      return {
+        name: normalized.name,
+        pattern: normalized.pattern,
+        target: normalized.target,
+        enabled: normalized.enabled !== false
+      }
+    }),
+    show_source_search: options.showSourceSearch !== false,
+    show_written_files: options.showWrittenFiles !== false,
+    show_download_progress: options.showDownloadedFiles !== false,
+    show_issues: options.showIssues !== false
+  }
+}
+
+function scheduleSaveRJSubtitlePreferences (value = subtitleOptions.value) {
+  if (subtitlePreferencesSaveTimer) clearTimeout(subtitlePreferencesSaveTimer)
+  const snapshot = normalizeRJSubtitleOptions(value)
+  subtitlePreferencesSaveTimer = window.setTimeout(async () => {
+    subtitlePreferencesSaveTimer = null
+    try {
+      await configApi.save({ rj_subtitle: buildRJSubtitleConfigPayload(snapshot) })
+    } catch (error) {
+      console.warn('RJ 字幕设置保存到后端失败，已保留浏览器本地副本', error)
+    }
+  }, 450)
 }
 
 async function loadLibraries () {
@@ -2679,20 +2763,37 @@ function normalizeRJSubtitleScanDepth (value) {
   return Math.max(1, Math.min(normalized, 10))
 }
 
-function loadRJSubtitlePreferences () {
-  const saved = loadJson(SUBTITLE_OPTIONS_KEY, {})
-  subtitleOptions.value = {
-    overwriteExisting: saved?.overwriteExisting ?? false,
-    scanDepth: normalizeRJSubtitleScanDepth(saved?.scanDepth ?? (saved?.scanOneLevelOnly === true ? 1 : 3)),
-    enableMetadataMatch: saved?.enableMetadataMatch ?? true,
-    skipIfExistingSubtitles: saved?.skipIfExistingSubtitles ?? false,
-    namingStrategy: ['audio', 'subtitle'].includes(saved?.namingStrategy) ? saved.namingStrategy : 'audio',
-    useFilterRules: saved?.useFilterRules ?? false,
-    subtitleFilterRules: Array.isArray(saved?.subtitleFilterRules) ? saved.subtitleFilterRules.map(rule => normalizeSubtitleFilterRule(rule)) : [],
-    showSourceSearch: saved?.showSourceSearch ?? true,
-    showWrittenFiles: saved?.showWrittenFiles ?? true,
-    showDownloadedFiles: saved?.showDownloadedFiles ?? true,
-    showIssues: saved?.showIssues ?? true
+async function loadRJSubtitlePreferences () {
+  const localSaved = loadJson(SUBTITLE_OPTIONS_KEY, {})
+  let nextOptions = normalizeRJSubtitleOptions(localSaved)
+  let loadedFromBackend = false
+
+  try {
+    const data = await configApi.get()
+    if (data?.rj_subtitle) {
+      nextOptions = normalizeRJSubtitleOptions(data.rj_subtitle)
+      loadedFromBackend = true
+    }
+  } catch (error) {
+    console.warn('读取后端 RJ 字幕设置失败，使用浏览器本地副本', error)
+  }
+
+  const localHasRules = Array.isArray(localSaved?.subtitleFilterRules) && localSaved.subtitleFilterRules.length > 0
+  const backendHasRules = Array.isArray(nextOptions.subtitleFilterRules) && nextOptions.subtitleFilterRules.length > 0
+  if (loadedFromBackend && !backendHasRules && localHasRules) {
+    nextOptions = normalizeRJSubtitleOptions({
+      ...nextOptions,
+      useFilterRules: localSaved.useFilterRules ?? nextOptions.useFilterRules,
+      subtitleFilterRules: localSaved.subtitleFilterRules
+    })
+  }
+
+  subtitleOptions.value = nextOptions
+  storeJson(SUBTITLE_OPTIONS_KEY, nextOptions)
+  subtitlePreferencesLoaded.value = true
+
+  if (!loadedFromBackend || (loadedFromBackend && localHasRules && !backendHasRules)) {
+    scheduleSaveRJSubtitlePreferences(nextOptions)
   }
 }
 
@@ -3123,10 +3224,19 @@ function canRetrySubtitleScanResult (item) {
   return Boolean(item?.path) && ['no_audio', 'no_match', 'failed', 'error'].includes(String(item?.status || ''))
 }
 
+function shouldDelayAutoInspectSelectionFolder (item) {
+  const matchedTask = findSubtitleTaskBySelection(item)
+  if (!matchedTask?.id) return false
+  if (!matchedTask.force_rerun) return false
+  if (matchedTask.subtitle_dir) return false
+  return ['pending', 'processing'].includes(String(matchedTask.status || ''))
+}
+
 function canInspectSubtitleSelectionFolder(item) {
   if (!item?.folder_path) return false
   const matchedTask = findSubtitleTaskBySelection(item)
   if (item?.task_id && matchedTask?.subtitle_dir) return false
+  if (shouldDelayAutoInspectSelectionFolder(item)) return false
   if (item?.status === 'existing') return true
   if (Number(item?.existing_subtitle_count || 0) > 0) return true
   if (Boolean(item?.awaiting_manual_match)) return true
@@ -3438,10 +3548,24 @@ function handleSubtitleDialogBeforeClose () {
   hideSubtitleTaskPanelToBackground()
 }
 
-function closeSubtitleTaskPanel () {
+async function closeSubtitleTaskPanel () {
+  const liveTasks = subtitleTasks.value
+    .map(task => ({ ...task, id: String(task?.id || '').trim() }))
+    .filter(task => task.id)
+  const cancellableTaskIds = liveTasks
+    .filter(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
+    .map(task => task.id)
+  if (cancellableTaskIds.length) {
+    await Promise.allSettled(cancellableTaskIds.map(taskId => rjSubtitleApi.cancel(taskId)))
+  }
+  if (liveTasks.length) {
+    await Promise.allSettled(liveTasks.map(task => rjSubtitleApi.clearTask(task.id)))
+  }
+
   subtitleDialogBackgroundActive.value = false
   subtitleDialogVisible.value = false
   clearSubtitleStatusPoll()
+  subtitleTasks.value = []
   subtitleActiveTaskId.value = ''
   subtitleScanRetryingPath.value = ''
   subtitleSelectionScanCurrent.value = ''
@@ -4777,6 +4901,11 @@ function decodePossibleMojibake (value) {
   }
 }
 
+function isSubtitleDirectoryMissingError (error) {
+  const detail = decodePossibleMojibake(error?.response?.data?.detail || error?.message || '')
+  return /目标文件夹不存在|未找到目录摘要/.test(detail)
+}
+
 function syncRemoteStatsDeletion ({ deletedBytes = 0, deletedFolderCount = 0, libraryId = selectedLibraryId.value } = {}) {
   if (!libraryId) return
   const current = statsMap.value[libraryId]
@@ -4982,11 +5111,19 @@ async function selectSubtitleTask (task) {
   if (!task?.id) return
   subtitleActiveTaskId.value = task.id
   subtitlePreferredSelectionKey.value = buildSubtitleTaskSelectionKey(task)
+  if (canLockSubtitleTaskToRuntimeOnly(task)) {
+    clearSubtitleInspectorState()
+    return
+  }
   if (task.subtitle_dir) {
     await inspectSubtitleTask(task)
     return
   }
   clearSubtitleInspectorState()
+}
+
+function canLockSubtitleTaskToRuntimeOnly (task) {
+  return Boolean(isSubtitleTaskRerunLocked(task))
 }
 
 async function handleSubtitleWorkbenchSelectTask (task, options = {}) {
@@ -5342,7 +5479,7 @@ async function ensureSubtitleInspectorFocus () {
   const preferredSelectionItem = subtitleDialogSelection.value.find(
     item => buildSubtitleSelectionKey(item) === subtitlePreferredSelectionKey.value
   ) || null
-  if (preferredSelectionItem && canInspectSubtitleSelectionFolder(preferredSelectionItem)) {
+  if (preferredSelectionItem && !shouldDelayAutoInspectSelectionFolder(preferredSelectionItem) && canInspectSubtitleSelectionFolder(preferredSelectionItem)) {
     await inspectSubtitleSelectionFolder(preferredSelectionItem, {
       force: true,
       preferredTaskId: preferredSelectionItem.task_id || ''
@@ -5350,7 +5487,9 @@ async function ensureSubtitleInspectorFocus () {
     return
   }
 
-  const inspectableSelectionItem = subtitleDialogSelection.value.find(item => canInspectSubtitleSelectionFolder(item)) || null
+  const inspectableSelectionItem = subtitleDialogSelection.value.find(item => (
+    !shouldDelayAutoInspectSelectionFolder(item) && canInspectSubtitleSelectionFolder(item)
+  )) || null
   if (inspectableSelectionItem) {
     await inspectSubtitleSelectionFolder(inspectableSelectionItem, {
       force: true,
@@ -5369,6 +5508,7 @@ async function ensureSubtitleInspectorFocus () {
 async function inspectSubtitleSelectionFolder (item, options = {}) {
   const { force = false, preferredTaskId = '' } = options
   if (!item?.folder_path) return
+  const loadSeq = ++subtitleInspectorLoadSeq.value
 
   const inspectorLibraryId = item.library_id || selectedLibraryId.value
   let subtitleDir = joinFolderPath(item.folder_path, 'subtitles')
@@ -5388,6 +5528,7 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
   subtitleInspectorLoading.value = true
   try {
     const existingState = await ensureRJSubtitleExistingStateForItem(item)
+    if (loadSeq !== subtitleInspectorLoadSeq.value) return
     if (existingState?.subtitleDir) {
       subtitleDir = existingState.subtitleDir
     }
@@ -5406,6 +5547,7 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
       libraryApi.browserFolderContents(inspectorLibraryId, subtitleDir),
       libraryApi.browserFolderContents(inspectorLibraryId, item.folder_path)
     ])
+    if (loadSeq !== subtitleInspectorLoadSeq.value) return
     subtitleInspectorSearch.value = ''
     subtitleInspectorItems.value = subtitleData.items || []
     subtitleInspectorAudioItems.value = audioData.items || []
@@ -5435,15 +5577,21 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
     subtitleInspectorLastSelectedId.value = ''
     syncSubtitleSelectionState()
     await nextTick()
+    if (loadSeq !== subtitleInspectorLoadSeq.value) return
     buildAutoSubtitlePairs()
   } catch (error) {
     if (error instanceof TypeError && /parentNode/.test(error.message || '')) {
       console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误:', error.message)
+    } else if (isSubtitleDirectoryMissingError(error)) {
+      clearSubtitleInspectorState()
+      ElMessage.info('当前字幕目录还未生成，或历史恢复的旧目录已失效')
     } else {
       ElMessage.error('加载现有字幕目录失败: ' + decodePossibleMojibake(error.response?.data?.detail || error.message))
     }
   } finally {
-    subtitleInspectorLoading.value = false
+    if (loadSeq === subtitleInspectorLoadSeq.value) {
+      subtitleInspectorLoading.value = false
+    }
   }
 }
 
@@ -5453,6 +5601,7 @@ async function inspectSubtitleTask (task, options = {}) {
     ElMessage.warning('当前任务还没有生成字幕目录')
     return
   }
+  const loadSeq = ++subtitleInspectorLoadSeq.value
 
   focusSubtitleTask(task.id)
   subtitlePreferredSelectionKey.value = buildSubtitleTaskSelectionKey(task)
@@ -5472,6 +5621,7 @@ async function inspectSubtitleTask (task, options = {}) {
       libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir),
       libraryApi.browserFolderContents(audioLibraryId, task.folder_path)
     ])
+    if (loadSeq !== subtitleInspectorLoadSeq.value) return
     subtitleInspectorSearch.value = ''
     subtitleInspectorItems.value = subtitleData.items || []
     subtitleInspectorAudioItems.value = audioData.items || []
@@ -5501,15 +5651,23 @@ async function inspectSubtitleTask (task, options = {}) {
     subtitleInspectorLastSelectedId.value = ''
     syncSubtitleSelectionState()
     await nextTick()
+    if (loadSeq !== subtitleInspectorLoadSeq.value) return
     buildAutoSubtitlePairs()
   } catch (error) {
     if (error instanceof TypeError && /parentNode/.test(error.message || '')) {
       console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误:', error.message)
+    } else if (isSubtitleDirectoryMissingError(error)) {
+      clearSubtitleInspectorState()
+      ElMessage.info(task.status === 'processing'
+        ? '字幕任务仍在执行，目录生成后会自动可见'
+        : '当前字幕目录还未生成，或历史恢复的旧目录已失效')
     } else {
       ElMessage.error('加载字幕目录失败: ' + decodePossibleMojibake(error.response?.data?.detail || error.message))
     }
   } finally {
-    subtitleInspectorLoading.value = false
+    if (loadSeq === subtitleInspectorLoadSeq.value) {
+      subtitleInspectorLoading.value = false
+    }
   }
 }
 

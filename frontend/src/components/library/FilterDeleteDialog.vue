@@ -1299,11 +1299,13 @@ function toggleAllFilterDeleteRows () {
 
 function handleFilterDeleteRowClick (row, event) {
   if (filterDeleteBusy.value || !row?.id) return
-  if (canFilterDeleteSelectRow(row)) {
-    toggleFilterDeleteSelect(row, event)
+  if (row.type === 'dir') {
+    toggleFilterDeleteExpand(row)
     return
   }
-  if (row.type === 'dir') toggleFilterDeleteExpand(row)
+  if (canFilterDeleteSelectRow(row)) {
+    toggleFilterDeleteSelect(row, event)
+  }
 }
 
 function onFilterDeleteSearchInput () {

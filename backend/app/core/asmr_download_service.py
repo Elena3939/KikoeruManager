@@ -487,7 +487,33 @@ class ASMRDownloadService:
         logger.error(f"[ASMR] 所有 API 服务器都无法获取文件列表: {rjcode}")
         return None
 
-    def _flatten_tracks(self, tracks: List[Dict], parent_path: str = "") -> List[Dict]:
+    def _resolve_track_display_title(self, track: Dict) -> str:
+        """优先读取 asmr.one 可能返回的本地化标题，避免只拿原始日文 title。"""
+        direct_keys = (
+            'display_title', 'displayTitle', 'localized_title', 'localizedTitle',
+            'translated_title', 'translatedTitle', 'title_zh', 'titleZh',
+            'title_zh_cn', 'titleZhCn', 'title_zh_tw', 'titleZhTw',
+            'name_zh', 'nameZh', 'name_zh_cn', 'nameZhCn',
+        )
+        for key in direct_keys:
+            value = str(track.get(key) or '').strip()
+            if value:
+                return value
+
+        dict_keys = ('title_i18n', 'titleI18n', 'titles', 'name_i18n', 'nameI18n', 'names', 'i18n', 'translation')
+        lang_keys = ('zh-cn', 'zh_hans', 'zh-hans', 'chs', 'chi_hans', 'zh-tw', 'zh_hant', 'zh-hant', 'cht', 'chi_hant', 'zh')
+        for key in dict_keys:
+            value = track.get(key)
+            if not isinstance(value, dict):
+                continue
+            for lang_key in lang_keys:
+                candidate = str(value.get(lang_key) or value.get(lang_key.upper()) or '').strip()
+                if candidate:
+                    return candidate
+
+        return str(track.get('title') or track.get('name') or '').strip()
+
+    def _flatten_tracks(self, tracks: List[Dict], parent_path: str = "", parent_display_path: str = "") -> List[Dict]:
         """
         扁平化音轨列表，提取所有可下载的文件
 
@@ -502,12 +528,15 @@ class ASMRDownloadService:
 
         for track in tracks:
             # 构建当前路径
-            current_path = os.path.join(parent_path, track.get('title', '')) if parent_path else track.get('title', '')
+            raw_title = track.get('title', '') or track.get('name', '')
+            display_title = self._resolve_track_display_title(track)
+            current_path = os.path.join(parent_path, raw_title) if parent_path else raw_title
+            display_path = os.path.join(parent_display_path, display_title) if parent_display_path else display_title
 
             if track.get('type') == 'folder':
                 # 如果是文件夹，递归处理子项
                 children = track.get('children', [])
-                files.extend(self._flatten_tracks(children, current_path))
+                files.extend(self._flatten_tracks(children, current_path, display_path))
             else:
                 # 如果是文件，添加到列表
                 # 支持多种ID字段名：id, hash, media_id
@@ -521,8 +550,10 @@ class ASMRDownloadService:
 
                 file_info = {
                     'id': file_id,
-                    'title': track.get('title', ''),
+                    'title': raw_title,
+                    'display_title': display_title,
                     'path': current_path,
+                    'display_path': display_path,
                     'type': track.get('type'),
                     'media_download_url': download_url,
                     'size': track.get('size', 0),

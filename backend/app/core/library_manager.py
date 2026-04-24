@@ -1249,6 +1249,18 @@ class LibraryManager:
             self._synology_client_cache[full_key] = SynologyFileStationClient(config)
         return self._synology_client_cache[full_key]
 
+    async def close_cached_synology_clients(self) -> None:
+        """应用关闭时统一关闭缓存客户端，避免 aiohttp session 泄漏告警。"""
+        if not self._synology_client_cache:
+            return
+        clients = list(self._synology_client_cache.values())
+        self._synology_client_cache.clear()
+        for client in clients:
+            try:
+                await client.close()
+            except Exception:
+                logger.warning("关闭 Synology 客户端失败", exc_info=True)
+
     def load_config(self) -> dict[str, Any]:
         return load_library_config()
 

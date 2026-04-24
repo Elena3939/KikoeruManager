@@ -694,7 +694,7 @@ class RJSubtitleService:
             return {}
 
     def _build_work_search_order(self, rjcode: str, linked_works: List) -> List:
-        """构建作品搜索顺序：当前 RJ -> 原作 -> 中文关联 -> 其他"""
+        """构建作品搜索顺序：当前 RJ -> 中文关联 -> 原作 -> 其他。"""
         ordered = []
         seen = set()
 
@@ -708,11 +708,11 @@ class RJSubtitleService:
         append_work(current)
 
         for work in linked_works:
-            if getattr(work, 'work_type', '') == 'original':
+            if getattr(work, 'lang', '') in self.CHINESE_LANGS:
                 append_work(work)
 
         for work in linked_works:
-            if getattr(work, 'lang', '') in self.CHINESE_LANGS:
+            if getattr(work, 'work_type', '') == 'original':
                 append_work(work)
 
         for work in linked_works:
@@ -798,9 +798,13 @@ class RJSubtitleService:
         """从文件列表中筛选候选字幕"""
         candidates = []
         for file_info in files:
-            title = file_info.get('title', '')
-            path = file_info.get('path', title)
-            ext = os.path.splitext(title)[1].lower()
+            raw_title = file_info.get('title', '')
+            raw_path = file_info.get('path', raw_title)
+            display_title = file_info.get('display_title') or raw_title
+            display_path = file_info.get('display_path') or raw_path
+            title = display_title or raw_title
+            path = display_path or raw_path or title
+            ext = os.path.splitext(raw_title or title)[1].lower()
             if ext not in self.SUBTITLE_EXTENSIONS:
                 continue
 
@@ -808,7 +812,7 @@ class RJSubtitleService:
             if not url:
                 continue
 
-            combined_text = f"{path} {title}".lower()
+            combined_text = f"{path} {title} {raw_path} {raw_title}".lower()
             has_marker = self._has_chinese_marker(combined_text)
 
             if getattr(work, 'lang', '') in self.CHINESE_LANGS:
@@ -826,6 +830,8 @@ class RJSubtitleService:
                 'media_download_url': url,
                 'subtitle_score': score,
                 'relative_path': path or title,
+                'source_name': raw_title or title,
+                'source_relative_path': raw_path or path,
                 'has_chinese_marker': has_marker,
             })
 
@@ -2429,7 +2435,7 @@ class RJSubtitleService:
 
                 if progress_callback:
                     progress = 30 + int((index / max(total_files, 1)) * 35)
-                    progress_callback(progress, f"下载字幕 {index}/{total_files}")
+                    progress_callback(progress, f"下载字幕 {index}/{total_files}: {preview_name}")
 
             if not downloaded_files:
                 return {
@@ -2502,10 +2508,10 @@ class RJSubtitleService:
             if should_cancel and should_cancel():
                 raise asyncio.CancelledError()
 
-            subtitle_dir, written_files, skipped_files, write_errors = await self._write_remote_subtitles(
+            subtitle_dir, written_files, skipped_files, write_errors = await self._write_remote_downloaded_subtitles(
                 library_id=library_id,
                 folder_path=folder_path,
-                match_result=match_result,
+                downloaded_files=downloaded_files,
                 overwrite=overwrite,
                 temp_dir=temp_dir,
                 progress_callback=progress_callback,
@@ -2681,7 +2687,7 @@ class RJSubtitleService:
 
                 if progress_callback:
                     progress = 30 + int((index / max(total_files, 1)) * 35)
-                    progress_callback(progress, f"下载字幕 {index}/{total_files}")
+                    progress_callback(progress, f"下载字幕 {index}/{total_files}: {preview_name}")
 
             if not downloaded_files:
                 return {
@@ -2748,30 +2754,13 @@ class RJSubtitleService:
             )
             self._annotate_download_display_names(downloaded_files, match_result)
 
-            subtitle_dir = folder / 'subtitles'
-            subtitle_dir.mkdir(parents=True, exist_ok=True)
-
-            written_files = []
-            skipped_files = []
-            write_errors = []
-            for match in match_result['matches']:
-                if should_cancel and should_cancel():
-                    raise asyncio.CancelledError()
-                destination = subtitle_dir / match['output_subtitle_name']
-                try:
-                    if destination.exists() and not overwrite:
-                        skipped_files.append(match['output_subtitle_name'])
-                        continue
-                    shutil.copy2(match['subtitle_path'], destination)
-                    written_files.append({
-                        'audio_name': match['audio_name'],
-                        'subtitle_name': match['subtitle_name'],
-                        'output_name': match['output_subtitle_name'],
-                        'match_type': match['match_type'],
-                        'match_score': match['match_score'],
-                    })
-                except Exception as exc:
-                    write_errors.append(f"{match['output_subtitle_name']}: {exc}")
+            subtitle_dir, written_files, skipped_files, write_errors = self._write_local_downloaded_subtitles(
+                folder=folder,
+                downloaded_files=downloaded_files,
+                overwrite=overwrite,
+                progress_callback=progress_callback,
+                should_cancel=should_cancel,
+            )
 
             if progress_callback:
                 progress_callback(96, "写入 subtitles 目录")
@@ -2804,7 +2793,7 @@ class RJSubtitleService:
                 'written_files': written_files,
                 'skipped_files': skipped_files,
                 'write_errors': write_errors,
-                'subtitle_dir': str(subtitle_dir),
+                'subtitle_dir': subtitle_dir,
                 'error': None if success else '未能匹配并写入任何字幕文件',
             }
         finally:

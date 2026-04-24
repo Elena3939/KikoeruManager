@@ -62,11 +62,11 @@
         </div>
         <div class="subtitle-tree-info-bottom">
           <div class="subtitle-tree-meta">
-            <span class="subtitle-mini-chip subtitle-mini-chip-accent"><Hash :size="11" :stroke-width="2.4" />{{ view.getTaskDisplayRJCode(view.activeSubtitleInspectTask) }}</span>
-            <span v-if="view.getTaskSourceRJCode(view.activeSubtitleInspectTask)" class="subtitle-mini-chip"><Link :size="11" :stroke-width="2.4" />来源 {{ view.getTaskSourceRJCode(view.activeSubtitleInspectTask) }}</span>
-            <span class="subtitle-mini-chip"><Music :size="11" :stroke-width="2.4" />{{ view.subtitleInspectorAudioFiles.length }} 个音频</span>
-            <span class="subtitle-mini-chip"><FileText :size="11" :stroke-width="2.4" />{{ view.subtitleInspectorInfo.totalFiles }} 个字幕</span>
-            <span class="subtitle-mini-chip"><Database :size="11" :stroke-width="2.4" />{{ view.formatFileSize(view.subtitleInspectorInfo.totalSize) }}</span>
+            <span class="subtitle-mini-chip subtitle-mini-chip-rj">{{ view.getTaskDisplayRJCode(view.activeSubtitleInspectTask) }}</span>
+            <span v-if="view.getTaskSourceRJCode(view.activeSubtitleInspectTask)" class="subtitle-mini-chip subtitle-mini-chip-source"><Link :size="11" :stroke-width="2.4" />来源 {{ view.getTaskSourceRJCode(view.activeSubtitleInspectTask) }}</span>
+            <span class="subtitle-mini-chip subtitle-mini-chip-audio"><Music :size="11" :stroke-width="2.4" />{{ view.subtitleInspectorAudioFiles.length }} 个音频</span>
+            <span class="subtitle-mini-chip subtitle-mini-chip-subtitle"><FileText :size="11" :stroke-width="2.4" />{{ view.subtitleInspectorInfo.totalFiles }} 个字幕</span>
+            <span class="subtitle-mini-chip subtitle-mini-chip-size"><Database :size="11" :stroke-width="2.4" />{{ view.formatFileSize(view.subtitleInspectorInfo.totalSize) }}</span>
           </div>
           <div v-if="view.activeSubtitleInspectTask" class="subtitle-tree-actions subtitle-tree-info-actions subtitle-tree-info-actions-bottom">
             <button
@@ -81,7 +81,7 @@
               :disabled="!view.canClearCurrentSubtitleTask?.(view.activeSubtitleInspectTask)"
               @click="view.clearCurrentSubtitleTask(view.activeSubtitleInspectTask)"
             >
-              <Trash2 :size="13" :stroke-width="2.2" /><span>清空当前任务</span>
+              <Trash2 class="workbench-icon-clean" :size="13" :stroke-width="2.2" /><span>清空当前任务</span>
             </button>
             <button
               class="workbench-pill-btn workbench-pill-warn"
@@ -109,17 +109,17 @@
           </div>
           <div class="subtitle-match-header-actions">
             <button class="workbench-pill-btn" @click="view.buildAutoSubtitlePairs">
-              <Wand2 :size="13" :stroke-width="2.2" /><span>自动预配对</span>
+              <Wand2 class="workbench-icon-auto" :size="13" :stroke-width="2.2" /><span>自动预配对</span>
             </button>
             <button :class="['workbench-pill-btn', view.subtitleSequenceMode ? 'workbench-pill-active' : '']" @click="view.setSubtitleSequenceMode(!view.subtitleSequenceMode)">
-              <MousePointerClick :size="13" :stroke-width="2.2" /><span>{{ view.subtitleSequenceMode ? '退出顺序点选' : '顺序点选配对' }}</span>
+              <MousePointerClick class="workbench-icon-sequence" :size="13" :stroke-width="2.2" /><span>{{ view.subtitleSequenceMode ? '退出顺序点选' : '顺序点选配对' }}</span>
             </button>
             <button
               class="workbench-pill-btn"
               :disabled="view.subtitleSequenceMode ? !view.canBuildSequenceSubtitlePairs : !view.filteredSubtitleInspectorAudioFiles.length || !view.filteredSubtitleInspectorSubtitleFiles.length"
               @click="view.buildSequenceOrOrderedSubtitlePairs"
             >
-              <ListOrdered :size="13" :stroke-width="2.2" /><span>{{ view.subtitleSequenceMode ? '生成顺序预配对' : '按当前列表预配对' }}</span>
+              <ListOrdered class="workbench-icon-list" :size="13" :stroke-width="2.2" /><span>{{ view.subtitleSequenceMode ? '生成顺序预配对' : '按当前列表预配对' }}</span>
             </button>
             <el-tooltip
               effect="light"
@@ -234,13 +234,10 @@
                 <div class="subtitle-match-pair-flow">
                   <div class="subtitle-match-flow-side subtitle-match-flow-source">
                     <span class="subtitle-match-flow-label">原始</span>
-                    <div class="subtitle-match-flow-line" :title="formatSubtitleName(pair.audio_name)">
-                      <Music :size="12" :stroke-width="2.2" class="subtitle-match-flow-icon subtitle-match-flow-icon-audio" />
-                      <span class="subtitle-match-flow-text">{{ formatSubtitleName(pair.audio_name) }}</span>
-                    </div>
-                    <div class="subtitle-match-flow-line" :title="formatSubtitleName(pair.subtitle_name)">
-                      <FileText :size="12" :stroke-width="2.2" class="subtitle-match-flow-icon subtitle-match-flow-icon-subtitle" />
-                      <span class="subtitle-match-flow-text">{{ formatSubtitleName(pair.subtitle_name) }}</span>
+                    <div class="subtitle-match-flow-line" :title="getSubtitlePairRenamePreview(pair).before">
+                      <Music v-if="getSubtitlePairRenamePreview(pair).kind === 'audio'" :size="12" :stroke-width="2.2" class="subtitle-match-flow-icon subtitle-match-flow-icon-audio" />
+                      <FileText v-else :size="12" :stroke-width="2.2" class="subtitle-match-flow-icon subtitle-match-flow-icon-subtitle" />
+                      <span class="subtitle-match-flow-text">{{ getSubtitlePairRenamePreview(pair).before }}</span>
                     </div>
                   </div>
                   <div class="subtitle-match-flow-arrow">
@@ -248,13 +245,10 @@
                   </div>
                   <div class="subtitle-match-flow-side subtitle-match-flow-target">
                     <span class="subtitle-match-flow-label">应用后</span>
-                    <div class="subtitle-match-flow-line" :title="pair.target_audio_name">
-                      <Music :size="12" :stroke-width="2.2" class="subtitle-match-flow-icon subtitle-match-flow-icon-audio" />
-                      <span class="subtitle-match-flow-text">{{ pair.target_audio_name }}</span>
-                    </div>
-                    <div class="subtitle-match-flow-line" :title="pair.target_subtitle_name">
-                      <FileText :size="12" :stroke-width="2.2" class="subtitle-match-flow-icon subtitle-match-flow-icon-subtitle" />
-                      <span class="subtitle-match-flow-text">{{ pair.target_subtitle_name }}</span>
+                    <div class="subtitle-match-flow-line" :title="getSubtitlePairRenamePreview(pair).after">
+                      <Music v-if="getSubtitlePairRenamePreview(pair).kind === 'audio'" :size="12" :stroke-width="2.2" class="subtitle-match-flow-icon subtitle-match-flow-icon-audio" />
+                      <FileText v-else :size="12" :stroke-width="2.2" class="subtitle-match-flow-icon subtitle-match-flow-icon-subtitle" />
+                      <span class="subtitle-match-flow-text">{{ getSubtitlePairRenamePreview(pair).after }}</span>
                     </div>
                   </div>
                 </div>
@@ -374,7 +368,7 @@
         </Transition>
 
         <div class="overflow-hidden rounded-[14px] border border-slate-200 bg-white shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
-          <div class="grid grid-cols-[40px_minmax(0,1fr)_96px_156px_112px] items-center gap-2 border-b border-slate-100 bg-slate-50/60 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-slate-500">
+          <div class="grid grid-cols-[40px_minmax(0,1fr)_96px_156px_112px] items-center gap-2 border-b border-slate-100 bg-slate-50/60 py-2 pl-3 pr-[29px] text-[11px] font-semibold uppercase tracking-[0.04em] text-slate-500">
             <div class="flex items-center justify-center">
               <input
                 type="checkbox"
@@ -388,7 +382,7 @@
             <div>文件名</div>
             <div>大小</div>
             <div>修改时间</div>
-            <div class="text-right">操作</div>
+            <div class="flex w-[60px] justify-center justify-self-end">操作</div>
           </div>
 
           <div class="max-h-[560px] overflow-auto [scrollbar-gutter:stable]">
@@ -430,7 +424,7 @@
                       :class="view.subtitleInspectorExpandedIds.has(row.id) ? 'rotate-90' : ''"
                     />
                   </button>
-                  <span v-else class="inline-block h-5 w-5 shrink-0"></span>
+                  <span v-else-if="row.depth > 0" class="inline-block h-5 w-5 shrink-0"></span>
                   <span
                     class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/row:rotate-[6deg] group-hover/row:scale-110"
                     :class="row.type === 'dir'
@@ -446,11 +440,11 @@
               </div>
               <div class="text-[12px] font-medium tabular-nums text-slate-600">{{ view.formatFileSize(row.size) }}</div>
               <div class="text-[12px] tabular-nums text-slate-500">{{ view.formatDate(row.modified_time) }}</div>
-              <div class="flex items-center justify-end gap-1" @click.stop>
+              <div class="flex w-[60px] items-center justify-center gap-1 justify-self-end" @click.stop>
                 <el-tooltip v-if="row.type === 'file'" effect="light" placement="top" content="重命名">
                   <button
                     type="button"
-                    class="group/act inline-flex h-7 w-7 items-center justify-center rounded-[7px] border border-slate-200 bg-white text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.08] hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 hover:shadow-[0_4px_10px_rgba(79,70,229,0.15)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
+                    class="group/act inline-flex h-7 w-7 items-center justify-center rounded-[7px] border border-sky-100 bg-white text-sky-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.08] hover:border-sky-300 hover:bg-white active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
                     :disabled="view.subtitleInspectorBusy"
                     @click="view.openSubtitleRenameDialog(row)"
                   >
@@ -460,7 +454,7 @@
                 <el-tooltip effect="light" placement="top" content="删除">
                   <button
                     type="button"
-                    class="group/act inline-flex h-7 w-7 items-center justify-center rounded-[7px] border border-slate-200 bg-white text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.08] hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 hover:shadow-[0_4px_10px_rgba(244,63,94,0.15)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
+                    class="group/act inline-flex h-7 w-7 items-center justify-center rounded-[7px] border border-rose-100 bg-white text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.08] hover:border-rose-300 hover:bg-white active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
                     :disabled="view.subtitleInspectorBusy"
                     @click="view.deleteSubtitleTreeEntry(row)"
                   >
@@ -576,6 +570,22 @@ function formatSubtitleName(name = '') {
 function formatSubtitleItemName(item = {}) {
   return formatSubtitleName(item?.display_name || item?.name || '')
 }
+
+function getSubtitlePairRenamePreview(pair = {}) {
+  const strategy = String(view.value.subtitleNamingStrategy || pair.naming_strategy || 'audio')
+  if (strategy === 'subtitle') {
+    return {
+      kind: 'audio',
+      before: formatSubtitleName(pair.audio_name || ''),
+      after: formatSubtitleName(pair.target_audio_name || pair.audio_name || '')
+    }
+  }
+  return {
+    kind: 'subtitle',
+    before: formatSubtitleName(pair.subtitle_name || ''),
+    after: formatSubtitleName(pair.target_subtitle_name || pair.subtitle_name || '')
+  }
+}
 </script>
 
 <style scoped>
@@ -600,7 +610,7 @@ function formatSubtitleItemName(item = {}) {
   border: 1px solid #e2e8f0;
   border-radius: 18px;
   background: #ffffff;
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+  box-shadow: none;
 }
 .subtitle-tree-card :deep(.el-card__header) {
   padding: 0;
@@ -618,12 +628,18 @@ function formatSubtitleItemName(item = {}) {
   width: 28px;
   height: 28px;
   border-radius: 10px;
-  background: linear-gradient(135deg, rgba(241, 245, 249, 0.98), rgba(226, 232, 240, 0.94));
-  color: #475569;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.8);
+  background: #ffffff;
+  color: #0078d4;
+  border: 1px solid #e2e8f0;
+  box-shadow: none;
   transition: transform .3s var(--ease-spring), box-shadow .3s var(--ease-spring);
 }
-.subtitle-section-icon-match { background: linear-gradient(135deg, rgba(241, 245, 249, 0.98), rgba(226, 232, 240, 0.94)); color: #475569; }
+.subtitle-section-icon-match {
+  background: #ffffff;
+  color: #0078d4;
+  border-color: #e2e8f0;
+  box-shadow: none;
+}
 .subtitle-section-heading:hover .subtitle-section-icon { transform: rotate(-4deg) scale(1.06); }
 .subtitle-section-tip {
   font-family: 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', sans-serif;
@@ -685,6 +701,21 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-mini-chip-accent:hover :deep(svg),
 .subtitle-mini-chip-accent:hover svg { color: #f1f5f9; }
 
+.subtitle-mini-chip-rj {
+  background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
+  color: #ffffff;
+  border-color: #0f172a;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.14);
+}
+.subtitle-mini-chip-source svg { color: #0078d4; opacity: 1; }
+.subtitle-mini-chip-audio svg { color: #00a2ed; opacity: 1; }
+.subtitle-mini-chip-subtitle svg { color: #7f56d9; opacity: 1; }
+.subtitle-mini-chip-size svg { color: #107c10; opacity: 1; }
+.subtitle-mini-chip-source:hover { border-color: #bae6fd; box-shadow: 0 6px 14px rgba(0, 120, 212, 0.12); }
+.subtitle-mini-chip-audio:hover { border-color: #bae6fd; box-shadow: 0 6px 14px rgba(0, 162, 237, 0.12); }
+.subtitle-mini-chip-subtitle:hover { border-color: #ddd6fe; box-shadow: 0 6px 14px rgba(127, 86, 217, 0.12); }
+.subtitle-mini-chip-size:hover { border-color: #bbf7d0; box-shadow: 0 6px 14px rgba(16, 124, 16, 0.12); }
+
 /* --- Icon action buttons ------------------------------------ */
 .workbench-icon-btn {
   appearance: none;
@@ -740,14 +771,22 @@ function formatSubtitleItemName(item = {}) {
 .workbench-primary-btn svg { transition: transform .3s var(--ease-spring), color .3s var(--ease-spring); }
 .workbench-pill-btn > svg,
 .workbench-pill-btn :deep(> svg) { color: #94a3b8; }
+.workbench-pill-btn > .workbench-icon-clean,
+.workbench-pill-btn :deep(> .workbench-icon-clean) { color: #0078d4; }
+.workbench-pill-btn > .workbench-icon-auto,
+.workbench-pill-btn :deep(> .workbench-icon-auto) { color: #107c10; }
+.workbench-pill-btn > .workbench-icon-sequence,
+.workbench-pill-btn :deep(> .workbench-icon-sequence) { color: #0078d4; }
+.workbench-pill-btn > .workbench-icon-list,
+.workbench-pill-btn :deep(> .workbench-icon-list) { color: #d97706; }
 .workbench-pill-btn:hover:not(:disabled) {
   border-color: #cbd5e1;
   color: #0f172a;
-  background: #f8fafc;
+  background: #ffffff;
   transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+  box-shadow: none;
 }
-.workbench-pill-btn:hover:not(:disabled) svg { transform: scale(1.15) rotate(-4deg); color: #475569; }
+.workbench-pill-btn:hover:not(:disabled) svg { transform: scale(1.15) rotate(-4deg); }
 .workbench-pill-btn:active:not(:disabled) { transform: scale(0.96); }
 .workbench-pill-btn.workbench-pill-active {
   background: #0f172a;
@@ -890,8 +929,8 @@ function formatSubtitleItemName(item = {}) {
   gap: 12px;
   padding: 18px 20px;
   border-radius: 20px;
-  background: #f5f5f7;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
   box-shadow: none;
 }
 .subtitle-tree-info-top { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
@@ -905,9 +944,10 @@ function formatSubtitleItemName(item = {}) {
   width: 42px;
   height: 42px;
   border-radius: 14px;
-  background: #ffffff;
-  color: #6e6e73;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  background: linear-gradient(135deg, #fff7ed, #ffffff);
+  color: #f59e0b;
+  border: 1px solid #fed7aa;
+  box-shadow: none;
   transition: transform .3s var(--ease-spring);
 }
 .subtitle-tree-info:hover .subtitle-tree-info-icon { transform: rotate(-6deg) scale(1.05); }
@@ -997,9 +1037,9 @@ function formatSubtitleItemName(item = {}) {
   align-items: center;
   flex-wrap: wrap;
   padding: 16px 18px;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  border: 1px solid #e2e8f0;
   border-radius: 18px;
-  background: #f5f5f7;
+  background: #ffffff;
   box-shadow: none;
 }
 .subtitle-match-header-title { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
@@ -1010,14 +1050,14 @@ function formatSubtitleItemName(item = {}) {
   display: inline-flex;
   gap: 8px;
   align-items: flex-start;
-  border: 1px dashed rgba(148, 163, 184, 0.6);
+  border: 1px dashed #cbd5e1;
   border-radius: 16px;
-  background: linear-gradient(135deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.94));
+  background: #ffffff;
   font-size: 13px;
   line-height: 1.6;
   color: #64748b;
 }
-.subtitle-sequence-hint svg { flex: 0 0 auto; margin-top: 2px; color: #64748b; }
+.subtitle-sequence-hint svg { flex: 0 0 auto; margin-top: 2px; color: #0078d4; }
 .subtitle-match-done-alert {
   display: flex;
   align-items: center;
@@ -1025,32 +1065,26 @@ function formatSubtitleItemName(item = {}) {
   margin-top: -2px;
   padding: 12px 14px;
   border-radius: 14px;
-  border: none;
-  background: #f5f5f7;
+  border: 1px solid #bbf7d0;
+  background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);
   color: #1d1d1f;
   font-size: 13px;
   line-height: 1.6;
   box-shadow: none;
 }
-.subtitle-match-done-alert svg { flex: 0 0 auto; }
+.subtitle-match-done-alert svg { flex: 0 0 auto; color: #107c10; }
 
 .subtitle-match-layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.5fr) minmax(0, 1.05fr); gap: 18px; align-items: stretch; }
 .subtitle-match-panel, .subtitle-match-center {
   min-width: 0;
-  border: none;
+  border: 1px solid #e2e8f0;
   border-radius: 20px;
-  background: #f5f5f7;
+  background: #ffffff;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   box-shadow: none;
-  transition: transform .25s var(--ease-spring), background-color .25s ease;
-}
-.subtitle-match-panel:hover,
-.subtitle-match-center:hover {
-  transform: translateY(-2px);
-  background: #f0f0f2;
 }
 .subtitle-match-panel-audio,
 .subtitle-match-panel-subtitle,
@@ -1062,7 +1096,7 @@ function formatSubtitleItemName(item = {}) {
   align-items: flex-start;
   flex-wrap: wrap;
   padding-bottom: 12px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.08);
+  border-bottom: 1px solid #e2e8f0;
 }
 .subtitle-match-preview-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; }
 .subtitle-match-panel-tools, .subtitle-match-preview-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -1096,12 +1130,15 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-match-list, .subtitle-match-pair-list {
   display: grid;
   gap: 10px;
+  min-width: 0;
   min-height: 440px;
   max-height: 680px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 6px;
   align-content: start;
   grid-auto-rows: max-content;
+  scrollbar-gutter: stable;
 }
 .subtitle-match-list::-webkit-scrollbar,
 .subtitle-match-pair-list::-webkit-scrollbar { width: 6px; }
@@ -1110,8 +1147,10 @@ function formatSubtitleItemName(item = {}) {
 
 .subtitle-match-item, .subtitle-match-pair {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   text-align: left;
-  border: none;
+  border: 1px solid #edf2f7;
   border-radius: 16px;
   background: #ffffff;
   padding: 10px 12px;
@@ -1120,32 +1159,44 @@ function formatSubtitleItemName(item = {}) {
   position: relative;
   box-shadow: none;
 }
-.subtitle-match-item::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 12px;
-  bottom: 12px;
-  width: 4px;
-  border-radius: 999px;
-  background: transparent;
-  transition: background .3s var(--ease-spring);
-}
-.subtitle-match-panel-audio .subtitle-match-item.active::before { background: var(--audio-accent); }
-.subtitle-match-panel-subtitle .subtitle-match-item.active::before { background: var(--subtitle-accent); }
 .subtitle-match-item:hover, .subtitle-match-pair:hover {
-  background: #fbfbfd;
+  border-color: #dbe4ee;
+  background: #ffffff;
   transform: translateY(-2px) scale(1.02);
+  box-shadow: none;
 }
 .subtitle-match-item:active, .subtitle-match-pair:active { transform: scale(0.98); }
-.subtitle-match-item.active, .subtitle-match-pair.active {
-  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.14), 0 8px 20px rgba(0, 113, 227, 0.08);
-  background: linear-gradient(180deg, #f7fbff 0%, #eef6ff 100%);
+.subtitle-match-item.active {
+  border-color: #0f172a;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.24), inset 0 0 0 1px rgba(15, 23, 42, 0.14);
 }
-.subtitle-match-item.paired { background: #ffffff; }
+.subtitle-match-item.queued {
+  border-color: #cbd5e1;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.10);
+}
+.subtitle-match-item.paired,
+.subtitle-match-pair.active {
+  border-color: #cbd5e1;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06);
+}
+.subtitle-match-item.active.queued {
+  border-color: #0f172a;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.24), inset 0 0 0 1px rgba(15, 23, 42, 0.14);
+}
+.subtitle-match-item.active.paired {
+  border-color: #0f172a;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.24), inset 0 0 0 1px rgba(15, 23, 42, 0.14);
+}
 .subtitle-match-item.suspicious,
-.subtitle-match-pair.suspicious { background: #fffaf1; }
-.subtitle-match-item.queued { background: #fbfbfd; }
+.subtitle-match-pair.suspicious {
+  border-color: #fed7aa;
+  background: #ffffff;
+}
 .subtitle-match-name {
   display: flex;
   gap: 8px;
@@ -1177,9 +1228,9 @@ function formatSubtitleItemName(item = {}) {
   border: 1px solid transparent;
   line-height: 1.3;
 }
-.badge-paired { background: #e9f7ef; color: #2f9158; border-color: #bfe3ca; }
-.badge-low { background: #fff4de; color: #b97714; border-color: #f4d58d; }
-.badge-seq { background: #eef2f7; color: #475569; border-color: #d7e0ea; }
+.badge-paired { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }
+.badge-low { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
+.badge-seq { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
 .subtitle-match-empty {
   min-height: 220px;
   border: 1px dashed #d5dfed;
@@ -1196,36 +1247,38 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-card-tip { font-size: 12px; color: #8394aa; }
 
 /* --- Pair card internal: confidence head + source->target flow --- */
-.subtitle-match-pair-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.subtitle-match-pair-head { display: flex; justify-content: space-between; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .subtitle-match-pair-head-left { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .subtitle-match-pair-confidence,
 .subtitle-match-pair-track {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  border-radius: 8px;
-  padding: 4px 9px;
+  border-radius: 7px;
+  padding: 3px 7px;
   border: 1px solid transparent;
   line-height: 1.35;
 }
-.confidence-high { background: #e8f7ed; color: #2f8f57; border-color: #bfe3ca; }
-.confidence-medium { background: #eef2f7; color: #475569; border-color: #d7e0ea; }
-.confidence-low { background: #fff4de; color: #b97714; border-color: #f4d58d; }
-.subtitle-match-pair-track { color: #475569; background: #eef2f7; border-color: #d7e0ea; }
-.subtitle-match-pair-reason { font-size: 11px; color: rgba(0, 0, 0, 0.48); letter-spacing: -0.12px; }
+.confidence-high { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }
+.confidence-medium { background: #f8fafc; color: #475569; border-color: #e2e8f0; }
+.confidence-low { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
+.subtitle-match-pair-track { color: #166534; background: #f0fdf4; border-color: #dcfce7; }
+.subtitle-match-pair-reason { font-size: 10px; color: rgba(0, 0, 0, 0.48); letter-spacing: -0.12px; }
 
 .subtitle-match-pair-flow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  padding: 10px;
-  border-radius: 14px;
-  background: #f5f5f7;
-  border: none;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  align-items: stretch;
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 9px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
 }
-.subtitle-match-flow-side { display: grid; gap: 6px; min-width: 0; }
+.subtitle-match-flow-side { display: grid; gap: 4px; min-width: 0; }
 .subtitle-match-flow-label {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1234,34 +1287,43 @@ function formatSubtitleItemName(item = {}) {
 .subtitle-match-flow-source .subtitle-match-flow-label { color: #8a97aa; }
 .subtitle-match-flow-target .subtitle-match-flow-label { color: #64748b; }
 .subtitle-match-flow-line {
-  display: inline-flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
   gap: 6px;
-  font-size: 11px;
-  line-height: 1.45;
+  align-items: flex-start;
+  font-size: 10.5px;
+  line-height: 1.35;
   color: #1d1d1f;
   min-width: 0;
 }
 .subtitle-match-flow-target .subtitle-match-flow-line { color: #1d1d1f; font-weight: 600; }
-.subtitle-match-flow-icon { flex: 0 0 auto; }
+.subtitle-match-flow-icon { flex: 0 0 auto; margin-top: 1px; }
 .subtitle-match-flow-icon-audio { color: var(--audio-accent); }
 .subtitle-match-flow-icon-subtitle { color: var(--subtitle-accent); }
-.subtitle-match-flow-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.subtitle-match-flow-text {
+  min-width: 0;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-all;
+  display: block;
+}
 .subtitle-match-flow-arrow {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 20px;
+  height: 20px;
   border-radius: 999px;
   color: rgba(29, 29, 31, 0.72);
-  background: #ffffff;
+  background: #f8fafc;
   justify-self: center;
   align-self: center;
+  transform: rotate(90deg);
 }
-.subtitle-match-pair:hover .subtitle-match-flow-arrow { animation: subtitle-arrow-nudge 0.9s var(--ease-spring) infinite alternate; }
-@keyframes subtitle-arrow-nudge { from { transform: translateX(0); } to { transform: translateX(3px); } }
-.subtitle-match-row-actions { margin-top: 4px; display: flex; justify-content: flex-end; }
+.subtitle-match-pair:hover .subtitle-match-flow-arrow { animation: subtitle-arrow-nudge-vertical 0.9s var(--ease-spring) infinite alternate; }
+@keyframes subtitle-arrow-nudge-vertical { from { transform: rotate(90deg) translateX(0); } to { transform: rotate(90deg) translateX(2px); } }
+.subtitle-match-row-actions { margin-top: 2px; display: flex; justify-content: flex-end; }
 
 /* --- Tree (bottom file list) --------------------------------- */
 .subtitle-tree-toolbar { display: flex; justify-content: flex-end; }
@@ -1294,7 +1356,7 @@ function formatSubtitleItemName(item = {}) {
   min-height: 38px;
   padding: 0 14px;
   border-bottom: 1px solid #e8edf5;
-  background: linear-gradient(180deg, #f8fafc 0%, #f2f5f9 100%);
+  background: #ffffff;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -1312,7 +1374,7 @@ function formatSubtitleItemName(item = {}) {
 .fm-row:hover { background: #f7fbff; }
 .fm-row:last-child { border-bottom: none; }
 .fm-row-dir { background: #fafbfd; }
-.fm-row-selected { background: linear-gradient(90deg, rgba(226, 232, 240, 0.72), rgba(248, 250, 252, 0.96)) !important; box-shadow: inset 3px 0 0 #94a3b8; }
+.fm-row-selected { background: linear-gradient(90deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.98)) !important; box-shadow: inset 3px 0 0 #0078d4; }
 .fm-empty { display: flex; align-items: center; justify-content: center; min-height: 180px; color: #a2b0c2; font-size: 13px; }
 .fm-col-name, .fm-col-size, .fm-col-time, .fm-col-action { min-width: 0; }
 .fm-col-size, .fm-col-time { font-variant-numeric: tabular-nums; color: var(--apple-text-soft); font-size: 12px; }

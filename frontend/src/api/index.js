@@ -230,8 +230,17 @@ export const passwordApi = {
 }
 
 export const logApi = {
-  get: async (lines = 100) => {
-    const response = await apiClient.get('/logs', { params: { lines } })
+  get: async (lines = 100, sinceOffset = -1) => {
+    const params = { lines }
+    if (sinceOffset >= 0) params.since_offset = sinceOffset
+    const response = await apiClient.get('/logs', { params })
+    return response.data
+  },
+  search: async (q = '', levels = [], limit = 3000, cursor = 0) => {
+    const params = { limit, cursor }
+    if (q) params.q = q
+    if (levels.length) params.levels = levels.join(',')
+    const response = await apiClient.get('/logs/search', { params })
     return response.data
   }
 }

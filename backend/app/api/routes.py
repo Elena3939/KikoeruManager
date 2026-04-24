@@ -1784,10 +1784,15 @@ async def import_passwords_from_text(request: Request):
         db.close()
 
 @app.get("/api/logs")
-async def get_logs(lines: int = 100):
-    """获取日志文件内容"""
+async def get_logs(lines: int = 100, since_offset: int = -1):
+    """获取日志文件内容。
+
+    - ``since_offset=-1``：全量模式，返回末尾 lines 条日志及当前文件字节偏移量。
+    - ``since_offset>=0``：增量模式，仅返回该字节偏移后的新内容（文件未轮转时）。
+      若文件已轮转（size < since_offset），自动退回全量模式。
+    响应格式：``{ "logs": [...], "next_offset": N, "is_full": bool }``
+    """
     import os
-    from collections import deque
     log_dir = os.environ.get('DATA_PATH', './data')
     log_files = [
         os.path.join(log_dir, 'app.log'),
@@ -1795,19 +1800,122 @@ async def get_logs(lines: int = 100):
     ]
     log_file = next((path for path in log_files if os.path.exists(path)), None)
     if not log_file:
-        return {"logs": []}
-    
+        return {"logs": [], "next_offset": 0, "is_full": True}
+
     try:
         line_limit = max(50, min(int(lines or 100), 5000))
         _log_file = log_file
+
         def _read_log():
-            with open(_log_file, 'r', encoding='utf-8', errors='ignore') as _f:
-                return list(deque((_l.strip() for _l in _f if _l.strip()), maxlen=line_limit))
-        return {"logs": await asyncio.to_thread(_read_log)}
+            file_size = os.path.getsize(_log_file)
+            with open(_log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                # 增量模式：文件未轮转且有新内容
+                if 0 <= since_offset <= file_size:
+                    if since_offset == file_size:
+                        return {"logs": [], "next_offset": file_size, "is_full": False}
+                    f.seek(since_offset)
+                    new_lines = [l.strip() for l in f.read().splitlines() if l.strip()]
+                    return {"logs": new_lines, "next_offset": file_size, "is_full": False}
+
+            # 全量模式：首次请求或文件已轮转
+            # 使用二进制反向块读取，仅扫描文件尾部，避免超大日志全文件遍历。
+            def _tail_lines(path: str, n: int):
+                if n <= 0:
+                    return []
+                chunk_size = 64 * 1024
+                data = b''
+                with open(path, 'rb') as bf:
+                    bf.seek(0, os.SEEK_END)
+                    pos = bf.tell()
+                    lines_found = 0
+                    while pos > 0 and lines_found <= n * 2:
+                        read_size = chunk_size if pos >= chunk_size else pos
+                        pos -= read_size
+                        bf.seek(pos)
+                        block = bf.read(read_size)
+                        data = block + data
+                        lines_found = data.count(b'\n')
+                        if lines_found >= n + 1:
+                            break
+                text = data.decode('utf-8', errors='ignore')
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
+                return lines[-n:]
+
+            result = _tail_lines(_log_file, line_limit)
+            return {"logs": result, "next_offset": file_size, "is_full": True}
+
+        return await asyncio.to_thread(_read_log)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
 
 @app.get("/api/conflicts")
+@app.get("/api/logs/search")
+async def search_logs(q: str = '', levels: str = '', limit: int = 3000, cursor: int = 0):
+    """在完整日志文件中全文检索，不受 tail 行数限制。
+
+    - ``q``：关键词（大小写不敏感，空则不过滤）
+    - ``levels``：逗号分隔的级别列表，如 ``INFO,ERROR``（空则不过滤）
+        - ``limit``：单页返回条数（默认 3000，上限 20000）
+        - ``cursor``：匹配游标偏移（默认 0）
+        响应格式：
+            ``{ "logs": [...], "total_matched": N, "next_cursor": M, "has_more": bool }``
+    """
+    import os, re as _re
+    log_dir = os.environ.get('DATA_PATH', './data')
+    log_files = [
+        os.path.join(log_dir, 'app.log'),
+        os.path.join(log_dir, 'desktop_app.log'),
+    ]
+    log_file = next((path for path in log_files if os.path.exists(path)), None)
+    if not log_file:
+        return {"logs": [], "total_matched": 0, "next_cursor": 0, "has_more": False}
+
+    try:
+        max_limit = max(100, min(int(limit or 3000), 20000))
+        safe_cursor = max(0, int(cursor or 0))
+        kw = q.strip().lower() if q else ''
+        lvl_set = {v.strip().upper() for v in levels.split(',') if v.strip()} if levels else set()
+        _log_file = log_file
+
+        _lvl_re = _re.compile(
+            r'^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]'
+            r'|^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-'
+        )
+
+        def _search():
+            results = []
+            total = 0
+            with open(_log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    # 级别过滤
+                    if lvl_set:
+                        m = _lvl_re.match(line)
+                        lvl = (m.group(2) or m.group(4) or '').upper() if m else 'INFO'
+                        if lvl not in lvl_set:
+                            continue
+                    # 关键词过滤
+                    if kw and kw not in line.lower():
+                        continue
+                    total += 1
+                    if total <= safe_cursor:
+                        continue
+                    if len(results) < max_limit:
+                        results.append(line)
+            next_cursor = safe_cursor + len(results)
+            return {
+                "logs": results,
+                "total_matched": total,
+                "next_cursor": next_cursor,
+                "has_more": next_cursor < total,
+            }
+
+        return await asyncio.to_thread(_search)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"日志检索失败: {str(e)}")
+
 async def get_conflicts():
     """获取问题作品列表"""
     from ..core.conflict_resolution_service import get_conflict_resolution_service
@@ -6451,7 +6559,7 @@ async def rj_subtitle_manual_complete(
             naming_strategy = str(request.naming_strategy or crawl_detail.get("naming_strategy") or "audio").lower()
             rj_log = fallback_rjcode or str(fallback_crawl_row.rjcode or "").strip().upper()
             source_path = fallback_folder_path or str(fallback_crawl_row.source_path or "").strip()
-            summary_parts = [f"后处理完成，已应用 {applied_pairs} 组配对"]
+            summary_parts = [f"已应用 {applied_pairs} 组配对"]
             if deleted_subtitles:
                 summary_parts.append(f"删除 {deleted_subtitles} 个未使用字幕")
             summary = "，".join(summary_parts)
@@ -6492,7 +6600,7 @@ async def rj_subtitle_manual_complete(
         task.task_metadata["manual_match_deleted_subtitles"] = deleted_subtitles
         task.task_metadata["naming_strategy"] = naming_strategy
 
-        summary_parts = [f"后处理完成，已应用 {applied_pairs} 组配对"]
+        summary_parts = [f"已应用 {applied_pairs} 组配对"]
         if deleted_subtitles:
             summary_parts.append(f"删除 {deleted_subtitles} 个未使用字幕")
         if linked_finalize_result.get("applied"):
@@ -6513,7 +6621,7 @@ async def rj_subtitle_manual_complete(
             "level": "success",
             "message": summary,
         })
-        task.task_metadata["progress_log"] = logs[-30:]
+        task.task_metadata["progress_log"] = logs
 
         try:
             from ..core.activity_log_service import log_subtitle_pair_complete, log_subtitle_import_action

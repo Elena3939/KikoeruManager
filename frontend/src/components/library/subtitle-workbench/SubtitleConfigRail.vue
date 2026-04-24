@@ -74,10 +74,25 @@
                 <div class="subtitle-option-title">同名依据</div>
                 <div class="subtitle-card-tip">一键应用后，以谁的名字为准。</div>
               </div>
-              <el-radio-group :model-value="ctx.subtitleOptions.namingStrategy" size="small" @update:model-value="ctx.setSubtitleOption('namingStrategy', $event)">
-                <el-radio-button label="audio">以音频名为准</el-radio-button>
-                <el-radio-button label="subtitle">以字幕名为准</el-radio-button>
-              </el-radio-group>
+              <div class="subtitle-naming-switch" role="radiogroup" aria-label="同名依据">
+                <button
+                  v-for="option in namingOptions"
+                  :key="option.value"
+                  type="button"
+                  class="group/naming subtitle-naming-option"
+                  :class="{ active: ctx.subtitleOptions.namingStrategy === option.value }"
+                  role="radio"
+                  :aria-checked="ctx.subtitleOptions.namingStrategy === option.value"
+                  @click="ctx.setSubtitleOption('namingStrategy', option.value)"
+                >
+                  <component
+                    :is="option.icon"
+                    :class="['h-[13px] w-[13px] shrink-0 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/naming:scale-110 group-hover/naming:rotate-[8deg]', option.color]"
+                    :stroke-width="2.4"
+                  />
+                  <span>{{ option.label }}</span>
+                </button>
+              </div>
             </div>
 
             <div class="subtitle-setting-item">
@@ -97,10 +112,10 @@
               </div>
               <button
                 type="button"
-                class="group/btn inline-flex shrink-0 items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-900 hover:bg-slate-900 hover:text-white hover:shadow-[0_8px_16px_rgba(15,23,42,0.18)] active:scale-[0.96]"
-                @click="ctx.addSubtitleFilterRule()"
+                class="group/btn inline-flex shrink-0 items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:text-slate-900 active:scale-[0.96]"
+                @click="handleAddSubtitleFilterRule"
               >
-                <Plus class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:rotate-[90deg] group-hover/btn:scale-110" :stroke-width="2.4" />
+                <Plus class="h-[13px] w-[13px] text-sky-600 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:rotate-[90deg] group-hover/btn:scale-110" :stroke-width="2.4" />
                 <span>添加规则</span>
               </button>
             </div>
@@ -111,27 +126,65 @@
             </div>
 
             <div v-else class="subtitle-filter-list">
-              <div v-for="rule in ctx.subtitleOptions.subtitleFilterRules" :key="rule.id" class="subtitle-filter-row">
-                <div class="subtitle-filter-row-top">
-                  <el-select v-model="rule.target" size="small" class="subtitle-filter-target">
+              <button
+                v-for="(rule, index) in ctx.subtitleOptions.subtitleFilterRules"
+                :key="rule.id"
+                type="button"
+                class="subtitle-filter-row"
+                :class="{ active: activeFilterRuleKey === getFilterRuleKey(rule, index) }"
+                @click="activeFilterRuleKey = getFilterRuleKey(rule, index)"
+              >
+                <span class="subtitle-filter-index">{{ index + 1 }}</span>
+                <span class="min-w-0 flex-1">
+                  <span class="subtitle-filter-summary-title">{{ String(rule.name || '').trim() || `规则 ${index + 1}` }}</span>
+                  <span class="subtitle-filter-summary-pattern">{{ String(rule.pattern || '').trim() || '尚未填写正则' }}</span>
+                </span>
+                <span class="subtitle-filter-state" :class="{ off: rule.enabled === false }">{{ rule.enabled === false ? '停用' : '启用' }}</span>
+              </button>
+            </div>
+
+            <div v-if="activeSubtitleFilterRule" class="subtitle-filter-detail">
+              <div class="subtitle-filter-detail-head">
+                <div>
+                  <div class="subtitle-filter-detail-title">编辑 {{ activeSubtitleFilterRuleIndex + 1 }} 号规则</div>
+                  <div class="subtitle-card-tip">完整填写规则名和正则，列表只保留摘要。</div>
+                </div>
+                <el-switch v-model="activeSubtitleFilterRule.enabled" size="small" />
+              </div>
+              <div class="subtitle-filter-form-grid">
+                <label class="subtitle-filter-field">
+                  <span>匹配范围</span>
+                  <el-select v-model="activeSubtitleFilterRule.target" size="small" class="subtitle-filter-target">
                     <el-option label="文件名" value="name" />
                     <el-option label="路径" value="path" />
                     <el-option label="全部" value="all" />
                   </el-select>
-                  <el-switch v-model="rule.enabled" size="small" />
-                </div>
-                <el-input v-model="rule.name" size="small" placeholder="规则名称" />
-                <el-input v-model="rule.pattern" size="small" placeholder="正则，例如 (反转|reverse|无SE)" />
-                <div class="subtitle-filter-row-actions">
-                  <button
-                    type="button"
-                    class="group/btn inline-flex items-center gap-1 rounded-[8px] border border-rose-200 bg-white px-2.5 py-1 text-[11.5px] font-semibold text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-500 hover:bg-rose-500 hover:text-white hover:shadow-[0_8px_16px_rgba(244,63,94,0.25)] active:scale-[0.96]"
-                    @click="ctx.removeSubtitleFilterRule(rule.id)"
-                  >
-                    <Trash2 class="h-[12px] w-[12px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:rotate-[-12deg] group-hover/btn:scale-110" :stroke-width="2.4" />
-                    <span>删除</span>
-                  </button>
-                </div>
+                </label>
+                <label class="subtitle-filter-field">
+                  <span>规则名称</span>
+                  <el-input v-model="activeSubtitleFilterRule.name" size="small" placeholder="例如：反转版" />
+                </label>
+                <label class="subtitle-filter-field subtitle-filter-field-full">
+                  <span>正则表达式</span>
+                  <el-input
+                    v-model="activeSubtitleFilterRule.pattern"
+                    size="small"
+                    type="textarea"
+                    :autosize="{ minRows: 2, maxRows: 4 }"
+                    placeholder="例如 (反转|reverse|無SE)"
+                  />
+                </label>
+              </div>
+              <div class="subtitle-filter-row-actions">
+                <span class="subtitle-filter-target-badge">{{ getFilterRuleTargetLabel(activeSubtitleFilterRule.target) }}</span>
+                <button
+                  type="button"
+                  class="group/btn inline-flex items-center gap-1 rounded-[8px] border border-rose-200 bg-white px-2.5 py-1 text-[11.5px] font-semibold text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-300 active:scale-[0.96]"
+                  @click="removeActiveSubtitleFilterRule"
+                >
+                  <Trash2 class="h-[12px] w-[12px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:rotate-[-12deg] group-hover/btn:scale-110" :stroke-width="2.4" />
+                  <span>删除当前规则</span>
+                </button>
               </div>
             </div>
           </div>
@@ -322,7 +375,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import {
   Gauge,
   Zap,
@@ -360,6 +413,8 @@ const props = defineProps({
   }
 })
 
+const activeFilterRuleKey = ref('')
+
 const pairingRows = computed(() => [
   { key: 'audio', label: '音频轨', icon: Music, color: 'text-sky-600', value: props.ctx?.pairingAudioSelectedCount || 0 },
   { key: 'subtitle', label: '字幕轨', icon: FileText, color: 'text-violet-600', value: props.ctx?.pairingSubtitleSelectedCount || 0 },
@@ -377,6 +432,53 @@ const displayPills = [
   { key: 'showDownloadedFiles', label: '下载进度', icon: Download, color: 'text-indigo-600' },
   { key: 'showIssues', label: '问题项', icon: AlertCircle, color: 'text-amber-600' }
 ]
+
+const namingOptions = [
+  { value: 'audio', label: '以音频名为准', icon: Music, color: 'text-sky-600' },
+  { value: 'subtitle', label: '以字幕名为准', icon: FileText, color: 'text-violet-600' }
+]
+
+const activeSubtitleFilterRuleIndex = computed(() => {
+  const rules = props.ctx?.subtitleOptions?.subtitleFilterRules || []
+  if (!rules.length) return -1
+  const index = rules.findIndex((rule, idx) => getFilterRuleKey(rule, idx) === activeFilterRuleKey.value)
+  return index >= 0 ? index : 0
+})
+
+const activeSubtitleFilterRule = computed(() => {
+  const rules = props.ctx?.subtitleOptions?.subtitleFilterRules || []
+  return activeSubtitleFilterRuleIndex.value >= 0 ? rules[activeSubtitleFilterRuleIndex.value] : null
+})
+
+function getFilterRuleKey(rule, index) {
+  return rule?.id || `rule-${index}`
+}
+
+function getFilterRuleTargetLabel(target) {
+  if (target === 'path') return '路径'
+  if (target === 'all') return '全部'
+  return '文件名'
+}
+
+function handleAddSubtitleFilterRule() {
+  props.ctx?.addSubtitleFilterRule?.()
+  nextTick(() => {
+    const rules = props.ctx?.subtitleOptions?.subtitleFilterRules || []
+    const lastIndex = rules.length - 1
+    if (lastIndex >= 0) activeFilterRuleKey.value = getFilterRuleKey(rules[lastIndex], lastIndex)
+  })
+}
+
+function removeActiveSubtitleFilterRule() {
+  const rule = activeSubtitleFilterRule.value
+  if (!rule?.id) return
+  props.ctx?.removeSubtitleFilterRule?.(rule.id)
+  nextTick(() => {
+    const rules = props.ctx?.subtitleOptions?.subtitleFilterRules || []
+    const nextIndex = Math.min(activeSubtitleFilterRuleIndex.value, rules.length - 1)
+    activeFilterRuleKey.value = nextIndex >= 0 ? getFilterRuleKey(rules[nextIndex], nextIndex) : ''
+  })
+}
 </script>
 
 <style scoped>
@@ -435,50 +537,53 @@ const displayPills = [
   box-shadow: inset 0 0 0 1px #7ea8d8, 0 0 0 3px rgba(114, 157, 208, 0.16);
 }
 
-.subtitle-config-card :deep(.el-radio-group) {
-  display: flex;
+.subtitle-naming-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
   width: 100%;
-  gap: 0;
-  padding: 4px;
-  border-radius: 12px;
-  background: #f1f5f9;
+  padding: 5px;
   border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: none;
 }
 
-.subtitle-config-card :deep(.el-radio-button) {
-  flex: 1;
-}
-
-.subtitle-config-card :deep(.el-radio-button__inner) {
-  width: 100%;
-  border-radius: 8px !important;
-  border: 1px solid transparent !important;
-  background: transparent !important;
-  color: #64748b !important;
-  box-shadow: none !important;
-  padding: 7px 10px !important;
-  font-size: 12px !important;
-  font-weight: 600;
+.subtitle-naming-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
   transition: all 0.28s var(--ease-spring);
 }
 
-.subtitle-config-card :deep(.el-radio-button__inner:hover) {
-  color: #0f172a !important;
-  background: rgba(255, 255, 255, 0.5) !important;
+.subtitle-naming-option:hover {
+  transform: translateY(-1px) scale(1.01);
+  color: #0f172a;
+  background: #ffffff;
+  border-color: #e2e8f0;
 }
 
-.subtitle-config-card :deep(.el-radio-button:first-child .el-radio-button__inner),
-.subtitle-config-card :deep(.el-radio-button:last-child .el-radio-button__inner) {
-  border-radius: 8px !important;
+.subtitle-naming-option:active {
+  transform: scale(0.96);
 }
 
-.subtitle-config-card :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: #ffffff !important;
-  border-color: #e2e8f0 !important;
-  color: #0f172a !important;
-  font-weight: 700;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08) !important;
-  transform: none;
+.subtitle-naming-option.active {
+  border-color: #bfdbfe;
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
 }
 
 .subtitle-config-card :deep(.el-button) {
@@ -526,14 +631,14 @@ const displayPills = [
   border: 1px solid #e2e8f0;
   border-radius: 18px;
   background: #ffffff;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
+  box-shadow: none;
   transition: all 0.28s var(--ease-spring);
 }
 
 .subtitle-settings-block:hover,
 .subtitle-help-card:hover {
   border-color: #cbd5e1;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+  box-shadow: none;
 }
 
 .subtitle-help-card-danger {
@@ -694,7 +799,7 @@ const displayPills = [
   padding: 12px;
   border: 1px solid #e2e8f0;
   border-radius: 14px;
-  background: #f8fafc;
+  background: #ffffff;
 }
 
 .subtitle-filter-editor-head {
@@ -709,20 +814,188 @@ const displayPills = [
 }
 
 .subtitle-filter-row {
-  display: grid;
+  display: flex;
+  align-items: center;
   gap: 8px;
-  padding: 10px;
-  border: 1px solid #dbe4ee;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbfe 100%);
+  width: 100%;
+  min-height: 48px;
+  padding: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 13px;
+  background: #ffffff;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
   transition: all 0.28s var(--ease-spring);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  box-shadow: none;
 }
 
 .subtitle-filter-row:hover {
-  border-color: #c3d3e4;
-  transform: translateY(-1px);
-  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  border-color: #cbd5e1;
+  transform: translateY(-1px) scale(1.01);
+  box-shadow: none;
+}
+
+.subtitle-filter-row.active {
+  border-color: #bfdbfe;
+  background: #ffffff;
+  box-shadow: inset 3px 0 0 #3b82f6, 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+.subtitle-filter-list {
+  display: grid;
+  gap: 8px;
+  max-height: 166px;
+  overflow-y: auto;
+  padding-right: 2px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.subtitle-filter-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.subtitle-filter-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.subtitle-filter-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-size: 10.5px;
+  font-weight: 800;
+  color: #475569;
+  transition: all 0.28s var(--ease-spring);
+}
+
+.subtitle-filter-row:hover .subtitle-filter-index,
+.subtitle-filter-row.active .subtitle-filter-index {
+  transform: scale(1.06);
+  border-color: #bfdbfe;
+  background: #ffffff;
+  color: #2563eb;
+}
+
+.subtitle-filter-row:hover .subtitle-filter-summary-title,
+.subtitle-filter-row.active .subtitle-filter-summary-title {
+  color: #0f172a;
+}
+
+.subtitle-filter-summary-title,
+.subtitle-filter-summary-pattern {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle-filter-summary-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #1e293b;
+  letter-spacing: -0.01em;
+}
+
+.subtitle-filter-summary-pattern {
+  margin-top: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 10.5px;
+  line-height: 1.25;
+  color: #64748b;
+}
+
+.subtitle-filter-target-badge,
+.subtitle-filter-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid #dbeafe;
+  background: #ffffff;
+  padding: 0 8px;
+  font-size: 10.5px;
+  font-weight: 800;
+  color: #2563eb;
+}
+
+.subtitle-filter-state {
+  min-width: 34px;
+  border-color: #dcfce7;
+  background: #ffffff;
+  color: #16a34a;
+}
+
+.subtitle-filter-state.off {
+  border-color: #e2e8f0;
+  background: #ffffff;
+  color: #94a3b8;
+}
+
+.subtitle-filter-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #dbe4ee;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.subtitle-filter-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.subtitle-filter-detail-title {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+
+.subtitle-filter-form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 9px;
+}
+
+.subtitle-filter-field {
+  display: grid;
+  gap: 5px;
+}
+
+.subtitle-filter-field > span {
+  font-size: 10.5px;
+  font-weight: 800;
+  color: #64748b;
+}
+
+.subtitle-filter-detail :deep(.el-textarea__inner),
+.subtitle-filter-detail :deep(.el-input__wrapper),
+.subtitle-filter-detail :deep(.el-select__wrapper) {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #dbe4ee inset;
+}
+
+.subtitle-filter-detail :deep(.el-textarea__inner) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .subtitle-filter-row-top,
@@ -746,7 +1019,7 @@ const displayPills = [
   padding: 14px 12px;
   border: 1px dashed #cbd5e1;
   border-radius: 12px;
-  background: #f8fafc;
+  background: #ffffff;
   font-size: 11.5px;
   font-weight: 600;
   color: #64748b;

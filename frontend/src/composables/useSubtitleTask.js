@@ -575,7 +575,34 @@ export function useSubtitleTask ({
     return !subtitleTaskRerunId.value && !subtitleForceQueueKey.value
   }
 
+  function buildSubtitleRerunStartItem (task) {
+    if (!task?.folder_path) return null
+    return {
+      library_id: task.library_id || selectedLibraryId.value,
+      folder_path: task.folder_path,
+      folder_name: task.folder_name || getFileName(task.folder_path),
+      rjcode: task.rjcode || task.actual_rjcode || extractRJCode(task.folder_path) || '',
+      existing_subtitle_count: Math.max(
+        Number(task.existing_subtitle_count || 0),
+        Number(task.downloaded_count || 0),
+        Number(task.written_files?.length || 0)
+      )
+    }
+  }
+
+  function shouldDelayAutoInspectSubtitleTree (task) {
+    if (!task?.id) return false
+    if (!task.force_rerun) return false
+    if (task.subtitle_dir) return false
+    return ['pending', 'processing'].includes(String(task.status || ''))
+  }
+
+  function isSubtitleTaskRerunLocked (task) {
+    return shouldDelayAutoInspectSubtitleTree(task)
+  }
+
   function getSubtitleTaskInspectLabel (task) {
+    if (isSubtitleTaskRerunLocked(task)) return '仅查看运行状态'
     return resolveSubtitleTaskViewState(task).inspectLabel
   }
 
@@ -947,8 +974,8 @@ export function useSubtitleTask ({
   ))
 
   const activeSubtitleTaskProgressLogs = computed(() => {
-    const entries = activeSubtitleTask.value?.progress_log || []
-    return [...entries.slice(-12)].reverse()
+    const entries = (activeSubtitleInspectTask.value || activeSubtitleTask.value)?.progress_log || []
+    return [...entries]
   })
 
   // ─── State management functions ──────────────────────────────────────────
@@ -1154,7 +1181,7 @@ export function useSubtitleTask ({
 
   function normalizeRJSubtitleTaskPayload (task, options = {}) {
     const { preserveDetail = false } = options
-    const trimTail = (items, limit) => Array.isArray(items) ? items.slice(-limit) : []
+    const keepAll = (items) => Array.isArray(items) ? items : []
     const { localTask, selectionItem } = resolveExistingSubtitleTaskContext(task)
     const inheritedSnapshot = localTask?.snapshot || null
     const inheritedSourceLabel = String(
@@ -1191,8 +1218,8 @@ export function useSubtitleTask ({
       activity_context: inheritedActivityContext,
       is_optimistic: false,
       search_attempts: Array.isArray(task?.search_attempts) ? task.search_attempts : [],
-      download_files: preserveDetail ? trimTail(task?.download_files, 24) : trimTail(task?.download_files, 8),
-      progress_log: preserveDetail ? trimTail(task?.progress_log, 24) : trimTail(task?.progress_log, 8)
+      download_files: keepAll(task?.download_files),
+      progress_log: keepAll(task?.progress_log)
     }
   }
 
@@ -1298,7 +1325,14 @@ export function useSubtitleTask ({
       } else if (subtitleInspectorInfo.value.taskId && !effectiveSubtitleTasks.value.some(task => task.id === subtitleInspectorInfo.value.taskId && task.subtitle_dir)) {
         clearSubtitleInspectorState()
       }
-      await ensureSubtitleInspectorFocus()
+      const currentActiveTask = effectiveSubtitleTasks.value.find(task => task.id === subtitleActiveTaskId.value) || null
+      if (shouldDelayAutoInspectSubtitleTree(currentActiveTask)) {
+        if (!subtitleInspectorInfo.value.taskId) {
+          subtitleActiveTaskId.value = currentActiveTask.id
+        }
+      } else {
+        await ensureSubtitleInspectorFocus()
+      }
       scheduleSubtitleStatusPoll(effectiveSubtitleTasks.value)
       if (showMessage) ElMessage.success('字幕任务状态已刷新')
     } catch (error) {
@@ -1420,20 +1454,45 @@ export function useSubtitleTask ({
     subtitleTaskRerunId.value = task.id
     subtitlePreferredSelectionKey.value = buildSubtitleTaskSelectionKey(task)
     try {
-      const data = await rjSubtitleApi.rerunTask(task.id, {
+      const rerunOptions = {
         overwriteExisting: subtitleOptions.value.overwriteExisting,
         enableMetadataMatch: subtitleOptions.value.enableMetadataMatch,
         namingStrategy: subtitleOptions.value.namingStrategy,
         useFilterRules: subtitleOptions.value.useFilterRules,
         subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules)
-      })
-      if (data?.task_id) {
-        subtitleActiveTaskId.value = data.task_id
+      }
+      const startItem = buildSubtitleRerunStartItem(task)
+      const useStartFallback = !isSubtitleTaskLiveMode(task)
+
+      let data = null
+      if (useStartFallback) {
+        data = await rjSubtitleApi.start(startItem ? [startItem] : [], {
+          ...rerunOptions,
+          skipIfExistingSubtitles: false,
+          forceRerun: true
+        })
+      } else {
+        data = await rjSubtitleApi.rerunTask(task.id, rerunOptions)
+      }
+
+      const fallbackCreatedTaskId = String(data?.tasks?.[0]?.task_id || '').trim()
+      const fallbackExistingTaskId = String(data?.skipped_items?.[0]?.task_id || '').trim()
+      const nextTaskId = String(data?.task_id || fallbackCreatedTaskId || fallbackExistingTaskId || '').trim()
+      const nextMessage = data?.message
+        || data?.tasks?.[0]?.message
+        || data?.skipped_items?.[0]?.queue_message
+        || '任务已重新加入抓取队列'
+
+      if (nextTaskId) {
+        subtitleActiveTaskId.value = nextTaskId
         upsertSubtitleTaskLocal({
           ...task,
+          id: nextTaskId,
+          task_view_mode: TASK_VIEW_MODE.LIVE,
+          live_task: null,
           status: 'pending',
           progress: 0,
-          current_step: data.message || '等待重新抓取字幕',
+          current_step: nextMessage || '等待重新抓取字幕',
           error_message: '',
           subtitle_dir: '',
           awaiting_manual_match: false,
@@ -1447,20 +1506,26 @@ export function useSubtitleTask ({
           match_result: {},
           download_files: [],
           downloaded_count: 0,
-          force_rerun: true
+          force_rerun: true,
+          is_optimistic: useStartFallback,
+          optimistic_created_at: useStartFallback ? Date.now() : undefined
         })
         await refreshRJSubtitleStatus(false, { silent: true })
-        ElMessage.success(data.message || '任务已重新加入抓取队列')
+        ElMessage.success(nextMessage)
         if (subtitleInspectorInfo.value.taskId === task.id) {
           clearSubtitleInspectorState()
         }
         const selectionItem = buildSubtitleSelectionItemFromTask(task)
         upsertSubtitleSelectionEntry(selectionItem, {
-          task_id: task.id,
+          task_id: nextTaskId,
           queue_state: 'queued',
-          queue_message: data.message || '已重置当前任务并重新抓取'
+          queue_message: nextMessage || '已重置当前任务并重新抓取'
         })
+        return
       }
+      throw new Error(nextMessage || '未能重新创建字幕任务')
+    } catch (error) {
+      ElMessage.error('重新执行爬取字幕失败: ' + (error.response?.data?.detail || error.message))
     } finally {
       if (subtitleTaskRerunId.value === task.id) subtitleTaskRerunId.value = ''
     }
@@ -1555,6 +1620,7 @@ export function useSubtitleTask ({
     canCancelRJSubtitleTask,
     canClearCurrentSubtitleTask,
     canRerunSubtitleTask,
+    isSubtitleTaskRerunLocked,
     getSubtitleTaskInspectLabel,
     getSubtitleTaskManualStateText,
     getSubtitleTaskManualStateChipClass,

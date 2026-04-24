@@ -1,119 +1,259 @@
 <template>
-  <div class="logs">
-    <div class="page-header">
+  <div class="max-w-[1480px] mx-auto flex flex-col gap-0">
+    <div class="flex items-start justify-between gap-4 mb-4 p-4 rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div>
-        <h1 class="page-title">系统日志</h1>
-        <p class="page-subtitle">查看实时日志、筛选模块与级别，并在需要时暂停自动刷新。</p>
+        <h1 class="m-0 text-[28px] font-bold text-slate-900 tracking-tight">系统日志</h1>
+        <p class="mt-1.5 text-[13.5px] text-slate-500">实时监控应用运行输出，支持级别过滤、模块筛选与关键词搜索。</p>
       </div>
-      <div class="header-actions">
-        <el-button :type="isPaused ? 'success' : 'warning'" @click="togglePause">
-          <el-icon><component :is="isPaused ? VideoPlay : VideoPause" /></el-icon>
-          {{ isPaused ? '恢复自动刷新' : '暂停自动刷新' }}
-        </el-button>
-        <el-button @click="refreshLogs(true)">
-          <el-icon><Refresh /></el-icon>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <span class="inline-flex items-center gap-1 px-3 py-1 border border-slate-200 rounded-full bg-slate-50 text-xs text-slate-500">
+          <span class="font-bold text-blue-500">{{ filteredLogs.length }}</span>
+          <span class="text-slate-300">/</span>
+          <span class="font-semibold text-slate-600">{{ logs.length }}</span> 条
+        </span>
+
+        <button
+          type="button"
+          class="log-action-btn"
+          :class="isPaused ? 'log-action-btn--success' : 'log-action-btn--warning'"
+          @click="togglePause"
+        >
+          <component :is="isPaused ? Play : PauseCircle" :size="13" />
+          {{ isPaused ? '恢复刷新' : '暂停刷新' }}
+        </button>
+
+        <button type="button" class="log-action-btn log-action-btn--default" @click="refreshLogs(true)">
+          <RefreshCw :size="13" />
           刷新
-        </el-button>
-        <el-button type="danger" @click="clearLogs">
-          <AppLottieIcon :src="deleteIconAnimation" :size="32" tone="danger" />
+        </button>
+
+        <button type="button" class="log-action-btn log-action-btn--default" @click="exportFilteredLogs">
+          <Download :size="13" />
+          导出筛选结果
+        </button>
+
+        <button type="button" class="log-action-btn log-action-btn--default" @click="copyVisibleLogs">
+          <Copy :size="13" />
+          复制可见窗口
+        </button>
+
+        <button type="button" class="log-action-btn log-action-btn--danger" @click="clearLogs">
+          <AppLottieIcon :src="deleteIconAnimation" :size="26" tone="danger" />
           清空视图
-        </el-button>
+        </button>
       </div>
     </div>
 
-    <el-card class="logs-card" shadow="never">
-      <div class="filter-section">
-        <div class="filter-group filter-group--levels">
-          <span class="filter-label">日志级别</span>
-          <div class="level-filter-list">
+    <div class="flex flex-wrap items-center gap-3 px-4 py-3 mb-3.5 border border-slate-200 rounded-2xl bg-white shadow-sm">
+      <div class="flex items-center gap-2">
+        <span class="text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">级别</span>
+        <div class="flex gap-1.5">
+          <button
+            v-for="level in allLevels"
+            :key="level"
+            type="button"
+            class="log-level-pill"
+            :class="[`is-${level.toLowerCase()}`, { 'is-active': isLevelSelected(level) }]"
+            @click="toggleLevel(level)"
+          >
+            <span class="log-level-dot" />
+            {{ level }}
+          </button>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <span class="text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">模块</span>
+        <el-select
+          v-model="selectedModules"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          placeholder="全部模块"
+          clearable
+          size="small"
+          style="min-width: 150px; max-width: 220px"
+        >
+          <el-option v-for="mod in availableModules" :key="mod" :label="mod" :value="mod" />
+        </el-select>
+      </div>
+
+      <div class="relative flex-1 min-w-[220px] max-w-[420px] flex items-center gap-2">
+        <Search :size="13" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        <input
+          ref="searchInputRef"
+          v-model="searchKeyword"
+          type="text"
+          class="w-full h-[32px] pl-7 pr-20 border border-slate-200 rounded-lg bg-white text-[13px] text-slate-800 outline-none placeholder-slate-400 transition focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+          :placeholder="isFullSearch ? '全历史检索关键词（回车立即检索）' : '搜索当前日志内容…'"
+          @input="onSearchInput"
+          @keydown.enter.prevent="doFullSearch(true)"
+        />
+        <button
+          v-if="searchKeyword"
+          type="button"
+          class="absolute right-[86px] top-1/2 -translate-y-1/2 text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 hover:bg-slate-200 transition"
+          @click="clearSearchKeyword"
+        >清空</button>
+        <button
+          v-if="isFullSearch"
+          type="button"
+          class="h-[32px] px-3 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-600 text-[12px] font-semibold hover:bg-indigo-100 transition"
+          @click="doFullSearch(true)"
+        >检索</button>
+      </div>
+
+      <div class="flex items-center gap-2 ml-auto" :class="{ 'opacity-50 pointer-events-none': isFullSearch }">
+        <span class="text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">条数</span>
+        <el-select v-model="logLimit" size="small" style="width: 100px" @change="onLimitChange">
+          <el-option :value="100" label="100 条" />
+          <el-option :value="300" label="300 条" />
+          <el-option :value="500" label="500 条" />
+          <el-option :value="1000" label="1000 条" />
+          <el-option :value="2000" label="2000 条" />
+        </el-select>
+      </div>
+
+      <button
+        type="button"
+        class="flex items-center gap-1.5 h-[28px] px-3 border rounded-full text-[11.5px] font-semibold cursor-pointer transition"
+        :class="isFullSearch
+          ? 'border-indigo-300 bg-indigo-50 text-indigo-600'
+          : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'"
+        @click="toggleFullSearch"
+      >
+        <FileSearch :size="12" />
+        {{ isSearchLoading ? '检索中…' : isFullSearch ? '全历史模式' : '搜索全历史' }}
+        <span v-if="fullSearchTotal > 0" class="text-[10px] text-indigo-400">{{ fullSearchTotal }}</span>
+      </button>
+
+      <div class="w-full flex flex-wrap items-center gap-2 text-[11px] text-slate-600 pt-1 border-t border-slate-100 mt-1">
+        <span class="px-2 py-0.5 rounded bg-sky-50 border border-sky-100 text-sky-700">模式 {{ lastFetchMode }}</span>
+        <span class="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-100 text-emerald-700">本次 {{ lastFetchMs }}ms</span>
+        <span class="px-2 py-0.5 rounded bg-white border border-slate-200">均值 {{ avgFetchMs }}ms</span>
+        <span class="px-2 py-0.5 rounded bg-white border border-slate-200">峰值 {{ maxFetchMs }}ms</span>
+        <span class="px-2 py-0.5 rounded bg-white border border-slate-200">parse 命中 {{ parseCacheHitRate }}%</span>
+        <span class="px-2 py-0.5 rounded bg-white border border-slate-200">highlight 命中 {{ highlightCacheHitRate }}%</span>
+        <span class="px-2 py-0.5 rounded bg-indigo-50 border border-indigo-100 text-indigo-700">快捷键 Ctrl+K 搜索 · Ctrl+R 刷新 · Ctrl+Shift+C 复制可见</span>
+      </div>
+    </div>
+
+    <div class="flex flex-col border border-slate-800 rounded-2xl overflow-hidden bg-[#0f172a] shadow-[0_20px_50px_rgba(15,23,42,0.24)]">
+      <div class="flex items-center gap-2 px-4 py-2 bg-[#111c31] border-b border-slate-700 text-xs text-slate-300">
+        <span
+          class="w-[7px] h-[7px] rounded-full flex-shrink-0"
+          :class="isFullSearch ? 'bg-indigo-400' : isPaused ? 'bg-amber-400' : 'bg-emerald-400 shadow-[0_0_6px_#22c55e]'"
+        />
+        <span class="font-bold text-slate-200">{{ isFullSearch ? '全历史检索' : isPaused ? '已暂停' : autoFollowLogs ? '实时跟随' : '查看历史' }}</span>
+        <span v-if="isFullSearch" class="ml-1 px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-bold">全历史</span>
+        <span class="text-slate-400">{{ filteredLogs.length }} 条匹配 · {{ logs.length }} 条总计</span>
+        <span class="text-cyan-300 text-[11px]">{{ lastFetchMode }} {{ lastFetchMs }}ms</span>
+        <span v-if="incrementalCount > 0" class="text-emerald-300">+{{ incrementalCount }} 新增</span>
+        <span v-if="isFullSearch && fullSearchHasMore" class="text-amber-400/80 text-[11px]">可继续加载更多</span>
+        <span v-if="isSearchLoading" class="text-indigo-300 text-[11px]">检索中…</span>
+        <button
+          v-if="!autoFollowLogs && !isPaused"
+          type="button"
+          class="ml-auto px-2.5 py-0.5 border border-indigo-400/40 rounded-md bg-indigo-400/10 text-indigo-300 text-[11px] font-semibold hover:bg-indigo-400/20 transition cursor-pointer"
+          @click="scrollToBottom"
+        >
+          <ArrowDown :size="10" class="inline mr-0.5" />跳到底部
+        </button>
+      </div>
+
+      <div
+        ref="logContainer"
+        class="log-viewer"
+        :class="{ 'is-paused': isPaused }"
+        @scroll.passive="onScroll"
+      >
+        <div :style="{ height: paddingTop + 'px' }" aria-hidden="true" />
+
+        <div
+          v-for="log in visibleLogs"
+          :key="log.id"
+          class="log-line"
+          :class="`is-${log.level.toLowerCase()}`"
+        >
+          <span class="log-ts">{{ log.time || '--:--:--' }}</span>
+          <span class="log-lvl" :class="`lvl-${log.level.toLowerCase()}`">{{ log.level }}</span>
+          <span
+            v-if="log.module"
+            class="log-mod"
+            :style="{ background: getModuleColor(log.module) }"
+            v-html="highlightModuleName(log.module)"
+          />
+          <span
+            class="log-msg"
+            :title="log.message"
+            @click="showLogDetail(log)"
+            @dblclick.stop="copyLogLine(log)"
+            v-html="highlightLogMessage(log.message)"
+          />
+        </div>
+
+        <div :style="{ height: paddingBottom + 'px' }" aria-hidden="true" />
+      </div>
+
+      <div v-if="selectedLog" class="border-t border-white/10 bg-black/20 px-4 py-3 text-xs text-slate-200">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <div class="font-semibold text-slate-100">日志详情</div>
+          <div class="flex items-center gap-2">
             <button
-              v-for="level in allLevels"
-              :key="level"
               type="button"
-              class="level-filter-chip"
-              :class="[
-                `is-${level.toLowerCase()}`,
-                { 'is-active': isLevelSelected(level) }
-              ]"
-              @click="toggleLevel(level)"
-            >
-              <span class="level-filter-dot" />
-              <span>{{ level }}</span>
-            </button>
+              class="px-2 py-1 rounded border border-slate-500/40 text-slate-200 hover:bg-slate-700/40 transition"
+              @click="copyLogLine(selectedLog)"
+            >复制</button>
+            <button
+              type="button"
+              class="px-2 py-1 rounded border border-slate-500/40 text-slate-300 hover:bg-slate-700/40 transition"
+              @click="selectedLog = null"
+            >关闭</button>
           </div>
         </div>
-
-        <div class="filter-group">
-          <span class="filter-label">模块筛选</span>
-          <el-select
-            v-model="selectedModules"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            placeholder="全部模块"
-            clearable
-            size="small"
-            style="width: 220px"
-          >
-            <el-option v-for="mod in availableModules" :key="mod" :label="mod" :value="mod" />
-          </el-select>
+        <div class="flex flex-wrap items-center gap-2 mb-2 text-[11px] text-slate-400">
+          <span>{{ selectedLog.time || '--:--:--' }}</span>
+          <span class="px-1.5 py-0.5 rounded bg-slate-700/60">{{ selectedLog.level }}</span>
+          <span v-if="selectedLog.module" class="px-1.5 py-0.5 rounded bg-slate-700/60">{{ selectedLog.module }}</span>
         </div>
-
-        <div class="filter-group">
-          <span class="filter-label">搜索</span>
-          <el-input
-            v-model="searchKeyword"
-            placeholder="搜索日志内容"
-            clearable
-            size="small"
-            style="width: 240px"
-          >
-            <template #prefix>
-              <el-icon><Search /></el-icon>
-            </template>
-          </el-input>
-        </div>
-
-        <div class="filter-group">
-          <span class="filter-label">显示条数</span>
-          <el-select v-model="logLimit" size="small" style="width: 110px" @change="refreshLogs(true)">
-            <el-option :value="100" label="100 条" />
-            <el-option :value="300" label="300 条" />
-            <el-option :value="500" label="500 条" />
-            <el-option :value="1000" label="1000 条" />
-            <el-option :value="2000" label="2000 条" />
-          </el-select>
-        </div>
-
-        <div class="filter-stats">{{ filteredLogs.length }} / {{ logs.length }} 条</div>
+        <pre class="m-0 whitespace-pre-wrap break-all leading-5 text-slate-100">{{ selectedLog.message }}</pre>
       </div>
 
-      <div ref="logContainer" class="log-container" :class="{ paused: isPaused }" @scroll.passive="handleScroll">
-        <div class="log-toolbar-status">
-          <span v-if="isPaused" class="log-status-indicator paused">已暂停自动刷新</span>
-          <span v-else-if="!autoFollowLogs" class="log-status-indicator history">正在查看历史日志</span>
-          <span v-else class="log-status-indicator active">自动跟随中</span>
-        </div>
-
-        <div v-for="log in filteredLogs" :key="log.id" class="log-line" :class="`log-${log.level.toLowerCase()}`">
-          <span class="log-time">{{ log.time || '--' }}</span>
-          <span class="log-level" :class="`level-${log.level.toLowerCase()}`">{{ log.level }}</span>
-          <span v-if="log.module" class="log-module" :style="{ backgroundColor: getModuleColor(log.module) }">
-            {{ log.module }}
-          </span>
-          <span class="log-message">{{ log.message }}</span>
-        </div>
+      <div v-if="isFullSearch" class="border-t border-white/10 px-4 py-2 bg-black/20 flex items-center gap-2">
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded border border-slate-400/40 bg-slate-500/10 text-slate-200 text-xs font-semibold hover:bg-slate-500/20 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          :disabled="isSearchLoading || fullSearchPageStart <= 0"
+          @click="loadPrevFullSearchPage"
+        >上一页</button>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded border border-indigo-400/50 bg-indigo-400/10 text-indigo-200 text-xs font-semibold hover:bg-indigo-400/20 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          :disabled="isSearchLoading || !fullSearchHasMore"
+          @click="loadNextFullSearchPage"
+        >下一页</button>
+        <span class="text-[11px] text-slate-400 ml-1">页起点 {{ fullSearchPageStart }} / 总匹配 {{ fullSearchTotal }}</span>
       </div>
 
-      <AppEmptyState v-if="filteredLogs.length === 0 && logs.length > 0" description="没有匹配的日志" size="default" />
-      <AppEmptyState v-if="logs.length === 0" description="暂无日志" size="default" />
-    </el-card>
+      <AppEmptyState
+        v-if="filteredLogs.length === 0 && logs.length > 0"
+        description="没有匹配的日志"
+        size="default"
+        class="py-8"
+      />
+      <AppEmptyState
+        v-if="logs.length === 0"
+        description="暂无日志"
+        size="default"
+        class="py-8"
+      />
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { Delete, Refresh, Search, VideoPause, VideoPlay } from '@element-plus/icons-vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, triggerRef } from 'vue'
+import { ArrowDown, Copy, Download, FileSearch, PauseCircle, Play, RefreshCw, Search } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { logApi } from '../api'
@@ -122,8 +262,10 @@ import AppEmptyState from '../components/common/AppEmptyState.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const LOG_POLL_INTERVAL = 5000
+const ITEM_HEIGHT = 28
+const OVERSCAN = 25
 
-const logs = ref([])
+const logs = shallowRef([])
 const logContainer = ref(null)
 const isPaused = ref(false)
 const autoFollowLogs = ref(true)
@@ -131,11 +273,43 @@ const logLimit = ref(300)
 const selectedLevels = ref(['INFO', 'WARNING', 'ERROR'])
 const selectedModules = ref([])
 const searchKeyword = ref('')
+const selectedLog = ref(null)
+const searchInputRef = ref(null)
+
+const scrollTop = ref(0)
+const viewerHeight = ref(600)
 
 const allLevels = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
 
 let intervalId = null
+let resizeObserver = null
 let lastLogSignature = ''
+let nextOffset = -1
+let logIdCounter = 0
+let searchDebounceTimer = null
+let scrollRafId = null
+let smoothScrollRafId = null
+let latestScrollTop = 0
+const fetchHistory = ref([])
+
+const incrementalCount = ref(0)
+const lastFetchMs = ref(0)
+const lastFetchMode = ref('idle')
+const isFullSearch = ref(false)
+const fullSearchTotal = ref(0)
+const fullSearchCursor = ref(0)
+const fullSearchHasMore = ref(false)
+const fullSearchPageStart = ref(0)
+const FULL_SEARCH_PAGE_SIZE = 2000
+const isSearchLoading = ref(false)
+const smoothScrollInertia = ref(0.22)
+
+const parseCache = new Map()
+const highlightCache = new Map()
+const parseCacheHits = ref(0)
+const parseCacheMisses = ref(0)
+const highlightCacheHits = ref(0)
+const highlightCacheMisses = ref(0)
 
 const moduleColors = {
   Prekikoeru: '#6d8ef7',
@@ -156,24 +330,70 @@ const moduleColors = {
 
 const availableModules = computed(() => {
   const modules = new Set()
-  logs.value.forEach((log) => {
+  for (const log of logs.value) {
     if (log.module) modules.add(log.module)
-  })
+  }
   return Array.from(modules).sort()
 })
 
 const filteredLogs = computed(() => {
-  const keyword = searchKeyword.value.trim().toLowerCase()
+  const terms = searchTerms.value
+  const lvlSet = new Set(selectedLevels.value)
+  const hasModuleFilter = selectedModules.value.length > 0
+
   return logs.value.filter((log) => {
-    if (!selectedLevels.value.includes(log.level)) return false
-    if (selectedModules.value.length > 0 && !selectedModules.value.includes(log.module)) return false
-    if (!keyword) return true
-    return (
-      String(log.message || '').toLowerCase().includes(keyword) ||
-      String(log.module || '').toLowerCase().includes(keyword)
-    )
+    if (!lvlSet.has(log.level)) return false
+    if (hasModuleFilter && !selectedModules.value.includes(log.module)) return false
+    if (!terms.length) return true
+    const msg = (log.message || '').toLowerCase()
+    const mod = (log.module || '').toLowerCase()
+    // 多关键词采用 AND 语义：每个关键词都要在 message 或 module 中命中
+    return terms.every((term) => msg.includes(term) || mod.includes(term))
   })
 })
+
+const searchTerms = computed(() =>
+  searchKeyword.value
+    .toLowerCase()
+    .split(/[\s,，]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 8)
+)
+
+const startIndex = computed(() => Math.max(0, Math.floor(scrollTop.value / ITEM_HEIGHT) - OVERSCAN))
+const endIndex = computed(() => Math.min(filteredLogs.value.length, Math.ceil((scrollTop.value + viewerHeight.value) / ITEM_HEIGHT) + OVERSCAN))
+const visibleLogs = computed(() => filteredLogs.value.slice(startIndex.value, endIndex.value))
+const paddingTop = computed(() => startIndex.value * ITEM_HEIGHT)
+const paddingBottom = computed(() => Math.max(0, (filteredLogs.value.length - endIndex.value) * ITEM_HEIGHT))
+
+const avgFetchMs = computed(() => {
+  if (!fetchHistory.value.length) return 0
+  const sum = fetchHistory.value.reduce((acc, cur) => acc + cur, 0)
+  return Math.round(sum / fetchHistory.value.length)
+})
+
+const maxFetchMs = computed(() => {
+  if (!fetchHistory.value.length) return 0
+  return Math.max(...fetchHistory.value)
+})
+
+const parseCacheHitRate = computed(() => {
+  const total = parseCacheHits.value + parseCacheMisses.value
+  return total ? Math.round((parseCacheHits.value / total) * 100) : 0
+})
+
+const highlightCacheHitRate = computed(() => {
+  const total = highlightCacheHits.value + highlightCacheMisses.value
+  return total ? Math.round((highlightCacheHits.value / total) * 100) : 0
+})
+
+const parseCacheMax = computed(() => Math.max(6000, logLimit.value * 8))
+const highlightCacheMax = computed(() => Math.max(2500, logLimit.value * 4))
+
+function getModuleColor(moduleName) {
+  return moduleColors[moduleName] || '#64748b'
+}
 
 function isLevelSelected(level) {
   return selectedLevels.value.includes(level)
@@ -182,14 +402,26 @@ function isLevelSelected(level) {
 function toggleLevel(level) {
   if (selectedLevels.value.includes(level)) {
     if (selectedLevels.value.length === 1) return
-    selectedLevels.value = selectedLevels.value.filter((item) => item !== level)
-    return
+    selectedLevels.value = selectedLevels.value.filter((l) => l !== level)
+  } else {
+    selectedLevels.value = [...selectedLevels.value, level]
   }
-  selectedLevels.value = [...selectedLevels.value, level]
+  if (isFullSearch.value) onSearchInput()
 }
 
-function getModuleColor(moduleName) {
-  return moduleColors[moduleName] || '#64748b'
+function onSearchInput() {
+  if (!isFullSearch.value) return
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  searchDebounceTimer = setTimeout(() => {
+    doFullSearch()
+  }, 260)
+}
+
+function clearSearchKeyword() {
+  searchKeyword.value = ''
+  if (isFullSearch.value) {
+    doFullSearch(true)
+  }
 }
 
 function parseModule(message, rawLine) {
@@ -209,84 +441,216 @@ function parseModule(message, rawLine) {
   return null
 }
 
-function parseLogLine(line, index) {
+function escapeHtml(input) {
+  return String(input)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function escapeRegExp(input) {
+  return String(input).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function trimMapByOldest(map, maxSize, trimCount) {
+  if (map.size <= maxSize) return
+  let removed = 0
+  for (const key of map.keys()) {
+    map.delete(key)
+    removed += 1
+    if (removed >= trimCount) break
+  }
+}
+
+function buildHighlightMeta(terms) {
+  if (!terms.length) return null
+  const sorted = [...terms].sort((a, b) => b.length - a.length)
+  const unique = Array.from(new Set(sorted))
+  const pattern = unique.map((t) => escapeRegExp(t)).join('|')
+  const regex = new RegExp(`(${pattern})`, 'ig')
+  const classMap = new Map()
+  unique.forEach((term, idx) => {
+    classMap.set(term.toLowerCase(), `log-hit-${idx % 4}`)
+  })
+  return { regex, classMap }
+}
+
+function highlightText(input) {
+  const safe = escapeHtml(input || '')
+  const terms = searchTerms.value
+  if (!terms.length) return safe
+  const termsKey = terms.join('|')
+  const cacheKey = `${termsKey}::${safe}`
+  if (highlightCache.has(cacheKey)) {
+    highlightCacheHits.value += 1
+    return highlightCache.get(cacheKey)
+  }
+  highlightCacheMisses.value += 1
+  const meta = buildHighlightMeta(terms)
+  if (!meta) return safe
+  const highlighted = safe.replace(meta.regex, (matched) => {
+    const cls = meta.classMap.get(matched.toLowerCase()) || 'log-hit-0'
+    return `<mark class="log-hit ${cls}">${matched}</mark>`
+  })
+  trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(500, Math.floor(highlightCacheMax.value / 4)))
+  highlightCache.set(cacheKey, highlighted)
+  return highlighted
+}
+
+function highlightLogMessage(message) {
+  return highlightText(message)
+}
+
+function highlightModuleName(moduleName) {
+  return highlightText(moduleName)
+}
+
+function parseLogLine(line) {
+  if (parseCache.has(line)) {
+    parseCacheHits.value += 1
+    const cached = parseCache.get(line)
+    return { ...cached, id: ++logIdCounter }
+  }
+  parseCacheMisses.value += 1
+  trimMapByOldest(parseCache, parseCacheMax.value, Math.max(1000, Math.floor(parseCacheMax.value / 4)))
+
   let match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s+\S+\s+-\s+(.+)$/)
   if (match) {
     const message = match[3]
-    return {
-      id: `${index}-${match[1]}-${match[2]}-${message}`,
-      time: match[1],
-      level: match[2].toUpperCase(),
-      module: parseModule(message, line),
-      message,
-      raw: line
-    }
+    const obj = { id: ++logIdCounter, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message }
+    parseCache.set(line, obj)
+    return obj
   }
 
   match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-\s+(.+)$/)
   if (match) {
     const message = match[3]
-    return {
-      id: `${index}-${match[1]}-${match[2]}-${message}`,
-      time: match[1],
-      level: match[2].toUpperCase(),
-      module: parseModule(message, line),
-      message,
-      raw: line
-    }
+    const obj = { id: ++logIdCounter, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message }
+    parseCache.set(line, obj)
+    return obj
   }
 
-  return {
-    id: `${index}-${line}`,
-    time: '',
-    level: 'INFO',
-    module: parseModule(line, line),
-    message: line,
-    raw: line
-  }
+  const obj = { id: ++logIdCounter, time: '', level: 'INFO', module: parseModule(line, line), message: line }
+  parseCache.set(line, obj)
+  return obj
 }
 
 function isNearBottom() {
   if (!logContainer.value) return true
-  const { scrollTop, scrollHeight, clientHeight } = logContainer.value
-  return scrollHeight - scrollTop - clientHeight < 40
+  const { scrollTop: st, scrollHeight, clientHeight } = logContainer.value
+  return scrollHeight - st - clientHeight < 60
 }
 
-function handleScroll() {
-  autoFollowLogs.value = isNearBottom()
+function onScroll(e) {
+  latestScrollTop = e.target.scrollTop
+  if (scrollRafId) return
+  scrollRafId = requestAnimationFrame(() => {
+    scrollTop.value = latestScrollTop
+    autoFollowLogs.value = isNearBottom()
+    scrollRafId = null
+  })
 }
 
-function scrollToBottom() {
+function scrollToBottom(smooth = true) {
   if (!logContainer.value) return
-  logContainer.value.scrollTop = logContainer.value.scrollHeight
+  const el = logContainer.value
+  const target = el.scrollHeight
+  if (!smooth) {
+    el.scrollTop = target
+    autoFollowLogs.value = true
+    return
+  }
+
+  const start = el.scrollTop
+  const distance = target - start
+  if (Math.abs(distance) < 8) {
+    el.scrollTop = target
+    autoFollowLogs.value = true
+    return
+  }
+
+  // 距离太大时直接跳转，避免长时间动画占用主线程。
+  if (Math.abs(distance) > 1600) {
+    el.scrollTop = target
+    autoFollowLogs.value = true
+    return
+  }
+
+  if (smoothScrollRafId) cancelAnimationFrame(smoothScrollRafId)
+  const duration = Math.min(280, Math.max(110, Math.abs(distance) * 0.08))
+  const inertia = smoothScrollInertia.value
+  const t0 = performance.now()
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3)
+  const easeOutQuint = (t) => 1 - Math.pow(1 - t, 5)
+
+  const tick = (ts) => {
+    const p = Math.min(1, (ts - t0) / duration)
+    const eased = easeOutCubic(p) * (1 - inertia) + easeOutQuint(p) * inertia
+    el.scrollTop = start + distance * eased
+    if (p < 1) {
+      smoothScrollRafId = requestAnimationFrame(tick)
+      return
+    }
+    smoothScrollRafId = null
+    autoFollowLogs.value = true
+  }
+
+  smoothScrollRafId = requestAnimationFrame(tick)
   autoFollowLogs.value = true
+}
+
+function showLogDetail(log) {
+  selectedLog.value = log
 }
 
 function togglePause() {
   isPaused.value = !isPaused.value
   if (isPaused.value) {
-    ElMessage.info('已暂停自动刷新，可以查看历史日志')
-    return
+    ElMessage.info('已暂停自动刷新')
+  } else {
+    ElMessage.success('已恢复自动刷新')
+    refreshLogs(true)
   }
-  ElMessage.success('已恢复自动刷新')
-  refreshLogs(true)
 }
 
 async function refreshLogs(force = false) {
-  if (!force && (isPaused.value || document.visibilityState === 'hidden')) return
+  if (!force && (isPaused.value || document.visibilityState === 'hidden' || isFullSearch.value)) return
 
   try {
+    const t0 = performance.now()
+    selectedLog.value = null
     const shouldFollow = autoFollowLogs.value || isNearBottom()
-    const data = await logApi.get(logLimit.value)
+    const useIncremental = !force && nextOffset >= 0
+    lastFetchMode.value = useIncremental ? 'delta' : force ? 'full(force)' : 'full'
+    const data = await logApi.get(logLimit.value, useIncremental ? nextOffset : -1)
     const logLines = Array.isArray(data.logs) ? data.logs : []
-    const signature = `${logLines.length}::${logLines[0] || ''}::${logLines[logLines.length - 1] || ''}`
-    if (!force && signature === lastLogSignature) return
 
-    lastLogSignature = signature
-    logs.value = logLines.map((line, index) => parseLogLine(line, index))
+    if (typeof data.next_offset === 'number') nextOffset = data.next_offset
 
+    if (!data.is_full && !force) {
+      if (logLines.length === 0) return
+      const parsed = logLines.map(parseLogLine)
+      incrementalCount.value += parsed.length
+      const combined = [...logs.value, ...parsed]
+      logs.value = combined.length > logLimit.value ? combined.slice(combined.length - logLimit.value) : combined
+    } else {
+      const lastLine = logLines[logLines.length - 1] || ''
+      const signature = `${logLines.length}::${lastLine}`
+      if (!force && signature === lastLogSignature) return
+      lastLogSignature = signature
+      incrementalCount.value = 0
+      logs.value = logLines.map(parseLogLine)
+    }
+
+    triggerRef(logs)
+    trimMapByOldest(parseCache, parseCacheMax.value, Math.max(500, Math.floor(parseCacheMax.value / 6)))
+    trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(250, Math.floor(highlightCacheMax.value / 6)))
+    lastFetchMs.value = Math.round(performance.now() - t0)
+    fetchHistory.value = [...fetchHistory.value.slice(-39), lastFetchMs.value]
     await nextTick()
-    if (shouldFollow && !isPaused.value) scrollToBottom()
+    if (shouldFollow && !isPaused.value) scrollToBottom(true)
   } catch (error) {
     console.error('获取日志失败:', error)
   }
@@ -294,308 +658,335 @@ async function refreshLogs(force = false) {
 
 async function clearLogs() {
   try {
-    await showSystemConfirm({ title: '确认', message: '确定要清空当前页面的日志显示吗？这不会删除后端日志文件。', tone: 'warning' })
+    await showSystemConfirm({
+      title: '确认',
+      message: '确定要清空当前页面的日志显示吗？这不会删除后端日志文件。',
+      tone: 'warning'
+    })
     logs.value = []
+    triggerRef(logs)
+    highlightCache.clear()
+    parseCacheHits.value = 0
+    parseCacheMisses.value = 0
+    highlightCacheHits.value = 0
+    highlightCacheMisses.value = 0
+    selectedLog.value = null
     lastLogSignature = ''
+    nextOffset = -1
+    incrementalCount.value = 0
+    fullSearchCursor.value = 0
+    fullSearchHasMore.value = false
+    fullSearchTotal.value = 0
+    fullSearchPageStart.value = 0
+    scrollTop.value = 0
     ElMessage.success('日志视图已清空')
-  } catch (_) {
+  } catch (_) {}
+}
+
+function onLimitChange() {
+  nextOffset = -1
+  refreshLogs(true)
+}
+
+async function copyLogLine(log) {
+  const text = [log.time, log.level, log.module, log.message].filter(Boolean).join('  ')
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage({ message: '已复制到剪贴板', type: 'success', duration: 1200 })
+  } catch {
+    ElMessage.warning('复制失败，请手动选中')
+  }
+}
+
+function exportFilteredLogs() {
+  if (!filteredLogs.value.length) {
+    ElMessage.warning('没有可导出的日志')
+    return
+  }
+
+  const lines = filteredLogs.value.map((log) =>
+    [log.time || '--', log.level, log.module || '-', log.message].join(' | ')
+  )
+  const content = lines.join('\n')
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const ts = new Date().toISOString().replace(/[:.]/g, '-')
+  a.href = url
+  a.download = `logs-export-${ts}.txt`
+  a.click()
+  URL.revokeObjectURL(url)
+  ElMessage.success('已导出筛选结果')
+}
+
+async function copyVisibleLogs() {
+  if (!visibleLogs.value.length) {
+    ElMessage.warning('当前可见区没有可复制日志')
+    return
+  }
+  const lines = visibleLogs.value.map((log) =>
+    [log.time || '--', log.level, log.module || '-', log.message].join(' | ')
+  )
+  try {
+    await navigator.clipboard.writeText(lines.join('\n'))
+    ElMessage.success(`已复制 ${visibleLogs.value.length} 条可见日志`)
+  } catch {
+    ElMessage.warning('复制失败，请手动选中')
+  }
+}
+
+function onWindowKeydown(e) {
+  if (e.ctrlKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    searchInputRef.value?.focus()
+    return
+  }
+  if (e.ctrlKey && e.key.toLowerCase() === 'r') {
+    e.preventDefault()
+    refreshLogs(true)
+    return
+  }
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'c') {
+    e.preventDefault()
+    copyVisibleLogs()
+  }
+}
+
+async function doFullSearch(reset = true) {
+  if (!searchKeyword.value.trim() && !selectedLevels.value.length) return
+  const cursor = reset ? 0 : fullSearchPageStart.value
+  await gotoFullSearchPage(cursor)
+}
+
+async function gotoFullSearchPage(cursor) {
+  if (!searchKeyword.value.trim() && !selectedLevels.value.length) return
+  isSearchLoading.value = true
+  try {
+    const t0 = performance.now()
+    lastFetchMode.value = 'search'
+    const data = await logApi.search(searchKeyword.value.trim(), selectedLevels.value, FULL_SEARCH_PAGE_SIZE, cursor)
+    const lines = Array.isArray(data.logs) ? data.logs : []
+    fullSearchTotal.value = data.total_matched ?? lines.length
+    fullSearchCursor.value = typeof data.next_cursor === 'number' ? data.next_cursor : (cursor + lines.length)
+    fullSearchHasMore.value = !!data.has_more
+    fullSearchPageStart.value = cursor
+    logIdCounter = 0
+    logs.value = lines.map(parseLogLine)
+    triggerRef(logs)
+    lastFetchMs.value = Math.round(performance.now() - t0)
+    fetchHistory.value = [...fetchHistory.value.slice(-39), lastFetchMs.value]
+    await nextTick()
+    scrollTop.value = 0
+    if (logContainer.value) logContainer.value.scrollTop = 0
+  } catch {
+    ElMessage.error('全历史检索失败')
+  } finally {
+    isSearchLoading.value = false
+  }
+}
+
+async function loadNextFullSearchPage() {
+  if (!isFullSearch.value || !fullSearchHasMore.value) return
+  await gotoFullSearchPage(fullSearchCursor.value)
+}
+
+async function loadPrevFullSearchPage() {
+  if (!isFullSearch.value) return
+  const prev = Math.max(0, fullSearchPageStart.value - FULL_SEARCH_PAGE_SIZE)
+  await gotoFullSearchPage(prev)
+}
+
+async function toggleFullSearch() {
+  if (isFullSearch.value) {
+    isFullSearch.value = false
+    fullSearchTotal.value = 0
+    fullSearchCursor.value = 0
+    fullSearchHasMore.value = false
+    fullSearchPageStart.value = 0
+    highlightCache.clear()
+    nextOffset = -1
+    refreshLogs(true)
+  } else {
+    isFullSearch.value = true
+    await doFullSearch(true)
   }
 }
 
 onMounted(async () => {
   await refreshLogs(true)
-  intervalId = setInterval(() => {
-    refreshLogs()
-  }, LOG_POLL_INTERVAL)
+  intervalId = setInterval(refreshLogs, LOG_POLL_INTERVAL)
+  window.addEventListener('keydown', onWindowKeydown)
+
+  if (logContainer.value) {
+    viewerHeight.value = logContainer.value.clientHeight
+    resizeObserver = new ResizeObserver(([entry]) => {
+      viewerHeight.value = entry.contentRect.height
+    })
+    resizeObserver.observe(logContainer.value)
+  }
 })
 
 onUnmounted(() => {
   if (intervalId) clearInterval(intervalId)
+  if (resizeObserver) resizeObserver.disconnect()
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  if (scrollRafId) cancelAnimationFrame(scrollRafId)
+  if (smoothScrollRafId) cancelAnimationFrame(smoothScrollRafId)
+  window.removeEventListener('keydown', onWindowKeydown)
 })
 </script>
 
 <style scoped>
-.logs {
-  max-width: 1480px;
-  margin: 0 auto;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-
-.page-title {
-  margin: 0;
-  font-size: 30px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.page-subtitle {
-  margin: 8px 0 0;
-  color: #64748b;
-  font-size: 14px;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.logs-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
-}
-
-.filter-section {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 16px;
-  padding: 14px 16px;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98) 0%, rgba(241, 245, 249, 0.92) 100%);
-}
-
-.filter-group {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.filter-group--levels {
-  align-items: flex-start;
-}
-
-.filter-label {
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  line-height: 30px;
-}
-
-.filter-stats {
-  margin-left: auto;
-  color: #94a3b8;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.level-filter-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.level-filter-chip {
+.log-action-btn {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  height: 30px;
+  gap: 5px;
+  height: 32px;
   padding: 0 12px;
-  border: 1px solid #d7e0ea;
+  border: 1px solid #dbe4f0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.log-action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.1);
+}
+
+.log-action-btn:active { transform: scale(0.96); }
+.log-action-btn--success { border-color: #bbf7d0; background: #f0fdf4; color: #16a34a; }
+.log-action-btn--warning { border-color: #fde68a; background: #fffbeb; color: #b45309; }
+.log-action-btn--danger  { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+.log-action-btn--default:hover { border-color: #94a3b8; background: #f8fafc; }
+
+.log-level-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #dbe4f0;
   border-radius: 999px;
   background: #ffffff;
   color: #64748b;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 0.02em;
   cursor: pointer;
-  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+  transition: all 0.16s ease;
 }
 
-.level-filter-chip:hover {
-  border-color: #c1cfde;
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
-}
+.log-level-pill:hover { box-shadow: 0 3px 8px rgba(15, 23, 42, 0.06); }
 
-.level-filter-dot {
-  width: 7px;
-  height: 7px;
+.log-level-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
   background: currentColor;
-  opacity: 0.45;
+  opacity: 0.4;
 }
 
-.level-filter-chip.is-active .level-filter-dot {
-  opacity: 1;
-}
+.log-level-pill.is-active .log-level-dot { opacity: 1; }
+.log-level-pill.is-debug.is-active  { border-color: #cbd5e1; background: #f1f5f9; color: #475569; }
+.log-level-pill.is-info.is-active   { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
+.log-level-pill.is-warning.is-active{ border-color: #fcd34d; background: #fffbeb; color: #b45309; }
+.log-level-pill.is-error.is-active  { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
 
-.level-filter-chip.is-debug {
-  color: #64748b;
-}
-
-.level-filter-chip.is-debug.is-active {
-  border-color: #cbd5e1;
-  background: #f1f5f9;
-  color: #475569;
-}
-
-.level-filter-chip.is-info {
-  color: #3b82f6;
-}
-
-.level-filter-chip.is-info.is-active {
-  border-color: #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.level-filter-chip.is-warning {
-  color: #d97706;
-}
-
-.level-filter-chip.is-warning.is-active {
-  border-color: #fcd34d;
-  background: #fffbeb;
-  color: #b45309;
-}
-
-.level-filter-chip.is-error {
-  color: #ef4444;
-}
-
-.level-filter-chip.is-error.is-active {
-  border-color: #fecaca;
-  background: #fef2f2;
-  color: #b91c1c;
-}
-
-.log-container {
-  height: 620px;
+.log-viewer {
+  height: calc(100vh - 320px);
+  min-height: 420px;
   overflow-y: auto;
-  padding: 10px 14px 16px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #1f2937 0%, #233047 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  overflow-x: auto;
+  padding: 8px 0 12px;
   color: #e2e8f0;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 13px;
-  line-height: 1.6;
+  font-family: 'Consolas', 'JetBrains Mono', 'Monaco', monospace;
+  font-size: 12.5px;
+  line-height: 28px;
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
 }
 
-.log-container.paused {
-  border: 2px solid #f59e0b;
+.log-viewer.is-paused {
+  outline: 2px solid rgba(245, 158, 11, 0.5);
+  outline-offset: -2px;
 }
 
-.log-toolbar-status {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  display: flex;
-  justify-content: flex-end;
-  padding: 2px 0 10px;
-  background: transparent;
-}
-
-.log-status-indicator {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 10px;
-  border: 1px solid rgba(147, 197, 253, 0.22);
-  border-radius: 999px;
-  color: #ffffff;
-  font-size: 12px;
-  font-weight: 700;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
-}
-
-.log-status-indicator.active {
-  background: rgba(16, 185, 129, 0.94);
-}
-
-.log-status-indicator.history {
-  background: rgba(59, 130, 246, 0.92);
-}
-
-.log-status-indicator.paused {
-  background: rgba(245, 158, 11, 0.94);
-}
+.log-viewer::-webkit-scrollbar { width: 6px; height: 6px; }
+.log-viewer::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
 
 .log-line {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  padding: 4px 8px;
-  border-radius: 8px;
-  transition: background-color 0.16s ease;
-}
-
-.log-line:hover {
-  background: rgba(148, 163, 184, 0.08);
-}
-
-.log-time {
-  flex-shrink: 0;
-  color: #7b8aa3;
+  height: 28px;
+  padding: 0 14px;
   white-space: nowrap;
+  transition: background-color 0.12s ease;
 }
 
-.log-level {
-  min-width: 50px;
-  padding: 0 4px;
-  border-radius: 999px;
-  font-size: 11px;
+.log-line:hover { background: rgba(148, 163, 184, 0.07); }
+.log-line.is-warning { background: rgba(245, 158, 11, 0.07); }
+.log-line.is-error   { background: rgba(239, 68, 68, 0.07); }
+.log-line.is-debug   { opacity: 0.7; }
+
+.log-ts {
+  flex-shrink: 0;
+  color: #5a6a82;
+  font-size: 12px;
+  width: 138px;
+}
+
+.log-lvl {
+  flex-shrink: 0;
+  width: 52px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10.5px;
   font-weight: 700;
   text-align: center;
-  white-space: nowrap;
+  letter-spacing: 0.03em;
+}
+
+.lvl-debug { background: #2d3748; color: #a0aec0; }
+.lvl-info { background: #162b4d; color: #7cc0ff; }
+.lvl-warning { background: #5a3310; color: #fbbf24; }
+.lvl-error { background: #5a1a1a; color: #fca5a5; }
+
+.log-mod {
   flex-shrink: 0;
-}
-
-.log-debug .log-level {
-  background: #374151;
-  color: #cbd5e1;
-}
-
-.log-info .log-level {
-  background: #17355d;
-  color: #7cc0ff;
-}
-
-.log-warning .log-level {
-  background: #6b3f12;
-  color: #fbbf24;
-}
-
-.log-error .log-level {
-  background: #6f1f1f;
-  color: #fca5a5;
-}
-
-.log-module {
-  flex-shrink: 0;
-  padding: 1px 8px;
-  border-radius: 999px;
+  padding: 0 7px;
+  border-radius: 4px;
   color: #ffffff;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
+  line-height: 18px;
 }
 
-.log-message {
+.log-msg {
   flex: 1;
   min-width: 0;
-  word-break: break-word;
+  color: #cbd5e1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
 }
 
-.log-debug {
-  opacity: 0.72;
+.log-line.is-error .log-msg { color: #fca5a5; }
+.log-line.is-warning .log-msg { color: #fde68a; }
+
+:deep(.log-hit) {
+  color: #f8fafc;
+  padding: 0 2px;
+  border-radius: 2px;
 }
 
-.log-warning {
-  background: rgba(245, 158, 11, 0.08);
-}
-
-.log-error {
-  background: rgba(239, 68, 68, 0.08);
-}
+:deep(.log-hit.log-hit-0) { background: rgba(250, 204, 21, 0.38); }
+:deep(.log-hit.log-hit-1) { background: rgba(34, 211, 238, 0.35); }
+:deep(.log-hit.log-hit-2) { background: rgba(52, 211, 153, 0.34); }
+:deep(.log-hit.log-hit-3) { background: rgba(251, 113, 133, 0.36); }
 </style>

@@ -125,19 +125,25 @@
               {{ ctx.activeSubtitleTask.progress_log?.length || 0 }} 条
             </span>
           </div>
-          <div v-if="ctx.activeSubtitleTaskProgressLogs.length" class="subtitle-workbench-scrollbar max-h-[260px] overflow-auto px-3 py-2">
-            <TransitionGroup tag="div" name="sub-log-item" class="grid gap-1.5">
+          <div v-if="ctx.activeSubtitleTaskProgressLogs.length" class="subtitle-workbench-scrollbar max-h-[300px] overflow-auto px-3 py-3">
+            <TransitionGroup tag="div" name="sub-log-item" class="task-log-stream">
               <div
                 v-for="(entry, idx) in ctx.activeSubtitleTaskProgressLogs"
                 :key="`${ctx.activeSubtitleTask.id}-progress-log-${idx}`"
-                class="grid grid-cols-[110px_80px_minmax(0,1fr)] items-start gap-2 text-[12px] leading-relaxed"
+                class="task-log-row"
               >
-                <span class="font-mono text-[11px] text-slate-400">{{ ctx.formatProgressLogTime(entry.time) }}</span>
+                <div class="task-log-time-wrap">
+                  <span class="task-log-time">{{ ctx.formatProgressLogTime(entry.time) }}</span>
+                  <span class="task-log-dot" :class="getTaskLogTone(entry).dot"></span>
+                </div>
                 <span
-                  class="inline-flex items-center justify-center rounded-md px-1.5 py-0.5 text-[10.5px] font-medium"
-                  :class="logLevelClass(entry.level)"
-                >{{ ctx.getProgressLogLevelLabel(entry.level) }}</span>
-                <span class="font-medium text-slate-800 break-words">{{ entry.message }}</span>
+                  class="task-log-level"
+                  :class="getTaskLogTone(entry).label"
+                >
+                  <component :is="getTaskLogBusinessIcon(entry)" class="h-3 w-3" :class="getTaskLogTone(entry).icon" :stroke-width="2.2" />
+                  {{ getTaskLogBusinessLabel(entry) }}
+                </span>
+                <span class="task-log-message">{{ entry.message }}</span>
               </div>
             </TransitionGroup>
           </div>
@@ -194,9 +200,13 @@
           :key="`queue-${task.id}`"
           :ref="el => registerRailRef(task.id, el)"
           type="button"
-          class="group grid min-w-0 content-start gap-2 rounded-[14px] border bg-white p-3 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_8px_20px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.98]"
+          class="group grid min-w-0 content-start gap-2 rounded-[14px] border bg-white p-3 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
           :class="[
-            ctx.isSubtitleTaskSelected(task)
+            isTaskInteractionLocked(task)
+              ? (ctx.isSubtitleTaskSelected(task)
+                  ? 'cursor-not-allowed border-slate-300 bg-slate-100/95 opacity-75 shadow-[0_4px_14px_rgba(15,23,42,0.06)] ring-1 ring-slate-300/70'
+                  : 'cursor-not-allowed border-slate-200 bg-slate-100/90 opacity-70 shadow-none')
+              : ctx.isSubtitleTaskSelected(task)
               ? 'border-slate-900 bg-white shadow-[0_6px_20px_rgba(15,23,42,0.1)] ring-1 ring-slate-900/15'
               : task.manual_match_completed
                 ? 'border-emerald-200/70 hover:border-emerald-300'
@@ -204,7 +214,8 @@
                   ? 'border-sky-200/70 hover:border-sky-300'
                   : 'border-slate-100 hover:border-slate-300'
           ]"
-          @click="ctx.selectSubtitleTask(task)"
+          :disabled="isTaskInteractionLocked(task)"
+          @click="handleTaskClick(task)"
         >
           <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-1.5 min-w-0">
@@ -227,13 +238,8 @@
             <span class="break-words line-clamp-2">{{ getDisplayFolderName(task) }}</span>
           </div>
 
-          <div v-if="ctx.getTaskSourceRJCode(task)" class="flex items-center gap-1 text-[11px] text-slate-900">
-            <Link2 class="h-3 w-3 text-sky-500" :stroke-width="2.2" />
-            <span>来源 {{ ctx.getTaskSourceRJCode(task) }}</span>
-          </div>
-
           <div class="rounded-lg bg-slate-50/60 px-2 py-1.5 text-[11.5px] leading-relaxed text-slate-500 line-clamp-2">
-            {{ task.current_step || task.error_message || '等待中' }}
+            {{ formatTaskStep(task.current_step || task.error_message || '等待中') }}
           </div>
 
           <div class="flex flex-wrap gap-1">
@@ -264,6 +270,9 @@
               <span class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-900">
                 <FileCheck class="h-2.5 w-2.5 text-emerald-500" :stroke-width="2.4" />写入 {{ task.written_files?.length || 0 }}
               </span>
+              <span v-if="isTaskInteractionLocked(task)" class="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-500">
+                <Clock class="h-2.5 w-2.5" :stroke-width="2.4" />运行锁定
+              </span>
               <span v-if="task.manual_match_completed" class="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10.5px] font-medium text-emerald-700">
                 <CheckCheck class="h-2.5 w-2.5" :stroke-width="2.4" />完成 {{ task.manual_match_applied_pairs || 0 }}
               </span>
@@ -273,13 +282,21 @@
             </template>
           </div>
 
-          <div class="flex justify-end pt-0.5">
+          <div class="flex min-h-[28px] items-center justify-between gap-2 pt-0.5">
+            <div class="flex min-w-0 items-center gap-1 text-[11px] text-slate-900">
+              <template v-if="ctx.getTaskSourceRJCode(task)">
+                <Link2 class="h-3 w-3 flex-shrink-0 text-sky-500" :stroke-width="2.2" />
+                <span class="truncate">来源 {{ ctx.getTaskSourceRJCode(task) }}</span>
+              </template>
+            </div>
             <span
-              class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-              :class="task.subtitle_dir
+              class="inline-flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+              :class="isTaskInteractionLocked(task)
+                ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                : task.subtitle_dir
                 ? 'border-slate-200 bg-white text-slate-900 hover:border-slate-900 hover:bg-slate-900 hover:text-white hover:shadow-[0_4px_12px_rgba(15,23,42,0.2)] cursor-pointer'
                 : 'border-slate-100 bg-slate-50/60 text-slate-300 cursor-not-allowed'"
-              @click.stop="task.subtitle_dir && ctx.inspectSubtitleTask(task)"
+              @click.stop="!isTaskInteractionLocked(task) && task.subtitle_dir && ctx.inspectSubtitleTask(task)"
             >
               <Eye class="h-3 w-3" :stroke-width="2.2" />
               <span>{{ ctx.getSubtitleTaskInspectLabel(task) }}</span>
@@ -295,8 +312,8 @@
 import { computed, nextTick, watch } from 'vue'
 import {
   Activity, CheckCheck, CheckCircle2, ChevronDown, CircleDot, CircleSlash,
-  Clock, Download, Eye, FileCheck, Folder, FolderOpen, Hand, History,
-  Layers, Link2, ListTodo, Loader2, ScrollText, Sparkles, Trash2, XCircle
+  Clock, Download, Eye, FileCheck, FileDown, FileUp, Filter, Folder, FolderOpen, Hand, History,
+  Layers, Link2, ListTodo, Loader2, Search, ScrollText, Sparkles, Trash2, Wand2, XCircle
 } from 'lucide-vue-next'
 import AppEmptyState from '../../common/AppEmptyState.vue'
 
@@ -382,10 +399,101 @@ function statusIconColor(key) {
 
 function logLevelClass(level) {
   const k = String(level || 'info').toLowerCase()
-  if (k === 'error') return 'bg-rose-50 text-rose-700 border border-rose-200'
-  if (k === 'warning' || k === 'warn') return 'bg-amber-50 text-amber-700 border border-amber-200'
-  if (k === 'success') return 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-  return 'bg-slate-100 text-slate-600 border border-slate-200'
+  if (k === 'error') return 'border-rose-200 text-rose-700'
+  if (k === 'warning' || k === 'warn') return 'border-amber-200 text-amber-700'
+  if (k === 'success') return 'border-emerald-200 text-emerald-700'
+  return 'border-slate-200 text-slate-600'
+}
+
+function isTaskInteractionLocked(task) {
+  return Boolean(props.ctx?.isSubtitleTaskRerunLocked?.(task))
+}
+
+function handleTaskClick(task) {
+  if (isTaskInteractionLocked(task)) return
+  if (task.subtitle_dir) {
+    props.ctx?.inspectSubtitleTask?.(task)
+    return
+  }
+  props.ctx?.selectSubtitleTask?.(task)
+}
+
+function logLevelDotClass(level) {
+  const k = String(level || 'info').toLowerCase()
+  if (k === 'error') return 'bg-rose-500'
+  if (k === 'warning' || k === 'warn') return 'bg-amber-500'
+  if (k === 'success') return 'bg-emerald-500'
+  return 'bg-sky-500'
+}
+
+function getTaskLogKind(entry = {}) {
+  const message = String(entry?.message || '').trim()
+  const level = String(entry?.level || 'info').toLowerCase()
+  if (/下载字幕/.test(message)) return 'download'
+  if (/上传字幕/.test(message)) return 'upload'
+  if (/写入完成|原始字幕写入完成|确认导入目标目录/.test(message)) return 'write'
+  if (/后处理|已应用\s*\d+\s*组配对|匹配完成/.test(message)) return 'postprocess'
+  if (/发现字幕来源|来源/.test(message)) return 'source'
+  if (/搜索|检索/.test(message)) return 'search'
+  if (/整理字幕|准备匹配/.test(message)) return 'match'
+  if (/过滤|跳过/.test(message)) return 'filter'
+  if (level === 'success') return 'success'
+  if (level === 'warning' || level === 'warn') return 'warning'
+  if (level === 'error') return 'error'
+  return 'progress'
+}
+
+function getTaskLogTone(entry = {}) {
+  const kind = getTaskLogKind(entry)
+  const tones = {
+    download: { dot: 'bg-sky-500', icon: 'text-sky-600', label: 'border-sky-200 text-sky-700' },
+    upload: { dot: 'bg-indigo-500', icon: 'text-indigo-600', label: 'border-indigo-200 text-indigo-700' },
+    write: { dot: 'bg-emerald-500', icon: 'text-emerald-600', label: 'border-emerald-200 text-emerald-700' },
+    postprocess: { dot: 'bg-teal-500', icon: 'text-teal-600', label: 'border-teal-200 text-teal-700' },
+    source: { dot: 'bg-violet-500', icon: 'text-violet-600', label: 'border-violet-200 text-violet-700' },
+    search: { dot: 'bg-blue-500', icon: 'text-blue-600', label: 'border-blue-200 text-blue-700' },
+    match: { dot: 'bg-cyan-500', icon: 'text-cyan-600', label: 'border-cyan-200 text-cyan-700' },
+    filter: { dot: 'bg-amber-500', icon: 'text-amber-600', label: 'border-amber-200 text-amber-700' },
+    success: { dot: 'bg-emerald-500', icon: 'text-emerald-600', label: 'border-emerald-200 text-emerald-700' },
+    warning: { dot: 'bg-amber-500', icon: 'text-amber-600', label: 'border-amber-200 text-amber-700' },
+    error: { dot: 'bg-rose-500', icon: 'text-rose-600', label: 'border-rose-200 text-rose-700' },
+    progress: { dot: 'bg-slate-400', icon: 'text-slate-500', label: 'border-slate-200 text-slate-600' }
+  }
+  return tones[kind] || tones.progress
+}
+
+function getTaskLogBusinessIcon(entry = {}) {
+  const kind = getTaskLogKind(entry)
+  if (kind === 'download') return FileDown
+  if (kind === 'upload') return FileUp
+  if (kind === 'write') return FileCheck
+  if (kind === 'postprocess') return Wand2
+  if (kind === 'source') return Link2
+  if (kind === 'search') return Search
+  if (kind === 'match') return Link2
+  if (kind === 'filter') return Filter
+  if (kind === 'success') return CheckCircle2
+  if (kind === 'warning') return CircleSlash
+  if (kind === 'error') return XCircle
+  return Activity
+}
+
+function getTaskLogBusinessLabel(entry = {}) {
+  const labels = {
+    download: '下载字幕',
+    upload: '上传字幕',
+    write: '写入完成',
+    postprocess: '后处理',
+    source: '来源确认',
+    search: '来源搜索',
+    match: '整理匹配',
+    filter: '筛选过滤',
+    success: '完成',
+    warning: '注意',
+    error: '错误',
+    progress: '任务进度'
+  }
+  return labels[getTaskLogKind(entry)] || labels.progress
 }
 
 function getDisplayFolderName(task) {
@@ -463,6 +571,10 @@ function getTaskMetaSourceLabel(task) {
     || task?.snapshot?.source_label
     || ''
   ).trim()
+}
+
+function formatTaskStep(value) {
+  return String(value || '').replace(/^后处理完成，?/, '') || '等待中'
 }
 
 function getTaskMetaPrimaryMessage(task) {
@@ -688,6 +800,96 @@ function getTaskMetaItems(task) {
 }
 
 /* Log item transitions */
+.task-log-stream {
+  position: relative;
+  display: grid;
+  gap: 0;
+}
+
+.task-log-stream::before {
+  content: '';
+  position: absolute;
+  left: 76px;
+  top: 10px;
+  bottom: 10px;
+  width: 1px;
+  background: #e2e8f0;
+}
+
+.task-log-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 96px 74px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 7px 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.task-log-time-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding-right: 14px;
+}
+
+.task-log-time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-log-dot {
+  position: relative;
+  z-index: 1;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px #ffffff;
+}
+
+.task-log-level {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 7px;
+  border: 1px solid;
+  background: #ffffff;
+  padding: 0 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.task-log-level svg {
+  flex: 0 0 auto;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.task-log-row:hover .task-log-level svg {
+  transform: rotate(-8deg) scale(1.12);
+}
+
+.task-log-message {
+  min-width: 0;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #1e293b;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
 .sub-log-item-enter-active {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }

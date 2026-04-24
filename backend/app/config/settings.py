@@ -115,6 +115,13 @@ class FilterRule(BaseModel):
     action: str = "exclude"  # exclude, include
     enabled: bool = True
 
+class SubtitleFilterRule(BaseModel):
+    """字幕候选过滤规则"""
+    name: str = ""
+    pattern: str = ""
+    target: str = "name"  # name, path, all
+    enabled: bool = True
+
 class FilterConfig(BaseModel):
     """过滤配置"""
     enabled: bool = True
@@ -275,9 +282,12 @@ class RJSubtitleConfig(BaseModel):
     """RJ 字幕抓取配置"""
     overwrite_existing: bool = False
     scan_one_level_only: bool = True
+    scan_depth: int = 3
     enable_metadata_match: bool = True
+    skip_if_existing_subtitles: bool = False
     naming_strategy: str = "audio"
     use_filter_rules: bool = False
+    subtitle_filter_rules: list[SubtitleFilterRule] = []
     auto_import_use_filter_rules: bool = True
     auto_import_filter_rules: list[FilterRule] = []
     show_source_search: bool = True
@@ -566,9 +576,12 @@ def load_config(config_path: str = None) -> AppConfig:
                         config_data['rj_subtitle'] = {
                             'overwrite_existing': False,
                             'scan_one_level_only': True,
+                            'scan_depth': 3,
                             'enable_metadata_match': True,
+                            'skip_if_existing_subtitles': False,
                             'naming_strategy': 'audio',
                             'use_filter_rules': False,
+                            'subtitle_filter_rules': [],
                             'show_source_search': True,
                             'show_written_files': True,
                             'show_download_progress': True,
@@ -579,9 +592,12 @@ def load_config(config_path: str = None) -> AppConfig:
                         defaults = {
                             'overwrite_existing': False,
                             'scan_one_level_only': True,
+                            'scan_depth': 3,
                             'enable_metadata_match': True,
+                            'skip_if_existing_subtitles': False,
                             'naming_strategy': 'audio',
                             'use_filter_rules': False,
+                            'subtitle_filter_rules': [],
                             'show_source_search': True,
                             'show_written_files': True,
                             'show_download_progress': True,
