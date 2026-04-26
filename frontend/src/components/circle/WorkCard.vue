@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { LibraryBig } from 'lucide-vue-next'
+import { LibraryBig, Calendar } from 'lucide-vue-next'
 
 const props = defineProps({
   /** 作品数据对象 */
@@ -25,7 +25,7 @@ const props = defineProps({
 
 const emit = defineEmits(['select', 'preview', 'reimport'])
 
-const coverUrl = computed(() => props.item[props.imageField])
+const rawCoverUrl = computed(() => String(props.item[props.imageField] || '').trim())
 const displayCode = computed(() => {
   if (props.codeField) return props.item[props.codeField]
   return props.item.source_compare?.work_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
@@ -40,6 +40,109 @@ const cvLabel = computed(() => {
   if (!Array.isArray(cvs) || cvs.length === 0) return ''
   return cvs.join(' / ')
 })
+const releaseLabel = computed(() => {
+  const value = String(props.item.release_date || props.item.date || props.item.release_at || '').trim()
+  if (!value) return '待定'
+  const match = value.match(/(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?/)
+  if (!match) return value
+  const month = String(match[2]).padStart(2, '0')
+  // 有具体日则显示日，有旬则显示旬，否则只显示月
+  let day = ''
+  if (match[3]) {
+    day = `/${String(match[3]).padStart(2, '0')}`
+  } else if (value.includes('下旬')) {
+    day = ' 下旬'
+  } else if (value.includes('中旬')) {
+    day = ' 中旬'
+  } else if (value.includes('上旬')) {
+    day = ' 上旬'
+  }
+  return `${match[1]}/${month}${day}`
+})
+const isUnreleased = computed(() => {
+  if (props.item.is_unreleased) return true
+  const value = String(props.item.release_date || props.item.date || props.item.release_at || '').trim()
+  if (!value) return true
+  // 日期在今天之后也算预售（未发售）
+  const match = value.match(/(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?/)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2]) - 1
+  // 处理「下旬/中旬/上旬」——不取默认 1 日，避免误判为已发售
+  let day
+  if (match[3]) {
+    day = Number(match[3])
+  } else if (value.includes('下旬')) {
+    day = 28
+  } else if (value.includes('中旬')) {
+    day = 20
+  } else if (value.includes('上旬')) {
+    day = 10
+  } else {
+    day = 1
+  }
+  const releaseDate = new Date(year, month, day)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return releaseDate > today
+})
+const coverUrl = computed(() => {
+  const value = rawCoverUrl.value
+  const rjcode = props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
+  if (isUnreleased.value && value.includes('/modpub/images2/work/doujin/')) {
+    return buildDlsiteCoverUrl(rjcode, true, 'sam')
+  }
+  if (value.includes('/modpub/images2/') && value.endsWith('_img_main.jpg')) {
+    return value
+      .replace('https://img.dlsite.jp/modpub/images2/', 'https://img.dlsite.jp/resize/images2/')
+      .replace('_img_main.jpg', '_img_main_240x240.jpg')
+  }
+  return value || buildDlsiteCoverUrl(rjcode, isUnreleased.value, 'sam')
+})
+
+function buildDlsiteCoverUrl(rjcode, unreleased = false, variant = 'sam') {
+  const normalized = String(rjcode || '').trim().toUpperCase()
+  const match = normalized.match(/^RJ(\d{6}|\d{8})$/)
+  if (!match) return ''
+  const number = Number(match[1])
+  const folderUpper = (Math.floor(number / 1000) + 1) * 1000
+  const folder = match[1].length === 8
+    ? `RJ${String(folderUpper).padStart(8, '0')}`
+    : `RJ${String(folderUpper).padStart(6, '0')}`
+  const pathType = unreleased ? 'announce' : 'work'
+  if (variant === 'sam') {
+    if (unreleased) {
+      return `https://img.dlsite.jp/modpub/images2/ana/doujin/${folder}/${normalized}_ana_img_main.jpg`
+    }
+    return `https://img.dlsite.jp/modpub/images2/${pathType}/doujin/${folder}/${normalized}_img_sam.jpg`
+  }
+  if (variant === 'resized') {
+    return `https://img.dlsite.jp/resize/images2/${pathType}/doujin/${folder}/${normalized}_img_main_240x240.jpg`
+  }
+  return `https://img.dlsite.jp/modpub/images2/${pathType}/doujin/${folder}/${normalized}_img_main.jpg`
+}
+
+function onCoverError(event) {
+  const rjcode = props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
+  const fallbacks = isUnreleased.value
+    ? [
+        buildDlsiteCoverUrl(rjcode, true, 'sam'),
+        buildDlsiteCoverUrl(rjcode, true, 'resized'),
+        buildDlsiteCoverUrl(rjcode, true, 'main'),
+        buildDlsiteCoverUrl(rjcode, false, 'sam'),
+        buildDlsiteCoverUrl(rjcode, false, 'resized'),
+        buildDlsiteCoverUrl(rjcode, false, 'main'),
+      ]
+    : [
+        buildDlsiteCoverUrl(rjcode, false, 'resized'),
+        buildDlsiteCoverUrl(rjcode, false, 'main'),
+      ]
+  const tried = Number(event.currentTarget.dataset.fallbackIndex || 0)
+  const fallback = fallbacks[tried]
+  if (!fallback) return
+  event.currentTarget.dataset.fallbackIndex = String(tried + 1)
+  event.currentTarget.src = fallback
+}
 </script>
 
 <template>
@@ -48,6 +151,7 @@ const cvLabel = computed(() => {
     :class="{
       selected: props.selected,
       'is-downloaded': item.local_download_ready && !cornerLabel,
+      'is-unreleased': isUnreleased,
       'status-flash': props.statusFlash,
       disabled: props.disabled,
       'work-card--lg': props.size === 'lg',
@@ -59,13 +163,17 @@ const cvLabel = computed(() => {
     <div class="work-card-select-ring" />
 
     <div class="work-cover-wrapper">
-      <img v-if="coverUrl" :src="coverUrl" class="work-cover" referrerpolicy="no-referrer" />
+      <img v-if="coverUrl" :src="coverUrl" class="work-cover" @error="onCoverError" />
       <div v-else class="work-cover-placeholder">
         <slot name="cover-placeholder">
           <LibraryBig :size="props.size === 'lg' ? 28 : 22" class="opacity-40" />
         </slot>
       </div>
       <div v-if="showCorner" class="work-corner-flag">{{ cornerText }}</div>
+      <div v-if="isUnreleased" class="work-unreleased-flag">
+        <Calendar :size="12" />
+        <span>未发售</span>
+      </div>
       <div class="work-cover-shine" />
     </div>
 
@@ -79,8 +187,14 @@ const cvLabel = computed(() => {
 
       <slot name="tags">
         <div class="work-tags">
-          <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
-          <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">{{ item.has_asmr_one ? '可下载' : '无源' }}</span>
+          <span v-if="isUnreleased" class="work-release-chip">
+            <Calendar :size="13" class="flex-shrink-0" />
+            发售 {{ releaseLabel }}
+          </span>
+          <template v-else>
+            <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
+            <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">{{ item.has_asmr_one ? '可下载' : '无源' }}</span>
+          </template>
         </div>
       </slot>
 
@@ -197,6 +311,16 @@ const cvLabel = computed(() => {
     0 10px 20px rgba(53, 102, 72, 0.09),
     inset 0 0 0 1px rgba(93, 193, 122, 0.08);
 }
+.work-card.is-unreleased {
+  border-color: rgba(52, 120, 246, 0.16);
+  background:
+    radial-gradient(circle at top left, rgba(52, 120, 246, 0.08), transparent 42%),
+    linear-gradient(180deg, #fbfcff 0%, #f5f8ff 100%);
+}
+.work-card.is-unreleased:hover {
+  border-color: rgba(52, 120, 246, 0.24);
+  box-shadow: 0 10px 20px rgba(38, 74, 134, 0.08);
+}
 
 /* ── hover / selected / flash ── */
 .work-card:hover {
@@ -311,6 +435,47 @@ const cvLabel = computed(() => {
   background: linear-gradient(180deg, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.05) 100%);
   transform: skewX(-20deg);
   opacity: 0.7;
+}
+.work-unreleased-flag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(52, 120, 246, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(10px);
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: .02em;
+  box-shadow: 0 6px 14px rgba(38, 74, 134, 0.10);
+  transition: transform .2s cubic-bezier(.34,1.56,.64,1), border-color .2s ease, background .2s ease;
+}
+.work-card:hover .work-unreleased-flag {
+  transform: translateY(-1px) scale(1.03);
+  border-color: rgba(52, 120, 246, 0.28);
+  background: rgba(255, 255, 255, 0.9);
+}
+.work-release-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 18px;
+  padding: 0 6px;
+  border: 1px solid rgba(52, 120, 246, 0.14);
+  border-radius: 6px;
+  background: rgba(237, 244, 255, 0.88);
+  color: #2f66c0;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 /* ── 卡片内容 ── */
@@ -536,5 +701,15 @@ const cvLabel = computed(() => {
   height: 22px;
   font-size: 10px;
   border-bottom-left-radius: 12px;
+}
+.work-card--lg .work-unreleased-flag {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+.work-card--lg .work-release-chip {
+  min-height: 20px;
+  padding: 0 7px;
+  font-size: 10px;
 }
 </style>

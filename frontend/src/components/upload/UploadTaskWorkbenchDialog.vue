@@ -11,6 +11,7 @@
     :show-download-metrics="false"
     :show-upload-eta="true"
     :prefer-upload-icon="true"
+    :compact="true"
     @update:visible="emit('update:visible', $event)"
     @refresh="emit('refresh')"
     @background="emit('background')"
@@ -29,6 +30,19 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:visible', 'refresh', 'background', 'close'])
+
+function clampActiveUploadPercent(transferredBytes, totalBytes, status, fallbackProgress = 0) {
+  const normalizedStatus = String(status || '')
+  const total = Math.max(0, Number(totalBytes || 0))
+  const transferred = Math.max(0, Number(transferredBytes || 0))
+
+  if (normalizedStatus === 'completed') return 100
+  if (total <= 0) return Math.max(0, Math.min(99, Math.floor(Number(fallbackProgress || 0))))
+
+  const rawPercent = Math.max(0, Math.min(100, Math.floor((Math.min(transferred, total) / total) * 100)))
+  if (transferred < total) return Math.min(rawPercent, 99)
+  return Math.min(rawPercent, 99)
+}
 
 const mappedTasks = computed(() => {
   return (Array.isArray(props.tasks) ? props.tasks : []).map((task) => {
@@ -82,9 +96,7 @@ const mappedTasks = computed(() => {
       id: task?.id,
       status: task?.status,
       display_status: task?.display_status || task?.status,
-      progress: totalBytes > 0
-        ? Math.max(0, Math.min(100, Math.round((transferredBytes / totalBytes) * 100)))
-        : Number(task?.progress || 0),
+      progress: clampActiveUploadPercent(transferredBytes, totalBytes, task?.display_status || task?.status, task?.progress || 0),
       current_step: task?.current_step,
       error_message: task?.error_message,
       created_at: task?.created_at,
@@ -92,7 +104,7 @@ const mappedTasks = computed(() => {
       completed_at: task?.completed_at,
       work_title: title,
       source_label: title,
-      rjcode: subtitle,
+      rjcode: '',
       output_path: finalOutputPath || targetPath,
       progress_log: Array.isArray(task?.progress_log) ? task.progress_log : [],
       upload_files: uploadFiles,
@@ -104,6 +116,7 @@ const mappedTasks = computed(() => {
         download_root: sourceBasePath,
         target_path: targetPath,
         final_output_path: finalOutputPath || targetPath,
+        workbench_subtitle: subtitle,
         selected_resources: uploadFiles.map((file) => ({
           relative_path: file.relative_path,
           file_name: file.name,

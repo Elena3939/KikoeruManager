@@ -7,7 +7,7 @@
   <Teleport to="body">
     <transition name="el-fade-in">
       <div v-if="visible" class="v1-overlay">
-        <div class="v1-shell">
+        <div class="v1-shell" :class="{ 'is-compact': compact }">
           <header class="v1-header">
             <div class="v1-header-copy">
               <div class="v1-title">{{ titleText }}</div>
@@ -61,27 +61,28 @@
             >
               <div class="v1-task-summary">
                 <div class="v1-task-icon" :class="iconToneClass(task)">
+                  <component
+                    :is="getTaskIcon(task)"
+                    v-if="!getTaskLottie(task)"
+                    class="v1-task-icon-fallback"
+                    :size="24"
+                  />
                   <DotLottieVue
                     v-if="getTaskLottie(task)"
-                    :ref="(node) => setTaskLottieRef(task.id, node)"
                     class="v1-task-icon-lottie"
-                    :class="{ paused: isTaskPaused(task) }"
+                    :class="{ 'is-upload-anim': isUploadLottie(task) }"
                     :src="getTaskLottie(task)"
-                    :autoplay="false"
-                    :loop="!isTaskSuccess(task)"
-                    :speed="1"
-                    mode="forward"
-                    :use-frame-interpolation="true"
-                    :render-config="{ autoResize: true }"
+                    :autoplay="true"
+                    :loop="isTaskProcessing(task)"
+                    :keep-last-frame="isTaskSuccess(task)"
                   />
-                  <component :is="getTaskIcon(task)" v-else :size="24" />
                 </div>
 
                 <div class="v1-task-main">
                   <div class="v1-task-head">
                     <div class="v1-task-name-wrap">
                       <h3 class="v1-task-name">{{ task.work_title || task.source_label || '未命名任务' }}</h3>
-                      <div class="v1-task-rj">{{ task.rjcode || '未知 RJ' }}</div>
+                      <div class="v1-task-rj">{{ getTaskSecondaryLabel(task) }}</div>
                     </div>
 
                     <div class="v1-task-actions" @click.stop>
@@ -292,10 +293,10 @@
 <script setup>
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Download, HardDriveUpload, Minimize2, Pause, Play, RefreshCw, Search, TriangleAlert, X, XCircle, Zap } from 'lucide-vue-next'
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import downloadIconAnimation from '../../assets/anime/download-icon-clean.json?url'
-import successConfettiAnimation from '../../assets/anime/success confetti.lottie'
 import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
+import successConfettiAnimation from '../../assets/anime/success confetti.lottie'
 import AppLottieProgressBar from '../common/AppLottieProgressBar.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
 
@@ -311,6 +312,7 @@ const props = defineProps({
   showDownloadMetrics: { type: Boolean, default: true },
   showUploadEta: { type: Boolean, default: false },
   preferUploadIcon: { type: Boolean, default: false },
+  compact: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -331,9 +333,6 @@ const activeFilter = ref('all')
 const searchQuery = ref('')
 const expandedTaskIds = ref(new Set())
 const localSpinning = ref(false)
-const taskLottieRefs = ref(new Map())
-const taskPausedFrames = ref(new Map())
-const taskSuccessPlayed = ref(new Set())
 
 function handleRefresh() {
   emit('refresh')
@@ -415,89 +414,11 @@ watch(() => mergedTasks.value.map(task => task.id).join(':'), () => {
   expandedTaskIds.value = nextExpanded
 }, { immediate: true })
 
-watch(
-  () => mergedTasks.value.map(task => `${task.id}:${task.display_status || task.status}:${getTaskLottie(task)}`).join('|'),
-  async () => {
-    await nextTick()
-    for (const task of mergedTasks.value) {
-      void syncTaskLottiePlayback(task)
-    }
-  },
-  { immediate: true }
-)
-
 function toggleExpanded(taskId) {
   const next = new Set(expandedTaskIds.value)
   if (next.has(taskId)) next.delete(taskId)
   else next.add(taskId)
   expandedTaskIds.value = next
-}
-
-function setTaskLottieRef(taskId, node) {
-  const next = new Map(taskLottieRefs.value)
-  if (node) next.set(taskId, node)
-  else next.delete(taskId)
-  taskLottieRefs.value = next
-  if (node) {
-    nextTick(() => {
-      const task = mergedTasks.value.find(item => item.id === taskId)
-      if (task) void syncTaskLottiePlayback(task)
-    })
-  }
-}
-
-function getTaskLottieInstance(taskId) {
-  return taskLottieRefs.value.get(taskId)?.getDotLottieInstance?.() || null
-}
-
-async function syncTaskLottiePlayback(task) {
-  const instance = getTaskLottieInstance(task.id)
-  if (!instance) return
-  if (!getTaskLottie(task)) {
-    await instance.pause?.()
-    if (taskSuccessPlayed.value.has(task.id)) {
-      const nextPlayed = new Set(taskSuccessPlayed.value)
-      nextPlayed.delete(task.id)
-      taskSuccessPlayed.value = nextPlayed
-    }
-    return
-  }
-  if (isTaskSuccess(task)) {
-    if (!taskSuccessPlayed.value.has(task.id)) {
-      await instance.stop?.()
-      await instance.setFrame?.(0)
-      await instance.play?.()
-      const nextPlayed = new Set(taskSuccessPlayed.value)
-      nextPlayed.add(task.id)
-      taskSuccessPlayed.value = nextPlayed
-    }
-    return
-  }
-  if (isTaskPaused(task)) {
-    const currentFrame = Number(instance.currentFrame ?? instance._currentFrame ?? 0)
-    await instance.pause?.()
-    if (Number.isFinite(currentFrame) && currentFrame >= 0) {
-      const nextFrames = new Map(taskPausedFrames.value)
-      nextFrames.set(task.id, currentFrame)
-      taskPausedFrames.value = nextFrames
-      await instance.setFrame?.(currentFrame)
-    }
-    return
-  }
-  const pausedFrame = Number(taskPausedFrames.value.get(task.id))
-  if (isTaskProcessing(task)) {
-    if (Number.isFinite(pausedFrame) && pausedFrame >= 0) {
-      await instance.setFrame?.(pausedFrame)
-    }
-    await instance.play?.()
-    if (taskPausedFrames.value.has(task.id)) {
-      const nextFrames = new Map(taskPausedFrames.value)
-      nextFrames.delete(task.id)
-      taskPausedFrames.value = nextFrames
-    }
-    return
-  }
-  await instance.pause?.()
 }
 
 function iconToneClass(task) {
@@ -544,14 +465,17 @@ function getTaskIcon(task) {
 }
 
 function getTaskLottie(task) {
+  if (isTaskSuccess(task)) return successConfettiAnimation
   const tone = getTaskTone(task)
-  if (tone === 'success') return successConfettiAnimation
   if (tone === 'warning' || tone === 'danger') return ''
-  if (['pending', 'waiting_retry'].includes(String(task?.display_status || task?.status || ''))) return ''
   const stage = getTaskStageLabel(task)
   if (props.preferUploadIcon && isUploadEnabled(task)) return uploadToCloudAnimation
   if (stage.includes('上传')) return uploadToCloudAnimation
   return downloadIconAnimation
+}
+
+function isUploadLottie(task) {
+  return getTaskLottie(task) === uploadToCloudAnimation
 }
 
 function isTaskSuccess(task) {
@@ -592,6 +516,10 @@ function getTaskSessionId(task) {
 
 function getTaskRjcode(task) {
   return String(task?.rjcode || task?.task_metadata?.rjcode || '').trim().toUpperCase()
+}
+
+function getTaskSecondaryLabel(task) {
+  return String(task?.task_metadata?.workbench_subtitle || task?.rjcode || task?.task_metadata?.rjcode || '').trim() || '未知 RJ'
 }
 
 function getTaskSourceAction(task) {
@@ -930,6 +858,9 @@ function getTaskSummaryStepText(task) {
   const currentStep = String(task?.current_step || '').trim()
   if (!currentStep) return ''
 
+  // 被后续任务覆盖：显示简洁文案，不要露出 UUID
+  if (currentStep.startsWith('已由后续成功任务覆盖')) return '已由其他任务完成，此条任务已合并'
+
   const errorMessage = String(task?.error_message || task?.task_metadata?.failure_reason || '').trim()
   if (!errorMessage) return currentStep
 
@@ -969,27 +900,34 @@ function getTaskStageLabel(task) {
 }
 
 function getTaskOverallPercent(task) {
+  const status = String(task?.display_status || task?.status || '')
+  if (status === 'completed') return 100
   const transferTotal = getTaskTransferBytes(task)
-  if (!transferTotal) return Math.min(100, Number(task?.progress || 0))
+  if (!transferTotal) return Math.max(0, Math.min(99, Math.floor(Number(task?.progress || 0))))
   // 上传专用任务（无下载文件）：直接按上传进度 0-100%
   const hasDownloadFiles = Array.isArray(task?.download_files) && task.download_files.length > 0
   if (!hasDownloadFiles && isUploadEnabled(task)) {
     const uploadTotal = getUploadTotalBytes(task) || transferTotal
-    return Math.max(0, Math.min(100, Math.round(Math.min(1, getTaskUploadedBytes(task) / uploadTotal) * 100)))
+    const uploadedBytes = Math.max(0, getTaskUploadedBytes(task))
+    const percent = Math.max(0, Math.min(100, Math.floor(Math.min(1, uploadedBytes / uploadTotal) * 100)))
+    return uploadedBytes < uploadTotal ? Math.min(percent, 99) : Math.min(percent, 99)
   }
   // 下载+上传并行任务：下载和上传各贡献 0-50%，合并为 0-100%
   if (isUploadEnabled(task)) {
     const uploadTotal = getUploadTotalBytes(task) || transferTotal
     const downloadFraction = Math.min(1, getTaskDownloadedBytes(task) / transferTotal)
     const uploadFraction = Math.min(1, getTaskUploadedBytes(task) / uploadTotal)
-    return Math.max(0, Math.min(100, Math.round((downloadFraction + uploadFraction) / 2 * 100)))
+    const percent = Math.max(0, Math.min(100, Math.floor((downloadFraction + uploadFraction) / 2 * 100)))
+    return Math.min(percent, 99)
   }
   const rows = getUnifiedFileRows(task)
   if (rows.length) {
     const progress = rows.reduce((sum, item) => sum + Number(item.progress || 0), 0) / rows.length
-    return Math.max(0, Math.min(100, Math.round(progress)))
+    return Math.max(0, Math.min(99, Math.floor(progress)))
   }
-  return Math.max(0, Math.min(100, Math.round((getTaskDownloadedBytes(task) / transferTotal) * 100)))
+  const downloadedBytes = Math.max(0, getTaskDownloadedBytes(task))
+  const percent = Math.max(0, Math.min(100, Math.floor((downloadedBytes / transferTotal) * 100)))
+  return downloadedBytes < transferTotal ? Math.min(percent, 99) : Math.min(percent, 99)
 }
 
 function shouldShowSummaryProgress(task) {
@@ -1293,8 +1231,13 @@ function getUnifiedFileRows(task) {
 .v1-task-card:hover { transform: translateY(-2px); box-shadow: 0 16px 28px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,.38), inset 0 0 0 1px rgba(255,255,255,.06); border-color: rgba(255,255,255,.46); background: linear-gradient(180deg, rgba(255,255,255,.38), rgba(255,255,255,.16)); }
 .v1-task-card.expanded { box-shadow: 0 18px 34px rgba(15, 23, 42, 0.1), inset 0 1px 0 rgba(255,255,255,.4), inset 0 0 0 1px rgba(255,255,255,.08); }
 .v1-task-summary { display: flex; align-items: center; gap: 16px; padding: 18px 22px; min-height: 92px; }
-.v1-task-icon { display: inline-flex; align-items: center; justify-content: center; width: 88px; height: 88px; flex-shrink: 0; overflow: visible; }
+.v1-task-icon { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 88px; height: 88px; flex-shrink: 0; overflow: visible; }
+.v1-task-icon-fallback { position: absolute; z-index: 1; opacity: 0.92; }
 .v1-task-icon-lottie { width: 72px; height: 72px; pointer-events: none; filter: drop-shadow(0 10px 24px rgba(59,130,246,.12)); background: transparent; }
+.v1-task-icon-lottie { position: relative; z-index: 2; }
+.v1-task-icon-lottie :deep(canvas) { background: transparent !important; background-color: transparent !important; }
+/* 上传动画画布 4:3(1024×768)；用 aspect-ratio 让容器跟随比例，消除上下空白 */
+.v1-task-icon-lottie.is-upload-anim { height: auto; aspect-ratio: 4 / 3; }
 .v1-task-icon-lottie.paused { opacity: 0.52; filter: grayscale(0.25) saturate(0.7) drop-shadow(0 10px 24px rgba(59,130,246,.08)); }
 .v1-task-icon.processing { color: #123f67; }
 .v1-task-icon.pending { color: #566167; }
@@ -1373,6 +1316,36 @@ function getUnifiedFileRows(task) {
 .v1-log-row + .v1-log-row { margin-top: 6px; }
 .v1-log-time { color: #94a3b8; }
 .v1-log-message { word-break: break-word; }
+
+.v1-shell.is-compact .v1-body { padding-top: 12px; padding-bottom: 10px; }
+.v1-shell.is-compact .v1-task-card { margin-bottom: 12px; border-radius: 24px; }
+.v1-shell.is-compact .v1-task-card::before { height: 46px; border-radius: 23px 23px 12px 12px; }
+.v1-shell.is-compact .v1-task-summary { gap: 12px; padding: 12px 16px; min-height: 72px; }
+.v1-shell.is-compact .v1-task-icon { width: 60px; height: 60px; }
+.v1-shell.is-compact .v1-task-icon-fallback { font-size: 18px; }
+.v1-shell.is-compact .v1-task-icon-lottie { width: 48px; height: 48px; filter: drop-shadow(0 6px 14px rgba(59,130,246,.1)); }
+.v1-shell.is-compact .v1-task-icon-lottie.is-upload-anim { height: auto; aspect-ratio: 4 / 3; }
+.v1-shell.is-compact .v1-task-name { font-size: 13px; line-height: 1.15; }
+.v1-shell.is-compact .v1-task-rj { margin-top: 2px; font-size: 11px; }
+.v1-shell.is-compact .v1-task-meta { margin-top: 4px; gap: 8px; font-size: 11px; }
+.v1-shell.is-compact .v1-summary-progress { margin-top: 8px; gap: 8px; }
+.v1-shell.is-compact .v1-inline-action { min-height: 26px; padding: 0 10px; font-size: 11px; }
+.v1-shell.is-compact .v1-task-detail { padding: 0 16px 12px; }
+.v1-shell.is-compact .v1-error-box { margin-top: 12px; padding: 10px 12px; }
+.v1-shell.is-compact .v1-path-grid { margin-top: 12px; gap: 10px; }
+.v1-shell.is-compact .v1-path-card { padding: 10px 12px; border-radius: 12px; }
+.v1-shell.is-compact .v1-path-value { margin-top: 4px; font-size: 12px; line-height: 1.4; }
+.v1-shell.is-compact .v1-detail-section { margin-top: 10px; }
+.v1-shell.is-compact .v1-file-row { padding: 6px 0; }
+.v1-shell.is-compact .v1-file-row-top { margin-bottom: 4px; }
+.v1-shell.is-compact .v1-file-row-main,
+.v1-shell.is-compact .v1-file-row-side { gap: 8px; }
+.v1-shell.is-compact .v1-file-row-name { font-size: 11px; }
+.v1-shell.is-compact .v1-file-row-side { font-size: 10px; }
+.v1-shell.is-compact .v1-file-chip { min-height: 18px; padding: 0 6px; font-size: 9px; }
+.v1-shell.is-compact .v1-strip-track { height: 5px; }
+.v1-shell.is-compact .v1-log-row { font-size: 11px; gap: 8px; }
+.v1-shell.is-compact .v1-log-row + .v1-log-row { margin-top: 4px; }
 .v1-empty-state { display: grid; justify-items: center; gap: 8px; padding: 110px 24px; color: #71808d; }
 .v1-empty-title { color: #334155; font-size: 18px; font-weight: 800; }
 .v1-empty-text { font-size: 13px; }

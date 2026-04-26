@@ -1,6 +1,64 @@
 <template>
   <div class="import-workbench-modal" v-app-loading="{ loading: workbenchLoading, text: '正在整理字幕工作台...', description: '同步批次、候选字幕和配对状态', size: 136 }">
-    <div class="import-workbench-head">
+    
+    <div class="subtitle-workbench-shell relative flex w-full min-h-[78vh] max-h-[92vh] flex-col overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.1)]">
+      <header class="subtitle-workbench-header relative flex items-center justify-between gap-4 px-6 py-4 flex-shrink-0 border-b border-slate-100 bg-white">
+        <div class="flex items-center gap-3.5 min-w-0">
+          <div class="subtitle-workbench-brand group flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[12px] border border-slate-200 bg-slate-900 text-white shadow-[0_4px_12px_rgba(15,23,42,0.18)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(15,23,42,0.28)]">
+            <Captions class="h-[18px] w-[18px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-4deg]" :stroke-width="2.1" />
+          </div>
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <h2 class="text-[17px] font-semibold tracking-[-0.02em] leading-tight text-slate-900">字幕补配工作台</h2>
+              <span class="inline-flex items-center gap-1 rounded-full border border-emerald-200/70 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-medium text-emerald-700">
+                <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>Live
+              </span>
+            </div>
+            <p class="mt-0.5 text-[11.5px] leading-snug text-slate-500 truncate">左侧队列、中间总览 / 筛选与配对 / 字幕树、右侧配置与批量操作。</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            class="subtitle-workbench-btn group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
+            :disabled="manualRefreshing"
+            @click="refreshTaskStatus(true, { inspect: true, forceInspect: true, showOverlay: false })"
+          >
+            <RefreshCw class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110" :class="{ 'animate-spin': manualRefreshing }" :stroke-width="2.2" />
+            <span>刷新状态</span>
+          </button>
+          <button
+            type="button"
+            class="subtitle-workbench-btn group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
+            :disabled="!clearableTaskCount || queueClearing"
+            @click="clearFinishedTasks"
+          >
+            <Trash2 class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-8deg]" :stroke-width="2.2" />
+            <span>清空队列</span>
+          </button>
+          <button
+            type="button"
+            class="subtitle-workbench-btn group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
+            @click="emit('hide-background')"
+          >
+            <Minimize2 class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-8deg]" :stroke-width="2.2" />
+            <span>隐藏到后台</span>
+          </button>
+          <button
+            type="button"
+            class="subtitle-workbench-btn subtitle-workbench-btn-close group inline-flex items-center gap-1.5 rounded-[10px] border border-rose-200/70 bg-rose-50/70 px-3.5 py-2 text-[12.5px] font-medium text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 hover:shadow-[0_8px_16px_rgba(225,29,72,0.16)] active:translate-y-0 active:scale-[0.96]"
+            @click="emit('close')"
+          >
+            <X class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-90" :stroke-width="2.4" />
+            <span>关闭工作台</span>
+          </button>
+        </div>
+      </header>
+      <div class="subtitle-workbench-body subtitle-workbench-scrollbar flex-1 min-h-0 overflow-auto bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-4">
+        <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
+      </div>
+    </div>
+    <div v-if="false" class="import-workbench-head">
       <div>
         <div class="import-workbench-title">字幕补配工作台</div>
         <div class="import-workbench-desc">工作台会保留补配历史，不会因为完成、失败或临时关闭而自动清空。你可以随时回来继续处理或回看结果。</div>
@@ -12,7 +70,7 @@
         <el-button size="small" @click="emit('close')">关闭工作台</el-button>
       </div>
     </div>
-    <div class="import-workbench-toolbar">
+    <div v-if="false" class="import-workbench-toolbar">
       <div class="import-toolbar-stats">
         <span class="toolbar-pill">全部 {{ linkedTasks.length }}</span>
         <span class="toolbar-pill toolbar-pill-primary">进行中 {{ processingTaskCount }}</span>
@@ -22,7 +80,7 @@
       <div class="import-toolbar-tip">仅手动清理已完成或已失败任务，进行中的任务会继续保留。</div>
     </div>
 
-    <div class="import-workbench-body">
+    <div v-if="false" class="import-workbench-body">
       <section class="import-task-list-card">
         <div class="import-task-list-head">
           <div>
@@ -312,11 +370,13 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Captions, Minimize2, RefreshCw, Trash2, X } from 'lucide-vue-next'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import { Folder, FolderOpened, Document, Picture, VideoPlay, Headset, Tickets } from '@element-plus/icons-vue'
 import { libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
 import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
 import SubtitleInspectorWorkbench from '../library/SubtitleInspectorWorkbench.vue'
+import SubtitleWorkbenchStage from '../library/subtitle-workbench/SubtitleWorkbenchStage.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
 
 const props = defineProps({
@@ -695,6 +755,15 @@ function getTaskSourceRJCode(task) {
   return sourceRJ && sourceRJ !== folderRJ ? sourceRJ : ''
 }
 
+function getRJSubtitleTaskStatusType(task) {
+  const state = getTaskStateClass(task)
+  if (state === 'failed') return 'danger'
+  if (state === 'awaiting') return 'warning'
+  if (state === 'completed') return 'success'
+  if (state === 'processing') return 'primary'
+  return 'info'
+}
+
 function getTaskStatusLabel(task) {
   if (!task) return '未知状态'
   if (task.manual_match_completed) return '已完成补配'
@@ -754,6 +823,34 @@ function getTaskProgressText(task) {
   if (task.awaiting_manual_match) return `待配对 ${task.downloaded_count || 0} 字幕`
   if (Number.isFinite(Number(task.progress))) return `${Math.max(0, Math.min(100, Number(task.progress || 0)))}%`
   return task.current_step || '-'
+}
+
+function buildDefaultSubtitleTaskDetailPanels(task) {
+  if (!task) return []
+  const panels = []
+  if (Array.isArray(task?.progress_log) && task.progress_log.length) panels.push('log')
+  if (Array.isArray(task?.download_files) && task.download_files.length) panels.push('download')
+  if (
+    (Array.isArray(task?.written_files) && task.written_files.length) ||
+    (Array.isArray(task?.skipped_files) && task.skipped_files.length) ||
+    Number(task?.manual_match_applied_pairs || 0) > 0
+  ) panels.push('written')
+  if (
+    (Array.isArray(task?.write_errors) && task.write_errors.length) ||
+    (Array.isArray(task?.failed_files) && task.failed_files.length) ||
+    String(task?.status || '').toLowerCase() === 'failed'
+  ) panels.push('issues')
+  if (
+    task?.activity_context ||
+    task?.restore_payload ||
+    task?.source_label ||
+    task?.source_mode ||
+    task?.created_at ||
+    task?.subtitle_dir ||
+    task?.folder_path ||
+    task?.snapshot
+  ) panels.push('meta')
+  return [...new Set(panels)]
 }
 
 function formatTaskTimeline(task) {
@@ -1190,11 +1287,12 @@ async function inspectSubtitleTask(task, options = {}) {
   subtitleInspectorLoading.value = true
   try {
     persistSubtitleTaskDraft()
-    const audioLibraryId = task.library_id || ''
+    const audioLibraryId = task.target_library_id || task.library_id || ''
     const subtitleLibraryId = task.subtitle_library_id || audioLibraryId
+    const audioFolderPath = String(task.target_folder_path || task.folder_path || '').trim()
     const [subtitleData, audioData] = await Promise.all([
       libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir),
-      libraryApi.browserFolderContents(audioLibraryId, task.folder_path)
+      audioFolderPath ? libraryApi.browserFolderContents(audioLibraryId, audioFolderPath) : Promise.resolve({ items: [] })
     ])
     skipTaskDraftPersistence = true
     subtitleInspectorSearch.value = ''
@@ -1206,7 +1304,7 @@ async function inspectSubtitleTask(task, options = {}) {
       libraryId: audioLibraryId,
       audioLibraryId,
       subtitleLibraryId,
-      folderPath: task.folder_path || '',
+      folderPath: audioFolderPath,
       subtitleDir: subtitleData.folder_path || task.subtitle_dir,
       sourceMode: task.source_mode || '',
       totalFiles: subtitleData.total_files || 0,
@@ -1223,7 +1321,18 @@ async function inspectSubtitleTask(task, options = {}) {
     skipTaskDraftPersistence = false
     persistSubtitleTaskDraft(task.id)
   } catch (error) {
-    ElMessage.error('加载字幕目录失败: ' + decodePossibleMojibake(error.response?.data?.detail || error.message))
+    const message = decodePossibleMojibake(error.response?.data?.detail || error.message)
+    clearSubtitleInspectorState()
+    if (activeTask.value?.id === task.id) {
+      activeTask.value = {
+        ...activeTask.value,
+        status: 'failed',
+        error_message: message,
+        current_step: message,
+        awaiting_manual_match: false
+      }
+    }
+    ElMessage.error('加载字幕目录失败: ' + message)
   } finally {
     skipTaskDraftPersistence = false
     subtitleInspectorLoading.value = false
@@ -2064,6 +2173,176 @@ watch(workbenchStatePayload, (value) => {
   emit('state-change', value)
 }, { deep: true, immediate: true })
 
+
+const activeSubtitleWorkbenchStage = ref('overview')
+const subtitleWorkbenchRailMode = ref('tasks')
+const subtitleWorkbenchContextMode = ref('pairing')
+const subtitleWorkbenchDrawerCollapsed = ref(false)
+const subtitleTaskManualFilter = ref('all')
+
+const subtitleClearableTaskCounts = computed(() => ({
+  all: linkedTasks.value.filter(task => canClearTask(task)).length,
+  completed: linkedTasks.value.filter(task => isCompletedTask(task)).length,
+  failed: linkedTasks.value.filter(task => isFailedTask(task)).length,
+  finished: linkedTasks.value.filter(task => canClearTask(task)).length
+}))
+const subtitleTaskManualOverview = computed(() => ([
+  { key: 'all', label: '\u5168\u90e8', value: linkedTasks.value.length },
+  { key: 'awaiting', label: '\u5f85\u914d\u5bf9', value: linkedTasks.value.filter(task => isAwaitingManualTask(task)).length },
+  { key: 'completed', label: '\u5df2\u5b8c\u6210', value: completedTaskCount.value },
+  { key: 'failed', label: '\u5931\u8d25', value: failedTaskCount.value }
+]).filter(item => item.key === 'all' || item.value > 0))
+const visibleSubtitleTasks = computed(() => {
+  if (subtitleTaskManualFilter.value === 'awaiting') return linkedTasks.value.filter(task => isAwaitingManualTask(task))
+  if (subtitleTaskManualFilter.value === 'completed') return linkedTasks.value.filter(task => isCompletedTask(task))
+  if (subtitleTaskManualFilter.value === 'failed') return linkedTasks.value.filter(task => isFailedTask(task))
+  return linkedTasks.value
+})
+const activeSubtitleTaskProgressLogs = computed(() => Array.isArray(activeTask.value?.progress_log) ? activeTask.value.progress_log : [])
+const activeSubtitleWorkbenchStageLabel = computed(() => ({
+  overview: '\u4efb\u52a1\u603b\u89c8',
+  pairing: '\u7b5b\u9009\u4e0e\u914d\u5bf9',
+  tree: '\u5b57\u5e55\u6811'
+}[activeSubtitleWorkbenchStage.value] || '\u4efb\u52a1\u603b\u89c8'))
+const subtitleWorkbenchFocusTitle = computed(() => activeTask.value ? getTaskDisplayRJCode(activeTask.value) : '\u7b49\u5f85\u7126\u70b9\u4efb\u52a1')
+const subtitleWorkbenchFocusSubtitle = computed(() => activeTask.value ? (activeTask.value.folder_name || getFileName(activeTask.value.folder_path)) : '\u4ece\u5de6\u4fa7\u4efb\u52a1\u961f\u5217\u91cc\u9009\u4e00\u4e2a\u7126\u70b9\u9879')
+const subtitleWorkbenchFocusStep = computed(() => activeTask.value?.current_step || '\u5f53\u524d\u8fd8\u6ca1\u6709\u8fdb\u884c\u4e2d\u7684\u5b57\u5e55\u5904\u7406\u6b65\u9aa4')
+const subtitleWorkbenchFocusChips = computed(() => {
+  const task = activeTask.value
+  const chips = []
+  if (task?.awaiting_manual_match) chips.push({ key: 'manual', label: '\u5f85\u624b\u52a8\u914d\u5bf9', class: 'is-warning' })
+  if (task?.manual_match_completed) chips.push({ key: 'done', label: `\u5df2\u5339\u914d ${task.manual_match_applied_pairs || 0}`, class: 'is-success' })
+  if (task?.subtitle_dir) chips.push({ key: 'tree', label: '\u53ef\u8fdb\u5165\u5b57\u5e55\u6811' })
+  return chips
+})
+const subtitleConfigCtx = computed(() => ({
+  subtitleOptions: subtitleOptions.value,
+  canClearSequenceSelection: Boolean(subtitleSequenceSelection.value.audioPaths.length || subtitleSequenceSelection.value.subtitlePaths.length),
+  canClearManualPairs: Boolean(subtitleManualPairs.value.length),
+  treeSelectedCount: subtitleInspectorSelectedRows.value.length,
+  treeVisibleCount: subtitleInspectorFlatTree.value.length,
+  treeSearchText: subtitleInspectorSearch.value,
+  setTreeSearch: value => {
+    subtitleInspectorSearch.value = value
+    onSubtitleInspectorSearchInput()
+  },
+  setSubtitleOption: (key, value) => { subtitleOptions.value[key] = value },
+  addSubtitleFilterRule,
+  removeSubtitleFilterRule,
+  clearSubtitleSequenceSelection,
+  clearSubtitleManualPairs,
+  openSubtitleInspectorFilterDeleteDialog,
+  canOpenSubtitleInspectorFilterDeleteDialog: canOpenSubtitleInspectorFilterDeleteDialog.value
+}))
+ const subtitleTaskStageCtx = computed(() => ({
+  subtitleQueueTasks: linkedTasks.value,
+  visibleSubtitleTasks: visibleSubtitleTasks.value,
+  activeSubtitleTask: activeTask.value,
+  selectedSubtitleTaskId: String(selectedTaskId.value || ''),
+  subtitleClearableTaskCounts: subtitleClearableTaskCounts.value,
+  subtitleBulkClearingScope: queueClearing.value ? 'finished' : '',
+  subtitleTaskDetailPanels: buildDefaultSubtitleTaskDetailPanels(activeTask.value),
+  subtitleOptions: subtitleOptions.value,
+  subtitleCancelingId: '',
+  subtitleTaskRerunId: retryingTaskId.value,
+  subtitleTaskManualOverview: subtitleTaskManualOverview.value,
+  subtitleTaskManualFilter: subtitleTaskManualFilter.value,
+  activeSubtitleTaskProgressLogs: activeSubtitleTaskProgressLogs.value,
+  getTaskDisplayRJCode,
+  getTaskSourceRJCode,
+  getRJSubtitleTaskBaseStatusType: getRJSubtitleTaskStatusType,
+  getRJSubtitleTaskBaseStatusLabel: getTaskStatusLabel,
+  getRJSubtitleTaskStatusLabel: getTaskStatusLabel,
+  getRJSubtitleTaskStatusClass: getTaskStateClass,
+  getRJSubtitleProgressStatus: getTaskProgressText,
+  getRJSubtitleLangLabel: value => value || '-',
+  getFileName,
+  getLibraryLabelById: value => value || '-',
+  isHistoryRestoredSubtitleTask: () => false,
+  isSelectionBackfillSubtitleTask: () => false,
+  isSubtitleTaskSelected: task => task?.id === selectedTaskId.value,
+  canCancelRJSubtitleTask: () => false,
+  canClearCurrentSubtitleTask: canClearTask,
+  canRerunSubtitleTask: canRetryTask,
+  getSubtitleTaskInspectLabel: () => '\u67e5\u770b',
+  cancelRJSubtitleTask: () => {},
+  clearCurrentSubtitleTask: async task => {
+    if (!task || !canClearTask(task)) return
+    await rjSubtitleApi.clearTask(task.id)
+    clearSubtitleTaskDraft(task.id)
+    await refreshTaskStatus(false, { inspect: false, silent: true })
+  },
+  rerunSubtitleTask: retryWorkbenchTask,
+  clearSubtitleTasksByScope: async (scope) => {
+    const tasks = linkedTasks.value.filter(task => {
+      if (scope === 'completed') return isCompletedTask(task)
+      if (scope === 'failed') return isFailedTask(task)
+      return canClearTask(task)
+    })
+    if (!tasks.length) return
+    const ids = tasks.map(t => t.id)
+    for (const id of ids) {
+      try { await rjSubtitleApi.clearTask(id) } catch (_) {}
+      clearSubtitleTaskDraft(id)
+    }
+    await refreshTaskStatus(false, { inspect: false, silent: true })
+  },
+  inspectSubtitleTask,
+  selectSubtitleTask: task => selectWorkbenchTask(task?.id || task),
+  setSubtitleTaskManualFilter: value => { subtitleTaskManualFilter.value = value },
+  getSubtitleDownloadFiles: task => Array.isArray(task?.download_files) ? task.download_files : [],
+  getSubtitleDownloadDisplayName: file => file?.name || file?.relative_path || file?.path || '-',
+  allSubtitleDownloadsCompleted: task => (Array.isArray(task?.download_files) ? task.download_files : []).every(file => file?.status === 'completed'),
+  isSubtitleDownloadExpanded: () => false,
+  toggleSubtitleDownloadExpanded: () => {},
+  visibleSubtitleDownloadFiles: task => Array.isArray(task?.download_files) ? task.download_files : [],
+  hiddenSubtitleDownloadCount: () => 0,
+  isSubtitleIssueExpanded: () => false,
+  toggleSubtitleIssueExpanded: () => {},
+  visibleSubtitleWriteErrors: task => Array.isArray(task?.write_errors) ? task.write_errors : [],
+  visibleSubtitleFailedFiles: task => Array.isArray(task?.failed_files) ? task.failed_files : [],
+  hiddenSubtitleIssueCount: () => 0,
+  formatRJSubtitleAttempt: value => value || '',
+  formatProgressLogTime: value => formatDate(value),
+  getProgressLogLevelLabel: value => value || ''
+}))
+const subtitleWorkbenchStageCtx = computed(() => ({
+  railModes: [{ key: 'tasks', label: '\u6267\u884c\u961f\u5217' }],
+  railMode: subtitleWorkbenchRailMode.value,
+  setRailMode: value => { subtitleWorkbenchRailMode.value = value },
+  stageTabs: [
+    { key: 'overview', label: '\u4efb\u52a1\u603b\u89c8', tip: '\u9636\u6bb5\u8fdb\u5ea6\u3001\u5199\u5165\u548c\u5f02\u5e38\u56de\u770b' },
+    { key: 'pairing', label: '\u7b5b\u9009\u4e0e\u914d\u5bf9', tip: '\u97f3\u9891\u8f68\u3001\u5b57\u5e55\u8f68\u548c\u9884\u914d\u5bf9\u5de5\u4f4d' },
+    { key: 'tree', label: '\u5b57\u5e55\u6587\u4ef6\u6811', tip: '\u68c0\u7d22\u3001\u6539\u540d\u4e0e\u6279\u91cf\u6e05\u7406' }
+  ],
+  activeStage: activeSubtitleWorkbenchStage.value,
+  activeStageLabel: activeSubtitleWorkbenchStageLabel.value,
+  setActiveStage: value => { activeSubtitleWorkbenchStage.value = value },
+  focusTitle: subtitleWorkbenchFocusTitle.value,
+  focusSubtitle: subtitleWorkbenchFocusSubtitle.value,
+  focusStep: subtitleWorkbenchFocusStep.value,
+  focusChips: subtitleWorkbenchFocusChips.value,
+  contextMode: subtitleWorkbenchContextMode.value,
+  scanCtx: {},
+  taskNavigatorCtx: subtitleTaskStageCtx.value,
+  taskOverviewCtx: subtitleTaskStageCtx.value,
+  workbenchCtx: subtitleWorkbenchCtx.value,
+  configCtx: subtitleConfigCtx.value,
+  contextDrawerCtx: {
+    modeTitle: subtitleWorkbenchContextMode.value === 'settings' ? '\u5b57\u5e55\u8bbe\u7f6e' : subtitleWorkbenchContextMode.value === 'pairing' ? '\u914d\u5bf9\u63a7\u5236' : '\u6587\u4ef6\u6811',
+    modeTip: '\u4e0e\u5b57\u5e55\u722c\u53d6\u5de5\u4f5c\u53f0\u4fdd\u6301\u4e00\u81f4\u7684\u53f3\u4fa7\u63a7\u5236\u533a',
+    contextMode: subtitleWorkbenchContextMode.value,
+    setContextMode: value => { subtitleWorkbenchContextMode.value = value },
+    drawerCollapsed: subtitleWorkbenchDrawerCollapsed.value,
+    toggleDrawer: () => { subtitleWorkbenchDrawerCollapsed.value = !subtitleWorkbenchDrawerCollapsed.value },
+    modeOptions: [
+      { key: 'settings', label: '\u8bbe\u7f6e', icon: 'Sliders' },
+      { key: 'pairing', label: '\u914d\u5bf9', icon: 'Link2' },
+      { key: 'tree', label: '\u5b57\u5e55\u6811', icon: 'FolderTree' }
+    ]
+  }
+}))
+
 const subtitleWorkbenchCtx = computed(() => ({
   subtitleInspectorInfo: subtitleInspectorInfo.value,
   subtitleInspectorBusy: subtitleInspectorBusy.value,
@@ -2145,6 +2424,147 @@ const subtitleWorkbenchCtx = computed(() => ({
 </script>
 
 <style scoped>
+
+.subtitle-workbench-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 78vh;
+  max-height: 92vh;
+  overflow: hidden;
+  border-radius: 20px;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  background: #fff;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.1);
+}
+
+.subtitle-workbench-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(16px);
+}
+
+.subtitle-workbench-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.subtitle-workbench-kicker,
+.subtitle-workbench-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  border: 1px solid rgb(226 232 240);
+  background: rgb(248 250 252);
+  padding: 3px 8px;
+  color: rgb(71 85 105);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.subtitle-workbench-kicker {
+  border-color: rgb(191 219 254);
+  background: rgb(239 246 255);
+  color: rgb(37 99 235);
+}
+
+.subtitle-workbench-stat.is-processing {
+  border-color: rgb(186 230 253);
+  background: rgb(240 249 255);
+  color: rgb(2 132 199);
+}
+
+.subtitle-workbench-stat.is-success {
+  border-color: rgb(187 247 208);
+  background: rgb(240 253 244);
+  color: rgb(22 163 74);
+}
+
+.subtitle-workbench-stat.is-danger {
+  border-color: rgb(254 202 202);
+  background: rgb(254 242 242);
+  color: rgb(220 38 38);
+}
+
+.subtitle-workbench-title {
+  margin: 8px 0 0;
+  color: rgb(15 23 42);
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.subtitle-workbench-desc {
+  margin: 4px 0 0;
+  color: rgb(100 116 139);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.subtitle-workbench-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.subtitle-workbench-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  border-radius: 12px;
+  border: 1px solid rgb(226 232 240);
+  background: rgba(255, 255, 255, 0.92);
+  padding: 0 12px;
+  color: rgb(51 65 85);
+  font-size: 12px;
+  font-weight: 700;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-workbench-action:hover:enabled {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgb(203 213 225);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
+.subtitle-workbench-action:active:enabled {
+  transform: scale(0.96);
+}
+
+.subtitle-workbench-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.subtitle-workbench-action.is-primary {
+  border-color: rgb(15 23 42);
+  background: rgb(15 23 42);
+  color: white;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.18);
+}
+
+.subtitle-workbench-body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  background: linear-gradient(180deg, #fafcff 0%, #ffffff 48%, #f6f8ff 100%);
+}
+
 .import-workbench-modal {
   display: grid;
   grid-template-rows: auto auto auto;
@@ -2705,9 +3125,9 @@ const subtitleWorkbenchCtx = computed(() => ({
   display: inline-flex;
   align-self: flex-start;
   padding: 3px 10px;
-  border-radius: 999px;
-  background: rgba(0, 113, 227, 0.08);
-  color: #2458a6;
+  border-radius: 8px;
+  background: rgb(248 250 252);
+  color: rgb(51 65 85);
   font-size: 12px;
   font-weight: 700;
 }
@@ -2860,252 +3280,208 @@ const subtitleWorkbenchCtx = computed(() => ({
 }
 
 .import-workbench-modal {
-  --apple-bg: #f5f5f7;
-  --apple-surface: rgba(255, 255, 255, 0.94);
-  --apple-surface-soft: rgba(255, 255, 255, 0.82);
-  --apple-border: rgba(0, 0, 0, 0.06);
-  --apple-text: #1d1d1f;
-  --apple-text-soft: rgba(29, 29, 31, 0.72);
-  --apple-text-muted: rgba(29, 29, 31, 0.52);
-  --apple-blue: #0071e3;
-  --apple-blue-soft: rgba(0, 113, 227, 0.08);
-  --apple-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
-  padding: 18px;
-  gap: 14px;
-  background:
-    radial-gradient(circle at top left, rgba(0, 113, 227, 0.06), transparent 26%),
-    linear-gradient(180deg, #fafafc 0%, #f5f5f7 100%);
+  display: block;
+  min-width: 0;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
 }
 
-.import-workbench-head {
-  padding: 18px 20px;
-  border: 1px solid var(--apple-border);
-  border-radius: 26px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.84)),
-    var(--apple-bg);
-  box-shadow: var(--apple-shadow);
+.subtitle-workbench-shell {
+  display: flex;
+  width: 100%;
+  min-height: 78vh;
+  max-height: 92vh;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 20px;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  background: #fff;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.1);
 }
 
-.import-workbench-title {
-  font-size: 28px;
-  line-height: 1.08;
-  letter-spacing: -0.36px;
-  color: var(--apple-text);
+.subtitle-workbench-header {
+  position: relative;
+  top: auto;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
+  padding: 16px 24px;
+  border-bottom: 1px solid rgb(241 245 249);
+  background: #fff;
+  backdrop-filter: none;
 }
 
-.import-workbench-desc,
-.import-toolbar-tip,
-.import-section-tip,
-.import-task-row-meta,
-.import-task-row-progress,
-.import-config-tip,
-.candidate-meta,
-.candidate-path,
-.import-task-placeholder-text {
-  color: var(--apple-text-soft);
+.subtitle-workbench-body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  background: linear-gradient(180deg, #fafcff 0%, #ffffff 48%, #f6f8ff 100%);
 }
 
-.import-workbench-actions :deep(.el-button),
-.import-task-row-actions :deep(.el-button),
-.import-config-inline-actions :deep(.el-button),
-.import-filter-actions :deep(.el-button) {
-  min-height: 34px;
-  padding: 0 14px;
-  border-radius: 999px;
+.subtitle-workbench-brand {
+  border-radius: 12px;
+  border-color: rgb(226 232 240);
+  background: rgb(15 23 42);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18);
+}
+
+.subtitle-workbench-btn {
+  border-radius: 10px;
+  border-color: rgb(226 232 240);
+  background: #fff;
+  color: rgb(71 85 105);
+  box-shadow: none;
+}
+
+.subtitle-workbench-btn:hover:enabled {
+  border-color: rgb(203 213 225);
+  background: rgb(248 250 252);
+  color: rgb(15 23 42);
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
+}
+
+.subtitle-workbench-btn-close {
+  border-color: rgba(254, 202, 202, 0.7);
+  background: rgba(255, 241, 242, 0.7);
+  color: rgb(225 29 72);
+}
+
+.subtitle-workbench-header .rounded-full {
+  border-radius: 8px;
+}
+
+.import-workbench-modal :deep(.el-button),
+.import-workbench-modal :deep(.el-button--default),
+.import-workbench-modal :deep(.el-button--primary) {
+  min-height: 32px;
+  border-radius: 8px;
   font-size: 12px;
-  font-weight: 500;
-  transition: transform 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
-}
-
-.import-workbench-actions :deep(.el-button:hover),
-.import-task-row-actions :deep(.el-button:hover),
-.import-config-inline-actions :deep(.el-button:hover),
-.import-filter-actions :deep(.el-button:hover) {
-  transform: translateY(-1px);
+  font-weight: 600;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .import-workbench-modal :deep(.el-button--default) {
-  border-color: rgba(0, 0, 0, 0.08);
-  background: rgba(255, 255, 255, 0.92);
-  color: var(--apple-text);
+  border-color: rgb(226 232 240);
+  background: #fff;
+  color: rgb(51 65 85);
 }
 
 .import-workbench-modal :deep(.el-button--default:hover) {
-  border-color: rgba(0, 113, 227, 0.24);
-  background: #ffffff;
-  color: var(--apple-blue);
+  border-color: rgb(203 213 225);
+  background: rgb(248 250 252);
+  color: rgb(15 23 42);
 }
 
 .import-workbench-modal :deep(.el-button--primary) {
-  border-color: transparent;
-  background: var(--apple-blue);
-  box-shadow: 0 10px 20px rgba(0, 113, 227, 0.18);
+  border-color: rgb(15 23 42);
+  background: rgb(15 23 42);
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.18);
 }
 
 .import-workbench-modal :deep(.el-button--primary:hover) {
-  background: #0066cc;
+  background: rgb(30 41 59);
+}
+
+.import-workbench-modal :deep(.el-input__wrapper),
+.import-workbench-modal :deep(.el-select__wrapper) {
+  border-radius: 8px;
+  background: rgb(248 250 252);
+  box-shadow: 0 0 0 1px rgb(226 232 240) inset;
+}
+
+.import-workbench-modal :deep(.el-input__wrapper.is-focus),
+.import-workbench-modal :deep(.el-select__wrapper.is-focused) {
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(203 213 225) inset, 0 0 0 3px rgb(226 232 240);
+}
+
+.import-workbench-modal :deep(.el-radio-button__inner) {
+  border-radius: 8px;
+}
+
+.import-workbench-modal :deep(.el-alert) {
+  border-radius: 12px;
+  border: 1px solid rgb(226 232 240);
+  background: #fff;
 }
 
 .import-workbench-toolbar,
 .import-task-list-card,
 .import-task-detail,
-.import-config-card {
-  border: 1px solid var(--apple-border);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.88)),
-    var(--apple-bg);
-  box-shadow: var(--apple-shadow);
-}
-
-.import-workbench-toolbar {
-  padding: 10px 14px;
-  border-radius: 20px;
-}
-
-.toolbar-pill {
-  border-color: rgba(0, 0, 0, 0.06);
-  background: rgba(255, 255, 255, 0.92);
-  color: var(--apple-text-soft);
-}
-
-.toolbar-pill-primary {
-  border-color: rgba(0, 113, 227, 0.12);
-  background: rgba(0, 113, 227, 0.08);
-  color: var(--apple-blue);
-}
-
-.import-task-list-card,
-.import-task-detail {
-  border-radius: 24px;
-}
-
-.import-task-list-head,
-.import-config-card :deep(.el-card__header) {
-  border-bottom-color: rgba(0, 0, 0, 0.04);
-  background: rgba(255, 255, 255, 0.68);
-}
-
-.import-section-title,
-.import-config-head,
-.import-config-title,
-.import-task-row-title,
-.candidate-title,
-.import-task-placeholder-title {
-  color: var(--apple-text);
-}
-
-.import-task-row {
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
-}
-
-.import-task-row:hover {
-  border-color: rgba(0, 113, 227, 0.18);
-  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.08);
-}
-
-.import-task-row.active {
-  border-color: rgba(0, 113, 227, 0.22);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.1);
-}
-
-.import-task-row-rj,
-.import-chip,
-.import-chip-primary {
-  border-radius: 999px;
-}
-
-.import-task-row-rj,
-.import-chip-primary {
-  background: rgba(0, 113, 227, 0.08);
-  color: var(--apple-blue);
-}
-
-.import-task-row-rj {
-  box-shadow: none;
-  letter-spacing: 0.02em;
-}
-
-.task-status-pill {
-  border-color: rgba(0, 0, 0, 0.06);
-  background: rgba(255, 255, 255, 0.92);
-}
-
-.import-config-card {
-  border-radius: 24px;
-  position: sticky;
-  top: 8px;
-}
-
-.import-config-card :deep(.el-card__body) {
-  padding: 12px 14px 14px;
-}
-
-.import-config-row {
-  padding: 10px 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-}
-
-.import-config-row:last-child {
-  border-bottom: 0;
-}
-
+.import-config-card,
 .import-filter-editor,
 .candidate-item,
 .import-retarget-current,
 .import-cleanup-summary,
 .import-task-placeholder {
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.84);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+  border: 1px solid rgb(226 232 240);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
 }
 
-.import-filter-editor {
-  padding: 10px;
+.import-task-row {
+  border: 1px solid rgb(226 232 240);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: none;
 }
 
-.candidate-item {
-  padding: 12px 14px;
+.import-task-row:hover {
+  border-color: rgb(203 213 225);
+  background: rgb(248 250 252);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+}
+
+.import-task-row.active {
+  border-color: rgb(15 23 42);
+  background: rgb(248 250 252);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
+}
+
+.toolbar-pill,
+.import-task-row-rj,
+.import-chip,
+.import-chip-primary,
+.task-status-pill {
+  border-radius: 8px;
+  border-color: rgb(226 232 240);
+  background: rgb(248 250 252);
+  color: rgb(71 85 105);
+  box-shadow: none;
+}
+
+.toolbar-pill-primary,
+.toolbar-pill-success,
+.toolbar-pill-danger,
+.import-chip-primary {
+  border-color: rgb(226 232 240);
+  background: rgb(248 250 252);
+  color: rgb(51 65 85);
 }
 
 .candidate-item:hover {
-  border-color: rgba(0, 113, 227, 0.18);
-  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
+  border-color: rgb(203 213 225);
+  background: rgb(248 250 252);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
 }
 
 .candidate-item :deep(.el-radio__input.is-checked .el-radio__inner) {
-  background: var(--apple-blue);
-  border-color: var(--apple-blue);
-}
-
-.import-workbench-modal :deep(.el-input__wrapper),
-.import-workbench-modal :deep(.el-select__wrapper) {
-  border-radius: 16px;
-  background: rgba(250, 250, 252, 0.94);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06) inset;
-}
-
-.import-workbench-modal :deep(.el-input__wrapper.is-focus),
-.import-workbench-modal :deep(.el-select__wrapper.is-focused) {
-  box-shadow: 0 0 0 1px rgba(0, 113, 227, 0.24) inset, 0 0 0 4px rgba(0, 113, 227, 0.08);
-}
-
-.import-workbench-modal :deep(.el-radio-button__inner) {
-  border-radius: 999px;
-}
-
-.import-workbench-modal :deep(.el-alert) {
-  border-radius: 18px;
-  border: 1px solid rgba(0, 0, 0, 0.04);
+  background: rgb(15 23 42);
+  border-color: rgb(15 23 42);
 }
 
 .import-task-main > :deep(.subtitle-inspector-workbench),
 .import-task-main > :deep(.el-card) {
-  border-radius: 24px;
-  overflow: hidden;
+  border-radius: 14px;
 }
 </style>

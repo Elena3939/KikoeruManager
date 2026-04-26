@@ -85,7 +85,13 @@
               :disabled="folderLoading || folderDeleting || !folderItems.length"
               @click="openMojibakeRepairPreview"
             >
-              <Languages :size="15" />
+              <DotLottieVue
+                :src="translateAnimation"
+                autoplay
+                loop
+                background="transparent"
+                style="width: 22px; height: 22px; flex-shrink: 0;"
+              />
               <span>修复乱码文件名</span>
             </button>
           </div>
@@ -303,6 +309,8 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
+import translateAnimation from '../../assets/anime/Translate.lottie'
 import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import {
@@ -320,7 +328,6 @@ import {
   RefreshCw,
   Search,
   Trash2,
-  Languages,
   X,
 } from 'lucide-vue-next'
 import { libraryApi } from '../../api'

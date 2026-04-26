@@ -171,9 +171,9 @@
 
         <div
           v-for="log in visibleLogs"
-          :key="log.id"
+          :key="log.key"
           class="log-line"
-          :class="`is-${log.level.toLowerCase()}`"
+          :class="[`is-${log.level.toLowerCase()}`, { 'is-selected': selectedLogKey === log.key }]"
         >
           <span class="log-ts">{{ log.time || '--:--:--' }}</span>
           <span class="log-lvl" :class="`lvl-${log.level.toLowerCase()}`">{{ log.level }}</span>
@@ -207,7 +207,7 @@
             <button
               type="button"
               class="px-2 py-1 rounded border border-slate-500/40 text-slate-300 hover:bg-slate-700/40 transition"
-              @click="selectedLog = null"
+              @click="clearSelectedLog"
             >关闭</button>
           </div>
         </div>
@@ -274,6 +274,7 @@ const selectedLevels = ref(['INFO', 'WARNING', 'ERROR'])
 const selectedModules = ref([])
 const searchKeyword = ref('')
 const selectedLog = ref(null)
+const selectedLogKey = ref('')
 const searchInputRef = ref(null)
 
 const scrollTop = ref(0)
@@ -511,7 +512,7 @@ function parseLogLine(line) {
   if (parseCache.has(line)) {
     parseCacheHits.value += 1
     const cached = parseCache.get(line)
-    return { ...cached, id: ++logIdCounter }
+    return { ...cached }
   }
   parseCacheMisses.value += 1
   trimMapByOldest(parseCache, parseCacheMax.value, Math.max(1000, Math.floor(parseCacheMax.value / 4)))
@@ -519,7 +520,7 @@ function parseLogLine(line) {
   let match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s+\S+\s+-\s+(.+)$/)
   if (match) {
     const message = match[3]
-    const obj = { id: ++logIdCounter, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message }
+    const obj = { id: ++logIdCounter, key: buildLogKey(line), rawLine: line, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message }
     parseCache.set(line, obj)
     return obj
   }
@@ -527,14 +528,24 @@ function parseLogLine(line) {
   match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-\s+(.+)$/)
   if (match) {
     const message = match[3]
-    const obj = { id: ++logIdCounter, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message }
+    const obj = { id: ++logIdCounter, key: buildLogKey(line), rawLine: line, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message }
     parseCache.set(line, obj)
     return obj
   }
 
-  const obj = { id: ++logIdCounter, time: '', level: 'INFO', module: parseModule(line, line), message: line }
+  const obj = { id: ++logIdCounter, key: buildLogKey(line), rawLine: line, time: '', level: 'INFO', module: parseModule(line, line), message: line }
   parseCache.set(line, obj)
   return obj
+}
+
+function buildLogKey(line) {
+  let hash = 2166136261
+  const text = String(line || '')
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `${text.length}-${(hash >>> 0).toString(36)}`
 }
 
 function isNearBottom() {
@@ -603,6 +614,23 @@ function scrollToBottom(smooth = true) {
 
 function showLogDetail(log) {
   selectedLog.value = log
+  selectedLogKey.value = log?.key || ''
+}
+
+function clearSelectedLog() {
+  selectedLog.value = null
+  selectedLogKey.value = ''
+}
+
+function restoreSelectedLog() {
+  if (!selectedLogKey.value) return
+  const matched = logs.value.find((log) => log.key === selectedLogKey.value)
+  if (matched) {
+    selectedLog.value = matched
+    return
+  }
+  selectedLog.value = null
+  selectedLogKey.value = ''
 }
 
 function togglePause() {
@@ -620,7 +648,6 @@ async function refreshLogs(force = false) {
 
   try {
     const t0 = performance.now()
-    selectedLog.value = null
     const shouldFollow = autoFollowLogs.value || isNearBottom()
     const useIncremental = !force && nextOffset >= 0
     lastFetchMode.value = useIncremental ? 'delta' : force ? 'full(force)' : 'full'
@@ -645,6 +672,7 @@ async function refreshLogs(force = false) {
     }
 
     triggerRef(logs)
+    restoreSelectedLog()
     trimMapByOldest(parseCache, parseCacheMax.value, Math.max(500, Math.floor(parseCacheMax.value / 6)))
     trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(250, Math.floor(highlightCacheMax.value / 6)))
     lastFetchMs.value = Math.round(performance.now() - t0)
@@ -670,7 +698,7 @@ async function clearLogs() {
     parseCacheMisses.value = 0
     highlightCacheHits.value = 0
     highlightCacheMisses.value = 0
-    selectedLog.value = null
+    clearSelectedLog()
     lastLogSignature = ''
     nextOffset = -1
     incrementalCount.value = 0
@@ -773,6 +801,7 @@ async function gotoFullSearchPage(cursor) {
     logIdCounter = 0
     logs.value = lines.map(parseLogLine)
     triggerRef(logs)
+    restoreSelectedLog()
     lastFetchMs.value = Math.round(performance.now() - t0)
     fetchHistory.value = [...fetchHistory.value.slice(-39), lastFetchMs.value]
     await nextTick()
@@ -930,9 +959,15 @@ onUnmounted(() => {
 }
 
 .log-line:hover { background: rgba(148, 163, 184, 0.07); }
+.log-line.is-selected {
+  background: rgba(59, 130, 246, 0.16);
+  box-shadow: inset 3px 0 0 #38bdf8;
+}
 .log-line.is-warning { background: rgba(245, 158, 11, 0.07); }
 .log-line.is-error   { background: rgba(239, 68, 68, 0.07); }
 .log-line.is-debug   { opacity: 0.7; }
+.log-line.is-selected.is-warning { background: rgba(245, 158, 11, 0.16); }
+.log-line.is-selected.is-error { background: rgba(239, 68, 68, 0.16); }
 
 .log-ts {
   flex-shrink: 0;

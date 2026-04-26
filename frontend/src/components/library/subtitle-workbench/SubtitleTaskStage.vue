@@ -334,6 +334,9 @@ const props = defineProps({
 
 const showOverview = computed(() => ['full', 'overview'].includes(props.mode))
 const showQueue = computed(() => ['full', 'queue'].includes(props.mode))
+const subtitleTaskDetailPanels = computed(() => (
+  Array.isArray(props.ctx?.subtitleTaskDetailPanels) ? props.ctx.subtitleTaskDetailPanels : []
+))
 
 const railRefs = new Map()
 function registerRailRef(id, el) {
@@ -607,7 +610,7 @@ function getTaskLogEmptyDescription(task) {
 function shouldShowMetaPanel(task) {
   return Boolean(
     task &&
-    props.ctx?.subtitleTaskDetailPanels?.includes('meta') &&
+    subtitleTaskDetailPanels.value.includes('meta') &&
     (props.ctx?.isHistoryRestoredSubtitleTask?.(task) || props.ctx?.isSelectionBackfillSubtitleTask?.(task))
   )
 }

@@ -1,7 +1,7 @@
 <template>
   <div
-    class="file-uploader"
-    :class="{ 'drag-over': isDragOver }"
+    class="upload-card"
+    :class="{ 'drag-over': isDragOver, 'compact-mode': compact }"
     @dragover.prevent="handleDragOver"
     @dragleave.prevent="handleDragLeave"
     @drop.prevent="handleDrop"
@@ -16,9 +16,13 @@
     />
 
     <div class="upload-content">
-      <el-icon :size="64" class="upload-icon"><Upload /></el-icon>
-      <h3 class="upload-title">拖拽文件到此处或点击上传</h3>
-      <p class="upload-desc">支持多种文件格式</p>
+      <div class="upload-head">
+        <el-icon :size="compact ? 20 : 42" class="upload-icon"><Upload /></el-icon>
+        <div class="upload-head-text">
+          <h3 class="upload-title">{{ compact ? '拖拽或点击上传文件' : '拖拽文件到此处或点击上传' }}</h3>
+          <p class="upload-desc">支持多种压缩格式，自动识别分卷</p>
+        </div>
+      </div>
 
       <div v-if="displayFiles.length > 0" class="selected-files">
         <div class="target-library-row">
@@ -46,7 +50,7 @@
 
         <el-button
           type="primary"
-          size="large"
+          :size="compact ? 'default' : 'large'"
           :loading="uploading"
           @click.stop="startUpload"
           class="upload-btn"
@@ -63,6 +67,13 @@ import { ref, computed, onMounted } from 'vue'
 import { Upload, Document } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { libraryApi } from '../api'
+
+defineProps({
+  compact: {
+    type: Boolean,
+    default: false
+  }
+})
 
 const emit = defineEmits(['upload-success'])
 
@@ -327,50 +338,69 @@ async function startUpload() {
 </script>
 
 <style scoped>
-.file-uploader {
-  border: 2px dashed #cbd5e1;
+.upload-card {
+  border: 1px dashed #cbd5e1;
   border-radius: 12px;
-  padding: 48px;
-  text-align: center;
+  padding: 14px;
+  text-align: left;
   cursor: pointer;
-  transition: all 0.3s;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   background-color: #f8fafc;
 }
 
-.file-uploader:hover,
-.file-uploader.drag-over {
+.upload-card.compact-mode {
+  padding: 10px 12px;
+}
+
+.upload-card:hover,
+.upload-card.drag-over {
   border-color: #3b82f6;
   background-color: #eff6ff;
+  transform: translateY(-2px);
 }
 
 .upload-content {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+
+.upload-head {
+  display: flex;
   align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.upload-head-text {
+  min-width: 0;
 }
 
 .upload-icon {
   color: #94a3b8;
-  margin-bottom: 16px;
+  flex: 0 0 auto;
 }
 
 .upload-title {
-  font-size: 18px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 700;
   color: #334155;
-  margin: 0 0 8px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .upload-desc {
-  font-size: 14px;
+  font-size: 12px;
   color: #64748b;
   margin: 0;
 }
 
 .selected-files {
-  margin-top: 24px;
   width: 100%;
-  max-width: 600px;
+  border-top: 1px dashed #dbe2ec;
+  padding-top: 10px;
 }
 
 .target-library-row {
@@ -391,10 +421,10 @@ async function startUpload() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 7px 10px;
   background-color: white;
   border-radius: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   border: 1px solid #e2e8f0;
 }
 
@@ -414,11 +444,27 @@ async function startUpload() {
 }
 
 .upload-btn {
-  margin-top: 16px;
+  margin-top: 8px;
 }
 
 .volume-tag {
   margin-left: 8px;
   vertical-align: middle;
+}
+
+.compact-mode .selected-files {
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+@media (max-width: 768px) {
+  .upload-card {
+    padding: 12px;
+  }
+
+  .upload-head {
+    align-items: flex-start;
+  }
 }
 </style>

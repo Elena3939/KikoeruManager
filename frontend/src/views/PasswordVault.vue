@@ -1,263 +1,329 @@
 <template>
-  <div class="password-vault">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">密码库</h1>
-        <p class="page-subtitle">集中管理解压密码、RJ 关联信息和清理历史。</p>
+  <div class="password-vault mx-auto w-full max-w-[1480px] px-1 pb-6 pt-2 text-slate-900">
+    <!-- 顶部标题 -->
+    <header class="mb-5 flex flex-wrap items-end justify-between gap-4">
+      <div class="min-w-0">
+        <div class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-blue-600/80">
+          <IconKey :size="13" :stroke-width="2.2" />
+          <span>密码库</span>
+        </div>
+        <h1 class="m-0 text-[28px] font-semibold leading-tight tracking-tight text-slate-900">解压密码工作台</h1>
+        <p class="mt-1.5 max-w-xl text-[13px] leading-relaxed text-slate-500">集中管理解压密码、作品绑定关系与自动清理规则。<span class="text-slate-600">同时填写文件名 + RJ 号时，系统会把该文件视为该 RJ，查重/命名/包裹目录都以此为准。</span></p>
       </div>
-      <div class="page-header-meta">
-        <span class="pill hover:bg-slate-100 hover:text-slate-900 transition-all duration-300 cursor-default hover:-translate-y-0.5">{{ `总数 ${totalCount}` }}</span>
-        <span class="pill text-blue-600 border-blue-100 bg-blue-50 hover:bg-blue-100 transition-all duration-300 cursor-default hover:-translate-y-0.5">{{ `已使用 ${usedPasswordCount}` }}</span>
-        <span class="pill text-emerald-600 border-emerald-100 bg-emerald-50 hover:bg-emerald-100 transition-all duration-300 cursor-default hover:-translate-y-0.5">{{ `已关联 ${scopedPasswordCount}` }}</span>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="inline-flex h-8 items-center gap-1.5 rounded-full border border-slate-200 bg-white/80 px-3 text-xs font-medium text-slate-600 shadow-sm">
+          <IconShield :size="14" :stroke-width="2.2" class="text-slate-400" />总数 <b class="text-slate-800">{{ totalCount }}</b>
+        </span>
+        <span class="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-200/70 bg-emerald-50/70 px-3 text-xs font-medium text-emerald-700">
+          <IconSparkles :size="14" :stroke-width="2.2" />已生效 <b>{{ usedPasswordCount }}</b>
+        </span>
+        <span class="inline-flex h-8 items-center gap-1.5 rounded-full border border-violet-200/70 bg-violet-50/70 px-3 text-xs font-medium text-violet-700">
+          <IconDoc :size="14" :stroke-width="2.2" />已绑定 <b>{{ scopedPasswordCount }}</b>
+        </span>
       </div>
-    </div>
+    </header>
 
-    <el-card class="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden transition-all duration-300" shadow="never" style="border: none;">
-      <div v-if="cleanupStatus" class="cleanup-banner hover:shadow-md transition-shadow duration-300 cursor-pointer">
-        <div>
-          <div class="banner-title">{{ cleanupStatus.enabled ? '智能清理策略已接管密码库维护' : '智能清理策略尚未启用' }}</div>
-          <div class="banner-text">
-            <template v-if="cleanupStatus.enabled">下次清理时间 {{ formatNextCleanupTime(cleanupStatus.next_cleanup_time) }}，规则为使用次数 ≤ {{ cleanupStatus.max_use_count }}，保留 {{ cleanupStatus.preserve_days }} 天。</template>
-            <template v-else>你可以在设置页开启密码库智能清理，避免低价值密码持续堆积。</template>
+    <!-- 工具栏 -->
+    <section class="vault-toolbar-shell mb-4">
+      <div class="vault-toolbar-panel vault-toolbar-panel-actions rounded-2xl border border-slate-200/80 bg-white/80 p-2.5 shadow-sm backdrop-blur">
+        <div class="vault-toolbar-main-actions">
+          <button type="button" class="vault-btn vault-btn-primary" @click="() => { resetForm(); showAddDialog = true }">
+            <span class="vault-btn-icon vault-btn-icon-add"><IconPlus :size="15" :stroke-width="2.4" /></span>
+            <span>添加密码</span>
+          </button>
+          <button type="button" class="vault-btn vault-btn-ghost" @click="showImportDialog = true">
+            <span class="vault-btn-icon vault-btn-icon-import"><IconDoc :size="15" :stroke-width="2.2" /></span>
+            <span>批量导入</span>
+          </button>
+          <button type="button" class="vault-btn vault-btn-ghost" @click="showCleanupDialog = true">
+            <span class="vault-btn-icon vault-btn-icon-cleanup"><IconSparkles :size="15" :stroke-width="2.2" /></span>
+            <span>智能清理</span>
+          </button>
+          <div class="vault-toolbar-divider"></div>
+          <button type="button" class="vault-btn vault-btn-danger" :disabled="!selectedRows.length" @click="handleBatchDelete">
+            <span class="vault-btn-icon vault-btn-icon-delete"><IconTrash :size="15" :stroke-width="2.2" /></span>
+            <span>批量删除</span>
+            <span v-if="selectedRows.length" class="rounded-full bg-rose-100 px-1.5 text-[11px] text-rose-700">{{ selectedRows.length }}</span>
+          </button>
+          <button type="button" class="vault-btn vault-btn-ghost ml-auto vault-btn-refresh-inline" @click="loadPasswords" :title="'刷新'">
+            <span class="vault-btn-icon vault-btn-icon-refresh"><IconRefresh :size="15" :stroke-width="2.2" :class="{ 'animate-spin': loading }" /></span>
+            <span>刷新</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="vault-toolbar-panel vault-toolbar-panel-filters rounded-2xl border border-slate-200/80 bg-white/80 p-2.5 shadow-sm backdrop-blur">
+        <span class="text-xs font-medium uppercase tracking-wider text-slate-400">排序</span>
+        <el-select v-model="passwordSortBy" size="small" class="vault-select !w-[128px]" @change="handlePasswordSortChange">
+          <el-option label="创建时间" value="created_at" />
+          <el-option label="更新时间" value="updated_at" />
+          <el-option label="RJ 号" value="rjcode" />
+          <el-option label="文件名" value="filename" />
+          <el-option label="使用次数" value="use_count" />
+        </el-select>
+        <button type="button" class="vault-btn vault-btn-ghost !min-w-[84px]" @click="togglePasswordSortOrder">
+          <component :is="passwordSortOrder === 'desc' ? IconArrowDown : IconArrowUp" :size="14" :stroke-width="2.4" />
+          {{ passwordSortOrder === 'desc' ? '倒序' : '正序' }}
+        </button>
+        <div class="relative">
+          <IconSearch :size="15" :stroke-width="2.2" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input v-model="searchQuery" type="text" placeholder="搜索 RJ 号、文件名或密码"
+            class="h-9 w-[280px] rounded-xl border border-slate-200 bg-slate-50/70 pl-9 pr-3 text-[13px] text-slate-700 outline-none transition-all duration-300 placeholder:text-slate-400 hover:border-slate-300 focus:w-[320px] focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-500/20"
+            @input="handleSearch" />
+        </div>
+      </div>
+    </section>
+
+    <!-- 主卡片 -->
+    <section class="rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-[0_12px_40px_-12px_rgba(15,23,42,0.12)] backdrop-blur">
+      <!-- Loading -->
+      <div v-if="loading" class="grid min-h-[420px] place-items-center gap-4 rounded-2xl border border-slate-100 bg-slate-50/50 p-10">
+        <AppLoadingAnimation :size="132" variant="block" />
+        <div class="text-sm text-slate-500">正在加载密码库…</div>
+      </div>
+
+      <!-- Empty -->
+      <div v-else-if="!passwords.length" class="relative overflow-hidden rounded-2xl border border-slate-100 bg-gradient-to-b from-white to-slate-50 p-12">
+        <AppEmptyState>
+          <template #icon>
+            <div class="grid size-20 place-items-center rounded-3xl bg-gradient-to-br from-blue-100 via-white to-blue-50 shadow-inner">
+              <IconKey :size="40" :stroke-width="1.8" class="text-blue-600" />
+            </div>
+          </template>
+          <template #title><span class="text-[22px] font-bold tracking-tight text-slate-800">还没有录入任何密码</span></template>
+          <template #subtitle><span class="text-sm text-slate-500">先录入常用解压密码，解压、匹配、清理链路才会真正串起来。</span></template>
+          <template #actions>
+            <button type="button" class="vault-btn vault-btn-primary" @click="() => { resetForm(); showAddDialog = true }">
+              <IconPlus :size="15" :stroke-width="2.4" />添加第一个密码
+            </button>
+            <button type="button" class="vault-btn vault-btn-ghost" @click="showImportDialog = true">
+              <IconDoc :size="15" :stroke-width="2.2" />批量导入
+            </button>
+          </template>
+        </AppEmptyState>
+      </div>
+
+      <!-- Table -->
+      <template v-else>
+        <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="text-base font-semibold tracking-tight text-slate-800">密码列表</h2>
+            <p class="mt-0.5 text-xs text-slate-500">支持批量选择、编辑、删除；双列键值不可同时为空。</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="inline-flex h-7 items-center rounded-full bg-slate-100 px-2.5 text-[11px] font-medium text-slate-600">
+              本页 {{ tablePasswords.length }} / 共 {{ totalCount }}
+            </span>
           </div>
         </div>
-        <div class="banner-meta">
-          <span class="pill dark hover:bg-slate-100 transition-colors">{{ cleanupStatus.enabled ? 'AUTO CLEANUP' : 'MANUAL MODE' }}</span>
-          <span class="pill dark hover:bg-slate-100 transition-colors">{{ cleanupStatus.is_running ? '服务运行中' : '服务未运行' }}</span>
-        </div>
-      </div>
 
-      <div class="toolbar-shell">
-        <div class="toolbar-group">
-          <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg shadow-sm hover:bg-blue-500 hover:shadow-blue-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showAddDialog = true"><el-icon class="group-hover:rotate-90 group-hover:scale-110 transition-transform duration-300"><Plus /></el-icon>添加密码</el-button>
-          <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-500 border border-transparent rounded-lg shadow-sm hover:bg-emerald-400 hover:shadow-emerald-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showImportDialog = true"><el-icon class="group-hover:-translate-y-0.5 group-hover:scale-110 transition-transform duration-300"><Document /></el-icon>批量导入</el-button>
-          <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg shadow-sm hover:bg-red-100 hover:text-red-800 hover:border-red-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-red-200 focus:ring-offset-1 active:scale-95 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:hover:shadow-none" @click="handleBatchDelete" :disabled="selectedRows.length === 0"><AppLottieIcon :src="deleteIconAnimation" :size="32" tone="danger" :disabled="selectedRows.length === 0" />批量删除</el-button>
-          <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-violet-500 border border-transparent rounded-lg shadow-sm hover:bg-violet-400 hover:shadow-violet-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showCleanupDialog = true"><el-icon class="group-hover:rotate-180 transition-transform duration-500"><Timer /></el-icon>智能清理</el-button>
-        </div>
-        <div class="toolbar-group toolbar-filters">
-          <span class="control-label">排序字段</span>
-          <el-select v-model="passwordSortBy" style="width:150px" @change="handlePasswordSortChange">
-            <el-option label="添加时间" value="created_at" />
-            <el-option label="更新时间" value="updated_at" />
-            <el-option label="RJ号" value="rjcode" />
-            <el-option label="文件名" value="filename" />
-            <el-option label="使用次数" value="use_count" />
-          </el-select>
-          <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-50 hover:text-slate-900 hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-300 sort-btn" @click="togglePasswordSortOrder"><el-icon class="group-hover:-translate-y-0.5 transition-transform duration-300"><SortDown v-if="passwordSortOrder === 'desc'" /><SortUp v-else /></el-icon>{{ passwordSortOrder === 'desc' ? '降序' : '升序' }}</el-button>
-          <el-input v-model="searchQuery" class="vault-search group transition-all duration-300 focus-within:w-[320px]" placeholder="搜索 RJ 号、文件名或密码" clearable @input="handleSearch"><template #prefix><el-icon class="text-slate-400 group-focus-within:text-blue-500 transition-colors duration-300"><Search /></el-icon></template></el-input>
-        </div>
-      </div>
+        <el-table ref="passwordTableRef" class="password-table" :data="tablePasswords" style="width:100%"
+          @selection-change="handleSelectionChange" row-key="id" stripe>
+          <el-table-column type="selection" width="44" />
+          <el-table-column prop="rjcode" label="RJ 号" width="130">
+            <template #default="{ row }">
+              <span v-if="row.rjcode" class="inline-flex h-6 items-center rounded-md bg-blue-50 px-2 font-mono text-[12px] font-medium text-blue-700">{{ row.rjcode }}</span>
+              <span v-else class="text-xs text-slate-400">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="filename" label="文件名" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.filename" class="text-[13px] text-slate-700">{{ row.filename }}</span>
+              <span v-else class="text-xs text-slate-400">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="password" label="密码" min-width="180">
+            <template #default="{ row }">
+              <div class="password-pill-wrap">
+                <el-tooltip :content="row.password" placement="top-start" :show-after="260">
+                  <span class="password-pill" :title="row.password">{{ row.password }}</span>
+                </el-tooltip>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="source" label="来源" width="92">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.source === 'manual' ? '' : row.source === 'batch' ? 'success' : 'info'" effect="plain">
+                {{ row.source === 'manual' ? '手动' : row.source === 'batch' ? '批量' : '自动' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="use_count" label="使用" width="72" align="center">
+            <template #default="{ row }">
+              <span class="font-mono text-sm font-semibold text-slate-700">{{ row.use_count }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="最后使用" width="170">
+            <template #default="{ row }">
+              <span v-if="row._formatted_last_used" class="inline-flex items-center gap-1 text-xs text-slate-500">
+                <IconClock :size="12" :stroke-width="2.2" />{{ row._formatted_last_used }}
+              </span>
+              <span v-else class="text-xs text-slate-400">从未使用</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="创建" width="170">
+            <template #default="{ row }">
+              <span class="text-xs text-slate-500">{{ row._formatted_created_at }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="170" align="center" fixed="right">
+            <template #default="{ row }">
+              <div class="inline-flex items-center justify-center gap-1.5">
+                <button type="button" class="inline-flex size-12 items-center justify-center rounded-lg text-slate-500 transition-all duration-300 hover:-translate-y-0.5 hover:bg-blue-50 hover:text-blue-600 active:scale-95" @click="handleEdit(row)" title="编辑">
+                  <AppLottieIcon :src="editIconAnimation" :size="52" tone="primary" />
+                </button>
+                <button type="button" class="group inline-flex size-11 items-center justify-center rounded-lg text-slate-500 transition-all duration-300 hover:-translate-y-0.5 hover:bg-rose-50 hover:text-rose-600 active:scale-95" @click="handleDelete(row)" title="删除">
+                  <AppLottieIcon :src="deleteIconAnimation" :size="38" tone="danger" />
+                </button>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
 
-      <div class="table-shell">
-        <div class="table-head">
+        <div class="mt-4 flex justify-end">
+          <el-pagination background layout="total, sizes, prev, pager, next, jumper"
+            :current-page="currentPage" :page-size="pageSize" :page-sizes="PAGE_SIZES" :total="totalCount"
+            @current-change="handlePageChange" @size-change="handlePageSizeChange" />
+        </div>
+      </template>
+    </section>
+
+    <!-- 添加/编辑弹框 -->
+    <el-dialog v-model="showAddDialog" :show-close="false" width="520px" align-center class="vault-dialog" @close="resetForm">
+      <div class="vault-dialog-shell">
+        <header class="vault-dialog-header">
           <div class="flex items-center gap-3">
-            <div class="table-title">密码记录</div>
-            <div class="table-subtitle hidden sm:block">保留表格密度，但把筛选、批量操作和状态反馈分层得更清楚。</div>
+            <div class="grid size-10 place-items-center rounded-xl bg-blue-50 text-blue-600">
+              <IconKey :size="18" :stroke-width="2.2" />
+            </div>
+            <div>
+              <div class="text-base font-semibold text-slate-900">{{ isEditing ? '编辑密码' : '添加密码' }}</div>
+              <div class="text-xs text-slate-500">维护解压密码与作品绑定信息</div>
+            </div>
           </div>
-          <div class="table-meta"><span class="pill hover:bg-slate-100 transition-colors">已选 {{ selectedRows.length }}</span><span class="pill hover:bg-slate-100 transition-colors">每页 {{ pageSize }}</span></div>
+          <button type="button" class="vault-icon-btn" @click="showAddDialog = false"><IconClose :size="16" :stroke-width="2.2" /></button>
+        </header>
+
+        <div class="vault-dialog-body">
+          <p class="vault-dialog-note mb-4 flex items-start gap-1.5 text-xs leading-relaxed text-slate-500"><IconShield :size="13" :stroke-width="2.2" class="mt-0.5 shrink-0 text-blue-500" />同时填写 <b>文件名</b> + <b>RJ 号</b> 时，系统会把匹配到的压缩包视为该 RJ 作品，查重、重命名和包裹目录都按这个绑定执行。</p>
+
+          <el-form ref="formRef" :model="form" :rules="rules" label-width="72px" class="vault-form">
+            <el-form-item label="RJ 号" prop="rjcode">
+              <el-input v-model="form.rjcode" placeholder="例如 RJ123456（可选）" clearable />
+            </el-form-item>
+            <el-form-item label="文件名" prop="filename">
+              <el-input v-model="form.filename" placeholder="例如 my_archive.rar（可选）" clearable />
+              <div class="mt-1 text-[11px] text-slate-400">留空表示不按文件名匹配。</div>
+            </el-form-item>
+            <el-form-item label="密码" prop="password" required>
+              <AnimatedPasswordInput v-model="form.password" placeholder="请输入解压密码" show-password />
+            </el-form-item>
+            <el-form-item label="备注">
+              <el-input v-model="form.description" type="textarea" :rows="2" placeholder="备注或来源说明（可选）" />
+            </el-form-item>
+          </el-form>
         </div>
 
-        <div v-if="loading && passwords.length === 0" class="vault-state-panel vault-state-loading" aria-hidden="true">
-          <AppLoadingAnimation
-            label="正在加载密码库"
-            description="正在同步密码记录、RJ 关联信息和使用状态，马上就好。"
-            :size="176"
-            :min-height="320"
-          />
-        </div>
+        <footer class="vault-dialog-footer">
+          <button type="button" class="vault-btn vault-btn-ghost" @click="showAddDialog = false">取消</button>
+          <button type="button" class="vault-btn vault-btn-primary" :disabled="submitting" @click="handleSubmit">
+            <span v-if="submitting" class="size-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
+            {{ isEditing ? '保存修改' : '添加密码' }}
+          </button>
+        </footer>
+      </div>
+    </el-dialog>
 
-        <div v-else-if="!loading && totalCount === 0" class="vault-state-panel vault-state-empty">
-          <div class="empty-orb empty-orb-left"></div>
-          <div class="empty-orb empty-orb-right"></div>
-          <AppEmptyState size="lg">
-            <div class="empty-copy">
-              <div class="empty-title">密码库还是空的</div>
-              <div class="empty-subtitle">先录入常用解压密码，后面解压、匹配和清理链路才会真正串起来。</div>
+    <!-- 智能清理弹框 -->
+    <el-dialog v-model="showCleanupDialog" :show-close="false" width="880px" align-center class="vault-dialog">
+      <div class="vault-dialog-shell">
+        <header class="vault-dialog-header">
+          <div class="flex items-center gap-3">
+            <div class="grid size-10 place-items-center rounded-xl bg-amber-50 text-amber-600">
+              <IconSparkles :size="18" :stroke-width="2.2" />
             </div>
-            <div class="empty-actions">
-              <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg shadow-sm hover:bg-blue-500 hover:shadow-blue-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showAddDialog = true"><el-icon class="group-hover:rotate-90 group-hover:scale-110 transition-transform duration-300"><Plus /></el-icon>添加第一个密码</el-button>
-              <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-500 border border-transparent rounded-lg shadow-sm hover:bg-emerald-400 hover:shadow-emerald-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showImportDialog = true"><el-icon class="group-hover:-translate-y-0.5 group-hover:scale-110 transition-transform duration-300"><Document /></el-icon>批量导入</el-button>
+            <div>
+              <div class="text-base font-semibold text-slate-900">智能清理</div>
+              <div class="text-xs text-slate-500">查看规则、预览匹配、确认后再执行</div>
             </div>
-          </AppEmptyState>
-        </div>
+          </div>
+          <button type="button" class="vault-icon-btn" @click="showCleanupDialog = false"><IconClose :size="16" :stroke-width="2.2" /></button>
+        </header>
 
-        <template v-else>
-          <el-table v-app-loading="{ loading, text: '正在加载密码库...', size: 124, delay: 0, minVisible: 360 }" ref="passwordTableRef" :data="tablePasswords" class="password-table transition-all duration-300" row-key="id" @selection-change="handleSelectionChange">
-            <el-table-column type="selection" width="55" />
-            <el-table-column prop="rjcode" label="RJ号" width="120" sortable align="center" header-align="center">
-              <template #default="{ row }"><div class="cell center"><el-tag v-if="row.rjcode" class="vault-tag hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors duration-300" size="small">{{ row.rjcode }}</el-tag><span v-else class="muted">-</span></div></template>
-            </el-table-column>
-            <el-table-column prop="filename" label="文件名" min-width="200" align="center" header-align="center">
-              <template #default="{ row }"><div class="cell center"><span v-if="row.filename">{{ row.filename }}</span><span v-else class="muted">-</span></div></template>
-            </el-table-column>
-            <el-table-column prop="password" label="密码" width="200" align="center" header-align="center">
-              <template #default="{ row }"><div class="cell center"><span class="password-chip hover:scale-105 hover:shadow-sm hover:text-blue-600 transition-all duration-300 cursor-pointer">{{ row.password }}</span></div></template>
-            </el-table-column>
-            <el-table-column prop="description" label="备注" min-width="150" align="center" header-align="center">
-              <template #default="{ row }"><div class="cell center"><span v-if="row.description">{{ row.description }}</span><span v-else class="muted">-</span></div></template>
-            </el-table-column>
-            <el-table-column prop="use_count" label="使用次数" width="120" sortable align="center" header-align="center">
-              <template #default="{ row }"><div class="cell center"><el-tag class="vault-tag hover:scale-105 transition-transform duration-300" :class="row.use_count > 0 ? 'is-strong bg-blue-50 text-blue-600 border-blue-200' : 'bg-slate-50 text-slate-500 border-slate-200'" size="small">{{ row.use_count }}</el-tag></div></template>
-            </el-table-column>
-            <el-table-column prop="last_used_at" label="最后使用" width="150" align="center" header-align="center">
-              <template #default="{ row }"><div class="cell center"><span v-if="row._formatted_last_used">{{ row._formatted_last_used }}</span><span v-else class="muted">未使用</span></div></template>
-            </el-table-column>
-            <el-table-column prop="created_at" label="创建时间" width="170" align="center" header-align="center">
-              <template #default="{ row }"><div class="cell center">{{ row._formatted_created_at }}</div></template>
-            </el-table-column>
-            <el-table-column label="操作" width="150" fixed="right" align="center" header-align="center">
+        <div class="vault-dialog-body">
+          <div class="vault-cleanup-summary mb-3">
+            <div class="vault-cleanup-meta">
+              <span class="vault-cleanup-label">下次清理</span>
+              <span class="vault-cleanup-value text-blue-600">{{ formatNextCleanupTime(cleanupStatus?.next_cleanup_at) }}</span>
+            </div>
+            <div class="vault-cleanup-meta">
+              <span class="vault-cleanup-label">已清理</span>
+              <span class="vault-cleanup-value text-emerald-600">{{ cleanupStatus?.total_cleaned_count ?? 0 }}</span>
+            </div>
+            <div class="vault-cleanup-meta">
+              <span class="vault-cleanup-label">规则</span>
+              <span class="vault-cleanup-value text-amber-600">使用 ≤ {{ cleanupStatus?.max_use_count ?? '-' }}，保留 {{ cleanupStatus?.preserve_days ?? '-' }} 天</span>
+            </div>
+          </div>
+
+          <div class="mb-3 flex flex-wrap gap-2">
+            <button type="button" class="vault-btn vault-btn-primary" :disabled="cleanupLoading" @click="previewCleanup">
+              <IconEye :size="15" :stroke-width="2.2" />预览清理
+            </button>
+            <button type="button" class="vault-btn vault-btn-ghost" :disabled="cleanupLoading" @click="loadCleanupHistory">
+              <IconRefresh :size="15" :stroke-width="2.2" :class="{ 'animate-spin': cleanupLoading }" />刷新历史
+            </button>
+            <button type="button" class="vault-btn vault-btn-ghost ml-auto" onclick="window.location.href='/settings#cleanup'">
+              <IconSettings :size="15" :stroke-width="2.2" />清理设置
+            </button>
+          </div>
+
+          <div class="mb-2 flex items-center gap-2 text-[12px] font-medium uppercase tracking-wider text-slate-400">
+            <span class="h-px flex-1 bg-slate-200"></span><span>清理历史</span><span class="h-px flex-1 bg-slate-200"></span>
+          </div>
+          <el-table :data="cleanupHistory" class="password-table" style="width:100%" max-height="300" row-key="id">
+            <el-table-column prop="_formatted_created_at" label="时间" width="180" />
+            <el-table-column prop="deleted_count" label="清理数" width="90" align="center" />
+            <el-table-column prop="trigger_type" label="触发方式" width="110">
               <template #default="{ row }">
-                <div class="flex items-center justify-center gap-3">
-                  <button type="button" class="group text-slate-500 hover:text-blue-600 focus:outline-none transition-colors duration-300" @click="handleEdit(row)" title="编辑">
-                    <AppLottieIcon :src="clipboardIconAnimation" :size="48" tone="primary" />
-                  </button>
-                  <button type="button" class="group text-slate-500 hover:text-red-600 focus:outline-none transition-colors duration-300" @click="handleDelete(row)" title="删除">
-                    <AppLottieIcon :src="deleteIconAnimation" :size="40" tone="danger" />
-                  </button>
-                </div>
+                <el-tag size="small" :type="row.trigger_type === 'manual' ? 'warning' : ''" effect="plain">{{ row.trigger_type === 'manual' ? '手动' : '自动' }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column prop="note" label="备注" show-overflow-tooltip />
           </el-table>
-
-          <div class="pagination-bar">
-            <el-pagination class="global-pager" v-model:current-page="currentPage" v-model:page-size="pageSize" :page-sizes="[10, 20, 50, 100]" :total="totalCount" layout="total, sizes, prev, pager, next, jumper" background @size-change="handlePageSizeChange" @current-change="handlePageChange" />
-          </div>
-        </template>
-      </div>
-    </el-card>
-
-    <el-dialog
-      v-model="showAddDialog"
-      :show-close="false"
-      :lock-scroll="false"
-      align-center
-      width="min(640px, calc(100vw - 32px))"
-      modal-class="custom-preview-overlay"
-      append-to-body
-      destroy-on-close
-      class="vault-centered-dialog vault-workbench-dialog"
-    >
-      <div class="window panel-enter glass-shell relative flex w-full max-w-[640px] flex-col overflow-hidden rounded-3xl">
-        <div class="window-header flex items-center justify-between px-6 py-4">
-          <div class="fm-header-main min-w-0">
-            <div class="fm-title-row">
-              <h1 class="title truncate text-lg font-bold tracking-tight text-slate-900">{{ isEditing ? '编辑密码' : '添加密码' }}</h1>
-              <span class="fm-badge">{{ isEditing ? 'MANUAL EDIT' : 'NEW PASSWORD' }}</span>
-            </div>
-            <p class="mt-1 truncate text-sm text-slate-500">维护解压密码和作品关联信息，后续清理与匹配链路都会吃这里的数据。</p>
-          </div>
-          <button type="button" class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700" @click="showAddDialog = false">
-            <el-icon :size="20"><Close /></el-icon>
-          </button>
-        </div>
-
-        <div class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5">
-          <el-form class="vault-form" :model="form" label-width="100px" :rules="rules" ref="formRef">
-            <el-form-item label="密码" prop="password"><AnimatedPasswordInput v-model="form.password" placeholder="输入解压密码" autocomplete="new-password" /><div class="form-tip">必填：解压密码</div></el-form-item>
-            <el-form-item label="RJ号"><el-input v-model="form.rjcode" placeholder="例如: RJ123456（可选）" /><div class="form-tip">可选：如果密码与特定作品关联，请填写RJ号</div></el-form-item>
-            <el-form-item label="文件名"><el-input v-model="form.filename" placeholder="例如: RJ123456.zip（可选）" /><div class="form-tip">可选：如果密码与特定文件关联，请填写文件名</div></el-form-item>
-            <el-form-item label="备注"><el-input v-model="form.description" type="textarea" :rows="2" placeholder="可选：添加描述信息，如来源、适用范围等" /></el-form-item>
-          </el-form>
-
-          <div class="dialog-actions">
-            <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-50 hover:text-slate-900 hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showAddDialog = false">取消</el-button>
-            <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg shadow-sm hover:bg-blue-500 hover:shadow-blue-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 active:scale-95 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:hover:shadow-none" @click="handleSubmit" :loading="submitting">{{ isEditing ? '保存' : '添加' }}</el-button>
-          </div>
         </div>
       </div>
     </el-dialog>
 
-    <el-dialog
-      v-model="showCleanupDialog"
-      :show-close="false"
-      :lock-scroll="false"
-      align-center
-      width="min(960px, calc(100vw - 32px))"
-      modal-class="custom-preview-overlay"
-      append-to-body
-      destroy-on-close
-      class="vault-centered-dialog vault-workbench-dialog"
-    >
-      <div class="window panel-enter glass-shell relative flex w-full max-w-[960px] flex-col overflow-hidden rounded-3xl">
-        <div class="window-header flex items-center justify-between px-6 py-4">
-          <div class="fm-header-main min-w-0">
-            <div class="fm-title-row">
-              <h1 class="title truncate text-lg font-bold tracking-tight text-slate-900">密码库智能清理</h1>
-              <span class="fm-badge">{{ cleanupStatus?.enabled ? 'AUTO CLEANUP' : 'MANUAL MODE' }}</span>
+    <!-- 批量导入弹框 -->
+    <el-dialog v-model="showImportDialog" :show-close="false" width="560px" align-center class="vault-dialog">
+      <div class="vault-dialog-shell">
+        <header class="vault-dialog-header">
+          <div class="flex items-center gap-3">
+            <div class="grid size-11 place-items-center rounded-xl bg-violet-50 text-violet-600">
+              <IconDoc :size="20" :stroke-width="2.3" />
             </div>
-            <p class="mt-1 truncate text-sm text-slate-500">集中看清理状态、规则和历史，确认后再执行，不把维护动作打散。</p>
+            <div>
+              <div class="text-base font-semibold text-slate-900">批量导入密码</div>
+              <div class="text-xs text-slate-500">按行粘贴通用密码，解压链路会自动尝试</div>
+            </div>
           </div>
-          <button type="button" class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700" @click="showCleanupDialog = false">
-            <el-icon :size="20"><Close /></el-icon>
+          <button type="button" class="vault-icon-btn" @click="showImportDialog = false"><IconClose :size="16" :stroke-width="2.2" /></button>
+        </header>
+
+        <div class="vault-dialog-body">
+          <p class="vault-dialog-note vault-dialog-note-subtle mb-3 text-xs leading-relaxed text-slate-500"><IconShield :size="13" :stroke-width="2.2" class="shrink-0 text-violet-500" />每行一个密码；此处导入的都是通用密码（不绑定 RJ / 文件名），适合添加常见公共解压密码。</p>
+          <el-input v-model="importText" type="textarea" :rows="10" placeholder="每行一个密码，例如：&#10;pass123&#10;kikoeru&#10;asmr.one" />
+          <div class="mt-2 text-xs text-slate-500">已识别有效密码 <b class="text-slate-800">{{ importLineCount }}</b> 条</div>
+        </div>
+
+        <footer class="vault-dialog-footer">
+          <button type="button" class="vault-btn vault-btn-ghost" @click="showImportDialog = false">取消</button>
+          <button type="button" class="vault-btn vault-btn-primary" :disabled="importing || importLineCount === 0" @click="handleImport">
+            <span v-if="importing" class="size-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
+            导入 {{ importLineCount }} 个密码
           </button>
-        </div>
-
-        <div class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5">
-          <div v-app-loading="{ loading: cleanupLoading, text: '正在清理失效密码...', size: 120 }">
-          <el-row :gutter="20" class="cleanup-grid">
-            <el-col :span="8"><el-card class="cleanup-card hover:shadow-md hover:-translate-y-1 transition-all duration-300 border-l-4 border-l-blue-500" shadow="never"><template #header><span>清理状态</span></template><div class="cleanup-center"><el-tag class="vault-tag transition-transform duration-300 hover:scale-105 bg-blue-50 text-blue-600 border-blue-200" :class="cleanupStatus?.enabled ? 'is-strong' : ''" size="large">{{ cleanupStatus?.enabled ? '已启用' : '已禁用' }}</el-tag><div class="cleanup-note mt-2 text-slate-500">{{ cleanupStatus?.is_running ? '服务运行中' : '服务未运行' }}</div></div></el-card></el-col>
-            <el-col :span="8"><el-card class="cleanup-card hover:shadow-md hover:-translate-y-1 transition-all duration-300 border-l-4 border-l-emerald-500" shadow="never"><template #header><span>下次清理</span></template><div class="cleanup-center"><div class="cleanup-value text-emerald-600 font-bold text-lg">{{ formatNextCleanupTime(cleanupStatus?.next_cleanup_time) }}</div><div class="cleanup-note mt-2 text-slate-500">Cron: {{ cleanupStatus?.cron_expression }}</div></div></el-card></el-col>
-            <el-col :span="8"><el-card class="cleanup-card hover:shadow-md hover:-translate-y-1 transition-all duration-300 border-l-4 border-l-amber-500" shadow="never"><template #header><span>清理规则</span></template><div class="cleanup-center"><div class="text-amber-600 font-bold text-lg">使用次数 ≤ {{ cleanupStatus?.max_use_count }}</div><div class="cleanup-note mt-2 text-slate-500">保留 {{ cleanupStatus?.preserve_days }} 天</div></div></el-card></el-col>
-          </el-row>
-            <div class="cleanup-tools flex flex-wrap gap-2 mb-4">
-              <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg shadow-sm hover:bg-blue-500 hover:shadow-blue-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 active:scale-95 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:hover:shadow-none" @click="previewCleanup" :disabled="!cleanupStatus?.enabled"><el-icon class="group-hover:scale-110 transition-transform duration-300"><View /></el-icon>预览清理</el-button>
-              <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg shadow-sm hover:bg-red-100 hover:text-red-800 hover:border-red-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-red-200 focus:ring-offset-1 active:scale-95 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:hover:shadow-none" @click="runCleanup" :disabled="!cleanupStatus?.enabled"><AppLottieIcon :src="deleteIconAnimation" :size="32" tone="danger" :disabled="!cleanupStatus?.enabled" />立即清理</el-button>
-              <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-50 hover:text-slate-900 hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="loadCleanupHistory"><el-icon class="group-hover:rotate-180 transition-transform duration-500"><Refresh /></el-icon>刷新历史</el-button>
-              <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-50 hover:text-slate-900 hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-300 ml-auto" @click="$router.push('/settings')"><el-icon class="group-hover:rotate-90 transition-transform duration-300"><Setting /></el-icon>前往设置</el-button>
-            </div>
-            <el-divider>清理历史</el-divider>
-            <el-table class="password-table transition-all duration-300" :data="cleanupHistory" style="width:100%" max-height="300" row-key="id">
-              <el-table-column prop="created_at" label="清理时间" width="180"><template #default="{ row }">{{ row._formatted_created_at }}</template></el-table-column>
-              <el-table-column prop="deleted_count" label="删除数量" width="100"><template #default="{ row }"><el-tag class="vault-tag is-danger hover:scale-105 transition-transform duration-300">{{ row.deleted_count }}</el-tag></template></el-table-column>
-              <el-table-column prop="config_snapshot" label="配置快照"><template #default="{ row }"><div class="history-meta">使用次数≤{{ row.config_snapshot?.max_use_count }}, 保留{{ row.config_snapshot?.preserve_days }}天</div></template></el-table-column>
-              <el-table-column prop="deleted_passwords_summary" label="删除详情" min-width="200"><template #default="{ row }"><div v-if="row.deleted_passwords_summary && row.deleted_passwords_summary.length > 0" class="history-list"><div v-for="(pwd, idx) in row.deleted_passwords_summary.slice(0, 3)" :key="idx">{{ pwd.rjcode || pwd.filename || '通用密码' }} ({{ pwd.use_count }}次)</div><div v-if="row.deleted_passwords_summary.length > 3" class="muted">等 {{ row.deleted_passwords_summary.length }} 个密码...</div></div><span v-else class="muted">-</span></template></el-table-column>
-            </el-table>
-            <AppEmptyState v-if="cleanupHistory.length === 0" description="暂无清理记录" size="default" />
-          </div>
-        </div>
-      </div>
-    </el-dialog>
-
-    <el-dialog
-      v-model="showImportDialog"
-      :show-close="false"
-      :lock-scroll="false"
-      align-center
-      width="min(680px, calc(100vw - 32px))"
-      modal-class="custom-preview-overlay"
-      append-to-body
-      destroy-on-close
-      class="vault-centered-dialog vault-workbench-dialog"
-    >
-      <div class="window panel-enter glass-shell relative flex w-full max-w-[680px] flex-col overflow-hidden rounded-3xl">
-        <div class="window-header flex items-center justify-between px-6 py-4">
-          <div class="fm-header-main min-w-0">
-            <div class="fm-title-row">
-              <h1 class="title truncate text-lg font-bold tracking-tight text-slate-900">批量导入密码</h1>
-              <span class="fm-badge">{{ importLineCount }} 条待导入</span>
-            </div>
-            <p class="mt-1 truncate text-sm text-slate-500">按行粘贴密码列表，系统会在解压链路里自动尝试，不用你额外绑定 RJ。</p>
-          </div>
-          <button type="button" class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700" @click="showImportDialog = false">
-            <el-icon :size="20"><Close /></el-icon>
-          </button>
-        </div>
-
-        <div class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5">
-          <div class="import-note-card">
-            <div class="import-note-title">导入格式说明</div>
-            <div class="import-help">
-              <p>每行一个密码，系统会尝试解压时使用这些密码。</p>
-              <p>系统会自动匹配 RJ 号，无需在导入时指定。</p>
-            </div>
-          </div>
-          <el-input v-model="importText" type="textarea" :rows="10" placeholder="在此粘贴密码列表（每行一个）...&#10;例如：&#10;password123&#10;password456&#10;password789" />
-
-          <div class="dialog-actions">
-            <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-50 hover:text-slate-900 hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-300" @click="showImportDialog = false">取消</el-button>
-            <el-button class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg shadow-sm hover:bg-blue-500 hover:shadow-blue-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 active:scale-95 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:hover:shadow-none" @click="handleImport" :loading="importing">导入 {{ importLineCount }} 个密码</el-button>
-          </div>
-        </div>
+        </footer>
       </div>
     </el-dialog>
   </div>
@@ -265,7 +331,22 @@
 
 <script setup>
 import { ref, shallowRef, computed, onMounted, watch, nextTick } from 'vue'
-import { Plus, Delete, Document, Search, View, Timer, Refresh, Setting, SortDown, SortUp, Close } from '@element-plus/icons-vue'
+import {
+  Plus as IconPlus,
+  Trash2 as IconTrash,
+  FileText as IconDoc,
+  Search as IconSearch,
+  Eye as IconEye,
+  Clock as IconClock,
+  RefreshCw as IconRefresh,
+  Settings as IconSettings,
+  ArrowUp as IconArrowUp,
+  ArrowDown as IconArrowDown,
+  X as IconClose,
+  KeyRound as IconKey,
+  ShieldCheck as IconShield,
+  Sparkles as IconSparkles,
+} from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { passwordApi, cleanupApi } from '../api'
@@ -273,7 +354,7 @@ import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
-import clipboardIconAnimation from '../assets/anime/Clipboard.lottie'
+import editIconAnimation from '../assets/anime/Clipboard.lottie'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const PAGE_SIZES = [10, 20, 50, 100]
@@ -425,8 +506,12 @@ function resetForm() { form.value = { id: null, rjcode: '', filename: '', passwo
 function formatDate(dateStr) {
   if (!dateStr) return '-'
   let date
-  if (typeof dateStr === 'string') date = dateStr.includes('T') ? new Date(dateStr + 'Z') : new Date(dateStr)
-  else date = new Date(dateStr)
+  if (typeof dateStr === 'string') {
+    const raw = dateStr.trim()
+    const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)
+    const normalized = hasExplicitTimezone ? raw : raw.replace(' ', 'T')
+    date = new Date(normalized)
+  } else date = new Date(dateStr)
   return date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 }
 
@@ -488,722 +573,400 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
 
 <style scoped>
 .password-vault {
-  max-width: 1480px;
-  margin: 0 auto;
-  padding: 8px 0 18px;
-  color: #1d1d1f;
   font-family: "SF Pro Text", "SF Pro Display", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
 }
 
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-
-.page-header-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.control-label {
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  color: rgba(29, 29, 31, .48);
-}
-
-.page-title {
-  margin: 0;
-  font-size: 29px;
-  font-weight: 600;
-  line-height: 1.12;
-  letter-spacing: -0.2px;
-  color: #1d1d1f;
-}
-
-.page-subtitle {
-  margin: 8px 0 0;
-  font-size: 13px;
-  line-height: 1.58;
-  color: rgba(29, 29, 31, .5);
-}
-
-.pill,
-.vault-tag {
+/* ============ 按钮 ============ */
+.vault-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 28px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(29, 29, 31, .08);
-  background: rgba(255, 255, 255, .92);
-  color: rgba(29, 29, 31, .72);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.pill.is-blue,
-.vault-tag.is-strong {
-  border-color: rgba(0, 113, 227, .16);
-  background: #edf4ff;
-  color: #0071e3;
-}
-
-.pill.dark {
-  border-color: rgba(29, 29, 31, .08);
-  background: rgba(255, 255, 255, .92);
-  color: rgba(29, 29, 31, .72);
-}
-
-.vault-tag.is-danger {
-  border-color: rgba(215, 0, 21, .16);
-  background: #fff5f5;
-  color: #d70015;
-}
-
-.muted,
-.form-tip,
-.history-meta,
-.import-help,
-.cleanup-note {
-  color: rgba(29, 29, 31, .5);
-}
-
-.main-card,
-.table-shell,
-.cleanup-banner,
-.cleanup-card {
-  background: rgba(255, 255, 255, .94);
-  border: none;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, .05);
-}
-
-.main-card {
-  border-radius: 18px;
-}
-
-.main-card :deep(.el-card__body) {
-  padding: 18px;
-}
-
-.cleanup-banner {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 20px;
-  margin-bottom: 18px;
-  padding: 16px 18px;
-  border-radius: 16px;
-  background: #f5f5f7;
-  box-shadow: none;
-}
-
-.banner-title {
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: -0.08px;
-  color: #1d1d1f;
-}
-
-.banner-text {
-  margin-top: 8px;
+  gap: 6px;
+  position: relative;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 10px;
   font-size: 13px;
-  line-height: 1.58;
-  color: rgba(29, 29, 31, .5);
+  font-weight: 500;
+  letter-spacing: -0.1px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.vault-btn:hover:not(:disabled) { transform: translateY(-2px) scale(1.02); }
+.vault-btn:active:not(:disabled) { transform: scale(0.96); }
+.vault-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.vault-btn-primary {
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+}
+.vault-btn-primary:hover:not(:disabled) { box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35); }
+
+.vault-btn-ghost {
+  background: rgba(248, 250, 252, 0.8);
+  color: #334155;
+  border-color: rgba(203, 213, 225, 0.7);
+}
+.vault-btn-ghost:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: rgba(148, 163, 184, 0.7);
+  color: #0f172a;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
 }
 
-.banner-meta {
+.vault-btn-danger {
+  background: rgba(254, 242, 242, 0.8);
+  color: #dc2626;
+  border-color: rgba(252, 165, 165, 0.7);
+}
+.vault-btn-danger:hover:not(:disabled) {
+  background: #fff;
+  border-color: rgba(239, 68, 68, 0.6);
+  box-shadow: 0 6px 14px rgba(220, 38, 38, 0.15);
+}
+
+.vault-toolbar-panel {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.toolbar-shell {
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.95fr);
-  gap: 14px;
-  margin-bottom: 18px;
-}
-
-.toolbar-group {
-  display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 16px 18px;
-  border: none;
-  border-radius: 16px;
-  background: #f5f5f7;
-}
-
-.toolbar-filters {
-  justify-content: flex-end;
-}
-
-.table-shell {
-  border-radius: 16px;
-  padding: 18px;
-}
-
-.vault-state-panel {
-  position: relative;
-  min-height: 420px;
-  display: grid;
-  place-items: center;
-  gap: 18px;
-  padding: 44px 28px;
-  overflow: hidden;
-  border: 1px solid rgba(219, 228, 244, 0.88);
-  border-radius: 28px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(246, 249, 255, 0.96) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.88),
-    0 18px 48px rgba(189, 204, 228, 0.18);
-}
-
-.vault-state-loading {
-  align-content: center;
-  justify-content: center;
-  text-align: center;
-}
-
-.vault-state-empty {
-  justify-items: center;
-  text-align: center;
-}
-
-.state-visual,
-.empty-icon-wrap {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  place-items: center;
-}
-
-.empty-orb {
-  position: absolute;
-  border-radius: 999px;
-  filter: blur(18px);
-  opacity: 0.75;
-  pointer-events: none;
-}
-
-.empty-orb-left {
-  width: 220px;
-  height: 220px;
-  left: 8%;
-  top: 18%;
-  background: radial-gradient(circle, rgba(147, 197, 253, 0.2) 0%, rgba(191, 219, 254, 0.08) 58%, transparent 80%);
-}
-
-.empty-orb-right {
-  width: 240px;
-  height: 240px;
-  right: 9%;
-  bottom: 10%;
-  background: radial-gradient(circle, rgba(96, 165, 250, 0.18) 0%, rgba(191, 219, 254, 0.08) 56%, transparent 78%);
-}
-
-.empty-icon-wrap {
-  width: 92px;
-  height: 92px;
-  border-radius: 28px;
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(255, 255, 255, 0.92) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    0 14px 30px rgba(96, 165, 250, 0.15);
-}
-
-.empty-icon {
-  font-size: 40px;
-  color: #2f6bca;
-}
-
-.empty-copy {
-  position: relative;
-  z-index: 1;
-  display: grid;
   gap: 8px;
-  max-width: 520px;
 }
 
-.empty-title {
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  color: #163457;
-}
-
-.empty-subtitle {
-  font-size: 14px;
-  line-height: 1.7;
-  color: #6b85a5;
-}
-
-.empty-actions {
-  position: relative;
-  z-index: 1;
+.vault-toolbar-shell {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
+  align-items: center;
   gap: 12px;
 }
 
-.table-head {
+.vault-toolbar-panel-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.vault-toolbar-panel-filters {
+  flex: 1 1 420px;
+  justify-content: flex-end;
+  min-width: min(100%, 420px);
+}
+
+.vault-toolbar-main-actions {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.table-title {
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.15;
-  letter-spacing: -0.08px;
-  color: #1d1d1f;
-}
-
-.table-subtitle {
-  font-size: 13px;
-  color: rgba(29, 29, 31, .5);
-}
-
-.table-meta {
-  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
 }
 
-.pagination-bar {
-  margin-top: 24px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-:deep(.vault-btn.el-button) {
-  min-height: 34px;
-  padding: 0 14px !important;
-  border-radius: 999px;
-  box-shadow: none;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: -0.12px;
-  transition: color .18s ease, background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease, opacity .18s ease;
-}
-
-:deep(.vault-btn.el-button > span) {
+.vault-btn-icon {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  transition: inherit;
+}
+
+.vault-toolbar-btn:hover:not(:disabled) .vault-btn-icon {
+  transform: rotate(-8deg) scale(1.08);
+}
+
+.vault-toolbar-divider {
+  width: 1px;
+  align-self: center;
+  height: 26px;
+  margin: 0 2px;
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0), rgba(148, 163, 184, 0.7), rgba(148, 163, 184, 0));
+}
+
+.vault-btn-refresh-inline {
+  margin-left: auto;
+}
+
+.vault-btn:hover:not(:disabled) .vault-btn-icon {
+  transform: translateY(-1px) scale(1.05);
+}
+
+.vault-btn-icon-add {
+  color: #1d4ed8;
+  background: rgba(219, 234, 254, 0.78);
+  border-color: rgba(96, 165, 250, 0.18);
+}
+
+.vault-btn-icon-import {
+  color: #7c3aed;
+  background: rgba(237, 233, 254, 0.78);
+  border-color: rgba(167, 139, 250, 0.2);
+}
+
+.vault-btn-icon-cleanup {
+  color: #0f766e;
+  background: rgba(204, 251, 241, 0.78);
+  border-color: rgba(45, 212, 191, 0.18);
+}
+
+.vault-btn-icon-delete {
+  color: #be123c;
+  background: rgba(255, 228, 230, 0.78);
+  border-color: rgba(251, 113, 133, 0.18);
+}
+
+.vault-btn-icon-refresh {
+  color: #475569;
+  background: rgba(241, 245, 249, 0.78);
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+@media (max-width: 960px) {
+  .vault-toolbar-shell {
+    align-items: stretch;
+  }
+
+  .vault-toolbar-panel-actions,
+  .vault-toolbar-panel-filters {
+    flex-basis: 100%;
+  }
+
+  .vault-toolbar-divider {
+    display: none;
+  }
+
+  .vault-btn-refresh-inline {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .vault-toolbar-main-actions > .vault-btn {
+    flex: 1 1 calc(50% - 10px);
+  }
+
+  .vault-btn-refresh-inline {
+    flex-basis: 100%;
+  }
+
+  .vault-toolbar-panel-filters {
+    justify-content: flex-start;
+  }
+}
+
+.vault-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(241, 245, 249, 0.8);
+  color: #64748b;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.vault-icon-btn:hover { transform: translateY(-2px) scale(1.05); color: #0f172a; background: #ffffff; border-color: rgba(203, 213, 225, 0.8); }
+.vault-icon-btn:active { transform: scale(0.95); }
+
+/* ============ 输入框 / 选择框 ============ */
+:deep(.vault-select .el-select__wrapper),
+:deep(.vault-form .el-input__wrapper),
+:deep(.vault-form .el-textarea__inner) {
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.7);
+  transition: all 0.3s ease;
+}
+:deep(.vault-select .el-select__wrapper:hover),
+:deep(.vault-form .el-input__wrapper:hover),
+:deep(.vault-form .el-textarea__inner:hover) {
+  box-shadow: inset 0 0 0 1px #94a3b8;
+  background: #ffffff;
+}
+:deep(.vault-select .el-select__wrapper.is-focused),
+:deep(.vault-form .el-input__wrapper.is-focus),
+:deep(.vault-form .el-textarea__inner:focus) {
+  box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.5) !important;
+  background: #ffffff;
+}
+
+/* ============ 表格 ============ */
+:deep(.password-table.el-table) {
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-row-hover-bg-color: #f8fafc;
+  border-radius: 12px;
+  overflow: hidden;
+}
+:deep(.password-table .el-table__inner-wrapper::before) { display: none; }
+:deep(.password-table th.el-table__cell) {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+  background: #f8fafc !important;
+}
+:deep(.password-table td.el-table__cell) { border-bottom-color: rgba(226, 232, 240, 0.7); }
+:deep(.password-table .el-table__row) { transition: all 0.25s ease; }
+:deep(.password-table .el-table__row:hover) { background: #f8fafc !important; }
+
+.password-pill-wrap {
+  width: 100%;
+  min-width: 0;
+}
+
+.password-pill {
+  display: block;
+  max-width: 100%;
+  height: 28px;
+  line-height: 26px;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 10px;
+  border: 1px solid rgba(203, 213, 225, 0.85);
+  background: rgba(248, 250, 252, 0.88);
+  padding: 0 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 12px;
+  color: #334155;
+}
+
+/* ============ 弹框 ============ */
+:deep(.vault-dialog.el-dialog) {
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  width: auto !important;
+  overflow: visible;
+}
+:deep(.vault-dialog .el-dialog__header),
+:deep(.vault-dialog .el-dialog__body) { padding: 0 !important; }
+:deep(.vault-dialog .el-dialog__header) { display: none; }
+
+.vault-dialog-shell {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 80px);
+  overflow: hidden;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(249, 250, 252, 0.96) 100%);
+  border: 1px solid rgba(226, 232, 240, 0.65);
+  box-shadow: 0 24px 64px -24px rgba(15, 23, 42, 0.28);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.vault-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.7);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.vault-dialog-body {
+  padding: 18px 18px 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.vault-dialog-note b {
+  font-weight: 600;
+  color: #334155;
+}
+
+.vault-dialog-note {
+  display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.dark-btn {
-  background: #0071e3 !important;
-  color: #fff !important;
-  border: 1px solid #0071e3 !important;
+.vault-dialog-note-subtle b {
+  color: #475569;
 }
 
-.dark-btn:hover {
-  background: #0077ed !important;
-  border-color: #0077ed !important;
-  color: #fff !important;
-  box-shadow: 0 8px 18px rgba(0, 113, 227, .2);
-  transform: translateY(-1px);
-}
-
-.ghost-btn {
-  background: #fafafc !important;
-  color: rgba(0, 0, 0, .8) !important;
-  border: 1px solid rgba(0, 0, 0, .06) !important;
-}
-
-@media (max-width: 960px) {
-  .vault-state-loading {
-    text-align: center;
-  }
-}
-
-.ghost-btn:hover {
-  color: #1d1d1f !important;
-  border-color: rgba(0, 0, 0, .1) !important;
-  background: #ffffff !important;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, .08);
-  transform: translateY(-1px);
-}
-
-.danger-btn {
-  background: #fff5f5 !important;
-  color: #d70015 !important;
-  border: 1px solid rgba(215, 0, 21, .16) !important;
-}
-
-.danger-btn:hover {
-  color: #b81d13 !important;
-  border-color: rgba(215, 0, 21, .24) !important;
-  background: #fff !important;
-  box-shadow: 0 6px 16px rgba(215, 0, 21, .1);
-  transform: translateY(-1px);
-}
-
-.vault-search {
-  width: 280px;
-}
-
-.sort-btn {
-  min-width: 92px;
-}
-
-:deep(.vault-search .el-input__wrapper),
-:deep(.toolbar-group .el-select__wrapper) {
-  min-height: 34px;
-  border-radius: 12px;
-  background: #f5f5f7;
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, .06);
-  transition: all 0.3s ease !important;
-}
-
-:deep(.vault-search .el-input__wrapper:hover),
-:deep(.toolbar-group .el-select__wrapper:hover) {
-  box-shadow: inset 0 0 0 1px #94a3b8 !important;
-}
-
-:deep(.vault-search .el-input__wrapper.is-focus),
-:deep(.toolbar-group .el-select__wrapper.is-focused) {
-  box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.5) !important;
-}
-
-.cell {
-  display: flex;
-  align-items: center;
-  min-height: 24px;
-}
-
-.center {
-  justify-content: center;
-}
-
-.password-chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 30px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(29, 29, 31, .08);
-  background: rgba(255, 255, 255, .92);
-  color: #1d1d1f;
-  font-size: 12px;
-}
-
-:deep(.password-table.el-table) {
-  --el-table-header-bg-color: #f5f5f7;
-  --el-table-row-hover-bg-color: #fafafc;
-  border-radius: 14px;
-  overflow: hidden;
-}
-
-:deep(.password-table .el-table__empty-block) {
-  min-height: 280px;
-}
-
-:deep(.password-table .el-table__empty-text) {
-  width: 100%;
-}
-
-:deep(.password-table .el-table__inner-wrapper::before) {
-  display: none;
-}
-
-:deep(.password-table th.el-table__cell) {
-  font-size: 12px;
-  font-weight: 500;
-  color: rgba(29, 29, 31, .54);
-}
-
-:deep(.password-table td.el-table__cell) {
-  border-bottom-color: rgba(29, 29, 31, .06);
-}
-
-:deep(.password-table .el-table__row) {
-  transition: all 0.3s ease;
-}
-
-:deep(.password-table .el-table__row:hover) {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-  z-index: 10;
-  position: relative;
-}
-
-.actions {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.vault-cleanup-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  width: 100%;
 }
 
-:deep(.inline-btn.el-button) {
-  padding: 0 !important;
-  min-height: auto;
-  color: #1d1d1f !important;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-:deep(.inline-btn.el-button:hover) {
-  color: #0066cc !important;
-}
-
-:deep(.inline-btn.danger.el-button:hover) {
-  color: #d70015 !important;
-}
-
-.vault-centered-dialog :deep(.el-dialog) {
-  margin: 0 auto !important;
-}
-
-.vault-centered-dialog :deep(.el-dialog__header) {
-  display: none;
-}
-
-.vault-centered-dialog :deep(.el-dialog__body) {
-  padding: 0 !important;
-  background: transparent !important;
-}
-
-.vault-workbench-dialog :deep(.el-dialog) {
-  background: transparent;
-  width: auto !important;
-  max-width: calc(100vw - 32px) !important;
-}
-
-.vault-workbench-dialog .glass-shell {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.76) 0%, rgba(250, 252, 255, 0.7) 100%);
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow:
-    0 24px 80px rgba(148, 163, 184, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-.vault-workbench-dialog .window-header {
-  border-bottom: 1px solid rgba(226, 232, 240, 0.72);
-}
-
-.vault-workbench-dialog .window {
-  margin: 0 auto;
-}
-
-.fm-header-main {
-  min-width: 0;
-  flex: 1;
-}
-
-.fm-title-row {
+.vault-cleanup-meta {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-height: 66px;
+  border-radius: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: rgba(248, 250, 252, 0.72);
+  padding: 8px 10px;
 }
 
-.fm-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(96, 165, 250, 0.28);
-  background: rgba(239, 246, 255, 0.92);
-  color: #2563eb;
-  font-size: 12px;
+.vault-cleanup-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.03em;
+}
+
+.vault-cleanup-value {
+  font-size: 13px;
   font-weight: 700;
-  white-space: nowrap;
+  line-height: 1.3;
 }
 
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 20px;
-  padding-top: 18px;
-  border-top: 1px solid rgba(226, 232, 240, 0.72);
-}
-
-.import-note-card {
-  margin-bottom: 18px;
-  padding: 16px 18px;
-  border-radius: 18px;
-  border: 1px solid rgba(191, 219, 254, 0.68);
-  background:
-    linear-gradient(180deg, rgba(239, 246, 255, 0.96) 0%, rgba(248, 250, 252, 0.96) 100%);
-}
-
-.import-note-title {
-  margin-bottom: 8px;
-  font-size: 14px;
-  font-weight: 700;
-  color: #1e3a8a;
-}
-
-.form-tip {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.cleanup-grid {
-  margin-bottom: 18px;
-}
-
-.cleanup-card {
-  border-radius: 16px;
-}
-
-.cleanup-card :deep(.el-card__header) {
-  padding: 18px 18px 0;
-  border-bottom: none;
-  color: rgba(29, 29, 31, .54);
-  font-size: 12px;
-}
-
-.cleanup-card :deep(.el-card__body) {
-  padding: 14px 18px 18px;
-}
-
-.cleanup-center {
-  text-align: center;
-}
-
-.cleanup-value {
-  font-size: 20px;
-  line-height: 1.2;
-  color: #0071e3;
-}
-
-.cleanup-tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 18px;
-}
-
-.settings-btn {
-  margin-left: auto;
-}
-
-.history-list,
-.import-help {
-  font-size: 12px;
-  line-height: 1.8;
-}
-
-.vault-form :deep(.el-form-item) {
-  margin-bottom: 20px;
-}
-
-.vault-form :deep(.el-input__wrapper),
-.vault-form :deep(.el-textarea__inner) {
-  border-radius: 16px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 10px 24px rgba(148, 163, 184, 0.08);
-  transition: all 0.3s ease !important;
-}
-
-.vault-form :deep(.el-input__wrapper:hover),
-.vault-form :deep(.el-textarea__inner:hover) {
-  box-shadow: 0 0 0 1px #94a3b8 inset !important;
-}
-
-.vault-form :deep(.el-input__wrapper.is-focus),
-.vault-form :deep(.el-textarea__inner:focus) {
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5) inset !important;
-}
-
-/* 密码框眼睛图标特效 */
-.vault-form :deep(.el-input__password) {
-  transition: all 0.3s ease !important;
-}
-.vault-form :deep(.el-input__password:hover) {
-  transform: scale(1.15) rotate(5deg) !important;
-  color: #3b82f6 !important;
-}
-
-/* 密码框眼睛图标特效 */
-:deep(.el-input__password) {
-  transition: all 0.3s ease !important;
-}
-:deep(.el-input__password:hover) {
-  transform: scale(1.15) rotate(5deg) !important;
-  color: #3b82f6 !important;
-}
-
-.vault-workbench-dialog :deep(.el-divider__text) {
-  color: #64748b;
-  font-weight: 700;
-}
-
-@media (max-width: 1200px) {
-  .toolbar-shell {
+@media (max-width: 720px) {
+  .vault-cleanup-summary {
     grid-template-columns: 1fr;
   }
 }
 
-@media (max-width: 768px) {
-  .page-header,
-  .table-shell,
-  .toolbar-group,
-  .cleanup-banner {
-    border-radius: 18px;
-  }
+.vault-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid rgba(226, 232, 240, 0.7);
+  background: rgba(248, 250, 252, 0.7);
+}
 
-  .dialog-actions {
-    flex-wrap: wrap;
-  }
+.vault-form :deep(.el-form-item) { margin-bottom: 14px; }
+.vault-form :deep(.el-form-item__label) { font-size: 12px; font-weight: 500; color: #475569; }
 
-  .pagination-bar {
-    overflow-x: auto;
-    justify-content: flex-start;
-  }
+:deep(.vault-form .el-input__wrapper),
+:deep(.vault-form .el-textarea__inner),
+:deep(.vault-form .el-select__wrapper),
+:deep(.vault-form .el-input__inner),
+:deep(.vault-form input),
+:deep(.vault-form textarea),
+:deep(.vault-form .animated-password-input .el-input__wrapper),
+:deep(.vault-form .animated-password-input input) {
+  background-color: #ffffff !important;
+}
 
-  :deep(.global-pager) {
-    min-width: max-content;
-  }
+:deep(.vault-form .el-input__inner:-webkit-autofill),
+:deep(.vault-form .el-input__inner:-webkit-autofill:hover),
+:deep(.vault-form .el-input__inner:-webkit-autofill:focus),
+:deep(.vault-form input:-webkit-autofill),
+:deep(.vault-form input:-webkit-autofill:hover),
+:deep(.vault-form input:-webkit-autofill:focus),
+:deep(.vault-form textarea:-webkit-autofill),
+:deep(.vault-form textarea:-webkit-autofill:hover),
+:deep(.vault-form textarea:-webkit-autofill:focus) {
+  -webkit-text-fill-color: #0f172a !important;
+  box-shadow: 0 0 0 1000px #ffffff inset !important;
+  transition: background-color 9999s ease-out 0s;
+}
 
-  .page-header,
-  .cleanup-banner,
-  .table-head {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .banner-meta,
-  .table-meta,
-  .toolbar-filters,
-  .pagination-bar {
-    justify-content: flex-start;
-  }
-
-  .vault-search {
-    width: 100%;
-  }
-
-  .settings-btn {
-    margin-left: 0;
-  }
+/* ============ 响应式 ============ */
+@media (max-width: 960px) {
+  .password-vault { padding-left: 12px; padding-right: 12px; }
 }
 </style>

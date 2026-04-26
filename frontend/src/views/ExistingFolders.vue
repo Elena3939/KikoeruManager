@@ -665,15 +665,12 @@ function formatFileSize(bytes) {
 
 function formatDate(dateStr) {
   if (!dateStr) return '-'
-  // 处理不同的日期格式
   let date
   if (typeof dateStr === 'string') {
-    if (dateStr.includes('T')) {
-      // 如果是ISO 8601格式，它是UTC时间，添加'Z'以正确解析为本地时间
-      date = new Date(dateStr + 'Z')
-    } else {
-      date = new Date(dateStr)
-    }
+    const raw = dateStr.trim()
+    const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)
+    const normalized = hasExplicitTimezone ? raw : raw.replace(' ', 'T')
+    date = new Date(normalized)
   } else {
     date = new Date(dateStr)
   }
