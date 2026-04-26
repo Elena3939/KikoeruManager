@@ -1,270 +1,244 @@
 <template>
-  <el-dialog
-    v-model="visible"
-    class="conflict-merge-dialog"
-    width="94%"
-    top="3vh"
-    :close-on-click-modal="false"
-    :destroy-on-close="false"
-  >
-    <template #header>
-      <div class="dialog-header">
-        <div class="header-copy">
-          <h3>目录差异工作台</h3>
-          <p>{{ conflictTitle }}</p>
-        </div>
-        <div v-if="preview" class="header-tags">
-          <button class="header-chip changed" type="button" @click="setStatusFilter('changed')">
-            <span>差异</span>
-            <strong>{{ displaySummary.changed }}</strong>
-          </button>
-          <button class="header-chip new-only" type="button" @click="setStatusFilter('new_only')">
-            <span>新包独有</span>
-            <strong>{{ displaySummary.newOnly }}</strong>
-          </button>
-          <button class="header-chip old-only" type="button" @click="setStatusFilter('old_only')">
-            <span>库存独有</span>
-            <strong>{{ displaySummary.oldOnly }}</strong>
-          </button>
-          <button class="header-chip unchanged" type="button" @click="setStatusFilter('unchanged')">
-            <span>一致</span>
-            <strong>{{ displaySummary.unchanged }}</strong>
-          </button>
-        </div>
-      </div>
-    </template>
-
-    <div v-app-loading="{ loading, text: '正在生成合并预览...', description: '比对新旧文件并同步决策面板', size: 132 }" class="merge-workbench">
-      <template v-if="preview">
-        <div class="toolbar">
-          <div class="toolbar-left">
-            <el-input
-              v-model="searchText"
-              placeholder="搜索文件名或相对路径"
-              clearable
-            />
-            <el-select v-model="statusFilter" class="status-filter">
-              <el-option label="全部项目" value="all" />
-              <el-option label="仅差异项" value="changed" />
-              <el-option label="仅新包独有" value="new_only" />
-              <el-option label="仅库存独有" value="old_only" />
-              <el-option label="仅大小不同" value="size_changed" />
-              <el-option label="仅其他差异" value="other_changed" />
-              <el-option label="仅一致" value="unchanged" />
-            </el-select>
-          </div>
-          <div class="toolbar-right">
-            <el-button @click="resetDecisions">恢复默认决策</el-button>
-            <el-button @click="$emit('refresh')" :disabled="submitting">重新生成预览</el-button>
-          </div>
-        </div>
-
-        <div class="filter-strip">
-          <button
-            v-for="pill in filterPills"
-            :key="pill.value"
-            class="filter-pill"
-            :class="[pill.tone, { active: isFilterActive(pill.value) }]"
-            type="button"
-            @click="setStatusFilter(pill.value)"
-          >
-            <span class="filter-pill__label">{{ pill.label }}</span>
-            <strong class="filter-pill__count">{{ pill.count }}</strong>
-          </button>
-        </div>
-
-        <div class="panels">
-          <section class="panel summary-panel">
-            <div class="panel-title">差异总览</div>
-
-            <div class="summary-grid">
-              <div class="summary-card highlight">
-                <strong>{{ displaySummary.changed }}</strong>
-                <span>需要处理的差异</span>
-              </div>
-              <div class="summary-card success">
-                <strong>{{ displaySummary.newOnly }}</strong>
-                <span>新包独有</span>
-              </div>
-              <div class="summary-card neutral">
-                <strong>{{ displaySummary.oldOnly }}</strong>
-                <span>库存独有</span>
-              </div>
-              <div class="summary-card warning">
-                <strong>{{ displaySummary.changedBoth }}</strong>
-                <span>同名但不一致</span>
-              </div>
-              <div class="summary-card calm">
-                <strong>{{ displaySummary.unchanged }}</strong>
-                <span>一致项也会显示</span>
-              </div>
-              <div class="summary-card calm">
-                <strong>{{ preview.summary?.total_files || 0 }}</strong>
-                <span>文件总数</span>
-              </div>
-            </div>
-
-            <div class="summary-section">
-              <div class="section-label">路径基准</div>
-              <div class="path-stack">
-                <div class="path-card existing">
-                  <label>{{ existingPaneLabel }}</label>
-                  <span>{{ resolvedExistingPath }}</span>
-                </div>
-                <div class="path-card incoming">
-                  <label>新包内容</label>
-                  <span>{{ resolvedSourcePath }}</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="summary-section">
-              <div class="section-label">当前决策</div>
-              <div class="decision-grid">
-                <div class="decision-card incoming">
-                  <strong>{{ decisionSummary.useNew }}</strong>
-                  <span>取新包</span>
-                </div>
-                <div class="decision-card existing">
-                  <strong>{{ decisionSummary.useOld }}</strong>
-                  <span>取库存</span>
-                </div>
-                <div class="decision-card delete">
-                  <strong>{{ decisionSummary.delete }}</strong>
-                  <span>删除</span>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel table-panel">
-            <div class="panel-title">左右对照差异树</div>
-            <el-table
-              :data="filteredTreeData"
-              row-key="node_key"
-              class="diff-table"
-              border
-              height="62vh"
-              default-expand-all
-              :row-class-name="resolveRowClassName"
-              :tree-props="{ children: 'children' }"
-            >
-              <el-table-column label="差异树" min-width="280">
-                <template #default="{ row }">
-                  <div class="node-cell" :style="nodeIndentStyle(row)">
-                    <span class="node-spacer" aria-hidden="true" />
-                    <span class="node-icon-badge">
-                      <el-icon class="node-icon">
-                        <Folder v-if="row.type === 'dir'" />
-                        <Document v-else />
-                      </el-icon>
-                      <span class="node-icon-dot" :class="statusToneClass(row)" />
-                    </span>
-                    <div class="node-copy">
-                      <div class="node-topline">
-                        <span class="node-name" :title="row.name">{{ row.name }}</span>
-                        <span class="status-text" :class="statusToneClass(row)">
-                          {{ displayStatusInfo(row).label }}
-                        </span>
-                      </div>
-                      <div class="node-path" :title="row.relative_path || '/'">
-                        {{ row.relative_path || '/' }}
-                      </div>
-                      <div
-                        v-if="displayStatusInfo(row).note"
-                        class="node-note"
-                      >
-                        {{ displayStatusInfo(row).note }}
-                      </div>
-                    </div>
-                  </div>
-                </template>
-              </el-table-column>
-
-              <el-table-column :label="existingPaneLabel" min-width="250">
-                <template #default="{ row }">
-                  <div class="side-pane existing" :class="[sidePaneToneClass(row, 'old'), { missing: !hasSide(row, 'old') }]">
-                    <template v-if="hasSide(row, 'old')">
-                      <div class="side-head">
-                        <span class="side-state">{{ row.type === 'dir' ? '目录' : '已存在' }}</span>
-                        <span class="side-size">{{ formatSidePrimary(row, 'old') }}</span>
-                      </div>
-                      <div class="side-path">{{ formatSideRelativePath(row, 'old') }}</div>
-                      <div class="side-meta">{{ formatSideTime(row, 'old') }}</div>
-                    </template>
-                    <template v-else>
-                      <div class="side-empty">无此项目</div>
-                    </template>
-                  </div>
-                </template>
-              </el-table-column>
-
-              <el-table-column label="新包内容" min-width="250">
-                <template #default="{ row }">
-                  <div class="side-pane incoming" :class="[sidePaneToneClass(row, 'new'), { missing: !hasSide(row, 'new') }]">
-                    <template v-if="hasSide(row, 'new')">
-                      <div class="side-head">
-                        <span class="side-state">{{ row.type === 'dir' ? '目录' : '新包提供' }}</span>
-                        <span class="side-size">{{ formatSidePrimary(row, 'new') }}</span>
-                      </div>
-                      <div class="side-path">{{ formatSideRelativePath(row, 'new') }}</div>
-                      <div class="side-meta">{{ formatSideTime(row, 'new') }}</div>
-                    </template>
-                    <template v-else>
-                      <div class="side-empty">无此项目</div>
-                    </template>
-                  </div>
-                </template>
-              </el-table-column>
-
-              <el-table-column label="合并决策" width="170">
-                <template #default="{ row }">
-                  <template v-if="row.type === 'file'">
-                    <el-select
-                      :model-value="decisionFor(row)"
-                      size="small"
-                      :disabled="submitting"
-                      @change="value => updateDecision(row, value)"
-                    >
-                      <el-option
-                        v-for="option in decisionOptions(row)"
-                        :key="option.value"
-                        :label="option.label"
-                        :value="option.value"
-                      />
-                    </el-select>
-                  </template>
-                  <span v-else class="dir-note">目录自动对齐</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </section>
-        </div>
-      </template>
-
-      <AppEmptyState v-else description="暂无合并预览数据" size="default" />
-    </div>
-
-    <template #footer>
-      <div class="dialog-footer">
-        <el-button @click="visible = false" :disabled="submitting">关闭</el-button>
-        <el-button
-          type="primary"
-          :loading="submitting"
-          :disabled="!preview"
-          @click="$emit('submit')"
+  <Teleport to="body">
+    <Transition
+      enter-active-class="transition-all duration-200 ease-out"
+      enter-from-class="opacity-0"
+      enter-to-class="opacity-100"
+      leave-active-class="transition-all duration-150 ease-in"
+      leave-from-class="opacity-100"
+      leave-to-class="opacity-0"
+    >
+      <div
+        v-if="visible"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4"
+        @mousedown.self="close"
+      >
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" @click="close" />
+        <div
+          class="relative bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden"
+          style="width: 94vw; height: 88vh;"
+          @mousedown.stop
         >
-          生成并提交合并结果
-        </el-button>
+          <!-- Header -->
+          <div class="flex-none px-6 py-4 border-b border-slate-200 bg-gradient-to-br from-slate-50 to-white">
+            <div class="flex items-start justify-between gap-4">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2.5 mb-1">
+                  <GitMerge class="w-5 h-5 text-amber-500 flex-shrink-0" />
+                  <h3 class="text-lg font-bold text-slate-900">目录差异工作台</h3>
+                  <span v-if="isRemoteTarget" class="flex items-center gap-1 px-2.5 py-0.5 bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200 rounded-full">
+                    <Upload class="w-3 h-3" />
+                    远程合并
+                  </span>
+                </div>
+                <p class="text-sm text-slate-500 truncate">{{ conflictTitle }}</p>
+              </div>
+              <div v-if="preview" class="flex flex-wrap gap-2 justify-end flex-shrink-0">
+                <button type="button" class="flex items-center gap-2 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all duration-200 hover:-translate-y-0.5" :class="statusFilter === 'changed' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white border-amber-200 text-amber-700 hover:border-amber-400'" @click="setStatusFilter('changed')">
+                  <span>差异</span><strong>{{ displaySummary.changed }}</strong>
+                </button>
+                <button type="button" class="flex items-center gap-2 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all duration-200 hover:-translate-y-0.5" :class="statusFilter === 'new_only' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white border-emerald-200 text-emerald-700 hover:border-emerald-400'" @click="setStatusFilter('new_only')">
+                  <span>新包独有</span><strong>{{ displaySummary.newOnly }}</strong>
+                </button>
+                <button type="button" class="flex items-center gap-2 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all duration-200 hover:-translate-y-0.5" :class="statusFilter === 'old_only' ? 'bg-slate-600 text-white border-slate-600' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-400'" @click="setStatusFilter('old_only')">
+                  <span>库存独有</span><strong>{{ displaySummary.oldOnly }}</strong>
+                </button>
+                <button type="button" class="flex items-center gap-2 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all duration-200 hover:-translate-y-0.5" :class="statusFilter === 'unchanged' ? 'bg-slate-200 text-slate-700 border-slate-300' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'" @click="setStatusFilter('unchanged')">
+                  <span>一致</span><strong>{{ displaySummary.unchanged }}</strong>
+                </button>
+              </div>
+              <button type="button" class="flex-shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all duration-200" @click="close">
+                <X class="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Toolbar -->
+          <div class="flex-none px-6 py-3 border-b border-slate-100 flex items-center gap-3 flex-wrap bg-white/80">
+            <div class="relative flex-1 min-w-[180px]">
+              <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+              <input v-model="searchText" type="text" placeholder="搜索文件名或路径" class="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-200 rounded-xl text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
+            </div>
+            <select v-model="statusFilter" class="px-3 py-2 text-sm bg-white border border-slate-200 rounded-xl text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 cursor-pointer">
+              <option value="all">全部项目</option>
+              <option value="changed">仅差异项</option>
+              <option value="new_only">仅新包独有</option>
+              <option value="old_only">仅库存独有</option>
+              <option value="size_changed">仅大小不同</option>
+              <option value="other_changed">仅其他差异</option>
+              <option value="unchanged">仅一致</option>
+            </select>
+            <div class="flex gap-2">
+              <button type="button" class="px-3 py-2 text-sm font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400 rounded-xl transition-all duration-200 flex items-center gap-1.5" @click="resetDecisions">
+                <RotateCcw class="w-3.5 h-3.5" />恢复默认
+              </button>
+              <button type="button" class="px-3 py-2 text-sm font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400 rounded-xl transition-all duration-200 flex items-center gap-1.5 disabled:opacity-50" :disabled="submitting || loading" @click="$emit('refresh')">
+                <RefreshCw class="w-3.5 h-3.5" :class="loading ? 'animate-spin' : ''" />重新生成
+              </button>
+            </div>
+          </div>
+
+          <!-- Filter Pills -->
+          <div v-if="preview" class="flex-none px-6 py-2.5 border-b border-slate-100 flex items-center gap-2 flex-wrap">
+            <button v-for="pill in filterPills" :key="pill.value" type="button" class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-200" :class="isFilterActive(pill.value) ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-400 hover:text-indigo-600'" @click="setStatusFilter(pill.value)">
+              {{ pill.label }}<span class="font-bold">{{ pill.count }}</span>
+            </button>
+          </div>
+
+          <!-- Loading -->
+          <div v-if="loading" class="flex-1 flex items-center justify-center bg-slate-50/50">
+            <div class="text-center">
+              <div class="w-10 h-10 border-[3px] border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+              <p class="text-sm font-medium text-slate-700">正在生成合并预览...</p>
+              <p class="text-xs text-slate-400 mt-1">比对新旧文件并同步决策面板</p>
+            </div>
+          </div>
+
+          <!-- No preview -->
+          <div v-else-if="!preview" class="flex-1 flex items-center justify-center bg-slate-50/50">
+            <div class="text-center text-slate-400">
+              <GitMerge class="w-16 h-16 mx-auto mb-3 opacity-20" />
+              <p class="text-sm">暂无合并预览数据</p>
+            </div>
+          </div>
+
+          <!-- Main content -->
+          <div v-else class="flex-1 min-h-0 flex overflow-hidden">
+            <!-- Left summary panel -->
+            <div class="w-64 flex-shrink-0 border-r border-slate-100 overflow-y-auto bg-slate-50/40 p-4 space-y-4">
+              <div>
+                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">来源路径</p>
+                <p class="text-[11px] text-slate-600 font-mono break-all leading-relaxed bg-white border border-slate-100 rounded-xl p-2.5">{{ resolvedSourcePath }}</p>
+              </div>
+              <div>
+                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">{{ existingPaneLabel }}路径</p>
+                <p class="text-[11px] text-slate-600 font-mono break-all leading-relaxed bg-white border border-slate-100 rounded-xl p-2.5">{{ resolvedExistingPath }}</p>
+              </div>
+              <div class="pt-2 border-t border-slate-200">
+                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">当前决策</p>
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between text-xs">
+                    <span class="text-emerald-700 font-medium flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-500 inline-block" />取新包</span>
+                    <strong class="text-emerald-800">{{ decisionSummary.useNew }}</strong>
+                  </div>
+                  <div class="flex items-center justify-between text-xs">
+                    <span class="text-indigo-700 font-medium flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-indigo-500 inline-block" />取库存</span>
+                    <strong class="text-indigo-800">{{ decisionSummary.useOld }}</strong>
+                  </div>
+                  <div class="flex items-center justify-between text-xs">
+                    <span class="text-rose-700 font-medium flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-rose-500 inline-block" />删除</span>
+                    <strong class="text-rose-800">{{ decisionSummary.delete }}</strong>
+                  </div>
+                </div>
+              </div>
+              <div v-if="isRemoteTarget" class="pt-2 border-t border-slate-200">
+                <div class="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                  <Upload class="w-3.5 h-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div class="min-w-0">
+                    <p class="text-[11px] font-semibold text-amber-800">远程上传合并</p>
+                    <p class="text-[10px] text-amber-600 mt-0.5 leading-relaxed">差异文件将上传至远程库存，耗时取决于网速与文件量。</p>
+                    <p class="text-[10px] font-bold text-amber-800 mt-1">{{ props.conflict?.context?.existing?.library_name || '远程库存' }}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right diff table -->
+            <div class="flex-1 min-w-0 overflow-auto">
+              <table class="w-full text-sm border-collapse" style="min-width: 860px;">
+                <thead class="sticky top-0 z-10 bg-slate-100/95 backdrop-blur-sm">
+                  <tr>
+                    <th class="px-4 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider border-b border-slate-200 min-w-[260px]">差异树</th>
+                    <th class="px-3 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider border-b border-slate-200 w-52">{{ existingPaneLabel }}</th>
+                    <th class="px-3 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider border-b border-slate-200 w-52">新包内容</th>
+                    <th class="px-3 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider border-b border-slate-200 w-40">合并决策</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in displayRows" :key="row.node_key" class="group border-b border-slate-100 transition-colors duration-100" :class="rowBgClass(row)">
+                    <td class="px-4 py-2.5">
+                      <div class="flex items-center gap-2" :style="{ paddingLeft: `${row._depth * 18}px` }">
+                        <button v-if="row.type === 'dir' && row._hasChildren" type="button" class="w-4 h-4 flex items-center justify-center flex-shrink-0 text-slate-400 hover:text-slate-700 transition-colors" @click="toggleCollapse(row)">
+                          <ChevronRight v-if="row._collapsed" class="w-3.5 h-3.5" />
+                          <ChevronDown v-else class="w-3.5 h-3.5" />
+                        </button>
+                        <span v-else class="w-4 flex-shrink-0" />
+                        <span class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-lg" :class="statusIconBg(row)">
+                          <FolderIcon v-if="row.type === 'dir'" class="w-3.5 h-3.5" />
+                          <FileIcon v-else class="w-3.5 h-3.5" />
+                        </span>
+                        <div class="min-w-0 flex-1">
+                          <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-slate-800 font-medium text-xs truncate max-w-[200px]" :title="row.name">{{ row.name }}</span>
+                            <span class="flex-shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-md" :class="statusBadgeClass(row)">{{ displayStatusInfo(row).label }}</span>
+                          </div>
+                          <p v-if="displayStatusInfo(row).note" class="text-[10px] text-slate-500 italic mt-0.5 truncate" :title="displayStatusInfo(row).note">{{ displayStatusInfo(row).note }}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td class="px-3 py-2.5 w-52">
+                      <template v-if="hasSide(row, 'old')">
+                        <p class="text-xs font-medium" :class="row.type === 'dir' ? 'text-slate-500' : 'text-slate-700'">{{ formatSidePrimary(row, 'old') }}</p>
+                        <p class="text-[10px] text-slate-400 truncate">{{ formatSideTime(row, 'old') }}</p>
+                      </template>
+                      <span v-else class="text-[11px] text-slate-300 italic">无此项目</span>
+                    </td>
+                    <td class="px-3 py-2.5 w-52">
+                      <template v-if="hasSide(row, 'new')">
+                        <p class="text-xs font-medium" :class="row.type === 'dir' ? 'text-slate-500' : 'text-indigo-700'">{{ formatSidePrimary(row, 'new') }}</p>
+                        <p class="text-[10px] text-slate-400 truncate">{{ formatSideTime(row, 'new') }}</p>
+                      </template>
+                      <span v-else class="text-[11px] text-slate-300 italic">无此项目</span>
+                    </td>
+                    <td class="px-3 py-2.5 w-40">
+                      <template v-if="row.type === 'file'">
+                        <select :value="decisionFor(row)" :disabled="submitting" class="w-full text-xs font-semibold bg-white border rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-50 cursor-pointer" :class="decisionSelectClass(row)" @change="e => updateDecision(row, e.target.value)">
+                          <option v-for="opt in decisionOptions(row)" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                        </select>
+                      </template>
+                      <span v-else class="text-[10px] text-slate-400">自动对齐</span>
+                    </td>
+                  </tr>
+                  <tr v-if="!displayRows.length">
+                    <td colspan="4" class="px-6 py-10 text-center text-sm text-slate-400">
+                      <Search class="w-10 h-10 mx-auto mb-2 opacity-20" />
+                      无匹配项目
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div class="flex-none px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-4 bg-white/90">
+            <div v-if="isRemoteTarget && preview" class="flex items-center gap-2 text-sm text-amber-700">
+              <Upload class="w-4 h-4 text-amber-500 flex-shrink-0" />
+              <span>合并结果将上传至 <strong>{{ props.conflict?.context?.existing?.library_name || '远程库存' }}</strong></span>
+            </div>
+            <div v-else class="flex-1" />
+            <div class="flex items-center gap-3">
+              <button type="button" class="px-5 py-2.5 text-sm font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400 rounded-2xl transition-all duration-200 disabled:opacity-50" :disabled="submitting" @click="close">关闭</button>
+              <button type="button" class="px-6 py-2.5 text-sm font-bold text-white rounded-2xl transition-all duration-200 disabled:opacity-50 flex items-center gap-2" :class="submitting ? 'bg-amber-400 cursor-not-allowed' : 'bg-gradient-to-br from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 hover:-translate-y-0.5 shadow-lg shadow-amber-500/30 active:scale-95'" :disabled="!preview || submitting" @click="$emit('submit')">
+                <span v-if="submitting" class="w-4 h-4 border-2 border-white/60 border-t-white rounded-full animate-spin" />
+                <GitMerge v-else class="w-4 h-4" />
+                <span>{{ submitLabel }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
-    </template>
-  </el-dialog>
+    </Transition>
+  </Teleport>
 </template>
 
 <script setup>
 import { computed, ref } from 'vue'
-import { Document, Folder } from '@element-plus/icons-vue'
-import AppEmptyState from '../common/AppEmptyState.vue'
+import {
+  GitMerge, Search, RotateCcw, RefreshCw, X, Upload,
+  ChevronRight, ChevronDown,
+  File as FileIcon, Folder as FolderIcon
+} from 'lucide-vue-next'
 
 const props = defineProps({
   modelValue: {
@@ -670,6 +644,90 @@ function isFilterActive(value) {
   return statusFilter.value === value
 }
 
+const isRemoteTarget = computed(() => Boolean(props.conflict?.context?.existing?.is_remote))
+
+const submitLabel = computed(() => {
+  if (props.submitting) {
+    return isRemoteTarget.value ? '正在上传至服务器...' : '提交中...'
+  }
+  return isRemoteTarget.value ? '上传并提交合并结果' : '生成并提交合并结果'
+})
+
+const collapsedPaths = ref(new Set())
+
+function toggleCollapse(node) {
+  const path = node.relative_path
+  const newSet = new Set(collapsedPaths.value)
+  if (newSet.has(path)) {
+    newSet.delete(path)
+  } else {
+    newSet.add(path)
+  }
+  collapsedPaths.value = newSet
+}
+
+function flattenTree(nodes, depth = 0) {
+  const result = []
+  for (const node of nodes) {
+    const isCollapsed = collapsedPaths.value.has(node.relative_path)
+    result.push({
+      ...node,
+      _depth: depth,
+      _collapsed: isCollapsed,
+      _hasChildren: (node.children || []).length > 0
+    })
+    if (!isCollapsed && node.children && node.children.length > 0) {
+      result.push(...flattenTree(node.children, depth + 1))
+    }
+  }
+  return result
+}
+
+const displayRows = computed(() => flattenTree(filteredTreeData.value))
+
+function close() {
+  if (!props.submitting) {
+    visible.value = false
+  }
+}
+
+function rowBgClass(row) {
+  const key = displayStatusInfo(row).key
+  if (key === 'new_only') return 'bg-emerald-50/60 hover:bg-emerald-50'
+  if (key === 'old_only') return 'bg-slate-100/60 hover:bg-slate-100'
+  if (key === 'size_changed' || key === 'content_changed') return 'bg-amber-50/60 hover:bg-amber-50'
+  if (key === 'time_changed') return 'bg-sky-50/40 hover:bg-sky-50/60'
+  return 'hover:bg-slate-50/60'
+}
+
+function statusIconBg(row) {
+  const key = displayStatusInfo(row).key
+  if (row.type === 'dir') return 'bg-slate-100 text-slate-500'
+  if (key === 'new_only') return 'bg-emerald-100 text-emerald-600'
+  if (key === 'old_only') return 'bg-slate-200 text-slate-500'
+  if (key === 'size_changed' || key === 'content_changed') return 'bg-amber-100 text-amber-600'
+  if (key === 'time_changed') return 'bg-sky-100 text-sky-600'
+  return 'bg-slate-100 text-slate-400'
+}
+
+function statusBadgeClass(row) {
+  const key = displayStatusInfo(row).key
+  if (key === 'new_only') return 'bg-emerald-100 text-emerald-700'
+  if (key === 'old_only') return 'bg-slate-200 text-slate-600'
+  if (key === 'size_changed') return 'bg-amber-100 text-amber-700'
+  if (key === 'content_changed') return 'bg-rose-100 text-rose-700'
+  if (key === 'time_changed') return 'bg-sky-100 text-sky-700'
+  return 'bg-slate-100 text-slate-500'
+}
+
+function decisionSelectClass(row) {
+  const decision = decisionFor(row)
+  if (decision === 'use_new') return 'border-emerald-200 text-emerald-800 bg-emerald-50'
+  if (decision === 'use_old') return 'border-indigo-200 text-indigo-800 bg-indigo-50'
+  if (decision === 'delete') return 'border-rose-200 text-rose-800 bg-rose-50'
+  return 'border-slate-200 text-slate-700'
+}
+
 function formatFileSize(size) {
   if (size === null || size === undefined) return '-'
   const value = Number(size)
@@ -700,662 +758,7 @@ function formatDate(value) {
 </script>
 
 <style scoped>
-.dialog-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  align-items: flex-start;
-}
-
-.header-copy h3 {
-  margin: 0 0 8px;
-  font-size: 22px;
-  color: #0f172a;
-  letter-spacing: 0.02em;
-}
-
-.header-copy p {
-  margin: 0;
-  color: #64748b;
-}
-
-.header-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.header-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  background: #fff;
-  color: #334155;
-  cursor: pointer;
-  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
-}
-
-.header-chip span {
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.header-chip strong {
-  font-size: 14px;
-}
-
-.header-chip:hover {
-  transform: translateY(-1px);
-}
-
-.header-chip.changed {
-  background: #fff7ed;
-  border-color: #fdba74;
-  color: #9a3412;
-}
-
-.header-chip.new-only {
-  background: #effcf3;
-  border-color: #86efac;
-  color: #166534;
-}
-
-.header-chip.old-only {
-  background: #eff6ff;
-  border-color: #93c5fd;
-  color: #1d4ed8;
-}
-
-.header-chip.unchanged {
-  background: #eef4ff;
-  border-color: #bfdbfe;
-  color: #1e40af;
-}
-
-.merge-workbench {
-  min-height: 320px;
-}
-
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-}
-
-.toolbar-left,
-.toolbar-right {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-
-.toolbar-left {
-  flex: 1;
-}
-
-.status-filter {
-  width: 180px;
-}
-
-.filter-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 18px;
-}
-
-.filter-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid #dbe4f0;
-  background: #fff;
-  color: #475569;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.filter-pill:hover {
-  border-color: #94a3b8;
-}
-
-.filter-pill.active {
-  transform: translateY(-1px);
-  box-shadow: 0 10px 20px rgba(148, 163, 184, 0.16);
-}
-
-.filter-pill__label {
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.filter-pill__count {
-  font-size: 14px;
-}
-
-.filter-pill.all.active {
-  background: #f8fafc;
-  border-color: #cbd5e1;
-  color: #0f172a;
-}
-
-.filter-pill.changed.active {
-  background: #fff7ed;
-  border-color: #fdba74;
-  color: #9a3412;
-}
-
-.filter-pill.new-only.active {
-  background: #effcf3;
-  border-color: #86efac;
-  color: #166534;
-}
-
-.filter-pill.old-only.active {
-  background: #eff6ff;
-  border-color: #93c5fd;
-  color: #1d4ed8;
-}
-
-.filter-pill.unchanged.active {
-  background: #eef4ff;
-  border-color: #bfdbfe;
-  color: #1e40af;
-}
-
-.panels {
-  display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
-  gap: 16px;
-}
-
-.panel {
-  border: 1px solid #dbe4f0;
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 251, 255, 0.98) 100%);
-  overflow: hidden;
-  box-shadow: 0 18px 40px rgba(148, 163, 184, 0.12);
-}
-
-.panel-title {
-  padding: 14px 16px;
-  font-weight: 700;
-  color: #0f172a;
-  background: linear-gradient(180deg, #fdfefe 0%, #f5f8fc 100%);
-  border-bottom: 1px solid #dbe4f0;
-}
-
-.summary-panel {
-  display: flex;
-  flex-direction: column;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  padding: 16px;
-}
-
-.summary-card {
-  display: grid;
-  gap: 6px;
-  padding: 14px;
-  border-radius: 16px;
-  border: 1px solid transparent;
-}
-
-.summary-card strong {
-  font-size: 24px;
-  line-height: 1;
-}
-
-.summary-card span {
-  font-size: 13px;
-}
-
-.summary-card.highlight {
-  background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 100%);
-  border-color: #fdba74;
-  color: #9a3412;
-}
-
-.summary-card.success {
-  background: linear-gradient(180deg, #effcf3 0%, #dcfce7 100%);
-  border-color: #86efac;
-  color: #166534;
-}
-
-.summary-card.neutral,
-.summary-card.calm {
-  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-  border-color: #cbd5e1;
-  color: #334155;
-}
-
-.summary-card.warning {
-  background: linear-gradient(180deg, #fefce8 0%, #fef3c7 100%);
-  border-color: #fcd34d;
-  color: #92400e;
-}
-
-.summary-section {
-  display: grid;
-  gap: 10px;
-  padding: 0 16px 16px;
-}
-
-.section-label {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: #64748b;
-  text-transform: uppercase;
-}
-
-.path-stack {
-  display: grid;
-  gap: 10px;
-}
-
-.path-card {
-  display: grid;
-  gap: 6px;
-  padding: 14px;
-  border-radius: 14px;
-  border: 1px solid #dbe4f0;
-}
-
-.path-card label {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.path-card span {
-  font-family: Consolas, Monaco, monospace;
-  word-break: break-all;
-  color: #0f172a;
-}
-
-.path-card.existing {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-}
-
-.path-card.incoming {
-  background: linear-gradient(180deg, #f4fff7 0%, #e7fbe9 100%);
-  border-color: #9dd8a8;
-}
-
-.decision-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 10px;
-}
-
-.decision-card {
-  display: grid;
-  gap: 5px;
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid #dbe4f0;
-}
-
-.decision-card strong {
-  font-size: 22px;
-}
-
-.decision-card.incoming {
-  background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%);
-  color: #166534;
-  border-color: #86efac;
-}
-
-.decision-card.existing {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  color: #334155;
-}
-
-.decision-card.delete {
-  background: linear-gradient(180deg, #fff5f5 0%, #fee2e2 100%);
-  color: #b91c1c;
-  border-color: #fca5a5;
-}
-
-.table-panel {
-  min-width: 0;
-}
-
-.node-cell {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-  flex: 1 1 auto;
-  padding-left: 0;
-}
-
-.node-spacer {
-  width: var(--node-indent, 0px);
-  flex: 0 0 var(--node-indent, 0px);
-  height: 1px;
-}
-
-.node-icon-badge {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  border: 1px solid #dbe4f0;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  flex: 0 0 auto;
-  margin-left: 0;
-}
-
-.node-icon {
-  font-size: 18px;
-  color: #64748b;
-}
-
-.node-icon-dot {
-  position: absolute;
-  right: -3px;
-  bottom: -3px;
-  width: 11px;
-  height: 11px;
-  border-radius: 999px;
-  border: 2px solid #fff;
-  background: #94a3b8;
-}
-
-.node-copy {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.node-topline {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.node-name {
-  font-weight: 600;
-  color: #0f172a;
-  word-break: break-all;
-}
-
-.node-path {
-  font-family: Consolas, Monaco, monospace;
-  font-size: 12px;
-  color: #64748b;
-  word-break: break-all;
-}
-
-.node-note {
-  font-size: 12px;
-  color: #475569;
-}
-
-.status-text {
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-.tone-new-only.status-text {
-  color: #166534;
-}
-
-.node-icon-dot.tone-new-only {
-  background: #16a34a;
-}
-
-.tone-old-only.status-text {
-  color: #1d4ed8;
-}
-
-.node-icon-dot.tone-old-only {
-  background: #2563eb;
-}
-
-.tone-size-changed.status-text,
-.tone-time-changed.status-text,
-.tone-content-changed.status-text {
-  color: #b91c1c;
-}
-
-.node-icon-dot.tone-size-changed,
-.node-icon-dot.tone-time-changed,
-.node-icon-dot.tone-content-changed {
-  background: #dc2626;
-}
-
-.tone-unchanged.status-text {
-  color: #64748b;
-}
-
-.node-icon-dot.tone-unchanged {
-  background: #94a3b8;
-}
-
-.side-pane {
-  display: grid;
-  gap: 5px;
-  min-height: auto;
-  padding: 4px 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.side-pane.missing {
-  color: #b91c1c;
-}
-
-.side-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: baseline;
-}
-
-.side-state {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #64748b;
-}
-
-.side-size {
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.side-pane.existing .side-size {
-  color: #334155;
-}
-
-.side-pane.incoming .side-size {
-  color: #15803d;
-}
-
-.side-meta,
-.side-path,
-.side-empty {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.side-path {
-  font-family: Consolas, Monaco, monospace;
-  word-break: break-all;
-}
-
-.dir-note {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.dialog-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-:deep(.diff-table .row-new-only) {
-  background: rgba(240, 253, 244, 0.72);
-}
-
-:deep(.diff-table .row-unchanged) {
-  background: transparent;
-}
-
-:deep(.diff-table .row-unchanged .node-name),
-:deep(.diff-table .row-unchanged .status-text),
-:deep(.diff-table .row-unchanged .node-note),
-:deep(.diff-table .row-unchanged .side-state),
-:deep(.diff-table .row-unchanged .side-path),
-:deep(.diff-table .row-unchanged .side-meta),
-:deep(.diff-table .row-unchanged .side-empty) {
-  color: #64748b;
-}
-
-:deep(.diff-table .row-old-only) {
-  background: rgba(239, 246, 255, 0.84);
-}
-
-:deep(.diff-table .row-old-only .node-name),
-:deep(.diff-table .row-old-only .status-text),
-:deep(.diff-table .row-old-only .node-note),
-:deep(.diff-table .row-old-only .side-state),
-:deep(.diff-table .row-old-only .side-path),
-:deep(.diff-table .row-old-only .side-meta),
-:deep(.diff-table .row-old-only .side-empty) {
-  color: #1d4ed8;
-}
-
-:deep(.diff-table .row-size-changed) {
-  background: rgba(254, 242, 242, 0.9);
-}
-
-:deep(.diff-table .row-size-changed .node-name),
-:deep(.diff-table .row-size-changed .status-text),
-:deep(.diff-table .row-size-changed .node-note),
-:deep(.diff-table .row-size-changed .side-state),
-:deep(.diff-table .row-size-changed .side-path),
-:deep(.diff-table .row-size-changed .side-meta),
-:deep(.diff-table .row-size-changed .side-empty) {
-  color: #b91c1c;
-}
-
-:deep(.diff-table .row-new-only .node-name),
-:deep(.diff-table .row-new-only .status-text),
-:deep(.diff-table .row-new-only .node-note),
-:deep(.diff-table .row-new-only .side-state),
-:deep(.diff-table .row-new-only .side-path),
-:deep(.diff-table .row-new-only .side-meta),
-:deep(.diff-table .row-new-only .side-empty) {
-  color: #166534;
-}
-
-:deep(.diff-table .row-modified) {
-  background: rgba(254, 242, 242, 0.78);
-}
-
-:deep(.diff-table .row-modified .node-name),
-:deep(.diff-table .row-modified .status-text),
-:deep(.diff-table .row-modified .node-note),
-:deep(.diff-table .row-modified .side-state),
-:deep(.diff-table .row-modified .side-path),
-:deep(.diff-table .row-modified .side-meta),
-:deep(.diff-table .row-modified .side-empty) {
-  color: #b91c1c;
-}
-
-:deep(.diff-table .el-table__row td:first-child .cell) {
-  display: flex;
-  align-items: flex-start;
-}
-
-:deep(.diff-table .el-table__indent) {
-  width: 18px !important;
-  flex: 0 0 18px;
-}
-
-:deep(.diff-table .el-table__placeholder) {
-  width: 18px !important;
-  flex: 0 0 18px;
-}
-
-:deep(.diff-table .el-table__expand-icon) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  margin-right: 6px;
-  margin-top: 8px;
-  color: #64748b;
-  transform: none;
-}
-
-@media (max-width: 1320px) {
-  .panels {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 900px) {
-  .toolbar {
-    flex-direction: column;
-  }
-
-  .toolbar-left,
-  .toolbar-right {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-
-  .status-filter {
-    width: 100%;
-  }
-
-  .filter-strip {
-    gap: 8px;
-  }
-
-  .decision-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 720px) {
-  .dialog-header {
-    flex-direction: column;
-  }
-
-  .header-tags {
-    justify-content: flex-start;
-  }
-
-  .summary-grid {
-    grid-template-columns: 1fr;
-  }
-}
+button:not(:disabled) { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
 </style>
+

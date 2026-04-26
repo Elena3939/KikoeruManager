@@ -392,19 +392,26 @@
       @refresh="refreshMergePreview"
       @submit="submitMerge"
     />
+
+    <BatchRetryPasswordDialog
+      v-model="batchRetryDialogVisible"
+      :conflicts="batchRetryTargets"
+      @confirm="handleBatchRetryConfirm"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { 
-  RefreshCw, AlertCircle, CheckCircle2, Cloud, HardDrive, 
-  FileWarning, Copy, Save, RotateCcw, SkipForward, 
+import {
+  RefreshCw, AlertCircle, CheckCircle2, Cloud, HardDrive,
+  FileWarning, Copy, Save, RotateCcw, SkipForward,
   GitMerge, AlertTriangle, FolderOpen, Archive, Info,
   CheckSquare, XSquare, ChevronRight
 } from 'lucide-vue-next'
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
+import BatchRetryPasswordDialog from '../components/conflicts/BatchRetryPasswordDialog.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import { conflictApi, taskCenterApi } from '../api'
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
@@ -431,6 +438,10 @@ const mergeDecisions = ref({})
 const mergePreviewCache = reactive({})
 const mergeDecisionCache = reactive({})
 const conflictFilter = ref('all')
+const retryPollers = new Map()
+
+const batchRetryDialogVisible = ref(false)
+const batchRetryTargets = ref([])
 
 const activeConflict = computed(() => conflicts.value.find(conflict => conflict.id === activeConflictId.value) || null)
 const mergeConflict = computed(() => conflicts.value.find(conflict => conflict.id === mergeConflictId.value) || null)
@@ -467,6 +478,14 @@ watch(conflictFilter, () => {
 onMounted(() => {
   fetchConflicts()
 })
+
+onUnmounted(() => {
+  for (const timerId of retryPollers.values()) {
+    clearTimeout(timerId)
+  }
+  retryPollers.clear()
+})
+
 
 async function fetchConflicts() {
   loading.value = true
@@ -643,24 +662,49 @@ function buildPathPreview(paths) {
   return lines.join('\n')
 }
 
-async function waitForRetryTask(taskId) {
-  const deadline = Date.now() + 10 * 60 * 1000
+function startRetryPoller(taskId, conflictId) {
+  if (retryPollers.has(taskId)) return
+  let attempts = 0
+  const maxAttempts = 120
 
-  while (Date.now() < deadline) {
-    await new Promise(resolve => window.setTimeout(resolve, 1500))
-    const task = await taskCenterApi.getItem({ engine_task_id: taskId })
-    if (!task) {
-      continue
+  const poll = async () => {
+    attempts++
+    try {
+      const task = await taskCenterApi.getItem({ engine_task_id: taskId })
+      if (task) {
+        if (task.status === 'completed') {
+          retryPollers.delete(taskId)
+          await fetchConflicts()
+          if (!conflicts.value.some(item => item.id === conflictId)) {
+            ElMessage.success('重试成功，已移出问题作品')
+          } else {
+            ElMessage.warning('重试任务已完成，但问题项仍在列表，请手动刷新确认')
+          }
+          return
+        }
+        if (task.status === 'failed') {
+          retryPollers.delete(taskId)
+          await fetchConflicts()
+          ElMessage.warning(task.error_message ? `重试失败：${task.error_message}` : '重试失败，请查看任务详情')
+          return
+        }
+      }
+      if (attempts % 4 === 0) {
+        await fetchConflicts()
+      }
+    } catch (_) {
     }
-    if (task.status === 'completed') {
-      return task
-    }
-    if (task.status === 'failed') {
-      throw new Error(task.error_message || '重试失败')
+    if (attempts < maxAttempts && retryPollers.has(taskId)) {
+      const timerId = setTimeout(poll, 5000)
+      retryPollers.set(taskId, timerId)
+    } else {
+      retryPollers.delete(taskId)
+      await fetchConflicts()
     }
   }
 
-  throw new Error('重试超时，请到任务列表查看进度')
+  const timerId = setTimeout(poll, 3000)
+  retryPollers.set(taskId, timerId)
 }
 
 async function loadKeepNewPreview(conflict) {
@@ -700,12 +744,19 @@ async function startRetry(conflict, payload = {}) {
   return conflictApi.retry(conflict.id, payload)
 }
 
-async function askRetryPassword(conflict) {
+async function askRetryPassword(conflict, batchCount = 1) {
+  const isBatch = batchCount > 1
+  const titleLabel = isBatch
+    ? `批量重试 ${batchCount} 个问题项`
+    : `重试 ${conflict.rjcode || '当前问题项'}`
+  const messageText = isBatch
+    ? `可选：指定一个密码用于全部 ${batchCount} 项重试。如各项需要不同密码，请关闭后单独逐项重试。留空则各项按原逻辑走密码库、RJ 推导和默认密码。`
+    : '可选：指定一个密码只用这一条来重试；直接明文输入，留空则按原逻辑继续走密码库、RJ 推导和默认密码。'
   try {
     const value = await showSystemPrompt({
-      title: `重试 ${conflict.rjcode || '当前问题项'}`,
-      message: '可选：指定一个密码只用这一条来重试；这里直接明文输入，留空则按原逻辑继续走密码库、RJ 推导和默认密码。',
-      confirmText: '开始重试',
+      title: titleLabel,
+      message: messageText,
+      confirmText: isBatch ? `开始批量重试 (${batchCount} 项)` : '开始重试',
       cancelText: '取消',
       inputType: 'text',
       placeholder: '直接输入明文密码；留空表示正常重试',
@@ -783,19 +834,13 @@ async function handleRetry(conflict) {
     const result = await startRetry(conflict, retryInput.password ? { password: retryInput.password } : {})
     ElMessage.success(
       result.already_running
-        ? (retryInput.password ? '已将指定密码应用到现有重试任务，正在继续跟踪结果' : '已存在重试任务，正在继续跟踪结果')
-        : (retryInput.password ? '已开始使用指定密码重试' : '已开始重试')
+        ? (retryInput.password ? '已将指定密码应用到现有重试任务，后台持续跟踪结果' : '已存在重试任务，后台持续跟踪结果')
+        : (retryInput.password ? '已开始使用指定密码重试，后台轮询中' : '已开始重试，后台轮询中')
     )
-    await waitForRetryTask(result.task_id)
     await fetchConflicts()
-    if (conflicts.value.some(item => item.id === conflict.id)) {
-      ElMessage.warning('重试任务已完成，但问题项仍在列表里，请刷新后再确认')
-      return
-    }
-    ElMessage.success('重试成功，已移出问题作品')
+    startRetryPoller(result.task_id, conflict.id)
   } catch (error) {
     console.error('重试问题作品失败:', error)
-    await fetchConflicts()
     ElMessage.error(resolveErrorMessage(error, '重试失败'))
   } finally {
     markAction(conflict.id, 'RETRY', false)
@@ -853,7 +898,7 @@ async function handleSkip(conflict) {
 async function handleBatchKeepNew() {
   const targets = getSelectedConflictsForAction('KEEP_NEW')
   if (!targets.length) {
-    ElMessage.warning('请先勾选可执行“保留新版”的问题项')
+    ElMessage.warning('请先勾选可执行"保留新版"的问题项')
     return
   }
 
@@ -920,7 +965,7 @@ async function handleBatchKeepNew() {
 async function handleBatchSkip() {
   const targets = getSelectedConflictsForAction('SKIP')
   if (!targets.length) {
-    ElMessage.warning('请先勾选可执行“跳过”的问题项')
+    ElMessage.warning('请先勾选可执行"跳过"的问题项')
     return
   }
 
@@ -963,7 +1008,7 @@ async function handleBatchSkip() {
 async function handleBatchMerge() {
   const targets = getSelectedConflictsForAction('MERGE')
   if (!targets.length) {
-    ElMessage.warning('请先勾选可执行“合并”的问题项')
+    ElMessage.warning('请先勾选可执行"合并"的问题项')
     return
   }
 
@@ -1005,44 +1050,46 @@ async function handleBatchMerge() {
   }
 }
 
-async function handleBatchRetry() {
+function handleBatchRetry() {
   const targets = getSelectedConflictsForAction('RETRY')
   if (!targets.length) {
-    ElMessage.warning('请先勾选可执行“重试”的问题项')
+    ElMessage.warning('请先勾选可执行"重试"的问题项')
     return
   }
+  batchRetryTargets.value = targets
+  batchRetryDialogVisible.value = true
+}
 
+async function handleBatchRetryConfirm(entries) {
+  const targets = batchRetryTargets.value
+  if (!targets.length) return
   setBatchState('重试', true)
+  const passwordMap = Object.fromEntries(entries.map(e => [e.conflictId, e.password]))
+  const successes = []
+  const failures = []
   try {
-    const retryInput = await askRetryPassword({
-      rjcode: targets.length === 1 ? (targets[0]?.rjcode || '当前问题项') : `${targets.length} 个问题项`
-    })
-    if (retryInput.cancelled) return
-
-    const successes = []
-    const failures = []
-
     for (const conflict of targets) {
       try {
-        await startRetry(conflict, retryInput.password ? { password: retryInput.password } : {})
+        const pw = passwordMap[conflict.id] || ''
+        const result = await startRetry(conflict, pw ? { password: pw } : {})
         successes.push(conflict)
+        startRetryPoller(result.task_id, conflict.id)
       } catch (error) {
         failures.push({ conflict, message: resolveErrorMessage(error, '提交重试失败') })
       }
     }
-
     await fetchConflicts()
     await presentBatchResult(
       '批量重试',
       successes,
       failures,
-      retryInput.password
-        ? '已使用指定密码提交批量重试，请到任务列表跟踪执行结果。'
-        : '重试任务已提交，请到任务列表跟踪执行结果。'
+      `${successes.length} 项重试已提交，后台轮询结果中，可到任务列表跟踪进度。`
     )
   } catch (error) {
-    console.error('批量重试失败:', error)
-    ElMessage.error(resolveErrorMessage(error, '批量重试失败'))
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('批量重试失败:', error)
+      ElMessage.error(resolveErrorMessage(error, '批量重试失败'))
+    }
   } finally {
     setBatchState('', false)
   }

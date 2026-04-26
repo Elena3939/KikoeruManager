@@ -1,344 +1,269 @@
 <template>
-  <div class="dashboard">
-    <section class="overview-top">
-      <el-card class="action-card compact-top-card">
-        <template #header>
-          <div class="card-header">
-            <span>快捷操作</span>
-          </div>
-        </template>
-        <div class="action-buttons">
-          <el-button
-            class="action-button action-button-primary"
-            size="large"
-            @click="handleManualScan"
-            :loading="scanning"
-          >
-            <el-icon><Search /></el-icon>
-            扫描处理
-          </el-button>
-          <el-button
-            class="action-button"
-            size="large"
-            @click="handleWatcherToggle"
-          >
-            <el-icon><VideoPlay v-if="!watcherRunning" /><VideoPause v-else /></el-icon>
-            {{ watcherRunning ? '停止监视' : '启动监视' }}
-          </el-button>
-          <el-button
-            class="action-button"
-            size="large"
-            @click="$router.push('/conflicts')"
-          >
-            <el-icon><Warning /></el-icon>
-            问题作品
-          </el-button>
+  <div class="dashboard-shell">
+    <header class="workspace-bar">
+      <div class="workspace-title">
+        <LayoutDashboard :size="18" :stroke-width="2.3" class="workspace-title-icon" />
+        <div>
+          <h1 class="dash-title">概览</h1>
+          <p class="dash-subtitle">处理队列、入库入口和最近归档</p>
         </div>
-        <el-divider />
-        <FileUploader @upload-success="handleUploadSuccess" />
-      </el-card>
+      </div>
 
-      <el-card class="stats-panel" shadow="never">
-        <div class="stats-panel-header">
-          <span class="stats-panel-title">处理概况</span>
-          <span class="stats-panel-subtitle">当前队列与结果摘要</span>
-        </div>
+      <div class="workspace-actions">
+        <span class="watcher-pill" :class="{ 'is-running': watcherRunning }">
+          <span class="watcher-dot"></span>
+          {{ watcherRunning ? '监视中' : '已停止' }}
+        </span>
+        <button type="button" class="dash-btn dash-btn-ghost" :disabled="loading" @click="refreshDashboardOnResume(false)">
+          <RefreshCw :size="14" :stroke-width="2.3" :class="{ 'animate-spin': loading }" />
+        </button>
+        <button type="button" class="dash-btn dash-btn-primary scan-entry-btn" :disabled="scanning" @click="handleManualScan">
+          <Search :size="14" :stroke-width="2.3" />
+          <span>{{ scanning ? '扫描中' : '扫描处理' }}</span>
+        </button>
+      </div>
+    </header>
 
-        <div class="stats-strip">
-          <button type="button" class="stat-chip" @click.stop>
-            <span class="stat-chip-icon stat-icon stat-icon-import">
-              <el-icon :size="18"><Document /></el-icon>
-            </span>
-            <span class="stat-chip-body">
-              <span class="stat-chip-label">导入处理</span>
-              <span class="stat-chip-value">{{ domainCounts.import }}</span>
-            </span>
-          </button>
-
-          <button type="button" class="stat-chip stat-chip-clickable" @click="$router.push('/library')">
-            <span class="stat-chip-icon stat-icon stat-icon-rj-subtitle">
-              <el-icon :size="18"><Search /></el-icon>
-            </span>
-            <span class="stat-chip-body">
-              <span class="stat-chip-label">RJ 字幕</span>
-              <span class="stat-chip-value">{{ domainCounts.rj_subtitle }}</span>
-            </span>
-          </button>
-
-          <button type="button" class="stat-chip stat-chip-clickable" @click="$router.push('/subtitle-import')">
-            <span class="stat-chip-icon stat-icon stat-icon-subtitle-import">
-              <el-icon :size="18"><CircleCheck /></el-icon>
-            </span>
-            <span class="stat-chip-body">
-              <span class="stat-chip-label">字幕补配</span>
-              <span class="stat-chip-value">{{ domainCounts.subtitle_import }}</span>
-            </span>
-          </button>
-
-          <button type="button" class="stat-chip stat-chip-clickable" @click="$router.push('/asmr-sync')">
-            <span class="stat-chip-icon stat-icon stat-icon-asmr-sync">
-              <el-icon :size="18"><Warning /></el-icon>
-            </span>
-            <span class="stat-chip-body">
-              <span class="stat-chip-label">ASMR 同步</span>
-              <span class="stat-chip-value">{{ domainCounts.asmr_sync }}</span>
-            </span>
-          </button>
-        </div>
-
-        <div class="stats-summary">
-          <div class="summary-card">
-            <span class="summary-label">监视器状态</span>
-            <span class="summary-value">{{ watcherRunning ? '运行中' : '已停止' }}</span>
-            <span class="summary-meta">
-              {{ watcherRunning ? '正在自动监听并处理新进入队列的文件。' : '当前需要你手动触发扫描和处理。' }}
-            </span>
-          </div>
-
-          <div class="summary-card">
-            <span class="summary-label">任务总数</span>
-            <span class="summary-value">{{ taskCenterOverview.total || 0 }}</span>
-            <span class="summary-meta">任务中心当前聚合到的全部任务项总数。</span>
-          </div>
-        </div>
-
-        <div class="stats-summary-actions">
-          <el-button link @click="$router.push('/tasks')">查看任务队列</el-button>
-          <el-button link @click="$router.push('/library')">打开库存管理</el-button>
-        </div>
-      </el-card>
+    <section class="workspace-metrics-panel">
+      <div class="workspace-metrics">
+        <button
+          v-for="item in kpiCards"
+          :key="item.key"
+          type="button"
+          class="metric-pill"
+          :class="`is-${item.key}`"
+          @click="openKpiTarget(item)"
+        >
+          <component :is="item.icon" :size="14" :stroke-width="2.3" class="metric-icon" />
+          <span>{{ item.label }}</span>
+          <b>{{ item.value }}</b>
+        </button>
+      </div>
     </section>
 
-    <!-- 当前任务 -->
-    <el-card class="tasks-card">
-      <template #header>
-        <div class="card-header">
-          <span>当前任务</span>
-          <el-button link @click="$router.push('/tasks')">查看全部</el-button>
-        </div>
-      </template>
+    <section class="command-strip">
+      <div class="command-group">
+        <button type="button" class="command-btn is-blue is-scan-entry" :disabled="scanning" @click="handleManualScan">
+          <Search :size="15" :stroke-width="2.3" class="command-icon" />
+          <span>{{ scanning ? '扫描中' : '扫描处理' }}</span>
+        </button>
+        <button type="button" class="command-btn is-emerald" @click="handleWatcherToggle">
+          <component :is="watcherRunning ? PauseCircle : PlayCircle" :size="15" :stroke-width="2.3" class="command-icon" />
+          <span>{{ watcherRunning ? '停止监视' : '启动监视' }}</span>
+        </button>
+        <button type="button" class="command-btn is-rose" @click="router.push('/conflicts')">
+          <AlertTriangle :size="15" :stroke-width="2.3" class="command-icon" />
+          <span>问题作品</span>
+        </button>
+        <button type="button" class="command-btn is-violet" @click="router.push('/tasks')">
+          <ListChecks :size="15" :stroke-width="2.3" class="command-icon" />
+          <span>任务中心</span>
+        </button>
+      </div>
 
-      <el-table :data="recentTasks" v-app-loading="{ loading, text: '正在加载近期任务...', size: 96 }" style="width: 100%" row-key="id">
+      <div class="upload-inline">
+        <FileUploader compact @upload-success="handleUploadSuccess" />
+      </div>
+    </section>
 
-        <el-table-column prop="title" label="源文件" show-overflow-tooltip min-width="260">
-          <template #default="{ row }">
-            <div class="source-file-cell">
-              <span class="filename">{{ row.title }}</span>
-              <span v-if="row.subtitle" class="task-subline">{{ row.subtitle }}</span>
-            </div>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="domain_label" label="类型" width="140">
-          <template #default="{ row }">
-            <el-tag size="small" effect="plain">{{ row.domain_label }}</el-tag>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="关键信息" min-width="260">
-          <template #default="{ row }">
-            <div class="task-summary-cell">
-              <span v-if="getDashboardRJLabel(row)" class="task-summary-pill">{{ getDashboardRJLabel(row) }}</span>
-              <span v-else class="task-summary-empty">-</span>
-            </div>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="status" label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag
-              :type="getRowStatusType(row)"
-              size="small"
-              class="dashboard-status-tag"
-              :class="`is-${getRowStatusClass(row)}`"
-            >
-              {{ getRowStatusLabel(row) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="progress" label="进度" width="320">
-          <template #default="{ row }">
-            <div class="progress-cell">
-              <el-progress
-                :percentage="row.progress"
-                :status="getRowProgressStatus(row)"
-                :stroke-width="12"
-                :show-text="false"
-              />
-              <span class="progress-label">{{ row.current_step }}</span>
-            </div>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="220" fixed="right" align="center">
-          <template #default="{ row }">
-            <div class="task-action-group">
-              <el-button
-                v-for="action in row.actions || []"
-                :key="`${row.id}-${action}`"
-                size="small"
-                class="task-action-btn"
-                :class="`is-${action}`"
-                :type="getDashboardActionType(action)"
-                :plain="action !== 'cancel'"
-                @click="handleTaskCenterAction(row, action)"
-              >
-                {{ getActionLabel(action) }}
-              </el-button>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <!-- 已处理压缩包 -->
-    <el-card class="archives-card">
-      <template #header>
-        <div class="card-header">
-          <span>已处理压缩包</span>
-          <div class="archives-header-actions">
-            <!-- 搜索框 -->
-            <el-input
-              v-model="archiveSearchQuery"
-              placeholder="搜索RJ号或文件名"
-              style="width: 200px; margin-right: 12px;"
-              clearable
-              @input="handleArchiveSearch"
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
-
-            <!-- 排序选择器 -->
-            <el-select v-model="archiveSortBy" style="width: 140px; margin-right: 8px;" @change="handleArchiveSortChange">
-              <el-option label="处理时间" value="processed_at" />
-              <el-option label="RJ号" value="rjcode" />
-              <el-option label="文件大小" value="file_size" />
-              <el-option label="处理次数" value="process_count" />
-              <el-option label="状态" value="status" />
-            </el-select>
-
-            <!-- 排序方向 -->
-            <el-button
-              link
-              @click="toggleArchiveSortOrder"
-              :title="archiveSortOrder === 'desc' ? '降序' : '升序'"
-            >
-              <el-icon>
-                <SortDown v-if="archiveSortOrder === 'desc'" />
-                <SortUp v-else />
-              </el-icon>
-            </el-button>
-
-            <el-button link @click="fetchProcessedArchives" :loading="archivesLoading">
-              <el-icon><Refresh /></el-icon>刷新
-            </el-button>
-            <el-button link @click="showAllArchives = !showAllArchives">
-              {{ showAllArchives ? '收起' : '查看全部' }}
-            </el-button>
+    <main class="workspace-grid">
+      <section class="main-pane">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">任务流</h2>
+            <p class="section-subtitle">活跃任务优先，空闲时显示最近完成/失败</p>
           </div>
+          <button type="button" class="mini-link" @click="router.push('/tasks')">
+            查看全部
+            <ArrowRight :size="14" :stroke-width="2.4" />
+          </button>
         </div>
-      </template>
 
-      <el-table
-        :data="displayedArchives"
-        v-app-loading="{ loading: archivesLoading, text: '正在加载最近入库...', size: 124 }"
-        style="width: 100%"
-        row-key="id"
-      >
-        <template #empty>
-          <AppEmptyState description="暂无已处理压缩包" size="default" />
-        </template>
-        <el-table-column type="expand" width="40" v-if="displayedArchives.some(a => a.isVolumeGroup)">
-          <template #default="{ row }">
-            <div v-if="row.isVolumeGroup && row.volumes" class="volume-list">
-              <div class="volume-list-title">分卷文件列表：</div>
-              <div v-for="(vol, idx) in row.volumes" :key="idx" class="volume-item">
-                <span class="volume-name">{{ vol.filename }}</span>
-                <span class="volume-size">{{ formatFileSize(vol.file_size) }}</span>
+        <div v-if="recentTasks.length" class="task-list">
+          <article v-for="task in recentTasks" :key="task.id" class="task-row" :class="`is-${task.domain || 'system'}`">
+            <span class="task-icon"><component :is="domainMeta(task.domain).icon" :size="15" :stroke-width="2.3" /></span>
+            <div class="task-main">
+              <div class="task-row-top">
+                <h3 class="task-title">{{ task.title }}</h3>
+                <span class="status-pill" :class="`is-${statusClass(task)}`">{{ statusLabel(task) }}</span>
+              </div>
+              <p v-if="task.subtitle" class="task-subtitle">{{ task.subtitle }}</p>
+              <div class="task-meta-line">
+                <span class="task-chip">
+                  <component :is="domainMeta(task.domain).icon" :size="12" :stroke-width="2.3" />
+                  <span>{{ task.domain_label }}</span>
+                </span>
+                <span v-if="formatRJ(task.rjcode)" class="task-chip is-rj">
+                  <Archive :size="12" :stroke-width="2.3" />
+                  <span>{{ formatRJ(task.rjcode) }}</span>
+                </span>
+                <span v-if="task.current_step" class="task-chip is-step">
+                  <Activity :size="12" :stroke-width="2.3" />
+                  <span>{{ task.current_step }}</span>
+                </span>
+              </div>
+              <div v-if="showProgress(task)" class="task-progress">
+                <el-progress :percentage="task.progress" :stroke-width="7" :show-text="false" />
+                <span>{{ task.progress }}%</span>
               </div>
             </div>
-          </template>
-        </el-table-column>
+            <div v-if="task.actions?.length" class="task-actions">
+              <button
+                v-for="action in task.actions"
+                :key="`${task.id}-${action}`"
+                type="button"
+                class="icon-action"
+                :class="`is-${action}`"
+                :title="getActionLabel(action)"
+                @click="handleTaskCenterAction(task, action)"
+              >
+                <component :is="actionIcon(action)" :size="14" :stroke-width="2.4" />
+              </button>
+            </div>
+          </article>
+        </div>
 
-        <el-table-column prop="rjcode" label="RJ号" width="120">
-          <template #default="{ row }">
-            <el-tag type="primary" size="small" v-if="row.rjcode">{{ row.rjcode }}</el-tag>
-            <span v-else class="text-gray">-</span>
-          </template>
-        </el-table-column>
+        <AppEmptyState v-else description="当前没有需要关注的任务" size="default" />
+      </section>
 
-        <el-table-column prop="filename" label="文件名" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ row.filename }}
-            <el-tag v-if="row.isVolumeGroup" type="warning" size="small" class="volume-tag">
-              {{ row.volumes.length }}个分卷
-            </el-tag>
-          </template>
-        </el-table-column>
+      <aside class="side-pane">
+        <section class="side-section">
+          <div class="section-head compact">
+            <div>
+              <h2 class="section-title">状态</h2>
+              <p class="section-subtitle">队列摘要</p>
+            </div>
+            <Activity :size="16" :stroke-width="2.2" class="text-blue-500" />
+          </div>
+          <div class="status-list">
+            <div v-for="item in statusCards" :key="item.key" class="status-row" :class="`is-${item.key}`">
+              <div class="status-row-main">
+                <component :is="statusCardIcon(item.key)" :size="14" :stroke-width="2.4" class="status-icon" />
+                <span>{{ item.label }}</span>
+              </div>
+              <b>{{ item.value }}</b>
+            </div>
+          </div>
+        </section>
 
-        <el-table-column prop="file_size" label="大小" width="120">
-          <template #default="{ row }">
-            {{ formatFileSize(row.file_size) }}
-          </template>
-        </el-table-column>
+        <section class="side-section">
+          <div class="section-head compact">
+            <div>
+              <h2 class="section-title">最近归档</h2>
+              <p class="section-subtitle">{{ filteredArchives.length ? `${filteredArchives.length} 条记录` : '暂无记录' }}</p>
+            </div>
+            <button type="button" class="mini-icon-btn" :disabled="archivesLoading" @click="refreshArchivePanel" title="刷新归档记录">
+              <RefreshCw :size="14" :stroke-width="2.3" :class="{ 'animate-spin': archivesLoading }" />
+            </button>
+          </div>
 
-        <el-table-column prop="process_count" label="处理次数" width="120">
-          <template #default="{ row }">
-            <el-tag type="info" size="small">{{ row.process_count || 1 }} 次</el-tag>
-          </template>
-        </el-table-column>
+          <div class="archive-tools">
+            <div class="archive-search">
+              <Search :size="13" :stroke-width="2.3" />
+              <input v-model="archiveSearchQuery" type="text" placeholder="搜索 RJ / 文件名" @input="handleArchiveSearch" />
+            </div>
+          </div>
 
-        <el-table-column prop="processed_at" label="处理时间" width="220">
-          <template #default="{ row }">
-            <span class="time-text">{{ formatDate(row.processed_at) }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="status" label="状态" width="110">
-          <template #default="{ row }">
-            <el-tag
-              :type="row.status === 'completed' ? 'success' : (row.status === 'reprocessing' ? 'warning' : 'info')"
-              size="small"
+          <div class="archive-domain-tabs">
+            <button
+              v-for="tab in archiveDomainTabs"
+              :key="tab.key"
+              type="button"
+              class="archive-tab-btn"
+              :class="{ 'is-active': archiveDomainFilter === tab.key }"
+              @click="archiveDomainFilter = tab.key"
             >
-              {{ row.status === 'completed' ? '已完成' : (row.status === 'reprocessing' ? '重新处理中' : '处理中') }}
-            </el-tag>
-          </template>
-        </el-table-column>
+              <component :is="tab.icon" :size="12" :stroke-width="2.3" class="archive-tab-icon" :class="`is-${tab.key}`" />
+              <span>{{ tab.label }}</span>
+              <span v-if="tab.count > 0" class="archive-tab-count">{{ tab.count }}</span>
+            </button>
+          </div>
 
-        <el-table-column label="操作" width="120" fixed="right" align="center">
-          <template #default="{ row }">
-            <el-button
-              size="small"
-              type="primary"
-              @click="reprocessArchive(row.id)"
-              :loading="reprocessingId === row.id"
-            >
-              重新解压
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
+          <div v-if="filteredArchives.length" class="archive-list">
+            <article v-for="archive in filteredArchives" :key="archive.id" class="archive-row">
+              <span class="archive-icon" :class="`is-${getArchiveTaskMeta(archive).key}`">
+                <component :is="getArchiveTaskMeta(archive).icon" :size="14" :stroke-width="2.3" />
+              </span>
+              <div class="archive-main">
+                <div class="archive-row-top">
+                  <h3 class="archive-title">{{ archive.filename }}</h3>
+                  <span v-if="archive.rjcode" class="archive-rj">{{ archive.rjcode }}</span>
+                </div>
+                <div class="archive-badges">
+                  <span class="archive-tag archive-type-tag" :class="`is-${getArchiveTaskMeta(archive).key}`">
+                    <component :is="getArchiveTaskMeta(archive).icon" :size="12" :stroke-width="2.3" />
+                    <span>{{ getArchiveTaskMeta(archive).label }}</span>
+                  </span>
+                  <span class="archive-tag archive-status-tag" :class="`is-${getArchiveStatusMeta(archive.status).key}`">
+                    <component :is="archiveStatusIcon(getArchiveStatusMeta(archive.status).key)" :size="12" :stroke-width="2.3" />
+                    <span>{{ getArchiveStatusMeta(archive.status).label }}</span>
+                  </span>
+                </div>
+                <div class="archive-meta">
+                  <span v-if="archive.file_size">{{ formatFileSize(archive.file_size) }}</span>
+                  <span>{{ formatDate(archive.processed_at) }}</span>
+                  <span v-if="archive.isVolumeGroup">{{ archive.volumes.length }} 分卷</span>
+                </div>
+              </div>
+              <button v-if="archive.source === 'processed_archive'" type="button" class="icon-action is-retry" :disabled="reprocessingId === archive.id" title="重新解压" @click="reprocessArchive(archive.id)">
+                <RotateCcw :size="14" :stroke-width="2.4" />
+              </button>
+            </article>
+          </div>
+
+          <AppEmptyState v-else description="暂无归档记录" size="default" />
+
+          <div v-if="archiveTotal > archivePageSize && archiveDomainFilter === 'import'" class="archive-footer archive-pagination">
+            <el-pagination
+              :current-page="archivePage"
+              :page-size="archivePageSize"
+              :total="archiveTotal"
+              layout="prev, pager, next"
+              :background="true"
+              :disabled="archivesLoading"
+              @current-change="handleArchivePageChange"
+            />
+          </div>
+        </section>
+      </aside>
+    </main>
   </div>
 </template>
 
 <script setup>
-import { ref, onActivated, onDeactivated, onMounted, onUnmounted, computed } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Document, CircleCheck, CircleCheckFilled, Warning, Search, VideoPlay, VideoPause, Refresh, SortDown, SortUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { conflictApi, scanApi, watcherApi, processedArchiveApi, taskCenterApi } from '../api'
+import {
+  Activity,
+  AlertTriangle,
+  Archive,
+  ArrowRight,
+  Captions,
+  Database,
+  FileArchive,
+  LayoutDashboard,
+  ListChecks,
+  PauseCircle,
+  PlayCircle,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  ShieldAlert,
+  Sparkles,
+  Upload,
+  UploadCloud,
+  XCircle,
+} from 'lucide-vue-next'
+import { conflictApi, processedArchiveApi, scanApi, taskCenterApi, watcherApi } from '../api'
 import FileUploader from '../components/FileUploader.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 
 const router = useRouter()
+
 const loading = ref(false)
 const scanning = ref(false)
 const watcherRunning = ref(false)
-const dashboardTaskItems = ref([])
 const taskCenterOverview = ref({
   recent_items: [],
   active_items: [],
@@ -353,160 +278,184 @@ const stats = ref({
   completed: 0,
   conflicts: 0
 })
-const domainCounts = computed(() => ({
-  import: Number(taskCenterOverview.value?.counts_by_domain?.import || 0),
-  rj_subtitle: Number(taskCenterOverview.value?.counts_by_domain?.rj_subtitle || 0),
-  subtitle_import: Number(taskCenterOverview.value?.counts_by_domain?.subtitle_import || 0),
-  asmr_sync: Number(taskCenterOverview.value?.counts_by_domain?.asmr_sync || 0)
-}))
-const dashboardActiveStatuses = new Set(['processing', 'pending', 'paused', 'waiting_manual', 'waiting_retry'])
-const dashboardDomains = ['import', 'rj_subtitle', 'subtitle_import', 'asmr_sync', 'system']
 
-function getFileName(path) {
-  if (!path) return ''
-  return String(path).split(/[\\/]/).pop()
-}
-
-const recentTasks = computed(() => {
-  const taskItems = Array.isArray(dashboardTaskItems.value) ? dashboardTaskItems.value : []
-  const activeItems = taskItems.filter(item => dashboardActiveStatuses.has(String(item?.status || '').trim()))
-  return activeItems.length ? activeItems.slice(0, 6) : taskItems.slice(0, 5)
-})
-
-function buildDashboardOverview(taskItems) {
-  const countsByDomain = Object.fromEntries(dashboardDomains.map((key) => [key, 0]))
-  const countsByStatus = {
-    pending: 0,
-    processing: 0,
-    paused: 0,
-    waiting_manual: 0,
-    waiting_retry: 0,
-    completed: 0,
-    failed: 0
-  }
-
-  for (const item of taskItems) {
-    const domain = String(item?.domain || '').trim()
-    const status = String(item?.status || '').trim()
-    if (domain in countsByDomain) countsByDomain[domain] += 1
-    if (status in countsByStatus) countsByStatus[status] += 1
-  }
-
-  const activeItems = taskItems.filter(item => dashboardActiveStatuses.has(String(item?.status || '').trim()))
-  return {
-    total: taskItems.length,
-    recent_items: taskItems.slice(0, 5),
-    active_items: activeItems.slice(0, 6),
-    counts_by_domain: countsByDomain,
-    counts_by_status: countsByStatus,
-    highlight_counts: {
-      processing: countsByStatus.processing,
-      waiting_manual: countsByStatus.waiting_manual,
-      waiting_retry: countsByStatus.waiting_retry,
-      failed: countsByStatus.failed
-    }
-  }
-}
-
-// 已处理压缩包相关
 const archives = ref([])
+const archiveTotal = ref(0)
 const archivesLoading = ref(false)
 const reprocessingId = ref(null)
-const showAllArchives = ref(false)
+const archivePage = ref(1)
+const archivePageSize = ref(6)
 const archiveSearchQuery = ref('')
 const archiveSortBy = ref('processed_at')
 const archiveSortOrder = ref('desc')
 let archiveSearchTimeout = null
 
-// 合并分卷压缩包组
-const groupedArchives = computed(() => {
-  const groups = new Map()
-  const singles = []
-
-  archives.value.forEach(archive => {
-    const filename = archive.filename
-    // 检查是否是分卷压缩包（支持 .part1.rar, .part2.rar, .part1.exe 等）
-    const volumeMatch = filename.match(/^(.*)\.part(\d+)\.(rar|zip|7z|exe)$/i)
-
-    if (volumeMatch) {
-      // 提取基础组名（如：RJ01207739，不包含 .part 和扩展名）
-      const baseName = volumeMatch[1]
-      const groupKey = baseName + '_volume_group'
-
-      if (!groups.has(groupKey)) {
-        groups.set(groupKey, {
-          id: archive.id,
-          rjcode: archive.rjcode,
-          filename: baseName + '（分卷组）',
-          originalFilename: filename,
-          file_size: 0,
-          process_count: archive.process_count || 1,
-          processed_at: archive.processed_at || new Date(0).toISOString(),
-          status: archive.status,
-          isVolumeGroup: true,
-          groupKey: groupKey,
-          volumes: []
-        })
-      }
-
-      const group = groups.get(groupKey)
-      group.volumes.push(archive)
-      group.file_size += (archive.file_size || 0)
-
-      // 使用最新的处理时间和状态（使用 Date 对象比较，避免字符串比较问题）
-      const archiveTime = archive.processed_at ? new Date(archive.processed_at).getTime() : 0
-      const groupTime = group.processed_at ? new Date(group.processed_at).getTime() : 0
-      if (archiveTime > groupTime) {
-        group.processed_at = archive.processed_at
-        // 同时更新状态为最新的状态
-        group.status = archive.status
-        group.process_count = archive.process_count || 1
-      }
-      // 优先使用 part1 作为组的ID
-      if (filename.toLowerCase().includes('.part1.')) {
-        group.id = archive.id
-      }
-      // 如果没有 part1，使用第一个作为ID
-      if (!group.id) {
-        group.id = archive.id
-      }
-    } else {
-      // 非分卷文件，直接添加
-      singles.push({
-        ...archive,
-        isVolumeGroup: false
-      })
-    }
-  })
-
-  // 合并组和非分卷文件
-  const result = [...groups.values(), ...singles]
-
-  // 按处理时间排序（降序，最新的在前）
-  result.sort((a, b) => {
-    const timeA = a.processed_at ? new Date(a.processed_at).getTime() : 0
-    const timeB = b.processed_at ? new Date(b.processed_at).getTime() : 0
-    return timeB - timeA
-  })
-
-  return result
-})
-
-// 显示的归档列表（根据showAllArchives控制数量）
-const displayedArchives = computed(() => {
-  if (showAllArchives.value) {
-    return groupedArchives.value
-  }
-  return groupedArchives.value.slice(0, 5)
-})
-
-let intervalId
+let intervalId = null
 let dashboardInitialized = false
 let dashboardViewActive = false
 let refreshRunning = false
 let refreshPending = false
 let refreshRequestId = 0
 let visibilityBound = false
+let lastConflictRefreshTime = 0
+let cachedConflictCount = 0
+const CONFLICT_REFRESH_INTERVAL = 30000
+
+const domainCounts = computed(() => ({
+  import: Number(taskCenterOverview.value?.counts_by_domain?.import || 0),
+  rj_subtitle: Number(taskCenterOverview.value?.counts_by_domain?.rj_subtitle || 0),
+  subtitle_import: Number(taskCenterOverview.value?.counts_by_domain?.subtitle_import || 0),
+  asmr_sync: Number(taskCenterOverview.value?.counts_by_domain?.asmr_sync || 0),
+  upload: Number(taskCenterOverview.value?.counts_by_domain?.upload || 0),
+  circle_completion: Number(taskCenterOverview.value?.counts_by_domain?.circle_completion || 0)
+}))
+
+const recentTasks = computed(() => {
+  const active = Array.isArray(taskCenterOverview.value?.active_items) ? taskCenterOverview.value.active_items : []
+  const recent = Array.isArray(taskCenterOverview.value?.recent_items) ? taskCenterOverview.value.recent_items : []
+  return active.length ? active : recent.slice(0, 10)
+})
+
+const kpiCards = computed(() => [
+  { key: 'import', label: '导入处理', value: domainCounts.value.import, meta: '压缩包入库链路', icon: FileArchive, route: '/library' },
+  { key: 'rj', label: 'RJ 字幕', value: domainCounts.value.rj_subtitle, meta: '抓取与配对', icon: Captions, route: '/library' },
+  { key: 'subtitle', label: '字幕补配', value: domainCounts.value.subtitle_import, meta: '预检与写入', icon: Sparkles, route: '/subtitle-import' },
+  { key: 'asmr', label: 'ASMR 同步', value: domainCounts.value.asmr_sync, meta: '下载与上传', icon: UploadCloud, route: '/asmr-sync' },
+  { key: 'upload', label: '库存上传', value: domainCounts.value.upload, meta: '目录上传与直传入库', icon: Upload, route: '/library' },
+  { key: 'conflicts', label: '问题作品', value: stats.value.conflicts, meta: '等待人工判断', icon: ShieldAlert, route: '/conflicts' },
+])
+
+const statusCards = computed(() => [
+  { key: 'processing', label: '处理中', value: Number(taskCenterOverview.value?.highlight_counts?.processing || 0) },
+  { key: 'waiting', label: '等待人工', value: Number(taskCenterOverview.value?.highlight_counts?.waiting_manual || 0) },
+  { key: 'retry', label: '等待重试', value: Number(taskCenterOverview.value?.highlight_counts?.waiting_retry || 0) },
+  { key: 'failed', label: '失败', value: Number(taskCenterOverview.value?.highlight_counts?.failed || 0) },
+])
+
+const groupedArchives = computed(() => {
+  const groups = new Map()
+  const singles = []
+  for (const archive of archives.value) {
+    const filename = String(archive.filename || '')
+    const volumeMatch = filename.match(/^(.*)\.part(\d+)\.(rar|zip|7z|exe)$/i)
+    if (!volumeMatch) {
+      singles.push({ ...archive, source: 'processed_archive', isVolumeGroup: false })
+      continue
+    }
+    const baseName = volumeMatch[1]
+    const groupKey = `${baseName}_volume_group`
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        id: archive.id,
+        rjcode: archive.rjcode,
+        filename: `${baseName}（分卷组）`,
+        file_size: 0,
+        process_count: archive.process_count || 1,
+        processed_at: archive.processed_at || new Date(0).toISOString(),
+        status: archive.status,
+        isVolumeGroup: true,
+        volumes: []
+      })
+    }
+    const group = groups.get(groupKey)
+    group.volumes.push(archive)
+    group.file_size += Number(archive.file_size || 0)
+    if (filename.toLowerCase().includes('.part1.')) {
+      group.id = archive.id
+    }
+  }
+  return [...groups.values(), ...singles].map(item => ({ ...item, source: item.source || 'processed_archive' }))
+})
+
+const taskArchiveItems = computed(() => {
+  const items = Array.isArray(taskCenterOverview.value?.recent_items) ? taskCenterOverview.value.recent_items : []
+  const active = Array.isArray(taskCenterOverview.value?.active_items) ? taskCenterOverview.value.active_items : []
+  return [...active, ...items]
+    .filter((task, index, list) => list.findIndex(item => item.id === task.id) === index)
+    .map(task => {
+      const domain = String(task.domain || 'system').trim()
+      const title = String(task.title || task.subtitle || task.id || '未命名任务').trim()
+      return {
+        id: `task-${task.id}`,
+        source: 'task_center',
+        filename: title,
+        rjcode: formatRJ(task.rjcode),
+        status: task.status,
+        task_domain: domain,
+        domain,
+        task_kind: task.kind || task.type || '',
+        processed_at: task.completed_at || task.updated_at || task.started_at || task.created_at,
+        file_size: 0,
+        summary: task.subtitle || task.current_step || '',
+        route_hint: task.route_hint,
+      }
+    })
+})
+
+const displayedArchives = computed(() => {
+  const archiveItems = groupedArchives.value
+  const taskItems = taskArchiveItems.value.filter(item => item.task_domain !== 'import')
+  return [...taskItems, ...archiveItems]
+    .sort((a, b) => new Date(b.processed_at || 0).getTime() - new Date(a.processed_at || 0).getTime())
+    .slice(0, archivePageSize.value)
+})
+
+const archiveDomainFilter = ref('all')
+
+const archiveDomainTabMeta = {
+  all: { key: 'all', label: '全部', icon: Archive },
+  import: { key: 'import', label: '解压入库', icon: FileArchive },
+  subtitle_import: { key: 'subtitle_import', label: '字幕补配', icon: Sparkles },
+  rj_subtitle: { key: 'rj_subtitle', label: 'RJ 字幕', icon: Captions },
+  asmr_sync: { key: 'asmr_sync', label: 'ASMR', icon: UploadCloud },
+  upload: { key: 'upload', label: '库存上传', icon: Upload },
+  circle_completion: { key: 'circle_completion', label: '社团补全', icon: Database },
+  system: { key: 'system', label: '系统', icon: Activity },
+}
+
+const archiveDomainOrder = ['import', 'subtitle_import', 'rj_subtitle', 'asmr_sync', 'upload', 'circle_completion', 'system']
+
+const archiveDomainTabs = computed(() => {
+  const domainCountMap = new Map()
+  for (const item of displayedArchives.value) {
+    const key = getArchiveTaskMeta(item).key
+    if (!key) continue
+    domainCountMap.set(key, (domainCountMap.get(key) || 0) + 1)
+  }
+
+  const tabs = [{ ...archiveDomainTabMeta.all, count: displayedArchives.value.length }]
+  for (const key of archiveDomainOrder) {
+    const count = domainCountMap.get(key) || 0
+    if (count > 0) tabs.push({ ...archiveDomainTabMeta[key], count })
+  }
+  return tabs
+})
+
+watch(archiveDomainTabs, tabs => {
+  const isCurrentFilterAvailable = tabs.some(tab => tab.key === archiveDomainFilter.value)
+  if (!isCurrentFilterAvailable) archiveDomainFilter.value = 'all'
+}, { immediate: true })
+
+const filteredArchives = computed(() => {
+  const keyword = archiveSearchQuery.value.trim().toLowerCase()
+  const all = keyword
+    ? displayedArchives.value.filter(item => {
+        const text = [
+          item.filename,
+          item.rjcode,
+          item.summary,
+          item.task_domain,
+          item.domain,
+        ].join(' ').toLowerCase()
+        return text.includes(keyword)
+      })
+    : displayedArchives.value
+  if (archiveDomainFilter.value === 'all') return all
+  return all.filter(a => {
+    const domain = String(a?.task_domain || a?.domain || a?.task_kind || a?.kind || 'import').trim().toLowerCase()
+    return domain === archiveDomainFilter.value
+  })
+})
 
 onMounted(async () => {
   await initializeDashboardPage()
@@ -537,12 +486,6 @@ onUnmounted(() => {
   }
 })
 
-let previousCompletedCount = 0
-let lastRefreshTime = 0
-let lastConflictRefreshTime = 0
-let cachedConflictCount = 0
-const CONFLICT_REFRESH_INTERVAL = 30000
-
 function stopDashboardPolling() {
   if (intervalId) {
     clearInterval(intervalId)
@@ -555,12 +498,6 @@ function startDashboardPolling() {
   intervalId = setInterval(() => {
     refreshData({ silent: true })
   }, 3000)
-}
-
-function handleDashboardVisibilityRefresh() {
-  if (!dashboardViewActive) return
-  if (document.visibilityState === 'hidden') return
-  refreshData({ silent: true })
 }
 
 function bindDashboardVisibilityRefresh() {
@@ -577,6 +514,11 @@ function unbindDashboardVisibilityRefresh() {
   document.removeEventListener('visibilitychange', handleDashboardVisibilityRefresh)
 }
 
+function handleDashboardVisibilityRefresh() {
+  if (!dashboardViewActive || document.visibilityState === 'hidden') return
+  refreshData({ silent: true })
+}
+
 async function initializeDashboardPage() {
   if (dashboardInitialized) return
   await refreshDashboardOnResume(false)
@@ -586,7 +528,7 @@ async function initializeDashboardPage() {
 async function refreshDashboardOnResume(silent = true) {
   await refreshData({ silent, forceConflictRefresh: true })
   await fetchWatcherStatus()
-  await fetchProcessedArchivesSilently()
+  await fetchProcessedArchives({ silent: true })
 }
 
 async function refreshData(options = {}) {
@@ -595,47 +537,16 @@ async function refreshData(options = {}) {
     refreshPending = true
     return
   }
-
   refreshRunning = true
   const currentRequestId = ++refreshRequestId
-  if (!silent) {
-    loading.value = true
-  }
-
+  if (!silent) loading.value = true
   try {
-    const cacheBust = Date.now()
-    const listData = await taskCenterApi.list({ limit: 300, _t: cacheBust })
-    if (currentRequestId !== refreshRequestId) {
-      return
-    }
-    const taskItems = Array.isArray(listData) ? listData : []
-    dashboardTaskItems.value = taskItems
-    const derivedOverview = buildDashboardOverview(taskItems)
-    taskCenterOverview.value = derivedOverview
+    const overview = await taskCenterApi.overview({ _t: Date.now() })
+    if (currentRequestId !== refreshRequestId) return
+    taskCenterOverview.value = overview || taskCenterOverview.value
 
-    // 获取当前完成的任务数
-    const currentCompletedCount = Number(derivedOverview?.counts_by_status?.completed || 0)
-
-    // 如果完成的任务数增加了，或者距离上次刷新已处理压缩包已超过30秒，则刷新
     const now = Date.now()
-    const shouldRefreshArchives =
-      currentCompletedCount > previousCompletedCount ||
-      (now - lastRefreshTime > 30000 && recentTasks.value.length > 0)
-
-    if (shouldRefreshArchives) {
-      console.log('检测到任务状态变化，刷新已处理压缩包列表')
-      await fetchProcessedArchivesSilently()
-      lastRefreshTime = now
-    }
-
-    previousCompletedCount = currentCompletedCount
-
-    // 获取问题作品数量
-    const shouldRefreshConflicts =
-      forceConflictRefresh ||
-      !lastConflictRefreshTime ||
-      (now - lastConflictRefreshTime >= CONFLICT_REFRESH_INTERVAL)
-
+    const shouldRefreshConflicts = forceConflictRefresh || !lastConflictRefreshTime || now - lastConflictRefreshTime >= CONFLICT_REFRESH_INTERVAL
     if (shouldRefreshConflicts) {
       try {
         const data = await conflictApi.count()
@@ -647,27 +558,19 @@ async function refreshData(options = {}) {
     }
 
     stats.value = {
-      pending: Number(derivedOverview?.counts_by_status?.pending || 0),
-      processing: Number(derivedOverview?.counts_by_status?.processing || 0),
-      completed: Number(derivedOverview?.counts_by_status?.completed || 0),
+      pending: Number(overview?.counts_by_status?.pending || 0),
+      processing: Number(overview?.counts_by_status?.processing || 0),
+      completed: Number(overview?.counts_by_status?.completed || 0),
       conflicts: cachedConflictCount
     }
   } catch (error) {
-    console.error('获取任务中心概览失败:', error)
-    dashboardTaskItems.value = []
-    taskCenterOverview.value = {
-      recent_items: [],
-      active_items: [],
-      counts_by_domain: {},
-      counts_by_status: {},
-      highlight_counts: {},
-      total: 0
+    console.error('获取概览失败:', error)
+    if (!silent) {
+      ElMessage.error('获取概览失败: ' + (error.response?.data?.detail || error.message))
     }
   } finally {
     refreshRunning = false
-    if (!silent) {
-      loading.value = false
-    }
+    if (!silent) loading.value = false
     if (refreshPending) {
       refreshPending = false
       refreshData({ silent: true })
@@ -675,112 +578,9 @@ async function refreshData(options = {}) {
   }
 }
 
-function getTaskTypeLabel(type) {
-  const labels = {
-    'auto_process': '自动处理',
-    'extract': '解压',
-    'filter': '过滤',
-    'metadata': '元数据',
-    'rename': '重命名'
-  }
-  return labels[type] || type
-}
-
-function getStatusLabel(status) {
-  const labels = {
-    'pending': '等待中',
-    'processing': '处理中',
-    'paused': '已暂停',
-    'waiting_manual': '等待手动处理',
-    'waiting_retry': '等待重试',
-    'completed': '已完成',
-    'failed': '失败',
-    'cancelled': '已取消',
-    'canceled': '已取消'
-  }
-  return labels[status] || status
-}
-
-function getStatusType(status) {
-  const types = {
-    'pending': 'info',
-    'processing': 'warning',
-    'paused': '',
-    'waiting_manual': 'warning',
-    'waiting_retry': 'danger',
-    'completed': 'success',
-    'failed': 'danger',
-    'cancelled': 'info',
-    'canceled': 'info'
-  }
-  return types[status] || ''
-}
-
-function isCancelledTask(row) {
-  if (!row) return false
-  if (row.status === 'cancelled' || row.status === 'canceled') return true
-  if (row.error_message === '用户取消') return true
-  const metadata = row?.details?.metadata || {}
-  return Boolean(metadata.is_cancelled || metadata.cancelled || metadata.canceled)
-}
-
-function getRowStatusLabel(row) {
-  if (isCancelledTask(row)) return '已取消'
-  return row?.status_label || getStatusLabel(row?.status)
-}
-
-function getRowStatusType(row) {
-  if (isCancelledTask(row)) return getStatusType('cancelled')
-  return getStatusType(row?.status)
-}
-
-function getRowStatusClass(row) {
-  if (isCancelledTask(row)) return 'cancelled'
-  return String(row?.status || '').trim() || 'default'
-}
-
-function pickMetricValue(row, label) {
-  const metrics = Array.isArray(row?.metrics) ? row.metrics : []
-  return metrics.find(metric => metric?.label === label)?.value || ''
-}
-
-function getDashboardRJLabel(row) {
-  const rjcode = String(row?.rjcode || '').trim().toUpperCase()
-  return rjcode || ''
-}
-
-function getRecoveredNotice(row) {
-  const details = row?.details || {}
-  const metadata = details.metadata || {}
-  return String(metadata.recovered_notice || '').trim()
-}
-
-function getRowProgressStatus(row) {
-  if (isCancelledTask(row) || row?.status === 'failed' || row?.status === 'waiting_retry') return 'exception'
-  if (row?.status === 'completed') return 'success'
-  return ''
-}
-
-async function pauseTask(taskId) {
-  await taskCenterApi.action(taskId, 'pause')
-}
-
-async function resumeTask(taskId) {
-  await taskCenterApi.action(taskId, 'resume')
-}
-
-async function cancelTask(taskId) {
-  await taskCenterApi.action(taskId, 'cancel')
-}
-
-function handleUploadSuccess() {
-  refreshData()
-}
-
 async function handleManualScan() {
   scanning.value = true
   try {
-    ElMessage.info('正在扫描文件夹...')
     const data = await scanApi.scan()
     ElMessage.success(data.message)
     await refreshData()
@@ -796,132 +596,81 @@ async function handleWatcherToggle() {
   try {
     if (watcherRunning.value) {
       await watcherApi.stop()
-      ElMessage.success('监视器已停止')
       watcherRunning.value = false
+      ElMessage.success('监视器已停止')
     } else {
       await watcherApi.start()
-      ElMessage.success('监视器已启动')
       watcherRunning.value = true
+      ElMessage.success('监视器已启动')
     }
   } catch (error) {
-    console.error('操作失败:', error)
+    console.error('操作监视器失败:', error)
     ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
   }
 }
 
-function getActionLabel(action) {
-  const labels = {
-    pause: '暂停',
-    resume: '恢复',
-    cancel: '取消',
-    retry: '重试',
-    retry_waiting: '重试',
-    delete_waiting_retry: '移除',
-    open_subtitle_import: '前往处理'
-  }
-  return labels[action] || action
-}
-
-function getDashboardActionType(action) {
-  const types = {
-    pause: 'warning',
-    resume: 'primary',
-    cancel: 'danger',
-    retry: 'primary',
-    retry_waiting: 'primary',
-    delete_waiting_retry: 'danger',
-    open_subtitle_import: 'primary'
-  }
-  return types[action] || 'info'
-}
-
-async function handleTaskCenterAction(row, action) {
-  try {
-    const result = await taskCenterApi.action(row.id, action)
-    if (result?.route_hint) {
-      await router.push(result.route_hint)
-    }
-    ElMessage.success(result?.message || '操作成功')
-    await refreshData()
-  } catch (error) {
-    console.error('执行任务中心动作失败:', error)
-    ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
-  }
+function handleUploadSuccess() {
+  refreshData()
+  fetchProcessedArchives({ silent: true })
 }
 
 async function fetchWatcherStatus() {
   try {
     const data = await watcherApi.status()
-    watcherRunning.value = data.is_running
+    watcherRunning.value = Boolean(data?.is_running)
   } catch (error) {
     console.error('获取监视器状态失败:', error)
   }
 }
 
-// 获取已处理压缩包列表
 async function fetchProcessedArchives(options = {}) {
-  const { silent = false } = options
+  const { silent = false, scan = false } = options
   archivesLoading.value = true
   try {
-    await processedArchiveApi.scan()
+    if (scan) {
+      await processedArchiveApi.scan()
+    }
     const params = {
       sort_by: archiveSortBy.value,
-      sort_order: archiveSortOrder.value
+      sort_order: archiveSortOrder.value,
+      limit: archivePageSize.value,
+      offset: (archivePage.value - 1) * archivePageSize.value
     }
-    if (archiveSearchQuery.value) {
-      params.search = archiveSearchQuery.value
-    }
+    if (archiveSearchQuery.value) params.search = archiveSearchQuery.value
     const data = await processedArchiveApi.list(params)
-    archives.value = data.archives || []
-    console.log('获取到已处理压缩包:', archives.value.length, '条记录')
-    if (archives.value.length > 0) {
-      console.log('第一条记录:', archives.value[0].filename, '时间:', archives.value[0].processed_at)
+    archives.value = data?.archives || []
+    archiveTotal.value = Number(data?.total || archives.value.length)
+    const maxPage = Math.max(1, Math.ceil(archiveTotal.value / archivePageSize.value))
+    if (archivePage.value > maxPage) {
+      archivePage.value = maxPage
+      await fetchProcessedArchives({ silent: true })
+      return
     }
-    ElMessage.success('刷新成功')
+    if (!silent) ElMessage.success('刷新成功')
   } catch (error) {
     console.error('获取已处理压缩包列表失败:', error)
-    ElMessage.error('获取已处理压缩包列表失败')
+    if (!silent) ElMessage.error('获取已处理压缩包列表失败')
   } finally {
     archivesLoading.value = false
   }
 }
 
-// 处理搜索输入（防抖）
+async function refreshArchivePanel() {
+  await refreshData({ silent: true })
+  await fetchProcessedArchives({ scan: true })
+}
+
 function handleArchiveSearch() {
-  if (archiveSearchTimeout) {
-    clearTimeout(archiveSearchTimeout)
-  }
+  if (archiveSearchTimeout) clearTimeout(archiveSearchTimeout)
   archiveSearchTimeout = setTimeout(() => {
-    fetchProcessedArchives()
-  }, 500)
+    archivePage.value = 1
+    fetchProcessedArchives({ silent: true })
+  }, 400)
 }
 
-// 处理排序字段变化
-function handleArchiveSortChange() {
-  fetchProcessedArchives()
-}
-
-// 切换排序方向
-function toggleArchiveSortOrder() {
-  archiveSortOrder.value = archiveSortOrder.value === 'desc' ? 'asc' : 'desc'
-  fetchProcessedArchives()
-}
-
-// 重新处理压缩包
-async function fetchProcessedArchivesSilently() {
-  try {
-    const params = {
-      sort_by: archiveSortBy.value,
-      sort_order: archiveSortOrder.value
-    }
-    if (archiveSearchQuery.value) {
-      params.search = archiveSearchQuery.value
-    }
-    const data = await processedArchiveApi.list(params)
-    archives.value = data.archives || []
-  } catch (error) {
-    console.error('Silent refresh of processed archives failed:', error)
-  }
+function handleArchivePageChange(page) {
+  archivePage.value = page
+  fetchProcessedArchives({ silent: true })
 }
 
 async function reprocessArchive(archiveId) {
@@ -930,7 +679,7 @@ async function reprocessArchive(archiveId) {
     const data = await processedArchiveApi.reprocess(archiveId)
     ElMessage.success(data.message)
     await refreshData()
-    await fetchProcessedArchives()
+    await fetchProcessedArchives({ silent: true })
   } catch (error) {
     console.error('重新处理失败:', error)
     ElMessage.error('重新处理失败: ' + (error.response?.data?.detail || error.message))
@@ -939,706 +688,1065 @@ async function reprocessArchive(archiveId) {
   }
 }
 
-// 格式化文件大小
-function formatFileSize(bytes) {
-  if (bytes === 0 || !bytes) return '-'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+async function handleTaskCenterAction(task, action) {
+  try {
+    const result = await taskCenterApi.action(task.id, action)
+    if (result?.route_hint) await router.push(result.route_hint)
+    ElMessage.success(result?.message || '操作成功')
+    await refreshData()
+  } catch (error) {
+    console.error('执行任务中心动作失败:', error)
+    ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
+  }
 }
 
-// 格式化日期
+function openKpiTarget(item) {
+  if (item.route) router.push(item.route)
+}
+
+function domainMeta(domain) {
+  const map = {
+    import: { icon: FileArchive },
+    rj_subtitle: { icon: Captions },
+    subtitle_import: { icon: Sparkles },
+    asmr_sync: { icon: UploadCloud },
+    upload: { icon: Upload },
+    circle_completion: { icon: Database },
+    system: { icon: Activity },
+  }
+  return map[domain] || map.system
+}
+
+function statusCardIcon(key) {
+  const map = {
+    processing: Activity,
+    waiting: PauseCircle,
+    retry: RotateCcw,
+    failed: XCircle,
+  }
+  return map[key] || Activity
+}
+
+function actionIcon(action) {
+  const map = {
+    pause: PauseCircle,
+    resume: PlayCircle,
+    cancel: XCircle,
+    retry: RotateCcw,
+    retry_waiting: RotateCcw,
+    delete_waiting_retry: XCircle,
+    open_subtitle_import: ArrowRight,
+  }
+  return map[action] || ArrowRight
+}
+
+function getActionLabel(action) {
+  const labels = {
+    pause: '暂停',
+    resume: '恢复',
+    cancel: '取消',
+    retry: '重试',
+    retry_waiting: '立即重试',
+    delete_waiting_retry: '移除',
+    open_subtitle_import: '前往字幕补配'
+  }
+  return labels[action] || action
+}
+
+function showProgress(task) {
+  return ['processing', 'pending', 'paused', 'waiting_retry'].includes(task?.status)
+}
+
+function statusClass(task) {
+  if (task?.error_message === '用户取消') return 'cancelled'
+  return String(task?.status || 'default')
+}
+
+function statusLabel(task) {
+  if (task?.error_message === '用户取消') return '已取消'
+  return task?.status_label || task?.status || '-'
+}
+
+function formatRJ(value) {
+  const text = String(value || '').trim().toUpperCase()
+  if (!text) return ''
+  const match = text.match(/[RVB]J\s*(\d{4,})/i)
+  return match ? `RJ${match[1]}` : text
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes || 0)
+  if (!size) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let current = size
+  let index = 0
+  while (current >= 1024 && index < units.length - 1) {
+    current /= 1024
+    index += 1
+  }
+  return `${current.toFixed(index === 0 ? 0 : 2)} ${units[index]}`
+}
+
 function formatDate(dateString) {
   if (!dateString) return '-'
-  // 处理不同的日期格式
-  let date
-  if (typeof dateString === 'string') {
-    if (dateString.includes('T')) {
-      // 如果是ISO 8601格式，它是UTC时间，添加'Z'以正确解析为本地时间
-      date = new Date(dateString + 'Z')
-    } else {
-      date = new Date(dateString)
-    }
-  } else {
-    date = new Date(dateString)
-  }
+  const raw = String(dateString).trim()
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)
+  const normalized = hasExplicitTimezone ? raw : raw.replace(' ', 'T')
+  const date = new Date(normalized)
+  if (Number.isNaN(date.getTime())) return String(dateString)
   return date.toLocaleString('zh-CN', {
-    year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    second: '2-digit',
     hour12: false
   })
+}
+
+function getArchiveTaskMeta(archive) {
+  const domain = String(
+    archive?.task_domain || archive?.domain || archive?.task_kind || archive?.kind || 'import'
+  ).trim().toLowerCase()
+
+  const map = {
+    import: { key: 'import', label: '导入处理', icon: FileArchive },
+    rj_subtitle: { key: 'rj_subtitle', label: 'RJ 字幕', icon: Captions },
+    subtitle_import: { key: 'subtitle_import', label: '字幕补配', icon: Sparkles },
+    asmr_sync: { key: 'asmr_sync', label: 'ASMR 同步', icon: UploadCloud },
+    upload: { key: 'upload', label: '库存上传', icon: Upload },
+    circle_completion: { key: 'circle_completion', label: '社团补全', icon: Database },
+    system: { key: 'system', label: '系统任务', icon: Activity },
+  }
+
+  return map[domain] || map.import
+}
+
+function getArchiveStatusMeta(status) {
+  const normalized = String(status || '').trim().toLowerCase()
+  if (!normalized) return { key: 'unknown', label: '状态未知' }
+  if (['completed', 'success', 'finished'].includes(normalized)) return { key: 'completed', label: '已完成' }
+  if (['failed', 'error'].includes(normalized)) return { key: 'failed', label: '失败' }
+  if (['processing', 'running'].includes(normalized)) return { key: 'processing', label: '处理中' }
+  if (['pending', 'waiting', 'queued'].includes(normalized)) return { key: 'pending', label: '待处理' }
+  return { key: 'unknown', label: normalized }
+}
+
+function archiveStatusIcon(statusKey) {
+  const icons = {
+    completed: Sparkles,
+    failed: XCircle,
+    processing: Activity,
+    pending: PauseCircle,
+    unknown: Activity,
+  }
+  return icons[statusKey] || Activity
 }
 </script>
 
 <style scoped>
-.dashboard {
-  --apple-blue: #0071e3;
-  --apple-link-blue: #0066cc;
-  --apple-bg: #f5f5f7;
-  --apple-surface: #ffffff;
-  --apple-text: #1d1d1f;
-  --apple-muted: rgba(29, 29, 31, 0.68);
-  --apple-subtle: rgba(29, 29, 31, 0.4);
-  --apple-line: rgba(29, 29, 31, 0.08);
-  --apple-shadow: 0 18px 44px rgba(0, 0, 0, 0.08);
-  max-width: 1440px;
+.dashboard-shell {
+  max-width: 1500px;
   margin: 0 auto;
-  padding: 8px 8px 28px;
-  color: var(--apple-text);
+  padding: 0 16px 32px;
+  color: #1a1a1a;
+  background: #fff;
 }
 
-.overview-top {
-  display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
-  gap: 20px;
-  margin-bottom: 24px;
+.workspace-bar,
+.workspace-title,
+.workspace-metrics,
+.workspace-actions,
+.command-strip,
+.command-group,
+.section-head,
+.archive-tools,
+.task-row-top,
+.archive-row-top,
+.task-meta-line,
+.archive-meta,
+.status-row {
+  display: flex;
+  align-items: center;
 }
 
-.stats-grid {
-  display: block;
-}
-
-.stats-panel {
+/* === Page Header (Notion-style, compact) === */
+.workspace-bar {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 2px 10px;
   border: none;
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: var(--apple-shadow);
-  backdrop-filter: blur(18px);
-}
-
-.stats-panel :deep(.el-card__body) {
-  padding: 18px 20px 20px;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.stats-panel-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.stats-panel-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--apple-text);
-}
-
-.stats-panel-subtitle {
-  font-size: 12px;
-  color: var(--apple-muted);
-}
-
-.stats-strip {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.stats-summary {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.summary-card {
-  display: flex;
-  flex-direction: column;
-  min-height: 92px;
-  padding: 14px 16px;
-  border-radius: 18px;
-  background: linear-gradient(180deg, #fcfcfd 0%, #f4f4f7 100%);
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
-}
-
-.summary-label {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: rgba(29, 29, 31, 0.46);
-}
-
-.summary-value {
-  margin-top: 8px;
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: var(--apple-text);
-}
-
-.summary-meta {
-  margin-top: 8px;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--apple-muted);
-}
-
-.stats-summary-actions {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-top: auto;
-  padding-top: 14px;
-}
-
-.stat-chip {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  min-height: 82px;
-  padding: 14px 16px;
-  border: 0;
-  border-radius: 18px;
-  background: #f7f7fa;
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
-  text-align: left;
-}
-
-.stat-chip-clickable {
-  cursor: pointer;
-  transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
-}
-
-.stat-chip-clickable:hover {
-  transform: translateY(-1px);
-  background: #f0f6ff;
-  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.08);
-}
-
-.stat-chip-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.stat-chip-label {
-  font-size: 13px;
-  color: var(--apple-muted);
-}
-
-.stat-chip-value {
-  font-size: 28px;
-  font-weight: 600;
-  line-height: 1;
-  color: var(--apple-text);
-}
-
-.stat-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--apple-text);
-  flex-shrink: 0;
-  background: #f2f2f4;
-}
-
-.stat-icon-import {
-  background: #f2f6ff;
-  color: var(--apple-link-blue);
-}
-
-.stat-icon-rj-subtitle {
-  background: #eef7ff;
-  color: #0c76c5;
-}
-
-.stat-icon-subtitle-import {
-  background: #f4f0ff;
-  color: #6952d6;
-}
-
-.stat-icon-asmr-sync {
-  background: #fff3ec;
-  color: #c7651a;
-}
-
-.upload-card {
-  margin-bottom: 24px;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  min-height: 28px;
-}
-
-.card-header > span {
-  font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.18px;
-  color: var(--apple-text);
-}
-
-.task-id {
-  font-family: monospace;
-  color: var(--apple-muted);
-}
-
-.progress-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-
-.progress-cell :deep(.el-progress) {
-  flex: 1;
+  border-bottom: 1px solid #EBEBEA;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  min-height: auto;
   margin-bottom: 0;
-  max-width: 100px;
 }
 
-.progress-label {
-  font-size: 13px;
-  color: var(--apple-muted);
-  white-space: nowrap;
-  min-width: 40px;
+.workspace-title {
+  gap: 11px;
+  min-width: 200px;
 }
 
-.source-file-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  overflow: hidden;
-}
-
-.recovered-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  width: 100%;
-  margin-top: 8px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(34, 197, 94, 0.16), rgba(134, 239, 172, 0.22));
-  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.18);
-  color: #166534;
-}
-
-.recovered-banner-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.76);
-  color: #16a34a;
+.workspace-title-icon {
+  color: #4F7FEF;
   flex-shrink: 0;
 }
 
-.recovered-banner-content {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.recovered-banner-title {
-  font-size: 12px;
+.dash-title {
+  margin: 0;
+  font-size: 22px;
   font-weight: 700;
   line-height: 1.2;
+  letter-spacing: -0.3px;
+  color: #1a1a1a;
 }
 
-.recovered-banner-text {
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.5;
-  white-space: normal;
+.dash-subtitle {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: #9B9A97;
 }
 
-.filename {
-  color: var(--apple-text);
-  font-size: 14px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.section-subtitle,
+.task-subtitle,
+.task-meta-line,
+.archive-meta {
+  color: #787774;
 }
 
-.task-subline {
-  max-width: 100%;
-  font-size: 12px;
-  color: var(--apple-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-summary-cell {
-  display: flex;
-  flex-wrap: wrap;
+.workspace-actions {
   gap: 8px;
 }
 
-.task-summary-pill {
-  display: inline-flex;
-  max-width: 100%;
-  padding: 5px 10px;
-  border-radius: 999px;
-  background: #f4f4f7;
-  color: rgba(29, 29, 31, 0.72);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.task-summary-empty {
-  font-size: 13px;
-  color: var(--apple-subtle);
-}
-
-.task-action-group {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  width: 100%;
-  max-width: 160px;
-  margin: 0 auto;
-}
-
-.task-action-btn {
-  min-width: 76px;
-  height: 28px;
-  margin: 0;
-  padding: 0 10px;
+/* === Metrics Strip (borderless) === */
+.workspace-metrics-panel {
+  margin: 6px 0;
+  padding: 6px 0;
   border: none;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 28px;
+  background: transparent;
+  border-radius: 0;
+}
+
+.workspace-metrics {
+  min-width: 0;
+  gap: 6px;
+  overflow: auto;
+  padding: 2px 0;
+}
+
+/* === Shared interactive base === */
+.metric-pill,
+.dash-btn,
+.command-btn,
+.mini-link,
+.mini-icon-btn,
+.icon-action {
+  border: 1px solid #EBEBEA;
+  background: #fff;
+  color: #37352f;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.metric-pill:hover,
+.dash-btn:hover:not(:disabled),
+.command-btn:hover:not(:disabled),
+.mini-link:hover,
+.mini-icon-btn:hover:not(:disabled),
+.icon-action:hover:not(:disabled) {
+  background: #F7F7F6;
+  border-color: #D4D4D2;
+  transform: none;
   box-shadow: none;
 }
 
-.task-action-btn:deep(span) {
+.metric-pill:active,
+.dash-btn:active:not(:disabled),
+.command-btn:active:not(:disabled),
+.mini-link:active,
+.mini-icon-btn:active:not(:disabled),
+.icon-action:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.dash-btn:disabled,
+.command-btn:disabled,
+.mini-icon-btn:disabled,
+.icon-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* === KPI Metric Pills === */
+.metric-pill {
   display: inline-flex;
-  justify-content: center;
   align-items: center;
-  width: 100%;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: #FAFAF9;
+  font-size: 12px;
+  font-weight: 500;
+  color: #787774;
 }
 
-.task-action-btn.is-pause,
-.task-action-btn.is-resume,
-.task-action-btn.is-retry,
-.task-action-btn.is-open_subtitle_import,
-.task-action-btn.is-retry_waiting {
-  background: #5aa7ff;
+.metric-pill b {
+  min-width: 16px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+  color: #1a1a1a;
+}
+
+.metric-icon {
+  color: var(--metric-icon-color, #9B9A97);
+  flex-shrink: 0;
+}
+
+.metric-pill.is-import { --metric-icon-color: #F59E0B; }
+.metric-pill.is-rj     { --metric-icon-color: #06B6D4; }
+.metric-pill.is-subtitle { --metric-icon-color: #8B5CF6; }
+.metric-pill.is-asmr   { --metric-icon-color: #10B981; }
+.metric-pill.is-conflicts { --metric-icon-color: #F43F5E; }
+
+/* === Watcher Pill === */
+.watcher-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid #EBEBEA;
+  background: #FAFAF9;
+  color: #9B9A97;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.watcher-pill.is-running {
+  background: #F0FDF4;
+  color: #16A34A;
+  border-color: #BBF7D0;
+}
+
+.watcher-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* === Header Buttons === */
+.dash-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dash-btn-ghost {
+  width: 32px;
+  padding: 0;
+  color: #787774;
+}
+
+.dash-btn-primary {
+  border-color: #EBEBEA;
+  background: #FAFAF9;
+}
+
+.scan-entry-btn {
+  border-color: #2563EB;
+  background: #2563EB;
   color: #fff;
+  font-weight: 600;
+  height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+  box-shadow: 0 1px 4px rgba(37,99,235,0.25);
 }
 
-.task-action-btn.is-cancel,
-.task-action-btn.is-delete_waiting_retry {
-  background: #ff7875;
-  color: #fff;
+.scan-entry-btn:hover:not(:disabled) {
+  background: #1D4ED8 !important;
+  border-color: #1D4ED8 !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 10px rgba(37,99,235,0.22) !important;
 }
 
-.task-action-btn:hover,
-.task-action-btn:focus {
-  opacity: 0.92;
+/* === Command Strip (borderless, just a divider row) === */
+.command-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 480px);
+  gap: 12px;
+  margin: 8px 0 14px;
+  padding: 10px 0;
+  border: none;
+  border-bottom: 1px solid #EBEBEA;
+  border-radius: 0;
+  background: transparent;
+}
+
+.command-group {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.command-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 11px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.command-icon {
+  color: var(--command-icon-color, #9B9A97);
+  flex-shrink: 0;
+}
+
+.command-btn.is-blue     { --command-icon-color: #2563EB; }
+.command-btn.is-emerald  { --command-icon-color: #10B981; }
+.command-btn.is-rose     { --command-icon-color: #F43F5E; }
+.command-btn.is-violet   { --command-icon-color: #8B5CF6; }
+
+.command-btn.is-scan-entry {
+  border-color: #BFDBFE;
+  background: #EFF6FF;
+  color: #1D4ED8;
+  font-weight: 600;
+  height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.command-btn.is-scan-entry { --command-icon-color: #2563EB; }
+
+.command-btn.is-scan-entry:hover:not(:disabled) {
+  background: #DBEAFE;
+  border-color: #93C5FD;
   transform: none;
 }
 
-.task-id {
-  font-family: monospace;
-  color: var(--apple-muted);
+.upload-inline {
+  min-width: 0;
+}
+
+.upload-inline :deep(.upload-card) {
+  min-height: 100%;
+}
+
+/* === Main Grid === */
+.workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 16px;
+  align-items: start;
+}
+
+.main-pane,
+.side-section {
+  border: 1px solid #EBEBEA;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.main-pane {
+  min-height: 500px;
+  padding: 18px 16px;
+}
+
+.side-pane {
+  display: grid;
+  gap: 12px;
+}
+
+.side-section {
+  padding: 16px;
+}
+
+/* === Section Headers === */
+.section-head {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.section-head.compact {
+  margin-bottom: 10px;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  color: #1a1a1a;
+}
+
+.section-subtitle {
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+.mini-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #787774;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.mini-link:hover {
+  color: #37352f;
+  background: #F7F7F6 !important;
+  border-color: #EBEBEA !important;
+}
+
+.mini-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: #787774;
+}
+
+/* === Task & Archive & Status Lists === */
+.task-list,
+.archive-list,
+.status-list {
+  display: grid;
+}
+
+.task-list {
+  gap: 8px;
+}
+
+/* Task Row — clean flat card */
+.task-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 10px;
+  border: 1px solid #EBEBEA;
+  border-radius: 10px;
+  background: #fff;
+  transition: background 0.12s ease;
+}
+
+.task-row:hover {
+  background: #FAFAF9;
+}
+
+.task-main {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Domain icon backgrounds */
+.task-icon,
+.archive-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #F7F7F6;
+  color: #9B9A97;
+  flex-shrink: 0;
+}
+
+.task-row.is-import          .task-icon { background: #FFFBEB; color: #F59E0B; }
+.task-row.is-rj_subtitle     .task-icon { background: #ECFEFF; color: #06B6D4; }
+.task-row.is-subtitle_import .task-icon { background: #F5F3FF; color: #8B5CF6; }
+.task-row.is-asmr_sync       .task-icon { background: #F0FDF4; color: #10B981; }
+.task-row.is-upload          .task-icon { background: #EFF6FF; color: #2563EB; }
+.task-row.is-circle_completion .task-icon { background: #FFF7ED; color: #F97316; }
+
+.task-row-top,
+.archive-row-top {
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-title,
+.archive-title {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #1a1a1a;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.action-card,
-.tasks-card,
-.archives-card {
-  margin-bottom: 24px;
-  border: none;
-  border-radius: 28px;
-  background: var(--apple-surface);
-  box-shadow: var(--apple-shadow);
+.task-subtitle {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-.compact-top-card {
-  height: 100%;
-}
-
-.action-card :deep(.el-card__header),
-.tasks-card :deep(.el-card__header),
-.archives-card :deep(.el-card__header) {
-  padding: 24px 28px 0;
-  border-bottom: none;
-}
-
-.action-card :deep(.el-card__body),
-.tasks-card :deep(.el-card__body),
-.archives-card :deep(.el-card__body) {
-  padding: 20px 28px 28px;
-}
-
-.action-buttons {
-  display: flex;
-  gap: 12px;
+.task-meta-line,
+.archive-meta {
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  gap: 5px 8px;
+  margin-top: 4px;
+  font-size: 11px;
 }
 
-.action-button {
-  min-width: 132px;
-  height: 40px;
-  padding: 0 16px;
-  border: 1px solid var(--apple-line);
-  border-radius: 999px;
-  background: #fafafc;
-  color: var(--apple-text);
-  font-size: 14px;
-  box-shadow: none;
-}
-
-.action-button:hover,
-.action-button:focus {
-  color: var(--apple-text);
-  border-color: rgba(29, 29, 31, 0.12);
-  background: #f1f1f3;
-}
-
-.action-button-primary {
-  border-color: transparent;
-  background: var(--apple-blue);
-  color: #fff;
-}
-
-.action-button-primary:hover,
-.action-button-primary:focus {
-  color: #fff;
-  background: #0077ed;
-}
-
-.action-buttons .el-icon {
-  margin-right: 8px;
-}
-
-.archives-card {
-  margin-top: 24px;
-}
-
-.archives-card .card-header {
+/* Archive tags */
+.archive-badges {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 5px;
 }
 
-.archives-header-actions {
+.archive-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 19px;
+  padding: 0 7px;
+  border-radius: 4px;
+  border: 1px solid #EBEBEA;
+  background: #FAFAF9;
+  color: #787774;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.archive-type-tag.is-import          { border-color: #FDE68A; color: #92400E; background: #FFFDE7; }
+.archive-type-tag.is-rj_subtitle     { border-color: #BAE6FD; color: #0E7490; background: #F0FDFE; }
+.archive-type-tag.is-subtitle_import { border-color: #DDD6FE; color: #6D28D9; background: #F9F7FF; }
+.archive-type-tag.is-asmr_sync       { border-color: #BBF7D0; color: #166534; background: #F0FDF4; }
+.archive-type-tag.is-upload          { border-color: #BFDBFE; color: #1D4ED8; background: #EFF6FF; }
+.archive-type-tag.is-circle_completion{ border-color: #FED7AA; color: #C2410C; background: #FFF7ED; }
+.archive-type-tag.is-system          { border-color: #EBEBEA; color: #787774; background: #FAFAF9; }
+
+.archive-status-tag.is-completed  { border-color: #BBF7D0; color: #166534; background: #F0FDF4; }
+.archive-status-tag.is-failed     { border-color: #FECACA; color: #B91C1C; background: #FFF5F5; }
+.archive-status-tag.is-processing { border-color: #BFDBFE; color: #1D4ED8; background: #EFF6FF; }
+.archive-status-tag.is-pending,
+.archive-status-tag.is-unknown    { border-color: #EBEBEA; color: #787774; background: #FAFAF9; }
+
+/* Task chips */
+.task-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 4px;
+  border: 1px solid #EBEBEA;
+  background: #FAFAF9;
+  color: #787774;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.task-chip svg { color: #9B9A97; }
+
+.task-chip.is-rj     { border-color: #FDE68A; color: #92400E; background: #FFFDE7; }
+.task-chip.is-rj svg { color: #F59E0B; }
+
+.task-chip.is-step     { border-color: #BFDBFE; color: #1D4ED8; background: #EFF6FF; }
+.task-chip.is-step svg { color: #2563EB; }
+
+/* Progress bar */
+.task-progress {
   display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: #9B9A97;
+  font-size: 11px;
+}
+
+.task-progress :deep(.el-progress) { flex: 1; }
+
+.task-progress :deep(.el-progress-bar__outer) {
+  height: 4px !important;
+  border-radius: 999px;
+  background: #F3F3F2;
+}
+
+.task-progress :deep(.el-progress-bar__inner) {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3B82F6 0%, #06B6D4 100%);
+}
+
+/* Status pills */
+.status-pill,
+.archive-rj {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-pill.is-processing                       { background: #FFF7ED; color: #C2410C; border-color: #FED7AA; }
+.status-pill.is-waiting_manual,
+.status-pill.is-waiting_retry                    { background: #FEFCE8; color: #A16207; border-color: #FDE68A; }
+.status-pill.is-completed                        { background: #F0FDF4; color: #16A34A; border-color: #BBF7D0; }
+.status-pill.is-failed,
+.status-pill.is-cancelled                        { background: #FFF5F5; color: #B91C1C; border-color: #FECACA; }
+.status-pill.is-pending,
+.status-pill.is-paused,
+.status-pill.is-default                          { background: #FAFAF9; color: #787774; border-color: #EBEBEA; }
+
+/* Task action buttons */
+.task-actions {
+  display: flex;
+  gap: 4px;
+  align-self: flex-start;
+}
+
+.icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+
+.icon-action.is-cancel,
+.icon-action.is-delete_waiting_retry {
+  color: #F43F5E;
+  background: #FFF5F5;
+  border-color: #FECACA;
+}
+
+.icon-action.is-retry,
+.icon-action.is-retry_waiting,
+.icon-action.is-resume,
+.icon-action.is-open_subtitle_import {
+  color: #2563EB;
+  background: #EFF6FF;
+  border-color: #BFDBFE;
+}
+
+.icon-action.is-pause {
+  color: #F59E0B;
+  background: #FFFBEB;
+  border-color: #FDE68A;
+}
+
+/* === Status Section === */
+.status-list {
+  gap: 6px;
+}
+
+.status-row {
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid #EBEBEA;
+  border-radius: 8px;
+  color: #37352f;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.status-row-main {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
 }
 
-.archives-card .el-button-group {
-  margin-left: 8px;
+.status-icon {
+  color: #9B9A97;
+  flex-shrink: 0;
 }
 
-.text-gray {
-  color: var(--apple-subtle);
+.status-row b {
+  font-size: 17px;
+  font-weight: 700;
+  color: #1a1a1a;
+  font-variant-numeric: tabular-nums;
 }
 
-.volume-tag {
-  margin-left: 8px;
-}
+.status-row.is-processing .status-icon { color: #F59E0B; }
+.status-row.is-waiting    .status-icon { color: #8B5CF6; }
+.status-row.is-retry      .status-icon { color: #F97316; }
+.status-row.is-failed     .status-icon { color: #F43F5E; }
 
-.volume-list {
-  padding: 16px 20px;
-  background-color: var(--apple-bg);
-  border-radius: 18px;
-  margin: 8px 0;
-}
-
-.volume-list-title {
-  font-weight: 600;
-  color: var(--apple-text);
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-
-.time-text {
-  font-size: 12px;
-  color: var(--apple-muted);
-  font-family: 'Consolas', 'Monaco', monospace;
-}
-
-.volume-item {
+/* === Archive Domain Tabs === */
+.archive-domain-tabs {
   display: flex;
-  justify-content: space-between;
-  padding: 6px 12px;
-  margin: 4px 0;
-  background-color: white;
-  border-radius: 12px;
-  font-size: 13px;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
 }
 
-.volume-name {
-  color: var(--apple-text);
-  font-family: 'Consolas', 'Monaco', monospace;
+.archive-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid #EBEBEA;
+  background: #fff;
+  color: #787774;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s ease;
 }
 
-.volume-size {
-  color: var(--apple-muted);
+.archive-tab-btn:hover {
+  background: #F7F7F6;
+  color: #37352f;
+}
+
+.archive-tab-btn.is-active {
+  background: #1a1a1a;
+  border-color: #1a1a1a;
+  color: #fff;
+}
+
+.archive-tab-btn.is-active .archive-tab-icon { color: #fff !important; }
+
+.archive-tab-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #F3F3F2;
+  color: #6A6967;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.archive-tab-btn.is-active .archive-tab-count {
+  background: rgba(255, 255, 255, 0.24);
+  color: #fff;
+}
+
+.archive-tab-icon.is-import          { color: #F59E0B; }
+.archive-tab-icon.is-subtitle_import { color: #8B5CF6; }
+.archive-tab-icon.is-rj_subtitle     { color: #06B6D4; }
+.archive-tab-icon.is-asmr_sync       { color: #10B981; }
+.archive-tab-icon.is-upload          { color: #2563EB; }
+.archive-tab-icon.is-circle_completion { color: #F97316; }
+.archive-tab-icon.is-system          { color: #6B7280; }
+.archive-tab-icon.is-all             { color: #9B9A97; }
+
+/* === Archive Section === */
+.archive-tools {
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.archive-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #EBEBEA;
+  border-radius: 7px;
+  background: #FAFAF9;
+  color: #9B9A97;
+  transition: border-color 0.15s ease;
+}
+
+.archive-search:focus-within {
+  border-color: #93C5FD;
+  background: #fff;
+}
+
+.archive-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: none;
+  font-size: 12px;
+  color: #1a1a1a;
+  background: transparent;
+}
+
+.archive-list {
+  gap: 0;
+}
+
+.archive-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 2px;
+  border-top: 1px solid #F3F3F2;
+}
+
+.archive-row:first-child {
+  border-top: 0;
+}
+
+.archive-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: #FFFFFF;
+  color: #9B9A97;
+  border: 1px solid #EBEBEA;
+}
+
+.archive-icon.is-import { color: #F59E0B; }
+.archive-icon.is-rj_subtitle { color: #06B6D4; }
+.archive-icon.is-subtitle_import { color: #8B5CF6; }
+.archive-icon.is-asmr_sync { color: #10B981; }
+.archive-icon.is-upload { color: #2563EB; }
+.archive-icon.is-circle_completion { color: #F97316; }
+.archive-icon.is-system { color: #6B7280; }
+
+.archive-rj {
+  display: inline-flex;
+  align-items: center;
+  height: 19px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: #F3F3F2;
+  color: #787774;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  white-space: nowrap;
+}
+
+.archive-footer {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.archive-pagination :deep(.el-pagination.is-background .btn-prev),
+.archive-pagination :deep(.el-pagination.is-background .btn-next),
+.archive-pagination :deep(.el-pagination.is-background .el-pager li) {
+  min-width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid #EBEBEA;
+  background: #fff;
   font-size: 12px;
 }
 
-:deep(.el-table__expand-icon) {
-  color: var(--apple-link-blue);
-}
-
-:deep(.el-divider) {
-  margin: 0 0 18px;
-  border-color: var(--apple-line);
-}
-
-:deep(.el-table) {
-  --el-table-border-color: transparent;
-  --el-table-header-bg-color: #fbfbfd;
-  --el-table-row-hover-bg-color: #f7f7f9;
-  --el-table-text-color: var(--apple-text);
-  --el-table-header-text-color: rgba(29, 29, 31, 0.76);
-  border-radius: 20px;
-  overflow: hidden;
-}
-
-:deep(.el-table th.el-table__cell) {
-  font-weight: 600;
-}
-
-:deep(.el-table td.el-table__cell),
-:deep(.el-table th.el-table__cell) {
-  padding-top: 15px;
-  padding-bottom: 15px;
+.archive-pagination :deep(.el-pagination.is-background .el-pager li.is-active) {
+  border-color: #2563EB;
+  background: #2563EB;
 }
 
 :deep(.el-progress-bar__outer) {
-  background: #e9e9ed;
+  background: #F3F3F2;
 }
 
 :deep(.el-progress-bar__inner) {
-  background: linear-gradient(90deg, #0071e3 0%, #2a8cff 100%);
+  background: linear-gradient(90deg, #2563EB 0%, #06B6D4 100%);
 }
 
-:deep(.el-button.is-link) {
-  color: var(--apple-link-blue);
-  font-weight: 500;
-}
+@media (max-width: 1280px) {
+  .workspace-bar {
+    flex-wrap: wrap;
+  }
 
-:deep(.el-button.is-link:hover) {
-  color: var(--apple-blue);
-}
+  .command-strip {
+    grid-template-columns: 1fr;
+  }
 
-:deep(.el-input__wrapper),
-:deep(.el-select__wrapper) {
-  border-radius: 14px;
-  box-shadow: 0 0 0 1px rgba(29, 29, 31, 0.08) inset;
-}
+  .workspace-title,
+  .workspace-actions {
+    flex: 0 0 auto;
+  }
 
-:deep(.el-tag) {
-  border-radius: 999px;
-  font-weight: 500;
-}
-
-:deep(.dashboard-status-tag.el-tag) {
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 22px;
-  letter-spacing: 0.01em;
-}
-
-:deep(.dashboard-status-tag.is-completed.el-tag) {
-  color: #2f7d32;
-  background: linear-gradient(180deg, #eef9ef 0%, #e4f6e6 100%);
-  border-color: #c8ebcf;
-}
-
-:deep(.dashboard-status-tag.is-processing.el-tag) {
-  color: #b86a00;
-  background: linear-gradient(180deg, #fff6e8 0%, #ffedd2 100%);
-  border-color: #ffd7a0;
-}
-
-:deep(.dashboard-status-tag.is-pending.el-tag),
-:deep(.dashboard-status-tag.is-paused.el-tag) {
-  color: #51606f;
-  background: linear-gradient(180deg, #f4f6f8 0%, #eceff3 100%);
-  border-color: #dde3ea;
-}
-
-:deep(.dashboard-status-tag.is-waiting_manual.el-tag),
-:deep(.dashboard-status-tag.is-waiting_retry.el-tag) {
-  color: #8f5a17;
-  background: linear-gradient(180deg, #fff5df 0%, #ffe8bf 100%);
-  border-color: #f3d39a;
-}
-
-:deep(.dashboard-status-tag.is-failed.el-tag),
-:deep(.dashboard-status-tag.is-cancelled.el-tag) {
-  color: #a63f3f;
-  background: linear-gradient(180deg, #fff0f0 0%, #ffe3e3 100%);
-  border-color: #f3c4c4;
-}
-
-@media (max-width: 1200px) {
-  .overview-top {
+  .workspace-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 768px) {
-  .dashboard {
-    padding: 0 0 20px;
+  .dashboard-shell {
+    padding: 0 12px 22px;
   }
 
-  .stats-grid {
-    width: 100%;
-  }
-
-  .stats-strip {
-    grid-template-columns: 1fr;
-  }
-
-  .stats-summary {
-    grid-template-columns: 1fr;
-  }
-
-  .card-header,
-  .archives-card .card-header {
+  .workspace-bar {
+    align-items: stretch;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
   }
 
-  .archives-header-actions {
+  .workspace-title,
+  .workspace-actions,
+  .command-btn,
+  .command-group,
+  .upload-inline {
     width: 100%;
+  }
+
+  .command-group {
+    justify-content: space-between;
+  }
+
+  .workspace-actions {
+    justify-content: space-between;
+  }
+
+  .workspace-metrics {
+    order: initial;
     flex-wrap: wrap;
+    overflow: visible;
   }
 
-  .action-buttons {
-    gap: 12px;
+  .task-row {
+    grid-template-columns: 30px minmax(0, 1fr);
   }
 
-  .action-button {
-    width: 100%;
+  .task-actions {
+    grid-column: 1 / -1;
+    margin-top: 4px;
   }
 }
 </style>

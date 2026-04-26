@@ -217,6 +217,7 @@
                     <Folder v-else-if="row.category === 'process_existing'" :size="12" :stroke-width="2.5" />
                     <Scissors v-else-if="row.category === 'pipeline_delete'" :size="12" :stroke-width="2.5" />
                     <RefreshCw v-else-if="row.category === 'asmr_sync'" :size="12" :stroke-width="2.5" />
+                    <Upload v-else-if="row.category === 'upload'" :size="12" :stroke-width="2.5" />
                     <Users v-else-if="row.category === 'circle_completion'" :size="12" :stroke-width="2.5" />
                     <Tag v-else :size="12" :stroke-width="2.5" />
                     {{ row.category_label }}
@@ -311,7 +312,7 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="source_path" label="源路径" min-width="180" show-overflow-tooltip>
+        <el-table-column prop="source_path" label="对象 / 路径" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="mono truncate">{{ compactPath(row.source_path) }}</span>
           </template>
@@ -371,6 +372,7 @@
                   <Folder v-else-if="selectedRow.category === 'process_existing'" :size="14" :stroke-width="2.5" />
                   <Scissors v-else-if="selectedRow.category === 'pipeline_delete'" :size="14" :stroke-width="2.5" />
                   <RefreshCw v-else-if="selectedRow.category === 'asmr_sync'" :size="14" :stroke-width="2.5" />
+                  <Upload v-else-if="selectedRow.category === 'upload'" :size="14" :stroke-width="2.5" />
                   <Users v-else-if="selectedRow.category === 'circle_completion'" :size="14" :stroke-width="2.5" />
                   <Tag v-else :size="14" :stroke-width="2.5" />
                   {{ selectedRow.category_label }}
@@ -837,6 +839,20 @@
             </div>
           </div>
 
+          <div v-if="uploadMetricCards(selectedRow).length" class="expand-item span-2">
+            <div class="ek">上传概览</div>
+            <div class="metric-grid">
+              <div
+                v-for="item in uploadMetricCards(selectedRow)"
+                :key="item.k"
+                class="metric-card"
+              >
+                <div class="metric-k">{{ item.k }}</div>
+                <div class="metric-v">{{ item.v }}</div>
+              </div>
+            </div>
+          </div>
+
           <div v-if="activityEntrySections(selectedRow).length" class="expand-item span-2">
             <div class="ek">{{ activityEntrySectionTitle(selectedRow) }}</div>
             <div class="entry-section-list">
@@ -950,6 +966,7 @@ import {
   Search,
   SlidersHorizontal,
   Tag,
+  Upload,
   Users,
   XCircle
 } from 'lucide-vue-next'
@@ -990,6 +1007,7 @@ const categoryConfigs = {
   process_existing: { icon: Folder, color: 'text-slate-600', bg: 'bg-slate-50/80', border: 'border-slate-100/50' },
   pipeline_delete: { icon: Scissors, color: 'text-rose-600', bg: 'bg-rose-50/80', border: 'border-rose-100/50' },
   asmr_sync: { icon: RefreshCw, color: 'text-indigo-600', bg: 'bg-indigo-50/80', border: 'border-indigo-100/50' },
+  upload: { icon: Upload, color: 'text-sky-600', bg: 'bg-sky-50/80', border: 'border-sky-100/60' },
   circle_completion: { icon: Users, color: 'text-blue-600', bg: 'bg-blue-50/80', border: 'border-blue-100/50' },
   default: { icon: Tag, color: 'text-slate-600', bg: 'bg-slate-50/80', border: 'border-slate-100/50' }
 }
@@ -1042,6 +1060,7 @@ const categoryOptions = [
   { value: 'pipeline_rename', label: '重命名' },
   { value: 'pipeline_delete', label: '删除' },
   { value: 'asmr_sync', label: 'ASMR 同步' },
+  { value: 'upload', label: '库存上传' },
   { value: 'circle_completion', label: '社团补全' }
 ]
 
@@ -1436,6 +1455,13 @@ function humanAction(row) {
   }
   if (category === 'process_existing') {
     return status === 'success' ? '已有目录处理完成' : '已有目录处理失败'
+  }
+  if (category === 'upload') {
+    if (status === 'success') return '库存上传完成'
+    if (status === 'failed') return '库存上传失败'
+    if (status === 'cancelled') return '库存上传已取消'
+    if (status === 'incomplete') return '库存上传未正常结束'
+    return '库存上传'
   }
   if (category === 'pipeline_filter') {
     return '作品筛选处理'
@@ -2720,8 +2746,10 @@ function detailHighlights(row) {
     target_path: '上传目标',
     target_library_id: '目标库存',
     target_subdir: '库存前缀目录',
+    source_base_path: '来源根目录',
     upload_mode: '上传模式',
     uploaded_count: '上传文件数',
+    selected_dir_count: '上传目录数',
     circle_name: '社团名',
     resource_name: '文件名',
     resource_path: '相对路径',
@@ -2798,6 +2826,12 @@ function detailHighlights(row) {
     , 'batch_duration_ms'
     , 'uploaded_bytes'
     , 'average_upload_speed_bytes'
+    , 'uploaded_count'
+    , 'selected_dir_count'
+    , 'target_path'
+    , 'target_library_id'
+    , 'target_subdir'
+    , 'source_base_path'
   ]
   const out = []
   for (const k of pickKeys) {
@@ -2856,6 +2890,23 @@ function filterDeleteMetricCards(row) {
   if (d.recovered_selected_size !== undefined) items.push({ k: '补回大小', v: formatBytes(d.recovered_selected_size) })
   if (d.scanned_entries !== undefined) items.push({ k: '扫描数', v: String(d.scanned_entries) })
   if (d.rule_count !== undefined) items.push({ k: '规则数', v: String(d.rule_count) })
+  return items.slice(0, 8)
+}
+
+function uploadMetricCards(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (String(row?.category || '').trim() !== 'upload') return []
+  const items = []
+  if (d.uploaded_count !== undefined) items.push({ k: '上传文件', v: String(d.uploaded_count) })
+  if (d.selected_dir_count !== undefined) items.push({ k: '上传目录', v: String(d.selected_dir_count) })
+  if (d.uploaded_bytes !== undefined) items.push({ k: '上传大小', v: formatBytes(d.uploaded_bytes) })
+  if (d.average_upload_speed_bytes !== undefined && Number(d.average_upload_speed_bytes || 0) > 0) {
+    items.push({ k: '平均速度', v: `${formatBytes(d.average_upload_speed_bytes)}/s` })
+  }
+  if (d.duration_ms !== undefined) items.push({ k: '耗时', v: formatDurationMs(d.duration_ms) })
+  if (d.target_path) items.push({ k: '目标路径', v: String(d.target_path) })
+  if (d.target_library_id) items.push({ k: '目标库存', v: String(d.target_library_id) })
   return items.slice(0, 8)
 }
 
@@ -3065,7 +3116,7 @@ function importFilteredEntrySections(row) {
 function asmrSyncEntrySections(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
-  if (String(row?.category || '').trim() !== 'asmr_sync') return []
+  if (!['asmr_sync', 'upload'].includes(String(row?.category || '').trim())) return []
   const mergedFiles = buildMergedAsmrSyncFileItems(row)
   if (!mergedFiles.length) return []
   const totalBytes = sumAsmrSyncFileBytes(mergedFiles)
@@ -3075,7 +3126,7 @@ function asmrSyncEntrySections(row) {
   if (totalBytes > 0) titleParts.push(formatBytes(totalBytes))
   if (uploadedCount > 0) titleParts.push(`已上传 ${uploadedCount}`)
   return [{
-    key: 'asmr-file-tree',
+    key: String(row?.category || '').trim() === 'upload' ? 'upload-file-tree' : 'asmr-file-tree',
     title: `文件清单（${titleParts.join(' / ')}）`,
     description: resolveAsmrSyncSectionDescription(d),
     rows: buildFilterDeleteTreeRows(mergedFiles)
@@ -3191,7 +3242,7 @@ function activityEntrySections(row) {
 function activityEntrySectionTitle(row) {
   const d = row?.detail
   if (d && typeof d === 'object' && d.mode === 'subtitle_batch_start') return '批量详情'
-  if (String(row?.category || '').trim() === 'asmr_sync') return '文件树'
+  if (['asmr_sync', 'upload'].includes(String(row?.category || '').trim())) return '文件树'
   if (String(row?.category || '').trim() === 'pipeline_delete') return '文件树'
   if (['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return '处理清单'
   return '删除清单'
@@ -3295,7 +3346,11 @@ function buildMergedAsmrSyncFileItems(row) {
 
 function resolveAsmrSyncSectionDescription(detail) {
   const finalPath = String(detail?.final_output_path || detail?.target_path || '').trim()
-  return finalPath ? `最终上传目录：${finalPath}` : ''
+  const sourceRoot = String(detail?.source_base_path || '').trim()
+  if (sourceRoot && finalPath) return `来源根目录：${sourceRoot} → 上传目标：${finalPath}`
+  if (finalPath) return `上传目标：${finalPath}`
+  if (sourceRoot) return `来源根目录：${sourceRoot}`
+  return ''
 }
 
 function collectAsmrSyncFiles(row, mode) {

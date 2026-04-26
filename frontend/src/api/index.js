@@ -1006,6 +1006,8 @@ export const rjSubtitleApi = {
       folder_path: payload.folderPath || '',
       library_id: payload.libraryId || '',
       rjcode: payload.rjcode || ''
+    }, {
+      timeout: 10 * 60 * 1000
     })
     return response.data
   },
@@ -1168,6 +1170,11 @@ export const circleCompletionApi = {
 
   getRefreshSelectedJobStatus: async (jobId) => {
     const response = await apiClient.get(`/circle-completion/refresh-selected/jobs/${jobId}`)
+    return response.data
+  },
+
+  listAllCircleNames: async () => {
+    const response = await apiClient.get('/circle-completion/circles/names')
     return response.data
   },
 
