@@ -207,12 +207,9 @@ class DesktopApp:
         data_dir = os.path.join(base_dir, 'data')
         os.environ['DATA_PATH'] = data_dir
 
-        if getattr(sys, 'frozen', False):
-            config_dir = os.path.join(data_dir, 'config')
-            os.makedirs(config_dir, exist_ok=True)
-            config_path = os.path.join(config_dir, 'config.yaml')
-        else:
-            config_path = os.path.join(base_dir, 'config', 'config.yaml')
+        config_dir = os.path.join(data_dir, 'config')
+        os.makedirs(config_dir, exist_ok=True)
+        config_path = os.path.join(config_dir, 'config.yaml')
 
         os.environ['CONFIG_PATH'] = config_path
         log_path = os.path.join(data_dir, 'app.log')
@@ -239,13 +236,6 @@ class DesktopApp:
                 os.makedirs(os.path.dirname(config_path), exist_ok=True)
                 shutil.copy2(bundled_config, config_path)
                 logger.info(f"已从包内复制默认配置到: {config_path}")
-            else:
-                # 尝试另一个可能的路径
-                bundled_config = os.path.join(bundle_dir, 'config', 'config.yaml')
-                if os.path.exists(bundled_config):
-                    os.makedirs(os.path.dirname(config_path), exist_ok=True)
-                    shutil.copy2(bundled_config, config_path)
-                    logger.info(f"已从包内复制默认配置到: {config_path}")
 
         # 3. 启动后端线程
         self.backend_thread = threading.Thread(target=self.run_backend, daemon=True)

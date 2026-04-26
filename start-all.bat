@@ -79,6 +79,12 @@ popd
 echo Starting all services...
 echo.
 
+if not exist "data\config" mkdir "data\config"
+set "CONFIG_PATH=%~dp0data\config\config.yaml"
+if not exist "%CONFIG_PATH%" (
+    if exist "%~dp0backend\config\config.yaml" copy /Y "%~dp0backend\config\config.yaml" "%CONFIG_PATH%" >nul
+)
+
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5555" ^| findstr "LISTENING"') do (
     echo [INFO] Stop process on 5555: %%P
     taskkill /PID %%P /F >nul 2>&1
@@ -88,7 +94,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5556" ^| findstr "LISTENING
     taskkill /PID %%P /F >nul 2>&1
 )
 
-start "Prekikoeru Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && cd /d %~dp0backend && venv\Scripts\python.exe -m app.main"
+start "Prekikoeru Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && set ""CONFIG_PATH=%CONFIG_PATH%"" && set ""DATA_PATH=%~dp0data"" && cd /d %~dp0backend && venv\Scripts\python.exe -m app.main"
 
 timeout /t 3 /nobreak >nul
 

@@ -11,6 +11,13 @@ echo.
 echo Press Ctrl+C to stop
 echo.
 
+if not exist "..\data\config" mkdir "..\data\config"
+set "CONFIG_PATH=%~dp0..\data\config\config.yaml"
+set "DATA_PATH=%~dp0..\data"
+if not exist "%CONFIG_PATH%" (
+    if exist "%~dp0config\config.yaml" copy /Y "%~dp0config\config.yaml" "%CONFIG_PATH%" >nul
+)
+
 set "PYTHON_CMD="
 for %%V in (3.13 3.12 3.11 3.10) do (
     if not defined PYTHON_CMD (
