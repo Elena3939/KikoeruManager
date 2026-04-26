@@ -246,7 +246,7 @@ class ConflictResolutionService:
                 "folder_count": None,
             }
 
-    def describe_conflict(self, conflict) -> dict[str, Any]:
+    def describe_conflict(self, conflict, include_stats: bool = False) -> dict[str, Any]:
         metadata = dict(conflict.new_metadata or {})
         existing_context = self.infer_library_context(
             conflict.existing_path,
@@ -259,27 +259,31 @@ class ConflictResolutionService:
         return {
             "existing": {
                 **existing_context,
-                "stats": None if existing_context.get("is_remote") else self._describe_local_path_stats(existing_context.get("path")),
+                "stats": self._describe_local_path_stats(existing_context.get("path"))
+                if include_stats and not existing_context.get("is_remote")
+                else None,
             },
             "source": {
                 **source_context,
-                "stats": None if source_context.get("is_remote") else self._describe_local_path_stats(source_context.get("path")),
+                "stats": self._describe_local_path_stats(source_context.get("path"))
+                if include_stats and not source_context.get("is_remote")
+                else None,
             },
             "new_path_kind": "archive" if os.path.isfile(str(conflict.new_path or "")) else "folder",
             "metadata": metadata,
         }
 
-    async def describe_conflict_async(self, conflict) -> dict[str, Any]:
-        description = self.describe_conflict(conflict)
+    async def describe_conflict_async(self, conflict, include_stats: bool = False) -> dict[str, Any]:
+        description = self.describe_conflict(conflict, include_stats=include_stats)
         existing = description.get("existing") or {}
         source = description.get("source") or {}
 
-        if existing.get("is_remote"):
+        if include_stats and existing.get("is_remote"):
             existing["stats"] = await self._describe_remote_path_stats(
                 existing.get("library_id"),
                 existing.get("path"),
             )
-        if source.get("is_remote"):
+        if include_stats and source.get("is_remote"):
             source["stats"] = await self._describe_remote_path_stats(
                 source.get("library_id"),
                 source.get("path"),

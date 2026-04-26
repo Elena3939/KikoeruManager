@@ -302,6 +302,118 @@ class TaskEngine:
             }
         )
 
+    def persist_task_snapshot(self, task: Task) -> None:
+        """把需要跨重启保留的任务快照写入 tasks 表。"""
+        from ..models.database import SessionLocal, Task as TaskRecord
+
+        self._ensure_task_context(task)
+        db = SessionLocal()
+        try:
+            record = db.query(TaskRecord).filter(TaskRecord.id == task.id).first()
+            if not record:
+                record = TaskRecord(id=task.id)
+                db.add(record)
+
+            record.type = task.type.value if isinstance(task.type, TaskType) else str(task.type or "")
+            record.status = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
+            record.source_path = task.source_path
+            record.output_path = task.output_path
+            record.progress = int(task.progress or 0)
+            record.current_step = task.current_step
+            record.error_message = task.error_message
+            record.created_at = task.created_at
+            record.started_at = task.started_at
+            record.completed_at = task.completed_at
+            record.task_metadata = dict(task.task_metadata or {})
+            db.commit()
+        except Exception:
+            logger.warning("[任务持久化] 写入任务快照失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
+            db.rollback()
+        finally:
+            db.close()
+
+    def delete_task_snapshot(self, task_id: str) -> None:
+        """删除任务快照，避免用户清理后重启又恢复。"""
+        from ..models.database import SessionLocal, Task as TaskRecord
+
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            return
+        db = SessionLocal()
+        try:
+            db.query(TaskRecord).filter(TaskRecord.id == normalized_task_id).delete()
+            db.commit()
+        except Exception:
+            logger.warning("[任务持久化] 删除任务快照失败: task_id=%s", normalized_task_id, exc_info=True)
+            db.rollback()
+        finally:
+            db.close()
+
+    def _coerce_task_type(self, value: str) -> Optional[TaskType]:
+        normalized = str(value or "").strip()
+        for item in TaskType:
+            if normalized in {item.value, item.name}:
+                return item
+        return None
+
+    def _coerce_task_status(self, value: str) -> TaskStatus:
+        normalized = str(value or "").strip()
+        for item in TaskStatus:
+            if normalized in {item.value, item.name}:
+                return item
+        return TaskStatus.COMPLETED
+
+    def load_persisted_linked_subtitle_tasks(self) -> int:
+        """恢复等待人工配对的字幕补配任务，避免后端重启后工作台状态丢失。"""
+        from ..models.database import SessionLocal, Task as TaskRecord
+
+        db = SessionLocal()
+        loaded_count = 0
+        try:
+            rows = db.query(TaskRecord).filter(TaskRecord.type == TaskType.RJ_SUBTITLE_FETCH.value).all()
+            for row in rows:
+                if row.id in self.tasks:
+                    continue
+                metadata = dict(row.task_metadata or {})
+                source_mode = str(metadata.get("source_mode") or "").strip().lower()
+                if source_mode not in {"linked_translation_archive_import", "subtitle_folder_import"}:
+                    continue
+                if not bool(metadata.get("awaiting_manual_match")):
+                    continue
+                if bool(metadata.get("manual_match_completed")):
+                    continue
+
+                task_type = self._coerce_task_type(row.type)
+                if task_type is None:
+                    continue
+                task = Task(
+                    task_type=task_type,
+                    source_path=row.source_path or metadata.get("folder_path") or "",
+                    output_path=row.output_path,
+                    auto_classify=False,
+                    metadata=metadata,
+                    task_id=row.id,
+                    status=self._coerce_task_status(row.status),
+                    rjcode=metadata.get("rjcode") or metadata.get("target_rjcode") or "",
+                )
+                task.progress = int(row.progress or 0)
+                task.current_step = row.current_step or "等待筛选与配对"
+                task.error_message = row.error_message
+                task.created_at = row.created_at or task.created_at
+                task.started_at = row.started_at
+                task.completed_at = row.completed_at
+                self._ensure_task_context(task)
+                self.tasks[task.id] = task
+                loaded_count += 1
+            if loaded_count:
+                logger.info("[任务持久化] 已恢复字幕补配人工配对任务 %s 个", loaded_count)
+            return loaded_count
+        except Exception:
+            logger.warning("[任务持久化] 恢复字幕补配任务失败", exc_info=True)
+            return 0
+        finally:
+            db.close()
+
     def _get_effective_rjcode(self, task: Task, fallback_path: Optional[str] = None) -> str:
         """统一获取当前任务可用的 RJ 号，优先复用已推断结果。"""
         candidates = [
@@ -669,7 +781,7 @@ class TaskEngine:
         try:
             query = db.query(ConflictWork).filter(
                 ConflictWork.conflict_type.in_(["EXTRACT_FAILED", "PROCESS_FAILED"]),
-                ConflictWork.status == "PENDING",
+                ConflictWork.status.in_(["PENDING", "PROCESSING"]),
             )
 
             if source_path and rjcode:
@@ -766,6 +878,29 @@ class TaskEngine:
                 logger.info(f"[{rjcode}] 步骤0: 预检")
                 task.update_progress(5, "预检中")
                 rjcode = self._extract_rjcode(task.source_path)
+
+                # 密码库权威绑定：若条目同时填写 filename + rjcode 命中了当前压缩包，
+                # 整条链路（查重/命名/包裹目录）都使用条目里的 rjcode。
+                if os.path.isfile(task.source_path):
+                    try:
+                        bound_rjcode = await extract_service.lookup_filename_bound_rjcode(task.source_path)
+                    except Exception as exc:
+                        bound_rjcode = None
+                        logger.warning(f"[{rjcode or '未知'}] 查询密码库绑定 RJ 失败: {exc}")
+                    if bound_rjcode and bound_rjcode != rjcode:
+                        logger.info(
+                            f"[{bound_rjcode}] 密码库 filename+RJ 权威绑定，"
+                            f"覆盖源路径 RJ {rjcode or '未知'} -> {bound_rjcode}"
+                        )
+                        rjcode = self._sync_task_rjcode(
+                            task,
+                            bound_rjcode,
+                            source="password_entry_filename_match",
+                        )
+                        if task.task_metadata is None:
+                            task.task_metadata = {}
+                        task.task_metadata["rjcode_lock"] = True
+
                 if not rjcode and os.path.isfile(task.source_path):
                     try:
                         archive_rj_result = await extract_service.infer_rjcode_from_archive(
@@ -812,11 +947,18 @@ class TaskEngine:
                         if linked_result.get("handled"):
                             record = linked_result.get("record") or {}
                             preview = linked_result.get("preview") or {}
+                            source_label = os.path.basename(task.source_path or "").strip() or rjcode or "字幕补配预检"
                             task.task_metadata = {
                                 **(task.task_metadata or {}),
                                 "linked_subtitle_import": record,
                                 "linked_subtitle_preview": preview,
                                 "source_mode": "linked_translation_archive_pending",
+                                "task_domain": "subtitle_import",
+                                "task_kind": "linked_translation_archive_pending",
+                                "source_page": "subtitle-import",
+                                "source_action": "linked_translation_archive_pending",
+                                "source_label": source_label,
+                                "business_key": str(record.get("id") or task.id),
                             }
                             task.output_path = ""
                             task.status = TaskStatus.COMPLETED
@@ -911,10 +1053,15 @@ class TaskEngine:
 
                 # 步骤1.5: 解压后重复检查（如果预检时无法提取 RJ 号）
                 # 从解压后的文件夹路径提取 RJ 号
-                extracted_rjcode = self._extract_rjcode(extracted_path) or str(task.task_metadata.get('inferred_rjcode') or '').strip().upper()
-                logger.info(f"[{rjcode}] 从解压后路径提取到的RJ号: {extracted_rjcode}")
-                
-                if extracted_rjcode and extracted_rjcode != rjcode:
+                rjcode_locked = bool((task.task_metadata or {}).get('rjcode_lock'))
+                if rjcode_locked:
+                    extracted_rjcode = rjcode
+                    logger.info(f"[{rjcode}] 密码库权威绑定已锁定 RJ，跳过解压后覆盖")
+                else:
+                    extracted_rjcode = self._extract_rjcode(extracted_path) or str(task.task_metadata.get('inferred_rjcode') or '').strip().upper()
+                    logger.info(f"[{rjcode}] 从解压后路径提取到的RJ号: {extracted_rjcode}")
+
+                if not rjcode_locked and extracted_rjcode and extracted_rjcode != rjcode:
                     # 更新任务的 RJ 号
                     rjcode = self._sync_task_rjcode(task, extracted_rjcode, source="extracted_path")
                     logger.info(f"[{rjcode}] 更新任务RJ号为解压后提取的RJ号")
@@ -987,6 +1134,7 @@ class TaskEngine:
                     filter_result = await filter_service.filter(renamed_path, task)
                     task.task_metadata = {
                         **(task.task_metadata or {}),
+                        "file_tree_items": list((filter_result or {}).get("all_items") or []),
                         "filtered_files": list((filter_result or {}).get("filtered_files") or []),
                         "filtered_dirs": list((filter_result or {}).get("filtered_dirs") or []),
                         "filtered_items": list((filter_result or {}).get("filtered_items") or []),
@@ -1184,6 +1332,7 @@ class TaskEngine:
                     filter_result = await filter_service.filter(renamed_path, task)
                     task.task_metadata = {
                         **(task.task_metadata or {}),
+                        "file_tree_items": list((filter_result or {}).get("all_items") or []),
                         "filtered_files": list((filter_result or {}).get("filtered_files") or []),
                         "filtered_dirs": list((filter_result or {}).get("filtered_dirs") or []),
                         "filtered_items": list((filter_result or {}).get("filtered_items") or []),
@@ -1386,6 +1535,7 @@ class TaskEngine:
 
         # 加载等待重试的任务
         self.load_waiting_retry_tasks()
+        self.load_persisted_linked_subtitle_tasks()
 
     async def _retry_scheduler(self):
         """定时重试调度器，使用cron表达式"""
@@ -1588,6 +1738,7 @@ class TaskEngine:
         self.processing.discard(task_id)
         if task.rjcode:
             self._processing_rjcodes.discard(task.rjcode)
+        self.delete_task_snapshot(task_id)
         return True
     
     def update_task_status(self, task_id: str, status: TaskStatus, message: Optional[str] = None):
@@ -2800,6 +2951,7 @@ class TaskEngine:
                         'completed_queries': success_count,
                         'failed_queries': failed_count,
                         'is_batch': is_batch,
+                        'is_refresh_all': bool((task.task_metadata or {}).get('is_refresh_all')),
                     },
                 }
                 prefix = f"[{batch_index}/{total_queries}] " if is_batch else ""
@@ -2857,6 +3009,7 @@ class TaskEngine:
                 'completed_queries': success_count,
                 'failed_queries': failed_count,
                 'is_batch': is_batch,
+                'is_refresh_all': bool((task.task_metadata or {}).get('is_refresh_all')),
                 'current_circle_query': normalized_circle_queries[-1],
             },
         }

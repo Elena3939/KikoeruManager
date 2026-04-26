@@ -698,6 +698,15 @@ class TaskCenterOverviewResponse(BaseModel):
     active_items: List[Dict[str, Any]]
 
 
+class TaskCenterListResponse(BaseModel):
+    items: List[Dict[str, Any]]
+    total: int
+    offset: int
+    limit: int
+    mode: str
+    generated_at: str
+
+
 class TaskCenterItemResponse(BaseModel):
     id: str
     entity_id: str
@@ -981,18 +990,20 @@ async def get_task_center_overview():
     return await service.get_overview()
 
 
-@app.get("/api/task-center/list", response_model=List[TaskCenterItemResponse])
+@app.get("/api/task-center/list", response_model=TaskCenterListResponse)
 async def get_task_center_list(
     domain: Optional[str] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    mode: str = "detail",
+    offset: int = 0,
     limit: int = 200,
 ):
     """获取任务中心统一任务列表。"""
     from ..core.task_center_service import get_task_center_service
 
     service = get_task_center_service()
-    return await service.list_items(domain=domain, status=status, search=search, limit=limit)
+    return await service.list_items(domain=domain, status=status, search=search, mode=mode, offset=offset, limit=limit)
 
 
 @app.get("/api/task-center/item", response_model=Optional[TaskCenterItemResponse])
@@ -1095,7 +1106,7 @@ async def batch_cancel_cleanup(request: Request):
         ).strip()
         if download_root and os.path.isdir(download_root):
             try:
-                shutil.rmtree(download_root, ignore_errors=True)
+                _robust_rmtree(download_root)
                 cleaned += 1
                 logger.info(f"已清理下载目录: {download_root}")
             except Exception:
@@ -1848,7 +1859,6 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
 
-@app.get("/api/conflicts")
 @app.get("/api/logs/search")
 async def search_logs(q: str = '', levels: str = '', limit: int = 3000, cursor: int = 0):
     """在完整日志文件中全文检索，不受 tail 行数限制。
@@ -1916,7 +1926,8 @@ async def search_logs(q: str = '', levels: str = '', limit: int = 3000, cursor: 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"日志检索失败: {str(e)}")
 
-async def get_conflicts():
+@app.get("/api/conflicts")
+async def get_conflicts(include_stats: bool = False):
     """获取问题作品列表"""
     from ..core.conflict_resolution_service import get_conflict_resolution_service
     from ..core.task_engine import TaskStatus
@@ -2004,7 +2015,7 @@ async def get_conflicts():
                 available_actions = ["SKIP"]
 
             try:
-                context = await resolution_service.describe_conflict_async(conflict)
+                context = await resolution_service.describe_conflict_async(conflict, include_stats=include_stats)
             except Exception as exc:
                 logger.error(
                     "构建问题作品上下文失败 conflict_id=%s error=%s",
@@ -2793,7 +2804,9 @@ async def scan_processed_archives_api():
 async def get_processed_archives(
     search: Optional[str] = None,
     sort_by: Optional[str] = "processed_at",
-    sort_order: Optional[str] = "desc"
+    sort_order: Optional[str] = "desc",
+    limit: int = 50,
+    offset: int = 0,
 ):
     """获取已处理压缩包列表，支持搜索和排序
     
@@ -2832,9 +2845,15 @@ async def get_processed_archives(
         else:
             query = query.order_by(sort_field.asc())
         
-        archives = query.all()
+        total = query.count()
+        safe_limit = max(1, min(int(limit or 50), 500))
+        safe_offset = max(0, int(offset or 0))
+        archives = query.offset(safe_offset).limit(safe_limit).all()
         return {
-            "archives": [archive.to_dict() for archive in archives]
+            "archives": [archive.to_dict() for archive in archives],
+            "total": total,
+            "offset": safe_offset,
+            "limit": safe_limit,
         }
     finally:
         db.close()
@@ -4025,6 +4044,38 @@ def map_path_to_local(remote_path: str) -> tuple[str, bool]:
     
     return remote_path, False
 
+
+def _robust_rmtree(path: str, retries: int = 3, delay: float = 1.0) -> None:
+    """删除目录树，自动处理只读文件(WinError 5)和文件被占用(WinError 32)。"""
+    import stat
+
+    def _onerror(func, fpath, exc_info):
+        exc = exc_info[1]
+        if getattr(exc, 'winerror', None) == 5:
+            try:
+                os.chmod(fpath, stat.S_IWRITE | stat.S_IREAD)
+                func(fpath)
+                return
+            except Exception:
+                pass
+        raise exc
+
+    import time as _time
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            shutil.rmtree(path, onerror=_onerror)
+            return
+        except Exception as exc:
+            last_exc = exc
+            if getattr(exc, 'winerror', None) == 32 and attempt < retries - 1:
+                _time.sleep(delay)
+                continue
+            break
+    if last_exc:
+        raise last_exc
+
+
 @app.post("/api/library/delete")
 async def delete_library_file(request: Request):
     """删除库内文件或文件夹（需要确认）"""
@@ -4078,9 +4129,8 @@ async def delete_library_file(request: Request):
                 }
         
         # 执行删除
-        import shutil
         if os.path.isdir(file_path):
-            shutil.rmtree(file_path)
+            _robust_rmtree(file_path)
             logger.info(f"删除文件夹: {file_path}")
         else:
             os.remove(file_path)
@@ -4147,14 +4197,13 @@ async def batch_delete_library_items(request: Request):
             }
         
         # 执行删除
-        import shutil
         success_count = 0
         failed_paths = []
         
         for path in paths:
             try:
                 if os.path.isdir(path):
-                    shutil.rmtree(path)
+                    _robust_rmtree(path)
                     logger.info(f"批量删除 - 删除文件夹：{path}")
                 else:
                     os.remove(path)
@@ -5255,7 +5304,7 @@ async def delete_existing_folder(request: Request):
         
         # 删除文件夹
         import shutil
-        shutil.rmtree(folder_path)
+        _robust_rmtree(folder_path)
         logger.info(f"已删除文件夹: {folder_path}")
         
         return {"message": "文件夹已删除", "path": folder_path}
@@ -5365,7 +5414,7 @@ async def process_existing_folder_with_resolution(request: Request):
         if normalized_resolution == "SKIP":
             # 抛弃新版 - 删除文件夹
             import shutil
-            shutil.rmtree(folder_path)
+            _robust_rmtree(folder_path)
             logger.info(f"已抛弃新版（删除文件夹）: {folder_path}")
             return {"message": "已跳过当前目录，待处理文件夹已删除", "resolution": normalized_resolution}
         
@@ -6685,6 +6734,11 @@ async def rj_subtitle_manual_complete(
         except Exception:
             logger.warning("[操作记录] 字幕配对记录失败", exc_info=True)
 
+        try:
+            engine.remove_task(task_id)
+        except Exception:
+            logger.warning("[任务中心] 字幕补配完成后清理任务记录失败: task_id=%s", task_id, exc_info=True)
+
         return {"success": True, "task_id": task_id, "message": summary}
     except HTTPException:
         raise
@@ -7121,6 +7175,7 @@ class CircleCompletionIndexJobRequest(BaseModel):
     include_dlsite: bool = True
     include_kikoeru: bool = True
     only_new_works: bool = False
+    is_refresh_all: bool = False
 
 
 class CircleCompletionDownloadPreviewRequest(BaseModel):
@@ -7734,7 +7789,16 @@ async def circle_completion_index_start(request: CircleCompletionIndexJobRequest
             raise ValueError("社团名不能为空")
         circle_query = circle_queries[0]
         is_batch = len(circle_queries) > 1
-        source_label = circle_query if not is_batch else f"批量建立 {len(circle_queries)} 个社团"
+        is_refresh_all = bool(request.is_refresh_all) and is_batch
+        if is_refresh_all:
+            source_label = f"全部刷新 {len(circle_queries)} 个社团"
+            source_action_kind = "refresh_all_circles"
+        elif is_batch:
+            source_label = f"批量建立 {len(circle_queries)} 个社团"
+            source_action_kind = "index_start"
+        else:
+            source_label = circle_query
+            source_action_kind = "index_start"
         business_key = circle_query if not is_batch else f"batch:{'|'.join(circle_queries[:20])}"
 
         task = Task(
@@ -7751,9 +7815,10 @@ async def circle_completion_index_start(request: CircleCompletionIndexJobRequest
                 "only_new_works": bool(request.only_new_works),
                 "is_batch": is_batch,
                 "batch_total": len(circle_queries),
+                "is_refresh_all": is_refresh_all,
                 "task_domain": "circle_completion",
                 "source_page": "circle-completion",
-                "source_action": "index_start",
+                "source_action": source_action_kind,
                 "source_label": source_label,
                 "business_key": business_key,
                 "progress_log": [],
@@ -7761,7 +7826,7 @@ async def circle_completion_index_start(request: CircleCompletionIndexJobRequest
         )
         task.ensure_business_context("circle_completion", {
             "source_page": "circle-completion",
-            "source_action": "index_start",
+            "source_action": source_action_kind,
             "source_label": source_label,
             "business_key": business_key,
         })
@@ -7826,6 +7891,7 @@ async def circle_completion_index_job_status(job_id: str):
                 **dict(metadata.get("index_meta") or {}),
                 "only_new_works": bool(metadata.get("only_new_works")),
                 "is_batch": bool(metadata.get("is_batch")),
+                "is_refresh_all": bool(metadata.get("is_refresh_all")),
                 "batch_total": int(metadata.get("batch_total") or 0),
             },
             "result": {
@@ -7862,6 +7928,19 @@ async def circle_completion_recent(limit: int = 20):
     except Exception as exc:
         logger.error("查询最近社团索引失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"查询最近社团索引失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/circles/names")
+async def circle_completion_all_circle_names():
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        circles = await get_circle_completion_service().search_circles("", limit=9999)
+        names = [c["circle_name"] for c in circles if c.get("circle_name")]
+        return {"success": True, "names": names, "total": len(names)}
+    except Exception as exc:
+        logger.error("获取所有社团名失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取所有社团名失败: {str(exc)}")
 
 
 @app.get("/api/circle-completion/circles/{circle_id}")
@@ -8233,8 +8312,13 @@ async def local_upload_start(request: LocalUploadStartRequest):
 
         target_library = manager.get_library_definition(target_library_id)
         target_root = PurePosixPath(str(target_library.root_path or "").replace("\\", "/"))
-        if target_subdir:
-            target_root = target_root / target_subdir.strip("/\\")
+        normalized_target_subdir = target_subdir.strip("/\\")
+        target_root_text = str(target_root).replace("\\", "/").rstrip("/")
+        target_root_name = PurePosixPath(target_root_text or "/").name
+        if normalized_target_subdir in {target_root_name, target_root_text.lstrip("/")}:
+            normalized_target_subdir = ""
+        if normalized_target_subdir:
+            target_root = target_root / normalized_target_subdir
         if circle_name:
             target_root = target_root / circle_name
         selected_items = []
@@ -8258,7 +8342,7 @@ async def local_upload_start(request: LocalUploadStartRequest):
                 "selected_paths": selected_paths,
                 "selected_items": selected_items,
                 "target_library_id": target_library_id,
-                "target_subdir": target_subdir,
+                "target_subdir": normalized_target_subdir,
                 "circle_name": circle_name,
                 "target_path": preview_target_path.replace("\\", "/"),
                 "selected_dir_count": len(selected_paths),

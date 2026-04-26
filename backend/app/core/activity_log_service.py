@@ -27,6 +27,7 @@ CATEGORY_PIPELINE_METADATA = "pipeline_metadata"
 CATEGORY_PIPELINE_RENAME = "pipeline_rename"
 CATEGORY_PIPELINE_DELETE = "pipeline_delete"
 CATEGORY_ASMR_SYNC = "asmr_sync"
+CATEGORY_UPLOAD = "upload"
 CATEGORY_CIRCLE_COMPLETION = "circle_completion"
 
 CATEGORY_LABELS = {
@@ -41,6 +42,7 @@ CATEGORY_LABELS = {
     CATEGORY_PIPELINE_RENAME: "重命名",
     CATEGORY_PIPELINE_DELETE: "删除",
     CATEGORY_ASMR_SYNC: "ASMR 同步",
+    CATEGORY_UPLOAD: "库存上传",
     CATEGORY_CIRCLE_COMPLETION: "社团补全",
 }
 
@@ -65,6 +67,7 @@ CIRCLE_COMPLETION_ACTIONS = {
     "index_failed",
     "view_built",
     "refresh_selected_works",
+    "refresh_all_circles",
     "download_batch_start",
     "download_batch_completed",
     "download_batch_partial_failed",
@@ -484,7 +487,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
         TaskType.METADATA: CATEGORY_PIPELINE_METADATA,
         TaskType.RENAME: CATEGORY_PIPELINE_RENAME,
         TaskType.ASMR_SYNC_DOWNLOAD: CATEGORY_ASMR_SYNC,
-        TaskType.LOCAL_LIBRARY_UPLOAD: CATEGORY_ASMR_SYNC,
+        TaskType.LOCAL_LIBRARY_UPLOAD: CATEGORY_UPLOAD,
         TaskType.CIRCLE_COMPLETION_INDEX: CATEGORY_CIRCLE_COMPLETION,
         TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED: CATEGORY_CIRCLE_COMPLETION,
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: CATEGORY_CIRCLE_COMPLETION,
@@ -600,6 +603,46 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "failed_count": failed_count,
             "uploaded_count": uploaded_count,
             "downloaded_bytes": downloaded_bytes,
+            "uploaded_bytes": uploaded_bytes,
+            "average_upload_speed_bytes": average_upload_speed_bytes,
+            "duration_ms": duration_ms,
+            "uploaded_files": uploaded_files[:200],
+        }
+    elif tt == TaskType.LOCAL_LIBRARY_UPLOAD:
+        upload_runtime = meta.get("upload_runtime") if isinstance(meta.get("upload_runtime"), dict) else {}
+        uploaded_files = list(meta.get("uploaded_files") or [])
+        selected_paths = list(meta.get("selected_paths") or [])
+        selected_dir_count = int(meta.get("selected_dir_count") or len(selected_paths) or 0)
+        duration_ms = int(_duration_ms_for_task(task) or 0)
+        uploaded_bytes = int(
+            upload_runtime.get("total_bytes")
+            or sum(int((item or {}).get("size_bytes") or 0) for item in uploaded_files)
+            or 0
+        )
+        average_upload_speed_bytes = int(
+            (uploaded_bytes / max(duration_ms / 1000, 1) if uploaded_bytes > 0 and duration_ms > 0 else 0)
+            or 0
+        )
+        target_path = str(meta.get("target_path") or task.output_path or "").strip()
+        source_action = str(meta.get("source_action") or "").strip()
+        if st == TaskStatus.COMPLETED:
+            summary_parts = [f"上传 {len(uploaded_files) or len(meta.get('upload_files') or []) or 0} 个文件"]
+            if uploaded_bytes > 0:
+                summary_parts.append(_format_bytes(uploaded_bytes))
+            if average_upload_speed_bytes > 0:
+                summary_parts.append(f"平均 {_format_bytes(average_upload_speed_bytes)}/s")
+            if duration_ms > 0:
+                summary_parts.append(f"耗时 {_format_duration_ms(duration_ms)}")
+            summary = " / ".join(summary_parts)[:4000]
+        detail = {
+            "target_path": target_path or None,
+            "target_library_id": str(meta.get("target_library_id") or "").strip() or None,
+            "target_subdir": str(meta.get("target_subdir") or "").strip() or None,
+            "source_library_id": str(meta.get("source_library_id") or "").strip() or None,
+            "source_base_path": str(meta.get("source_base_path") or "").strip() or None,
+            "source_action": source_action or None,
+            "selected_dir_count": selected_dir_count,
+            "uploaded_count": len(uploaded_files),
             "uploaded_bytes": uploaded_bytes,
             "average_upload_speed_bytes": average_upload_speed_bytes,
             "duration_ms": duration_ms,

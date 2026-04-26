@@ -1221,67 +1221,98 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         preview_row["has_child_rows"] = True
         preview_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else preview_row.get("created_at")
 
+    # 社团补全操作记录聚合
     circle_index_rows_by_circle: dict[str, list[dict[str, Any]]] = {}
     circle_refresh_rows_by_circle: dict[str, list[dict[str, Any]]] = {}
+    circle_download_batches: dict[str, dict[str, Any]] = {}  # batch_id -> row
+
+    def _circle_source_label(row: dict[str, Any], detail: dict[str, Any]) -> str:
+        action = str(row.get("action") or "").strip()
+        circle_name = str(detail.get("circle_name") or "").strip()
+        circle_id = str(detail.get("circle_id") or "").strip()
+        title = str(detail.get("work_title") or detail.get("source_label") or "").strip()
+        rjcode = str(row.get("rjcode") or detail.get("rjcode") or detail.get("canonical_rjcode") or "").strip()
+        source_action = str(row.get("source_action") or detail.get("source_action") or "").strip()
+        target_subdir = str(detail.get("target_subdir") or "").strip()
+        download_base_path = str(detail.get("download_base_path") or "").strip()
+        circle_label = circle_name or circle_id
+        work_label = " / ".join(item for item in [rjcode, title] if item)
+        if action == "index_completed":
+            return f"社团：{circle_label}" if circle_label else ""
+        if action == "refresh_selected_works":
+            return f"社团状态刷新：{circle_label}" if circle_label else ""
+        if action == "download_batch_start":
+            target_label = target_subdir or download_base_path
+            if circle_label and target_label:
+                return f"批量下载：{circle_label} → {target_label}"
+            return f"批量下载：{circle_label}" if circle_label else target_label
+        if action == "download_item_queued":
+            return f"作品：{work_label}" if work_label else ""
+        if action in {"task_finished", "task_finished_incomplete"}:
+            if source_action == "refresh_selected":
+                return f"社团状态刷新：{circle_label}" if circle_label else ""
+            if work_label:
+                return f"作品：{work_label}"
+            return f"社团：{circle_label}" if circle_label else ""
+        return f"社团：{circle_label}" if circle_label else ""
+    
+    # 第一步：收集索引和刷新记录
     for row in rows:
         if str(row.get("category") or "").strip() != "circle_completion":
             continue
         action = str(row.get("action") or "").strip()
-        if action not in {"index_completed", "refresh_selected_works"}:
-            continue
         detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+        row["source_path"] = row.get("source_path") or _circle_source_label(row, detail)
         circle_id = str(detail.get("circle_id") or "").strip()
         if not circle_id:
             continue
+            
         if action == "index_completed":
             circle_index_rows_by_circle.setdefault(circle_id, []).append(row)
         elif action == "refresh_selected_works":
             circle_refresh_rows_by_circle.setdefault(circle_id, []).append(row)
+        elif action == "download_batch_start":
+            # 批量下载任务作为独立的父任务，不关联到索引记录
+            batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
+            if batch_id:
+                circle_download_batches[batch_id] = row
+                # 标记为父任务
+                row["is_parent_task"] = True
+                row["child_rows"] = []
 
+    # 排序
     for circle_id, circle_rows in circle_index_rows_by_circle.items():
         circle_rows.sort(key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
-
     for circle_id, circle_rows in circle_refresh_rows_by_circle.items():
         circle_rows.sort(key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
 
+    # 第二步：处理批量下载任务的子任务
     for row in rows:
         if str(row.get("category") or "").strip() != "circle_completion":
             continue
-        if str(row.get("action") or "").strip() != "download_batch_start":
+        if str(row.get("action") or "").strip() != "download_item_queued":
             continue
 
         row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-        circle_id = str(row_detail.get("circle_id") or "").strip()
-        if not circle_id:
+        batch_id = str(row_detail.get("parent_session_id") or "").strip()
+        if not batch_id:
             continue
-        parent_candidates = circle_index_rows_by_circle.get(circle_id) or []
-        if not parent_candidates:
+            
+        parent_batch_row = circle_download_batches.get(batch_id)
+        if not parent_batch_row:
             continue
-
-        row_dt = _coerce_dt(row.get("created_at")) or datetime.min
-        parent_row = None
-        for candidate in parent_candidates:
-            candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
-            if candidate_dt <= row_dt:
-                parent_row = candidate
-        if parent_row is None:
-            parent_row = parent_candidates[-1]
-
-        child_detail = {
-            **row_detail,
-            "batch_task_count": len(row_detail.get("items") or []),
-        }
+            
+        # 将下载项作为子任务关联到批量下载任务
         child_row = _make_tree_child(
             row,
-            relation="download_batch",
-            category_label="下载任务",
-            detail=child_detail,
+            relation="download_item",
+            category_label="下载项",
+            detail=row_detail,
         )
-        _append_tree_child(parent_row, child_row)
-        parent_row["merged_circle_completion_download"] = True
-        parent_row["merged_circle_completion_download_status"] = row.get("status") or ""
+        _append_tree_child(parent_batch_row, child_row)
         merged_circle_completion_ids.add(str(row.get("id") or ""))
 
+    # 第三步：处理任务完成状态
     for row in rows:
         if str(row.get("category") or "").strip() != "circle_completion":
             continue
@@ -1290,10 +1321,36 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
 
         row_detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
         circle_id = str(row_detail.get("circle_id") or "").strip()
+        source_action = str(row.get("source_action") or row_detail.get("source_action") or "").strip()
+        batch_id = str(row_detail.get("batch_id") or row_detail.get("parent_session_id") or "").strip()
+        
+        # 跳过全量刷新
+        if source_action == "refresh_all_circles":
+            continue
         if not circle_id:
             continue
 
-        source_action = str(row.get("source_action") or row_detail.get("source_action") or "").strip()
+        # 优先关联到批量下载任务
+        if batch_id and batch_id in circle_download_batches:
+            parent_batch_row = circle_download_batches[batch_id]
+            # 更新批量下载任务的状态
+            if str(row.get("action") or "").strip() == "task_finished":
+                parent_batch_row["status"] = "success"
+            elif str(row.get("action") or "").strip() == "task_finished_incomplete":
+                parent_batch_row["status"] = "partial_success"
+            
+            # 作为子任务添加
+            child_row = _make_tree_child(
+                row,
+                relation="task_completion",
+                category_label="任务完成",
+                detail=row_detail,
+            )
+            _append_tree_child(parent_batch_row, child_row)
+            merged_circle_completion_ids.add(str(row.get("id") or ""))
+            continue
+
+        # 关联到刷新任务
         if source_action == "refresh_selected":
             parent_candidates = circle_refresh_rows_by_circle.get(circle_id) or []
             if parent_candidates:
@@ -1306,6 +1363,15 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 if parent_row is None:
                     parent_row = parent_candidates[-1]
                 parent_row["latest_activity_at"] = row.get("created_at") or parent_row.get("latest_activity_at") or parent_row.get("created_at")
+                
+                # 添加任务完成状态
+                child_row = _make_tree_child(
+                    row,
+                    relation="task_completion",
+                    category_label="任务完成",
+                    detail=row_detail,
+                )
+                _append_tree_child(parent_row, child_row)
             merged_circle_completion_ids.add(str(row.get("id") or ""))
             continue
 
@@ -1374,6 +1440,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         "task_finished_incomplete": 75,
         "session_started": 60,
         "enhanced_plan_created": 40,
+        "task_failed": 30,
+        "task_cancelled": 25,
     }
     child_action_relations = {
         "resource_downloaded": ("asmr_resource", "下载文件"),
@@ -1386,6 +1454,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         "task_resumed": ("asmr_session", "任务恢复"),
         "task_cancelled": ("asmr_session", "任务取消"),
         "task_retried": ("asmr_session", "任务重试"),
+        "task_failed": ("asmr_session", "任务失败"),
+        "task_queued": ("asmr_session", "任务排队"),
     }
 
     for session_id, session_rows in asmr_rows_by_session.items():
@@ -1488,6 +1558,7 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             or 0
         )
         original_parent_status = str(parent_row.get("status") or "").strip() or "success"
+        # 计算任务状态
         rollup_status = original_parent_status
         if success_count > 0 and failed_count <= 0:
             rollup_status = "success"
@@ -1497,6 +1568,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             rollup_status = "failed"
         elif upload_mode == "disabled" and (download_root or downloaded_bytes > 0):
             rollup_status = "success"
+        elif str(parent_row.get("status") or "").strip() in {"pending", "processing", "paused", "waiting_retry"}:
+            rollup_status = str(parent_row.get("status") or "").strip()
 
         child_rows: list[dict[str, Any]] = []
         latest_activity = _coerce_dt(parent_row.get("created_at")) or datetime.min
@@ -1509,13 +1582,12 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 merged_asmr_sync_ids.add(str(row.get("id") or ""))
                 continue
             relation, category_label = relation_info
-            child_rows.append(
-                _make_tree_child(
-                    row,
-                    relation=relation,
-                    category_label=category_label,
-                )
+            child_row = _make_tree_child(
+                row,
+                relation=relation,
+                category_label=category_label,
             )
+            child_rows.append(child_row)
             merged_asmr_sync_ids.add(str(row.get("id") or ""))
             latest_activity = max(latest_activity, _coerce_dt(row.get("created_at")) or datetime.min)
 
@@ -1536,6 +1608,10 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             parent_row["action"] = "session_completed"
         elif rollup_status == "partial_success":
             parent_row["action"] = "session_partial_failed"
+        elif rollup_status == "failed":
+            parent_row["action"] = "session_failed"
+        elif rollup_status in {"pending", "processing", "paused", "waiting_retry"}:
+            parent_row["action"] = f"session_{rollup_status}"
 
         parent_row["detail"] = {
             **parent_detail,

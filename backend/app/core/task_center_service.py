@@ -1,10 +1,12 @@
 import logging
 import os
+import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
+from ..models.database import ConflictWork, SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -12,12 +14,15 @@ logger = logging.getLogger(__name__)
 class TaskCenterService:
     """统一聚合业务任务与引擎任务，供任务中心页面使用。"""
 
+    CACHE_TTL_SECONDS = 1.2
+
     DOMAIN_LABELS = {
         "all": "全部",
         "import": "导入处理",
         "rj_subtitle": "RJ 字幕",
         "subtitle_import": "字幕补配",
         "asmr_sync": "ASMR 同步",
+        "upload": "库存上传",
         "circle_completion": "社团补全",
         "system": "系统任务",
     }
@@ -47,8 +52,9 @@ class TaskCenterService:
         "rj_subtitle": 1,
         "subtitle_import": 2,
         "asmr_sync": 3,
-        "circle_completion": 4,
-        "system": 5,
+        "upload": 4,
+        "circle_completion": 5,
+        "system": 6,
     }
 
     TASK_TYPE_TO_DOMAIN = {
@@ -70,9 +76,15 @@ class TaskCenterService:
         "rj_subtitle": "/library",
         "subtitle_import": "/subtitle-import",
         "asmr_sync": "/asmr-sync",
+        "upload": "/library",
         "circle_completion": "/circle-completion",
         "system": "/tasks",
     }
+
+    def __init__(self):
+        self._items_cache: Optional[List[Dict[str, Any]]] = None
+        self._items_cache_key: Optional[Tuple[Any, ...]] = None
+        self._items_cache_at = 0.0
 
     def _safe_iso(self, value: Optional[datetime]) -> Optional[str]:
         return value.isoformat() if value else None
@@ -115,6 +127,79 @@ class TaskCenterService:
             current /= 1024
             unit_index += 1
         return f"{current:.2f} {units[unit_index]}"
+
+    def _snapshot_directory_items(self, root_path: str, limit: int = 600) -> List[Dict[str, Any]]:
+        normalized_root = self._safe_text(root_path)
+        if not normalized_root or not os.path.isdir(normalized_root):
+            return []
+
+        items: List[Dict[str, Any]] = []
+        try:
+            for current_root, dirs, files in os.walk(normalized_root):
+                relative_root = os.path.relpath(current_root, normalized_root).replace("\\", "/")
+                if relative_root == ".":
+                    relative_root = ""
+                dirs.sort()
+                files.sort()
+
+                for dir_name in dirs:
+                    relative_path = f"{relative_root}/{dir_name}".strip("/")
+                    items.append({
+                        "path": os.path.join(current_root, dir_name),
+                        "relative_path": relative_path,
+                        "name": dir_name,
+                        "type": "dir",
+                        "size": None,
+                    })
+                    if len(items) >= limit:
+                        return items
+
+                for file_name in files:
+                    file_path = os.path.join(current_root, file_name)
+                    relative_path = f"{relative_root}/{file_name}".strip("/")
+                    try:
+                        size = int(os.path.getsize(file_path)) if os.path.exists(file_path) else 0
+                    except Exception:
+                        size = 0
+                    items.append({
+                        "path": file_path,
+                        "relative_path": relative_path,
+                        "name": file_name,
+                        "type": "file",
+                        "size": size,
+                    })
+                    if len(items) >= limit:
+                        return items
+        except Exception:
+            logger.debug("任务中心回填文件树失败: %s", normalized_root, exc_info=True)
+        return items
+
+    def _ensure_file_tree_metadata(self, metadata: Dict[str, Any], resolved_target_path: str, source_path: str) -> Dict[str, Any]:
+        if metadata.get("file_tree_items"):
+            return metadata
+
+        candidate_paths: List[str] = []
+        for candidate in (
+            metadata.get("final_output_path"),
+            metadata.get("target_path"),
+            resolved_target_path,
+            metadata.get("folder_path"),
+            source_path,
+        ):
+            normalized = self._safe_text(candidate)
+            if not normalized or normalized in candidate_paths:
+                continue
+            if os.path.isdir(normalized):
+                candidate_paths.append(normalized)
+
+        for candidate in candidate_paths:
+            snapshot = self._snapshot_directory_items(candidate)
+            if snapshot:
+                enriched = dict(metadata)
+                enriched["file_tree_items"] = snapshot
+                return enriched
+
+        return metadata
 
     def _format_duration_ms(self, value: Any) -> str:
         try:
@@ -167,6 +252,114 @@ class TaskCenterService:
             return [self._json_safe(current) for current in value]
         return str(value)
 
+    def _summary_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """任务列表/概览用轻量结构，避免轮询时反复传大 metadata。"""
+        details = dict(item.get("details") or {})
+        metadata = dict(details.get("metadata") or {}) if isinstance(details.get("metadata"), dict) else {}
+        summary_details: Dict[str, Any] = {}
+        for key in (
+            "recovered_notice",
+            "extract_stage",
+            "archive_size",
+            "extract_started_at",
+            "extract_finished_at",
+            "nested_archive_count",
+            "verify_mode",
+            "failure_stage",
+        ):
+            if key in metadata:
+                summary_details.setdefault("metadata", {})[key] = self._json_safe(metadata.get(key))
+
+        return {
+            "id": self._safe_text(item.get("id")),
+            "entity_id": self._safe_text(item.get("entity_id")),
+            "engine_task_id": self._safe_text(item.get("engine_task_id")) or None,
+            "record_id": self._safe_text(item.get("record_id")) or None,
+            "domain": self._safe_text(item.get("domain")),
+            "domain_label": self._safe_text(item.get("domain_label")),
+            "kind": self._safe_text(item.get("kind")),
+            "kind_label": self._safe_text(item.get("kind_label")),
+            "title": self._safe_text(item.get("title")),
+            "subtitle": self._safe_text(item.get("subtitle")),
+            "source_label": self._safe_text(item.get("source_label")),
+            "source_page": self._safe_text(item.get("source_page")),
+            "source_action": self._safe_text(item.get("source_action")),
+            "route_hint": self._safe_text(item.get("route_hint")),
+            "status": self._safe_text(item.get("status")),
+            "status_label": self._safe_text(item.get("status_label")),
+            "progress": int(item.get("progress") or 0),
+            "current_step": self._safe_text(item.get("current_step")),
+            "error_message": self._safe_text(item.get("error_message")),
+            "source_path": self._safe_text(item.get("source_path")),
+            "target_path": self._safe_text(item.get("target_path")),
+            "rjcode": self._safe_text(item.get("rjcode")),
+            "created_at": item.get("created_at"),
+            "started_at": item.get("started_at"),
+            "completed_at": item.get("completed_at"),
+            "metrics": list(item.get("metrics") or [])[:8],
+            "actions": list(item.get("actions") or []),
+            "details": summary_details,
+        }
+
+    def _cache_key(self) -> Tuple[Any, ...]:
+        engine = get_task_engine()
+        tasks = engine.get_all_tasks()
+        task_signature = tuple(
+            (
+                task.id,
+                getattr(getattr(task, "status", None), "value", str(getattr(task, "status", ""))),
+                int(getattr(task, "progress", 0) or 0),
+                self._safe_text(getattr(task, "current_step", "")),
+                self._safe_text(getattr(task, "error_message", "")),
+                self._safe_iso(getattr(task, "completed_at", None)),
+            )
+            for task in tasks
+        )
+        return (
+            len(tasks),
+            task_signature,
+            len(getattr(engine, "processing", set()) or set()),
+            self._active_conflict_signature(),
+        )
+
+    def _active_conflict_signature(self) -> Tuple[Any, ...]:
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(
+                    ConflictWork.id,
+                    ConflictWork.task_id,
+                    ConflictWork.rjcode,
+                    ConflictWork.conflict_type,
+                    ConflictWork.status,
+                    ConflictWork.created_at,
+                    ConflictWork.new_path,
+                )
+                .filter(
+                    ConflictWork.status.in_(["PENDING", "PROCESSING"]),
+                    ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
+                )
+                .order_by(ConflictWork.created_at.desc())
+                .all()
+            )
+            return tuple(
+                (
+                    self._safe_text(row[0]),
+                    self._safe_text(row[1]),
+                    self._safe_text(row[2]),
+                    self._safe_text(row[3]),
+                    self._safe_text(row[4]),
+                    self._safe_iso(row[5]) if isinstance(row[5], datetime) else self._safe_text(row[5]),
+                    self._safe_text(row[6]),
+                )
+                for row in rows
+            )
+        except Exception:
+            logger.exception("[任务中心] 生成问题作品缓存签名失败，当前轮次按空列表处理")
+            return tuple()
+        finally:
+            db.close()
+
     def _item_metadata(self, item: Dict[str, Any]) -> Dict[str, Any]:
         details = dict(item.get("details") or {})
         metadata = details.get("metadata") or {}
@@ -186,6 +379,172 @@ class TaskCenterService:
                 seen_labels.add(label)
                 merged.append({"label": label, "value": value})
         return merged
+
+    def _normalize_conflict_metadata(self, raw_metadata: Any) -> Dict[str, Any]:
+        if isinstance(raw_metadata, dict):
+            return dict(raw_metadata)
+        if raw_metadata in (None, "", []):
+            return {}
+        if isinstance(raw_metadata, str):
+            try:
+                import json
+
+                parsed = json.loads(raw_metadata)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                return {"raw_metadata": raw_metadata}
+            return {"raw_metadata": raw_metadata}
+        try:
+            return dict(raw_metadata)
+        except Exception:
+            return {"raw_metadata": str(raw_metadata)}
+
+    def _conflict_type_label(self, conflict_type: str) -> str:
+        mapping = {
+            "DUPLICATE": "重复作品",
+            "LANGUAGE_VARIANT": "语言版本冲突",
+            "MULTIPLE_VERSIONS": "多版本冲突",
+            "LINKED_WORK": "关联作品冲突",
+            "EXTRACT_FAILED": "解压失败",
+            "PROCESS_FAILED": "处理失败",
+        }
+        normalized = self._safe_text(conflict_type).upper()
+        return mapping.get(normalized, normalized or "问题作品")
+
+    def _serialize_conflict_item(self, conflict: ConflictWork) -> Dict[str, Any]:
+        metadata = self._normalize_conflict_metadata(getattr(conflict, "new_metadata", None))
+        conflict_type = self._safe_text(getattr(conflict, "conflict_type", "")).upper()
+        raw_status = self._safe_text(getattr(conflict, "status", "")).upper()
+        display_status = TaskStatus.PROCESSING.value if raw_status == "PROCESSING" else TaskStatus.WAITING_MANUAL.value
+        title = self._normalize_rjcode(getattr(conflict, "rjcode", "")) or self._basename(getattr(conflict, "new_path", "")) or "问题作品"
+        error_message = self._safe_text(metadata.get("error_message"))
+        subtitle = error_message or self._basename(getattr(conflict, "new_path", ""))
+        metrics: List[Dict[str, str]] = []
+        self._append_metric(metrics, "问题类型", self._conflict_type_label(conflict_type))
+        self._append_metric(metrics, "来源", "压缩包" if os.path.isfile(str(getattr(conflict, "new_path", "") or "")) else "目录")
+        self._append_metric(metrics, "目标 RJ", self._normalize_rjcode(getattr(conflict, "rjcode", "")))
+
+        current_step = error_message or (
+            "等待在问题作品页处理中" if display_status == TaskStatus.WAITING_MANUAL.value else "问题作品处理中"
+        )
+
+        return {
+            "id": f"conflict:{self._safe_text(getattr(conflict, 'id', ''))}",
+            "entity_id": self._safe_text(getattr(conflict, "id", "")),
+            "engine_task_id": self._safe_text(getattr(conflict, "task_id", "")),
+            "record_id": self._safe_text(getattr(conflict, "id", "")),
+            "domain": "import",
+            "domain_label": self.DOMAIN_LABELS["import"],
+            "kind": "conflict_work",
+            "kind_label": self._conflict_type_label(conflict_type),
+            "title": title,
+            "subtitle": subtitle,
+            "source_label": "问题作品 / 待处理",
+            "source_page": "conflicts",
+            "source_action": "conflict_resolution",
+            "route_hint": "/conflicts",
+            "status": display_status,
+            "status_label": self.STATUS_LABELS[display_status],
+            "progress": 0,
+            "current_step": current_step,
+            "error_message": error_message,
+            "source_path": self._safe_text(getattr(conflict, "new_path", "")),
+            "target_path": self._safe_text(getattr(conflict, "existing_path", "")),
+            "rjcode": self._normalize_rjcode(getattr(conflict, "rjcode", "")),
+            "created_at": self._safe_iso(getattr(conflict, "created_at", None)),
+            "started_at": None,
+            "completed_at": None,
+            "metrics": metrics,
+            "actions": [],
+            "details": {
+                "metadata": self._json_safe(metadata),
+                "conflict": {
+                    "id": self._safe_text(getattr(conflict, "id", "")),
+                    "task_id": self._safe_text(getattr(conflict, "task_id", "")),
+                    "conflict_type": conflict_type,
+                    "existing_path": self._safe_text(getattr(conflict, "existing_path", "")),
+                    "new_path": self._safe_text(getattr(conflict, "new_path", "")),
+                    "status": raw_status,
+                },
+            },
+        }
+
+    def _safe_serialize_conflict_item(self, conflict: ConflictWork) -> Optional[Dict[str, Any]]:
+        try:
+            return self._serialize_conflict_item(conflict)
+        except Exception:
+            logger.exception(
+                "[任务中心] 序列化问题作品失败，已跳过: conflict_id=%s task_id=%s type=%s",
+                getattr(conflict, "id", ""),
+                getattr(conflict, "task_id", ""),
+                getattr(conflict, "conflict_type", ""),
+            )
+            return None
+
+    def _load_active_conflicts(self) -> List[ConflictWork]:
+        db = SessionLocal()
+        try:
+            return (
+                db.query(ConflictWork)
+                .filter(
+                    ConflictWork.status.in_(["PENDING", "PROCESSING"]),
+                    ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
+                )
+                .order_by(ConflictWork.created_at.desc())
+                .all()
+            )
+        finally:
+            db.close()
+
+    def _merge_conflict_pipeline_items(
+        self,
+        items: List[Dict[str, Any]],
+        conflict_items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        parent_by_engine_id: Dict[str, Dict[str, Any]] = {}
+        merged_conflict_ids: set[str] = set()
+
+        for item in items:
+            if not self._safe_text(item.get("id")).startswith("engine:"):
+                continue
+            engine_task_id = self._safe_text(item.get("engine_task_id")) or self._safe_text(item.get("entity_id"))
+            if engine_task_id:
+                parent_by_engine_id[engine_task_id] = item
+
+        for conflict_item in conflict_items:
+            engine_task_id = self._safe_text(conflict_item.get("engine_task_id"))
+            parent = parent_by_engine_id.get(engine_task_id)
+            if not parent:
+                continue
+
+            parent["status"] = self._safe_text(conflict_item.get("status")) or parent.get("status")
+            parent["status_label"] = self._safe_text(conflict_item.get("status_label")) or parent.get("status_label")
+            parent["kind"] = self._safe_text(conflict_item.get("kind")) or parent.get("kind")
+            parent["kind_label"] = self._safe_text(conflict_item.get("kind_label")) or parent.get("kind_label")
+            parent["route_hint"] = self._safe_text(conflict_item.get("route_hint")) or parent.get("route_hint")
+            parent["current_step"] = self._safe_text(conflict_item.get("current_step")) or parent.get("current_step")
+            parent["error_message"] = self._safe_text(conflict_item.get("error_message")) or parent.get("error_message")
+            parent["metrics"] = self._merge_metric_items(parent.get("metrics") or [], conflict_item.get("metrics") or [])
+            parent["actions"] = list(conflict_item.get("actions") or [])
+
+            parent_details = dict(parent.get("details") or {})
+            parent_metadata = self._item_metadata(parent)
+            conflict_details = dict(conflict_item.get("details") or {})
+            linked_conflict = dict(conflict_details.get("conflict") or {})
+            parent_metadata["linked_conflict_id"] = self._safe_text(linked_conflict.get("id"))
+            parent_metadata["linked_conflict_type"] = self._safe_text(linked_conflict.get("conflict_type"))
+            parent_metadata["linked_conflict_status"] = self._safe_text(linked_conflict.get("status"))
+            parent_details["metadata"] = self._json_safe(parent_metadata)
+            parent_details["conflict"] = self._json_safe(linked_conflict)
+            parent["details"] = parent_details
+            merged_conflict_ids.add(self._safe_text(conflict_item.get("id")))
+
+        passthrough_conflicts = [
+            item for item in conflict_items
+            if self._safe_text(item.get("id")) not in merged_conflict_ids
+        ]
+        return items + passthrough_conflicts
 
     def _compose_import_step(self, parent: Dict[str, Any], linked_item: Dict[str, Any]) -> str:
         parent_step = self._safe_text(parent.get("current_step"))
@@ -331,6 +690,7 @@ class TaskCenterService:
             or self._safe_text(metadata.get("target_folder_path"))
             or self._safe_text(metadata.get("folder_path"))
         )
+        metadata = self._ensure_file_tree_metadata(metadata, resolved_target_path, source_path)
         route_hint = self.DOMAIN_ROUTE_HINT.get(domain, "/tasks")
         rjcode = self._normalize_rjcode(
             self._safe_text(getattr(task, "rjcode", ""))
@@ -345,6 +705,7 @@ class TaskCenterService:
         source_action = self._safe_text(metadata.get("source_action"))
         source_page = self._safe_text(metadata.get("source_page"))
         metrics: List[Dict[str, str]] = []
+        current_step_override = ""
 
         if domain == "import":
             title = self._basename(source_path) or self._safe_text(metadata.get("work_name")) or "导入任务"
@@ -394,12 +755,77 @@ class TaskCenterService:
                     self._safe_text(metadata.get("target_library_id"))
                     or self._safe_text((metadata.get("postprocess_options") or {}).get("target_library_id")),
                 )
+        elif domain == "upload":
+            selected_paths = [
+                self._safe_text(path)
+                for path in (metadata.get("selected_paths") or [])
+                if self._safe_text(path)
+            ]
+            selected_items = [
+                item for item in (metadata.get("selected_items") or [])
+                if isinstance(item, dict) and self._safe_text(item.get("source_path"))
+            ]
+            upload_runtime = dict(metadata.get("upload_runtime") or {})
+            upload_files = list(metadata.get("upload_files") or [])
+            uploaded_files = list(metadata.get("uploaded_files") or [])
+            selected_dir_count = int(metadata.get("selected_dir_count") or len(selected_paths) or len(selected_items) or 0)
+            current_relative_path = self._safe_text(upload_runtime.get("current_relative_path"))
+            current_file_name = self._safe_text(upload_runtime.get("current_file_name"))
+            title_source = ""
+            if len(selected_paths) == 1:
+                title_source = selected_paths[0]
+            elif len(selected_items) == 1:
+                title_source = self._safe_text(selected_items[0].get("source_path"))
+            elif selected_paths:
+                title_source = selected_paths[0]
+            elif selected_items:
+                title_source = self._safe_text(selected_items[0].get("source_path"))
+            else:
+                title_source = self._safe_text(metadata.get("source_label")) or self._safe_text(metadata.get("circle_name")) or source_path
+            title = self._basename(title_source) or "库存上传任务"
+            if selected_dir_count > 1:
+                title = f"{title} 等 {selected_dir_count} 项"
+            subtitle_parts = []
+            final_target = self._safe_text(metadata.get("final_output_path")) or output_path or self._safe_text(metadata.get("target_path"))
+            if selected_dir_count > 0:
+                subtitle_parts.append(f"{selected_dir_count} 个目录")
+            if final_target:
+                subtitle_parts.append(final_target)
+            subtitle = " · ".join(subtitle_parts) or self._safe_text(metadata.get("target_path")) or source_path
+            source_label = source_label or "库存上传"
+            source_action = source_action or "upload_to_server"
+            source_page = source_page or "library"
+            if not rjcode:
+                rjcode = self._normalize_rjcode(title_source)
+            upload_total_bytes = int(
+                upload_runtime.get("total_bytes")
+                or sum(int((item or {}).get("size") or (item or {}).get("size_bytes") or 0) for item in upload_files)
+                or sum(int((item or {}).get("size") or (item or {}).get("size_bytes") or (item or {}).get("uploaded_bytes") or 0) for item in uploaded_files)
+                or 0
+            )
+            uploaded_count = int(len(uploaded_files) or sum(1 for item in upload_files if int((item or {}).get("progress") or 0) >= 100))
+            self._append_metric(metrics, "RJ", rjcode)
+            self._append_metric(metrics, "目录", selected_dir_count)
+            self._append_metric(metrics, "文件", len(upload_files) or len(uploaded_files))
+            self._append_metric(metrics, "大小", self._format_bytes(upload_total_bytes) if upload_total_bytes else None)
+            self._append_metric(metrics, "已上传", uploaded_count if uploaded_count else None)
+            self._append_metric(metrics, "目标库", metadata.get("target_library_id"))
+            self._append_metric(metrics, "前缀", metadata.get("target_subdir"))
+            if task.status == TaskStatus.PROCESSING:
+                if current_relative_path:
+                    current_step_override = f"上传中: {current_relative_path}"
+                elif current_file_name:
+                    current_step_override = f"上传中: {current_file_name}"
         elif domain == "circle_completion":
             if task.type == TaskType.CIRCLE_COMPLETION_INDEX:
                 index_meta = dict(metadata.get("index_meta") or {})
                 indexed_counts = dict(metadata.get("indexed_counts") or {})
-                title = self._safe_text(metadata.get("circle_name")) or self._safe_text(metadata.get("circle_query")) or "社团索引任务"
-                subtitle = self._safe_text(metadata.get("circle_id")) or self._safe_text(metadata.get("circle_query"))
+                if bool(metadata.get("is_refresh_all")):
+                    title = "全部刷新社团索引"
+                    subtitle = self._safe_text(metadata.get("source_label")) or f"{int(metadata.get('batch_total') or 0)} 个社团"
+                else:
+                    title = self._safe_text(metadata.get("circle_name")) or self._safe_text(metadata.get("circle_query")) or "社团索引任务"
+                    subtitle = self._safe_text(metadata.get("circle_id")) or self._safe_text(metadata.get("circle_query"))
                 self._append_metric(metrics, "候选", index_meta.get("combined_candidates_count") or index_meta.get("aggregated_count"))
                 self._append_metric(metrics, "DLsite", index_meta.get("dlsite_candidates_count") or index_meta.get("dlsite_profile_total"))
                 self._append_metric(metrics, "可下载", index_meta.get("asmr_available_count") or indexed_counts.get("downloadable_count"))
@@ -430,7 +856,7 @@ class TaskCenterService:
         if recovered_conflict_count > 0:
             self._append_metric(metrics, "问题作品", f"已移除 {recovered_conflict_count} 项")
 
-        current_step = self._safe_text(task.current_step) or "等待中"
+        current_step = current_step_override or self._safe_text(task.current_step) or "等待中"
         if task.status == TaskStatus.COMPLETED and recovered_notice:
             current_step = recovered_notice
 
@@ -713,6 +1139,15 @@ class TaskCenterService:
             return None
 
     async def _build_all_items(self) -> List[Dict[str, Any]]:
+        now = time.monotonic()
+        cache_key = self._cache_key()
+        if (
+            self._items_cache is not None
+            and self._items_cache_key == cache_key
+            and now - self._items_cache_at <= self.CACHE_TTL_SECONDS
+        ):
+            return list(self._items_cache)
+
         engine = get_task_engine()
         items = [
             serialized
@@ -739,10 +1174,26 @@ class TaskCenterService:
             if serialized
         )
 
+        try:
+            active_conflicts = self._load_active_conflicts()
+        except Exception:
+            logger.exception("[任务中心] 读取问题作品列表失败，当前轮次已跳过 conflict items")
+            active_conflicts = []
+        conflict_items = [
+            serialized
+            for serialized in (self._safe_serialize_conflict_item(conflict) for conflict in active_conflicts)
+            if serialized
+        ]
+
         items = self._merge_linked_subtitle_pipeline_items(items)
+        items = self._merge_conflict_pipeline_items(items, conflict_items)
         items = self._dedupe_items(items)
         items = [item for item in items if not self._is_superseded_failed_item(item)]
-        return self._sort_items(items)
+        items = self._sort_items(items)
+        self._items_cache = list(items)
+        self._items_cache_key = cache_key
+        self._items_cache_at = time.monotonic()
+        return items
 
     async def diagnose_serialization_failures(self) -> Dict[str, Any]:
         engine = get_task_engine()
@@ -811,10 +1262,25 @@ class TaskCenterService:
         status: Optional[str] = None,
         search: Optional[str] = None,
         limit: int = 200,
-    ) -> List[Dict[str, Any]]:
+        offset: int = 0,
+        mode: str = "detail",
+    ) -> Dict[str, Any]:
         items = await self._build_all_items()
         items = self._filter_items(items, domain=domain, status=status, search=search)
-        return items[: max(1, min(int(limit or 200), 500))]
+        total = len(items)
+        safe_limit = max(1, min(int(limit or 200), 500))
+        safe_offset = max(0, int(offset or 0))
+        page_items = items[safe_offset:safe_offset + safe_limit]
+        if self._safe_text(mode).lower() == "summary":
+            page_items = [self._summary_item(item) for item in page_items]
+        return {
+            "items": page_items,
+            "total": total,
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "mode": self._safe_text(mode).lower() or "detail",
+            "generated_at": datetime.now().isoformat(),
+        }
 
     async def get_item(
         self,
@@ -864,6 +1330,11 @@ class TaskCenterService:
             }
         ]
 
+        recent_terminal_items = [
+            item for item in items
+            if item.get("status") in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value}
+        ]
+
         return {
             "generated_at": datetime.now().isoformat(),
             "total": len(items),
@@ -875,8 +1346,8 @@ class TaskCenterService:
                 "waiting_retry": counts_by_status.get(TaskStatus.WAITING_RETRY.value, 0),
                 "failed": counts_by_status.get(TaskStatus.FAILED.value, 0),
             },
-            "recent_items": items[:5],
-            "active_items": active_items[:6],
+            "recent_items": [self._summary_item(item) for item in recent_terminal_items[:6]],
+            "active_items": [self._summary_item(item) for item in active_items[:6]],
         }
 
     async def execute_action(self, item_id: str, action: str) -> Dict[str, Any]:
@@ -972,6 +1443,13 @@ class TaskCenterService:
                     "route_hint": self.DOMAIN_ROUTE_HINT["subtitle_import"],
                 }
             raise ValueError("当前任务不支持该动作")
+
+        if normalized_item_id.startswith("conflict:"):
+            return {
+                "success": True,
+                "message": "请前往问题作品页继续处理",
+                "route_hint": "/conflicts",
+            }
 
         raise ValueError("未知的任务中心项目")
 

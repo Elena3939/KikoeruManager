@@ -64,6 +64,7 @@ class FilterService:
         filtered_files = []
         filtered_dirs = []
         filtered_items: list[dict[str, Any]] = []
+        all_items: list[dict[str, Any]] = []
         filtered_size = 0
         
         # 遍历目录
@@ -71,17 +72,24 @@ class FilterService:
             # 过滤文件
             for file in files:
                 file_path = os.path.join(root, file)
-                if self._should_filter_file(file_path, rules):
+                size_bytes = 0
+                relative_path = ""
+                try:
+                    size_bytes = int(os.path.getsize(file_path)) if os.path.exists(file_path) else 0
+                except Exception:
                     size_bytes = 0
-                    relative_path = ""
-                    try:
-                        size_bytes = int(os.path.getsize(file_path)) if os.path.exists(file_path) else 0
-                    except Exception:
-                        size_bytes = 0
-                    try:
-                        relative_path = os.path.relpath(file_path, path).replace("\\", "/")
-                    except Exception:
-                        relative_path = file
+                try:
+                    relative_path = os.path.relpath(file_path, path).replace("\\", "/")
+                except Exception:
+                    relative_path = file
+                all_items.append({
+                    "path": file_path,
+                    "relative_path": relative_path,
+                    "name": file,
+                    "type": "file",
+                    "size": size_bytes,
+                })
+                if self._should_filter_file(file_path, rules):
                     self._delete_file(file_path)
                     filtered_files.append(file)
                     filtered_size += size_bytes
@@ -95,6 +103,20 @@ class FilterService:
                     logger.info(f"过滤文件: {file}")
             
             # 过滤文件夹
+            for dir_name in dirs:
+                dir_path = os.path.join(root, dir_name)
+                relative_path = ""
+                try:
+                    relative_path = os.path.relpath(dir_path, path).replace("\\", "/")
+                except Exception:
+                    relative_path = dir_name
+                all_items.append({
+                    "path": dir_path,
+                    "relative_path": relative_path,
+                    "name": dir_name,
+                    "type": "dir",
+                    "size": None,
+                })
             if self.config.filter.filter_dir:
                 for dir_name in dirs:
                     dir_path = os.path.join(root, dir_name)
@@ -120,6 +142,7 @@ class FilterService:
         task.update_progress(50, f"过滤完成，已过滤 {len(filtered_files)} 个文件，{len(filtered_dirs)} 个文件夹")
         logger.info(f"过滤完成: 文件 {len(filtered_files)} 个，文件夹 {len(filtered_dirs)} 个")
         return {
+            "all_items": all_items,
             "filtered_files": filtered_files,
             "filtered_dirs": filtered_dirs,
             "filtered_items": filtered_items,

@@ -188,6 +188,28 @@ class CircleCatalog(Base):
         }
 
 
+class CircleExternalIdentity(Base):
+    """社团外部身份映射缓存（DLsite/Kikoeru）"""
+    __tablename__ = 'circle_external_identities'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    circle_name_normalized = Column(String(255), unique=True, index=True)
+    maker_id = Column(String(20), index=True, default='')
+    kikoeru_circle_id = Column(String(32), index=True, default='')
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'circle_name_normalized': self.circle_name_normalized,
+            'maker_id': self.maker_id or '',
+            'kikoeru_circle_id': self.kikoeru_circle_id or '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class CircleWork(Base):
     """社团作品索引表"""
     __tablename__ = 'circle_works'

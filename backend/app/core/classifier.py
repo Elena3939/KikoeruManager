@@ -124,9 +124,118 @@ class SmartClassifier:
                 cue_languages=['CHI_HANS', 'CHI_HANT', 'ENG'],
                 use_cache=True
             )
+
+            # 读取 DLsite 关联信息，用于识别“当前是否翻译作品”以及同语种筛选。
+            # 约定：翻译作品只有在远程存在字幕文件时才算重复；否则应继续后续补配流程。
+            linked_works = {}
+            is_translation_work = False
+            requested_lang = ""
+            try:
+                from .dlsite_service import get_dlsite_service
+                linked_works = await get_dlsite_service().get_linked_works(rjcode)
+                requested_work = linked_works.get(rjcode)
+                requested_type = str(getattr(requested_work, 'work_type', '') or '').strip().lower()
+                requested_lang = str(getattr(requested_work, 'lang', '') or '').strip().upper()
+                is_translation_work = (
+                    requested_type in {'translation', 'child_translation'}
+                    and requested_lang in {'CHI_HANS', 'CHI_HANT', 'ENG'}
+                )
+            except Exception as e:
+                logger.warning(f"[Kikoeru预检] 获取关联语言信息失败，回退通用判重: {rjcode}, error={e}")
+
+            def _has_remote_subtitles(check_result) -> bool:
+                subtitle_count = int(getattr(check_result, 'subtitle_file_count', 0) or 0)
+                return subtitle_count > 0
+
+            def _is_same_language_translation(candidate_rj: str) -> bool:
+                if candidate_rj == rjcode:
+                    return True
+                linked = linked_works.get(candidate_rj)
+                if linked is None:
+                    # 由 related_translation 补查返回的候选，服务端已按同语种过滤。
+                    return True
+                candidate_type = str(getattr(linked, 'work_type', '') or '').strip().lower()
+                if candidate_type not in {'translation', 'child_translation'}:
+                    return False
+                candidate_lang = str(getattr(linked, 'lang', '') or '').strip().upper()
+                if requested_lang and candidate_lang and candidate_lang != requested_lang:
+                    return False
+                return True
             
             # 检查是否找到
             primary_result = result.get(rjcode)
+
+            if is_translation_work:
+                subtitle_hits = []
+                for candidate_rj, candidate_result in result.items():
+                    if not getattr(candidate_result, 'is_found', False):
+                        continue
+                    if not _is_same_language_translation(candidate_rj):
+                        continue
+                    if _has_remote_subtitles(candidate_result):
+                        subtitle_hits.append((candidate_rj, candidate_result))
+
+                if not subtitle_hits:
+                    logger.info(
+                        f"[Kikoeru预检] 翻译作品远程无字幕，不判重复: {rjcode} "
+                        f"(requested_lang={requested_lang or 'UNKNOWN'})"
+                    )
+                    return False
+
+                primary_hit = next((item for item in subtitle_hits if item[0] == rjcode), None)
+                if primary_hit:
+                    _, hit = primary_hit
+                    logger.info(
+                        f"[Kikoeru预检] 翻译作品在远程找到同作且有字幕: {rjcode}, "
+                        f"subtitle_count={getattr(hit, 'subtitle_file_count', 0)}"
+                    )
+                    self._add_to_conflict_works(
+                        task.id,
+                        rjcode,
+                        'DUPLICATE',
+                        f"[远程服务器] 翻译作品已存在字幕: {hit.title}",
+                        task.source_path,
+                        {
+                            'work_name': hit.title,
+                            'circle_name': hit.circle_name,
+                            'source': 'kikoeru_server',
+                            'subtitle_file_count': int(getattr(hit, 'subtitle_file_count', 0) or 0),
+                            'subtitle_check_source': str(getattr(hit, 'subtitle_check_source', '') or ''),
+                        },
+                        linked_works_info=[{
+                            'rjcode': rjcode,
+                            'title': hit.title,
+                            'circle_name': hit.circle_name,
+                            'subtitle_file_count': int(getattr(hit, 'subtitle_file_count', 0) or 0),
+                        }]
+                    )
+                    return True
+
+                linked_hits = [
+                    {
+                        'rjcode': hit_rj,
+                        'title': hit_res.title,
+                        'circle_name': hit_res.circle_name,
+                        'subtitle_file_count': int(getattr(hit_res, 'subtitle_file_count', 0) or 0),
+                    }
+                    for hit_rj, hit_res in subtitle_hits
+                ]
+                logger.info(f"[Kikoeru预检] 翻译作品命中同语种关联且有字幕: {rjcode}, hits={linked_hits}")
+                self._add_to_conflict_works(
+                    task.id,
+                    rjcode,
+                    'DUPLICATE',
+                    f"[远程服务器] 同语种翻译作品已存在字幕: {', '.join([h['rjcode'] for h in linked_hits])}",
+                    task.source_path,
+                    {
+                        'work_name': rjcode,
+                        'source': 'kikoeru_server_linked',
+                        'requested_lang': requested_lang,
+                    },
+                    linked_works_info=linked_hits
+                )
+                return True
+
             if primary_result and primary_result.is_found:
                 logger.info(f"[Kikoeru预检] 在远程服务器找到作品: {rjcode} - {primary_result.title}")
                 
