@@ -355,7 +355,7 @@ def _resolve_config_path(config_path: str = None) -> str:
         else:
             current_dir = os.path.dirname(os.path.abspath(__file__))
             project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
-            config_path = os.path.join(project_root, 'config', 'config.yaml')
+            config_path = os.path.join(project_root, 'data', 'config', 'config.yaml')
     return os.path.abspath(config_path)
 
 
@@ -897,7 +897,7 @@ def start_config_watcher(config_path: str = None):
         else:
             current_dir = os.path.dirname(os.path.abspath(__file__))
             project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
-            config_path = os.path.join(project_root, 'config', 'config.yaml')
+            config_path = os.path.join(project_root, 'data', 'config', 'config.yaml')
     
     config_path = os.path.abspath(config_path)
     _config_file_path = config_path
@@ -939,4 +939,4 @@ def stop_config_watcher():
 
 def get_config_file_path() -> str:
     """获取配置文件路径"""
-    return _config_file_path or os.environ.get('CONFIG_PATH', './config/config.yaml')
+    return _config_file_path or os.environ.get('CONFIG_PATH', './data/config/config.yaml')

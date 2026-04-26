@@ -660,9 +660,53 @@ class ASMRDownloadService:
                 ) as response:
                     # 处理响应状态
                     if resume_offset > 0 and response.status == 206:
-                        # 服务器支持断点续传
                         content_range = response.headers.get('content-range', '')
-                        total_size = int(content_range.split('/')[-1]) if '/' in content_range else 0
+                        # 严格校验 Content-Range，防止服务端返回错误分片导致追加污染文件尾部。
+                        range_match = re.match(r'^bytes\s+(\d+)-(\d+)/(\d+|\*)$', str(content_range).strip(), re.IGNORECASE)
+                        if not range_match:
+                            logger.warning(f"[下载] 续传响应缺少有效 Content-Range，回退全量重下: {os.path.basename(dest_path)}, content-range={content_range}")
+                            push_log(f"{os.path.basename(dest_path)} 续传响应无效，回退全量重下", "warning")
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                            await asyncio.sleep(1)
+                            continue
+
+                        range_start = int(range_match.group(1))
+                        total_size = int(range_match.group(3)) if range_match.group(3).isdigit() else 0
+
+                        if range_start != resume_offset:
+                            logger.warning(
+                                "[下载] 续传偏移不匹配，回退全量重下: file=%s, local_offset=%s, server_start=%s, content-range=%s",
+                                os.path.basename(dest_path),
+                                resume_offset,
+                                range_start,
+                                content_range,
+                            )
+                            push_log(
+                                f"{os.path.basename(dest_path)} 续传偏移不匹配(local={resume_offset}, remote={range_start})，回退全量重下",
+                                "warning",
+                            )
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                            await asyncio.sleep(1)
+                            continue
+
+                        if total_size > 0 and resume_offset >= total_size:
+                            logger.warning(
+                                "[下载] 本地续传片段大小异常，回退全量重下: file=%s, local_offset=%s, total=%s",
+                                os.path.basename(dest_path),
+                                resume_offset,
+                                total_size,
+                            )
+                            push_log(
+                                f"{os.path.basename(dest_path)} 本地续传片段异常(local={resume_offset}, total={total_size})，回退全量重下",
+                                "warning",
+                            )
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                            await asyncio.sleep(1)
+                            continue
+
                         downloaded = resume_offset
                         logger.info(f"[下载] 服务器支持断点续传，从 {resume_offset}/{total_size} 继续")
                         push_log(f"{os.path.basename(dest_path)} 源站已响应，支持断点续传 {resume_offset}/{total_size}")
@@ -732,6 +776,22 @@ class ASMRDownloadService:
 
                     # 下载完成，重命名临时文件
                     if os.path.exists(temp_path):
+                        # 避免下载链路把错误内容静默当作成功。
+                        actual_size = os.path.getsize(temp_path)
+                        if total_size > 0 and actual_size != total_size:
+                            logger.warning(
+                                "[下载] 下载后大小校验失败，准备重试: file=%s, actual=%s, total=%s",
+                                os.path.basename(dest_path),
+                                actual_size,
+                                total_size,
+                            )
+                            push_log(
+                                f"{os.path.basename(dest_path)} 下载大小校验失败({actual_size}/{total_size})，准备重试",
+                                "warning",
+                            )
+                            await asyncio.sleep(1)
+                            continue
+
                         if os.path.exists(dest_path):
                             os.remove(dest_path)
                         os.rename(temp_path, dest_path)

@@ -51,6 +51,21 @@ class ExtractService:
     _seven_zip_check_lock: Optional[asyncio.Lock] = None
     _seven_zip_semaphore: Optional[asyncio.Semaphore] = None
     _seven_zip_semaphore_limit: Optional[int] = None
+    VERIFY_FULL_FILE_LIMIT = 1200
+    VERIFY_SAMPLE_FILE_LIMIT = 240
+    NESTED_SCAN_FILE_BUDGET = 5000
+    NESTED_SCAN_DIR_BUDGET = 800
+    NESTED_SKIP_DIRS = {
+        "__macosx",
+        ".git",
+        ".svn",
+        "node_modules",
+        ".cache",
+        "temp",
+        "tmp",
+        "_conflicts",
+        "subtitles",
+    }
     
     @property
     def config(self):
@@ -138,6 +153,12 @@ class ExtractService:
             self.__class__._seven_zip_semaphore_limit = limit
             logger.info("设置 7z 并发上限: %s", limit)
         return self.__class__._seven_zip_semaphore
+
+    def _set_extract_meta(self, task: Task, **values):
+        if task.task_metadata is None:
+            task.task_metadata = {}
+        for key, value in values.items():
+            task.task_metadata[key] = value
     
     async def extract(self, task: Task) -> Optional[str]:
         """
@@ -156,6 +177,12 @@ class ExtractService:
             return None
         
         # 1. 等待文件稳定
+        self._set_extract_meta(
+            task,
+            extract_stage="wait_stable",
+            extract_started_at=datetime.now().isoformat(),
+            archive_size=os.path.getsize(archive_path) if os.path.exists(archive_path) else 0,
+        )
         task.update_progress(5, "等待文件写入完成")
         await self._wait_file_stable(archive_path, task)
         
@@ -166,6 +193,7 @@ class ExtractService:
             return None
         
         # 2. 修复后缀名
+        self._set_extract_meta(task, extract_stage="detect_type")
         task.update_progress(10, "检测文件类型")
         archive_path = await self._repair_extension(archive_path)
 
@@ -177,6 +205,7 @@ class ExtractService:
         # 3. 检查是否是分卷
         volume_set = self._detect_volume_set(archive_path)
         if volume_set:
+            self._set_extract_meta(task, extract_stage="wait_volume_set")
             task.update_progress(15, "等待分卷组完整")
             if not await self._wait_for_complete_set(volume_set, task):
                 raise Exception("分卷组不完整或等待超时")
@@ -202,8 +231,9 @@ class ExtractService:
             return None
         
         # 4. 获取压缩包内文件列表
+        self._set_extract_meta(task, extract_stage="list_archive")
         task.update_progress(20, "读取压缩包内容")
-        archive_info = await self._get_archive_info(archive_path)
+        archive_info = await self._get_archive_info(archive_path, password_candidates=password_candidates)
         archive_info_from_listing = archive_info is not None
         if not archive_info:
             logger.warning("预读取压缩包内容失败，回退为直接尝试解压: %s", archive_path)
@@ -220,8 +250,9 @@ class ExtractService:
         )
         
         # 6. 尝试解压
+        self._set_extract_meta(task, extract_stage="extract")
         task.update_progress(30, "开始解压")
-        success, success_password = await self._try_extract(
+        success, success_password, extract_failure_reason = await self._try_extract(
             archive_info,
             output_path,
             task,
@@ -229,8 +260,14 @@ class ExtractService:
         )
         
         if not success:
-            # 更新任务状态为失败，并设置错误信息
-            error_msg = "解压失败：无正确密码"
+            # 更新任务状态为失败，并设置更准确的错误信息
+            if extract_failure_reason == "archive_corrupt":
+                error_msg = "解压失败：压缩包损坏或不完整（Headers/Data Error）"
+            elif extract_failure_reason == "wrong_password":
+                error_msg = "解压失败：无正确密码"
+            else:
+                error_msg = "解压失败：无法解压压缩包（原因未知）"
+            self._set_extract_meta(task, extract_failure_reason=extract_failure_reason)
             task.fail(error_msg)
             logger.error(f"任务 {task.id}: {error_msg}")
             # 清理已创建的解压目录（包括部分解压的残留文件）
@@ -238,6 +275,7 @@ class ExtractService:
             return None
         
         # 记录成功使用的密码
+        self._set_extract_meta(task, extract_stage="extracted")
         logger.info(f"外层压缩包解压成功，使用密码: {success_password or '无密码'}")
         
         # 检查暂停和取消
@@ -251,6 +289,8 @@ class ExtractService:
         
         # 7. 验证解压完整性
         if archive_info_from_listing:
+            verify_mode = "sample" if len([item for item in archive_info.file_list if not item.get('is_dir')]) > self.VERIFY_FULL_FILE_LIMIT else "full"
+            self._set_extract_meta(task, extract_stage="verify", verify_mode=verify_mode)
             task.update_progress(90, "验证解压完整性")
             if not await self._verify_extraction(archive_info, output_path):
                 raise Exception("解压验证失败，文件不完整")
@@ -259,6 +299,7 @@ class ExtractService:
         
         # 8. 检查并解压嵌套压缩包
         if self.config.extract.extract_nested_archives:
+            self._set_extract_meta(task, extract_stage="nested_scan")
             task.update_progress(95, "检查嵌套压缩包")
             nested_count = await self._extract_nested_archives(
                 output_path, 
@@ -268,9 +309,11 @@ class ExtractService:
             )
             if nested_count > 0:
                 logger.info(f"解压了 {nested_count} 个嵌套压缩包")
+            self._set_extract_meta(task, nested_archive_count=nested_count)
         else:
             logger.debug("嵌套压缩包解压已禁用")
         
+        self._set_extract_meta(task, extract_stage="done", extract_finished_at=datetime.now().isoformat())
         return output_path
 
     def _pick_filename_matched_rjcode(self, password_candidates: List[Dict[str, Optional[str]]]) -> Optional[str]:
@@ -294,13 +337,48 @@ class ExtractService:
 
         if task.task_metadata is None:
             task.task_metadata = {}
-        task.task_metadata.setdefault("inferred_rjcode", matched_rjcode)
-        task.task_metadata.setdefault("rjcode", matched_rjcode)
+        # 密码库同时填写了 filename + rjcode，视为用户显式权威绑定：
+        # 强制覆盖任务 RJ、推断 RJ 和元数据 RJ，后续查重/重命名/分类统一用这个 RJ。
+        task.task_metadata["inferred_rjcode"] = matched_rjcode
+        task.task_metadata["rjcode"] = matched_rjcode
         task.task_metadata["inferred_rjcode_source"] = "password_entry_filename_match"
-        if not getattr(task, "rjcode", None) or str(task.rjcode).strip() in {"", "未知"}:
-            task.rjcode = matched_rjcode
-        logger.info("[Extract] 密码库按文件名命中 RJ，仅注入任务上下文，不改源文件名: source=%s rj=%s", archive_path, matched_rjcode)
+        task.task_metadata["rjcode_source"] = "password_entry_filename_match"
+        task.task_metadata["rjcode_lock"] = True
+        task.rjcode = matched_rjcode
+        logger.info(
+            "[Extract] 密码库按文件名+RJ 权威绑定，强制覆盖任务 RJ: source=%s rj=%s",
+            archive_path,
+            matched_rjcode,
+        )
         return matched_rjcode
+
+    async def lookup_filename_bound_rjcode(self, archive_path: str) -> Optional[str]:
+        """预检阶段轻量查询：若密码库条目同时填写了 filename 和 rjcode，则返回其 rjcode。
+
+        用于在解压前把任务的权威 RJ 切换到密码库绑定的 RJ，驱动查重/命名链路。
+        """
+        if not archive_path or not os.path.isfile(archive_path):
+            return None
+        from ..models.database import PasswordEntry, get_db
+
+        filename_candidates = self._build_filename_candidates(archive_path)
+        if not filename_candidates:
+            return None
+
+        db = next(get_db())
+        try:
+            entries = (
+                db.query(PasswordEntry)
+                .filter(PasswordEntry.filename.in_(filename_candidates))
+                .all()
+            )
+            for entry in entries:
+                normalized_rjcode = normalize_rjcode_value(entry.rjcode)
+                if normalized_rjcode:
+                    return normalized_rjcode
+            return None
+        finally:
+            db.close()
 
     async def get_archive_info(self, archive_path: str) -> Optional[ArchiveInfo]:
         """Public wrapper for archive listing."""
@@ -399,7 +477,7 @@ class ExtractService:
                 f"@{list_file_path}",
             ]
 
-            result = await self._run_7z_command(cmd)
+            result = await self._run_7z_command(cmd, capture_stdout=False)
             if result.returncode == 0:
                 archive_info.password = password
                 return output_path
@@ -442,17 +520,32 @@ class ExtractService:
         await task.wait_if_paused()
         
         extracted_count = 0
+        scanned_files = 0
+        scanned_dirs = 0
         archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}
         
         # 扫描目录中的所有文件
         try:
             for root, dirs, files in os.walk(directory):
+                dirs[:] = [
+                    item for item in dirs
+                    if item.lower() not in self.NESTED_SKIP_DIRS
+                    and not item.lower().startswith((".git", "__pycache__"))
+                ]
+                scanned_dirs += 1
+                if scanned_dirs > self.NESTED_SCAN_DIR_BUDGET:
+                    logger.warning("嵌套压缩包目录扫描达到预算上限，停止扫描: %s", directory)
+                    break
                 # 检查任务状态
                 if task.is_cancelled():
                     break
                 await task.wait_if_paused()
                 
                 for filename in files:
+                    scanned_files += 1
+                    if scanned_files > self.NESTED_SCAN_FILE_BUDGET:
+                        logger.warning("嵌套压缩包文件扫描达到预算上限，停止扫描: %s", directory)
+                        return extracted_count
                     file_path = os.path.join(root, filename)
                     
                     # 检查是否已经处理过（防止循环）
@@ -675,7 +768,7 @@ class ExtractService:
             
             try:
                 logger.info(f"尝试解压嵌套压缩包使用: {source} ({password or '无密码'})")
-                result = await self._run_7z_command(cmd)
+                result = await self._run_7z_command(cmd, capture_stdout=False)
                 
                 if result.returncode == 0:
                     logger.info(f"嵌套压缩包解压成功，使用: {source} ({password or '无密码'})")
@@ -1930,13 +2023,18 @@ class ExtractService:
             logger.debug(f"从路径提取RJ号生成密码: {passwords}")
         return passwords
 
-    async def _get_archive_info(self, archive_path: str) -> Optional[ArchiveInfo]:
+    async def _get_archive_info(
+        self,
+        archive_path: str,
+        password_candidates: Optional[List[Dict[str, Optional[str]]]] = None,
+    ) -> Optional[ArchiveInfo]:
         """获取压缩包信息（文件列表、大小等）
 
         注意：这里只获取文件列表，不解压。真正能解压的密码在 _try_extract 中确定。
         为了不限制解压时的密码选择，这里尝试找一个能读取内容的密码即可。
         """
-        password_candidates = await self._get_password_candidates_for_archive(archive_path)
+        if password_candidates is None:
+            password_candidates = await self._get_password_candidates_for_archive(archive_path)
         vault_passwords = [item["password"] for item in password_candidates]
         password_rjcode_map = {
             item["password"]: item.get("rjcode")
@@ -2153,7 +2251,7 @@ class ExtractService:
         output_path: str,
         task: Task,
         password_candidates: Optional[List[Dict[str, Optional[str]]]] = None,
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple[bool, Optional[str], str]:
         """尝试解压，返回 (是否成功, 成功使用的密码)"""
         if password_candidates is None:
             password_candidates = await self._get_password_candidates_for_archive(archive_info.path)
@@ -2182,12 +2280,12 @@ class ExtractService:
             # 获取RJ号相关密码
             rj_passwords = self._get_rj_passwords(archive_info.path)
 
-            # 构建密码列表：RJ号密码优先，然后密码库密码，已知密码，最后是默认密码
+            # 构建密码列表：预读成功密码优先，减少同一压缩包重复失败尝试。
             password_list = []
+            if archive_info.password:
+                password_list.append(archive_info.password)
             password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
             password_list.extend(vault_passwords)  # 密码库密码
-            if archive_info.password and archive_info.password not in password_list:
-                password_list.append(archive_info.password)
             password_list.append("")  # 无密码
             password_list.extend(self.config.extract.password_list)  # 默认密码
             
@@ -2229,9 +2327,10 @@ class ExtractService:
                 # 创建进度解析回调
                 start_time = datetime.now()
                 last_update = 0
+                last_percent = -1
 
                 def progress_callback(line: str):
-                    nonlocal last_update
+                    nonlocal last_update, last_percent
                     # 解析 7z 进度行，例如:  12% 123/1000 5678/100000000
                     percent_match = re.search(r"(\d{1,3})%", line)
                     if percent_match:
@@ -2268,12 +2367,19 @@ class ExtractService:
 
                         # 控制更新频率
                         current_ts = now.timestamp()
-                        if current_ts - last_update >= 1 or raw_percent == 100:
+                        if raw_percent == last_percent and raw_percent != 100:
+                            return
+                        if current_ts - last_update >= 1.5 or raw_percent == 100:
                             last_update = current_ts
+                            last_percent = raw_percent
                             task.update_progress(min(99, mapped), f"解压中 {raw_percent}%" + (f" ({speed_str}, 剩余 {eta_str})" if speed_str else ""))
 
                 task.update_progress(40, f"准备解压 (密码来源: {password_source})")
-                result = await self._run_7z_command(cmd, progress_callback=progress_callback)
+                result = await self._run_7z_command(
+                    cmd,
+                    progress_callback=progress_callback,
+                    capture_stdout=False,
+                )
                 
                 if result.returncode == 0:
                     # 记录成功使用的密码
@@ -2294,13 +2400,34 @@ class ExtractService:
                         if not getattr(task, 'rjcode', None) or str(task.rjcode).strip() in {'', '未知'}:
                             task.rjcode = inferred_rjcode
                     logger.info(f"解压成功，使用{password_source}密码: {password or '无密码'}")
-                    return True, password
+                    return True, password, ""
+
+                stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
+                stderr_lower = stderr_text.lower()
+
+                if "wrong password" in stderr_lower:
+                    logger.warning(f"密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
+                    continue
+
+                archive_corrupt_markers = (
+                    "headers error",
+                    "unconfirmed start of archive",
+                    "unexpected end of archive",
+                    "data error",
+                    "can not open the file as archive",
+                )
+                if any(marker in stderr_lower for marker in archive_corrupt_markers):
+                    logger.error(
+                        "检测到压缩包损坏特征，停止密码重试: %s",
+                        stderr_text[:300] if stderr_text else "(无错误文本)",
+                    )
+                    return False, None, "archive_corrupt"
                 
             except Exception as e:
                 logger.warning(f"解压尝试失败: {e}")
                 continue
         
-        return False, None
+        return False, None, "wrong_password"
     
     async def _verify_extraction(self, archive_info: ArchiveInfo, output_path: str) -> bool:
         """验证解压完整性"""
@@ -2310,14 +2437,36 @@ class ExtractService:
         if not archive_info.file_list:
             logger.warning("压缩包预读清单为空，跳过完整性验证: %s", archive_info.path)
             return True
+
+        file_entries = [item for item in archive_info.file_list if not item.get('is_dir')]
+        total_files = len(file_entries)
+        verify_mode = "full"
+        if total_files > self.VERIFY_FULL_FILE_LIMIT:
+            verify_mode = "sample"
+            head_count = self.VERIFY_SAMPLE_FILE_LIMIT // 3
+            tail_count = self.VERIFY_SAMPLE_FILE_LIMIT // 3
+            stride_count = max(0, self.VERIFY_SAMPLE_FILE_LIMIT - head_count - tail_count)
+            stride = max(1, total_files // max(1, stride_count))
+            sampled = file_entries[:head_count]
+            sampled.extend(file_entries[head_count:total_files - tail_count:stride][:stride_count])
+            sampled.extend(file_entries[-tail_count:])
+            seen_names = set()
+            file_entries = [
+                item for item in sampled
+                if not (item.get('name') in seen_names or seen_names.add(item.get('name')))
+            ]
+            logger.info(
+                "压缩包文件数 %s，使用抽样完整性验证 %s/%s: %s",
+                total_files,
+                len(file_entries),
+                total_files,
+                archive_info.path,
+            )
         
         missing_files = []
         size_mismatch_files = []
         
-        for expected in archive_info.file_list:
-            if expected.get('is_dir'):
-                continue
-            
+        for expected in file_entries:
             # 尝试多种可能的路径（处理编码问题）
             possible_paths = [
                 os.path.join(output_path, expected['name']),  # 原始路径
@@ -2356,6 +2505,14 @@ class ExtractService:
         if size_mismatch_files:
             logger.error(f"有 {len(size_mismatch_files)} 个文件大小不匹配，解压可能不完整")
             return False
+
+        logger.info(
+            "解压完整性验证完成: mode=%s checked=%s total=%s archive=%s",
+            verify_mode,
+            len(file_entries),
+            total_files,
+            archive_info.path,
+        )
         
         return True
     
@@ -2378,7 +2535,13 @@ class ExtractService:
                 else:
                     logger.error(f"清理解压目录失败: {output_path}, {e}")
     
-    async def _run_7z_command(self, cmd: List[str], progress_callback: Optional[Callable[[str], None]] = None) -> subprocess.CompletedProcess:
+    async def _run_7z_command(
+        self,
+        cmd: List[str],
+        progress_callback: Optional[Callable[[str], None]] = None,
+        capture_stdout: bool = True,
+        max_captured_bytes: int = 4 * 1024 * 1024,
+    ) -> subprocess.CompletedProcess:
         """运行7z命令"""
         # 记录命令（显示密码用于调试）
         logger.info(f"执行7z命令: {' '.join(cmd)}")
@@ -2410,7 +2573,11 @@ class ExtractService:
                         chunk = await stream.read(4096)
                         if not chunk:
                             break
-                        buffer.extend(chunk)
+                        should_store = (is_stdout and capture_stdout) or (not is_stdout)
+                        if should_store and len(buffer) < max_captured_bytes:
+                            remain = max_captured_bytes - len(buffer)
+                            if remain > 0:
+                                buffer.extend(chunk[:remain])
                         if is_stdout and progress_callback:
                             try:
                                 text = chunk.decode('utf-8', errors='ignore')

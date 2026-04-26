@@ -2,7 +2,7 @@ import os
 import re
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from typing import Any, Optional, Dict, List
 import requests
 import logging
 import json
@@ -77,7 +77,16 @@ class MetadataService:
         """
         从路径中提取 RJ 号并获取元数据。
         """
-        rjcode = self._extract_rjcode(path)
+        task_metadata = getattr(task, "task_metadata", {}) or {} if task is not None else {}
+        # 密码库权威绑定：rjcode_lock 时优先使用任务上下文 RJ，避免被解压目录里的子作品 RJ 抢走。
+        rjcode = None
+        if task_metadata.get("rjcode_lock"):
+            locked = str(task_metadata.get("rjcode") or getattr(task, "rjcode", "") or "").strip().upper()
+            if locked and locked != "未知":
+                rjcode = locked
+                logger.info("元数据服务命中密码库权威 RJ 绑定: %s", rjcode)
+        if not rjcode:
+            rjcode = self._extract_rjcode(path)
         if not rjcode and task is not None:
             task_metadata = getattr(task, "task_metadata", {}) or {}
             for candidate in (
@@ -126,10 +135,13 @@ class MetadataService:
     def _should_refresh_cached_metadata(self, cached: WorkMetadataModel) -> bool:
         maker_name = str(getattr(cached, "maker_name", "") or "").strip()
         work_name = str(getattr(cached, "work_name", "") or "").strip()
+        release_date = str(getattr(cached, "release_date", "") or "").strip()
+        tags = list(getattr(cached, "tags", None) or [])
         if not maker_name:
             return True
 
         normalized_maker = maker_name.lower()
+        normalized_title = work_name.lower()
         suspicious_markers = (
             "みんなで翻訳",
             "everyone translation",
@@ -142,6 +154,14 @@ class MetadataService:
 
         # 某些翻译占位社团名会和作品标题几乎一样，命中时也强制刷新。
         if work_name and maker_name == work_name:
+            return True
+
+        # 旧版预告页缓存只抓到了标题/社团/封面，没有标签和发售日，需要强制重抓。
+        if (
+            ("予告作品" in work_name or "预告作品" in work_name or "announcement" in normalized_title)
+            and not release_date
+            and not tags
+        ):
             return True
 
         return False
@@ -290,6 +310,16 @@ class MetadataService:
         metadata.age_category = 'ADL'
         return metadata
 
+    def _normalize_cover_url(self, value: Any) -> str:
+        url = str(value or '').strip()
+        if not url:
+            return ''
+        if url.startswith('//'):
+            return f'https:{url}'
+        if url.startswith('https://') or url.startswith('http://'):
+            return url
+        return ''
+
     async def _build_metadata_from_dlsite_product(self, rjcode: str, product: Dict) -> WorkMetadata:
         metadata = WorkMetadata()
         metadata.rjcode = product.get('workno', rjcode)
@@ -300,7 +330,7 @@ class MetadataService:
         metadata.release_date = product.get('regist_date', '')[:10]
         metadata.series_name = product.get('series_name')
         metadata.series_id = product.get('series_id')
-        metadata.cover_url = 'https:' + product.get('image_main', {}).get('url', '')
+        metadata.cover_url = self._normalize_cover_url((product.get('image_main') or {}).get('url'))
 
         age_category = product.get('age_category', 3)
         if age_category == 1:
@@ -457,7 +487,7 @@ class MetadataService:
             metadata.release_date = product.get('regist_date', '')[:10]
             metadata.series_name = product.get('series_name')
             metadata.series_id = product.get('series_id')
-            metadata.cover_url = 'https:' + product.get('image_main', {}).get('url', '')
+            metadata.cover_url = self._normalize_cover_url((product.get('image_main') or {}).get('url'))
             
             # 年龄分级
             age_category = product.get('age_category', 3)

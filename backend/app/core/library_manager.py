@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import time
 import uuid
 from dataclasses import dataclass, field, replace
@@ -17,6 +18,35 @@ from urllib.parse import quote, unquote
 import aiohttp
 
 from ..config.settings import get_config, get_config_file_path
+
+
+def _robust_rmtree(path: str, retries: int = 3, delay: float = 1.0) -> None:
+    """删除目录树，自动处理只读文件(WinError 5)和文件被占用(WinError 32)。"""
+
+    def _onerror(func, fpath, exc_info):
+        exc = exc_info[1]
+        if getattr(exc, 'winerror', None) == 5:
+            try:
+                os.chmod(fpath, stat.S_IWRITE | stat.S_IREAD)
+                func(fpath)
+                return
+            except Exception:
+                pass
+        raise exc
+
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            shutil.rmtree(path, onerror=_onerror)
+            return
+        except Exception as exc:
+            last_exc = exc
+            if getattr(exc, 'winerror', None) == 32 and attempt < retries - 1:
+                time.sleep(delay)
+                continue
+            break
+    if last_exc:
+        raise last_exc
 
 logger = logging.getLogger(__name__)
 
@@ -549,6 +579,9 @@ class SynologyFileStationClient:
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> dict[str, Any]:
         file_name = remote_name or os.path.basename(local_path)
+        if not os.path.isfile(local_path):
+            raise FileNotFoundError(f"待上传本地文件不存在: {local_path}")
+
         boundary = f"----CodexSynology{uuid.uuid4().hex}"
         file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
         preamble = bytearray()
@@ -573,14 +606,18 @@ class SynologyFileStationClient:
                     chunk = handle.read(1024 * 256)
                     if not chunk:
                         break
+                    yield chunk
                     uploaded += len(chunk)
                     if progress_callback:
                         progress_callback(uploaded, file_size)
-                    yield chunk
             yield epilogue
 
         headers = {
             "Content-Type": f"multipart/form-data; boundary={boundary}",
+            # DSM / 公网反代对 chunked multipart upload 很敏感；显式长度能避免
+            # aiohttp 走 Transfer-Encoding: chunked 后被对端提前断开。
+            "Content-Length": str(len(preamble) + file_size + len(epilogue)),
+            "Connection": "close",
         }
 
         async with session.post(url, params=query_params, data=body_iter(), headers=headers, ssl=self.config.verify_ssl) as response:
@@ -989,7 +1026,10 @@ class SynologyFileStationClient:
         overwrite_value = "true" if overwrite else "false"
         local_file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
         connect_timeout = max(10, int(self.config.timeout or 30))
-        response_timeout = max(90, connect_timeout * 6)
+        if local_file_size <= 10 * 1024 * 1024:
+            response_timeout = max(30, min(45, connect_timeout * 2))
+        else:
+            response_timeout = max(90, connect_timeout * 6)
         estimated_transfer_timeout = (local_file_size // (512 * 1024)) + 180 if local_file_size > 0 else 180
         total_timeout = max(response_timeout, connect_timeout * 4, estimated_transfer_timeout)
         total_timeout = min(max(total_timeout, 180), 6 * 60 * 60)
@@ -1120,13 +1160,15 @@ class SynologyFileStationClient:
                             if "_sid" in form:
                                 form["_sid"] = self._sid
                         logger.info(
-                            "[SynologyUpload] 尝试变体 %s/%s name=%s attempt=%s/%s path=%s api_path=%s api_version=%s query_keys=%s form_keys=%s",
+                            "[SynologyUpload] 尝试变体 %s/%s name=%s attempt=%s/%s path=%s local=%s size=%s api_path=%s api_version=%s query_keys=%s form_keys=%s",
                             index + 1,
                             len(payload_variants),
                             variant.get("name"),
                             attempt,
                             per_variant_retry_limit,
                             normalized_path,
+                            local_path,
+                            local_file_size,
                             api_path,
                             api_version,
                             sorted(query.keys()),
@@ -1158,10 +1200,14 @@ class SynologyFileStationClient:
                             exc,
                         )
                         last_error = exc
-                        if self._is_error_code(exc, 414):
+                        if isinstance(exc, FileNotFoundError):
+                            raise
+                        if self._is_error_code(exc, 414) or self._is_error_code(exc, 408):
+                            error_code = 414 if self._is_error_code(exc, 414) else 408
                             if await self._remote_file_matches_local_size(remote_file_path, local_file_size):
                                 logger.info(
-                                    "[SynologyUpload] 414 后远端校验命中，直接判定成功 path=%s size=%s variant=%s",
+                                    "[SynologyUpload] %s 后远端校验命中，直接判定成功 path=%s size=%s variant=%s",
+                                    error_code,
                                     remote_file_path,
                                     local_file_size,
                                     variant.get("name"),
@@ -1171,11 +1217,12 @@ class SynologyFileStationClient:
                                     progress_callback(local_file_size, local_file_size)
                                 return
                             logger.info(
-                                "[SynologyUpload] 414 后远端校验未命中，继续切换变体 path=%s local_size=%s",
+                                "[SynologyUpload] %s 后远端校验未命中，停止当前文件上传 path=%s local_size=%s",
+                                error_code,
                                 remote_file_path,
                                 local_file_size,
                             )
-                            break
+                            raise
                         if self._is_retryable_upload_error(exc):
                             if await self._remote_file_matches_local_size(remote_file_path, local_file_size):
                                 logger.info(
@@ -2700,7 +2747,7 @@ class LibraryManager:
             }
 
         if os.path.isdir(path):
-            shutil.rmtree(path)
+            _robust_rmtree(path)
         else:
             os.remove(path)
         self._append_stats_log(library, "INFO", f"删除完成 path={path}")
@@ -2724,7 +2771,7 @@ class LibraryManager:
         for path in paths:
             try:
                 if os.path.isdir(path):
-                    shutil.rmtree(path)
+                    _robust_rmtree(path)
                 else:
                     os.remove(path)
                 success_count += 1
@@ -2943,7 +2990,11 @@ class LibraryManager:
             file_completed_callback=file_completed_callback,
         )
         if delete_source_on_success and os.path.isdir(source_dir):
-            shutil.rmtree(source_dir, ignore_errors=True)
+            try:
+                _robust_rmtree(source_dir)
+            except Exception as exc:
+                logger.warning("上传成功后删除本地目录失败: source=%s error=%s", source_dir, exc, exc_info=True)
+                raise RuntimeError(f"上传完成，但删除本地目录失败: {source_dir}，{exc}") from exc
         return final_remote_path
 
     def _move_directory_to_local_library(self, library: LibraryDefinition, source_dir: str, relative_target_dir: Optional[str]) -> str:
@@ -2969,6 +3020,7 @@ class LibraryManager:
         file_completed_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ):
         remote_root = remote_root.rstrip("/")
+        await self._ensure_remote_directory(client, remote_root)
         if progress_callback:
             progress_callback({
                 "phase": "preparing",
@@ -3031,17 +3083,28 @@ class LibraryManager:
 
         total_bytes = sum(int(item.get("size") or 0) for item in file_rows)
         started_at = time.monotonic()
-        # U5: 并发上传状态（asyncio 单线程，无竞争）
+        last_speed_sample_at = started_at
+        last_speed_sample_bytes = 0
+        # FileStation Upload 对同一目录并发写入很容易在公网/反代链路下返回 408。
+        # 这里保持单文件流式上传，避免前端等待最终补配时发生超时回滚竞态。
         completed_files = 0
         completed_bytes = 0
         in_flight_bytes: dict[str, int] = {row["local_path"]: 0 for row in file_rows}
-        _upload_semaphore = asyncio.Semaphore(4)
+        _upload_semaphore = asyncio.Semaphore(1)
 
         def emit_progress(current_row: dict, uploaded_bytes: int):
+            nonlocal last_speed_sample_at, last_speed_sample_bytes
             if not progress_callback:
                 return
             transferred_bytes = min(total_bytes, completed_bytes + sum(in_flight_bytes.values()))
             elapsed = max(0.001, time.monotonic() - started_at)
+            now = time.monotonic()
+            delta_time = max(0.001, now - last_speed_sample_at)
+            delta_bytes = max(0, transferred_bytes - last_speed_sample_bytes)
+            instant_speed = int(delta_bytes / delta_time) if delta_bytes > 0 else 0
+            if instant_speed > 0:
+                last_speed_sample_at = now
+                last_speed_sample_bytes = transferred_bytes
             progress_callback({
                 "phase": "uploading",
                 "current_file_name": current_row.get("name") or "",
@@ -3053,7 +3116,8 @@ class LibraryManager:
                 "total_files": len(file_rows),
                 "transferred_bytes": transferred_bytes,
                 "total_bytes": total_bytes,
-                "speed_bytes_per_sec": int(transferred_bytes / elapsed) if transferred_bytes > 0 else 0,
+                "speed_bytes_per_sec": instant_speed,
+                "average_speed_bytes_per_sec": int(transferred_bytes / elapsed) if transferred_bytes > 0 else 0,
             })
 
         async def upload_one(row: dict):
@@ -3085,7 +3149,15 @@ class LibraryManager:
                         "remote_dir": row.get("remote_dir") or "",
                     })
 
-        await asyncio.gather(*[upload_one(row) for row in file_rows])
+        upload_tasks = [asyncio.create_task(upload_one(row)) for row in file_rows]
+        try:
+            await asyncio.gather(*upload_tasks)
+        except Exception:
+            for upload_task in upload_tasks:
+                if not upload_task.done():
+                    upload_task.cancel()
+            await asyncio.gather(*upload_tasks, return_exceptions=True)
+            raise
 
     async def _ensure_remote_directory(self, client: SynologyFileStationClient, remote_dir: str):
         normalized = self._normalize_remote_path(remote_dir)
@@ -3206,14 +3278,18 @@ class LibraryManager:
                 except Exception:
                     pass
 
+        target_exists = await self._remote_path_exists(client, target)
         try:
-            await self._retry_remote_rename(client, target, backup_name)
+            if target_exists:
+                await self._retry_remote_rename(client, target, backup_name)
             try:
                 await self._retry_remote_rename(client, stage_path, target_name)
             except Exception:
-                await self._retry_remote_rename(client, backup_path, target_name)
+                if target_exists:
+                    await self._retry_remote_rename(client, backup_path, target_name)
                 raise
-            await self._retry_remote_delete(client, backup_path)
+            if target_exists:
+                await self._retry_remote_delete(client, backup_path)
             return target
         except Exception:
             try:

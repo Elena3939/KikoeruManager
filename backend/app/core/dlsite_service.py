@@ -75,10 +75,25 @@ class DLsiteApiService:
             url = f"{url}/?locale={locale}"
         return url
 
+    def _build_announce_product_page_url(self, rjcode: str, locale: Optional[str] = None) -> str:
+        workno = self._normalize_workno(rjcode)
+        url = f"https://www.dlsite.com/maniax/announce/=/product_id/{workno}.html"
+        if locale:
+            url = f"{url}/?locale={locale}"
+        return url
+
     def _build_circle_profile_url(self, maker_id: str, language: str = "JPN", page: int = 1) -> str:
         normalized_maker_id = str(maker_id or "").strip().upper()
         normalized_language = str(language or "JPN").strip().upper() or "JPN"
         base = f"https://www.dlsite.com/maniax/circle/profile/=/maker_id/{normalized_maker_id}.html/options[0]/{normalized_language}"
+        if page > 1:
+            return f"{base}/page/{page}"
+        return base
+
+    def _build_circle_announce_url(self, maker_id: str, language: str = "JPN", page: int = 1) -> str:
+        normalized_maker_id = str(maker_id or "").strip().upper()
+        normalized_language = str(language or "JPN").strip().upper() or "JPN"
+        base = f"https://www.dlsite.com/maniax/announce/=/maker_id/{normalized_maker_id}.html/options[0]/{normalized_language}"
         if page > 1:
             return f"{base}/page/{page}"
         return base
@@ -105,7 +120,7 @@ class DLsiteApiService:
             return []
         seen = set()
         result: List[str] = []
-        for matched in re.findall(r'/product_id/([RVB]J(?:\d{8}|\d{6}))\.html', text, re.IGNORECASE):
+        for matched in re.findall(r'/(?:work|announce)/=/product_id/([RVB]J(?:\d{8}|\d{6}))\.html', text, re.IGNORECASE):
             workno = self._normalize_workno(matched)
             if workno and workno not in seen:
                 seen.add(workno)
@@ -230,6 +245,75 @@ class DLsiteApiService:
                 names.append({'name': decoded})
         return names
 
+    def _extract_work_category_name(self, text: str) -> str:
+        if not text:
+            return ''
+        match = re.search(
+            r'<div[^>]+class="[^"]*\bwork_category\b[^"]*"[^>]*>\s*<a[^>]*>(.*?)</a>',
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return ''
+        return self._decode_html_value(re.sub(r'<[^>]+>', '', match.group(1)))
+
+    def _extract_outline_field_values(self, text: str) -> Dict[str, object]:
+        if not text:
+            return {}
+        table_match = re.search(
+            r'<table[^>]+id=["\']work_outline["\'][^>]*>(.*?)</table>',
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not table_match:
+            return {}
+
+        result: Dict[str, object] = {}
+        row_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.IGNORECASE | re.DOTALL)
+        cell_pattern = re.compile(r'<t[hd][^>]*>(.*?)</t[hd]>', re.IGNORECASE | re.DOTALL)
+        for row_match in row_pattern.finditer(table_match.group(1)):
+            cells = cell_pattern.findall(row_match.group(1))
+            if len(cells) < 2:
+                continue
+            header = self._decode_html_value(re.sub(r'<[^>]+>', '', cells[0])).strip()
+            body_html = cells[1]
+            body_text = self._decode_html_value(re.sub(r'<[^>]+>', '', body_html)).strip()
+            if not header or not body_text:
+                continue
+
+            if header in {"販売日", "发售日", "販賣日", "Release date"}:
+                result["release_date"] = body_text
+                continue
+            if header in {"ジャンル", "分类", "分類", "Genre"}:
+                tags: List[str] = []
+                for tag_html in re.findall(r'<a[^>]*>(.*?)</a>', body_html, re.IGNORECASE | re.DOTALL):
+                    tag_text = self._decode_html_value(re.sub(r'<[^>]+>', '', tag_html)).strip()
+                    if tag_text and tag_text not in tags:
+                        tags.append(tag_text)
+                if not tags and body_text:
+                    tags = [part.strip() for part in re.split(r'[／/,|]', body_text) if part.strip()]
+                if tags:
+                    result["genres"] = [{"name": tag} for tag in tags]
+                continue
+            if header in {"声優", "声优", "聲優", "Voice Actor"}:
+                names = [part.strip() for part in re.split(r'[／/,|]', body_text) if part.strip()]
+                if names:
+                    result["voice_by"] = [{"name": name} for name in names]
+                continue
+            if header in {"作品形式", "作品类型", "作品類型", "Work format", "作品种类", "作品種類"}:
+                result["work_category"] = body_text
+                continue
+
+        announce_date_match = re.search(
+            r'<strong[^>]+class=["\'][^"\']*\bwork_date_ana\b[^"\']*["\'][^>]*>(.*?)</strong>',
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if announce_date_match and not result.get("release_date"):
+            result["release_date"] = self._decode_html_value(re.sub(r'<[^>]+>', '', announce_date_match.group(1))).strip()
+
+        return result
+
     def _extract_image_main_url(self, text: str) -> str:
         if not text:
             return ''
@@ -247,6 +331,8 @@ class DLsiteApiService:
             return None
 
         title = self._extract_json_string(page_html, 'work_name') or self._extract_html_meta(page_html, 'og:title')
+        if title:
+            title = re.sub(r'\s*\[[^\]]+\]\s*予告作品\s*\|\s*DLsite\s*$', '', title).strip()
         maker_name = self._extract_json_string(page_html, 'maker_name')
         maker_id = self._extract_json_string(page_html, 'maker_id')
         series_name = self._extract_json_string(page_html, 'series_name')
@@ -261,7 +347,20 @@ class DLsiteApiService:
         ) or self._normalize_image_url(self._extract_html_meta(page_html, 'og:image'))
 
         genres = self._extract_name_list(page_html, r'"genres"\s*:\s*\[(.*?)\]')
+        category_name = self._extract_work_category_name(page_html)
         voice_by = self._extract_name_list(page_html, r'"voice_by"\s*:\s*\[(.*?)\]')
+        outline_fields = self._extract_outline_field_values(page_html)
+        outline_release_date = self._normalize_release_date(str(outline_fields.get('release_date') or ''))
+        if not release_date:
+            release_date = outline_release_date
+        if not genres:
+            genres = list(outline_fields.get('genres') or [])
+        if not voice_by:
+            voice_by = list(outline_fields.get('voice_by') or [])
+        if not category_name:
+            category_name = str(outline_fields.get('work_category') or '').strip()
+        if category_name and all(item.get('name') != category_name for item in genres):
+            genres.insert(0, {'name': category_name})
 
         if not maker_name:
             maker_match = re.search(
@@ -297,6 +396,8 @@ class DLsiteApiService:
             'series_name': series_name,
             'series_id': series_id,
             'image_main': {'url': image_url} if image_url else {},
+            'work_category': category_name,
+            'category_name': category_name,
             'genres': genres,
             'creaters': {'voice_by': voice_by} if voice_by else {},
             'translation_info': {'is_original': True, 'lang': 'JPN'},
@@ -307,35 +408,41 @@ class DLsiteApiService:
         if not workno:
             return None
 
-        page_url = self._build_product_page_url(workno, locale=locale)
-        cache_key = f"page_metadata:{page_url}"
-        if cache_key in self.cache:
-            cached_data = self.cache[cache_key]
-            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
-                return cached_data['data']
+        page_urls = [
+            self._build_product_page_url(workno, locale=locale),
+            self._build_announce_product_page_url(workno, locale=locale),
+        ]
+        client = await self._get_client()
+        for page_url in page_urls:
+            cache_key = f"page_metadata:{page_url}"
+            if cache_key in self.cache:
+                cached_data = self.cache[cache_key]
+                if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                    cached_product = cached_data['data']
+                    if cached_product:
+                        return cached_product
+                    continue
 
-        logger.info("[DLsite] 尝试页面元数据抓取: %s", page_url)
-        try:
-            client = await self._get_client()
-            response = await client.get(page_url, headers=self._get_browser_headers())
-            product = self._parse_product_from_html(workno, page_url, str(response.url), response.text)
-            self.cache[cache_key] = {
-                'data': product,
-                'timestamp': datetime.now()
-            }
-            if product:
-                logger.info(
-                    "[DLsite] 页面元数据抓取成功: requested=%s resolved=%s title=%s",
-                    workno,
-                    self._normalize_workno(product.get('workno') or workno),
-                    product.get('work_name') or '',
-                )
-            else:
-                logger.info("[DLsite] 页面元数据未提取到有效字段: requested=%s", workno)
-            return product
-        except Exception as exc:
-            logger.warning("[DLsite] 页面元数据抓取失败: requested=%s error=%s", workno, exc)
-            return None
+            logger.info("[DLsite] 尝试页面元数据抓取: %s", page_url)
+            try:
+                response = await client.get(page_url, headers=self._get_browser_headers())
+                product = self._parse_product_from_html(workno, page_url, str(response.url), response.text)
+                self.cache[cache_key] = {
+                    'data': product,
+                    'timestamp': datetime.now()
+                }
+                if product:
+                    logger.info(
+                        "[DLsite] 页面元数据抓取成功: requested=%s resolved=%s title=%s",
+                        workno,
+                        self._normalize_workno(product.get('workno') or workno),
+                        product.get('work_name') or '',
+                    )
+                    return product
+                logger.info("[DLsite] 页面元数据未提取到有效字段: requested=%s url=%s", workno, page_url)
+            except Exception as exc:
+                logger.warning("[DLsite] 页面元数据抓取失败: requested=%s url=%s error=%s", workno, page_url, exc)
+        return None
 
     async def _fetch_product_page_html(self, rjcode: str, locale: Optional[str] = None) -> str:
         workno = self._normalize_workno(rjcode)
@@ -809,7 +916,7 @@ class DLsiteApiService:
         if not normalized_maker_id:
             return []
 
-        cache_key = f"circle_profile:{normalized_maker_id}:{normalized_language}"
+        cache_key = f"circle_profile_with_announce:{normalized_maker_id}:{normalized_language}"
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
             if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
@@ -820,34 +927,39 @@ class DLsiteApiService:
         seen: Set[str] = set()
         empty_streak = 0
 
-        for page in range(1, max(1, int(max_pages)) + 1):
-            url = self._build_circle_profile_url(normalized_maker_id, language=normalized_language, page=page)
-            try:
-                response = await client.get(url, headers=self._get_browser_headers())
-                if response.status_code != 200:
-                    logger.warning("[DLsite] 社团主页抓取失败 maker_id=%s page=%s status=%s", normalized_maker_id, page, response.status_code)
+        for mode, url_builder in [
+            ("profile", self._build_circle_profile_url),
+            ("announce", self._build_circle_announce_url),
+        ]:
+            empty_streak = 0
+            for page in range(1, max(1, int(max_pages)) + 1):
+                url = url_builder(normalized_maker_id, language=normalized_language, page=page)
+                try:
+                    response = await client.get(url, headers=self._get_browser_headers())
+                    if response.status_code != 200:
+                        logger.warning("[DLsite] 社团%s抓取失败 maker_id=%s page=%s status=%s", mode, normalized_maker_id, page, response.status_code)
+                        break
+                    page_worknos = self._extract_worknos_from_listing_html(response.text)
+                except Exception as exc:
+                    logger.warning("[DLsite] 社团%s抓取异常 maker_id=%s page=%s error=%s", mode, normalized_maker_id, page, exc)
                     break
-                page_worknos = self._extract_worknos_from_listing_html(response.text)
-            except Exception as exc:
-                logger.warning("[DLsite] 社团主页抓取异常 maker_id=%s page=%s error=%s", normalized_maker_id, page, exc)
-                break
 
-            new_count = 0
-            for workno in page_worknos:
-                if workno not in seen:
-                    seen.add(workno)
-                    found.append(workno)
-                    new_count += 1
+                new_count = 0
+                for workno in page_worknos:
+                    if workno not in seen:
+                        seen.add(workno)
+                        found.append(workno)
+                        new_count += 1
 
-            logger.info("[DLsite] 社团主页分页抓取 maker_id=%s lang=%s page=%s new=%s total=%s", normalized_maker_id, normalized_language, page, new_count, len(found))
+                logger.info("[DLsite] 社团%s分页抓取 maker_id=%s lang=%s page=%s new=%s total=%s", mode, normalized_maker_id, normalized_language, page, new_count, len(found))
 
-            if not page_worknos or new_count == 0:
-                empty_streak += 1
-            else:
-                empty_streak = 0
+                if not page_worknos or new_count == 0:
+                    empty_streak += 1
+                else:
+                    empty_streak = 0
 
-            if empty_streak >= 2:
-                break
+                if empty_streak >= 2:
+                    break
 
         self.cache[cache_key] = {
             'data': list(found),

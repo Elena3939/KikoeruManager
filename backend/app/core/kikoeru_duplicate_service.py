@@ -71,7 +71,34 @@ class KikoeruDuplicateService:
     def __init__(self, config: Optional[KikoeruServerConfig] = None):
         self.config = config or self._load_config()
         self._cache: Dict[str, tuple] = {}  # 缓存: rjcode -> (result, timestamp)
+        self._circle_id_cache: Dict[str, tuple[int, datetime]] = {}
         self._session: Optional[aiohttp.ClientSession] = None
+
+    def _get_circle_id_cache(self, keyword: str) -> int:
+        cache_key = self._normalize_search_text(keyword)
+        if not cache_key:
+            return 0
+        payload = self._circle_id_cache.get(cache_key)
+        if not payload:
+            return 0
+        circle_id, cached_at = payload
+        ttl_seconds = max(int(self.config.cache_ttl or 0), 300)
+        if datetime.now() - cached_at > timedelta(seconds=ttl_seconds):
+            self._circle_id_cache.pop(cache_key, None)
+            return 0
+        return int(circle_id or 0)
+
+    def _set_circle_id_cache(self, keyword: str, circle_id: int) -> None:
+        cache_key = self._normalize_search_text(keyword)
+        if not cache_key:
+            return
+        try:
+            normalized_circle_id = int(circle_id or 0)
+        except Exception:
+            normalized_circle_id = 0
+        if normalized_circle_id <= 0:
+            return
+        self._circle_id_cache[cache_key] = (normalized_circle_id, datetime.now())
     
     def _load_config(self) -> KikoeruServerConfig:
         """从系统配置加载 Kikoeru 服务器配置"""
@@ -243,6 +270,18 @@ class KikoeruDuplicateService:
         encoded = quote(str(keyword or "").strip())
         return f"{self.config.server_url}/works?keyword={encoded}"
 
+    def _build_circle_works_url(self, circle_id: int, page: int = 1) -> str:
+        return (
+            f"{self.config.server_url}/api/circles/{int(circle_id)}/works"
+            f"?page={max(1, int(page))}"
+            f"&sort=desc"
+            f"&order=created_at"
+            f"&nsfw=2"
+            f"&lyric="
+            f"&seed=7"
+            f"&isAdvance=0"
+        )
+
     def _build_tracks_url(self, work_id: int) -> str:
         return f"{self.config.server_url}/api/tracks/{int(work_id)}"
     
@@ -328,6 +367,57 @@ class KikoeruDuplicateService:
             return 'ENG'
         return ''
 
+    def _extract_total_pages(self, data: dict) -> int:
+        pagination = data.get('pagination') if isinstance(data.get('pagination'), dict) else {}
+        meta = data.get('meta') if isinstance(data.get('meta'), dict) else {}
+        total = 0
+        for v in (
+            data.get('total_pages'),
+            data.get('last_page'),
+            pagination.get('total_pages'),
+            pagination.get('last_page'),
+            meta.get('total_pages'),
+            meta.get('last_page'),
+        ):
+            try:
+                total = max(total, int(v or 0))
+            except Exception:
+                pass
+        return total
+
+    def _collect_works_unique(self, data: dict, seen_ids: Set[int], out: List[Dict]) -> int:
+        works = data.get('works', []) if isinstance(data, dict) else []
+        if not isinstance(works, list):
+            return 0
+        added = 0
+        for work in works:
+            if not isinstance(work, dict):
+                continue
+            try:
+                wid = int(work.get('id') or 0)
+            except Exception:
+                wid = 0
+            if wid and wid in seen_ids:
+                continue
+            if wid:
+                seen_ids.add(wid)
+            out.append(work)
+            added += 1
+        return added
+
+    def _extract_circle_id_from_work(self, work: Dict) -> int:
+        if not isinstance(work, dict):
+            return 0
+        circle = work.get('circle') if isinstance(work.get('circle'), dict) else {}
+        for candidate in (circle.get('id'), work.get('circle_id')):
+            try:
+                value = int(candidate or 0)
+            except Exception:
+                value = 0
+            if value > 0:
+                return value
+        return 0
+
     async def _search_works_by_keyword(self, keyword: str, page: int = 1) -> List[Dict]:
         normalized_keyword = str(keyword or "").strip()
         if not normalized_keyword:
@@ -347,6 +437,109 @@ class KikoeruDuplicateService:
             data = await response.json()
         works = data.get('works', []) if isinstance(data, dict) else []
         return works if isinstance(works, list) else []
+
+    async def find_circle_id_by_keyword(self, keyword: str) -> int:
+        normalized_keyword = str(keyword or "").strip()
+        if not normalized_keyword:
+            return 0
+        cached_circle_id = self._get_circle_id_cache(normalized_keyword)
+        if cached_circle_id > 0:
+            return cached_circle_id
+
+        normalized_query = self._normalize_search_text(normalized_keyword)
+        best_circle_id = 0
+        try:
+            for page in range(1, 4):
+                works = await self._search_works_by_keyword(normalized_keyword, page=page)
+                if not works:
+                    break
+                for work in works:
+                    if not isinstance(work, dict):
+                        continue
+                    circle = work.get('circle') if isinstance(work.get('circle'), dict) else {}
+                    circle_name = str(circle.get('name') or '').strip()
+                    circle_id = self._extract_circle_id_from_work(work)
+                    if circle_id <= 0:
+                        continue
+                    if not circle_name:
+                        if best_circle_id <= 0:
+                            best_circle_id = circle_id
+                        continue
+
+                    normalized_circle_name = self._normalize_search_text(circle_name)
+                    if normalized_circle_name == normalized_query:
+                        self._set_circle_id_cache(normalized_keyword, circle_id)
+                        return circle_id
+                    if normalized_query and (
+                        normalized_query in normalized_circle_name
+                        or normalized_circle_name in normalized_query
+                    ):
+                        if best_circle_id <= 0:
+                            best_circle_id = circle_id
+        except Exception as exc:
+            logger.warning("[Kikoeru] 社团 id 探测失败 keyword=%s error=%s", normalized_keyword, exc)
+            return 0
+
+        if best_circle_id > 0:
+            self._set_circle_id_cache(normalized_keyword, best_circle_id)
+            return best_circle_id
+        return 0
+
+    async def list_circle_works(self, circle_id: int, max_pages: int = 100) -> List[Dict]:
+        if not self.config.enabled:
+            return []
+        try:
+            normalized_circle_id = int(circle_id or 0)
+        except Exception:
+            normalized_circle_id = 0
+        if normalized_circle_id <= 0:
+            return []
+        if not await self._ensure_valid_token():
+            return []
+
+        session = await self._get_session()
+        headers = self._get_headers()
+
+        async def _fetch_page(page: int) -> Optional[dict]:
+            url = self._build_circle_works_url(normalized_circle_id, page=page)
+            try:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning("[Kikoeru] 社团直连拉取失败 circle_id=%s page=%s status=%s", normalized_circle_id, page, resp.status)
+                        return None
+                    return await resp.json()
+            except Exception as exc:
+                logger.warning("[Kikoeru] 社团直连拉取异常 circle_id=%s page=%s error=%s", normalized_circle_id, page, exc)
+                return None
+
+        all_works: List[Dict] = []
+        seen_ids: Set[int] = set()
+        data1 = await _fetch_page(1)
+        if not data1:
+            return all_works
+        self._collect_works_unique(data1, seen_ids, all_works)
+        total_pages = self._extract_total_pages(data1)
+        if total_pages <= 0:
+            total_pages = max_pages
+        effective_max = min(total_pages, max(1, int(max_pages)))
+        if effective_max <= 1:
+            return all_works
+
+        batch_size = 5
+        for batch_start in range(2, effective_max + 1, batch_size):
+            pages = list(range(batch_start, min(batch_start + batch_size, effective_max + 1)))
+            results = await asyncio.gather(*[_fetch_page(p) for p in pages], return_exceptions=True)
+            for res in results:
+                if isinstance(res, Exception) or res is None:
+                    continue
+                self._collect_works_unique(res, seen_ids, all_works)
+
+        logger.info("[Kikoeru] 社团直连拉取完成 circle_id=%s works=%d effective_max_pages=%d", normalized_circle_id, len(all_works), effective_max)
+        return all_works
 
     async def _find_related_translation_candidates(
         self,
@@ -1027,7 +1220,10 @@ class KikoeruDuplicateService:
         return results
 
     async def search_circle_works(self, keyword: str, max_pages: int = 200) -> List[Dict]:
-        """按 works 页面实际搜索链路分页拉取社团作品。"""
+        """按 works 页面实际搜索链路分页拉取社团作品。
+        改进：1) 社团名强过滤；2) 从第1页获取 total_pages 限制循环上限；
+              3) 剩余页并发分批拉取（每批5页）；4) 连续3批无命中提前终止。
+        """
         if not self.config.enabled:
             return []
         if not await self._ensure_valid_token():
@@ -1035,85 +1231,85 @@ class KikoeruDuplicateService:
 
         session = await self._get_session()
         headers = self._get_headers()
-        page_headers = self._get_page_headers(keyword)
-        all_works: List[Dict] = []
-        seen_ids: Set[int] = set()
         normalized_keyword = str(keyword or "").strip()
 
         # 先访问 works 页面，保持和前端搜索页一致的会话/来源语义。
         try:
             async with session.get(
                 self._build_keyword_works_page_url(normalized_keyword),
-                headers=page_headers,
+                headers=self._get_page_headers(normalized_keyword),
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
             ) as response:
                 await response.text()
-                if response.status != 200:
-                    logger.warning("[Kikoeru] 社团 works 页面预热失败 keyword=%s status=%s", normalized_keyword, response.status)
         except Exception as exc:
             logger.warning("[Kikoeru] 社团 works 页面预热失败 keyword=%s: %s", normalized_keyword, exc)
 
-        empty_or_stalled_pages = 0
-        for page in range(1, max(1, int(max_pages)) + 1):
+        def _circle_matches(work: dict) -> bool:
+            """判断作品的社团名是否与搜索关键词匹配（全文搜索会混入其他社团作品）。"""
+            if not normalized_keyword:
+                return True
+            wc = work.get("circle") if isinstance(work.get("circle"), dict) else {}
+            cn = str(wc.get("name", "") or "").strip()
+            if not cn:
+                return True  # 无社团名字段时保留，不误杀
+            return cn == normalized_keyword or normalized_keyword in cn or cn in normalized_keyword
+
+        def _extract_total_pages(data: dict) -> int:
+            return self._extract_total_pages(data)
+
+        async def _fetch_page(page: int) -> Optional[dict]:
             url = self._build_keyword_search_url(normalized_keyword, page=page)
             try:
                 async with session.get(
-                    url,
-                    headers=headers,
+                    url, headers=headers,
                     timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-                ) as response:
-                    if response.status != 200:
-                        break
-                    data = await response.json()
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    return await resp.json()
             except Exception as exc:
                 logger.warning("[Kikoeru] 社团搜索失败 page=%s keyword=%s: %s", page, keyword, exc)
-                break
+                return None
 
-            works = data.get('works', []) if isinstance(data, dict) else []
-            if not isinstance(works, list) or not works:
-                break
+        def _collect_works(data: dict, seen_ids: set, out: list) -> int:
+            filtered = {'works': [work for work in (data.get('works', []) if isinstance(data, dict) else []) if isinstance(work, dict) and _circle_matches(work)]}
+            return self._collect_works_unique(filtered, seen_ids, out)
 
-            added = 0
-            for work in works:
-                if not isinstance(work, dict):
+        all_works: List[Dict] = []
+        seen_ids: Set[int] = set()
+
+        # 第1页：顺序拉取，获得 total_pages 上限
+        data1 = await _fetch_page(1)
+        if not data1:
+            return all_works
+        _collect_works(data1, seen_ids, all_works)
+        total_pages = _extract_total_pages(data1)
+        if total_pages <= 0:
+            total_pages = max_pages
+        effective_max = min(total_pages, max(1, int(max_pages)))
+        if effective_max <= 1:
+            return all_works
+
+        # 剩余页：每批 5 页并发拉取，连续 3 批无命中则提前终止
+        BATCH = 5
+        consecutive_empty_batches = 0
+        for batch_start in range(2, effective_max + 1, BATCH):
+            if consecutive_empty_batches >= 3:
+                break
+            pages = list(range(batch_start, min(batch_start + BATCH, effective_max + 1)))
+            results = await asyncio.gather(*[_fetch_page(p) for p in pages], return_exceptions=True)
+            batch_added = 0
+            for res in results:
+                if isinstance(res, Exception) or res is None:
                     continue
-                try:
-                    work_id = int(work.get('id') or 0)
-                except Exception:
-                    work_id = 0
-                if work_id and work_id in seen_ids:
-                    continue
-                if work_id:
-                    seen_ids.add(work_id)
-                all_works.append(work)
-                added += 1
+                batch_added += _collect_works(res, seen_ids, all_works)
+            if batch_added > 0:
+                consecutive_empty_batches = 0
+            else:
+                consecutive_empty_batches += 1
 
-            if added <= 0:
-                empty_or_stalled_pages += 1
-                if empty_or_stalled_pages >= 2:
-                    break
-                continue
-
-            empty_or_stalled_pages = 0
-
-            # 如果接口带总数/总页数，优先按服务端声明停止。
-            total_pages = 0
-            pagination = data.get('pagination') if isinstance(data.get('pagination'), dict) else {}
-            meta = data.get('meta') if isinstance(data.get('meta'), dict) else {}
-            for candidate in (
-                data.get('total_pages'),
-                data.get('last_page'),
-                pagination.get('total_pages'),
-                pagination.get('last_page'),
-                meta.get('total_pages'),
-                meta.get('last_page'),
-            ):
-                try:
-                    total_pages = max(total_pages, int(candidate or 0))
-                except Exception:
-                    pass
-            if total_pages > 0 and page >= total_pages:
-                break
+        logger.info("[Kikoeru] 社团搜索完成 keyword=%s works=%d effective_max_pages=%d",
+                    keyword, len(all_works), effective_max)
         return all_works
 
     async def close(self):

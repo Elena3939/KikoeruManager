@@ -764,9 +764,16 @@ class LinkedSubtitleImportService:
             raise ValueError("缺少最终字幕目录，无法校验字幕补配结果")
 
         deadline = datetime.now().timestamp() + timeout_seconds
-        minimum_count = max(1, int(expected_count or 0))
+        minimum_count = int(expected_count or 0)
         last_error: Optional[Exception] = None
         last_items: List[Dict[str, Any]] = []
+
+        if minimum_count == 0:
+            try:
+                contents = await self.library_manager.folder_contents(library_id, normalized_dir)
+                return [item for item in (contents.get("items") or []) if not item.get("is_directory")]
+            except Exception:
+                return []
 
         while datetime.now().timestamp() <= deadline:
             try:
@@ -826,6 +833,9 @@ class LinkedSubtitleImportService:
             "subtitle_library_id": library_id,
             "linked_workbench_root_dir": "",
             "linked_workbench_applied": True,
+            "awaiting_manual_match": False,
+            "manual_match_completed": True,
+            "manual_match_completed_at": datetime.now().isoformat(),
             "written_files": [
                 {
                     "subtitle_name": item.get("name") or "",
@@ -838,6 +848,10 @@ class LinkedSubtitleImportService:
             "downloaded_count": len(final_items),
         })
         task.task_metadata = metadata
+        task.current_step = "字幕补配已应用到目标目录"
+        task.progress = 100
+        task.completed_at = datetime.now()
+        get_task_engine().delete_task_snapshot(task.id)
         return {
             "applied": True,
             "final_subtitle_dir": final_subtitle_dir,
@@ -1562,6 +1576,8 @@ class LinkedSubtitleImportService:
             candidate_search_reason = ""
         ready_candidates = [item for item in candidates if bool(item.get("ready_for_import"))]
         selected_candidate = ready_candidates[0] if len(ready_candidates) == 1 else None
+        has_local_target_candidate = bool(candidates)
+        has_ready_target_candidate = bool(ready_candidates)
 
         treat_as_new_work = (
             bool(source_rjcode)
@@ -1579,11 +1595,7 @@ class LinkedSubtitleImportService:
         if is_translation_work:
             should_queue_pending = (
                 bool(source_rjcode)
-                and not source_exists_in_kikoeru
-                and (
-                    target_needs_subtitle_in_kikoeru
-                    or not kikoeru_route_confident
-                )
+                and bool(target_rjcode)
                 and subtitle_count > 0
             )
         elif is_manual_subtitle_source:
@@ -1607,10 +1619,6 @@ class LinkedSubtitleImportService:
             stage_reason = ""
         elif not is_linked_subtitle_source:
             stage_reason = "当前作品不是可补配到原作的翻译作品"
-        elif is_translation_work and source_exists_in_kikoeru:
-            stage_reason = "来源作品已在 Kikoeru 命中，按重复作品处理"
-        elif is_translation_work and not target_exists_in_kikoeru:
-            stage_reason = "Kikoeru 未命中原作作品，按普通解压入库处理"
         elif target_has_subtitle_in_kikoeru:
             stage_reason = "Kikoeru 显示原作已有字幕，不需要触发字幕补配"
         elif candidates and not ready_candidates:
@@ -1630,7 +1638,7 @@ class LinkedSubtitleImportService:
             execute_reason = "命中多个可用目标目录，需要在字幕补配页手动选择"
 
         can_stage_pending = should_queue_pending and (not stage_reason or candidate_search_status == "pending_remote")
-        can_execute = can_stage_pending and subtitle_count > 0 and len(ready_candidates) > 0
+        can_execute = can_stage_pending and subtitle_count > 0 and has_ready_target_candidate
 
         return {
             "source_rjcode": source_rjcode,
@@ -1886,6 +1894,7 @@ class LinkedSubtitleImportService:
         task.current_step = summary
         task.completed_at = datetime.now()
         engine.tasks[task.id] = task
+        engine.persist_task_snapshot(task)
         return task
 
     async def cleanup_workbench_subtitles(self, task_id: str) -> Dict[str, Any]:
@@ -1969,6 +1978,7 @@ class LinkedSubtitleImportService:
             ],
         )
         engine.tasks[task.id] = task
+        engine.persist_task_snapshot(task)
         return result
 
     async def execute_archive_import(
