@@ -69,3 +69,20 @@ design-skills-test/
 .agents.rar
 scripts/generate_design_skills.ps1
 scripts/install_design_skills_to_agents.ps1
+
+# Local runtime and sensitive files
+.env
+backend/data/
+data/
+update_dialog.py
+
+# Backup artifacts
+*.bak-perf-*
+
+# Frontend temporary work directories
+frontend/.Uploading_to_cloud/
+frontend/.download_icon/
+frontend/.npm-cache/
+frontend/.tmp*/
+frontend/src/assets/tempView/
+frontend/vite.config.js.timestamp-*.mjs
