@@ -551,6 +551,19 @@ function onCoverError(event) {
   border-color: rgba(34, 197, 94, 0.6);
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12), 0 0 20px rgba(34, 197, 94, 0.18);
 }
+/* ── 未发售边框光圈 ── */
+.work-card.is-unreleased {
+  border-color: rgba(52, 120, 246, 0.45);
+  box-shadow: 0 0 0 2px rgba(52, 120, 246, 0.10), 0 0 18px rgba(52, 120, 246, 0.16);
+}
+.work-card.is-unreleased:hover {
+  border-color: rgba(52, 120, 246, 0.65);
+  box-shadow: 0 0 0 3px rgba(52, 120, 246, 0.14), 0 0 26px rgba(52, 120, 246, 0.22);
+}
+.work-card.is-unreleased .work-card-select-ring {
+  border-color: rgba(52, 120, 246, 0.6);
+  box-shadow: 0 0 0 3px rgba(52, 120, 246, 0.12), 0 0 20px rgba(52, 120, 246, 0.18);
+}
 .work-release-chip {
   display: inline-flex;
   align-items: center;

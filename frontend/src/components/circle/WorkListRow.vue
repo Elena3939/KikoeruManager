@@ -213,6 +213,14 @@ function onImgError(e) {
   border-color: rgba(34, 197, 94, 0.60);
   box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.14), 0 0 18px rgba(34, 197, 94, 0.18);
 }
+.work-list-row.is-unreleased {
+  border-color: rgba(52, 120, 246, 0.40);
+  box-shadow: 0 0 0 2px rgba(52, 120, 246, 0.08), 0 0 14px rgba(52, 120, 246, 0.12);
+}
+.work-list-row.is-unreleased:hover {
+  border-color: rgba(52, 120, 246, 0.60);
+  box-shadow: 0 0 0 2px rgba(52, 120, 246, 0.14), 0 0 18px rgba(52, 120, 246, 0.18);
+}
 
 
 .work-list-row.is-selected {
