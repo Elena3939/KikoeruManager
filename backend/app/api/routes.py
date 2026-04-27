@@ -635,10 +635,19 @@ async def startup_event():
     else:
         logger.info("启动时扫描已处理压缩包目录已禁用")
 
+    # 启动 DLsite 邮件监听服务（IMAP IDLE）
+    from ..core.email_watcher_service import get_email_watcher_service
+    email_watcher = get_email_watcher_service()
+    await email_watcher.start()
+
 # 关闭事件
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭时执行"""
+    # 停止 DLsite 邮件监听服务
+    from ..core.email_watcher_service import get_email_watcher_service
+    await get_email_watcher_service().stop()
+
     # 停止任务引擎
     engine = get_task_engine()
     engine.stop()
@@ -760,6 +769,7 @@ class ConfigResponse(BaseModel):
     asmr_sync_step: Optional[dict] = None
     rj_subtitle: Optional[dict] = None
     backup_zip: Optional[dict] = None
+    email_watcher: Optional[dict] = None
 
 # API路由
 # 兼容层：旧任务接口仅保留给少数历史入口使用，新功能统一走 /api/task-center/*
@@ -1141,7 +1151,8 @@ async def get_configuration():
         process_existing=config.process_existing.model_dump() if hasattr(config, 'process_existing') else None,
         asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None,
         rj_subtitle=config.rj_subtitle.model_dump() if hasattr(config, 'rj_subtitle') else None,
-        backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None
+        backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None,
+        email_watcher=config.email_watcher.model_dump() if hasattr(config, 'email_watcher') else None
     )
 
 @app.get("/api/config/state")
@@ -7794,7 +7805,7 @@ async def circle_completion_index_start(request: CircleCompletionIndexJobRequest
             source_label = f"全部刷新 {len(circle_queries)} 个社团"
             source_action_kind = "refresh_all_circles"
         elif is_batch:
-            source_label = f"批量建立 {len(circle_queries)} 个社团"
+            source_label = f"批量补全 {len(circle_queries)} 个社团"
             source_action_kind = "index_start"
         else:
             source_label = circle_query
@@ -8736,6 +8747,61 @@ async def asmr_sync_delete_waiting_retry_task(task_id: str):
     except Exception as e:
         logger.error(f"删除任务失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+
+
+# ========== 邮件监听 API ==========
+
+class EmailWatcherTestRequest(BaseModel):
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_ssl: bool = True
+    username: str = ""
+    password: str = ""
+    mailbox: str = "INBOX"
+
+
+@app.get("/api/email-watcher/status")
+async def email_watcher_status():
+    """返回邮件监听服务的当前状态。"""
+    from ..core.email_watcher_service import get_email_watcher_service
+    config = get_config()
+    service = get_email_watcher_service()
+    status = service.get_status()
+    status["enabled"] = config.email_watcher.enabled
+    if not config.email_watcher.enabled:
+        status["mode"] = "disabled"
+    return {"success": True, **status}
+
+
+@app.post("/api/email-watcher/test")
+async def email_watcher_test(request: EmailWatcherTestRequest):
+    """测试 IMAP 连接是否正常。"""
+    from ..core.email_watcher_service import get_email_watcher_service
+    config = get_config()
+    # 使用请求参数，如果为空则回退到已保存配置
+    host = request.imap_host or config.email_watcher.imap_host
+    port = request.imap_port or config.email_watcher.imap_port
+    ssl = request.imap_ssl if request.imap_host else config.email_watcher.imap_ssl
+    username = request.username or config.email_watcher.username
+    password = request.password or config.email_watcher.password
+    mailbox = request.mailbox or config.email_watcher.mailbox
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="邮箱账号和密码不能为空")
+    result = await get_email_watcher_service().test_connection(host, port, ssl, username, password, mailbox)
+    return {"success": result.get("success", False), **result}
+
+
+@app.post("/api/email-watcher/poll-now")
+async def email_watcher_poll_now():
+    """手动立即触发一次邮件检查（调试用）。"""
+    from ..core.email_watcher_service import get_email_watcher_service
+    config = get_config()
+    if not config.email_watcher.enabled:
+        raise HTTPException(status_code=400, detail="邮件监听未启用")
+    if not config.email_watcher.username:
+        raise HTTPException(status_code=400, detail="邮箱账号未配置")
+    result = await get_email_watcher_service().poll_once()
+    return result
 
 
 # 静态文件服务（前端）

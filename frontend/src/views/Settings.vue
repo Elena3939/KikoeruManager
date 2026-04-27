@@ -330,6 +330,132 @@
             </div>
           </div>
         </div>
+
+        <div class="settings-grid two">
+          <div class="settings-card">
+            <div class="card-title">
+              DLsite 邮件监听
+              <span v-if="config.email_watcher.enabled" class="email-watcher-badge is-enabled">已启用</span>
+              <span v-else class="email-watcher-badge is-disabled">未启用</span>
+            </div>
+            <div class="field-stack">
+              <label class="toggle-card">
+                <span><strong>启用邮件监听</strong><small>IMAP IDLE 长连接实时监听 DLsite 新作通知，自动触发社团索引。</small></span>
+                <el-switch v-model="config.email_watcher.enabled" />
+              </label>
+              <div class="mini-grid two">
+                <label class="field-card">
+                  <span class="field-label">快速预设</span>
+                  <el-select v-model="emailImapPreset" class="field-select" placeholder="选择邮件服务">
+                    <el-option label="Gmail" value="gmail" />
+                    <el-option label="QQ 邮箱" value="qq" />
+                    <el-option label="163 邮箱" value="163" />
+                    <el-option label="Outlook" value="outlook" />
+                    <el-option label="自定义" value="custom" />
+                  </el-select>
+                </label>
+                <label class="field-card">
+                  <span class="field-label">端口</span>
+                  <el-input-number v-model="config.email_watcher.imap_port" :min="1" :max="65535" class="field-number" />
+                </label>
+              </div>
+              <label class="field-card">
+                <span class="field-label">IMAP 地址</span>
+                <input v-model="config.email_watcher.imap_host" class="field-input" type="text" placeholder="例如 imap.gmail.com">
+              </label>
+              <label class="toggle-card">
+                <span><strong>使用 SSL</strong><small>绝大多数 IMAP 服务器需要 SSL（推荐开启）。</small></span>
+                <el-switch v-model="config.email_watcher.imap_ssl" />
+              </label>
+              <label class="field-card">
+                <span class="field-label">邮箱账号</span>
+                <input v-model="config.email_watcher.username" class="field-input" type="text" placeholder="例如 yourname@gmail.com" autocomplete="username">
+              </label>
+              <label class="field-card">
+                <span class="field-label">密码 / 授权码</span>
+                <AnimatedPasswordInput v-model="config.email_watcher.password" placeholder="Gmail 填应用专用密码；QQ/163 填 IMAP 授权码" autocomplete="new-password" />
+              </label>
+              <div v-if="emailImapPasswordHint" class="email-watcher-hint">
+                <span>{{ emailImapPasswordHint }}</span>
+              </div>
+              <div class="mini-grid two">
+                <label class="field-card">
+                  <span class="field-label">监听文件夹</span>
+                  <input v-model="config.email_watcher.mailbox" class="field-input" type="text" placeholder="INBOX">
+                </label>
+                <label class="field-card">
+                  <span class="field-label">移入文件夹（可选）</span>
+                  <input v-model="config.email_watcher.move_to_folder" class="field-input" type="text" placeholder="留空则不移动">
+                </label>
+              </div>
+              <div class="mini-grid two">
+                <label class="field-card"><span class="field-label">发件人关键词</span><input v-model="config.email_watcher.sender_filter" class="field-input" type="text" placeholder="dlsite.com"></label>
+                <label class="field-card"><span class="field-label">主题关键词</span><input v-model="config.email_watcher.subject_filter" class="field-input" type="text" placeholder="新着作品"></label>
+              </div>
+              <div class="mini-grid two">
+                <label class="toggle-card"><span><strong>处理后标记已读</strong></span><el-switch v-model="config.email_watcher.mark_as_read" /></label>
+                <label class="toggle-card"><span><strong>新社团自动全量索引</strong><small>首次出现的社团建立索引。</small></span><el-switch v-model="config.email_watcher.auto_index_new_circles" /></label>
+              </div>
+              <div class="mini-grid two">
+                <label class="field-card"><span class="field-label">IDLE 超时（分钟）</span><el-input-number v-model="config.email_watcher.idle_timeout_minutes" :min="5" :max="28" class="field-number" /></label>
+                <label class="field-card"><span class="field-label">降级轮询间隔（秒）</span><el-input-number v-model="config.email_watcher.fallback_poll_interval_seconds" :min="60" :max="3600" class="field-number" /></label>
+              </div>
+              <div class="service-action-row">
+                <button type="button" class="email-watcher-action-btn" :disabled="emailWatcherBusy" @click="testEmailWatcherConnection">
+                  <Wifi :size="14" :stroke-width="2.4" />
+                  测试连接
+                </button>
+                <button type="button" class="email-watcher-action-btn" :disabled="emailWatcherBusy || !config.email_watcher.enabled" @click="pollEmailWatcherNow">
+                  <RefreshCw :size="14" :stroke-width="2.4" :class="{ 'spin-once': emailWatcherBusy }" />
+                  立即检查邮件
+                </button>
+              </div>
+              <transition name="fade-up">
+                <div v-if="emailWatcherMessage" class="email-watcher-msg" :class="emailWatcherMessage.startsWith('✓') ? 'is-success' : emailWatcherMessage.startsWith('✗') ? 'is-error' : 'is-info'">
+                  {{ emailWatcherMessage }}
+                </div>
+              </transition>
+              <transition name="fade-up">
+                <div v-if="emailWatcherStatus" class="service-result-card">
+                  <div class="service-result-grid">
+                    <div><span class="service-result-key">运行模式</span><strong>{{ emailWatcherStatus.mode }}</strong></div>
+                    <div><span class="service-result-key">上次检查</span><strong>{{ emailWatcherStatus.last_check_at || '—' }}</strong></div>
+                    <div><span class="service-result-key">处理邮件数</span><strong>{{ emailWatcherStatus.total_mails_processed ?? '—' }}</strong></div>
+                    <div><span class="service-result-key">触发索引数</span><strong>{{ emailWatcherStatus.total_rjcodes_triggered ?? '—' }}</strong></div>
+                  </div>
+                  <div v-if="emailWatcherStatus.last_error" class="service-result-line" style="margin-top:8px;color:var(--el-color-danger)">错误：{{ emailWatcherStatus.last_error }}</div>
+                </div>
+              </transition>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <div class="card-title">配置说明</div>
+            <div class="field-stack">
+              <div class="email-watcher-guide-item">
+                <div class="email-watcher-guide-label"><Mail :size="13" :stroke-width="2.5" /> Gmail</div>
+                <p>开启两步验证后，在 <strong>Google 账号 → 安全 → 应用专用密码</strong> 中生成专用密码（非 Gmail 登录密码）填入密码栏。IMAP 地址 <code>imap.gmail.com</code>，端口 993。</p>
+              </div>
+              <div class="email-watcher-guide-item">
+                <div class="email-watcher-guide-label"><Mail :size="13" :stroke-width="2.5" /> QQ / 163 邮箱</div>
+                <p>邮箱设置 → POP3/IMAP/SMTP → 开启 IMAP 服务后生成<strong>授权码</strong>（非 QQ 密码）。QQ 地址 <code>imap.qq.com</code>，163 地址 <code>imap.163.com</code>，端口均 993。</p>
+              </div>
+              <div class="email-watcher-guide-item">
+                <div class="email-watcher-guide-label"><Zap :size="13" :stroke-width="2.5" /> IDLE vs 降级 Polling</div>
+                <p>默认使用 IMAP IDLE 长连接（<strong>近实时推送</strong>）。连续失败 3 次后自动降级为定期轮询，网络恢复后自动回升。IDLE 超时默认 25 分钟（RFC 允许最长 29 分钟）。</p>
+              </div>
+              <div class="email-watcher-guide-item">
+                <div class="email-watcher-guide-label"><BookOpen :size="13" :stroke-width="2.5" /> DLsite 订阅设置</div>
+                <p>在 DLsite 个人中心 → お気に入りサークル → 「新着作品メール通知」开启后，有新作品时 DLsite 将发送邮件通知，系统监听到后自动触发社团补全索引。</p>
+              </div>
+              <div class="email-watcher-guide-item">
+                <div class="email-watcher-guide-label"><FolderOpen :size="13" :stroke-width="2.5" /> 监听文件夹 vs 移入文件夹</div>
+                <p><strong>监听文件夹</strong>：从哪个文件夹检查新邮件，默认 <code>INBOX</code>。若你用过滤规则把 DLsite 邮件归入子文件夹（如 <code>DLsite</code>），改成对应名称即可。</p>
+                <p style="margin-top:6px"><strong>移入文件夹</strong>：处理完邮件后自动把它搬到该文件夹（需提前在邮箱里创建好），留空则邮件原地不动。配合「标记已读」使用可保持收件箱整洁。</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
@@ -391,14 +517,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
-import { Boxes, HardDrive, LifeBuoy, ScanSearch, Workflow, Plus, Trash2 } from 'lucide-vue-next'
+import { Boxes, HardDrive, LifeBuoy, ScanSearch, Workflow, Plus, Trash2, Wifi, RefreshCw, Mail, Zap, BookOpen, FolderOpen } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 import { useSettingsDraft } from '../composables/useSettingsDraft'
 import { useSynologyProfiles } from '../composables/useSynologyProfiles'
-import { kikoeruApi } from '../api'
+import { kikoeruApi, emailWatcherApi } from '../api'
 import { useConfigStore } from '../stores'
 import insiderLoadingAnimation from '../assets/anime/Insider-loading.lottie'
 import successConfettiAnimation from '../assets/anime/success confetti.lottie'
@@ -452,6 +578,66 @@ const kikoeruButtonLottieRef = ref(null)
 const kikoeruButtonLottieReady = ref(false)
 let kikoeruButtonResetTimer = null
 
+// 邮件监听
+const emailWatcherBusy = ref(false)
+const emailWatcherMessage = ref('')
+const emailWatcherStatus = ref(null)
+const emailImapPreset = ref('custom')
+const emailImapPasswordHint = computed(() => {
+  if (emailImapPreset.value === 'gmail') return '⚠ Gmail 需填「应用专用密码」（非登录密码）：Google账号 → 安全 → 应用专用密码 → 生成'
+  if (emailImapPreset.value === 'qq') return '⚠ QQ邮箱需填「授权码」（非QQ密码）：邮箱设置 → 账户 → IMAP/SMTP服务 → 生成授权码'
+  if (emailImapPreset.value === '163') return '⚠ 163邮箱需填「客户端授权密码」：邮箱设置 → POP3/SMTP/IMAP → 开启IMAP → 生成授权密码'
+  if (emailImapPreset.value === 'outlook') return '⚠ Outlook 直接填登录密码即可（如启用二步验证则需应用密码）'
+  return ''
+})
+watch(emailImapPreset, (val) => {
+  if (!config.value) return
+  if (val === 'gmail') { config.value.email_watcher.imap_host = 'imap.gmail.com'; config.value.email_watcher.imap_port = 993; config.value.email_watcher.imap_ssl = true }
+  else if (val === 'qq') { config.value.email_watcher.imap_host = 'imap.qq.com'; config.value.email_watcher.imap_port = 993; config.value.email_watcher.imap_ssl = true }
+  else if (val === '163') { config.value.email_watcher.imap_host = 'imap.163.com'; config.value.email_watcher.imap_port = 993; config.value.email_watcher.imap_ssl = true }
+  else if (val === 'outlook') { config.value.email_watcher.imap_host = 'outlook.office365.com'; config.value.email_watcher.imap_port = 993; config.value.email_watcher.imap_ssl = true }
+})
+
+async function testEmailWatcherConnection() {
+  if (emailWatcherBusy.value) return
+  emailWatcherBusy.value = true
+  emailWatcherMessage.value = '正在测试连接...'
+  emailWatcherStatus.value = null
+  try {
+    const result = await emailWatcherApi.test({
+      imap_host: config.value.email_watcher.imap_host,
+      imap_port: config.value.email_watcher.imap_port,
+      imap_ssl: config.value.email_watcher.imap_ssl,
+      username: config.value.email_watcher.username,
+      password: config.value.email_watcher.password,
+      mailbox: config.value.email_watcher.mailbox
+    })
+    emailWatcherMessage.value = result.success ? `✓ ${result.message || '连接成功'}` : `✗ ${result.message || result.detail || result.error || '连接失败'}`
+  } catch (e) {
+    emailWatcherMessage.value = `✗ ${e.response?.data?.detail || e.message || '连接失败'}`
+  } finally {
+    emailWatcherBusy.value = false
+  }
+}
+
+async function pollEmailWatcherNow() {
+  if (emailWatcherBusy.value) return
+  emailWatcherBusy.value = true
+  emailWatcherMessage.value = '正在检查邮件...'
+  try {
+    const result = await emailWatcherApi.pollNow()
+    emailWatcherMessage.value = result.success
+      ? `✓ ${result.message || '检查完成'}`
+      : `✗ ${result.message || result.detail || '检查失败'}`
+    const status = await emailWatcherApi.status()
+    emailWatcherStatus.value = status
+  } catch (e) {
+    emailWatcherMessage.value = `✗ ${e.response?.data?.detail || e.message || '检查失败'}`
+  } finally {
+    emailWatcherBusy.value = false
+  }
+}
+
 const sections = [
   { id: 'storage', title: '存储与库存', short: '路径、本地库存、群晖模板', icon: HardDrive, keywords: ['storage', 'library', 'synology', '群晖', '库存'] },
   { id: 'processing', title: '处理流程', short: '监视、解压、自动处理', icon: Workflow, keywords: ['watcher', 'processing', 'extract', '自动处理'] },
@@ -464,7 +650,7 @@ const sectionKeyMap = {
   storage: ['storage'],
   processing: ['watcher', 'processing', 'extract', 'auto_process', 'process_existing'],
   rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
-  services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle'],
+  services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher'],
   maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip']
 }
 
@@ -1039,4 +1225,154 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 }
+/* ---- 邮件监听 ---- */
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.email-watcher-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.email-watcher-badge.is-enabled {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.12), rgba(16, 185, 129, 0.10));
+  color: #15803d;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.email-watcher-badge.is-disabled {
+  background: rgba(148, 163, 184, 0.1);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.email-watcher-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(255, 255, 255, 0.92);
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.email-watcher-action-btn:not(:disabled):hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.12);
+  color: #4f46e5;
+}
+
+.email-watcher-action-btn:not(:disabled):active {
+  transform: scale(0.96);
+  box-shadow: none;
+}
+
+.email-watcher-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.email-watcher-msg {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.email-watcher-msg.is-success {
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  color: #15803d;
+}
+
+.email-watcher-msg.is-error {
+  background: rgba(239, 68, 68, 0.07);
+  border: 1px solid rgba(239, 68, 68, 0.22);
+  color: #b91c1c;
+}
+
+.email-watcher-msg.is-info {
+  background: rgba(99, 102, 241, 0.07);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  color: #4338ca;
+}
+
+.email-watcher-guide-item {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.9);
+  border: 1px solid rgba(226, 232, 240, 0.7);
+}
+
+.email-watcher-guide-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #475569;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.email-watcher-guide-item p {
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: #64748b;
+  margin: 0;
+}
+
+.email-watcher-guide-item p code {
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11.5px;
+  color: #4338ca;
+  font-family: ui-monospace, monospace;
+}
+
+.fade-up-enter-active, .fade-up-leave-active {
+  transition: all 0.28s ease;
+}
+.fade-up-enter-from, .fade-up-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+@keyframes spin-once {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin-once {
+  animation: spin-once 0.7s linear infinite;
+}
+
+.email-watcher-hint {
+  padding: 9px 13px;
+  border-radius: 10px;
+  background: rgba(250, 204, 21, 0.08);
+  border: 1px solid rgba(250, 204, 21, 0.3);
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 </style>

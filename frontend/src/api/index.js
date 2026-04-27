@@ -1196,6 +1196,21 @@ export const localUploadApi = {
   }
 }
 
+export const emailWatcherApi = {
+  status: async () => {
+    const response = await apiClient.get('/email-watcher/status')
+    return response.data
+  },
+  test: async (config) => {
+    const response = await apiClient.post('/email-watcher/test', config)
+    return response.data
+  },
+  pollNow: async () => {
+    const response = await apiClient.post('/email-watcher/poll-now')
+    return response.data
+  }
+}
+
 export default {
   task: taskApi,
   config: configApi,
@@ -1217,5 +1232,6 @@ export default {
   circleCompletion: circleCompletionApi,
   localUpload: localUploadApi,
   backup: backupApi,
-  activityLog: activityLogApi
+  activityLog: activityLogApi,
+  emailWatcher: emailWatcherApi
 }

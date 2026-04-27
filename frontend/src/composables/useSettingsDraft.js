@@ -250,6 +250,22 @@ export const defaultConfig = {
     show_download_progress: true,
     show_issues: true
   },
+  email_watcher: {
+    enabled: false,
+    imap_host: 'imap.gmail.com',
+    imap_port: 993,
+    imap_ssl: true,
+    username: '',
+    password: '',
+    mailbox: 'INBOX',
+    sender_filter: 'dlsite.com',
+    subject_filter: '',
+    mark_as_read: true,
+    move_to_folder: '',
+    auto_index_new_circles: true,
+    idle_timeout_minutes: 25,
+    fallback_poll_interval_seconds: 300
+  },
   classification: [
     {
       id: Date.now(),
@@ -347,6 +363,7 @@ function hydrateConfig(data = {}) {
     process_existing: { ...defaultConfig.process_existing, ...(data?.process_existing || {}) },
     asmr_sync_step: { ...defaultConfig.asmr_sync_step, ...(data?.asmr_sync_step || {}) },
     rj_subtitle: { ...defaultConfig.rj_subtitle, ...(data?.rj_subtitle || {}) },
+    email_watcher: { ...defaultConfig.email_watcher, ...(data?.email_watcher || {}) },
     classification: data?.classification || defaultConfig.classification
   }
 
@@ -389,7 +406,8 @@ function serializeConfig(config) {
     auto_process: payload.auto_process,
     process_existing: payload.process_existing,
     asmr_sync_step: payload.asmr_sync_step,
-    rj_subtitle: payload.rj_subtitle
+    rj_subtitle: payload.rj_subtitle,
+    email_watcher: payload.email_watcher
   }
 }
 
