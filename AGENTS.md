@@ -69,10 +69,21 @@
 
 ### 配置与敏感数据
 
-- 用户说“改配置文件”时，默认改仓库模板 `backend/config/config.yaml`，不要直接碰本地真实运行配置。
-- 常见真实配置位置：桌面版 `data/config/config.yaml`，Docker `/app/config/config.yaml`。
+- 用户说“改配置文件”且没有明确说运行态时，默认改仓库模板 `backend/config/config.yaml`，不要直接碰本地真实运行配置。
+- 本地桌面 / 开发运行默认读取项目根目录 `data/config/config.yaml`；代码入口是 `backend/app/config/settings.py` 的 `_resolve_config_path()`。只有设置了 `CONFIG_PATH` 时才会改读环境变量指向的文件。
+- `get_config_file_path()` 返回的是运行配置路径，当前默认 `./data/config/config.yaml`；排查“设置页保存后配置不对”先看 `/api/config/state`、后端日志里的 `[CONFIG] 尝试加载配置文件` 和 `data/config/config.yaml`。
+- `backend/config/config.yaml` 是模板 / 仓库默认配置，不是当前桌面运行态实际读取文件。不要用它判断用户本机设置是否生效。
+- 常见真实配置位置：桌面版 / 开发默认 `data/config/config.yaml`，Docker `/app/config/config.yaml`。
 - 不要提交真实密码、Token、代理、私服地址、群晖账号信息。
 - 默认视为运行态 / 敏感产物：`.env`、`backend/data/`、本地数据库、缓存目录、`.codex-backups/`、`data/`。
+
+### 设置页 / 通知配置
+
+- SMTP 发件配置在 `notification_email` 下，模型在 `backend/app/config/settings.py` 的 `NotificationEmailConfig`，接口聚合在 `backend/app/api/routes.py` 的 `/api/config` 和 `/api/notifications/test-email`。
+- `/api/config` 返回 SMTP 密码时必须脱敏为 `********`；保存 `/api/config` 时如果前端传回 `********` 或省略 `password`，后端必须保留运行配置里的真实密码，不能把占位符写回 `data/config/config.yaml`。
+- 前端设置草稿在 `frontend/src/composables/useSettingsDraft.js`；保存前应避免把未改动的脱敏密码作为真实配置提交。
+- QQ 邮箱 SMTP 常用组合是 `smtp.qq.com` + `465` + `smtp_ssl: true` + `smtp_starttls: false`。`587` 才通常配 STARTTLS；端口和加密方式错配只应导致测试邮件失败，不应拖垮设置页。
+- 通知铃铛入口是 `frontend/src/components/system/NotificationBell.vue`，SSE 单例在 `frontend/src/composables/useNotifications.js`。这里的启动 / 停止函数名必须和 composable 导出一致；未捕获的 mounted 报错会连锁打断设置页组件更新。
 
 ### 桌面端
 
