@@ -2686,6 +2686,38 @@ class CircleCompletionService:
                     item["asmr_available"] = stats.get("asmr_available", 0)
                     item["dl_works"] = stats.get("dl_works", 0)
 
+                # 批量统计邮件新作数量（source_tags）
+                tag_rows = (
+                    db.query(CircleWork.circle_id, CircleWork.source_tags)
+                    .filter(CircleWork.circle_id.in_(collected_ids))
+                    .all()
+                )
+                new_work_map: Dict[str, int] = {}
+                for tr in tag_rows:
+                    tags = tr.source_tags
+                    if isinstance(tags, list) and "email_watcher" in tags:
+                        new_work_map[tr.circle_id] = new_work_map.get(tr.circle_id, 0) + 1
+
+                # 批量统计未发售（join WorkMetadata.release_date）
+                from datetime import date as _date
+                today_str = _date.today().isoformat()
+                unreleased_rows = (
+                    db.query(CircleWork.circle_id, WorkMetadata.release_date)
+                    .join(WorkMetadata, WorkMetadata.rjcode == CircleWork.canonical_rjcode)
+                    .filter(CircleWork.circle_id.in_(collected_ids))
+                    .all()
+                )
+                unreleased_map: Dict[str, int] = {}
+                for ur in unreleased_rows:
+                    rd = str(ur.release_date or "").strip()
+                    if rd and rd[:10] > today_str:
+                        unreleased_map[ur.circle_id] = unreleased_map.get(ur.circle_id, 0) + 1
+
+                for item in out:
+                    cid = item["circle_id"]
+                    item["unreleased_count"] = unreleased_map.get(cid, 0)
+                    item["new_works_count"] = new_work_map.get(cid, 0)
+
             return out
         finally:
             db.close()

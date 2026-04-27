@@ -234,6 +234,7 @@ class CircleWork(Base):
     image_url = Column(String(500))
     asmr_one_cached_at = Column(DateTime)
     dlsite_cached_at = Column(DateTime)
+    source_tags = Column(JSON, default=list)  # 来源标签，如 ["email_watcher"]，用于"新作"标识
     created_at = Column(DateTime, default=get_local_now)
     updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
 
@@ -262,6 +263,7 @@ class CircleWork(Base):
             'image_url': self.image_url,
             'asmr_one_cached_at': self.asmr_one_cached_at.isoformat() if self.asmr_one_cached_at else None,
             'dlsite_cached_at': self.dlsite_cached_at.isoformat() if self.dlsite_cached_at else None,
+            'source_tags': self.source_tags or [],
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
