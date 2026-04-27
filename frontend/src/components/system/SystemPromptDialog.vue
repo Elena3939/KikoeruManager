@@ -4,7 +4,8 @@
     @click="handleOverlayClick"
   >
     <div
-      class="sp-shell relative w-full max-w-[420px]"
+      class="sp-shell relative w-full"
+      :style="{ maxWidth: `${dialogWidth}px` }"
       role="dialog"
       aria-modal="true"
       :aria-labelledby="titleId"
@@ -32,7 +33,7 @@
           <button
             v-if="options.showClose"
             type="button"
-            class="flex-shrink-0 ml-3 w-6 h-6 flex items-center justify-center rounded-[6px] text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all duration-150"
+            class="flex-shrink-0 ml-3 w-6 h-6 flex items-center justify-center rounded-[6px] text-rose-400 hover:text-rose-600 hover:bg-rose-50 transition-all duration-150 cursor-pointer hover:scale-105 active:scale-95"
             @click="emit('close')"
           >
             <X :size="15" />
@@ -67,9 +68,10 @@
               v-if="options.inputType === 'textarea'"
               ref="inputRef"
               v-model="draftValue"
-              class="w-full min-h-[100px] px-3 py-2 rounded-[8px] bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-sm outline-none transition-all duration-150 focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-200 resize-y"
+              class="w-full min-h-[132px] px-3 py-2 rounded-[8px] bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-sm leading-relaxed outline-none transition-[border-color,background-color,box-shadow] duration-150 focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-200 resize-y"
+              style="resize: vertical; will-change: auto;"
               :placeholder="options.placeholder"
-              rows="4"
+              rows="5"
               @keydown.stop
             />
             <input
@@ -91,14 +93,14 @@
           <button
             v-if="options.mode !== 'alert'"
             type="button"
-            class="px-4 py-1.5 text-sm text-slate-600 hover:text-slate-900 rounded-[6px] hover:bg-slate-100 transition-all duration-150 font-medium"
+            class="px-4 py-1.5 text-sm text-slate-600 hover:text-slate-900 rounded-[6px] hover:bg-slate-100 transition-all duration-150 font-medium cursor-pointer hover:scale-[1.02] active:scale-95"
             @click="emit('cancel')"
           >
             {{ options.cancelText }}
           </button>
           <button
             type="button"
-            class="inline-flex items-center justify-center px-4 py-1.5 rounded-[6px] text-sm font-semibold text-white transition-all duration-150 hover:opacity-90 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+            class="inline-flex items-center justify-center px-4 py-1.5 rounded-[6px] text-sm font-semibold transition-all duration-150 hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             :class="confirmBtnClass"
             :disabled="confirmDisabled"
             @click="handleConfirm"
@@ -134,6 +136,10 @@ const titleId = computed(() => `${props.prompt?.id || 'sp'}-title`)
 const descriptionId = computed(() => `${props.prompt?.id || 'sp'}-desc`)
 const draftValue = ref('')
 const usesLottieTone = computed(() => options.value.tone === 'success')
+const dialogWidth = computed(() => {
+  const width = Number(options.value.width || 420)
+  return Math.max(360, Math.min(width, 960))
+})
 
 const fallbackTitle = computed(() => {
   if (options.value.mode === 'alert') return '系统提示'
@@ -157,10 +163,10 @@ const toneIconColorClass = computed(() => {
 
 const confirmBtnClass = computed(() => {
   const t = options.value.tone
-  if (t === 'success') return 'bg-emerald-600 hover:bg-emerald-700'
-  if (t === 'warning') return 'bg-amber-500 hover:bg-amber-600'
-  if (t === 'danger') return 'bg-red-600 hover:bg-red-700'
-  return 'bg-slate-900 hover:bg-slate-700'
+  if (t === 'success') return 'bg-emerald-600 text-white hover:bg-emerald-700'
+  if (t === 'warning') return 'bg-amber-500 text-white hover:bg-amber-600'
+  if (t === 'danger') return 'bg-red-600 text-white hover:bg-red-700'
+  return 'bg-slate-900 text-white border border-slate-900 hover:bg-white hover:text-slate-900 hover:border-slate-300'
 })
 
 const normalizedInputType = computed(() => options.value.inputType === 'password' ? 'password' : 'text')

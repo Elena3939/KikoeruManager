@@ -78,15 +78,15 @@
       </article>
     </div>
 
-    <div v-else class="flex flex-1 flex-col items-center justify-center gap-1.5 text-[11.5px] text-slate-400">
-      <Inbox :size="18" :stroke-width="1.5" class="text-slate-300" />
-      <span>当前没有需要关注的任务</span>
+    <div v-else class="flex flex-1 items-center justify-center rounded-[10px] border border-dashed border-slate-200 bg-slate-50/40">
+      <AppEmptyState description="当前没有需要关注的任务" size="default" />
     </div>
   </section>
 </template>
 
 <script setup>
-import { ArrowRight, Inbox, MoreVertical, PauseCircle, PlayCircle, RotateCcw, XCircle } from 'lucide-vue-next'
+import { ArrowRight, MoreVertical, PauseCircle, PlayCircle, RotateCcw, XCircle } from 'lucide-vue-next'
+import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from './StatusPill.vue'
 import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
 

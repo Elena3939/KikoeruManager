@@ -297,7 +297,9 @@
       </section>
     </template>
 
-    <AppEmptyState v-else description="选择左侧任务查看详情" size="sm" />
+    <div v-else class="flex flex-1 items-center justify-center px-6 py-12">
+      <AppEmptyState description="选择左侧任务查看详情" size="lg" />
+    </div>
   </div>
 </template>
 

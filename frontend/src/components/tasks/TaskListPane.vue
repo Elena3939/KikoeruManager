@@ -116,13 +116,8 @@
       </button>
     </TransitionGroup>
 
-    <div v-else class="m-3 flex flex-1 min-h-0 flex-col items-center justify-center gap-3 rounded-[12px] border border-dashed border-slate-300 bg-slate-50/40 p-5">
-      <AppEmptyState description="当前筛选条件下没有任务" size="default" />
-      <div class="flex flex-wrap justify-center gap-1.5">
-        <button type="button" class="group inline-flex h-7 items-center gap-1 rounded-[8px] border border-slate-200 bg-white px-2.5 text-[11px] font-medium text-slate-700 transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.03] hover:border-slate-300 hover:bg-slate-50 active:scale-95" @click="$emit('quick-filter', 'all', 'all')">查看全部</button>
-        <button type="button" class="group inline-flex h-7 items-center gap-1 rounded-[8px] border border-slate-200 bg-white px-2.5 text-[11px] font-medium text-slate-700 transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.03] hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700 active:scale-95" @click="$emit('quick-filter', 'rj_subtitle', 'processing')">查看 RJ 处理中</button>
-        <button type="button" class="group inline-flex h-7 items-center gap-1 rounded-[8px] border border-slate-200 bg-white px-2.5 text-[11px] font-medium text-slate-700 transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.03] hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700 active:scale-95" @click="$emit('quick-filter', 'circle_completion', 'waiting_manual')">查看待人工任务</button>
-      </div>
+    <div v-else class="flex flex-1 min-h-0 items-center justify-center px-6 py-10">
+      <AppEmptyState description="当前筛选条件下没有任务" size="lg" />
     </div>
 
     <div v-if="totalItems > pageSize" class="flex items-center justify-center gap-2 border-t border-slate-200 px-3 py-2.5">
