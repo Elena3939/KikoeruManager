@@ -153,6 +153,7 @@ function onCoverError(event) {
       'is-downloaded': item.local_download_ready && !cornerLabel,
       'is-unreleased': isUnreleased,
       'is-new-work': item.source_tags && item.source_tags.includes('email_watcher'),
+      'is-owned': item.server_owned,
       'status-flash': props.statusFlash,
       disabled: props.disabled,
       'work-card--lg': props.size === 'lg',
@@ -536,6 +537,19 @@ function onCoverError(event) {
 .work-card.is-new-work .work-card-select-ring {
   border-color: rgba(249, 115, 22, 0.7);
   box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.14), 0 0 24px rgba(249, 115, 22, 0.22);
+}
+/* ── 已收录边框光圈 ── */
+.work-card.is-owned {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.10), 0 0 18px rgba(34, 197, 94, 0.16);
+}
+.work-card.is-owned:hover {
+  border-color: rgba(34, 197, 94, 0.65);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14), 0 0 26px rgba(34, 197, 94, 0.24);
+}
+.work-card.is-owned .work-card-select-ring {
+  border-color: rgba(34, 197, 94, 0.6);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12), 0 0 20px rgba(34, 197, 94, 0.18);
 }
 .work-release-chip {
   display: inline-flex;

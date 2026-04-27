@@ -96,6 +96,7 @@ function onImgError(e) {
       'is-selected': selected,
       'is-downloaded': item.local_download_ready && !cornerLabel,
       'is-new-work': isNewWork,
+      'is-owned': item.server_owned,
       'is-unreleased': isUnreleased,
       'status-flash': statusFlash,
       'is-disabled': disabled,
@@ -203,6 +204,14 @@ function onImgError(e) {
 .work-list-row.is-new-work:hover {
   border-color: rgba(249, 115, 22, 0.70);
   box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.18), 0 0 20px rgba(249, 115, 22, 0.20);
+}
+.work-list-row.is-owned {
+  border-color: rgba(34, 197, 94, 0.40);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.08), 0 0 14px rgba(34, 197, 94, 0.12);
+}
+.work-list-row.is-owned:hover {
+  border-color: rgba(34, 197, 94, 0.60);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.14), 0 0 18px rgba(34, 197, 94, 0.18);
 }
 
 

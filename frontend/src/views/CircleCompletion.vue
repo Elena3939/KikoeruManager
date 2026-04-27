@@ -3256,8 +3256,8 @@ function getUploadBackgroundTargetLabel(task) {
 
 <style scoped>
 .circle-page {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 0;
   padding: 0;
   background: #fafafa;
@@ -4479,7 +4479,7 @@ function getUploadBackgroundTargetLabel(task) {
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 8px;
   padding: 8px;
-  height: 100%;
+  flex: 1;
   min-height: 0;
   overflow: hidden;
 }
