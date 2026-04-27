@@ -152,6 +152,7 @@ function onCoverError(event) {
       selected: props.selected,
       'is-downloaded': item.local_download_ready && !cornerLabel,
       'is-unreleased': isUnreleased,
+      'is-new-work': item.source_tags && item.source_tags.includes('email_watcher'),
       'status-flash': props.statusFlash,
       disabled: props.disabled,
       'work-card--lg': props.size === 'lg',
@@ -174,6 +175,10 @@ function onCoverError(event) {
         <Calendar :size="12" />
         <span>未发售</span>
       </div>
+      <div v-if="item.source_tags && item.source_tags.includes('email_watcher')" :class="['work-new-flag', isUnreleased ? 'work-new-flag--below' : '']">
+        <span>✦ 新作</span>
+      </div>
+
       <div class="work-cover-shine" />
     </div>
 
@@ -227,6 +232,7 @@ function onCoverError(event) {
     background-color .2s ease;
   will-change: transform, box-shadow;
   transform: translateZ(0);
+  height: max-content;
   animation: workCardEntrance .38s cubic-bezier(.22,1,.36,1) both;
   animation-delay: calc(var(--card-index, 0) * 28ms);
 }
@@ -452,22 +458,84 @@ function onCoverError(event) {
   gap: 4px;
   height: 22px;
   padding: 0 8px;
-  border: 1px solid rgba(52, 120, 246, 0.18);
+  border: 1px solid rgba(52, 120, 246, 0.15);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(10px);
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(12px) saturate(1.6);
   color: #2563eb;
   font-size: 10px;
   font-weight: 800;
   line-height: 1;
   letter-spacing: .02em;
-  box-shadow: 0 6px 14px rgba(38, 74, 134, 0.10);
+  box-shadow: 0 2px 8px rgba(38, 74, 134, 0.08);
   transition: transform .2s cubic-bezier(.34,1.56,.64,1), border-color .2s ease, background .2s ease;
 }
 .work-card:hover .work-unreleased-flag {
   transform: translateY(-1px) scale(1.03);
-  border-color: rgba(52, 120, 246, 0.28);
-  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(52, 120, 246, 0.22);
+  background: rgba(255, 255, 255, 0.6);
+}
+.work-new-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #f97316 0%, #fb923c 100%);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  box-shadow: 0 2px 6px rgba(249, 115, 22, 0.3);
+}
+.work-rj-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.work-new-flag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(249, 115, 22, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 248, 240, 0.45);
+  backdrop-filter: blur(12px) saturate(1.6);
+  color: #ea580c;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: .02em;
+  box-shadow: 0 2px 8px rgba(249, 115, 22, 0.10);
+  transition: transform .2s cubic-bezier(.34,1.56,.64,1), border-color .2s ease, background .2s ease;
+}
+.work-new-flag--below {
+  top: 38px;
+}
+.work-card:hover .work-new-flag {
+  transform: translateY(-1px) scale(1.03);
+  border-color: rgba(249, 115, 22, 0.28);
+  background: rgba(255, 248, 240, 0.62);
+}
+/* ── 新作边框光圈 ── */
+.work-card.is-new-work {
+  border-color: rgba(249, 115, 22, 0.55);
+  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.12), 0 0 22px rgba(249, 115, 22, 0.20);
+}
+.work-card.is-new-work:hover {
+  border-color: rgba(249, 115, 22, 0.72);
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.16), 0 0 30px rgba(249, 115, 22, 0.28);
+}
+.work-card.is-new-work .work-card-select-ring {
+  border-color: rgba(249, 115, 22, 0.7);
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.14), 0 0 24px rgba(249, 115, 22, 0.22);
 }
 .work-release-chip {
   display: inline-flex;

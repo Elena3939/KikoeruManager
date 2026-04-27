@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { LibraryBig, Server, X, PackageCheck, Layers, ExternalLink } from 'lucide-vue-next'
+import { LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar } from 'lucide-vue-next'
 
 const props = defineProps({
   /** 作品数据对象 */
@@ -33,6 +33,21 @@ const variantLabel = computed(() =>
 const downloadRjcode = computed(() =>
   props.item.download_plan?.rjcode || props.item.display_rjcode || props.item.canonical_rjcode || ''
 )
+
+const isNewWork = computed(() =>
+  Array.isArray(props.item.source_tags) && props.item.source_tags.includes('email_watcher')
+)
+
+const isUnreleased = computed(() => {
+  if (props.item.is_unreleased) return true
+  const value = String(props.item.release_date || props.item.date || props.item.release_at || '').trim()
+  if (!value) return true
+  const match = value.match(/(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?/)
+  if (!match) return false
+  const releaseDate = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3] || 1))
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  return releaseDate > today
+})
 
 /** CV 名列表，用 / 拼接 */
 const cvLabel = computed(() => {
@@ -80,6 +95,8 @@ function onImgError(e) {
     :class="{
       'is-selected': selected,
       'is-downloaded': item.local_download_ready && !cornerLabel,
+      'is-new-work': isNewWork,
+      'is-unreleased': isUnreleased,
       'status-flash': statusFlash,
       'is-disabled': disabled,
     }"
@@ -99,7 +116,11 @@ function onImgError(e) {
 
     <!-- 主信息区 -->
     <div class="wlr-main">
-      <div class="wlr-title" :title="item.title">{{ item.title || '未命名作品' }}</div>
+      <div class="wlr-title" :title="item.title">
+        <span v-if="isNewWork" class="wlr-new-badge">✦ 新作</span>
+        <span v-if="isUnreleased" class="wlr-unreleased-badge"><Calendar :size="10" />未发售</span>
+        {{ item.title || '未命名作品' }}
+      </div>
       <div class="wlr-subtitle">
         <span class="wlr-code">{{ displayCode }}</span>
         <template v-if="cvLabel">
@@ -175,10 +196,15 @@ function onImgError(e) {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.work-list-row:hover {
-  background: #f5f5f7;
-  border-color: rgba(0,0,0,0.06);
+.work-list-row.is-new-work {
+  border-color: rgba(249, 115, 22, 0.55);
+  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.12), 0 0 16px rgba(249, 115, 22, 0.14);
 }
+.work-list-row.is-new-work:hover {
+  border-color: rgba(249, 115, 22, 0.70);
+  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.18), 0 0 20px rgba(249, 115, 22, 0.20);
+}
+
 
 .work-list-row.is-selected {
   background: #eff6ff;
@@ -268,6 +294,40 @@ function onImgError(e) {
   overflow: hidden;
   text-overflow: ellipsis;
   line-height: 1.4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wlr-new-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid rgba(249, 115, 22, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 248, 240, 0.80);
+  color: #ea580c;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .03em;
+  box-shadow: 0 1px 4px rgba(249, 115, 22, 0.14);
+}
+.wlr-unreleased-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid rgba(52, 120, 246, 0.20);
+  border-radius: 999px;
+  background: rgba(237, 244, 255, 0.80);
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .03em;
+  box-shadow: 0 1px 4px rgba(52, 120, 246, 0.10);
 }
 
 .wlr-subtitle {
