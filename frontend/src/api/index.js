@@ -1211,6 +1211,63 @@ export const emailWatcherApi = {
   }
 }
 
+export const notificationApi = {
+  unreadCount: async () => {
+    const response = await apiClient.get('/notifications/unread-count')
+    return response.data
+  },
+
+  list: async (params = {}) => {
+    const response = await apiClient.get('/notifications', { params })
+    return response.data
+  },
+
+  markRead: async (ids) => {
+    const response = await apiClient.post('/notifications/read', { ids })
+    return response.data
+  },
+
+  markAllRead: async () => {
+    const response = await apiClient.post('/notifications/read-all')
+    return response.data
+  },
+
+  delete: async (id) => {
+    const response = await apiClient.delete(`/notifications/${id}`)
+    return response.data
+  },
+
+  testEmail: async (config = null) => {
+    const response = await apiClient.post('/notifications/test-email', { config })
+    return response.data
+  },
+
+  listTemplates: async () => {
+    const response = await apiClient.get('/notifications/templates')
+    return response.data
+  },
+
+  createTemplate: async (data) => {
+    const response = await apiClient.post('/notifications/templates', data)
+    return response.data
+  },
+
+  updateTemplate: async (id, data) => {
+    const response = await apiClient.put(`/notifications/templates/${id}`, data)
+    return response.data
+  },
+
+  deleteTemplate: async (id) => {
+    const response = await apiClient.delete(`/notifications/templates/${id}`)
+    return response.data
+  },
+
+  previewTemplate: async (templateId, payload) => {
+    const response = await apiClient.post('/notifications/templates/preview', { template_id: templateId, payload })
+    return response.data
+  }
+}
+
 export default {
   task: taskApi,
   config: configApi,
@@ -1233,5 +1290,6 @@ export default {
   localUpload: localUploadApi,
   backup: backupApi,
   activityLog: activityLogApi,
-  emailWatcher: emailWatcherApi
+  emailWatcher: emailWatcherApi,
+  notification: notificationApi
 }

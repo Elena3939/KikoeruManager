@@ -798,6 +798,151 @@ class ASMRDownloadSession(Base):
 import logging
 _db_logger = logging.getLogger(__name__)
 
+class NotificationTemplate(Base):
+    """通知邮件模板表"""
+    __tablename__ = 'notification_templates'
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(100), nullable=False)
+    channel = Column(String(20), default='email')
+    event_types = Column(JSON, default=list)
+    task_domains = Column(JSON, default=list)
+    editor_mode = Column(String(20), default='html')
+    subject_template = Column(Text, default='')
+    html_template = Column(Text, default='')
+    text_template = Column(Text, default='')
+    enabled = Column(Boolean, default=True)
+    is_default = Column(Boolean, default=False)
+    sort_order = Column(Integer, default=0)
+    description = Column(Text, default='')
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'channel': self.channel,
+            'event_types': self.event_types or [],
+            'task_domains': self.task_domains or [],
+            'editor_mode': self.editor_mode,
+            'subject_template': self.subject_template or '',
+            'html_template': self.html_template or '',
+            'text_template': self.text_template or '',
+            'enabled': bool(self.enabled),
+            'is_default': bool(self.is_default),
+            'sort_order': self.sort_order or 0,
+            'description': self.description or '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class NotificationInboxItem(Base):
+    """站内通知收件箱表"""
+    __tablename__ = 'notification_inbox_items'
+
+    id = Column(String(36), primary_key=True)
+    event_key = Column(String(200), unique=True, index=True)
+    event_type = Column(String(40), index=True)
+    severity = Column(String(20), default='info')
+    group_key = Column(String(200), index=True)
+    group_type = Column(String(40), default='task')
+    group_run_id = Column(String(80), default='')
+    primary_task_id = Column(String(36), index=True)
+    task_ids = Column(JSON, default=list)
+    session_id = Column(String(80), default='')
+    parent_session_id = Column(String(80), default='')
+    batch_id = Column(String(80), default='')
+    task_domain = Column(String(60), default='')
+    task_kind = Column(String(60), default='')
+    source_page = Column(String(60), default='')
+    source_action = Column(String(80), default='')
+    source_label = Column(Text, default='')
+    business_key = Column(String(120), default='')
+    title = Column(Text, default='')
+    summary = Column(Text, default='')
+    rjcode = Column(String(20), default='')
+    route_path = Column(String(200), default='')
+    route_query = Column(JSON, default=dict)
+    is_read = Column(Boolean, default=False, index=True)
+    read_at = Column(DateTime)
+    created_at = Column(DateTime, default=get_local_now, index=True)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_notification_inbox_created', 'created_at'),
+        Index('idx_notification_inbox_unread', 'is_read', 'created_at'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'event_key': self.event_key,
+            'event_type': self.event_type,
+            'severity': self.severity,
+            'group_key': self.group_key,
+            'group_type': self.group_type,
+            'group_run_id': self.group_run_id or '',
+            'primary_task_id': self.primary_task_id,
+            'task_ids': self.task_ids or [],
+            'session_id': self.session_id or '',
+            'parent_session_id': self.parent_session_id or '',
+            'batch_id': self.batch_id or '',
+            'task_domain': self.task_domain or '',
+            'task_kind': self.task_kind or '',
+            'source_page': self.source_page or '',
+            'source_action': self.source_action or '',
+            'source_label': self.source_label or '',
+            'business_key': self.business_key or '',
+            'title': self.title or '',
+            'summary': self.summary or '',
+            'rjcode': self.rjcode or '',
+            'route_path': self.route_path or '',
+            'route_query': self.route_query or {},
+            'is_read': bool(self.is_read),
+            'read_at': self.read_at.isoformat() if self.read_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class NotificationOutbox(Base):
+    """通知邮件发送 outbox 表（异步发件队列）"""
+    __tablename__ = 'notification_outbox'
+
+    id = Column(String(36), primary_key=True)
+    inbox_item_id = Column(String(36), index=True)
+    event_key = Column(String(200), index=True)
+    channel = Column(String(20), default='email')
+    status = Column(String(20), default='pending', index=True)
+    attempt_count = Column(Integer, default=0)
+    next_retry_at = Column(DateTime)
+    last_error = Column(Text)
+    payload = Column(JSON, default=dict)
+    sent_at = Column(DateTime)
+    created_at = Column(DateTime, default=get_local_now, index=True)
+
+    __table_args__ = (
+        Index('idx_notification_outbox_status', 'status', 'created_at'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'inbox_item_id': self.inbox_item_id,
+            'event_key': self.event_key,
+            'channel': self.channel,
+            'status': self.status,
+            'attempt_count': self.attempt_count,
+            'next_retry_at': self.next_retry_at.isoformat() if self.next_retry_at else None,
+            'last_error': self.last_error,
+            'payload': self.payload or {},
+            'sent_at': self.sent_at.isoformat() if self.sent_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 # 数据库连接
 def _count_password_entries(db_path):
     if not os.path.exists(db_path):

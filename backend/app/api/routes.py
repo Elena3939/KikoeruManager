@@ -19,6 +19,7 @@ import re
 import shutil
 import tempfile
 import uuid
+import yaml
 
 # Create logger instance
 logger = logging.getLogger(__name__)
@@ -640,6 +641,10 @@ async def startup_event():
     email_watcher = get_email_watcher_service()
     await email_watcher.start()
 
+    # 启动通知中心 outbox 发件 worker
+    from ..core.task_notification_service import start_outbox_worker
+    asyncio.create_task(start_outbox_worker())
+
 # 关闭事件
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -770,6 +775,8 @@ class ConfigResponse(BaseModel):
     rj_subtitle: Optional[dict] = None
     backup_zip: Optional[dict] = None
     email_watcher: Optional[dict] = None
+    notification_email: Optional[dict] = None
+    notification_center: Optional[dict] = None
 
 # API路由
 # 兼容层：旧任务接口仅保留给少数历史入口使用，新功能统一走 /api/task-center/*
@@ -1123,6 +1130,33 @@ async def batch_cancel_cleanup(request: Request):
                 logger.warning(f"清理下载目录失败: {download_root}")
     return {"cancelled": cancelled, "cleaned": cleaned, "message": f"已取消 {cancelled} 个任务，清理 {cleaned} 个下载目录"}
 
+def _mask_notification_email_config(config) -> Optional[dict]:
+    """返回 notification_email 配置，密码脱敏"""
+    if not hasattr(config, 'notification_email'):
+        return None
+    data = config.notification_email.model_dump()
+    if data.get('password'):
+        data['password'] = '********'
+    return data
+
+
+def _read_notification_email_password_from_disk() -> str:
+    """读取磁盘原始配置，避免把前端脱敏占位符写回真实配置。"""
+    try:
+        from ..config.settings import get_config_file_path
+
+        config_path = get_config_file_path()
+        if not os.path.exists(config_path):
+            return ""
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        password = data.get("notification_email", {}).get("password", "")
+        return password if password != "********" else ""
+    except Exception:
+        logger.warning("[NOTIFICATION] 读取磁盘 notification_email 密码失败", exc_info=True)
+        return ""
+
+
 @app.get("/api/config", response_model=ConfigResponse)
 async def get_configuration():
     """获取配置"""
@@ -1152,7 +1186,9 @@ async def get_configuration():
         asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None,
         rj_subtitle=config.rj_subtitle.model_dump() if hasattr(config, 'rj_subtitle') else None,
         backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None,
-        email_watcher=config.email_watcher.model_dump() if hasattr(config, 'email_watcher') else None
+        email_watcher=config.email_watcher.model_dump() if hasattr(config, 'email_watcher') else None,
+        notification_email=_mask_notification_email_config(config),
+        notification_center=config.notification_center.model_dump() if hasattr(config, 'notification_center') else None,
     )
 
 @app.get("/api/config/state")
@@ -1267,6 +1303,30 @@ async def update_configuration(request: Request):
                 config_data['rj_subtitle'] = rj_subtitle_config.model_dump()
             except Exception as e:
                 logger.error(f"[RJ_SUBTITLE] 配置验证失败: {e}")
+
+        if 'notification_email' in config_data and config_data['notification_email']:
+            try:
+                from ..config.settings import NotificationEmailConfig
+                ne_data = dict(config_data['notification_email'])
+                if 'password' not in ne_data or ne_data.get('password') == '********':
+                    current_cfg = get_config()
+                    current_password = current_cfg.notification_email.password
+                    ne_data['password'] = (
+                        _read_notification_email_password_from_disk()
+                        or (current_password if current_password != '********' else '')
+                    )
+                ne_cfg = NotificationEmailConfig(**ne_data)
+                config_data['notification_email'] = ne_cfg.model_dump()
+            except Exception as e:
+                logger.error(f"[NOTIFICATION] notification_email 配置验证失败: {e}")
+
+        if 'notification_center' in config_data and config_data['notification_center']:
+            try:
+                from ..config.settings import NotificationCenterConfig
+                nc_cfg = NotificationCenterConfig(**config_data['notification_center'])
+                config_data['notification_center'] = nc_cfg.model_dump()
+            except Exception as e:
+                logger.error(f"[NOTIFICATION] notification_center 配置验证失败: {e}")
 
         result = save_config(config_data)
         logger.info(f"配置已保存，分类规则数: {len(config_data.get('classification', []))}")
@@ -8802,6 +8862,165 @@ async def email_watcher_poll_now():
         raise HTTPException(status_code=400, detail="邮箱账号未配置")
     result = await get_email_watcher_service().poll_once()
     return result
+
+
+# ========== 通知中心 API ==========
+
+@app.get("/api/notifications/stream")
+async def notifications_sse(request: Request):
+    """SSE 实时通知推送流"""
+    import json as _json
+    from starlette.responses import StreamingResponse as _SR
+    from ..core.task_notification_service import sse_subscribe, sse_unsubscribe
+
+    loop = asyncio.get_event_loop()
+    sid, q = sse_subscribe(loop)
+
+    async def generator():
+        try:
+            yield f"data: {_json.dumps({'type': 'connected'})}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=25)
+                    yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            sse_unsubscribe(sid)
+
+    return _SR(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/notifications/unread-count")
+async def notifications_unread_count():
+    """获取未读通知数"""
+    from ..core.task_notification_service import get_unread_count
+    return {"count": get_unread_count()}
+
+
+@app.get("/api/notifications")
+async def list_notifications(
+    page: int = 1,
+    limit: int = 30,
+    unread_only: bool = False,
+):
+    """获取通知列表"""
+    from ..core.task_notification_service import list_notifications as _list
+    return _list(page=page, limit=limit, unread_only=unread_only)
+
+
+class NotificationReadRequest(BaseModel):
+    ids: List[str]
+
+
+@app.post("/api/notifications/read")
+async def mark_notifications_read(body: NotificationReadRequest):
+    """标记指定通知为已读"""
+    from ..core.task_notification_service import mark_read
+    count = mark_read(body.ids)
+    return {"updated": count}
+
+
+@app.post("/api/notifications/read-all")
+async def mark_all_notifications_read():
+    """标记全部通知为已读"""
+    from ..core.task_notification_service import mark_all_read
+    count = mark_all_read()
+    return {"updated": count}
+
+
+@app.delete("/api/notifications/{item_id}")
+async def delete_notification(item_id: str):
+    """删除单条通知"""
+    from ..core.task_notification_service import delete_notification as _delete
+    ok = _delete(item_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="通知不存在")
+    return {"ok": True}
+
+
+class TestEmailRequest(BaseModel):
+    config: Optional[dict] = None
+
+
+@app.post("/api/notifications/test-email")
+async def test_notification_email(body: TestEmailRequest):
+    """测试 SMTP 发送配置"""
+    from ..core.notification_email_service import test_smtp_connection
+    cfg_dict = body.config or {}
+    if not cfg_dict:
+        config = get_config()
+        cfg_dict = config.notification_email.model_dump()
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, test_smtp_connection, cfg_dict)
+    return result
+
+
+# ---- 通知模板 API ----
+
+@app.get("/api/notifications/templates")
+async def list_notification_templates():
+    """获取所有通知模板"""
+    from ..core.notification_template_service import list_templates
+    return {"items": list_templates()}
+
+
+@app.post("/api/notifications/templates")
+async def create_notification_template(request: Request):
+    """创建通知模板"""
+    from ..core.notification_template_service import create_template
+    data = await request.json()
+    return create_template(data)
+
+
+@app.put("/api/notifications/templates/{template_id}")
+async def update_notification_template(template_id: str, request: Request):
+    """更新通知模板"""
+    from ..core.notification_template_service import update_template
+    data = await request.json()
+    result = update_template(template_id, data)
+    if not result:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    return result
+
+
+@app.delete("/api/notifications/templates/{template_id}")
+async def delete_notification_template(template_id: str):
+    """删除通知模板"""
+    from ..core.notification_template_service import delete_template
+    ok = delete_template(template_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    return {"ok": True}
+
+
+class TemplatePreviewRequest(BaseModel):
+    template_id: Optional[str] = None
+    payload: Optional[dict] = None
+
+
+@app.post("/api/notifications/templates/preview")
+async def preview_notification_template(body: TemplatePreviewRequest):
+    """预览模板渲染结果"""
+    from ..core.notification_template_service import preview_template
+    sample_payload = body.payload or {
+        'event_type': 'completed',
+        'title': '示例任务',
+        'domain_label': '解压入库',
+        'summary': '解压入库任务完成',
+        'rjcode': 'RJ123456',
+    }
+    return preview_template(body.template_id, sample_payload)
 
 
 # 静态文件服务（前端）

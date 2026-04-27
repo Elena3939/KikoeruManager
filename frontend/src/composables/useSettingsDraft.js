@@ -266,6 +266,33 @@ export const defaultConfig = {
     idle_timeout_minutes: 25,
     fallback_poll_interval_seconds: 300
   },
+  notification_email: {
+    enabled: false,
+    smtp_host: '',
+    smtp_port: 465,
+    smtp_ssl: true,
+    smtp_starttls: false,
+    username: '',
+    password: '',
+    from_email: '',
+    from_name: 'Prekikoeru',
+    to_email: '',
+    connect_timeout_seconds: 10,
+    send_timeout_seconds: 30,
+    max_retry_count: 3,
+    retry_interval_seconds: 60,
+    send_on_completed: true,
+    send_on_failed: true,
+    send_on_waiting_manual: true,
+    send_on_cancelled: false
+  },
+  notification_center: {
+    enabled: true,
+    retain_days: 30,
+    max_items: 200,
+    poll_interval_seconds: 20,
+    unread_highlight_enabled: true
+  },
   classification: [
     {
       id: Date.now(),
@@ -281,6 +308,8 @@ export const defaultConfig = {
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value))
 }
+
+const MASKED_PASSWORD = '********'
 
 function sanitizeSynologyProfileForSave(profile = {}, index = 1) {
   const normalized = normalizeSynologyProfile(profile, index)
@@ -364,6 +393,8 @@ function hydrateConfig(data = {}) {
     asmr_sync_step: { ...defaultConfig.asmr_sync_step, ...(data?.asmr_sync_step || {}) },
     rj_subtitle: { ...defaultConfig.rj_subtitle, ...(data?.rj_subtitle || {}) },
     email_watcher: { ...defaultConfig.email_watcher, ...(data?.email_watcher || {}) },
+    notification_email: { ...defaultConfig.notification_email, ...(data?.notification_email || {}) },
+    notification_center: { ...defaultConfig.notification_center, ...(data?.notification_center || {}) },
     classification: data?.classification || defaultConfig.classification
   }
 
@@ -407,7 +438,9 @@ function serializeConfig(config) {
     process_existing: payload.process_existing,
     asmr_sync_step: payload.asmr_sync_step,
     rj_subtitle: payload.rj_subtitle,
-    email_watcher: payload.email_watcher
+    email_watcher: payload.email_watcher,
+    notification_email: payload.notification_email,
+    notification_center: payload.notification_center
   }
 }
 
@@ -471,6 +504,12 @@ export function useSettingsDraft() {
     try {
       saving.value = true
       const payload = serializeConfig(config.value)
+      if (
+        payload.notification_email?.password === MASKED_PASSWORD &&
+        snapshot.value?.notification_email?.password === MASKED_PASSWORD
+      ) {
+        delete payload.notification_email.password
+      }
       await configStore.saveConfig(payload)
       snapshot.value = deepClone(config.value)
       lastSavedAt.value = Date.now()

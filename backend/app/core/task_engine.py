@@ -1492,6 +1492,11 @@ class TaskEngine:
                 log_task_lifecycle_event(task)
             except Exception:
                 logger.warning("[操作记录] 任务周期记录失败", exc_info=True)
+            try:
+                from .task_notification_service import enqueue_notification_check
+                asyncio.create_task(enqueue_notification_check(task))
+            except Exception:
+                logger.warning("[通知] 通知入队失败", exc_info=True)
             # 清理任务产生的临时文件（无论成功还是失败）
             self._resolve_retry_extract_conflict(task)
             self._resolve_completed_failure_followups(task)

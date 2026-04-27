@@ -325,6 +325,37 @@ class EmailWatcherConfig(BaseModel):
     idle_timeout_minutes: int = 25         # 单次 IDLE 等待超时（分钟），RFC 上限 29
     fallback_poll_interval_seconds: int = 300  # IDLE 失败后降级轮询间隔
 
+class NotificationEmailConfig(BaseModel):
+    """任务通知邮件配置（SMTP 发件）"""
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_ssl: bool = True
+    smtp_starttls: bool = False
+    username: str = ""
+    password: str = ""
+    from_email: str = ""
+    from_name: str = "Prekikoeru"
+    to_email: str = ""
+    connect_timeout_seconds: int = 10
+    send_timeout_seconds: int = 30
+    max_retry_count: int = 3
+    retry_interval_seconds: int = 60
+    send_on_completed: bool = True
+    send_on_failed: bool = True
+    send_on_waiting_manual: bool = True
+    send_on_cancelled: bool = False
+
+
+class NotificationCenterConfig(BaseModel):
+    """站内通知中心配置"""
+    enabled: bool = True
+    retain_days: int = 30
+    max_items: int = 200
+    poll_interval_seconds: int = 20
+    unread_highlight_enabled: bool = True
+
+
 class AppConfig(BaseModel):
     """应用配置"""
     storage: StorageConfig = StorageConfig()
@@ -355,6 +386,8 @@ class AppConfig(BaseModel):
     rj_subtitle: RJSubtitleConfig = RJSubtitleConfig()
     backup_zip: BackupZipConfig = BackupZipConfig()
     email_watcher: EmailWatcherConfig = EmailWatcherConfig()
+    notification_email: NotificationEmailConfig = NotificationEmailConfig()
+    notification_center: NotificationCenterConfig = NotificationCenterConfig()
 
 # 全局配置实例
 _config: Optional[AppConfig] = None

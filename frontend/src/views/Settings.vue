@@ -459,7 +459,7 @@
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
-        v-else
+        v-else-if="activeSection === 'maintenance'"
         kicker="Maintenance"
         title="维护与清理"
         description="自动清理、备份打包等维护项集中放在一起，避免日常配置区被危险操作打断。"
@@ -509,6 +509,78 @@
           </div>
         </div>
       </SettingsSectionPanel>
+
+      <SettingsSectionPanel
+        v-else
+        kicker="Notifications"
+        title="通知中心"
+        description="任务完成、失败或需要人工处理时，站内铃铛实时提醒；配置 SMTP 还可收到邮件推送。"
+      >
+        <div class="settings-grid two">
+          <div class="settings-card">
+            <div class="card-title">站内通知</div>
+            <div class="toggle-stack">
+              <label class="toggle-card"><span><strong>启用通知中心</strong><small>任务状态变化时写入站内铃铛。</small></span><el-switch v-model="config.notification_center.enabled" /></label>
+              <label class="toggle-card"><span><strong>未读高亮提示</strong><small>铃铛图标显示未读数量徽章。</small></span><el-switch v-model="config.notification_center.unread_highlight_enabled" /></label>
+            </div>
+            <div class="field-stack" style="margin-top:10px">
+              <div class="mini-grid two">
+                <label class="field-card"><span class="field-label">通知保留天数</span><el-input-number v-model="config.notification_center.retain_days" :min="1" :max="365" class="field-number" /></label>
+                <label class="field-card"><span class="field-label">最大保留条数</span><el-input-number v-model="config.notification_center.max_items" :min="20" :max="2000" class="field-number" /></label>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <div class="card-title">邮件推送触发规则</div>
+            <div class="toggle-stack">
+              <label class="toggle-card"><span><strong>启用邮件推送</strong><small>通过 SMTP 发送任务通知邮件。</small></span><el-switch v-model="config.notification_email.enabled" /></label>
+              <label class="toggle-card"><span><strong>任务完成时发送</strong></span><el-switch v-model="config.notification_email.send_on_completed" :disabled="!config.notification_email.enabled" /></label>
+              <label class="toggle-card"><span><strong>任务失败时发送</strong></span><el-switch v-model="config.notification_email.send_on_failed" :disabled="!config.notification_email.enabled" /></label>
+              <label class="toggle-card"><span><strong>等待人工处理时发送</strong></span><el-switch v-model="config.notification_email.send_on_waiting_manual" :disabled="!config.notification_email.enabled" /></label>
+              <label class="toggle-card"><span><strong>任务取消时发送</strong><small>默认关闭，取消通知噪音较多。</small></span><el-switch v-model="config.notification_email.send_on_cancelled" :disabled="!config.notification_email.enabled" /></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-card" v-if="config.notification_email.enabled">
+          <div class="card-title">SMTP 发件配置</div>
+          <div class="smtp-preset-row">
+            <span class="smtp-preset-label">快速填入：</span>
+            <button v-for="p in smtpPresets" :key="p.name" class="smtp-preset-btn" type="button" @click="applySmtpPreset(p)">{{ p.name }}</button>
+            <a class="smtp-help-link" href="https://service.mail.qq.com/detail/0/75" target="_blank" rel="noopener">QQ 如何开启 SMTP？</a>
+          </div>
+          <div class="settings-grid two">
+            <div class="field-stack">
+              <label class="field-card">
+                <span class="field-label">SMTP 主机 <small style="color:#8e8e93;font-weight:400">（填服务器地址，如 smtp.qq.com）</small></span>
+                <input v-model="config.notification_email.smtp_host" class="field-input" type="text" placeholder="smtp.qq.com">
+              </label>
+              <div class="mini-grid two">
+                <label class="field-card"><span class="field-label">端口</span><el-input-number v-model="config.notification_email.smtp_port" :min="1" :max="65535" class="field-number" /></label>
+                <div class="field-card" style="gap:8px">
+                  <label class="toggle-mini"><el-switch v-model="config.notification_email.smtp_ssl" @change="v => { if(v) config.notification_email.smtp_starttls = false }" /><span>SSL</span></label>
+                  <label class="toggle-mini"><el-switch v-model="config.notification_email.smtp_starttls" @change="v => { if(v) config.notification_email.smtp_ssl = false }" /><span>STARTTLS</span></label>
+                </div>
+              </div>
+              <label class="field-card"><span class="field-label">发件账号</span><input v-model="config.notification_email.username" class="field-input" type="text" placeholder="your@qq.com"></label>
+              <label class="field-card"><span class="field-label">发件密码 / 授权码</span><AnimatedPasswordInput v-model="config.notification_email.password" placeholder="QQ 邮箱需填授权码" /></label>
+            </div>
+            <div class="field-stack">
+              <label class="field-card"><span class="field-label">发件显示名</span><input v-model="config.notification_email.from_name" class="field-input" type="text" placeholder="Prekikoeru"></label>
+              <label class="field-card"><span class="field-label">发件地址</span><input v-model="config.notification_email.from_email" class="field-input" type="text" placeholder="留空使用账号地址"></label>
+              <label class="field-card"><span class="field-label">收件地址</span><input v-model="config.notification_email.to_email" class="field-input" type="text" placeholder="接收通知的邮箱"></label>
+              <div class="field-card" style="flex-direction:row;align-items:center;gap:8px">
+                <button class="action-btn action-btn--secondary" :disabled="emailTestBusy" @click="doTestEmail">
+                  <Mail :size="14" />
+                  {{ emailTestBusy ? '发送中...' : '发送测试邮件' }}
+                </button>
+                <span v-if="emailTestResult" :class="['email-test-result', emailTestResult.ok ? 'ok' : 'err']" style="white-space:pre-line">{{ emailTestResult.message }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </SettingsSectionPanel>
     </SettingsWorkbench>
   </div>
 </template>
@@ -517,14 +589,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
-import { Boxes, HardDrive, LifeBuoy, ScanSearch, Workflow, Plus, Trash2, Wifi, RefreshCw, Mail, Zap, BookOpen, FolderOpen } from 'lucide-vue-next'
+import { Boxes, HardDrive, LifeBuoy, ScanSearch, Workflow, Plus, Trash2, Wifi, RefreshCw, Mail, Zap, BookOpen, FolderOpen, Bell } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 import { useSettingsDraft } from '../composables/useSettingsDraft'
 import { useSynologyProfiles } from '../composables/useSynologyProfiles'
-import { kikoeruApi, emailWatcherApi } from '../api'
+import { kikoeruApi, emailWatcherApi, notificationApi } from '../api'
 import { useConfigStore } from '../stores'
 import insiderLoadingAnimation from '../assets/anime/Insider-loading.lottie'
 import successConfettiAnimation from '../assets/anime/success confetti.lottie'
@@ -638,12 +710,47 @@ async function pollEmailWatcherNow() {
   }
 }
 
+// SMTP 服务商预设
+const smtpPresets = [
+  { name: 'QQ 邮箱', smtp_host: 'smtp.qq.com', smtp_port: 465, smtp_ssl: true, smtp_starttls: false },
+  { name: '163 邮箱', smtp_host: 'smtp.163.com', smtp_port: 465, smtp_ssl: true, smtp_starttls: false },
+  { name: '126 邮箱', smtp_host: 'smtp.126.com', smtp_port: 465, smtp_ssl: true, smtp_starttls: false },
+  { name: 'Gmail', smtp_host: 'smtp.gmail.com', smtp_port: 587, smtp_ssl: false, smtp_starttls: true },
+  { name: 'Outlook', smtp_host: 'smtp.office365.com', smtp_port: 587, smtp_ssl: false, smtp_starttls: true },
+]
+
+function applySmtpPreset(preset) {
+  config.value.notification_email.smtp_host = preset.smtp_host
+  config.value.notification_email.smtp_port = preset.smtp_port
+  config.value.notification_email.smtp_ssl = preset.smtp_ssl
+  config.value.notification_email.smtp_starttls = preset.smtp_starttls
+}
+
+// 通知邮件测试
+const emailTestBusy = ref(false)
+const emailTestResult = ref(null)
+async function doTestEmail() {
+  if (emailTestBusy.value) return
+  emailTestBusy.value = true
+  emailTestResult.value = null
+  try {
+    const cfg = { ...config.value.notification_email }
+    const result = await notificationApi.testEmail(cfg)
+    emailTestResult.value = result
+  } catch (e) {
+    emailTestResult.value = { ok: false, message: e.response?.data?.detail || e.message || '发送失败' }
+  } finally {
+    emailTestBusy.value = false
+  }
+}
+
 const sections = [
   { id: 'storage', title: '存储与库存', short: '路径、本地库存、群晖模板', icon: HardDrive, keywords: ['storage', 'library', 'synology', '群晖', '库存'] },
   { id: 'processing', title: '处理流程', short: '监视、解压、自动处理', icon: Workflow, keywords: ['watcher', 'processing', 'extract', '自动处理'] },
   { id: 'rules', title: '内容规则', short: '过滤、重命名、分类、路径映射', icon: Boxes, keywords: ['filter', 'rename', 'classification', 'path'] },
   { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', '外部服务'] },
-  { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] }
+  { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
+  { id: 'notification', title: '通知中心', short: 'SMTP 邮件、站内铃铛', icon: Bell, keywords: ['notification', 'smtp', 'email', '通知', '邮件', '铃铛'] }
 ]
 
 const sectionKeyMap = {
@@ -651,7 +758,8 @@ const sectionKeyMap = {
   processing: ['watcher', 'processing', 'extract', 'auto_process', 'process_existing'],
   rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
   services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher'],
-  maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip']
+  maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip'],
+  notification: ['notification_email', 'notification_center']
 }
 
 const autoProcessItems = [
@@ -1373,6 +1481,115 @@ onBeforeUnmount(() => {
   color: #92400e;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.toggle-mini {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(29, 29, 31, 0.7);
+  cursor: pointer;
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.action-btn:hover {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.action-btn:active {
+  transform: scale(0.96);
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.action-btn--secondary {
+  background: rgba(0, 113, 227, 0.08);
+  color: #0071e3;
+  border: 1px solid rgba(0, 113, 227, 0.18);
+}
+
+.action-btn--secondary:hover {
+  background: rgba(0, 113, 227, 0.14);
+}
+
+.email-test-result {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+
+.email-test-result.ok {
+  background: rgba(31, 143, 78, 0.08);
+  color: #1f8f4e;
+  border: 1px solid rgba(31, 143, 78, 0.18);
+}
+
+.email-test-result.err {
+  background: rgba(217, 48, 37, 0.08);
+  color: #d93025;
+  border: 1px solid rgba(217, 48, 37, 0.18);
+}
+
+.smtp-preset-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.smtp-preset-label {
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.5);
+}
+
+.smtp-preset-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #0071e3;
+  background: rgba(0, 113, 227, 0.06);
+  border: 1px solid rgba(0, 113, 227, 0.15);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.smtp-preset-btn:hover {
+  background: rgba(0, 113, 227, 0.12);
+  border-color: rgba(0, 113, 227, 0.3);
+}
+
+.smtp-help-link {
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.4);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  margin-left: auto;
+  transition: color 0.15s;
+}
+
+.smtp-help-link:hover {
+  color: #0071e3;
 }
 
 </style>

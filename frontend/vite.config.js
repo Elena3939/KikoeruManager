@@ -8,6 +8,15 @@ export default defineConfig({
   server: {
     port: 5556,
     proxy: {
+      '/api/notifications/stream': {
+        target: 'http://localhost:5555',
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['x-accel-buffering'] = 'no'
+          })
+        }
+      },
       '/api': {
         target: 'http://localhost:5555',
         changeOrigin: true

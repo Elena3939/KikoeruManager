@@ -10,6 +10,7 @@
           <span class="logo-text">Prekikoeru</span>
           <span class="logo-subtitle">v{{ appVersion }}</span>
         </div>
+        <NotificationBell class="logo-bell" />
         </div>
 
         <div class="sidebar-section-label">导航</div>
@@ -165,6 +166,7 @@ import ActivityHistory from './views/ActivityHistory.vue'
 import CircleCompletion from './views/CircleCompletion.vue'
 import BackgroundWorkbenchHost from './components/workbench/BackgroundWorkbenchHost.vue'
 import SystemPromptHost from './components/system/SystemPromptHost.vue'
+import NotificationBell from './components/system/NotificationBell.vue'
 import router from './router'
 
 const appVersion = '1.0.2'
@@ -274,6 +276,15 @@ body {
   align-items: center;
   gap: 12px;
   padding: 6px 8px 18px;
+}
+
+.logo-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.logo-bell {
+  flex-shrink: 0;
 }
 
 .logo-mark {
