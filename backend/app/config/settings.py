@@ -308,6 +308,23 @@ class BackupZipConfig(BaseModel):
     dictionary_size_mb: int = 0    # 0=自动根据压缩级别选择
     solid_archive: bool = True     # 7z格式启用固实压缩（提升压缩率）
 
+class EmailWatcherConfig(BaseModel):
+    """DLsite 邮件监听配置（IMAP IDLE + fallback 轮询）"""
+    enabled: bool = False
+    imap_host: str = "imap.gmail.com"
+    imap_port: int = 993
+    imap_ssl: bool = True
+    username: str = ""
+    password: str = ""
+    mailbox: str = "INBOX"
+    sender_filter: str = "dlsite.com"       # 只处理来自该域名的邮件
+    subject_filter: str = ""                  # 主题关键词（空字符串=不过滤）
+    mark_as_read: bool = True               # 处理后标记已读
+    move_to_folder: str = ""               # 处理后移入指定文件夹（空=不移动）
+    auto_index_new_circles: bool = True     # 首次出现的社团自动全量索引
+    idle_timeout_minutes: int = 25         # 单次 IDLE 等待超时（分钟），RFC 上限 29
+    fallback_poll_interval_seconds: int = 300  # IDLE 失败后降级轮询间隔
+
 class AppConfig(BaseModel):
     """应用配置"""
     storage: StorageConfig = StorageConfig()
@@ -337,6 +354,7 @@ class AppConfig(BaseModel):
     asmr_sync_step: ASMRSyncStepConfig = ASMRSyncStepConfig()
     rj_subtitle: RJSubtitleConfig = RJSubtitleConfig()
     backup_zip: BackupZipConfig = BackupZipConfig()
+    email_watcher: EmailWatcherConfig = EmailWatcherConfig()
 
 # 全局配置实例
 _config: Optional[AppConfig] = None
