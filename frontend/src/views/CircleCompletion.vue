@@ -22,7 +22,17 @@
           />
         </div>
         <el-button class="hero-btn hero-btn-primary" :loading="indexing" @click="handleIndexCircle">建立 / 刷新索引</el-button>
-        <el-button class="hero-btn hero-btn-secondary" :disabled="indexing" @click="openBatchIndexPrompt">批量建立</el-button>
+        <el-button class="hero-btn hero-btn-secondary" :disabled="indexing" @click="openBatchIndexPrompt">批量创建</el-button>
+        <el-tooltip content="立即检查 DLsite 邮件，提取新作 RJ 号并触发社团补全索引" placement="bottom">
+          <el-button
+            class="hero-btn hero-btn-email"
+            :loading="emailCheckLoading"
+            @click="handleEmailCheck"
+          >
+            <Mail :size="13" style="margin-right:4px" />
+            邮件检查
+          </el-button>
+        </el-tooltip>
       </div>
     </section>
 
@@ -84,6 +94,7 @@
               <button type="button" class="sidebar-filter-chip" :class="{ active: circleCompletionFilter === 'all' }" @click="circleCompletionFilter = 'all'">全部</button>
               <button type="button" class="sidebar-filter-chip" :class="{ active: circleCompletionFilter === 'completed' }" @click="circleCompletionFilter = 'completed'">已补全</button>
               <button type="button" class="sidebar-filter-chip" :class="{ active: circleCompletionFilter === 'incomplete' }" @click="circleCompletionFilter = 'incomplete'">未补全</button>
+              <button type="button" class="sidebar-filter-chip new-work" :class="{ active: circleCompletionFilter === 'new_works' }" @click="circleCompletionFilter = 'new_works'">✦ 新作</button>
             </div>
             <div class="sidebar-sort-row">
               <span class="sidebar-sort-label">排序</span>
@@ -127,6 +138,10 @@
                 </div>
                 <span class="circle-list-percent">{{ getCircleOwnedPercent(circle) }}%</span>
               </div>
+              <div v-if="(circle.unreleased_count > 0) || (circle.new_works_count > 0)" class="circle-list-tag-row">
+                <span v-if="circle.unreleased_count > 0" class="circle-list-tag unreleased"><Calendar :size="9" /> {{ circle.unreleased_count }} 未发售</span>
+                <span v-if="circle.new_works_count > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_count }} 新作</span>
+              </div>
             </button>
           </div>
           <AppEmptyState v-else :description="circleList.length ? '当前筛选条件下没有社团' : '还没有社团索引'" size="sm" />
@@ -166,6 +181,8 @@
               <span class="metric-pill warn"><XCircle :size="12" /> 缺失 {{ detail.missing_count || 0 }}</span>
               <span class="metric-pill ok"><Download :size="12" /> 可下载 {{ detail.downloadable_count || 0 }}</span>
               <span class="metric-pill muted"><MinusCircle :size="12" /> 暂不可下载 {{ detail.dl_only_count || 0 }}</span>
+              <span v-if="unreleasedWorksCount > 0" class="metric-pill unreleased"><Calendar :size="12" /> 未发售 {{ unreleasedWorksCount }}</span>
+              <span v-if="newWorksCount > 0" class="metric-pill new-work"><Mail :size="12" /> 新作 {{ newWorksCount }}</span>
             </div>
           </div>
           <div v-if="refreshForceRefreshHint" class="toolbar-subtext">{{ refreshForceRefreshHint }}</div>
@@ -846,9 +863,9 @@ import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { CheckCircle2, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-vue-next'
+import { CheckCircle2, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
-import api, { asmrSyncApi, circleCompletionApi, libraryApi, localUploadApi, taskApi } from '../api'
+import api, { asmrSyncApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
@@ -877,6 +894,7 @@ const circleSearchRequestSeq = ref(0)
 const circleCompletionFilter = ref('all')
 const circleSortKey = ref('refreshed_at')
 const indexing = ref(false)
+const emailCheckLoading = ref(false)
 const previewing = ref(false)
 const previewLoading = ref(false)
 const starting = ref(false)
@@ -1056,6 +1074,26 @@ const missingWorksTotal = computed(() =>
   Math.max(0, Number(detail.missing_count || 0))
 )
 
+const unreleasedWorksCount = computed(() =>
+  (detail.works || []).filter(item => {
+    if (item?.owned) return false
+    if (item?.is_unreleased) return true
+    const value = String(item?.release_date || item?.date || item?.release_at || '').trim()
+    if (!value) return true
+    const m = value.match(/(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?/)
+    if (!m) return false
+    const rd = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3] || 1))
+    const today = new Date(); today.setHours(0, 0, 0, 0)
+    return rd > today
+  }).length
+)
+
+const newWorksCount = computed(() =>
+  (detail.works || []).filter(item =>
+    Array.isArray(item?.source_tags) && item.source_tags.includes('email_watcher')
+  ).length
+)
+
 function getCircleWorksCount(circle) {
   return Number(circle?.dl_works || circle?.total_works || 0)
 }
@@ -1070,8 +1108,50 @@ function getCircleMissingCount(circle) {
 
 function getWorkReleaseTimestamp(item) {
   const raw = String(item?.release_date || item?.date || item?.release_at || '').trim()
-  const timestamp = raw ? new Date(raw.replace(/\//g, '-')).getTime() : 0
+  const timestamp = raw ? parseReleaseDateForSort(raw) : 0
   return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function parseReleaseDateForSort(raw) {
+  const text = String(raw || '').trim()
+  if (!text) return 0
+
+  const normalized = text
+    .replace(/[年./]/g, '-')
+    .replace(/月/g, '-')
+    .replace(/日/g, '')
+    .replace(/\s+/g, '')
+
+  const exactTimestamp = new Date(normalized).getTime()
+  if (Number.isFinite(exactTimestamp) && exactTimestamp > 0) {
+    return exactTimestamp
+  }
+
+  const monthMatch = text.match(/(\d{4})\D+(\d{1,2})\D*(上旬|中旬|下旬)/)
+  if (monthMatch) {
+    const year = Number(monthMatch[1])
+    const month = Number(monthMatch[2])
+    const phase = monthMatch[3]
+    if (year > 0 && month >= 1 && month <= 12) {
+      const day = phase === '上旬'
+        ? 9
+        : phase === '中旬'
+          ? 19
+          : new Date(year, month, 0).getDate()
+      return new Date(year, month - 1, day).getTime()
+    }
+  }
+
+  const yearMonthMatch = normalized.match(/^(\d{4})-(\d{1,2})$/)
+  if (yearMonthMatch) {
+    const year = Number(yearMonthMatch[1])
+    const month = Number(yearMonthMatch[2])
+    if (year > 0 && month >= 1 && month <= 12) {
+      return new Date(year, month - 1, 1).getTime()
+    }
+  }
+
+  return 0
 }
 
 function toggleMissingReleaseSort() {
@@ -1098,6 +1178,8 @@ const displayCircleList = computed(() => {
     list = list.filter(circle => getCircleCompletionState(circle) === 'completed')
   } else if (circleCompletionFilter.value === 'incomplete') {
     list = list.filter(circle => getCircleCompletionState(circle) === 'incomplete')
+  } else if (circleCompletionFilter.value === 'new_works') {
+    list = list.filter(circle => (circle.new_works_count || 0) > 0)
   }
 
   list.sort((left, right) => {
@@ -2572,7 +2654,7 @@ async function pollIndexJob(jobId) {
       const onlyNewWorks = Boolean(result.meta?.only_new_works)
       const newlyIndexedCount = Number(result.result?.incremental?.newly_indexed_count || result.meta?.newly_indexed_count || 0)
       if (result.meta?.is_batch) {
-        ElMessage.success(`批量建立完成，成功 ${result.meta.completed_queries || 0} 个，失败 ${result.meta.failed_queries || 0} 个`)
+        ElMessage.success(`批量社团补全完成，成功 ${result.meta.completed_queries || 0} 个，失败 ${result.meta.failed_queries || 0} 个`)
       } else {
         ElMessage.success(onlyNewWorks ? `新作索引完成，新增 ${newlyIndexedCount} 个作品` : '社团索引已刷新')
       }
@@ -2734,6 +2816,23 @@ async function handleIndexCircle() {
   })
 }
 
+async function handleEmailCheck() {
+  if (emailCheckLoading.value) return
+  emailCheckLoading.value = true
+  try {
+    const result = await emailWatcherApi.pollNow()
+    if (result.success) {
+      ElMessage({ type: result.count > 0 ? 'success' : 'info', message: result.message || '检查完成' })
+    } else {
+      ElMessage({ type: 'warning', message: result.message || '邮件检查失败，请检查设置页的邮件监听配置' })
+    }
+  } catch (e) {
+    ElMessage({ type: 'error', message: '邮件检查请求失败，请确认后端已启动且已配置邮件监听' })
+  } finally {
+    emailCheckLoading.value = false
+  }
+}
+
 function normalizeBatchCircleQueries(text = '') {
   const seen = new Set()
   return String(text || '')
@@ -2749,13 +2848,15 @@ function normalizeBatchCircleQueries(text = '') {
 async function openBatchIndexPrompt() {
   try {
     const value = await showSystemPrompt({
-      title: '批量建立社团索引',
-      description: '一行一个社团名，提交后会按顺序批量建立或刷新索引。',
+      title: '批量创建社团补全',
+      description: '手动输入社团名，一行一个，提交后会按顺序批量执行社团补全。',
       badge: '社团补全',
       mode: 'prompt',
       inputType: 'textarea',
+      width: 680,
+      closeOnClickModal: false,
       placeholder: '例如：\nリリムワークス/兎月りりむ。\n耳かき屋\nしろくまだんご',
-      confirmText: '开始批量建立',
+      confirmText: '开始批量补全',
       cancelText: '取消',
       validator: value => {
         const queries = normalizeBatchCircleQueries(value)
@@ -4034,6 +4135,24 @@ function getUploadBackgroundTargetLabel(task) {
 .hero-btn-secondary:active:not(.is-disabled):not(:disabled) {
   transform: translateY(0) scale(0.96);
 }
+.hero-btn-email {
+  background: linear-gradient(135deg, #e0f2fe 0%, #f0fdf4 100%);
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+  box-shadow: 0 1px 3px rgba(3, 105, 161, 0.08);
+  display: flex;
+  align-items: center;
+}
+.hero-btn-email:hover:not(.is-disabled):not(:disabled) {
+  background: linear-gradient(135deg, #bae6fd 0%, #bbf7d0 100%);
+  border-color: #7dd3fc;
+  color: #075985;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px -4px rgba(3, 105, 161, 0.22);
+}
+.hero-btn-email:active:not(.is-disabled):not(:disabled) {
+  transform: translateY(0) scale(0.96);
+}
 .sidebar-refresh-button {
   font-weight: 600;
   color: #6b7280;
@@ -4088,6 +4207,19 @@ function getUploadBackgroundTargetLabel(task) {
   background: #eff6ff;
   color: #1d4ed8;
   box-shadow: 0 1px 2px rgba(37, 99, 235, 0.08), inset 0 0 0 1px rgba(147, 197, 253, 0.35);
+}
+
+.sidebar-filter-chip.new-work.active {
+  border-color: rgba(249, 115, 22, 0.5);
+  background: rgba(255, 248, 240, 0.95);
+  color: #ea580c;
+  box-shadow: 0 1px 2px rgba(249, 115, 22, 0.1), inset 0 0 0 1px rgba(249, 115, 22, 0.2);
+}
+
+.sidebar-filter-chip.new-work:not(.active):hover {
+  border-color: rgba(249, 115, 22, 0.3);
+  background: rgba(255, 248, 240, 0.6);
+  color: #ea580c;
 }
 
 .sidebar-sort-row {
@@ -4523,6 +4655,24 @@ function getUploadBackgroundTargetLabel(task) {
   border-color: #e2e8f0;
   color: #475569;
 }
+.metric-pill.unreleased {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: rgba(52, 120, 246, 0.18);
+}
+.metric-pill.unreleased:hover {
+  background: #dbeafe;
+  border-color: rgba(52, 120, 246, 0.30);
+}
+.metric-pill.new-work {
+  background: rgba(255, 248, 240, 0.9);
+  color: #ea580c;
+  border-color: rgba(249, 115, 22, 0.22);
+}
+.metric-pill.new-work:hover {
+  background: #fed7aa;
+  border-color: rgba(249, 115, 22, 0.35);
+}
 .toolbar-right-actions {
   display: flex;
   align-items: center;
@@ -4718,6 +4868,35 @@ function getUploadBackgroundTargetLabel(task) {
   justify-content: space-between;
   gap: 8px;
   margin-top: 8px;
+}
+.circle-list-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+.circle-list-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  line-height: 1;
+  border: 1px solid transparent;
+}
+.circle-list-tag.unreleased {
+  background: rgba(237, 244, 255, 0.85);
+  color: #2563eb;
+  border-color: rgba(52, 120, 246, 0.18);
+}
+.circle-list-tag.new-work {
+  background: rgba(255, 248, 240, 0.85);
+  color: #ea580c;
+  border-color: rgba(249, 115, 22, 0.22);
 }
 .circle-list-counts {
   display: flex;
@@ -5032,14 +5211,21 @@ function getUploadBackgroundTargetLabel(task) {
 .work-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(152px, 1fr));
+  grid-auto-rows: max-content;
   gap: 10px;
   flex: 1;
-  align-content: start;
-  align-items: start; /* 单元格按内容自然高度，避免同一行被最高那张卡拉伸压垮封面比例 */
   min-height: 0;
+  padding-bottom: 14px;
+  box-sizing: border-box;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-gutter: stable;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.work-grid::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 /* ── 列表视图 ── */
@@ -5049,9 +5235,17 @@ function getUploadBackgroundTargetLabel(task) {
   flex: 1;
   min-height: 0;
   gap: 6px;
+  padding-bottom: 14px;
+  box-sizing: border-box;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-gutter: stable;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.work-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .owned-works-list,
