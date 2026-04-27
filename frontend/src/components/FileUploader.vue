@@ -1,7 +1,14 @@
 <template>
   <div
-    class="upload-card"
-    :class="{ 'drag-over': isDragOver, 'compact-mode': compact }"
+    class="group relative w-full cursor-pointer transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+    :class="[
+      compact
+        ? ['rounded-[8px]', isDragOver ? 'bg-slate-50' : 'hover:bg-slate-50']
+        : [
+            'rounded-[10px] border border-dashed bg-white px-4 py-3 shadow-[0_1px_3px_rgba(15,23,42,0.04)] hover:-translate-y-0.5 hover:shadow-[0_4px_12px_-6px_rgba(15,23,42,0.15)]',
+            isDragOver ? 'border-slate-900 bg-slate-50' : 'border-slate-300 hover:border-slate-400',
+          ],
+    ]"
     @dragover.prevent="handleDragOver"
     @dragleave.prevent="handleDragLeave"
     @drop.prevent="handleDrop"
@@ -11,52 +18,104 @@
       ref="fileInput"
       type="file"
       multiple
-      style="display: none"
+      class="hidden"
       @change="handleFileSelect"
     />
 
-    <div class="upload-content">
-      <div class="upload-head">
-        <el-icon :size="compact ? 20 : 42" class="upload-icon"><Upload /></el-icon>
-        <div class="upload-head-text">
-          <h3 class="upload-title">{{ compact ? '拖拽或点击上传文件' : '拖拽文件到此处或点击上传' }}</h3>
-          <p class="upload-desc">支持多种压缩格式，自动识别分卷</p>
+    <div class="flex flex-col gap-2.5">
+      <div class="flex items-center gap-2.5 min-w-0">
+        <span
+          class="inline-flex flex-shrink-0 items-center justify-center rounded-[10px] border border-slate-200 bg-white text-blue-600 transition-all duration-300 group-hover:scale-110 group-hover:-rotate-[6deg]"
+          :class="compact ? 'h-9 w-9' : 'h-10 w-10'"
+        >
+          <Upload :size="compact ? 16 : 20" :stroke-width="1.7" />
+        </span>
+        <div class="min-w-0 flex-1">
+          <h3
+            class="m-0 truncate font-bold tracking-tight text-slate-900"
+            :class="compact ? 'text-[11.5px]' : 'text-[13px]'"
+          >
+            {{ compact ? '拖拽或点击上传文件' : '拖拽文件到此处或点击上传' }}
+          </h3>
+          <p class="m-0 mt-px text-[10.5px] leading-snug text-slate-500">
+            支持多种压缩格式，自动识别分卷
+          </p>
         </div>
       </div>
 
-      <div v-if="displayFiles.length > 0" class="selected-files">
-        <div class="target-library-row">
-          <span class="target-library-label">解压目标库</span>
-          <el-select v-model="targetLibraryId" style="width: 100%" placeholder="选择目标库存">
-            <el-option
-              v-for="library in libraries"
-              :key="library.id"
-              :label="library.name"
-              :value="library.id"
+      <div
+        v-if="displayFiles.length > 0"
+        class="flex flex-col gap-2 border-t border-dashed border-neutral-200 pt-2.5"
+        :class="compact ? 'max-h-[220px] overflow-auto pr-0.5' : ''"
+        @click.stop
+      >
+        <div class="flex flex-col gap-1.5">
+          <span class="text-[10.5px] font-bold uppercase tracking-[0.06em] text-slate-400">解压目标库</span>
+          <div class="relative">
+            <select
+              v-model="targetLibraryId"
+              class="w-full appearance-none rounded-[8px] border border-slate-200 bg-white px-3 pr-8 text-[12.5px] font-medium text-slate-800 outline-none shadow-[0_1px_3px_rgba(15,23,42,0.04)] transition-all duration-300 hover:border-slate-300 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+              :class="compact ? 'h-8' : 'h-9'"
+            >
+              <option value="" disabled>选择目标库存</option>
+              <option
+                v-for="library in libraries"
+                :key="library.id"
+                :value="library.id"
+              >
+                {{ library.name }}
+              </option>
+            </select>
+            <ChevronDown
+              :size="13"
+              :stroke-width="2.2"
+              class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400"
             />
-          </el-select>
-        </div>
-        <!-- 显示分组后的文件 -->
-        <div v-for="(group, index) in displayFiles" :key="group._uid" class="file-item">
-          <el-icon><Document /></el-icon>
-          <span class="file-name">
-            {{ group.displayName }}
-            <el-tag v-if="group.isVolumeGroup" type="warning" size="small" class="volume-tag">
-              {{ group.fileCount }} 个分卷
-            </el-tag>
-          </span>
-          <span class="file-size">{{ formatFileSize(group.totalSize) }}</span>
+          </div>
         </div>
 
-        <el-button
-          type="primary"
-          :size="compact ? 'default' : 'large'"
-          :loading="uploading"
+        <div class="flex flex-col gap-1">
+          <div
+            v-for="group in displayFiles"
+            :key="group._uid"
+            class="flex items-center gap-2 rounded-[8px] border border-slate-200 bg-white px-2.5 py-1.5 transition-all duration-300 hover:border-slate-300 hover:shadow-[0_2px_8px_-4px_rgba(15,23,42,0.1)]"
+          >
+            <FileText :size="12" :stroke-width="2.2" class="flex-shrink-0 text-slate-500" />
+            <span class="flex-1 min-w-0 truncate text-left text-[12.5px] text-slate-800">
+              {{ group.displayName }}
+              <span
+                v-if="group.isVolumeGroup"
+                class="ml-1.5 inline-flex items-center rounded-md border border-amber-200 bg-amber-50 px-1.5 py-px align-middle text-[10.5px] font-bold text-amber-700"
+              >
+                {{ group.fileCount }} 个分卷
+              </span>
+            </span>
+            <span class="flex-shrink-0 text-[11px] tabular-nums text-slate-500">
+              {{ formatFileSize(group.totalSize) }}
+            </span>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          class="group/btn mt-1 inline-flex h-9 w-full items-center justify-center gap-2 rounded-[10px] bg-slate-900 px-4 text-[13px] font-bold text-white shadow-[0_4px_14px_-4px_rgba(15,23,42,0.4)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:bg-slate-800 hover:shadow-[0_8px_22px_-6px_rgba(15,23,42,0.5)] active:translate-y-0 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-60"
+          :disabled="uploading"
           @click.stop="startUpload"
-          class="upload-btn"
         >
-          开始处理 ({{ displayFiles.length }} 个任务)
-        </el-button>
+          <Loader2
+            v-if="uploading"
+            :size="14"
+            :stroke-width="2.4"
+            class="animate-spin"
+          />
+          <Play
+            v-else
+            :size="13"
+            :stroke-width="2.4"
+            class="transition-transform duration-300 group-hover/btn:rotate-6"
+          />
+          <span>开始处理 ({{ displayFiles.length }} 个任务)</span>
+        </button>
       </div>
     </div>
   </div>
@@ -64,15 +123,15 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { Upload, Document } from '@element-plus/icons-vue'
+import { ChevronDown, FileText, Loader2, Play, Upload } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { libraryApi } from '../api'
 
 defineProps({
   compact: {
     type: Boolean,
-    default: false
-  }
+    default: false,
+  },
 })
 
 const emit = defineEmits(['upload-success'])
@@ -88,107 +147,54 @@ onMounted(async () => {
   try {
     const data = await libraryApi.listLibraries()
     libraries.value = data.libraries || []
-    targetLibraryId.value = data.default_extract_library_id || data.default_library_id || libraries.value[0]?.id || ''
+    targetLibraryId.value =
+      data.default_extract_library_id ||
+      data.default_library_id ||
+      libraries.value[0]?.id ||
+      ''
   } catch (error) {
     console.error('failed to load libraries', error)
   }
 })
 
-// 生成分卷组显示名称
 function getVolumeBaseName(filename) {
-  // 匹配 .z01, .z02 等 ZIP 分卷
   const zipMatch = filename.match(/^(.+)\.z\d{2}$/i)
   if (zipMatch) return zipMatch[1]
-
-  // 匹配 .r00, .r01 等旧式 RAR 分卷
   const rarLegacyMatch = filename.match(/^(.+)\.r\d{2}$/i)
   if (rarLegacyMatch) return rarLegacyMatch[1]
-
-  // 匹配 .part1.rar, .part2.rar 等 RAR 分卷
   const rarMatch = filename.match(/^(.+)\.part\d+\.(rar|7z|zip|exe)$/i)
   if (rarMatch) return rarMatch[1]
-
-  // 匹配 .7z.001, .7z.002 等 7z 分卷
   const sevenZMatch = filename.match(/^(.+\.(7z|zip|rar))\.\d{3}$/i)
   if (sevenZMatch) return sevenZMatch[1]
-
   return null
 }
 
-// 检测是否是分卷文件（包括 .zip 主文件）
-function getVolumeGroupInfo(filename, allFiles) {
-  // 首先检查是否是标准分卷格式
-  const baseName = getVolumeBaseName(filename)
-  if (baseName) {
-    return { baseName, isVolume: true }
-  }
-
-  // 检查是否是 ZIP 分卷的主文件 (.zip)
-  // 如果存在对应的 .z01 文件，则这个 .zip 也是分卷的一部分
-  if (filename.toLowerCase().endsWith('.zip')) {
-    const nameWithoutExt = filename.slice(0, -4) // 去掉 .zip
-    // 检查是否有对应的 .z01 文件
-    const hasVolumeFiles = allFiles.some(f =>
-      f.name.toLowerCase() === `${nameWithoutExt.toLowerCase()}.z01` ||
-      f.name.toLowerCase().match(new RegExp(`^${nameWithoutExt.toLowerCase()}\\.z\\d{2}$`))
-    )
-    if (hasVolumeFiles) {
-      return { baseName: nameWithoutExt, isVolume: true }
-    }
-  }
-
-  // 检查是否是旧式 RAR 分卷的主文件 (.rar)
-  if (filename.toLowerCase().endsWith('.rar')) {
-    const nameWithoutExt = filename.slice(0, -4)
-    const hasVolumeFiles = allFiles.some(f =>
-      f.name.toLowerCase().match(new RegExp(`^${nameWithoutExt.toLowerCase()}\\.r\\d{2}$`))
-    )
-    if (hasVolumeFiles) {
-      return { baseName: nameWithoutExt, isVolume: true }
-    }
-  }
-
-  return { baseName: null, isVolume: false }
-}
-
-// 检测是否是分卷文件（简单版本，用于判断是否显示分卷标签）
-function isVolumeFile(filename) {
-  return getVolumeBaseName(filename) !== null
-}
-
-// 计算分组后的显示文件
 const displayFiles = computed(() => {
   const groups = new Map()
   const singles = []
   const allFiles = selectedFiles.value
 
-  // 第一遍：收集所有分卷基础名称
   const volumeBaseNames = new Set()
-  allFiles.forEach(file => {
+  allFiles.forEach((file) => {
     const baseName = getVolumeBaseName(file.name)
     if (baseName) {
       volumeBaseNames.add(baseName.toLowerCase())
     }
   })
 
-  // 检查 .zip 文件是否有对应的分卷文件
-  allFiles.forEach(file => {
+  allFiles.forEach((file) => {
     if (file.name.toLowerCase().endsWith('.zip')) {
       const nameWithoutExt = file.name.slice(0, -4)
       if (volumeBaseNames.has(nameWithoutExt.toLowerCase())) {
-        // 这个 .zip 是分卷的一部分
-        volumeBaseNames.add(file.name.toLowerCase()) // 添加完整名称用于匹配
+        volumeBaseNames.add(file.name.toLowerCase())
       }
     }
   })
 
-  allFiles.forEach(file => {
+  allFiles.forEach((file) => {
     const nameLower = file.name.toLowerCase()
-
-    // 检查是否是分卷文件 (.z01, .part1.rar 等)
     let baseName = getVolumeBaseName(file.name)
 
-    // 如果是 .zip 文件，检查是否有对应的分卷
     if (!baseName && nameLower.endsWith('.zip')) {
       const nameWithoutExt = file.name.slice(0, -4)
       if (volumeBaseNames.has(nameWithoutExt.toLowerCase())) {
@@ -197,7 +203,6 @@ const displayFiles = computed(() => {
     }
 
     if (baseName) {
-      // 是分卷文件
       const groupKey = baseName.toLowerCase()
       if (!groups.has(groupKey)) {
         groups.set(groupKey, {
@@ -206,7 +211,7 @@ const displayFiles = computed(() => {
           isVolumeGroup: true,
           fileCount: 0,
           totalSize: 0,
-          files: []
+          files: [],
         })
       }
       const group = groups.get(groupKey)
@@ -214,19 +219,17 @@ const displayFiles = computed(() => {
       group.totalSize += file.size
       group.fileCount = group.files.length
     } else {
-      // 非分卷文件
       singles.push({
         _uid: file._uid,
         displayName: file.name,
         isVolumeGroup: false,
         fileCount: 1,
         totalSize: file.size,
-        files: [file]
+        files: [file],
       })
     }
   })
 
-  // 合并组和非分卷文件
   return [...groups.values(), ...singles]
 })
 
@@ -243,7 +246,7 @@ function handleDragLeave() {
 }
 
 function handleDrop(e) {
-  e.stopPropagation() // 阻止事件冒泡
+  e.stopPropagation()
   isDragOver.value = false
   const files = Array.from(e.dataTransfer.files)
   addFiles(files)
@@ -254,32 +257,29 @@ function handleFileSelect(e) {
   addFiles(files)
 }
 
-// 生成唯一ID的计数器
 let uidCounter = 0
 
 function addFiles(files) {
-  // 接受所有文件，不进行扩展名验证
   const validFiles = files
-
   if (validFiles.length === 0) {
     ElMessage.warning('没有可添加的文件')
     return
   }
 
-  // 为每个文件添加唯一ID，同时保留原始 File 对象的引用
-  const filesWithUid = validFiles.map(file => ({
-    _file: file,  // 保留原始 File 对象
+  const filesWithUid = validFiles.map((file) => ({
+    _file: file,
     name: file.name,
     size: file.size,
     lastModified: file.lastModified,
-    _uid: `file_${Date.now()}_${uidCounter++}`
+    _uid: `file_${Date.now()}_${uidCounter++}`,
   }))
 
-  // 过滤掉已经在列表中的文件（基于名称和大小）
-  const newFiles = filesWithUid.filter(newFile =>
-    !selectedFiles.value.some(existingFile =>
-      existingFile.name === newFile.name && existingFile.size === newFile.size
-    )
+  const newFiles = filesWithUid.filter(
+    (newFile) =>
+      !selectedFiles.value.some(
+        (existingFile) =>
+          existingFile.name === newFile.name && existingFile.size === newFile.size
+      )
   )
 
   if (newFiles.length > 0) {
@@ -300,33 +300,21 @@ function formatFileSize(bytes) {
 
 async function startUpload() {
   if (selectedFiles.value.length === 0) return
-
   uploading.value = true
-
   try {
-    // 始终通过上传文件内容处理，因为浏览器环境中的 file.path 可能不可靠
-    // 即使在 Electron 等桌面环境中，也通过上传确保文件内容完整传输
     const formData = new FormData()
-
     for (const file of selectedFiles.value) {
       formData.append('files', file._file)
     }
     if (targetLibraryId.value) {
       formData.append('target_library_id', targetLibraryId.value)
     }
-
-    const response = await fetch('/api/upload', {
-      method: 'POST',
-      body: formData
-    })
-
+    const response = await fetch('/api/upload', { method: 'POST', body: formData })
     if (!response.ok) {
       throw new Error(`上传失败: ${response.statusText}`)
     }
-
     const result = await response.json()
     ElMessage.success(result.message)
-
     selectedFiles.value = []
     emit('upload-success')
   } catch (error) {
@@ -336,135 +324,3 @@ async function startUpload() {
   }
 }
 </script>
-
-<style scoped>
-.upload-card {
-  border: 1px dashed #cbd5e1;
-  border-radius: 12px;
-  padding: 14px;
-  text-align: left;
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-  background-color: #f8fafc;
-}
-
-.upload-card.compact-mode {
-  padding: 10px 12px;
-}
-
-.upload-card:hover,
-.upload-card.drag-over {
-  border-color: #3b82f6;
-  background-color: #eff6ff;
-  transform: translateY(-2px);
-}
-
-.upload-content {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.upload-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.upload-head-text {
-  min-width: 0;
-}
-
-.upload-icon {
-  color: #94a3b8;
-  flex: 0 0 auto;
-}
-
-.upload-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #334155;
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.upload-desc {
-  font-size: 12px;
-  color: #64748b;
-  margin: 0;
-}
-
-.selected-files {
-  width: 100%;
-  border-top: 1px dashed #dbe2ec;
-  padding-top: 10px;
-}
-
-.target-library-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 12px;
-  text-align: left;
-}
-
-.target-library-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: #475569;
-}
-
-.file-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  background-color: white;
-  border-radius: 6px;
-  margin-bottom: 6px;
-  border: 1px solid #e2e8f0;
-}
-
-.file-name {
-  flex: 1;
-  font-size: 14px;
-  color: #334155;
-  text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-size {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.upload-btn {
-  margin-top: 8px;
-}
-
-.volume-tag {
-  margin-left: 8px;
-  vertical-align: middle;
-}
-
-.compact-mode .selected-files {
-  max-height: 220px;
-  overflow: auto;
-  padding-right: 2px;
-}
-
-@media (max-width: 768px) {
-  .upload-card {
-    padding: 12px;
-  }
-
-  .upload-head {
-    align-items: flex-start;
-  }
-}
-</style>

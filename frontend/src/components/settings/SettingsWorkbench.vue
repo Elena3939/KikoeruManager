@@ -129,9 +129,7 @@ const filteredSections = computed(() => {
 .sidebar-shell {
   padding: 24px 20px 20px;
   border-radius: 30px;
-  background:
-    radial-gradient(circle at top left, rgba(191, 219, 254, 0.32), transparent 35%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.95));
+  background: #fff;
   border: 1px solid rgba(226, 232, 240, 0.92);
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
   backdrop-filter: blur(10px);

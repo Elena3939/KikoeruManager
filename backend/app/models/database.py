@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import os
 import shutil
 import sqlite3
+import stat
 
 import orjson
 
@@ -894,7 +895,42 @@ def get_db_path():
     # 转换为绝对路径
     db_path = os.path.abspath(db_path)
     _migrate_legacy_db_if_needed(db_path)
+    _ensure_db_writable(db_path)
     return db_path
+
+
+def _ensure_db_writable(db_path: str) -> None:
+    """确保 SQLite 主库 + 同目录 -journal/-wal/-shm 副本可写。
+
+    Windows 上常见 ReadOnly 属性被备份 / 同步软件 / shutil.copy2 复制保留下来，
+    一旦置位 SQLite 整个连接会被 sqlite3 模块判定为 readonly database，
+    所有 INSERT/UPDATE 都会报 `attempt to write a readonly database`。
+    在引擎初始化前把只读位强制清掉，免得每次重启都要手动 attrib -R。
+    """
+    candidates = [db_path, f"{db_path}-journal", f"{db_path}-wal", f"{db_path}-shm"]
+    for path in candidates:
+        try:
+            if not os.path.exists(path):
+                continue
+            current_mode = os.stat(path).st_mode
+            if not (current_mode & stat.S_IWUSR):
+                os.chmod(path, current_mode | stat.S_IWUSR | stat.S_IWGRP)
+                _db_logger.warning("[数据库] 已自动清除只读位: %s", path)
+            if os.name == "nt":
+                try:
+                    import ctypes
+
+                    FILE_ATTRIBUTE_READONLY = 0x1
+                    GetFileAttributesW = ctypes.windll.kernel32.GetFileAttributesW
+                    SetFileAttributesW = ctypes.windll.kernel32.SetFileAttributesW
+                    attrs = GetFileAttributesW(path)
+                    if attrs != -1 and (attrs & FILE_ATTRIBUTE_READONLY):
+                        SetFileAttributesW(path, attrs & ~FILE_ATTRIBUTE_READONLY)
+                        _db_logger.warning("[数据库] 已自动清除 Windows ReadOnly 属性: %s", path)
+                except Exception:
+                    _db_logger.debug("[数据库] 清除 Windows ReadOnly 属性失败，忽略", exc_info=True)
+        except Exception:
+            _db_logger.warning("[数据库] 检查只读属性失败 path=%s", path, exc_info=True)
 
 # 获取数据库路径
 _db_path = get_db_path()

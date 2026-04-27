@@ -82,7 +82,7 @@
 
 ## 4. 前端设计规则
 
-- 设计语言对齐 `shadcn / Radix / Vercel` 类型的 React 产品风格；不要交付 Element Plus 默认后台风。
+- 设计语言对齐 `Radix` 类型的 React 产品风格；不要交付 Element Plus 默认后台风。
 - 样式优先级：`Tailwind CSS` -> 项目已有语义 class -> `Element Plus` 容器 / 基础交互能力 -> Lottie 动画增强。
 - 图标只允许用 `lucide-vue-next`。不要混用多套图标库。
 - 所有按钮、都要有交互动效：hover `translateY(-2px) scale(1.02)`，active `scale(0.96)`，图标轻旋转。

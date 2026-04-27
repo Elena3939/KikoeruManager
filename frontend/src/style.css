@@ -1,11 +1,37 @@
 :root {
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    "Segoe UI Variable",
+    "Segoe UI",
+    "Noto Sans SC",
+    "HarmonyOS Sans SC",
+    "PingFang SC",
+    "Source Han Sans SC",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    sans-serif;
   color: #111827;
   background: #dfe7ef;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01", "tnum";
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+}
+
+/* 小字号下中文易糊，统一稍微加粗一档 */
+.text-\[9\.5px\],
+.text-\[10px\],
+.text-\[10\.5px\],
+.text-\[11px\],
+.text-\[11\.5px\] {
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01", "tnum";
+  letter-spacing: 0;
 }
 
 * {

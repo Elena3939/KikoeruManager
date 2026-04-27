@@ -748,10 +748,7 @@ onBeforeUnmount(() => {
 .settings-page {
   min-height: 100%;
   padding: 18px;
-  background:
-    radial-gradient(circle at top left, rgba(191, 219, 254, 0.28), transparent 28%),
-    radial-gradient(circle at top right, rgba(226, 232, 240, 0.42), transparent 30%),
-    linear-gradient(180deg, #f8fafc, #f1f5f9 48%, #eef2f7);
+  background: #fff;
 }
 
 .settings-grid,

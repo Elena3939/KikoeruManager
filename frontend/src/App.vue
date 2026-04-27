@@ -230,14 +230,26 @@ async function toggleWatcher() {
 }
 </script>
 
+<style>
+body {
+  font-family: 
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    sans-serif;
+}
+</style>
+
+
 <style scoped>
 .app-container {
   height: 100vh;
   padding: 16px;
   gap: 16px;
-  background:
-    radial-gradient(circle at top right, rgba(0, 113, 227, 0.08) 0%, rgba(245, 245, 247, 0) 26%),
-    linear-gradient(180deg, #fbfbfd 0%, #f2f2f5 100%);
+  background: linear-gradient(180deg, #fbfbfd 0%, #f2f2f5 100%);
 }
 
 .sidebar {

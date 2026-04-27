@@ -1,19 +1,18 @@
 <template>
   <div class="circle-page">
     <section class="circle-hero">
-      <div class="hero-copy">
-        <div class="hero-eyebrow">
-          <span class="hero-eyebrow-dot"></span>
-          Circle Completion
+      <div class="hero-title-block">
+        <div class="hero-icon-box">
+          <Tags :size="14" :stroke-width="2.1" />
         </div>
-        <h1>社团补全</h1>
-        <p class="hero-desc">
-          按社团建立索引，以 Kikoeru 服务器收录状态判定缺失，结合 DLsite 关联链和 asmr.one 下载能力，批量补全缺失作品。
-        </p>
+        <div class="hero-text">
+          <h1>社团补全</h1>
+          <p class="hero-desc">按社团建立索引，结合 Kikoeru 收录态、DLsite 关联与 asmr.one 下载能力补全缺失作品</p>
+        </div>
       </div>
       <div class="hero-actions">
         <div class="hero-search-wrap">
-          <Search :size="16" class="hero-search-icon" />
+          <Search :size="13" class="hero-search-icon" />
           <el-input
             v-model="circleQuery"
             class="hero-search-input"
@@ -847,7 +846,7 @@ import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { CheckCircle2, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-vue-next'
+import { CheckCircle2, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api, { asmrSyncApi, circleCompletionApi, libraryApi, localUploadApi, taskApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
@@ -3897,56 +3896,67 @@ function getUploadBackgroundTargetLabel(task) {
 .reimport-file-result-path {
   text-align: left;
 }
+/* ── 紧凑 hero 区（参照任务中心头部） ── */
 .circle-hero {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 32px;
-  padding: 28px 32px;
-  min-height: 136px;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin: 8px 8px 0;
   background: #fff;
-  border-bottom: 1px solid #e5e7eb;
+  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  box-shadow: 0 2px 8px -6px rgba(15, 23, 42, 0.08);
 }
-.hero-copy {
-  flex: 1;
+.hero-title-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
-.hero-eyebrow {
-  display: inline-flex;
+.hero-icon-box {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  color: #6b7280;
-  margin-bottom: 8px;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgb(15 23 42);
+  color: #fff;
+  box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.18);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.hero-eyebrow-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #3b82f6;
+.hero-icon-box:hover {
+  transform: translateY(-1px) rotate(-6deg) scale(1.05);
+}
+.hero-text {
+  min-width: 0;
 }
 .circle-hero h1 {
-  margin: 0 0 6px;
-  font-size: 24px;
+  margin: 0;
+  font-size: 15px;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #111827;
-  line-height: 1.2;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  color: rgb(15 23 42);
 }
 .hero-desc {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.6;
-  color: #6b7280;
+  margin: 1px 0 0;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: rgb(100 116 139);
   max-width: 560px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .hero-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 .hero-search-wrap {
@@ -3954,53 +3964,75 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .hero-search-icon {
   position: absolute;
-  left: 10px;
+  left: 8px;
   top: 50%;
   transform: translateY(-50%);
-  color: #9ca3af;
+  color: rgb(148 163 184);
   z-index: 1;
   pointer-events: none;
 }
 .hero-search-input :deep(.el-input__wrapper) {
-  min-height: 36px;
-  min-width: 280px;
+  min-height: 28px;
+  min-width: 240px;
   border-radius: 8px;
-  box-shadow: none;
-  border: 1px solid #d1d5db;
   background: #fff;
-  padding-left: 30px;
-  transition: border-color .15s;
+  box-shadow: 0 0 0 1px rgb(226 232 240) inset, 0 1px 2px rgba(15, 23, 42, 0.04);
+  padding: 0 8px 0 26px;
+  transition: box-shadow 0.3s ease;
 }
-.hero-search-input :deep(.el-input__wrapper:hover),
+.hero-search-input :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px rgb(203 213 225) inset, 0 1px 2px rgba(15, 23, 42, 0.04);
+}
 .hero-search-input :deep(.el-input__wrapper.is-focus) {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 1px rgb(148 163 184) inset, 0 0 0 3px rgb(241 245 249);
+}
+.hero-search-input :deep(.el-input__inner) {
+  height: 26px;
+  font-size: 11.5px;
+  color: rgb(30 41 59);
+}
+.hero-search-input :deep(.el-input__inner::placeholder) {
+  color: rgb(148 163 184);
 }
 .hero-btn {
-  height: 36px;
-  padding: 0 16px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  margin: 0 !important;
   border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 500;
   cursor: pointer;
-  transition: all .15s;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .hero-btn-primary {
-  background: #111827;
+  background: rgb(15 23 42);
   color: #fff;
-  border: 1px solid #111827;
+  border: 1px solid rgb(15 23 42);
+  box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.35);
 }
-.hero-btn-primary:hover {
-  background: #1f2937;
+.hero-btn-primary:hover:not(.is-disabled):not(:disabled) {
+  background: rgb(30 41 59);
+  transform: translateY(-1px);
+}
+.hero-btn-primary:active:not(.is-disabled):not(:disabled) {
+  transform: translateY(0) scale(0.96);
 }
 .hero-btn-secondary {
   background: #fff;
-  color: #374151;
-  border: 1px solid #d1d5db;
+  color: rgb(51 65 85);
+  border: 1px solid rgb(226 232 240);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
-.hero-btn-secondary:hover {
-  background: #f9fafb;
-  border-color: #9ca3af;
+.hero-btn-secondary:hover:not(.is-disabled):not(:disabled) {
+  background: rgb(248 250 252);
+  border-color: rgb(203 213 225);
+  color: rgb(15 23 42);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.18);
+}
+.hero-btn-secondary:active:not(.is-disabled):not(:disabled) {
+  transform: translateY(0) scale(0.96);
 }
 .sidebar-refresh-button {
   font-weight: 600;
@@ -4313,7 +4345,8 @@ function getUploadBackgroundTargetLabel(task) {
 .circle-shell {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
-  gap: 0;
+  gap: 8px;
+  padding: 8px;
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -4325,9 +4358,11 @@ function getUploadBackgroundTargetLabel(task) {
 .sidebar-card,
 .circle-main {
   background: #fff;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 6px 16px -10px rgba(15, 23, 42, 0.10);
 }
 .circle-main {
   flex: 1;
@@ -4336,7 +4371,6 @@ function getUploadBackgroundTargetLabel(task) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-left: 1px solid #e5e7eb;
 }
 .circle-empty-state {
   flex: 1;
@@ -4352,7 +4386,6 @@ function getUploadBackgroundTargetLabel(task) {
   display: grid;
   grid-template-rows: auto auto auto 1fr;
   gap: 12px;
-  border-right: none;
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -4609,6 +4642,9 @@ function getUploadBackgroundTargetLabel(task) {
   padding: 4px 6px 4px 2px;
   min-height: 0;
   max-height: none;
+  /* 数量少时不要被 1fr 行拉伸，按内容高度堆在顶部 */
+  align-content: start;
+  grid-auto-rows: max-content;
   overflow-y: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -4999,6 +5035,7 @@ function getUploadBackgroundTargetLabel(task) {
   gap: 10px;
   flex: 1;
   align-content: start;
+  align-items: start; /* 单元格按内容自然高度，避免同一行被最高那张卡拉伸压垮封面比例 */
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;

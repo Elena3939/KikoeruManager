@@ -267,7 +267,11 @@ function onCoverError(event) {
 .work-cover-wrapper {
   position: relative;
   width: 100%;
-  aspect-ratio: 1 / 1;
+  /* DLsite 主封面默认 4:3，按原图比例预留容器，避免 contain 模式下出现大块空白 */
+  aspect-ratio: 4 / 3;
+  /* 不允许被父级 flex/grid 拉伸或压缩，防止刷新进度卡占用空间时封面被挤成扁条 */
+  flex-shrink: 0;
+  flex-grow: 0;
   overflow: hidden;
   background: #f5f6f8;
   border-bottom: 1px solid rgba(29,29,31,0.04);
@@ -277,7 +281,9 @@ function onCoverError(event) {
 .work-cover {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* contain：按原图比例缩小，不裁切；进度条压缩空间时也能完整看到封面 */
+  object-fit: contain;
+  object-position: center;
   transition: transform .45s cubic-bezier(.4,0,.2,1), filter .3s ease;
 }
 .work-card:hover .work-cover {

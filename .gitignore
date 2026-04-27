@@ -85,4 +85,15 @@ frontend/.download_icon/
 frontend/.npm-cache/
 frontend/.tmp*/
 frontend/src/assets/tempView/
+frontend/src/assets/anime/tempView/
 frontend/vite.config.js.timestamp-*.mjs
+
+# Codex / agent runtime caches and intermediate artifacts
+.codex/
+.codex-backups/
+.codex-temp-visibility/
+.codex-temp/
+.cursor/
+
+# Backend / view scratch dirs
+backend/tempView/

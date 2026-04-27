@@ -4,14 +4,13 @@
       v-if="visible"
       ref="panelRef"
       data-library-row-menu="1"
-      class="menu-panel fixed z-[2400] w-[180px] overflow-hidden rounded-md border border-slate-300/90 bg-white p-1 shadow-[0_10px_24px_rgba(15,23,42,0.18)]"
+      class="menu-panel fixed z-[2400] w-[200px] overflow-hidden rounded-[10px] border border-slate-200 bg-white p-1.5"
       :style="{ left: `${x}px`, top: `${y}px` }"
       @click.stop
       @contextmenu.stop
     >
-        <div class="mb-1 flex items-center gap-1.5 border-b border-slate-200 px-2 py-1 text-slate-500">
-          <MoreHorizontal :size="12" :stroke-width="2.2" class="text-slate-400" />
-          <span class="min-w-0 truncate text-[11px]" :title="row?.name || ''">{{ row?.name || '操作菜单' }}</span>
+        <div class="menu-header flex items-center px-2 py-1.5">
+          <span class="min-w-0 truncate text-[11px] font-semibold tracking-tight text-slate-700" :title="row?.name || ''">{{ row?.name || '操作菜单' }}</span>
         </div>
 
         <button
@@ -105,7 +104,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, ExternalLink, FolderCog, FolderOpen, MapPin, MoreHorizontal, Pencil, Sparkles, Trash2 } from 'lucide-vue-next'
+import { Captions, ExternalLink, FolderCog, FolderOpen, MapPin, Pencil, Sparkles, Trash2 } from 'lucide-vue-next'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -174,56 +173,88 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.menu-panel {
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 12px 28px -10px rgba(15, 23, 42, 0.18),
+    0 6px 16px -12px rgba(15, 23, 42, 0.12);
+  animation: menu-enter 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: top left;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.menu-header {
+  /* 不带分割线，靠下方第一组菜单项后的 border-t 做分组 */
+}
+
 .menu-item {
+  position: relative;
   width: 100%;
-  min-height: 30px;
+  min-height: 32px;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 0 7px;
+  gap: 9px;
+  padding: 0 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: #334155;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 500;
   text-align: left;
-  transition: background-color 0.16s ease, color 0.16s ease;
   cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.2s ease;
 }
 
 .menu-item:hover:not(:disabled) {
-  background: #f1f5f9;
+  background: rgb(248 250 252);
   color: #0f172a;
+  transform: translateX(2px);
+  box-shadow: inset 0 0 0 1px rgb(226 232 240);
+}
+
+.menu-item:active:not(:disabled) {
+  transform: translateX(2px) scale(0.98);
 }
 
 .menu-item-icon {
-  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  flex-shrink: 0;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.2s ease;
 }
 
 .menu-item:hover:not(:disabled) .menu-item-icon {
-  transform: translateY(-1px) scale(1.05);
+  transform: translateY(-1px) scale(1.12) rotate(-4deg);
 }
 
 .menu-item:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: not-allowed;
+  color: #94a3b8;
 }
 
-.menu-item-danger:hover:not(:disabled) {
-  background: #ffe4e6;
+.menu-item:disabled .menu-item-icon {
+  color: #cbd5e1 !important;
+}
+
+.menu-item-danger {
   color: #be123c;
 }
 
-.menu-panel {
-  animation: menu-enter 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
-  transform-origin: top left;
+.menu-item-danger:hover:not(:disabled) {
+  background: rgb(255 241 242);
+  color: #9f1239;
+  box-shadow: inset 0 0 0 1px rgb(254 205 211);
 }
 
 @keyframes menu-enter {
   from {
     opacity: 0;
-    transform: translateY(-4px) scale(0.98);
+    transform: translateY(-4px) scale(0.96);
   }
   to {
     opacity: 1;
