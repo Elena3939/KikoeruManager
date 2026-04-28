@@ -822,6 +822,10 @@ function buildTaskFileTreeSections(item) {
       })
       if (entry.type === 'dir') directoryKeys.add(rawPath)
     }
+    const directoryKeyList = Array.from(directoryKeys)
+    const allExpanded = directoryKeyList.length
+      ? directoryKeyList.every((key) => treeExpandedState.value[key] ?? true)
+      : true
     return {
       key: section.key,
       label: section.label,
@@ -829,7 +833,8 @@ function buildTaskFileTreeSections(item) {
       totalCount: mergedItems.length,
       addedCount: mergedItems.filter((entry) => entry.status === 'added').length,
       removedCount: mergedItems.filter((entry) => entry.status === 'removed').length,
-      directoryKeys: Array.from(directoryKeys),
+      directoryKeys: directoryKeyList,
+      allExpanded,
     }
   }).filter((section) => section.rows.length)
 }

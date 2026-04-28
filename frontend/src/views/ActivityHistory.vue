@@ -2697,10 +2697,57 @@ function prettyDetail(row) {
   if (!row?.detail || typeof row.detail !== 'object') return ''
   if (String(row?.detail?.mode || '').startsWith('filter_delete_')) return ''
   try {
-    return JSON.stringify(row.detail, null, 2)
+    return stringifyDetailPreview(row.detail)
   } catch {
     return ''
   }
+}
+
+function stringifyDetailPreview(detail) {
+  const seen = new WeakSet()
+  const maxDepth = 4
+  const maxArrayItems = 80
+  const maxObjectKeys = 80
+  const maxStringLength = 1200
+  const maxOutputLength = 60000
+
+  function compact(value, depth = 0) {
+    if (value === null || typeof value !== 'object') {
+      if (typeof value === 'string' && value.length > maxStringLength) {
+        return `${value.slice(0, maxStringLength)}...（已截断 ${value.length - maxStringLength} 字符）`
+      }
+      return value
+    }
+    if (seen.has(value)) return '[Circular]'
+    if (depth >= maxDepth) {
+      return Array.isArray(value)
+        ? `[Array(${value.length})]`
+        : `[Object(${Object.keys(value).length})]`
+    }
+    seen.add(value)
+
+    if (Array.isArray(value)) {
+      const out = value.slice(0, maxArrayItems).map(item => compact(item, depth + 1))
+      if (value.length > maxArrayItems) {
+        out.push(`...（已省略 ${value.length - maxArrayItems} 项）`)
+      }
+      return out
+    }
+
+    const entries = Object.entries(value)
+    const out = {}
+    for (const [key, current] of entries.slice(0, maxObjectKeys)) {
+      out[key] = compact(current, depth + 1)
+    }
+    if (entries.length > maxObjectKeys) {
+      out.__truncated_keys__ = `已省略 ${entries.length - maxObjectKeys} 个字段`
+    }
+    return out
+  }
+
+  const text = JSON.stringify(compact(detail), null, 2)
+  if (text.length <= maxOutputLength) return text
+  return `${text.slice(0, maxOutputLength)}\n...（原始 JSON 过大，已截断 ${text.length - maxOutputLength} 字符）`
 }
 
 function detailHighlights(row) {

@@ -8,6 +8,9 @@
           <span v-if="conflicts.length > 0" class="px-2.5 py-0.5 bg-slate-100 text-slate-600 text-sm font-medium border border-slate-200 rounded-md">
             {{ pendingConflicts.length }} 项待处理
           </span>
+          <span v-if="retryingConflicts.length > 0" class="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 text-sm font-medium border border-emerald-200 rounded-md">
+            {{ retryingConflicts.length }} 项重试中
+          </span>
           <span v-if="processingConflicts.length > 0" class="px-2.5 py-0.5 bg-blue-50 text-blue-600 text-sm font-medium border border-blue-200 rounded-md">
             {{ processingConflicts.length }} 项处理中
           </span>
@@ -119,16 +122,21 @@
             <button
               v-for="conflict in filteredConflicts"
               :key="conflict.id"
+              :disabled="isConflictRetrying(conflict)"
               class="w-full text-left p-3.5 border transition-all duration-300 relative group overflow-hidden rounded-2xl"
               :class="[
                 isConflictSelected(conflict.id)
                   ? 'bg-indigo-50/50 border-indigo-300 shadow-sm ring-1 ring-indigo-500/20'
                   : 'bg-white border-slate-200 hover:border-indigo-400 hover:shadow-md hover:-translate-y-0.5',
                 conflict.id === activeConflictId ? 'before:absolute before:left-0 before:top-0 before:bottom-0 before:w-1 before:bg-indigo-500 pl-4.5' : '',
-                isConflictProcessing(conflict) ? 'processing-conflict-card' : ''
+                isConflictProcessing(conflict) ? 'processing-conflict-card' : '',
+                isConflictRetrying(conflict) ? 'retry-conflict-card' : ''
               ]"
               @click="handleConflictCardClick(conflict, $event)"
             >
+              <span v-if="isConflictRetrying(conflict)" class="retry-card-orbit" aria-hidden="true">
+                <RotateCcw class="w-3.5 h-3.5" />
+              </span>
               <div class="flex items-center justify-between gap-3 mb-2" :class="conflict.id === activeConflictId ? 'pl-2' : ''">
                 <strong class="text-sm font-bold text-slate-800 tracking-tight truncate flex items-center gap-1">
                   {{ conflict.rjcode || conflict.new_metadata?.work_name || conflict.new_path || '未识别项目' }}
@@ -152,12 +160,18 @@
                 <div class="flex items-center gap-2">
                   <span
                     class="px-1.5 py-0.5 text-[10px] font-semibold border rounded-md"
-                    :class="isConflictProcessing(conflict) ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-slate-100 text-slate-500 border-slate-200'"
+                    :class="getConflictStatusClass(conflict)"
                   >
-                    {{ isConflictProcessing(conflict) ? '处理中' : '待处理' }}
+                    {{ getConflictStatusLabel(conflict) }}
                   </span>
                   <span class="text-slate-400">{{ formatDate(conflict.created_at).split(' ')[0] }}</span>
                 </div>
+              </div>
+              <div v-if="isConflictRetrying(conflict)" class="mt-2 flex items-center gap-2" :class="conflict.id === activeConflictId ? 'pl-2' : ''">
+                <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-emerald-100">
+                  <div class="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-500 transition-all duration-700" :style="{ width: `${getConflictRetryProgress(conflict)}%` }" />
+                </div>
+                <span class="text-[10px] font-bold tabular-nums text-emerald-700">{{ getConflictRetryProgress(conflict) }}%</span>
               </div>
             </button>
           </div>
@@ -202,9 +216,9 @@
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleRetry(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'RETRY') || isRetryProcessing(activeConflict)" variant="inline" :size="32" />
+                  <AppLoadingAnimation v-if="isConflictRetrying(activeConflict)" variant="inline" :size="32" />
                   <RotateCcw v-else class="w-4 h-4 transition-transform duration-300 group-hover:-rotate-90" />
-                  {{ isRetryProcessing(activeConflict) ? '重试中' : '重试' }}
+                  {{ isConflictRetrying(activeConflict) ? '重试中' : '重试' }}
                 </button>
                 <button
                   v-if="canUseAction(activeConflict, 'SKIP')"
@@ -446,7 +460,8 @@ const batchRetryTargets = ref([])
 const activeConflict = computed(() => conflicts.value.find(conflict => conflict.id === activeConflictId.value) || null)
 const mergeConflict = computed(() => conflicts.value.find(conflict => conflict.id === mergeConflictId.value) || null)
 const pendingConflicts = computed(() => conflicts.value.filter(conflict => !isConflictProcessing(conflict)))
-const processingConflicts = computed(() => conflicts.value.filter(conflict => isConflictProcessing(conflict)))
+const retryingConflicts = computed(() => conflicts.value.filter(conflict => isConflictRetrying(conflict)))
+const processingConflicts = computed(() => conflicts.value.filter(conflict => isConflictProcessing(conflict) && !isConflictRetrying(conflict)))
 const filterOptions = computed(() => ([
   { value: 'all', label: `全部 ${conflicts.value.length}` },
   { value: 'pending', label: `待处理 ${pendingConflicts.value.length}` },
@@ -514,7 +529,7 @@ function syncActiveConflict() {
 }
 
 function syncSelectedConflicts() {
-  const existingIds = new Set(filteredConflicts.value.map(conflict => conflict.id))
+  const existingIds = new Set(filteredConflicts.value.filter(conflict => !isConflictRetrying(conflict)).map(conflict => conflict.id))
   selectedConflictIds.value = selectedConflictIds.value.filter(id => existingIds.has(id))
 }
 
@@ -558,6 +573,28 @@ function isRetryProcessing(conflict) {
   return isConflictProcessing(conflict) && String(conflict?.new_metadata?.resolution_action || '').trim().toUpperCase() === 'RETRY'
 }
 
+function isConflictRetrying(conflict) {
+  return Boolean(conflict?.id) && (isRetryProcessing(conflict) || isActionLoading(conflict.id, 'RETRY'))
+}
+
+function getConflictRetryProgress(conflict) {
+  const value = Number(conflict?.linked_task?.progress ?? conflict?.new_metadata?.resolution_progress ?? 0)
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function getConflictStatusLabel(conflict) {
+  if (isConflictRetrying(conflict)) return '重试中'
+  if (isConflictProcessing(conflict)) return '处理中'
+  return '待处理'
+}
+
+function getConflictStatusClass(conflict) {
+  if (isConflictRetrying(conflict)) return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+  if (isConflictProcessing(conflict)) return 'bg-blue-50 text-blue-600 border-blue-200'
+  return 'bg-slate-100 text-slate-500 border-slate-200'
+}
+
 function isConflictSelected(conflictId) {
   return selectedConflictIds.value.includes(conflictId)
 }
@@ -574,7 +611,7 @@ function setConflictSelected(conflictId, selected) {
 }
 
 function handleConflictCardClick(conflict, event) {
-  if (!conflict?.id || batchRunning.value) {
+  if (!conflict?.id || batchRunning.value || isConflictRetrying(conflict)) {
     return
   }
 
@@ -611,7 +648,7 @@ function toggleSelectAll() {
     clearSelection()
     return
   }
-  selectedConflictIds.value = filteredConflicts.value.map(conflict => conflict.id)
+  selectedConflictIds.value = filteredConflicts.value.filter(conflict => !isConflictRetrying(conflict)).map(conflict => conflict.id)
   selectionAnchorId.value = selectedConflictIds.value[selectedConflictIds.value.length - 1] || ''
 }
 
@@ -621,11 +658,11 @@ function clearSelection() {
 }
 
 function selectedActionCount(action) {
-  return selectedConflicts.value.filter(conflict => canUseAction(conflict, action)).length
+  return selectedConflicts.value.filter(conflict => !isConflictRetrying(conflict) && canUseAction(conflict, action)).length
 }
 
 function getSelectedConflictsForAction(action) {
-  return selectedConflicts.value.filter(conflict => canUseAction(conflict, action))
+  return selectedConflicts.value.filter(conflict => !isConflictRetrying(conflict) && canUseAction(conflict, action))
 }
 
 function batchButtonLabel(action, label) {
@@ -1247,6 +1284,49 @@ button:disabled {
   animation: processing-conflict-aura 1.9s ease-in-out infinite;
 }
 
+.retry-conflict-card {
+  border-color: rgba(16, 185, 129, 0.82) !important;
+  background:
+    linear-gradient(100deg, rgba(236, 253, 245, 0.86), rgba(255, 255, 255, 0.98) 38%, rgba(209, 250, 229, 0.72)) !important;
+  cursor: not-allowed !important;
+}
+
+.retry-conflict-card:hover {
+  transform: none !important;
+}
+
+.retry-conflict-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 0%, rgba(255, 255, 255, 0.85) 42%, transparent 58%);
+  transform: translateX(-120%);
+  animation: retry-card-sheen 1.45s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+
+.retry-card-orbit {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  border-radius: 999px;
+  background: rgba(236, 253, 245, 0.92);
+  color: #059669;
+  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.18);
+  animation: retry-card-float 1.2s ease-in-out infinite;
+}
+
+.retry-card-orbit svg {
+  animation: retry-card-spin 1s linear infinite;
+}
+
 @keyframes processing-conflict-glow {
   0%, 100% {
     box-shadow:
@@ -1271,5 +1351,19 @@ button:disabled {
     opacity: 0.92;
     transform: scale(1.01);
   }
+}
+
+@keyframes retry-card-sheen {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(120%); }
+}
+
+@keyframes retry-card-spin {
+  to { transform: rotate(-360deg); }
+}
+
+@keyframes retry-card-float {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-2px) scale(1.06); }
 }
 </style>

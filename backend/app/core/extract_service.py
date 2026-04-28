@@ -218,7 +218,14 @@ class ExtractService:
 
         password_candidates: List[Dict[str, Optional[str]]] = []
         hinted_rjcode = None
-        if not (manual_retry_password and manual_retry_password_only):
+        if manual_retry_password and manual_retry_password_only:
+            password_candidates = [{
+                "password": manual_retry_password,
+                "source": "指定密码",
+                "entry_id": None,
+                "rjcode": None,
+            }]
+        else:
             # 3.5 如果密码库是按文件名匹配到的，且条目里带 RJ 号，则只注入 RJ 提示。
             # 不改源文件名，避免监控链路还在等旧路径导致超时。
             password_candidates = await self._get_password_candidates_for_archive(archive_path)
@@ -261,7 +268,9 @@ class ExtractService:
         
         if not success:
             # 更新任务状态为失败，并设置更准确的错误信息
-            if extract_failure_reason == "archive_corrupt":
+            if extract_failure_reason == "disk_full":
+                error_msg = "解压失败：临时目录磁盘空间不足"
+            elif extract_failure_reason == "archive_corrupt":
                 error_msg = "解压失败：压缩包损坏或不完整（Headers/Data Error）"
             elif extract_failure_reason == "wrong_password":
                 error_msg = "解压失败：无正确密码"
@@ -2036,21 +2045,29 @@ class ExtractService:
         if password_candidates is None:
             password_candidates = await self._get_password_candidates_for_archive(archive_path)
         vault_passwords = [item["password"] for item in password_candidates]
+        manual_only_passwords = [
+            item["password"]
+            for item in password_candidates
+            if item.get("source") == "指定密码" and item.get("password")
+        ]
         password_rjcode_map = {
             item["password"]: item.get("rjcode")
             for item in password_candidates
             if item.get("rjcode")
         }
 
-        # 获取RJ号相关密码
-        rj_passwords = self._get_rj_passwords(archive_path)
+        if manual_only_passwords:
+            password_list = manual_only_passwords
+        else:
+            # 获取RJ号相关密码
+            rj_passwords = self._get_rj_passwords(archive_path)
 
-        # 构建密码列表：RJ号密码优先，然后密码库密码，最后是配置中的默认密码
-        password_list = []
-        password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
-        password_list.extend(vault_passwords)  # 密码库密码
-        password_list.append("")  # 无密码
-        password_list.extend(self.config.extract.password_list)  # 默认密码
+            # 构建密码列表：RJ号密码优先，然后密码库密码，最后是配置中的默认密码
+            password_list = []
+            password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
+            password_list.extend(vault_passwords)  # 密码库密码
+            password_list.append("")  # 无密码
+            password_list.extend(self.config.extract.password_list)  # 默认密码
         
         # 去重（保持顺序）
         seen = set()
@@ -2064,7 +2081,9 @@ class ExtractService:
             file_list = await self._list_archive_contents(archive_path, password)
             if file_list is not None:
                 # 判断密码来源
-                if password in rj_passwords:
+                if manual_only_passwords:
+                    source = "指定密码"
+                elif password in rj_passwords:
                     source = "RJ号"
                 elif password in vault_passwords:
                     source = "密码库"
@@ -2405,6 +2424,21 @@ class ExtractService:
                 stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
                 stderr_lower = stderr_text.lower()
 
+                disk_full_markers = (
+                    "磁盘空间不足",
+                    "there is not enough space",
+                    "not enough space",
+                    "no space left on device",
+                    "cannot set length for output file",
+                    "write error",
+                )
+                if any(marker in stderr_lower or marker in stderr_text for marker in disk_full_markers):
+                    logger.error(
+                        "检测到解压目标磁盘空间不足，停止密码重试: %s",
+                        stderr_text[:300] if stderr_text else "(无错误文本)",
+                    )
+                    return False, None, "disk_full"
+
                 if "wrong password" in stderr_lower:
                     logger.warning(f"密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
                     continue
@@ -2413,7 +2447,6 @@ class ExtractService:
                     "headers error",
                     "unconfirmed start of archive",
                     "unexpected end of archive",
-                    "data error",
                     "can not open the file as archive",
                 )
                 if any(marker in stderr_lower for marker in archive_corrupt_markers):
@@ -2422,6 +2455,14 @@ class ExtractService:
                         stderr_text[:300] if stderr_text else "(无错误文本)",
                     )
                     return False, None, "archive_corrupt"
+
+                if "data error" in stderr_lower:
+                    logger.warning(
+                        "7z 返回 Data Error，按密码失败继续尝试，避免把加密包误判为损坏: source=%s stderr=%s",
+                        password_source,
+                        stderr_text[:300] if stderr_text else "(无错误文本)",
+                    )
+                    continue
                 
             except Exception as e:
                 logger.warning(f"解压尝试失败: {e}")

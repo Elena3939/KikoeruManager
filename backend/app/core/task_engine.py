@@ -873,157 +873,162 @@ class TaskEngine:
                 filter_service = FilterService()
                 metadata_service = MetadataService()
                 classifier = SmartClassifier()
+                skip_retry_precheck = bool((task.task_metadata or {}).get("skip_retry_precheck"))
 
                 # 步骤0: 预检（先字幕补配，再普通查重）
-                logger.info(f"[{rjcode}] 步骤0: 预检")
-                task.update_progress(5, "预检中")
-                rjcode = self._extract_rjcode(task.source_path)
-
-                # 密码库权威绑定：若条目同时填写 filename + rjcode 命中了当前压缩包，
-                # 整条链路（查重/命名/包裹目录）都使用条目里的 rjcode。
-                if os.path.isfile(task.source_path):
-                    try:
-                        bound_rjcode = await extract_service.lookup_filename_bound_rjcode(task.source_path)
-                    except Exception as exc:
-                        bound_rjcode = None
-                        logger.warning(f"[{rjcode or '未知'}] 查询密码库绑定 RJ 失败: {exc}")
-                    if bound_rjcode and bound_rjcode != rjcode:
-                        logger.info(
-                            f"[{bound_rjcode}] 密码库 filename+RJ 权威绑定，"
-                            f"覆盖源路径 RJ {rjcode or '未知'} -> {bound_rjcode}"
-                        )
-                        rjcode = self._sync_task_rjcode(
-                            task,
-                            bound_rjcode,
-                            source="password_entry_filename_match",
-                        )
-                        if task.task_metadata is None:
-                            task.task_metadata = {}
-                        task.task_metadata["rjcode_lock"] = True
-
-                if not rjcode and os.path.isfile(task.source_path):
-                    try:
-                        archive_rj_result = await extract_service.infer_rjcode_from_archive(
-                            task.source_path,
-                            max_nested_depth=3,
-                        )
-                    except Exception as exc:
-                        archive_rj_result = None
-                        logger.warning(f"[未知] 压缩包预检推断 RJ 失败: {os.path.basename(task.source_path)} error={exc}")
-
-                    if archive_rj_result and archive_rj_result.get("rjcode"):
-                        rjcode = self._sync_task_rjcode(
-                            task,
-                            archive_rj_result.get("rjcode"),
-                            source=archive_rj_result.get("source") or "archive_precheck",
-                        )
-                        logger.info(
-                            f"[{rjcode}] 预检阶段从压缩包内容推断到 RJ 号: "
-                            f"source={archive_rj_result.get('source') or 'archive_precheck'}"
-                        )
-                    else:
-                        logger.info(
-                            f"[未知] 压缩包预检未推断出 RJ 号: "
-                            f"source={os.path.basename(task.source_path)}"
-                        )
-                logger.info(f"[{rjcode}] 提取到的RJ号: {rjcode}")
-                
-                linked_result = {"handled": False, "reason": "not_run", "preview": {}}
-                if not rjcode:
-                    logger.warning(f"[未知] 无法从文件名提取RJ号，跳过字幕补配预检和预检查重: {os.path.basename(task.source_path)}")
-                elif not task.auto_classify:
-                    logger.info(f"[{rjcode}] auto_classify=False，跳过字幕补配预检和预检查重")
+                if skip_retry_precheck:
+                    logger.info(f"[{rjcode}] 问题作品解压失败重试，跳过已完成的解压前预检")
+                    task.update_progress(8, "跳过预检，准备重试解压")
                 else:
-                    if getattr(config.auto_process, 'import_linked_translation_subtitles', False):
-                        from .linked_subtitle_import_service import get_linked_subtitle_import_service
+                    logger.info(f"[{rjcode}] 步骤0: 预检")
+                    task.update_progress(5, "预检中")
+                    rjcode = self._extract_rjcode(task.source_path)
 
-                        linked_import_service = get_linked_subtitle_import_service()
+                    # 密码库权威绑定：若条目同时填写 filename + rjcode 命中了当前压缩包，
+                    # 整条链路（查重/命名/包裹目录）都使用条目里的 rjcode。
+                    if os.path.isfile(task.source_path):
                         try:
-                            linked_result = await linked_import_service.queue_pending_archive_import(task, rjcode)
+                            bound_rjcode = await extract_service.lookup_filename_bound_rjcode(task.source_path)
                         except Exception as exc:
-                            linked_result = {"handled": False, "reason": str(exc)}
-                            logger.warning(f"[{rjcode}] 关联字幕自动导入预检失败，回退原问题队列逻辑: {exc}")
-
-                        if linked_result.get("handled"):
-                            record = linked_result.get("record") or {}
-                            preview = linked_result.get("preview") or {}
-                            source_label = os.path.basename(task.source_path or "").strip() or rjcode or "字幕补配预检"
-                            task.task_metadata = {
-                                **(task.task_metadata or {}),
-                                "linked_subtitle_import": record,
-                                "linked_subtitle_preview": preview,
-                                "source_mode": "linked_translation_archive_pending",
-                                "task_domain": "subtitle_import",
-                                "task_kind": "linked_translation_archive_pending",
-                                "source_page": "subtitle-import",
-                                "source_action": "linked_translation_archive_pending",
-                                "source_label": source_label,
-                                "business_key": str(record.get("id") or task.id),
-                            }
-                            task.output_path = ""
-                            task.status = TaskStatus.COMPLETED
-                            task.update_progress(100, "已加入字幕补配预检列表，请在字幕补配页继续处理")
-                            task.completed_at = datetime.now()
+                            bound_rjcode = None
+                            logger.warning(f"[{rjcode or '未知'}] 查询密码库绑定 RJ 失败: {exc}")
+                        if bound_rjcode and bound_rjcode != rjcode:
                             logger.info(
-                                f"[{rjcode}] 命中关联字幕补配预检分支，已挂入字幕补配页: "
-                                f"target={preview.get('target_rjcode', '')} record={record.get('id', '')}"
+                                f"[{bound_rjcode}] 密码库 filename+RJ 权威绑定，"
+                                f"覆盖源路径 RJ {rjcode or '未知'} -> {bound_rjcode}"
                             )
-                            return
+                            rjcode = self._sync_task_rjcode(
+                                task,
+                                bound_rjcode,
+                                source="password_entry_filename_match",
+                            )
+                            if task.task_metadata is None:
+                                task.task_metadata = {}
+                            task.task_metadata["rjcode_lock"] = True
+
+                    if not rjcode and os.path.isfile(task.source_path):
+                        try:
+                            archive_rj_result = await extract_service.infer_rjcode_from_archive(
+                                task.source_path,
+                                max_nested_depth=3,
+                            )
+                        except Exception as exc:
+                            archive_rj_result = None
+                            logger.warning(f"[未知] 压缩包预检推断 RJ 失败: {os.path.basename(task.source_path)} error={exc}")
+
+                        if archive_rj_result and archive_rj_result.get("rjcode"):
+                            rjcode = self._sync_task_rjcode(
+                                task,
+                                archive_rj_result.get("rjcode"),
+                                source=archive_rj_result.get("source") or "archive_precheck",
+                            )
+                            logger.info(
+                                f"[{rjcode}] 预检阶段从压缩包内容推断到 RJ 号: "
+                                f"source={archive_rj_result.get('source') or 'archive_precheck'}"
+                            )
+                        else:
+                            logger.info(
+                                f"[未知] 压缩包预检未推断出 RJ 号: "
+                                f"source={os.path.basename(task.source_path)}"
+                            )
+                    logger.info(f"[{rjcode}] 提取到的RJ号: {rjcode}")
+                    
+                    linked_result = {"handled": False, "reason": "not_run", "preview": {}}
+                    if not rjcode:
+                        logger.warning(f"[未知] 无法从文件名提取RJ号，跳过字幕补配预检和预检查重: {os.path.basename(task.source_path)}")
+                    elif not task.auto_classify:
+                        logger.info(f"[{rjcode}] auto_classify=False，跳过字幕补配预检和预检查重")
+                    else:
+                        if getattr(config.auto_process, 'import_linked_translation_subtitles', False):
+                            from .linked_subtitle_import_service import get_linked_subtitle_import_service
+
+                            linked_import_service = get_linked_subtitle_import_service()
+                            try:
+                                linked_result = await linked_import_service.queue_pending_archive_import(task, rjcode)
+                            except Exception as exc:
+                                linked_result = {"handled": False, "reason": str(exc)}
+                                logger.warning(f"[{rjcode}] 关联字幕自动导入预检失败，回退原问题队列逻辑: {exc}")
+
+                            if linked_result.get("handled"):
+                                record = linked_result.get("record") or {}
+                                preview = linked_result.get("preview") or {}
+                                source_label = os.path.basename(task.source_path or "").strip() or rjcode or "字幕补配预检"
+                                task.task_metadata = {
+                                    **(task.task_metadata or {}),
+                                    "linked_subtitle_import": record,
+                                    "linked_subtitle_preview": preview,
+                                    "source_mode": "linked_translation_archive_pending",
+                                    "task_domain": "subtitle_import",
+                                    "task_kind": "linked_translation_archive_pending",
+                                    "source_page": "subtitle-import",
+                                    "source_action": "linked_translation_archive_pending",
+                                    "source_label": source_label,
+                                    "business_key": str(record.get("id") or task.id),
+                                }
+                                task.output_path = ""
+                                task.status = TaskStatus.COMPLETED
+                                task.update_progress(100, "已加入字幕补配预检列表，请在字幕补配页继续处理")
+                                task.completed_at = datetime.now()
+                                logger.info(
+                                    f"[{rjcode}] 命中关联字幕补配预检分支，已挂入字幕补配页: "
+                                    f"target={preview.get('target_rjcode', '')} record={record.get('id', '')}"
+                                )
+                                return
+
+                            preview = linked_result.get("preview") or {}
+                            existing_subtitle_problem = await linked_import_service.create_existing_subtitle_problem(
+                                source_path=task.source_path,
+                                preview=preview,
+                                task_id=task.id,
+                                queue_origin="auto_process",
+                            )
+                            if existing_subtitle_problem.get("handled"):
+                                task.task_metadata = {
+                                    **(task.task_metadata or {}),
+                                    "linked_subtitle_preview": preview,
+                                    "linked_subtitle_problem": existing_subtitle_problem,
+                                    "source_mode": "linked_translation_archive_existing_subtitle_conflict",
+                                }
+                                task.output_path = ""
+                                task.status = TaskStatus.COMPLETED
+                                task.update_progress(100, "原作目录已有字幕，已加入问题作品列表")
+                                task.completed_at = datetime.now()
+                                logger.info(
+                                    f"[{rjcode}] 原作目录已有字幕，已转入问题作品列表: "
+                                    f"target={preview.get('target_rjcode', '')} conflict={existing_subtitle_problem.get('conflict_id', '')}"
+                                )
+                                return
+                        else:
+                            logger.info(f"[{rjcode}] 字幕补配预检已禁用，跳过")
 
                         preview = linked_result.get("preview") or {}
-                        existing_subtitle_problem = await linked_import_service.create_existing_subtitle_problem(
-                            source_path=task.source_path,
-                            preview=preview,
-                            task_id=task.id,
-                            queue_origin="auto_process",
-                        )
-                        if existing_subtitle_problem.get("handled"):
-                            task.task_metadata = {
-                                **(task.task_metadata or {}),
-                                "linked_subtitle_preview": preview,
-                                "linked_subtitle_problem": existing_subtitle_problem,
-                                "source_mode": "linked_translation_archive_existing_subtitle_conflict",
-                            }
-                            task.output_path = ""
-                            task.status = TaskStatus.COMPLETED
-                            task.update_progress(100, "原作目录已有字幕，已加入问题作品列表")
-                            task.completed_at = datetime.now()
-                            logger.info(
-                                f"[{rjcode}] 原作目录已有字幕，已转入问题作品列表: "
-                                f"target={preview.get('target_rjcode', '')} conflict={existing_subtitle_problem.get('conflict_id', '')}"
+                        fatal_extract_error = str(preview.get("fatal_extract_error") or "").strip()
+                        if fatal_extract_error:
+                            task.fail(fatal_extract_error)
+                            self._record_problem_work_for_extract_failure(
+                                task,
+                                rjcode,
+                                fatal_extract_error,
                             )
+                            logger.error(f"[{rjcode}] 字幕补配预检已确认解压失败，任务终止: {fatal_extract_error}")
                             return
-                    else:
-                        logger.info(f"[{rjcode}] 字幕补配预检已禁用，跳过")
-
-                    preview = linked_result.get("preview") or {}
-                    fatal_extract_error = str(preview.get("fatal_extract_error") or "").strip()
-                    if fatal_extract_error:
-                        task.fail(fatal_extract_error)
-                        self._record_problem_work_for_extract_failure(
-                            task,
-                            rjcode,
-                            fatal_extract_error,
+                        logger.info(
+                            f"[{rjcode}] 未进入字幕补配预检分支: "
+                            f"target={preview.get('target_rjcode', '')} "
+                            f"reason={linked_result.get('reason') or preview.get('reason') or 'conditions_not_met'}"
                         )
-                        logger.error(f"[{rjcode}] 字幕补配预检已确认解压失败，任务终止: {fatal_extract_error}")
-                        return
-                    logger.info(
-                        f"[{rjcode}] 未进入字幕补配预检分支: "
-                        f"target={preview.get('target_rjcode', '')} "
-                        f"reason={linked_result.get('reason') or preview.get('reason') or 'conditions_not_met'}"
-                    )
 
-                    if not config.auto_process.check_duplicate:
-                        logger.info(f"[{rjcode}] 预检查重已禁用，跳过")
-                    else:
-                        is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
-                        logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
-                        if is_duplicate:
-                            logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
-                            task.status = TaskStatus.WAITING_MANUAL
-                            task.update_progress(100, "重复作品，请在问题作品页面处理")
-                            task.completed_at = datetime.now()
-                            return
+                        if not config.auto_process.check_duplicate:
+                            logger.info(f"[{rjcode}] 预检查重已禁用，跳过")
+                        else:
+                            is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
+                            logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
+                            if is_duplicate:
+                                logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
+                                task.status = TaskStatus.WAITING_MANUAL
+                                task.update_progress(100, "重复作品，请在问题作品页面处理")
+                                task.completed_at = datetime.now()
+                                return
 
                 # 步骤1: 解压
                 logger.info(f"[{rjcode}] 步骤1: 解压")
@@ -1204,6 +1209,11 @@ class TaskEngine:
 
                 task.update_progress(100, "完成")
                 task.complete()
+                try:
+                    from .notification_helper import build_import_notification_extra, set_notification_extra
+                    set_notification_extra(task, **build_import_notification_extra(task))
+                except Exception:
+                    logger.warning("[通知] 构建导入完成 payload 失败", exc_info=True)
                 logger.info(f"[{rjcode}] ========== 任务完成 ==========")
                 
             elif task.type == TaskType.PROCESS_EXISTING_FOLDER:
@@ -1440,6 +1450,11 @@ class TaskEngine:
 
                 task.update_progress(100, "完成")
                 task.complete()
+                try:
+                    from .notification_helper import build_import_notification_extra, set_notification_extra
+                    set_notification_extra(task, **build_import_notification_extra(task))
+                except Exception:
+                    logger.warning("[通知] 构建导入完成 payload 失败", exc_info=True)
                 logger.info(f"[{rjcode}] ========== 任务完成 ==========")
                 
             else:
@@ -1483,6 +1498,12 @@ class TaskEngine:
             if task.type in {TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
                 self._record_problem_work_for_task_failure(task, rjcode, str(e))
             task.fail(str(e))
+            if task.type in {TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
+                try:
+                    from .notification_helper import build_import_notification_extra, set_notification_extra
+                    set_notification_extra(task, **build_import_notification_extra(task, error=str(e)))
+                except Exception:
+                    logger.warning("[通知] 构建导入失败 payload 失败", exc_info=True)
             logger.info(f"[{rjcode}] ========== 任务失败 ==========")
         finally:
             # 操作记录优先写入，避免后续清理/通知异常导致整段 finally 中断而未落库

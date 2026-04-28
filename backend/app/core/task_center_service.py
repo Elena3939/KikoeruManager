@@ -266,6 +266,11 @@ class TaskCenterService:
             "nested_archive_count",
             "verify_mode",
             "failure_stage",
+            "conflict_resolution_action",
+            "retry_result",
+            "retry_completed_at",
+            "manual_retry_password_requested",
+            "linked_conflict_retrying",
         ):
             if key in metadata:
                 summary_details.setdefault("metadata", {})[key] = self._json_safe(metadata.get(key))
@@ -417,6 +422,18 @@ class TaskCenterService:
         conflict_type = self._safe_text(getattr(conflict, "conflict_type", "")).upper()
         raw_status = self._safe_text(getattr(conflict, "status", "")).upper()
         display_status = TaskStatus.PROCESSING.value if raw_status == "PROCESSING" else TaskStatus.WAITING_MANUAL.value
+        resolution_action = self._safe_text(metadata.get("resolution_action")).upper()
+        is_retrying = display_status == TaskStatus.PROCESSING.value and resolution_action == "RETRY"
+        linked_engine_task = None
+        linked_task_id = (
+            self._safe_text(metadata.get("resolution_task_id"))
+            or self._safe_text(getattr(conflict, "task_id", ""))
+        )
+        if linked_task_id:
+            try:
+                linked_engine_task = get_task_engine().get_task(linked_task_id)
+            except Exception:
+                linked_engine_task = None
         title = self._normalize_rjcode(getattr(conflict, "rjcode", "")) or self._basename(getattr(conflict, "new_path", "")) or "问题作品"
         error_message = self._safe_text(metadata.get("error_message"))
         subtitle = error_message or self._basename(getattr(conflict, "new_path", ""))
@@ -425,9 +442,17 @@ class TaskCenterService:
         self._append_metric(metrics, "来源", "压缩包" if os.path.isfile(str(getattr(conflict, "new_path", "") or "")) else "目录")
         self._append_metric(metrics, "目标 RJ", self._normalize_rjcode(getattr(conflict, "rjcode", "")))
 
-        current_step = error_message or (
-            "等待在问题作品页处理中" if display_status == TaskStatus.WAITING_MANUAL.value else "问题作品处理中"
-        )
+        if is_retrying:
+            current_step = self._safe_text(getattr(linked_engine_task, "current_step", "")) or "正在按问题作品重试"
+            status_label = "重试中"
+            progress = int(getattr(linked_engine_task, "progress", 0) or 0)
+            subtitle = self._safe_text(getattr(linked_engine_task, "current_step", "")) or subtitle
+        else:
+            current_step = error_message or (
+                "等待在问题作品页处理中" if display_status == TaskStatus.WAITING_MANUAL.value else "问题作品处理中"
+            )
+            status_label = self.STATUS_LABELS[display_status]
+            progress = 0
 
         return {
             "id": f"conflict:{self._safe_text(getattr(conflict, 'id', ''))}",
@@ -440,13 +465,13 @@ class TaskCenterService:
             "kind_label": self._conflict_type_label(conflict_type),
             "title": title,
             "subtitle": subtitle,
-            "source_label": "问题作品 / 待处理",
+            "source_label": "问题作品 / 重试" if is_retrying else "问题作品 / 待处理",
             "source_page": "conflicts",
             "source_action": "conflict_resolution",
             "route_hint": "/conflicts",
             "status": display_status,
-            "status_label": self.STATUS_LABELS[display_status],
-            "progress": 0,
+            "status_label": status_label,
+            "progress": progress,
             "current_step": current_step,
             "error_message": error_message,
             "source_path": self._safe_text(getattr(conflict, "new_path", "")),
@@ -459,6 +484,7 @@ class TaskCenterService:
             "actions": [],
             "details": {
                 "metadata": self._json_safe(metadata),
+                "retrying": is_retrying,
                 "conflict": {
                     "id": self._safe_text(getattr(conflict, "id", "")),
                     "task_id": self._safe_text(getattr(conflict, "task_id", "")),
@@ -525,6 +551,7 @@ class TaskCenterService:
             parent["route_hint"] = self._safe_text(conflict_item.get("route_hint")) or parent.get("route_hint")
             parent["current_step"] = self._safe_text(conflict_item.get("current_step")) or parent.get("current_step")
             parent["error_message"] = self._safe_text(conflict_item.get("error_message")) or parent.get("error_message")
+            parent["progress"] = max(int(parent.get("progress") or 0), int(conflict_item.get("progress") or 0))
             parent["metrics"] = self._merge_metric_items(parent.get("metrics") or [], conflict_item.get("metrics") or [])
             parent["actions"] = list(conflict_item.get("actions") or [])
 
@@ -535,6 +562,7 @@ class TaskCenterService:
             parent_metadata["linked_conflict_id"] = self._safe_text(linked_conflict.get("id"))
             parent_metadata["linked_conflict_type"] = self._safe_text(linked_conflict.get("conflict_type"))
             parent_metadata["linked_conflict_status"] = self._safe_text(linked_conflict.get("status"))
+            parent_metadata["linked_conflict_retrying"] = bool((conflict_item.get("details") or {}).get("retrying"))
             parent_details["metadata"] = self._json_safe(parent_metadata)
             parent_details["conflict"] = self._json_safe(linked_conflict)
             parent["details"] = parent_details
@@ -853,12 +881,24 @@ class TaskCenterService:
         recovered_failure_count = int(metadata.get("recovered_failure_count") or 0)
         recovered_conflict_count = int(metadata.get("recovered_conflict_count") or 0)
         display_status = self._resolve_display_status(task, domain, metadata)
+        is_conflict_retry = self._safe_text(metadata.get("conflict_resolution_action")).upper() == "RETRY"
         if recovered_failure_count > 0:
             self._append_metric(metrics, "此前失败", f"{recovered_failure_count} 次")
         if recovered_conflict_count > 0:
             self._append_metric(metrics, "问题作品", f"已移除 {recovered_conflict_count} 项")
 
         current_step = current_step_override or self._safe_text(task.current_step) or "等待中"
+        status_label = self.STATUS_LABELS.get(display_status, display_status)
+        if is_conflict_retry and display_status == TaskStatus.PROCESSING.value:
+            status_label = "重试中"
+            source_label = "问题作品 / 重试"
+            source_page = "conflicts"
+            route_hint = "/conflicts"
+        elif is_conflict_retry and display_status == TaskStatus.COMPLETED.value:
+            status_label = "已解决"
+            source_label = "问题作品 / 已解决"
+            source_page = "conflicts"
+            route_hint = "/conflicts"
         if task.status == TaskStatus.COMPLETED and recovered_notice:
             current_step = recovered_notice
 
@@ -877,7 +917,7 @@ class TaskCenterService:
             "source_action": source_action,
             "route_hint": route_hint,
             "status": display_status,
-            "status_label": self.STATUS_LABELS.get(display_status, display_status),
+            "status_label": status_label,
             "progress": int(task.progress or 0),
             "current_step": current_step,
             "error_message": self._safe_text(task.error_message),

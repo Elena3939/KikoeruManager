@@ -127,21 +127,28 @@
         </div>
       </section>
 
-      <!-- 关键指标：横向数据条，无独立框 -->
+      <!-- 本次处理：轻量业务摘要 -->
       <section v-if="item.metrics?.length" class="border-b border-slate-200 px-4 pt-3.5 pb-3.5">
         <span class="mb-2.5 flex items-center gap-1.5 text-[11.5px] font-bold uppercase tracking-[0.06em] text-slate-500">
           <span class="h-1 w-1 rounded-full bg-amber-500" />
-          关键指标
+          本次处理
         </span>
-        <div class="flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div class="task-metrics-strip">
           <div
             v-for="(metric, mIndex) in item.metrics"
             :key="`${item.id}-${metric.label}`"
-            class="detail-fade-up flex items-baseline gap-1.5"
+            class="detail-fade-up task-metric-item"
+            :class="getMetricItemClass(metric)"
             :style="{ animationDelay: `${mIndex * 30}ms` }"
           >
-            <span class="text-[20px] font-bold tabular-nums text-slate-900 leading-none">{{ metric.value }}</span>
-            <span class="text-[11px] text-slate-500">{{ metric.label }}</span>
+            <span class="task-metric-label">{{ getMetricLabel(metric.label) }}</span>
+            <span
+              class="task-metric-value"
+              :class="isCompactMetric(metric) ? 'tabular-nums' : ''"
+              :title="String(metric.value || '')"
+            >
+              {{ getMetricValue(metric) }}
+            </span>
           </div>
         </div>
       </section>
@@ -190,41 +197,42 @@
         :key="`${item.id}-${section.key}`"
         class="border-b border-slate-200 px-4 pt-3.5 pb-3.5"
       >
-        <div class="mb-2 flex items-start justify-between gap-2 flex-wrap">
-          <span class="flex items-center gap-1.5 text-[11.5px] font-bold uppercase tracking-[0.06em] text-slate-500">
-            <span class="h-1 w-1 rounded-full bg-emerald-500" />
-            {{ section.label }}
-          </span>
-          <div class="flex flex-wrap items-center gap-2">
-            <div class="flex flex-wrap gap-1">
-              <button
-                v-for="mode in [
-                  { value: 'all', label: '全部' },
-                  { value: 'added', label: '只看新增' },
-                  { value: 'removed', label: '只看删除' },
-                ]"
-                :key="mode.value"
-                type="button"
-                class="group inline-flex h-6 items-center rounded-[7px] border px-2 text-[10.5px] font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.04] active:scale-95"
-                :class="treeFilterMode === mode.value
-                  ? 'border-slate-900 bg-slate-900 text-white shadow-[0_3px_10px_-4px_rgba(15,23,42,0.4)]'
-                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'"
-                @click="$emit('update:treeFilterMode', mode.value)"
-              >
-                {{ mode.label }}
-              </button>
-              <button type="button" class="inline-flex h-6 items-center rounded-[7px] border border-slate-200 bg-white px-2 text-[10.5px] font-semibold text-slate-600 transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.04] hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 active:scale-95" @click="$emit('expand-section', section, true)">展开全部</button>
-              <button type="button" class="inline-flex h-6 items-center rounded-[7px] border border-slate-200 bg-white px-2 text-[10.5px] font-semibold text-slate-600 transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.04] hover:border-slate-300 hover:bg-slate-50 active:scale-95" @click="$emit('expand-section', section, false)">收起全部</button>
-            </div>
-            <div class="flex flex-wrap gap-1">
-              <span v-if="section.totalCount" class="inline-flex h-5 items-center rounded-md border border-slate-200 bg-white px-1.5 text-[10px] font-bold tabular-nums text-slate-700">共 {{ section.totalCount }} 项</span>
-              <span v-if="section.addedCount" class="inline-flex h-5 items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-1.5 text-[10px] font-bold tabular-nums text-emerald-700">
-                <span class="h-1 w-1 rounded-full bg-emerald-500" /> 新增 {{ section.addedCount }}
+        <div class="mb-2.5 flex flex-col gap-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="flex items-center gap-1.5 text-[11.5px] font-bold uppercase tracking-[0.06em] text-slate-500">
+              <span class="h-1 w-1 rounded-full bg-emerald-500" />
+              {{ section.label }}
+            </span>
+            <el-radio-group
+              :model-value="treeFilterMode"
+              size="small"
+              class="task-tree-filter"
+              @change="$emit('update:treeFilterMode', $event)"
+            >
+              <el-radio-button label="all">全部</el-radio-button>
+              <el-radio-button label="added">新增</el-radio-button>
+              <el-radio-button label="removed">移除</el-radio-button>
+            </el-radio-group>
+          </div>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex flex-wrap gap-1.5">
+              <span v-if="section.totalCount" class="inline-flex h-6 items-center rounded-md border border-slate-200 bg-white px-2 text-[10.5px] font-bold tabular-nums text-slate-700">文件 {{ section.totalCount }}</span>
+              <span v-if="section.addedCount" class="inline-flex h-6 items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 text-[10.5px] font-bold tabular-nums text-emerald-700">
+                <span class="h-1.5 w-1.5 rounded-full bg-emerald-500" /> 新增 {{ section.addedCount }}
               </span>
-              <span v-if="section.removedCount" class="inline-flex h-5 items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 text-[10px] font-bold tabular-nums text-slate-500">
-                <span class="h-1 w-1 rounded-full bg-slate-400" /> 删除 {{ section.removedCount }}
+              <span v-if="section.removedCount" class="inline-flex h-6 items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 text-[10.5px] font-bold tabular-nums text-rose-700">
+                <span class="h-1.5 w-1.5 rounded-full bg-rose-500" /> 移除 {{ section.removedCount }}
               </span>
             </div>
+            <el-button class="task-tree-toggle" size="small" @click="$emit('expand-section', section, !section.allExpanded)">
+              <component
+                :is="section.allExpanded ? ChevronRight : ChevronDown"
+                :size="12"
+                :stroke-width="2.4"
+                class="task-tree-toggle__icon"
+              />
+              <span>{{ section.allExpanded ? '收起全部' : '展开全部' }}</span>
+            </el-button>
           </div>
         </div>
 
@@ -344,6 +352,53 @@ function domainMeta(domain) {
   return getTaskDomainMeta(domain)
 }
 
+const METRIC_LABEL_MAP = {
+  RJ: 'RJ 号',
+  输出: '作品目录',
+  此前失败: '失败次数',
+  问题作品: '问题记录',
+  目标库: '目标库存',
+  下载: '下载字幕',
+  写入: '写入字幕',
+  来源字幕: '候选字幕',
+  可执行候选: '可配对目录',
+  候选目录: '候选目录',
+  下载文件: '下载文件',
+  失败文件: '失败文件',
+  已上传: '已上传',
+  上传大小: '上传大小',
+  平均上传: '平均速度',
+  耗时: '耗时',
+  DLsite: 'DLsite 作品',
+  可下载: '可下载',
+  本地: '本地已有',
+  缺失: '服务器缺失',
+}
+
+function getMetricLabel(label) {
+  const raw = String(label || '').trim()
+  return METRIC_LABEL_MAP[raw] || raw || '指标'
+}
+
+function getMetricValue(metric) {
+  const label = String(metric?.label || '').trim()
+  const value = String(metric?.value ?? '').trim()
+  if (!value) return '—'
+  if (label === '此前失败' && !value.includes('次')) return `${value} 次`
+  if (label === '问题作品' && /^\d+$/.test(value)) return `${value} 条`
+  return value
+}
+
+function isCompactMetric(metric) {
+  const label = String(metric?.label || '').trim()
+  const value = String(metric?.value ?? '').trim()
+  return label === 'RJ' || /^[\d.]+\s*[\w%次条]*$/i.test(value) || value.length <= 12
+}
+
+function getMetricItemClass(metric) {
+  return isCompactMetric(metric) ? 'task-metric-item--compact' : 'task-metric-item--wide'
+}
+
 const ACTION_ICON_MAP = {
   pause: PauseCircle,
   resume: PlayCircle,
@@ -398,6 +453,187 @@ function actionToneClass(action) {
 .detail-fade-up {
   animation: detail-fade-up 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
+
+.task-metrics-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.task-metric-item {
+  position: relative;
+  min-width: 0;
+  padding: 9px 12px 9px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.8);
+  background: linear-gradient(90deg, rgba(248, 250, 252, 0.9), #fff);
+}
+
+.task-metric-item::before {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 999px 999px 0;
+  background: #f59e0b;
+  content: '';
+}
+
+.task-metric-item:last-child {
+  border-bottom: 0;
+}
+
+.task-metric-label {
+  display: block;
+  color: #64748b;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.task-metric-value {
+  display: block;
+  min-width: 0;
+  margin-top: 3px;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-tree-filter,
+.task-tree-toggle {
+  font-family: inherit;
+}
+
+.task-tree-filter {
+  overflow: hidden;
+  padding: 3px;
+  border: 1px solid #dbe3ee;
+  border-radius: 11px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.95));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 6px 16px rgba(15, 23, 42, 0.04);
+}
+
+.task-tree-filter :deep(.el-radio-button__inner) {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px !important;
+  background: transparent;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 28px;
+  box-shadow: none !important;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.task-tree-filter :deep(.el-radio-button__inner:hover) {
+  transform: translateY(-1px) scale(1.02);
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+}
+
+.task-tree-filter :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  background: #0f172a;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.22) !important;
+  color: #fff;
+}
+
+.task-tree-filter :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner:hover) {
+  transform: translateY(-1px) scale(1.02);
+  background: #0f172a;
+  color: #fff;
+}
+
+.task-tree-toggle {
+  height: 32px;
+  padding: 0 13px !important;
+  border-color: #bbf7d0 !important;
+  border-radius: 11px !important;
+  background:
+    radial-gradient(circle at top left, rgba(220, 252, 231, 0.95), rgba(255, 255, 255, 0.98) 68%) !important;
+  color: #047857 !important;
+  font-size: 11px;
+  font-weight: 800;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 8px 18px rgba(16, 185, 129, 0.1);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.task-tree-toggle :deep(span) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.task-tree-toggle:hover {
+  transform: translateY(-2px) scale(1.03);
+  border-color: #34d399 !important;
+  background: linear-gradient(180deg, #ecfdf5, #fff) !important;
+  box-shadow: 0 12px 22px rgba(16, 185, 129, 0.16);
+}
+
+.task-tree-toggle:active {
+  transform: scale(0.96);
+}
+
+.task-tree-toggle__icon {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.task-tree-toggle:hover .task-tree-toggle__icon {
+  transform: rotate(-12deg) scale(1.12);
+}
+
+@media (min-width: 640px) {
+  .task-metrics-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-metric-item {
+    border-right: 1px solid rgba(226, 232, 240, 0.8);
+  }
+
+  .task-metric-item:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .task-metric-item--wide {
+    grid-column: span 2;
+  }
+}
+
+@media (min-width: 1280px) {
+  .task-metrics-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .task-metric-item:nth-child(2n) {
+    border-right: 1px solid rgba(226, 232, 240, 0.8);
+  }
+
+  .task-metric-item:nth-child(3n) {
+    border-right: 0;
+  }
+
+  .task-metric-item--wide {
+    grid-column: span 2;
+  }
+}
+
 @keyframes detail-fade-up {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }

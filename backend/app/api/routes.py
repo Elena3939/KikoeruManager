@@ -650,6 +650,8 @@ async def startup_event():
     await email_watcher.start()
 
     # 启动通知中心 outbox 发件 worker
+    from ..core.notification_template_service import ensure_default_email_templates
+    ensure_default_email_templates()
     from ..core.task_notification_service import start_outbox_worker
     asyncio.create_task(start_outbox_worker())
 
@@ -2124,6 +2126,21 @@ async def get_conflicts(include_stats: bool = False):
                     "context_error": str(exc),
                 }
 
+            linked_task_info = None
+            linked_task_id = str(
+                (_normalize_conflict_metadata(conflict.new_metadata).get("resolution_task_id") or conflict.task_id or "")
+            ).strip()
+            if linked_task_id:
+                linked_task = engine.get_task(linked_task_id)
+                if linked_task is not None:
+                    linked_task_info = {
+                        "id": linked_task.id,
+                        "status": linked_task.status.value if isinstance(linked_task.status, TaskStatus) else str(linked_task.status or ""),
+                        "progress": int(getattr(linked_task, "progress", 0) or 0),
+                        "current_step": str(getattr(linked_task, "current_step", "") or ""),
+                        "error_message": str(getattr(linked_task, "error_message", "") or ""),
+                    }
+
             conflict_items.append(
                 {
                     "id": conflict.id,
@@ -2136,6 +2153,7 @@ async def get_conflicts(include_stats: bool = False):
                     "status": conflict.status,
                     "created_at": conflict.created_at.isoformat() if conflict.created_at else None,
                     "available_actions": available_actions,
+                    "linked_task": linked_task_info,
                     "context": context,
                 }
             )
@@ -2202,6 +2220,19 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             None,
         )
         if existing_task:
+            existing_metadata = existing_task.task_metadata or {}
+            existing_manual_password = normalize_password_value(existing_metadata.get("manual_retry_password"))
+            if specified_password and existing_manual_password != specified_password:
+                if existing_task.status == TaskStatus.PROCESSING:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="同源任务已经开始解压，不能把指定密码热替换到正在运行的 7z 进程；请取消或等待本次失败后再重试",
+                    )
+                if existing_task.status != TaskStatus.PENDING:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="同源任务已存在但不是可注入密码的等待态，请等待当前任务结束后再用指定密码重试",
+                    )
             conflict.status = "PROCESSING"
             next_metadata = dict(conflict.new_metadata or {})
             next_metadata["resolution_task_state"] = "running"
@@ -2211,9 +2242,13 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             conflict.new_metadata = next_metadata
             existing_task.task_metadata["retry_conflict_id"] = conflict.id
             existing_task.task_metadata["retry_conflict_source_path"] = source_path
+            existing_task.task_metadata["retry_conflict_type"] = conflict.conflict_type
+            if conflict.conflict_type == "EXTRACT_FAILED":
+                existing_task.task_metadata["skip_retry_precheck"] = True
             if specified_password:
                 existing_task.task_metadata["manual_retry_password"] = specified_password
                 existing_task.task_metadata["manual_retry_password_only"] = True
+                existing_task.task_metadata["manual_retry_password_requested"] = True
             if conflict.task_id:
                 existing_task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
             db.commit()
@@ -2237,12 +2272,16 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         )
         task.task_metadata["retry_conflict_id"] = conflict.id
         task.task_metadata["retry_conflict_source_path"] = source_path
+        task.task_metadata["retry_conflict_type"] = conflict.conflict_type
         task.task_metadata["retry_from_conflicts"] = True
+        if conflict.conflict_type == "EXTRACT_FAILED":
+            task.task_metadata["skip_retry_precheck"] = True
         task.task_metadata["conflict_resolution_conflict_id"] = conflict.id
         task.task_metadata["conflict_resolution_action"] = "RETRY"
         if specified_password:
             task.task_metadata["manual_retry_password"] = specified_password
             task.task_metadata["manual_retry_password_only"] = True
+            task.task_metadata["manual_retry_password_requested"] = True
         if conflict.task_id:
             task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
         if conflict.rjcode:

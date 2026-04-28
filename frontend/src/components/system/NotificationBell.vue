@@ -6,8 +6,20 @@
       @click="onBellClick"
       title="通知"
     >
-      <Bell :size="18" :stroke-width="2.2" />
-      <span v-if="unreadCount > 0" class="notif-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+      <DotLottieVue
+        ref="playerRef"
+        class="notif-bell-player"
+        :src="notificationLottie"
+        :autoplay="false"
+        :loop="false"
+        :speed="1"
+        :render-config="{ autoResize: true }"
+      />
+      <span
+        v-if="unreadCount > 0"
+        class="notif-dot"
+        :title="unreadCount > 99 ? '99+ 条未读通知' : `${unreadCount} 条未读通知`"
+      />
     </button>
 
     <teleport to="body">
@@ -22,13 +34,16 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { Bell } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
+import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import NotificationPanel from './NotificationPanel.vue'
 import { useNotifications } from '../../composables/useNotifications'
+import notificationLottie from '../../assets/anime/Notification.lottie'
 
 const bellRef = ref(null)
 const panelRect = ref(null)
+const playerRef = ref(null)
+const lottieReady = ref(false)
 const { unreadCount, panelOpen, openPanel, closePanel, startSSE, stopSSE } = useNotifications()
 
 const PANEL_WIDTH = 360
@@ -49,6 +64,46 @@ const panelStyle = computed(() => {
   }
 })
 
+function getInstance() {
+  return playerRef.value?.getDotLottieInstance?.() || null
+}
+
+async function setStaticFrame() {
+  const instance = getInstance()
+  if (!instance) return
+  await instance.pause()
+  await instance.setLoop(false)
+  await instance.setFrame(0)
+  await instance.freeze()
+}
+
+async function syncPlayback(force = false) {
+  const instance = getInstance()
+  if (!instance || !lottieReady.value) return
+  if (unreadCount.value > 0) {
+    await instance.unfreeze()
+    await instance.setLoop(true)
+    if (force) {
+      await instance.stop()
+      await instance.setFrame(0)
+    }
+    await instance.play()
+    return
+  }
+  await setStaticFrame()
+}
+
+async function handleReady() {
+  lottieReady.value = true
+  await nextTick()
+  await syncPlayback(true)
+}
+
+async function handleComplete() {
+  await nextTick()
+  await syncPlayback(true)
+}
+
 function updateRect() {
   if (bellRef.value) {
     panelRect.value = bellRef.value.getBoundingClientRect()
@@ -66,6 +121,31 @@ function onBellClick() {
 
 onMounted(() => {
   startSSE()
+  const bind = () => {
+    const instance = getInstance()
+    if (!instance) return false
+    instance.addEventListener('ready', handleReady)
+    instance.addEventListener('load', handleReady)
+    instance.addEventListener('complete', handleComplete)
+    return true
+  }
+  if (!bind()) {
+    window.setTimeout(bind, 60)
+  }
+})
+
+watch(unreadCount, async (count, prev) => {
+  if (!lottieReady.value) return
+  await syncPlayback(count > 0 && prev <= 0)
+})
+
+onBeforeUnmount(() => {
+  const instance = getInstance()
+  if (instance) {
+    instance.removeEventListener('ready', handleReady)
+    instance.removeEventListener('load', handleReady)
+    instance.removeEventListener('complete', handleComplete)
+  }
 })
 
 onUnmounted(() => {
@@ -83,21 +163,22 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  border: 1px solid rgba(29, 29, 31, 0.08);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.7);
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
   color: rgba(29, 29, 31, 0.6);
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: none;
 }
 
 .notif-bell-btn:hover {
-  background: rgba(255, 255, 255, 0.95);
+  background: transparent;
   color: #1d1d1f;
-  transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  transform: translateY(-2px) scale(1.08);
+  box-shadow: none;
 }
 
 .notif-bell-btn:active {
@@ -105,38 +186,59 @@ onUnmounted(() => {
 }
 
 .notif-bell-btn--active {
-  background: #f0f6ff;
+  background: transparent;
   color: #0071e3;
-  border-color: rgba(0, 113, 227, 0.2);
+  box-shadow: none;
 }
 
 .notif-bell-btn--has-unread {
-  color: #0071e3;
-  border-color: rgba(0, 113, 227, 0.15);
+  color: #8a5a00;
+  background: transparent;
+  box-shadow: none;
 }
 
-.notif-badge {
+.notif-bell-player {
+  width: 38px;
+  height: 38px;
+  pointer-events: none;
+  filter: drop-shadow(0 6px 12px rgba(245, 158, 11, 0.22));
+}
+
+.notif-dot {
   position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 18px;
-  text-align: center;
-  border-radius: 99px;
-  background: #d93025;
-  color: #fff;
+  top: 9px;
+  right: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 35%, #fff5a6, #facc15 58%, #f59e0b 100%);
   border: 2px solid #fff;
-  box-shadow: 0 1px 4px rgba(217, 48, 37, 0.4);
-  animation: badge-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow:
+    0 0 0 4px rgba(250, 204, 21, 0.18),
+    0 4px 12px rgba(245, 158, 11, 0.42);
+  animation:
+    notif-dot-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    notif-dot-pulse 1.6s ease-in-out infinite;
 }
 
-@keyframes badge-pop {
+@keyframes notif-dot-pop {
   from { transform: scale(0); }
   to { transform: scale(1); }
+}
+
+@keyframes notif-dot-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 4px rgba(250, 204, 21, 0.18),
+      0 4px 12px rgba(245, 158, 11, 0.42);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow:
+      0 0 0 7px rgba(250, 204, 21, 0.1),
+      0 6px 16px rgba(245, 158, 11, 0.5);
+    transform: scale(1.08);
+  }
 }
 
 .notif-overlay {

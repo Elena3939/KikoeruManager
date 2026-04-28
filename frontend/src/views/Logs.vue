@@ -185,10 +185,10 @@
           />
           <span
             class="log-msg"
-            :title="log.message"
+            :title="log.isTruncated ? '内容过长，点击下方详情查看完整文本' : log.message"
             @click="showLogDetail(log)"
             @dblclick.stop="copyLogLine(log)"
-            v-html="highlightLogMessage(log.message)"
+            v-html="highlightLogMessage(log.displayMessage || log.message)"
           />
         </div>
 
@@ -216,7 +216,7 @@
           <span class="px-1.5 py-0.5 rounded bg-slate-700/60">{{ selectedLog.level }}</span>
           <span v-if="selectedLog.module" class="px-1.5 py-0.5 rounded bg-slate-700/60">{{ selectedLog.module }}</span>
         </div>
-        <pre class="m-0 whitespace-pre-wrap break-all leading-5 text-slate-100">{{ selectedLog.message }}</pre>
+        <pre class="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap break-all leading-5 text-slate-100 no-scrollbar">{{ selectedLog.message }}</pre>
       </div>
 
       <div v-if="isFullSearch" class="border-t border-white/10 px-4 py-2 bg-black/20 flex items-center gap-2">
@@ -264,6 +264,7 @@ import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 const LOG_POLL_INTERVAL = 5000
 const ITEM_HEIGHT = 28
 const OVERSCAN = 25
+const LOG_PREVIEW_LIMIT = 900
 
 const logs = shallowRef([])
 const logContainer = ref(null)
@@ -508,6 +509,17 @@ function highlightModuleName(moduleName) {
   return highlightText(moduleName)
 }
 
+function buildDisplayMessage(message) {
+  const text = String(message || '')
+  if (text.length <= LOG_PREVIEW_LIMIT) {
+    return { displayMessage: text, isTruncated: false }
+  }
+  return {
+    displayMessage: `${text.slice(0, LOG_PREVIEW_LIMIT)}...（已截断，点击查看完整）`,
+    isTruncated: true,
+  }
+}
+
 function parseLogLine(line) {
   if (parseCache.has(line)) {
     parseCacheHits.value += 1
@@ -520,7 +532,7 @@ function parseLogLine(line) {
   let match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s+\S+\s+-\s+(.+)$/)
   if (match) {
     const message = match[3]
-    const obj = { id: ++logIdCounter, key: buildLogKey(line), rawLine: line, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message }
+    const obj = { id: ++logIdCounter, rawKey: buildLogKey(line), rawLine: line, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message, ...buildDisplayMessage(message) }
     parseCache.set(line, obj)
     return obj
   }
@@ -528,14 +540,28 @@ function parseLogLine(line) {
   match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-\s+(.+)$/)
   if (match) {
     const message = match[3]
-    const obj = { id: ++logIdCounter, key: buildLogKey(line), rawLine: line, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message }
+    const obj = { id: ++logIdCounter, rawKey: buildLogKey(line), rawLine: line, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message, ...buildDisplayMessage(message) }
     parseCache.set(line, obj)
     return obj
   }
 
-  const obj = { id: ++logIdCounter, key: buildLogKey(line), rawLine: line, time: '', level: 'INFO', module: parseModule(line, line), message: line }
+  const obj = { id: ++logIdCounter, rawKey: buildLogKey(line), rawLine: line, time: '', level: 'INFO', module: parseModule(line, line), message: line, ...buildDisplayMessage(line) }
   parseCache.set(line, obj)
   return obj
+}
+
+function parseLogLines(lines, keyPrefix = '') {
+  const duplicateCounter = new Map()
+  return lines.map((line, index) => {
+    const parsed = parseLogLine(line)
+    const rawKey = parsed.rawKey || buildLogKey(line)
+    const seen = duplicateCounter.get(rawKey) || 0
+    duplicateCounter.set(rawKey, seen + 1)
+    return {
+      ...parsed,
+      key: `${keyPrefix}${index}-${seen}-${rawKey}`,
+    }
+  })
 }
 
 function buildLogKey(line) {
@@ -658,7 +684,7 @@ async function refreshLogs(force = false) {
 
     if (!data.is_full && !force) {
       if (logLines.length === 0) return
-      const parsed = logLines.map(parseLogLine)
+      const parsed = parseLogLines(logLines, `delta-${nextOffset}-`)
       incrementalCount.value += parsed.length
       const combined = [...logs.value, ...parsed]
       logs.value = combined.length > logLimit.value ? combined.slice(combined.length - logLimit.value) : combined
@@ -668,7 +694,7 @@ async function refreshLogs(force = false) {
       if (!force && signature === lastLogSignature) return
       lastLogSignature = signature
       incrementalCount.value = 0
-      logs.value = logLines.map(parseLogLine)
+      logs.value = parseLogLines(logLines, 'full-')
     }
 
     triggerRef(logs)
@@ -799,7 +825,7 @@ async function gotoFullSearchPage(cursor) {
     fullSearchHasMore.value = !!data.has_more
     fullSearchPageStart.value = cursor
     logIdCounter = 0
-    logs.value = lines.map(parseLogLine)
+    logs.value = parseLogLines(lines, `search-${cursor}-`)
     triggerRef(logs)
     restoreSelectedLog()
     lastFetchMs.value = Math.round(performance.now() - t0)
