@@ -271,6 +271,22 @@
 
 
       <el-alert
+        v-if="synologyOtpRequired"
+        type="error"
+        title="群晖二步验证（OTP）已过期，无法连接群晖库存"
+        :closable="true"
+        show-icon
+        style="margin-bottom: 10px"
+        @close="synologyOtpRequired = false"
+      >
+        <template #default>
+          请前往
+          <router-link to="/settings" class="text-blue-500 underline">设置页</router-link>
+          在「群晖连接」中填写新的一次性验证码（OTP），并开启 Device Token，避免每次登录都需要验证。
+        </template>
+      </el-alert>
+
+      <el-alert
 
         v-if="currentLibrary?.health?.warnings?.length || currentLibrary?.health?.errors?.length"
 
@@ -1286,7 +1302,7 @@ import {
 
 import { ElMessage } from 'element-plus'
 
-import { configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi } from '../api'
+import { configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi, synologyOtpRequired } from '../api'
 
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 

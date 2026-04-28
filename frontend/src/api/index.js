@@ -1,8 +1,12 @@
 import axios from 'axios'
+import { ref } from 'vue'
 
 const API_BASE = '/api'
 const FILTER_DELETE_PREVIEW_TIMEOUT = 30 * 60 * 1000
 const RJ_SUBTITLE_SCAN_TIMEOUT = 0
+
+/** 群晖 OTP 二步验证过期标志。任意库存接口返回含 OTP 的错误时置 true，提示用户刷新 Device Token。 */
+export const synologyOtpRequired = ref(false)
 
 const apiClient = axios.create({
   baseURL: API_BASE,
@@ -17,6 +21,9 @@ apiClient.interceptors.response.use(
   error => {
     const detail = error.response?.data?.detail || error.message || '未知错误'
     console.error('[API Error]', error.config?.url, detail)
+    if (typeof detail === 'string' && detail.includes('OTP')) {
+      synologyOtpRequired.value = true
+    }
     return Promise.reject(error)
   }
 )
