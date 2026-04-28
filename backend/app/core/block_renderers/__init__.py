@@ -344,7 +344,7 @@ def render_task_log(props: dict, payload: dict) -> str:
     """
     source_key = props.get("sourceKey") or "recent_logs"
     title = _esc(props.get("title") or "执行日志")
-    max_lines = max(1, int(props.get("maxLines", 12) or 12))
+    max_lines = max(1, int(props.get("maxLines", 30) or 30))
     items = payload.get(source_key) or []
     if not items:
         return (
@@ -559,7 +559,7 @@ BLOCK_SCHEMA = [
         "defaultProps": {
             "title":     "执行日志",
             "sourceKey": "recent_logs",
-            "maxLines":  12,
+            "maxLines":  30,
         },
         "propSchema": [
             {"key": "title",     "label": "标题",       "type": "text",   "default": "执行日志"},
@@ -570,7 +570,7 @@ BLOCK_SCHEMA = [
                  {"value": "error_logs",   "label": "错误日志"},
                  {"value": "warning_logs", "label": "警告日志"},
              ]},
-            {"key": "maxLines",  "label": "最多行数",   "type": "number", "min": 3, "max": 50, "default": 12},
+            {"key": "maxLines",  "label": "最多行数",   "type": "number", "min": 3, "max": 50, "default": 30},
         ],
     },
 ]

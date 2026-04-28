@@ -6,7 +6,7 @@
           <div class="tpl-editor-head-text">
             <span class="tpl-editor-kicker">Email Template</span>
             <h2 class="tpl-editor-title">{{ isCreate ? '新建邮件模板' : '编辑邮件模板' }}</h2>
-            <p v-if="form.editor_mode === 'html'" class="tpl-editor-desc">变量插入用 <code>{title}</code> / <code>{summary}</code> / <code>{domain_label}</code> / <code>{rjcode}</code> / <code>{event_label}</code> / <code>{event_icon}</code> / <code>{created_at}</code></p>
+            <p v-if="form.editor_mode === 'html'" class="tpl-editor-desc">变量插入用 <code>{任务标题}</code> / <code>{摘要}</code> / <code>{任务类型}</code> / <code>{RJ号}</code> / <code>{事件名称}</code> / <code>{事件图标}</code> / <code>{时间}</code></p>
           </div>
           <!-- 模式切换 -->
           <div class="tpl-mode-toggle">
@@ -14,7 +14,7 @@
               type="button"
               class="tpl-mode-btn"
               :class="{ 'is-active': form.editor_mode === 'html' }"
-              @click="form.editor_mode = 'html'"
+              @click="setEditorMode('html')"
             >
               <Code2 :size="13" :stroke-width="2.4" /> HTML
             </button>
@@ -22,7 +22,7 @@
               type="button"
               class="tpl-mode-btn"
               :class="{ 'is-active': form.editor_mode === 'blocks' }"
-              @click="form.editor_mode = 'blocks'"
+              @click="setEditorMode('blocks')"
             >
               <LayoutTemplate :size="13" :stroke-width="2.4" /> 积木编辑器
             </button>
@@ -119,7 +119,7 @@
               :model-value="null"
               :html-cache="form.html_template"
               size="large"
-              @update:html-cache="v => form.html_template = v"
+              @update:html-cache="onHtmlTemplateChange"
             />
           </div>
         </div>
@@ -173,6 +173,7 @@ import { notificationApi } from '../../api'
 import NotificationBlockEditor from './block-editor/NotificationBlockEditor.vue'
 import RichTextEditor from './block-editor/RichTextEditor.vue'
 import { DEFAULT_EMAIL_HTML, DEFAULT_SUBJECT } from './block-editor/defaultEmailTemplate.js'
+import { renderBlockMini, buildSamplePayload } from './block-editor/blockMiniRenderers.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -272,14 +273,7 @@ async function runPreview() {
     // 后端预览需要落库的模板才能精确定位，但若是新建则只能用 payload 直接渲染。
     // 为了让"未保存就能预览"，我们组装一份本地变量做客户端简单 format。
     const event_type = form.event_types[0] || 'completed'
-    const samplePayload = {
-      event_type,
-      title: '示例任务标题',
-      domain_label: '导入处理',
-      summary: '示例摘要：批量任务结束，3/3 个完成',
-      rjcode: 'RJ123456',
-      severity: event_type === 'completed' ? 'success' : (event_type === 'failed' ? 'danger' : 'warning')
-    }
+    const samplePayload = buildSamplePayload(event_type)
     let result
     if (props.template?.id) {
       result = await notificationApi.previewTemplate(props.template.id, samplePayload)
@@ -319,16 +313,99 @@ function renderLocalPreview(payload) {
     '事件名称': en.event_label,
     '事件图标': en.event_icon,
     '时间':     en.created_at,
-    '严重程度': payload.severity || ''
+    '严重程度': payload.severity || '',
+    '业务数据块': renderPayloadSections(payload.event_type),
+    '统计网格': renderPayloadSection(payload.event_type, 'stats_grid'),
+    '文件树': renderPayloadSection(payload.event_type, 'file_tree'),
+    '差异对比': renderPayloadSection(payload.event_type, 'diff'),
+    '执行日志': renderPayloadSection(payload.event_type, 'task_log'),
   }
   // 占位符放宽：花括号内任意非空白非花括号字符（兼容中文）
   const fill = (tpl) => String(tpl || '').replace(/\{([^{}\s]+)\}/g, (raw, k) => {
+    const rawHtmlKeys = {
+      payload_sections: '业务数据块',
+      stats_grid_section: '统计网格',
+      file_tree_section: '文件树',
+      diff_section: '差异对比',
+      task_log_section: '执行日志',
+    }
+    if (variables[k] !== undefined && ['业务数据块', '统计网格', '文件树', '差异对比', '执行日志'].includes(k)) return variables[k]
+    if (rawHtmlKeys[k]) return variables[rawHtmlKeys[k]]
     return variables[k] !== undefined ? escapeHtml(variables[k]) : raw
   })
   return {
     subject: fill(form.subject_template),
     html: fill(form.html_template),
     text: fill(form.text_template) || variables.summary
+  }
+}
+
+function renderPayloadSections(eventType = 'completed') {
+  return [
+    renderPayloadSection(eventType, 'stats_grid'),
+    renderPayloadSection(eventType, 'file_tree'),
+    renderPayloadSection(eventType, 'diff'),
+    renderPayloadSection(eventType, 'task_log'),
+  ].join('')
+}
+
+function renderPayloadSection(eventType = 'completed', section = 'stats_grid') {
+  const sample = buildSamplePayload(eventType)
+  const blockMap = {
+    stats_grid: {
+      type: 'stats_grid',
+      props: {
+        columns: 3,
+        items: [
+          { key: 'total_files', label: '总文件数', icon: '' },
+          { key: 'total_size', label: '总大小', icon: '' },
+          { key: 'duration', label: '耗时', icon: '' },
+        ],
+      },
+    },
+    file_tree: { type: 'file_tree', props: { title: '文件清单', sourceKey: 'file_tree', maxItems: 8 } },
+    diff: { type: 'diff_view', props: { title: '数据差异', sourceKey: 'diff_items' } },
+    task_log: { type: 'task_log', props: { title: '执行日志', sourceKey: 'recent_logs', maxLines: 6 } },
+  }
+  return renderBlockMini(blockMap[section], sample)
+}
+
+function createHtmlMirrorBlock(html = form.html_template) {
+  return {
+    id: `blk_html_${Date.now().toString(36)}`,
+    type: 'rich_text',
+    enabled: true,
+    schemaVersion: 1,
+    props: {
+      contentJson: null,
+      htmlCache: html || '',
+      mirrorSource: 'html',
+    },
+  }
+}
+
+function syncHtmlMirrorBlock() {
+  const first = form.blocks[0]
+  if (!first || first.type !== 'rich_text' || first.props?.mirrorSource === 'html') {
+    form.blocks = [createHtmlMirrorBlock()]
+  }
+}
+
+function setEditorMode(mode) {
+  if (mode === form.editor_mode) return
+  if (mode === 'blocks' && !form.blocks.length) {
+    form.blocks = [createHtmlMirrorBlock()]
+  }
+  if (mode === 'html' && blockEditorRef.value?.getBlocks) {
+    form.blocks = blockEditorRef.value.getBlocks()
+  }
+  form.editor_mode = mode
+}
+
+function onHtmlTemplateChange(value) {
+  form.html_template = value
+  if (!form.blocks.length || form.blocks[0]?.props?.mirrorSource === 'html') {
+    form.blocks = [createHtmlMirrorBlock(value)]
   }
 }
 
@@ -352,10 +429,10 @@ async function onSave() {
       event_types: [...form.event_types],
       task_domains: [...form.task_domains],
       editor_mode: form.editor_mode,
-      blocks: form.editor_mode === 'blocks' ? (blockEditorRef.value?.getBlocks() ?? form.blocks) : [],
+      blocks: form.editor_mode === 'blocks' ? (blockEditorRef.value?.getBlocks() ?? form.blocks) : (syncHtmlMirrorBlock(), form.blocks),
       subject_template: form.subject_template,
-      html_template: form.editor_mode === 'html' ? form.html_template : '',
-      text_template: form.editor_mode === 'html' ? form.text_template : '',
+      html_template: form.html_template,
+      text_template: form.text_template,
       enabled: !!form.enabled,
       is_default: !!form.is_default,
       sort_order: Number(form.sort_order) || 0

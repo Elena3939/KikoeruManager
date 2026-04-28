@@ -158,7 +158,7 @@ export const BLOCK_TYPES = {
     defaultProps: {
       title:     '执行日志',
       sourceKey: 'recent_logs',
-      maxLines:  12,
+      maxLines:  30,
     },
     propSchema: [
       { key: 'title',     label: '标题',     type: 'text',   default: '执行日志' },
@@ -168,7 +168,7 @@ export const BLOCK_TYPES = {
           { value: 'error_logs',   label: '错误日志' },
           { value: 'warning_logs', label: '警告日志' },
         ] },
-      { key: 'maxLines',  label: '最多行数', type: 'number', min: 3, max: 50, default: 12 },
+      { key: 'maxLines',  label: '最多行数', type: 'number', min: 3, max: 50, default: 30 },
     ],
   },
 }
@@ -197,6 +197,11 @@ export const VARIABLES = [
   { key: '严重程度',  aliasEn: 'severity',         example: 'success' },
   { key: '总文件数',  aliasEn: 'stats.total_files',example: '10' },
   { key: '总大小',    aliasEn: 'stats.total_size', example: '256 MB' },
+  { key: '业务数据块', aliasEn: 'payload_sections', example: '自动渲染统计 / 文件树 / 日志' },
+  { key: '统计网格',  aliasEn: 'stats_grid_section', example: '自动渲染统计网格' },
+  { key: '文件树',    aliasEn: 'file_tree_section',  example: '自动渲染文件清单' },
+  { key: '差异对比',  aliasEn: 'diff_section',       example: '自动渲染差异列表' },
+  { key: '执行日志',  aliasEn: 'task_log_section',   example: '自动渲染执行日志' },
 ]
 
 // 向下兼容：老组件用 v.label 拿展示文本，统一指向 key 自身

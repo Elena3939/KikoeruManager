@@ -11,6 +11,7 @@ _ALLOWED_TAGS = frozenset({
     "ul", "ol", "li",
     "a", "span", "div",
     "table", "thead", "tbody", "tr", "th", "td",
+    "img",
     "hr", "blockquote", "pre", "code",
 })
 
@@ -18,6 +19,7 @@ _ALLOWED_ATTRS = frozenset({
     "style", "href", "target", "rel", "class", "align", "valign",
     "colspan", "rowspan", "width", "height", "bgcolor",
     "border", "cellpadding", "cellspacing",
+    "src", "alt",
     # 变量 pill 标记：富文本里的变量节点用 data-var 存储变量 key，
     # 后端在 substitute 前会还原为 {key}
     "data-var",

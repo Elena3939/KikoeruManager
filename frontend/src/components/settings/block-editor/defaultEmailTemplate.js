@@ -1,97 +1,61 @@
-/**
- * 默认邮件模板（HTML 模式）
- *
- * 设计灵感：Vercel / Linear / Stripe 等海外 SaaS 通知邮件
- * - 600px 居中容器，白底 + 极淡灰背景
- * - 顶部 logo / 品牌名 + 极简标题
- * - 主体卡片：状态徽章 + 标题 + 摘要 + 关键字段 grid
- * - 底部签名 + 取消订阅链接（占位）
- * - 全 inline style，兼容主流邮件客户端
- */
+const EMAIL_HEADER_URL = 'https://im.gurl.eu.org/file/AgACAgEAAxkDAAEBgcVp8OfJBO4AAUxLd8WPdMwRLA8TX28AAnsMaxuveYhHvw-4JedMJTcBAAMCAAN3AAM7BA.png'
 
-export const DEFAULT_EMAIL_HTML = `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f6f7f9;padding:32px 0;">
+export const DEFAULT_EMAIL_HTML = `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f7f8fa;padding:34px 0;">
 <tr><td align="center">
-<table width="560" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;border:1px solid #ececef;border-radius:14px;overflow:hidden;">
+<table width="620" cellpadding="0" cellspacing="0" border="0" style="width:620px;max-width:calc(100% - 32px);background:#ffffff;border:1px solid #e9eaee;border-radius:18px;border-collapse:separate;overflow:hidden;box-shadow:0 18px 48px rgba(20,24,31,0.08);">
 
-<!-- 品牌头 -->
-<tr><td style="padding:28px 36px 0 36px;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td style="font-size:13px;font-weight:600;color:#1d1d1f;letter-spacing:0.02em;">
-<span style="display:inline-block;width:10px;height:10px;background:#1d1d1f;border-radius:3px;vertical-align:middle;margin-right:8px;"></span>
-Prekikoeru
-</td>
-<td align="right" style="font-size:11px;color:#8e8e93;letter-spacing:0.04em;">{时间}</td>
-</tr>
-</table>
-</td></tr>
-
-<!-- 状态徽章 -->
-<tr><td style="padding:24px 36px 0 36px;">
-<span style="display:inline-block;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f8f4e;background:#e8f5ee;border:1px solid #bce0c9;padding:3px 10px;border-radius:99px;">
-{事件图标} {事件名称}
-</span>
-</td></tr>
-
-<!-- 标题 -->
-<tr><td style="padding:14px 36px 0 36px;">
-<h1 style="font-size:22px;font-weight:600;color:#1d1d1f;line-height:1.35;margin:0;letter-spacing:-0.01em;">
-{任务标题}
-</h1>
-</td></tr>
-
-<!-- 摘要 -->
-<tr><td style="padding:10px 36px 0 36px;">
-<p style="font-size:14px;color:#48484a;line-height:1.6;margin:0;">
-{摘要}
-</p>
-</td></tr>
-
-<!-- 关键字段卡 -->
-<tr><td style="padding:24px 36px 0 36px;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fafafa;border:1px solid #ececef;border-radius:10px;">
-<tr>
-<td style="padding:14px 18px;border-right:1px solid #ececef;">
-<div style="font-size:10px;font-weight:600;color:#8e8e93;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">分类</div>
-<div style="font-size:13px;color:#1d1d1f;font-weight:500;">{任务类型}</div>
-</td>
-<td style="padding:14px 18px;border-right:1px solid #ececef;">
-<div style="font-size:10px;font-weight:600;color:#8e8e93;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">RJ 号</div>
-<div style="font-size:13px;color:#1d1d1f;font-weight:500;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{RJ号}</div>
-</td>
-<td style="padding:14px 18px;">
-<div style="font-size:10px;font-weight:600;color:#8e8e93;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">耗时</div>
-<div style="font-size:13px;color:#1d1d1f;font-weight:500;">{时间}</div>
+<td style="padding:0;background:#ffffff;">
+  <img src="${EMAIL_HEADER_URL}" alt="Prekikoeru Mail" width="620" style="display:block;width:100%;max-width:620px;height:auto;border:0;outline:none;text-decoration:none;">
 </td>
 </tr>
+
+<tr>
+<td style="padding:24px 34px 0 34px;background:#ffffff;text-align:center;">
+  <div style="margin:0 0 13px 0;font-size:13px;line-height:1.5;color:#7b4fb4;font-weight:800;">{事件图标} {事件名称} · {时间}</div>
+  <h1 style="margin:0;font-size:24px;line-height:1.34;font-weight:700;color:#16181d;letter-spacing:0;">{任务标题}</h1>
+  <p style="margin:12px auto 0 auto;max-width:480px;font-size:14px;line-height:1.75;color:#5d6470;">{摘要}</p>
+</td>
+</tr>
+
+<tr>
+<td style="padding:28px 34px 0 34px;background:#ffffff;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #eceef3;border-radius:14px;border-collapse:separate;overflow:hidden;background:#ffffff;">
+    <tr>
+      <td style="padding:16px 18px;border-bottom:1px solid #eceef3;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9aa1ac;margin-bottom:5px;">任务类型</div>
+        <div style="font-size:14px;font-weight:650;color:#1f2329;">{任务类型}</div>
+      </td>
+      <td style="padding:16px 18px;border-bottom:1px solid #eceef3;border-left:1px solid #eceef3;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9aa1ac;margin-bottom:5px;">摘要</div>
+        <div style="font-size:14px;font-weight:650;color:#1f2329;line-height:1.55;">{摘要}</div>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2" style="padding:16px 18px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9aa1ac;margin-bottom:5px;">状态</div>
+        <div style="font-size:14px;font-weight:650;color:#1f2329;">{事件图标} {事件名称}</div>
+      </td>
+    </tr>
+  </table>
+</td>
+</tr>
+
+<tr>
+<td style="padding:18px 34px 0 34px;background:#ffffff;">
+  {业务数据块}
+</td>
+</tr>
+
+<tr>
+<td style="padding:28px 34px 32px 34px;background:#ffffff;">
+  <div style="height:1px;background:#eceef3;margin-bottom:16px;"></div>
+  <p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">Prekikoeru</strong> 自动生成。任务详情可在桌面端任务中心查看。</p>
+</td>
+</tr>
+
 </table>
-</td></tr>
-
-<!-- 分隔 -->
-<tr><td style="padding:28px 36px 0 36px;">
-<div style="height:1px;background:#ececef;"></div>
-</td></tr>
-
-<!-- 签名说明 -->
-<tr><td style="padding:18px 36px 28px 36px;">
-<p style="font-size:12px;color:#8e8e93;line-height:1.6;margin:0;">
-此邮件由 <strong style="color:#48484a;font-weight:500;">Prekikoeru</strong> 自动生成。任务详情可在桌面端"任务中心"查看。
-</p>
-</td></tr>
-
-</table>
-
-<!-- 底部 footer -->
-<table width="560" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;">
-<tr><td align="center" style="font-size:10px;color:#a1a1a6;letter-spacing:0.04em;line-height:1.7;">
-Prekikoeru · 本地部署 · 请勿回复
-</td></tr>
-</table>
-
 </td></tr>
 </table>`
 
-/**
- * 默认主题模板
- */
 export const DEFAULT_SUBJECT = '[Prekikoeru] {任务类型}{事件名称} · {任务标题}'

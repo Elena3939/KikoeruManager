@@ -94,12 +94,21 @@
         <span>{{ v.key }}</span>
       </button>
     </div>
+    <SlashMenu
+      v-if="slashMenu.open && filteredSlashCommands.length"
+      :items="filteredSlashCommands"
+      :x="slashMenu.x"
+      :y="slashMenu.y"
+      :active-index="slashMenu.activeIndex"
+      @active="slashMenu.activeIndex = $event"
+      @select="runSlashCommand"
+    />
     <editor-content class="rte-body" :editor="editor" @focus="isFocused = true" @blur="isFocused = false" />
   </div>
 </template>
 
 <script setup>
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
@@ -107,8 +116,11 @@ import { Table } from '@tiptap/extension-table'
 import { TableRow } from '@tiptap/extension-table-row'
 import { TableHeader } from '@tiptap/extension-table-header'
 import { TableCell } from '@tiptap/extension-table-cell'
-import { Bold, Code, Hash, Italic, Link2, Link2Off, List, ListOrdered, Minus, Quote, Redo2, Strikethrough, Undo2 } from 'lucide-vue-next'
+import { Bold, Code, Hash, Heading1, Heading2, Heading3, Italic, Link2, Link2Off, List, ListOrdered, Minus, Quote, Redo2, Table2, Strikethrough, Undo2 } from 'lucide-vue-next'
 import { VARIABLES } from './blockTypes.js'
+import { EmailImage } from './emailImageExtension.js'
+import { PreserveEmailAttributes } from './preserveEmailAttributes.js'
+import SlashMenu from './SlashMenu.vue'
 
 const props = defineProps({
   modelValue: { type: [Object, String], default: null },  // Tiptap JSON doc 或 HTML 字符串
@@ -119,6 +131,14 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'update:htmlCache'])
 
 const isFocused = ref(false)
+const slashMenu = reactive({
+  open: false,
+  x: 12,
+  y: 48,
+  activeIndex: 0,
+  from: 0,
+  query: '',
+})
 
 // 初始内容：modelValue 优先 JSON，无则用 htmlCache 作为 HTML 字符串
 const initialContent = props.modelValue || props.htmlCache || ''
@@ -136,6 +156,8 @@ const largeModeExtensions = props.size === 'large'
 const editor = useEditor({
   content: initialContent,
   extensions: [
+    PreserveEmailAttributes,
+    EmailImage,
     StarterKit.configure({
       link: false,
       codeBlock: props.size === 'large' ? {} : false,
@@ -148,6 +170,36 @@ const editor = useEditor({
     }),
     ...largeModeExtensions,
   ],
+  editorProps: {
+    handleKeyDown(view, event) {
+      if (event.key === '/') {
+        window.setTimeout(() => openSlashMenu(view), 0)
+        return false
+      }
+      if (!slashMenu.open) return false
+      if (event.key === 'Escape') {
+        closeSlashMenu()
+        return true
+      }
+      if (event.key === 'ArrowDown') {
+        if (!filteredSlashCommands.value.length) return true
+        slashMenu.activeIndex = (slashMenu.activeIndex + 1) % filteredSlashCommands.value.length
+        return true
+      }
+      if (event.key === 'ArrowUp') {
+        if (!filteredSlashCommands.value.length) return true
+        slashMenu.activeIndex = (slashMenu.activeIndex - 1 + filteredSlashCommands.value.length) % filteredSlashCommands.value.length
+        return true
+      }
+      if (event.key === 'Enter') {
+        const item = filteredSlashCommands.value[slashMenu.activeIndex]
+        if (item) runSlashCommand(item)
+        return true
+      }
+      window.setTimeout(() => refreshSlashQuery(view), 0)
+      return false
+    },
+  },
   onUpdate({ editor }) {
     emit('update:modelValue', editor.getJSON())
     emit('update:htmlCache',  editor.getHTML())
@@ -162,12 +214,132 @@ const editor = useEditor({
 onBeforeUnmount(() => editor.value?.destroy())
 
 function insertVariable(key) {
+  if (props.size === 'large') {
+    editor.value?.commands.insertContent(`{${key}}`)
+    return
+  }
   // 以 pill 形式插入：data-var 标记变量 key，正文显示中文 label
   // 后端 sanitize 后会把 <span data-var="..."> 整个还原为 {key} 再做替换
   // 末尾 \u200B 零宽空格 = 让光标可以从 pill 后面跳出来
   const safeKey = String(key).replace(/"/g, '&quot;')
   const html = `<span class="rte-var-pill" data-var="${safeKey}">${safeKey}</span>\u200B`
   editor.value?.commands.insertContent(html)
+}
+
+function commandChain() {
+  const instance = editor.value
+  if (!instance) return null
+  return instance.chain().focus().deleteRange({ from: slashMenu.from, to: instance.state.selection.from })
+}
+
+const slashCommands = computed(() => {
+  const base = [
+    { key: 'h1', label: '一级标题', hint: '大标题', icon: Heading1, action: () => commandChain()?.setHeading({ level: 1 }).run() },
+    { key: 'h2', label: '二级标题', hint: '章节标题', icon: Heading2, action: () => commandChain()?.setHeading({ level: 2 }).run() },
+    { key: 'h3', label: '三级标题', hint: '小标题', icon: Heading3, action: () => commandChain()?.setHeading({ level: 3 }).run() },
+    { key: 'bullet', label: '项目列表', hint: '无序列表', icon: List, action: () => commandChain()?.toggleBulletList().run() },
+    { key: 'ordered', label: '编号列表', hint: '有序列表', icon: ListOrdered, action: () => commandChain()?.toggleOrderedList().run() },
+    { key: 'quote', label: '引用', hint: '强调一段说明', icon: Quote, action: () => commandChain()?.toggleBlockquote().run() },
+    { key: 'code', label: '代码块', hint: '等宽日志 / 错误内容', icon: Code, action: () => commandChain()?.toggleCodeBlock().run() },
+    { key: 'hr', label: '分割线', hint: '水平线', icon: Minus, action: () => commandChain()?.setHorizontalRule().run() },
+  ]
+  if (props.size === 'large') {
+    base.push({
+      key: 'table',
+      label: '表格',
+      hint: '插入 3 x 3 表格',
+      icon: Table2,
+      action: () => commandChain()?.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
+    })
+  }
+  return [
+    ...base,
+    ...VARIABLES.map((v) => ({
+      key: `var-${v.key}`,
+      label: `变量：${v.key}`,
+      hint: `插入 {${v.key}}`,
+      icon: Hash,
+      action: () => {
+        commandChain()?.run()
+        insertVariable(v.key)
+      },
+    })),
+  ]
+})
+
+const filteredSlashCommands = computed(() => {
+  const q = slashMenu.query.trim().toLowerCase()
+  if (!q) return slashCommands.value
+  return slashCommands.value.filter((item) => `${item.label} ${item.hint} ${item.key}`.toLowerCase().includes(q))
+})
+
+function openSlashMenu(view) {
+  const instance = editor.value
+  if (!instance) return
+  const pos = instance.state.selection.from
+  slashMenu.from = Math.max(1, pos - 1)
+  slashMenu.query = ''
+  slashMenu.activeIndex = 0
+  positionSlashMenu(view, pos)
+  slashMenu.open = true
+}
+
+function refreshSlashQuery(view) {
+  const instance = editor.value
+  if (!instance || !slashMenu.open) return
+  const pos = instance.state.selection.from
+  const query = instance.state.doc.textBetween(slashMenu.from + 1, pos, '\n', '\n')
+  if (query.includes(' ') || query.includes('\n')) {
+    closeSlashMenu()
+    return
+  }
+  slashMenu.query = query
+  slashMenu.activeIndex = Math.min(slashMenu.activeIndex, Math.max(0, filteredSlashCommands.value.length - 1))
+  positionSlashMenu(view, pos)
+}
+
+function positionSlashMenu(view, pos) {
+  const caret = getCaretRect(view, pos)
+  const menuHeight = 320
+  const menuWidth = 260
+  const below = caret.bottom + 8
+  const above = caret.top - menuHeight - 8
+  slashMenu.x = Math.max(8, Math.min(caret.left, window.innerWidth - menuWidth - 8))
+  slashMenu.y = below + menuHeight > window.innerHeight && above > 8 ? above : below
+}
+
+function getCaretRect(view, pos) {
+  const selection = window.getSelection()
+  if (selection?.rangeCount) {
+    const range = selection.getRangeAt(0).cloneRange()
+    range.collapse(false)
+    const rect = range.getBoundingClientRect()
+    if (rect && (rect.width || rect.height) && rect.top >= 0) return rect
+
+    const marker = document.createElement('span')
+    marker.textContent = '\u200b'
+    marker.style.display = 'inline-block'
+    marker.style.width = '1px'
+    marker.style.height = '1em'
+    range.insertNode(marker)
+    const markerRect = marker.getBoundingClientRect()
+    marker.parentNode?.removeChild(marker)
+    view.focus()
+    if (markerRect && markerRect.top >= 0) return markerRect
+  }
+  return view.coordsAtPos(pos)
+}
+
+function closeSlashMenu() {
+  slashMenu.open = false
+  slashMenu.query = ''
+  slashMenu.activeIndex = 0
+}
+
+function runSlashCommand(item) {
+  if (!item) return
+  item.action()
+  closeSlashMenu()
 }
 
 const toolbarBtns = [
@@ -221,6 +393,7 @@ const toolbarBtns = [
 
 <style scoped>
 .rte-wrap {
+  position: relative;
   border: 1px solid rgba(29, 29, 31, 0.12);
   border-radius: 10px;
   overflow: hidden;

@@ -8,10 +8,35 @@
         <RefreshCw :size="13" :stroke-width="2.4" :class="{ 'spin-once': loading }" />
         刷新
       </button>
-      <button class="tpl-panel-action tpl-panel-action--primary" type="button" @click="openCreate">
-        <Plus :size="14" :stroke-width="2.6" />
-        新建模板
-      </button>
+      <div class="tpl-create-wrap">
+        <button class="tpl-panel-action tpl-panel-action--primary" type="button" @click="presetMenuOpen = !presetMenuOpen">
+          <Plus :size="14" :stroke-width="2.6" />
+          新建模板
+          <ChevronDown :size="13" :stroke-width="2.4" />
+        </button>
+        <div v-if="presetMenuOpen" class="tpl-create-menu">
+          <button class="tpl-create-item" type="button" @click="openCreate">
+            <FilePlus2 :size="15" :stroke-width="2.2" />
+            <span>
+              <strong>从空白创建</strong>
+              <small>使用默认 HTML 模板</small>
+            </span>
+          </button>
+          <button
+            v-for="preset in PRESET_TEMPLATES"
+            :key="preset.id"
+            class="tpl-create-item"
+            type="button"
+            @click="openPreset(preset)"
+          >
+            <component :is="PRESET_ICONS[preset.icon] || LayoutTemplate" :size="15" :stroke-width="2.2" />
+            <span>
+              <strong>{{ preset.name }}</strong>
+              <small>{{ preset.description }}</small>
+            </span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <p class="tpl-panel-desc">
@@ -84,10 +109,23 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { Mail, Pencil, Plus, RefreshCw, Star, ToggleLeft, ToggleRight, Trash2 } from 'lucide-vue-next'
+import {
+  ChevronDown,
+  FilePlus2,
+  LayoutTemplate,
+  Mail,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Star,
+  ToggleLeft,
+  ToggleRight,
+  Trash2,
+} from 'lucide-vue-next'
 import { notificationApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import NotificationTemplateEditor from './NotificationTemplateEditor.vue'
+import { PRESET_TEMPLATES } from './block-editor/presetTemplates.js'
 
 const EVENT_LABEL = { completed: '完成', failed: '失败', waiting_manual: '等待人工' }
 const DOMAIN_LABEL = {
@@ -104,6 +142,12 @@ const templates = ref([])
 const loading = ref(false)
 const editorVisible = ref(false)
 const editingTemplate = ref(null)
+const presetMenuOpen = ref(false)
+
+const PRESET_ICONS = {
+  LayoutTemplate,
+  Mail,
+}
 
 async function reload() {
   loading.value = true
@@ -118,7 +162,21 @@ async function reload() {
 }
 
 function openCreate() {
+  presetMenuOpen.value = false
   editingTemplate.value = null
+  editorVisible.value = true
+}
+
+function openPreset(preset) {
+  presetMenuOpen.value = false
+  editingTemplate.value = {
+    ...preset,
+    id: undefined,
+    blocks: Array.isArray(preset.blocks) ? JSON.parse(JSON.stringify(preset.blocks)) : [],
+    enabled: true,
+    is_default: false,
+    sort_order: 0,
+  }
   editorVisible.value = true
 }
 
@@ -259,6 +317,68 @@ defineExpose({ reload })
   border-color: #000;
   color: #fff;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.tpl-create-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.tpl-create-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  width: 310px;
+  padding: 7px;
+  background: #fff;
+  border: 1px solid rgba(29, 29, 31, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.14);
+}
+
+.tpl-create-item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 11px;
+  color: #1d1d1f;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.tpl-create-item:hover {
+  background: rgba(0, 113, 227, 0.06);
+  color: #0071e3;
+  transform: translateY(-1px);
+}
+
+.tpl-create-item:active {
+  transform: scale(0.98);
+}
+
+.tpl-create-item span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tpl-create-item strong {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: inherit;
+}
+
+.tpl-create-item small {
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(29, 29, 31, 0.52);
 }
 
 .tpl-panel-desc {

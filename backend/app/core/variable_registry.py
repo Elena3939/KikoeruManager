@@ -19,6 +19,11 @@ VARIABLE_REGISTRY = {
     "严重程度":  {"path": "severity",         "label": "严重程度",   "example": "success"},
     "总文件数":  {"path": "stats.total_files","label": "总文件数",   "example": "10"},
     "总大小":    {"path": "stats.total_size", "label": "总大小",     "example": "256 MB"},
+    "业务数据块": {"path": "payload_sections", "label": "业务数据块", "example": "自动渲染统计 / 文件树 / 日志"},
+    "统计网格":  {"path": "stats_grid_section", "label": "统计网格", "example": "自动渲染统计网格"},
+    "文件树":    {"path": "file_tree_section", "label": "文件树", "example": "自动渲染文件清单"},
+    "差异对比":  {"path": "diff_section", "label": "差异对比", "example": "自动渲染差异列表"},
+    "执行日志":  {"path": "task_log_section", "label": "执行日志", "example": "自动渲染执行日志"},
 }
 
 # 旧英文 key → 中文 key 的别名映射，写老模板时仍可识别。
@@ -33,6 +38,11 @@ VARIABLE_ALIASES = {
     "severity":         "严重程度",
     "stats.total_files":"总文件数",
     "stats.total_size": "总大小",
+    "payload_sections": "业务数据块",
+    "stats_grid_section": "统计网格",
+    "file_tree_section": "文件树",
+    "diff_section": "差异对比",
+    "task_log_section": "执行日志",
 }
 
 

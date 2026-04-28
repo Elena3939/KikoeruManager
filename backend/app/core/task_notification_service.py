@@ -308,6 +308,18 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
                 f"[通知] 跳过邮件 event_key={event_key} domain={info['domain']} 不在 enabled_domains"
             )
         if should_email:
+            try:
+                from .notification_helper import build_notification_extra_for_task
+                auto_extra = build_notification_extra_for_task(task)
+            except Exception:
+                logger.warning("[通知] 构建邮件业务块失败 task=%s", getattr(task, "id", "?"), exc_info=True)
+                auto_extra = {}
+            extra = {
+                **(auto_extra if isinstance(auto_extra, dict) else {}),
+                **(meta.get('notification_extra') or {}),
+            }
+            if not isinstance(extra, dict):
+                extra = {}
             outbox = NotificationOutbox(
                 id=str(uuid.uuid4()),
                 inbox_item_id=item_id,
@@ -326,6 +338,7 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
                     'task_ids': task_ids,
                     'group_type': group_type,
                     'severity': info['severity'],
+                    **extra,
                 },
                 created_at=now,
             )
@@ -364,6 +377,21 @@ async def start_outbox_worker() -> None:
                 s.next_retry_at = None
             if stuck:
                 logger.info(f"[通知] outbox 启动时回收卡死 sending 记录 {len(stuck)} 条")
+            template_failed = (
+                db.query(NotificationOutbox)
+                .filter(
+                    NotificationOutbox.status == 'failed',
+                    NotificationOutbox.last_error.in_(["'任务类型'", "'任务标题'"]),
+                )
+                .all()
+            )
+            for s in template_failed:
+                s.status = 'pending'
+                s.attempt_count = 0
+                s.next_retry_at = None
+                s.last_error = None
+            if template_failed:
+                logger.info(f"[通知] outbox 启动时恢复模板变量失败记录 {len(template_failed)} 条")
             db.commit()
         finally:
             db.close()
