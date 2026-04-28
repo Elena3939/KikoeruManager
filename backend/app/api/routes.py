@@ -31,7 +31,7 @@ from ..core.password_cleanup import get_cleanup_service
 from ..core.processed_archive_cleanup import get_processed_archive_cleanup_service
 from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
-from ..core.library_manager import get_library_manager
+from ..core.library_manager import get_library_manager, SynologyError
 from ..core.password_utils import (
     normalize_filename_value,
     normalize_optional_text,
@@ -59,6 +59,14 @@ def _synology_http_status(exc: Exception) -> int:
             return 502
     return 500
 
+
+
+def _log_synology_err(msg: str, exc: Exception) -> None:
+    """群晖/认证可预期错误降级为 WARNING（不打堆栈）；其他意外错误仍用 ERROR + traceback。"""
+    if isinstance(exc, SynologyError):
+        logger.warning(msg)
+    else:
+        logger.error(msg, exc_info=True)
 
 # ========== 健康检查 API ==========
 @app.get("/api/health")
@@ -3023,7 +3031,7 @@ async def test_library_connection(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"库存连接测试失败: {e}", exc_info=True)
+        _log_synology_err(f"库存连接测试失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"库存连接测试失败: {str(e)}")
 
 
@@ -3044,7 +3052,7 @@ async def get_library_storage_info(library_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取库存空间失败: {e}", exc_info=True)
+        _log_synology_err(f"获取库存空间失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"获取库存空间失败: {str(e)}")
 
 
@@ -3112,7 +3120,7 @@ async def browse_library_files(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"库存浏览失败: {e}", exc_info=True)
+        _log_synology_err(f"库存浏览失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"库存浏览失败: {str(e)}")
 
 
@@ -3124,7 +3132,7 @@ async def get_library_browser_stats(force_refresh: bool = False, library_id: Opt
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"库存统计失败: {e}", exc_info=True)
+        _log_synology_err(f"库存统计失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"库存统计失败: {str(e)}")
 
 
@@ -3173,7 +3181,7 @@ async def get_library_browser_folder_contents(request: Request):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"获取库存文件夹内容失败: {e}", exc_info=True)
+        _log_synology_err(f"获取库存文件夹内容失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"获取库存文件夹内容失败: {str(e)}")
 
 
@@ -3197,7 +3205,7 @@ async def get_library_browser_mojibake_preview(request: Request):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"获取乱码修复预览失败: {e}", exc_info=True)
+        _log_synology_err(f"获取乱码修复预览失败: {e}", e)
         raise HTTPException(status_code=500, detail=f"获取乱码修复预览失败: {str(e)}")
 
 
@@ -3259,7 +3267,7 @@ async def get_library_browser_filter_delete_preview_status(job_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="过滤删除预审任务不存在")
     except Exception as e:
-        logger.error(f"获取过滤删除预审状态失败: {e}", exc_info=True)
+        _log_synology_err(f"获取过滤删除预审状态失败: {e}", e)
         raise HTTPException(status_code=500, detail=f"获取过滤删除预审状态失败: {str(e)}")
 
 
@@ -3348,7 +3356,7 @@ async def rename_library_browser_item(request: Request):
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
-        logger.error(f"库存重命名失败: {e}", exc_info=True)
+        _log_synology_err(f"库存重命名失败: {e}", e)
         try:
             from ..core.activity_log_service import log_api_rename_action
             if path and not skip_activity_log:
@@ -3483,7 +3491,7 @@ async def batch_rename_library_browser_items(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"库存批量重命名失败: {e}", exc_info=True)
+        _log_synology_err(f"库存批量重命名失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"库存批量重命名失败: {str(e)}")
 
 
@@ -3540,7 +3548,7 @@ async def delete_library_browser_item(request: Request):
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
-        logger.error(f"库存删除失败: {e}", exc_info=True)
+        _log_synology_err(f"库存删除失败: {e}", e)
         try:
             from ..core.activity_log_service import log_api_delete_action
             if path and not skip_activity_log:
@@ -3624,7 +3632,7 @@ async def batch_delete_library_browser_items(request: Request):
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
-        logger.error(f"库存批量删除失败: {e}", exc_info=True)
+        _log_synology_err(f"库存批量删除失败: {e}", e)
         try:
             from ..core.activity_log_service import log_batch_api_delete_result
             if paths:
@@ -3655,7 +3663,7 @@ async def open_library_browser_folder(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"库存打开目录失败: {e}", exc_info=True)
+        _log_synology_err(f"库存打开目录失败: {e}", e)
         raise HTTPException(status_code=500, detail=f"库存打开目录失败: {str(e)}")
 
 
@@ -3772,7 +3780,7 @@ async def get_library_files():
         return {"files": items}
         
     except Exception as e:
-        logger.error(f"获取库文件失败: {e}", exc_info=True)
+        _log_synology_err(f"获取库文件失败: {e}", e)
         raise HTTPException(status_code=500, detail=f"获取库文件失败: {str(e)}")
 
 @app.post("/api/library/folder-contents")
@@ -3824,7 +3832,7 @@ async def get_library_folder_contents(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取文件夹内容失败: {e}", exc_info=True)
+        _log_synology_err(f"获取文件夹内容失败: {e}", e)
         raise HTTPException(status_code=500, detail=f"获取文件夹内容失败: {str(e)}")
 
 @app.post("/api/library/rename")
