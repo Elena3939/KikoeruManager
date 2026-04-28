@@ -6805,10 +6805,17 @@ async def rj_subtitle_manual_complete(
         except Exception:
             logger.warning("[操作记录] 字幕配对记录失败", exc_info=True)
 
-        try:
-            engine.remove_task(task_id)
-        except Exception:
-            logger.warning("[任务中心] 字幕补配完成后清理任务记录失败: task_id=%s", task_id, exc_info=True)
+        source_mode = str(task.task_metadata.get("source_mode") or "").strip().lower()
+        if source_mode in {"linked_translation_archive_import", "subtitle_folder_import"}:
+            try:
+                engine.persist_task_snapshot(task)
+            except Exception:
+                logger.warning("[任务中心] 字幕补配完成后保留任务快照失败: task_id=%s", task_id, exc_info=True)
+        else:
+            try:
+                engine.remove_task(task_id)
+            except Exception:
+                logger.warning("[任务中心] 字幕配对完成后清理任务记录失败: task_id=%s", task_id, exc_info=True)
 
         return {"success": True, "task_id": task_id, "message": summary}
     except HTTPException:
@@ -9023,7 +9030,42 @@ async def preview_notification_template(body: TemplatePreviewRequest):
     return preview_template(body.template_id, sample_payload)
 
 
-# 静态文件服务（前端）
+# ---- Block 编辑器 API ----
+
+@app.get("/api/notifications/blocks/schema")
+async def get_blocks_schema():
+    """返回 Block 类型 Schema、默认 props、属性定义和变量列表。"""
+    from ..core.block_renderers import BLOCK_SCHEMA
+    from ..core.variable_registry import VARIABLE_REGISTRY
+    variables = [
+        {"key": k, "label": v["label"], "example": v["example"]}
+        for k, v in VARIABLE_REGISTRY.items()
+    ]
+    return {"blocks": BLOCK_SCHEMA, "variables": variables}
+
+
+class PreviewBlocksRequest(BaseModel):
+    requestId: Optional[str] = None
+    blocks: list = []
+    event_type: str = "completed"
+    domain: str = "import"
+    subject_template: Optional[str] = ""
+
+
+@app.post("/api/notifications/templates/preview-blocks")
+async def preview_notification_blocks(body: PreviewBlocksRequest):
+    """用 blocks 数组 + 示例 payload 渲染预览 HTML，支持 requestId 校验乱序。"""
+    from ..core.notification_template_service import preview_blocks
+    result = preview_blocks(
+        blocks=body.blocks,
+        event_type=body.event_type,
+        domain=body.domain,
+        subject_template=body.subject_template or "",
+    )
+    return {"requestId": body.requestId, **result}
+
+
+
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 

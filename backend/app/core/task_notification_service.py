@@ -49,7 +49,12 @@ def _task_status(task) -> str:
 
 
 def _resolve_group_key(task) -> tuple:
-    """确定聚合键和类型，优先级：显式 > parent_session > batch > session > 单任务"""
+    """确定聚合键和类型，优先级：显式 > parent_session > batch > 单任务
+
+    注意：task_center 的 session_id 是执行会话，会被长期复用挂多批任务，
+    不能当作通知聚合键，否则会导致组终态条件永远不满足、inbox 永远不写。
+    需要批量聚合的入口必须显式写入 notification_group_key/batch_id/parent_session_id。
+    """
     meta = dict(task.task_metadata or {})
     if meta.get('notification_group_key'):
         return str(meta['notification_group_key']), 'explicit'
@@ -57,8 +62,6 @@ def _resolve_group_key(task) -> tuple:
         return str(meta['parent_session_id']), 'parent_session'
     if meta.get('batch_id'):
         return str(meta['batch_id']), 'batch'
-    if task.session_id and task.session_id != task.id:
-        return str(task.session_id), 'session'
     return str(task.id), 'task'
 
 
@@ -141,6 +144,10 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         rjcode = ''
         route_hint = {}
 
+    # route_hint 在不同 domain 序列化下可能是 str / None / dict，统一兜底成 dict
+    if not isinstance(route_hint, dict):
+        route_hint = {'path': str(route_hint)} if route_hint else {}
+
     severity_map = {'completed': 'success', 'failed': 'danger', 'waiting_manual': 'warning'}
     label_map = {'completed': '已完成', 'failed': '执行失败', 'waiting_manual': '等待处理'}
 
@@ -190,20 +197,27 @@ async def enqueue_notification_check(task) -> None:
 
 async def _check_and_write(task) -> None:
     status = _task_status(task)
+    tid = getattr(task, 'id', '?')
     if status not in ('completed', 'failed', 'cancelled', 'waiting_manual'):
+        logger.debug(f"[通知] 跳过 task={tid} status={status} 不在通知白名单")
         return
 
     meta = dict(task.task_metadata or {})
     if meta.get('notification_suppress'):
+        logger.info(f"[通知] 跳过 task={tid} 显式 notification_suppress=True")
         return
 
     from ..config.settings import get_config
     cfg = get_config()
     if not cfg.notification_center.enabled:
+        logger.info(f"[通知] 跳过 task={tid} notification_center.enabled=False")
         return
 
     group_key, group_type = _resolve_group_key(task)
     group_run_id = _resolve_group_run_id(task, meta)
+    logger.info(
+        f"[通知] 处理 task={tid} status={status} group_type={group_type} group_key={group_key[:32]}"
+    )
 
     if status == 'waiting_manual':
         event_key = f"waiting_manual:{group_key}:{group_run_id}"
@@ -211,10 +225,10 @@ async def _check_and_write(task) -> None:
         await loop.run_in_executor(None, _write_sync, event_key, 'waiting_manual', task, group_key, group_type, group_run_id)
         return
 
-    if status == 'cancelled' and not cfg.notification_email.send_on_cancelled:
-        return
-
+    # cancelled 仅当用户开启 send_on_cancelled 时才写邮件 outbox，
+    # 但站内通知（inbox）始终落库，避免铃铛漏报
     if not _is_group_terminal(group_key, group_type, task.id):
+        logger.info(f"[通知] 跳过 task={tid} group 尚未全部终态 group_key={group_key[:32]}")
         return
 
     evt = _final_event_type(group_key, group_type, task)
@@ -277,13 +291,22 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
         db.add(inbox)
 
         cfg = get_config().notification_email
+        # domain 过滤：enabled_domains 非空时仅发清单内的 domain
+        domain_allowed = (
+            not cfg.enabled_domains
+            or info['domain'] in cfg.enabled_domains
+        )
         should_email = (
-            cfg.enabled and cfg.to_email and cfg.smtp_host and (
+            cfg.enabled and cfg.to_email and cfg.smtp_host and domain_allowed and (
                 (event_type == 'completed' and cfg.send_on_completed) or
                 (event_type == 'failed' and cfg.send_on_failed) or
                 (event_type == 'waiting_manual' and cfg.send_on_waiting_manual)
             )
         )
+        if cfg.enabled and not domain_allowed:
+            logger.info(
+                f"[通知] 跳过邮件 event_key={event_key} domain={info['domain']} 不在 enabled_domains"
+            )
         if should_email:
             outbox = NotificationOutbox(
                 id=str(uuid.uuid4()),
@@ -296,6 +319,7 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
                     'event_type': event_type,
                     'title': info['title'],
                     'summary': info['summary'],
+                    'domain': info['domain'],
                     'domain_label': info['domain_label'],
                     'rjcode': info['rjcode'],
                     'source_label': info['source_label'],
@@ -329,6 +353,22 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
 async def start_outbox_worker() -> None:
     """后台 outbox 邮件发送 worker，在应用启动时作为 asyncio 任务运行"""
     logger.info("[通知] outbox worker 启动")
+    # 回收上一次进程被旧 bug 卡死的 sending 记录，重新排队发送
+    try:
+        from ..models.database import SessionLocal, NotificationOutbox
+        db = SessionLocal()
+        try:
+            stuck = db.query(NotificationOutbox).filter(NotificationOutbox.status == 'sending').all()
+            for s in stuck:
+                s.status = 'pending'
+                s.next_retry_at = None
+            if stuck:
+                logger.info(f"[通知] outbox 启动时回收卡死 sending 记录 {len(stuck)} 条")
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.warning("[通知] outbox 启动回收失败", exc_info=True)
     while True:
         try:
             await _process_outbox_once()
@@ -349,7 +389,8 @@ async def _process_outbox_once() -> None:
 
     now = datetime.now()
     db = SessionLocal()
-    pending_items = []
+    # 提交前把需要的字段拷成纯 Python 数据，避免 close() 后访问 detached 实例
+    pending_snapshots: list[dict] = []
     try:
         pending_items = (
             db.query(NotificationOutbox)
@@ -363,21 +404,32 @@ async def _process_outbox_once() -> None:
         for item in pending_items:
             item.status = 'sending'
             item.attempt_count = (item.attempt_count or 0) + 1
+            pending_snapshots.append({
+                'id': item.id,
+                'payload': dict(item.payload) if item.payload else {},
+            })
         db.commit()
     except Exception:
         db.rollback()
+        logger.warning("[通知] outbox 标记 sending 失败", exc_info=True)
         return
     finally:
         db.close()
 
-    for item in pending_items:
+    if not pending_snapshots:
+        return
+
+    logger.info(f"[通知] outbox 准备发送 {len(pending_snapshots)} 封邮件")
+    for snap in pending_snapshots:
+        item_id = snap['id']
         try:
-            subject, html_body, text_body = render_email_for_outbox(item.payload or {})
+            subject, html_body, text_body = render_email_for_outbox(snap['payload'])
             ok = await send_notification_email(subject, html_body, text_body)
-            _update_outbox_status(item.id, ok, cfg)
+            _update_outbox_status(item_id, ok, cfg, error='' if ok else '发送失败')
+            logger.info(f"[通知] outbox 发送结果 id={item_id} ok={ok}")
         except Exception as e:
-            logger.error(f"[通知] outbox 发送异常 id={item.id}: {e}", exc_info=True)
-            _update_outbox_status(item.id, False, cfg, error=str(e))
+            logger.error(f"[通知] outbox 发送异常 id={item_id}: {e}", exc_info=True)
+            _update_outbox_status(item_id, False, cfg, error=str(e))
 
 
 def _update_outbox_status(item_id: str, ok: bool, cfg, error: str = '') -> None:

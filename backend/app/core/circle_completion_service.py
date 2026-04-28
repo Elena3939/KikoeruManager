@@ -58,6 +58,13 @@ class CircleCompletionService:
     def normalize_circle_name(self, value: Any) -> str:
         text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
         text = re.sub(r"\s+", " ", text)
+        # 社团名里常混入 ○/●/☆/♡ 等装饰或规避符号；做匹配时去掉符号层差异，
+        # 避免 J○大好き / J大好き / J●大好き 这类写法被误判为不同社团。
+        text = "".join(
+            ch for ch in text
+            if not unicodedata.category(ch).startswith(("P", "S"))
+        )
+        text = re.sub(r"\s+", " ", text).strip()
         return text
 
     def normalize_rjcode(self, value: Any) -> str:
@@ -1527,6 +1534,13 @@ class CircleCompletionService:
                 try:
                     response = await client.get(url, headers=headers, timeout=12.0)
                     if response.status_code != 200:
+                        if response.status_code == 404 and page > 1:
+                            logger.info(
+                                "[社团补全] DLsite 社团关键字搜索到第 %s 页返回 404，视为无更多分页 keyword=%s",
+                                page,
+                                keyword,
+                            )
+                            break
                         logger.warning(
                             "[社团补全] DLsite 社团关键字搜索失败 keyword=%s page=%s status=%s",
                             keyword,
@@ -1692,6 +1706,72 @@ class CircleCompletionService:
                     "maker_name": maker_name,
                 }
         return {"maker_id": "", "maker_name": ""}
+
+    async def _resolve_identity_from_candidates(
+        self,
+        circle_query: str,
+        candidates: List[Dict[str, Any]],
+        *,
+        progress_callback: Optional[Callable[..., None]] = None,
+    ) -> Dict[str, str]:
+        normalized_query = self.normalize_circle_name(circle_query)
+        if not candidates:
+            return {"maker_id": "", "maker_name": ""}
+
+        preferred = next((item for item in candidates if item.get("maker_id")), None)
+        if preferred:
+            return {
+                "maker_id": str(preferred.get("maker_id") or "").strip(),
+                "maker_name": str(preferred.get("maker_name") or "").strip(),
+            }
+
+        total = min(len(candidates), 16)
+        for index, item in enumerate(candidates[:total], start=1):
+            rjcode = self.normalize_rjcode(item.get("rjcode"))
+            if not rjcode:
+                continue
+            try:
+                metadata = await self._fetch_metadata_dict(rjcode)
+            except Exception:
+                metadata = {}
+            maker_id = str(metadata.get("maker_id") or item.get("maker_id") or "").strip()
+            maker_name = str(metadata.get("maker_name") or item.get("maker_name") or "").strip()
+            if progress_callback and (index == 1 or index == total or index % 4 == 0):
+                progress_callback(
+                    56,
+                    f"补查候选社团标识 {index}/{total}",
+                    identity_probe_rjcode=rjcode,
+                    identity_probe_maker_id=maker_id,
+                )
+            if maker_id and (
+                not normalized_query
+                or not maker_name
+                or normalized_query in self.normalize_circle_name(maker_name)
+            ):
+                return {
+                    "maker_id": maker_id,
+                    "maker_name": maker_name,
+                }
+        return {"maker_id": "", "maker_name": ""}
+
+    def _build_invalid_circle_query_hint(
+        self,
+        circle_query: str,
+        *,
+        local_candidates_count: int = 0,
+        kikoeru_candidates_count: int = 0,
+        dlsite_candidates_count: int = 0,
+    ) -> str:
+        if local_candidates_count or kikoeru_candidates_count or dlsite_candidates_count:
+            return ""
+        normalized_query = self.normalize_circle_name(circle_query)
+        if not normalized_query:
+            return ""
+        return (
+            "当前关键词更像作品关联名而不是社团名；"
+            "如果这是翻译者名、汉化者名、配音名或角色名，"
+            "DLsite 搜索会命中大量无关作品，无法建立有效社团目录。"
+        )
 
     async def _collect_dlsite_circle_candidates(
         self,
@@ -2143,6 +2223,12 @@ class CircleCompletionService:
         ensure_not_cancelled()
 
         combined_candidates = local_candidates + kikoeru_candidates + dlsite_candidates
+        invalid_circle_query_hint = self._build_invalid_circle_query_hint(
+            circle_query,
+            local_candidates_count=len(local_candidates),
+            kikoeru_candidates_count=len(kikoeru_candidates),
+            dlsite_candidates_count=len(dlsite_candidates),
+        )
         report(
             54,
             "归并作品并补全元数据",
@@ -2150,12 +2236,36 @@ class CircleCompletionService:
             kikoeru_candidates_count=len(kikoeru_candidates),
             dlsite_candidates_count=len(dlsite_candidates),
             combined_candidates_count=len(combined_candidates),
+            circle_query_hint=invalid_circle_query_hint,
         )
         if not combined_candidates:
             identity = self.resolve_circle_identity("", circle_query, circle_query)
         else:
             preferred = next((item for item in combined_candidates if item.get("maker_id")), combined_candidates[0])
             identity = self.resolve_circle_identity(preferred.get("maker_id"), preferred.get("maker_name"), circle_query)
+
+        if not identity.get("maker_id") and combined_candidates:
+            fallback_identity = await self._resolve_identity_from_candidates(
+                circle_query,
+                combined_candidates,
+                progress_callback=report,
+            )
+            if fallback_identity.get("maker_id"):
+                identity = self.resolve_circle_identity(
+                    fallback_identity.get("maker_id"),
+                    fallback_identity.get("maker_name") or circle_query,
+                    circle_query,
+                )
+                if resolved_kikoeru_circle_id:
+                    self._set_cached_kikoeru_circle_id(
+                        resolved_kikoeru_circle_id,
+                        f"maker:{str(identity['maker_id']).strip().upper()}",
+                    )
+                    self._save_persisted_kikoeru_circle_id(
+                        self.normalize_circle_name(circle_query),
+                        resolved_kikoeru_circle_id,
+                        str(identity["maker_id"] or "").strip(),
+                    )
 
         circle_id = identity["circle_id"]
         if (not circle_id or str(circle_id).strip().lower().startswith("name:")) and resolved_kikoeru_circle_id:
@@ -2172,6 +2282,10 @@ class CircleCompletionService:
             finally:
                 db.close()
         if not circle_id or str(circle_id).strip().lower().startswith("name:"):
+            if invalid_circle_query_hint:
+                raise ValueError(
+                    f"未识别到有效社团标识，已跳过入社团目录。{invalid_circle_query_hint}"
+                )
             raise ValueError("未识别到有效社团标识，已跳过入社团目录")
 
         existing_canonical_rjcodes: set[str] = set()

@@ -1265,6 +1265,16 @@ export const notificationApi = {
   previewTemplate: async (templateId, payload) => {
     const response = await apiClient.post('/notifications/templates/preview', { template_id: templateId, payload })
     return response.data
+  },
+  previewBlocks: async (blocks, eventType = 'completed', domain = 'import', subjectTemplate = '') => {
+    const response = await apiClient.post('/notifications/templates/preview-blocks', {
+      requestId: Date.now().toString(),
+      blocks,
+      event_type: eventType,
+      domain,
+      subject_template: subjectTemplate,
+    })
+    return response.data
   }
 }
 

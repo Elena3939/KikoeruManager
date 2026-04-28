@@ -1,0 +1,157 @@
+"""变量注册表：定义 Block 系统可使用的变量键及其 payload 路径、示例值。
+
+变量 key 全部中文化（"任务标题"、"摘要"...），便于业务用户理解；
+同时通过 ALIAS 表保留旧英文 key（"title"、"summary"...）兼容，
+让历史模板继续工作。
+"""
+import html as _html
+import re
+
+# 主注册表：中文 key 是"权威"，写新模板时使用。
+VARIABLE_REGISTRY = {
+    "任务标题":  {"path": "title",            "label": "任务标题",   "example": "示例任务标题"},
+    "摘要":      {"path": "summary",          "label": "摘要",       "example": "批量任务结束，3/3 个完成"},
+    "任务类型":  {"path": "domain_label",     "label": "任务类型",   "example": "导入处理"},
+    "RJ号":      {"path": "rjcode",           "label": "RJ 号",      "example": "RJ123456"},
+    "事件名称":  {"path": "event_label",      "label": "事件名称",   "example": "任务完成"},
+    "事件图标":  {"path": "event_icon",       "label": "事件图标",   "example": "✅"},
+    "时间":      {"path": "created_at_text",  "label": "时间",       "example": "2024-01-01 12:00:00"},
+    "严重程度":  {"path": "severity",         "label": "严重程度",   "example": "success"},
+    "总文件数":  {"path": "stats.total_files","label": "总文件数",   "example": "10"},
+    "总大小":    {"path": "stats.total_size", "label": "总大小",     "example": "256 MB"},
+}
+
+# 旧英文 key → 中文 key 的别名映射，写老模板时仍可识别。
+VARIABLE_ALIASES = {
+    "title":            "任务标题",
+    "summary":          "摘要",
+    "domain_label":     "任务类型",
+    "rjcode":           "RJ号",
+    "event_label":      "事件名称",
+    "event_icon":       "事件图标",
+    "created_at":       "时间",
+    "severity":         "严重程度",
+    "stats.total_files":"总文件数",
+    "stats.total_size": "总大小",
+}
+
+
+def _normalize_key(key: str) -> str:
+    """把英文别名规范化为中文 key；中文 key 原样返回。"""
+    return VARIABLE_ALIASES.get(key, key)
+
+
+def resolve_variable(key: str, payload: dict, fallback: str = "") -> str:
+    """从 payload 中按点号路径解析变量，结果已 HTML escape。
+
+    支持中文 key（推荐）和英文别名（兼容），二者都会先经 VARIABLE_REGISTRY
+    走 path 字段，找到 payload 中真实路径后取值。
+    """
+    canonical = _normalize_key(key)
+    actual_path = canonical
+    meta = VARIABLE_REGISTRY.get(canonical)
+    if meta and meta.get("path"):
+        actual_path = meta["path"]
+
+    parts = actual_path.split(".")
+    value = payload
+    for part in parts:
+        if isinstance(value, dict):
+            value = value.get(part)
+        else:
+            value = None
+        if value is None:
+            return _html.escape(fallback)
+    if value is None:
+        return _html.escape(fallback)
+    return _html.escape(str(value))
+
+
+# {key} 占位符：允许中文、字母数字、下划线、点号。
+# 用 [^{}\s]+ 匹配花括号内连续非空白非花括号字符（兼容中文）。
+_VAR_PLACEHOLDER_RE = re.compile(r"\{([^{}\s]+)\}")
+
+
+def substitute_variables(text: str, payload: dict, *, escape: bool = True) -> str:
+    """把字符串里的 {var} 占位符替换为 payload 中对应值。
+
+    - escape=True: 替换值会被 HTML escape，适用于会被当 HTML 渲染的场景（富文本块）。
+    - escape=False: 不 escape，适用于已知会被作为纯文本展示的字段（邮件主题）。
+
+    支持中文 key（{任务标题}）和英文别名（{title}）。未注册的变量保留原文。
+    """
+    if not text:
+        return ""
+
+    def _repl(match):
+        key = match.group(1)
+        canonical = _normalize_key(key)
+        actual_path = canonical
+        meta = VARIABLE_REGISTRY.get(canonical)
+        if meta and meta.get("path"):
+            actual_path = meta["path"]
+
+        parts = actual_path.split(".")
+        value = payload
+        for part in parts:
+            if isinstance(value, dict):
+                value = value.get(part)
+            else:
+                value = None
+            if value is None:
+                return match.group(0)  # 找不到，保留原文
+        if value is None:
+            return match.group(0)
+        text_value = str(value)
+        return _html.escape(text_value) if escape else text_value
+
+    return _VAR_PLACEHOLDER_RE.sub(_repl, text)
+
+
+def build_sample_payload(event_type: str = "completed", domain: str = "import") -> dict:
+    """构建用于预览的示例 Payload。"""
+    _EVENT_LABELS = {"completed": "任务完成", "failed": "任务失败", "waiting_manual": "等待人工处理"}
+    _EVENT_ICONS  = {"completed": "✅",        "failed": "❌",        "waiting_manual": "⚠️"}
+    _SEVERITY_MAP = {"completed": "success",   "failed": "danger",    "waiting_manual": "warning"}
+    return {
+        "event_type":      event_type,
+        "title":           "示例任务标题",
+        "summary":         "批量任务结束，3/3 个完成",
+        "domain_label":    "导入处理",
+        "rjcode":          "RJ123456",
+        "event_label":     _EVENT_LABELS.get(event_type, event_type),
+        "event_icon":      _EVENT_ICONS.get(event_type, ""),
+        "created_at_text": "2024-01-01 12:00:00",
+        "severity":        _SEVERITY_MAP.get(event_type, "info"),
+        "stats": {
+            "total_files": "3",
+            "total_size":  "256 MB",
+            "duration":    "12.4s",
+            "succeeded":   "3",
+            "failed":      "0",
+        },
+        # ─── 业务块示例数据（让模板预览能看到效果） ───
+        "file_tree": [
+            {"name": "新作品", "status": "kept", "children": [
+                {"path": "RJ123456/track01.flac", "size_text": "42.1 MB", "status": "kept"},
+                {"path": "RJ123456/track02.flac", "size_text": "38.6 MB", "status": "kept"},
+                {"path": "RJ123456/cover.jpg",    "size_text": "1.2 MB",  "status": "kept"},
+            ]},
+            {"path": "RJ123456/sample.mp3", "size_text": "3.4 MB",  "status": "filtered"},
+            {"path": "RJ123456/readme.txt", "size_text": "256 B",   "status": "filtered"},
+        ],
+        "diff_items": [
+            {"label": "社团名",    "old": "Tsuki",         "new": "Tsuki Studio"},
+            {"label": "封面",      "old": "",              "new": "cover_v2.jpg"},
+            {"label": "RJ 编号",   "old": "RJ123456",      "new": "RJ123456"},
+            {"label": "标签",      "old": "ASMR",          "new": "ASMR / 治愈"},
+        ],
+        "recent_logs": [
+            {"ts": "12:00:01", "level": "info",  "text": "开始处理任务 RJ123456"},
+            {"ts": "12:00:03", "level": "info",  "text": "下载封面：cover.jpg (1.2 MB)"},
+            {"ts": "12:00:05", "level": "warn",  "text": "检测到重复文件 sample.mp3，已过滤"},
+            {"ts": "12:00:08", "level": "info",  "text": "解压完成，共 3 个有效文件"},
+            {"ts": "12:00:12", "level": "info",  "text": "任务完成，耗时 12.4s"},
+        ],
+        "domain": domain,
+    }

@@ -851,7 +851,6 @@ class LinkedSubtitleImportService:
         task.current_step = "字幕补配已应用到目标目录"
         task.progress = 100
         task.completed_at = datetime.now()
-        get_task_engine().delete_task_snapshot(task.id)
         return {
             "applied": True,
             "final_subtitle_dir": final_subtitle_dir,

@@ -14,28 +14,10 @@
                 <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>Live
               </span>
             </div>
-            <p class="mt-0.5 text-[11.5px] leading-snug text-slate-500 truncate">左侧队列、中间总览 / 筛选与配对 / 字幕树、右侧配置与批量操作。</p>
+            <p class="mt-0.5 text-[11.5px] leading-snug text-slate-500 truncate">沉浸式单舞台工作台，焦点只保留当前阶段、当前任务和当前操作。</p>
           </div>
         </div>
         <div class="flex items-center gap-2 flex-shrink-0">
-          <button
-            type="button"
-            class="subtitle-workbench-btn group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
-            :disabled="manualRefreshing"
-            @click="refreshTaskStatus(true, { inspect: true, forceInspect: true, showOverlay: false })"
-          >
-            <RefreshCw class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110" :class="{ 'animate-spin': manualRefreshing }" :stroke-width="2.2" />
-            <span>刷新状态</span>
-          </button>
-          <button
-            type="button"
-            class="subtitle-workbench-btn group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
-            :disabled="!clearableTaskCount || queueClearing"
-            @click="clearFinishedTasks"
-          >
-            <Trash2 class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-8deg]" :stroke-width="2.2" />
-            <span>清空队列</span>
-          </button>
           <button
             type="button"
             class="subtitle-workbench-btn group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
@@ -47,10 +29,11 @@
           <button
             type="button"
             class="subtitle-workbench-btn subtitle-workbench-btn-close group inline-flex items-center gap-1.5 rounded-[10px] border border-rose-200/70 bg-rose-50/70 px-3.5 py-2 text-[12.5px] font-medium text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 hover:shadow-[0_8px_16px_rgba(225,29,72,0.16)] active:translate-y-0 active:scale-[0.96]"
-            @click="emit('close')"
+            :disabled="workbenchClosing"
+            @click="closeWorkbenchAndCleanupCompleted"
           >
-            <X class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-90" :stroke-width="2.4" />
-            <span>关闭工作台</span>
+            <X class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-90" :class="{ 'animate-spin': workbenchClosing }" :stroke-width="2.4" />
+            <span>关闭</span>
           </button>
         </div>
       </header>
@@ -480,6 +463,7 @@ const selectedTaskId = ref(String(queueState.selectedTaskId || ''))
 const queuePageSize = 8
 const queuePage = ref(Math.max(1, Number(queueState.page || 1)))
 const queueClearing = ref(false)
+const workbenchClosing = ref(false)
 const retryingTaskId = ref('')
 const subtitleRenameDialogVisible = ref(false)
 const subtitleRenameForm = ref({ currentName: '', newName: '', path: '' })
@@ -1025,6 +1009,25 @@ async function clearFinishedTasks() {
     ElMessage.error('清空队列失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     queueClearing.value = false
+  }
+}
+
+async function closeWorkbenchAndCleanupCompleted() {
+  if (workbenchClosing.value) return
+  workbenchClosing.value = true
+  try {
+    const completedTasks = linkedTasks.value.filter(task => isCompletedTask(task))
+    for (const task of completedTasks) {
+      try {
+        await rjSubtitleApi.clearTask(task.id)
+        clearSubtitleTaskDraft(task.id)
+      } catch (error) {
+        console.warn('[字幕补配] 关闭工作台时清理已完成任务失败', task.id, error)
+      }
+    }
+    emit('close')
+  } finally {
+    workbenchClosing.value = false
   }
 }
 
@@ -2329,16 +2332,24 @@ const subtitleWorkbenchStageCtx = computed(() => ({
   workbenchCtx: subtitleWorkbenchCtx.value,
   configCtx: subtitleConfigCtx.value,
   contextDrawerCtx: {
-    modeTitle: subtitleWorkbenchContextMode.value === 'settings' ? '\u5b57\u5e55\u8bbe\u7f6e' : subtitleWorkbenchContextMode.value === 'pairing' ? '\u914d\u5bf9\u63a7\u5236' : '\u6587\u4ef6\u6811',
-    modeTip: '\u4e0e\u5b57\u5e55\u722c\u53d6\u5de5\u4f5c\u53f0\u4fdd\u6301\u4e00\u81f4\u7684\u53f3\u4fa7\u63a7\u5236\u533a',
+    modeTitle: ({
+      settings: '\u53c2\u6570\u9762\u677f',
+      pairing: '\u914d\u5bf9\u52a9\u624b',
+      tree: '\u6587\u4ef6\u5de5\u5177'
+    })[subtitleWorkbenchContextMode.value] || '\u53c2\u6570\u9762\u677f',
+    modeTip: ({
+      settings: '\u6267\u884c\u7b56\u7565\u3001\u8fc7\u6ee4\u89c4\u5219\u548c\u4efb\u52a1\u5c55\u793a\u90fd\u5728\u8fd9\u91cc\u7edf\u4e00\u63a7\u5236\u3002',
+      pairing: '\u987a\u5e8f\u70b9\u9009\u3001\u914d\u5bf9\u6570\u91cf\u548c\u5173\u952e\u52a8\u4f5c\u63d0\u793a\u90fd\u96c6\u4e2d\u5728\u53f3\u4fa7\u3002',
+      tree: '\u641c\u7d22\u8303\u56f4\u3001\u9009\u4e2d\u89c4\u6a21\u548c\u5220\u9664\u98ce\u9669\u63d0\u793a\u5728\u8fd9\u91cc\u67e5\u770b\u3002'
+    })[subtitleWorkbenchContextMode.value] || '',
     contextMode: subtitleWorkbenchContextMode.value,
     setContextMode: value => { subtitleWorkbenchContextMode.value = value },
     drawerCollapsed: subtitleWorkbenchDrawerCollapsed.value,
     toggleDrawer: () => { subtitleWorkbenchDrawerCollapsed.value = !subtitleWorkbenchDrawerCollapsed.value },
     modeOptions: [
-      { key: 'settings', label: '\u8bbe\u7f6e', icon: 'Sliders' },
-      { key: 'pairing', label: '\u914d\u5bf9', icon: 'Link2' },
-      { key: 'tree', label: '\u5b57\u5e55\u6811', icon: 'FolderTree' }
+      { key: 'settings', label: '\u53c2\u6570', shortLabel: '\u53c2' },
+      { key: 'pairing', label: '\u914d\u5bf9', shortLabel: '\u914d' },
+      { key: 'tree', label: '\u6587\u4ef6', shortLabel: '\u6587' }
     ]
   }
 }))

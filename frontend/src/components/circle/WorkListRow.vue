@@ -117,9 +117,9 @@ function onImgError(e) {
     <!-- 主信息区 -->
     <div class="wlr-main">
       <div class="wlr-title" :title="item.title">
+        <span class="wlr-title-text">{{ item.title || '未命名作品' }}</span>
         <span v-if="isNewWork" class="wlr-new-badge">✦ 新作</span>
         <span v-if="isUnreleased" class="wlr-unreleased-badge"><Calendar :size="10" />未发售</span>
-        {{ item.title || '未命名作品' }}
       </div>
       <div class="wlr-subtitle">
         <span class="wlr-code">{{ displayCode }}</span>
@@ -280,10 +280,10 @@ function onImgError(e) {
 /* ── 主信息 ── */
 .wlr-main {
   flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .wlr-code {
@@ -298,20 +298,22 @@ function onImgError(e) {
   font-size: 13px;
   font-weight: 500;
   color: #111827;
+  line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.4;
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
+
+.wlr-title-text {
+  display: inline;
+}
+
 .wlr-new-badge {
-  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   height: 18px;
   padding: 0 7px;
+  margin-left: 6px;
   border: 1px solid rgba(249, 115, 22, 0.22);
   border-radius: 999px;
   background: rgba(255, 248, 240, 0.80);
@@ -322,12 +324,12 @@ function onImgError(e) {
   box-shadow: 0 1px 4px rgba(249, 115, 22, 0.14);
 }
 .wlr-unreleased-badge {
-  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 3px;
   height: 18px;
   padding: 0 7px;
+  margin-left: 6px;
   border: 1px solid rgba(52, 120, 246, 0.20);
   border-radius: 999px;
   background: rgba(237, 244, 255, 0.80);
@@ -376,7 +378,7 @@ function onImgError(e) {
   flex-direction: column;
   align-items: flex-end;
   gap: 2px;
-  min-width: 72px;
+  width: 72px;
 }
 
 .wlr-variant {
@@ -425,6 +427,8 @@ function onImgError(e) {
   display: flex;
   gap: 5px;
   align-items: center;
+  justify-content: flex-end;
+  width: 74px;
   opacity: 0;
   transform: translateX(10px);
   transition: opacity .2s ease, transform .24s cubic-bezier(.34, 1.56, .64, 1);

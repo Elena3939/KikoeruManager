@@ -364,7 +364,7 @@ class TaskEngine:
         return TaskStatus.COMPLETED
 
     def load_persisted_linked_subtitle_tasks(self) -> int:
-        """恢复等待人工配对的字幕补配任务，避免后端重启后工作台状态丢失。"""
+        """恢复字幕补配工作台任务，只有用户清理后才从工作台消失。"""
         from ..models.database import SessionLocal, Task as TaskRecord
 
         db = SessionLocal()
@@ -378,9 +378,9 @@ class TaskEngine:
                 source_mode = str(metadata.get("source_mode") or "").strip().lower()
                 if source_mode not in {"linked_translation_archive_import", "subtitle_folder_import"}:
                     continue
-                if not bool(metadata.get("awaiting_manual_match")):
-                    continue
-                if bool(metadata.get("manual_match_completed")):
+                is_waiting_manual = bool(metadata.get("awaiting_manual_match"))
+                is_manual_completed = bool(metadata.get("manual_match_completed"))
+                if not (is_waiting_manual or is_manual_completed):
                     continue
 
                 task_type = self._coerce_task_type(row.type)

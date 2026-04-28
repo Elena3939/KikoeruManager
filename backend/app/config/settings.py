@@ -345,6 +345,9 @@ class NotificationEmailConfig(BaseModel):
     send_on_failed: bool = True
     send_on_waiting_manual: bool = True
     send_on_cancelled: bool = False
+    # 推送域过滤：空列表 = 全部 domain 都发；非空时只发清单内的 domain
+    # 可选值参考 TaskCenterService.DOMAIN_LABELS 的 key（all 除外）
+    enabled_domains: list[str] = []
 
 
 class NotificationCenterConfig(BaseModel):

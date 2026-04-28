@@ -115,8 +115,8 @@ const filteredSections = computed(() => {
 <style scoped>
 .settings-workbench {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 22px;
+  grid-template-columns: 268px minmax(0, 1fr);
+  gap: 18px;
   min-height: calc(100vh - 88px);
 }
 
@@ -127,18 +127,18 @@ const filteredSections = computed(() => {
 }
 
 .sidebar-shell {
-  padding: 24px 20px 20px;
-  border-radius: 30px;
+  padding: 18px 16px 16px;
+  border-radius: 24px;
   background: #fff;
   border: 1px solid rgba(226, 232, 240, 0.92);
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.06);
   backdrop-filter: blur(10px);
 }
 
 .sidebar-kicker {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   color: #94a3b8;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -147,26 +147,26 @@ const filteredSections = computed(() => {
 .sidebar-title {
   margin: 0;
   color: #0f172a;
-  font-size: 34px;
-  line-height: 0.98;
+  font-size: 28px;
+  line-height: 1;
   font-weight: 900;
   letter-spacing: -0.06em;
 }
 
 .sidebar-desc {
-  margin: 12px 0 0;
+  margin: 8px 0 0;
   color: #64748b;
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .settings-search {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 46px;
-  margin-top: 18px;
-  padding: 0 14px;
+  gap: 8px;
+  height: 40px;
+  margin-top: 14px;
+  padding: 0 12px;
   border-radius: 999px;
   border: 1px solid rgba(226, 232, 240, 0.92);
   background: rgba(248, 250, 252, 0.95);
@@ -179,18 +179,18 @@ const filteredSections = computed(() => {
   outline: none;
   background: transparent;
   color: #0f172a;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .sidebar-summary {
   display: grid;
-  gap: 10px;
-  margin-top: 18px;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .summary-chip {
-  padding: 12px 14px;
-  border-radius: 18px;
+  padding: 10px 12px;
+  border-radius: 14px;
   border: 1px solid rgba(226, 232, 240, 0.88);
   background: rgba(255, 255, 255, 0.8);
 }
@@ -211,27 +211,27 @@ const filteredSections = computed(() => {
 
 .summary-value {
   display: block;
-  margin-top: 6px;
+  margin-top: 4px;
   color: #0f172a;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .settings-nav {
   display: grid;
-  gap: 10px;
-  margin-top: 18px;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .nav-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  padding: 14px;
-  border-radius: 20px;
+  padding: 11px 12px;
+  border-radius: 16px;
   border: 1px solid rgba(226, 232, 240, 0.88);
   background: rgba(255, 255, 255, 0.86);
   cursor: pointer;
@@ -252,7 +252,7 @@ const filteredSections = computed(() => {
 .nav-item-main {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   text-align: left;
 }
 
@@ -260,33 +260,34 @@ const filteredSections = computed(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 14px;
+  width: 30px;
+  height: 30px;
+  border-radius: 11px;
   background: rgba(241, 245, 249, 0.95);
   color: #475569;
 }
 
 .nav-item-title {
   color: #0f172a;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
 }
 
 .nav-item-desc {
-  margin-top: 3px;
+  margin-top: 2px;
   color: #64748b;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .nav-badge {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  height: 22px;
-  padding: 0 9px;
+  height: 20px;
+  padding: 0 8px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
 }
 
@@ -297,7 +298,7 @@ const filteredSections = computed(() => {
 }
 
 .sidebar-footer {
-  margin-top: 18px;
+  margin-top: 14px;
 }
 
 .settings-main {

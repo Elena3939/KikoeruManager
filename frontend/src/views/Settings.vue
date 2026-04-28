@@ -540,6 +540,31 @@
               <label class="toggle-card"><span><strong>等待人工处理时发送</strong></span><el-switch v-model="config.notification_email.send_on_waiting_manual" :disabled="!config.notification_email.enabled" /></label>
               <label class="toggle-card"><span><strong>任务取消时发送</strong><small>默认关闭，取消通知噪音较多。</small></span><el-switch v-model="config.notification_email.send_on_cancelled" :disabled="!config.notification_email.enabled" /></label>
             </div>
+            <div class="notif-domain-block" :class="{ 'is-disabled': !config.notification_email.enabled }">
+              <div class="notif-domain-head">
+                <strong>按任务类型推送</strong>
+                <span class="notif-domain-hint">{{ notifDomainHint }}</span>
+              </div>
+              <div class="notif-domain-chips">
+                <button
+                  v-for="d in NOTIF_DOMAINS"
+                  :key="d.value"
+                  type="button"
+                  class="notif-domain-chip"
+                  :class="{ 'is-active': isDomainEnabled(d.value) }"
+                  :disabled="!config.notification_email.enabled"
+                  @click="toggleDomain(d.value)"
+                >
+                  <component :is="d.icon" :size="13" :stroke-width="2.4" />
+                  <span>{{ d.label }}</span>
+                </button>
+              </div>
+              <div class="notif-domain-actions">
+                <button type="button" class="notif-domain-link" :disabled="!config.notification_email.enabled" @click="setAllDomains(true)">全选</button>
+                <span class="notif-domain-sep">·</span>
+                <button type="button" class="notif-domain-link" :disabled="!config.notification_email.enabled" @click="setAllDomains(false)">清空（=全部发送）</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -580,6 +605,8 @@
             </div>
           </div>
         </div>
+
+        <NotificationTemplatesPanel />
       </SettingsSectionPanel>
     </SettingsWorkbench>
   </div>
@@ -589,10 +616,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
-import { Boxes, HardDrive, LifeBuoy, ScanSearch, Workflow, Plus, Trash2, Wifi, RefreshCw, Mail, Zap, BookOpen, FolderOpen, Bell } from 'lucide-vue-next'
+import { Boxes, HardDrive, LifeBuoy, ScanSearch, Workflow, Plus, Trash2, Wifi, RefreshCw, Mail, Zap, BookOpen, FolderOpen, Bell, FileArchive, Captions, Sparkles, UploadCloud, Upload, Database, Activity } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
+import NotificationTemplatesPanel from '../components/settings/NotificationTemplatesPanel.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 import { useSettingsDraft } from '../composables/useSettingsDraft'
 import { useSynologyProfiles } from '../composables/useSynologyProfiles'
@@ -724,6 +752,46 @@ function applySmtpPreset(preset) {
   config.value.notification_email.smtp_port = preset.smtp_port
   config.value.notification_email.smtp_ssl = preset.smtp_ssl
   config.value.notification_email.smtp_starttls = preset.smtp_starttls
+}
+
+// 通知邮件按 domain 过滤
+const NOTIF_DOMAINS = [
+  { value: 'import', label: '导入处理', icon: FileArchive },
+  { value: 'rj_subtitle', label: 'RJ 字幕', icon: Captions },
+  { value: 'subtitle_import', label: '字幕补配', icon: Sparkles },
+  { value: 'asmr_sync', label: 'ASMR 同步', icon: UploadCloud },
+  { value: 'upload', label: '库存上传', icon: Upload },
+  { value: 'circle_completion', label: '社团补全', icon: Database },
+  { value: 'system', label: '系统任务', icon: Activity }
+]
+
+const notifDomainHint = computed(() => {
+  const list = config.value?.notification_email?.enabled_domains || []
+  if (!list.length) return '未选 = 全部任务类型都发邮件'
+  return `仅推送 ${list.length} 类任务`
+})
+
+function isDomainEnabled(domain) {
+  const list = config.value?.notification_email?.enabled_domains || []
+  return list.includes(domain)
+}
+
+function toggleDomain(domain) {
+  if (!config.value?.notification_email) return
+  const list = Array.isArray(config.value.notification_email.enabled_domains)
+    ? [...config.value.notification_email.enabled_domains]
+    : []
+  const idx = list.indexOf(domain)
+  if (idx >= 0) list.splice(idx, 1)
+  else list.push(domain)
+  config.value.notification_email.enabled_domains = list
+}
+
+function setAllDomains(selectAll) {
+  if (!config.value?.notification_email) return
+  config.value.notification_email.enabled_domains = selectAll
+    ? NOTIF_DOMAINS.map(d => d.value)
+    : []
 }
 
 // 通知邮件测试
@@ -1590,6 +1658,117 @@ onBeforeUnmount(() => {
 
 .smtp-help-link:hover {
   color: #0071e3;
+}
+
+/* —— 通知按 domain 过滤 chip —— */
+.notif-domain-block {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(29, 29, 31, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.notif-domain-block.is-disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.notif-domain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: #1d1d1f;
+}
+
+.notif-domain-hint {
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.5);
+  font-weight: 500;
+}
+
+.notif-domain-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.notif-domain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(29, 29, 31, 0.7);
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(29, 29, 31, 0.08);
+  border-radius: 99px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.notif-domain-chip:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  background: rgba(0, 113, 227, 0.06);
+  border-color: rgba(0, 113, 227, 0.2);
+  color: #0071e3;
+}
+
+.notif-domain-chip:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.notif-domain-chip.is-active {
+  background: #1d1d1f;
+  border-color: #1d1d1f;
+  color: #fff;
+}
+
+.notif-domain-chip.is-active:hover:not(:disabled) {
+  background: #000;
+  border-color: #000;
+  color: #fff;
+}
+
+.notif-domain-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.notif-domain-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.notif-domain-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: rgba(0, 113, 227, 0.85);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.notif-domain-link:hover:not(:disabled) {
+  color: #0071e3;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.notif-domain-link:disabled {
+  color: rgba(29, 29, 31, 0.3);
+  cursor: not-allowed;
+}
+
+.notif-domain-sep {
+  color: rgba(29, 29, 31, 0.3);
 }
 
 </style>
