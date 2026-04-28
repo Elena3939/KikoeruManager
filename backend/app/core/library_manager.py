@@ -310,6 +310,10 @@ def _format_synology_error(api: str, action: str, data: dict[str, Any]) -> str:
     return f"Synology {action} failed ({code_text}): {json.dumps(data, ensure_ascii=False)}"
 
 
+class SynologyError(RuntimeError):
+    """群晖 API 通信错误（可预期的认证/权限/参数/超时错误）。日志只打 WARNING，不打堆栈。"""
+
+
 @dataclass
 class SynologyConfig:
     base_url: str = ""
@@ -518,7 +522,7 @@ class SynologyFileStationClient:
                     logger.info("群晖 SID 过期（code 119），自动重新登录: api=%s", api)
                     self._sid = None
                     continue
-                raise RuntimeError(_format_synology_error(api, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
+                raise SynologyError(_format_synology_error(api, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
             return data.get("data") or {}
         return {}  # 不可达，仅供类型检查器
 
@@ -624,7 +628,7 @@ class SynologyFileStationClient:
             data = await self._read_response_payload(response, api_name)
 
         if not data.get("success"):
-            raise RuntimeError(_format_synology_error(api_name, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
+            raise SynologyError(_format_synology_error(api_name, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
         return data.get("data") or {}
 
     async def _resolve_api_route(self, session: aiohttp.ClientSession, api_name: str, default_path: str = "entry.cgi", default_version: int = 2) -> tuple[str, int]:
@@ -679,14 +683,14 @@ class SynologyFileStationClient:
             auth_errors = (data.get("error") or {}).get("errors") or {}
             auth_types = [item.get("type") for item in auth_errors.get("types") or [] if item.get("type")]
             if "otp" in auth_types:
-                raise RuntimeError(f"\u7fa4\u6656\u767b\u5f55\u5931\u8d25\uff08\u4ee3\u7801 403\uff1a\u9700\u8981\u4e8c\u6b65\u9a8c\u8bc1\uff0c\u8bf7\u586b\u5199\u4e00\u6b21\u6027\u9a8c\u8bc1\u7801 OTP\uff09: {json.dumps(data, ensure_ascii=False)}")
+                raise SynologyError(f"\u7fa4\u6656\u767b\u5f55\u5931\u8d25\uff08\u4ee3\u7801 403\uff1a\u9700\u8981\u4e8c\u6b65\u9a8c\u8bc1\uff0c\u8bf7\u586b\u5199\u4e00\u6b21\u6027\u9a8c\u8bc1\u7801 OTP\uff09: {json.dumps(data, ensure_ascii=False)}")
         if not data.get("success"):
-            raise RuntimeError(_format_synology_error("SYNO.API.Auth", "\u767b\u5f55", data))
+            raise SynologyError(_format_synology_error("SYNO.API.Auth", "\u767b\u5f55", data))
         login_data = data.get("data") or {}
         self._sid = login_data.get("sid")
         self._device_id = login_data.get("did") or self._device_id
         if not self._sid:
-            raise RuntimeError("\u7fa4\u6656\u767b\u5f55\u6210\u529f\u4f46\u672a\u8fd4\u56de sid")
+            raise SynologyError("\u7fa4\u6656\u767b\u5f55\u6210\u529f\u4f46\u672a\u8fd4\u56de sid")
 
     @property
     def device_id(self) -> str:
@@ -709,7 +713,7 @@ class SynologyFileStationClient:
         async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
             data = await self._read_response_payload(response, api_name)
         if not data.get("success"):
-            raise RuntimeError(_format_synology_error(api_name, "查询群晖存储信息", data))
+            raise SynologyError(_format_synology_error(api_name, "查询群晖存储信息", data))
         storage = data.get("data") or {}
         volumes = (
             storage.get("vol_info")
@@ -926,7 +930,7 @@ class SynologyFileStationClient:
                 async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
                     data = await self._read_response_payload(response, "SYNO.FileStation.CreateFolder")
                 if not data.get("success"):
-                    raise RuntimeError(_format_synology_error("SYNO.FileStation.CreateFolder", "create folder", data))
+                    raise SynologyError(_format_synology_error("SYNO.FileStation.CreateFolder", "create folder", data))
                 return data.get("data") or {}
             except Exception as exc:
                 last_error = exc
@@ -935,7 +939,7 @@ class SynologyFileStationClient:
 
         if last_error:
             raise last_error
-        raise RuntimeError("群晖创建目录失败")
+        raise SynologyError("群晖创建目录失败")
 
     async def rename(self, path: str, new_name: str):
         return await self._request(
@@ -1012,7 +1016,7 @@ class SynologyFileStationClient:
             if finished:
                 return status
             await asyncio.sleep(1.0)
-        raise RuntimeError(f"Synology CopyMove task timed out: {task_id}, status={last_status}")
+        raise SynologyError(f"Synology CopyMove task timed out: {task_id}, status={last_status}")
 
     async def upload_file(
         self,
