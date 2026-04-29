@@ -25,6 +25,9 @@
 - 社团补全：`backend/app/core/circle_completion_service.py`、`backend/app/core/kikoeru_duplicate_service.py`
 - ASMR 下载 / 上传：`backend/app/core/asmr_resource_service.py`
 - 冲突处理：`backend/app/core/conflict_resolution_service.py`
+- 通知模板：`backend/app/core/notification_template_service.py`、`backend/app/core/notification_helper.py`、`backend/app/core/task_notification_service.py`、`backend/app/core/variable_registry.py`、`backend/app/core/block_renderers/__init__.py`、`backend/app/core/html_sanitizer.py`
+- 邮件监听 / IMAP：`backend/app/core/email_watcher_service.py`（如有）以及 `routes.py` 内 `/api/notifications/*`、`/api/email-watcher/*` 接口
+- 群晖错误体系：`backend/app/core/synology_*.py` 中的 `SynologyError`，群晖通信相关运行时错误统一走它，不再裸抛 `RuntimeError`
 
 ### 前端
 
@@ -48,6 +51,8 @@
 - 社团作品卡片 / 行：`frontend/src/components/circle/WorkCard.vue`、`frontend/src/components/circle/WorkListRow.vue`
 - 本地 / 服务端上传预览：`frontend/src/components/circle/CircleLocalUploadDialog.vue`、`frontend/src/components/common/ServerUploadPreviewDialog.vue`
 - 操作历史详情：`frontend/src/components/activity/ActivityLogDetailDialog.vue`
+- 通知模板编辑器：`frontend/src/components/settings/NotificationTemplatesPanel.vue`、`NotificationTemplateEditor.vue`、`frontend/src/components/settings/block-editor/`（`TemplateBlockCanvas.vue`、`TemplateBlockInspector.vue`、`TemplateBlockLibrary.vue`、`TemplateBlockPreview.vue`、`RichTextEditor.vue`、`SlashMenu.vue`、`blockTypes.js`、`blockMiniRenderers.js`、`defaultEmailTemplate.js`、`presetTemplates.js`、`emailImageExtension.js`、`preserveEmailAttributes.js`）
+- 通知铃铛 / 通知中心：`frontend/src/components/system/NotificationBell.vue`、`frontend/src/composables/useNotifications.js`
 - 系统弹窗：`frontend/src/components/system/SystemPromptDialog.vue`、`frontend/src/components/system/SystemPromptHost.vue`、`frontend/src/composables/useSystemPrompt.js`
 - Lottie 通用组件：`frontend/src/components/common/AppLoadingAnimation.vue`、`AppLottieIcon.vue`、`AppLottieSwitch.vue`、`AppLottieProgressBar.vue`
 - 统一空态：`frontend/src/components/common/AppEmptyState.vue`
@@ -84,6 +89,7 @@
 - 前端设置草稿在 `frontend/src/composables/useSettingsDraft.js`；保存前应避免把未改动的脱敏密码作为真实配置提交。
 - QQ 邮箱 SMTP 常用组合是 `smtp.qq.com` + `465` + `smtp_ssl: true` + `smtp_starttls: false`。`587` 才通常配 STARTTLS；端口和加密方式错配只应导致测试邮件失败，不应拖垮设置页。
 - 通知铃铛入口是 `frontend/src/components/system/NotificationBell.vue`，SSE 单例在 `frontend/src/composables/useNotifications.js`。这里的启动 / 停止函数名必须和 composable 导出一致；未捕获的 mounted 报错会连锁打断设置页组件更新。
+- IMAP 邮件监听配置在设置页“邮件监听”区块，后端入口聚合在 `routes.py` 的 `/api/email-watcher/*`（启动 / 停止 / 立即检查 / 诊断）。`subject_filter` 默认空字符串，**不要**塞默认关键词，否则 DLsite 邮件会被静默过滤掉。
 
 ### 桌面端
 
@@ -93,7 +99,7 @@
 
 ## 4. 前端设计规则
 
-- 设计语言对齐 `Radix` 类型的 React 产品风格；不要交付 Element Plus 默认后台风。
+- 不要交付 Element Plus 默认后台风。
 - 样式优先级：`Tailwind CSS` -> 项目已有语义 class -> `Element Plus` 容器 / 基础交互能力 -> Lottie 动画增强。
 - 图标只允许用 `lucide-vue-next`。不要混用多套图标库。
 - 所有按钮、都要有交互动效：hover `translateY(-2px) scale(1.02)`，active `scale(0.96)`，图标轻旋转。
@@ -103,9 +109,21 @@
 - 禁止用 Element Plus 默认表格当核心页面布局。
 - 新做任务面板、工作台、预览、批量处理、详情抽屉时，默认对齐 `DownloadTaskWorkbenchDialog.vue`。
 - 系统确认 / 输入 / 提醒统一走 `useSystemPrompt`，不要新增散落的 `ElMessageBox.*`。
-- 优先延续现有语义 class：`toolbar`、`summary`、`actions`、`filter-pill`、`task-card`、`meta-pill`、`detail-grid`、`log-list`。
 
 ## 5. 业务链路红线
+
+### 通知模板 / 邮件块编辑器
+
+- 邮件模板已升级为 Block Editor，参考设计文档 `docs/notification-template-builder.md`。模板表多了 `blocks` JSON 列和 `editor_mode` 字段：`html` 走旧逻辑，`blocks` 走新积木渲染，**不要**把两条链路混着改。
+- 后端渲染入口在 `backend/app/core/block_renderers/__init__.py`：`render_blocks(blocks, payload) -> sanitize_html -> wrap_email_envelope`。新增块类型必须同时补：前端 `blockTypes.js` 的 `defaultProps / propSchema`、`blockMiniRenderers.js` 的预览、后端 `block_renderers` 里的 `render_xxx`。三者缺一就会出现“画布有但邮件渲染丢失”或“预览和真实邮件不一致”。
+- 变量系统统一走 `backend/app/core/variable_registry.py`：中文 key 是权威（`任务标题`、`摘要`、`总文件数`、`业务数据块` 等），英文 key 走 `VARIABLE_ALIASES` 兼容旧模板。**不要**新增散落的 `payload[xxx]` 直读，加变量必须先在 `VARIABLE_REGISTRY` 注册。
+- 富文本块的“变量 pill”是 `<span data-var="任务标题">...</span>`，渲染时由 `_VAR_PILL_RE` 还原为 `{任务标题}` 再交给 `substitute_variables`。改 RichTextEditor 时不要破坏 `data-var` 属性，否则邮件里变量会变成纯文字。
+- HTML 清洗统一走 `backend/app/core/html_sanitizer.py` 的 `sanitize_html()`（底层优先 `nh3`）。邮件块只输出 email-safe 的 table + inline style，**禁止** `script / iframe / 外部 CSS / JS 交互`。
+- 任务发邮件时业务 payload 由 `backend/app/core/notification_helper.py` 构造：`build_notification_extra_for_task` / `build_import_notification_extra` 等，结果通过 `set_notification_extra(task, ...)` 塞进 `task_metadata.notification_extra`，再由 `task_notification_service` 合并进 outbox payload。新任务想在邮件里出业务块（文件树 / 统计 / 日志 / diff），改这里，不要直接改模板渲染。
+- 预览接口 `/api/notifications/templates/preview-blocks` 必须 `debounce 300ms + abort 上一个请求 + requestId 校验`，否则乱序响应会让画布闪烁。
+- 邮件 `task_metadata` 不能整段塞进 payload，要走 `safe_metadata` 白名单，避免泄漏路径 / Token。
+- 旧 HTML 模板继续保留，提供“转换为 blocks”入口；不要直接删 `editor_mode == 'html'` 分支。
+
 
 ### 库存页
 
@@ -194,6 +212,7 @@
 - 远程 `list / stat / create` 行为可能不完全一致，改 `relative_path`、`real_path`、标准化路径时要谨慎。
 - 判断远程路径是否在库存范围内时，复用现有 `root / browse_root` 校验。
 - 常见群晖错误码：`119`、`121`、`401`、`408`。
+- 群晖通信相关错误统一抛 `SynologyError`，**不要**裸抛 `RuntimeError`。库存接口对 `SynologyError` 走 `WARNING` 不打堆栈；OTP 过期由前端库存页横幅引导用户重新登录，别在后端日志里刷红。
 
 ## 6. 常见需求先看哪里
 
@@ -202,6 +221,8 @@
 - “任务中心 / 历史记录不对”：先看 `task_center_service.py`、`activity_log_service.py`、`routes.py`、`Dashboard.vue`、`ActivityHistory.vue`、`Tasks.vue`、`Library.vue`。
 - “社团补全任务 / 历史不完整”：先看 `ActivityHistory.vue` 社团索引概览、`routes.py` 的 `circle_completion` 聚合、`Tasks.vue` 的 `dlsite_failure_reason`、`activity_log_service.py` 的类型映射。
 - “下载 / 上传工作台不对”：先看 `asmr_resource_service.py`、`library_manager.py`、`routes.py`、下载 / 上传工作台组件、上传预览组件、`ActivityHistory.vue`。
+- “通知邮件 / 模板 / 变量 / 业务块不对”：先看 `notification_template_service.py`、`block_renderers/__init__.py`、`variable_registry.py`、`notification_helper.py`、`task_notification_service.py`，前端看 `NotificationTemplateEditor.vue`、`block-editor/RichTextEditor.vue`、`blockTypes.js`、`blockMiniRenderers.js`。
+- “通知铃铛 / 通知中心 / 邮件监听不对”：先看 `NotificationBell.vue`、`useNotifications.js`、`routes.py` 的 `/api/notifications/*` 与 `/api/email-watcher/*`。
 - “推送仓库”：先跑 `git status`，确认没有 `.env`、本地数据库、用户配置、缓存目录，tag 符合 semver。
 - “Actions 失败”：先看 tag 是否 `vX.Y.Z`，再看 `.github/workflows/ghcr.yml` 的触发和 semver 解析。
 
@@ -219,6 +240,7 @@
 
 - 改前端：至少在 `frontend` 执行 `npm run build`。
 - 改后端核心：至少执行 `py -3 -m py_compile backend/app/api/routes.py backend/app/core/task_engine.py backend/app/core/rj_subtitle_service.py backend/app/core/task_center_service.py backend/app/core/activity_log_service.py`。
+- 改通知模板 / 邮件渲染：补 `py -3 -m py_compile backend/app/core/notification_template_service.py backend/app/core/notification_helper.py backend/app/core/task_notification_service.py backend/app/core/variable_registry.py backend/app/core/block_renderers/__init__.py backend/app/core/html_sanitizer.py`，前端 `npm run build`。
 - 改社团补全后端：补跑 `py -3 -m py_compile backend/app/core/circle_completion_service.py backend/app/core/asmr_resource_service.py backend/app/models/database.py`，前端仍跑 `npm run build`。
 - 改下载 / 上传链路：前端跑 `npm run build`；如改后端，补对应 `py_compile`。
 - 改桌面版：检查托盘图标、菜单、打开 Web、退出、打包。

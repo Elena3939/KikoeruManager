@@ -1093,8 +1093,6 @@ class ASMRResourceService:
 
     async def cancel_session_with_cleanup(self, session_id: str) -> Dict[str, Any]:
         """取消会话并清理已下载的临时文件。"""
-        import shutil
-
         session = await self.control_session(session_id, "cancel")
         cleaned = False
         download_root = ""
@@ -1104,14 +1102,65 @@ class ASMRResourceService:
             or statistics.get("download_root")
             or ""
         ).strip()
-        if download_root and os.path.isdir(download_root):
-            try:
-                shutil.rmtree(download_root, ignore_errors=True)
-                cleaned = True
-                logger.info("已清理会话下载目录: %s", download_root)
-            except Exception:
-                logger.warning("清理会话下载目录失败: %s", download_root)
+        if not download_root:
+            latest_metadata = self._get_latest_session_task_metadata(
+                session_id,
+                str(session.get("task_id") or "").strip(),
+            )
+            download_root = str(latest_metadata.get("download_root") or "").strip()
+        if download_root:
+            await self._wait_session_tasks_released(session_id)
+            cleaned = await self._cleanup_download_root(download_root)
         return {**session, "cleaned": cleaned, "cleaned_path": download_root if cleaned else ""}
+
+    async def _wait_session_tasks_released(self, session_id: str, timeout_seconds: float = 5.0) -> None:
+        from .task_engine import get_task_engine
+
+        engine = get_task_engine()
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            task_ids = {
+                str(task.id)
+                for task in engine.get_tasks_by_session(session_id)
+                if task is not None
+            }
+            if not task_ids or not any(task_id in engine.processing for task_id in task_ids):
+                return
+            await asyncio.sleep(0.15)
+
+    async def _cleanup_download_root(self, download_root: str) -> bool:
+        normalized_root = str(download_root or "").strip()
+        if not normalized_root:
+            return False
+        for attempt in range(8):
+            if not os.path.exists(normalized_root):
+                return True
+            try:
+                await asyncio.to_thread(shutil.rmtree, normalized_root)
+                logger.info("已清理会话下载目录: %s", normalized_root)
+                return True
+            except Exception:
+                if attempt >= 7:
+                    break
+                await asyncio.sleep(0.25)
+        try:
+            removed_any = False
+            if os.path.isdir(normalized_root):
+                for path in Path(normalized_root).rglob("*"):
+                    if path.is_file() and (path.name.endswith(".downloading") or path.stat().st_size > 0):
+                        try:
+                            path.unlink()
+                            removed_any = True
+                        except Exception:
+                            logger.debug("删除下载残留文件失败: %s", path, exc_info=True)
+                shutil.rmtree(normalized_root, ignore_errors=True)
+                if not os.path.exists(normalized_root):
+                    logger.info("已清理会话下载目录: %s", normalized_root)
+                    return True
+            return removed_any and not os.path.exists(normalized_root)
+        except Exception:
+            logger.warning("清理会话下载目录失败: %s", normalized_root, exc_info=True)
+            return False
 
     def _get_latest_session_task_metadata(self, session_id: str, fallback_task_id: str = "") -> Dict[str, Any]:
         from .task_engine import get_task_engine
@@ -1923,6 +1972,19 @@ class ASMRResourceService:
         except Exception:
             logger.warning("[社团补全] 回写库存拥有态失败 rj=%s path=%s", rjcode, folder_path, exc_info=True)
 
+    async def _refresh_library_after_full_upload(self, rjcode: str, folder_path: str, library_id: str = "") -> None:
+        if not rjcode or not folder_path:
+            return
+        await self._sync_circle_completion_owned_state(rjcode, folder_path, library_id=library_id)
+        if not library_id:
+            return
+        try:
+            from .library_manager import get_library_manager
+
+            await get_library_manager().ensure_stats(force=True, library_id=library_id)
+        except Exception:
+            logger.warning("[库存] 上传完成后刷新库存统计失败 library=%s path=%s", library_id, folder_path, exc_info=True)
+
     async def process_download_task(self, task) -> Dict[str, Any]:
         from .activity_log_service import log_asmr_sync_event
 
@@ -1999,6 +2061,7 @@ class ASMRResourceService:
             else:
                 download_root = os.path.join(temp_root, f"{rjcode}_{task.id[:8]}")
         os.makedirs(download_root, exist_ok=True)
+        task.task_metadata["download_root"] = download_root
 
         started_at = datetime.now()
         success_files: List[Dict[str, Any]] = []
@@ -2028,6 +2091,8 @@ class ASMRResourceService:
                 status="queued",
                 target_path=upload_options["target_path"],
                 upload_mode=upload_options["mode"],
+                statistics={**(task.task_metadata.get("performance_metrics") or {}), "download_root": download_root},
+                local_download_root=download_root,
             )
             log_asmr_sync_event(
                 "session_started",
@@ -2415,10 +2480,29 @@ class ASMRResourceService:
                 self._append_task_log(task, f"已入库到: {final_output_path}")
 
             final_status = "partial_failed" if failed_files or verification_failures else "completed"
+            target_owned_library_id = str(
+                postprocess_options.get("target_library_id")
+                or upload_options.get("library_id")
+                or ""
+            ).strip()
+            all_files_uploaded = bool(
+                final_status == "completed"
+                and success_files
+                and upload_options.get("enabled")
+                and len(uploaded_files) == len(success_files)
+                and final_output_path
+            )
+            if all_files_uploaded:
+                await self._refresh_library_after_full_upload(
+                    rjcode,
+                    final_output_path,
+                    library_id=target_owned_library_id,
+                )
             if (
                 final_status == "completed"
                 and postprocess_options.get("enabled")
                 and final_output_path
+                and not all_files_uploaded
                 and (
                     str(metadata.get("source_page") or "").strip() == "circle-completion"
                     or str(metadata.get("task_domain") or "").strip() == "circle_completion"
@@ -2427,11 +2511,7 @@ class ASMRResourceService:
                 await self._sync_circle_completion_owned_state(
                     rjcode,
                     final_output_path,
-                    library_id=str(
-                        postprocess_options.get("target_library_id")
-                        or upload_options.get("library_id")
-                        or ""
-                    ).strip(),
+                    library_id=target_owned_library_id,
                 )
             self._finalize_upload_runtime(task, "completed" if (uploaded_files or task.task_metadata.get("upload_runtime")) else final_status)
             persisted_local_root = download_root if os.path.isdir(download_root) else ""

@@ -410,6 +410,8 @@ function emitSubmit() {
       canonical_rjcode: plan.canonical_rjcode,
       display_rjcodes: plan.display_rjcodes || [],
       work_title: plan.title,
+      cover_url: plan.cover_url || plan.image_url || '',
+      image_url: plan.image_url || plan.cover_url || '',
       folder_path: plan.folder_path || '',
       selected_resources: plan.selectable_resources.filter(item => item.selected),
       upload_options: {
