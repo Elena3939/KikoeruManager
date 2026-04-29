@@ -87,14 +87,45 @@ export function buildSamplePayload(eventType = 'completed') {
     succeeded:   '3',
     failed:      '0',
   }
+  // 与后端 _flat_to_tree 输出一致：dir 节点带 children，叶子 path 仅文件名
   out.file_tree = [
-    { name: '新作品', status: 'kept', children: [
-      { path: 'RJ123456/track01.flac', size_text: '42.1 MB', status: 'kept' },
-      { path: 'RJ123456/track02.flac', size_text: '38.6 MB', status: 'kept' },
-      { path: 'RJ123456/cover.jpg',    size_text: '1.2 MB',  status: 'kept' },
+    { name: 'RJ123456', status: 'kept', children: [
+      { name: 'audio', status: 'kept', children: [
+        { path: 'track01.flac', size_text: '42.1 MB', status: 'kept', badges: ['已上传'] },
+        { path: 'track02.flac', size_text: '38.6 MB', status: 'kept', badges: ['已上传'] },
+        { path: 'sample.mp3',   size_text: '3.4 MB',  status: 'filtered' },
+      ]},
+      { path: 'cover.jpg', size_text: '1.2 MB', status: 'kept', badges: ['已上传'] },
+      { path: 'readme.txt', size_text: '256 B', status: 'filtered' },
     ]},
-    { path: 'RJ123456/sample.mp3', size_text: '3.4 MB',  status: 'filtered' },
-    { path: 'RJ123456/readme.txt', size_text: '256 B',   status: 'filtered' },
+  ]
+  out.download_files = out.file_tree
+  out.download_work_cards = [
+    {
+      rjcode: 'RJ123456',
+      title: '【早期購入特典付き】ひたすら“ぎゅー”してお互い「好き好き」と言わなきゃいけない、あまあまクール大好きペア',
+      circle_name: '防講潤滑剤',
+      cover_url: 'https://img.dlsite.jp/modpub/images2/work/doujin/RJ123000/RJ123456_img_main.jpg',
+      size_text: '1.32 GB',
+      file_count: 7,
+    },
+  ]
+  out.rj_work_cards = [
+    {
+      rjcode: 'RJ01574313',
+      title: '【简体中文版】【免费公开中--要去了要去了视频♡】超喜欢你的幼妻〇莉/哦哟♡公主〜〜新婚甜蜜调教&恩爱授孕做爱的故事♪〜',
+      circle_name: 'リリムワークス',
+      cover_url: 'https://img.dlsite.jp/modpub/images2/work/doujin/RJ01574000/RJ01574313_img_main.jpg',
+      size_text: '有更新 / 服务器已有',
+      file_count: 4,
+      count_label: '4 处变化',
+      changes: [
+        '服务器状态: 服务器缺失 -> 服务器已有',
+        '服务器RJ: 无 -> RJ01574313',
+        '字幕状态: 无 -> 有',
+        '来源集合: asmr_one / dlsite / local -> asmr_one / dlsite / kikoeru / local',
+      ],
+    },
   ]
   out.diff_items = [
     { label: '社团名',  old: 'Tsuki',    new: 'Tsuki Studio' },
@@ -264,10 +295,10 @@ function renderStatsGrid(props, payload) {
 }
 
 const FILE_STATUS_STYLE = {
-  kept:     { color: '#1f8f4e', marker: '✓' },
-  filtered: { color: '#d97706', marker: '✕' },
-  new:      { color: '#0071e3', marker: '+' },
-  removed:  { color: '#d93025', marker: '−' },
+  kept:     { color: '#1f8f4e', marker: '✓', labelExtra: 'color:#1d1d1f;' },
+  filtered: { color: '#d97706', marker: '✕', labelExtra: 'color:rgba(29,29,31,0.5);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.6);' },
+  new:      { color: '#0071e3', marker: '+', labelExtra: 'color:#1d1d1f;' },
+  removed:  { color: '#d93025', marker: '−', labelExtra: 'color:rgba(29,29,31,0.5);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.6);' },
 }
 
 function renderFileTree(props, payload) {
@@ -275,43 +306,125 @@ function renderFileTree(props, payload) {
   const title = htmlEscape(props.title || '文件清单')
   const maxItems = Math.max(0, Number(props.maxItems) || 30)
   const items = payload[sourceKey] || []
+  if ((sourceKey === 'file_tree' || sourceKey === 'download_files') && Array.isArray(payload.rj_work_cards) && payload.rj_work_cards.length) {
+    return renderDownloadWorkCards(title, payload.rj_work_cards, maxItems)
+  }
+  if (sourceKey === 'download_files' && Array.isArray(payload.download_work_cards) && payload.download_work_cards.length) {
+    return renderDownloadWorkCards(title, payload.download_work_cards, maxItems)
+  }
   if (!items.length) {
     return `<div style="padding:12px 14px;background:#fafafa;border:1px solid #ececef;border-radius:8px;font-size:12px;color:#8e8e93;margin:8px 0;">${title}：（无数据）</div>`
   }
-  const flat = []
-  const walk = (nodes, depth) => {
-    for (const n of nodes) {
-      if (n && typeof n === 'object' && Array.isArray(n.children)) {
-        flat.push({ label: n.name || n.path || '', size: n.size_text || '', status: n.status || 'kept', depth, isDir: true })
-        walk(n.children, depth + 1)
+  const BADGE_STYLE_MAP = {
+    '已上传':   'background:#dcfce7;color:#166534;border:1px solid #86efac;',
+    '下载失败': 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;',
+  }
+  const DEFAULT_BADGE_STYLE = 'background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;'
+  const renderBadges = (badges) => {
+    if (!Array.isArray(badges) || !badges.length) return ''
+    return badges.map(b => {
+      const text = String(b || '').trim()
+      if (!text) return ''
+      const extra = BADGE_STYLE_MAP[text] || DEFAULT_BADGE_STYLE
+      return `<span style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:5px;font-size:10.5px;font-weight:600;line-height:1.5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;${extra}">${htmlEscape(text)}</span>`
+    }).join('')
+  }
+
+  // 嵌套 <details>/<summary> 结构，与后端 render_file_tree 对齐：
+  //   每个目录 = <details open>，summary 是文件夹行；子内容 padding-left:18px。
+  //   每个文件 = <div>。
+  // 截断：累计 emit 计数，到达 maxItems 停止递归。
+  const state = { emitted: 0, truncated: false, skipped: 0 }
+  const fileRowStyle = 'padding:5px 12px;border-bottom:1px solid #f5f5f7;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.7;'
+  const summaryStyle = 'cursor:pointer;padding:6px 12px;border-bottom:1px solid #f5f5f7;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600;color:#1d1d1f;line-height:1.7;outline:none;'
+  const detailsStyle = 'border:none;margin:0;'
+
+  const renderFileRow = (node) => {
+    const label = String(node.path || node.name || '')
+    const status = node.status || 'kept'
+    const style = FILE_STATUS_STYLE[status] || { color: '#48484a', marker: '·', labelExtra: 'color:#1d1d1f;' }
+    const markerHtml = `<span style="color:${style.color};display:inline-block;width:14px;font-weight:600;text-decoration:none;">${style.marker}</span>`
+    const sizeText = String(node.size_text || '')
+    const sizeHtml = sizeText ? `<span style="float:right;color:#8e8e93;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(sizeText)}</span>` : ''
+    const badgeHtml = renderBadges(node.badges || [])
+    return `<div style="${fileRowStyle}${style.labelExtra}">${sizeHtml}${markerHtml}${htmlEscape(label)}${badgeHtml}</div>`
+  }
+
+  const renderDir = (node, depth) => {
+    if (state.truncated) { state.skipped += 1; return '' }
+    state.emitted += 1
+    const label = String(node.name || node.path || '')
+    const typeIcon = `<span style="color:#d97706;display:inline-block;width:18px;font-size:13px;text-align:left;">📁</span>`
+    const sizeText = String(node.size_text || '')
+    const sizeHtml = sizeText ? `<span style="float:right;color:#8e8e93;font-size:11px;font-weight:400;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(sizeText)}</span>` : ''
+    const badgeHtml = renderBadges(node.badges || [])
+    const children = Array.isArray(node.children) ? node.children : []
+    const childChunks = []
+    for (const child of children) {
+      if (state.truncated) { state.skipped += 1; continue }
+      if (state.emitted >= maxItems) { state.truncated = true; state.skipped += 1; continue }
+      if (child && typeof child === 'object' && Array.isArray(child.children)) {
+        childChunks.push(renderDir(child, depth + 1))
       } else {
-        const o = (n && typeof n === 'object') ? n : { path: String(n) }
-        flat.push({ label: o.path || o.name || '', size: o.size_text || '', status: o.status || 'kept', depth, isDir: false })
+        state.emitted += 1
+        const safeChild = (child && typeof child === 'object') ? child : { path: String(child) }
+        childChunks.push(renderFileRow(safeChild))
       }
     }
+    const childrenWrapper = childChunks.length ? `<div style="padding-left:18px;">${childChunks.join('')}</div>` : ''
+    return `<details open style="${detailsStyle}"><summary style="${summaryStyle}">${sizeHtml}${typeIcon}${htmlEscape(label)}${badgeHtml}</summary>${childrenWrapper}</details>`
   }
-  walk(items, 0)
-  const truncated = flat.length > maxItems
-  const visible = truncated ? flat.slice(0, maxItems) : flat
 
-  const rows = visible.map(it => {
-    const { color, marker } = FILE_STATUS_STYLE[it.status] || { color: '#48484a', marker: '·' }
-    const indent = 16 + it.depth * 18
-    const weight = it.isDir ? 600 : 400
-    return `<tr>
-      <td style="padding:5px 12px 5px ${indent}px;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#1d1d1f;border-bottom:1px solid #f5f5f7;font-weight:${weight};">
-        <span style="color:${color};display:inline-block;width:14px;font-weight:600;">${marker}</span>${htmlEscape(it.label)}
-      </td>
-      <td align="right" style="padding:5px 12px;font-size:11px;color:#8e8e93;border-bottom:1px solid #f5f5f7;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(it.size)}</td>
-    </tr>`
-  })
-  if (truncated) {
-    rows.push(`<tr><td colspan="2" style="padding:8px 14px;font-size:11px;color:#8e8e93;text-align:center;font-style:italic;">... 还有 ${flat.length - maxItems} 项未显示</td></tr>`)
+  const bodyChunks = []
+  for (const n of items) {
+    if (state.truncated) { state.skipped += 1; continue }
+    if (state.emitted >= maxItems) { state.truncated = true; state.skipped += 1; continue }
+    if (n && typeof n === 'object' && Array.isArray(n.children)) {
+      bodyChunks.push(renderDir(n, 0))
+    } else {
+      state.emitted += 1
+      const safe = (n && typeof n === 'object') ? n : { path: String(n) }
+      bodyChunks.push(renderFileRow(safe))
+    }
   }
+  if (state.truncated && state.skipped > 0) {
+    bodyChunks.push(`<div style="padding:8px 14px;font-size:11px;color:#8e8e93;text-align:center;font-style:italic;border-top:1px solid #f5f5f7;">... 还有 ${state.skipped} 项未显示</div>`)
+  }
+
   return `<div style="margin:10px 0;">
     <div style="font-size:11px;font-weight:600;color:#8e8e93;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;padding:0 4px;">${title}</div>
-    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fff;border:1px solid #ececef;border-radius:10px;overflow:hidden;border-collapse:separate;">${rows.join('')}</table>
+    <div style="background:#fff;border:1px solid #ececef;border-radius:10px;overflow:hidden;">${bodyChunks.join('')}</div>
   </div>`
+}
+
+function renderDownloadWorkCards(title, items, maxItems) {
+  const rows = []
+  const limit = Math.max(0, maxItems || 30)
+  for (const item of items.slice(0, limit)) {
+    if (!item || typeof item !== 'object') continue
+    const coverUrl = htmlEscape(item.cover_url || '')
+    const rjcode = htmlEscape(item.rjcode || 'RJ')
+    const workTitle = htmlEscape(item.title || item.rjcode || '下载作品')
+    const circleName = htmlEscape(item.circle_name || '')
+    const sizeText = htmlEscape(item.size_text || '')
+    const fileCount = Number(item.file_count) || 0
+    const countLabel = htmlEscape(item.count_label || (fileCount ? `${fileCount} 个文件` : ''))
+    const meta = [circleName, sizeText, countLabel].filter(Boolean).join(' · ') || '下载完成'
+    const changes = Array.isArray(item.changes) ? item.changes.map(change => String(change || '').trim()).filter(Boolean) : []
+    const changesHtml = changes.length
+      ? `<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;color:#334155;font-size:12px;line-height:1.6;">${changes.slice(0, 6).map(change => `<div>${htmlEscape(change)}</div>`).join('')}</div>`
+      : ''
+    const imageHtml = coverUrl
+      ? `<img src="${coverUrl}" alt="${workTitle}" width="180" height="180" style="display:block;width:180px;height:180px;object-fit:cover;border:0;">`
+      : `<div style="width:180px;height:180px;background:#f5f5f7;color:#8e8e93;font-size:12px;line-height:180px;text-align:center;">无封面</div>`
+    rows.push(`<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 14px;border-collapse:collapse;"><tr><td width="180" valign="top" style="padding:0 16px 0 0;"><table width="180" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td>${imageHtml}</td></tr><tr><td style="background:#fff3cf;color:#c2410c;font-size:12px;line-height:20px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">${rjcode}</td></tr></table></td><td valign="top" style="padding:2px 0 0 0;"><div style="font-size:18px;line-height:1.35;font-weight:700;color:#0f172a;margin:0 0 8px 0;">${workTitle}</div><div style="font-size:13px;line-height:1.6;color:#475569;margin:0 0 10px 0;">${meta}</div><div style="font-size:20px;line-height:1.2;font-weight:700;color:#111827;">${sizeText || '大小未知'}</div>${changesHtml}</td></tr></table>`)
+  }
+  if (!rows.length) {
+    return `<div style="padding:12px 14px;background:#fafafa;border:1px solid #ececef;border-radius:8px;font-size:12px;color:#8e8e93;margin:8px 0;">${title}：（无数据）</div>`
+  }
+  const more = Math.max(0, items.length - rows.length)
+  const moreHtml = more ? `<div style="padding:8px 14px;font-size:11px;color:#8e8e93;text-align:center;font-style:italic;border-top:1px solid #f5f5f7;">... 还有 ${more} 项未显示</div>` : ''
+  return `<div style="margin:10px 0;"><div style="font-size:11px;font-weight:600;color:#8e8e93;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;padding:0 4px;">${title}</div><div style="background:#fff;border:1px solid #ececef;border-radius:10px;padding:14px 14px 0;overflow:hidden;">${rows.join('')}${moreHtml}</div></div>`
 }
 
 function renderDiffView(props, payload) {

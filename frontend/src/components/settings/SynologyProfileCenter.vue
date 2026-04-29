@@ -142,9 +142,10 @@ function emitProfileFlag(key, value) {
 .profile-banner,
 .field-card,
 .toggle-card {
-  border-radius: 20px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.92);
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.76);
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 .profile-banner {
@@ -225,7 +226,7 @@ function emitProfileFlag(key, value) {
 }
 
 .field-label {
-  color: #94a3b8;
+  color: #64748b;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -239,10 +240,15 @@ function emitProfileFlag(key, value) {
   border: none;
   outline: none;
   border-radius: 12px;
-  background: rgba(248, 250, 252, 0.95);
+  background: #ffffff;
   color: #0f172a;
   font-size: 14px;
-  box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.84);
+  transition: box-shadow 0.2s ease;
+}
+
+.field-input:focus {
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.72), 0 0 0 3px rgba(15, 23, 42, 0.06);
 }
 
 .field-number :deep(.el-input__wrapper) {

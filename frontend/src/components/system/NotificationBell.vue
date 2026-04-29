@@ -4,6 +4,8 @@
       class="notif-bell-btn"
       :class="{ 'notif-bell-btn--active': panelOpen, 'notif-bell-btn--has-unread': unreadCount > 0 }"
       @click="onBellClick"
+      @mouseenter="onBellHover"
+      @mouseleave="onBellLeave"
       title="通知"
     >
       <DotLottieVue
@@ -108,6 +110,47 @@ function updateRect() {
   if (bellRef.value) {
     panelRect.value = bellRef.value.getBoundingClientRect()
   }
+}
+
+const HOVER_SHAKE_MAX_FRAME = 10
+let hoverFrameHandler = null
+
+async function onBellHover() {
+  if (unreadCount.value > 0) return
+  const instance = getInstance()
+  if (!instance || !lottieReady.value) return
+  // 卸掉旧监听，避免重复
+  if (hoverFrameHandler) {
+    instance.removeEventListener('frame', hoverFrameHandler)
+    hoverFrameHandler = null
+  }
+  hoverFrameHandler = async (event) => {
+    const frame = event?.currentFrame ?? 0
+    if (frame >= HOVER_SHAKE_MAX_FRAME) {
+      instance.removeEventListener('frame', hoverFrameHandler)
+      hoverFrameHandler = null
+      // 定格在摄晃末端的帧，不返回静止帧
+      await instance.pause()
+      await instance.setFrame(HOVER_SHAKE_MAX_FRAME)
+    }
+  }
+  instance.addEventListener('frame', hoverFrameHandler)
+  await instance.unfreeze()
+  await instance.setLoop(false)
+  await instance.stop()
+  await instance.setFrame(0)
+  await instance.play()
+}
+
+async function onBellLeave() {
+  if (unreadCount.value > 0) return
+  const instance = getInstance()
+  if (!instance || !lottieReady.value) return
+  if (hoverFrameHandler) {
+    instance.removeEventListener('frame', hoverFrameHandler)
+    hoverFrameHandler = null
+  }
+  await setStaticFrame()
 }
 
 function onBellClick() {

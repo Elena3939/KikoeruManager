@@ -829,7 +829,7 @@ export const asmrSyncApi = {
     return response.data
   },
 
-  cancelSession: async (sessionId, { cleanup = false } = {}) => {
+  cancelSession: async (sessionId, { cleanup = true } = {}) => {
     const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/cancel`, { cleanup })
     return response.data
   },

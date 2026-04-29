@@ -53,6 +53,15 @@
               <el-switch v-model="form.is_default" size="small" />
               <span style="font-size:12px;">默认</span>
             </label>
+            <button
+              type="button"
+              class="tpl-reset-btn"
+              title="把当前积木重置为拆分后的默认多块布局（头图 / 事件元信息 / 标题 / 信息表 / 统计 / 文件 / 日志 / 页脚）"
+              @click="resetToDefaultBlocks"
+            >
+              <RefreshCw :size="12" :stroke-width="2.4" />
+              重置为标准积木
+            </button>
           </div>
           <!-- 积木编辑器主体 -->
           <NotificationBlockEditor
@@ -172,7 +181,7 @@ import { Check, Code2, Eye, LayoutTemplate, RefreshCw, X } from 'lucide-vue-next
 import { notificationApi } from '../../api'
 import NotificationBlockEditor from './block-editor/NotificationBlockEditor.vue'
 import RichTextEditor from './block-editor/RichTextEditor.vue'
-import { DEFAULT_EMAIL_HTML, DEFAULT_SUBJECT } from './block-editor/defaultEmailTemplate.js'
+import { DEFAULT_EMAIL_HTML, DEFAULT_SUBJECT, buildDefaultEmailBlocks } from './block-editor/defaultEmailTemplate.js'
 import { renderBlockMini, buildSamplePayload } from './block-editor/blockMiniRenderers.js'
 
 const props = defineProps({
@@ -247,6 +256,11 @@ watch(() => props.visible, (v) => {
       task_domains: Array.isArray(props.template.task_domains) ? [...props.template.task_domains] : [],
       blocks: Array.isArray(props.template.blocks) ? JSON.parse(JSON.stringify(props.template.blocks)) : [],
     })
+    // 历史遗留升级：旧版本创建的预设会把默认 HTML 镜像为单个 rich_text，
+    // 只要仍然是「单镜像块 + html 未修改」就静默升级为拆分后的多块布局。
+    if (form.editor_mode === 'blocks' && isLegacyDefaultMirror(form.blocks, form.html_template)) {
+      form.blocks = buildDefaultEmailBlocks()
+    }
   }
   preview.subject = ''
   preview.html = ''
@@ -384,6 +398,23 @@ function createHtmlMirrorBlock(html = form.html_template) {
   }
 }
 
+// 判断当前 blocks 是否是「默认 HTML 镜像为单个 rich_text」的遗留状态
+function isLegacyDefaultMirror(blocks, htmlTemplate) {
+  if (!Array.isArray(blocks) || blocks.length !== 1) return false
+  const only = blocks[0]
+  if (!only || only.type !== 'rich_text') return false
+  const isMirror = only.props?.mirrorSource === 'html'
+  const cache = (only.props?.htmlCache || '').trim()
+  const html = (htmlTemplate || '').trim()
+  const def = DEFAULT_EMAIL_HTML.trim()
+  // 两种判定：明确标记为 html 镜像，或者 cache/html 仍然是默认 HTML
+  return isMirror || cache === def || html === def
+}
+
+function resetToDefaultBlocks() {
+  form.blocks = buildDefaultEmailBlocks()
+}
+
 function syncHtmlMirrorBlock() {
   const first = form.blocks[0]
   if (!first || first.type !== 'rich_text' || first.props?.mirrorSource === 'html') {
@@ -394,7 +425,13 @@ function syncHtmlMirrorBlock() {
 function setEditorMode(mode) {
   if (mode === form.editor_mode) return
   if (mode === 'blocks' && !form.blocks.length) {
-    form.blocks = [createHtmlMirrorBlock()]
+    // 默认 HTML 转积木：用拆分好的多个独立块；
+    // 用户已自定义过 HTML 时才退回“整段 HTML 镜像为单个富文本块”。
+    if ((form.html_template || '').trim() === DEFAULT_EMAIL_HTML.trim()) {
+      form.blocks = buildDefaultEmailBlocks()
+    } else {
+      form.blocks = [createHtmlMirrorBlock()]
+    }
   }
   if (mode === 'html' && blockEditorRef.value?.getBlocks) {
     form.blocks = blockEditorRef.value.getBlocks()
@@ -915,6 +952,27 @@ function onCancel() {
 .tpl-meta-bar--secondary {
   padding-top: 0;
 }
+.tpl-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid rgba(29, 29, 31, 0.12);
+  border-radius: 7px;
+  background: #fff;
+  color: rgba(29, 29, 31, 0.7);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.tpl-reset-btn:hover {
+  border-color: rgba(0, 113, 227, 0.4);
+  background: rgba(0, 113, 227, 0.04);
+  color: #0071e3;
+}
+.tpl-reset-btn:active { transform: scale(0.96); }
 .tpl-meta-bar-label {
   font-size: 11px;
   font-weight: 600;

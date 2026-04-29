@@ -35,7 +35,7 @@
             <div class="notif-item-title">{{ item.title }}</div>
             <div class="notif-item-summary">{{ item.summary }}</div>
             <div class="notif-item-meta">
-              <span class="notif-meta-tag notif-meta-domain">{{ item.task_domain || item.domain_label || '任务' }}</span>
+              <span class="notif-meta-tag notif-meta-domain">{{ domainLabel(item) }}</span>
               <span v-if="item.rjcode" class="notif-meta-tag notif-meta-rj">{{ item.rjcode }}</span>
               <span class="notif-item-time">{{ formatTime(item.created_at) }}</span>
             </div>
@@ -53,6 +53,7 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { Bell, CheckCircle2, XCircle, AlertTriangle, Info, X, Loader2 } from 'lucide-vue-next'
 import { useNotifications } from '../../composables/useNotifications'
+import { getTaskDomainMeta } from '../common/taskDomainMeta'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -64,6 +65,12 @@ const router = useRouter()
 const { items, loading, markAllRead, deleteItem } = useNotifications()
 
 const hasUnread = computed(() => items.value.some(i => !i.is_read))
+
+function domainLabel(item) {
+  if (item.domain_label) return item.domain_label
+  if (item.task_domain) return getTaskDomainMeta(item.task_domain).label
+  return '任务'
+}
 
 function severityIcon(severity) {
   const map = {
@@ -210,7 +217,35 @@ function onItemClick(item) {
 .notif-list {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(29, 29, 31, 0.18) transparent;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+}
+
+.notif-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.notif-list::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 6px 0;
+}
+
+.notif-list::-webkit-scrollbar-thumb {
+  background: rgba(29, 29, 31, 0.14);
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+.notif-list:hover::-webkit-scrollbar-thumb {
+  background: rgba(29, 29, 31, 0.28);
+}
+
+.notif-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(29, 29, 31, 0.4);
 }
 
 .notif-item {

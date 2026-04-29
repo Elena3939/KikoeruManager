@@ -296,6 +296,22 @@ function toggleEnabled(id) {
 .blk-row-content {
   position: relative;
   z-index: 1;
+  /* 安全约束：rich_text 块允许用户粘任意 HTML（含邮件级 <table width="620">、box-shadow），
+     这里统一卡死宽度、剥掉外层阴影 / 圆角，避免「邮件壳套邮件壳」造成的歪扭叠层。
+     真实邮件由后端 wrap_email_envelope 包外壳，画布只负责显示内容本身。 */
+  max-width: 100%;
+  overflow: hidden;
+}
+.blk-row-content :deep(table) {
+  max-width: 100% !important;
+  width: 100% !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  box-shadow: none !important;
+}
+.blk-row-content :deep(img) {
+  max-width: 100% !important;
+  height: auto !important;
 }
 
 /* 把手 — 浮动到行外侧左边 */

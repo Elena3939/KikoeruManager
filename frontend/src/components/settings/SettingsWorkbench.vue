@@ -115,8 +115,8 @@ const filteredSections = computed(() => {
 <style scoped>
 .settings-workbench {
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: 272px minmax(0, 1fr);
+  gap: 20px;
   min-height: calc(100vh - 88px);
 }
 
@@ -128,16 +128,15 @@ const filteredSections = computed(() => {
 
 .sidebar-shell {
   padding: 18px 16px 16px;
-  border-radius: 24px;
-  background: #fff;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(10px);
+  border-radius: 22px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
 }
 
 .sidebar-kicker {
   margin: 0 0 6px;
-  color: #94a3b8;
+  color: #64748b;
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.16em;
@@ -147,17 +146,17 @@ const filteredSections = computed(() => {
 .sidebar-title {
   margin: 0;
   color: #0f172a;
-  font-size: 28px;
+  font-size: 27px;
   line-height: 1;
   font-weight: 900;
-  letter-spacing: -0.06em;
+  letter-spacing: -0.05em;
 }
 
 .sidebar-desc {
   margin: 8px 0 0;
-  color: #64748b;
+  color: #475569;
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.6;
 }
 
 .settings-search {
@@ -168,9 +167,10 @@ const filteredSections = computed(() => {
   margin-top: 14px;
   padding: 0 12px;
   border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(248, 250, 252, 0.95);
-  color: #94a3b8;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #64748b;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 .settings-search input {
@@ -191,18 +191,18 @@ const filteredSections = computed(() => {
 .summary-chip {
   padding: 10px 12px;
   border-radius: 14px;
-  border: 1px solid rgba(226, 232, 240, 0.88);
-  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
 }
 
 .summary-chip.changed {
-  border-color: rgba(96, 165, 250, 0.45);
-  background: rgba(239, 246, 255, 0.88);
+  border-color: #cbd5e1;
+  background: #f8fafc;
 }
 
 .summary-label {
   display: block;
-  color: #94a3b8;
+  color: #64748b;
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -232,21 +232,22 @@ const filteredSections = computed(() => {
   width: 100%;
   padding: 11px 12px;
   border-radius: 16px;
-  border: 1px solid rgba(226, 232, 240, 0.88);
-  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid transparent;
+  background: #ffffff;
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .nav-item:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+  transform: translateY(-2px) scale(1.01);
+  border-color: #e5e7eb;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
 }
 
 .nav-item.active {
-  border-color: rgba(96, 165, 250, 0.55);
-  background: linear-gradient(180deg, rgba(239, 246, 255, 0.95), rgba(255, 255, 255, 0.98));
-  box-shadow: 0 16px 36px rgba(59, 130, 246, 0.12);
+  border-color: #d1d5db;
+  background: #f8fafc;
+  box-shadow: inset 3px 0 0 #0f172a, 0 8px 22px rgba(15, 23, 42, 0.05);
 }
 
 .nav-item-main {
@@ -263,8 +264,9 @@ const filteredSections = computed(() => {
   width: 30px;
   height: 30px;
   border-radius: 11px;
-  background: rgba(241, 245, 249, 0.95);
-  color: #475569;
+  background: #f8fafc;
+  color: #334155;
+  border: 1px solid #e5e7eb;
 }
 
 .nav-item-title {
@@ -292,19 +294,16 @@ const filteredSections = computed(() => {
 }
 
 .nav-badge.is-dirty {
-  background: rgba(239, 246, 255, 0.9);
-  color: #2563eb;
-  border: 1px solid rgba(191, 219, 254, 0.95);
+  background: #0f172a;
+  color: #ffffff;
+  border: 1px solid #0f172a;
 }
 
 .sidebar-footer {
   margin-top: 14px;
 }
 
-.settings-main {
-  min-width: 0;
-}
-
+.settings-main,
 .main-slot {
   min-width: 0;
 }
@@ -320,11 +319,10 @@ const filteredSections = computed(() => {
   gap: 18px;
   width: min(760px, calc(100vw - 340px));
   padding: 16px 18px;
-  border-radius: 22px;
-  border: 1px solid rgba(147, 197, 253, 0.85);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 26px 50px rgba(37, 99, 235, 0.16);
-  backdrop-filter: blur(12px);
+  border-radius: 20px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.12);
   pointer-events: none;
 }
 
@@ -360,18 +358,29 @@ const filteredSections = computed(() => {
   font-weight: 800;
   cursor: pointer;
   border: 1px solid transparent;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .primary-btn {
   background: #0f172a;
   color: #f8fafc;
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.16);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
 }
 
 .ghost-btn {
-  background: rgba(248, 250, 252, 0.95);
-  border-color: rgba(226, 232, 240, 0.95);
+  background: #ffffff;
+  border-color: #e5e7eb;
   color: #334155;
+}
+
+.primary-btn:not(:disabled):hover,
+.ghost-btn:not(:disabled):hover {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.primary-btn:not(:disabled):active,
+.ghost-btn:not(:disabled):active {
+  transform: scale(0.96);
 }
 
 .spinning {
@@ -391,40 +400,19 @@ const filteredSections = computed(() => {
 }
 
 @keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
 }
 
 @media (max-width: 1200px) {
-  .settings-workbench {
-    grid-template-columns: 1fr;
-  }
-
-  .settings-sidebar {
-    position: static;
-  }
-
-  .save-bar {
-    left: 18px;
-    right: 18px;
-    width: auto;
-  }
+  .settings-workbench { grid-template-columns: 1fr; }
+  .settings-sidebar { position: static; }
+  .save-bar { left: 18px; right: 18px; width: auto; }
 }
 
 @media (max-width: 768px) {
-  .save-bar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .save-bar-actions {
-    width: 100%;
-    justify-content: stretch;
-  }
-
-  .save-bar-actions button {
-    flex: 1;
-  }
+  .save-bar { flex-direction: column; align-items: stretch; }
+  .save-bar-actions { width: 100%; justify-content: stretch; }
+  .save-bar-actions button { flex: 1; }
 }
 </style>
+

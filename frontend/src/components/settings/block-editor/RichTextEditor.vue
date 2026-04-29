@@ -81,18 +81,35 @@
       </template>
 
       <div class="rte-tb-sep" />
-      <span class="rte-tb-var-label">变量</span>
-      <button
-        v-for="v in VARIABLES"
-        :key="v.key"
-        type="button"
-        class="rte-var-pill rte-var-pill--btn"
-        :title="`点击插入：${v.key} — 例如：${v.example}`"
-        @mousedown.prevent="insertVariable(v.key)"
-      >
-        <Hash :size="10" :stroke-width="2.6" class="rte-var-pill-icon" />
-        <span>{{ v.key }}</span>
-      </button>
+      <div class="rte-var-dropdown" ref="varDropdownEl">
+        <button
+          type="button"
+          class="rte-var-trigger"
+          :class="{ 'is-open': varMenuOpen }"
+          title="插入变量"
+          @mousedown.prevent="toggleVarMenu"
+        >
+          <Hash :size="11" :stroke-width="2.6" class="rte-var-trigger-icon" />
+          <span>插入变量</span>
+          <ChevronDown :size="12" :stroke-width="2.4" class="rte-var-trigger-caret" />
+        </button>
+        <div v-if="varMenuOpen" class="rte-var-menu" role="listbox">
+          <button
+            v-for="v in VARIABLES"
+            :key="v.key"
+            type="button"
+            class="rte-var-menu-item"
+            :title="`例如：${v.example}`"
+            @mousedown.prevent="onPickVariable(v.key)"
+          >
+            <span class="rte-var-pill rte-var-pill--btn rte-var-pill--menu">
+              <Hash :size="10" :stroke-width="2.6" class="rte-var-pill-icon" />
+              <span>{{ v.key }}</span>
+            </span>
+            <span class="rte-var-menu-example">{{ v.example }}</span>
+          </button>
+        </div>
+      </div>
     </div>
     <SlashMenu
       v-if="slashMenu.open && filteredSlashCommands.length"
@@ -108,7 +125,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
@@ -116,7 +133,7 @@ import { Table } from '@tiptap/extension-table'
 import { TableRow } from '@tiptap/extension-table-row'
 import { TableHeader } from '@tiptap/extension-table-header'
 import { TableCell } from '@tiptap/extension-table-cell'
-import { Bold, Code, Hash, Heading1, Heading2, Heading3, Italic, Link2, Link2Off, List, ListOrdered, Minus, Quote, Redo2, Table2, Strikethrough, Undo2 } from 'lucide-vue-next'
+import { Bold, ChevronDown, Code, Hash, Heading1, Heading2, Heading3, Italic, Link2, Link2Off, List, ListOrdered, Minus, Quote, Redo2, Table2, Strikethrough, Undo2 } from 'lucide-vue-next'
 import { VARIABLES } from './blockTypes.js'
 import { EmailImage } from './emailImageExtension.js'
 import { PreserveEmailAttributes } from './preserveEmailAttributes.js'
@@ -131,6 +148,8 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'update:htmlCache'])
 
 const isFocused = ref(false)
+const varMenuOpen = ref(false)
+const varDropdownEl = ref(null)
 const slashMenu = reactive({
   open: false,
   x: 12,
@@ -211,7 +230,39 @@ const editor = useEditor({
 // 因此编辑期间不需要再 watch props.modelValue，避免 onUpdate emit 后
 // 外部回写引发的 setContent 抖动 / 光标跳动。
 
-onBeforeUnmount(() => editor.value?.destroy())
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocClickForVarMenu, true)
+  document.removeEventListener('keydown', onDocKeydownForVarMenu)
+  editor.value?.destroy()
+})
+
+function toggleVarMenu() {
+  varMenuOpen.value = !varMenuOpen.value
+}
+
+function closeVarMenu() {
+  varMenuOpen.value = false
+}
+
+function onPickVariable(key) {
+  insertVariable(key)
+  closeVarMenu()
+}
+
+function onDocClickForVarMenu(event) {
+  if (!varMenuOpen.value) return
+  const root = varDropdownEl.value
+  if (root && !root.contains(event.target)) closeVarMenu()
+}
+
+function onDocKeydownForVarMenu(event) {
+  if (varMenuOpen.value && event.key === 'Escape') closeVarMenu()
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocClickForVarMenu, true)
+  document.addEventListener('keydown', onDocKeydownForVarMenu)
+})
 
 function insertVariable(key) {
   if (props.size === 'large') {
@@ -513,6 +564,93 @@ const toolbarBtns = [
 .rte-var-pill-icon {
   color: #6ea8fe;
   flex-shrink: 0;
+}
+/* 变量下拉触发器 */
+.rte-var-dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.rte-var-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px 0 8px;
+  border: 1px solid rgba(29, 29, 31, 0.12);
+  border-radius: 7px;
+  background: #fff;
+  color: #1d1d1f;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  font-family: inherit;
+}
+.rte-var-trigger:hover {
+  border-color: rgba(0, 113, 227, 0.4);
+  background: rgba(0, 113, 227, 0.04);
+  color: #0071e3;
+}
+.rte-var-trigger.is-open {
+  border-color: rgba(0, 113, 227, 0.55);
+  background: rgba(0, 113, 227, 0.08);
+  color: #0071e3;
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+}
+.rte-var-trigger-icon { color: #0071e3; }
+.rte-var-trigger-caret {
+  color: rgba(29, 29, 31, 0.5);
+  transition: transform 0.18s ease;
+}
+.rte-var-trigger.is-open .rte-var-trigger-caret { transform: rotate(180deg); }
+
+/* 变量下拉菜单 */
+.rte-var-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 240px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid rgba(29, 29, 31, 0.1);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
+  animation: rteVarMenuIn 0.16s ease;
+}
+@keyframes rteVarMenuIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.rte-var-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.rte-var-menu-item:hover { background: rgba(0, 113, 227, 0.06); }
+.rte-var-menu-item:active { background: rgba(0, 113, 227, 0.1); }
+.rte-var-pill--menu { flex-shrink: 0; }
+.rte-var-menu-example {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: rgba(29, 29, 31, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .rte-body {
   min-height: 120px;

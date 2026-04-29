@@ -169,10 +169,17 @@ function openCreate() {
 
 function openPreset(preset) {
   presetMenuOpen.value = false
+  // 优先 buildBlocks() 现场生成（保证每次 ID 唯一）；否则回退到静态 blocks 数组
+  let blocks = []
+  if (typeof preset.buildBlocks === 'function') {
+    blocks = preset.buildBlocks() || []
+  } else if (Array.isArray(preset.blocks)) {
+    blocks = JSON.parse(JSON.stringify(preset.blocks))
+  }
   editingTemplate.value = {
     ...preset,
     id: undefined,
-    blocks: Array.isArray(preset.blocks) ? JSON.parse(JSON.stringify(preset.blocks)) : [],
+    blocks,
     enabled: true,
     is_default: false,
     sort_order: 0,
