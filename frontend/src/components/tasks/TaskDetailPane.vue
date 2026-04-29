@@ -127,32 +127,6 @@
         </div>
       </section>
 
-      <!-- 本次处理：轻量业务摘要 -->
-      <section v-if="item.metrics?.length" class="border-b border-slate-200 px-4 pt-3.5 pb-3.5">
-        <span class="mb-2.5 flex items-center gap-1.5 text-[11.5px] font-bold uppercase tracking-[0.06em] text-slate-500">
-          <span class="h-1 w-1 rounded-full bg-amber-500" />
-          本次处理
-        </span>
-        <div class="task-metrics-strip">
-          <div
-            v-for="(metric, mIndex) in item.metrics"
-            :key="`${item.id}-${metric.label}`"
-            class="detail-fade-up task-metric-item"
-            :class="getMetricItemClass(metric)"
-            :style="{ animationDelay: `${mIndex * 30}ms` }"
-          >
-            <span class="task-metric-label">{{ getMetricLabel(metric.label) }}</span>
-            <span
-              class="task-metric-value"
-              :class="isCompactMetric(metric) ? 'tabular-nums' : ''"
-              :title="String(metric.value || '')"
-            >
-              {{ getMetricValue(metric) }}
-            </span>
-          </div>
-        </div>
-      </section>
-
       <!-- 进度元信息：定义列表 2 列，无独立边框 -->
       <section v-if="circleMeta.length" class="border-b border-slate-200 px-4 pt-3.5 pb-3.5">
         <span class="mb-2.5 flex items-center gap-1.5 text-[11.5px] font-bold uppercase tracking-[0.06em] text-slate-500">
@@ -197,34 +171,35 @@
         :key="`${item.id}-${section.key}`"
         class="border-b border-slate-200 px-4 pt-3.5 pb-3.5"
       >
-        <div class="mb-2.5 flex flex-col gap-2">
-          <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="mb-2.5 flex flex-col gap-2.5">
+          <div class="flex flex-wrap items-start justify-between gap-2">
             <span class="flex items-center gap-1.5 text-[11.5px] font-bold uppercase tracking-[0.06em] text-slate-500">
               <span class="h-1 w-1 rounded-full bg-emerald-500" />
               {{ section.label }}
             </span>
-            <el-radio-group
-              :model-value="treeFilterMode"
-              size="small"
-              class="task-tree-filter"
-              @change="$emit('update:treeFilterMode', $event)"
-            >
-              <el-radio-button label="all">全部</el-radio-button>
-              <el-radio-button label="added">新增</el-radio-button>
-              <el-radio-button label="removed">移除</el-radio-button>
-            </el-radio-group>
+            <div class="task-tree-actions">
+              <button
+                v-for="option in treeFilterOptions"
+                :key="option.value"
+                v-show="option.value === 'all' || section.removedCount > 0"
+                type="button"
+                class="task-tree-filter-button"
+                :class="{ 'task-tree-filter-button--active': treeFilterMode === option.value || (option.value === 'all' && !section.removedCount) }"
+                @click="$emit('update:treeFilterMode', option.value)"
+              >
+                <component :is="option.icon" :size="12" :stroke-width="2.4" class="task-tree-filter-button__icon" />
+                <span>{{ option.label }}</span>
+              </button>
+            </div>
           </div>
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex flex-wrap gap-1.5">
               <span v-if="section.totalCount" class="inline-flex h-6 items-center rounded-md border border-slate-200 bg-white px-2 text-[10.5px] font-bold tabular-nums text-slate-700">文件 {{ section.totalCount }}</span>
-              <span v-if="section.addedCount" class="inline-flex h-6 items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 text-[10.5px] font-bold tabular-nums text-emerald-700">
-                <span class="h-1.5 w-1.5 rounded-full bg-emerald-500" /> 新增 {{ section.addedCount }}
-              </span>
               <span v-if="section.removedCount" class="inline-flex h-6 items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 text-[10.5px] font-bold tabular-nums text-rose-700">
-                <span class="h-1.5 w-1.5 rounded-full bg-rose-500" /> 移除 {{ section.removedCount }}
+                <span class="h-1.5 w-1.5 rounded-full bg-rose-500" /> 被过滤 {{ section.removedCount }}
               </span>
             </div>
-            <el-button class="task-tree-toggle" size="small" @click="$emit('expand-section', section, !section.allExpanded)">
+            <button type="button" class="task-tree-toggle" @click="$emit('expand-section', section, !section.allExpanded)">
               <component
                 :is="section.allExpanded ? ChevronRight : ChevronDown"
                 :size="12"
@@ -232,41 +207,39 @@
                 class="task-tree-toggle__icon"
               />
               <span>{{ section.allExpanded ? '收起全部' : '展开全部' }}</span>
-            </el-button>
+            </button>
           </div>
         </div>
 
-        <div class="max-h-[320px] overflow-y-auto rounded-[10px] border border-slate-200 bg-slate-50/50 detail-scroll">
-          <div
-            v-for="entry in section.rows"
-            :key="`${item.id}-${section.key}-${entry.key}`"
-            class="flex items-center justify-between gap-2 border-b border-slate-200/70 py-1 pr-2.5 last:border-b-0 transition-colors duration-200 hover:bg-white"
-            :class="[
-              entry.status === 'added' ? 'bg-gradient-to-r from-emerald-50/60 to-transparent' : '',
-              entry.status === 'removed' ? 'bg-slate-100/40 line-through opacity-70' : '',
-            ]"
-            :style="{ paddingLeft: `${12 + entry.depth * 18}px` }"
-          >
-            <div class="flex min-w-0 flex-1 items-center gap-1.5">
-              <button
-                v-if="entry.hasChildren"
-                type="button"
-                class="group inline-flex h-[18px] w-[18px] flex-shrink-0 items-center justify-center rounded text-slate-400 transition-all duration-200 hover:bg-slate-200 hover:text-slate-700"
-                @click="$emit('toggle-node', entry.key, entry.defaultExpanded)"
-              >
-                <component :is="entry.expanded ? ChevronDown : ChevronRight" :size="11" :stroke-width="2.4" class="transition-transform duration-200 group-hover:scale-110" />
-              </button>
-              <span v-else class="inline-block h-[18px] w-[18px] flex-shrink-0" />
-              <span
-                class="inline-flex h-[18px] w-[18px] flex-shrink-0 items-center justify-center rounded transition-transform duration-200 hover:scale-110"
-                :class="entry.type === 'dir' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'"
-              >
-                <component :is="entry.type === 'dir' ? Folder : File" :size="11" :stroke-width="2.3" />
-              </span>
-              <span class="min-w-0 truncate text-[11.5px] text-slate-800">{{ entry.label }}</span>
-              <span v-if="entry.status === 'added'" class="inline-flex h-[18px] items-center rounded-md border border-emerald-200 bg-emerald-50 px-1.5 text-[9.5px] font-bold text-emerald-700">新增</span>
+        <div class="task-file-tree-card">
+          <div class="task-file-tree detail-scroll">
+            <div
+              v-for="entry in section.rows"
+              :key="`${item.id}-${section.key}-${entry.key}`"
+              class="task-file-tree-row tree-row"
+              :class="{ 'tree-row-filtered': entry.status === 'removed' }"
+              :style="{ paddingLeft: `${entry.depth * 16 + 8}px` }"
+            >
+              <div class="tree-main">
+                <button
+                  v-if="entry.hasChildren"
+                  type="button"
+                  class="tree-expander"
+                  @click="$emit('toggle-node', entry.key, entry.defaultExpanded)"
+                >
+                  <component :is="entry.expanded ? ChevronDown : ChevronRight" :size="17" :stroke-width="2.3" />
+                </button>
+                <span v-else class="expander-spacer" />
+
+                <component :is="getTreeRowIconComponent(entry)" :size="20" class="tree-icon" :class="getTreeRowIconClass(entry)" />
+
+                <span class="tree-name">
+                  {{ entry.label }}
+                </span>
+                <span v-if="entry.status === 'removed'" class="tree-filter-badge">被过滤</span>
+              </div>
+              <span v-if="entry.sizeText" class="tree-size">{{ entry.sizeText }}</span>
             </div>
-            <span v-if="entry.sizeText" class="flex-shrink-0 text-[10.5px] tabular-nums text-slate-400">{{ entry.sizeText }}</span>
           </div>
         </div>
       </section>
@@ -319,13 +292,16 @@ import {
   ChevronDown,
   ChevronRight,
   File,
+  FileText,
   Folder,
+  Music,
   PauseCircle,
   PlayCircle,
   RefreshCw,
   RotateCcw,
   XCircle,
   Activity,
+  ListFilter,
 } from 'lucide-vue-next'
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from '../dashboard/StatusPill.vue'
@@ -352,52 +328,27 @@ function domainMeta(domain) {
   return getTaskDomainMeta(domain)
 }
 
-const METRIC_LABEL_MAP = {
-  RJ: 'RJ 号',
-  输出: '作品目录',
-  此前失败: '失败次数',
-  问题作品: '问题记录',
-  目标库: '目标库存',
-  下载: '下载字幕',
-  写入: '写入字幕',
-  来源字幕: '候选字幕',
-  可执行候选: '可配对目录',
-  候选目录: '候选目录',
-  下载文件: '下载文件',
-  失败文件: '失败文件',
-  已上传: '已上传',
-  上传大小: '上传大小',
-  平均上传: '平均速度',
-  耗时: '耗时',
-  DLsite: 'DLsite 作品',
-  可下载: '可下载',
-  本地: '本地已有',
-  缺失: '服务器缺失',
+function getTreeRowIconComponent(entry) {
+  if (entry?.type === 'dir') return Folder
+  const label = String(entry?.label || '').toLowerCase()
+  if (/\.(wav|flac|mp3|m4a|ogg|aac|wma)$/.test(label)) return Music
+  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc)$/.test(label)) return FileText
+  return File
 }
 
-function getMetricLabel(label) {
-  const raw = String(label || '').trim()
-  return METRIC_LABEL_MAP[raw] || raw || '指标'
+function getTreeRowIconClass(entry) {
+  if (entry?.type === 'dir') return 'icon-folder'
+  const label = String(entry?.label || '').toLowerCase()
+  if (/\.(wav|flac)$/.test(label)) return 'icon-audio-lossless'
+  if (/\.(mp3|m4a|ogg|aac|wma)$/.test(label)) return 'icon-audio'
+  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc)$/.test(label)) return 'icon-text'
+  return 'icon-file'
 }
 
-function getMetricValue(metric) {
-  const label = String(metric?.label || '').trim()
-  const value = String(metric?.value ?? '').trim()
-  if (!value) return '—'
-  if (label === '此前失败' && !value.includes('次')) return `${value} 次`
-  if (label === '问题作品' && /^\d+$/.test(value)) return `${value} 条`
-  return value
-}
-
-function isCompactMetric(metric) {
-  const label = String(metric?.label || '').trim()
-  const value = String(metric?.value ?? '').trim()
-  return label === 'RJ' || /^[\d.]+\s*[\w%次条]*$/i.test(value) || value.length <= 12
-}
-
-function getMetricItemClass(metric) {
-  return isCompactMetric(metric) ? 'task-metric-item--compact' : 'task-metric-item--wide'
-}
+const treeFilterOptions = [
+  { value: 'all', label: '全部', icon: ListFilter },
+  { value: 'removed', label: '被过滤', icon: XCircle },
+]
 
 const ACTION_ICON_MAP = {
   pause: PauseCircle,
@@ -454,135 +405,85 @@ function actionToneClass(action) {
   animation: detail-fade-up 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
-.task-metrics-strip {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-  overflow: hidden;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 10px;
-  background: #fff;
-}
-
-.task-metric-item {
-  position: relative;
-  min-width: 0;
-  padding: 9px 12px 9px 14px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.8);
-  background: linear-gradient(90deg, rgba(248, 250, 252, 0.9), #fff);
-}
-
-.task-metric-item::before {
-  position: absolute;
-  top: 10px;
-  bottom: 10px;
-  left: 0;
-  width: 3px;
-  border-radius: 0 999px 999px 0;
-  background: #f59e0b;
-  content: '';
-}
-
-.task-metric-item:last-child {
-  border-bottom: 0;
-}
-
-.task-metric-label {
-  display: block;
-  color: #64748b;
-  font-size: 10.5px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.task-metric-value {
-  display: block;
-  min-width: 0;
-  margin-top: 3px;
-  overflow: hidden;
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 800;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-tree-filter,
-.task-tree-toggle {
-  font-family: inherit;
-}
-
-.task-tree-filter {
-  overflow: hidden;
+.task-tree-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 3px;
   border: 1px solid #dbe3ee;
-  border-radius: 11px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.95));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 6px 16px rgba(15, 23, 42, 0.04);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
 }
 
-.task-tree-filter :deep(.el-radio-button__inner) {
+.task-tree-filter-button {
+  display: inline-flex;
   height: 28px;
-  padding: 0 12px;
+  cursor: pointer;
+  align-items: center;
+  gap: 5px;
   border: 0;
-  border-radius: 8px !important;
+  border-radius: 10px;
   background: transparent;
+  padding: 0 10px;
   color: #475569;
   font-size: 11px;
   font-weight: 800;
-  line-height: 28px;
-  box-shadow: none !important;
+  line-height: 1;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.task-tree-filter :deep(.el-radio-button__inner:hover) {
-  transform: translateY(-1px) scale(1.02);
-  background: rgba(255, 255, 255, 0.92);
+.task-tree-filter-button:hover {
+  transform: translateY(-1px) scale(1.03);
+  background: #f8fafc;
   color: #0f172a;
 }
 
-.task-tree-filter :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+.task-tree-filter-button:active {
+  transform: scale(0.96);
+}
+
+.task-tree-filter-button--active {
   background: #0f172a;
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.22) !important;
+  color: #fff;
+  box-shadow: 0 7px 16px rgba(15, 23, 42, 0.2);
+}
+
+.task-tree-filter-button--active:hover {
+  background: #0f172a;
   color: #fff;
 }
 
-.task-tree-filter :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner:hover) {
-  transform: translateY(-1px) scale(1.02);
-  background: #0f172a;
-  color: #fff;
+.task-tree-filter-button__icon {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.task-tree-filter-button:hover .task-tree-filter-button__icon {
+  transform: rotate(-10deg) scale(1.12);
 }
 
 .task-tree-toggle {
+  display: inline-flex;
   height: 32px;
-  padding: 0 13px !important;
-  border-color: #bbf7d0 !important;
-  border-radius: 11px !important;
-  background:
-    radial-gradient(circle at top left, rgba(220, 252, 231, 0.95), rgba(255, 255, 255, 0.98) 68%) !important;
-  color: #047857 !important;
+  cursor: pointer;
+  align-items: center;
+  gap: 6px;
+  padding: 0 13px;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  background: #f0fdf4;
+  color: #047857;
   font-size: 11px;
   font-weight: 800;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 8px 18px rgba(16, 185, 129, 0.1);
+  line-height: 1;
+  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.1);
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.task-tree-toggle :deep(span) {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
 }
 
 .task-tree-toggle:hover {
   transform: translateY(-2px) scale(1.03);
-  border-color: #34d399 !important;
-  background: linear-gradient(180deg, #ecfdf5, #fff) !important;
+  border-color: #34d399;
+  background: #ecfdf5;
   box-shadow: 0 12px 22px rgba(16, 185, 129, 0.16);
 }
 
@@ -598,40 +499,185 @@ function actionToneClass(action) {
   transform: rotate(-12deg) scale(1.12);
 }
 
-@media (min-width: 640px) {
-  .task-metrics-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .task-metric-item {
-    border-right: 1px solid rgba(226, 232, 240, 0.8);
-  }
-
-  .task-metric-item:nth-child(2n) {
-    border-right: 0;
-  }
-
-  .task-metric-item--wide {
-    grid-column: span 2;
-  }
+.task-file-tree-card {
+  position: relative;
+  height: 420px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow:
+    0 10px 28px rgba(15, 23, 42, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
 }
 
-@media (min-width: 1280px) {
-  .task-metrics-strip {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+.task-file-tree-card::before,
+.task-file-tree-card::after {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 18px;
+  pointer-events: none;
+  content: '';
+}
 
-  .task-metric-item:nth-child(2n) {
-    border-right: 1px solid rgba(226, 232, 240, 0.8);
-  }
+.task-file-tree-card::before {
+  top: 0;
+  background: linear-gradient(180deg, #ffffff 0%, rgba(255, 255, 255, 0));
+}
 
-  .task-metric-item:nth-child(3n) {
-    border-right: 0;
-  }
+.task-file-tree-card::after {
+  bottom: 0;
+  background: linear-gradient(0deg, #ffffff 0%, rgba(255, 255, 255, 0));
+}
 
-  .task-metric-item--wide {
-    grid-column: span 2;
-  }
+.task-file-tree {
+  height: 100%;
+  overflow: auto;
+  padding: 10px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
+}
+
+.tree-row {
+  position: relative;
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 7px;
+  padding: 6px 10px 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: rgb(30, 41, 59);
+  cursor: default;
+  transition: background-color 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.tree-row:last-child {
+  margin-bottom: 0;
+}
+
+.tree-row:hover {
+  background: rgba(248, 250, 252, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.84);
+}
+
+.tree-row-filtered {
+  border-color: rgba(226, 232, 240, 0.75);
+  background: rgba(248, 250, 252, 0.78);
+  color: #94a3b8;
+}
+
+.tree-main {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+}
+
+.tree-expander,
+.expander-spacer {
+  width: 20px;
+  flex: 0 0 20px;
+}
+
+.tree-expander {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #38bdf8;
+  cursor: pointer;
+  padding: 2px;
+  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.tree-expander:hover {
+  transform: scale(1.08);
+  background: rgba(224, 242, 254, 0.76);
+  color: #0284c7;
+}
+
+.tree-icon {
+  flex: 0 0 auto;
+}
+
+.icon-folder {
+  color: #f6b73c;
+  fill: rgba(251, 191, 36, 0.22);
+}
+
+.icon-audio-lossless {
+  color: #2563eb;
+}
+
+.icon-audio {
+  color: #7c3aed;
+}
+
+.icon-text {
+  color: #64748b;
+}
+
+.icon-file {
+  color: #94a3b8;
+}
+
+.tree-row-filtered .tree-icon {
+  color: #94a3b8;
+  fill: rgba(148, 163, 184, 0.14);
+}
+
+.tree-name {
+  min-width: 0;
+  overflow: hidden;
+  color: currentColor;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-row-filtered .tree-name {
+  text-decoration: line-through;
+  text-decoration-color: #94a3b8;
+  text-decoration-thickness: 1px;
+}
+
+.tree-filter-badge {
+  display: inline-flex;
+  height: 18px;
+  flex-shrink: 0;
+  align-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #94a3b8;
+  font-size: 9.5px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0 7px;
+}
+
+.tree-size {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  min-width: 72px;
+  margin-left: 16px;
+  color: rgb(148, 163, 184);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 @keyframes detail-fade-up {
@@ -640,14 +686,18 @@ function actionToneClass(action) {
 }
 
 .detail-scroll::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 .detail-scroll::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.4);
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: rgba(148, 163, 184, 0.52);
   border-radius: 999px;
 }
 .detail-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.55);
+  background: rgba(100, 116, 139, 0.68);
+}
+.detail-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 </style>

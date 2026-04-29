@@ -410,7 +410,7 @@ async function refreshTaskCenter(showMessage = false, options = {}) {
     }
 
     if (shouldRefreshDetail(nextItems)) {
-      fetchSelectedItemDetail(selectedItemId.value).catch((error) => {
+      fetchSelectedItemDetail(selectedItemId.value, { silent: true }).catch((error) => {
         console.error('任务详情同步刷新失败:', error)
       })
     }
@@ -434,20 +434,21 @@ async function refreshTaskCenter(showMessage = false, options = {}) {
 }
 
 async function fetchSelectedItemDetail(itemId, options = {}) {
-  const { force = false } = options
+  const { force = false, silent = false } = options
   if (!force && detailLoading.value) return
-  detailLoading.value = true
+  if (!silent) detailLoading.value = true
   try {
     const detail = await taskCenterApi.getItem({ item_id: itemId, _t: Date.now() })
     if (selectedItemId.value === itemId) {
       selectedItemDetail.value = detail || null
-      lastDetailSyncSignature = buildSummarySyncSignature(detail || {})
+      const currentSummary = items.value.find((item) => item.id === itemId)
+      lastDetailSyncSignature = buildSummarySyncSignature(currentSummary || detail || {})
       lastDetailFetchedAt = Date.now()
     }
   } catch (error) {
     console.error('获取任务详情失败:', error)
   } finally {
-    detailLoading.value = false
+    if (!silent) detailLoading.value = false
   }
 }
 
@@ -531,7 +532,7 @@ function buildTreeRows(treeItems = []) {
     const sorted = [...nodes].sort(compareNodes)
     for (const node of sorted) {
       const hasChildren = node.children.length > 0
-      const defaultExpanded = depth < 1
+      const defaultExpanded = true
       const expanded = hasChildren
         ? (treeExpandedState.value[node.key] ?? defaultExpanded)
         : false
@@ -773,70 +774,66 @@ function buildTaskFileTreeSections(item) {
   if (!item) return []
   const metadata = item?.details?.metadata || {}
   const removedItems = mapFilteredItems(item)
-  const filterMode = treeFilterMode.value
-  const sectionDefinitions = []
+  const sourceItems = []
 
   if (Array.isArray(metadata.file_tree_items) && metadata.file_tree_items.length) {
-    sectionDefinitions.push({ key: 'extracted', label: '解压文件树', items: mapFileTreeItems(item) })
+    sourceItems.push(...mapFileTreeItems(item))
   }
   if (Array.isArray(metadata.upload_files) && metadata.upload_files.length) {
-    sectionDefinitions.push({ key: 'upload', label: '新增文件树', items: mapUploadedFiles(item) })
-  } else if (!sectionDefinitions.length && Array.isArray(metadata.uploaded_files) && metadata.uploaded_files.length) {
-    sectionDefinitions.push({ key: 'upload', label: '新增文件树', items: mapUploadedFiles(item) })
+    sourceItems.push(...mapUploadedFiles(item))
+  } else if (Array.isArray(metadata.uploaded_files) && metadata.uploaded_files.length) {
+    sourceItems.push(...mapUploadedFiles(item))
   }
   if (Array.isArray(metadata.download_files) && metadata.download_files.length) {
-    sectionDefinitions.push({ key: 'download', label: '下载文件树', items: mapDownloadFiles(item) })
+    sourceItems.push(...mapDownloadFiles(item))
   }
-  if (!sectionDefinitions.length && removedItems.length) {
-    sectionDefinitions.push({ key: 'removed-only', label: '过滤移除清单', items: [] })
+  if (!sourceItems.length && !removedItems.length) return []
+
+  const mergedMap = new Map()
+  for (const current of sourceItems) {
+    const path = String(current?.relative_path || current?.name || '').replace(/^[/\\]+|[/\\]+$/g, '')
+    if (!path) continue
+    mergedMap.set(path, { ...current, relative_path: path, status: 'default' })
+  }
+  for (const removed of removedItems) {
+    const path = String(removed?.relative_path || removed?.name || '').replace(/^[/\\]+|[/\\]+$/g, '')
+    if (!path) continue
+    const previous = mergedMap.get(path)
+    mergedMap.set(path, { ...(previous || {}), ...removed, relative_path: path, status: 'removed' })
   }
 
-  return sectionDefinitions.map((section) => {
-    const mergedMap = new Map()
-    for (const current of section.items) {
-      const path = String(current?.relative_path || current?.name || '').replace(/^[/\\]+|[/\\]+$/g, '')
-      if (!path) continue
-      mergedMap.set(path, { ...current, relative_path: path })
-    }
-    for (const removed of removedItems) {
-      const path = String(removed?.relative_path || removed?.name || '').replace(/^[/\\]+|[/\\]+$/g, '')
-      if (!path) continue
-      const previous = mergedMap.get(path)
-      mergedMap.set(path, { ...(previous || {}), ...removed, relative_path: path, status: 'removed' })
-    }
-    const mergedItems = Array.from(mergedMap.values())
-    const filtered = mergedItems.filter((entry) => {
-      if (filterMode === 'added') return entry.status === 'added'
-      if (filterMode === 'removed') return entry.status === 'removed'
-      return true
+  const mergedItems = Array.from(mergedMap.values())
+  const removedCount = mergedItems.filter((entry) => entry.status === 'removed').length
+  const effectiveFilterMode = treeFilterMode.value === 'removed' && removedCount > 0 ? 'removed' : 'all'
+  const filtered = effectiveFilterMode === 'removed'
+    ? mergedItems.filter((entry) => entry.status === 'removed')
+    : mergedItems
+  const directoryKeys = new Set()
+  for (const entry of mergedItems) {
+    const rawPath = String(entry?.relative_path || '').replace(/^[/\\]+|[/\\]+$/g, '')
+    if (!rawPath) continue
+    const parts = rawPath.split('/').filter(Boolean)
+    let joined = ''
+    parts.slice(0, -1).forEach((part) => {
+      joined = joined ? `${joined}/${part}` : part
+      directoryKeys.add(joined)
     })
-    const directoryKeys = new Set()
-    for (const entry of mergedItems) {
-      const rawPath = String(entry?.relative_path || '').replace(/^[/\\]+|[/\\]+$/g, '')
-      if (!rawPath) continue
-      const parts = rawPath.split('/').filter(Boolean)
-      let joined = ''
-      parts.slice(0, -1).forEach((part) => {
-        joined = joined ? `${joined}/${part}` : part
-        directoryKeys.add(joined)
-      })
-      if (entry.type === 'dir') directoryKeys.add(rawPath)
-    }
-    const directoryKeyList = Array.from(directoryKeys)
-    const allExpanded = directoryKeyList.length
-      ? directoryKeyList.every((key) => treeExpandedState.value[key] ?? true)
-      : true
-    return {
-      key: section.key,
-      label: section.label,
-      rows: buildTreeRows(filtered),
-      totalCount: mergedItems.length,
-      addedCount: mergedItems.filter((entry) => entry.status === 'added').length,
-      removedCount: mergedItems.filter((entry) => entry.status === 'removed').length,
-      directoryKeys: directoryKeyList,
-      allExpanded,
-    }
-  }).filter((section) => section.rows.length)
+    if (entry.type === 'dir') directoryKeys.add(rawPath)
+  }
+  const directoryKeyList = Array.from(directoryKeys)
+  const allExpanded = directoryKeyList.length
+    ? directoryKeyList.every((key) => treeExpandedState.value[key] ?? true)
+    : true
+  const section = {
+    key: 'file-list',
+    label: '文件列表',
+    rows: buildTreeRows(filtered),
+    totalCount: mergedItems.length,
+    removedCount,
+    directoryKeys: directoryKeyList,
+    allExpanded,
+  }
+  return section.rows.length ? [section] : []
 }
 
 const selectedItemFileTreeSections = computed(() => buildTaskFileTreeSections(selectedItem.value))
