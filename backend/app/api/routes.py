@@ -7638,6 +7638,7 @@ async def asmr_sync_enhanced_start(request: ASMRSyncEnhancedStartRequest):
             metadata={
                 "rjcode": rjcode,
                 "work_title": str(item.get("work_title") or ""),
+                "cover_url": str(item.get("cover_url") or item.get("image_url") or item.get("mainCoverUrl") or ""),
                 "folder_path": str(item.get("folder_path") or ""),
                 "download_mode": "enhanced",
                 "session_id": session_id,
@@ -7789,7 +7790,7 @@ async def asmr_sync_enhanced_session_cancel(session_id: str, request: Request):
             body = await request.json()
         except Exception:
             pass
-        cleanup = bool(body.get("cleanup", False))
+        cleanup = bool(body.get("cleanup", True))
         service = get_asmr_resource_service()
         if cleanup:
             session = await service.cancel_session_with_cleanup(session_id)
@@ -8288,6 +8289,7 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
             metadata={
                 "rjcode": rjcode,
                 "work_title": str(item.get("work_title") or rjcode),
+                "cover_url": str(item.get("cover_url") or item.get("image_url") or item.get("mainCoverUrl") or ""),
                 "folder_path": str(item.get("folder_path") or ""),
                 "download_mode": "enhanced",
                 "session_id": session_id,

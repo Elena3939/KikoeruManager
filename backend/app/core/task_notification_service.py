@@ -170,6 +170,9 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         summary = f'{domain_label}{label_map.get(event_type, event_type)}'
 
     meta = dict(current_task.task_metadata or {})
+    task_kind = (current_task.type.value if hasattr(current_task.type, 'value') else str(current_task.type))
+    if task_kind == 'circle_completion_refresh_selected':
+        title, summary, rjcode = _build_refresh_selected_notification_text(meta, domain_label, label_map.get(event_type, event_type))
     return {
         'title': title,
         'summary': summary,
@@ -183,8 +186,35 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         'business_key': str(meta.get('business_key') or ''),
         'route_path': route_hint.get('path', ''),
         'route_query': route_hint.get('query') or {},
-        'task_kind': (current_task.type.value if hasattr(current_task.type, 'value') else str(current_task.type)),
+        'task_kind': task_kind,
     }
+
+
+def _build_refresh_selected_notification_text(meta: dict, domain_label: str, event_label: str) -> tuple[str, str, str]:
+    """手动刷新选中作品的站内通知文案。"""
+    result = dict(meta.get('refresh_result') or {})
+    items = [item for item in list(result.get('items') or []) if isinstance(item, dict)]
+    selected_count = _safe_int(result.get('selected_count') or meta.get('selected_count') or len(items))
+    refreshed_count = _safe_int(result.get('refreshed_count') or len(items) or selected_count)
+    changed_count = _safe_int(result.get('changed_count') or sum(1 for item in items if item.get('changed')))
+    if len(items) == 1:
+        item = items[0]
+        rjcode = str(item.get('display_rjcode') or item.get('canonical_rjcode') or '').strip().upper()
+        title = str(item.get('title') or rjcode or meta.get('source_label') or '社团作品信息更新').strip()
+        status_text = '有更新' if item.get('changed') else '无变化'
+        summary = f'{domain_label}{event_label}：{rjcode} {status_text}'
+        return title, summary, rjcode
+    circle_name = str(result.get('circle_name') or meta.get('circle_name') or '').strip()
+    title = f'{circle_name} · 已刷新 {refreshed_count} 个作品' if circle_name else f'已刷新 {refreshed_count} 个作品'
+    summary = f'{domain_label}{event_label}：已选 {selected_count} 个，已刷新 {refreshed_count} 个，有更新 {changed_count} 个'
+    return title, summary, ''
+
+
+def _safe_int(value) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
 
 
 async def enqueue_notification_check(task) -> None:

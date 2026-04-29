@@ -375,6 +375,8 @@ def _render_payload_section(payload: dict, section: str) -> str:
             }, payload)
         if section == 'file_tree':
             parts = []
+            if payload.get('rj_work_cards'):
+                parts.append(render_file_tree({'title': '本次作品', 'sourceKey': 'file_tree', 'maxItems': 40}, payload))
             if payload.get('file_tree'):
                 parts.append(render_file_tree({'title': '文件清单', 'sourceKey': 'file_tree', 'maxItems': 40}, payload))
             if payload.get('download_files'):

@@ -44,31 +44,60 @@ def build_recent_logs(task, *, max_lines: int = 30, level: str = "info") -> list
 
 
 def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
-    """为解压 / 入库任务构造业务块 payload。"""
+    """为解压 / 入库任务构造业务块 payload。
+
+    设计：
+      - `file_tree_items` 是 filter_service 返回的 `all_items`，包含解压后所有
+        文件 + 文件夹（不带 status）。
+      - `filtered_items / filtered_files / filtered_dirs` 是被规则过滤掉的子集。
+      - 我们把过滤集合转成 path 集，回填到 `all_items` 行的 `status='filtered'`，
+        保持「全部展示 + 过滤项划线」一致的视觉与任务详情对齐。
+      - 然后用 `_flat_to_tree` 把扁平 path 重建成嵌套目录树，让邮件里的文件树
+        有正常的层级缩进，而不是几十行重复完整路径。
+    """
     meta = dict(getattr(task, "task_metadata", None) or {})
     output_path = str(getattr(task, "output_path", "") or meta.get("final_output_path") or "").strip()
-    file_tree = _normalize_file_tree(meta.get("file_tree_items") or [], output_path)
 
+    raw_items = list(meta.get("file_tree_items") or [])
     filtered_items = list(meta.get("filtered_items") or [])
     filtered_files = list(meta.get("filtered_files") or [])
     filtered_dirs = list(meta.get("filtered_dirs") or [])
-    for item in filtered_items or filtered_files or filtered_dirs:
-        row = _normalize_tree_item(item, status="filtered")
-        if row:
-            file_tree.append(row)
+
+    filtered_set = _build_filtered_path_set(filtered_items, filtered_files, filtered_dirs)
+    flat_rows = _flatten_all_items(raw_items, filtered_set)
+
+    # raw_items 为空（例如未跑过滤）时退回扫盘补一份
+    if not flat_rows and output_path:
+        scan_rows = _normalize_file_tree([], output_path)
+        for row in scan_rows:
+            rel = _norm_rel_path(row.get("path"))
+            if not rel:
+                continue
+            flat_rows.append({
+                "rel": rel,
+                "size": int(row.get("size") or 0),
+                "size_text": row.get("size_text") or "",
+                "status": row.get("status") or "kept",
+                "is_dir": False,
+            })
+
+    # 扁平中带 status 的行 → 嵌套目录树
+    file_tree = _flat_to_tree(flat_rows)
+
+    # 只统计真实保留下来的文件
+    kept_count = sum(1 for row in flat_rows if not row.get("is_dir") and row.get("status") != "filtered")
+    kept_size = sum(int(row.get("size") or 0) for row in flat_rows if not row.get("is_dir") and row.get("status") != "filtered")
 
     stats = {
-        "total_files": _count_files(file_tree) or _count_files_on_disk(output_path),
-        "total_size": _format_bytes(_sum_sizes(file_tree)),
+        "total_files": kept_count or _count_files_on_disk(output_path),
+        "total_size": _format_bytes(kept_size) or (_format_bytes(_sum_size_on_disk(output_path)) if output_path else ""),
         "filtered_count": int(meta.get("filtered_count") or len(filtered_items or filtered_files or filtered_dirs) or 0),
         "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
     }
-    if not stats["total_size"] and output_path:
-        stats["total_size"] = _format_bytes(_sum_size_on_disk(output_path))
 
     result: dict[str, Any] = {
         "stats": stats,
-        "file_tree": file_tree[:120],
+        "file_tree": file_tree[:200],
         "recent_logs": build_recent_logs(task, max_lines=30),
     }
     if error:
@@ -78,22 +107,44 @@ def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
 
 
 def build_notification_extra_for_task(task) -> dict[str, Any]:
-    """从任务详情 metadata 自动抽取邮件业务组件数据。"""
+    """从任务详情 metadata 自动抽取邮件业务组件数据。
+
+    路由优先级说明：
+      `task_metadata.task_domain` 在「从社团补全页触发下载」之类的场景会被强行
+      置为 `circle_completion`（用于任务中心分组），但任务真实 `kind` 仍是
+      `asmr_sync_download`。所以这里**优先按 kind（任务真实类型）路由**，
+      只有 kind 没有命中时才回退到 domain。否则一切走社团补全的下载都会被
+      错误地塞进「社团索引概览」邮件里。
+    """
     meta = dict(getattr(task, "task_metadata", None) or {})
     domain = str(meta.get("task_domain") or "").strip()
     kind = str(meta.get("task_kind") or getattr(getattr(task, "type", None), "value", "") or "").strip()
 
-    if domain == "circle_completion" or kind.startswith("circle_completion"):
-        return build_circle_completion_notification_extra(task)
-
-    if domain == "upload" or kind == "local_library_upload":
-        return build_upload_notification_extra(task)
-
-    if domain == "asmr_sync" or kind == "asmr_sync_download":
+    # ─── 第一优先：按真实 task kind 路由 ───
+    if kind == "asmr_sync_download":
         return build_download_notification_extra(task, title="下载文件")
-
-    if domain == "rj_subtitle" or kind == "rj_subtitle_fetch":
+    if kind == "local_library_upload":
+        return build_upload_notification_extra(task)
+    if kind == "rj_subtitle_fetch":
         return build_subtitle_notification_extra(task)
+    # 仅这两种是真正的「社团补全索引 / 状态刷新」任务，会跑 36 行作品概览
+    if kind == "circle_completion_refresh_selected":
+        return build_circle_refresh_selected_notification_extra(task)
+    if kind == "circle_completion_index":
+        return build_circle_completion_notification_extra(task)
+    # circle_completion_download_batch 是个空壳控制任务，不需要业务块，落到默认分支
+
+    # ─── 兜底：按 domain 路由（kind 未识别时） ───
+    if domain == "upload":
+        return build_upload_notification_extra(task)
+    if domain == "asmr_sync":
+        return build_download_notification_extra(task, title="下载文件")
+    if domain == "rj_subtitle":
+        return build_subtitle_notification_extra(task)
+    if domain == "circle_completion":
+        # 走到这里说明 kind 没明确归类（既不是 index 也不是 download / batch），
+        # 才退回社团概览
+        return build_circle_completion_notification_extra(task)
 
     if any(meta.get(key) for key in ("file_tree_items", "filtered_items", "filtered_files", "filtered_dirs")):
         return build_import_notification_extra(task, error=str(getattr(task, "error_message", "") or ""))
@@ -162,41 +213,148 @@ def build_circle_completion_notification_extra(task) -> dict[str, Any]:
     return extra
 
 
+def build_circle_refresh_selected_notification_extra(task) -> dict[str, Any]:
+    """社团补全手动刷新：只展示本次选中的作品变化。"""
+    meta = dict(getattr(task, "task_metadata", None) or {})
+    result = dict(meta.get("refresh_result") or {})
+    circle_id = str(result.get("circle_id") or meta.get("circle_id") or "").strip()
+    circle_name = str(result.get("circle_name") or meta.get("circle_name") or "").strip()
+    items = list(result.get("items") or [])
+    selected_count = _safe_int(result.get("selected_count")) or _safe_int(meta.get("selected_count")) or len(items)
+    refreshed_count = _safe_int(result.get("refreshed_count")) or len(items)
+    changed_count = _safe_int(result.get("changed_count")) or sum(1 for item in items if isinstance(item, dict) and item.get("changed"))
+    cards = _build_circle_refresh_cards(circle_id, items)
+
+    stats = {
+        "total_files": refreshed_count,
+        "total_size": f"有更新 {changed_count} 个",
+        "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
+        "selected_count": selected_count,
+        "refreshed_count": refreshed_count,
+        "changed_count": changed_count,
+    }
+    diff_items = [
+        {"label": "已选", "old": "", "new": f"{selected_count} 个"},
+        {"label": "已刷新", "old": "", "new": f"{refreshed_count} 个"},
+        {"label": "有更新", "old": "", "new": f"{changed_count} 个"},
+    ]
+    summary = f"{circle_name or circle_id}：本次刷新 {refreshed_count} 个作品，{changed_count} 个有更新"
+    return {
+        "stats": stats,
+        "summary": summary,
+        "circle_name": circle_name,
+        "circle_id": circle_id,
+        "circle_diff": diff_items,
+        "rj_work_cards": cards[:50],
+        "recent_logs": build_recent_logs(task, max_lines=30),
+    }
+
+
 def build_upload_notification_extra(task) -> dict[str, Any]:
     meta = dict(getattr(task, "task_metadata", None) or {})
-    upload_files = [_normalize_tree_item(item, status=str((item or {}).get("status") or "pending")) for item in list(meta.get("upload_files") or []) if item]
-    uploaded_files = [_normalize_tree_item(item, status="completed") for item in list(meta.get("uploaded_files") or []) if item]
-    rows = [row for row in upload_files if row] or [row for row in uploaded_files if row]
+    upload_items = list(meta.get("upload_files") or [])
+    uploaded_items = list(meta.get("uploaded_files") or [])
+    base_items = upload_items or uploaded_items
+    uploaded_set = _build_uploaded_path_set(uploaded_items)
+
+    flat_rows = _items_to_flat_rows(base_items, uploaded_set, default_status="pending" if upload_items else "completed")
+    file_tree = _flat_to_tree(flat_rows)
+
     runtime = dict(meta.get("upload_runtime") or {})
-    total_bytes = _safe_int(runtime.get("total_bytes")) or _sum_sizes(rows)
-    completed_files = _safe_int(runtime.get("completed_files")) or len(uploaded_files)
+    total_bytes = _safe_int(runtime.get("total_bytes")) or sum(int(r.get("size") or 0) for r in flat_rows if not r.get("is_dir"))
+    completed_files = _safe_int(runtime.get("completed_files")) or len(uploaded_items)
     return {
         "stats": {
-            "total_files": len(rows) or completed_files,
+            "total_files": sum(1 for r in flat_rows if not r.get("is_dir")) or completed_files,
             "uploaded_count": completed_files,
             "total_size": _format_bytes(total_bytes),
             "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
         },
-        "upload_files": rows[:160],
+        "upload_files": file_tree[:200],
         "recent_logs": build_recent_logs(task, max_lines=30),
     }
 
 
 def build_download_notification_extra(task, *, title: str = "下载文件") -> dict[str, Any]:
+    """下载邮件 payload。
+
+    设计与任务详情页的「文件清单」对齐：
+      - 把扁平 `download_files` 按相对路径重建成嵌套目录树（与解压链路一致）。
+      - 如果任务带了 `uploaded_files`，把命中的叶子打上 `已上传` badge，
+        在邮件里直接显示对应的标签（与活动详情页一致）。
+    """
     meta = dict(getattr(task, "task_metadata", None) or {})
-    rows = [_normalize_tree_item(item, status=str((item or {}).get("status") or "kept")) for item in list(meta.get("download_files") or []) if item]
-    rows = [row for row in rows if row]
-    failed_count = len(list(meta.get("failed_files") or []))
+    download_items = list(meta.get("download_files") or [])
+    uploaded_items = list(meta.get("uploaded_files") or [])
+    failed_items = list(meta.get("failed_files") or [])
+
+    uploaded_set = _build_uploaded_path_set(uploaded_items)
+    failed_set = _build_uploaded_path_set(failed_items)
+    flat_rows = _items_to_flat_rows(download_items, uploaded_set, failed_set=failed_set, default_status="kept")
+    file_tree = _flat_to_tree(flat_rows)
+    total_bytes = sum(int(r.get("size") or 0) for r in flat_rows if not r.get("is_dir"))
+    work_cards = _build_download_work_cards(task, meta, flat_rows)
+
     return {
         "stats": {
-            "total_files": len(rows) or _safe_int(meta.get("selected_resource_count")),
-            "failed_count": failed_count,
-            "total_size": _format_bytes(_sum_sizes(rows)),
+            "total_files": sum(1 for r in flat_rows if not r.get("is_dir")) or _safe_int(meta.get("selected_resource_count")),
+            "failed_count": len(failed_items),
+            "uploaded_count": sum(1 for r in flat_rows if not r.get("is_dir") and "已上传" in (r.get("badges") or [])),
+            "total_size": _format_bytes(total_bytes),
             "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
         },
-        "download_files": rows[:160],
+        "download_files": file_tree[:200],
+        "download_work_cards": work_cards[:24],
         "recent_logs": build_recent_logs(task, max_lines=30),
     }
+
+
+def _build_download_work_cards(task, meta: dict, flat_rows: list[dict]) -> list[dict]:
+    """为下载完成邮件生成作品卡片：封面、标题、RJ、大小。"""
+    selected_resources = list(meta.get("selected_resources") or [])
+    rjcode = str(meta.get("rjcode") or getattr(task, "rjcode", "") or "").strip().upper()
+    title = str(
+        meta.get("work_title")
+        or meta.get("work_name")
+        or meta.get("title")
+        or meta.get("source_label")
+        or rjcode
+    ).strip()
+    cover_url = str(
+        meta.get("cover_url")
+        or meta.get("mainCoverUrl")
+        or meta.get("main_cover_url")
+        or meta.get("image_url")
+        or ""
+    ).strip()
+    circle_name = str(meta.get("circle_name") or "").strip()
+    if not cover_url:
+        circle_id = str(meta.get("circle_id") or "").strip()
+        canonical = str(meta.get("canonical_rjcode") or rjcode).strip().upper()
+        work_map = _load_circle_work_map(circle_id, [canonical, rjcode])
+        row = work_map.get(canonical) or work_map.get(rjcode) or {}
+        cover_url = str(row.get("image_url") or "").strip()
+        circle_name = circle_name or str(row.get("maker_name") or "").strip()
+
+    resource_bytes = 0
+    for item in selected_resources:
+        if not isinstance(item, dict):
+            continue
+        resource_bytes += _safe_int(item.get("size") or item.get("size_bytes") or item.get("file_size"))
+        cover_url = cover_url or str(item.get("cover_url") or item.get("image_url") or item.get("mainCoverUrl") or "").strip()
+    total_bytes = sum(int(row.get("size") or 0) for row in flat_rows if not row.get("is_dir")) or resource_bytes
+    file_count = sum(1 for row in flat_rows if not row.get("is_dir")) or _safe_int(meta.get("selected_resource_count")) or len(selected_resources)
+
+    if not any([rjcode, title, cover_url, total_bytes, file_count]):
+        return []
+    return [{
+        "rjcode": rjcode,
+        "title": title or rjcode or "下载作品",
+        "cover_url": cover_url,
+        "circle_name": circle_name,
+        "size_text": _format_bytes(total_bytes),
+        "file_count": file_count,
+    }]
 
 
 def build_subtitle_notification_extra(task) -> dict[str, Any]:
@@ -254,6 +412,340 @@ def _load_circle_overview_rows(circle_id: str, *, limit: int = 36) -> list[dict]
             db.close()
     except Exception:
         return []
+
+
+def _build_circle_refresh_cards(circle_id: str, items: list) -> list[dict]:
+    """把刷新结果转成邮件 RJ 卡片，并从 circle_works 补封面。"""
+    enriched = _load_circle_work_map(circle_id, [
+        str((item or {}).get("canonical_rjcode") or (item or {}).get("display_rjcode") or "").strip()
+        for item in items
+        if isinstance(item, dict)
+    ])
+    cards: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        canonical = str(item.get("canonical_rjcode") or "").strip().upper()
+        display = str(item.get("display_rjcode") or canonical).strip().upper()
+        row = enriched.get(canonical) or enriched.get(display) or {}
+        rjcode = display or canonical or str(row.get("display_rjcode") or row.get("canonical_rjcode") or "").strip().upper()
+        title = str(item.get("title") or row.get("title") or rjcode or "刷新作品").strip()
+        changes = []
+        for change in item.get("change_details") or []:
+            if not isinstance(change, dict):
+                continue
+            label = str(change.get("label") or change.get("key") or "").strip()
+            old = str(change.get("old") or "").strip() or "无"
+            new = str(change.get("new") or "").strip() or "无"
+            if label:
+                changes.append(f"{label}: {old} -> {new}")
+        if not changes:
+            changes.append("状态无变化" if not item.get("changed") else "状态已更新")
+        badges = []
+        if item.get("changed"):
+            badges.append("有更新")
+        if item.get("has_kikoeru"):
+            badges.append("服务器已有")
+        if item.get("has_asmr_one"):
+            badges.append("ASMR 可用")
+        cards.append({
+            "rjcode": rjcode or canonical,
+            "title": title,
+            "cover_url": str(row.get("image_url") or item.get("image_url") or item.get("cover_url") or "").strip(),
+            "circle_name": str(row.get("maker_name") or "").strip(),
+            "size_text": " / ".join(badges) if badges else "已刷新",
+            "file_count": _safe_int(item.get("change_count")),
+            "count_label": f"{_safe_int(item.get('change_count'))} 处变化" if _safe_int(item.get("change_count")) else "",
+            "changes": changes[:6],
+        })
+    return cards
+
+
+def _load_circle_work_map(circle_id: str, rjcodes: list[str]) -> dict[str, dict]:
+    codes = {str(code or "").strip().upper() for code in rjcodes if str(code or "").strip()}
+    if not circle_id or not codes:
+        return {}
+    try:
+        from ..models.database import SessionLocal, CircleWork
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(CircleWork)
+                .filter(CircleWork.circle_id == circle_id)
+                .filter(CircleWork.canonical_rjcode.in_(list(codes)))
+                .all()
+            )
+            result: dict[str, dict] = {}
+            for row in rows:
+                data = row.to_dict()
+                for key in (row.canonical_rjcode, row.display_rjcode, row.asmr_available_rjcode):
+                    normalized = str(key or "").strip().upper()
+                    if normalized:
+                        result[normalized] = data
+            return result
+        finally:
+            db.close()
+    except Exception:
+        return {}
+
+
+def _norm_rel_path(value) -> str:
+    """统一规整 relative_path：正斜杠、剥首尾斜杠。"""
+    if not value:
+        return ""
+    s = str(value).replace("\\", "/").strip().strip("/")
+    return s
+
+
+def _build_filtered_path_set(filtered_items: list, filtered_files: list, filtered_dirs: list) -> set[str]:
+    """把 filter_service 返回的过滤集合归一为 relative_path 集。
+
+    filter_service 的 filtered_files / filtered_dirs 只是文件名 / 文件夹名（不带路径），
+    filtered_items 才有完整 relative_path。这里三种都尽量收集，命中任意一种就标记。
+    """
+    out: set[str] = set()
+    for item in filtered_items or []:
+        if isinstance(item, dict):
+            rel = _norm_rel_path(item.get("relative_path") or item.get("path") or item.get("name"))
+            if rel:
+                out.add(rel)
+            name = _norm_rel_path(item.get("name"))
+            if name:
+                out.add(name)
+        elif isinstance(item, str):
+            out.add(_norm_rel_path(item))
+    for name in filtered_files or []:
+        if isinstance(name, str) and name:
+            out.add(_norm_rel_path(name))
+    for name in filtered_dirs or []:
+        if isinstance(name, str) and name:
+            out.add(_norm_rel_path(name))
+    return {x for x in out if x}
+
+
+def _build_uploaded_path_set(items: list) -> set[str]:
+    """从 uploaded_files / failed_files 构建匹配集（rel + basename 都收）。"""
+    out: set[str] = set()
+    for item in items or []:
+        if isinstance(item, dict):
+            rel = _norm_rel_path(item.get("relative_path") or item.get("path") or item.get("upload_path") or item.get("target_path") or item.get("name"))
+            if rel:
+                out.add(rel)
+                out.add(os.path.basename(rel))
+            name = _norm_rel_path(item.get("name"))
+            if name:
+                out.add(name)
+        elif isinstance(item, str):
+            rel = _norm_rel_path(item)
+            if rel:
+                out.add(rel)
+                out.add(os.path.basename(rel))
+    return {x for x in out if x}
+
+
+def _items_to_flat_rows(items: list, uploaded_set: set[str] | None = None, failed_set: set[str] | None = None, default_status: str = "kept") -> list[dict]:
+    """通用：把 download_files / upload_files 之类扁平条目转成 flat row。
+
+    - 命中 `uploaded_set` 的叶子打 `已上传` badge
+    - 命中 `failed_set` 的叶子状态置 `removed` 并打 `下载失败` badge
+    - 其它叶子使用 `default_status`
+    """
+    uploaded_set = uploaded_set or set()
+    failed_set = failed_set or set()
+    rows: list[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            if isinstance(item, str):
+                rel = _norm_rel_path(item)
+                if not rel:
+                    continue
+                base = os.path.basename(rel)
+                badges = []
+                status = default_status
+                if rel in failed_set or base in failed_set:
+                    status = "removed"
+                    badges.append("下载失败")
+                elif rel in uploaded_set or base in uploaded_set:
+                    badges.append("已上传")
+                rows.append({"rel": rel, "size": 0, "size_text": "", "status": status, "is_dir": False, "badges": badges})
+            continue
+        rel = _norm_rel_path(item.get("relative_path") or item.get("path") or item.get("upload_path") or item.get("target_path") or item.get("name"))
+        if not rel:
+            continue
+        kind = (item.get("type") or ("dir" if item.get("children") else "file")).lower()
+        is_dir = kind == "dir"
+        base = _norm_rel_path(item.get("name") or os.path.basename(rel))
+
+        size = item.get("size") or item.get("size_bytes") or 0
+        try:
+            size_int = int(size or 0)
+        except Exception:
+            size_int = 0
+
+        badges: list[str] = []
+        status = item.get("status") or default_status
+        if not is_dir:
+            if rel in failed_set or base in failed_set:
+                status = "removed"
+                badges.append("下载失败")
+            elif rel in uploaded_set or base in uploaded_set:
+                badges.append("已上传")
+
+        rows.append({
+            "rel": rel,
+            "size": size_int,
+            "size_text": item.get("size_text") or (_format_bytes(size_int) if size_int and not is_dir else ""),
+            "status": status,
+            "is_dir": is_dir,
+            "badges": badges,
+        })
+    return rows
+
+
+def _flatten_all_items(items: list, filtered_set: set[str]) -> list[dict]:
+    """把 filter_service.all_items 转成统一扁平 row。
+
+    返回：[{rel, size, size_text, status, is_dir}, ...]
+    is_dir=True 的行表示空目录或被过滤目录，渲染时不计入文件计数。
+    """
+    rows: list[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            if isinstance(item, str):
+                rel = _norm_rel_path(item)
+                if rel:
+                    rows.append({
+                        "rel": rel,
+                        "size": 0,
+                        "size_text": "",
+                        "status": "filtered" if rel in filtered_set or os.path.basename(rel) in filtered_set else "kept",
+                        "is_dir": False,
+                    })
+            continue
+        rel = _norm_rel_path(item.get("relative_path") or item.get("path") or item.get("name"))
+        if not rel:
+            continue
+        kind = (item.get("type") or ("dir" if item.get("children") else "file")).lower()
+        is_dir = kind == "dir"
+        # 文件/目录是否在过滤集合：完整 rel 或末段 name 都查一次
+        name = _norm_rel_path(item.get("name") or os.path.basename(rel))
+        is_filtered = rel in filtered_set or (name and name in filtered_set)
+        size = item.get("size") or item.get("size_bytes") or 0
+        try:
+            size_int = int(size or 0)
+        except Exception:
+            size_int = 0
+        rows.append({
+            "rel": rel,
+            "size": size_int,
+            "size_text": item.get("size_text") or (_format_bytes(size_int) if size_int and not is_dir else ""),
+            "status": "filtered" if is_filtered else "kept",
+            "is_dir": is_dir,
+        })
+    return rows
+
+
+def _flat_to_tree(flat_rows: list[dict]) -> list[dict]:
+    """扁平 path 列表 -> 嵌套目录树。
+
+    给每个目录段建一个节点，文件挂到对应目录下。目录节点的 status 默认 kept，
+    若它本身（rel 完整匹配）出现在 filtered_set 中也会被标 filtered。
+    """
+    if not flat_rows:
+        return []
+
+    # 用 (parent_rel, name) 去重 + 保持顺序
+    root_children: dict = {}
+    # 路径段 -> 节点 dict
+    node_map: dict[str, dict] = {}
+
+    def _ensure_dir(rel: str, status: str = "kept") -> dict:
+        existing = node_map.get(rel)
+        if existing:
+            if status == "filtered":
+                existing["status"] = "filtered"
+            return existing
+        parts = rel.split("/")
+        parent_rel = "/".join(parts[:-1])
+        name = parts[-1]
+        node = {
+            "name": name,
+            "status": status,
+            "_children_map": {},
+            "children": [],
+        }
+        node_map[rel] = node
+        if parent_rel:
+            parent = _ensure_dir(parent_rel, status="kept")
+            if name not in parent["_children_map"]:
+                parent["_children_map"][name] = node
+                parent["children"].append(node)
+        else:
+            if name not in root_children:
+                root_children[name] = node
+        return node
+
+    # 先把所有目录建出来（包括隐含的中间路径）
+    for row in flat_rows:
+        rel = row["rel"]
+        parts = rel.split("/")
+        if row.get("is_dir"):
+            _ensure_dir(rel, status=row.get("status") or "kept")
+        else:
+            # 中间各级目录用 kept 占位（叶子文件本身的 status 单独存）
+            for i in range(1, len(parts)):
+                _ensure_dir("/".join(parts[:i]), status="kept")
+
+    # 再挂文件叶子
+    for row in flat_rows:
+        if row.get("is_dir"):
+            continue
+        rel = row["rel"]
+        parts = rel.split("/")
+        name = parts[-1]
+        leaf = {
+            "path": name,
+            "size": row.get("size") or 0,
+            "size_text": row.get("size_text") or "",
+            "status": row.get("status") or "kept",
+        }
+        if row.get("badges"):
+            leaf["badges"] = list(row["badges"])
+        if len(parts) == 1:
+            # 直接挂根
+            root_children.setdefault(name, leaf)
+            if root_children[name] is not leaf and isinstance(root_children[name], dict) and "children" in root_children[name]:
+                # 重名冲突：忽略叶子
+                continue
+            root_children[name] = leaf
+        else:
+            parent_rel = "/".join(parts[:-1])
+            parent = node_map.get(parent_rel)
+            if parent is not None:
+                parent["children"].append(leaf)
+
+    # 输出：按目录在前 / 文件在后，名字字典序排
+    def _emit(children_iter):
+        dirs, files = [], []
+        for child in children_iter:
+            if isinstance(child, dict) and "children" in child:
+                dirs.append(child)
+            else:
+                files.append(child)
+        dirs.sort(key=lambda n: n.get("name", ""))
+        files.sort(key=lambda n: n.get("path", ""))
+        out = []
+        for d in dirs:
+            children_emitted = _emit(d["children"])
+            out.append({
+                "name": d["name"],
+                "status": d["status"],
+                "children": children_emitted,
+            })
+        out.extend(files)
+        return out
+
+    return _emit(list(root_children.values()))
 
 
 def _normalize_file_tree(items: list, output_path: str) -> list[dict]:

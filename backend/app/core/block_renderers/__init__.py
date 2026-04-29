@@ -187,6 +187,11 @@ def render_file_tree(props: dict, payload: dict) -> str:
     title = _esc(props.get("title") or "文件清单")
     max_items = max(0, int(props.get("maxItems", 30) or 30))
     items = payload.get(source_key) or []
+    card_html = ""
+    if payload.get("rj_work_cards") and source_key in {"file_tree", "download_files"}:
+        return _render_download_work_cards(title, payload.get("rj_work_cards") or [], max_items)
+    if source_key == "download_files" and payload.get("download_work_cards"):
+        card_html = _render_download_work_cards(title, payload.get("download_work_cards") or [], max_items)
     if not items:
         return (
             f'<div style="padding:12px 14px;background:#fafafa;border:1px solid #ececef;'
@@ -194,79 +199,238 @@ def render_file_tree(props: dict, payload: dict) -> str:
             f'{title}：（无数据）</div>\n'
         )
 
-    # 状态色
-    status_colors = {
-        "kept":     ("#1f8f4e", "✓"),
-        "filtered": ("#d97706", "✕"),
-        "new":      ("#0071e3", "+"),
-        "removed":  ("#d93025", "−"),
+    # 状态色 + 文本样式（filtered/removed 加 line-through 与任务详情面板对齐）
+    status_styles = {
+        "kept":     {"color": "#1f8f4e", "marker": "✓", "label_extra": "color:#1d1d1f;"},
+        "filtered": {"color": "#d97706", "marker": "✕", "label_extra": "color:rgba(29,29,31,0.5);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.6);"},
+        "new":      {"color": "#0071e3", "marker": "+", "label_extra": "color:#1d1d1f;"},
+        "removed":  {"color": "#d93025", "marker": "−", "label_extra": "color:rgba(29,29,31,0.5);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.6);"},
     }
 
-    # 扁平化（嵌套 → 扁平 + indent）
-    flat = []
-    def _walk(nodes, depth=0):
-        for n in nodes:
-            if isinstance(n, dict) and "children" in n:
-                flat.append({
-                    "label": n.get("name") or n.get("path") or "",
-                    "size":  n.get("size_text") or "",
-                    "status": n.get("status") or "kept",
-                    "depth": depth,
-                    "is_dir": True,
-                })
-                _walk(n.get("children") or [], depth + 1)
+    # badge 样式（与活动详情页 .entry-inline-badge 视觉对齐）
+    BADGE_STYLE_MAP = {
+        "已上传":   "background:#dcfce7;color:#166534;border:1px solid #86efac;",
+        "下载失败": "background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;",
+    }
+    DEFAULT_BADGE_STYLE = "background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;"
+
+    def _render_badges(badges):
+        if not badges:
+            return ""
+        chunks = []
+        for b in badges:
+            text = str(b or "").strip()
+            if not text:
+                continue
+            extra = BADGE_STYLE_MAP.get(text, DEFAULT_BADGE_STYLE)
+            chunks.append(
+                f'<span style="display:inline-block;margin-left:6px;padding:1px 6px;'
+                f'border-radius:5px;font-size:10.5px;font-weight:600;line-height:1.5;'
+                f'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;'
+                f'{extra}">{_esc(text)}</span>'
+            )
+        return "".join(chunks)
+
+    # ─── 嵌套 <details>/<summary> 渲染 ───
+    # 设计：
+    #   每个目录 = <details open>，summary 是文件夹行；子内容 padding-left:18px。
+    #   每个文件 = <div>，行内右浮动显示大小。
+    #   summary 默认会显示一个 ▶/▼ 三角形（list-item marker），各邮件客户端原生
+    #   支持点击展开/收起。Outlook 桌面会忽略 <details> 但内部 div 仍正常渲染，
+    #   兜底就是全部展开的扁平显示。
+    #
+    # 截断：递归过程中累计计数，到达 max_items 就停掉并尾追"... 还有 N 项"。
+    state = {"emitted": 0, "truncated": False, "skipped": 0}
+
+    file_row_style = (
+        "padding:5px 12px;border-bottom:1px solid #f5f5f7;font-size:12.5px;"
+        "font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.7;"
+    )
+    summary_style = (
+        "cursor:pointer;padding:6px 12px;border-bottom:1px solid #f5f5f7;"
+        "font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
+        "font-weight:600;color:#1d1d1f;line-height:1.7;outline:none;"
+    )
+    details_style = "border:none;margin:0;"
+
+    def _file_row_html(node):
+        label = str(node.get("path") or node.get("name") or "")
+        status = str(node.get("status") or "kept")
+        style = status_styles.get(status, {"color": "#48484a", "marker": "·", "label_extra": "color:#1d1d1f;"})
+        marker_html = (
+            f'<span style="color:{style["color"]};display:inline-block;width:14px;'
+            f'font-weight:600;text-decoration:none;">{style["marker"]}</span>'
+        )
+        size_text = str(node.get("size_text") or "")
+        size_html = (
+            f'<span style="float:right;color:#8e8e93;font-size:11px;'
+            f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(size_text)}</span>'
+            if size_text else ""
+        )
+        badge_html = _render_badges(node.get("badges") or [])
+        return (
+            f'<div style="{file_row_style}{style["label_extra"]}">'
+            f'{size_html}'
+            f'{marker_html}{_esc(label)}{badge_html}'
+            f'</div>'
+        )
+
+    def _dir_html(node, depth):
+        if state["truncated"]:
+            state["skipped"] += 1
+            return ""
+        state["emitted"] += 1
+        label = str(node.get("name") or node.get("path") or "")
+        type_icon = (
+            f'<span style="color:#d97706;display:inline-block;width:18px;'
+            f'font-size:13px;text-align:left;">📁</span>'
+        )
+        size_text = str(node.get("size_text") or "")
+        size_html = (
+            f'<span style="float:right;color:#8e8e93;font-size:11px;font-weight:400;'
+            f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(size_text)}</span>'
+            if size_text else ""
+        )
+        badge_html = _render_badges(node.get("badges") or [])
+        children = node.get("children") or []
+        children_html_chunks = []
+        for child in children:
+            if state["truncated"]:
+                state["skipped"] += 1
+                continue
+            if state["emitted"] >= max_items:
+                state["truncated"] = True
+                state["skipped"] += 1
+                continue
+            if isinstance(child, dict) and "children" in child:
+                children_html_chunks.append(_dir_html(child, depth + 1))
             else:
-                flat.append({
-                    "label": (n.get("path") or n.get("name") or "") if isinstance(n, dict) else str(n),
-                    "size":  (n.get("size_text") or "") if isinstance(n, dict) else "",
-                    "status": (n.get("status") or "kept") if isinstance(n, dict) else "kept",
-                    "depth": depth,
-                    "is_dir": False,
-                })
-    _walk(items)
-
-    truncated = False
-    if len(flat) > max_items:
-        flat = flat[:max_items]
-        truncated = True
-
-    rows = []
-    for it in flat:
-        color, marker = status_colors.get(it["status"], ("#48484a", "·"))
-        indent_px = 16 + it["depth"] * 18
-        weight = "600" if it["is_dir"] else "400"
-        rows.append(
-            f'<tr><td style="padding:5px 12px 5px {indent_px}px;font-size:12.5px;'
-            f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#1d1d1f;'
-            f'border-bottom:1px solid #f5f5f7;font-weight:{weight};">'
-            f'<span style="color:{color};display:inline-block;width:14px;'
-            f'font-weight:600;">{marker}</span>'
-            f'{_esc(it["label"])}'
-            f'</td>'
-            f'<td align="right" style="padding:5px 12px;font-size:11px;'
-            f'color:#8e8e93;border-bottom:1px solid #f5f5f7;'
-            f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">'
-            f'{_esc(it["size"])}</td></tr>'
+                state["emitted"] += 1
+                children_html_chunks.append(_file_row_html(child if isinstance(child, dict) else {"path": str(child)}))
+        children_wrapper = (
+            f'<div style="padding-left:18px;">{"".join(children_html_chunks)}</div>'
+            if children_html_chunks else ""
+        )
+        return (
+            f'<details open style="{details_style}">'
+            f'<summary style="{summary_style}">'
+            f'{size_html}{type_icon}{_esc(label)}{badge_html}'
+            f'</summary>'
+            f'{children_wrapper}'
+            f'</details>'
         )
 
-    if truncated:
-        rows.append(
-            f'<tr><td colspan="2" style="padding:8px 14px;font-size:11px;'
-            f'color:#8e8e93;text-align:center;font-style:italic;">'
-            f'... 还有 {len(payload.get(source_key) or []) - max_items} 项未显示'
-            f'</td></tr>'
+    body_chunks = []
+    for n in items:
+        if state["truncated"]:
+            state["skipped"] += 1
+            continue
+        if state["emitted"] >= max_items:
+            state["truncated"] = True
+            state["skipped"] += 1
+            continue
+        if isinstance(n, dict) and "children" in n:
+            body_chunks.append(_dir_html(n, 0))
+        else:
+            state["emitted"] += 1
+            body_chunks.append(_file_row_html(n if isinstance(n, dict) else {"path": str(n)}))
+
+    if state["truncated"] and state["skipped"] > 0:
+        body_chunks.append(
+            f'<div style="padding:8px 14px;font-size:11px;color:#8e8e93;'
+            f'text-align:center;font-style:italic;border-top:1px solid #f5f5f7;">'
+            f'... 还有 {state["skipped"]} 项未显示'
+            f'</div>'
         )
 
-    return (
+    tree_html = (
         f'<div style="margin:10px 0;">'
         f'<div style="font-size:11px;font-weight:600;color:#8e8e93;'
         f'letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;'
         f'padding:0 4px;">{title}</div>'
-        f'<table width="100%" cellpadding="0" cellspacing="0" border="0" '
-        f'style="background:#fff;border:1px solid #ececef;border-radius:10px;'
-        f'overflow:hidden;border-collapse:separate;">'
-        f'{"".join(rows)}'
-        f'</table></div>\n'
+        f'<div style="background:#fff;border:1px solid #ececef;border-radius:10px;'
+        f'overflow:hidden;">'
+        f'{"".join(body_chunks)}'
+        f'</div></div>\n'
+    )
+    return card_html + tree_html
+
+
+def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
+    """下载列表专用图文卡片。"""
+    rows = []
+    shown = 0
+    for item in items:
+        if shown >= max_items:
+            break
+        if not isinstance(item, dict):
+            continue
+        shown += 1
+        cover_url = _esc(item.get("cover_url") or "")
+        rjcode = _esc(item.get("rjcode") or "RJ")
+        work_title = _esc(item.get("title") or rjcode or "下载作品")
+        circle_name = _esc(item.get("circle_name") or "")
+        size_text = _esc(item.get("size_text") or "")
+        file_count = int(item.get("file_count") or 0)
+        file_text = _esc(item.get("count_label") or (f"{file_count} 个文件" if file_count else ""))
+        meta_chunks = [text for text in [circle_name, size_text, file_text] if text]
+        meta_html = " · ".join(meta_chunks) if meta_chunks else "下载完成"
+        changes = [str(change or "").strip() for change in (item.get("changes") or []) if str(change or "").strip()]
+        changes_html = ""
+        if changes:
+            changes_html = (
+                f'<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;'
+                f'border-radius:8px;color:#334155;font-size:12px;line-height:1.6;">'
+                + "".join(f'<div>{_esc(change)}</div>' for change in changes[:6])
+                + f'</div>'
+            )
+        image_html = (
+            f'<img src="{cover_url}" alt="{work_title}" width="180" height="180" '
+            f'style="display:block;width:180px;height:180px;object-fit:cover;border:0;">'
+            if cover_url else
+            f'<div style="width:180px;height:180px;background:#f5f5f7;color:#8e8e93;'
+            f'font-size:12px;line-height:180px;text-align:center;">无封面</div>'
+        )
+        rows.append(
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="margin:0 0 14px;border-collapse:collapse;">'
+            f'<tr>'
+            f'<td width="180" valign="top" style="padding:0 16px 0 0;">'
+            f'<table width="180" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">'
+            f'<tr><td>{image_html}</td></tr>'
+            f'<tr><td style="background:#fff3cf;color:#c2410c;font-size:12px;line-height:20px;'
+            f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">{rjcode}</td></tr>'
+            f'</table>'
+            f'</td>'
+            f'<td valign="top" style="padding:2px 0 0 0;">'
+            f'<div style="font-size:18px;line-height:1.35;font-weight:700;color:#0f172a;'
+            f'margin:0 0 8px 0;">{work_title}</div>'
+            f'<div style="font-size:13px;line-height:1.6;color:#475569;margin:0 0 10px 0;">{meta_html}</div>'
+            f'<div style="font-size:20px;line-height:1.2;font-weight:700;color:#111827;">{size_text or "大小未知"}</div>'
+            f'{changes_html}'
+            f'</td>'
+            f'</tr>'
+            f'</table>'
+        )
+    if not rows:
+        return (
+            f'<div style="padding:12px 14px;background:#fafafa;border:1px solid #ececef;'
+            f'border-radius:8px;font-size:12px;color:#8e8e93;margin:8px 0;">'
+            f'{title}：（无数据）</div>\n'
+        )
+    more = max(0, len(items) - shown)
+    more_html = (
+        f'<div style="padding:8px 14px;font-size:11px;color:#8e8e93;text-align:center;'
+        f'font-style:italic;border-top:1px solid #f5f5f7;">... 还有 {more} 项未显示</div>'
+        if more else ""
+    )
+    return (
+        f'<div style="margin:10px 0;">'
+        f'<div style="font-size:11px;font-weight:600;color:#8e8e93;letter-spacing:0.06em;'
+        f'text-transform:uppercase;margin-bottom:8px;padding:0 4px;">{title}</div>'
+        f'<div style="background:#fff;border:1px solid #ececef;border-radius:10px;'
+        f'padding:14px 14px 0;overflow:hidden;">{"".join(rows)}{more_html}</div>'
+        f'</div>\n'
     )
 
 

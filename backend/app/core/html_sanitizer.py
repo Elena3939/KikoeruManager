@@ -13,32 +13,29 @@ _ALLOWED_TAGS = frozenset({
     "table", "thead", "tbody", "tr", "th", "td",
     "img",
     "hr", "blockquote", "pre", "code",
+    "details", "summary",
 })
 
 _ALLOWED_ATTRS = frozenset({
     "style", "href", "target", "rel", "class", "align", "valign",
     "colspan", "rowspan", "width", "height", "bgcolor",
     "border", "cellpadding", "cellspacing",
-    "src", "alt",
+    "src", "alt", "open",
     # 变量 pill 标记：富文本里的变量节点用 data-var 存储变量 key，
     # 后端在 substitute 前会还原为 {key}
     "data-var",
 })
 
-# 危险完整标签
 _DANGEROUS_BLOCK_RE = re.compile(
     r'<\s*(script|iframe|object|embed|form|input|textarea|select|button|link|meta|base|svg|math)\b'
     r'[^>]*>.*?<\s*/\s*\1\s*>',
     re.IGNORECASE | re.DOTALL,
 )
-# 自闭合危险标签
 _DANGEROUS_SELF_RE = re.compile(
     r'<\s*(script|iframe|object|embed|form|input|link|meta|base)\b[^>]*/?>',
     re.IGNORECASE,
 )
-# 事件属性
 _EVENT_ATTR_RE = re.compile(r'\s+on\w+\s*=\s*(?:["\'][^"\']*["\']|\S+)', re.IGNORECASE)
-# javascript: href
 _JAVASCRIPT_HREF_RE = re.compile(r'(href\s*=\s*["\'])javascript:[^"\']*(["\'])', re.IGNORECASE)
 
 
@@ -56,7 +53,6 @@ def sanitize_html(html_content: str) -> str:
         )
     except ImportError:
         pass
-    # 回退：正则清洗
     result = _DANGEROUS_BLOCK_RE.sub("", html_content)
     result = _DANGEROUS_SELF_RE.sub("", result)
     result = _EVENT_ATTR_RE.sub("", result)

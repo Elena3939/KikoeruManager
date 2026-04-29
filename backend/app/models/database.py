@@ -808,7 +808,6 @@ class NotificationTemplate(Base):
     event_types = Column(JSON, default=list)
     task_domains = Column(JSON, default=list)
     editor_mode = Column(String(20), default='html')
-    blocks = Column(JSON, default=list)
     subject_template = Column(Text, default='')
     html_template = Column(Text, default='')
     text_template = Column(Text, default='')
@@ -827,7 +826,6 @@ class NotificationTemplate(Base):
             'event_types': self.event_types or [],
             'task_domains': self.task_domains or [],
             'editor_mode': self.editor_mode,
-            'blocks': self.blocks or [],
             'subject_template': self.subject_template or '',
             'html_template': self.html_template or '',
             'text_template': self.text_template or '',
@@ -1179,9 +1177,6 @@ def init_db():
                 )
             )
 
-        # === notification_templates.blocks 列迁移 ===
-        _migrate_notification_templates(conn)
-
         # === Phase 2: activity_logs 迁移 ===
         _migrate_activity_logs_phase2(conn)
 
@@ -1189,18 +1184,6 @@ def init_db():
         _migrate_activity_log_daily_stats(conn)
 
     _db_logger.info(f"[数据库] 表创建完成")
-
-
-def _migrate_notification_templates(conn) -> None:
-    """notification_templates 表增量迁移：新增 blocks 列（JSON）。"""
-    try:
-        result = conn.execute(text("PRAGMA table_info(notification_templates)"))
-        existing = {row[1] for row in result.fetchall()}
-        if 'blocks' not in existing:
-            conn.execute(text("ALTER TABLE notification_templates ADD COLUMN blocks JSON DEFAULT '[]'"))
-            _db_logger.info("[数据库] notification_templates 新增列: blocks")
-    except Exception:
-        _db_logger.warning("[数据库] notification_templates 迁移失败（非致命）", exc_info=True)
 
 
 def _migrate_activity_log_daily_stats(conn) -> None:
