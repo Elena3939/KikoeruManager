@@ -874,7 +874,10 @@
                     {{ isEntrySectionExpanded(section.key) ? '收起' : '展开' }}
                   </button>
                 </div>
-                <div v-show="isEntrySectionExpanded(section.key)" class="entry-tree-box">
+                <div
+                  v-if="isEntrySectionExpanded(section.key) && flattenEntryRows(section.rows).length"
+                  class="entry-tree-box"
+                >
                   <div
                     v-for="item in flattenEntryRows(section.rows)"
                     :key="`${section.key}-${item.key}`"
@@ -896,10 +899,8 @@
                         >
                           <ChevronRight :size="12" :stroke-width="2.6" />
                         </button>
-                        <span v-else class="tree-branch" aria-hidden="true">{{ item.depth ? '└' : '•' }}</span>
-                        <span :class="['entry-icon', entryIconClass(item), { 'is-deleted': item.variant === 'deleted' }]">
-                          <component :is="resolveEntryIcon(item)" :size="14" />
-                        </span>
+                        <span v-else class="tree-expander-spacer" />
+                        <component :is="resolveEntryIcon(item)" :size="20" :class="['entry-icon', entryIconClass(item), { 'is-deleted': item.variant === 'deleted' }]" />
                         <div class="entry-main-copy">
                           <div class="entry-title-row">
                             <span :class="['entry-name', { 'is-deleted': item.variant === 'deleted', 'is-failed': item.variant === 'failed' }]">{{ item.label }}</span>
@@ -917,6 +918,12 @@
                     </div>
                   </div>
                 </div>
+                <AppEmptyState
+                  v-else-if="isEntrySectionExpanded(section.key)"
+                  class="entry-tree-empty"
+                  description="暂无文件树内容"
+                  size="sm"
+                />
               </div>
             </div>
           </div>
@@ -2959,7 +2966,7 @@ function uploadMetricCards(row) {
 
 function mapFilterDeleteItems(items) {
   if (!Array.isArray(items)) return []
-  return items.slice(0, 120).map((item) => ({
+  return items.map((item) => ({
     key: item?.relative_path || item?.path || item?.name || '',
     path: item?.path || '',
     relative_path: item?.relative_path || '',
@@ -2968,6 +2975,22 @@ function mapFilterDeleteItems(items) {
     sizeText: item?.size !== undefined && item?.size !== null ? formatBytes(item.size) : '',
     error: item?.error || ''
   }))
+}
+
+function normalizeEntryTreePath(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+}
+
+function buildFilteredPathSet(items) {
+  const out = new Set()
+  for (const item of Array.isArray(items) ? items : []) {
+    const path = normalizeEntryTreePath(item?.relative_path || item?.path || item?.name || '')
+    if (path) out.add(path.toLowerCase())
+  }
+  return out
 }
 
 function buildFilterDeleteTreeRows(items) {
@@ -3149,13 +3172,21 @@ function importFilteredEntrySections(row) {
   if (!['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return []
 
   const rawItems = Array.isArray(d.filtered_items) ? d.filtered_items : []
-  if (!rawItems.length) return []
+  const rawTreeItems = Array.isArray(d.file_tree_items) ? d.file_tree_items : []
+  if (!rawTreeItems.length && !rawItems.length) return []
 
-  const items = mapFilterDeleteItems(rawItems)
+  const filteredPathSet = buildFilteredPathSet(rawItems)
+  const baseItems = rawTreeItems.length ? rawTreeItems : rawItems
+  const items = mapFilterDeleteItems(baseItems).map((item) => {
+    const path = normalizeEntryTreePath(item.relative_path || item.path || item.name)
+    return filteredPathSet.has(path.toLowerCase())
+      ? { ...item, variant: 'deleted' }
+      : item
+  })
   const total = Number(d.filtered_count || rawItems.length || 0)
   return [{
-    key: 'import-filtered-items',
-    title: `过滤移除项（${total}）`,
+    key: 'import-file-tree',
+    title: total > 0 ? `文件树（过滤 ${total}）` : `文件树（${items.length}）`,
     rows: buildFilterDeleteTreeRows(items)
   }]
 }
@@ -3490,10 +3521,14 @@ function flattenEntryRows(rows) {
   const flattened = []
   const visit = (items, depth = 0) => {
     for (const item of Array.isArray(items) ? items : []) {
-      const current = { ...item, depth }
+      // 子层级节点不一定带 expandable 字段（buildFilterDeleteTreeRows 只在
+      // 根节点上 push 了 expandable），这里按 children.length 现场推导，
+      // 让任意深度的目录都能继续展开 / 显示文件。
+      const hasChildren = Array.isArray(item.children) && item.children.length > 0
+      const current = { ...item, depth, expandable: hasChildren }
       flattened.push(current)
-      if (current.expandable && isEntryTreeRowExpanded(current.key) && current.children?.length) {
-        visit(current.children, depth + 1)
+      if (hasChildren && isEntryTreeRowExpanded(current.key)) {
+        visit(item.children, depth + 1)
       }
     }
   }
@@ -6017,32 +6052,41 @@ watch(selectedRow, (row) => {
 }
 
 .entry-tree-box {
-  max-height: 360px;
+  height: 360px;
   overflow: auto;
   overflow-x: hidden;
-  padding: 8px;
-  border-radius: 14px;
-  background: #f7f8fb;
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.06);
+  padding: 0 8px 0 0;
+  background: transparent;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
+}
+
+.entry-tree-empty {
+  min-height: 260px;
 }
 
 .tree-row-shell {
-  border-bottom: 1px solid rgba(29, 29, 31, 0.05);
+  margin-bottom: 7px;
 }
 
 .tree-row-shell:last-child {
-  border-bottom: none;
+  margin-bottom: 0;
 }
 
 .tree-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: start;
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
   padding-top: 6px;
+  padding-right: 10px;
   padding-bottom: 6px;
   cursor: default;
-  transition: none;
+  transition: background-color 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
 
 .tree-row.is-expandable {
@@ -6060,6 +6104,13 @@ watch(selectedRow, (row) => {
   background: transparent;
 }
 
+.tree-row:hover {
+  border-radius: 6px;
+  border-color: rgba(186, 230, 253, 0.7);
+  background: rgba(240, 249, 255, 0.45);
+  box-shadow: none;
+}
+
 .tree-main {
   display: flex;
   align-items: center;
@@ -6067,34 +6118,28 @@ watch(selectedRow, (row) => {
   min-width: 0;
 }
 
-.tree-branch {
-  color: rgba(29, 29, 31, 0.35);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  flex: 0 0 auto;
-}
-
 .tree-inline-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(255, 255, 255, 0.9);
-  color: #64748b;
-  flex: 0 0 auto;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #38bdf8;
+  flex: 0 0 20px;
   cursor: pointer;
   position: relative;
   z-index: 2;
-  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
 }
 
 .tree-inline-toggle:hover {
-  background: rgba(255, 255, 255, 0.98);
-  border-color: rgba(148, 163, 184, 0.32);
-  color: #334155;
+  transform: scale(1.08);
+  background: rgba(224, 242, 254, 0.76);
+  color: #0284c7;
 }
 
 .tree-inline-toggle.expanded svg {
@@ -6105,80 +6150,74 @@ watch(selectedRow, (row) => {
   transition: transform 0.18s ease;
 }
 
-.entry-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.tree-expander-spacer {
   width: 20px;
-  height: 20px;
-  border-radius: 6px;
+  flex: 0 0 20px;
+}
+
+.entry-icon {
   flex: 0 0 auto;
 }
 
 .entry-icon.is-dir {
-  background: rgba(239, 246, 255, 0.92);
-  color: #60a5fa;
+  color: #f6b73c;
+  fill: rgba(251, 191, 36, 0.22);
 }
 
 .entry-icon.is-success {
-  background: rgba(236, 253, 245, 0.95);
   color: #059669;
 }
 
 .entry-icon.is-warning {
-  background: rgba(255, 241, 242, 0.98);
   color: #e11d48;
 }
 
 .entry-icon.is-file {
-  background: rgba(248, 250, 252, 0.92);
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .entry-icon.is-deleted {
-  background: rgba(241, 245, 249, 0.9);
-  color: rgba(71, 85, 105, 0.72);
+  color: #94a3b8;
+  fill: rgba(148, 163, 184, 0.14);
 }
 
 .entry-icon.is-audio-blue {
-  background: rgba(219, 234, 254, 0.92);
-  color: #3b82f6;
+  color: #2563eb;
 }
 
 .entry-icon.is-audio-purple {
-  background: rgba(237, 233, 254, 0.92);
-  color: #8b5cf6;
+  color: #7c3aed;
 }
 
 .entry-icon.is-image {
-  background: rgba(254, 242, 242, 0.96);
   color: #f97316;
 }
 
 .entry-icon.is-video {
-  background: rgba(238, 242, 255, 0.96);
   color: #6366f1;
 }
 
 .entry-icon.is-pdf {
-  background: rgba(254, 242, 242, 0.96);
   color: #dc2626;
 }
 
 .entry-icon.is-archive {
-  background: rgba(255, 247, 237, 0.96);
   color: #d97706;
 }
 
 .entry-icon.is-text {
-  background: rgba(241, 245, 249, 0.96);
-  color: #475569;
+  color: #64748b;
 }
 
 .entry-name {
   min-width: 0;
   color: #1d1d1f;
-  word-break: break-word;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .entry-name.is-deleted {
@@ -6197,6 +6236,7 @@ watch(selectedRow, (row) => {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  flex: 1;
 }
 
 .entry-title-row {
@@ -6204,7 +6244,7 @@ watch(selectedRow, (row) => {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .entry-meta-text {
@@ -6233,15 +6273,18 @@ watch(selectedRow, (row) => {
 }
 
 .entry-size {
-  color: rgba(29, 29, 31, 0.55);
+  flex: 0 0 auto;
+  min-width: 72px;
+  margin-left: 16px;
+  color: rgb(148, 163, 184);
   font-size: 12px;
-  white-space: normal;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   text-align: right;
-  word-break: break-word;
 }
 
 .entry-error {
-  grid-column: 1 / -1;
+  flex: 0 0 100%;
   color: #d70015;
   font-size: 12px;
   word-break: break-word;
