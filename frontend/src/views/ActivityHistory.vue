@@ -219,6 +219,7 @@
                     <RefreshCw v-else-if="row.category === 'asmr_sync'" :size="12" :stroke-width="2.5" />
                     <Upload v-else-if="row.category === 'upload'" :size="12" :stroke-width="2.5" />
                     <Users v-else-if="row.category === 'circle_completion'" :size="12" :stroke-width="2.5" />
+                    <Mail v-else-if="row.category === 'email_watcher'" :size="12" :stroke-width="2.5" />
                     <Tag v-else :size="12" :stroke-width="2.5" />
                     {{ row.category_label }}
                   </span>
@@ -314,7 +315,7 @@
         </el-table-column>
         <el-table-column prop="source_path" label="对象 / 路径" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="mono truncate">{{ compactPath(row.source_path) }}</span>
+            <span class="mono truncate">{{ compactPath(displayObjectPath(row)) }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -624,6 +625,53 @@
               </div>
             </div>
           </div>
+          <div v-if="selectedEmailWatcherBatchModel" class="expand-item span-2">
+            <div class="ek">新作卡片</div>
+            <div class="email-watch-card">
+              <div class="email-watch-head">
+                <div>
+                  <div class="email-watch-title">监视新作</div>
+                  <div class="email-watch-desc">
+                    {{ selectedEmailWatcherBatchModel.circleNamesText || '本批次未解析到社团名' }}
+                  </div>
+                </div>
+                <div class="email-watch-metrics">
+                  <span class="email-watch-metric">邮件 {{ selectedEmailWatcherBatchModel.mailCount }}</span>
+                  <span class="email-watch-metric">新作 {{ selectedEmailWatcherBatchModel.totalCount }}</span>
+                  <span class="email-watch-metric is-success">成功 {{ selectedEmailWatcherBatchModel.successCount }}</span>
+                  <span v-if="selectedEmailWatcherBatchModel.failedCount" class="email-watch-metric is-failed">失败 {{ selectedEmailWatcherBatchModel.failedCount }}</span>
+                </div>
+              </div>
+              <div v-if="selectedEmailWatcherBatchModel.mailSubjects.length" class="email-watch-subjects">
+                <span
+                  v-for="subject in selectedEmailWatcherBatchModel.mailSubjects"
+                  :key="subject"
+                  class="email-watch-subject-pill"
+                >{{ subject }}</span>
+              </div>
+              <div class="email-watch-grid">
+                <article
+                  v-for="item in selectedEmailWatcherBatchModel.items"
+                  :key="`${item.rjcode}-${item.productUrl || item.title}`"
+                  class="email-watch-item"
+                  :class="`is-${item.statusKey}`"
+                >
+                  <div class="email-watch-item-top">
+                    <span class="email-watch-rj mono">{{ item.rjcode || '—' }}</span>
+                    <span class="email-watch-status" :class="`is-${item.statusKey}`">{{ item.statusLabel }}</span>
+                  </div>
+                  <div class="email-watch-item-title">{{ item.title || item.rjcode || '未命名作品' }}</div>
+                  <div class="email-watch-item-circle">{{ item.circleName || '未知社团' }}</div>
+                  <div class="email-watch-item-meta">
+                    <span v-if="item.priceText" class="email-watch-meta-pill">{{ item.priceText }}</span>
+                    <span v-if="item.workType" class="email-watch-meta-pill">{{ item.workType }}</span>
+                    <span v-if="item.indexMode" class="email-watch-meta-pill">{{ item.indexMode }}</span>
+                  </div>
+                  <div class="email-watch-item-note">{{ item.note }}</div>
+                </article>
+              </div>
+            </div>
+          </div>
           <div v-if="pairWorkbenchModel(selectedRow)" class="expand-item span-2 pair-workbench-block">
             <div class="pair-workbench-card" :class="{ 'is-awaiting': pairWorkbenchModel(selectedRow).awaiting }">
               <div class="pair-workbench-main">
@@ -900,18 +948,20 @@
                           <ChevronRight :size="12" :stroke-width="2.6" />
                         </button>
                         <span v-else class="tree-expander-spacer" />
-                        <component :is="resolveEntryIcon(item)" :size="20" :class="['entry-icon', entryIconClass(item), { 'is-deleted': item.variant === 'deleted' }]" />
-                        <div class="entry-main-copy">
-                          <div class="entry-title-row">
-                            <span :class="['entry-name', { 'is-deleted': item.variant === 'deleted', 'is-failed': item.variant === 'failed' }]">{{ item.label }}</span>
-                            <span
-                              v-for="badge in item.badges || []"
-                              :key="`${item.key}-${badge}`"
-                              class="entry-inline-badge"
-                            >{{ badge }}</span>
+                        <span class="entry-main-target" :class="{ 'is-deleted': item.variant === 'deleted' }">
+                          <component :is="resolveEntryIcon(item)" :size="20" :class="['entry-icon', entryIconClass(item), { 'is-deleted': item.variant === 'deleted' }]" />
+                          <div class="entry-main-copy">
+                            <div class="entry-title-row">
+                              <span :class="['entry-name', { 'is-deleted': item.variant === 'deleted', 'is-failed': item.variant === 'failed' }]">{{ item.label }}</span>
+                              <span
+                                v-for="badge in item.badges || []"
+                                :key="`${item.key}-${badge}`"
+                                class="entry-inline-badge"
+                              >{{ badge }}</span>
+                            </div>
+                            <span v-if="item.metaText" class="entry-meta-text">{{ item.metaText }}</span>
                           </div>
-                          <span v-if="item.metaText" class="entry-meta-text">{{ item.metaText }}</span>
-                        </div>
+                        </span>
                       </div>
                       <span v-if="item.sizeText" class="entry-size">{{ item.sizeText }}</span>
                       <span v-if="item.error" class="entry-error">{{ item.error }}</span>
@@ -964,6 +1014,7 @@ import {
   Image as ImageIcon,
   LayoutGrid,
   Link,
+  Mail,
   MinusCircle,
   Music,
   Package,
@@ -1016,6 +1067,7 @@ const categoryConfigs = {
   asmr_sync: { icon: RefreshCw, color: 'text-indigo-600', bg: 'bg-indigo-50/80', border: 'border-indigo-100/50' },
   upload: { icon: Upload, color: 'text-sky-600', bg: 'bg-sky-50/80', border: 'border-sky-100/60' },
   circle_completion: { icon: Users, color: 'text-blue-600', bg: 'bg-blue-50/80', border: 'border-blue-100/50' },
+  email_watcher: { icon: Mail, color: 'text-cyan-600', bg: 'bg-cyan-50/80', border: 'border-cyan-100/50' },
   default: { icon: Tag, color: 'text-slate-600', bg: 'bg-slate-50/80', border: 'border-slate-100/50' }
 }
 
@@ -1099,6 +1151,7 @@ const categoryWithPct = computed(() =>
 
 const selectedCircleCompletionIndexModel = computed(() => circleCompletionIndexModel(selectedRow.value))
 const selectedCircleCompletionRefreshModel = computed(() => circleCompletionRefreshModel(selectedRow.value))
+const selectedEmailWatcherBatchModel = computed(() => emailWatcherBatchModel(selectedRow.value))
 const filteredCircleIndexRows = computed(() => {
   const rows = Array.isArray(selectedCircleCompletionIndexModel.value?.rows) ? selectedCircleCompletionIndexModel.value.rows : []
   const query = String(compareSearchQuery.value || '').trim().toLowerCase()
@@ -1554,6 +1607,11 @@ function humanAction(row) {
     }
     if (status === 'success') return '社团补全完成'
     if (status === 'failed') return '社团补全失败'
+  }
+  if (category === 'email_watcher') {
+    if (action === 'fetch_check') return '监视新作'
+    if (action === 'circle_index_triggered') return status === 'success' ? '新作索引完成' : '新作索引失败'
+    return '邮件监听'
   }
 
   // 回退：用中文状态 + 英文动作描述
@@ -2116,6 +2174,20 @@ function compactPath(p) {
   const prefix = s.slice(0, 28)
   const suffix = s.slice(-26)
   return `${prefix}…${suffix}`
+}
+
+function displayObjectPath(row) {
+  if (!row) return ''
+  if (String(row.category || '').trim() === 'email_watcher') {
+    const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+    const circleNames = Array.isArray(detail.circle_names) ? detail.circle_names.map(item => String(item || '').trim()).filter(Boolean) : []
+    if (circleNames.length) return circleNames.join(' / ')
+    if (String(detail.circle_name || detail.mail_circle_name || '').trim()) return String(detail.circle_name || detail.mail_circle_name || '').trim()
+    const subjects = Array.isArray(detail.mail_summaries) ? detail.mail_summaries : []
+    const firstSubject = String(subjects[0]?.subject || detail.mail_subject || '').trim()
+    if (firstSubject) return firstSubject
+  }
+  return String(row.source_path || '').trim()
 }
 
 function normalizeRjcode(value) {
@@ -3324,6 +3396,69 @@ function activityEntrySectionTitle(row) {
   if (String(row?.category || '').trim() === 'pipeline_delete') return '文件树'
   if (['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return '处理清单'
   return '删除清单'
+}
+
+function emailWatcherBatchModel(row) {
+  if (!row || String(row.category || '').trim() !== 'email_watcher') return null
+  if (String(row.action || '').trim() !== 'fetch_check') return null
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  const childRows = collectChildRowsFromParent(row)
+    .filter((item) => String(item?.category || '').trim() === 'email_watcher')
+
+  const childItems = childRows.map((item) => {
+    const childDetail = item?.detail && typeof item.detail === 'object' ? item.detail : {}
+    const status = String(item?.status || '').trim()
+    return {
+      rjcode: String(item?.rjcode || childDetail.rjcode || '').trim().toUpperCase(),
+      title: String(childDetail.work_title || childDetail.title || '').trim(),
+      circleName: String(childDetail.circle_name || childDetail.mail_circle_name || '').trim(),
+      priceText: String(childDetail.price_text || '').trim(),
+      workType: String(childDetail.work_type || '').trim(),
+      productUrl: String(childDetail.product_url || '').trim(),
+      indexMode: String(childDetail.index_mode || '').trim(),
+      statusKey: status === 'success' ? 'success' : 'failed',
+      statusLabel: status === 'success' ? '索引完成' : '索引失败',
+      note: status === 'success'
+        ? (String(childDetail.circle_name || '').trim() || '已完成社团索引')
+        : (String(childDetail.error || item?.summary || '').trim() || '索引失败'),
+    }
+  })
+
+  const fallbackItems = (Array.isArray(detail.items) ? detail.items : []).map((item) => ({
+    rjcode: String(item?.rjcode || '').trim().toUpperCase(),
+    title: String(item?.title || '').trim(),
+    circleName: String(item?.circle_name || '').trim(),
+    priceText: String(item?.price_text || '').trim(),
+    workType: String(item?.work_type || '').trim(),
+    productUrl: String(item?.product_url || '').trim(),
+    indexMode: '',
+    statusKey: 'default',
+    statusLabel: '待处理',
+    note: String(item?.mail_subject || '').trim() || '等待异步索引结果',
+  }))
+
+  const items = childItems.length ? childItems : fallbackItems
+  if (!items.length) return null
+
+  const circleNames = Array.from(new Set(
+    items
+      .map((item) => String(item.circleName || '').trim())
+      .filter(Boolean)
+  ))
+  const mailSubjects = Array.from(new Set(
+    (Array.isArray(detail.mail_summaries) ? detail.mail_summaries : [])
+      .map((item) => String(item?.subject || '').trim())
+      .filter(Boolean)
+  ))
+  return {
+    items,
+    totalCount: items.length,
+    successCount: items.filter((item) => item.statusKey === 'success').length,
+    failedCount: items.filter((item) => item.statusKey === 'failed').length,
+    mailCount: Number(detail.unseen_total || mailSubjects.length || 0),
+    mailSubjects,
+    circleNamesText: circleNames.join(' / ')
+  }
 }
 
 function inferDeleteTreeItemType(path, itemType) {
@@ -5227,6 +5362,154 @@ watch(selectedRow, (row) => {
   padding-top: 6px;
 }
 
+.email-watch-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,252,255,0.94)),
+    radial-gradient(circle at top right, rgba(103,232,249,0.12), transparent 48%);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+}
+
+.email-watch-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.email-watch-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.email-watch-desc {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.email-watch-metrics,
+.email-watch-item-meta,
+.email-watch-subjects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.email-watch-metric,
+.email-watch-meta-pill,
+.email-watch-subject-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255,255,255,0.88);
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.email-watch-metric.is-success {
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.22);
+  background: rgba(236, 253, 245, 0.9);
+}
+
+.email-watch-metric.is-failed {
+  color: #dc2626;
+  border-color: rgba(248, 113, 113, 0.22);
+  background: rgba(254, 242, 242, 0.92);
+}
+
+.email-watch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.email-watch-item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+}
+
+.email-watch-item.is-success {
+  border-color: rgba(16, 185, 129, 0.2);
+}
+
+.email-watch-item.is-failed {
+  border-color: rgba(248, 113, 113, 0.22);
+}
+
+.email-watch-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.email-watch-rj {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.email-watch-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: #64748b;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.email-watch-status.is-success {
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.22);
+  background: rgba(236, 253, 245, 0.9);
+}
+
+.email-watch-status.is-failed {
+  color: #dc2626;
+  border-color: rgba(248, 113, 113, 0.22);
+  background: rgba(254, 242, 242, 0.92);
+}
+
+.email-watch-item-title {
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.email-watch-item-circle {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2563eb;
+}
+
+.email-watch-item-note {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
 @media (max-width: 1120px) {
   .circle-index-head {
     flex-direction: column;
@@ -6118,6 +6401,27 @@ watch(selectedRow, (row) => {
   min-width: 0;
 }
 
+.entry-main-target {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1;
+}
+
+.entry-main-target.is-deleted::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1.5px solid rgba(148, 163, 184, 0.88);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
 .tree-inline-toggle {
   display: inline-flex;
   align-items: center;
@@ -6179,6 +6483,8 @@ watch(selectedRow, (row) => {
 .entry-icon.is-deleted {
   color: #94a3b8;
   fill: rgba(148, 163, 184, 0.14);
+  stroke: #94a3b8;
+  opacity: 0.88;
 }
 
 .entry-icon.is-audio-blue {
@@ -6222,9 +6528,6 @@ watch(selectedRow, (row) => {
 
 .entry-name.is-deleted {
   color: rgba(29, 29, 31, 0.5);
-  text-decoration: line-through;
-  text-decoration-thickness: 1.5px;
-  text-decoration-color: rgba(29, 29, 31, 0.72);
 }
 
 .entry-name.is-failed {
