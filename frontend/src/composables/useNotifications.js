@@ -1,6 +1,5 @@
 import { ref, computed } from 'vue'
 import { notificationApi } from '../api'
-import { showSystemAlert } from './useSystemPrompt'
 
 const _unreadCount = ref(0)
 const _items = ref([])
@@ -17,7 +16,6 @@ let _sseRetryTimer = null
 let _sseRetryDelay = 2000
 const SSE_MAX_DELAY = 30000
 const SSE_URL = '/api/notifications/stream'
-const _recentPopupKeys = new Set()
 
 // ─────────────────────────────────────────────
 // SSE 连接管理
@@ -37,22 +35,6 @@ function _connectSSE() {
       }
       if (data.type === 'new_notification') {
         _unreadCount.value = data.unread_count ?? (_unreadCount.value + 1)
-        const eventType = String(data?.item?.event_type || '').trim()
-        const eventKey = String(data?.item?.event_key || data?.item?.id || '').trim()
-        if (eventType === 'email_watcher_new_release' && eventKey && !_recentPopupKeys.has(eventKey)) {
-          _recentPopupKeys.add(eventKey)
-          if (_recentPopupKeys.size > 120) {
-            const first = _recentPopupKeys.values().next().value
-            if (first) _recentPopupKeys.delete(first)
-          }
-          showSystemAlert({
-            tone: 'success',
-            title: '新作索引完成',
-            message: String(data?.item?.title || '监视新作已命中').trim() || '监视新作已命中',
-            description: String(data?.item?.summary || '').trim(),
-            confirmText: '知道了'
-          }).catch(() => {})
-        }
         if (_panelOpen.value) {
           // 面板打开中，实时追加到列表顶部
           if (data.item) {

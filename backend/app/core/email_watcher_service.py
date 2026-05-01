@@ -78,6 +78,21 @@ def _normalize_mail_address(value: str) -> str:
     return str(email.utils.parseaddr(value or "")[1] or "").strip().lower()
 
 
+def _sender_matches_filter(msg: "email.message.Message", sender_filter: str) -> bool:
+    keyword = str(sender_filter or "").strip().lower()
+    if not keyword:
+        return True
+    raw_from = _decode_header_value(msg.get("From", ""))
+    address = _normalize_mail_address(raw_from)
+    display_name = str(email.utils.parseaddr(raw_from)[0] or "").strip().lower()
+    haystacks = [
+        raw_from.lower(),
+        address,
+        display_name,
+    ]
+    return any(keyword in value for value in haystacks if value)
+
+
 def _is_self_generated_notification(msg: "email.message.Message", subject: str, config) -> bool:
     if str(msg.get("X-Prekikoeru-Notification") or "").strip() == "1":
         return True
@@ -650,6 +665,12 @@ class EmailWatcherService:
             linked_rjcodes.append(rjcode)
 
         metadata = await circle_service._fetch_metadata_dict(rjcode)
+        product_release_date = str(product.get("regist_date") or product.get("release_date") or "").strip()
+        if product_release_date and metadata.get("release_date") != product_release_date:
+            metadata = {**metadata, "release_date": product_release_date}
+        product_cover_url = ""
+        if isinstance(product.get("image_main"), dict):
+            product_cover_url = str((product.get("image_main") or {}).get("url") or "").strip()
         title = str(
             metadata.get("work_name")
             or product.get("work_name")
@@ -659,7 +680,7 @@ class EmailWatcherService:
         display_rjcode = circle_service.normalize_rjcode(product.get("workno")) or rjcode
         normalized_name = circle_service.normalize_circle_name(circle_name)
         image_url = circle_service._normalize_dlsite_cover_url(
-            (product.get("image_main") or {}).get("url") if isinstance(product.get("image_main"), dict) else "",
+            product_cover_url,
             display_rjcode,
         ) or str(item.get("image_url") or "").strip()
 
@@ -688,6 +709,8 @@ class EmailWatcherService:
 
         db = SessionLocal()
         try:
+            from ..models.database import WorkMetadata
+
             catalog = None
             if normalized_name:
                 catalog = (
@@ -739,6 +762,28 @@ class EmailWatcherService:
             if row is None:
                 row = CircleWork(id=str(uuid.uuid4()), circle_id=catalog.circle_id, canonical_rjcode=canonical)
                 db.add(row)
+
+            metadata_targets = sorted({
+                code for code in [rjcode, display_rjcode, canonical, *linked_rjcodes]
+                if circle_service.normalize_rjcode(code)
+            })
+            for metadata_rjcode in metadata_targets:
+                normalized_meta_rj = circle_service.normalize_rjcode(metadata_rjcode)
+                metadata_row = db.query(WorkMetadata).filter(WorkMetadata.rjcode == normalized_meta_rj).first()
+                if metadata_row is None:
+                    metadata_row = WorkMetadata(rjcode=normalized_meta_rj)
+                    db.add(metadata_row)
+                metadata_row.work_name = str(product.get("work_name") or metadata.get("work_name") or title or metadata_row.work_name or "").strip()
+                metadata_row.maker_id = maker_id or str(metadata.get("maker_id") or metadata_row.maker_id or "").strip()
+                metadata_row.maker_name = circle_name or str(metadata.get("maker_name") or metadata_row.maker_name or "").strip()
+                if product_release_date:
+                    metadata_row.release_date = product_release_date
+                metadata_row.cover_url = product_cover_url or str(metadata.get("cover_url") or metadata_row.cover_url or "").strip()
+                metadata_row.tags = metadata.get("tags") or metadata_row.tags or []
+                metadata_row.cvs = metadata.get("cvs") or metadata_row.cvs or []
+                metadata_row.cached_at = datetime.now()
+                metadata_row.expires_at = None
+                circle_service._metadata_cache.pop(normalized_meta_rj, None)
 
             row.display_rjcode = display_rjcode or row.display_rjcode or canonical
             row.title = title or row.title or canonical
@@ -934,14 +979,14 @@ class EmailWatcherService:
             "items": [],
             "mail_summaries": [],
             "skipped_read": 0,
+            "skipped_sender_filter": 0,
             "skipped_subject_filter": 0,
             "skipped_self_notification": 0,
         }
 
-        # 构建搜索条件（优先未读）
+        # 先只搜未读。QQ/部分 IMAP 服务端的 FROM 子串匹配不稳定，
+        # 发件人过滤放到本地用解码后的 From 头处理。
         criteria = ['UNSEEN']
-        if sender_filter:
-            criteria += ['FROM', sender_filter]
 
         try:
             uids = client.search(criteria)
@@ -957,7 +1002,7 @@ class EmailWatcherService:
 
         # 批量获取邮件
         try:
-            raw_messages = client.fetch(uids, ['BODY[]', 'ENVELOPE'])
+            raw_messages = client.fetch(uids, ['BODY.PEEK[]', 'ENVELOPE'])
         except Exception as exc:
             logger.warning("[邮件监听] 获取邮件内容失败: %s", exc)
             return diag
@@ -966,7 +1011,7 @@ class EmailWatcherService:
         processed_uids = []
 
         for uid, data in raw_messages.items():
-            raw_body = data.get(b'BODY[]') or data.get(b'BODY[]PEEK')
+            raw_body = data.get(b'BODY.PEEK[]') or data.get(b'BODY[]') or data.get(b'BODY[]PEEK')
             if not raw_body:
                 continue
 
@@ -984,7 +1029,12 @@ class EmailWatcherService:
 
             # 主题过滤
             subject = _decode_header_value(msg.get('Subject', ''))
-            logger.info("[邮件监听] uid=%s 主题=%r", uid, subject)
+            from_header = _decode_header_value(msg.get('From', ''))
+            logger.info("[邮件监听] uid=%s From=%r 主题=%r", uid, from_header, subject)
+            if not _sender_matches_filter(msg, sender_filter):
+                logger.info("[邮件监听] uid=%s 发件人过滤不匹配（关键词=%r，From=%r），跳过", uid, sender_filter, from_header)
+                diag["skipped_sender_filter"] += 1
+                continue
             if _is_self_generated_notification(msg, subject, config):
                 logger.info("[邮件监听] uid=%s 是 Prekikoeru 自己发出的通知邮件，跳过", uid)
                 diag["skipped_self_notification"] += 1
@@ -1158,6 +1208,7 @@ class EmailWatcherService:
                         )),
                         "items": unique_items[:80],
                         "mail_summaries": diag["mail_summaries"][:20],
+                        "skipped_sender_filter": diag["skipped_sender_filter"],
                         "skipped_subject_filter": diag["skipped_subject_filter"],
                         "skipped_self_notification": diag["skipped_self_notification"],
                         "skipped_read": diag["skipped_read"],
