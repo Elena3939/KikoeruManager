@@ -74,11 +74,12 @@ def main():
     init_database()
 
     reload_mode = os.environ.get("DEV_MODE", "false").lower() == "true"
+    port = int(os.environ.get("PORT", "5555"))
 
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=5555,
+        port=port,
         log_level="info",
         reload=reload_mode,
     )

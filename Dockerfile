@@ -50,13 +50,15 @@ ENV CONFIG_PATH=/app/config/config.yaml
 ENV DATA_PATH=/app/data
 ENV PYTHONPATH=/app
 ENV STATIC_FILES_PATH=/app/static
+# 应用端口，可通过 docker run -e PORT=xxxx 覆盖
+ENV PORT=5555
 
-# 暴露端口
-EXPOSE 8000
+# 暴露端口（与 PORT 默认值一致）
+EXPOSE 5555
 
 # 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/api/health')" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://localhost:' + os.environ.get('PORT','5555') + '/api/health')" || exit 1
 
 # 启动命令
 CMD ["python", "-m", "app.main"]

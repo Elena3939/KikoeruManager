@@ -8,26 +8,31 @@ services:
     image: prekikoeru:latest
     container_name: prekikoeru
     ports:
-      - "8000:8000"
+      # host_port:container_port — 容器内 uvicorn 默认监听 5555，可通过 PORT 环境变量修改
+      - "5555:5555"
     volumes:
-      # 配置目录 - 保存配置文件
-      - ./config:/app/config
-      # 数据目录 - 数据库、日志等
-      - ./data:/app/data
-      # 输入目录 - 待处理的压缩包
-      - /path/to/input:/input
-      # 临时目录 - 解压过程中的临时文件
-      - /path/to/temp:/temp
-      # 作品库目录 - 最终整理好的作品
-      - /path/to/library:/library
-      # 已有文件夹目录 - 非软件解压的已有作品
-      - /path/to/existing:/existing
-      # 已处理压缩包目录 - 保存处理过的压缩包
-      - /path/to/processed:/processed
+      # --- 应用数据（建议放在一个独立的 Docker 数据共享文件夹下）---
+      # 配置文件目录，保存 config.yaml
+      - /volume1/docker/prekikoeru/config:/app/config
+      # 数据库、日志等运行时数据
+      - /volume1/docker/prekikoeru/data:/app/data
+
+      # --- 业务目录（路径改成你群晖上实际的共享文件夹）---
+      # 待处理压缩包的输入目录（把下载好的 zip/7z 丢进这个文件夹）
+      - /volume1/incoming:/input
+      # 解压过程中使用的临时目录（建议和 library 在同一 volume 避免跨卷 copy）
+      - /volume1/ASMR/temp:/temp
+      # 最终整理完的作品库目录（这里填你主要的 ASMR 收藏目录）
+      - /volume1/ASMR:/library
+      # 已有作品目录（用于重复检查，若和 library 相同则填一样的路径）
+      - /volume1/ASMR:/existing
+      # 已处理的原始压缩包归档目录（处理完的 zip 会移动到这里）
+      - /volume1/ASMR/processed:/processed
     environment:
       - CONFIG_PATH=/app/config/config.yaml
       - DATA_PATH=/app/data
       - TZ=Asia/Shanghai
+      - PORT=5555
     # 使用 root 权限运行（文件操作需要）
     user: "0:0"
     privileged: true
@@ -39,7 +44,7 @@ services:
     restart: unless-stopped
     # 健康检查
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/health')"]
+      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://localhost:' + os.environ.get('PORT','5555') + '/api/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
