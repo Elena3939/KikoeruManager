@@ -370,6 +370,11 @@ export const libraryApi = {
     return response.data
   },
 
+  computeFolderSize: async (path) => {
+    const response = await apiClient.post('/library/browser/compute-folder-size', { path })
+    return response.data
+  },
+
   getStatsLogs: async ({ libraryId = null, lines = 200 } = {}) => {
     const response = await apiClient.get('/library/browser/stats/logs', {
       params: {

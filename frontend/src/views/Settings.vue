@@ -974,7 +974,7 @@ function normalizeKikoeruCheckResult(result = {}, requestedRJCode = '') {
   return {
     requested_rjcode: String(result?.rjcode || requestedRJCode || '').trim(),
     found: Boolean(primary?.is_found ?? result?.found ?? result?.exists),
-    matched_rjcode: String(primary?.rjcode || primary?.matched_rjcode || result?.matched_rjcode || '').trim(),
+    matched_rjcode: String(primary?.matched_rjcode || result?.matched_rjcode || primary?.rjcode || '').trim(),
     title: String(primary?.title || result?.title || '').trim(),
     source: String(primary?.source || result?.source || '').trim(),
     message: String(result?.message || '').trim(),
