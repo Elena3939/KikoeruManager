@@ -328,23 +328,42 @@ class KikoeruDuplicateService:
             return []
         return [token for token in normalized.split(" ") if len(token) >= 2]
 
-    def _work_to_rjcode(self, work: Dict) -> str:
+    def _rjcode_from_work_id(self, work_id: int) -> str:
+        if 0 < work_id < 1_000_000:
+            return f"RJ{work_id:06d}"
+        if work_id > 0:
+            return f"RJ{work_id:08d}"
+        return ""
+
+    def _work_to_rjcodes(self, work: Dict) -> List[str]:
         if not isinstance(work, dict):
-            return ""
+            return []
+        rjcodes: List[str] = []
+
+        def append(value: str) -> None:
+            normalized = self._normalize_rjcode(str(value or "").strip()) if str(value or "").strip() else ""
+            if re.fullmatch(r"(RJ|BJ|VJ)\d{6,8}", normalized) and normalized not in rjcodes:
+                rjcodes.append(normalized)
+
+        try:
+            work_id = int(work.get('id') or 0)
+        except Exception:
+            work_id = 0
+        # Kikoeru 的 id 通常就是当前作品 RJ 的数字部分；sourceWorkno 在翻译版上
+        # 可能指向原作。先认 id，才能和 VoiceLinks 的关联搜索语义一致。
+        append(self._rjcode_from_work_id(work_id))
         for candidate in (
             work.get('sourceWorkno'),
             work.get('source_workno'),
             work.get('workno'),
             work.get('rjcode'),
         ):
-            normalized = self._normalize_rjcode(str(candidate or "").strip()) if str(candidate or "").strip() else ""
-            if re.fullmatch(r"(RJ|BJ|VJ)\d{6,8}", normalized):
-                return normalized
-        try:
-            work_id = int(work.get('id') or 0)
-        except Exception:
-            work_id = 0
-        return f"RJ{work_id:06d}" if 0 < work_id < 1_000_000 else (f"RJ{work_id:08d}" if work_id > 0 else "")
+            append(candidate)
+        return rjcodes
+
+    def _work_to_rjcode(self, work: Dict) -> str:
+        rjcodes = self._work_to_rjcodes(work)
+        return rjcodes[0] if rjcodes else ""
 
     def _detect_work_language(self, work: Dict) -> str:
         if not isinstance(work, dict):
@@ -972,18 +991,21 @@ class KikoeruDuplicateService:
         
         result.total_count = len(works)
         
-        # 查找匹配的作品
-        # Kikoeru 中 id 是纯数字，需要转换 RJ 号
+        # 查找匹配的作品。
+        # 不能只看 id：不同部署 / 数据源下，搜索结果里更稳定的主键有时是
+        # sourceWorkno/source_workno/workno/rjcode。
         search_id = self._rjcode_to_id(rjcode)
-        
+        normalized_target_rjcode = self._normalize_rjcode(rjcode)
+
         for work in works:
             if not isinstance(work, dict):
                 continue
             
             work_id = work.get('id', 0)
+            candidate_rjcodes = self._work_to_rjcodes(work)
             
-            # 检查是否匹配
-            if work_id == search_id:
+            # 优先认显式 RJ 字段；没有时再退回 id 数字匹配。
+            if normalized_target_rjcode in candidate_rjcodes or work_id == search_id:
                 result.is_found = True
                 result.work_id = work_id
                 result.title = work.get('title', '')
@@ -991,6 +1013,7 @@ class KikoeruDuplicateService:
                 result.has_lyric_hint = False
                 result.subtitle_file_count = 0
                 result.subtitle_check_source = "search_only"
+                result.matched_rjcode = normalized_target_rjcode
                 
                 # 获取社团名
                 circle = work.get('circle', {})

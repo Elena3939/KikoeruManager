@@ -26,6 +26,7 @@ from ..models.database import (
     SessionLocal,
     WorkCanonicalLink,
     WorkMetadata,
+    get_local_now,
 )
 from .activity_log_service import log_circle_completion_event
 from .asmr_download_service import get_asmr_download_service
@@ -84,6 +85,60 @@ class CircleCompletionService:
             "TW": "CHI_HANT",
         }
         return alias_map.get(normalized, normalized)
+
+    def _normalize_maker_id(self, value: Any) -> str:
+        return str(value or "").strip().upper()
+
+    def _looks_like_non_chinese_translation_title(self, *values: Any) -> str:
+        title = " ".join(str(value or "").strip().lower() for value in values if str(value or "").strip())
+        if not title:
+            return ""
+        marker_map = {
+            "KO_KR": ["[한국어판]", "한국어판", "韓国語版", "韩语版", "韓語版", "korean ver", "korean version"],
+            "ENG": ["english ver", "english version", "英語版", "英文版"],
+        }
+        for lang, markers in marker_map.items():
+            if any(marker in title for marker in markers):
+                return lang
+        return ""
+
+    def _candidate_belongs_to_identity(
+        self,
+        *,
+        circle_query: str,
+        identity: Dict[str, str],
+        item: Dict[str, Any],
+        metadata: Dict[str, Any],
+        canonical_metadata: Dict[str, Any],
+    ) -> bool:
+        target_maker_id = self._normalize_maker_id(identity.get("maker_id"))
+        if target_maker_id:
+            maker_ids = {
+                self._normalize_maker_id(candidate)
+                for candidate in (
+                    canonical_metadata.get("maker_id"),
+                    metadata.get("maker_id"),
+                    item.get("maker_id"),
+                )
+                if self._normalize_maker_id(candidate)
+            }
+            if maker_ids:
+                return target_maker_id in maker_ids
+
+        target_name = self.normalize_circle_name(identity.get("circle_name") or circle_query)
+        if not target_name:
+            return True
+
+        maker_names = [
+            self.normalize_circle_name(candidate)
+            for candidate in (
+                canonical_metadata.get("maker_name"),
+                metadata.get("maker_name"),
+                item.get("maker_name"),
+            )
+            if str(candidate or "").strip()
+        ]
+        return any(target_name == maker_name or target_name in maker_name for maker_name in maker_names)
 
     def _work_type_priority(self, work_type: Any) -> int:
         normalized = str(work_type or "").strip().lower()
@@ -496,11 +551,11 @@ class CircleCompletionService:
         if not haystack:
             return False
         markers = [
-            "cg・插画", "cg・イラスト", "cg イラスト", "cg集", " cg", "cg ",
+            "cg・插画", "cg・イラスト", "cg イラスト", "cg集",
             "jpeg", "jpg", "png", "pdf",
             "漫画", "マンガ", "コミック", "comic",
             "ゲーム", "game", "rpg", "adv", "アドベンチャー", "ノベル", "novel",
-            "3dcg", "3d作品", "動画", "movie", "mp4",
+            "3dcg", "3d作品",
         ]
         return any(marker in haystack for marker in markers)
 
@@ -512,6 +567,7 @@ class CircleCompletionService:
             "sou", "audio", "voice", "asmr", "音声", "ボイス", "ボイス・asmr",
             "囁き", "ささやき", "耳かき", "耳舐め", "舐耳", "バイノーラル",
             "フォーリーサウンド", "wav",
+            "音声・asmr", "双声道立体声", "人头麦", "舔耳", "低语", "治愈",
         ]
         return any(marker in haystack for marker in markers)
 
@@ -523,10 +579,10 @@ class CircleCompletionService:
         for key in ("work_type", "work_category", "category", "category_name", "genre", "genre_name", "file_type", "file_format"):
             categories.extend(self._extract_text_values(metadata.get(key)))
         haystack = " ".join([title, *tags, *categories])
-        if self._is_non_audio_package_text(haystack):
-            return False
         if self._is_audio_package_text(haystack):
             return True
+        if self._is_non_audio_package_text(haystack):
+            return False
         return False
 
     def _build_dlsite_cover_url(self, rjcode: Any, is_unreleased: bool = False, resized: bool = False) -> str:
@@ -1102,6 +1158,15 @@ class CircleCompletionService:
         return self._snapshot_job(str(job_id or "").strip())
 
     def _guess_kikoeru_rjcode(self, work: Dict[str, Any]) -> str:
+        try:
+            work_id = int(work.get("id") or 0)
+        except Exception:
+            work_id = 0
+        if 0 < work_id < 1_000_000:
+            return f"RJ{work_id:06d}"
+        if work_id > 0:
+            return f"RJ{work_id:08d}"
+
         candidates = [
             work.get("sourceWorkno"),
             work.get("source_workno"),
@@ -1113,15 +1178,7 @@ class CircleCompletionService:
             normalized = self.normalize_rjcode(candidate)
             if normalized and normalized.startswith(("RJ", "BJ", "VJ")):
                 return normalized
-        try:
-            work_id = int(work.get("id") or 0)
-        except Exception:
-            work_id = 0
-        if work_id <= 0:
-            return ""
-        if work_id < 1_000_000:
-            return f"RJ{work_id:06d}"
-        return f"RJ{work_id:08d}"
+        return ""
 
     def resolve_circle_identity(self, maker_id: Any = "", maker_name: Any = "", circle_name: Any = "") -> Dict[str, str]:
         resolved_name = str(maker_name or circle_name or "").strip()
@@ -1898,6 +1955,9 @@ class CircleCompletionService:
                     return None
                 if not await self._is_asmr_work_candidate(rjcode, meta):
                     return None
+            candidate_maker_id = self._normalize_maker_id(meta.get("maker_id"))
+            if normalized_maker_id and candidate_maker_id and candidate_maker_id != normalized_maker_id:
+                return None
             maker_name = str(meta.get("maker_name") or "").strip()
             if not is_from_profile:
                 # 关键字/预告搜索来源：必须校验社团名，防止不相关社团作品混入
@@ -2360,6 +2420,22 @@ class CircleCompletionService:
                     canonical or rjcode,
                     display_metadata_map,
                 )
+                foreign_lang = self._looks_like_non_chinese_translation_title(
+                    preferred_title,
+                    canonical_metadata.get("work_name"),
+                    metadata.get("work_name"),
+                    item.get("title"),
+                )
+                if foreign_lang:
+                    return None
+                if not self._candidate_belongs_to_identity(
+                    circle_query=circle_query,
+                    identity=identity,
+                    item=item,
+                    metadata=metadata or {},
+                    canonical_metadata=canonical_metadata or {},
+                ):
+                    return None
             return {
                 "item": item,
                 "rjcode": rjcode,
@@ -2802,15 +2878,24 @@ class CircleCompletionService:
 
                 # 批量统计邮件新作数量（source_tags）
                 tag_rows = (
-                    db.query(CircleWork.circle_id, CircleWork.source_tags)
+                    db.query(CircleWork.circle_id, CircleWork.source_tags, CircleWork.updated_at, CircleWork.created_at)
                     .filter(CircleWork.circle_id.in_(collected_ids))
                     .all()
                 )
                 new_work_map: Dict[str, int] = {}
+                new_work_24h_map: Dict[str, int] = {}
+                now_local = get_local_now()
+                window_seconds = 24 * 60 * 60
                 for tr in tag_rows:
                     tags = tr.source_tags
-                    if isinstance(tags, list) and "email_watcher" in tags:
-                        new_work_map[tr.circle_id] = new_work_map.get(tr.circle_id, 0) + 1
+                    if not (isinstance(tags, list) and "email_watcher" in tags):
+                        continue
+                    new_work_map[tr.circle_id] = new_work_map.get(tr.circle_id, 0) + 1
+                    seen_at = tr.updated_at or tr.created_at
+                    if seen_at and hasattr(seen_at, "timestamp"):
+                        age_seconds = now_local.timestamp() - seen_at.timestamp()
+                        if 0 <= age_seconds <= window_seconds:
+                            new_work_24h_map[tr.circle_id] = new_work_24h_map.get(tr.circle_id, 0) + 1
 
                 # 批量统计未发售（join WorkMetadata.release_date）
                 from datetime import date as _date
@@ -2831,6 +2916,7 @@ class CircleCompletionService:
                     cid = item["circle_id"]
                     item["unreleased_count"] = unreleased_map.get(cid, 0)
                     item["new_works_count"] = new_work_map.get(cid, 0)
+                    item["new_works_24h_count"] = new_work_24h_map.get(cid, 0)
 
             return out
         finally:
@@ -3011,7 +3097,7 @@ class CircleCompletionService:
                     or (server_match_rjcodes[0] if server_match_rjcodes else "")
                 ).strip()
                 server_owned = bool(server_match_rjcodes)
-                completion_owned = bool(server_owned)
+                completion_owned = bool(local_owned or server_owned)
                 item["owned"] = completion_owned
                 item["completion_owned"] = completion_owned
                 item["server_owned"] = server_owned
