@@ -1225,6 +1225,7 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
     circle_index_rows_by_circle: dict[str, list[dict[str, Any]]] = {}
     circle_refresh_rows_by_circle: dict[str, list[dict[str, Any]]] = {}
     circle_download_batches: dict[str, dict[str, Any]] = {}  # batch_id -> row
+    email_watcher_batches: dict[str, dict[str, Any]] = {}
 
     def _circle_source_label(row: dict[str, Any], detail: dict[str, Any]) -> str:
         action = str(row.get("action") or "").strip()
@@ -1258,6 +1259,27 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
     
     # 第一步：收集索引和刷新记录
     for row in rows:
+        if str(row.get("category") or "").strip() == "email_watcher":
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
+            mode = str(detail.get("mode") or "").strip()
+            if str(row.get("action") or "").strip() == "fetch_check" and batch_id:
+                email_watcher_batches[batch_id] = row
+                row["is_parent_task"] = True
+                row["child_rows"] = []
+            elif str(row.get("action") or "").strip() == "circle_index_triggered" and batch_id and batch_id in email_watcher_batches:
+                parent_row = email_watcher_batches[batch_id]
+                child_detail = detail or {}
+                child_row = _make_tree_child(
+                    row,
+                    relation="email_new_release_item" if mode == "email_new_release_item" else "email_watcher",
+                    category_label="新作项",
+                    detail=child_detail,
+                )
+                _append_tree_child(parent_row, child_row)
+                merged_circle_completion_ids.add(str(row.get("id") or ""))
+            continue
+
         if str(row.get("category") or "").strip() != "circle_completion":
             continue
         action = str(row.get("action") or "").strip()
@@ -1323,6 +1345,40 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         circle_id = str(row_detail.get("circle_id") or "").strip()
         source_action = str(row.get("source_action") or row_detail.get("source_action") or "").strip()
         batch_id = str(row_detail.get("batch_id") or row_detail.get("parent_session_id") or "").strip()
+        batch_circle_summaries = [
+            item for item in list(row_detail.get("batch_circle_summaries") or [])
+            if isinstance(item, dict)
+        ]
+
+        if batch_circle_summaries:
+            row["is_parent_task"] = True
+            row["child_rows"] = []
+            for index, item in enumerate(batch_circle_summaries, start=1):
+                success = bool(item.get("success", True))
+                circle_label = str(item.get("circle_name") or item.get("circle_query") or item.get("circle_id") or f"社团 {index}").strip()
+                child_detail = {
+                    **item,
+                    "circle_name": circle_label,
+                    "source_action": "circle_batch_index_item",
+                }
+                child_row = {
+                    **row,
+                    "id": f"{row.get('id')}:circle:{index}",
+                    "relation": "circle_batch_index_item",
+                    "category_label": "社团索引项",
+                    "status": "success" if success else "failed",
+                    "summary": (
+                        f"{circle_label} 索引完成：Kikoeru {item.get('kikoeru_owned_count') or 0} / "
+                        f"DL {item.get('dl_count') or 0} / 可下载 {item.get('downloadable_count') or 0} / "
+                        f"缺失 {item.get('missing_count') or 0}"
+                        if success else f"{circle_label} 索引失败：{item.get('error_message') or '未知错误'}"
+                    ),
+                    "source_path": f"社团：{circle_label}",
+                    "detail": child_detail,
+                    "child_rows": [],
+                }
+                _append_tree_child(row, child_row)
+            continue
         
         # 跳过全量刷新
         if source_action == "refresh_all_circles":

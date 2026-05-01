@@ -12,6 +12,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from sqlalchemy.orm.attributes import flag_modified
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +31,7 @@ CATEGORY_PIPELINE_DELETE = "pipeline_delete"
 CATEGORY_ASMR_SYNC = "asmr_sync"
 CATEGORY_UPLOAD = "upload"
 CATEGORY_CIRCLE_COMPLETION = "circle_completion"
+CATEGORY_EMAIL_WATCHER = "email_watcher"
 
 CATEGORY_LABELS = {
     CATEGORY_SUBTITLE_CRAWL: "字幕爬取",
@@ -44,6 +47,7 @@ CATEGORY_LABELS = {
     CATEGORY_ASMR_SYNC: "ASMR 同步",
     CATEGORY_UPLOAD: "库存上传",
     CATEGORY_CIRCLE_COMPLETION: "社团补全",
+    CATEGORY_EMAIL_WATCHER: "邮件监听",
 }
 
 ASMR_SYNC_ACTIONS = {
@@ -172,6 +176,7 @@ def _resolve_filter_scope_label(payload: Dict[str, Any]) -> tuple[str, str]:
 
 _SAFE_PATH_SIZE_MAX_ENTRIES = 50000  # 保护上限：超过则停止统计，返回已累计值
 _SAFE_PATH_SIZE_MAX_SECONDS = 3.0    # 保护上限：单次 walk 最长耗时
+_FILE_TREE_SNAPSHOT_MAX_ITEMS = 400
 
 
 def _safe_path_size(path: Any) -> int:
@@ -201,6 +206,120 @@ def _safe_path_size(path: Any) -> int:
         return total
     except Exception:
         return 0
+
+
+def _snapshot_file_tree_items(root_path: Any, limit: Optional[int] = _FILE_TREE_SNAPSHOT_MAX_ITEMS) -> list[dict[str, Any]]:
+    """为操作记录生成轻量文件树快照。"""
+    try:
+        normalized_root = str(root_path or "").strip()
+    except Exception:
+        return []
+    if not normalized_root or not os.path.isdir(normalized_root):
+        return []
+
+    items: list[dict[str, Any]] = []
+    try:
+        for current_root, dir_names, file_names in os.walk(normalized_root):
+            dir_names.sort()
+            file_names.sort()
+            relative_root = os.path.relpath(current_root, normalized_root)
+            current_relative = "" if relative_root in {".", ""} else relative_root.replace("\\", "/")
+
+            if current_relative:
+                items.append({
+                    "path": current_root,
+                    "relative_path": current_relative,
+                    "name": os.path.basename(current_root) or current_relative,
+                    "type": "dir",
+                    "size": 0,
+                })
+                if limit is not None and len(items) >= limit:
+                    return items[:limit]
+
+            for file_name in file_names:
+                file_path = os.path.join(current_root, file_name)
+                relative_path = f"{current_relative}/{file_name}" if current_relative else file_name
+                try:
+                    size = int(os.path.getsize(file_path))
+                except Exception:
+                    size = 0
+                items.append({
+                    "path": file_path,
+                    "relative_path": relative_path.replace("\\", "/"),
+                    "name": file_name,
+                    "type": "file",
+                    "size": size,
+                })
+                if limit is not None and len(items) >= limit:
+                    return items[:limit]
+    except Exception:
+        logger.debug("[操作记录] 生成文件树快照失败: %s", normalized_root, exc_info=True)
+        return []
+    return items
+
+
+def _normalize_file_tree_item_key(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    raw = item.get("relative_path") or item.get("path") or item.get("name") or ""
+    return str(raw).strip().replace("\\", "/").strip("/")
+
+
+def _sanitize_file_tree_item(item: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+    key = _normalize_file_tree_item_key(item)
+    if not key:
+        return None
+    item_type = str(item.get("type") or "file").strip().lower()
+    if item_type not in {"file", "dir"}:
+        item_type = "file"
+    try:
+        size = int(item.get("size") or 0)
+    except Exception:
+        size = 0
+    return {
+        "path": item.get("path"),
+        "relative_path": key,
+        "name": item.get("name") or os.path.basename(key) or key,
+        "type": item_type,
+        "size": size,
+    }
+
+
+def _merge_file_tree_items(*item_groups: Any) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in item_groups:
+        if not isinstance(group, list):
+            continue
+        for raw_item in group:
+            item = _sanitize_file_tree_item(raw_item)
+            if item is None:
+                continue
+            key = item["relative_path"].lower()
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = item
+                continue
+            if not existing.get("path") and item.get("path"):
+                existing["path"] = item["path"]
+            if (
+                existing.get("type") != "dir"
+                and item.get("type") == "dir"
+            ):
+                existing["type"] = "dir"
+            if (not existing.get("name")) and item.get("name"):
+                existing["name"] = item["name"]
+            if int(existing.get("size") or 0) <= 0 and int(item.get("size") or 0) > 0:
+                existing["size"] = int(item.get("size") or 0)
+    return sorted(
+        merged.values(),
+        key=lambda item: (
+            str(item.get("relative_path") or "").count("/"),
+            str(item.get("relative_path") or "").lower(),
+            0 if str(item.get("type") or "") == "dir" else 1,
+        ),
+    )
 
 
 def _resolve_archive_snapshot(task: Any) -> tuple[int, Optional[str]]:
@@ -651,6 +770,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
     elif tt == TaskType.EXTRACT:
         archive_size_bytes, archive_path = _resolve_archive_snapshot(task)
         output_size_bytes = _safe_path_size(task.output_path) if st == TaskStatus.COMPLETED else 0
+        file_tree_items = _snapshot_file_tree_items(task.output_path) if st == TaskStatus.COMPLETED else []
         duration_ms = _duration_ms_for_task(task)
         if st == TaskStatus.COMPLETED:
             summary = (
@@ -666,6 +786,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "archive_size_bytes": archive_size_bytes,
             "output_size_bytes": output_size_bytes,
             "duration_ms": duration_ms,
+            "file_tree_items": file_tree_items,
         }
     else:
         archive_input = _looks_like_archive_path(task.source_path)
@@ -708,6 +829,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "source_mode": source_mode or None,
             "linked_source_rjcode": str(linked_preview.get("source_rjcode") or "").strip().upper() or None,
             "linked_target_rjcode": str(linked_preview.get("target_rjcode") or "").strip().upper() or None,
+            "file_tree_items": list(meta.get("file_tree_items") or []),
             "filtered_count": int(meta.get("filtered_count") or 0),
             "filtered_size": int(meta.get("filtered_size") or 0),
             "filtered_items": _build_filter_delete_items(meta.get("filtered_items"), limit=240),
@@ -716,6 +838,8 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             detail["circle_id"] = str(meta.get("circle_id") or "").strip() or None
             detail["circle_name"] = str(meta.get("circle_name") or "").strip() or None
             detail["parent_session_id"] = str(meta.get("parent_session_id") or "").strip() or None
+            detail["batch_total"] = int(meta.get("batch_total") or 0) or None
+            detail["batch_circle_summaries"] = list(meta.get("batch_circle_summaries") or [])[:100]
 
     if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
         detail["source_page"] = str(meta.get("source_page") or "").strip() or None
@@ -1460,7 +1584,7 @@ def backfill_auto_import_extract_fields(
     max_rows: Optional[int] = None,
     time_budget_seconds: float = 8.0,
 ) -> Dict[str, Any]:
-    """分片回填旧 auto_import 记录中的压缩包大小、解压标记与解压产物大小。
+    """分片回填旧导入链记录中的压缩包大小、解压标记、解压产物大小与文件树。
 
     原实现把全表 auto_import 行一次加载到内存并逐行 os.walk，大库存会直接卡死事件循环。
     Phase 1：改成按 offset 分片扫描 + 时间预算 + 可恢复 cursor。调用方（API 或 TaskEngine）
@@ -1499,7 +1623,7 @@ def backfill_auto_import_extract_fields(
         try:
             rows = (
                 db.query(ActivityLog)
-                .filter(ActivityLog.category == CATEGORY_AUTO_IMPORT)
+                .filter(ActivityLog.category.in_([CATEGORY_AUTO_IMPORT, CATEGORY_EXTRACT, CATEGORY_PROCESS_EXISTING]))
                 .order_by(ActivityLog.created_at.asc(), ActivityLog.id.asc())
                 .offset(offset)
                 .limit(this_chunk)
@@ -1524,18 +1648,42 @@ def backfill_auto_import_extract_fields(
                     detail = row.detail if isinstance(row.detail, dict) else {}
                     source_path = str(row.source_path or "").strip()
                     output_path = str(detail.get("output_path") or "").strip()
+                    category = str(row.category or "").strip()
                     is_archive = _looks_like_archive_path(source_path)
                     current_archive_input = detail.get("archive_input")
                     current_extract_performed = detail.get("extract_performed")
                     current_extract_output_bytes = detail.get("extract_output_bytes")
                     current_archive_size_bytes = detail.get("archive_size_bytes")
+                    current_file_tree_items = list(detail.get("file_tree_items") or [])
+                    filtered_items = _build_filter_delete_items(detail.get("filtered_items"), limit=10000)
+                    should_snapshot_output_tree = bool(
+                        row.status == "success"
+                        and output_path
+                        and category in {CATEGORY_AUTO_IMPORT, CATEGORY_EXTRACT, CATEGORY_PROCESS_EXISTING}
+                    )
 
                     next_archive_input = bool(is_archive)
-                    next_extract_performed = bool(is_archive and row.status == "success")
+                    next_extract_performed = bool(
+                        row.status == "success"
+                        and (
+                            category == CATEGORY_EXTRACT
+                            or is_archive
+                        )
+                    )
                     next_extract_output_bytes = (
                         _safe_path_size(output_path)
                         if next_extract_performed and output_path
                         else int(current_extract_output_bytes or 0)
+                    )
+                    snapshot_file_tree_items = (
+                        _snapshot_file_tree_items(output_path, limit=None)
+                        if should_snapshot_output_tree
+                        else []
+                    )
+                    next_file_tree_items = _merge_file_tree_items(
+                        snapshot_file_tree_items,
+                        current_file_tree_items,
+                        filtered_items,
                     )
                     next_archive_size_bytes = int(current_archive_size_bytes or 0)
                     archive_path = source_path
@@ -1556,7 +1704,7 @@ def backfill_auto_import_extract_fields(
                     if current_archive_input is None:
                         detail["archive_input"] = next_archive_input
                         needs_update = True
-                    if current_extract_performed is None and next_archive_input:
+                    if current_extract_performed is None and (next_archive_input or category == CATEGORY_EXTRACT):
                         detail["extract_performed"] = next_extract_performed
                         needs_update = True
                     if (current_extract_output_bytes is None or int(current_extract_output_bytes or 0) <= 0) and next_extract_performed:
@@ -1565,22 +1713,34 @@ def backfill_auto_import_extract_fields(
                     if (current_archive_size_bytes is None or int(current_archive_size_bytes or 0) <= 0) and next_archive_input:
                         detail["archive_size_bytes"] = int(next_archive_size_bytes or 0)
                         needs_update = True
+                    if next_file_tree_items != current_file_tree_items:
+                        detail["file_tree_items"] = next_file_tree_items
+                        needs_update = True
                     if archive_path and archive_path != str(detail.get("archive_path") or "").strip():
                         detail["archive_path"] = archive_path
                         needs_update = True
 
                     if needs_update:
                         row.detail = _sanitize_for_db_json(detail)
-                        if row.status == "success" and next_archive_input:
+                        flag_modified(row, "detail")
+                        if row.status == "success" and (next_archive_input or category == CATEGORY_EXTRACT):
                             duration_ms = int(detail.get("duration_ms") or 0)
                             extract_output_bytes = int(detail.get("extract_output_bytes") or 0)
-                            extract_label = "预检解包" if str(detail.get("source_mode") or "").strip() == "linked_translation_archive_pending" and not output_path else "解压产物"
-                            row.summary = (
-                                f"{str(row.summary or '解压入库完成').split('，压缩包 ')[0]}，"
-                                f"压缩包 {_format_bytes(next_archive_size_bytes)}，"
-                                f"{extract_label} {_format_bytes(extract_output_bytes)}，"
-                                f"耗时 {_format_duration_ms(duration_ms)}"
-                            )[:4000]
+                            if category == CATEGORY_EXTRACT:
+                                row.summary = (
+                                    f"{str(row.summary or '压缩包解压完成').split('，压缩包 ')[0]}，"
+                                    f"压缩包 {_format_bytes(next_archive_size_bytes)}，"
+                                    f"解压产物 {_format_bytes(extract_output_bytes)}，"
+                                    f"耗时 {_format_duration_ms(duration_ms)}"
+                                )[:4000]
+                            else:
+                                extract_label = "预检解包" if str(detail.get("source_mode") or "").strip() == "linked_translation_archive_pending" and not output_path else "解压产物"
+                                row.summary = (
+                                    f"{str(row.summary or '解压入库完成').split('，压缩包 ')[0]}，"
+                                    f"压缩包 {_format_bytes(next_archive_size_bytes)}，"
+                                    f"{extract_label} {_format_bytes(extract_output_bytes)}，"
+                                    f"耗时 {_format_duration_ms(duration_ms)}"
+                                )[:4000]
                         updated += 1
                     else:
                         skipped += 1
