@@ -117,7 +117,10 @@
               @click="selectCircle(circle.circle_id)"
             >
               <div class="circle-list-header">
-                <div class="circle-list-name">{{ circle.circle_name || circle.circle_id }}</div>
+                <div class="circle-list-name">
+                  <span>{{ circle.circle_name || circle.circle_id }}</span>
+                  <span v-if="(circle.new_works_24h_count || 0) > 0" class="circle-inline-new-badge">NEW</span>
+                </div>
                 <div class="circle-list-id">{{ circle.circle_id }}</div>
               </div>
               <div class="circle-list-stats-row">
@@ -138,9 +141,10 @@
                 </div>
                 <span class="circle-list-percent">{{ getCircleOwnedPercent(circle) }}%</span>
               </div>
-              <div v-if="(circle.unreleased_count > 0) || (circle.new_works_count > 0)" class="circle-list-tag-row">
+              <div v-if="(circle.unreleased_count > 0) || (circle.new_works_24h_count > 0) || (circle.new_works_count > 0)" class="circle-list-tag-row">
                 <span v-if="circle.unreleased_count > 0" class="circle-list-tag unreleased"><Calendar :size="9" /> {{ circle.unreleased_count }} 未发售</span>
-                <span v-if="circle.new_works_count > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_count }} 新作</span>
+                <span v-if="(circle.new_works_24h_count || 0) > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_24h_count }} 新作(24h)</span>
+                <span v-else-if="circle.new_works_count > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_count }} 新作</span>
               </div>
             </button>
           </div>
@@ -1183,6 +1187,12 @@ const displayCircleList = computed(() => {
   }
 
   list.sort((left, right) => {
+    const newWork24hDiff = Number(right?.new_works_24h_count || 0) - Number(left?.new_works_24h_count || 0)
+    if (newWork24hDiff !== 0) return newWork24hDiff
+
+    const newWorkDiff = Number(right?.new_works_count || 0) - Number(left?.new_works_count || 0)
+    if (newWorkDiff !== 0) return newWorkDiff
+
     switch (circleSortKey.value) {
       case 'completion': {
         const diff = getCircleOwnedPercent(right) - getCircleOwnedPercent(left)
@@ -4844,6 +4854,9 @@ function getUploadBackgroundTargetLabel(task) {
   min-width: 0;
 }
 .circle-list-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 14px;
   font-weight: 700;
   color: #111827;
@@ -4852,6 +4865,23 @@ function getUploadBackgroundTargetLabel(task) {
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
+}
+.circle-inline-new-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: .04em;
+  color: #166534;
+  background: linear-gradient(135deg, rgba(220, 252, 231, 0.98), rgba(187, 247, 208, 0.96));
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  box-shadow: 0 1px 2px rgba(22, 163, 74, 0.18);
+  flex-shrink: 0;
 }
 .circle-list-id {
   font-size: 11px;
@@ -4894,9 +4924,9 @@ function getUploadBackgroundTargetLabel(task) {
   border-color: rgba(52, 120, 246, 0.18);
 }
 .circle-list-tag.new-work {
-  background: rgba(255, 248, 240, 0.85);
-  color: #ea580c;
-  border-color: rgba(249, 115, 22, 0.22);
+  background: rgba(236, 253, 245, 0.9);
+  color: #15803d;
+  border-color: rgba(34, 197, 94, 0.28);
 }
 .circle-list-counts {
   display: flex;
