@@ -415,20 +415,34 @@ class SmartClassifier:
                     db.delete(snapshot)
                     db.commit()
 
-            # 如果没有数据库记录，扫描库存目录
+            # 如果没有数据库记录，两层扫描：社团层 → 作品层（避免全盘 rglob）
             library_path = Path(self.config.storage.library_path)
-            logger.info(f"扫描库存目录: {library_path}")
-            found_count = 0
-            for folder in library_path.rglob('*'):
-                if folder.is_dir() and rjcode in folder.name and _is_valid_library_path(str(folder)):
-                    found_count += 1
-                    logger.info(f"目录扫描找到已存在的作品: {rjcode} -> {folder}")
-                    return {
-                        'path': str(folder),
-                        'size': self._get_folder_size(str(folder))
-                    }
-            
-            logger.info(f"扫描完成，找到 {found_count} 个匹配项")
+            logger.info(f"两层扫描库存目录: {library_path}")
+            try:
+                for maker_dir in library_path.iterdir():
+                    if not maker_dir.is_dir():
+                        continue
+                    # 社团层本身就含 RJ 号（非标准归档，少见）
+                    if rjcode in maker_dir.name and _is_valid_library_path(str(maker_dir)):
+                        logger.info(f"目录扫描找到已存在的作品(社团层): {rjcode} -> {maker_dir}")
+                        return {
+                            'path': str(maker_dir),
+                            'size': self._get_folder_size(str(maker_dir))
+                        }
+                    # 扫描社团目录下一层（作品层）
+                    try:
+                        for work_dir in maker_dir.iterdir():
+                            if work_dir.is_dir() and rjcode in work_dir.name and _is_valid_library_path(str(work_dir)):
+                                logger.info(f"目录扫描找到已存在的作品: {rjcode} -> {work_dir}")
+                                return {
+                                    'path': str(work_dir),
+                                    'size': self._get_folder_size(str(work_dir))
+                                }
+                    except (PermissionError, OSError):
+                        continue
+            except (PermissionError, OSError) as e:
+                logger.warning(f"扫描库存目录失败: {e}")
+            logger.info(f"两层扫描完成，未找到 {rjcode}")
             return None
         except Exception as e:
             logger.error(f"检查作品存在性时出错: {e}")
