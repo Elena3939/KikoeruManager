@@ -1825,12 +1825,20 @@ class LibraryManager:
             return False
         return self._extract_rjcode(normalized) == normalized
 
+    def _local_path_is_within_root(self, path: str, root_path: str) -> bool:
+        try:
+            normalized_path = os.path.normcase(os.path.abspath(path))
+            normalized_root = os.path.normcase(os.path.abspath(root_path))
+            return os.path.commonpath([normalized_path, normalized_root]) == normalized_root
+        except (OSError, ValueError):
+            return False
+
     def _find_nearest_local_rj_directory(self, path: str, search_root: str) -> Optional[str]:
         current = os.path.abspath(path)
         root = os.path.abspath(search_root)
         if os.path.isfile(current):
             current = os.path.dirname(current)
-        while current and (current == root or current.startswith(root + os.sep)):
+        while current and self._local_path_is_within_root(current, root):
             if self._extract_rjcode(os.path.basename(current) or current):
                 return current
             if current == root:
@@ -1906,7 +1914,7 @@ class LibraryManager:
         search_root = os.path.abspath(current_path or browse_root)
         if not os.path.exists(browse_root):
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": browse_root, "browse_root_path": browse_root, "search_mode": True}
-        if not (search_root == browse_root or search_root.startswith(browse_root + os.sep)):
+        if not self._local_path_is_within_root(search_root, browse_root):
             search_root = browse_root
         if not os.path.isdir(search_root):
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": search_root, "browse_root_path": browse_root, "search_mode": True}
@@ -2023,7 +2031,7 @@ class LibraryManager:
         target_path = os.path.abspath(current_path or browse_root)
         if not os.path.exists(browse_root):
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": browse_root, "browse_root_path": browse_root}
-        if not (target_path == browse_root or target_path.startswith(browse_root + os.sep)):
+        if not self._local_path_is_within_root(target_path, browse_root):
             target_path = browse_root
         if not os.path.isdir(target_path):
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": target_path, "browse_root_path": browse_root}
@@ -2034,6 +2042,10 @@ class LibraryManager:
             entries = list(os.scandir(target_path))
         except OSError:
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": target_path, "browse_root_path": browse_root}
+
+        # 顶层（社团目录层）不计算大小，避免对慢速网络盘做递归 os.walk。
+        # 进入社团目录后（RJ 作品层）才计算各文件夹大小。
+        at_root = target_path == browse_root
 
         for item_id, entry in enumerate(entries):
             if self._should_skip_entry(entry.name):
@@ -2046,13 +2058,15 @@ class LibraryManager:
             except OSError:
                 continue
             is_directory = entry.is_dir(follow_symlinks=False)
+            cached_size, cached_size_status = self._get_cached_size_info(entry.path) if (is_directory and at_root) else (None, "")
             items.append(
                 {
                     "id": f"{library.id}:{item_id}",
                     "name": entry.name,
                     "path": entry.path,
                     "rjcode": rjcode,
-                    "size": self._cached_path_size(entry.path) if is_directory else stat.st_size,
+                    "size": cached_size if (is_directory and at_root) else (self._cached_path_size(entry.path) if is_directory else stat.st_size),
+                    "size_status": cached_size_status if (is_directory and at_root) else "ready",
                     "modified_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
                     "unzip_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
                     "is_directory": is_directory,
@@ -2079,17 +2093,31 @@ class LibraryManager:
             "parent_path": None if target_path == browse_root else os.path.dirname(target_path),
         }
 
-    async def _list_remote_files(self, library: LibraryDefinition, page: int, page_size: int, search: str) -> dict[str, Any]:
+    async def _list_remote_files(
+        self,
+        library: LibraryDefinition,
+        page: int,
+        page_size: int,
+        search: str,
+        current_path: Optional[str],
+        sort_by: str,
+        sort_order: str,
+    ) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
 
         client = self.get_cached_synology_client(library.synology)
         offset = max(0, (page - 1) * page_size)
-        if library.root_path in ("", "/"):
+        browse_root, target_path = self._resolve_remote_target_path(library, current_path)
+        if browse_root in ("", "/") and target_path in ("", "/"):
             data = await client.list_share(offset=offset, limit=page_size, sort_by="name", sort_direction="asc")
             raw_items = data.get("shares") or data.get("files") or []
         else:
-            data = await client.list(library.root_path, offset=offset, limit=page_size, sort_by="mtime", sort_direction="desc")
+            normalized_sort_by = self._normalize_library_sort_by(sort_by)
+            normalized_sort_order = self._normalize_library_sort_order(sort_order)
+            remote_sort_by = "name" if normalized_sort_by == "name" else "mtime"
+            remote_sort_direction = "asc" if normalized_sort_order == "asc" else "desc"
+            data = await client.list(target_path, offset=offset, limit=page_size, sort_by=remote_sort_by, sort_direction=remote_sort_direction)
             raw_items = data.get("files") or []
         files = []
         for index, item in enumerate(raw_items, start=offset):
@@ -2117,6 +2145,9 @@ class LibraryManager:
             "page": page,
             "page_size": page_size,
             "total": data.get("total", len(files)),
+            "current_path": target_path,
+            "browse_root_path": browse_root,
+            "parent_path": None if target_path == browse_root else self._remote_parent_path(target_path),
         }
 
     async def folder_contents(self, library_id: str, path: str) -> dict[str, Any]:
@@ -2128,7 +2159,7 @@ class LibraryManager:
     def _local_folder_contents(self, library: LibraryDefinition, path: str) -> dict[str, Any]:
         library_root = os.path.abspath(library.root_path)
         target_path = os.path.abspath(path)
-        if not (target_path == library_root or target_path.startswith(library_root + os.sep)):
+        if not self._local_path_is_within_root(target_path, library_root):
             raise PermissionError("只能查看当前库存根目录内的文件夹")
         if not os.path.isdir(target_path):
             raise FileNotFoundError("目标文件夹不存在")
@@ -2840,7 +2871,8 @@ class LibraryManager:
                 self._persist_stats()
                 task = None
             force_this_library = force and (not target_library_id or library.id == target_library_id)
-            should_refresh = force_this_library if library.type == "synology_filestation" else (force_this_library or expired)
+            # 本地库和远程库统一策略：只在明确 force=True 时才触发扫描，避免启动/页面加载时自动遍历网络驱动器
+            should_refresh = force_this_library
             if should_refresh:
                 if task is None or task.done():
                     self._stats_cache[library.id] = {
@@ -2934,24 +2966,22 @@ class LibraryManager:
         self._stats_cache[library.id] = stats
 
     def _collect_local_stats(self, library: LibraryDefinition) -> dict[str, Any]:
+        # 只统计顶层目录数量，不做递归 os.walk 大小计算，避免在 SMB 映射盘等慢速路径上阻塞。
+        target_root = os.path.abspath(library.root_path)
         folder_count = 0
-        total_size = 0
-        for root, dirs, files in os.walk(library.root_path):
-            folder_count += len(dirs)
-            for filename in files:
-                file_path = os.path.join(root, filename)
-                try:
-                    total_size += os.path.getsize(file_path)
-                except OSError:
-                    continue
+        if os.path.exists(target_root):
+            try:
+                folder_count = sum(1 for e in os.scandir(target_root) if e.is_dir())
+            except OSError:
+                pass
         return {
             "library_id": library.id,
             "library_name": library.name,
             "library_type": library.type,
             "status": "ready",
             "folder_count": folder_count,
-            "total_size_bytes": total_size,
-            "total_size_gb": _gb(total_size),
+            "total_size_bytes": 0,
+            "total_size_gb": 0,
         }
 
     async def upload_directory_to_library(
@@ -3305,7 +3335,7 @@ class LibraryManager:
     def _assert_local_path_in_library(self, library: LibraryDefinition, path: str):
         library_root = os.path.abspath(library.root_path)
         target_path = os.path.abspath(path)
-        if not (target_path == library_root or target_path.startswith(library_root + os.sep)):
+        if not self._local_path_is_within_root(target_path, library_root):
             raise PermissionError("目标路径超出当前库存根目录")
 
     def _path_size(self, path: str) -> int:
@@ -3319,6 +3349,28 @@ class LibraryManager:
                 except OSError:
                     continue
         return total
+
+    def _get_cached_size_only(self, path: str) -> int:
+        """仅返回已缓存的目录大小，不触发实时计算（避免列表接口阻塞在慢速网络盘上）。
+        缓存未命中时返回 0；后台 ensure_stats 任务会填充缓存。
+        """
+        cache_key = os.path.abspath(path)
+        cached = self._size_cache.get(cache_key)
+        return int(cached.get("size", 0)) if cached else 0
+
+    def _get_cached_size_info(self, path: str) -> tuple[Optional[int], str]:
+        """读取目录大小缓存，不触发递归统计。"""
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None, "pending"
+        cache_key = os.path.abspath(path)
+        cached = self._size_cache.get(cache_key)
+        if cached and cached.get("signature") == stat.st_mtime_ns:
+            return int(cached.get("size", 0)), "ready"
+        if cached:
+            return int(cached.get("size", 0)), "stale"
+        return None, "pending"
 
     def _cached_path_size(self, path: str) -> int:
         try:
@@ -5566,34 +5618,32 @@ class LibraryManager:
         return await self._remote_batch_delete(library, normalized_paths, confirmed)
 
     def _collect_local_stats(self, library: LibraryDefinition) -> dict[str, Any]:
-        folder_count = 0
-        total_size = 0
+        # 只统计顶层目录数量，不做递归 os.walk 大小计算，避免在 SMB 映射盘等慢速路径上阻塞。
         target_root = os.path.abspath(library.browse_root_path or library.root_path)
         if not os.path.exists(target_root):
             return {
                 "library_id": library.id,
                 "library_name": library.name,
+                "library_type": library.type,
                 "status": "ready",
                 "folder_count": 0,
                 "total_size_bytes": 0,
                 "total_size_gb": 0,
+                "scan_mode": "manual_persisted",
             }
-        for root, dirs, files in os.walk(target_root):
-            folder_count += len(dirs)
-            for filename in files:
-                file_path = os.path.join(root, filename)
-                try:
-                    total_size += os.path.getsize(file_path)
-                except OSError:
-                    continue
+        folder_count = 0
+        try:
+            folder_count = sum(1 for e in os.scandir(target_root) if e.is_dir())
+        except OSError:
+            pass
         return {
             "library_id": library.id,
             "library_name": library.name,
             "library_type": library.type,
             "status": "ready",
             "folder_count": folder_count,
-            "total_size_bytes": total_size,
-            "total_size_gb": _gb(total_size),
+            "total_size_bytes": 0,
+            "total_size_gb": 0,
             "scan_mode": "manual_persisted",
         }
 
