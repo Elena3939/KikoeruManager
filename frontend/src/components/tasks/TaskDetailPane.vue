@@ -231,12 +231,13 @@
                 </button>
                 <span v-else class="expander-spacer" />
 
-                <component :is="getTreeRowIconComponent(entry)" :size="20" class="tree-icon" :class="getTreeRowIconClass(entry)" />
+                <span class="tree-main-target" :class="{ 'tree-main-target-filtered': entry.status === 'removed' }">
+                  <component :is="getTreeRowIconComponent(entry)" :size="20" class="tree-icon" :class="getTreeRowIconClass(entry)" />
 
-                <span class="tree-name">
-                  {{ entry.label }}
+                  <span class="tree-name">
+                    {{ entry.label }}
+                  </span>
                 </span>
-                <span v-if="entry.status === 'removed'" class="tree-filter-badge">被过滤</span>
               </div>
               <span v-if="entry.sizeText" class="tree-size">{{ entry.sizeText }}</span>
             </div>
@@ -566,8 +567,8 @@ function actionToneClass(action) {
 }
 
 .tree-row-filtered {
-  border-color: rgba(226, 232, 240, 0.75);
-  background: rgba(248, 250, 252, 0.78);
+  border-color: transparent;
+  background: transparent;
   color: #94a3b8;
 }
 
@@ -579,6 +580,19 @@ function actionToneClass(action) {
   flex: 1;
   align-items: center;
   gap: 8px;
+}
+
+.tree-main-target {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.tree-main-target-filtered::after {
+  content: none;
 }
 
 .tree-expander,
@@ -634,6 +648,8 @@ function actionToneClass(action) {
 .tree-row-filtered .tree-icon {
   color: #94a3b8;
   fill: rgba(148, 163, 184, 0.14);
+  stroke: #94a3b8;
+  opacity: 0.88;
 }
 
 .tree-name {
@@ -648,24 +664,10 @@ function actionToneClass(action) {
 }
 
 .tree-row-filtered .tree-name {
-  text-decoration: line-through;
-  text-decoration-color: #94a3b8;
-  text-decoration-thickness: 1px;
-}
-
-.tree-filter-badge {
-  display: inline-flex;
-  height: 18px;
-  flex-shrink: 0;
-  align-items: center;
-  border: 1px solid #e2e8f0;
-  border-radius: 999px;
-  background: #ffffff;
   color: #94a3b8;
-  font-size: 9.5px;
-  font-weight: 800;
-  line-height: 1;
-  padding: 0 7px;
+  text-decoration: line-through;
+  text-decoration-color: rgba(148, 163, 184, 0.86);
+  text-decoration-thickness: 1.5px;
 }
 
 .tree-size {

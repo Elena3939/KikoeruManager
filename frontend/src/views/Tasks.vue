@@ -555,6 +555,33 @@ function buildTreeRows(treeItems = []) {
   return rows
 }
 
+function inferTaskFileTreeRoot(item) {
+  const metadata = item?.details?.metadata || {}
+  const candidates = [
+    metadata.final_output_path,
+    metadata.output_path,
+    metadata.target_path,
+    metadata.folder_path,
+    item?.output_path,
+    item?.target_path,
+    item?.source_path,
+  ]
+  for (const candidate of candidates) {
+    const label = getFileName(String(candidate || '').replace(/[\\/]+$/g, ''))
+    if (containsRJ(label)) return label
+  }
+  return ''
+}
+
+function withTaskFileTreeRoot(path, rootLabel) {
+  const normalizedPath = String(path || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
+  const normalizedRoot = String(rootLabel || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
+  if (!normalizedPath || !normalizedRoot) return normalizedPath
+  if (normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`)) return normalizedPath
+  if (containsRJ(normalizedPath.split('/')[0])) return normalizedPath
+  return `${normalizedRoot}/${normalizedPath}`
+}
+
 function toggleTreeNode(key, defaultExpanded = false) {
   treeExpandedState.value = {
     ...treeExpandedState.value,
@@ -775,6 +802,7 @@ function buildTaskFileTreeSections(item) {
   const metadata = item?.details?.metadata || {}
   const removedItems = mapFilteredItems(item)
   const sourceItems = []
+  const rootLabel = inferTaskFileTreeRoot(item)
 
   if (Array.isArray(metadata.file_tree_items) && metadata.file_tree_items.length) {
     sourceItems.push(...mapFileTreeItems(item))
@@ -791,12 +819,12 @@ function buildTaskFileTreeSections(item) {
 
   const mergedMap = new Map()
   for (const current of sourceItems) {
-    const path = String(current?.relative_path || current?.name || '').replace(/^[/\\]+|[/\\]+$/g, '')
+    const path = withTaskFileTreeRoot(current?.relative_path || current?.name || '', rootLabel)
     if (!path) continue
     mergedMap.set(path, { ...current, relative_path: path, status: 'default' })
   }
   for (const removed of removedItems) {
-    const path = String(removed?.relative_path || removed?.name || '').replace(/^[/\\]+|[/\\]+$/g, '')
+    const path = withTaskFileTreeRoot(removed?.relative_path || removed?.name || '', rootLabel)
     if (!path) continue
     const previous = mergedMap.get(path)
     mergedMap.set(path, { ...(previous || {}), ...removed, relative_path: path, status: 'removed' })
