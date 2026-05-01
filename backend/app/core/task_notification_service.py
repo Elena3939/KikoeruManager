@@ -514,6 +514,81 @@ def _update_outbox_status(item_id: str, ok: bool, cfg, error: str = '') -> None:
         db.close()
 
 
+def create_custom_notification(
+    *,
+    event_key: str,
+    event_type: str,
+    title: str,
+    summary: str,
+    severity: str = 'info',
+    task_domain: str = 'system',
+    task_kind: str = 'custom',
+    source_page: str = '',
+    source_action: str = '',
+    source_label: str = '',
+    business_key: str = '',
+    rjcode: str = '',
+    route_path: str = '',
+    route_query: Optional[dict] = None,
+) -> str:
+    """写一条自定义站内通知，并通过 SSE 推送。"""
+    from ..models.database import SessionLocal, NotificationInboxItem
+
+    db = SessionLocal()
+    try:
+        existing = db.query(NotificationInboxItem).filter(NotificationInboxItem.event_key == event_key).first()
+        if existing:
+            return str(existing.id or '')
+
+        now = datetime.now()
+        item = NotificationInboxItem(
+            id=str(uuid.uuid4()),
+            event_key=event_key,
+            event_type=str(event_type or 'custom'),
+            severity=str(severity or 'info'),
+            group_key=str(business_key or event_key),
+            group_type='custom',
+            group_run_id='',
+            primary_task_id='',
+            task_ids=[],
+            session_id='',
+            parent_session_id='',
+            batch_id='',
+            task_domain=str(task_domain or 'system'),
+            task_kind=str(task_kind or 'custom'),
+            source_page=str(source_page or ''),
+            source_action=str(source_action or ''),
+            source_label=str(source_label or ''),
+            business_key=str(business_key or ''),
+            title=str(title or '').strip(),
+            summary=str(summary or '').strip(),
+            rjcode=str(rjcode or '').strip().upper(),
+            route_path=str(route_path or ''),
+            route_query=dict(route_query or {}),
+            is_read=False,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(item)
+        db.commit()
+        try:
+            unread_n = db.query(NotificationInboxItem).filter(NotificationInboxItem.is_read.is_(False)).count()
+            _sse_broadcast({
+                'type': 'new_notification',
+                'unread_count': unread_n,
+                'item': item.to_dict(),
+            })
+        except Exception:
+            pass
+        return item.id
+    except Exception:
+        db.rollback()
+        logger.error("[通知] 写入自定义通知失败", exc_info=True)
+        return ''
+    finally:
+        db.close()
+
+
 def get_unread_count() -> int:
     from ..models.database import SessionLocal, NotificationInboxItem
     db = SessionLocal()

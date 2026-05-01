@@ -15,6 +15,7 @@ def _build_message(from_email: str, from_name: str, to_email: str, subject: str,
     msg['Subject'] = Header(clean_subject, 'utf-8')
     msg['From'] = f"{from_name} <{from_email}>" if from_name else from_email
     msg['To'] = to_email
+    msg['X-Prekikoeru-Notification'] = '1'
     if text_body:
         msg.attach(MIMEText(text_body, 'plain', 'utf-8'))
     msg.attach(MIMEText(html_body, 'html', 'utf-8'))

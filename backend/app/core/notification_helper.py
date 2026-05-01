@@ -95,11 +95,63 @@ def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
         "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
     }
 
+    # 构建 RJ 作品卡片（含统计信息）
+    rjcode = str(
+        meta.get("inferred_rjcode") or meta.get("rjcode") or ""
+    ).strip().upper()
+    work_title = str(
+        meta.get("work_title") or meta.get("work_name") or meta.get("title") or rjcode
+    ).strip()
+    cover_url = str(
+        meta.get("cover_url") or meta.get("mainCoverUrl") or meta.get("main_cover_url") or meta.get("image_url") or ""
+    ).strip()
+    circle_name = str(meta.get("circle_name") or meta.get("maker_name") or "").strip()
+
+    # 尝试从 circle_works 补封面 / 社团名
+    if rjcode and not cover_url:
+        circle_id = str(meta.get("circle_id") or "").strip()
+        work_map = _load_circle_work_map(circle_id, [rjcode])
+        row = work_map.get(rjcode) or {}
+        cover_url = str(row.get("image_url") or "").strip()
+        circle_name = circle_name or str(row.get("maker_name") or "").strip()
+
+    rj_work_cards: list[dict] = []
+    if rjcode or work_title or cover_url:
+        # 把统计数据拼进 changes 字段，显示在卡片下方
+        card_changes = []
+        if stats["total_files"]:
+            card_changes.append(f"📁 {stats['total_files']} 个文件  {stats['total_size']}")
+        if stats["filtered_count"]:
+            card_changes.append(f"🔕 已过滤 {stats['filtered_count']} 个文件")
+        if stats["duration"]:
+            card_changes.append(f"⏱ 用时 {stats['duration']}")
+        rj_work_cards.append({
+            "rjcode": rjcode,
+            "title": work_title or rjcode or "入库作品",
+            "cover_url": cover_url,
+            "circle_name": circle_name,
+            "size_text": stats["total_size"] or "",
+            "file_count": stats["total_files"],
+            "count_label": f"{stats['total_files']} 个文件" if stats["total_files"] else "",
+            "changes": card_changes,
+        })
+
+    # 构建日志（追加密码信息）
+    recent_logs = build_recent_logs(task, max_lines=30)
+    password_used = str(
+        meta.get("resolved_password") or meta.get("manual_retry_password") or ""
+    ).strip()
+    if password_used:
+        ts = datetime.now().strftime("%H:%M:%S")
+        recent_logs.append({"level": "info", "text": f"🔑 使用密码解压：{password_used}", "ts": ts})
+
     result: dict[str, Any] = {
         "stats": stats,
         "file_tree": file_tree[:200],
-        "recent_logs": build_recent_logs(task, max_lines=30),
+        "recent_logs": recent_logs,
     }
+    if rj_work_cards:
+        result["rj_work_cards"] = rj_work_cards
     if error:
         result["error_logs"] = [{"level": "error", "text": str(error), "ts": datetime.now().strftime("%H:%M:%S")}]
         result["summary"] = str(error)
@@ -159,6 +211,33 @@ def build_notification_extra_for_task(task) -> dict[str, Any]:
 def build_circle_completion_notification_extra(task) -> dict[str, Any]:
     """社团补全：统计 + 类似详情页的来源概括表 + 执行日志。"""
     meta = dict(getattr(task, "task_metadata", None) or {})
+    batch_rows = _normalize_circle_batch_rows(meta.get("batch_circle_summaries") or meta.get("index_batch_results") or [])
+    if batch_rows:
+        success_rows = [row for row in batch_rows if row.get("success", True)]
+        failed_rows = [row for row in batch_rows if not row.get("success", True)]
+        stats = {
+            "circle_count": len(batch_rows),
+            "completed_circles": len(success_rows),
+            "failed_circles": len(failed_rows),
+            "works": sum(_safe_int(row.get("works")) for row in success_rows),
+            "local_owned": sum(_safe_int(row.get("local_owned_count")) for row in success_rows),
+            "owned": sum(_safe_int(row.get("kikoeru_owned_count")) for row in success_rows),
+            "dl_count": sum(_safe_int(row.get("dl_count")) for row in success_rows),
+            "asmr_one": sum(_safe_int(row.get("asmr_available_count")) for row in success_rows),
+            "downloadable": sum(_safe_int(row.get("downloadable_count")) for row in success_rows),
+            "missing": sum(_safe_int(row.get("missing_count")) for row in success_rows),
+            "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
+        }
+        summary = f"批量补全 {len(batch_rows)} 个社团，成功 {len(success_rows)} 个"
+        if failed_rows:
+            summary += f"，失败 {len(failed_rows)} 个"
+        return {
+            "stats": stats,
+            "summary": summary,
+            "circle_batch_summary": batch_rows,
+            "recent_logs": build_recent_logs(task, max_lines=30),
+        }
+
     counts = dict(meta.get("indexed_counts") or {})
     result_payload = dict(meta.get("index_result") or {})
     summary = dict(result_payload.get("summary") or {})
@@ -213,6 +292,39 @@ def build_circle_completion_notification_extra(task) -> dict[str, Any]:
     return extra
 
 
+def _normalize_circle_batch_rows(raw_rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_rows, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
+        source = raw
+        if isinstance(raw.get("result"), dict):
+            result = raw.get("result") or {}
+            source = {
+                **raw,
+                **dict(result.get("indexed_counts") or {}),
+                "circle_id": result.get("circle_id") or raw.get("circle_id"),
+                "circle_name": ((result.get("summary") or {}).get("circle_name") if isinstance(result.get("summary"), dict) else "") or raw.get("circle_name") or raw.get("circle_query"),
+            }
+        rows.append({
+            "success": bool(source.get("success", True)),
+            "circle_query": str(source.get("circle_query") or "").strip(),
+            "circle_id": str(source.get("circle_id") or "").strip(),
+            "circle_name": str(source.get("circle_name") or source.get("circle_query") or "").strip(),
+            "works": _safe_int(source.get("works")),
+            "local_owned_count": _safe_int(source.get("local_owned_count")),
+            "kikoeru_owned_count": _safe_int(source.get("kikoeru_owned_count") or source.get("owned_count")),
+            "dl_count": _safe_int(source.get("dl_count")),
+            "asmr_available_count": _safe_int(source.get("asmr_available_count") or source.get("downloadable_count")),
+            "downloadable_count": _safe_int(source.get("downloadable_count")),
+            "missing_count": _safe_int(source.get("missing_count")),
+            "error_message": str(source.get("error_message") or "").strip(),
+        })
+    return rows
+
+
 def build_circle_refresh_selected_notification_extra(task) -> dict[str, Any]:
     """社团补全手动刷新：只展示本次选中的作品变化。"""
     meta = dict(getattr(task, "task_metadata", None) or {})
@@ -263,16 +375,48 @@ def build_upload_notification_extra(task) -> dict[str, Any]:
     runtime = dict(meta.get("upload_runtime") or {})
     total_bytes = _safe_int(runtime.get("total_bytes")) or sum(int(r.get("size") or 0) for r in flat_rows if not r.get("is_dir"))
     completed_files = _safe_int(runtime.get("completed_files")) or len(uploaded_items)
-    return {
-        "stats": {
-            "total_files": sum(1 for r in flat_rows if not r.get("is_dir")) or completed_files,
-            "uploaded_count": completed_files,
-            "total_size": _format_bytes(total_bytes),
-            "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
-        },
-        "upload_files": file_tree[:200],
+    file_count = sum(1 for r in flat_rows if not r.get("is_dir")) or completed_files
+    stats = {
+        "total_files": file_count,
+        "uploaded_count": completed_files,
+        "total_size": _format_bytes(total_bytes),
+        "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
+    }
+
+    # 构建 RJ 作品卡片
+    rjcode = str(meta.get("inferred_rjcode") or meta.get("rjcode") or getattr(task, "rjcode", "") or "").strip().upper()
+    work_title = str(meta.get("work_title") or meta.get("work_name") or meta.get("title") or meta.get("source_label") or rjcode).strip()
+    cover_url = str(meta.get("cover_url") or meta.get("mainCoverUrl") or meta.get("main_cover_url") or "").strip()
+    circle_name = str(meta.get("circle_name") or "").strip()
+    if not cover_url and rjcode:
+        circle_id = str(meta.get("circle_id") or "").strip()
+        work_map = _load_circle_work_map(circle_id, [rjcode])
+        row = work_map.get(rjcode) or {}
+        cover_url = cover_url or str(row.get("image_url") or "").strip()
+        circle_name = circle_name or str(row.get("maker_name") or "").strip()
+    rj_work_cards: list[dict] = []
+    if rjcode or work_title or cover_url:
+        card_changes = [
+            {"label": "文件数", "value": f"{file_count} 个"},
+            {"label": "大小", "value": _format_bytes(total_bytes)},
+            {"label": "用时", "value": stats["duration"] or "-"},
+            {"label": "已上传", "value": f"{completed_files} 个"},
+        ]
+        rj_work_cards.append({
+            "rjcode": rjcode, "title": work_title, "cover_url": cover_url,
+            "circle_name": circle_name, "size_text": _format_bytes(total_bytes),
+            "file_count": file_count, "count_label": f"{_format_bytes(total_bytes)} / {file_count} 个",
+            "changes": card_changes,
+        })
+
+    result = {
+        "stats": stats,
+        "upload_files": file_tree,
         "recent_logs": build_recent_logs(task, max_lines=30),
     }
+    if rj_work_cards:
+        result["rj_work_cards"] = rj_work_cards
+    return result
 
 
 def build_download_notification_extra(task, *, title: str = "下载文件") -> dict[str, Any]:

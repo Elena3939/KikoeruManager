@@ -181,17 +181,25 @@ def render_file_tree(props: dict, payload: dict) -> str:
 
     status: kept / filtered / new / removed —— 影响行颜色
     title: 顶部标题
-    maxItems: 最多显示行数，超出折叠为"...还有 N 项"
+    maxItems: 保留参数但不再截断，有多少显示多少（设极大值或不传均可）
+    顶层目录（根节点）默认收缩，子目录/文件默认展开。
     """
     source_key = props.get("sourceKey") or "file_tree"
     title = _esc(props.get("title") or "文件清单")
-    max_items = max(0, int(props.get("maxItems", 30) or 30))
+    # upload_files 场景：file_tree 不存在时 fallback 到 upload_files
+    if source_key == "file_tree" and not payload.get("file_tree") and payload.get("upload_files"):
+        source_key = "upload_files"
+    if source_key == "file_tree" and not payload.get("file_tree") and payload.get("circle_batch_summary"):
+        source_key = "circle_batch_summary"
+        title = "批量社团补全汇总"
+    if source_key == "circle_batch_summary":
+        return _render_circle_batch_summary_table(title, payload.get("circle_batch_summary") or [])
+    if source_key == "rj_work_cards":
+        return _render_download_work_cards(title, payload.get("rj_work_cards") or [], 9999)
     items = payload.get(source_key) or []
     card_html = ""
-    if payload.get("rj_work_cards") and source_key in {"file_tree", "download_files"}:
-        return _render_download_work_cards(title, payload.get("rj_work_cards") or [], max_items)
     if source_key == "download_files" and payload.get("download_work_cards"):
-        card_html = _render_download_work_cards(title, payload.get("download_work_cards") or [], max_items)
+        card_html = _render_download_work_cards(title, payload.get("download_work_cards") or [], 9999)
     if not items:
         return (
             f'<div style="padding:12px 14px;background:#fafafa;border:1px solid #ececef;'
@@ -202,9 +210,9 @@ def render_file_tree(props: dict, payload: dict) -> str:
     # 状态色 + 文本样式（filtered/removed 加 line-through 与任务详情面板对齐）
     status_styles = {
         "kept":     {"color": "#1f8f4e", "marker": "✓", "label_extra": "color:#1d1d1f;"},
-        "filtered": {"color": "#d97706", "marker": "✕", "label_extra": "color:rgba(29,29,31,0.5);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.6);"},
+        "filtered": {"color": "#d97706", "marker": "✕", "label_extra": "color:rgba(29,29,31,0.45);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.5);"},
         "new":      {"color": "#0071e3", "marker": "+", "label_extra": "color:#1d1d1f;"},
-        "removed":  {"color": "#d93025", "marker": "−", "label_extra": "color:rgba(29,29,31,0.5);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.6);"},
+        "removed":  {"color": "#d93025", "marker": "−", "label_extra": "color:rgba(29,29,31,0.45);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.5);"},
     }
 
     # badge 样式（与活动详情页 .entry-inline-badge 视觉对齐）
@@ -233,23 +241,21 @@ def render_file_tree(props: dict, payload: dict) -> str:
 
     # ─── 嵌套 <details>/<summary> 渲染 ───
     # 设计：
-    #   每个目录 = <details open>，summary 是文件夹行；子内容 padding-left:18px。
-    #   每个文件 = <div>，行内右浮动显示大小。
-    #   summary 默认会显示一个 ▶/▼ 三角形（list-item marker），各邮件客户端原生
-    #   支持点击展开/收起。Outlook 桌面会忽略 <details> 但内部 div 仍正常渲染，
-    #   兜底就是全部展开的扁平显示。
-    #
-    # 截断：递归过程中累计计数，到达 max_items 就停掉并尾追"... 还有 N 项"。
-    state = {"emitted": 0, "truncated": False, "skipped": 0}
+    #   顶层目录（depth=0）= <details>（默认收缩），summary 是文件夹行。
+    #   子目录/文件（depth>0）= <details open>（默认展开）。
+    #   Outlook 桌面会忽略 <details> 但内部 div 仍正常渲染，兜底就是全部展开。
+    #   不做条目截断，有多少渲染多少。
 
+    # 行样式：对齐任务列表上传/解压文件树
     file_row_style = (
-        "padding:5px 12px;border-bottom:1px solid #f5f5f7;font-size:12.5px;"
-        "font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.7;"
+        "padding:7px 14px;border-bottom:1px solid #edf2f7;font-size:12.5px;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;"
+        "line-height:1.65;display:flex;align-items:center;justify-content:space-between;gap:10px;"
     )
     summary_style = (
-        "cursor:pointer;padding:6px 12px;border-bottom:1px solid #f5f5f7;"
-        "font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
-        "font-weight:600;color:#1d1d1f;line-height:1.7;outline:none;"
+        "cursor:pointer;padding:8px 14px;border-bottom:1px solid #e7edf5;background:#fcfdff;"
+        "font-size:12.5px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;"
+        "font-weight:600;color:#0f172a;line-height:1.65;outline:none;display:flex;align-items:center;gap:8px;"
     )
     details_style = "border:none;margin:0;"
 
@@ -257,64 +263,74 @@ def render_file_tree(props: dict, payload: dict) -> str:
         label = str(node.get("path") or node.get("name") or "")
         status = str(node.get("status") or "kept")
         style = status_styles.get(status, {"color": "#48484a", "marker": "·", "label_extra": "color:#1d1d1f;"})
-        marker_html = (
-            f'<span style="color:{style["color"]};display:inline-block;width:14px;'
-            f'font-weight:600;text-decoration:none;">{style["marker"]}</span>'
+        is_muted = status in {"filtered", "removed"}
+        marker_html = f'<span style="display:inline-block;width:12px;height:12px;border-radius:999px;background:{style["color"]};opacity:{".68" if is_muted else ".9"};flex-shrink:0;"></span>'
+        icon_html = (
+            f'<span style="font-size:14px;line-height:1;color:{"#94a3b8" if is_muted else "#8b5cf6"};flex-shrink:0;">📝</span>'
+            if label.lower().endswith((".txt", ".lrc", ".srt", ".vtt", ".ass", ".ssa"))
+            else f'<span style="font-size:14px;line-height:1;color:{"#94a3b8" if is_muted else "#0ea5e9"};flex-shrink:0;">🎵</span>'
+            if label.lower().endswith((".flac", ".wav", ".mp3", ".m4a", ".ogg", ".aac"))
+            else '<span style="font-size:14px;line-height:1;color:#94a3b8;flex-shrink:0;">📄</span>'
         )
         size_text = str(node.get("size_text") or "")
         size_html = (
-            f'<span style="float:right;color:#8e8e93;font-size:11px;'
+            f'<span style="color:#94a3b8;font-size:11px;white-space:nowrap;flex-shrink:0;'
             f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(size_text)}</span>'
             if size_text else ""
         )
         badge_html = _render_badges(node.get("badges") or [])
+        label_style = style["label_extra"]
+        line_html = (
+            '<span style="position:absolute;left:0;right:0;top:50%;border-top:1.5px solid rgba(148,163,184,0.88);'
+            'transform:translateY(-50%);pointer-events:none;"></span>'
+            if is_muted else ""
+        )
         return (
-            f'<div style="{file_row_style}{style["label_extra"]}">'
+            f'<div style="{file_row_style}{label_style}">'
+            f'<span style="position:relative;display:inline-flex;align-items:center;gap:8px;min-width:0;overflow:hidden;">'
+            f'{line_html}'
+            f'{marker_html}'
+            f'{icon_html}'
+            f'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">{_esc(label)}</span>'
+            f'{badge_html}'
+            f'</span>'
             f'{size_html}'
-            f'{marker_html}{_esc(label)}{badge_html}'
             f'</div>'
         )
 
     def _dir_html(node, depth):
-        if state["truncated"]:
-            state["skipped"] += 1
-            return ""
-        state["emitted"] += 1
         label = str(node.get("name") or node.get("path") or "")
-        type_icon = (
-            f'<span style="color:#d97706;display:inline-block;width:18px;'
-            f'font-size:13px;text-align:left;">📁</span>'
-        )
+        dir_status = str(node.get("status") or "kept")
+        dir_style = status_styles.get(dir_status, {"color": "#d97706", "marker": "▸", "label_extra": ""})
+        folder_icon = f'<span style="color:#f59e0b;font-size:15px;line-height:1;flex-shrink:0;">📁</span>'
         size_text = str(node.get("size_text") or "")
         size_html = (
-            f'<span style="float:right;color:#8e8e93;font-size:11px;font-weight:400;'
+            f'<span style="margin-left:auto;color:#94a3b8;font-size:11px;white-space:nowrap;'
             f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(size_text)}</span>'
             if size_text else ""
         )
         badge_html = _render_badges(node.get("badges") or [])
         children = node.get("children") or []
-        children_html_chunks = []
-        for child in children:
-            if state["truncated"]:
-                state["skipped"] += 1
-                continue
-            if state["emitted"] >= max_items:
-                state["truncated"] = True
-                state["skipped"] += 1
-                continue
-            if isinstance(child, dict) and "children" in child:
-                children_html_chunks.append(_dir_html(child, depth + 1))
-            else:
-                state["emitted"] += 1
-                children_html_chunks.append(_file_row_html(child if isinstance(child, dict) else {"path": str(child)}))
+        children_html_chunks = [
+            _dir_html(child, depth + 1) if isinstance(child, dict) and "children" in child
+            else _file_row_html(child if isinstance(child, dict) else {"path": str(child)})
+            for child in children
+        ]
         children_wrapper = (
-            f'<div style="padding-left:18px;">{"".join(children_html_chunks)}</div>'
+            f'<div style="padding-left:18px;border-left:1px dashed #dbe5f0;margin-left:22px;background:#fff;">'
+            f'{"".join(children_html_chunks)}'
+            f'</div>'
             if children_html_chunks else ""
         )
+        # 顶层目录（depth=0）默认收缩；子目录默认展开
+        open_attr = "" if depth == 0 else " open"
         return (
-            f'<details open style="{details_style}">'
+            f'<details{open_attr} style="{details_style}">'
             f'<summary style="{summary_style}">'
-            f'{size_html}{type_icon}{_esc(label)}{badge_html}'
+            f'{folder_icon}'
+            f'<span style="font-weight:600;color:#334155;">{_esc(label)}</span>'
+            f'{badge_html}'
+            f'{size_html}'
             f'</summary>'
             f'{children_wrapper}'
             f'</details>'
@@ -322,38 +338,72 @@ def render_file_tree(props: dict, payload: dict) -> str:
 
     body_chunks = []
     for n in items:
-        if state["truncated"]:
-            state["skipped"] += 1
-            continue
-        if state["emitted"] >= max_items:
-            state["truncated"] = True
-            state["skipped"] += 1
-            continue
         if isinstance(n, dict) and "children" in n:
             body_chunks.append(_dir_html(n, 0))
         else:
-            state["emitted"] += 1
             body_chunks.append(_file_row_html(n if isinstance(n, dict) else {"path": str(n)}))
-
-    if state["truncated"] and state["skipped"] > 0:
-        body_chunks.append(
-            f'<div style="padding:8px 14px;font-size:11px;color:#8e8e93;'
-            f'text-align:center;font-style:italic;border-top:1px solid #f5f5f7;">'
-            f'... 还有 {state["skipped"]} 项未显示'
-            f'</div>'
-        )
 
     tree_html = (
         f'<div style="margin:10px 0;">'
-        f'<div style="font-size:11px;font-weight:600;color:#8e8e93;'
+        f'<div style="font-size:11px;font-weight:600;color:#64748b;'
         f'letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;'
         f'padding:0 4px;">{title}</div>'
-        f'<div style="background:#fff;border:1px solid #ececef;border-radius:10px;'
-        f'overflow:hidden;">'
+        f'<div style="background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%);border:1px solid #dde6f0;border-radius:12px;'
+        f'overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,0.06);">'
         f'{"".join(body_chunks)}'
         f'</div></div>\n'
     )
     return card_html + tree_html
+
+
+def _render_circle_batch_summary_table(title: str, items: list) -> str:
+    rows = []
+    for item in items[:80]:
+        if not isinstance(item, dict):
+            continue
+        success = bool(item.get("success", True))
+        status_text = "完成" if success else "失败"
+        status_color = "#16a34a" if success else "#dc2626"
+        circle_name = _esc(item.get("circle_name") or item.get("circle_query") or item.get("circle_id") or "未知社团")
+        rows.append(
+            f'<tr>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid #edf0f4;color:#20242b;font-size:13px;font-weight:650;line-height:1.45;">{circle_name}</td>'
+            f'<td style="padding:11px 10px;border-bottom:1px solid #edf0f4;color:#475569;font-size:12px;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(item.get("kikoeru_owned_count") or 0)}</td>'
+            f'<td style="padding:11px 10px;border-bottom:1px solid #edf0f4;color:#475569;font-size:12px;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(item.get("dl_count") or 0)}</td>'
+            f'<td style="padding:11px 10px;border-bottom:1px solid #edf0f4;color:#475569;font-size:12px;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(item.get("downloadable_count") or 0)}</td>'
+            f'<td style="padding:11px 10px;border-bottom:1px solid #edf0f4;color:#475569;font-size:12px;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(item.get("missing_count") or 0)}</td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid #edf0f4;text-align:center;"><span style="display:inline-block;padding:3px 8px;border-radius:999px;background:{status_color}14;color:{status_color};font-size:11px;font-weight:700;">{_esc(status_text)}</span></td>'
+            f'</tr>'
+        )
+    if not rows:
+        return (
+            f'<div style="padding:12px 14px;background:#fafafa;border:1px solid #ececef;'
+            f'border-radius:8px;font-size:12px;color:#8e8e93;margin:8px 0;">'
+            f'{title}：（无数据）</div>\n'
+        )
+    more = ""
+    if len(items) > 80:
+        more = (
+            f'<tr><td colspan="6" style="padding:10px 14px;color:#8b95a5;font-size:12px;text-align:center;">'
+            f'还有 {len(items) - 80} 个社团未展示，可在桌面端查看完整记录'
+            f'</td></tr>'
+        )
+    return (
+        f'<div style="margin:10px 0;">'
+        f'<div style="font-size:11px;font-weight:600;color:#8e8e93;letter-spacing:0.06em;'
+        f'text-transform:uppercase;margin-bottom:8px;padding:0 4px;">{_esc(title)}</div>'
+        f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;border:1px solid #e7eaf0;border-radius:12px;border-collapse:separate;overflow:hidden;">'
+        f'<tr>'
+        f'<th align="left" style="padding:10px 12px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">社团</th>'
+        f'<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">KIKOERU</th>'
+        f'<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">DLSITE</th>'
+        f'<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">可下载</th>'
+        f'<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">缺失</th>'
+        f'<th style="padding:10px 12px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">状态</th>'
+        f'</tr>'
+        f'{"".join(rows)}{more}'
+        f'</table></div>\n'
+    )
 
 
 def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
@@ -685,6 +735,7 @@ BLOCK_SCHEMA = [
             {"key": "sourceKey", "label": "数据来源 key","type": "data_source",
              "default": "file_tree",
              "options": [
+                 {"value": "rj_work_cards",  "label": "RJ 作品卡片"},
                  {"value": "file_tree",      "label": "通用文件树（file_tree）"},
                  {"value": "download_files", "label": "下载文件列表"},
                  {"value": "upload_files",   "label": "上传文件列表"},

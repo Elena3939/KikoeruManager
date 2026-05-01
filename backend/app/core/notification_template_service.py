@@ -47,15 +47,6 @@ def _default_white_template_html() -> str:
 <h1 style="margin:0;font-size:24px;line-height:1.36;font-weight:760;color:#151922;letter-spacing:0;">{任务标题}</h1>
 <p style="margin:12px auto 0 auto;max-width:520px;font-size:14px;line-height:1.75;color:#596272;">{摘要}</p>
 </td></tr>
-<tr><td style="padding:26px 34px 0 34px;background:#ffffff;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #eceef3;border-radius:14px;border-collapse:separate;overflow:hidden;background:#ffffff;">
-<tr>
-<td style="padding:16px 18px;border-bottom:1px solid #eceef3;"><div style="font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#98a2b3;margin-bottom:5px;">任务类型</div><div style="font-size:14px;font-weight:700;color:#20242b;">{任务类型}</div></td>
-<td style="padding:16px 18px;border-bottom:1px solid #eceef3;border-left:1px solid #eceef3;"><div style="font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#98a2b3;margin-bottom:5px;">摘要</div><div style="font-size:14px;font-weight:700;color:#20242b;line-height:1.55;">{摘要}</div></td>
-</tr>
-<tr><td colspan="2" style="padding:16px 18px;"><div style="font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#98a2b3;margin-bottom:5px;">状态</div><div style="font-size:14px;font-weight:700;color:#20242b;">{事件图标} {事件名称}</div></td></tr>
-</table>
-</td></tr>
 <tr><td style="padding:18px 34px 0 34px;background:#ffffff;">{业务数据块}</td></tr>
 <tr><td style="padding:28px 34px 32px 34px;background:#ffffff;"><div style="height:1px;background:#eceef3;margin-bottom:16px;"></div><p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">Prekikoeru</strong> 自动生成。任务详情可在桌面端任务中心查看。</p></td></tr>
 </table>
@@ -219,15 +210,6 @@ def render_builtin_email(payload: dict) -> tuple:
 <h1 style="margin:0;color:#151922;font-size:24px;line-height:1.36;font-weight:760;">{title}</h1>
 <p style="margin:12px auto 0 auto;max-width:520px;color:#596272;font-size:14px;line-height:1.75;">{summary}</p>
 </td></tr>
-<tr><td style="padding:26px 34px 0 34px;background:#fff;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #eceef3;border-radius:14px;border-collapse:separate;overflow:hidden;background:#fff;">
-<tr>
-<td style="padding:16px 18px;border-bottom:1px solid #eceef3;"><div style="font-size:11px;font-weight:800;color:#98a2b3;letter-spacing:.08em;margin-bottom:5px;">任务类型</div><div style="font-size:14px;font-weight:700;color:#20242b;">{domain_label}</div></td>
-<td style="padding:16px 18px;border-bottom:1px solid #eceef3;border-left:1px solid #eceef3;"><div style="font-size:11px;font-weight:800;color:#98a2b3;letter-spacing:.08em;margin-bottom:5px;">摘要</div><div style="font-size:14px;font-weight:700;color:#20242b;line-height:1.55;">{summary or '—'}</div></td>
-</tr>
-<tr><td colspan="2" style="padding:16px 18px;"><div style="font-size:11px;font-weight:800;color:#98a2b3;letter-spacing:.08em;margin-bottom:5px;">状态</div><div style="font-size:14px;font-weight:700;color:#20242b;">{_esc(event_icon)} {_esc(event_label)}</div></td></tr>
-</table>
-</td></tr>
 <tr><td style="padding:18px 34px 0 34px;background:#fff;">{sections}</td></tr>
 <tr><td style="padding:28px 34px 32px 34px;background:#fff;"><div style="height:1px;background:#eceef3;margin-bottom:16px;"></div><p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">Prekikoeru</strong> 自动生成。任务详情可在桌面端任务中心查看。</p></td></tr>
 </table>
@@ -351,9 +333,12 @@ def _render_user_template(tpl, payload: dict) -> tuple:
 
 def _render_payload_sections(payload: dict) -> str:
     """HTML 模板里的 {业务数据块} 自动区：有数据才渲染。"""
+    rj_cards = list(payload.get('rj_work_cards') or [])
+    show_stats = not rj_cards or len(rj_cards) > 1
     return ''.join([
-        _render_payload_section(payload, 'stats_grid'),
-        _render_circle_overview(payload),
+        _render_payload_section(payload, 'stats_grid') if show_stats else '',
+        _render_circle_batch_summary(payload),
+        '' if payload.get('circle_batch_summary') else _render_circle_overview(payload),
         _render_payload_section(payload, 'file_tree'),
         _render_payload_section(payload, 'diff'),
         _render_payload_section(payload, 'task_log'),
@@ -376,7 +361,7 @@ def _render_payload_section(payload: dict, section: str) -> str:
         if section == 'file_tree':
             parts = []
             if payload.get('rj_work_cards'):
-                parts.append(render_file_tree({'title': '本次作品', 'sourceKey': 'file_tree', 'maxItems': 40}, payload))
+                parts.append(render_file_tree({'title': '本次作品', 'sourceKey': 'rj_work_cards', 'maxItems': 40}, payload))
             if payload.get('file_tree'):
                 parts.append(render_file_tree({'title': '文件清单', 'sourceKey': 'file_tree', 'maxItems': 40}, payload))
             if payload.get('download_files'):
@@ -415,6 +400,9 @@ def _build_stats_items(stats: dict) -> list:
         'downloadable': '可下载',
         'missing': '缺失',
         'dl_only': '暂无来源',
+        'circle_count': '社团数',
+        'completed_circles': '完成社团',
+        'failed_circles': '失败社团',
         'total_files': '总文件数',
         'uploaded_count': '已上传',
         'downloaded': '已下载',
@@ -427,6 +415,7 @@ def _build_stats_items(stats: dict) -> list:
         'duration': '耗时',
     }
     preferred = [
+        'circle_count', 'completed_circles', 'failed_circles',
         'works', 'local_owned', 'owned', 'dl_count', 'asmr_one', 'downloadable', 'missing', 'dl_only',
         'total_files', 'uploaded_count', 'downloaded', 'written', 'skipped', 'filtered_count',
         'failed_count', 'existing_subtitles', 'total_size', 'duration',
@@ -479,6 +468,52 @@ def _render_circle_overview(payload: dict) -> str:
         '<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">DLSITE</th>'
         '<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">ASMR.ONE</th>'
         '<th style="padding:10px 14px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">状态</th>'
+        '</tr>'
+        f'{"".join(body_rows)}{more}'
+        '</table></div>'
+    )
+
+
+def _render_circle_batch_summary(payload: dict) -> str:
+    rows = payload.get('circle_batch_summary') or []
+    if not rows:
+        return ''
+    body_rows = []
+    for item in rows[:80]:
+        if not isinstance(item, dict):
+            continue
+        success = bool(item.get('success', True))
+        status_text = '完成' if success else '失败'
+        status_color = '#16a34a' if success else '#dc2626'
+        circle_name = item.get('circle_name') or item.get('circle_query') or item.get('circle_id') or '未知社团'
+        body_rows.append(
+            '<tr>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid #edf0f4;color:#20242b;font-size:13px;font-weight:650;line-height:1.45;">{_esc(circle_name)}</td>'
+            f'<td style="padding:11px 10px;border-bottom:1px solid #edf0f4;color:#475569;font-size:12px;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(item.get("kikoeru_owned_count") or 0)}</td>'
+            f'<td style="padding:11px 10px;border-bottom:1px solid #edf0f4;color:#475569;font-size:12px;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(item.get("dl_count") or 0)}</td>'
+            f'<td style="padding:11px 10px;border-bottom:1px solid #edf0f4;color:#475569;font-size:12px;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(item.get("downloadable_count") or 0)}</td>'
+            f'<td style="padding:11px 10px;border-bottom:1px solid #edf0f4;color:#475569;font-size:12px;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(item.get("missing_count") or 0)}</td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid #edf0f4;text-align:center;"><span style="display:inline-block;padding:3px 8px;border-radius:999px;background:{status_color}14;color:{status_color};font-size:11px;font-weight:700;">{_esc(status_text)}</span></td>'
+            '</tr>'
+        )
+    more = ''
+    if len(rows) > 80:
+        more = (
+            f'<tr><td colspan="6" style="padding:10px 14px;color:#8b95a5;font-size:12px;text-align:center;">'
+            f'还有 {len(rows) - 80} 个社团未展示，可在桌面端查看完整记录'
+            f'</td></tr>'
+        )
+    return (
+        '<div style="margin:14px 0 12px 0;">'
+        '<div style="font-size:12px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#9aa3b2;margin:0 0 9px 2px;">批量社团补全汇总</div>'
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;border:1px solid #e7eaf0;border-radius:12px;border-collapse:separate;overflow:hidden;">'
+        '<tr>'
+        '<th align="left" style="padding:10px 12px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">社团</th>'
+        '<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">KIKOERU</th>'
+        '<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">DLSITE</th>'
+        '<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">可下载</th>'
+        '<th style="padding:10px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">缺失</th>'
+        '<th style="padding:10px 12px;border-bottom:1px solid #e7eaf0;color:#98a2b3;font-size:11px;letter-spacing:0.08em;">状态</th>'
         '</tr>'
         f'{"".join(body_rows)}{more}'
         '</table></div>'
