@@ -2949,6 +2949,7 @@ class TaskEngine:
         append_progress_log("准备建立社团索引", 1)
 
         batch_results = []
+        batch_circle_summaries = []
         last_successful_result = None
         success_count = 0
         failed_count = 0
@@ -2995,6 +2996,20 @@ class TaskEngine:
                 )
                 last_successful_result = result
                 success_count += 1
+                result_summary = dict(result.get('summary') or {})
+                indexed_counts = dict(result.get('indexed_counts') or {})
+                batch_circle_summaries.append({
+                    'circle_query': circle_query,
+                    'circle_id': str(result.get('circle_id') or ''),
+                    'circle_name': str(result_summary.get('circle_name') or circle_query),
+                    'works': int(indexed_counts.get('works') or result_summary.get('works') or 0),
+                    'local_owned_count': int(indexed_counts.get('local_owned_count') or result_summary.get('local_owned_count') or 0),
+                    'kikoeru_owned_count': int(indexed_counts.get('owned_count') or result_summary.get('owned_count') or 0),
+                    'dl_count': int(indexed_counts.get('dl_count') or result_summary.get('dl_count') or 0),
+                    'asmr_available_count': int(indexed_counts.get('asmr_available_count') or result_summary.get('asmr_available_count') or indexed_counts.get('downloadable_count') or 0),
+                    'downloadable_count': int(indexed_counts.get('downloadable_count') or result_summary.get('downloadable_count') or 0),
+                    'missing_count': int(indexed_counts.get('missing_count') or result_summary.get('missing_count') or 0),
+                })
                 batch_results.append({
                     'circle_query': circle_query,
                     'success': True,
@@ -3007,6 +3022,12 @@ class TaskEngine:
                 raise
             except Exception as exc:
                 failed_count += 1
+                batch_circle_summaries.append({
+                    'circle_query': circle_query,
+                    'circle_name': circle_query,
+                    'success': False,
+                    'error_message': str(exc),
+                })
                 batch_results.append({
                     'circle_query': circle_query,
                     'success': False,
@@ -3028,6 +3049,7 @@ class TaskEngine:
             'circle_name': str(((last_successful_result.get('summary') or {}).get('circle_name')) or normalized_circle_queries[0]),
             'index_result': last_successful_result,
             'index_batch_results': batch_results,
+            'batch_circle_summaries': batch_circle_summaries,
             'indexed_counts': dict(last_successful_result.get('indexed_counts') or {}),
             'index_meta': {
                 **dict((task.task_metadata or {}).get('index_meta') or {}),

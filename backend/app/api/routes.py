@@ -576,7 +576,7 @@ async def backfill_auto_import_extract_activity_logs(
     max_rows: Optional[int] = None,
     time_budget_seconds: float = 8.0,
 ):
-    """分片回填旧 auto_import 操作记录中的解压字段。
+    """分片回填旧导入链操作记录中的解压字段与文件树。
 
     Phase 1：不再一次性全表扫描 + os.walk，改为 offset 分片 + 时间预算。
     若返回 done=false，前端应带 next_offset 再次调用直到 done=true。
@@ -592,15 +592,15 @@ async def backfill_auto_import_extract_activity_logs(
         )
         return {
             "message": (
-                "auto_import 解压字段回填完成"
+                "导入链操作记录字段与文件树回填完成"
                 if result.get("done")
                 else f"本轮处理 {result.get('scanned')} 行，未完成，请带 next_offset 继续"
             ),
             **result,
         }
     except Exception as e:
-        logger.error(f"回填 auto_import 解压字段失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"回填 auto_import 解压字段失败: {str(e)}")
+        logger.error(f"回填导入链操作记录字段失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"回填导入链操作记录字段失败: {str(e)}")
 
 
 # CORS配置
@@ -611,6 +611,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 通知定期清理协程（每24h清一次超7天的已读通知）
+async def _periodic_notification_cleanup():
+    while True:
+        try:
+            await asyncio.sleep(24 * 3600)
+            from ..core.task_notification_service import cleanup_old_notifications
+            deleted = cleanup_old_notifications(retain_days=7)
+            if deleted > 0:
+                logger.info(f"[通知清理] 已清理 {deleted} 条超过7天的旧通知")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[通知清理] 定期清理异常: {e}")
+
 
 # 启动事件
 @app.on_event("startup")
@@ -654,6 +669,9 @@ async def startup_event():
     ensure_default_email_templates()
     from ..core.task_notification_service import start_outbox_worker
     asyncio.create_task(start_outbox_worker())
+
+    # 启动通知定期清理任务（每天清理超7天的旧通知）
+    asyncio.create_task(_periodic_notification_cleanup())
 
 # 关闭事件
 @app.on_event("shutdown")
@@ -1340,6 +1358,19 @@ async def update_configuration(request: Request):
 
         result = save_config(config_data)
         logger.info(f"配置已保存，分类规则数: {len(config_data.get('classification', []))}")
+
+        if 'kikoeru_server' in config_data:
+            try:
+                kikoeru_service = get_kikoeru_service()
+                kikoeru_service.config = kikoeru_service._load_config()
+                kikoeru_service.clear_cache()
+                logger.info(
+                    "[KIKOERU] 运行时配置已刷新: enabled=%s, server_url=%s",
+                    kikoeru_service.config.enabled,
+                    kikoeru_service.config.server_url,
+                )
+            except Exception:
+                logger.warning("[KIKOERU] 刷新运行时配置失败", exc_info=True)
 
         # 重新读取配置文件确保数据已写入
         from ..config.settings import get_config
@@ -2065,7 +2096,9 @@ async def get_conflicts(include_stats: bool = False):
                 conflict.new_metadata = _normalize_conflict_metadata(conflict.new_metadata)
                 normalized_status = str(conflict.status or "").strip().upper()
                 if normalized_status == "PROCESSING":
-                    linked_task_status = _get_linked_task_status(conflict.task_id)
+                    _nm = _normalize_conflict_metadata(conflict.new_metadata)
+                    _recovery_task_id = str((_nm.get("resolution_task_id") or conflict.task_id or "")).strip()
+                    linked_task_status = _get_linked_task_status(_recovery_task_id)
                     if linked_task_status not in active_task_statuses:
                         conflict.status = "PENDING"
                         next_metadata = _normalize_conflict_metadata(conflict.new_metadata)
@@ -2234,6 +2267,7 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
                         detail="同源任务已存在但不是可注入密码的等待态，请等待当前任务结束后再用指定密码重试",
                     )
             conflict.status = "PROCESSING"
+            conflict.task_id = existing_task.id
             next_metadata = dict(conflict.new_metadata or {})
             next_metadata["resolution_task_state"] = "running"
             next_metadata["resolution_action"] = "RETRY"
@@ -3189,6 +3223,31 @@ async def cancel_library_browser_stats(request: Request):
     except Exception as e:
         logger.error(f"取消库存统计失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"取消库存统计失败: {str(e)}")
+
+
+@app.post("/api/library/browser/compute-folder-size")
+async def compute_folder_size(request: Request):
+    """手动计算并缓存指定文件夹的大小（供社团目录右键菜单触发）。"""
+    try:
+        data = await request.json()
+        folder_path = str(data.get("path") or "").strip()
+        if not folder_path:
+            raise HTTPException(status_code=400, detail="缺少文件夹路径")
+        if not os.path.isdir(folder_path):
+            raise HTTPException(status_code=404, detail="文件夹不存在")
+
+        manager = get_library_manager()
+
+        def _compute():
+            return manager._cached_path_size(folder_path)
+
+        size = await asyncio.to_thread(_compute)
+        return {"path": folder_path, "size": size}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"计算文件夹大小失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"计算文件夹大小失败: {str(e)}")
 
 
 @app.get("/api/library/browser/stats/logs")
@@ -6010,23 +6069,41 @@ async def check_kikoeru_duplicate(
             found_works = []
             for rj, res in results.items():
                 if res.is_found:
+                    matched_rjcode = str(res.matched_rjcode or rj or res.rjcode or "").strip().upper()
                     found_works.append({
                         "rjcode": rj,
+                        "matched_rjcode": matched_rjcode,
                         "title": res.title,
                         "circle_name": res.circle_name,
-                        "tags": res.tags
+                        "tags": res.tags,
+                        "source": res.source,
                     })
             
             primary_result = results.get(rjcode, KikoeruCheckResult(rjcode=rjcode))
+            matched_result = next((item for item in found_works if item.get("matched_rjcode")), None)
             
             logger.info(f"[Kikoeru查重] 关联查询完成: 总共 {len(results)} 个作品，找到 {len(found_works)} 个")
             
             return {
                 "rjcode": rjcode,
                 "is_found": primary_result.is_found or len(found_works) > 0,
+                "matched_rjcode": (
+                    primary_result.matched_rjcode
+                    or (matched_result or {}).get("matched_rjcode")
+                    or (matched_result or {}).get("rjcode")
+                    or ""
+                ),
                 "title": primary_result.title,
                 "circle_name": primary_result.circle_name,
                 "tags": primary_result.tags,
+                "primary_result": {
+                    "rjcode": primary_result.rjcode,
+                    "is_found": primary_result.is_found,
+                    "matched_rjcode": primary_result.matched_rjcode,
+                    "title": primary_result.title,
+                    "circle_name": primary_result.circle_name,
+                    "source": primary_result.source,
+                },
                 "linked_works_found": found_works,
                 "total_checked": len(results),
                 "source": "kikoeru_with_linkages",
