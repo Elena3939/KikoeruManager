@@ -1,10 +1,14 @@
 import { ref, computed } from 'vue'
 import { notificationApi } from '../api'
+import { showSystemAlert } from './useSystemPrompt'
 
 const _unreadCount = ref(0)
 const _items = ref([])
 const _total = ref(0)
 const _loading = ref(false)
+const _loadingMore = ref(false)
+const _page = ref(1)
+const _pageSize = 20
 const _panelOpen = ref(false)
 
 // SSE 状态（模块级单例，避免多组件重复连接）
@@ -13,6 +17,7 @@ let _sseRetryTimer = null
 let _sseRetryDelay = 2000
 const SSE_MAX_DELAY = 30000
 const SSE_URL = '/api/notifications/stream'
+const _recentPopupKeys = new Set()
 
 // ─────────────────────────────────────────────
 // SSE 连接管理
@@ -32,6 +37,22 @@ function _connectSSE() {
       }
       if (data.type === 'new_notification') {
         _unreadCount.value = data.unread_count ?? (_unreadCount.value + 1)
+        const eventType = String(data?.item?.event_type || '').trim()
+        const eventKey = String(data?.item?.event_key || data?.item?.id || '').trim()
+        if (eventType === 'email_watcher_new_release' && eventKey && !_recentPopupKeys.has(eventKey)) {
+          _recentPopupKeys.add(eventKey)
+          if (_recentPopupKeys.size > 120) {
+            const first = _recentPopupKeys.values().next().value
+            if (first) _recentPopupKeys.delete(first)
+          }
+          showSystemAlert({
+            tone: 'success',
+            title: '新作索引完成',
+            message: String(data?.item?.title || '监视新作已命中').trim() || '监视新作已命中',
+            description: String(data?.item?.summary || '').trim(),
+            confirmText: '知道了'
+          }).catch(() => {})
+        }
         if (_panelOpen.value) {
           // 面板打开中，实时追加到列表顶部
           if (data.item) {
@@ -80,13 +101,30 @@ async function fetchUnreadCount() {
 
 async function fetchList(params = {}) {
   _loading.value = true
+  _page.value = 1
   try {
-    const data = await notificationApi.list({ page: 1, limit: 50, ...params })
+    const data = await notificationApi.list({ page: 1, limit: _pageSize, ...params })
     _items.value = data.items || []
     _total.value = data.total || 0
   } catch {
   } finally {
     _loading.value = false
+  }
+}
+
+async function loadMore() {
+  if (_loadingMore.value) return
+  _loadingMore.value = true
+  try {
+    const nextPage = _page.value + 1
+    const data = await notificationApi.list({ page: nextPage, limit: _pageSize })
+    const newItems = (data.items || []).filter(ni => !_items.value.some(i => i.id === ni.id))
+    _items.value = [..._items.value, ...newItems]
+    _total.value = data.total || _total.value
+    _page.value = nextPage
+  } catch {
+  } finally {
+    _loadingMore.value = false
   }
 }
 
@@ -117,6 +155,8 @@ async function deleteItem(id) {
 export function useNotifications() {
   const unreadCount = computed(() => _unreadCount.value)
   const loading = computed(() => _loading.value)
+  const loadingMore = computed(() => _loadingMore.value)
+  const hasMore = computed(() => _items.value.length < _total.value)
   const panelOpen = computed({
     get: () => _panelOpen.value,
     set: (v) => { _panelOpen.value = v },
@@ -127,7 +167,10 @@ export function useNotifications() {
     await fetchList()
     const unreadIds = _items.value.filter(i => !i.is_read).map(i => i.id)
     if (unreadIds.length > 0) {
-      await markRead(unreadIds)
+      // 延迟 420ms 标已读，让用户先看到未读状态，再触发 CSS 渐变灰过渡
+      setTimeout(async () => {
+        await markRead(unreadIds)
+      }, 420)
     }
   }
 
@@ -148,9 +191,12 @@ export function useNotifications() {
     items: _items,
     total: _total,
     loading,
+    loadingMore,
+    hasMore,
     panelOpen,
     fetchUnreadCount,
     fetchList,
+    loadMore,
     markRead,
     markAllRead,
     deleteItem,

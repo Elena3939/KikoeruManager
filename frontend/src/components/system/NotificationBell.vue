@@ -17,11 +17,7 @@
         :speed="1"
         :render-config="{ autoResize: true }"
       />
-      <span
-        v-if="unreadCount > 0"
-        class="notif-dot"
-        :title="unreadCount > 99 ? '99+ 条未读通知' : `${unreadCount} 条未读通知`"
-      />
+
     </button>
 
     <teleport to="body">
@@ -41,6 +37,10 @@ import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import NotificationPanel from './NotificationPanel.vue'
 import { useNotifications } from '../../composables/useNotifications'
 import notificationLottie from '../../assets/anime/Notification.lottie'
+
+// ── 未读循环帧段 ── 调整这两个值到动画内黄点出现的帧范围 ──
+const UNREAD_LOOP_START = 15  // 循环起始帧（黄点出现之后）
+const UNREAD_LOOP_END = 60    // 循环结束帧
 
 const bellRef = ref(null)
 const panelRect = ref(null)
@@ -85,12 +85,20 @@ async function syncPlayback(force = false) {
   if (unreadCount.value > 0) {
     await instance.unfreeze()
     await instance.setLoop(true)
+    // 锁定在含黄点的帧段内循环
+    if (typeof instance.setSegment === 'function') {
+      instance.setSegment(UNREAD_LOOP_START, UNREAD_LOOP_END)
+    }
     if (force) {
       await instance.stop()
-      await instance.setFrame(0)
+      await instance.setFrame(UNREAD_LOOP_START)
     }
     await instance.play()
     return
+  }
+  // 恢复全段
+  if (typeof instance.setSegment === 'function') {
+    instance.setSegment(0, Infinity)
   }
   await setStaticFrame()
 }
@@ -247,42 +255,7 @@ onUnmounted(() => {
   filter: drop-shadow(0 6px 12px rgba(245, 158, 11, 0.22));
 }
 
-.notif-dot {
-  position: absolute;
-  top: 9px;
-  right: 8px;
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: radial-gradient(circle at 35% 35%, #fff5a6, #facc15 58%, #f59e0b 100%);
-  border: 2px solid #fff;
-  box-shadow:
-    0 0 0 4px rgba(250, 204, 21, 0.18),
-    0 4px 12px rgba(245, 158, 11, 0.42);
-  animation:
-    notif-dot-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
-    notif-dot-pulse 1.6s ease-in-out infinite;
-}
 
-@keyframes notif-dot-pop {
-  from { transform: scale(0); }
-  to { transform: scale(1); }
-}
-
-@keyframes notif-dot-pulse {
-  0%, 100% {
-    box-shadow:
-      0 0 0 4px rgba(250, 204, 21, 0.18),
-      0 4px 12px rgba(245, 158, 11, 0.42);
-    transform: scale(1);
-  }
-  50% {
-    box-shadow:
-      0 0 0 7px rgba(250, 204, 21, 0.1),
-      0 6px 16px rgba(245, 158, 11, 0.5);
-    transform: scale(1.08);
-  }
-}
 
 .notif-overlay {
   position: fixed;

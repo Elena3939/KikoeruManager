@@ -20,12 +20,18 @@
         <span>暂无通知</span>
       </div>
 
+      <div v-else-if="displayedItems.length === 0" class="notif-empty">
+        <Bell :size="32" :stroke-width="1.4" style="opacity:0.3" />
+        <span>近3天内无通知</span>
+      </div>
+
       <div v-else class="notif-list">
         <div
-          v-for="item in items"
+          v-for="(item, index) in displayedItems"
           :key="item.id"
           class="notif-item"
-          :class="[`notif-item--${item.severity}`, { 'notif-item--unread': !item.is_read }]"
+          :class="[`notif-item--${item.severity}`, { 'notif-item--unread': !item.is_read, 'notif-item--read': item.is_read }]"
+          :style="item.is_read ? { transitionDelay: `${index * 45}ms` } : {}"
           @click="onItemClick(item)"
         >
           <div class="notif-item-icon">
@@ -44,6 +50,18 @@
             <X :size="12" :stroke-width="2" />
           </button>
         </div>
+
+        <!-- 加载更多 -->
+        <div v-if="hasMore || loadingMore" class="notif-load-more">
+          <button v-if="!loadingMore" class="notif-load-more-btn" @click="onLoadMore">
+            <ChevronDown :size="13" :stroke-width="2.2" />
+            查看更多
+          </button>
+          <div v-else class="notif-load-more-spin">
+            <Loader2 :size="14" :stroke-width="2" class="notif-spin" />
+            <span>加载中...</span>
+          </div>
+        </div>
       </div>
     </div>
 </template>
@@ -51,7 +69,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { Bell, CheckCircle2, XCircle, AlertTriangle, Info, X, Loader2 } from 'lucide-vue-next'
+import { Bell, CheckCircle2, XCircle, AlertTriangle, Info, X, Loader2, ChevronDown } from 'lucide-vue-next'
 import { useNotifications } from '../../composables/useNotifications'
 import { getTaskDomainMeta } from '../common/taskDomainMeta'
 
@@ -62,9 +80,15 @@ const props = defineProps({
 
 const emit = defineEmits(['close'])
 const router = useRouter()
-const { items, loading, markAllRead, deleteItem } = useNotifications()
+const { items, loading, loadingMore, hasMore, markAllRead, deleteItem, loadMore } = useNotifications()
 
-const hasUnread = computed(() => items.value.some(i => !i.is_read))
+const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000
+const displayedItems = computed(() => {
+  const cutoff = Date.now() - THREE_DAYS_MS
+  return items.value.filter(i => new Date(i.created_at).getTime() >= cutoff)
+})
+
+const hasUnread = computed(() => displayedItems.value.some(i => !i.is_read))
 
 function domainLabel(item) {
   if (item.domain_label) return item.domain_label
@@ -99,6 +123,10 @@ async function onMarkAllRead() {
 
 async function onDelete(id) {
   await deleteItem(id)
+}
+
+async function onLoadMore() {
+  await loadMore()
 }
 
 function onItemClick(item) {
@@ -371,6 +399,72 @@ function onItemClick(item) {
 .notif-item-del:hover {
   background: rgba(217, 48, 37, 0.08);
   color: #d93025;
+}
+
+/* ── 加载更多 ── */
+.notif-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 4px;
+}
+
+.notif-load-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(29, 29, 31, 0.5);
+  background: rgba(29, 29, 31, 0.04);
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.notif-load-more-btn:hover {
+  background: rgba(0, 113, 227, 0.07);
+  color: #0071e3;
+  transform: translateY(-1px) scale(1.02);
+}
+
+.notif-load-more-btn:active {
+  transform: scale(0.96);
+}
+
+.notif-load-more-spin {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: rgba(29, 29, 31, 0.4);
+  padding: 5px 0;
+}
+
+/* ── 已读状态：整体变灰 ── */
+.notif-item--read {
+  opacity: 0.55;
+  transition: opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.15s;
+}
+
+.notif-item--read .notif-item-title {
+  color: rgba(29, 29, 31, 0.5);
+  font-weight: 500;
+}
+
+.notif-item--read .notif-item-icon {
+  color: rgba(29, 29, 31, 0.3) !important;
+}
+
+.notif-item--read .notif-meta-rj {
+  background: rgba(29, 29, 31, 0.06);
+  color: rgba(29, 29, 31, 0.4);
+}
+
+.notif-item--read:hover {
+  opacity: 0.75;
+  background: rgba(29, 29, 31, 0.03);
 }
 
 </style>
