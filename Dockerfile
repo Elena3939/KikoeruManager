@@ -1,16 +1,17 @@
 # 多阶段构建 Dockerfile
 # 阶段1：构建前端
-FROM node:18-alpine AS frontend-builder
+FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
 # 复制前端依赖
 COPY frontend/package*.json ./
-RUN npm ci --verbose || (echo "npm install failed" && exit 1)
+# 增大 Node.js 堆内存上限，避免大型 Vite 项目 OOM
+RUN NODE_OPTIONS="--max-old-space-size=2048" npm ci
 
 # 复制前端源码并构建
 COPY frontend/ ./
-RUN npm run build 2>&1 || (echo "Build failed with exit code $?" && cat /app/frontend/npm-debug.log 2>/dev/null || true && exit 1)
+RUN NODE_OPTIONS="--max-old-space-size=2048" npm run build
 
 # 阶段2：后端运行环境
 FROM python:3.11-slim
