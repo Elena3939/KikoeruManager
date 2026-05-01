@@ -526,6 +526,28 @@
 
             <button
 
+              v-if="!isRemoteCurrentLibrary && isAtComputeSizeRoot"
+
+              type="button"
+
+              class="lib-btn lib-btn-icon-tinted"
+
+              :disabled="batchComputingSize || !selectedDirectoryRows.length"
+
+              @click="handleBatchComputeSize"
+
+            >
+
+              <IconHardDrive :size="14" :stroke-width="2.2" />
+
+              <span>批量计算大小</span>
+
+              <span v-if="batchComputingSize" class="lib-badge">计算中</span>
+
+            </button>
+
+            <button
+
               type="button"
 
               class="lib-btn lib-btn-icon-tinted lib-icon-batch-delete"
@@ -622,11 +644,13 @@
 
               <div class="file-main-line">
 
-                <el-icon class="file-icon"><Folder v-if="row.is_directory" /><Files v-else /></el-icon>
+                <span class="file-icon-shell">
+                  <component :is="getLibraryRowIconComponent(row)" class="file-icon" :class="getLibraryRowIconClass(row)" :size="18" :stroke-width="2.2" />
+                </span>
 
-                <button v-if="isSearchResultRow(row)" type="button" class="file-link-btn" @click="locateLibrarySearchResult(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
+                <button v-if="isSearchResultRow(row)" type="button" class="file-link-btn" @click.stop="locateLibrarySearchResult(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
 
-                <button v-else-if="row.is_directory" type="button" class="file-link-btn" @click="openFolder(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
+                <button v-else-if="row.is_directory" type="button" class="file-link-btn" @click.stop="openFolder(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
 
                 <span v-else class="file-name" v-html="renderLibrarySearchHighlight(row.name)"></span>
 
@@ -701,6 +725,10 @@
         :disable-manage="!libraryRowContextMenu.row?.is_directory"
 
         :disable-delete="!isWritableCurrentLibrary"
+
+        :show-compute-size="Boolean(libraryRowContextMenu.row?.is_directory && !isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value))"
+
+        :computing-size-id="computingSizeId"
 
         @close="closeLibraryRowContextMenu"
 
@@ -1287,6 +1315,10 @@ import {
   Trash2 as IconTrash,
 
   Pencil as IconPencil,
+  File as IconFile,
+  FileText as IconFileText,
+  Folder as IconFolderTree,
+  Music as IconMusic,
 
   Captions as IconCaptions,
 
@@ -1395,6 +1427,8 @@ const selectedRows = ref([])
 
 const batchDeleting = ref(false)
 
+const batchComputingSize = ref(false)
+
 const batchRenaming = ref(false)
 
 const tableRef = ref(null)
@@ -1416,6 +1450,8 @@ const currentPath = ref('')
 const browseRootPath = ref('')
 
 const parentPath = ref('')
+
+const computingSizeId = ref(null)
 
 function createLibrarySearchState (overrides = {}) {
 
@@ -2477,6 +2513,12 @@ const remoteUploadLibraries = computed(() => (Array.isArray(libraries.value) ? l
 const hasRemoteUploadLibraries = computed(() => remoteUploadLibraries.value.length > 0)
 
 const isAllSelected = computed(() => files.value.length > 0 && selectedRows.value.length === files.value.length)
+
+// 是否处于根目录层（社团层），只有这一层需要"计算大小"入口
+const isAtComputeSizeRoot = computed(() => !currentPath.value || currentPath.value === browseRootPath.value)
+
+// 当前选中行中的目录行（供批量计算使用）
+const selectedDirectoryRows = computed(() => selectedRows.value.filter(r => r?.is_directory))
 
 const aggregatePending = computed(() => Object.values(statsMap.value).some(item => item?.status === 'pending'))
 
@@ -5225,6 +5267,23 @@ function getFileName (path) {
 
   return String(path).split(/[\\/]/).pop()
 
+}
+
+function getLibraryRowIconComponent (row) {
+  if (row?.is_directory) return IconFolderTree
+  const name = String(row?.name || '').toLowerCase()
+  if (/\.(wav|flac|mp3|m4a|ogg|aac|wma)$/.test(name)) return IconMusic
+  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc)$/.test(name)) return IconFileText
+  return IconFile
+}
+
+function getLibraryRowIconClass (row) {
+  if (row?.is_directory) return 'icon-folder'
+  const name = String(row?.name || '').toLowerCase()
+  if (/\.(wav|flac)$/.test(name)) return 'icon-audio-lossless'
+  if (/\.(mp3|m4a|ogg|aac|wma)$/.test(name)) return 'icon-audio'
+  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc)$/.test(name)) return 'icon-text'
+  return 'icon-file'
 }
 
 
@@ -12405,11 +12464,19 @@ function handleLibraryRowContextMenu (row, _column, event) {
 }
 
 
-function handleLibraryRowClick () {
+function handleLibraryRowClick (row, _column, event) {
 
-  if (!libraryRowContextMenu.value.visible) return
+  if (libraryRowContextMenu.value.visible) closeLibraryRowContextMenu()
 
-  closeLibraryRowContextMenu()
+  const target = event?.target
+
+  if (target instanceof Element && target.closest('input,textarea,select,a,.el-checkbox,.el-tag')) return
+
+  if (row?.is_directory) {
+
+    openFolder(row)
+
+  }
 
 }
 
@@ -12464,6 +12531,8 @@ async function handleLibraryRowContextMenuAction (action) {
   if (action === 'subtitle') return startSingleRJSubtitle(toRJSubtitleItem(row))
 
   if (action === 'manage') return openFolderContentsDialog(row)
+
+  if (action === 'compute_size') return computeFolderSize(row)
 
   if (action === 'delete') return deleteItem(row)
 
@@ -12591,6 +12660,45 @@ async function apiRenameItem (row) {
 
 
 
+async function computeFolderSize (row) {
+
+  if (!row?.path || !row?.is_directory) return
+
+  computingSizeId.value = row.id
+
+  try {
+
+    const result = await libraryApi.computeFolderSize(row.path)
+
+      const sizeBytes = result?.size ?? 0
+
+      // 更新当前列表中对应行的 size 字段，避免重新加载整页
+
+      const target = files.value.find(f => f.id === row.id)
+
+      if (target) {
+        target.size = sizeBytes
+        target.size_status = 'ready'
+      }
+
+    const gb = (sizeBytes / 1073741824).toFixed(2)
+
+    ElMessage.success(`"${row.name}" 大小：${formatFileSize(sizeBytes)}`)
+
+  } catch (err) {
+
+    ElMessage.error('计算文件夹大小失败：' + (err.response?.data?.detail || err.message || '未知错误'))
+
+  } finally {
+
+    computingSizeId.value = null
+
+  }
+
+}
+
+
+
 async function deleteItem (row) {
 
   try {
@@ -12636,6 +12744,63 @@ async function deleteItem (row) {
     if (error === 'cancel' || error?.message === 'cancel') return
 
     ElMessage.error('删除失败: ' + (error.response?.data?.detail || error.message))
+
+  }
+
+}
+
+
+
+async function handleBatchComputeSize () {
+
+  const targets = selectedDirectoryRows.value
+
+  if (!targets.length) return
+
+  batchComputingSize.value = true
+
+  let successCount = 0
+
+  let failCount = 0
+
+  for (const row of targets) {
+
+    computingSizeId.value = row.id
+
+    try {
+
+      const result = await libraryApi.computeFolderSize(row.path)
+
+      const sizeBytes = result?.size ?? 0
+
+      const target = files.value.find(f => f.id === row.id)
+
+      if (target) {
+        target.size = sizeBytes
+        target.size_status = 'ready'
+      }
+
+      successCount++
+
+    } catch {
+
+      failCount++
+
+    }
+
+  }
+
+  computingSizeId.value = null
+
+  batchComputingSize.value = false
+
+  if (failCount === 0) {
+
+    ElMessage.success(`批量计算完成：${successCount} 个文件夹大小已更新`)
+
+  } else {
+
+    ElMessage.warning(`批量计算：${successCount} 个成功，${failCount} 个失败`)
 
   }
 
@@ -13467,7 +13632,7 @@ function libraryRowClassName ({ row }) {
 
 function formatRowSize (row) {
 
-  if (isRemoteCurrentLibrary.value && row?.is_directory) return '-'
+  if (row?.is_directory && isAtComputeSizeRoot.value && row?.size_status !== 'ready') return '-'
 
   if (row?.size_status === 'pending' && (row.size === null || row.size === undefined)) return '统计中'
 
@@ -15969,7 +16134,33 @@ function statsStatusTextDisplay (stats) {
 
 .file-main-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
 
-.file-icon { margin-right: 6px; color: #0071e3; vertical-align: middle; }
+.file-icon-shell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+}
+
+.file-icon {
+  flex-shrink: 0;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.file-icon.icon-folder {
+  color: #f59e0b;
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+.file-icon.icon-audio-lossless { color: #0f766e; }
+
+.file-icon.icon-audio { color: #0ea5e9; }
+
+.file-icon.icon-text { color: #8b5cf6; }
+
+.file-icon.icon-file { color: #64748b; }
 
 .file-name { vertical-align: middle; font-weight: 500; color: #1d1d1f; }
 

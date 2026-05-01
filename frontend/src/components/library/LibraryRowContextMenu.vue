@@ -87,6 +87,18 @@
           <span>文件管理</span>
         </button>
 
+        <button
+          v-if="showComputeSize"
+          type="button"
+          class="menu-item"
+          :disabled="computingSizeId === row?.id"
+          @click="emit('action', 'compute_size')"
+        >
+          <HardDrive :size="14" :stroke-width="2.2" class="menu-item-icon text-teal-600" />
+          <span>计算文件夹大小</span>
+          <span v-if="computingSizeId === row?.id" class="ml-auto text-[10px] text-teal-700">计算中</span>
+        </button>
+
         <div class="my-1 border-t border-slate-200"></div>
 
         <button
@@ -104,7 +116,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, ExternalLink, FolderCog, FolderOpen, MapPin, Pencil, Sparkles, Trash2 } from 'lucide-vue-next'
+import { Captions, ExternalLink, FolderCog, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Trash2 } from 'lucide-vue-next'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -121,6 +133,8 @@ const props = defineProps({
   disableSubtitle: { type: Boolean, default: false },
   disableManage: { type: Boolean, default: false },
   disableDelete: { type: Boolean, default: false },
+  showComputeSize: { type: Boolean, default: false },
+  computingSizeId: { type: String, default: null },
 })
 
 const emit = defineEmits(['close', 'action'])
