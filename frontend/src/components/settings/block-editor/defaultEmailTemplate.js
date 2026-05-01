@@ -17,30 +17,6 @@ export const DEFAULT_EMAIL_HTML = `<table width="100%" cellpadding="0" cellspaci
   <p style="margin:12px auto 0 auto;max-width:480px;font-size:14px;line-height:1.75;color:#5d6470;">{摘要}</p>
 </td>
 </tr>
-
-<tr>
-<td style="padding:28px 34px 0 34px;background:#ffffff;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #eceef3;border-radius:14px;border-collapse:separate;overflow:hidden;background:#ffffff;">
-    <tr>
-      <td style="padding:16px 18px;border-bottom:1px solid #eceef3;">
-        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9aa1ac;margin-bottom:5px;">任务类型</div>
-        <div style="font-size:14px;font-weight:650;color:#1f2329;">{任务类型}</div>
-      </td>
-      <td style="padding:16px 18px;border-bottom:1px solid #eceef3;border-left:1px solid #eceef3;">
-        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9aa1ac;margin-bottom:5px;">摘要</div>
-        <div style="font-size:14px;font-weight:650;color:#1f2329;line-height:1.55;">{摘要}</div>
-      </td>
-    </tr>
-    <tr>
-      <td colspan="2" style="padding:16px 18px;">
-        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9aa1ac;margin-bottom:5px;">状态</div>
-        <div style="font-size:14px;font-weight:650;color:#1f2329;">{事件图标} {事件名称}</div>
-      </td>
-    </tr>
-  </table>
-</td>
-</tr>
-
 <tr>
 <td style="padding:18px 34px 0 34px;background:#ffffff;">
   {业务数据块}
@@ -106,52 +82,18 @@ export function buildDefaultEmailBlocks() {
       },
     },
     {
-      id: _uid('info_grid'),
-      type: 'rich_text',
+      id: _uid('rj_card'),
+      type: 'file_tree',
       enabled: true,
       schemaVersion: 1,
-      props: {
-        contentJson: null,
-        htmlCache: `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0 0 0;border:1px solid #eceef3;border-radius:14px;border-collapse:separate;overflow:hidden;background:#ffffff;">
-<tr>
-  <td style="padding:14px 16px;border-bottom:1px solid #eceef3;">
-    <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9aa1ac;margin-bottom:4px;">任务类型</div>
-    <div style="font-size:14px;font-weight:650;color:#1f2329;">{任务类型}</div>
-  </td>
-  <td style="padding:14px 16px;border-bottom:1px solid #eceef3;border-left:1px solid #eceef3;">
-    <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9aa1ac;margin-bottom:4px;">摘要</div>
-    <div style="font-size:14px;font-weight:650;color:#1f2329;line-height:1.55;">{摘要}</div>
-  </td>
-</tr>
-<tr>
-  <td colspan="2" style="padding:14px 16px;">
-    <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9aa1ac;margin-bottom:4px;">状态</div>
-    <div style="font-size:14px;font-weight:650;color:#1f2329;">{事件图标} {事件名称}</div>
-  </td>
-</tr>
-</table>`,
-      },
-    },
-    {
-      id: _uid('stats'),
-      type: 'stats_grid',
-      enabled: true,
-      schemaVersion: 1,
-      props: {
-        columns: 3,
-        items: [
-          { key: 'total_files', label: '总文件数', icon: '' },
-          { key: 'total_size',  label: '总大小',   icon: '' },
-          { key: 'duration',    label: '耗时',     icon: '' },
-        ],
-      },
+      props: { title: 'RJ 作品', sourceKey: 'rj_work_cards', maxItems: 6 },
     },
     {
       id: _uid('files'),
       type: 'file_tree',
       enabled: true,
       schemaVersion: 1,
-      props: { title: '文件清单', sourceKey: 'file_tree', maxItems: 12 },
+      props: { title: '文件清单', sourceKey: 'file_tree', maxItems: 9999 },
     },
     {
       id: _uid('logs'),

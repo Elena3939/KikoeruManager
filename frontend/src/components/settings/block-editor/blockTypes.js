@@ -120,6 +120,7 @@ export const BLOCK_TYPES = {
       { key: 'sourceKey', label: '数据来源',     type: 'data_source', default: 'file_tree',
         options: [
           { value: 'file_tree',       label: '通用文件树' },
+          { value: 'circle_batch_summary', label: '批量社团补全汇总' },
           { value: 'download_files',  label: '下载文件列表' },
           { value: 'upload_files',    label: '上传文件列表' },
           { value: 'filtered_files',  label: '过滤前后对比' },

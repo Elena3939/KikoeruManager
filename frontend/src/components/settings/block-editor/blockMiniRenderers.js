@@ -305,10 +305,10 @@ function renderFileTree(props, payload) {
   const sourceKey = props.sourceKey || 'file_tree'
   const title = htmlEscape(props.title || '文件清单')
   const maxItems = Math.max(0, Number(props.maxItems) || 30)
-  const items = payload[sourceKey] || []
-  if ((sourceKey === 'file_tree' || sourceKey === 'download_files') && Array.isArray(payload.rj_work_cards) && payload.rj_work_cards.length) {
-    return renderDownloadWorkCards(title, payload.rj_work_cards, maxItems)
+  if (sourceKey === 'rj_work_cards') {
+    return renderDownloadWorkCards(title, payload.rj_work_cards || [], maxItems)
   }
+  const items = payload[sourceKey] || []
   if (sourceKey === 'download_files' && Array.isArray(payload.download_work_cards) && payload.download_work_cards.length) {
     return renderDownloadWorkCards(title, payload.download_work_cards, maxItems)
   }
@@ -330,33 +330,37 @@ function renderFileTree(props, payload) {
     }).join('')
   }
 
-  // 嵌套 <details>/<summary> 结构，与后端 render_file_tree 对齐：
-  //   每个目录 = <details open>，summary 是文件夹行；子内容 padding-left:18px。
-  //   每个文件 = <div>。
-  // 截断：累计 emit 计数，到达 maxItems 停止递归。
   const state = { emitted: 0, truncated: false, skipped: 0 }
-  const fileRowStyle = 'padding:5px 12px;border-bottom:1px solid #f5f5f7;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.7;'
-  const summaryStyle = 'cursor:pointer;padding:6px 12px;border-bottom:1px solid #f5f5f7;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600;color:#1d1d1f;line-height:1.7;outline:none;'
+  const fileRowStyle = "padding:7px 14px;border-bottom:1px solid #edf2f7;font-size:12.5px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;line-height:1.65;display:flex;align-items:center;justify-content:space-between;gap:10px;"
+  const summaryStyle = "cursor:pointer;padding:8px 14px;border-bottom:1px solid #e7edf5;background:#fcfdff;font-size:12.5px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;font-weight:600;color:#0f172a;line-height:1.65;outline:none;display:flex;align-items:center;gap:8px;"
   const detailsStyle = 'border:none;margin:0;'
 
   const renderFileRow = (node) => {
     const label = String(node.path || node.name || '')
     const status = node.status || 'kept'
     const style = FILE_STATUS_STYLE[status] || { color: '#48484a', marker: '·', labelExtra: 'color:#1d1d1f;' }
-    const markerHtml = `<span style="color:${style.color};display:inline-block;width:14px;font-weight:600;text-decoration:none;">${style.marker}</span>`
+    const isMuted = status === 'filtered' || status === 'removed'
+    const markerHtml = `<span style="display:inline-block;width:12px;height:12px;border-radius:999px;background:${style.color};opacity:${isMuted ? '.68' : '.9'};flex-shrink:0;"></span>`
+    const lowerLabel = label.toLowerCase()
+    const iconHtml = lowerLabel.match(/\.(txt|lrc|srt|vtt|ass|ssa)$/)
+      ? `<span style="font-size:14px;line-height:1;color:${isMuted ? '#94a3b8' : '#8b5cf6'};flex-shrink:0;">📝</span>`
+      : lowerLabel.match(/\.(flac|wav|mp3|m4a|ogg|aac)$/)
+        ? `<span style="font-size:14px;line-height:1;color:${isMuted ? '#94a3b8' : '#0ea5e9'};flex-shrink:0;">🎵</span>`
+        : '<span style="font-size:14px;line-height:1;color:#94a3b8;flex-shrink:0;">📄</span>'
     const sizeText = String(node.size_text || '')
-    const sizeHtml = sizeText ? `<span style="float:right;color:#8e8e93;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(sizeText)}</span>` : ''
+    const sizeHtml = sizeText ? `<span style="color:#94a3b8;font-size:11px;white-space:nowrap;flex-shrink:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(sizeText)}</span>` : ''
     const badgeHtml = renderBadges(node.badges || [])
-    return `<div style="${fileRowStyle}${style.labelExtra}">${sizeHtml}${markerHtml}${htmlEscape(label)}${badgeHtml}</div>`
+    const lineHtml = isMuted ? '<span style="position:absolute;left:0;right:0;top:50%;border-top:1.5px solid rgba(148,163,184,0.88);transform:translateY(-50%);pointer-events:none;"></span>' : ''
+    return `<div style="${fileRowStyle}${style.labelExtra}"><span style="position:relative;display:inline-flex;align-items:center;gap:8px;min-width:0;overflow:hidden;">${lineHtml}${markerHtml}${iconHtml}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">${htmlEscape(label)}</span>${badgeHtml}</span>${sizeHtml}</div>`
   }
 
   const renderDir = (node, depth) => {
     if (state.truncated) { state.skipped += 1; return '' }
     state.emitted += 1
     const label = String(node.name || node.path || '')
-    const typeIcon = `<span style="color:#d97706;display:inline-block;width:18px;font-size:13px;text-align:left;">📁</span>`
+    const typeIcon = '<span style="color:#f59e0b;font-size:15px;line-height:1;flex-shrink:0;">📁</span>'
     const sizeText = String(node.size_text || '')
-    const sizeHtml = sizeText ? `<span style="float:right;color:#8e8e93;font-size:11px;font-weight:400;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(sizeText)}</span>` : ''
+    const sizeHtml = sizeText ? `<span style="margin-left:auto;color:#94a3b8;font-size:11px;font-weight:400;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(sizeText)}</span>` : ''
     const badgeHtml = renderBadges(node.badges || [])
     const children = Array.isArray(node.children) ? node.children : []
     const childChunks = []
@@ -371,8 +375,9 @@ function renderFileTree(props, payload) {
         childChunks.push(renderFileRow(safeChild))
       }
     }
-    const childrenWrapper = childChunks.length ? `<div style="padding-left:18px;">${childChunks.join('')}</div>` : ''
-    return `<details open style="${detailsStyle}"><summary style="${summaryStyle}">${sizeHtml}${typeIcon}${htmlEscape(label)}${badgeHtml}</summary>${childrenWrapper}</details>`
+    const childrenWrapper = childChunks.length ? `<div style="padding-left:18px;border-left:1px dashed #dbe5f0;margin-left:22px;background:#fff;">${childChunks.join('')}</div>` : ''
+    const openAttr = depth === 0 ? '' : ' open'
+    return `<details${openAttr} style="${detailsStyle}"><summary style="${summaryStyle}">${typeIcon}<span style="font-weight:600;color:#334155;">${htmlEscape(label)}</span>${badgeHtml}${sizeHtml}</summary>${childrenWrapper}</details>`
   }
 
   const bodyChunks = []
@@ -392,8 +397,8 @@ function renderFileTree(props, payload) {
   }
 
   return `<div style="margin:10px 0;">
-    <div style="font-size:11px;font-weight:600;color:#8e8e93;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;padding:0 4px;">${title}</div>
-    <div style="background:#fff;border:1px solid #ececef;border-radius:10px;overflow:hidden;">${bodyChunks.join('')}</div>
+    <div style="font-size:11px;font-weight:600;color:#64748b;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;padding:0 4px;">${title}</div>
+    <div style="background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%);border:1px solid #dde6f0;border-radius:12px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,0.06);">${bodyChunks.join('')}</div>
   </div>`
 }
 

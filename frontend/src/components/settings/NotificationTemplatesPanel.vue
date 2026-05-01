@@ -62,6 +62,16 @@
             <span v-if="!tpl.enabled" class="tpl-badge tpl-badge--off">已停用</span>
           </div>
           <div class="tpl-card-actions">
+            <button
+              v-if="isLegacyBlocksTemplate(tpl)"
+              class="tpl-action tpl-action--upgrade"
+              type="button"
+              title="升级到最新模板布局（RJ 卡片 + 完整文件树）"
+              @click="upgradeTemplate(tpl)"
+            >
+              <Sparkles :size="14" :stroke-width="2.2" />
+              升级布局
+            </button>
             <button class="tpl-action" type="button" title="启用 / 停用" @click="toggleEnabled(tpl)">
               <component :is="tpl.enabled ? ToggleRight : ToggleLeft" :size="16" :stroke-width="2.2" />
             </button>
@@ -117,15 +127,18 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Sparkles,
   Star,
   ToggleLeft,
   ToggleRight,
   Trash2,
 } from 'lucide-vue-next'
+import { ElMessage } from 'element-plus'
 import { notificationApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import NotificationTemplateEditor from './NotificationTemplateEditor.vue'
 import { PRESET_TEMPLATES } from './block-editor/presetTemplates.js'
+import { buildDefaultEmailBlocks } from './block-editor/defaultEmailTemplate.js'
 
 const EVENT_LABEL = { completed: '完成', failed: '失败', waiting_manual: '等待人工' }
 const DOMAIN_LABEL = {
@@ -225,6 +238,33 @@ async function setDefault(tpl) {
     await reload()
   } catch (e) {
     /* 忽略 */
+  }
+}
+
+function isLegacyBlocksTemplate(tpl) {
+  if (tpl.editor_mode !== 'blocks') return false
+  const blocks = Array.isArray(tpl.blocks) ? tpl.blocks : []
+  return blocks.some(b => b && b.type === 'stats_grid')
+}
+
+async function upgradeTemplate(tpl) {
+  try {
+    await showSystemConfirm({
+      title: '升级模板布局',
+      message: `将把「${tpl.name || '未命名'}」的积木布局升级到最新版本（RJ 作品卡片 + 完整文件树），原 stats_grid 统计格会被移除。此操作会覆盖当前积木内容。`,
+      confirmText: '确认升级',
+      cancelText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
+    const newBlocks = buildDefaultEmailBlocks()
+    await notificationApi.updateTemplate(tpl.id, { blocks: newBlocks, editor_mode: 'blocks' })
+    ElMessage.success('布局已升级到最新版本')
+    await reload()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '升级失败')
   }
 }
 
@@ -513,6 +553,27 @@ defineExpose({ reload })
 .tpl-action--danger:hover {
   background: rgba(217, 48, 37, 0.08);
   color: #d93025;
+}
+
+.tpl-action--upgrade {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.07);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  white-space: nowrap;
+}
+
+.tpl-action--upgrade:hover {
+  background: rgba(124, 58, 237, 0.14);
+  color: #6d28d9;
+  transform: translateY(-1px);
+  border-color: rgba(109, 40, 217, 0.35);
 }
 
 .tpl-action :deep(.is-filled) {
