@@ -1064,10 +1064,17 @@ class EmailWatcherService:
         if not matched_header_uids:
             return diag
 
-        try:
-            raw_messages = client.fetch(matched_header_uids, ['BODY.PEEK[]'])
-        except Exception as exc:
-            logger.warning("[邮件监听] 获取邮件内容失败: %s", exc)
+        raw_messages = {}
+        for uid in matched_header_uids:
+            try:
+                fetched = client.fetch([uid], ['BODY.PEEK[]'])
+                raw_messages.update(fetched or {})
+            except Exception as exc:
+                logger.warning("[邮件监听] 获取邮件 uid=%s 内容失败，已跳过: %s", uid, exc)
+                continue
+
+        if not raw_messages:
+            logger.warning("[邮件监听] 命中邮件头 %d 封，但正文均获取失败", len(matched_header_uids))
             return diag
 
         for uid, data in raw_messages.items():
