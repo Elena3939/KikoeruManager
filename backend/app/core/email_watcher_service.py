@@ -1025,11 +1025,13 @@ class EmailWatcherService:
             "skipped_sender_filter": 0,
             "skipped_subject_filter": 0,
             "skipped_self_notification": 0,
+            "dlsite_subject_total": 0,
+            "dlsite_from_total": 0,
         }
 
         since_date = (datetime.now() - timedelta(days=EMAIL_WATCHER_LOOKBACK_DAYS)).date()
         # 先在服务端限定未读 + 最近 2 天，避免老邮箱历史未读过多。
-        # QQ/部分 IMAP 服务端的 FROM 子串匹配不稳定，发件人过滤放到本地用解码后的 From 头处理。
+        # 再额外合并最近 2 天的 DLsite 主题/发件人候选：QQ 网页端未读状态和 IMAP UNSEEN 偶尔不一致。
         criteria = ['UNSEEN', 'SINCE', since_date]
 
         try:
@@ -1038,16 +1040,39 @@ class EmailWatcherService:
             logger.warning("[邮件监听] 搜索邮件失败: %s", exc)
             return diag
 
-        diag["unseen_total"] = len(uids)
-        logger.info("[邮件监听] 搜索条件=%s 找到最近 %d 天未读邮件 %d 封", criteria, EMAIL_WATCHER_LOOKBACK_DAYS, len(uids))
+        dlsite_subject_uids = []
+        dlsite_from_uids = []
+        try:
+            dlsite_subject_uids = client.search(['SINCE', since_date, 'SUBJECT', 'DLsite'])
+        except Exception as exc:
+            logger.debug("[邮件监听] SUBJECT DLsite 搜索失败，继续使用未读集合: %s", exc)
+        try:
+            dlsite_from_uids = client.search(['SINCE', since_date, 'FROM', 'dlsite'])
+        except Exception as exc:
+            logger.debug("[邮件监听] FROM dlsite 搜索失败，继续使用未读集合: %s", exc)
 
-        if not uids:
+        diag["dlsite_subject_total"] = len(dlsite_subject_uids)
+        diag["dlsite_from_total"] = len(dlsite_from_uids)
+        merged_uids = list(dict.fromkeys(list(uids) + list(dlsite_subject_uids) + list(dlsite_from_uids)))
+
+        diag["unseen_total"] = len(uids)
+        logger.info(
+            "[邮件监听] 搜索条件=%s 找到最近 %d 天未读邮件 %d 封；DLsite主题候选 %d 封，发件人候选 %d 封，合并检查 %d 封",
+            criteria,
+            EMAIL_WATCHER_LOOKBACK_DAYS,
+            len(uids),
+            len(dlsite_subject_uids),
+            len(dlsite_from_uids),
+            len(merged_uids),
+        )
+
+        if not merged_uids:
             return diag
 
         # 先只取头部做 From/Subject/Message-ID 筛选，命中的邮件才拉正文。
         try:
             header_messages = client.fetch(
-                uids,
+                merged_uids,
                 ['BODY.PEEK[HEADER.FIELDS (FROM SUBJECT MESSAGE-ID)]', 'ENVELOPE']
             )
         except Exception as exc:
@@ -1312,6 +1337,8 @@ class EmailWatcherService:
                         "skipped_subject_filter": diag["skipped_subject_filter"],
                         "skipped_self_notification": diag["skipped_self_notification"],
                         "skipped_read": diag["skipped_read"],
+                        "dlsite_subject_total": diag["dlsite_subject_total"],
+                        "dlsite_from_total": diag["dlsite_from_total"],
                         "sender_filter": config.email_watcher.sender_filter,
                         "subject_filter": config.email_watcher.subject_filter,
                     },
