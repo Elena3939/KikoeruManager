@@ -1495,7 +1495,7 @@ class TaskEngine:
                 task.cancel()
         except Exception as e:
             logger.error(f"[{rjcode}] 任务失败: {e}", exc_info=True)
-            if task.type in {TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
+            if task.type in {TaskType.EXTRACT, TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
                 self._record_problem_work_for_task_failure(task, rjcode, str(e))
             task.fail(str(e))
             if task.type in {TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:

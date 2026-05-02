@@ -509,10 +509,15 @@ class SmartClassifier:
                 logger.info(f"冲突记录已存在，跳过重复添加: {rjcode}")
                 return
             
-            # 检查新文件是否还存在（如果用户已经手动删除了，就不需要再添加）
-            if not os.path.exists(new_path):
+            # 检查新文件是否还存在（如果用户已经手动删除了，就不需要再添加）。
+            # 解压/处理失败例外：临时输入可能已被上游清理，但失败事实仍要进问题作品页。
+            if not os.path.exists(new_path) and conflict_type not in {'EXTRACT_FAILED', 'PROCESS_FAILED'}:
                 logger.info(f"新文件已不存在，跳过添加冲突记录: {rjcode}, 路径: {new_path}")
                 return
+            if not os.path.exists(new_path):
+                metadata = dict(metadata or {})
+                metadata["source_missing"] = True
+                metadata["source_missing_path"] = new_path
             
             conflict = ConflictWork(
                 id=str(uuid.uuid4()),

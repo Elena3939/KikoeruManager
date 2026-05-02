@@ -2082,10 +2082,83 @@ async def get_conflicts(include_stats: bool = False):
         db_task = db.query(TaskRecord.status).filter(TaskRecord.id == normalized_task_id).first()
         return str((db_task[0] if db_task else "") or "").strip().lower()
 
+    def _backfill_failed_import_conflicts() -> None:
+        """把历史漏写的问题导入任务补进问题作品列表。"""
+        failed_rows = (
+            db.query(TaskRecord)
+            .filter(
+                TaskRecord.status == "failed",
+                TaskRecord.type.in_(["extract", "auto_process", "process_existing_folder"]),
+            )
+            .order_by(TaskRecord.completed_at.desc(), TaskRecord.created_at.desc())
+            .limit(200)
+            .all()
+        )
+        for task_row in failed_rows:
+            source_path = str(task_row.source_path or "").strip()
+            if not source_path:
+                continue
+            exists = (
+                db.query(ConflictWork.id)
+                .filter(
+                    ConflictWork.conflict_type.in_(["EXTRACT_FAILED", "PROCESS_FAILED"]),
+                    or_(
+                        ConflictWork.task_id == task_row.id,
+                        ConflictWork.new_path == source_path,
+                    ),
+                    ConflictWork.status.in_(["PENDING", "PROCESSING"]),
+                )
+                .first()
+            )
+            if exists:
+                continue
+
+            metadata = _normalize_conflict_metadata(task_row.task_metadata)
+            reason = str(task_row.error_message or metadata.get("error_message") or task_row.current_step or "任务失败").strip()
+            step = str(task_row.current_step or "").strip()
+            combined = f"{step} {reason}".lower()
+            is_extract_failure = (
+                str(task_row.type or "") == "extract"
+                or any(keyword in combined for keyword in ["解压", "密码", "压缩包"])
+            )
+            rjcode = (
+                normalize_rjcode_value(metadata.get("rjcode"))
+                or normalize_rjcode_value(metadata.get("inferred_rjcode"))
+                or normalize_rjcode_value(source_path)
+            )
+            failure_metadata = {
+                **metadata,
+                "failure_stage": "extract" if is_extract_failure else "process",
+                "error_message": reason,
+                "available_actions": ["RETRY", "SKIP"],
+                "source_task_type": str(task_row.type or "auto_process"),
+                "failed_task_id": task_row.id,
+                "failed_step": step,
+                "failed_progress": int(task_row.progress or 0),
+                "backfilled_from_failed_task": True,
+                "source_missing": not os.path.exists(source_path),
+            }
+            db.add(ConflictWork(
+                id=str(uuid.uuid4()),
+                task_id=task_row.id,
+                rjcode=rjcode or None,
+                conflict_type="EXTRACT_FAILED" if is_extract_failure else "PROCESS_FAILED",
+                existing_path="",
+                new_path=source_path,
+                new_metadata=failure_metadata,
+                status="PENDING",
+                linked_works_info=[],
+                analysis_info={},
+                related_rjcodes=[],
+                created_at=datetime.now(),
+            ))
+        db.commit()
+
     db = next(get_db())
     try:
         resolution_service = get_conflict_resolution_service()
         engine = get_task_engine()
+        _backfill_failed_import_conflicts()
         conflicts = db.query(ConflictWork).filter(
             ConflictWork.status.in_(["PENDING", "PROCESSING"]),
             ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
