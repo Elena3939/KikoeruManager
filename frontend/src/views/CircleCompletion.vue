@@ -983,6 +983,20 @@ const localUploadForm = ref({ targetLibraryId: '', targetSubdir: '' })
 const trackedUploadTaskIds = ref([])
 const trackedUploadTasks = ref([])
 const uploadWorkbenchVisible = ref(false)
+
+async function handleNewReleaseNotification(event) {
+  const item = event?.detail || {}
+  if (String(item.event_type || '') !== 'email_watcher_new_release') return
+  const circleId = String(item.route_query?.circle_id || '').trim()
+  await loadRecentCircles()
+  if (!circleId) return
+  const exists = circleList.value.some(circle => String(circle?.circle_id || '') === circleId)
+  if (exists) {
+    await selectCircle(circleId)
+  } else if (activeCircleId.value === circleId) {
+    await refreshActiveCircle()
+  }
+}
 const uploadWorkbenchBackgroundActive = ref(false)
 const uploadWorkbenchRefreshing = ref(false)
 const worksPageSizes = [12, 24, 48, 96]
@@ -1628,6 +1642,7 @@ const isRefreshJobActive = computed(() =>
 const canCancelRefreshJob = computed(() => isRefreshJobActive.value)
 
 onMounted(async () => {
+  window.addEventListener('prekikoeru:notification:new', handleNewReleaseNotification)
   hydrateIndexJobState()
   hydrateRefreshJobState()
   hydrateDownloadWorkbenchState()
@@ -1676,6 +1691,7 @@ onActivated(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('prekikoeru:notification:new', handleNewReleaseNotification)
   if (completeConfettiTimer) {
     clearTimeout(completeConfettiTimer)
     completeConfettiTimer = null

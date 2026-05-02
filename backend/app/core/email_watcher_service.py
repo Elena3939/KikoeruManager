@@ -651,6 +651,8 @@ class EmailWatcherService:
 
             if not (cfg.notification_email.enabled and cfg.notification_email.to_email and cfg.notification_email.smtp_host):
                 continue
+            # 站内通知会通过 SSE 驱动社团补全页刷新；邮件稍后发送，避免早于页面数据刷新到达。
+            await asyncio.sleep(1.2)
             lines = [f"{circle_name} 有新作"]
             for item in items:
                 code = str(item.get("mail_rjcode") or item.get("display_rjcode") or item.get("canonical_rjcode") or "").strip().upper()

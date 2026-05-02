@@ -35,6 +35,7 @@ function _connectSSE() {
       }
       if (data.type === 'new_notification') {
         _unreadCount.value = data.unread_count ?? (_unreadCount.value + 1)
+        window.dispatchEvent(new CustomEvent('prekikoeru:notification:new', { detail: data.item || data }))
         if (_panelOpen.value) {
           // 面板打开中，实时追加到列表顶部
           if (data.item) {
