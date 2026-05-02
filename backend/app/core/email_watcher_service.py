@@ -81,6 +81,35 @@ def _normalize_mail_address(value: str) -> str:
     return str(email.utils.parseaddr(value or "")[1] or "").strip().lower()
 
 
+def _decode_envelope_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return _decode_header_value(value.decode("utf-8", errors="replace"))
+    return _decode_header_value(str(value))
+
+
+def _header_msg_from_envelope(envelope) -> Optional["email.message.Message"]:
+    if envelope is None:
+        return None
+    msg = email.message.Message()
+    subject = _decode_envelope_text(getattr(envelope, "subject", "") or "")
+    from_items = getattr(envelope, "from_", None) or []
+    if subject:
+        msg["Subject"] = subject
+    if from_items:
+        addr = from_items[0]
+        mailbox = _decode_envelope_text(getattr(addr, "mailbox", "") or "")
+        host = _decode_envelope_text(getattr(addr, "host", "") or "")
+        name = _decode_envelope_text(getattr(addr, "name", "") or "")
+        address = f"{mailbox}@{host}" if mailbox and host else mailbox or host
+        msg["From"] = f"{name} <{address}>" if name and address else address or name
+    message_id = _decode_envelope_text(getattr(envelope, "message_id", "") or "")
+    if message_id:
+        msg["Message-ID"] = message_id
+    return msg if msg.keys() else None
+
+
 def _sender_matches_filter(msg: "email.message.Message", sender_filter: str, subject: str = "") -> bool:
     keyword = str(sender_filter or "").strip().lower()
     if not keyword:
@@ -102,7 +131,7 @@ def _sender_matches_filter(msg: "email.message.Message", sender_filter: str, sub
         normalized_subject = _normalize_subject_text(subject)
         if any("dlsite" in value for value in haystacks if value):
             return True
-        if "dlsite" in normalized_subject and ("新着作品" in subject or "販売開始" in subject):
+        if "dlsite" in normalized_subject:
             return True
     return False
 
@@ -1035,12 +1064,16 @@ class EmailWatcherService:
                 data.get(b'BODY[HEADER.FIELDS (FROM SUBJECT MESSAGE-ID)]')
                 or data.get(b'BODY.PEEK[HEADER.FIELDS (FROM SUBJECT MESSAGE-ID)]')
             )
-            if not raw_header:
-                continue
-
-            try:
-                header_msg = email.message_from_bytes(raw_header)
-            except Exception:
+            header_msg = None
+            if raw_header:
+                try:
+                    header_msg = email.message_from_bytes(raw_header)
+                except Exception as exc:
+                    logger.debug("[邮件监听] uid=%s 解析邮件头失败，尝试 ENVELOPE 兜底: %s", uid, exc)
+            if header_msg is None:
+                header_msg = _header_msg_from_envelope(data.get(b'ENVELOPE'))
+            if header_msg is None:
+                logger.warning("[邮件监听] uid=%s 无法读取邮件头和 ENVELOPE，已跳过；fetch keys=%s", uid, list(data.keys()))
                 continue
 
             message_id = header_msg.get('Message-ID', '') or header_msg.get('Message-Id', '')
@@ -1051,20 +1084,21 @@ class EmailWatcherService:
 
             subject = _decode_header_value(header_msg.get('Subject', ''))
             from_header = _decode_header_value(header_msg.get('From', ''))
-            logger.info("[邮件监听] uid=%s From=%r 主题=%r", uid, from_header, subject)
+            logger.debug("[邮件监听] uid=%s From=%r 主题=%r", uid, from_header, subject)
             if not _sender_matches_filter(header_msg, sender_filter, subject):
-                logger.info("[邮件监听] uid=%s 发件人过滤不匹配（关键词=%r，From=%r），跳过", uid, sender_filter, from_header)
+                logger.debug("[邮件监听] uid=%s 发件人过滤不匹配（关键词=%r，From=%r），跳过", uid, sender_filter, from_header)
                 diag["skipped_sender_filter"] += 1
                 continue
             if _is_self_generated_notification(header_msg, subject, config):
-                logger.info("[邮件监听] uid=%s 是 Prekikoeru 自己发出的通知邮件，跳过", uid)
+                logger.debug("[邮件监听] uid=%s 是 Prekikoeru 自己发出的通知邮件，跳过", uid)
                 diag["skipped_self_notification"] += 1
                 continue
             if not _subject_matches_filter(subject, subject_filter):
-                logger.info("[邮件监听] uid=%s 主题过滤不匹配（关键词=%r），跳过", uid, subject_filter)
+                logger.debug("[邮件监听] uid=%s 主题过滤不匹配（关键词=%r），跳过", uid, subject_filter)
                 diag["skipped_subject_filter"] += 1
                 continue
 
+            logger.info("[邮件监听] 命中候选邮件 uid=%s From=%r 主题=%r", uid, from_header, subject)
             matched_header_uids.append(uid)
             header_cache[uid] = {
                 "message_id": str(message_id or ""),
@@ -1073,7 +1107,15 @@ class EmailWatcherService:
             }
 
         if not matched_header_uids:
+            logger.info(
+                "[邮件监听] 头部筛选完成：候选 0 封，发件人跳过 %d，主题跳过 %d，自发通知跳过 %d",
+                diag["skipped_sender_filter"],
+                diag["skipped_subject_filter"],
+                diag["skipped_self_notification"],
+            )
             return diag
+
+        logger.info("[邮件监听] 头部筛选完成：候选 %d 封，开始获取正文", len(matched_header_uids))
 
         raw_messages = {}
         for uid in matched_header_uids:
