@@ -21,10 +21,13 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+IMAP_CONNECT_TIMEOUT_SECONDS = 15
+EMAIL_WATCHER_LOOKBACK_DAYS = 2
 
 
 def _decode_header_value(value: str) -> str:
@@ -908,7 +911,7 @@ class EmailWatcherService:
         imap_ssl = config.email_watcher.imap_ssl
         idle_timeout = config.email_watcher.idle_timeout_minutes * 60
 
-        with IMAPClient(host=imap_host, port=imap_port, ssl=imap_ssl) as client:
+        with IMAPClient(host=imap_host, port=imap_port, ssl=imap_ssl, timeout=IMAP_CONNECT_TIMEOUT_SECONDS) as client:
             client.login(config.email_watcher.username, config.email_watcher.password)
             client.select_folder(config.email_watcher.mailbox)
             logger.info("[邮件监听] IMAP 登录成功，进入 IDLE 模式")
@@ -952,7 +955,7 @@ class EmailWatcherService:
         imap_port = config.email_watcher.imap_port
         imap_ssl = config.email_watcher.imap_ssl
 
-        with IMAPClient(host=imap_host, port=imap_port, ssl=imap_ssl) as client:
+        with IMAPClient(host=imap_host, port=imap_port, ssl=imap_ssl, timeout=IMAP_CONNECT_TIMEOUT_SECONDS) as client:
             client.login(config.email_watcher.username, config.email_watcher.password)
             client.select_folder(config.email_watcher.mailbox)
             result = self._fetch_and_process(client, config)
@@ -984,9 +987,10 @@ class EmailWatcherService:
             "skipped_self_notification": 0,
         }
 
-        # 先只搜未读。QQ/部分 IMAP 服务端的 FROM 子串匹配不稳定，
-        # 发件人过滤放到本地用解码后的 From 头处理。
-        criteria = ['UNSEEN']
+        since_date = (datetime.now() - timedelta(days=EMAIL_WATCHER_LOOKBACK_DAYS)).date()
+        # 先在服务端限定未读 + 最近 2 天，避免老邮箱历史未读过多。
+        # QQ/部分 IMAP 服务端的 FROM 子串匹配不稳定，发件人过滤放到本地用解码后的 From 头处理。
+        criteria = ['UNSEEN', 'SINCE', since_date]
 
         try:
             uids = client.search(criteria)
@@ -995,20 +999,76 @@ class EmailWatcherService:
             return diag
 
         diag["unseen_total"] = len(uids)
-        logger.info("[邮件监听] 搜索条件=%s 找到未读邮件 %d 封", criteria, len(uids))
+        logger.info("[邮件监听] 搜索条件=%s 找到最近 %d 天未读邮件 %d 封", criteria, EMAIL_WATCHER_LOOKBACK_DAYS, len(uids))
 
         if not uids:
             return diag
 
-        # 批量获取邮件
+        # 先只取头部做 From/Subject/Message-ID 筛选，命中的邮件才拉正文。
         try:
-            raw_messages = client.fetch(uids, ['BODY.PEEK[]', 'ENVELOPE'])
+            header_messages = client.fetch(
+                uids,
+                ['BODY.PEEK[HEADER.FIELDS (FROM SUBJECT MESSAGE-ID)]', 'ENVELOPE']
+            )
         except Exception as exc:
-            logger.warning("[邮件监听] 获取邮件内容失败: %s", exc)
+            logger.warning("[邮件监听] 获取邮件头失败: %s", exc)
             return diag
 
         parsed_items: List[Dict[str, str]] = []
         processed_uids = []
+        matched_header_uids: List = []
+        header_cache: Dict[object, Dict[str, str]] = {}
+
+        for uid, data in header_messages.items():
+            raw_header = (
+                data.get(b'BODY[HEADER.FIELDS (FROM SUBJECT MESSAGE-ID)]')
+                or data.get(b'BODY.PEEK[HEADER.FIELDS (FROM SUBJECT MESSAGE-ID)]')
+            )
+            if not raw_header:
+                continue
+
+            try:
+                header_msg = email.message_from_bytes(raw_header)
+            except Exception:
+                continue
+
+            message_id = header_msg.get('Message-ID', '') or header_msg.get('Message-Id', '')
+            if message_id and message_id in self._processed_message_ids:
+                diag["skipped_read"] += 1
+                processed_uids.append(uid)
+                continue
+
+            subject = _decode_header_value(header_msg.get('Subject', ''))
+            from_header = _decode_header_value(header_msg.get('From', ''))
+            logger.info("[邮件监听] uid=%s From=%r 主题=%r", uid, from_header, subject)
+            if not _sender_matches_filter(header_msg, sender_filter):
+                logger.info("[邮件监听] uid=%s 发件人过滤不匹配（关键词=%r，From=%r），跳过", uid, sender_filter, from_header)
+                diag["skipped_sender_filter"] += 1
+                continue
+            if _is_self_generated_notification(header_msg, subject, config):
+                logger.info("[邮件监听] uid=%s 是 Prekikoeru 自己发出的通知邮件，跳过", uid)
+                diag["skipped_self_notification"] += 1
+                continue
+            if not _subject_matches_filter(subject, subject_filter):
+                logger.info("[邮件监听] uid=%s 主题过滤不匹配（关键词=%r），跳过", uid, subject_filter)
+                diag["skipped_subject_filter"] += 1
+                continue
+
+            matched_header_uids.append(uid)
+            header_cache[uid] = {
+                "message_id": str(message_id or ""),
+                "subject": subject,
+                "from_header": from_header,
+            }
+
+        if not matched_header_uids:
+            return diag
+
+        try:
+            raw_messages = client.fetch(matched_header_uids, ['BODY.PEEK[]'])
+        except Exception as exc:
+            logger.warning("[邮件监听] 获取邮件内容失败: %s", exc)
+            return diag
 
         for uid, data in raw_messages.items():
             raw_body = data.get(b'BODY.PEEK[]') or data.get(b'BODY[]') or data.get(b'BODY[]PEEK')
@@ -1020,30 +1080,9 @@ class EmailWatcherService:
             except Exception:
                 continue
 
-            # 去重：Message-ID
-            message_id = msg.get('Message-ID', '') or msg.get('Message-Id', '')
-            if message_id and message_id in self._processed_message_ids:
-                diag["skipped_read"] += 1
-                processed_uids.append(uid)
-                continue
-
-            # 主题过滤
-            subject = _decode_header_value(msg.get('Subject', ''))
-            from_header = _decode_header_value(msg.get('From', ''))
-            logger.info("[邮件监听] uid=%s From=%r 主题=%r", uid, from_header, subject)
-            if not _sender_matches_filter(msg, sender_filter):
-                logger.info("[邮件监听] uid=%s 发件人过滤不匹配（关键词=%r，From=%r），跳过", uid, sender_filter, from_header)
-                diag["skipped_sender_filter"] += 1
-                continue
-            if _is_self_generated_notification(msg, subject, config):
-                logger.info("[邮件监听] uid=%s 是 Prekikoeru 自己发出的通知邮件，跳过", uid)
-                diag["skipped_self_notification"] += 1
-                continue
-            if not _subject_matches_filter(subject, subject_filter):
-                logger.info("[邮件监听] uid=%s 主题过滤不匹配（关键词=%r），跳过", uid, subject_filter)
-                diag["skipped_subject_filter"] += 1
-                continue
-
+            cached_header = header_cache.get(uid, {})
+            message_id = cached_header.get("message_id") or msg.get('Message-ID', '') or msg.get('Message-Id', '')
+            subject = cached_header.get("subject") or _decode_header_value(msg.get('Subject', ''))
             message_items = _extract_new_release_items_from_mail(msg)
             if not message_items:
                 fallback_rjcodes = _extract_rjcodes_from_mail(msg)
@@ -1124,29 +1163,30 @@ class EmailWatcherService:
 
         batch_id = f"email-watch-{uuid.uuid4().hex}"
         if unique_items:
-            triggered_uids: Set[str] = set()
+            triggered_uids: Set[str] = {
+                str(item.get("mail_uid") or "").strip()
+                for item in unique_items
+                if str(item.get("mail_uid") or "").strip()
+            }
             if self._loop and not self._loop.is_closed():
                 future = asyncio.run_coroutine_threadsafe(
                     self._trigger_index_for_rjcodes(unique_items, config, batch_id),
                     self._loop,
                 )
-                try:
-                    trigger_results = future.result(timeout=240)
-                except Exception as exc:
-                    logger.warning("[邮件监听] 批量触发社团索引失败: %s", exc)
-                    trigger_results = []
-                for item, result in zip(unique_items, trigger_results):
-                    if not isinstance(result, dict) or not result.get("success"):
-                        continue
-                    uid = str(item.get("mail_uid") or "").strip()
-                    if uid:
-                        triggered_uids.add(uid)
+                future.add_done_callback(
+                    lambda done: logger.warning(
+                        "[邮件监听] 后台社团索引失败: %s",
+                        done.exception(),
+                    )
+                    if done.exception()
+                    else logger.info("[邮件监听] 后台社团索引完成: %s", diag["rjcodes"])
+                )
             else:
                 logger.warning("[邮件监听] 事件循环不可用，无法触发新作批次索引: %s", diag["rjcodes"])
-                trigger_results = []
+                triggered_uids = set()
 
             processed_triggered_uids = [uid for uid in processed_uids if str(uid) in triggered_uids]
-            # 标记已读：只标记“成功触发任务”的邮件
+            # 标记已读：只标记已成功派发后台索引的邮件，避免手动检查接口被索引耗时拖到超时。
             if config.email_watcher.mark_as_read and processed_triggered_uids:
                 try:
                     client.add_flags(processed_triggered_uids, [SEEN])
@@ -1421,7 +1461,7 @@ class EmailWatcherService:
             return {"success": False, "message": "imapclient 未安装，请执行: pip install imapclient>=3.0.1"}
 
         try:
-            with IMAPClient(host=host, port=port, ssl=ssl) as client:
+            with IMAPClient(host=host, port=port, ssl=ssl, timeout=IMAP_CONNECT_TIMEOUT_SECONDS) as client:
                 client.login(username, password)
                 client.select_folder(mailbox)
                 unseen = client.search(['UNSEEN'])
@@ -1430,6 +1470,18 @@ class EmailWatcherService:
                     "message": f"连接成功，INBOX 未读邮件: {len(unseen)} 封",
                     "unseen_count": len(unseen),
                 }
+        except TimeoutError:
+            return {
+                "success": False,
+                "message": f"连接 IMAP 超时（{IMAP_CONNECT_TIMEOUT_SECONDS}s）: {host}:{port}。请检查 Docker 容器到该地址的出站 TCP 连接是否放行。",
+            }
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 10060 or "timed out" in str(exc).lower():
+                return {
+                    "success": False,
+                    "message": f"连接 IMAP 超时（{IMAP_CONNECT_TIMEOUT_SECONDS}s）: {host}:{port}。请检查 Docker 容器到该地址的出站 TCP 连接是否放行。",
+                }
+            return {"success": False, "message": f"连接失败: {exc}"}
         except Exception as exc:
             return {"success": False, "message": f"连接失败: {exc}"}
 

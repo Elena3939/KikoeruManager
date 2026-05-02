@@ -808,6 +808,7 @@ class NotificationTemplate(Base):
     event_types = Column(JSON, default=list)
     task_domains = Column(JSON, default=list)
     editor_mode = Column(String(20), default='html')
+    blocks = Column(JSON, default=list)
     subject_template = Column(Text, default='')
     html_template = Column(Text, default='')
     text_template = Column(Text, default='')
@@ -826,6 +827,7 @@ class NotificationTemplate(Base):
             'event_types': self.event_types or [],
             'task_domains': self.task_domains or [],
             'editor_mode': self.editor_mode,
+            'blocks': self.blocks or [],
             'subject_template': self.subject_template or '',
             'html_template': self.html_template or '',
             'text_template': self.text_template or '',
@@ -1176,6 +1178,22 @@ def init_db():
                     f"ALTER TABLE asmr_download_sessions ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
                 )
             )
+
+        result = conn.execute(text("PRAGMA table_info(notification_templates)"))
+        template_columns = {row[1] for row in result.fetchall()}
+        template_missing_columns = []
+        if result.returns_rows:
+            if 'editor_mode' not in template_columns:
+                template_missing_columns.append(("editor_mode", "VARCHAR(20)", "'html'"))
+            if 'blocks' not in template_columns:
+                template_missing_columns.append(("blocks", "JSON", "'[]'"))
+        for column_name, column_type, default_value in template_missing_columns:
+            conn.execute(
+                text(
+                    f"ALTER TABLE notification_templates ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
+                )
+            )
+            _db_logger.info(f"[数据库] notification_templates 新增列: {column_name}")
 
         # === Phase 2: activity_logs 迁移 ===
         _migrate_activity_logs_phase2(conn)
