@@ -81,7 +81,7 @@ def _normalize_mail_address(value: str) -> str:
     return str(email.utils.parseaddr(value or "")[1] or "").strip().lower()
 
 
-def _sender_matches_filter(msg: "email.message.Message", sender_filter: str) -> bool:
+def _sender_matches_filter(msg: "email.message.Message", sender_filter: str, subject: str = "") -> bool:
     keyword = str(sender_filter or "").strip().lower()
     if not keyword:
         return True
@@ -93,7 +93,18 @@ def _sender_matches_filter(msg: "email.message.Message", sender_filter: str) -> 
         address,
         display_name,
     ]
-    return any(keyword in value for value in haystacks if value)
+    if any(keyword in value for value in haystacks if value):
+        return True
+
+    # DLsite/がるまに邮件的 From 显示名和真实地址在不同邮箱里不稳定。
+    # 用户配置 dlsite.com 时，把它当作 DLsite 通知预设，结合显示名和主题兜底识别。
+    if keyword in {"dlsite", "dlsite.com", "www.dlsite.com"}:
+        normalized_subject = _normalize_subject_text(subject)
+        if any("dlsite" in value for value in haystacks if value):
+            return True
+        if "dlsite" in normalized_subject and ("新着作品" in subject or "販売開始" in subject):
+            return True
+    return False
 
 
 def _is_self_generated_notification(msg: "email.message.Message", subject: str, config) -> bool:
@@ -1041,7 +1052,7 @@ class EmailWatcherService:
             subject = _decode_header_value(header_msg.get('Subject', ''))
             from_header = _decode_header_value(header_msg.get('From', ''))
             logger.info("[邮件监听] uid=%s From=%r 主题=%r", uid, from_header, subject)
-            if not _sender_matches_filter(header_msg, sender_filter):
+            if not _sender_matches_filter(header_msg, sender_filter, subject):
                 logger.info("[邮件监听] uid=%s 发件人过滤不匹配（关键词=%r，From=%r），跳过", uid, sender_filter, from_header)
                 diag["skipped_sender_filter"] += 1
                 continue
