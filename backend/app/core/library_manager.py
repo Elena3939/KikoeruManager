@@ -1880,6 +1880,7 @@ class LibraryManager:
     ) -> dict[str, Any]:
         relative_path = os.path.relpath(full_path, search_root).replace("\\", "/")
         parent_path = os.path.dirname(full_path)
+        cached_size, cached_size_status = self._get_cached_size_info(full_path) if is_directory else (stat_result.st_size, "ready")
         return {
             "id": f"{library.id}:search:{item_id}",
             "name": name,
@@ -1887,8 +1888,8 @@ class LibraryManager:
             "relative_path": relative_path,
             "parent_path": parent_path,
             "rjcode": self._extract_rjcode(relative_path) or self._extract_rjcode(name),
-            "size": None if is_directory else stat_result.st_size,
-            "size_status": "disabled" if is_directory else "ready",
+            "size": cached_size,
+            "size_status": cached_size_status,
             "modified_time": datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
             "unzip_time": datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
             "is_directory": is_directory,

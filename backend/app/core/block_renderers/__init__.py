@@ -239,74 +239,80 @@ def render_file_tree(props: dict, payload: dict) -> str:
             )
         return "".join(chunks)
 
-    # ─── 嵌套 <details>/<summary> 渲染 ───
-    # 设计：
-    #   顶层目录（depth=0）= <details>（默认收缩），summary 是文件夹行。
-    #   子目录/文件（depth>0）= <details open>（默认展开）。
-    #   Outlook 桌面会忽略 <details> 但内部 div 仍正常渲染，兜底就是全部展开。
-    #   不做条目截断，有多少渲染多少。
-
-    # 行样式：对齐任务列表上传/解压文件树
-    file_row_style = (
-        "padding:7px 14px;border-bottom:1px solid #edf2f7;font-size:12.5px;"
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;"
-        "line-height:1.65;display:flex;align-items:center;justify-content:space-between;gap:10px;"
+    # 邮件端尽量复刻任务中心 TaskDetailPane 的文件树：
+    # 白底卡片、行式树、左侧 20px expander 占位、图标 + 名称 + 右侧大小。
+    # 邮件客户端不可靠支持交互，所以全部展开；过滤/删除只做灰色删除线。
+    row_base_style = (
+        "min-height:32px;margin:0 0 7px 0;padding:6px 10px 6px 8px;"
+        "border:1px solid transparent;border-radius:6px;color:#1e293b;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;"
+        "font-size:14px;font-weight:500;line-height:1.25;"
     )
-    summary_style = (
-        "cursor:pointer;padding:8px 14px;border-bottom:1px solid #e7edf5;background:#fcfdff;"
-        "font-size:12.5px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;"
-        "font-weight:600;color:#0f172a;line-height:1.65;outline:none;display:flex;align-items:center;gap:8px;"
+    tree_name_base = (
+        "display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;"
+        "white-space:nowrap;vertical-align:middle;color:currentColor;"
     )
-    details_style = "border:none;margin:0;"
 
     def _file_row_html(node):
         label = str(node.get("path") or node.get("name") or "")
         status = str(node.get("status") or "kept")
-        style = status_styles.get(status, {"color": "#48484a", "marker": "·", "label_extra": "color:#1d1d1f;"})
         is_muted = status in {"filtered", "removed"}
-        marker_html = f'<span style="display:inline-block;width:12px;height:12px;border-radius:999px;background:{style["color"]};opacity:{".68" if is_muted else ".9"};flex-shrink:0;"></span>'
+        row_color = "#94a3b8" if is_muted else "#1e293b"
+        label_extra = (
+            "color:#94a3b8;text-decoration:line-through;"
+            "text-decoration-color:rgba(148,163,184,.86);text-decoration-thickness:1.5px;"
+            if is_muted else "color:#1e293b;"
+        )
+        icon_color = "#94a3b8" if is_muted else (
+            "#2563eb" if label.lower().endswith((".flac", ".wav")) else
+            "#7c3aed" if label.lower().endswith((".mp3", ".m4a", ".ogg", ".aac", ".wma")) else
+            "#64748b" if label.lower().endswith((".txt", ".lrc", ".srt", ".vtt", ".ass", ".ssa", ".cue", ".json", ".md")) else
+            "#94a3b8"
+        )
         icon_html = (
-            f'<span style="font-size:14px;line-height:1;color:{"#94a3b8" if is_muted else "#8b5cf6"};flex-shrink:0;">📝</span>'
-            if label.lower().endswith((".txt", ".lrc", ".srt", ".vtt", ".ass", ".ssa"))
-            else f'<span style="font-size:14px;line-height:1;color:{"#94a3b8" if is_muted else "#0ea5e9"};flex-shrink:0;">🎵</span>'
-            if label.lower().endswith((".flac", ".wav", ".mp3", ".m4a", ".ogg", ".aac"))
-            else '<span style="font-size:14px;line-height:1;color:#94a3b8;flex-shrink:0;">📄</span>'
+            f'<span style="display:inline-block;width:20px;text-align:center;color:{icon_color};font-size:17px;line-height:1;vertical-align:middle;">'
+            f'{"♫" if label.lower().endswith((".flac", ".wav", ".mp3", ".m4a", ".ogg", ".aac", ".wma")) else "□"}'
+            f'</span>'
         )
         size_text = str(node.get("size_text") or "")
         size_html = (
-            f'<span style="color:#94a3b8;font-size:11px;white-space:nowrap;flex-shrink:0;'
-            f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(size_text)}</span>'
+            f'<td style="width:86px;padding-left:16px;color:#94a3b8;font-size:12px;'
+            f'font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">{_esc(size_text)}</td>'
             if size_text else ""
         )
         badge_html = _render_badges(node.get("badges") or [])
-        label_style = style["label_extra"]
-        line_html = (
-            '<span style="position:absolute;left:0;right:0;top:50%;border-top:1.5px solid rgba(148,163,184,0.88);'
-            'transform:translateY(-50%);pointer-events:none;"></span>'
-            if is_muted else ""
-        )
         return (
-            f'<div style="{file_row_style}{label_style}">'
-            f'<span style="position:relative;display:inline-flex;align-items:center;gap:8px;min-width:0;overflow:hidden;">'
-            f'{line_html}'
-            f'{marker_html}'
+            f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;{row_base_style}color:{row_color};">'
+            f'<tr>'
+            f'<td style="width:20px;color:#38bdf8;font-size:14px;text-align:center;vertical-align:middle;">&nbsp;</td>'
+            f'<td style="vertical-align:middle;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
             f'{icon_html}'
-            f'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">{_esc(label)}</span>'
+            f'<span style="{tree_name_base}{label_extra}">{_esc(label)}</span>'
             f'{badge_html}'
-            f'</span>'
+            f'</td>'
             f'{size_html}'
-            f'</div>'
+            f'</tr>'
+            f'</table>'
         )
 
     def _dir_html(node, depth):
         label = str(node.get("name") or node.get("path") or "")
         dir_status = str(node.get("status") or "kept")
-        dir_style = status_styles.get(dir_status, {"color": "#d97706", "marker": "▸", "label_extra": ""})
-        folder_icon = f'<span style="color:#f59e0b;font-size:15px;line-height:1;flex-shrink:0;">📁</span>'
+        is_muted = dir_status in {"filtered", "removed"}
+        dir_color = "#94a3b8" if is_muted else "#1e293b"
+        dir_label_extra = (
+            "color:#94a3b8;text-decoration:line-through;"
+            "text-decoration-color:rgba(148,163,184,.86);text-decoration-thickness:1.5px;"
+            if is_muted else "color:#1e293b;"
+        )
+        folder_icon = (
+            f'<span style="display:inline-block;width:20px;text-align:center;color:{"#94a3b8" if is_muted else "#f6b73c"};'
+            f'font-size:16px;line-height:1;vertical-align:middle;">▰</span>'
+        )
         size_text = str(node.get("size_text") or "")
         size_html = (
-            f'<span style="margin-left:auto;color:#94a3b8;font-size:11px;white-space:nowrap;'
-            f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{_esc(size_text)}</span>'
+            f'<td style="width:86px;padding-left:16px;color:#94a3b8;font-size:12px;'
+            f'font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">{_esc(size_text)}</td>'
             if size_text else ""
         )
         badge_html = _render_badges(node.get("badges") or [])
@@ -316,24 +322,31 @@ def render_file_tree(props: dict, payload: dict) -> str:
             else _file_row_html(child if isinstance(child, dict) else {"path": str(child)})
             for child in children
         ]
+        indent = max(0, depth) * 18
+        row_html = (
+            f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;{row_base_style}color:{dir_color};">'
+            f'<tr>'
+            f'<td style="width:20px;color:#38bdf8;font-size:14px;text-align:center;vertical-align:middle;">›</td>'
+            f'<td style="vertical-align:middle;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+            f'{folder_icon}'
+            f'<span style="{tree_name_base}{dir_label_extra}">{_esc(label)}</span>'
+            f'{badge_html}'
+            f'</td>'
+            f'{size_html}'
+            f'</tr>'
+            f'</table>'
+        )
         children_wrapper = (
             f'<div style="padding-left:18px;border-left:1px dashed #dbe5f0;margin-left:22px;background:#fff;">'
             f'{"".join(children_html_chunks)}'
             f'</div>'
             if children_html_chunks else ""
         )
-        # 顶层目录（depth=0）默认收缩；子目录默认展开
-        open_attr = "" if depth == 0 else " open"
         return (
-            f'<details{open_attr} style="{details_style}">'
-            f'<summary style="{summary_style}">'
-            f'{folder_icon}'
-            f'<span style="font-weight:600;color:#334155;">{_esc(label)}</span>'
-            f'{badge_html}'
-            f'{size_html}'
-            f'</summary>'
+            f'<div style="margin-left:{indent}px;">'
+            f'{row_html}'
             f'{children_wrapper}'
-            f'</details>'
+            f'</div>'
         )
 
     body_chunks = []

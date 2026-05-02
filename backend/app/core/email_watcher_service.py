@@ -364,40 +364,38 @@ def _build_new_release_email_card_html(circle_name: str, items: List[Dict[str, o
             badges.append('<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 8px;border-radius:7px;background:#dbeafe;color:#1d4ed8;font-size:12px;font-weight:700;">服务器已有</span>')
 
         image_cell = (
-            f'<img src="{image_url}" alt="{title}" width="168" style="display:block;width:168px;max-width:168px;border-radius:10px;border:1px solid rgba(15,23,42,.08);object-fit:cover;">'
+            f'<img src="{image_url}" alt="{title}" width="520" style="display:block;width:100%;max-width:520px;height:auto;border-radius:12px;border:1px solid rgba(148,163,184,.25);object-fit:cover;">'
             if image_url
-            else '<div style="width:168px;height:118px;border-radius:10px;background:#e2e8f0;color:#64748b;font-size:13px;font-weight:700;text-align:center;line-height:118px;">No Cover</div>'
+            else '<div style="width:100%;max-width:520px;height:180px;border-radius:12px;background:#1f2937;color:#94a3b8;font-size:13px;font-weight:700;text-align:center;line-height:180px;">No Cover</div>'
         )
-        title_html = f'<a href="{product_url}" style="color:#0f172a;text-decoration:none;" target="_blank">{title}</a>' if product_url else title
+        title_html = f'<a href="{product_url}" style="color:#f8fafc;text-decoration:none;" target="_blank">{title}</a>' if product_url else title
         relation = f'<div style="margin-top:7px;color:#94a3b8;font-size:12px;font-weight:700;">{canonical} → {display}</div>' if canonical and display and canonical != display else ""
 
         rows.append(f'''
           <tr>
-            <td style="padding:14px 0;border-top:1px solid #e5e7eb;">
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
-                <tr>
-                  <td width="184" valign="top" style="width:184px;padding-right:16px;">{image_cell}</td>
-                  <td valign="top" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;">
-                    <div style="margin-bottom:8px;color:#2563eb;font-size:12px;font-weight:800;letter-spacing:.02em;">{rjcode}</div>
-                    <div style="margin-bottom:10px;color:#0f172a;font-size:18px;font-weight:800;line-height:1.45;">{title_html}</div>
-                    <div style="margin-bottom:8px;">{''.join(badges)}</div>
-                    <div style="color:#475569;font-size:13px;line-height:1.7;">社团：{esc(item.get("circle_name") or circle_name)}</div>
-                    {relation}
-                  </td>
-                </tr>
-              </table>
+            <td style="padding:14px 0;border-top:1px solid #1f2937;">
+              <div style="border-radius:16px;background:#020617;border:1px solid #1e293b;overflow:hidden;">
+                <div style="padding:14px 14px 0 14px;">{image_cell}</div>
+                <div style="padding:14px 16px 16px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;">
+                  <div style="margin-bottom:8px;color:#a5b4fc;font-size:13px;font-weight:900;letter-spacing:.04em;">{rjcode}</div>
+                  <div style="margin-bottom:10px;color:#f8fafc;font-size:20px;font-weight:900;line-height:1.38;word-break:break-word;">{title_html}</div>
+                  <div style="margin-bottom:10px;">{''.join(badges)}</div>
+                  <div style="color:#cbd5e1;font-size:14px;line-height:1.7;word-break:break-word;">社团：{esc(item.get("circle_name") or circle_name)}</div>
+                  {relation}
+                </div>
+              </div>
             </td>
           </tr>
         ''')
 
     return f'''
-      <div style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#0f172a;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:760px;margin:0 auto;border-collapse:collapse;">
+      <div style="margin:0;padding:14px;background:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#f8fafc;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;margin:0 auto;border-collapse:collapse;">
           <tr>
-            <td style="padding:20px 22px;border-radius:14px;background:#ffffff;border:1px solid #e2e8f0;box-shadow:0 10px 30px rgba(15,23,42,.08);">
-              <div style="margin-bottom:4px;color:#16a34a;font-size:13px;font-weight:900;">NEW RELEASE</div>
-              <div style="margin-bottom:8px;color:#0f172a;font-size:22px;font-weight:900;">{esc(circle_name)} 有新作品发售</div>
-              <div style="margin-bottom:4px;color:#64748b;font-size:13px;">已写入社团补全索引，可在 Prekikoeru 查看状态。</div>
+            <td style="padding:18px 16px;border-radius:18px;background:#020617;border:1px solid #1f2937;box-shadow:0 10px 30px rgba(0,0,0,.25);">
+              <div style="margin-bottom:6px;color:#22c55e;font-size:13px;font-weight:900;letter-spacing:.08em;">NEW RELEASE</div>
+              <div style="margin-bottom:10px;color:#f8fafc;font-size:24px;font-weight:900;line-height:1.28;word-break:break-word;">{esc(circle_name)} 有新作品发售</div>
+              <div style="margin-bottom:6px;color:#cbd5e1;font-size:14px;line-height:1.7;">已写入社团补全索引，可在 Prekikoeru 查看状态。</div>
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin-top:14px;">
                 {''.join(rows)}
               </table>
