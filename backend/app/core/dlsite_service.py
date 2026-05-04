@@ -645,6 +645,7 @@ class DLsiteApiService:
                 'timeout': httpx.Timeout(30.0, connect=10.0),
                 'verify': False,  # 避免部分网络环境下的 SSL 问题
                 'follow_redirects': True,
+                'limits': httpx.Limits(max_connections=50, max_keepalive_connections=20),
             }
             if proxy_url:
                 async_client_params = inspect.signature(httpx.AsyncClient.__init__).parameters
@@ -662,7 +663,7 @@ class DLsiteApiService:
     async def _guarded_get(self, url: str, **kwargs) -> httpx.Response:
         """带并发限制的 HTTP GET，PoolTimeout 时自动重试一次"""
         if self._http_semaphore is None:
-            self._http_semaphore = asyncio.Semaphore(5)  # 最多 5 个并发 DLsite 请求
+            self._http_semaphore = asyncio.Semaphore(15)  # 最多 15 个并发 DLsite 请求
         client = await self._get_client()
         for attempt in range(2):
             try:
