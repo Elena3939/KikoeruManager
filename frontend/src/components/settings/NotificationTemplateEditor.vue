@@ -987,7 +987,9 @@ function beautifyHtml(html) {
   const source = String(html || '').replace(/\r\n/g, '\n').trim()
   if (!source) return ''
 
-  const tokens = source.match(/<!--[\s\S]*?-->|<[^>]+>|[^<]+/g) || []
+  // eslint-disable-next-line no-useless-escape
+  const HTML_TOKEN_RE = new RegExp('<!--[\\s\\S]*?-->|<[^>]+>|[^<]+', 'g')
+  const tokens = source.match(HTML_TOKEN_RE) || []
   const voidTagRe = /^<\s*(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\b/i
   const closeTagRe = /^<\s*\//
   const openTagRe = /^<\s*[a-zA-Z]/
@@ -1075,7 +1077,9 @@ function parseTagAttributes(attrsRaw) {
 function buildHighlightedHtml(html) {
   const input = String(html || '')
   if (!input) return '<span class="tpl-code-token-text"></span>'
-  const tokens = input.match(/<!--[\s\S]*?-->|<[^>]+>|[^<]+/g) || []
+  // eslint-disable-next-line no-useless-escape
+  const HTML_TOKEN_RE = new RegExp('<!--[\\s\\S]*?-->|<[^>]+>|[^<]+', 'g')
+  const tokens = input.match(HTML_TOKEN_RE) || []
   return tokens.map((token) => {
     if (token.startsWith('<!--')) {
       return `<span class="tpl-code-token-comment">${escapeCodeToken(token)}</span>`
