@@ -293,7 +293,7 @@ class ExtractService:
             logger.info(f"任务 {task.id} 在解压完成后被取消，清理已解压文件")
             import shutil
             if os.path.exists(output_path):
-                shutil.rmtree(output_path)
+                await asyncio.to_thread(shutil.rmtree, output_path)
             return None
         
         # 7. 验证解压完整性
@@ -474,7 +474,7 @@ class ExtractService:
             unique_passwords.append(password)
 
         for password in unique_passwords:
-            cleanup_attempt_output()
+            await asyncio.to_thread(cleanup_attempt_output)
             password_args = [f"-p{password}"] if password else ["-p"]
             cmd = [
                 self.seven_zip,
@@ -491,10 +491,10 @@ class ExtractService:
                 archive_info.password = password
                 return output_path
 
-        cleanup_attempt_output()
+        await asyncio.to_thread(cleanup_attempt_output)
         if created_temp_dir:
             try:
-                os.remove(list_file_path)
+                await asyncio.to_thread(os.remove, list_file_path)
             except OSError:
                 pass
         raise RuntimeError("选择性解压失败：未能使用现有密码策略提取目标条目")
@@ -658,11 +658,11 @@ class ExtractService:
                                             # 如果是分卷压缩包，删除所有相关分卷
                                             for volume_path in volume_set.volumes:
                                                 if os.path.exists(volume_path):
-                                                    os.remove(volume_path)
+                                                    await asyncio.to_thread(os.remove, volume_path)
                                                     logger.info(f"已删除嵌套压缩包分卷文件: {volume_path}")
                                         else:
                                             # 只是普通单文件压缩包
-                                            os.remove(file_path)
+                                            await asyncio.to_thread(os.remove, file_path)
                                             logger.info(f"已删除嵌套压缩包文件: {file_path}")
                                     except Exception as e:
                                         logger.warning(f"删除嵌套压缩包文件失败: {file_path}, 错误: {e}")
@@ -682,7 +682,7 @@ class ExtractService:
                                     # 清理失败的解压目录
                                     if os.path.exists(nested_output_dir):
                                         import shutil
-                                        shutil.rmtree(nested_output_dir)
+                                        await asyncio.to_thread(shutil.rmtree, nested_output_dir)
                             else:
                                 logger.warning(f"无法读取嵌套压缩包内容: {filename}")
                         
@@ -691,7 +691,7 @@ class ExtractService:
                             # 清理失败的解压目录
                             if os.path.exists(nested_output_dir):
                                 import shutil
-                                shutil.rmtree(nested_output_dir)
+                                await asyncio.to_thread(shutil.rmtree, nested_output_dir)
         
         except Exception as e:
             logger.error(f"扫描嵌套压缩包时出错: {e}")
@@ -928,7 +928,7 @@ class ExtractService:
         # 情况1: 文件有常见压缩后缀名，检查是否需要修复
         if current_ext in common_archive_extensions:
             if current_ext != f".{correct_ext}":
-                new_path = self._rename_with_extension(file_path, correct_ext)
+                new_path = await asyncio.to_thread(self._rename_with_extension, file_path, correct_ext)
                 logger.info(f"修复后缀名: {file_path} -> {new_path}")
                 return new_path
             return file_path
@@ -1045,11 +1045,11 @@ class ExtractService:
                 new_path = os.path.join(os.path.dirname(file_path), new_filename)
                 counter += 1
 
-            os.rename(file_path, new_path)
+            await asyncio.to_thread(os.rename, file_path, new_path)
             return new_path
 
         # 文件名需要规范化，重命名文件
-        new_path = self._rename_with_normalized_name(file_path, normalized_name, correct_ext)
+        new_path = await asyncio.to_thread(self._rename_with_normalized_name, file_path, normalized_name, correct_ext)
         logger.info(f"[RENAME] 文件名规范化: {file_path} -> {new_path}")
         return new_path
     
@@ -1101,7 +1101,7 @@ class ExtractService:
 
         for old_path, new_path in rename_map:
             if old_path != new_path and os.path.exists(old_path):
-                os.rename(old_path, new_path)
+                await asyncio.to_thread(os.rename, old_path, new_path)
                 logger.info(f"[RENAME] 分卷重命名: {old_path} -> {new_path}")
 
         target_entry_path = volume_set.entry_path or file_path
@@ -1973,7 +1973,7 @@ class ExtractService:
                 )
             finally:
                 if temp_dir and os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    await asyncio.to_thread(shutil.rmtree, temp_dir, True)
 
         return None
     

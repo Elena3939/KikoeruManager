@@ -3,6 +3,7 @@
 根据配置定期清理已处理的压缩包文件
 """
 
+import asyncio
 import logging
 import os
 import uuid
@@ -194,7 +195,7 @@ class ProcessedArchiveCleanupService:
                     try:
                         # 删除物理文件
                         if archive.current_path and os.path.exists(archive.current_path):
-                            os.remove(archive.current_path)
+                            await asyncio.to_thread(os.remove, archive.current_path)
                             logger.debug(f"删除文件: {archive.current_path}")
 
                         # 删除数据库记录

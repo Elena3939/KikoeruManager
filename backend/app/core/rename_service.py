@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import shutil
@@ -98,7 +99,7 @@ class RenameService:
                 logger.info(f"重命名服务 - 使用新名称避免冲突: {new_path.name}")
         
         # 执行重命名
-        shutil.move(str(dir_path), str(new_path))
+        await asyncio.to_thread(shutil.move, str(dir_path), str(new_path))
         logger.info(f"重命名: {dir_path} -> {new_path}")
 
         return str(new_path)

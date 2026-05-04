@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import shutil
@@ -48,7 +49,7 @@ class FilterService:
             ]
         
         # 检测音频格式分布，防止过滤后变成空文件夹
-        audio_formats = self._detect_audio_formats(path)
+        audio_formats = await asyncio.to_thread(self._detect_audio_formats, path)
         logger.info(f"检测到音频格式分布: {audio_formats}")
         
         # 如果只有 MP3 格式，临时禁用 MP3 过滤规则
@@ -67,8 +68,11 @@ class FilterService:
         all_items: list[dict[str, Any]] = []
         filtered_size = 0
         
+        # 目录遍历可能很重，放到线程中避免阻塞事件循环
+        walk_entries = await asyncio.to_thread(lambda: list(os.walk(path, topdown=False)))
+
         # 遍历目录
-        for root, dirs, files in os.walk(path, topdown=False):
+        for root, dirs, files in walk_entries:
             # 过滤文件
             for file in files:
                 file_path = os.path.join(root, file)
@@ -90,7 +94,7 @@ class FilterService:
                     "size": size_bytes,
                 })
                 if self._should_filter_file(file_path, rules):
-                    self._delete_file(file_path)
+                    await asyncio.to_thread(self._delete_file, file_path)
                     filtered_files.append(file)
                     filtered_size += size_bytes
                     filtered_items.append({
@@ -121,13 +125,13 @@ class FilterService:
                 for dir_name in dirs:
                     dir_path = os.path.join(root, dir_name)
                     if self._should_filter_dir(dir_path, rules):
-                        size_bytes = self._calculate_path_size(dir_path)
+                        size_bytes = await asyncio.to_thread(self._calculate_path_size, dir_path)
                         relative_path = ""
                         try:
                             relative_path = os.path.relpath(dir_path, path).replace("\\", "/")
                         except Exception:
                             relative_path = dir_name
-                        self._delete_dir(dir_path)
+                        await asyncio.to_thread(self._delete_dir, dir_path)
                         filtered_dirs.append(dir_name)
                         filtered_size += size_bytes
                         filtered_items.append({
