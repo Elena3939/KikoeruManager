@@ -237,6 +237,11 @@ async def _check_and_write(task) -> None:
         logger.info(f"[通知] 跳过 task={tid} 显式 notification_suppress=True")
         return
 
+    # 用户主动取消的任务不发通知
+    if status == 'failed' and getattr(task, 'error_message', '') == '用户取消':
+        logger.info(f"[通知] 跳过 task={tid} 用户主动取消")
+        return
+
     from ..config.settings import get_config
     cfg = get_config()
     if not cfg.notification_center.enabled:
