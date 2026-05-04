@@ -95,7 +95,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Eye, Layers, Plus, X } from 'lucide-vue-next'
 import { createBlock, cloneBlock } from './blockTypes.js'
 import TemplateBlockCanvas    from './TemplateBlockCanvas.vue'
@@ -208,6 +208,16 @@ defineExpose({
   triggerPreview: () => {
     fullPreviewOpen.value = true
     Promise.resolve().then(() => previewRef.value?.fetchPreview?.())
+  },
+  selectBlockByType: (blockType) => {
+    const block = blocks.value.find(b => b.type === blockType)
+    if (!block) return false
+    selectedId.value = block.id
+    nextTick(() => {
+      const el = document.querySelector(`[data-block-id="${block.id}"]`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+    return true
   },
 })
 </script>

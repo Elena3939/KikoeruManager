@@ -45,6 +45,7 @@ def _default_white_template_html() -> str:
 <tr><td style="padding:26px 34px 0 34px;background:#ffffff;text-align:center;">
 <div style="margin:0 0 12px 0;font-size:13px;line-height:1.5;color:#7b4fb4;font-weight:800;">{事件图标} {事件名称} · {时间}</div>
 <h1 style="margin:0;font-size:24px;line-height:1.36;font-weight:760;color:#151922;letter-spacing:0;">{任务标题}</h1>
+{总耗时徽章}
 <p style="margin:12px auto 0 auto;max-width:520px;font-size:14px;line-height:1.75;color:#596272;">{摘要}</p>
 </td></tr>
 <tr><td style="padding:18px 34px 0 34px;background:#ffffff;">{业务数据块}</td></tr>
@@ -285,6 +286,21 @@ def _render_user_template(tpl, payload: dict) -> tuple:
     file_tree_section = _render_payload_section(payload, 'file_tree')
     diff_section = _render_payload_section(payload, 'diff')
     task_log_section = _render_payload_section(payload, 'task_log')
+    stats_map = dict(payload.get('stats') or {})
+    total_duration = str(
+        stats_map.get('total_duration')
+        or stats_map.get('duration')
+        or ''
+    ).strip()
+    # 整封邮件顶部的"总耗时"徽章，总耗时缺省时渲染为空串，模板位置自然坍塌
+    total_duration_badge = (
+        f'<div style="margin:10px auto 0 auto;display:inline-block;padding:4px 12px;'
+        f'background:#eef2ff;color:#4338ca;border-radius:999px;font-size:12px;'
+        f'font-weight:600;letter-spacing:0.02em;">'
+        f'⏱ 总耗时 {_esc(total_duration)}'
+        f'</div>'
+    ) if total_duration else ''
+
     variables = {
         'title': payload.get('title', ''),
         'domain_label': payload.get('domain_label', ''),
@@ -294,6 +310,8 @@ def _render_user_template(tpl, payload: dict) -> tuple:
         'event_icon': _EVENT_ICONS.get(payload.get('event_type', ''), ''),
         'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'severity': payload.get('severity', ''),
+        'total_duration': total_duration,
+        'total_duration_badge': total_duration_badge,
         'payload_sections': payload_sections,
         'stats_grid_section': stats_grid_section,
         'file_tree_section': file_tree_section,
@@ -309,6 +327,8 @@ def _render_user_template(tpl, payload: dict) -> tuple:
         '事件图标': variables['event_icon'],
         '时间': variables['created_at'],
         '严重程度': variables['severity'],
+        '总耗时': total_duration,
+        '总耗时徽章': total_duration_badge,
         '业务数据块': payload_sections,
         '统计网格': stats_grid_section,
         '文件树': file_tree_section,
@@ -322,6 +342,7 @@ def _render_user_template(tpl, payload: dict) -> tuple:
         'file_tree_section', '文件树',
         'diff_section', '差异对比',
         'task_log_section', '执行日志',
+        'total_duration_badge', '总耗时徽章',
     ):
         safe_vars[raw_key] = variables.get(raw_key, '')
     formatter = _SafeFormatDict(safe_vars)
@@ -379,11 +400,12 @@ def _render_payload_section(payload: dict, section: str) -> str:
                 parts.append(render_diff_view({'title': '数据差异', 'sourceKey': 'diff_items'}, payload))
             return ''.join(parts)
         if section == 'task_log':
+            parts = []
             if payload.get('error_logs'):
-                return render_task_log({'title': '错误日志', 'sourceKey': 'error_logs', 'maxLines': 30}, payload)
+                parts.append(render_task_log({'title': '错误日志', 'sourceKey': 'error_logs', 'maxLines': 500}, payload))
             if payload.get('recent_logs'):
-                return render_task_log({'title': '执行日志', 'sourceKey': 'recent_logs', 'maxLines': 30}, payload)
-            return ''
+                parts.append(render_task_log({'title': '执行日志', 'sourceKey': 'recent_logs', 'maxLines': 2000}, payload))
+            return ''.join(parts)
         return ''
     except Exception:
         logger.warning("[通知模板] 渲染业务组件失败 section=%s", section, exc_info=True)

@@ -172,6 +172,44 @@ def render_stats_grid(props: dict, payload: dict) -> str:
 # ---------------------------------------------------------------------------
 # file_tree —— 文件 / 目录树
 # ---------------------------------------------------------------------------
+def _lucide_icon(name: str, color: str, size: int = 16) -> str:
+    paths = {
+        "chevron-right": '<path d="m9 18 6-6-6-6"/>',
+        "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.6 3.9A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+        "folder-open": '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.2 10H20a2 2 0 0 1 1.8 2.9l-2.2 4.4A3 3 0 0 1 16.9 19H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H19a2 2 0 0 1 2 2v2"/>',
+        "file": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+        "file-text": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+        "music": '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+        "image": '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+        "archive": '<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/>',
+        "clock": '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+        "filter-x": '<path d="M13.013 3H2l8 9.46V19l4 2v-8.54l.9-1.055"/><path d="m22 3-5 5"/><path d="m17 3 5 5"/>',
+        "x-circle": '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+        "check-circle": '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+        "hard-drive": '<line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>',
+    }
+    body = paths.get(name) or paths["file"]
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
+        f'viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2.2" '
+        f'stroke-linecap="round" stroke-linejoin="round" '
+        f'style="display:inline-block;vertical-align:-3px;flex-shrink:0;">{body}</svg>'
+    )
+
+
+def _file_tree_icon_name(label: str) -> str:
+    lower = label.lower()
+    if lower.endswith((".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aac", ".opus", ".cue")):
+        return "music"
+    if lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif")):
+        return "image"
+    if lower.endswith((".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz")):
+        return "archive"
+    if lower.endswith((".txt", ".lrc", ".srt", ".vtt", ".ass", ".ssa", ".json", ".md", ".pdf")):
+        return "file-text"
+    return "file"
+
+
 def render_file_tree(props: dict, payload: dict) -> str:
     """从 payload[sourceKey] 读取扁平或嵌套文件列表，渲染缩进树。
 
@@ -239,122 +277,119 @@ def render_file_tree(props: dict, payload: dict) -> str:
             )
         return "".join(chunks)
 
-    # 邮件端尽量复刻任务中心 TaskDetailPane 的文件树：
-    # 白底卡片、行式树、左侧 20px expander 占位、图标 + 名称 + 右侧大小。
-    # 邮件客户端不可靠支持交互，所以全部展开；过滤/删除只做灰色删除线。
     row_base_style = (
-        "min-height:32px;margin:0 0 7px 0;padding:6px 10px 6px 8px;"
+        "min-height:24px;margin:0;padding:3px 10px 3px 6px;"
         "border:1px solid transparent;border-radius:6px;color:#1e293b;"
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;"
-        "font-size:14px;font-weight:500;line-height:1.25;"
+        "font-size:12.5px;font-weight:500;line-height:1.25;"
     )
     tree_name_base = (
         "display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;"
         "white-space:nowrap;vertical-align:middle;color:currentColor;"
     )
 
-    def _file_row_html(node):
-        label = str(node.get("path") or node.get("name") or "")
-        status = str(node.get("status") or "kept")
-        is_muted = status in {"filtered", "removed"}
-        row_color = "#94a3b8" if is_muted else "#1e293b"
-        label_extra = (
-            "color:#94a3b8;text-decoration:line-through;"
-            "text-decoration-color:rgba(148,163,184,.86);text-decoration-thickness:1.5px;"
-            if is_muted else "color:#1e293b;"
-        )
-        icon_color = "#94a3b8" if is_muted else (
-            "#2563eb" if label.lower().endswith((".flac", ".wav")) else
-            "#7c3aed" if label.lower().endswith((".mp3", ".m4a", ".ogg", ".aac", ".wma")) else
-            "#64748b" if label.lower().endswith((".txt", ".lrc", ".srt", ".vtt", ".ass", ".ssa", ".cue", ".json", ".md")) else
-            "#94a3b8"
-        )
-        icon_html = (
-            f'<span style="display:inline-block;width:20px;text-align:center;color:{icon_color};font-size:17px;line-height:1;vertical-align:middle;">'
-            f'{"♫" if label.lower().endswith((".flac", ".wav", ".mp3", ".m4a", ".ogg", ".aac", ".wma")) else "□"}'
-            f'</span>'
-        )
-        size_text = str(node.get("size_text") or "")
-        size_html = (
-            f'<td style="width:86px;padding-left:16px;color:#94a3b8;font-size:12px;'
-            f'font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">{_esc(size_text)}</td>'
-            if size_text else ""
-        )
-        badge_html = _render_badges(node.get("badges") or [])
-        return (
-            f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;{row_base_style}color:{row_color};">'
-            f'<tr>'
-            f'<td style="width:20px;color:#38bdf8;font-size:14px;text-align:center;vertical-align:middle;">&nbsp;</td>'
-            f'<td style="vertical-align:middle;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
-            f'{icon_html}'
-            f'<span style="{tree_name_base}{label_extra}">{_esc(label)}</span>'
-            f'{badge_html}'
-            f'</td>'
-            f'{size_html}'
-            f'</tr>'
-            f'</table>'
-        )
+    # 邮件里用 <details> 会在不同客户端表现差异极大，而且外层 margin-left
+    # 与子容器 padding-left 叠加会让深层文件缩进"延伸"到奇怪的位置。
+    # 这里改成和任务详情面板一致的扁平 row + depth*16px padding-left 渲染。
+    def _render_rows(nodes, depth, out):
+        dirs, files = [], []
+        for child in nodes or []:
+            if isinstance(child, dict) and "children" in child:
+                dirs.append(child)
+            else:
+                files.append(child)
+        dirs.sort(key=lambda n: str(n.get("name") or "").lower())
+        files.sort(key=lambda n: str(n.get("path") or n.get("name") or "").lower())
 
-    def _dir_html(node, depth):
-        label = str(node.get("name") or node.get("path") or "")
-        dir_status = str(node.get("status") or "kept")
-        is_muted = dir_status in {"filtered", "removed"}
-        dir_color = "#94a3b8" if is_muted else "#1e293b"
-        dir_label_extra = (
-            "color:#94a3b8;text-decoration:line-through;"
-            "text-decoration-color:rgba(148,163,184,.86);text-decoration-thickness:1.5px;"
-            if is_muted else "color:#1e293b;"
-        )
-        folder_icon = (
-            f'<span style="display:inline-block;width:20px;text-align:center;color:{"#94a3b8" if is_muted else "#f6b73c"};'
-            f'font-size:16px;line-height:1;vertical-align:middle;">▰</span>'
-        )
-        size_text = str(node.get("size_text") or "")
-        size_html = (
-            f'<td style="width:86px;padding-left:16px;color:#94a3b8;font-size:12px;'
-            f'font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">{_esc(size_text)}</td>'
-            if size_text else ""
-        )
-        badge_html = _render_badges(node.get("badges") or [])
-        children = node.get("children") or []
-        children_html_chunks = [
-            _dir_html(child, depth + 1) if isinstance(child, dict) and "children" in child
-            else _file_row_html(child if isinstance(child, dict) else {"path": str(child)})
-            for child in children
-        ]
-        indent = max(0, depth) * 18
-        row_html = (
-            f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;{row_base_style}color:{dir_color};">'
-            f'<tr>'
-            f'<td style="width:20px;color:#38bdf8;font-size:14px;text-align:center;vertical-align:middle;">›</td>'
-            f'<td style="vertical-align:middle;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
-            f'{folder_icon}'
-            f'<span style="{tree_name_base}{dir_label_extra}">{_esc(label)}</span>'
-            f'{badge_html}'
-            f'</td>'
-            f'{size_html}'
-            f'</tr>'
-            f'</table>'
-        )
-        children_wrapper = (
-            f'<div style="padding-left:18px;border-left:1px dashed #dbe5f0;margin-left:22px;background:#fff;">'
-            f'{"".join(children_html_chunks)}'
-            f'</div>'
-            if children_html_chunks else ""
-        )
-        return (
-            f'<div style="margin-left:{indent}px;">'
-            f'{row_html}'
-            f'{children_wrapper}'
-            f'</div>'
-        )
+        indent_px = max(0, depth) * 16 + 8
+        for node in dirs:
+            label = str(node.get("name") or node.get("path") or "")
+            dir_status = str(node.get("status") or "kept")
+            is_muted = dir_status in {"filtered", "removed"}
+            dir_color = "#94a3b8" if is_muted else "#1e293b"
+            dir_label_extra = (
+                "color:#94a3b8;text-decoration:line-through;"
+                "text-decoration-color:rgba(148,163,184,.86);text-decoration-thickness:1.5px;"
+                if is_muted else "color:#1e293b;"
+            )
+            folder_color = "#94a3b8" if is_muted else "#f59e0b"
+            folder_icon = (
+                f'<span style="display:inline-block;width:18px;text-align:center;'
+                f'line-height:1;vertical-align:middle;">'
+                f'{_lucide_icon("folder-open", folder_color, 15)}</span>'
+            )
+            badge_html = _render_badges(node.get("badges") or [])
+            size_text = str(node.get("size_text") or "")
+            size_html = (
+                f'<td style="width:86px;padding-left:16px;color:#94a3b8;font-size:12px;'
+                f'font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">{_esc(size_text)}</td>'
+                if size_text else ""
+            )
+            out.append(
+                f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
+                f'style="border-collapse:collapse;{row_base_style}color:{dir_color};">'
+                f'<tr>'
+                f'<td style="width:{indent_px}px;"></td>'
+                f'<td style="vertical-align:middle;min-width:0;white-space:nowrap;'
+                f'overflow:hidden;text-overflow:ellipsis;">'
+                f'{folder_icon}'
+                f'<span style="{tree_name_base}{dir_label_extra}">{_esc(label)}</span>'
+                f'{badge_html}'
+                f'</td>'
+                f'{size_html}'
+                f'</tr>'
+                f'</table>'
+            )
+            _render_rows(node.get("children") or [], depth + 1, out)
 
-    body_chunks = []
-    for n in items:
-        if isinstance(n, dict) and "children" in n:
-            body_chunks.append(_dir_html(n, 0))
-        else:
-            body_chunks.append(_file_row_html(n if isinstance(n, dict) else {"path": str(n)}))
+        for node in files:
+            if not isinstance(node, dict):
+                node = {"path": str(node)}
+            label = str(node.get("path") or node.get("name") or "")
+            status = str(node.get("status") or "kept")
+            is_muted = status in {"filtered", "removed"}
+            row_color = "#94a3b8" if is_muted else "#1e293b"
+            label_extra = (
+                "color:#94a3b8;text-decoration:line-through;"
+                "text-decoration-color:rgba(148,163,184,.86);text-decoration-thickness:1.5px;"
+                if is_muted else "color:#1e293b;"
+            )
+            icon_color = "#94a3b8" if is_muted else (
+                "#2563eb" if label.lower().endswith((".flac", ".wav")) else
+                "#7c3aed" if label.lower().endswith((".mp3", ".m4a", ".ogg", ".aac", ".wma")) else
+                "#64748b" if label.lower().endswith((".txt", ".lrc", ".srt", ".vtt", ".ass", ".ssa", ".cue", ".json", ".md")) else
+                "#94a3b8"
+            )
+            icon_html = (
+                f'<span style="display:inline-block;width:18px;text-align:center;'
+                f'line-height:1;vertical-align:middle;">'
+                f'{_lucide_icon(_file_tree_icon_name(label), icon_color, 15)}</span>'
+            )
+            size_text = str(node.get("size_text") or "")
+            size_html = (
+                f'<td style="width:86px;padding-left:16px;color:#94a3b8;font-size:12px;'
+                f'font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">{_esc(size_text)}</td>'
+                if size_text else ""
+            )
+            badge_html = _render_badges(node.get("badges") or [])
+            out.append(
+                f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
+                f'style="border-collapse:collapse;{row_base_style}color:{row_color};">'
+                f'<tr>'
+                f'<td style="width:{indent_px}px;"></td>'
+                f'<td style="vertical-align:middle;min-width:0;white-space:nowrap;'
+                f'overflow:hidden;text-overflow:ellipsis;">'
+                f'{icon_html}'
+                f'<span style="{tree_name_base}{label_extra}">{_esc(label)}</span>'
+                f'{badge_html}'
+                f'</td>'
+                f'{size_html}'
+                f'</tr>'
+                f'</table>'
+            )
+
+    body_chunks: list[str] = []
+    _render_rows(items, 0, body_chunks)
 
     tree_html = (
         f'<div style="margin:10px 0;">'
@@ -420,7 +455,7 @@ def _render_circle_batch_summary_table(title: str, items: list) -> str:
 
 
 def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
-    """下载列表专用图文卡片。"""
+    """下载列表专用图文卡片。支持按 status=success/failed 区分成功 / 失败作品。"""
     rows = []
     shown = 0
     for item in items:
@@ -429,6 +464,9 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
         if not isinstance(item, dict):
             continue
         shown += 1
+        status = str(item.get("status") or "success").lower()
+        is_failed = status == "failed"
+
         cover_url = _esc(item.get("cover_url") or "")
         rjcode = _esc(item.get("rjcode") or "RJ")
         work_title = _esc(item.get("title") or rjcode or "下载作品")
@@ -437,39 +475,91 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
         file_count = int(item.get("file_count") or 0)
         file_text = _esc(item.get("count_label") or (f"{file_count} 个文件" if file_count else ""))
         meta_chunks = [text for text in [circle_name, size_text, file_text] if text]
-        meta_html = " · ".join(meta_chunks) if meta_chunks else "下载完成"
-        changes = [str(change or "").strip() for change in (item.get("changes") or []) if str(change or "").strip()]
+        meta_html = " · ".join(meta_chunks) if meta_chunks else ("失败" if is_failed else "下载完成")
+        # 支持两种 changes 格式：
+        #   - 纯字符串（旧版 / 下载任务）：直接渲染为文本行
+        #   - {icon, text}（解压 / 入库任务）：左侧 lucide SVG + 右侧文本
+        raw_changes = item.get("changes") or []
+        change_entries: list[tuple[str, str]] = []
+        for change in raw_changes:
+            if isinstance(change, dict):
+                text = str(change.get("text") or change.get("label") or "").strip()
+                if not text:
+                    continue
+                change_entries.append((str(change.get("icon") or ""), text))
+            else:
+                text = str(change or "").strip()
+                if text:
+                    change_entries.append(("", text))
+
         changes_html = ""
-        if changes:
+        if change_entries:
+            change_bg = "#fef2f2" if is_failed else "#f8fafc"
+            change_border = "#fecaca" if is_failed else "#e2e8f0"
+            change_color = "#991b1b" if is_failed else "#334155"
+            icon_color = "#b91c1c" if is_failed else "#64748b"
+            lines = []
+            for icon_name, text in change_entries[:6]:
+                if icon_name:
+                    icon_html = (
+                        f'<span style="display:inline-block;width:18px;line-height:1;'
+                        f'vertical-align:middle;margin-right:6px;">'
+                        f'{_lucide_icon(icon_name, icon_color, 14)}</span>'
+                    )
+                else:
+                    icon_html = ""
+                lines.append(
+                    f'<div style="display:block;padding:1px 0;">'
+                    f'{icon_html}<span style="vertical-align:middle;">{_esc(text)}</span>'
+                    f'</div>'
+                )
             changes_html = (
-                f'<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;'
-                f'border-radius:8px;color:#334155;font-size:12px;line-height:1.6;">'
-                + "".join(f'<div>{_esc(change)}</div>' for change in changes[:6])
+                f'<div style="margin-top:10px;padding:8px 10px;background:{change_bg};'
+                f'border:1px solid {change_border};border-radius:8px;color:{change_color};'
+                f'font-size:12px;line-height:1.6;">'
+                + "".join(lines)
                 + f'</div>'
             )
+
+        # 失败卡片：封面灰度 + 整体半透明，RJ 条替换为红色"失败"标签
+        image_filter = 'filter:grayscale(0.95);opacity:0.55;' if is_failed else ''
         image_html = (
             f'<img src="{cover_url}" alt="{work_title}" width="180" height="180" '
-            f'style="display:block;width:180px;height:180px;object-fit:cover;border:0;">'
+            f'style="display:block;width:180px;height:180px;object-fit:contain;background:#fff;border:0;{image_filter}">'
             if cover_url else
             f'<div style="width:180px;height:180px;background:#f5f5f7;color:#8e8e93;'
-            f'font-size:12px;line-height:180px;text-align:center;">无封面</div>'
+            f'font-size:12px;line-height:180px;text-align:center;{image_filter}">无封面</div>'
+        )
+        rj_bar = (
+            f'<tr><td style="background:#fee2e2;color:#991b1b;font-size:12px;line-height:20px;'
+            f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">✕ 失败 · {rjcode}</td></tr>'
+            if is_failed else
+            f'<tr><td style="background:#fff3cf;color:#c2410c;font-size:12px;line-height:20px;'
+            f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">{rjcode}</td></tr>'
+        )
+
+        title_color = "#64748b" if is_failed else "#0f172a"
+        meta_color = "#94a3b8" if is_failed else "#475569"
+        size_color = "#94a3b8" if is_failed else "#111827"
+        card_wrapper_style = (
+            'margin:0 0 14px;border-collapse:collapse;'
+            + ('background:#fafafa;border:1px dashed #e2e8f0;border-radius:10px;' if is_failed else '')
         )
         rows.append(
             f'<table width="100%" cellpadding="0" cellspacing="0" border="0" '
-            f'style="margin:0 0 14px;border-collapse:collapse;">'
+            f'style="{card_wrapper_style}">'
             f'<tr>'
-            f'<td width="180" valign="top" style="padding:0 16px 0 0;">'
+            f'<td width="180" valign="top" style="padding:10px 16px 10px 10px;">'
             f'<table width="180" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">'
             f'<tr><td>{image_html}</td></tr>'
-            f'<tr><td style="background:#fff3cf;color:#c2410c;font-size:12px;line-height:20px;'
-            f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">{rjcode}</td></tr>'
+            f'{rj_bar}'
             f'</table>'
             f'</td>'
-            f'<td valign="top" style="padding:2px 0 0 0;">'
-            f'<div style="font-size:18px;line-height:1.35;font-weight:700;color:#0f172a;'
+            f'<td valign="top" style="padding:10px 10px 10px 0;">'
+            f'<div style="font-size:18px;line-height:1.35;font-weight:700;color:{title_color};'
             f'margin:0 0 8px 0;">{work_title}</div>'
-            f'<div style="font-size:13px;line-height:1.6;color:#475569;margin:0 0 10px 0;">{meta_html}</div>'
-            f'<div style="font-size:20px;line-height:1.2;font-weight:700;color:#111827;">{size_text or "大小未知"}</div>'
+            f'<div style="font-size:13px;line-height:1.6;color:{meta_color};margin:0 0 10px 0;">{meta_html}</div>'
+            f'<div style="font-size:20px;line-height:1.2;font-weight:700;color:{size_color};">{size_text or "—"}</div>'
             f'{changes_html}'
             f'</td>'
             f'</tr>'
@@ -598,7 +688,7 @@ def render_task_log(props: dict, payload: dict) -> str:
         color = level_colors.get(level, "#a1a1a6")
         ts_html = f'<span style="color:#6e6e73;margin-right:8px;">{ts}</span>' if ts else ""
         rows.append(
-            f'<div style="padding:2px 0;color:{color};">{ts_html}{text}</div>'
+            f'<div style="padding:2px 0;color:{color};white-space:pre-wrap;word-break:break-all;">{ts_html}{text}</div>'
         )
 
     truncated_html = ""
@@ -608,16 +698,30 @@ def render_task_log(props: dict, payload: dict) -> str:
             f'font-size:10.5px;">…（仅显示最后 {max_lines} 行，共 {len(items)} 行）</div>'
         )
 
+    # 日志可能很长：外层 max-height + overflow-y:auto 在现代邮件客户端（Gmail/
+    # Apple Mail/ Outlook web / Thunderbird）里生效；老 Outlook 退化为展开全部，
+    # 也不会截断数据。顶部给一个浅色 meta 行显示总行数。
+    meta_line = (
+        f'<div style="font-size:11px;color:#7a7a7e;margin-bottom:6px;'
+        f'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">'
+        f'共 {len(items)} 行'
+        + (f'，滚动查看全部' if len(items) > 12 else '')
+        + f'</div>'
+    )
     return (
         f'<div style="margin:10px 0;">'
         f'<div style="font-size:11px;font-weight:600;color:#8e8e93;'
         f'letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;'
         f'padding:0 4px;">{title}</div>'
-        f'<div style="background:#1d1d1f;border-radius:10px;padding:14px 16px;'
+        f'<div style="background:#1d1d1f;border-radius:10px;padding:12px 16px 14px;'
         f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;'
-        f'line-height:1.55;color:#a1a1a6;overflow:hidden;">'
+        f'line-height:1.55;color:#a1a1a6;">'
+        f'{meta_line}'
+        f'<div style="max-height:360px;overflow-y:auto;padding-right:4px;'
+        f'scrollbar-width:thin;scrollbar-color:#4a4a4f #1d1d1f;">'
         f'{"".join(rows)}'
         f'{truncated_html}'
+        f'</div>'
         f'</div></div>\n'
     )
 

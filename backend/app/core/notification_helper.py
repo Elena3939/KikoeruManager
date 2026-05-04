@@ -88,10 +88,23 @@ def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
     kept_count = sum(1 for row in flat_rows if not row.get("is_dir") and row.get("status") != "filtered")
     kept_size = sum(int(row.get("size") or 0) for row in flat_rows if not row.get("is_dir") and row.get("status") != "filtered")
 
+    filtered_size_bytes = int(meta.get("filtered_size") or 0)
+    if not filtered_size_bytes:
+        # 兜底：filter_service 没写 filtered_size 时，从 filtered_items 的 size 累加
+        try:
+            filtered_size_bytes = sum(
+                int((item or {}).get("size") or 0)
+                for item in (filtered_items or [])
+                if isinstance(item, dict)
+            )
+        except Exception:
+            filtered_size_bytes = 0
+
     stats = {
         "total_files": kept_count or _count_files_on_disk(output_path),
         "total_size": _format_bytes(kept_size) or (_format_bytes(_sum_size_on_disk(output_path)) if output_path else ""),
         "filtered_count": int(meta.get("filtered_count") or len(filtered_items or filtered_files or filtered_dirs) or 0),
+        "filtered_size": _format_bytes(filtered_size_bytes),
         "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
     }
 
@@ -116,15 +129,24 @@ def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
         circle_name = circle_name or str(row.get("maker_name") or "").strip()
 
     rj_work_cards: list[dict] = []
+    card_status = "failed" if error else "success"
     if rjcode or work_title or cover_url:
-        # 把统计数据拼进 changes 字段，显示在卡片下方
-        card_changes = []
+        # 卡片下方的元信息行：用 lucide 图标 + 文本，与文件树视觉一致
+        card_changes: list[dict[str, str]] = []
+        if error:
+            card_changes.append({"icon": "x-circle", "text": f"处理失败：{error}"})
         if stats["total_files"]:
-            card_changes.append(f"📁 {stats['total_files']} 个文件  {stats['total_size']}")
+            total_text = f"{stats['total_files']} 个文件"
+            if stats["total_size"]:
+                total_text += f" · {stats['total_size']}"
+            card_changes.append({"icon": "folder", "text": total_text})
         if stats["filtered_count"]:
-            card_changes.append(f"🔕 已过滤 {stats['filtered_count']} 个文件")
+            filtered_text = f"已过滤 {stats['filtered_count']} 个文件"
+            if stats["filtered_size"]:
+                filtered_text += f" · {stats['filtered_size']}"
+            card_changes.append({"icon": "filter-x", "text": filtered_text})
         if stats["duration"]:
-            card_changes.append(f"⏱ 用时 {stats['duration']}")
+            card_changes.append({"icon": "clock", "text": f"用时 {stats['duration']}"})
         rj_work_cards.append({
             "rjcode": rjcode,
             "title": work_title or rjcode or "入库作品",
@@ -134,7 +156,18 @@ def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
             "file_count": stats["total_files"],
             "count_label": f"{stats['total_files']} 个文件" if stats["total_files"] else "",
             "changes": card_changes,
+            "status": card_status,
+            "error": str(error or ""),
         })
+
+    # 将当前任务的 file_tree 包进以 RJ 为根的文件夹节点，便于批量聚合时按 RJ 分组展示
+    root_label = rjcode or work_title or "入库作品"
+    if file_tree:
+        file_tree = [{
+            "name": root_label,
+            "status": "filtered" if error else "kept",
+            "children": file_tree,
+        }]
 
     # 构建日志（追加密码信息）
     recent_logs = build_recent_logs(task, max_lines=30)
@@ -155,6 +188,150 @@ def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
     if error:
         result["error_logs"] = [{"level": "error", "text": str(error), "ts": datetime.now().strftime("%H:%M:%S")}]
         result["summary"] = str(error)
+    return result
+
+
+def aggregate_import_batch_extras(primary_task, group_tasks) -> dict[str, Any]:
+    """把批量解压 / 入库任务组的业务块合并成一个 payload。
+
+    - 遍历组内每个任务，取 `notification_extra` 里已经构建好的卡片 / 文件树；
+      如果任务是 `auto_process / process_existing_folder`，但还没写入 extra
+      （例如旧任务），则临时跑一次 `build_import_notification_extra` 作为兜底。
+    - 所有 `rj_work_cards` 平铺拼接，成功在前、失败在后。
+    - `file_tree` 拼接各任务以 RJ 为根的顶层节点，确保每个 RJ 自成一棵子树。
+    - 统计字段累加；`recent_logs` 合并每个失败任务一条摘要。
+    """
+    cards_success: list[dict] = []
+    cards_failed: list[dict] = []
+    file_tree_roots: list[dict] = []
+    total_files = 0
+    filtered_count = 0
+    failed_summary_logs: list[dict] = []
+    error_logs: list[dict] = []
+    all_recent_logs: list[dict] = []
+
+    # 计算批量墙钟耗时所需的时间区间
+    earliest_start = None
+    latest_end = None
+
+    seen_ids = set()
+    ordered_tasks = []
+    if primary_task is not None:
+        ordered_tasks.append(primary_task)
+        seen_ids.add(getattr(primary_task, "id", None))
+    for t in group_tasks or []:
+        if getattr(t, "id", None) in seen_ids:
+            continue
+        seen_ids.add(getattr(t, "id", None))
+        ordered_tasks.append(t)
+
+    for t in ordered_tasks:
+        meta = dict(getattr(t, "task_metadata", None) or {})
+        extra = dict(meta.get("notification_extra") or {})
+        if not extra:
+            task_kind = (t.type.value if hasattr(getattr(t, "type", None), "value") else str(getattr(t, "type", "")))
+            if task_kind in {"auto_process", "process_existing_folder", "extract"}:
+                extra = build_import_notification_extra(t, error=str(getattr(t, "error_message", "") or ""))
+            else:
+                continue
+
+        cards = list(extra.get("rj_work_cards") or [])
+        tree_roots = list(extra.get("file_tree") or [])
+        stats = dict(extra.get("stats") or {})
+        task_logs = list(extra.get("recent_logs") or [])
+
+        try:
+            total_files += int(stats.get("total_files") or 0)
+        except Exception:
+            pass
+        try:
+            filtered_count += int(stats.get("filtered_count") or 0)
+        except Exception:
+            pass
+
+        # 累积起止时间计算整体耗时
+        started_at = getattr(t, "started_at", None)
+        completed_at = getattr(t, "completed_at", None)
+        if started_at is not None and (earliest_start is None or started_at < earliest_start):
+            earliest_start = started_at
+        if completed_at is not None and (latest_end is None or completed_at > latest_end):
+            latest_end = completed_at
+
+        task_error = str(getattr(t, "error_message", "") or "")
+        card_label = ""
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            status = str(card.get("status") or ("failed" if task_error else "success"))
+            if status == "failed" and not card.get("error") and task_error:
+                card = {**card, "error": task_error, "status": "failed"}
+            if not card_label:
+                card_label = str(card.get("rjcode") or card.get("title") or "").strip()
+            (cards_failed if status == "failed" else cards_success).append(card)
+
+        for root in tree_roots:
+            if isinstance(root, dict):
+                file_tree_roots.append(root)
+
+        # 归并该任务的日志并加上 RJ 前缀，方便在批量大日志中定位
+        prefix_label = card_label or str(getattr(t, "name", "") or getattr(t, "id", ""))[:16]
+        for entry in task_logs:
+            if isinstance(entry, dict):
+                text = str(entry.get("text") or "").strip()
+                if not text:
+                    continue
+                all_recent_logs.append({
+                    "level": str(entry.get("level") or "info"),
+                    "text": f"[{prefix_label}] {text}" if prefix_label else text,
+                    "ts": str(entry.get("ts") or ""),
+                })
+            else:
+                text = str(entry or "").strip()
+                if text:
+                    all_recent_logs.append({
+                        "level": "info",
+                        "text": f"[{prefix_label}] {text}" if prefix_label else text,
+                        "ts": "",
+                    })
+
+        if task_error:
+            label = prefix_label or "任务"
+            failed_summary_logs.append({
+                "level": "error",
+                "text": f"{label}：{task_error}",
+                "ts": datetime.now().strftime("%H:%M:%S"),
+            })
+            error_logs.append({
+                "level": "error",
+                "text": f"{label}：{task_error}",
+                "ts": datetime.now().strftime("%H:%M:%S"),
+            })
+
+    merged_cards = cards_success + cards_failed
+    recent_logs = all_recent_logs + failed_summary_logs
+
+    total_duration = _format_duration(earliest_start, latest_end) if earliest_start and latest_end else ""
+
+    stats_out = {
+        "total_files": total_files,
+        "total_size": "",
+        "filtered_count": filtered_count,
+        "success_count": len(cards_success),
+        "failed_count": len(cards_failed),
+        "duration": total_duration,
+        "total_duration": total_duration,
+    }
+
+    result: dict[str, Any] = {
+        "stats": stats_out,
+        "recent_logs": recent_logs,
+    }
+    if merged_cards:
+        result["rj_work_cards"] = merged_cards
+    if file_tree_roots:
+        result["file_tree"] = file_tree_roots[:200]
+    if error_logs:
+        result["error_logs"] = error_logs
     return result
 
 

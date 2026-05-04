@@ -296,9 +296,32 @@ function renderStatsGrid(props, payload) {
 
 const FILE_STATUS_STYLE = {
   kept:     { color: '#1f8f4e', marker: '✓', labelExtra: 'color:#1d1d1f;' },
-  filtered: { color: '#d97706', marker: '✕', labelExtra: 'color:rgba(29,29,31,0.5);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.6);' },
+  filtered: { color: '#d97706', marker: '✕', labelExtra: 'color:rgba(29,29,31,0.45);' },
   new:      { color: '#0071e3', marker: '+', labelExtra: 'color:#1d1d1f;' },
-  removed:  { color: '#d93025', marker: '−', labelExtra: 'color:rgba(29,29,31,0.5);text-decoration:line-through;text-decoration-thickness:1.5px;text-decoration-color:rgba(29,29,31,0.6);' },
+  removed:  { color: '#d93025', marker: '−', labelExtra: 'color:rgba(29,29,31,0.45);' },
+}
+
+function lucideIcon(name, color, size = 15) {
+  const paths = {
+    chevronRight: '<path d="m9 18 6-6-6-6"/>',
+    folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.6 3.9A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+    folderOpen: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.2 10H20a2 2 0 0 1 1.8 2.9l-2.2 4.4A3 3 0 0 1 16.9 19H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H19a2 2 0 0 1 2 2v2"/>',
+    file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+    fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+    music: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+    image: '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+    archive: '<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/>',
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-3px;flex-shrink:0;">${paths[name] || paths.file}</svg>`
+}
+
+function fileTreeIconName(label) {
+  const lower = String(label || '').toLowerCase()
+  if (/\.(wav|flac|mp3|m4a|ogg|aac|opus|cue)$/.test(lower)) return 'music'
+  if (/\.(png|jpg|jpeg|webp|gif|bmp|avif)$/.test(lower)) return 'image'
+  if (/\.(zip|7z|rar|tar|gz|bz2|xz)$/.test(lower)) return 'archive'
+  if (/\.(txt|lrc|srt|vtt|ass|ssa|json|md|pdf)$/.test(lower)) return 'fileText'
+  return 'file'
 }
 
 function renderFileTree(props, payload) {
@@ -331,8 +354,8 @@ function renderFileTree(props, payload) {
   }
 
   const state = { emitted: 0, truncated: false, skipped: 0 }
-  const fileRowStyle = "padding:7px 14px;border-bottom:1px solid #edf2f7;font-size:12.5px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;line-height:1.65;display:flex;align-items:center;justify-content:space-between;gap:10px;"
-  const summaryStyle = "cursor:pointer;padding:8px 14px;border-bottom:1px solid #e7edf5;background:#fcfdff;font-size:12.5px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;font-weight:600;color:#0f172a;line-height:1.65;outline:none;display:flex;align-items:center;gap:8px;"
+  const fileRowStyle = "padding:3px 10px 3px 6px;font-size:12.5px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;line-height:1.35;display:flex;align-items:center;justify-content:space-between;gap:8px;"
+  const summaryStyle = "cursor:pointer;padding:3px 10px 3px 6px;background:#fcfdff;font-size:12.5px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;font-weight:600;color:#0f172a;line-height:1.35;outline:none;display:flex;align-items:center;gap:6px;"
   const detailsStyle = 'border:none;margin:0;'
 
   const renderFileRow = (node) => {
@@ -340,25 +363,21 @@ function renderFileTree(props, payload) {
     const status = node.status || 'kept'
     const style = FILE_STATUS_STYLE[status] || { color: '#48484a', marker: '·', labelExtra: 'color:#1d1d1f;' }
     const isMuted = status === 'filtered' || status === 'removed'
-    const markerHtml = `<span style="display:inline-block;width:12px;height:12px;border-radius:999px;background:${style.color};opacity:${isMuted ? '.68' : '.9'};flex-shrink:0;"></span>`
     const lowerLabel = label.toLowerCase()
-    const iconHtml = lowerLabel.match(/\.(txt|lrc|srt|vtt|ass|ssa)$/)
-      ? `<span style="font-size:14px;line-height:1;color:${isMuted ? '#94a3b8' : '#8b5cf6'};flex-shrink:0;">📝</span>`
-      : lowerLabel.match(/\.(flac|wav|mp3|m4a|ogg|aac)$/)
-        ? `<span style="font-size:14px;line-height:1;color:${isMuted ? '#94a3b8' : '#0ea5e9'};flex-shrink:0;">🎵</span>`
-        : '<span style="font-size:14px;line-height:1;color:#94a3b8;flex-shrink:0;">📄</span>'
+    const iconColor = isMuted ? '#94a3b8' : (lowerLabel.match(/\.(flac|wav)$/) ? '#2563eb' : lowerLabel.match(/\.(mp3|m4a|ogg|aac|opus)$/) ? '#7c3aed' : '#64748b')
+    const iconHtml = `<span style="display:inline-block;width:18px;text-align:center;line-height:1;flex-shrink:0;">${lucideIcon(fileTreeIconName(label), iconColor, 15)}</span>`
     const sizeText = String(node.size_text || '')
     const sizeHtml = sizeText ? `<span style="color:#94a3b8;font-size:11px;white-space:nowrap;flex-shrink:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(sizeText)}</span>` : ''
     const badgeHtml = renderBadges(node.badges || [])
-    const lineHtml = isMuted ? '<span style="position:absolute;left:0;right:0;top:50%;border-top:1.5px solid rgba(148,163,184,0.88);transform:translateY(-50%);pointer-events:none;"></span>' : ''
-    return `<div style="${fileRowStyle}${style.labelExtra}"><span style="position:relative;display:inline-flex;align-items:center;gap:8px;min-width:0;overflow:hidden;">${lineHtml}${markerHtml}${iconHtml}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">${htmlEscape(label)}</span>${badgeHtml}</span>${sizeHtml}</div>`
+    const lineHtml = isMuted ? '<span style="position:absolute;left:18px;right:10px;top:50%;border-top:1.5px solid rgba(148,163,184,0.75);transform:translateY(-50%);pointer-events:none;z-index:1;"></span>' : ''
+    return `<div style="position:relative;${fileRowStyle}${style.labelExtra}">${lineHtml}<span style="display:inline-flex;align-items:center;gap:6px;min-width:0;overflow:hidden;flex:1;padding-right:8px;"><span style="display:inline-block;width:18px;flex-shrink:0;"></span>${iconHtml}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">${htmlEscape(label)}</span>${badgeHtml}</span>${sizeHtml}</div>`
   }
 
   const renderDir = (node, depth) => {
     if (state.truncated) { state.skipped += 1; return '' }
     state.emitted += 1
     const label = String(node.name || node.path || '')
-    const typeIcon = '<span style="color:#f59e0b;font-size:15px;line-height:1;flex-shrink:0;">📁</span>'
+    const typeIcon = `<span style="display:inline-block;width:18px;text-align:center;line-height:1;flex-shrink:0;">${lucideIcon('folderOpen', '#f59e0b', 15)}</span>`
     const sizeText = String(node.size_text || '')
     const sizeHtml = sizeText ? `<span style="margin-left:auto;color:#94a3b8;font-size:11px;font-weight:400;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(sizeText)}</span>` : ''
     const badgeHtml = renderBadges(node.badges || [])
@@ -375,9 +394,8 @@ function renderFileTree(props, payload) {
         childChunks.push(renderFileRow(safeChild))
       }
     }
-    const childrenWrapper = childChunks.length ? `<div style="padding-left:18px;border-left:1px dashed #dbe5f0;margin-left:22px;background:#fff;">${childChunks.join('')}</div>` : ''
-    const openAttr = depth === 0 ? '' : ' open'
-    return `<details${openAttr} style="${detailsStyle}"><summary style="${summaryStyle}">${typeIcon}<span style="font-weight:600;color:#334155;">${htmlEscape(label)}</span>${badgeHtml}${sizeHtml}</summary>${childrenWrapper}</details>`
+    const childrenWrapper = childChunks.length ? `<div style="padding-left:4px;margin-left:8px;background:#fff;">${childChunks.join('')}</div>` : ''
+    return `<details open style="${detailsStyle}"><summary style="${summaryStyle}"><span style="display:inline-block;width:18px;text-align:center;line-height:1;flex-shrink:0;">${lucideIcon('chevronRight', '#94a3b8', 13)}</span>${typeIcon}<span style="font-weight:600;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${htmlEscape(label)}</span>${badgeHtml}${sizeHtml}</summary>${childrenWrapper}</details>`
   }
 
   const bodyChunks = []
@@ -420,7 +438,7 @@ function renderDownloadWorkCards(title, items, maxItems) {
       ? `<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;color:#334155;font-size:12px;line-height:1.6;">${changes.slice(0, 6).map(change => `<div>${htmlEscape(change)}</div>`).join('')}</div>`
       : ''
     const imageHtml = coverUrl
-      ? `<img src="${coverUrl}" alt="${workTitle}" width="180" height="180" style="display:block;width:180px;height:180px;object-fit:cover;border:0;">`
+      ? `<img src="${coverUrl}" alt="${workTitle}" width="180" height="180" style="display:block;width:180px;height:180px;object-fit:contain;background:#fff;border:0;">`
       : `<div style="width:180px;height:180px;background:#f5f5f7;color:#8e8e93;font-size:12px;line-height:180px;text-align:center;">无封面</div>`
     rows.push(`<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 14px;border-collapse:collapse;"><tr><td width="180" valign="top" style="padding:0 16px 0 0;"><table width="180" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td>${imageHtml}</td></tr><tr><td style="background:#fff3cf;color:#c2410c;font-size:12px;line-height:20px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">${rjcode}</td></tr></table></td><td valign="top" style="padding:2px 0 0 0;"><div style="font-size:18px;line-height:1.35;font-weight:700;color:#0f172a;margin:0 0 8px 0;">${workTitle}</div><div style="font-size:13px;line-height:1.6;color:#475569;margin:0 0 10px 0;">${meta}</div><div style="font-size:20px;line-height:1.2;font-weight:700;color:#111827;">${sizeText || '大小未知'}</div>${changesHtml}</td></tr></table>`)
   }

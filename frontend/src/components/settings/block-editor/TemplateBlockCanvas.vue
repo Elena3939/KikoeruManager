@@ -29,6 +29,7 @@
             'is-dragging': dragging === block.id,
             'is-drag-over': dragOver === block.id,
           }"
+          :data-block-id="block.id"
           :style="{ '--accent': BLOCK_TYPES[block.type]?.color ?? '#8e8e93' }"
           @click="emit('select', block.id)"
           @dragenter.prevent="onDragEnter(block.id)"

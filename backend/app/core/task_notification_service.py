@@ -339,14 +339,37 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
             )
         if should_email:
             try:
-                from .notification_helper import build_notification_extra_for_task
+                from .notification_helper import (
+                    build_notification_extra_for_task,
+                    aggregate_import_batch_extras,
+                )
                 auto_extra = build_notification_extra_for_task(task)
             except Exception:
                 logger.warning("[通知] 构建邮件业务块失败 task=%s", getattr(task, "id", "?"), exc_info=True)
                 auto_extra = {}
+
+            # 批量任务聚合：把组内所有任务的 rj_work_cards / file_tree / 错误日志合并展示
+            batch_extra: dict = {}
+            if group_type != 'task':
+                try:
+                    from .task_engine import get_task_engine
+                    engine = get_task_engine()
+                    group_tasks = [
+                        t for t in list(engine.tasks.values())
+                        if _resolve_group_key(t)[0] == group_key
+                    ]
+                    task_kind = info.get('task_kind') or ''
+                    # 仅对解压 / 入库类批量做聚合，其它批量保持原有 per-task 行为
+                    if task_kind in {'auto_process', 'process_existing_folder', 'extract'}:
+                        batch_extra = aggregate_import_batch_extras(task, group_tasks)
+                except Exception:
+                    logger.warning("[通知] 批量聚合业务块失败 task=%s", getattr(task, "id", "?"), exc_info=True)
+                    batch_extra = {}
+
             extra = {
                 **(auto_extra if isinstance(auto_extra, dict) else {}),
                 **(meta.get('notification_extra') or {}),
+                **(batch_extra if isinstance(batch_extra, dict) else {}),
             }
             if not isinstance(extra, dict):
                 extra = {}
