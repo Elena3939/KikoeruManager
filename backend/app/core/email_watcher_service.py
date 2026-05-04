@@ -767,6 +767,7 @@ class EmailWatcherService:
                 raise ValueError("无法解析社团 ID")
             if catalog is None:
                 catalog = db.query(CircleCatalog).filter(CircleCatalog.circle_id == circle_id).first()
+            is_new_catalog = catalog is None
             if catalog is None:
                 catalog = CircleCatalog(circle_id=circle_id)
                 db.add(catalog)
@@ -873,6 +874,7 @@ class EmailWatcherService:
                 "has_asmr_one": bool(row.has_asmr_one),
                 "has_kikoeru": bool(row.has_kikoeru),
                 "fallback_source": str(product_info_result.get("fallback_source") or ""),
+                "is_new_circle": is_new_catalog,
             }
         except Exception:
             db.rollback()
@@ -1381,18 +1383,34 @@ class EmailWatcherService:
                 maker_id=maker_id,
             )
             logger.info(
-                "[邮件监听] RJ 直入完成: %s → %s (%s)",
+                "[邮件监听] RJ 直入完成: %s → %s (%s)%s",
                 rjcode,
                 direct_result.get("circle_name") or circle_name,
                 direct_result.get("circle_id") or "",
+                "（新社团，将触发全量索引）" if direct_result.get("is_new_circle") else "",
             )
+            # 如果是首次收录的新社团，异步触发全量历史作品索引
+            if direct_result.get("is_new_circle"):
+                async def _backfill_circle_history(cname: str):
+                    try:
+                        from .circle_completion_service import get_circle_completion_service as _get_cs
+                        _cs = _get_cs()
+                        logger.info("[邮件监听] 新社团全量补档开始: %r", cname)
+                        await _cs.index_circle_catalog(cname, only_new_works=False)
+                        logger.info("[邮件监听] 新社团全量补档完成: %r", cname)
+                    except Exception as _exc:
+                        logger.warning("[邮件监听] 新社团全量补档失败: %r → %s", cname, _exc)
+                asyncio.create_task(
+                    _backfill_circle_history(str(direct_result.get("circle_name") or circle_name)),
+                    name=f"email_watcher_backfill_{circle_name[:20]}",
+                )
             try:
                 from .activity_log_service import write_activity_log
                 write_activity_log(
                     category="email_watcher",
                     action="circle_index_triggered",
                     status="success",
-                    summary=f"监视新作直入：{circle_name} · {rjcode}",
+                    summary=f"监视新作直入：{circle_name} · {rjcode}{'（新社团已触发全量补档）' if direct_result.get('is_new_circle') else ''}",
                     rjcode=rjcode,
                     detail={
                         "mode": "email_new_release_item",
