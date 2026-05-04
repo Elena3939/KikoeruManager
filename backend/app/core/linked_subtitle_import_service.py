@@ -199,7 +199,7 @@ class LinkedSubtitleImportService:
                     "reason": probe_reason,
                 }
 
-            extracted_subtitles = self._scan_source_subtitles(extracted_dir, source_root=extracted_dir)
+            extracted_subtitles = await asyncio.to_thread(self._scan_source_subtitles, extracted_dir, extracted_dir)
             if not extracted_subtitles:
                 logger.info(
                     "[字幕补配预检] 临时解包完成，但未扫描到字幕文件: source=%s extracted_dir=%s",
@@ -218,7 +218,7 @@ class LinkedSubtitleImportService:
                     continue
                 destination = os.path.join(stage_dir, *relative_path.split("/"))
                 os.makedirs(os.path.dirname(destination), exist_ok=True)
-                shutil.copy2(item.get("path") or "", destination)
+                await asyncio.to_thread(shutil.copy2, item.get("path") or "", destination)
 
             logger.info(
                 "[字幕补配预检] 临时解包扫描到字幕并已复制到工作区: source=%s extracted_dir=%s stage_dir=%s subtitle_count=%s",
@@ -227,14 +227,14 @@ class LinkedSubtitleImportService:
                 stage_dir,
                 len(extracted_subtitles),
             )
-            return stage_dir, self._scan_source_subtitles(stage_dir, source_root=stage_dir), {
+            return stage_dir, await asyncio.to_thread(self._scan_source_subtitles, stage_dir, stage_dir), {
                 "status": "ok",
                 "reason": "",
             }
         finally:
             if extracted_dir and os.path.isdir(extracted_dir):
                 logger.info("[字幕补配预检] 清理临时解包目录: %s", extracted_dir)
-                shutil.rmtree(extracted_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, extracted_dir, True)
 
     def _resolve_subtitle_source_folder(self, folder_path: str) -> Tuple[str, str]:
         source_path = Path(folder_path)
@@ -553,7 +553,8 @@ class LinkedSubtitleImportService:
                 use_filter_rules=use_filter_rules,
                 subtitle_filter_rules=subtitle_filter_rules,
             )
-            copied_items = self._copy_source_subtitles_to_workspace(
+            copied_items = await asyncio.to_thread(
+                self._copy_source_subtitles_to_workspace,
                 stage_plan.get("subtitles") or [],
                 destination_dir=local_subtitle_dir,
             )
@@ -561,7 +562,7 @@ class LinkedSubtitleImportService:
                 raise ValueError("来源中没有可供工作台处理的字幕文件")
         except Exception:
             if os.path.isdir(local_workspace_root):
-                shutil.rmtree(local_workspace_root, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, local_workspace_root, True)
                 self._cleanup_empty_workbench_shell(local_workspace_root)
             raise
 
@@ -623,7 +624,8 @@ class LinkedSubtitleImportService:
                 use_filter_rules=use_filter_rules,
                 subtitle_filter_rules=subtitle_filter_rules,
             )
-            copied_items = self._copy_source_subtitles_to_workspace(
+            copied_items = await asyncio.to_thread(
+                self._copy_source_subtitles_to_workspace,
                 stage_plan.get("subtitles") or [],
                 destination_dir=temp_subtitle_dir,
             )
@@ -677,7 +679,7 @@ class LinkedSubtitleImportService:
             }
         except Exception:
             if os.path.isdir(temp_root):
-                shutil.rmtree(temp_root, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_root, True)
             raise
 
     async def _publish_workbench_to_target(
@@ -708,7 +710,7 @@ class LinkedSubtitleImportService:
                 source_dir=workbench_subtitle_dir,
                 target_path=target_subtitle_dir,
             )
-            shutil.rmtree(workbench_root_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, workbench_root_dir, True)
             self._cleanup_empty_workbench_shell(workbench_root_dir)
             return target_subtitle_dir
 
@@ -721,24 +723,24 @@ class LinkedSubtitleImportService:
         os.makedirs(target_parent_dir, exist_ok=True)
 
         try:
-            shutil.copytree(workbench_subtitle_dir, stage_dir)
+            await asyncio.to_thread(shutil.copytree, workbench_subtitle_dir, stage_dir)
             if os.path.exists(target_subtitle_dir):
-                os.replace(target_subtitle_dir, backup_dir)
-            os.replace(stage_dir, target_subtitle_dir)
+                await asyncio.to_thread(os.replace, target_subtitle_dir, backup_dir)
+            await asyncio.to_thread(os.replace, stage_dir, target_subtitle_dir)
             if os.path.exists(backup_dir):
-                shutil.rmtree(backup_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, backup_dir, True)
         except Exception:
             if os.path.exists(stage_dir):
-                shutil.rmtree(stage_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, stage_dir, True)
             if os.path.exists(backup_dir) and not os.path.exists(target_subtitle_dir):
                 try:
-                    os.replace(backup_dir, target_subtitle_dir)
+                    await asyncio.to_thread(os.replace, backup_dir, target_subtitle_dir)
                 except Exception:
                     logger.warning("[字幕补配] 恢复本地字幕目录失败: %s -> %s", backup_dir, target_subtitle_dir, exc_info=True)
             raise
 
         try:
-            shutil.rmtree(workbench_root_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, workbench_root_dir, True)
             self._cleanup_empty_workbench_shell(workbench_root_dir)
         except Exception:
             logger.warning("[字幕补配] 清理本地工作台目录失败: %s", workbench_root_dir, exc_info=True)
@@ -2069,7 +2071,7 @@ class LinkedSubtitleImportService:
                 }
         finally:
             if temp_dir and os.path.isdir(temp_dir):
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_dir, True)
 
         task = None
         if import_result.get("success") and import_result.get("awaiting_manual_match"):

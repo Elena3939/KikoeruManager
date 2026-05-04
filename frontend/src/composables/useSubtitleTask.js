@@ -766,6 +766,44 @@ export function useSubtitleTask ({
     return Array.from(deduped.values())
   }
 
+  function isRawWorkbenchStageFile (file) {
+    return String(file?.match_type || '').trim() === 'raw_workbench_stage'
+  }
+
+  function getSubtitleRawWorkbenchStageFiles (task) {
+    return (Array.isArray(task?.written_files) ? task.written_files : []).filter(isRawWorkbenchStageFile)
+  }
+
+  function getSubtitleAppliedWrittenFiles (task) {
+    return (Array.isArray(task?.written_files) ? task.written_files : []).filter(file => !isRawWorkbenchStageFile(file))
+  }
+
+  function getSubtitleMatchedPairCount (task) {
+    if (!task) return 0
+    const manualPairs = Number(task.manual_match_applied_pairs || 0)
+    if (task.manual_match_completed) return Math.max(0, manualPairs)
+    return Math.max(
+      0,
+      Number(task.match_result?.matched_group_count || 0),
+      manualPairs
+    )
+  }
+
+  function getSubtitleUnmatchedAudioCount (task) {
+    if (!task || task.manual_match_completed) return 0
+    const matched = getSubtitleMatchedPairCount(task)
+    const explicitUnmatched = Number(task.match_result?.unmatched_audio?.length || 0)
+    const estimatedAudio = estimateSubtitleTaskAudioCount(task)
+    if (Number.isFinite(estimatedAudio) && estimatedAudio > 0) {
+      return Math.max(0, estimatedAudio - matched)
+    }
+    if (task.awaiting_manual_match) {
+      const downloaded = Number(task.downloaded_count || getSubtitleDownloadFiles(task).length || 0)
+      return Math.max(0, downloaded - matched)
+    }
+    return Math.max(0, explicitUnmatched)
+  }
+
   function getSubtitleDownloadDisplayName (file) {
     const displayName = String(file?.display_name || file?.name || '字幕文件')
     const extMatch = displayName.match(/\.[^.]+$/)
@@ -1639,6 +1677,10 @@ export function useSubtitleTask ({
     compareSubtitleWorkbenchNames,
     normalizeSubtitleDownloadKey,
     getSubtitleDownloadFiles,
+    getSubtitleRawWorkbenchStageFiles,
+    getSubtitleAppliedWrittenFiles,
+    getSubtitleMatchedPairCount,
+    getSubtitleUnmatchedAudioCount,
     getSubtitleDownloadDisplayName,
     allSubtitleDownloadsCompleted,
     isSubtitleDownloadExpanded,

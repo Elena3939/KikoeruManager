@@ -124,7 +124,7 @@
               class="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1 py-0.5 font-medium text-emerald-700"
             >
               <CheckCheck class="h-2 w-2" :stroke-width="2.4" />
-              已匹配 {{ task.manual_match_applied_pairs || 0 }}
+              已匹配 {{ ctx.getSubtitleMatchedPairCount?.(task) || 0 }}
             </span>
             <span
               v-else-if="task.awaiting_manual_match || task.status === 'awaiting_manual_match' || task.status === 'waiting_manual'"
@@ -148,14 +148,14 @@
           </span>
           <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-900">
             <FilePenLine class="h-2 w-2 text-emerald-500" :stroke-width="2.4" />
-            写入 {{ task.written_files?.length || 0 }}
+            写入 {{ ctx.getSubtitleAppliedWrittenFiles?.(task).length || 0 }}
           </span>
           <span
             v-if="task.manual_match_completed"
             class="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1 py-0.5 font-medium text-emerald-700"
           >
             <CheckCheck class="h-2 w-2" :stroke-width="2.4" />
-            已匹配 {{ task.manual_match_applied_pairs || 0 }}
+            已匹配 {{ ctx.getSubtitleMatchedPairCount?.(task) || 0 }}
           </span>
           <span
             v-if="isTaskInteractionLocked(task)"
@@ -301,7 +301,8 @@ function getTaskStatusKey(task) {
 
 function getStatusLabel(task) {
   const status = getTaskStatusKey(task)
-  if (task?.manual_match_completed || ['completed', 'manual_match_completed'].includes(status)) return '已匹配完成'
+  if (task?.manual_match_completed || status === 'manual_match_completed') return '已匹配完成'
+  if (status === 'completed') return '已完成'
   if (['processing'].includes(status)) return '执行中'
   if (['awaiting_manual_match', 'waiting_manual'].includes(status)) return '待手动配对'
   if (status === 'view_restored') return '恢复查看'
@@ -313,7 +314,7 @@ function getStatusLabel(task) {
 
 function getStatusClass(task) {
   const status = getTaskStatusKey(task)
-  if (task?.manual_match_completed || ['completed', 'manual_match_completed'].includes(status)) {
+  if (task?.manual_match_completed || status === 'manual_match_completed') {
     return 'border-emerald-200 bg-emerald-50 text-emerald-700 [animation:subtitleStatusGlow_1.6s_ease-in-out_infinite]'
   }
   if (status === 'view_restored') return 'border-violet-200 bg-violet-50 text-violet-700'
@@ -327,7 +328,7 @@ function getStatusClass(task) {
 
 function getStatusIcon(task) {
   const status = getTaskStatusKey(task)
-  if (task?.manual_match_completed || ['completed', 'manual_match_completed'].includes(status)) return CheckCircle2
+  if (task?.manual_match_completed || status === 'manual_match_completed') return CheckCircle2
   if (status === 'processing') return Loader2
   if (['awaiting_manual_match', 'waiting_manual'].includes(status)) return Link2
   if (status === 'failed') return XCircle
@@ -345,7 +346,7 @@ function getCardClass(task) {
   if (props.ctx?.isSubtitleTaskSelected?.(task)) {
     return 'border-slate-900 bg-white shadow-[0_6px_20px_rgba(15,23,42,0.1)] ring-1 ring-slate-900/15 hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
   }
-  if (task?.manual_match_completed || ['completed', 'manual_match_completed'].includes(status)) {
+  if (task?.manual_match_completed || status === 'manual_match_completed') {
     return 'border-emerald-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-emerald-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
   }
   if (status === 'view_restored') {

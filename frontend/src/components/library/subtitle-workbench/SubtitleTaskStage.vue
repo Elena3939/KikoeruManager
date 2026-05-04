@@ -248,7 +248,7 @@
                 <History class="h-2.5 w-2.5 text-violet-500" :stroke-width="2.4" />{{ ctx.isHistoryRestoredSubtitleTask(task) ? '历史恢复' : '结果回填' }}
               </span>
               <span v-if="task.manual_match_completed" class="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10.5px] font-medium text-emerald-700">
-                <CheckCheck class="h-2.5 w-2.5" :stroke-width="2.4" />已匹配 {{ task.manual_match_applied_pairs || 0 }}
+                <CheckCheck class="h-2.5 w-2.5" :stroke-width="2.4" />已匹配 {{ ctx.getSubtitleMatchedPairCount(task) || 0 }}
               </span>
               <span v-else-if="task.awaiting_manual_match" class="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-700">
                 <Hand class="h-2.5 w-2.5" :stroke-width="2.4" />待配对
@@ -265,19 +265,19 @@
                 <Download class="h-2.5 w-2.5 text-sky-500" :stroke-width="2.4" />下载 {{ task.downloaded_count || ctx.getSubtitleDownloadFiles(task).length }}
               </span>
               <span class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-900">
-                <Link2 class="h-2.5 w-2.5 text-indigo-500" :stroke-width="2.4" />匹配 {{ task.match_result?.matched_group_count || 0 }}
+                <Link2 class="h-2.5 w-2.5 text-indigo-500" :stroke-width="2.4" />匹配 {{ ctx.getSubtitleMatchedPairCount(task) || 0 }}
               </span>
               <span class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-900">
-                <FileCheck class="h-2.5 w-2.5 text-emerald-500" :stroke-width="2.4" />写入 {{ task.written_files?.length || 0 }}
+                <FileCheck class="h-2.5 w-2.5 text-emerald-500" :stroke-width="2.4" />写入 {{ ctx.getSubtitleAppliedWrittenFiles(task).length || 0 }}
               </span>
               <span v-if="isTaskInteractionLocked(task)" class="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-500">
                 <Clock class="h-2.5 w-2.5" :stroke-width="2.4" />运行锁定
               </span>
               <span v-if="task.manual_match_completed" class="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10.5px] font-medium text-emerald-700">
-                <CheckCheck class="h-2.5 w-2.5" :stroke-width="2.4" />完成 {{ task.manual_match_applied_pairs || 0 }}
+                <CheckCheck class="h-2.5 w-2.5" :stroke-width="2.4" />完成 {{ ctx.getSubtitleMatchedPairCount(task) || 0 }}
               </span>
               <span v-else class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-900">
-                <CircleSlash class="h-2.5 w-2.5 text-rose-400" :stroke-width="2.4" />未配 {{ task.match_result?.unmatched_audio?.length || 0 }}
+                <CircleSlash class="h-2.5 w-2.5 text-rose-400" :stroke-width="2.4" />未配 {{ ctx.getSubtitleUnmatchedAudioCount(task) || 0 }}
               </span>
             </template>
           </div>
@@ -641,7 +641,7 @@ function getTaskMetaChips(task) {
   if (task?.manual_match_completed) {
     chips.push({
       key: 'manual-done',
-      label: `已匹配 ${task.manual_match_applied_pairs || 0}`,
+      label: `已匹配 ${props.ctx?.getSubtitleMatchedPairCount?.(task) || 0}`,
       icon: CheckCircle2,
       class: 'border-emerald-200 bg-emerald-50 text-emerald-700'
     })

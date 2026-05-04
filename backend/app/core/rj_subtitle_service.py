@@ -1695,7 +1695,7 @@ class RJSubtitleService:
         subtitle_dir = str(subtitle_path)
         deleted_subtitles = self._count_existing_subtitles(folder)
         if subtitle_path.exists():
-            shutil.rmtree(subtitle_path)
+            await asyncio.to_thread(shutil.rmtree, subtitle_path)
         return {
             'subtitle_dir': subtitle_dir,
             'deleted_subtitles': deleted_subtitles,
@@ -1937,7 +1937,7 @@ class RJSubtitleService:
                     progress = 84 + int(completed_uploads / max(upload_count, 1) * 14)
                     progress_callback(progress, f"上传字幕: {output_name}")
                 try:
-                    shutil.copy2(w_item['path'], staged_path)
+                    await asyncio.to_thread(shutil.copy2, w_item['path'], staged_path)
                     await client.upload_file(subtitle_dir, staged_path, overwrite=True, remote_name=temp_remote_name)
                     if overwrite and output_name in existing_names:
                         try:
@@ -2163,7 +2163,7 @@ class RJSubtitleService:
             }
         finally:
             if temp_dir and os.path.isdir(temp_dir):
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_dir, True)
 
     async def _write_remote_subtitles(
         self,
@@ -2242,7 +2242,7 @@ class RJSubtitleService:
                     progress = 95 + int(completed_uploads / max(upload_count, 1) * 3)
                     progress_callback(progress, f"回写远程 subtitles: {output_name}")
                 try:
-                    shutil.copy2(match['subtitle_path'], staged_path)
+                    await asyncio.to_thread(shutil.copy2, match['subtitle_path'], staged_path)
                     logger.info('[RJ字幕] 开始回写远程字幕 %s 临时名=%s', output_name, temp_remote_name)
                     await client.upload_file(subtitle_dir, staged_path, overwrite=True, remote_name=temp_remote_name)
                     if overwrite and output_name in existing_names:
@@ -2551,7 +2551,7 @@ class RJSubtitleService:
                 'error': None if success else '未能匹配并写入任何字幕文件',
             }
         finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, True)
 
     async def process_folder(
         self,
@@ -2797,7 +2797,7 @@ class RJSubtitleService:
                 'error': None if success else '未能匹配并写入任何字幕文件',
             }
         finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, True)
 
 
 _rj_subtitle_service: Optional[RJSubtitleService] = None

@@ -2183,6 +2183,37 @@ const subtitleWorkbenchContextMode = ref('pairing')
 const subtitleWorkbenchDrawerCollapsed = ref(false)
 const subtitleTaskManualFilter = ref('all')
 
+// 切换当前任务时自动拉取字幕目录快照；之前只有 refreshTaskStatus(inspect:true)
+// 会触发 inspect，导致用户从任务队列里点另一条任务后，"筛选与配对" / "字幕文件树"
+// 两个 stage 里的音频 / 字幕列表为空、看起来像"配对列表显示不出来"。
+watch(() => activeTask.value?.id, async (taskId) => {
+  if (!taskId || !props.visible) return
+  const task = activeTask.value
+  if (!task?.subtitle_dir) {
+    clearSubtitleInspectorState()
+    return
+  }
+  if (subtitleInspectorInfo.value.taskId === taskId
+      && subtitleInspectorInfo.value.subtitleDir === task.subtitle_dir
+      && subtitleInspectorItems.value.length) {
+    return
+  }
+  await inspectSubtitleTask(task)
+})
+
+// 切到 "筛选与配对" / "字幕文件树" stage 时兜底再 inspect 一次，
+// 避免 overview 阶段打开工作台后、没自动 inspect 过就切 tab 导致列表空。
+watch(activeSubtitleWorkbenchStage, async (stage) => {
+  if (stage !== 'pairing' && stage !== 'tree') return
+  const task = activeTask.value
+  if (!task?.subtitle_dir) return
+  if (subtitleInspectorInfo.value.taskId === task.id
+      && subtitleInspectorItems.value.length) {
+    return
+  }
+  await inspectSubtitleTask(task)
+})
+
 const subtitleClearableTaskCounts = computed(() => ({
   all: linkedTasks.value.filter(task => canClearTask(task)).length,
   completed: linkedTasks.value.filter(task => isCompletedTask(task)).length,
