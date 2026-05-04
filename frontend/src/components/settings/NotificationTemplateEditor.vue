@@ -988,7 +988,7 @@ function beautifyHtml(html) {
   if (!source) return ''
 
   // eslint-disable-next-line no-useless-escape
-  const HTML_TOKEN_RE = new RegExp('<!--[\\s\\S]*?-->|<[^>]+>|[^<]+', 'g')
+  const HTML_TOKEN_RE = new RegExp('\x3c!--[\\s\\S]*?--\x3e|\x3c[^\x3e]+\x3e|[^\x3c]+', 'g')
   const tokens = source.match(HTML_TOKEN_RE) || []
   const voidTagRe = /^<\s*(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\b/i
   const closeTagRe = /^<\s*\//
@@ -1015,7 +1015,7 @@ function beautifyHtml(html) {
     const isOpen = openTagRe.test(token)
     const isVoid = voidTagRe.test(token)
     const isSelfClose = selfCloseRe.test(token)
-    const isComment = /^<!--/.test(token)
+    const isComment = new RegExp('^\x3c!--').test(token)
 
     if (isClose) depth = Math.max(depth - 1, 0)
     if (isOpen && !isClose && !isComment) {
@@ -1078,7 +1078,7 @@ function buildHighlightedHtml(html) {
   const input = String(html || '')
   if (!input) return '<span class="tpl-code-token-text"></span>'
   // eslint-disable-next-line no-useless-escape
-  const HTML_TOKEN_RE = new RegExp('<!--[\\s\\S]*?-->|<[^>]+>|[^<]+', 'g')
+  const HTML_TOKEN_RE = new RegExp('\x3c!--[\\s\\S]*?--\x3e|\x3c[^\x3e]+\x3e|[^\x3c]+', 'g')
   const tokens = input.match(HTML_TOKEN_RE) || []
   return tokens.map((token) => {
     if (token.startsWith('<!--')) {
