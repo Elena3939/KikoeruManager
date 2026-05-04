@@ -364,9 +364,9 @@ def _build_new_release_email_card_html(circle_name: str, items: List[Dict[str, o
             badges.append('<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 8px;border-radius:7px;background:#dbeafe;color:#1d4ed8;font-size:12px;font-weight:700;">服务器已有</span>')
 
         image_cell = (
-            f'<img src="{image_url}" alt="{title}" width="520" style="display:block;width:100%;max-width:520px;height:auto;border-radius:12px;border:1px solid rgba(148,163,184,.25);object-fit:cover;">'
+            f'<img src="{image_url}" alt="{title}" style="display:block;width:100%;height:auto;border-radius:12px;border:1px solid rgba(148,163,184,.25);object-fit:cover;">'
             if image_url
-            else '<div style="width:100%;max-width:520px;height:180px;border-radius:12px;background:#1f2937;color:#94a3b8;font-size:13px;font-weight:700;text-align:center;line-height:180px;">No Cover</div>'
+            else '<div style="width:100%;height:180px;border-radius:12px;background:#1f2937;color:#94a3b8;font-size:13px;font-weight:700;text-align:center;line-height:180px;">No Cover</div>'
         )
         title_html = f'<a href="{product_url}" style="color:#f8fafc;text-decoration:none;" target="_blank">{title}</a>' if product_url else title
         relation = f'<div style="margin-top:7px;color:#94a3b8;font-size:12px;font-weight:700;">{canonical} → {display}</div>' if canonical and display and canonical != display else ""
@@ -1294,30 +1294,22 @@ class EmailWatcherService:
                 from .activity_log_service import write_activity_log as _wal
             except ImportError:
                 _wal = None
-        if _wal:
-            if triggered > 0:
-                circle_names = [
-                    str(item.get("circle_name") or "").strip()
-                    for item in unique_items
-                    if str(item.get("circle_name") or "").strip()
-                ]
-                unique_circles = list(dict.fromkeys(circle_names))
-                summary = (
-                    f"监视新作：发现 {diag['unseen_total']} 封未读，"
-                    f"识别新作 {triggered} 个，涉及社团 {len(unique_circles)} 个"
-                )
-                status = "success"
-            elif diag["unseen_total"] == 0:
-                summary = f"监视新作：无未读邮件（sender_filter={config.email_watcher.sender_filter}）"
-                status = "info"
-            else:
-                summary = f"监视新作：未读 {diag['unseen_total']} 封，匹配 {diag['matched_mails']} 封，无可识别新作"
-                status = "info"
+        if _wal and triggered > 0:
+            circle_names = [
+                str(item.get("circle_name") or "").strip()
+                for item in unique_items
+                if str(item.get("circle_name") or "").strip()
+            ]
+            unique_circles = list(dict.fromkeys(circle_names))
+            summary = (
+                f"监视新作：发现 {diag['unseen_total']} 封未读，"
+                f"识别新作 {triggered} 个，涉及社团 {len(unique_circles)} 个"
+            )
             try:
                 _wal(
                     category="email_watcher",
                     action="fetch_check",
-                    status=status,
+                    status="success",
                     summary=summary,
                     detail={
                         "mode": "email_new_release_batch",
