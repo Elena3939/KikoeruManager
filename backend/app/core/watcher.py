@@ -258,7 +258,7 @@ class FolderWatcher:
                         try:
                             # 检查文件是否还存在（可能已被归档移动）
                             if os.path.exists(task.source_path):
-                                os.remove(task.source_path)
+                                await asyncio.to_thread(os.remove, task.source_path)
                                 logger.info(f"已删除原文件: {task.source_path}")
                         except Exception as e:
                             logger.warning(f"删除原文件失败: {task.source_path}, {e}")

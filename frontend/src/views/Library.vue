@@ -304,7 +304,7 @@
 
 
 
-      <div v-if="!selectedRows.length" class="lib-path-toolbar">
+      <div v-if="!selectedRowPaths.size" class="lib-path-toolbar">
 
         <div class="lib-path-left">
 
@@ -462,7 +462,7 @@
 
       <transition name="lib-batch-slide">
 
-        <div v-if="selectedRows.length" class="lib-batch-bar">
+        <div v-if="selectedRowPaths.size" class="lib-batch-bar">
 
           <div class="lib-batch-info">
 
@@ -470,7 +470,7 @@
 
               <IconCheckSquare :size="14" :stroke-width="2.4" />
 
-              <span>已选 <b>{{ selectedRows.length }}</b> 项</span>
+              <span>已选 <b>{{ selectedRowPaths.size }}</b> 项</span>
 
             </div>
 
@@ -530,7 +530,8 @@
 
               type="button"
 
-              class="lib-btn lib-btn-icon-tinted"
+
+              :class="['lib-btn lib-btn-icon-tinted lib-icon-compute-size lib-batch-action-btn', { 'is-executing': batchComputingSize }]"
 
               :disabled="batchComputingSize || !selectedDirectoryRows.length"
 
@@ -550,7 +551,7 @@
 
               type="button"
 
-              class="lib-btn lib-btn-icon-tinted lib-icon-batch-delete"
+              :class="['lib-btn lib-btn-icon-tinted lib-icon-batch-delete lib-batch-action-btn', { 'is-executing': batchDeleting }]"
 
               :disabled="!isWritableCurrentLibrary || batchDeleting"
 
@@ -568,7 +569,7 @@
 
               type="button"
 
-              class="lib-btn lib-btn-icon-tinted lib-icon-api-rename"
+              :class="['lib-btn lib-btn-icon-tinted lib-icon-api-rename lib-batch-action-btn', { 'is-executing': batchRenaming }]"
 
               :disabled="!selectedApiRenameRows.length || apiRenameBusy"
 
@@ -971,9 +972,9 @@
 
               type="button"
 
-              class="subtitle-workbench-btn subtitle-workbench-btn-close group inline-flex items-center gap-1.5 rounded-[10px] border border-rose-200/70 bg-rose-50/70 px-3.5 py-2 text-[12.5px] font-medium text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 hover:shadow-[0_8px_16px_rgba(225,29,72,0.16)] active:translate-y-0 active:scale-[0.96]"
+              class="subtitle-workbench-btn subtitle-workbench-btn-close group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200/70 bg-slate-50/70 px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 hover:shadow-[0_8px_16px_rgba(0,0,0,0.08)] active:translate-y-0 active:scale-[0.96]"
 
-              @click="closeSubtitleTaskPanel"
+              @click="hideSubtitleTaskPanelToBackground"
 
             >
 
@@ -1159,7 +1160,7 @@
 
       <div class="flex items-center justify-end gap-2 pt-0.5">
 
-        <button type="button" class="floating-action-btn" @click="closeSubtitleTaskPanel">关闭</button>
+        <button type="button" class="floating-action-btn" @click="dismissSubtitleBackground">关闭</button>
 
         <button type="button" class="floating-action-btn floating-action-btn-emerald" @click="resumeSubtitleTaskPanelFromBackground">
 
@@ -1425,6 +1426,8 @@ const sortOrder = ref(DEFAULT_SORT_ORDER)
 
 const selectedRows = ref([])
 
+const selectedRowPaths = ref(new Set())
+
 const batchDeleting = ref(false)
 
 const batchComputingSize = ref(false)
@@ -1440,6 +1443,8 @@ const filterDeleteDialogRef = ref(null)
 const folderDialogRef = ref(null)
 
 const suppressSortChange = ref(false)
+
+const suppressSelectionChange = ref(false)
 
 const apiRenamingId = ref(null)
 
@@ -5065,6 +5070,12 @@ async function refreshLibrary (options = {}) {
 
   if (!selectedLibraryId.value) return
 
+  const prevSelectedPaths = new Set(selectedRowPaths.value)
+
+  if (prevSelectedPaths.size) {
+    suppressSelectionChange.value = true
+  }
+
   clearListPoll()
 
   if (silent) listPolling.value = true
@@ -5163,11 +5174,35 @@ async function refreshLibrary (options = {}) {
 
     await applyTableSortIndicator()
 
+    await nextTick()
+
+    if (prevSelectedPaths.size) {
+      try {
+        files.value.forEach(row => {
+          if (row?.path && prevSelectedPaths.has(row.path)) {
+            tableRef.value?.toggleRowSelection(row, true)
+          }
+        })
+        selectedRows.value = files.value.filter(row => row?.path && prevSelectedPaths.has(row.path))
+        selectedRowPaths.value = new Set(selectedRows.value.map(row => row.path).filter(Boolean))
+      } finally {
+        await nextTick()
+      }
+    } else {
+      selectedRows.value = []
+      selectedRowPaths.value = new Set()
+    }
+
   } catch (error) {
 
     ElMessage.error(error.response?.data?.detail || error.message || '获取库存文件失败')
 
   } finally {
+
+    if (suppressSelectionChange.value) {
+      await nextTick()
+      suppressSelectionChange.value = false
+    }
 
     if (silent) listPolling.value = false
 
@@ -5255,7 +5290,11 @@ async function handleSortChange ({ prop, order }) {
 
 function handleSelectionChange (selection) {
 
+  if (suppressSelectionChange.value) return
+
   selectedRows.value = Array.isArray(selection) ? selection : []
+
+  selectedRowPaths.value = new Set(selectedRows.value.map(row => row?.path).filter(Boolean))
 
 }
 
@@ -5499,6 +5538,8 @@ function clearSelection () {
   tableRef.value?.clearSelection()
 
   selectedRows.value = []
+
+  selectedRowPaths.value = new Set()
 
 }
 
@@ -7629,6 +7670,16 @@ function hideSubtitleTaskPanelToBackground () {
   subtitleDialogBackgroundActive.value = true
 
   subtitleDialogVisible.value = false
+
+}
+
+
+
+function dismissSubtitleBackground () {
+
+  // 只收掉浮动片，不取消、不删除任务；任务继续在后台保持
+
+  subtitleDialogBackgroundActive.value = false
 
 }
 
@@ -14762,21 +14813,23 @@ function statsStatusTextDisplay (stats) {
 
   color: #334155;
 
-  background: #fff;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
 
-  border-color: rgba(203, 213, 225, 0.7);
+  border-color: rgba(226, 232, 240, 0.78);
+
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.95) inset, 0 5px 14px rgba(15, 23, 42, 0.045);
 
 }
 
 .lib-btn-icon-tinted:hover:not(:disabled) {
 
-  background: #fff;
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(255, 255, 255, 0.96));
 
-  color: #0f172a;
+  color: #1e293b;
 
-  border-color: rgba(148, 163, 184, 0.9);
+  border-color: rgba(191, 219, 254, 0.92);
 
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.1);
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.12), 0 1px 0 rgba(255, 255, 255, 0.96) inset;
 
 }
 
@@ -14788,25 +14841,75 @@ function statsStatusTextDisplay (stats) {
 
 /* 每个类型不同的图标颜色 */
 
-.lib-btn-icon-tinted.lib-icon-refresh svg { color: #3b82f6; }
+.lib-btn-icon-tinted svg { color: #4f46e5; }
 
-.lib-btn-icon-tinted.lib-icon-stats svg { color: #8b5cf6; }
-
-.lib-btn-icon-tinted.lib-icon-select svg { color: #0891b2; }
-
-.lib-btn-icon-tinted.lib-icon-subtitle svg { color: #059669; }
-
-.lib-btn-icon-tinted.lib-icon-filter-delete svg { color: #e11d48; }
-
-.lib-btn-icon-tinted.lib-icon-task-panel svg { color: #f59e0b; }
-
-.lib-btn-icon-tinted.lib-icon-upload svg { color: #6366f1; }
-
+.lib-btn-icon-tinted.lib-icon-refresh svg { color: #2563eb; }
+.lib-btn-icon-tinted.lib-icon-stats svg { color: #4f46e5; }
+.lib-btn-icon-tinted.lib-icon-select svg { color: #0f766e; }
+.lib-btn-icon-tinted.lib-icon-subtitle svg,
 .lib-btn-icon-tinted.lib-icon-subtitle-batch svg { color: #059669; }
-
+.lib-btn-icon-tinted.lib-icon-filter-delete svg { color: #d97706; }
+.lib-btn-icon-tinted.lib-icon-task-panel svg { color: #7c3aed; }
+.lib-btn-icon-tinted.lib-icon-upload svg { color: #0284c7; }
+.lib-btn-icon-tinted.lib-icon-compute-size svg { color: #0ea5e9; }
 .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48; }
+.lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed; }
 
-.lib-btn-icon-tinted.lib-icon-api-rename svg { color: #f59e0b; }
+.lib-batch-action-btn {
+
+  position: relative;
+
+  overflow: hidden;
+
+}
+
+.lib-batch-action-btn.is-executing {
+
+  color: #312e81;
+
+  border-color: rgba(165, 180, 252, 0.9);
+
+  background:
+    linear-gradient(135deg, rgba(238, 242, 255, 0.98), rgba(255, 255, 255, 0.94)),
+    linear-gradient(90deg, rgba(99, 102, 241, 0), rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0));
+
+  box-shadow: 0 10px 26px rgba(79, 70, 229, 0.16), 0 1px 0 rgba(255, 255, 255, 0.95) inset;
+
+}
+
+.lib-batch-action-btn.is-executing::before {
+
+  content: "";
+
+  position: absolute;
+
+  inset: 0;
+
+  transform: translateX(-120%);
+
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+
+  animation: library-row-operating-sweep 1.35s ease-in-out infinite;
+
+  pointer-events: none;
+
+}
+
+.lib-batch-action-btn.is-executing svg {
+
+  color: #4338ca;
+
+  animation: library-row-operating-pulse 0.95s ease-in-out infinite;
+
+}
+
+.lib-batch-action-btn.is-executing .lib-badge {
+
+  color: #3730a3;
+
+  background: rgba(199, 210, 254, 0.72);
+
+}
 
 
 
@@ -16190,43 +16293,34 @@ function statsStatusTextDisplay (stats) {
 
 :deep(.el-table .library-row-context-active > td.el-table__cell) { background: #f1f5f9 !important; }
 
+:deep(.el-table .library-row-operating) {
+  background:
+    linear-gradient(
+      105deg,
+      rgba(239, 246, 255, 0.98) 0%,
+      rgba(219, 234, 254, 0.92) 24%,
+      rgba(96, 165, 250, 0.5) 42%,
+      rgba(191, 219, 254, 0.86) 58%,
+      rgba(147, 197, 253, 0.42) 72%,
+      rgba(239, 246, 255, 0.98) 100%
+    ) !important;
+  background-size: 300% 100%;
+  animation: library-row-operating-flow 1.25s linear infinite;
+}
+
 :deep(.el-table .library-row-operating > td.el-table__cell) {
   position: relative;
   overflow: hidden;
-  background:
-    linear-gradient(90deg, rgba(37, 99, 235, 0.08), rgba(20, 184, 166, 0.08)),
-    #f8fbff !important;
+  background: transparent !important;
 }
 
-:deep(.el-table .library-row-operating > td.el-table__cell:first-child::before) {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  content: '';
-  background: linear-gradient(180deg, #2563eb, #14b8a6);
-  box-shadow: 0 0 16px rgba(37, 99, 235, 0.36);
-}
-
-:deep(.el-table .library-row-operating > td.el-table__cell:first-child::after) {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  content: '';
-  background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.7) 45%, transparent 72%);
-  animation: library-row-operating-sweep 1.25s ease-in-out infinite;
+:deep(.el-table .library-row-operating > td.el-table__cell > .cell) {
+  position: relative;
+  z-index: 1;
 }
 
 :deep(.el-table .library-row-operating .file-icon-shell) {
   position: relative;
-}
-
-:deep(.el-table .library-row-operating .file-icon-shell::after) {
-  position: absolute;
-  inset: -3px;
-  border: 1px solid rgba(37, 99, 235, 0.28);
-  border-radius: 999px;
-  content: '';
-  animation: library-row-operating-pulse 1.1s ease-in-out infinite;
 }
 
 :deep(.el-table .library-row-operating .file-icon) {
@@ -16240,8 +16334,13 @@ function statsStatusTextDisplay (stats) {
   100% { transform: translateX(120%); opacity: 0; }
 }
 
+@keyframes library-row-operating-flow {
+  0% { background-position: 0% 0; }
+  100% { background-position: 300% 0; }
+}
+
 @keyframes library-row-operating-pulse {
-  0%, 100% { opacity: 0.45; transform: scale(0.94); }
+  0%, 100% { opacity: 0.72; transform: scale(1); }
   50% { opacity: 1; transform: scale(1.08); }
 }
 

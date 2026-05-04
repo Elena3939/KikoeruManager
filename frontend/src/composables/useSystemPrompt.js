@@ -59,12 +59,23 @@ function normalizeOptions(mode, options = {}) {
   }
 }
 
+function shouldSuppressAlert(mode, options = {}) {
+  if (mode !== 'alert') return false
+  const title = String(options.title || '').trim()
+  const eventType = String(options.eventType || options.event_type || '').trim()
+  if (eventType === 'email_watcher_new_release') return true
+  return title === '新作索引完成' || title === '新作索引失败'
+}
+
 function flushQueue() {
   if (state.current || !state.queue.length) return
   state.current = state.queue.shift() || null
 }
 
 function enqueue(mode, options = {}) {
+  if (shouldSuppressAlert(mode, options)) {
+    return Promise.resolve(null)
+  }
   return new Promise((resolve, reject) => {
     state.sequence += 1
     state.queue.push({

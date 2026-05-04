@@ -217,6 +217,27 @@ class TaskEngine:
         if rjcode in self._processing_rjcodes:
             self._processing_rjcodes.discard(rjcode)
             logger.info(f"取消标记RJ号: {rjcode}")
+
+    def _release_non_running_slots(self):
+        """释放等待人工/已结束任务误占的并发槽。"""
+        releasable_statuses = {
+            TaskStatus.WAITING_MANUAL,
+            TaskStatus.WAITING_RETRY,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.PAUSED,
+        }
+        for task_id in list(self.processing):
+            task = self.tasks.get(task_id)
+            if task is None or task.status in releasable_statuses:
+                self.processing.discard(task_id)
+                if task and task.rjcode:
+                    self.unmark_rjcode_processing(task.rjcode)
+                logger.info(
+                    "释放非运行任务占用的并发槽: task_id=%s status=%s",
+                    task_id,
+                    getattr(task, "status", "missing"),
+                )
     
     def add_progress_callback(self, callback: Callable):
         """添加进度回调"""
@@ -300,6 +321,18 @@ class TaskEngine:
                 "source_label": metadata.get("source_label") or fallback_label,
                 "business_key": metadata.get("business_key") or metadata.get("rjcode") or task.id,
             }
+        )
+
+    def _should_skip_conflict_retry_precheck(self, task: Task) -> bool:
+        """问题作品发起的重试不再被普通重复预检打回问题队列。"""
+        metadata = dict(task.task_metadata or {})
+        action = str(metadata.get("conflict_resolution_action") or "").strip().upper()
+        return bool(
+            metadata.get("skip_retry_precheck")
+            or metadata.get("retry_from_conflicts")
+            or metadata.get("retry_conflict_id")
+            or metadata.get("manual_retry_password_requested")
+            or action == "RETRY"
         )
 
     def persist_task_snapshot(self, task: Task) -> None:
@@ -873,7 +906,7 @@ class TaskEngine:
                 filter_service = FilterService()
                 metadata_service = MetadataService()
                 classifier = SmartClassifier()
-                skip_retry_precheck = bool((task.task_metadata or {}).get("skip_retry_precheck"))
+                skip_retry_precheck = self._should_skip_conflict_retry_precheck(task)
 
                 # 步骤0: 预检（先字幕补配，再普通查重）
                 if skip_retry_precheck:
@@ -1233,7 +1266,10 @@ class TaskEngine:
                 rjcode = self._extract_rjcode(existing_folder_path)
                 logger.debug(f"[{rjcode}] 提取到的RJ号: {rjcode}")
                 resolution_mode = str((task.task_metadata or {}).get('existing_folder_resolution') or '').strip().upper()
-                if resolution_mode in {"KEEP_NEW", "MERGE"}:
+                skip_conflict_retry_precheck = self._should_skip_conflict_retry_precheck(task)
+                if skip_conflict_retry_precheck:
+                    logger.info(f"[{rjcode}] 问题作品重试任务，跳过重复预检")
+                elif resolution_mode in {"KEEP_NEW", "MERGE"}:
                     logger.info(f"[{rjcode}] 已指定冲突处理方案 {resolution_mode}，跳过重复预检")
                 elif config.process_existing.check_duplicate and rjcode and task.auto_classify:
                     from .duplicate_service import get_duplicate_service
@@ -1535,9 +1571,19 @@ class TaskEngine:
             try:
                 # 控制并发数
                 while len(self.processing) >= self.max_concurrent:
+                    self._release_non_running_slots()
+                    if len(self.processing) < self.max_concurrent:
+                        break
                     await asyncio.sleep(0.1)
                 
                 task = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+                if task.status != TaskStatus.PENDING:
+                    logger.info(
+                        "跳过非待处理队列项，避免占用并发槽: task_id=%s status=%s",
+                        task.id,
+                        task.status,
+                    )
+                    continue
                 self.processing.add(task.id)
                 
                 # 创建任务处理协程
@@ -1776,6 +1822,16 @@ class TaskEngine:
                 task.current_step = message
             if status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
                 task.completed_at = datetime.now()
+            if status in {
+                TaskStatus.WAITING_MANUAL,
+                TaskStatus.WAITING_RETRY,
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.PAUSED,
+            }:
+                self.processing.discard(task.id)
+                if task.rjcode:
+                    self.unmark_rjcode_processing(task.rjcode)
             logger.info(f"任务 {task_id} 状态更新为: {status.value}")
             return True
         return False
@@ -2033,7 +2089,7 @@ class TaskEngine:
         # 1. 清理 output_path（如果已设置）- 只针对失败的任务
         if task.status == TaskStatus.FAILED and task.output_path and os.path.exists(task.output_path):
             try:
-                shutil.rmtree(task.output_path)
+                await asyncio.to_thread(shutil.rmtree, task.output_path)
                 cleaned_paths.append(task.output_path)
                 logger.info(f"清理失败任务缓存: {task.output_path}")
             except Exception as e:
@@ -2057,7 +2113,7 @@ class TaskEngine:
                 path = os.path.join(temp_path, name)
                 if os.path.exists(path) and path not in cleaned_paths:
                     try:
-                        shutil.rmtree(path)
+                        await asyncio.to_thread(shutil.rmtree, path)
                         cleaned_paths.append(path)
                         logger.info(f"清理残留目录: {path}")
                     except Exception as e:
@@ -2073,7 +2129,7 @@ class TaskEngine:
                 
                 if os.path.exists(potential_path) and potential_path not in cleaned_paths:
                     try:
-                        shutil.rmtree(potential_path)
+                        await asyncio.to_thread(shutil.rmtree, potential_path)
                         logger.info(f"清理解压失败残留: {potential_path}")
                     except Exception as e:
                         logger.warning(f"清理解压失败残留失败: {potential_path}, {e}")
@@ -2083,7 +2139,7 @@ class TaskEngine:
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
-                shutil.move(source_path, dest_path)
+                await asyncio.to_thread(shutil.move, source_path, dest_path)
                 return
             except FileNotFoundError:
                 raise
@@ -2660,7 +2716,7 @@ class TaskEngine:
                     final_path = os.path.join(library_path, f"{os.path.basename(renamed_path)}_{counter}")
                     counter += 1
 
-                shutil.move(renamed_path, final_path)
+                await asyncio.to_thread(shutil.move, renamed_path, final_path)
                 task.output_path = final_path
                 logger.info(f"[{rjcode}] 移动到: {final_path}")
 
@@ -2684,7 +2740,7 @@ class TaskEngine:
                         dest_subtitle_path = os.path.join(finished_dir, f"{subtitle_folder_name}_{counter}")
                         counter += 1
 
-                    shutil.move(subtitle_folder, dest_subtitle_path)
+                    await asyncio.to_thread(shutil.move, subtitle_folder, dest_subtitle_path)
                     logger.info(f"[{rjcode}] 字幕文件夹已移动到: {dest_subtitle_path}")
                     task.task_metadata['subtitle_moved_to'] = dest_subtitle_path
 
@@ -2705,7 +2761,7 @@ class TaskEngine:
             # 清理临时文件
             if 'download_dir' in locals() and os.path.exists(download_dir):
                 try:
-                    shutil.rmtree(download_dir)
+                    await asyncio.to_thread(shutil.rmtree, download_dir)
                     logger.info(f"[{rjcode}] 清理临时目录: {download_dir}")
                 except Exception as cleanup_error:
                     logger.warning(f"[{rjcode}] 清理临时目录失败: {cleanup_error}")
