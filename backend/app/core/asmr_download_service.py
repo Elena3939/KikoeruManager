@@ -639,7 +639,7 @@ class ASMRDownloadService:
                                 return True
                             elif existing_size > 0:
                                 # 文件存在但不完整，重命名并续传
-                                os.rename(dest_path, temp_path)
+                                await asyncio.to_thread(os.rename, dest_path, temp_path)
                                 resume_offset = existing_size
                                 logger.info(f"[下载] 文件不完整({existing_size}/{remote_size})，续传: {os.path.basename(dest_path)}")
                                 push_log(f"{os.path.basename(dest_path)} 文件不完整，准备续传 {existing_size}/{remote_size}")
@@ -667,7 +667,7 @@ class ASMRDownloadService:
                             logger.warning(f"[下载] 续传响应缺少有效 Content-Range，回退全量重下: {os.path.basename(dest_path)}, content-range={content_range}")
                             push_log(f"{os.path.basename(dest_path)} 续传响应无效，回退全量重下", "warning")
                             if os.path.exists(temp_path):
-                                os.remove(temp_path)
+                                await asyncio.to_thread(os.remove, temp_path)
                             await asyncio.sleep(1)
                             continue
 
@@ -687,7 +687,7 @@ class ASMRDownloadService:
                                 "warning",
                             )
                             if os.path.exists(temp_path):
-                                os.remove(temp_path)
+                                await asyncio.to_thread(os.remove, temp_path)
                             await asyncio.sleep(1)
                             continue
 
@@ -703,7 +703,7 @@ class ASMRDownloadService:
                                 "warning",
                             )
                             if os.path.exists(temp_path):
-                                os.remove(temp_path)
+                                await asyncio.to_thread(os.remove, temp_path)
                             await asyncio.sleep(1)
                             continue
 
@@ -716,7 +716,7 @@ class ASMRDownloadService:
                         total_size = int(response.headers.get('content-length', 0))
                         downloaded = 0
                         if os.path.exists(temp_path):
-                            os.remove(temp_path)
+                            await asyncio.to_thread(os.remove, temp_path)
                         logger.info(f"[下载] 服务器不支持断点续传，重新下载")
                         push_log(f"{os.path.basename(dest_path)} 源站已响应，但不支持断点续传，准备重新下载")
                     elif response.status != 200:
@@ -793,8 +793,8 @@ class ASMRDownloadService:
                             continue
 
                         if os.path.exists(dest_path):
-                            os.remove(dest_path)
-                        os.rename(temp_path, dest_path)
+                            await asyncio.to_thread(os.remove, dest_path)
+                        await asyncio.to_thread(os.rename, temp_path, dest_path)
 
                     logger.info(f"下载完成: {dest_path} ({downloaded} bytes)")
                     push_log(f"{os.path.basename(dest_path)} 下载完成", "success")

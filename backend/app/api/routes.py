@@ -2077,7 +2077,10 @@ async def get_conflicts(include_stats: bool = False):
 
         linked_task = engine.get_task(normalized_task_id)
         if linked_task is not None:
-            return str(getattr(linked_task, "status", "") or "").strip().lower()
+            linked_status = getattr(linked_task, "status", "")
+            if isinstance(linked_status, TaskStatus):
+                return linked_status.value
+            return str(linked_status or "").strip().lower()
 
         db_task = db.query(TaskRecord.status).filter(TaskRecord.id == normalized_task_id).first()
         return str((db_task[0] if db_task else "") or "").strip().lower()
@@ -2350,6 +2353,9 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             existing_task.task_metadata["retry_conflict_id"] = conflict.id
             existing_task.task_metadata["retry_conflict_source_path"] = source_path
             existing_task.task_metadata["retry_conflict_type"] = conflict.conflict_type
+            existing_task.task_metadata["retry_from_conflicts"] = True
+            existing_task.task_metadata["conflict_resolution_conflict_id"] = conflict.id
+            existing_task.task_metadata["conflict_resolution_action"] = "RETRY"
             if conflict.conflict_type == "EXTRACT_FAILED":
                 existing_task.task_metadata["skip_retry_precheck"] = True
             if specified_password:

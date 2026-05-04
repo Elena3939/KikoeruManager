@@ -466,13 +466,14 @@ class MetadataService:
         url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={rjcode}&locale={self.config.metadata.locale}"
         
         try:
-            response = self.session.get(
+            response = await asyncio.to_thread(
+                self.session.get,
                 url,
-                timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout)
+                timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout),
             )
-            response.raise_for_status()
-            
-            data = response.json()
+            await asyncio.to_thread(response.raise_for_status)
+
+            data = await asyncio.to_thread(response.json)
             if not data or len(data) == 0:
                 raise Exception(f"作品未找到: {rjcode}")
             
@@ -587,13 +588,14 @@ class MetadataService:
         logger.info(f"[{rjcode}] 调用翻译标题 API: {url}")
         
         try:
-            response = self.session.get(
+            response = await asyncio.to_thread(
+                self.session.get,
                 url,
-                timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout)
+                timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout),
             )
-            response.raise_for_status()
-            
-            data = response.json()
+            await asyncio.to_thread(response.raise_for_status)
+
+            data = await asyncio.to_thread(response.json)
             if data and len(data) > 0:
                 title = data[0].get('work_name')
                 if title:
@@ -636,13 +638,14 @@ class MetadataService:
         logger.info(f"[{rjcode}] 获取日文元数据: {url}")
 
         try:
-            response = self.session.get(
+            response = await asyncio.to_thread(
+                self.session.get,
                 url,
-                timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout)
+                timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout),
             )
-            response.raise_for_status()
+            await asyncio.to_thread(response.raise_for_status)
 
-            data = response.json()
+            data = await asyncio.to_thread(response.json)
             if not data or len(data) == 0:
                 logger.warning(f"[{rjcode}] 未找到日文元数据")
                 return None
@@ -667,13 +670,14 @@ class MetadataService:
                 logger.info(f"[{original_workno}] 获取原作日文元数据: {original_url}")
 
                 try:
-                    original_response = self.session.get(
+                    original_response = await asyncio.to_thread(
+                        self.session.get,
                         original_url,
-                        timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout)
+                        timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout),
                     )
-                    original_response.raise_for_status()
+                    await asyncio.to_thread(original_response.raise_for_status)
 
-                    original_data = original_response.json()
+                    original_data = await asyncio.to_thread(original_response.json)
                     if original_data and len(original_data) > 0:
                         product = original_data[0]
                         logger.info(f"[{rjcode}] 使用原作 {original_workno} 的元数据: maker_name={product.get('maker_name')}")

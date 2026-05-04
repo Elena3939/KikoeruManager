@@ -1143,21 +1143,27 @@ class ASMRResourceService:
                 if attempt >= 7:
                     break
                 await asyncio.sleep(0.25)
-        try:
+        def _best_effort_cleanup(root: str) -> bool:
             removed_any = False
-            if os.path.isdir(normalized_root):
-                for path in Path(normalized_root).rglob("*"):
+            if os.path.isdir(root):
+                for path in Path(root).rglob("*"):
                     if path.is_file() and (path.name.endswith(".downloading") or path.stat().st_size > 0):
                         try:
                             path.unlink()
                             removed_any = True
                         except Exception:
                             logger.debug("删除下载残留文件失败: %s", path, exc_info=True)
-                shutil.rmtree(normalized_root, ignore_errors=True)
-                if not os.path.exists(normalized_root):
-                    logger.info("已清理会话下载目录: %s", normalized_root)
+                shutil.rmtree(root, ignore_errors=True)
+                if not os.path.exists(root):
                     return True
-            return removed_any and not os.path.exists(normalized_root)
+            return removed_any and not os.path.exists(root)
+
+        try:
+            cleaned = await asyncio.to_thread(_best_effort_cleanup, normalized_root)
+            if cleaned:
+                logger.info("已清理会话下载目录: %s", normalized_root)
+                return True
+            return False
         except Exception:
             logger.warning("清理会话下载目录失败: %s", normalized_root, exc_info=True)
             return False
@@ -1810,7 +1816,7 @@ class ASMRResourceService:
         while target_path.exists() and target_path.resolve() != current_path.resolve():
             target_path = current_path.parent / f"{renamed_name}({counter})"
             counter += 1
-        shutil.move(str(current_path), str(target_path))
+        await asyncio.to_thread(shutil.move, str(current_path), str(target_path))
         return str(target_path)
 
     async def _finalize_circle_completion_download(
@@ -1945,7 +1951,7 @@ class ASMRResourceService:
                 await asyncio.gather(*[upload_lib_file(row, idx + 1) for idx, row in enumerate(file_rows_lib)])
                 self._finalize_upload_runtime(task, "completed")
                 final_path = remote_root
-                shutil.rmtree(renamed_root, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, renamed_root, True)
                 return final_path
             if target_library:
                 target_root = target_library.root_path
@@ -2466,7 +2472,7 @@ class ASMRResourceService:
                     task.task_metadata["final_output_path"] = final_output_path
                     self._finalize_upload_runtime(task, "completed" if uploaded_files else "failed")
                     if uploaded_files and len(uploaded_files) == len(success_files) and not failed_files and os.path.isdir(download_root):
-                        shutil.rmtree(download_root, ignore_errors=True)
+                        await asyncio.to_thread(shutil.rmtree, download_root, True)
                 else:
                     final_output_path = await self._finalize_circle_completion_download(
                         task,
