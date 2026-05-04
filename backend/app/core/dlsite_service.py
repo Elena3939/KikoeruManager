@@ -55,6 +55,7 @@ class DLsiteApiService:
         self.client: Optional[httpx.AsyncClient] = None
         self.cache: Dict[str, Dict] = {}  # 缓存 API 响应
         self.cache_ttl = timedelta(hours=24)  # 缓存 24 小时
+        self._http_semaphore: Optional[asyncio.Semaphore] = None  # 并发限制，惰性初始化
 
     def _normalize_workno(self, rjcode: str) -> str:
         value = str(rjcode or '').strip().upper()
@@ -412,7 +413,6 @@ class DLsiteApiService:
             self._build_product_page_url(workno, locale=locale),
             self._build_announce_product_page_url(workno, locale=locale),
         ]
-        client = await self._get_client()
         for page_url in page_urls:
             cache_key = f"page_metadata:{page_url}"
             if cache_key in self.cache:
@@ -425,7 +425,7 @@ class DLsiteApiService:
 
             logger.info("[DLsite] 尝试页面元数据抓取: %s", page_url)
             try:
-                response = await client.get(page_url, headers=self._get_browser_headers())
+                response = await self._guarded_get(page_url, headers=self._get_browser_headers())
                 product = self._parse_product_from_html(workno, page_url, str(response.url), response.text)
                 self.cache[cache_key] = {
                     'data': product,
@@ -457,8 +457,7 @@ class DLsiteApiService:
                 return str(cached_data.get('data') or '')
 
         try:
-            client = await self._get_client()
-            response = await client.get(page_url, headers=self._get_browser_headers())
+            response = await self._guarded_get(page_url, headers=self._get_browser_headers())
             text = str(response.text or '')
             self.cache[cache_key] = {
                 'data': text,
@@ -489,8 +488,7 @@ class DLsiteApiService:
 
         logger.info("[DLsite] 尝试页面 fallback: %s", page_url)
         try:
-            client = await self._get_client()
-            response = await client.get(
+            response = await self._guarded_get(
                 page_url,
                 headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -660,7 +658,25 @@ class DLsiteApiService:
 
             self.client = httpx.AsyncClient(**client_kwargs)
         return self.client
-    
+
+    async def _guarded_get(self, url: str, **kwargs) -> httpx.Response:
+        """带并发限制的 HTTP GET，PoolTimeout 时自动重试一次"""
+        if self._http_semaphore is None:
+            self._http_semaphore = asyncio.Semaphore(5)  # 最多 5 个并发 DLsite 请求
+        client = await self._get_client()
+        for attempt in range(2):
+            try:
+                async with self._http_semaphore:
+                    return await client.get(url, **kwargs)
+            except httpx.PoolTimeout:
+                if attempt == 0:
+                    logger.warning("[DLsite] 连接池超时，等待 1s 后重试: %s", url)
+                    await asyncio.sleep(1.0)
+                    continue
+                logger.error("[DLsite] 连接池超时（重试后仍失败）: %s", url)
+                raise
+        raise RuntimeError("unreachable")
+
     async def _fetch_api(self, url: str) -> Optional[Dict]:
         """从 DLsite API 获取数据"""
         cache_key = url
@@ -674,9 +690,8 @@ class DLsiteApiService:
         logger.info("[DLsite] 正在请求 API: %s", url)
 
         try:
-            client = await self._get_client()
             logger.debug("[DLsite] 使用客户端配置: verify=False, timeout=30s")
-            response = await client.get(url)
+            response = await self._guarded_get(url)
 
             logger.info("[DLsite] 响应状态码：%s", response.status_code)
 
@@ -922,7 +937,6 @@ class DLsiteApiService:
             if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
                 return list(cached_data.get('data') or [])
 
-        client = await self._get_client()
         found: List[str] = []
         seen: Set[str] = set()
         empty_streak = 0
@@ -935,7 +949,7 @@ class DLsiteApiService:
             for page in range(1, max(1, int(max_pages)) + 1):
                 url = url_builder(normalized_maker_id, language=normalized_language, page=page)
                 try:
-                    response = await client.get(url, headers=self._get_browser_headers())
+                    response = await self._guarded_get(url, headers=self._get_browser_headers())
                     if response.status_code != 200:
                         logger.warning("[DLsite] 社团%s抓取失败 maker_id=%s page=%s status=%s", mode, normalized_maker_id, page, response.status_code)
                         break
