@@ -330,7 +330,7 @@ class SmartClassifier:
             source_folder_name = os.path.basename(source_path)
             conflict_base_path = os.path.join(self.config.storage.library_path, '_conflicts')
             os.makedirs(conflict_base_path, exist_ok=True)
-            final_path = self._move_with_rename(source_path, conflict_base_path)
+            final_path = await asyncio.to_thread(self._move_with_rename, source_path, conflict_base_path)
             return final_path
         
         # 2. 应用分类规则（传入源路径以提取文件夹名中的社团名）
@@ -351,7 +351,7 @@ class SmartClassifier:
                 str(resolution_existing_path),
             )
         elif target_library.type == 'local':
-            final_path = self._move_with_rename(source_path, target_path)
+            final_path = await asyncio.to_thread(self._move_with_rename, source_path, target_path)
         else:
             relative_target_dir = os.path.relpath(target_path, target_library.root_path).replace("\\", "/")
             if relative_target_dir == '.':

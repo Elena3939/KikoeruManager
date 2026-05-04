@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import shutil
@@ -337,7 +338,7 @@ class ConflictResolutionService:
         if not conflict.new_path:
             raise RuntimeError("Missing new source path")
 
-        self.cleanup_conflict_sessions(conflict.id)
+        await self.cleanup_conflict_sessions(conflict.id)
         workspace = self._create_workspace(conflict.id)
         staged_root = await self._stage_new_source(conflict, workspace)
         compare_service = get_folder_compare_service()
@@ -398,7 +399,7 @@ class ConflictResolutionService:
             final_path = get_folder_compare_service().safe_replace_directory(staged_root, existing["path"])
 
         await self._finalize_new_source(conflict)
-        self.cleanup_conflict_sessions(conflict.id)
+        await self.cleanup_conflict_sessions(conflict.id)
         return {
             "message": "已采用新版本内容替换现有目录",
             "final_path": final_path,
@@ -408,7 +409,7 @@ class ConflictResolutionService:
         description = self.describe_conflict(conflict)
         source = description["source"]
         await self._delete_source_path(conflict.new_path, source.get("library_id"))
-        self.cleanup_conflict_sessions(conflict.id)
+        await self.cleanup_conflict_sessions(conflict.id)
         return {
             "message": "已跳过当前压缩包或目录，并删除待处理来源",
             "deleted_path": conflict.new_path,
@@ -448,13 +449,13 @@ class ConflictResolutionService:
             )
 
         await self._finalize_new_source(conflict)
-        self.cleanup_conflict_sessions(conflict.id)
+        await self.cleanup_conflict_sessions(conflict.id)
         return {
             "message": "合并结果已生成并写入目标目录",
             "final_path": final_path,
         }
 
-    def cleanup_conflict_sessions(self, conflict_id: str) -> None:
+    async def cleanup_conflict_sessions(self, conflict_id: str) -> None:
         target_conflict_id = str(conflict_id or "")
         stale_ids = [
             session_id
@@ -464,7 +465,7 @@ class ConflictResolutionService:
         for session_id in stale_ids:
             session = self._merge_sessions.pop(session_id, None)
             if session and os.path.exists(session.workspace):
-                shutil.rmtree(session.workspace, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, session.workspace, True)
 
     def _create_workspace(self, conflict_id: str) -> str:
         temp_root = get_config().storage.temp_path
@@ -478,7 +479,7 @@ class ConflictResolutionService:
 
         if os.path.isfile(source_path):
             staged_archive_path = os.path.join(workspace, os.path.basename(source_path))
-            shutil.copy2(source_path, staged_archive_path)
+            await asyncio.to_thread(shutil.copy2, source_path, staged_archive_path)
             extract_task = Task(
                 task_type=TaskType.EXTRACT,
                 source_path=staged_archive_path,
@@ -491,7 +492,7 @@ class ConflictResolutionService:
             staged_root = extracted_path
         else:
             staged_root = os.path.join(workspace, os.path.basename(source_path))
-            shutil.copytree(source_path, staged_root)
+            await asyncio.to_thread(shutil.copytree, source_path, staged_root)
 
         filter_task = Task(
             task_type=TaskType.FILTER,
@@ -518,9 +519,9 @@ class ConflictResolutionService:
         if not os.path.exists(target_path):
             return
         if os.path.isdir(target_path):
-            shutil.rmtree(target_path, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, target_path, True)
         else:
-            os.remove(target_path)
+            await asyncio.to_thread(os.remove, target_path)
 
     def _local_preview(self, path: str) -> dict[str, Any]:
         if not path or not os.path.exists(path):

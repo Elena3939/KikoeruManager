@@ -453,6 +453,7 @@ const mergePreviewCache = reactive({})
 const mergeDecisionCache = reactive({})
 const conflictFilter = ref('all')
 const retryPollers = new Map()
+const localRetryingConflictIds = reactive({})
 
 const batchRetryDialogVisible = ref(false)
 const batchRetryTargets = ref([])
@@ -499,6 +500,9 @@ onUnmounted(() => {
     clearTimeout(timerId)
   }
   retryPollers.clear()
+  for (const key of Object.keys(localRetryingConflictIds)) {
+    delete localRetryingConflictIds[key]
+  }
 })
 
 
@@ -570,11 +574,38 @@ function isConflictProcessing(conflict) {
 }
 
 function isRetryProcessing(conflict) {
-  return isConflictProcessing(conflict) && String(conflict?.new_metadata?.resolution_action || '').trim().toUpperCase() === 'RETRY'
+  return isConflictProcessing(conflict) && isRetryConflict(conflict)
 }
 
 function isConflictRetrying(conflict) {
-  return Boolean(conflict?.id) && (isRetryProcessing(conflict) || isActionLoading(conflict.id, 'RETRY'))
+  if (!conflict?.id) return false
+  return Boolean(
+    localRetryingConflictIds[conflict.id] ||
+    isRetryProcessing(conflict) ||
+    isActiveRetryLinkedTask(conflict) ||
+    isActionLoading(conflict.id, 'RETRY')
+  )
+}
+
+function isRetryConflict(conflict) {
+  const metadata = conflict?.new_metadata || {}
+  return String(metadata.resolution_action || metadata.conflict_resolution_action || '').trim().toUpperCase() === 'RETRY' ||
+    Boolean(metadata.retry_from_conflicts || metadata.retry_conflict_id || metadata.retry_task_id || metadata.resolution_task_id)
+}
+
+function isActiveRetryLinkedTask(conflict) {
+  if (!isRetryConflict(conflict)) return false
+  const status = String(conflict?.linked_task?.status || '').trim().toLowerCase()
+  return ['pending', 'processing', 'paused', 'waiting_retry'].includes(status)
+}
+
+function markConflictRetrying(conflictId, value) {
+  if (!conflictId) return
+  if (value) {
+    localRetryingConflictIds[conflictId] = true
+    return
+  }
+  delete localRetryingConflictIds[conflictId]
 }
 
 function getConflictRetryProgress(conflict) {
@@ -711,6 +742,7 @@ function startRetryPoller(taskId, conflictId) {
       if (task) {
         if (task.status === 'completed') {
           retryPollers.delete(taskId)
+          markConflictRetrying(conflictId, false)
           await fetchConflicts()
           if (!conflicts.value.some(item => item.id === conflictId)) {
             ElMessage.success('重试成功，已移出问题作品')
@@ -721,6 +753,7 @@ function startRetryPoller(taskId, conflictId) {
         }
         if (task.status === 'failed') {
           retryPollers.delete(taskId)
+          markConflictRetrying(conflictId, false)
           await fetchConflicts()
           ElMessage.warning(task.error_message ? `重试失败：${task.error_message}` : '重试失败，请查看任务详情')
           return
@@ -736,6 +769,7 @@ function startRetryPoller(taskId, conflictId) {
       retryPollers.set(taskId, timerId)
     } else {
       retryPollers.delete(taskId)
+      markConflictRetrying(conflictId, false)
       await fetchConflicts()
     }
   }
@@ -869,6 +903,7 @@ async function handleRetry(conflict) {
     const retryInput = await askRetryPassword(conflict)
     if (retryInput.cancelled) return
     const result = await startRetry(conflict, retryInput.password ? { password: retryInput.password } : {})
+    markConflictRetrying(conflict.id, true)
     ElMessage.success(
       result.already_running
         ? (retryInput.password ? '已将指定密码应用到现有重试任务，后台持续跟踪结果' : '已存在重试任务，后台持续跟踪结果')
@@ -1109,6 +1144,7 @@ async function handleBatchRetryConfirm(entries) {
       try {
         const pw = passwordMap[conflict.id] || ''
         const result = await startRetry(conflict, pw ? { password: pw } : {})
+        markConflictRetrying(conflict.id, true)
         successes.push(conflict)
         startRetryPoller(result.task_id, conflict.id)
       } catch (error) {
