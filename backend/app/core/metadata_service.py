@@ -261,7 +261,7 @@ class MetadataService:
                 WorkMetadataModel.rjcode == rjcode
             ).first()
             
-            if cached is not None and cached.expires_at > datetime.now():
+            if cached is not None and cached.expires_at is not None and cached.expires_at > datetime.now():
                 return cached
             return None
         finally:

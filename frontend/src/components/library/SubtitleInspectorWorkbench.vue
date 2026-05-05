@@ -9,13 +9,13 @@
         <p class="text-[11.5px] text-slate-500 leading-relaxed pl-9">上半区先清理不要的原始字幕，下半区预览配对结果，最后一次性把音频和字幕处理成同名。</p>
       </div>
       <div class="flex items-center gap-1 flex-shrink-0">
-        <button class="inline-flex items-center justify-center w-8 h-8 rounded-xl border border-slate-200 bg-white text-slate-500 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.04] hover:border-slate-300 hover:text-slate-900 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="!view.subtitleInspectorInfo.subtitleDir || view.subtitleInspectorBusy" title="刷新当前页" @click="view.reloadSubtitleInspector">
+        <button class="inline-flex items-center justify-center w-8 h-8 rounded-xl border border-slate-200 bg-white text-slate-500 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.04] hover:border-slate-300 hover:text-slate-900 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="!view.subtitleInspectorInfo.subtitleDir || view.subtitleInspectorBusy" title="刷新当前页" @click="view.reloadSubtitleInspector?.()">
           <RefreshCw :size="13" :stroke-width="2.2" :class="{ 'is-spinning': view.subtitleInspectorLoading }" />
         </button>
-        <button class="inline-flex items-center justify-center w-8 h-8 rounded-xl border border-slate-200 bg-white text-slate-500 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.04] hover:border-slate-300 hover:text-slate-900 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="!view.subtitleInspectorInfo.subtitleDir || !view.subtitleInspectorHasDirectories || view.subtitleInspectorBusy" title="展开所有子目录" @click="view.expandSubtitleInspectorTree">
+        <button class="inline-flex items-center justify-center w-8 h-8 rounded-xl border border-slate-200 bg-white text-slate-500 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.04] hover:border-slate-300 hover:text-slate-900 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="!view.subtitleInspectorInfo.subtitleDir || !view.subtitleInspectorHasDirectories || view.subtitleInspectorBusy" title="展开所有子目录" @click="view.expandSubtitleInspectorTree?.()">
           <ChevronsDown :size="13" :stroke-width="2.2" />
         </button>
-        <button class="inline-flex items-center justify-center w-8 h-8 rounded-xl border border-slate-200 bg-white text-slate-500 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.04] hover:border-slate-300 hover:text-slate-900 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="!view.subtitleInspectorInfo.subtitleDir || !view.subtitleInspectorHasDirectories || view.subtitleInspectorBusy" title="折叠所有子目录" @click="view.collapseSubtitleInspectorTree">
+        <button class="inline-flex items-center justify-center w-8 h-8 rounded-xl border border-slate-200 bg-white text-slate-500 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.04] hover:border-slate-300 hover:text-slate-900 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="!view.subtitleInspectorInfo.subtitleDir || !view.subtitleInspectorHasDirectories || view.subtitleInspectorBusy" title="折叠所有子目录" @click="view.collapseSubtitleInspectorTree?.()">
           <ChevronsUp :size="13" :stroke-width="2.2" />
         </button>
       </div>
@@ -62,21 +62,21 @@
       </div>
 
       <div v-if="showPairing" class="flex flex-col gap-3">
-        <div class="flex items-start justify-between gap-4 flex-wrap px-4 py-3.5 rounded-[12px] border border-slate-200 bg-white">
+        <div class="grid gap-3 px-4 py-3.5 rounded-[12px] border border-slate-200 bg-white">
 
-          <div class="flex flex-col gap-1.5 min-w-0 flex-1">
+          <div class="flex flex-col gap-1.5 min-w-0">
             <div class="flex items-center gap-2">
               <span class="inline-flex items-center justify-center w-6 h-6 rounded-[8px] border border-slate-200 bg-white text-blue-600"><Link2 :size="13" :stroke-width="2.2" /></span>
               <span class="text-[13px] font-semibold text-slate-900">配对结果预览</span>
             </div>
-            <p class="text-[11.5px] text-slate-500 pl-8">先在这里筛掉不需要的原始字幕，再生成预匹配结果，确认后再一键应用同名。</p>
-            <div v-if="view.subtitleSequenceMode" class="ml-8 inline-flex items-start gap-2 px-3 py-2 rounded-[9px] border border-dashed border-slate-300 bg-slate-50 text-[11.5px] text-slate-600">
+            <p class="text-[11.5px] leading-relaxed text-slate-500 pl-8">先在这里筛掉不需要的原始字幕，再生成预匹配结果，确认后再一键应用同名。</p>
+            <div v-if="view.subtitleSequenceMode" class="ml-8 inline-flex items-start gap-2 px-3 py-2 rounded-[11px] border border-blue-200 bg-gradient-to-r from-blue-50 via-white to-violet-50 text-[11.5px] leading-relaxed text-blue-700 shadow-[0_8px_24px_rgba(37,99,235,0.12)]">
 
-              <Wand2 :size="12" :stroke-width="2.2" class="text-blue-500 mt-0.5 flex-shrink-0" />
-              <span>顺序点选进行中：先在左侧依次点音频，再在右侧依次点字幕，然后生成顺序配对。当前已点选 音频 {{ view.subtitleSequenceSelection.audioPaths.length }} 项 / 字幕 {{ view.subtitleSequenceSelection.subtitlePaths.length }} 项。</span>
+              <Wand2 :size="12" :stroke-width="2.2" class="text-blue-600 mt-0.5 flex-shrink-0 is-sequence-pulse" />
+              <span>顺序点选进行中：左侧蓝色序号是音频顺序，右侧紫色序号是字幕顺序。当前已点选 音频 {{ view.subtitleSequenceSelection.audioPaths.length }} 项 / 字幕 {{ view.subtitleSequenceSelection.subtitlePaths.length }} 项。</span>
             </div>
           </div>
-          <div class="flex items-center gap-1.5 flex-wrap flex-shrink-0">
+          <div class="flex items-center gap-1.5 flex-wrap justify-end">
             <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 active:scale-95" @click="view.buildAutoSubtitlePairs">
               <Wand2 :size="12" class="text-emerald-500" />自动预配对
             </button>
@@ -98,8 +98,9 @@
           <span>已匹配完成，已应用 {{ view.activeSubtitleInspectTask?.manual_match_applied_pairs || view.subtitleInspectorInfo.manualMatchAppliedPairs || 0 }} 组配对。若还要调整，可以继续重新筛选后再次应用。</span>
         </div>
 
-        <div class="grid gap-3" style="grid-template-columns:1fr 232px 1fr">
-          <div class="flex flex-col rounded-[13px] border border-slate-200 bg-white overflow-hidden">
+        <div class="overflow-x-auto pb-1">
+          <div class="grid min-w-[980px] gap-3 xl:min-w-0" style="grid-template-columns:minmax(280px,1fr) minmax(320px,360px) minmax(280px,1fr)">
+            <div class="flex flex-col rounded-[13px] border border-slate-200 bg-white overflow-hidden">
             <div class="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-100 bg-slate-50/60">
               <div class="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700"><Music :size="12" :stroke-width="2.2" class="text-sky-500" />原音频目录<span class="text-[11px] font-normal text-slate-400">{{ view.filteredSubtitleInspectorAudioFiles.length }} 项</span></div>
               <div class="inline-flex gap-0.5 p-0.5 rounded-lg bg-slate-100">
@@ -108,15 +109,15 @@
             </div>
             <div class="px-2 pt-2"><input :value="view.subtitleInspectorAudioSearch" class="w-full h-7 px-2 rounded-lg bg-slate-50 border border-slate-200 text-[11.5px] placeholder-slate-400 outline-none focus:bg-white focus:border-slate-400 transition-all duration-150" placeholder="搜索音频名..." :disabled="view.subtitleInspectorBusy" @input="view.setSubtitleInspectorAudioSearch($event.target.value)" /></div>
             <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5 min-h-[200px] max-h-[340px]">
-              <button v-for="audio in view.filteredSubtitleInspectorAudioFiles" :key="audio.path" type="button" class="w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[9px] border text-left transition-all duration-150" :class="[view.subtitleMatchSelection.audioPath === audio.path ? 'border-slate-400 bg-slate-100' : view.isAudioPaired(audio.path) ? 'border-slate-200 bg-white' : 'border-transparent bg-slate-50/60 hover:border-slate-200 hover:bg-slate-50']" @click="view.selectSubtitleAudio(audio)">
+              <button v-for="audio in view.filteredSubtitleInspectorAudioFiles" :key="audio.path" type="button" class="group/sequence-row w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[10px] border text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.97]" :class="[view.getSubtitleSequenceIndex('audio', audio.path) ? 'border-blue-400 bg-gradient-to-r from-blue-100 via-sky-50 to-white shadow-[0_8px_22px_rgba(37,99,235,0.22)] ring-2 ring-blue-200/70' : view.subtitleMatchSelection.audioPath === audio.path ? 'border-blue-300 bg-blue-50 shadow-[0_6px_18px_rgba(37,99,235,0.16)]' : view.isAudioPaired(audio.path) ? 'border-slate-200 bg-white' : 'border-transparent bg-slate-50/60 hover:border-blue-200 hover:bg-blue-50/50']" @click="view.selectSubtitleAudio(audio)">
 
                 <div class="flex items-center gap-1 flex-wrap">
                   <span v-if="view.isAudioPaired(audio.path)" class="text-[9.5px] font-semibold text-slate-500">已配对</span>
                   <span v-if="view.isAudioSuspicious(audio.path)" class="text-[9.5px] font-semibold text-amber-600">待确认</span>
-                  <span v-if="view.getSubtitleSequenceIndex('audio', audio.path)" class="text-[9.5px] font-semibold text-slate-500">#{{ view.getSubtitleSequenceIndex('audio', audio.path) }}</span>
+                  <span v-if="view.getSubtitleSequenceIndex('audio', audio.path)" class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1.5 text-[10px] font-black text-white shadow-[0_4px_12px_rgba(37,99,235,0.35)] ring-2 ring-white">#{{ view.getSubtitleSequenceIndex('audio', audio.path) }}</span>
 
                 </div>
-                <div class="text-[11.5px] font-medium text-slate-800 truncate">{{ formatSubtitleItemName(audio) }}</div>
+                <div class="text-[11.5px] font-semibold text-slate-800 truncate transition-colors duration-300 group-hover/sequence-row:text-blue-700" :class="view.getSubtitleSequenceIndex('audio', audio.path) ? 'text-blue-900' : ''">{{ formatSubtitleItemName(audio) }}</div>
                 <div class="text-[10px] text-slate-400 truncate">{{ audio.relative_path || audio.name }}</div>
               </button>
             </div>
@@ -131,7 +132,7 @@
               </div>
             </div>
             <div class="px-2 pt-2">
-              <button type="button" class="w-full h-7 inline-flex items-center justify-center gap-1 rounded-lg text-[11.5px] font-semibold border transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :class="view.canAddSubtitleManualPair && !view.subtitleInspectorBusy ? 'border-blue-300 bg-blue-600 text-white hover:bg-blue-700' : 'border-slate-200 bg-slate-50 text-slate-400'" :disabled="!view.canAddSubtitleManualPair || view.subtitleInspectorBusy" :title="!view.canAddSubtitleManualPair ? '请先在左侧选一条音频，再在右侧选一条字幕，然后点此加入配对。' : ''" @click="view.addSubtitleManualPair">加入手动配对</button>
+              <button type="button" class="w-full h-7 inline-flex items-center justify-center gap-1 rounded-lg text-[11.5px] font-semibold border transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :class="view.canAddSubtitleManualPair && !view.subtitleInspectorBusy ? 'border-blue-300 bg-blue-600 text-white hover:bg-blue-700' : 'border-slate-200 bg-slate-50 text-slate-400'" :disabled="!view.canAddSubtitleManualPair || view.subtitleInspectorBusy" :title="!view.canAddSubtitleManualPair ? '请先在左侧选一条音频，再在右侧选一条字幕，然后点此加入配对。' : ''" @click="view.addSubtitleManualPair?.()">加入手动配对</button>
             </div>
             <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 min-h-[200px] max-h-[340px]">
               <div v-if="!view.subtitleManualPairs.length" class="flex flex-col items-center justify-center py-6 gap-1 text-center"><div class="text-[11.5px] font-medium text-slate-500">还没有生成配对结果</div><div class="text-[10.5px] text-slate-400">可以先点"自动预配对"</div></div>
@@ -164,20 +165,21 @@
             </div>
             <div class="px-2 pt-2"><input :value="view.subtitleInspectorSubtitleSearch" class="w-full h-7 px-2 rounded-lg bg-slate-50 border border-slate-200 text-[11.5px] placeholder-slate-400 outline-none focus:bg-white focus:border-slate-400 transition-all duration-150" placeholder="搜索字幕名..." :disabled="view.subtitleInspectorBusy" @input="view.setSubtitleInspectorSubtitleSearch($event.target.value)" /></div>
             <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5 min-h-[200px] max-h-[340px]">
-              <button v-for="subtitle in view.filteredSubtitleInspectorSubtitleFiles" :key="subtitle.path" type="button" class="w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[9px] border text-left transition-all duration-150" :class="[view.subtitleMatchSelection.subtitlePath === subtitle.path ? 'border-slate-400 bg-slate-100' : view.isSubtitlePaired(subtitle.path) ? 'border-slate-200 bg-white' : 'border-transparent bg-slate-50/60 hover:border-slate-200 hover:bg-slate-50']" @click="view.selectSubtitleFile(subtitle)">
+              <button v-for="subtitle in view.filteredSubtitleInspectorSubtitleFiles" :key="subtitle.path" type="button" class="group/sequence-row w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[10px] border text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.97]" :class="[view.getSubtitleSequenceIndex('subtitle', subtitle.path) ? 'border-violet-400 bg-gradient-to-r from-violet-100 via-fuchsia-50 to-white shadow-[0_8px_22px_rgba(124,58,237,0.22)] ring-2 ring-violet-200/70' : view.subtitleMatchSelection.subtitlePath === subtitle.path ? 'border-violet-300 bg-violet-50 shadow-[0_6px_18px_rgba(124,58,237,0.16)]' : view.isSubtitlePaired(subtitle.path) ? 'border-slate-200 bg-white' : 'border-transparent bg-slate-50/60 hover:border-violet-200 hover:bg-violet-50/50']" @click="view.selectSubtitleFile(subtitle)">
 
                 <div class="flex items-center gap-1 flex-wrap">
                   <span v-if="view.isSubtitlePaired(subtitle.path)" class="text-[9.5px] font-semibold text-slate-500">已配对</span>
                   <span v-if="view.isSubtitleSuspicious(subtitle.path)" class="text-[9.5px] font-semibold text-amber-600">待确认</span>
-                  <span v-if="view.getSubtitleSequenceIndex('subtitle', subtitle.path)" class="text-[9.5px] font-semibold text-slate-500">#{{ view.getSubtitleSequenceIndex('subtitle', subtitle.path) }}</span>
+                  <span v-if="view.getSubtitleSequenceIndex('subtitle', subtitle.path)" class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-600 px-1.5 text-[10px] font-black text-white shadow-[0_4px_12px_rgba(124,58,237,0.35)] ring-2 ring-white">#{{ view.getSubtitleSequenceIndex('subtitle', subtitle.path) }}</span>
 
                 </div>
-                <div class="text-[11.5px] font-medium text-slate-800 truncate">{{ formatSubtitleItemName(subtitle) }}</div>
+                <div class="text-[11.5px] font-semibold text-slate-800 truncate transition-colors duration-300 group-hover/sequence-row:text-violet-700" :class="view.getSubtitleSequenceIndex('subtitle', subtitle.path) ? 'text-violet-900' : ''">{{ formatSubtitleItemName(subtitle) }}</div>
                 <div class="text-[10px] text-slate-400 truncate">{{ subtitle.relative_path || subtitle.name }}</div>
               </button>
             </div>
           </div>
         </div>
+      </div>
       </div>
 
       <div v-if="showPairing && view.activeSubtitleTaskProgressLogs?.length" class="flex flex-col gap-2 p-3 rounded-[13px] bg-slate-50 border border-slate-200">
@@ -402,7 +404,91 @@ const props = defineProps({
   }
 })
 
-const view = computed(() => props.ctx || {})
+const emptySet = new Set()
+const noop = () => {}
+const view = computed(() => ({
+  subtitleInspectorInfo: {},
+  subtitleInspectorBusy: false,
+  subtitleInspectorLoading: false,
+  subtitleInspectorDeleting: false,
+  subtitleInspectorHasDirectories: false,
+  subtitleInspectorAudioFiles: [],
+  subtitleInspectorFlatTree: [],
+  subtitleInspectorSelectedRows: [],
+  subtitleInspectorSelectedIds: emptySet,
+  subtitleInspectorExpandedIds: emptySet,
+  subtitleInspectorSearch: '',
+  subtitleInspectorAudioSearch: '',
+  subtitleInspectorSubtitleSearch: '',
+  subtitleInspectorAllSelected: false,
+  subtitleInspectorSomeSelected: false,
+  inspectableSubtitleTasks: [],
+  activeSubtitleTask: null,
+  subtitleBackgroundActiveTask: null,
+  activeSubtitleInspectTask: null,
+  subtitleSequenceMode: false,
+  subtitleSequenceSelection: { audioPaths: [], subtitlePaths: [] },
+  subtitleManualPairs: [],
+  subtitleSelectedManualPairId: '',
+  subtitlePairApplying: false,
+  subtitleManualApplyLabel: '',
+  subtitleAudioFilterMode: 'all',
+  subtitleSubtitleFilterMode: 'all',
+  subtitleMatchSelection: { audioPath: '', subtitlePath: '' },
+  filteredSubtitleInspectorAudioFiles: [],
+  filteredSubtitleInspectorSubtitleFiles: [],
+  canBuildSequenceSubtitlePairs: false,
+  canAddSubtitleManualPair: false,
+  activeSubtitleTaskProgressLogs: [],
+  subtitleCancelingId: '',
+  subtitleTaskRerunId: '',
+  subtitleNamingStrategy: 'audio',
+  reloadSubtitleInspector: noop,
+  expandSubtitleInspectorTree: noop,
+  collapseSubtitleInspectorTree: noop,
+  getTaskDisplayRJCode: () => '未知RJ',
+  getTaskSourceRJCode: () => '',
+  getFileName: value => String(value || '').split(/[\\/]/).pop(),
+  formatFileSize: value => value || '0 B',
+  formatDate: value => value || '-',
+  canCancelRJSubtitleTask: () => false,
+  cancelRJSubtitleTask: noop,
+  canClearCurrentSubtitleTask: () => false,
+  clearCurrentSubtitleTask: noop,
+  canRerunSubtitleTask: () => false,
+  rerunSubtitleTask: noop,
+  buildAutoSubtitlePairs: noop,
+  buildSequenceOrOrderedSubtitlePairs: noop,
+  applySubtitleManualPairs: noop,
+  setSubtitleSequenceMode: noop,
+  setSubtitleAudioFilterMode: noop,
+  setSubtitleSubtitleFilterMode: noop,
+  setSubtitleInspectorAudioSearch: noop,
+  setSubtitleInspectorSubtitleSearch: noop,
+  setSubtitleInspectorSearch: noop,
+  setSubtitleSelectedManualPairId: noop,
+  isAudioPaired: () => false,
+  isAudioSuspicious: () => false,
+  getSubtitleSequenceIndex: () => 0,
+  selectSubtitleAudio: noop,
+  addSubtitleManualPair: noop,
+  clearSubtitleSequenceSelection: noop,
+  clearSubtitleManualPairs: noop,
+  getSubtitlePairConfidenceLabel: value => value || '中',
+  removeSubtitleManualPair: noop,
+  isSubtitlePaired: () => false,
+  isSubtitleSuspicious: () => false,
+  selectSubtitleFile: noop,
+  batchDeleteSubtitleTreeEntries: noop,
+  clearSubtitleInspectorSelection: noop,
+  toggleAllSubtitleInspectorRows: noop,
+  handleSubtitleInspectorRowClick: noop,
+  toggleSubtitleInspectorSelect: noop,
+  toggleSubtitleInspectorExpand: noop,
+  openSubtitleRenameDialog: noop,
+  deleteSubtitleTreeEntry: noop,
+  ...(props.ctx || {})
+}))
 const showPairing = computed(() => ['all', 'pairing'].includes(props.stageMode))
 const showTree = computed(() => ['all', 'tree'].includes(props.stageMode))
 
@@ -470,7 +556,12 @@ function getSubtitlePairRenamePreview(pair = {}) {
 
 <style scoped>
 .is-spinning { animation: subtitle-spin 1s linear infinite; }
+.is-sequence-pulse { animation: subtitle-sequence-pulse 1.4s ease-in-out infinite; }
 @keyframes subtitle-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes subtitle-sequence-pulse {
+  0%, 100% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 0 rgba(37, 99, 235, 0)); }
+  50% { transform: scale(1.18) rotate(-8deg); filter: drop-shadow(0 0 8px rgba(37, 99, 235, 0.35)); }
+}
 .sub-stage-fade-enter-active, .sub-stage-fade-leave-active { transition: all 0.25s ease; }
 .sub-stage-fade-enter-from, .sub-stage-fade-leave-to { opacity: 0; transform: translateY(-4px); }
 </style>

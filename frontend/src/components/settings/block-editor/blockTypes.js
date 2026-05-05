@@ -107,7 +107,7 @@ export const BLOCK_TYPES = {
   file_tree: {
     label: '文件树',
     icon: 'FolderTree',
-    description: '文件 / 目录树（上下载、解压过滤场景）',
+    description: '统一文件 / 目录树，新增、删除、过滤和上传状态直接显示在树节点上',
     group: 'data',
     color: '#34c759',
     defaultProps: {
@@ -121,10 +121,7 @@ export const BLOCK_TYPES = {
         options: [
           { value: 'file_tree',       label: '通用文件树' },
           { value: 'circle_batch_summary', label: '批量社团补全汇总' },
-          { value: 'download_files',  label: '下载文件列表' },
-          { value: 'upload_files',    label: '上传文件列表' },
-          { value: 'filtered_files',  label: '过滤前后对比' },
-          { value: 'extracted_files', label: '解压结果' },
+          { value: 'download_files',  label: '下载文件列表（兼容旧模板，实际使用通用文件树）' },
         ] },
       { key: 'maxItems',  label: '最多显示行数', type: 'number', min: 5, max: 200, default: 30 },
     ],

@@ -589,7 +589,7 @@ class TaskCenterService:
         for item in items:
             if not self._safe_text(item.get("id")).startswith("engine:"):
                 continue
-            if self._safe_text(item.get("domain")) != "import":
+            if self._safe_text(item.get("domain")) not in ("import", "subtitle_import"):
                 continue
             metadata = self._item_metadata(item)
             source_mode = self._safe_text(metadata.get("source_mode"))

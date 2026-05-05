@@ -1289,41 +1289,49 @@ class RJSubtitleService:
         preferred_audio_exts = self._preferred_subtitle_source_audio_exts(audio_files)
         retained: Dict[Tuple[str, str], Dict] = {}
         deduped_records: List[Dict] = []
+        grouped_by_name: Dict[Tuple[str, str], List[Dict]] = defaultdict(list)
 
         for subtitle in downloaded_files:
             normalized = self._normalize_subtitle_file(subtitle)
-            fingerprint_info = self._build_subtitle_content_fingerprint(normalized)
-            normalized.update(fingerprint_info)
-
-            fingerprint = normalized.get('content_fingerprint')
-            if not fingerprint:
-                unique_key = str(normalized.get('path') or normalized.get('name') or uuid.uuid4().hex)
-                retained[(normalized.get('ext') or '', unique_key)] = normalized
-                continue
-
-            # Only collapse exact same-content subtitles when their normalized file names
-            # are also the same. Different names may represent different track groups
-            # that happen to share identical subtitle text and should be preserved.
             subtitle_name_key = str(normalized.get('name') or '').strip().lower()
-            dedupe_key = (normalized.get('ext') or '', fingerprint, subtitle_name_key)
-            existing = retained.get(dedupe_key)
-            if existing is None:
-                retained[dedupe_key] = normalized
+            grouped_by_name[(normalized.get('ext') or '', subtitle_name_key)].append(normalized)
+
+        for name_key, group_items in grouped_by_name.items():
+            if len(group_items) == 1:
+                item = group_items[0]
+                unique_key = str(item.get('path') or item.get('name') or uuid.uuid4().hex)
+                retained[(item.get('ext') or '', unique_key)] = item
                 continue
 
-            kept = self._pick_download_candidate(existing, normalized, preferred_audio_exts)
-            dropped = normalized if kept is existing else existing
-            retained[dedupe_key] = kept
-            deduped_records.append({
-                'kept_name': kept.get('display_name') or kept.get('name') or '',
-                'dropped_name': dropped.get('display_name') or dropped.get('name') or '',
-                'kept_source_name': kept.get('source_name') or kept.get('name') or '',
-                'dropped_source_name': dropped.get('source_name') or dropped.get('name') or '',
-                'ext': kept.get('ext') or '',
-                'fingerprint': fingerprint,
-                'line_count': int(kept.get('content_line_count') or dropped.get('content_line_count') or 0),
-                'char_count': int(kept.get('content_char_count') or dropped.get('content_char_count') or 0),
-            })
+            for normalized in group_items:
+                fingerprint_info = self._build_subtitle_content_fingerprint(normalized)
+                normalized.update(fingerprint_info)
+
+                fingerprint = normalized.get('content_fingerprint')
+                if not fingerprint:
+                    unique_key = str(normalized.get('path') or normalized.get('name') or uuid.uuid4().hex)
+                    retained[(normalized.get('ext') or '', unique_key)] = normalized
+                    continue
+
+                dedupe_key = (name_key[0], fingerprint, name_key[1])
+                existing = retained.get(dedupe_key)
+                if existing is None:
+                    retained[dedupe_key] = normalized
+                    continue
+
+                kept = self._pick_download_candidate(existing, normalized, preferred_audio_exts)
+                dropped = normalized if kept is existing else existing
+                retained[dedupe_key] = kept
+                deduped_records.append({
+                    'kept_name': kept.get('display_name') or kept.get('name') or '',
+                    'dropped_name': dropped.get('display_name') or dropped.get('name') or '',
+                    'kept_source_name': kept.get('source_name') or kept.get('name') or '',
+                    'dropped_source_name': dropped.get('source_name') or dropped.get('name') or '',
+                    'ext': kept.get('ext') or '',
+                    'fingerprint': fingerprint,
+                    'line_count': int(kept.get('content_line_count') or dropped.get('content_line_count') or 0),
+                    'char_count': int(kept.get('content_char_count') or dropped.get('content_char_count') or 0),
+                })
 
         deduped_files = sorted(
             retained.values(),

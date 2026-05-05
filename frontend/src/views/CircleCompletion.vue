@@ -1134,6 +1134,22 @@ function parseReleaseDateForSort(raw) {
   const text = String(raw || '').trim()
   if (!text) return 0
 
+  const fullDateMatch = text.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/)
+  if (fullDateMatch) {
+    const year = Number(fullDateMatch[1])
+    const month = Number(fullDateMatch[2])
+    const day = Number(fullDateMatch[3])
+    if (
+      year > 0
+      && month >= 1
+      && month <= 12
+      && day >= 1
+      && day <= 31
+    ) {
+      return new Date(year, month - 1, day).getTime()
+    }
+  }
+
   const normalized = text
     .replace(/[年./]/g, '-')
     .replace(/月/g, '-')
@@ -1164,6 +1180,15 @@ function parseReleaseDateForSort(raw) {
   if (yearMonthMatch) {
     const year = Number(yearMonthMatch[1])
     const month = Number(yearMonthMatch[2])
+    if (year > 0 && month >= 1 && month <= 12) {
+      return new Date(year, month - 1, 1).getTime()
+    }
+  }
+
+  const looseYearMonthMatch = text.match(/(\d{4})\D+(\d{1,2})/)
+  if (looseYearMonthMatch) {
+    const year = Number(looseYearMonthMatch[1])
+    const month = Number(looseYearMonthMatch[2])
     if (year > 0 && month >= 1 && month <= 12) {
       return new Date(year, month - 1, 1).getTime()
     }

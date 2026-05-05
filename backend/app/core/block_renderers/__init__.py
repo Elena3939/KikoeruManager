@@ -187,13 +187,15 @@ def _lucide_icon(name: str, color: str, size: int = 16) -> str:
         "x-circle": '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
         "check-circle": '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
         "hard-drive": '<line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>',
+        "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
     }
     body = paths.get(name) or paths["file"]
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
         f'viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2.2" '
         f'stroke-linecap="round" stroke-linejoin="round" '
-        f'style="display:inline-block;vertical-align:-3px;flex-shrink:0;">{body}</svg>'
+        f'style="display:inline-block;vertical-align:-3px;flex-shrink:0;'
+        f'fill:none;stroke:{color};stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;">{body}</svg>'
     )
 
 
@@ -224,9 +226,13 @@ def render_file_tree(props: dict, payload: dict) -> str:
     """
     source_key = props.get("sourceKey") or "file_tree"
     title = _esc(props.get("title") or "文件清单")
-    # upload_files 场景：file_tree 不存在时 fallback 到 upload_files
+    if source_key in {"download_files", "upload_files", "filtered_files", "extracted_files"} and payload.get("file_tree"):
+        source_key = "file_tree"
+    # 旧 payload 兼容：file_tree 不存在时 fallback 到历史字段
     if source_key == "file_tree" and not payload.get("file_tree") and payload.get("upload_files"):
         source_key = "upload_files"
+    if source_key == "file_tree" and not payload.get("file_tree") and payload.get("download_files"):
+        source_key = "download_files"
     if source_key == "file_tree" and not payload.get("file_tree") and payload.get("circle_batch_summary"):
         source_key = "circle_batch_summary"
         title = "批量社团补全汇总"
@@ -236,14 +242,57 @@ def render_file_tree(props: dict, payload: dict) -> str:
         return _render_download_work_cards(title, payload.get("rj_work_cards") or [], 9999)
     items = payload.get(source_key) or []
     card_html = ""
-    if source_key == "download_files" and payload.get("download_work_cards"):
-        card_html = _render_download_work_cards(title, payload.get("download_work_cards") or [], 9999)
     if not items:
         return (
             f'<div style="padding:12px 14px;background:#fafafa;border:1px solid #ececef;'
             f'border-radius:8px;font-size:12px;color:#8e8e93;margin:8px 0;">'
             f'{title}：（无数据）</div>\n'
         )
+
+    def _coerce_tree(nodes):
+        if any(isinstance(node, dict) and node.get("children") for node in nodes):
+            return nodes
+        root: dict[str, dict] = {}
+
+        def _ensure_dir(parts):
+            current = root
+            node = None
+            for part in parts:
+                node = current.get(part)
+                if not node:
+                    node = {"name": part, "children": [], "_children_map": {}}
+                    current[part] = node
+                current = node["_children_map"]
+            return node
+
+        for raw in nodes:
+            if not isinstance(raw, dict):
+                raw = {"path": str(raw)}
+            raw_path = str(raw.get("path") or raw.get("relative_path") or raw.get("name") or "").replace("\\", "/").strip("/")
+            if not raw_path:
+                continue
+            parts = [part for part in raw_path.split("/") if part]
+            if not parts:
+                continue
+            if len(parts) == 1:
+                root[parts[0]] = {**raw, "path": parts[0], "name": raw.get("name") or parts[0]}
+                continue
+            parent = _ensure_dir(parts[:-1])
+            parent["children"].append({**raw, "path": parts[-1], "name": raw.get("name") or parts[-1]})
+
+        def _strip_maps(children):
+            output = []
+            for child in children:
+                if isinstance(child, dict) and "children" in child:
+                    child["children"].extend(child.get("_children_map", {}).values())
+                    child.pop("_children_map", None)
+                    child["children"] = _strip_maps(child["children"])
+                output.append(child)
+            return output
+
+        return _strip_maps(list(root.values()))
+
+    items = _coerce_tree(items)
 
     # 状态色 + 文本样式（filtered/removed 加 line-through 与任务详情面板对齐）
     status_styles = {
@@ -288,10 +337,7 @@ def render_file_tree(props: dict, payload: dict) -> str:
         "white-space:nowrap;vertical-align:middle;color:currentColor;"
     )
 
-    # 邮件里用 <details> 会在不同客户端表现差异极大，而且外层 margin-left
-    # 与子容器 padding-left 叠加会让深层文件缩进"延伸"到奇怪的位置。
-    # 这里改成和任务详情面板一致的扁平 row + depth*16px padding-left 渲染。
-    def _render_rows(nodes, depth, out):
+    def _render_rows(nodes, depth, out, inherited_muted=False):
         dirs, files = [], []
         for child in nodes or []:
             if isinstance(child, dict) and "children" in child:
@@ -301,11 +347,11 @@ def render_file_tree(props: dict, payload: dict) -> str:
         dirs.sort(key=lambda n: str(n.get("name") or "").lower())
         files.sort(key=lambda n: str(n.get("path") or n.get("name") or "").lower())
 
-        indent_px = max(0, depth) * 16 + 8
+        indent_px = max(0, depth) * 14 + 8
         for node in dirs:
             label = str(node.get("name") or node.get("path") or "")
             dir_status = str(node.get("status") or "kept")
-            is_muted = dir_status in {"filtered", "removed"}
+            is_muted = inherited_muted or dir_status in {"filtered", "removed"}
             dir_color = "#94a3b8" if is_muted else "#1e293b"
             dir_label_extra = (
                 "color:#94a3b8;text-decoration:line-through;"
@@ -320,34 +366,28 @@ def render_file_tree(props: dict, payload: dict) -> str:
             )
             badge_html = _render_badges(node.get("badges") or [])
             size_text = str(node.get("size_text") or "")
-            size_html = (
-                f'<td style="width:86px;padding-left:16px;color:#94a3b8;font-size:12px;'
-                f'font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">{_esc(size_text)}</td>'
-                if size_text else ""
-            )
+            size_badge = f'<span style="float:right;color:#94a3b8;font-size:12px;font-weight:500;">{_esc(size_text)}</span>' if size_text else ""
+            child_chunks: list[str] = []
+            _render_rows(node.get("children") or [], depth + 1, child_chunks, is_muted)
             out.append(
-                f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
-                f'style="border-collapse:collapse;{row_base_style}color:{dir_color};">'
-                f'<tr>'
-                f'<td style="width:{indent_px}px;"></td>'
-                f'<td style="vertical-align:middle;min-width:0;white-space:nowrap;'
-                f'overflow:hidden;text-overflow:ellipsis;">'
+                f'<details {"open" if depth > 0 else ""} style="margin:0;padding:0;">'
+                f'<summary style="list-style-position:inside;cursor:pointer;{row_base_style}color:{dir_color};'
+                f'padding-left:{indent_px}px;">'
                 f'{folder_icon}'
                 f'<span style="{tree_name_base}{dir_label_extra}">{_esc(label)}</span>'
-                f'{badge_html}'
-                f'</td>'
-                f'{size_html}'
-                f'</tr>'
-                f'</table>'
+                f'{badge_html}{size_badge}'
+                f'</summary>'
+                f'{"".join(child_chunks)}'
+                f'</details>'
             )
-            _render_rows(node.get("children") or [], depth + 1, out)
 
         for node in files:
             if not isinstance(node, dict):
                 node = {"path": str(node)}
-            label = str(node.get("path") or node.get("name") or "")
+            label = str(node.get("name") or node.get("path") or "")
+            label = label.replace("\\", "/").strip("/").split("/")[-1]
             status = str(node.get("status") or "kept")
-            is_muted = status in {"filtered", "removed"}
+            is_muted = inherited_muted or status in {"filtered", "removed"}
             row_color = "#94a3b8" if is_muted else "#1e293b"
             label_extra = (
                 "color:#94a3b8;text-decoration:line-through;"
@@ -367,7 +407,7 @@ def render_file_tree(props: dict, payload: dict) -> str:
             )
             size_text = str(node.get("size_text") or "")
             size_html = (
-                f'<td style="width:86px;padding-left:16px;color:#94a3b8;font-size:12px;'
+                f'<td style="width:112px;min-width:112px;padding-left:16px;padding-right:8px;color:#94a3b8;font-size:12px;'
                 f'font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">{_esc(size_text)}</td>'
                 if size_text else ""
             )
@@ -455,7 +495,7 @@ def _render_circle_batch_summary_table(title: str, items: list) -> str:
 
 
 def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
-    """下载列表专用图文卡片。支持按 status=success/failed 区分成功 / 失败作品。"""
+    """下载列表专用图文卡片。支持按 status=success/failed/warning/duplicate/waiting_manual 区分样式。"""
     rows = []
     shown = 0
     for item in items:
@@ -466,6 +506,9 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
         shown += 1
         status = str(item.get("status") or "success").lower()
         is_failed = status == "failed"
+        is_warning = status == "warning"
+        is_duplicate = status == "duplicate"
+        is_waiting_manual = status == "waiting_manual"
 
         cover_url = _esc(item.get("cover_url") or "")
         rjcode = _esc(item.get("rjcode") or "RJ")
@@ -475,7 +518,7 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
         file_count = int(item.get("file_count") or 0)
         file_text = _esc(item.get("count_label") or (f"{file_count} 个文件" if file_count else ""))
         meta_chunks = [text for text in [circle_name, size_text, file_text] if text]
-        meta_html = " · ".join(meta_chunks) if meta_chunks else ("失败" if is_failed else "下载完成")
+        meta_html = " · ".join(meta_chunks) if meta_chunks else ("失败" if is_failed else ("待字幕补配" if is_warning else "下载完成"))
         # 支持两种 changes 格式：
         #   - 纯字符串（旧版 / 下载任务）：直接渲染为文本行
         #   - {icon, text}（解压 / 入库任务）：左侧 lucide SVG + 右侧文本
@@ -494,10 +537,16 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
 
         changes_html = ""
         if change_entries:
-            change_bg = "#fef2f2" if is_failed else "#f8fafc"
-            change_border = "#fecaca" if is_failed else "#e2e8f0"
-            change_color = "#991b1b" if is_failed else "#334155"
-            icon_color = "#b91c1c" if is_failed else "#64748b"
+            if is_failed:
+                change_bg, change_border, change_color, icon_color = "#fef2f2", "#fecaca", "#991b1b", "#b91c1c"
+            elif is_warning:
+                change_bg, change_border, change_color, icon_color = "#fffbeb", "#fde68a", "#92400e", "#d97706"
+            elif is_duplicate:
+                change_bg, change_border, change_color, icon_color = "#fff7ed", "#fed7aa", "#9a3412", "#ea580c"
+            elif is_waiting_manual:
+                change_bg, change_border, change_color, icon_color = "#f5f3ff", "#ddd6fe", "#5b21b6", "#7c3aed"
+            else:
+                change_bg, change_border, change_color, icon_color = "#f8fafc", "#e2e8f0", "#334155", "#64748b"
             lines = []
             for icon_name, text in change_entries[:6]:
                 if icon_name:
@@ -521,8 +570,15 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
                 + f'</div>'
             )
 
-        # 失败卡片：封面灰度 + 整体半透明，RJ 条替换为红色"失败"标签
-        image_filter = 'filter:grayscale(0.95);opacity:0.55;' if is_failed else ''
+        # 封面过滤器：失败灰度，重复/等待处理轻度模糊透明
+        if is_failed:
+            image_filter = 'filter:grayscale(0.95);opacity:0.55;'
+        elif is_duplicate:
+            image_filter = 'opacity:0.75;'
+        elif is_waiting_manual:
+            image_filter = 'opacity:0.8;'
+        else:
+            image_filter = ''
         image_html = (
             f'<img src="{cover_url}" alt="{work_title}" width="180" height="180" '
             f'style="display:block;width:180px;height:180px;object-fit:contain;background:#fff;border:0;{image_filter}">'
@@ -530,21 +586,54 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
             f'<div style="width:180px;height:180px;background:#f5f5f7;color:#8e8e93;'
             f'font-size:12px;line-height:180px;text-align:center;{image_filter}">无封面</div>'
         )
-        rj_bar = (
-            f'<tr><td style="background:#fee2e2;color:#991b1b;font-size:12px;line-height:20px;'
-            f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">✕ 失败 · {rjcode}</td></tr>'
-            if is_failed else
-            f'<tr><td style="background:#fff3cf;color:#c2410c;font-size:12px;line-height:20px;'
-            f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">{rjcode}</td></tr>'
-        )
+        if is_failed:
+            rj_bar = (
+                f'<tr><td style="background:#fee2e2;color:#991b1b;font-size:12px;line-height:20px;'
+                f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">✕ 失败 · {rjcode}</td></tr>'
+            )
+        elif is_warning:
+            rj_bar = (
+                f'<tr><td style="background:#fef3c7;color:#92400e;font-size:12px;line-height:20px;'
+                f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">⚠ 待补配 · {rjcode}</td></tr>'
+            )
+        elif is_duplicate:
+            rj_bar = (
+                f'<tr><td style="background:#ffedd5;color:#9a3412;font-size:12px;line-height:20px;'
+                f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">📋 重复作品 · {rjcode}</td></tr>'
+            )
+        elif is_waiting_manual:
+            rj_bar = (
+                f'<tr><td style="background:#ede9fe;color:#5b21b6;font-size:12px;line-height:20px;'
+                f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">⚙ 待人工处理 · {rjcode}</td></tr>'
+            )
+        else:
+            rj_bar = (
+                f'<tr><td style="background:#fff3cf;color:#c2410c;font-size:12px;line-height:20px;'
+                f'text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">{rjcode}</td></tr>'
+            )
 
-        title_color = "#64748b" if is_failed else "#0f172a"
-        meta_color = "#94a3b8" if is_failed else "#475569"
-        size_color = "#94a3b8" if is_failed else "#111827"
-        card_wrapper_style = (
-            'margin:0 0 14px;border-collapse:collapse;'
-            + ('background:#fafafa;border:1px dashed #e2e8f0;border-radius:10px;' if is_failed else '')
-        )
+        if is_failed:
+            title_color, meta_color, size_color = "#64748b", "#94a3b8", "#94a3b8"
+        elif is_warning:
+            title_color, meta_color, size_color = "#0f172a", "#92400e", "#111827"
+        elif is_duplicate:
+            title_color, meta_color, size_color = "#1c1917", "#9a3412", "#111827"
+        elif is_waiting_manual:
+            title_color, meta_color, size_color = "#1e1b4b", "#5b21b6", "#111827"
+        else:
+            title_color, meta_color, size_color = "#0f172a", "#475569", "#111827"
+
+        if is_failed:
+            card_wrapper_bg = 'background:#fafafa;border:1px dashed #e2e8f0;border-radius:10px;'
+        elif is_warning:
+            card_wrapper_bg = 'background:#fffbeb;border:1px solid #fde68a;border-radius:10px;'
+        elif is_duplicate:
+            card_wrapper_bg = 'background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;'
+        elif is_waiting_manual:
+            card_wrapper_bg = 'background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;'
+        else:
+            card_wrapper_bg = ''
+        card_wrapper_style = 'margin:0 0 14px;border-collapse:collapse;' + card_wrapper_bg
         rows.append(
             f'<table width="100%" cellpadding="0" cellspacing="0" border="0" '
             f'style="{card_wrapper_style}">'

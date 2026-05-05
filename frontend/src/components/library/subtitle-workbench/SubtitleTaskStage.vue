@@ -332,10 +332,53 @@ const props = defineProps({
   }
 })
 
+const noop = () => {}
+const emptyArray = []
+const defaultCtx = {
+  subtitleQueueTasks: emptyArray,
+  visibleSubtitleTasks: emptyArray,
+  activeSubtitleTask: null,
+  selectedSubtitleTaskId: '',
+  subtitleTaskDetailPanels: emptyArray,
+  subtitleTaskManualOverview: emptyArray,
+  subtitleTaskManualFilter: 'all',
+  activeSubtitleTaskProgressLogs: emptyArray,
+  getTaskDisplayRJCode: task => task?.rjcode || task?.actual_rjcode || '未知RJ',
+  getTaskSourceRJCode: () => '',
+  getRJSubtitleTaskStatusClass: task => String(task?.status || 'idle'),
+  getRJSubtitleTaskStatusLabel: task => String(task?.status || '未知状态'),
+  getRJSubtitleProgressStatus: task => task?.current_step || '-',
+  getSubtitleTaskInspectLabel: () => '查看',
+  getSubtitleDownloadFiles: task => Array.isArray(task?.download_files) ? task.download_files : [],
+  getSubtitleMatchedPairCount: task => Number(task?.manual_match_applied_pairs || task?.matched_pair_count || 0),
+  getSubtitleAppliedWrittenFiles: task => Array.isArray(task?.written_files) ? task.written_files : [],
+  getSubtitleUnmatchedAudioCount: task => Number(task?.unmatched_audio_count || 0),
+  isHistoryRestoredSubtitleTask: () => false,
+  isSelectionBackfillSubtitleTask: () => false,
+  isSubtitleTaskSelected: task => false,
+  canCancelRJSubtitleTask: () => false,
+  canClearCurrentSubtitleTask: () => false,
+  canRerunSubtitleTask: () => false,
+  isSubtitleTaskRerunLocked: () => false,
+  formatProgressLogTime: value => value || '',
+  getProgressLogLevelLabel: value => value || '',
+  setSubtitleTaskManualFilter: noop,
+  selectSubtitleTask: noop,
+  inspectSubtitleTask: noop,
+  cancelRJSubtitleTask: noop,
+  clearCurrentSubtitleTask: noop,
+  rerunSubtitleTask: noop,
+  clearSubtitleTasksByScope: noop
+}
+const ctx = computed(() => ({
+  ...defaultCtx,
+  ...(props.ctx || {})
+}))
+
 const showOverview = computed(() => ['full', 'overview'].includes(props.mode))
 const showQueue = computed(() => ['full', 'queue'].includes(props.mode))
 const subtitleTaskDetailPanels = computed(() => (
-  Array.isArray(props.ctx?.subtitleTaskDetailPanels) ? props.ctx.subtitleTaskDetailPanels : []
+  Array.isArray(ctx.value?.subtitleTaskDetailPanels) ? ctx.value.subtitleTaskDetailPanels : []
 ))
 
 const railRefs = new Map()
@@ -362,7 +405,7 @@ function scrollRailToTask(id) {
 }
 
 watch(
-  () => props.ctx?.selectedSubtitleTaskId || props.ctx?.activeSubtitleTask?.id || '',
+  () => ctx.value?.selectedSubtitleTaskId || ctx.value?.activeSubtitleTask?.id || '',
   (id) => {
     if (!id) return
     nextTick(() => scrollRailToTask(id))

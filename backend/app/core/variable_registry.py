@@ -188,8 +188,41 @@ def build_sample_payload(event_type: str = "completed", domain: str = "import") 
                 "size_text": "1.32 GB",
                 "file_count": 7,
             }
-        ],
-        "diff_items": [
+        ],        "rj_work_cards": [
+            {
+                "rjcode": "RJ123456",
+                "title": "【早期購入特典付き】サンプル作品タイトル",
+                "circle_name": "防講潤滑剤",
+                "cover_url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ123000/RJ123456_img_main.jpg",
+                "size_text": "1.32 GB",
+                "file_count": 7,
+                "count_label": "7 个文件",
+                "changes": [{"icon": "folder", "text": "7 个文件 · 1.32 GB"}, {"icon": "clock", "text": "用时 12.4s"}],
+                "status": "success",
+            },
+            {
+                "rjcode": "RJ234567",
+                "title": "重复作品示例（橙色边框卡片）",
+                "circle_name": "示例社团",
+                "cover_url": "",
+                "size_text": "",
+                "file_count": 0,
+                "count_label": "",
+                "changes": [{"icon": "copy", "text": "检测到重复作品，等待人工确认处理"}],
+                "status": "duplicate",
+            },
+            {
+                "rjcode": "RJ345678",
+                "title": "人工处理作品示例（紫色边框卡片）",
+                "circle_name": "示例社团",
+                "cover_url": "",
+                "size_text": "",
+                "file_count": 0,
+                "count_label": "",
+                "changes": [{"icon": "alert-triangle", "text": "需要人工处理：处理文件夹名称冲突"}],
+                "status": "waiting_manual",
+            },
+        ],        "diff_items": [
             {"label": "社团名", "old": "Tsuki", "new": "Tsuki Studio"},
             {"label": "封面", "old": "", "new": "cover_v2.jpg"},
             {"label": "RJ 编号", "old": "RJ123456", "new": "RJ123456"},

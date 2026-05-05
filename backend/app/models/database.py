@@ -368,6 +368,24 @@ class ProcessedArchive(Base):
     
     def to_dict(self):
         """转换为字典"""
+        # 修复：确保 processed_at 包含时区信息，避免前端把无时区 ISO 字符串当作 UTC 解析
+        # 数据库中的 processed_at 是服务器本地时间，需要添加本地时区信息
+        processed_at_str = None
+        if self.processed_at:
+            if self.processed_at.tzinfo is None:
+                # 无时区信息，添加本地时区
+                import time
+                import os
+                # 获取本地时区偏移（秒）
+                if time.daylight and time.localtime().tm_isdst > 0:
+                    offset_seconds = -time.altzone
+                else:
+                    offset_seconds = -time.timezone
+                from datetime import timezone, timedelta
+                local_tz = timezone(timedelta(seconds=offset_seconds))
+                processed_at_str = self.processed_at.replace(tzinfo=local_tz).isoformat()
+            else:
+                processed_at_str = self.processed_at.isoformat()
         return {
             'id': self.id,
             'original_path': self.original_path,
@@ -375,7 +393,7 @@ class ProcessedArchive(Base):
             'filename': self.filename,
             'rjcode': self.rjcode,
             'file_size': self.file_size,
-            'processed_at': self.processed_at.isoformat() if self.processed_at else None,
+            'processed_at': processed_at_str,
             'process_count': self.process_count,
             'task_id': self.task_id,
             'status': self.status

@@ -42,10 +42,37 @@ def _sse_broadcast(event: dict) -> None:
             pass
 
 _NON_TERMINAL = frozenset({'pending', 'processing', 'paused', 'waiting_retry'})
+_IMPORT_TASK_KINDS = frozenset({'auto_process', 'process_existing_folder', 'extract'})
 
 
 def _task_status(task) -> str:
     return (task.status.value if hasattr(task.status, 'value') else str(task.status)).lower()
+
+
+def _task_kind(task) -> str:
+    return (task.type.value if hasattr(getattr(task, 'type', None), 'value') else str(getattr(task, 'type', '')))
+
+
+def _get_group_tasks(group_key: str) -> list:
+    try:
+        from .task_engine import get_task_engine
+        engine = get_task_engine()
+        return [t for t in list(engine.tasks.values()) if _resolve_group_key(t)[0] == group_key]
+    except Exception:
+        return []
+
+
+def _select_notification_context_task(current_task, group_key: str, group_type: str):
+    if group_type == 'task':
+        return current_task
+    group_tasks = _get_group_tasks(group_key)
+    import_tasks = [t for t in group_tasks if _task_kind(t) in _IMPORT_TASK_KINDS]
+    if not import_tasks:
+        return current_task
+    if _task_kind(current_task) in _IMPORT_TASK_KINDS:
+        return current_task
+    import_tasks.sort(key=lambda t: getattr(t, 'started_at', None) or getattr(t, 'created_at', None) or datetime.min)
+    return import_tasks[0]
 
 
 def _resolve_group_key(task) -> tuple:
@@ -128,19 +155,20 @@ def _final_event_type(group_key: str, group_type: str, current_task) -> str:
 
 def _build_notification_info(event_type: str, group_key: str, group_type: str, current_task) -> dict:
     """构建通知摘要和路由信息"""
+    context_task = _select_notification_context_task(current_task, group_key, group_type)
     try:
         from .task_center_service import TaskCenterService
         tcs = TaskCenterService()
-        serialized = tcs._serialize_engine_task(current_task)
+        serialized = tcs._serialize_engine_task(context_task)
         domain = serialized.get('domain', 'task')
         domain_label = serialized.get('domain_label') or tcs.DOMAIN_LABELS.get(domain, domain)
-        title = serialized.get('title') or serialized.get('source_label') or current_task.id[:8]
+        title = serialized.get('title') or serialized.get('source_label') or context_task.id[:8]
         rjcode = serialized.get('rjcode', '')
         route_hint = serialized.get('route_hint') or {}
     except Exception:
         domain = 'task'
         domain_label = '任务'
-        title = current_task.id[:8]
+        title = context_task.id[:8]
         rjcode = ''
         route_hint = {}
 
@@ -169,8 +197,8 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
     else:
         summary = f'{domain_label}{label_map.get(event_type, event_type)}'
 
-    meta = dict(current_task.task_metadata or {})
-    task_kind = (current_task.type.value if hasattr(current_task.type, 'value') else str(current_task.type))
+    meta = dict(context_task.task_metadata or {})
+    task_kind = _task_kind(context_task)
     if task_kind == 'circle_completion_refresh_selected':
         title, summary, rjcode = _build_refresh_selected_notification_text(meta, domain_label, label_map.get(event_type, event_type))
     return {
@@ -254,7 +282,7 @@ async def _check_and_write(task) -> None:
         f"[通知] 处理 task={tid} status={status} group_type={group_type} group_key={group_key[:32]}"
     )
 
-    if status == 'waiting_manual':
+    if status == 'waiting_manual' and group_type == 'task':
         event_key = f"waiting_manual:{group_key}:{group_run_id}"
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, _write_sync, event_key, 'waiting_manual', task, group_key, group_type, group_run_id)
@@ -363,9 +391,10 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
                         t for t in list(engine.tasks.values())
                         if _resolve_group_key(t)[0] == group_key
                     ]
-                    task_kind = info.get('task_kind') or ''
-                    # 仅对解压 / 入库类批量做聚合，其它批量保持原有 per-task 行为
-                    if task_kind in {'auto_process', 'process_existing_folder', 'extract'}:
+                    has_import_task = any(_task_kind(t) in _IMPORT_TASK_KINDS for t in group_tasks)
+                    # 只要组内包含解压 / 入库任务，就按入库批量聚合；
+                    # 当前触发通知的任务可能是字幕补配 waiting_manual，不能用它的 kind 判断。
+                    if has_import_task:
                         batch_extra = aggregate_import_batch_extras(task, group_tasks)
                 except Exception:
                     logger.warning("[通知] 批量聚合业务块失败 task=%s", getattr(task, "id", "?"), exc_info=True)

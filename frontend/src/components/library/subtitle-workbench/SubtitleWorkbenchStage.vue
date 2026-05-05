@@ -143,50 +143,35 @@
         </div>
 
         <div class="min-w-0">
-          <Transition name="sub-stage-fade" mode="out-in">
-            <SubtitleTaskStage
-              v-if="ctx.taskOverviewCtx?.subtitleQueueTasks?.length"
-              key="queue-rail"
-              :ctx="ctx.taskOverviewCtx"
-              mode="queue"
-              immersive
-            />
-            <div
-              v-else
-              key="queue-empty"
-              class="grid min-h-20 content-center gap-1.5 rounded-[14px] border border-dashed border-slate-200 bg-slate-50/40 px-3 py-2.5"
-            >
-              <div class="text-[13px] font-semibold text-slate-800">当前没有可展示任务</div>
-              <div class="text-[12px] leading-6 text-slate-500">先在左侧“扫描命中”里选目录入队，任务卡会在这里实时出现。</div>
-            </div>
-          </Transition>
+          <SubtitleTaskStage
+            v-if="ctx.taskOverviewCtx?.subtitleQueueTasks?.length"
+            :ctx="ctx.taskOverviewCtx"
+            mode="queue"
+            immersive
+          />
+          <div
+            v-else
+            class="grid min-h-20 content-center gap-1.5 rounded-[14px] border border-dashed border-slate-200 bg-slate-50/40 px-3 py-2.5"
+          >
+            <div class="text-[13px] font-semibold text-slate-800">当前没有可展示任务</div>
+            <div class="text-[12px] leading-6 text-slate-500">先在左侧“扫描命中”里选目录入队，任务卡会在这里实时出现。</div>
+          </div>
         </div>
 
         <div class="min-h-0 min-w-0">
-          <Transition name="sub-stage-fade" mode="out-in">
-            <SubtitleTaskStage
-              v-if="ctx.activeStage === 'overview'"
-              key="stage-overview"
-              :ctx="ctx.taskOverviewCtx"
-              mode="overview"
-              immersive
-            />
-            <SubtitleInspectorWorkbench
-              v-else-if="ctx.activeStage === 'pairing'"
-              key="stage-pairing"
-              :ctx="ctx.workbenchCtx"
-              stage-mode="pairing"
-              :show-delete-precheck="false"
-              immersive
-            />
-            <SubtitleInspectorWorkbench
-              v-else
-              key="stage-tree"
-              :ctx="ctx.workbenchCtx"
-              stage-mode="tree"
-              immersive
-            />
-          </Transition>
+          <SubtitleTaskStage
+            v-if="ctx.activeStage === 'overview'"
+            :ctx="ctx.taskOverviewCtx"
+            mode="overview"
+            immersive
+          />
+          <SubtitleInspectorWorkbench
+            v-else
+            :ctx="ctx.workbenchCtx"
+            :stage-mode="ctx.activeStage === 'pairing' ? 'pairing' : 'tree'"
+            :show-delete-precheck="ctx.activeStage !== 'pairing'"
+            immersive
+          />
         </div>
       </div>
 

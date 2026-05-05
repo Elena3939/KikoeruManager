@@ -9,6 +9,7 @@ import httpx
 import inspect
 import json
 import logging
+import random
 import re
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, field
@@ -56,6 +57,10 @@ class DLsiteApiService:
         self.cache: Dict[str, Dict] = {}  # 缓存 API 响应
         self.cache_ttl = timedelta(hours=24)  # 缓存 24 小时
         self._http_semaphore: Optional[asyncio.Semaphore] = None  # 并发限制，惰性初始化
+        # 进行中的 HTTP 请求 Task，key=url，实现并发去重（参考 view.txt WorkPromise 机制）
+        self._inflight: Dict[str, asyncio.Task] = {}
+        # translation_info 专项缓存，key=workno，避免重复走 get_product_info
+        self._translation_info_cache: Dict[str, tuple] = {}
 
     def _normalize_workno(self, rjcode: str) -> str:
         value = str(rjcode or '').strip().upper()
@@ -642,10 +647,13 @@ class DLsiteApiService:
 
             client_kwargs = {
                 'headers': self._get_browser_headers('application/json, text/plain, */*'),
-                'timeout': httpx.Timeout(30.0, connect=10.0),
+                # pool=None: 依赖 semaphore 限制并发，不再让 httpx 抛 PoolTimeout
+                # connect/read 分别设置以便精确控制各阶段超时
+                'timeout': httpx.Timeout(connect=15.0, read=30.0, write=10.0, pool=None),
                 'verify': False,  # 避免部分网络环境下的 SSL 问题
                 'follow_redirects': True,
-                'limits': httpx.Limits(max_connections=50, max_keepalive_connections=20),
+                # 连接数与 semaphore 上限对齐，避免池内积压空闲连接
+                'limits': httpx.Limits(max_connections=10, max_keepalive_connections=5),
             }
             if proxy_url:
                 async_client_params = inspect.signature(httpx.AsyncClient.__init__).parameters
@@ -661,25 +669,37 @@ class DLsiteApiService:
         return self.client
 
     async def _guarded_get(self, url: str, **kwargs) -> httpx.Response:
-        """带并发限制的 HTTP GET，PoolTimeout 时自动重试一次"""
+        """带并发限制的 HTTP GET，超时时指数退避重试（最多 3 次）。
+
+        并发上限设为 3，与 DLsite 的隐式速率限制对齐，避免连接被服务端挂起。
+        每次进入 semaphore 后加随机抖动延迟，分散请求时序，降低被限流概率。
+        """
         if self._http_semaphore is None:
-            self._http_semaphore = asyncio.Semaphore(15)  # 最多 15 个并发 DLsite 请求
+            # 最多 3 个并发 DLsite 请求，对标 kikoeru 的低并发策略
+            self._http_semaphore = asyncio.Semaphore(3)
         client = await self._get_client()
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 async with self._http_semaphore:
+                    # 随机抖动 0.2~0.8s，避免多个协程同时爆发请求
+                    await asyncio.sleep(random.uniform(0.2, 0.8))
                     return await client.get(url, **kwargs)
-            except httpx.PoolTimeout:
-                if attempt == 0:
-                    logger.warning("[DLsite] 连接池超时，等待 1s 后重试: %s", url)
-                    await asyncio.sleep(1.0)
+            except (httpx.PoolTimeout, httpx.ReadTimeout, httpx.ConnectTimeout) as exc:
+                exc_name = type(exc).__name__
+                wait = 2.0 * (2 ** attempt)  # 2s → 4s → 8s
+                if attempt < 2:
+                    logger.warning(
+                        "[DLsite] %s，等待 %.0fs 后重试（第 %d 次）: %s",
+                        exc_name, wait, attempt + 1, url,
+                    )
+                    await asyncio.sleep(wait)
                     continue
-                logger.error("[DLsite] 连接池超时（重试后仍失败）: %s", url)
+                logger.error("[DLsite] %s（重试后仍失败）: %s", exc_name, url)
                 raise
         raise RuntimeError("unreachable")
 
     async def _fetch_api(self, url: str) -> Optional[Dict]:
-        """从 DLsite API 获取数据"""
+        """从 DLsite API 获取数据，带内存缓存和并发去重（同一 URL 只发一次 HTTP 请求）"""
         cache_key = url
 
         if cache_key in self.cache:
@@ -688,6 +708,23 @@ class DLsiteApiService:
                 logger.debug("[DLsite] 使用缓存数据: %s", url)
                 return cached_data['data']
 
+        # 进行中的请求复用：若已有相同 URL 的请求在飞，直接等待其结果，不再新发
+        if cache_key in self._inflight:
+            logger.debug("[DLsite] 复用进行中的请求: %s", url)
+            try:
+                return await asyncio.shield(self._inflight[cache_key])
+            except Exception:
+                return None
+
+        task = asyncio.ensure_future(self._do_fetch_api(url))
+        self._inflight[cache_key] = task
+        try:
+            return await task
+        finally:
+            self._inflight.pop(cache_key, None)
+
+    async def _do_fetch_api(self, url: str) -> Optional[Dict]:
+        """实际 HTTP 请求逻辑，由 _fetch_api 唯一调用"""
         logger.info("[DLsite] 正在请求 API: %s", url)
 
         try:
@@ -698,7 +735,7 @@ class DLsiteApiService:
 
             if response.status_code == 200:
                 data = response.json()
-                self.cache[cache_key] = {
+                self.cache[url] = {
                     'data': data,
                     'timestamp': datetime.now()
                 }
@@ -733,25 +770,38 @@ class DLsiteApiService:
         返回:
             TranslationInfo: 包含 is_original, is_parent, is_child 等信息
         """
-        product_info = await self.get_product_info(rjcode)
+        workno = self._normalize_workno(rjcode)
+        if not workno:
+            return TranslationInfo(is_original=True)
+
+        # 专项缓存命中（translation_info 独立缓存，避免每次走完整 get_product_info）
+        if workno in self._translation_info_cache:
+            cached_result, cached_ts = self._translation_info_cache[workno]
+            if datetime.now() - cached_ts < self.cache_ttl:
+                logger.debug("[DLsite] translation_info 缓存命中: %s", workno)
+                return cached_result
+
+        product_info = await self.get_product_info(workno)
         if product_info and product_info.get('product'):
             translation_info = dict((product_info.get('product') or {}).get('translation_info', {}) or {})
-
-            return TranslationInfo(
+            result = TranslationInfo(
                 is_original=translation_info.get('is_original', False),
                 is_parent=translation_info.get('is_parent', False),
                 is_child=translation_info.get('is_child', False),
                 parent_workno=translation_info.get('parent_workno'),
                 original_workno=translation_info.get('original_workno'),
                 child_worknos=[
-                    self._normalize_workno(workno)
-                    for workno in list(translation_info.get('child_worknos') or [])
-                    if self._normalize_workno(workno)
+                    self._normalize_workno(w)
+                    for w in list(translation_info.get('child_worknos') or [])
+                    if self._normalize_workno(w)
                 ],
                 lang=translation_info.get('lang', 'JPN')
             )
-        
-        return TranslationInfo(is_original=True)
+        else:
+            result = TranslationInfo(is_original=True)
+
+        self._translation_info_cache[workno] = (result, datetime.now())
+        return result
     
     async def get_linked_works(self, rjcode: str) -> Dict[str, LinkedWork]:
         """

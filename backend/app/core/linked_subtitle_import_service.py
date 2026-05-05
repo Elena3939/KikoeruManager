@@ -180,6 +180,7 @@ class LinkedSubtitleImportService:
                 task_type=TaskType.EXTRACT,
                 source_path=archive_path,
                 auto_classify=False,
+                metadata={"subtitle_probe_mode": True},
             )
             extracted_dir = await self.extract_service.extract(probe_task)
             if not extracted_dir or not os.path.isdir(extracted_dir):
@@ -212,6 +213,7 @@ class LinkedSubtitleImportService:
                 }
 
             stage_dir = self._create_archive_stage_dir(archive_path)
+            staged_subtitles: List[Dict[str, Any]] = []
             for item in extracted_subtitles:
                 relative_path = str(item.get("relative_path") or item.get("name") or "").strip().replace("\\", "/")
                 if not relative_path:
@@ -219,15 +221,23 @@ class LinkedSubtitleImportService:
                 destination = os.path.join(stage_dir, *relative_path.split("/"))
                 os.makedirs(os.path.dirname(destination), exist_ok=True)
                 await asyncio.to_thread(shutil.copy2, item.get("path") or "", destination)
+                staged_subtitles.append({
+                    "name": os.path.basename(destination),
+                    "path": destination,
+                    "relative_path": relative_path,
+                    "source_name": item.get("source_name") or item.get("name") or os.path.basename(destination),
+                    "display_name": item.get("display_name") or os.path.basename(destination),
+                })
 
             logger.info(
                 "[字幕补配预检] 临时解包扫描到字幕并已复制到工作区: source=%s extracted_dir=%s stage_dir=%s subtitle_count=%s",
                 archive_path,
                 extracted_dir,
                 stage_dir,
-                len(extracted_subtitles),
+                len(staged_subtitles),
             )
-            return stage_dir, await asyncio.to_thread(self._scan_source_subtitles, stage_dir, stage_dir), {
+            staged_subtitles.sort(key=lambda current: current.get("relative_path") or current.get("name") or "")
+            return stage_dir, staged_subtitles, {
                 "status": "ok",
                 "reason": "",
             }
@@ -1177,8 +1187,10 @@ class LinkedSubtitleImportService:
             subtitle_dir = f"{folder_path.rstrip('/')}/subtitles"
         else:
             folder = Path(folder_path)
-            audio_count = len(self.subtitle_service._collect_audio_files(folder))
-            existing_subtitle_count = self.subtitle_service._count_existing_subtitles(folder)
+            audio_count, existing_subtitle_count = await asyncio.to_thread(
+                self._quick_count_local_candidate_files,
+                folder,
+            )
             folder_name = folder.name
             subtitle_dir = os.path.join(folder_path, "subtitles")
 
@@ -1201,6 +1213,38 @@ class LinkedSubtitleImportService:
             "file_samples": file_samples,
             "ready_for_import": existing_subtitle_count == 0,
         }
+
+    def _quick_count_local_candidate_files(self, folder: Path) -> Tuple[int, int]:
+        audio_count = 0
+        existing_subtitle_count = 0
+        try:
+            for root, dirs, files in os.walk(folder):
+                dirs[:] = [name for name in dirs if name.lower() != "subtitles"]
+                for file in files:
+                    if os.path.splitext(file)[1].lower() in self.subtitle_service.AUDIO_EXTENSIONS:
+                        audio_count += 1
+                        if audio_count > 1:
+                            break
+                if audio_count > 1:
+                    break
+        except (FileNotFoundError, PermissionError, OSError):
+            audio_count = 0
+
+        subtitle_dir = folder / "subtitles"
+        if subtitle_dir.is_dir():
+            try:
+                for _root, _dirs, files in os.walk(subtitle_dir):
+                    for file in files:
+                        if os.path.splitext(file)[1].lower() in self.subtitle_service.SUBTITLE_EXTENSIONS:
+                            existing_subtitle_count += 1
+                            if existing_subtitle_count > 1:
+                                break
+                    if existing_subtitle_count > 1:
+                        break
+            except (FileNotFoundError, PermissionError, OSError):
+                existing_subtitle_count = 0
+
+        return audio_count, existing_subtitle_count
 
     async def summarize_target_folder(
         self,
@@ -1292,13 +1336,27 @@ class LinkedSubtitleImportService:
 
         candidates: List[Dict[str, Any]] = []
         seen_paths: set[Tuple[str, str]] = set()
+        summary_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
+
+        async def summarize_cached(library_id: str, folder_path: str) -> Optional[Dict[str, Any]]:
+            normalized_library_id = str(library_id or "").strip()
+            normalized_folder_path = str(folder_path or "").strip()
+            if not normalized_library_id or not normalized_folder_path:
+                return None
+            cache_key = (normalized_library_id, normalized_folder_path)
+            if cache_key in summary_cache:
+                cached = summary_cache[cache_key]
+                return dict(cached) if isinstance(cached, dict) else None
+            summary = await self._summarize_candidate(normalized_library_id, normalized_folder_path)
+            summary_cache[cache_key] = dict(summary) if isinstance(summary, dict) else None
+            return summary
 
         for library_id, folder_path in self._collect_snapshot_candidates(
             target_rjcode,
             preferred_library_id=preferred_library_id,
         ):
             try:
-                summary = await self._summarize_candidate(library_id, folder_path)
+                summary = await summarize_cached(library_id, folder_path)
             except Exception as exc:
                 logger.warning("[字幕补配] 读取快照目标目录摘要失败: library=%s path=%s error=%s", library_id, folder_path, exc)
                 continue
@@ -1320,6 +1378,9 @@ class LinkedSubtitleImportService:
             )
             direct_summary = await self._locate_direct_rj_candidate(library_id, target_rjcode)
             if direct_summary:
+                direct_folder_path = str(direct_summary.get("folder_path") or "").strip()
+                if direct_folder_path:
+                    summary_cache[(library_id, direct_folder_path)] = dict(direct_summary)
                 return {"summaries": [direct_summary], "uncertain": False}
             try:
                 search_items = await self._search_library_browser_candidates(library_id, target_rjcode)
@@ -1343,7 +1404,7 @@ class LinkedSubtitleImportService:
                     continue
 
                 try:
-                    summary = await self._summarize_candidate(library_id, folder_path)
+                    summary = await summarize_cached(library_id, folder_path)
                 except Exception as exc:
                     logger.warning("[字幕补配] 读取目标目录摘要失败: library=%s path=%s error=%s", library_id, folder_path, exc)
                     continue
@@ -1430,9 +1491,13 @@ class LinkedSubtitleImportService:
                     remote_search_pending = True
                     logger.info("[字幕补配] 远程目标目录暂未检出: rj=%s", target_rjcode)
             finally:
+                cancelled_tasks = []
                 for task in remote_tasks:
                     if not task.done():
                         task.cancel()
+                        cancelled_tasks.append(task)
+                if cancelled_tasks:
+                    await asyncio.gather(*cancelled_tasks, return_exceptions=True)
 
         candidates.sort(
             key=lambda item: (
@@ -1521,52 +1586,92 @@ class LinkedSubtitleImportService:
         source_label: str,
         subtitle_count: int,
         preferred_library_id: Optional[str],
+        _prefetched_translation: Optional[Tuple[Any, str]] = None,
+        _prefetched_target_kikoeru=None,
+        is_small_archive: bool = False,
     ) -> Dict[str, Any]:
         source_rjcode = self._extract_rjcode(source_rjcode)
-        translation_info = await self.dlsite_service.get_translation_info(source_rjcode) if source_rjcode else None
-        resolved_target_rjcode = await self._resolve_translation_target_rjcode(source_rjcode, translation_info)
+        if _prefetched_translation is not None:
+            translation_info, resolved_target_rjcode = _prefetched_translation
+        else:
+            translation_info = await self.dlsite_service.get_translation_info(source_rjcode) if source_rjcode else None
+            resolved_target_rjcode = await self._resolve_translation_target_rjcode(source_rjcode, translation_info)
         is_translation_work = bool(source_rjcode and resolved_target_rjcode and resolved_target_rjcode != source_rjcode)
         # Some manually made subtitle packs are placed directly into the original RJ folder.
         # When the source is not a translation work but clearly contains subtitle files,
         # we still treat it as a linked subtitle source and supplement the same RJ work.
         is_manual_subtitle_source = bool(source_rjcode and subtitle_count > 0 and not is_translation_work)
-        target_rjcode = resolved_target_rjcode or (source_rjcode if is_manual_subtitle_source else "")
+        # 小型压缩包：即使包内未扫到字幕文件，也先用 source_rjcode 查 Kikoeru 以判断是否需要补配。
+        # 只有在 Kikoeru 确认目标作品存在、无字幕、非空壳后才强制进入补配路由。
+        if is_small_archive and source_rjcode and not is_translation_work and not is_manual_subtitle_source:
+            # 用 source_rjcode 作为临时 target，下方查 Kikoeru 后再修正
+            target_rjcode = source_rjcode
+        else:
+            target_rjcode = resolved_target_rjcode or (source_rjcode if is_manual_subtitle_source else "")
         is_linked_subtitle_source = bool(is_translation_work or is_manual_subtitle_source)
 
-        source_kikoeru_result = None
-        source_exists_in_kikoeru = False
-        source_kikoeru_query_ok = not bool(source_rjcode)
-        if source_rjcode:
+        # 并发查 Kikoeru：来源作品 + 目标作品（target 若已预取则直接用）
+        async def _safe_kikoeru(rjcode: str) -> Tuple[Any, bool]:
             try:
-                source_kikoeru_result = await self.kikoeru_service.check_duplicate(source_rjcode, use_cache=True)
-                source_exists_in_kikoeru = bool(source_kikoeru_result and source_kikoeru_result.is_found)
-                source_kikoeru_query_ok = self._is_kikoeru_result_reliable(source_kikoeru_result)
+                r = await self.kikoeru_service.check_duplicate(rjcode, use_cache=True)
+                return r, self._is_kikoeru_result_reliable(r)
             except Exception as exc:
-                source_kikoeru_query_ok = False
-                logger.warning("[字幕补配] 查询来源作品 Kikoeru 失败: rj=%s error=%s", source_rjcode, exc)
+                logger.warning("[字幕补配] Kikoeru 查询失败: rj=%s error=%s", rjcode, exc)
+                return None, False
 
-        target_kikoeru_result = None
-        target_exists_in_kikoeru = False
-        target_has_subtitle_in_kikoeru = False
-        target_needs_subtitle_in_kikoeru = False
-        target_kikoeru_query_ok = not bool(target_rjcode)
-        if target_rjcode:
-            try:
-                target_kikoeru_result = await self.kikoeru_service.check_duplicate(target_rjcode, use_cache=True)
-                target_exists_in_kikoeru = bool(target_kikoeru_result and target_kikoeru_result.is_found)
-                target_has_subtitle_in_kikoeru = bool(target_kikoeru_result and getattr(target_kikoeru_result, "has_lyric_hint", False))
-                target_needs_subtitle_in_kikoeru = bool(target_exists_in_kikoeru and not target_has_subtitle_in_kikoeru)
-                target_kikoeru_query_ok = self._is_kikoeru_result_reliable(target_kikoeru_result)
-            except Exception as exc:
-                target_kikoeru_query_ok = False
-                logger.warning("[字幕补配] 查询 Kikoeru 失败: rj=%s error=%s", target_rjcode, exc)
+        async def _noop_kikoeru() -> Tuple[None, bool]:
+            return None, True
 
+        source_coro = _safe_kikoeru(source_rjcode) if source_rjcode else _noop_kikoeru()
+        if _prefetched_target_kikoeru is not None:
+            (source_kikoeru_result, source_kikoeru_query_ok) = await source_coro
+            target_kikoeru_result = _prefetched_target_kikoeru
+            target_kikoeru_query_ok = (
+                self._is_kikoeru_result_reliable(_prefetched_target_kikoeru) if target_rjcode else True
+            )
+        else:
+            target_coro = _safe_kikoeru(target_rjcode) if target_rjcode else _noop_kikoeru()
+            (source_kikoeru_result, source_kikoeru_query_ok), (target_kikoeru_result, target_kikoeru_query_ok) = \
+                await asyncio.gather(source_coro, target_coro)
+
+        source_exists_in_kikoeru = bool(source_kikoeru_result and source_kikoeru_result.is_found)
+        target_exists_in_kikoeru = bool(target_kikoeru_result and target_kikoeru_result.is_found)
+        target_has_subtitle_in_kikoeru = bool(target_kikoeru_result and getattr(target_kikoeru_result, "has_lyric_hint", False))
+        target_needs_subtitle_in_kikoeru = bool(target_exists_in_kikoeru and not target_has_subtitle_in_kikoeru)
         kikoeru_route_confident = bool(source_kikoeru_query_ok and target_kikoeru_query_ok)
+        # 空壳检测：Kikoeru 找到该作品但文件树为空（total_track_count=0 且已成功查询）
+        _target_total_track = int(getattr(target_kikoeru_result, "total_track_count", -1) or -1) if target_kikoeru_result else -1
+        _target_check_source = str(getattr(target_kikoeru_result, "subtitle_check_source", "") or "") if target_kikoeru_result else ""
+        kikoeru_target_is_empty_shell = bool(
+            target_exists_in_kikoeru
+            and _target_check_source == "tracks"
+            and _target_total_track == 0
+        )
+        # 小型压缩包补配强制路由：Kikoeru 确认目标作品存在、无字幕、非空壳 → 强制视为 manual_subtitle_source。
+        # 此时无论压缩包内是否已扫到字幕文件，都进入字幕补配队列，由后续人工筛选 / 自动配对处理。
+        if (
+            is_small_archive
+            and not is_translation_work
+            and not is_manual_subtitle_source
+            and target_exists_in_kikoeru
+            and not target_has_subtitle_in_kikoeru
+            and not kikoeru_target_is_empty_shell
+            and kikoeru_route_confident
+            and source_rjcode
+        ):
+            is_manual_subtitle_source = True
+            is_linked_subtitle_source = True
+            logger.info(
+                "[字幕补配预检] 小型压缩包强制进入补配路由: source_rj=%s target_rj=%s",
+                source_rjcode,
+                target_rjcode,
+            )
 
+        # 只有确认是"有可补配字幕的关联作品"时才查候选目录，非翻译/非手动字幕包时跳过
         candidate_bundle = await self.search_target_candidates(
             target_rjcode,
             preferred_library_id=preferred_library_id,
-        ) if target_rjcode else []
+        ) if target_rjcode and is_linked_subtitle_source else []
         if isinstance(candidate_bundle, dict):
             candidates = list(candidate_bundle.get("candidates") or [])
             candidate_search_status = str(candidate_bundle.get("search_status") or "")
@@ -1600,16 +1705,17 @@ class LinkedSubtitleImportService:
                 and subtitle_count > 0
             )
         elif is_manual_subtitle_source:
-            # 手动字幕包如果 Kikoeru 明确未命中原作，就按新作品处理；
-            # 只有“原作存在但缺字幕”时才进入字幕补配工作台。
-            should_queue_pending = (
-                bool(source_rjcode)
-                and subtitle_count > 0
-                and (
-                    target_needs_subtitle_in_kikoeru
-                    or not kikoeru_route_confident
+            # 小包强制激活路径：subtitle_count 可能为 0（包内字幕未在预检阶段提取），
+            # 只要 Kikoeru 确认目标需要字幕就允许进队列，后续在字幕补配页再决定。
+            _manual_needs_subtitle = target_needs_subtitle_in_kikoeru or not kikoeru_route_confident
+            if is_small_archive and not subtitle_count:
+                should_queue_pending = bool(source_rjcode) and _manual_needs_subtitle
+            else:
+                should_queue_pending = (
+                    bool(source_rjcode)
+                    and subtitle_count > 0
+                    and _manual_needs_subtitle
                 )
-            )
 
         stage_reason = ""
         if not source_rjcode:
@@ -1618,6 +1724,8 @@ class LinkedSubtitleImportService:
             stage_reason = "未命中任何关联作品，按新作直接解压入库"
         elif not kikoeru_route_confident:
             stage_reason = ""
+        elif kikoeru_target_is_empty_shell:
+            stage_reason = "字幕补配时发现服务器作品为空壳"
         elif not is_linked_subtitle_source:
             stage_reason = "当前作品不是可补配到原作的翻译作品"
         elif target_has_subtitle_in_kikoeru:
@@ -1658,6 +1766,7 @@ class LinkedSubtitleImportService:
             "kikoeru_checked_rjcode": target_rjcode,
             "kikoeru_has_work": target_exists_in_kikoeru,
             "kikoeru_needs_subtitle": target_needs_subtitle_in_kikoeru,
+            "kikoeru_target_is_empty_shell": kikoeru_target_is_empty_shell,
             "kikoeru_source_query_ok": source_kikoeru_query_ok,
             "kikoeru_target_query_ok": target_kikoeru_query_ok,
             "kikoeru_route_confident": kikoeru_route_confident,
@@ -1705,7 +1814,74 @@ class LinkedSubtitleImportService:
             archive_path,
             getattr(archive_info, "inferred_rjcode", "") if archive_info else "",
         )
-        stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
+
+        _subtitle_size_threshold = int(self.extract_service.NESTED_SUBTITLE_SIZE_THRESHOLD)
+        try:
+            _archive_size = os.path.getsize(archive_path)
+        except OSError:
+            _archive_size = 0
+        _is_small_archive = (0 < _archive_size < _subtitle_size_threshold)
+
+        stage_dir: str = ""
+        source_subtitles: List[Dict[str, Any]] = []
+        probe_result: Dict[str, Any] = {}
+
+        if 0 < _archive_size < _subtitle_size_threshold:
+            # 小包（< 10MB）：先解压探查字幕，再查 DLsite 确认翻译作关系，
+            # Kikoeru 字幕状态由 _build_common_preview 内部并发查询。
+            stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
+            logger.info(
+                "[字幕补配预检] 小型压缩包先解压后判断路由: source=%s source_rj=%s"
+                " size=%.1fKB subtitle_count=%s",
+                archive_path,
+                source_rjcode,
+                _archive_size / 1024,
+                len(source_subtitles),
+            )
+            translation_info = await self.dlsite_service.get_translation_info(source_rjcode) if source_rjcode else None
+            resolved_target_rjcode = await self._resolve_translation_target_rjcode(source_rjcode, translation_info)
+            prefetched_target_kikoeru = None
+            prefetched_target_has_subtitle = False
+        else:
+            # 大包：Step 1 查 DLsite 确认是否翻译作品
+            translation_info = await self.dlsite_service.get_translation_info(source_rjcode) if source_rjcode else None
+            resolved_target_rjcode = await self._resolve_translation_target_rjcode(source_rjcode, translation_info)
+            is_translation_work = bool(source_rjcode and resolved_target_rjcode and resolved_target_rjcode != source_rjcode)
+
+            # Step 2：如果是翻译作品，先查 Kikoeru 确认原作是否已有字幕，有字幕就不需要解包
+            prefetched_target_kikoeru = None
+            prefetched_target_has_subtitle = False
+            if is_translation_work and resolved_target_rjcode:
+                try:
+                    prefetched_target_kikoeru = await self.kikoeru_service.check_duplicate(
+                        resolved_target_rjcode, use_cache=True
+                    )
+                    prefetched_target_has_subtitle = bool(
+                        prefetched_target_kikoeru and getattr(prefetched_target_kikoeru, "has_lyric_hint", False)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[字幕补配预检] 预查 Kikoeru target 失败: rj=%s error=%s", resolved_target_rjcode, exc
+                    )
+
+            # Step 3：决定是否解包——翻译作品且原作缺字幕才解包
+            if is_translation_work and not prefetched_target_has_subtitle:
+                stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
+            elif not is_translation_work:
+                logger.info(
+                    "[字幕补配预检] 大型非翻译作品压缩包，跳过临时解包: source=%s source_rj=%s size=%s",
+                    archive_path,
+                    source_rjcode,
+                    _archive_size,
+                )
+            else:
+                logger.info(
+                    "[字幕补配预检] 原作已有字幕，跳过临时解包: source=%s source_rj=%s target_rj=%s",
+                    archive_path,
+                    source_rjcode,
+                    resolved_target_rjcode,
+                )
+
         subtitle_entries = [item.get("relative_path") or item.get("name") or "" for item in source_subtitles]
         logger.info(
             "[字幕补配预检] 压缩包来源扫描完成: source=%s source_rj=%s subtitle_count=%s probe_status=%s probe_reason=%s subtitle_entries=%s",
@@ -1722,6 +1898,9 @@ class LinkedSubtitleImportService:
             source_label=os.path.basename(archive_path),
             subtitle_count=len(source_subtitles),
             preferred_library_id=preferred_library_id,
+            _prefetched_translation=(translation_info, resolved_target_rjcode),
+            _prefetched_target_kikoeru=prefetched_target_kikoeru,
+            is_small_archive=_is_small_archive,
         )
         preview.update({
             "mode": "archive",
@@ -2018,9 +2197,9 @@ class LinkedSubtitleImportService:
                         archive_path,
                         source_dir,
                     )
-                    temp_dir, source_subtitles = await self._collect_archive_subtitles_to_stage(archive_path)
+                    temp_dir, source_subtitles, _probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
             else:
-                temp_dir, source_subtitles = await self._collect_archive_subtitles_to_stage(archive_path)
+                temp_dir, source_subtitles, _probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
             if self._should_direct_import_to_empty_candidate(preview, target_candidate):
                 import_result = await self._direct_import_source_subtitles_to_target(
                     source_subtitles=source_subtitles,
@@ -2502,10 +2681,12 @@ class LinkedSubtitleImportService:
             or (task.task_metadata or {}).get("inferred_rjcode")
             or ""
         )
+        task.update_progress(5, "预检中（查询翻译信息...）")
         preview = await self.preview_archive_import(
             task.source_path,
             source_rjcode_hint=hinted_rjcode,
         )
+        task.update_progress(5, "预检中（确认字幕候选...）")
         should_create_pending = self._should_create_pending_import(preview)
         if should_create_pending:
             preview = await self._stage_archive_subtitles_for_preview(task.source_path, preview)
@@ -2527,6 +2708,12 @@ class LinkedSubtitleImportService:
             self._can_execute_pending_import(preview),
         )
         if not should_create_pending:
+            # 预检未命中字幕补配路径，立即清理临时 stage 目录
+            stage_dir = str(
+                preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or ""
+            ).strip()
+            if stage_dir:
+                self._cleanup_stage_dir(stage_dir)
             return {
                 "handled": False,
                 "preview": preview,

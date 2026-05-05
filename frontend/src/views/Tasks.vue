@@ -523,6 +523,30 @@ function buildTreeRows(treeItems = []) {
       parentKey = joined
     })
   }
+  // 压掉重复同名 / RJ 前缀的包装目录
+  const dedupeTreeDirs = (nodes) => {
+    const dirKey = (name) => String(name || '').toLowerCase().replace(/rj0?/g, '').replace(/[^a-z0-9]/g, '')
+    const walk = (items, parentName = '') => {
+      const out = []
+      const pk = dirKey(parentName)
+      for (const item of items || []) {
+        if (!item.children || !item.children.length) { out.push(item); continue }
+        item.children = walk(item.children, item.label)
+        const ck = dirKey(item.label)
+        if (pk && ck && (ck === pk || ck.includes(pk) || pk.includes(ck))) {
+          out.push(...item.children)
+        } else if (item.children.length === 1 && item.children[0].children && item.children[0].children.length) {
+          const childKey = dirKey(item.children[0].label)
+          if (childKey && ck && (childKey === ck || childKey.includes(ck) || ck.includes(childKey))) {
+            out.push({ ...item.children[0], label: item.label || item.children[0].label, key: item.key })
+          } else { out.push(item) }
+        } else { out.push(item) }
+      }
+      return out
+    }
+    return walk(nodes)
+  }
+  const dedupedRoots = dedupeTreeDirs(roots)
   const compareNodes = (left, right) => {
     if (left.type !== right.type) return left.type === 'dir' ? -1 : 1
     return left.label.localeCompare(right.label, 'zh-Hans-CN-u-kn-true')
@@ -551,7 +575,7 @@ function buildTreeRows(treeItems = []) {
       if (hasChildren && expanded) walk(node.children, depth + 1)
     }
   }
-  walk(roots)
+  walk(dedupedRoots)
   return rows
 }
 
@@ -806,13 +830,12 @@ function buildTaskFileTreeSections(item) {
 
   if (Array.isArray(metadata.file_tree_items) && metadata.file_tree_items.length) {
     sourceItems.push(...mapFileTreeItems(item))
-  }
-  if (Array.isArray(metadata.upload_files) && metadata.upload_files.length) {
+  } else if (
+    (Array.isArray(metadata.upload_files) && metadata.upload_files.length) ||
+    (Array.isArray(metadata.uploaded_files) && metadata.uploaded_files.length)
+  ) {
     sourceItems.push(...mapUploadedFiles(item))
-  } else if (Array.isArray(metadata.uploaded_files) && metadata.uploaded_files.length) {
-    sourceItems.push(...mapUploadedFiles(item))
-  }
-  if (Array.isArray(metadata.download_files) && metadata.download_files.length) {
+  } else if (Array.isArray(metadata.download_files) && metadata.download_files.length) {
     sourceItems.push(...mapDownloadFiles(item))
   }
   if (!sourceItems.length && !removedItems.length) return []

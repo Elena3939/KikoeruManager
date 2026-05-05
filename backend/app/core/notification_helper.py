@@ -131,7 +131,7 @@ def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
     rj_work_cards: list[dict] = []
     card_status = "failed" if error else "success"
     if rjcode or work_title or cover_url:
-        # 卡片下方的元信息行：用 lucide 图标 + 文本，与文件树视觉一致
+        # 卡片下方的元信息行：用 lucide SVG 图标 + 文本，与文件树视觉一致
         card_changes: list[dict[str, str]] = []
         if error:
             card_changes.append({"icon": "x-circle", "text": f"处理失败：{error}"})
@@ -159,15 +159,6 @@ def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
             "status": card_status,
             "error": str(error or ""),
         })
-
-    # 将当前任务的 file_tree 包进以 RJ 为根的文件夹节点，便于批量聚合时按 RJ 分组展示
-    root_label = rjcode or work_title or "入库作品"
-    if file_tree:
-        file_tree = [{
-            "name": root_label,
-            "status": "filtered" if error else "kept",
-            "children": file_tree,
-        }]
 
     # 构建日志（追加密码信息）
     recent_logs = build_recent_logs(task, max_lines=30)
@@ -225,11 +216,30 @@ def aggregate_import_batch_extras(primary_task, group_tasks) -> dict[str, Any]:
         seen_ids.add(getattr(t, "id", None))
         ordered_tasks.append(t)
 
+    subtitle_manual_by_rj: dict[str, dict[str, Any]] = {}
     for t in ordered_tasks:
         meta = dict(getattr(t, "task_metadata", None) or {})
+        task_kind = (t.type.value if hasattr(getattr(t, "type", None), "value") else str(getattr(t, "type", "")))
+        if task_kind != "rj_subtitle_fetch":
+            continue
+        if not bool(meta.get("awaiting_manual_match")) or bool(meta.get("manual_match_completed")):
+            continue
+        rjcode = str(meta.get("target_rjcode") or meta.get("rjcode") or meta.get("actual_rjcode") or "").strip().upper()
+        if not rjcode:
+            continue
+        downloaded = _safe_int(meta.get("downloaded_count")) or len(meta.get("download_files") or []) or len(meta.get("written_files") or [])
+        subtitle_manual_by_rj[rjcode] = {
+            "downloaded": downloaded,
+            "message": str(getattr(t, "current_step", "") or "等待字幕筛选与配对").strip(),
+        }
+
+    for t in ordered_tasks:
+        meta = dict(getattr(t, "task_metadata", None) or {})
+        task_kind = (t.type.value if hasattr(getattr(t, "type", None), "value") else str(getattr(t, "type", "")))
+        if task_kind not in {"auto_process", "process_existing_folder", "extract"}:
+            continue
         extra = dict(meta.get("notification_extra") or {})
         if not extra:
-            task_kind = (t.type.value if hasattr(getattr(t, "type", None), "value") else str(getattr(t, "type", "")))
             if task_kind in {"auto_process", "process_existing_folder", "extract"}:
                 extra = build_import_notification_extra(t, error=str(getattr(t, "error_message", "") or ""))
             else:
@@ -265,6 +275,25 @@ def aggregate_import_batch_extras(primary_task, group_tasks) -> dict[str, Any]:
             status = str(card.get("status") or ("failed" if task_error else "success"))
             if status == "failed" and not card.get("error") and task_error:
                 card = {**card, "error": task_error, "status": "failed"}
+            card_rjcode = str(card.get("rjcode") or "").strip().upper()
+            manual_info = subtitle_manual_by_rj.get(card_rjcode)
+            if manual_info and status != "failed":
+                changes = list(card.get("changes") or [])
+                downloaded = int(manual_info.get("downloaded") or 0)
+                subtitle_text = "待字幕补配"
+                if downloaded:
+                    subtitle_text += f"：已导入原始字幕 {downloaded} 个，等待人工配对"
+                else:
+                    subtitle_text += "：等待人工配对"
+                changes.append({"icon": "link", "text": subtitle_text})
+                card = {
+                    **card,
+                    "status": "warning",
+                    "subtitle_status": "waiting_manual",
+                    "subtitle_status_label": "待字幕补配",
+                    "changes": changes,
+                }
+                status = "warning"
             if not card_label:
                 card_label = str(card.get("rjcode") or card.get("title") or "").strip()
             (cards_failed if status == "failed" else cards_success).append(card)
@@ -378,10 +407,91 @@ def build_notification_extra_for_task(task) -> dict[str, Any]:
     if any(meta.get(key) for key in ("file_tree_items", "filtered_items", "filtered_files", "filtered_dirs")):
         return build_import_notification_extra(task, error=str(getattr(task, "error_message", "") or ""))
 
+    # ─── 问题作品 / 重复作品（waiting_manual 且非字幕补配） ───
+    task_status_val = str(
+        getattr(getattr(task, "status", None), "value", "")
+        or getattr(task, "status", "")
+        or ""
+    ).strip().lower()
+    if task_status_val == "waiting_manual" and not meta.get("awaiting_manual_match"):
+        return build_problem_work_notification_extra(task)
+
     result: dict[str, Any] = {}
     logs = build_recent_logs(task, max_lines=30)
     if logs:
         result["recent_logs"] = logs
+    return result
+
+
+def build_problem_work_notification_extra(task) -> dict[str, Any]:
+    """为重复作品 / 等待人工处理问题作品构造邮件卡片。
+
+    适用场景：task.status == WAITING_MANUAL 且不是字幕补配任务。
+    根据 current_step 内容区分「重复作品（duplicate）」和
+    「其他需人工处理（waiting_manual）」两种卡片样式。
+    """
+    meta = dict(getattr(task, "task_metadata", None) or {})
+    rjcode = str(
+        meta.get("inferred_rjcode") or meta.get("rjcode") or ""
+    ).strip().upper()
+    work_title = str(
+        meta.get("work_title") or meta.get("work_name") or meta.get("title") or rjcode
+    ).strip()
+    cover_url = str(
+        meta.get("cover_url") or meta.get("mainCoverUrl") or meta.get("main_cover_url") or meta.get("image_url") or ""
+    ).strip()
+    circle_name = str(meta.get("circle_name") or meta.get("maker_name") or "").strip()
+
+    # 尝试从 circle_works 补封面 / 社团名
+    if rjcode and not cover_url:
+        try:
+            circle_id = str(meta.get("circle_id") or "").strip()
+            work_map = _load_circle_work_map(circle_id, [rjcode])
+            row = work_map.get(rjcode) or {}
+            cover_url = str(row.get("image_url") or "").strip()
+            circle_name = circle_name or str(row.get("maker_name") or "").strip()
+        except Exception:
+            pass
+
+    current_step = str(getattr(task, "current_step", "") or "").strip()
+    is_duplicate = "重复" in current_step or bool(meta.get("is_duplicate"))
+
+    if is_duplicate:
+        card_status = "duplicate"
+        reason_text = "检测到重复作品，请在问题作品页面处理"
+        changes = [
+            {"icon": "copy", "text": reason_text},
+        ]
+        # 如果有已存在路径信息，补充一行
+        existing_path = str(meta.get("existing_path") or meta.get("conflict_path") or "").strip()
+        if existing_path:
+            import os as _os
+            changes.append({"icon": "folder", "text": f"已存在：{_os.path.basename(existing_path)}"})
+    else:
+        card_status = "waiting_manual"
+        reason_text = str(getattr(task, "error_message", "") or current_step or "需要人工处理").strip()
+        changes = [
+            {"icon": "alert-triangle", "text": reason_text or "需要人工处理"},
+        ]
+
+    card = {
+        "rjcode": rjcode,
+        "title": work_title or rjcode or "问题作品",
+        "cover_url": cover_url,
+        "circle_name": circle_name,
+        "size_text": "",
+        "file_count": 0,
+        "count_label": "",
+        "changes": changes,
+        "status": card_status,
+        "error": "",
+    }
+    recent_logs = build_recent_logs(task, max_lines=20)
+    result: dict[str, Any] = {
+        "rj_work_cards": [card],
+    }
+    if recent_logs:
+        result["recent_logs"] = recent_logs
     return result
 
 
@@ -588,7 +698,7 @@ def build_upload_notification_extra(task) -> dict[str, Any]:
 
     result = {
         "stats": stats,
-        "upload_files": file_tree,
+        "file_tree": file_tree,
         "recent_logs": build_recent_logs(task, max_lines=30),
     }
     if rj_work_cards:
@@ -624,7 +734,9 @@ def build_download_notification_extra(task, *, title: str = "下载文件") -> d
             "total_size": _format_bytes(total_bytes),
             "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
         },
+        "file_tree": file_tree[:200],
         "download_files": file_tree[:200],
+        "rj_work_cards": work_cards[:24],
         "download_work_cards": work_cards[:24],
         "recent_logs": build_recent_logs(task, max_lines=30),
     }
@@ -668,6 +780,15 @@ def _build_download_work_cards(task, meta: dict, flat_rows: list[dict]) -> list[
 
     if not any([rjcode, title, cover_url, total_bytes, file_count]):
         return []
+    duration = _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None))
+    changes: list[dict[str, str]] = [{"icon": "check-circle", "text": "下载完成"}]
+    if file_count:
+        total_text = f"{file_count} 个文件"
+        if total_bytes:
+            total_text += f" · {_format_bytes(total_bytes)}"
+        changes.append({"icon": "folder", "text": total_text})
+    if duration:
+        changes.append({"icon": "clock", "text": f"用时 {duration}"})
     return [{
         "rjcode": rjcode,
         "title": title or rjcode or "下载作品",
@@ -675,6 +796,9 @@ def _build_download_work_cards(task, meta: dict, flat_rows: list[dict]) -> list[
         "circle_name": circle_name,
         "size_text": _format_bytes(total_bytes),
         "file_count": file_count,
+        "count_label": f"{file_count} 个文件" if file_count else "",
+        "changes": changes,
+        "status": "success",
     }]
 
 
@@ -684,14 +808,60 @@ def build_subtitle_notification_extra(task) -> dict[str, Any]:
     written = [_normalize_tree_item(item, status="kept") for item in list(meta.get("written_files") or []) if item]
     skipped = [_normalize_tree_item(item, status="filtered") for item in list(meta.get("skipped_files") or []) if item]
     rows = [row for row in [*downloaded, *written, *skipped] if row]
+    downloaded_count = _safe_int(meta.get("downloaded_count")) or len(downloaded)
+    existing_count = _safe_int(meta.get("existing_subtitle_count"))
+    duration = _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None))
+    rjcode = str(meta.get("target_rjcode") or meta.get("rjcode") or meta.get("actual_rjcode") or getattr(task, "rjcode", "") or "").strip().upper()
+    title = str(meta.get("work_title") or meta.get("work_name") or meta.get("title") or meta.get("folder_name") or rjcode).strip()
+    cover_url = str(meta.get("cover_url") or meta.get("mainCoverUrl") or meta.get("main_cover_url") or meta.get("image_url") or "").strip()
+    circle_name = str(meta.get("circle_name") or meta.get("maker_name") or "").strip()
+    if rjcode and (not cover_url or not circle_name):
+        circle_id = str(meta.get("circle_id") or "").strip()
+        work_map = _load_circle_work_map(circle_id, [rjcode])
+        row = work_map.get(rjcode) or {}
+        cover_url = cover_url or str(row.get("image_url") or "").strip()
+        circle_name = circle_name or str(row.get("maker_name") or "").strip()
+        title = title or str(row.get("title") or "").strip()
+    awaiting_manual = bool(meta.get("awaiting_manual_match")) and not bool(meta.get("manual_match_completed"))
+    changes: list[dict[str, str]] = []
+    if awaiting_manual:
+        changes.append({"icon": "link", "text": "待字幕补配：等待人工筛选与配对"})
+    else:
+        changes.append({"icon": "check-circle", "text": "字幕处理完成"})
+    if downloaded_count:
+        changes.append({"icon": "folder", "text": f"已导入原始字幕 {downloaded_count} 个"})
+    if written:
+        changes.append({"icon": "file-text", "text": f"已写入字幕 {len(written)} 个"})
+    if skipped:
+        changes.append({"icon": "filter-x", "text": f"已跳过 {len(skipped)} 个"})
+    if existing_count:
+        changes.append({"icon": "hard-drive", "text": f"现有字幕 {existing_count} 个"})
+    if duration:
+        changes.append({"icon": "clock", "text": f"用时 {duration}"})
+    rj_work_cards = []
+    if rjcode or title or cover_url:
+        rj_work_cards.append({
+            "rjcode": rjcode,
+            "title": title or rjcode or "字幕任务",
+            "cover_url": cover_url,
+            "circle_name": circle_name,
+            "size_text": "待字幕补配" if awaiting_manual else "字幕处理完成",
+            "file_count": downloaded_count or len(written) or len(rows),
+            "count_label": f"{downloaded_count} 个原始字幕" if downloaded_count else "",
+            "changes": changes,
+            "status": "warning" if awaiting_manual else "success",
+            "subtitle_status": "waiting_manual" if awaiting_manual else "completed",
+            "subtitle_status_label": "待字幕补配" if awaiting_manual else "字幕处理完成",
+        })
     return {
         "stats": {
-            "downloaded": _safe_int(meta.get("downloaded_count")) or len(downloaded),
+            "downloaded": downloaded_count,
             "written": len(written),
             "skipped": len(skipped),
-            "existing_subtitles": _safe_int(meta.get("existing_subtitle_count")),
-            "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
+            "existing_subtitles": existing_count,
+            "duration": duration,
         },
+        "rj_work_cards": rj_work_cards,
         "file_tree": rows[:120],
         "recent_logs": build_recent_logs(task, max_lines=30),
     }
@@ -784,18 +954,24 @@ def _build_circle_refresh_cards(circle_id: str, items: list) -> list[dict]:
 
 def _load_circle_work_map(circle_id: str, rjcodes: list[str]) -> dict[str, dict]:
     codes = {str(code or "").strip().upper() for code in rjcodes if str(code or "").strip()}
-    if not circle_id or not codes:
+    if not codes:
         return {}
     try:
         from ..models.database import SessionLocal, CircleWork
         db = SessionLocal()
         try:
-            rows = (
-                db.query(CircleWork)
-                .filter(CircleWork.circle_id == circle_id)
-                .filter(CircleWork.canonical_rjcode.in_(list(codes)))
-                .all()
-            )
+            query = db.query(CircleWork)
+            if circle_id:
+                query = query.filter(CircleWork.circle_id == circle_id)
+            rows = query.filter(
+                (
+                    CircleWork.canonical_rjcode.in_(list(codes))
+                ) | (
+                    CircleWork.display_rjcode.in_(list(codes))
+                ) | (
+                    CircleWork.asmr_available_rjcode.in_(list(codes))
+                )
+            ).all()
             result: dict[str, dict] = {}
             for row in rows:
                 data = row.to_dict()
@@ -1066,7 +1242,42 @@ def _flat_to_tree(flat_rows: list[dict]) -> list[dict]:
         out.extend(files)
         return out
 
-    return _emit(list(root_children.values()))
+    return _dedupe_redundant_tree_dirs(_emit(list(root_children.values())))
+
+
+def _dedupe_redundant_tree_dirs(nodes: list[dict]) -> list[dict]:
+    """压掉重复 RJ / 同名包装目录，保留一棵文件树和叶子状态。"""
+    def _key(value: str) -> str:
+        s = str(value or "").lower()
+        s = s.replace("rj0", "rj").replace("rj", "")
+        return "".join(ch for ch in s if ch.isalnum())
+
+    def _walk(items: list[dict], parent_name: str = "") -> list[dict]:
+        out = []
+        parent_key = _key(parent_name)
+        for item in items or []:
+            if not isinstance(item, dict) or "children" not in item:
+                out.append(item)
+                continue
+            name = str(item.get("name") or "")
+            children = _walk(list(item.get("children") or []), name)
+            current = {**item, "children": children}
+            current_key = _key(name)
+            if parent_key and current_key and (current_key == parent_key or current_key in parent_key or parent_key in current_key):
+                out.extend(children)
+            elif len(children) == 1 and isinstance(children[0], dict) and "children" in children[0]:
+                child_name = str(children[0].get("name") or "")
+                child_key = _key(child_name)
+                if child_key and current_key and (child_key == current_key or child_key in current_key or current_key in child_key):
+                    merged_status = "filtered" if "filtered" in {current.get("status"), children[0].get("status")} else current.get("status", "kept")
+                    out.append({**children[0], "name": name or child_name, "status": merged_status})
+                else:
+                    out.append(current)
+            else:
+                out.append(current)
+        return out
+
+    return _walk(nodes)
 
 
 def _normalize_file_tree(items: list, output_path: str) -> list[dict]:

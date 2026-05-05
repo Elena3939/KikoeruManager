@@ -52,6 +52,7 @@ class KikoeruCheckResult:
     has_lyric_hint: bool = False
     subtitle_file_count: int = 0
     subtitle_check_source: str = ""
+    total_track_count: int = -1  # -1=未查，0=空壳（无任何文件），>0=有文件
     
     def __post_init__(self):
         if self.checked_at is None:
@@ -714,6 +715,27 @@ class KikoeruDuplicateService:
         walk(entries)
         return count
 
+    def _count_all_files_from_tracks(self, entries) -> int:
+        """统计文件树中所有文件节点数量（不含目录），用于检测空壳作品。"""
+        count = 0
+
+        def walk(nodes):
+            nonlocal count
+            if not isinstance(nodes, list):
+                return
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                node_type = str(node.get('type') or '').lower()
+                if node_type == 'file' or (node_type != 'folder' and node.get('hash')):
+                    count += 1
+                children = node.get('children')
+                if isinstance(children, list) and children:
+                    walk(children)
+
+        walk(entries)
+        return count
+
     async def _fetch_track_subtitle_state(
         self,
         session: aiohttp.ClientSession,
@@ -721,7 +743,7 @@ class KikoeruDuplicateService:
         work_id: int,
     ) -> tuple[Optional[int], str]:
         if not work_id:
-            return None, "work_id_empty"
+            return None, None, "work_id_empty"
 
         url = self._build_tracks_url(work_id)
         try:
@@ -732,14 +754,15 @@ class KikoeruDuplicateService:
             ) as response:
                 if response.status != 200:
                     logger.warning("[Kikoeru] 获取作品文件树失败: work_id=%s status=%s", work_id, response.status)
-                    return None, f"tracks_http_{response.status}"
+                    return None, None, f"tracks_http_{response.status}"
                 data = await response.json()
                 subtitle_count = self._count_subtitle_files_from_tracks(data)
-                logger.info("[Kikoeru] 作品文件树字幕统计: work_id=%s subtitle_count=%s", work_id, subtitle_count)
-                return subtitle_count, "tracks"
+                total_count = self._count_all_files_from_tracks(data)
+                logger.info("[Kikoeru] 作品文件树字幕统计: work_id=%s subtitle_count=%s total_count=%s", work_id, subtitle_count, total_count)
+                return subtitle_count, total_count, "tracks"
         except Exception as exc:
             logger.warning("[Kikoeru] 获取作品文件树异常: work_id=%s error=%s", work_id, exc)
-            return None, "tracks_error"
+            return None, None, "tracks_error"
 
     async def _hydrate_track_subtitle_state(
         self,
@@ -750,12 +773,13 @@ class KikoeruDuplicateService:
         if not result.is_found or not result.work_id:
             return result
 
-        subtitle_count, source = await self._fetch_track_subtitle_state(session, headers, result.work_id)
+        subtitle_count, total_count, source = await self._fetch_track_subtitle_state(session, headers, result.work_id)
         if subtitle_count is None:
             result.subtitle_check_source = source
             return result
 
         result.subtitle_file_count = int(subtitle_count)
+        result.total_track_count = int(total_count if total_count is not None else -1)
         result.subtitle_check_source = source
         result.has_lyric_hint = subtitle_count > 0
         return result
