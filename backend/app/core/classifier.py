@@ -49,41 +49,20 @@ class SmartClassifier:
             )
             return True
         
-        # 2. 检查本地库中是否已存在
-        logger.info(f"[预检] 检查本地库: {rjcode}")
-        existing = self._check_existing(rjcode)
-        
-        if existing:
-            # 强制使用DUPLICATE类型（预检阶段无法判断语言差异）
-            conflict_type = 'DUPLICATE'
-            
-            logger.info(f"[预检] 本地库发现重复: RJ={rjcode}, 类型={conflict_type}, 已存在={existing['path']}")
-            
-            # 添加到问题作品表（不解压，只记录压缩包路径）
-            self._add_to_conflict_works(
-                task.id, 
-                rjcode, 
-                conflict_type, 
-                existing['path'], 
-                task.source_path,  # 压缩包路径
-                {}  # 尚无元数据
-            )
-            
-            logger.info(f"[预检] 已添加到问题列表等待手动处理")
-            return True
-        
-        # 3. 检查远程 Kikoeru 服务器
+        logger.info(f"[预检] 跳过本地库重复扫描，仅检查 Kikoeru: {rjcode}")
+
+        # 2. 检查远程 Kikoeru 服务器
         logger.info(f"[预检] 检查远程服务器: {rjcode}")
         kikoeru_result = await self._check_kikoeru_server(rjcode, task)
         if kikoeru_result:
             return True
         
-        # 4. 标记RJ号正在处理（防止其他任务同时处理）
+        # 3. 标记RJ号正在处理（防止其他任务同时处理）
         if engine:
             engine.mark_rjcode_processing(rjcode)
             task.rjcode = rjcode  # 保存RJ号到任务，用于后续清理
         
-        logger.info(f"[预检] 完成: RJ号 {rjcode} 未在本地库和远程服务器发现重复，继续解压")
+        logger.info(f"[预检] 完成: RJ号 {rjcode} 未在 Kikoeru 发现重复，继续解压")
         return False
     
     async def _check_kikoeru_server(self, rjcode: str, task: Task) -> bool:
@@ -308,8 +287,16 @@ class SmartClassifier:
         merge_decisions = (task.task_metadata or {}).get('merge_decisions') if getattr(task, 'task_metadata', None) else None
         
         # 1. 检查是否已存在
-        task.update_progress(82, "检查重复")
-        existing = self._check_existing(rjcode)
+        task.update_progress(82, "准备入库")
+        task_type = getattr(task, 'type', None)
+        task_type_value = getattr(task_type, 'value', task_type)
+        skip_local_duplicate_check = task_type_value == 'auto_process'
+        if skip_local_duplicate_check:
+            logger.info(f"解压入库跳过本地库重复扫描: {rjcode}")
+            existing = None
+        else:
+            task.update_progress(82, "检查重复")
+            existing = self._check_existing(rjcode)
         manager = get_library_manager()
         target_library_id = task.task_metadata.get('target_library_id') if getattr(task, 'task_metadata', None) else None
         target_library = manager.get_library_definition(target_library_id)
