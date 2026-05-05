@@ -169,7 +169,7 @@ import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import router from './router'
 
-const appVersion = '1.0.11'
+const appVersion = '1.0.12'
 const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
