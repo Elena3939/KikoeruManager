@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Optional
+from urllib.parse import parse_qs, unquote, urlparse
 
 from ..config.settings import get_config
 from ..core.extract_service import ExtractService
@@ -91,6 +92,21 @@ class ConflictResolutionService:
                     "path": target_path,
                     "is_remote": False,
                 }
+
+        if preferred_library_id:
+            for library in (self._iter_libraries()):
+                if library.id != preferred_library_id:
+                    continue
+                if library.type == "synology_filestation":
+                    normalized_path = manager._normalize_remote_path(raw_path)
+                    return {
+                        "library_id": library.id,
+                        "library_type": library.type,
+                        "library_name": library.name,
+                        "path": normalized_path,
+                        "is_remote": True,
+                    }
+                break
 
         return {
             "library_id": None,
@@ -247,6 +263,67 @@ class ConflictResolutionService:
                 "folder_count": None,
             }
 
+    async def _load_existing_remote_items(self, existing: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
+        manager = get_library_manager()
+        raw_path = str(existing.get("path") or "").strip()
+        if not raw_path:
+            return None
+
+        candidates = self._remote_path_candidates(raw_path)
+        preferred_library_id = existing.get("library_id") if existing.get("is_remote") else None
+        libraries = list(self._iter_libraries())
+        if preferred_library_id:
+            libraries.sort(key=lambda lib: 0 if lib.id == preferred_library_id else 1)
+
+        for lib in libraries:
+            if lib.type != "synology_filestation":
+                continue
+            for candidate in candidates:
+                try:
+                    tree = await manager.folder_contents(lib.id, candidate)
+                    existing["library_id"] = lib.id
+                    existing["library_type"] = lib.type
+                    existing["library_name"] = lib.name
+                    existing["path"] = candidate
+                    existing["is_remote"] = True
+                    return tree.get("items") or []
+                except Exception as exc:
+                    logger.debug("群晖库存 %s 无法访问路径 %s: %s", lib.id, candidate, exc)
+                    continue
+
+        return None
+
+    def _remote_path_candidates(self, path: str) -> list[str]:
+        manager = get_library_manager()
+        raw_path = str(path or "").strip()
+        candidates: list[str] = []
+
+        def add(value: Any) -> None:
+            text = unquote(str(value or "").strip())
+            if not text:
+                return
+            if text.startswith("path="):
+                text = text.split("=", 1)[1]
+            normalized = manager._normalize_remote_path(text)
+            if normalized not in candidates:
+                candidates.append(normalized)
+
+        add(raw_path)
+        parsed = urlparse(raw_path)
+        if parsed.scheme and parsed.netloc:
+            query = parse_qs(parsed.query)
+            for launch_param in query.get("launchParam") or []:
+                launch_query = parse_qs(unquote(launch_param))
+                for value in launch_query.get("path") or []:
+                    add(value)
+                add(launch_param)
+            for value in query.get("path") or []:
+                add(value)
+            if parsed.path and not parsed.path.startswith("/webapi/"):
+                add(parsed.path)
+
+        return candidates
+
     def describe_conflict(self, conflict, include_stats: bool = False) -> dict[str, Any]:
         metadata = dict(conflict.new_metadata or {})
         existing_context = self.infer_library_context(
@@ -343,12 +420,11 @@ class ConflictResolutionService:
         staged_root = await self._stage_new_source(conflict, workspace)
         compare_service = get_folder_compare_service()
 
-        if existing["library_id"] and existing["is_remote"]:
-            manager = get_library_manager()
-            existing_tree = await manager.folder_contents(existing["library_id"], existing["path"])
+        remote_items = await self._load_existing_remote_items(existing)
+        if remote_items is not None:
             compare_items = compare_service.build_compare_items_from_listing(
                 staged_root,
-                existing_tree.get("items") or [],
+                remote_items,
                 existing["path"],
             )
         else:
