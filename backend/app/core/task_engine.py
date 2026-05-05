@@ -3,7 +3,7 @@ import uuid
 import os
 import shutil
 from datetime import datetime
-from typing import Optional, Callable, List
+from typing import Optional, Callable
 from enum import Enum
 from pathlib import Path
 import logging
