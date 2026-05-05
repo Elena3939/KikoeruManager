@@ -871,7 +871,7 @@ function canClearTask(task) {
   return Boolean(task && (isFailedTask(task) || isCompletedTask(task)))
 }
 
-function selectWorkbenchTask(taskId, options = {}) {
+async function selectWorkbenchTask(taskId, options = {}) {
   const normalized = String(taskId || '')
   if (!normalized) return
   selectedTaskId.value = normalized
@@ -879,6 +879,11 @@ function selectWorkbenchTask(taskId, options = {}) {
   if (matchedTask) activeTask.value = matchedTask
   if (props.visible && options.sync !== false && props.taskId !== normalized) {
     emit('select-task', normalized)
+  }
+  if (matchedTask?.subtitle_dir && options.inspect !== false) {
+    await inspectSubtitleTask(matchedTask, { force: true })
+  } else if (matchedTask && !matchedTask.subtitle_dir) {
+    clearSubtitleInspectorState()
   }
 }
 
@@ -1318,24 +1323,36 @@ async function inspectSubtitleTask(task, options = {}) {
     subtitleInspectorExpandedIds.value = opened
     subtitleInspectorSelectedIds.value = new Set()
     subtitleInspectorLastSelectedId.value = ''
-    await nextTick()
+    try {
+      await nextTick()
+    } catch (nextTickError) {
+      if (nextTickError instanceof TypeError && /parentNode/.test(nextTickError.message || '')) {
+        console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误 (nextTick):', nextTickError.message)
+      } else {
+        throw nextTickError
+      }
+    }
     const restored = restoreSubtitleTaskDraft(task.id)
     if (!restored) buildAutoSubtitlePairs()
     skipTaskDraftPersistence = false
     persistSubtitleTaskDraft(task.id)
   } catch (error) {
-    const message = decodePossibleMojibake(error.response?.data?.detail || error.message)
-    clearSubtitleInspectorState()
-    if (activeTask.value?.id === task.id) {
-      activeTask.value = {
-        ...activeTask.value,
-        status: 'failed',
-        error_message: message,
-        current_step: message,
-        awaiting_manual_match: false
+    if (error instanceof TypeError && /parentNode/.test(error.message || '')) {
+      console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误:', error.message)
+    } else {
+      const message = decodePossibleMojibake(error.response?.data?.detail || error.message)
+      clearSubtitleInspectorState()
+      if (activeTask.value?.id === task.id) {
+        activeTask.value = {
+          ...activeTask.value,
+          status: 'failed',
+          error_message: message,
+          current_step: message,
+          awaiting_manual_match: false
+        }
       }
+      ElMessage.error('加载字幕目录失败: ' + message)
     }
-    ElMessage.error('加载字幕目录失败: ' + message)
   } finally {
     skipTaskDraftPersistence = false
     subtitleInspectorLoading.value = false
@@ -2338,7 +2355,9 @@ const subtitleConfigCtx = computed(() => ({
   hiddenSubtitleIssueCount: () => 0,
   formatRJSubtitleAttempt: value => value || '',
   formatProgressLogTime: value => formatDate(value),
-  getProgressLogLevelLabel: value => value || ''
+  getProgressLogLevelLabel: value => value || '',
+  getSubtitleMatchedPairCount: task => Number(task?.manual_match_applied_pairs || task?.matched_pair_count || 0),
+  getSubtitleAppliedWrittenFiles: task => (Array.isArray(task?.written_files) ? task.written_files : []).filter(f => f?.match_type !== 'raw_workbench_stage')
 }))
 const subtitleWorkbenchStageCtx = computed(() => ({
   railModes: [{ key: 'tasks', label: '\u6267\u884c\u961f\u5217' }],
@@ -2407,6 +2426,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   subtitleSequenceSelection: subtitleSequenceSelection.value,
   subtitleManualPairs: subtitleManualPairs.value,
   subtitleSelectedManualPairId: subtitleSelectedManualPairId.value,
+  subtitleNamingStrategy: subtitleOptions.value.namingStrategy,
   subtitlePairApplying: subtitlePairApplying.value,
   subtitleManualApplyLabel: '重命名并导入',
   isLinkedSubtitleImportWorkbench: true,
