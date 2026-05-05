@@ -26,7 +26,8 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
     xz-utils \
     unar \
     libopencc-dev \
-    && wget -O /tmp/7z.tar.xz https://www.7-zip.org/a/7z2408-linux-x64.tar.xz \
+    && wget --retry-connrefused --waitretry=5 --tries=3 -O /tmp/7z.tar.xz \
+        https://github.com/ip7z/7zip/releases/download/24.08/7z2408-linux-x64.tar.xz \
     && mkdir -p /opt/7zip \
     && tar -xJf /tmp/7z.tar.xz -C /opt/7zip \
     && ln -sf /opt/7zip/7zz /usr/local/bin/7zz \
