@@ -2561,7 +2561,9 @@ class ExtractService:
                     "headers error",
                     "unconfirmed start of archive",
                     "unexpected end of archive",
+                    "cannot open the file as archive",
                     "can not open the file as archive",
+                    "e_invalidarg",
                 )
                 if any(marker in stderr_lower for marker in archive_corrupt_markers):
                     logger.error(

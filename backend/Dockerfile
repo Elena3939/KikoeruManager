@@ -3,8 +3,10 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # 安装系统依赖
-RUN apt-get update && apt-get install -y \
+RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y \
     p7zip-full \
+    p7zip-rar \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件

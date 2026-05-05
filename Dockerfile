@@ -18,9 +18,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 安装系统依赖（包括 7zip 和 opencc）
-RUN apt-get update && apt-get install -y \
+# 安装系统依赖（包括 7zip、RAR 解码插件和 opencc）
+RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y \
     p7zip-full \
+    p7zip-rar \
     libopencc-dev \
     && rm -rf /var/lib/apt/lists/*
 
