@@ -18,12 +18,20 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 安装系统依赖（包括 7zip、RAR 解码插件和 opencc）
+# 安装系统依赖（包括官方 7-Zip、unar 和 opencc）
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && apt-get install -y \
-    p7zip-full \
-    p7zip-rar \
+    ca-certificates \
+    wget \
+    xz-utils \
+    unar \
     libopencc-dev \
+    && wget -O /tmp/7z.tar.xz https://www.7-zip.org/a/7z2408-linux-x64.tar.xz \
+    && mkdir -p /opt/7zip \
+    && tar -xJf /tmp/7z.tar.xz -C /opt/7zip \
+    && ln -sf /opt/7zip/7zz /usr/local/bin/7zz \
+    && ln -sf /opt/7zip/7zz /usr/local/bin/7z \
+    && rm -f /tmp/7z.tar.xz \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制后端依赖

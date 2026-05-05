@@ -98,8 +98,8 @@ class ExtractService:
             if os.path.exists(configured_path):
                 return configured_path
         
-        # 尝试在 PATH 中查找
-        seven_zip_path = shutil.which("7z")
+        # 尝试在 PATH 中查找，Docker 优先使用官方 7zz 以支持 RAR5
+        seven_zip_path = shutil.which("7zz") or shutil.which("7z")
         if seven_zip_path:
             return seven_zip_path
         
@@ -116,6 +116,13 @@ class ExtractService:
         # 如果都找不到，返回配置的值（后续会报错）
         logger.error("找不到 7z 可执行文件。请安装 7-Zip 并确保它在 PATH 中，或在配置中指定正确路径。")
         return "7z"
+
+    def _find_unar_executable(self) -> Optional[str]:
+        return shutil.which("unar")
+
+    def _is_rar_archive(self, archive_path: str) -> bool:
+        lower_path = str(archive_path).lower()
+        return lower_path.endswith(".rar") or bool(re.search(r"\.part0*1\.rar$", lower_path))
     
     async def _ensure_7z_available(self) -> bool:
         """异步检查 7z 是否可用，并缓存结果避免高并发重复探测"""
@@ -2566,6 +2573,34 @@ class ExtractService:
                     "e_invalidarg",
                 )
                 if any(marker in stderr_lower for marker in archive_corrupt_markers):
+                    if self._is_rar_archive(archive_info.path):
+                        unar_result = await self._try_unar_extract(
+                            archive_info.path,
+                            output_path,
+                            password,
+                        )
+                        if unar_result.returncode == 0:
+                            if password and password in vault_passwords:
+                                await self._record_password_usage(
+                                    password,
+                                    archive_info.path,
+                                    entry_id=password_entry_id_map.get(password),
+                                )
+                            archive_info.password = password
+                            inferred_rjcode = password_rjcode_map.get(password)
+                            if inferred_rjcode:
+                                archive_info.inferred_rjcode = inferred_rjcode
+                                task.task_metadata['inferred_rjcode'] = inferred_rjcode
+                                task.task_metadata['rjcode'] = inferred_rjcode
+                                task.task_metadata['inferred_rjcode_source'] = 'password_entry'
+                                if not getattr(task, 'rjcode', None) or str(task.rjcode).strip() in {'', '未知'}:
+                                    task.rjcode = inferred_rjcode
+                            logger.info(f"RAR fallback 解压成功，使用{password_source}密码: {password or '无密码'}")
+                            return True, password, ""
+                        unar_stderr = (unar_result.stderr or b"").decode('utf-8', errors='ignore').lower()
+                        if "password" in unar_stderr or "passphrase" in unar_stderr:
+                            logger.warning(f"RAR fallback 密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
+                            continue
                     logger.error(
                         "检测到压缩包损坏特征，停止密码重试: %s",
                         stderr_text[:300] if stderr_text else "(无错误文本)",
@@ -2757,8 +2792,14 @@ class ExtractService:
                     try:
                         err_text = bytes(stderr_data).decode('gbk', errors='ignore')
                         logger.error(f"错误输出: {err_text[:200]}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.error(f"执行7z命令失败: {e}")
+                    return subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=return_code,
+                        stdout=bytes(stdout_data),
+                        stderr=bytes(stderr_data)
+                    )
 
                 return subprocess.CompletedProcess(
                     args=cmd,
@@ -2769,6 +2810,63 @@ class ExtractService:
         except Exception as e:
             logger.error(f"执行7z命令异常: {e}")
             raise
+
+    async def _run_subprocess_command(self, cmd: List[str]) -> subprocess.CompletedProcess:
+        semaphore = self._get_7z_semaphore()
+        try:
+            async with semaphore:
+                kwargs = {
+                    'stdout': subprocess.PIPE,
+                    'stderr': subprocess.PIPE,
+                    'stdin': subprocess.DEVNULL,
+                }
+                if sys.platform == 'win32':
+                    from subprocess import CREATE_NO_WINDOW
+                    kwargs['creationflags'] = CREATE_NO_WINDOW
+
+                process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+                stdout_data, stderr_data = await process.communicate()
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=process.returncode,
+                    stdout=stdout_data,
+                    stderr=stderr_data,
+                )
+        except Exception as e:
+            logger.error(f"执行子进程命令失败: {e}")
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=-1,
+                stdout=b"",
+                stderr=str(e).encode('utf-8'),
+            )
+
+    async def _try_unar_extract(
+        self,
+        archive_path: str,
+        output_path: str,
+        password: Optional[str],
+    ) -> subprocess.CompletedProcess:
+        unar_path = self._find_unar_executable()
+        if not unar_path:
+            return subprocess.CompletedProcess(
+                args=["unar", archive_path],
+                returncode=127,
+                stdout=b"",
+                stderr=b"unar not found",
+            )
+
+        cmd = [
+            unar_path,
+            "-f",
+            "-o",
+            output_path,
+        ]
+        if password:
+            cmd.extend(["-p", password])
+        cmd.append(archive_path)
+        logger.info("执行 unar fallback 命令: %s", " ".join(cmd))
+        return await self._run_subprocess_command(cmd)
 
 class VolumeSet:
     """分卷组"""
