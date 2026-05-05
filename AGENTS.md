@@ -270,9 +270,74 @@
 
 ## 11. 最近改动同步（2026-05）
 
-- 缺失作品“发售时间”排序在 `frontend/src/views/CircleCompletion.vue` 增强了日期解析：
+### 社团补全 / 缺失作品
+
+- 缺失作品"发售时间"排序在 `frontend/src/views/CircleCompletion.vue` 增强了日期解析：
   - 支持从带附加文本的日期里提取 `YYYY-MM-DD`（如带括号、曜日、说明文案）。
   - 支持宽松 `YYYY-MM` 解析，避免解析失败被当作 `0` 导致倒序沉底。
+
+### 版本号 / 发布
+
 - 侧边栏版本号来源是 `frontend/src/App.vue` 的 `appVersion` 常量；发版改版本时要同步这里。
 - 已发生一次误把 `frontend/src/assets/temp/` 临时图提交进仓库的情况；后续提交前必须重点检查临时目录与二进制资源是否误入变更集。
-- 版本发布已使用 semver tag：`v1.0.10`；如果代码有补提，记得同步更新 tag 与展示版本，避免“标签版本”和“UI 版本”不一致。
+- 版本发布已使用 semver tag：`v1.0.10`；如果代码有补提，记得同步更新 tag 与展示版本，避免"标签版本"和"UI 版本"不一致。
+
+### 字幕去重逻辑（`rj_subtitle_service.py`）
+
+- 去重策略改为：**先按文件名分组，再在同名组内比对内容指纹**，避免不同音轨对应的同内容字幕被误合并。
+- 修改前的逻辑会跨名称直接用内容指纹去重，导致同名不同轨的字幕丢失；修改后每组独立走 `_build_subtitle_content_fingerprint`，不同名称不再跨组合并。
+
+### Kikoeru 查重服务（`kikoeru_duplicate_service.py`）
+
+- `_fetch_track_subtitle_state` 返回值由 2 元组改为 3 元组：`(subtitle_count, total_track_count, source)`，新增 `total_track_count` 用于判断服务器是否为空壳作品。
+- `KikoeruDuplicateResult` 新增 `total_track_count: int` 字段（`-1`=未知，`0`=空壳，`>0`=有文件），调用方改动要同步更新解包。
+
+### 解压服务（`extract_service.py`）
+
+- 新增 `_collapse_wrapper_dir`：解压后若输出目录只有一层同名包装目录，自动折叠进父目录，避免多余嵌套。
+- 新增 `_try_extract_nested_direct`：直接解压至目标目录的内层尝试，减少无效临时目录。
+
+### 字幕导入服务（`linked_subtitle_import_service.py`）
+
+- 新增 `_quick_count_local_candidate_files`：快速统计候选字幕数量，避免全量扫描。
+- `summarize_cached` / `_noop_kikoeru` 内部辅助函数化，减少重复调用开销。
+
+### 任务引擎（`task_engine.py`）
+
+- 新增对"小型压缩包是字幕候选"的判定分支：`< 10MB` 且开启字幕匹配预检时，根据 Kikoeru 状态决定走字幕配对路由还是转问题作品等待人工。
+- 新增 `_queue_nested_subtitle_archives`：解压后如发现内嵌字幕压缩包，自动入子任务队列处理。
+- 启动时清理上次服务重启前残留的"正在处理中"临时冲突记录。
+
+### 通知构造层（`notification_helper.py`、`variable_registry.py`）
+
+- 新增 `build_problem_work_notification_extra`：问题作品任务（`waiting_manual` / 冲突类）专用 payload 构造函数，支持 RJ 作品卡片块（`rj_work_cards`）。
+- 新增 `_dedupe_redundant_tree_dirs`：清洗文件树中与 RJ 前缀冗余的单级包装目录。
+- `variable_registry.py` 新增 `rj_work_cards` 变量示例（包含 `success`、`duplicate`、`waiting_manual` 三种卡片状态的预览样本）。
+
+### 邮件块渲染（`block_renderers/__init__.py`、`blockTypes.js`、`blockMiniRenderers.js`）
+
+- SVG 图标渲染补全了 `fill:none; stroke` 等属性，修复部分客户端图标不可见的问题。
+- 文件树渲染逻辑改进：
+  - 新增 `_coerce_tree`：将平铺路径列表自动转换为嵌套目录树，兼容没有预构建树的旧 payload。
+  - `file_tree` 优先级调高：`download_files / upload_files / filtered_files / extracted_files` 中任意一项有值且 `file_tree` 存在时，统一切换到 `file_tree` 渲染。
+  - 目录行改用 `<details>/<summary>` 折叠，解决 `margin-left` 与 `padding-left` 叠加导致深层文件缩进过大的问题。
+  - 继承 `is_muted` 状态：父目录被过滤时子节点自动置灰，不再需要每个子节点单独标记。
+
+### 任务中心 / 操作历史（`Tasks.vue`、`ActivityHistory.vue`）
+
+- 文件树新增 `dedupeTreeDirs`：折叠与 RJ 前缀同名或内容相同的单层包装目录，前端展示层与后端 `_dedupe_redundant_tree_dirs` 对齐。
+- `Tasks.vue` 修复 `upload_files` / `uploaded_files` 判断逻辑：从"先后判断"改为"合并判断"，避免其中一个为空时另一个被跳过。
+- `ActivityHistory.vue` 文件树标题改为始终显示实际条目数，不再因过滤数量为 0 而显示不同格式的括号文本。
+
+### 数据库模型（`database.py`）
+
+- `ProcessedArchive.to_dict()` 中 `processed_at` 现在正确附加本地时区偏移（`+08:00` 格式），避免前端把无时区 ISO 字符串当 UTC 解析导致时间显示提前 8 小时。
+
+### 字幕检查工作台（`SubtitleInspectorWorkbench.vue`、`SubtitleTaskStage.vue`、`SubtitleWorkbenchStage.vue`）
+
+- 顺序配对模式 UI 升级：音频选中序号徽章改为蓝色圆形胶囊（`bg-blue-600`），字幕序号改为紫色（`bg-violet-600`），视觉区分更清晰。
+- 左侧音频行 hover 改为蓝色系，字幕行 hover 改为紫色系，已进入序列的行用渐变高亮+阴影区分。
+- 顺序配对提示文案更新，明确说明"左侧蓝色序号=音频顺序，右侧紫色序号=字幕顺序"。
+- 中间三栏改用 `overflow-x-auto` + `min-w-[980px]` 包裹，解决小屏幕下三列被压缩至不可用的问题。
+- 操作按钮改用可选链调用（`view.xxx?.()`），避免 `ctx` 为空时 mounted 报错连锁打断父组件更新。
+- `view` computed 补全了完整的空值默认对象，防止 `props.ctx` 为 `null` 时模板访问属性报错。
