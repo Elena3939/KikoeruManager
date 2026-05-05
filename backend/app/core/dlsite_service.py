@@ -109,8 +109,42 @@ class DLsiteApiService:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': accept,
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://www.dlsite.com/maniax/',
+            'Origin': 'https://www.dlsite.com',
+            'DNT': '1',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-User': '?1',
+            'Sec-CH-UA': '"Chromium";v="120", "Google Chrome";v="120", "Not_A Brand";v="99"',
+            'Sec-CH-UA-Mobile': '?0',
+            'Sec-CH-UA-Platform': '"Windows"',
             'Connection': 'keep-alive',
         }
+
+    def _get_api_headers(self) -> Dict[str, str]:
+        headers = self._get_browser_headers('application/json, text/plain, */*')
+        headers.update({
+            'Upgrade-Insecure-Requests': '0',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'X-Requested-With': 'XMLHttpRequest',
+        })
+        return headers
+
+    def _format_exc(self, exc: BaseException) -> str:
+        message = str(exc).strip()
+        return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+    def _normalize_proxy_url(self, proxy: str) -> str:
+        value = str(proxy or '').strip()
+        if not value:
+            return ''
+        if re.match(r'^[a-z][a-z0-9+.-]*://', value, re.IGNORECASE):
+            return value
+        return f"http://{value}"
 
     def _extract_product_codes_from_url(self, url: str) -> Dict[str, str]:
         parsed = urlparse(str(url or ''))
@@ -642,18 +676,16 @@ class DLsiteApiService:
             config = get_config()
             proxy_url = None
             if config.metadata.http_proxy:
-                proxy_url = f"http://{config.metadata.http_proxy}"
+                proxy_url = self._normalize_proxy_url(config.metadata.http_proxy)
                 logger.debug("[DLsite] 使用代理: %s", proxy_url)
 
             client_kwargs = {
-                'headers': self._get_browser_headers('application/json, text/plain, */*'),
-                # pool=None: 依赖 semaphore 限制并发，不再让 httpx 抛 PoolTimeout
-                # connect/read 分别设置以便精确控制各阶段超时
-                'timeout': httpx.Timeout(connect=15.0, read=30.0, write=10.0, pool=None),
-                'verify': False,  # 避免部分网络环境下的 SSL 问题
+                'headers': self._get_api_headers(),
+                'timeout': httpx.Timeout(connect=20.0, read=45.0, write=10.0, pool=None),
+                'verify': False,
                 'follow_redirects': True,
-                # 连接数与 semaphore 上限对齐，避免池内积压空闲连接
                 'limits': httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                'http2': False,
             }
             if proxy_url:
                 async_client_params = inspect.signature(httpx.AsyncClient.__init__).parameters
@@ -668,6 +700,36 @@ class DLsiteApiService:
             self.client = httpx.AsyncClient(**client_kwargs)
         return self.client
 
+    async def _close_client(self):
+        if self.client and not self.client.is_closed:
+            await self.client.aclose()
+        self.client = None
+
+    async def _one_shot_get(self, url: str, **kwargs) -> httpx.Response:
+        from ..config.settings import get_config
+
+        config = get_config()
+        client_kwargs = {
+            'headers': self._get_api_headers(),
+            'timeout': httpx.Timeout(connect=25.0, read=60.0, write=10.0, pool=None),
+            'verify': False,
+            'follow_redirects': True,
+            'limits': httpx.Limits(max_connections=1, max_keepalive_connections=0),
+            'http2': False,
+        }
+        proxy_url = self._normalize_proxy_url(config.metadata.http_proxy)
+        if proxy_url:
+            async_client_params = inspect.signature(httpx.AsyncClient.__init__).parameters
+            if 'proxy' in async_client_params:
+                client_kwargs['proxy'] = proxy_url
+            elif 'proxies' in async_client_params:
+                client_kwargs['proxies'] = {
+                    'http://': proxy_url,
+                    'https://': proxy_url,
+                }
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            return await client.get(url, **kwargs)
+
     async def _guarded_get(self, url: str, **kwargs) -> httpx.Response:
         """带并发限制的 HTTP GET，超时时指数退避重试（最多 3 次）。
 
@@ -677,25 +739,24 @@ class DLsiteApiService:
         if self._http_semaphore is None:
             # 最多 3 个并发 DLsite 请求，对标 kikoeru 的低并发策略
             self._http_semaphore = asyncio.Semaphore(3)
-        client = await self._get_client()
         for attempt in range(3):
             try:
                 async with self._http_semaphore:
-                    # 随机抖动 0.2~0.8s，避免多个协程同时爆发请求
                     await asyncio.sleep(random.uniform(0.2, 0.8))
+                    client = await self._get_client()
                     return await client.get(url, **kwargs)
-            except (httpx.PoolTimeout, httpx.ReadTimeout, httpx.ConnectTimeout) as exc:
-                exc_name = type(exc).__name__
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as exc:
                 wait = 2.0 * (2 ** attempt)  # 2s → 4s → 8s
+                await self._close_client()
                 if attempt < 2:
                     logger.warning(
-                        "[DLsite] %s，等待 %.0fs 后重试（第 %d 次）: %s",
-                        exc_name, wait, attempt + 1, url,
+                        "[DLsite] 请求失败，等待 %.0fs 后重试（第 %d 次）: %s error=%s",
+                        wait, attempt + 1, url, self._format_exc(exc),
                     )
                     await asyncio.sleep(wait)
                     continue
-                logger.error("[DLsite] %s（重试后仍失败）: %s", exc_name, url)
-                raise
+                logger.warning("[DLsite] 复用客户端重试失败，改用一次性客户端: %s error=%s", url, self._format_exc(exc))
+                return await self._one_shot_get(url, **kwargs)
         raise RuntimeError("unreachable")
 
     async def _fetch_api(self, url: str) -> Optional[Dict]:
@@ -728,8 +789,8 @@ class DLsiteApiService:
         logger.info("[DLsite] 正在请求 API: %s", url)
 
         try:
-            logger.debug("[DLsite] 使用客户端配置: verify=False, timeout=30s")
-            response = await self._guarded_get(url)
+            logger.debug("[DLsite] 使用客户端配置: verify=False, timeout=45s, http2=False")
+            response = await self._guarded_get(url, headers=self._get_api_headers())
 
             logger.info("[DLsite] 响应状态码：%s", response.status_code)
 
@@ -748,17 +809,17 @@ class DLsiteApiService:
             return None
         except httpx.ConnectError as e:
             logger.error("API 连接失败: %s", url)
-            logger.error("错误详情: %s", str(e))
+            logger.error("错误详情: %s", self._format_exc(e))
             logger.error("可能原因: 1) 网络连接异常 2) DLsite 不可达 3) 代理或防火墙拦截")
             return None
         except httpx.ReadTimeout as e:
-            logger.error("API 读取超时: %s (超过 30 秒)", url)
-            logger.error("错误详情: %s", str(e))
+            logger.error("API 读取超时: %s (超过 45 秒)", url)
+            logger.error("错误详情: %s", self._format_exc(e))
             return None
         except Exception as e:
             logger.error("API 请求异常: %s", url)
             logger.error("错误类型: %s", type(e).__name__)
-            logger.error("错误详情: %s", str(e))
+            logger.error("错误详情: %s", self._format_exc(e))
             import traceback
             logger.debug(traceback.format_exc())
             return None

@@ -62,16 +62,46 @@ class MetadataService:
         if self._session is None:
             self._session = requests.Session()
 
+        self._session.headers.update(self._get_dlsite_headers())
+
         # 每次访问时都刷新代理配置。
         if self.config.metadata.http_proxy:
+            proxy_url = self._normalize_proxy_url(self.config.metadata.http_proxy)
             self._session.proxies = {
-                'http': self.config.metadata.http_proxy,
-                'https': self.config.metadata.http_proxy
+                'http': proxy_url,
+                'https': proxy_url
             }
         else:
             self._session.proxies = {}
 
         return self._session
+
+    def _normalize_proxy_url(self, proxy: str) -> str:
+        value = str(proxy or '').strip()
+        if not value:
+            return ''
+        if re.match(r'^[a-z][a-z0-9+.-]*://', value, re.IGNORECASE):
+            return value
+        return f"http://{value}"
+
+    def _get_dlsite_headers(self) -> Dict[str, str]:
+        return {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://www.dlsite.com/maniax/',
+            'Origin': 'https://www.dlsite.com',
+            'DNT': '1',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-CH-UA': '"Chromium";v="120", "Google Chrome";v="120", "Not_A Brand";v="99"',
+            'Sec-CH-UA-Mobile': '?0',
+            'Sec-CH-UA-Platform': '"Windows"',
+            'Connection': 'keep-alive',
+        }
     
     async def fetch(self, path: str, task: Task, force_refresh: bool = False) -> dict:
         """
