@@ -79,7 +79,15 @@ class ExtractService:
     def seven_zip(self) -> str:
         """动态获取7z路径"""
         return self._find_7z_executable()
-    
+
+    @property
+    def _mcp_args(self) -> list:
+        """返回 ZIP 文件名代码页参数，0 表示不传"""
+        cp = int(self.config.extract.zip_encoding or 0)
+        if cp > 0:
+            return [f"-mcp={cp}"]
+        return []
+
     def _find_7z_executable(self) -> str:
         """查找 7z 可执行文件"""
         import shutil
@@ -483,6 +491,7 @@ class ExtractService:
                 "x",
                 "-y",
                 f"-o{output_path}",
+                *self._mcp_args,  # ZIP 文件名编码
                 *password_args,
                 archive_info.path,
                 f"@{list_file_path}",
@@ -810,6 +819,7 @@ class ExtractService:
                 self.seven_zip, 'x',
                 '-y',  # 自动确认
                 '-o' + output_path,  # 输出目录
+                *self._mcp_args,  # ZIP 文件名编码
                 archive_info.path
             ]
             
@@ -883,7 +893,7 @@ class ExtractService:
 
         for password in password_list:
             await asyncio.to_thread(clean_output)
-            cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", archive_path]
+            cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._mcp_args, archive_path]
             cmd.append(f"-p{password}" if password else "-p")
             try:
                 result = await self._run_7z_command(cmd, capture_stdout=False)
@@ -2427,6 +2437,7 @@ class ExtractService:
                 '-o' + output_path,  # 输出目录
                 '-bsp1', # 启用进度输出
                 '-bso1', # 将进度输出到 stdout
+                *self._mcp_args,  # ZIP 文件名编码
                 *password_args,
                 archive_info.path
             ]

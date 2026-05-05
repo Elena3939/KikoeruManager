@@ -106,6 +106,7 @@ class ExtractConfig(BaseModel):
     password_list: list = []
     extract_nested_archives: bool = True  # 是否解压嵌套压缩包
     max_nested_depth: int = 5  # 最大嵌套深度
+    zip_encoding: int = 932  # ZIP 文件名编码代码页，932=Shift-JIS（日语），936=GBK（简中），0=禁用
 
 class FilterRule(BaseModel):
     """过滤规则"""
