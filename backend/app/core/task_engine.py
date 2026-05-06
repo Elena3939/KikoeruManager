@@ -2,6 +2,7 @@ import asyncio
 import uuid
 import os
 import shutil
+import threading
 from datetime import datetime
 from typing import Optional, Callable, List
 from enum import Enum
@@ -67,6 +68,13 @@ class Task:
         self.rjcode = rjcode  # 作品的RJ号，用于重复检测
         self.session_id = None
         self.business_key = None
+        # 任务运行期间活跃的外部子进程（主要是 7zz x / -so）。
+        # cancel / pause 只设 flag 是不够的：7zz 进程不会主动轮询标志，
+        # 必须被主动 kill 才能让上层 await 返回，进而走到下一个
+        # is_cancelled() / wait_if_paused() 检查点。
+        self._active_processes: List = []
+        self._proc_lock = threading.Lock()
+        self._stop_reason: Optional[str] = None  # 'cancel' | 'pause' | None
 
     def start(self):
         """开始任务"""
@@ -89,9 +97,12 @@ class Task:
         self.current_step = f"失败: {error}"
     
     def pause(self):
-        """暂停任务"""
+        """暂停任务。会主动 kill 正在跑的 7z 子进程，让上层从 await 返回，
+        之后会在下一个 wait_if_paused 检查点阻塞。恢复后调用方会重试
+        被中断的那个阶段（例如同一个密码的完整解压）。"""
         self.status = TaskStatus.PAUSED
         self._pause_event.clear()
+        self._kill_active_processes('pause')
     
     def resume(self):
         """恢复任务"""
@@ -118,17 +129,77 @@ class Task:
         return True
 
     def cancel(self):
-        """取消任务"""
+        """取消任务。同时 kill 正在跑的 7z 子进程，以免后台还在跑。"""
         self._cancelled = True
         self.status = TaskStatus.FAILED
         self.error_message = "用户取消"
         self.completed_at = datetime.now()
         self.current_step = "已取消"
+        # 取消优先级高于暂停：避免子进程被 kill 后又被 pause 逻辑卡住。
+        if not self._pause_event.is_set():
+            self._pause_event.set()
+        self._kill_active_processes('cancel')
         logger.info(f"任务 {self.id} 已被用户取消")
     
     async def wait_if_paused(self):
         """如果暂停则等待"""
         await self._pause_event.wait()
+
+    # ---------------------------------------------------------------
+    # 活跃子进程跟踪 / kill
+    # ---------------------------------------------------------------
+
+    def register_process(self, proc) -> None:
+        """登记当前任务在跑的外部子进程。允许重入，嵌套调用者各自负责配对 unregister。"""
+        if proc is None:
+            return
+        with self._proc_lock:
+            self._active_processes.append(proc)
+            should_kill_now = self._cancelled or not self._pause_event.is_set()
+            current_reason = self._stop_reason
+        # 边界情况：子进程启动与 cancel/pause 下发出现竞态，
+        # 这里补一刀，避免接下来又跑一个完整解压。
+        if should_kill_now and proc.returncode is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            if not current_reason:
+                with self._proc_lock:
+                    if not self._stop_reason:
+                        self._stop_reason = 'cancel' if self._cancelled else 'pause'
+
+    def unregister_process(self, proc) -> None:
+        if proc is None:
+            return
+        with self._proc_lock:
+            try:
+                self._active_processes.remove(proc)
+            except ValueError:
+                pass
+
+    def _kill_active_processes(self, reason: str) -> None:
+        """主动 kill 任务当前所有外部子进程。reason 供调用方区分取消 / 暂停。"""
+        with self._proc_lock:
+            self._stop_reason = reason
+            procs = list(self._active_processes)
+        for p in procs:
+            try:
+                if p.returncode is None:
+                    p.kill()
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                logger.debug(f"任务 {self.id} kill 子进程失败（忽略）: {e}")
+        if procs:
+            logger.info(f"任务 {self.id} 因 {reason} kill 了 {len(procs)} 个活跃子进程")
+
+    def consume_stop_reason(self) -> Optional[str]:
+        """取出并清除上一次 cancel/pause 设下的原因标记，供调用方决策重试/中止。"""
+        with self._proc_lock:
+            r = self._stop_reason
+            self._stop_reason = None
+        return r
     
     def is_cancelled(self) -> bool:
         """检查是否被取消"""
@@ -181,6 +252,9 @@ class Task:
         self.completed_at = None
         self._cancelled = False
         self._pause_event.set()
+        with self._proc_lock:
+            self._active_processes.clear()
+            self._stop_reason = None
 
     def ensure_business_context(self, domain: str, defaults: Optional[dict] = None):
         """为任务补齐业务上下文，供任务中心统一展示。"""

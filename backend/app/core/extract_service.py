@@ -6,9 +6,11 @@ import asyncio
 import sys
 import filetype
 import tempfile
-from typing import Optional, List, Dict, Callable, Union
+from typing import Optional, List, Dict, Callable, Tuple, Union
 from pathlib import Path
 import logging
+import hashlib
+import time
 from datetime import datetime
 
 from ..config.settings import get_config
@@ -51,6 +53,17 @@ class ExtractService:
     _seven_zip_check_lock: Optional[asyncio.Lock] = None
     _seven_zip_semaphore: Optional[asyncio.Semaphore] = None
     _seven_zip_semaphore_limit: Optional[int] = None
+    # ------- 密码探测 / 负缓存 -------
+    # #1 流式预验证：解压前先用 `7zz x -so` 把数据流到管道，只读前 PROBE_BYTES 字节。
+    #   - 密码错：AES 解出来的是垃圾，LZMA/Deflate 解码器会很快报错，进程提前退出。
+    #   - 密码对：能持续吐出有效解压数据，达到阈值后主动 kill，认为密码正确再跑正式 x。
+    # 这样错密码场景的耗时从"全部解压完才发现 CRC Failed" 降到秒级。
+    PROBE_BEFORE_EXTRACT: bool = True
+    PROBE_BYTES: int = 2 * 1024 * 1024            # 单次探测读到 2MB 即认为解压流可信
+    PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次探测最多等 30s，超时回退完整解压
+    # #3 负缓存：按 "压缩包指纹 × 密码哈希" 记忆失败组合，进程内重试任务时直接跳过。
+    _password_negative_cache: Dict[Tuple[str, str], float] = {}
+    PASSWORD_NEGATIVE_CACHE_MAX: int = 4096       # 简单兜底，避免长跑任务无限增长
     VERIFY_FULL_FILE_LIMIT = 1200
     VERIFY_SAMPLE_FILE_LIMIT = 240
     NESTED_SCAN_FILE_BUDGET = 5000
@@ -298,6 +311,12 @@ class ExtractService:
         )
         
         if not success:
+            # 用户取消：task.cancel() 里已经把状态写成 "用户取消"，不要再 task.fail()
+            # 把它覆盖成 "原因未知"。直接清理临时目录后返回。
+            if extract_failure_reason == "cancelled" or task.is_cancelled():
+                logger.info(f"任务 {task.id}: 用户取消，跳过失败标记")
+                await self._cleanup_extract_path(output_path)
+                return None
             # 更新任务状态为失败，并设置更准确的错误信息
             if extract_failure_reason == "disk_full":
                 error_msg = "解压失败：临时目录磁盘空间不足"
@@ -2456,6 +2475,9 @@ class ExtractService:
         encountered_wrong_password = False
         last_corrupt_stderr: Optional[str] = None
 
+        # #3 负缓存：同一压缩包同一密码近期失败过，直接跳过；指纹拿不到就不缓存。
+        archive_fingerprint = self._archive_fingerprint(archive_info.path)
+
         for password in unique_passwords:
             password_args = [f'-p{password}'] if password else []
             cmd = [
@@ -2483,6 +2505,70 @@ class ExtractService:
                     password_source = "无"
                 else:
                     password_source = "默认"
+
+                # #3 命中负缓存：跳过，不再启动 7z
+                cache_key = (
+                    self._password_cache_key(archive_fingerprint, password)
+                    if archive_fingerprint else None
+                )
+                if cache_key and cache_key in ExtractService._password_negative_cache:
+                    logger.info(
+                        "密码 %s (%s) 命中负缓存，跳过本次尝试",
+                        password_source,
+                        password or '无密码',
+                    )
+                    encountered_wrong_password = True
+                    continue
+
+                # 每轮入口先响应取消 / 暂停，避免用户点了按钮但还会换下一个密码继续跑
+                if task.is_cancelled():
+                    return False, None, "cancelled"
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    return False, None, "cancelled"
+
+                # #1 流式预验证：错密码秒级淘汰，避免跑完整解压才发现 CRC Failed
+                if self.PROBE_BEFORE_EXTRACT:
+                    task.update_progress(38, f"探测密码 (来源: {password_source})")
+                    probe_result = await self._probe_password(
+                        archive_info.path,
+                        password,
+                        probe_bytes=self.PROBE_BYTES,
+                        timeout=self.PROBE_TIMEOUT_SECONDS,
+                        task=task,
+                    )
+                    # 探测期间被 cancel/pause kill 掉，按 stop_reason 决策
+                    if task.is_cancelled():
+                        return False, None, "cancelled"
+                    if probe_result == 'unknown' and task.consume_stop_reason() == 'pause':
+                        await task.wait_if_paused()
+                        if task.is_cancelled():
+                            return False, None, "cancelled"
+                        # 用户恢复后重试本轮密码的完整解压（跳过探测，不再迫追探测结果）
+                        probe_result = 'ok'
+                    if probe_result == 'wrong_password':
+                        encountered_wrong_password = True
+                        if cache_key:
+                            self._remember_negative_password(cache_key)
+                        logger.info(
+                            "密码 %s (%s) 探测阶段判定为密码错误，跳过完整解压",
+                            password_source,
+                            password or '无密码',
+                        )
+                        continue
+                    if probe_result == 'corrupt':
+                        last_corrupt_stderr = last_corrupt_stderr or 'probe: corrupt'
+                        if cache_key:
+                            self._remember_negative_password(cache_key)
+                        logger.warning(
+                            "密码 %s (%s) 探测阶段命中疑似损坏特征，跳过完整解压",
+                            password_source,
+                            password or '无密码',
+                        )
+                        continue
+                    # 'ok' / 'unknown' 都让其继续走完整解压：
+                    #   - ok: 大概率密码正确，直接进入 x
+                    #   - unknown: 探测无法定性（如超时 / 7zz 输出特殊），保持旧行为兜底
                 
                 # 创建进度解析回调
                 start_time = datetime.now()
@@ -2534,12 +2620,28 @@ class ExtractService:
                             last_percent = raw_percent
                             task.update_progress(min(99, mapped), f"解压中 {raw_percent}%" + (f" ({speed_str}, 剩余 {eta_str})" if speed_str else ""))
 
-                task.update_progress(40, f"准备解压 (密码来源: {password_source})")
-                result = await self._run_7z_command(
-                    cmd,
-                    progress_callback=progress_callback,
-                    capture_stdout=False,
-                )
+                # 对同一个密码重试完整解压：被暂停 kill 掉后，恢复时希望从同一个密码
+                # 重新跑 x，而不是跳到下一个密码（那会导致恢复后丢掉85%进度并跳密码）。
+                while True:
+                    task.update_progress(40, f"准备解压 (密码来源: {password_source})")
+                    result = await self._run_7z_command(
+                        cmd,
+                        progress_callback=progress_callback,
+                        capture_stdout=False,
+                        task=task,
+                    )
+                    if task.is_cancelled():
+                        return False, None, "cancelled"
+                    # 被暂停 kill 掉了：returncode 非零 + stop_reason == 'pause'
+                    if result.returncode != 0 and task.consume_stop_reason() == 'pause':
+                        logger.info(
+                            f"任务 {task.id} 被暂停中断了当前解压，等待恢复后重试同一密码: {password_source}"
+                        )
+                        await task.wait_if_paused()
+                        if task.is_cancelled():
+                            return False, None, "cancelled"
+                        continue  # 重跑同一个 cmd
+                    break
                 
                 if result.returncode == 0:
                     # 记录成功使用的密码
@@ -2592,6 +2694,8 @@ class ExtractService:
                 )
                 if any(marker in stderr_lower for marker in encryption_markers):
                     encountered_wrong_password = True
+                    if cache_key:
+                        self._remember_negative_password(cache_key)
                     logger.warning(f"密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
                     continue
 
@@ -2790,8 +2894,9 @@ class ExtractService:
         progress_callback: Optional[Callable[[str], None]] = None,
         capture_stdout: bool = True,
         max_captured_bytes: int = 4 * 1024 * 1024,
+        task: Optional[Task] = None,
     ) -> subprocess.CompletedProcess:
-        """运行7z命令"""
+        """运行7z命令。传入 task 后会把子进程登记到 task 上，cancel/pause 能立刻 kill。"""
         # 记录命令（显示密码用于调试）
         logger.info(f"执行7z命令: {' '.join(cmd)}")
 
@@ -2813,6 +2918,8 @@ class ExtractService:
                     *cmd,
                     **kwargs
                 )
+                if task is not None:
+                    task.register_process(process)
 
                 stdout_data = bytearray()
                 stderr_data = bytearray()
@@ -2836,13 +2943,17 @@ class ExtractService:
                             except Exception:
                                 pass
 
-                await asyncio.gather(
-                    read_stream(process.stdout, stdout_data, is_stdout=True),
-                    read_stream(process.stderr, stderr_data)
-                )
+                try:
+                    await asyncio.gather(
+                        read_stream(process.stdout, stdout_data, is_stdout=True),
+                        read_stream(process.stderr, stderr_data)
+                    )
 
-                return_code = await process.wait()
-                await asyncio.sleep(0.1)
+                    return_code = await process.wait()
+                    await asyncio.sleep(0.1)
+                finally:
+                    if task is not None:
+                        task.unregister_process(process)
 
                 if return_code != 0:
                     logger.error(f"7z命令执行失败，返回码: {return_code}")
@@ -2874,6 +2985,211 @@ class ExtractService:
         except Exception as e:
             logger.error(f"执行7z命令异常: {e}")
             raise
+
+    # ---------------------------------------------------------------
+    # 密码探测 / 负缓存
+    # ---------------------------------------------------------------
+
+    def _archive_fingerprint(self, path: str) -> Optional[str]:
+        """用 (绝对路径|大小|mtime) 当压缩包指纹，文件被替换/编辑后会自动失效。"""
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return f"{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}"
+
+    def _password_cache_key(self, fingerprint: str, password: str) -> Tuple[str, str]:
+        pwd_bytes = (password or '').encode('utf-8', errors='ignore')
+        pwd_hash = hashlib.sha1(pwd_bytes if password else b'<empty>').hexdigest()[:16]
+        return (fingerprint, pwd_hash)
+
+    def _remember_negative_password(self, cache_key: Tuple[str, str]) -> None:
+        cache = ExtractService._password_negative_cache
+        # 简单容量上限：超出阈值时丢掉最早写入的一批，避免长跑任务无限增长。
+        if len(cache) >= self.PASSWORD_NEGATIVE_CACHE_MAX:
+            try:
+                drop_count = max(1, self.PASSWORD_NEGATIVE_CACHE_MAX // 8)
+                for old_key in list(cache.keys())[:drop_count]:
+                    cache.pop(old_key, None)
+            except Exception:
+                cache.clear()
+        cache[cache_key] = time.time()
+
+    async def _probe_password(
+        self,
+        archive_path: str,
+        password: str,
+        probe_bytes: int = 2 * 1024 * 1024,
+        timeout: float = 30.0,
+        task: Optional[Task] = None,
+    ) -> str:
+        """轻量探测密码是否正确。
+
+        通过 `7zz x -so` 把解压数据流到 stdout，只读前 probe_bytes 字节就主动 kill。
+        - 密码错：AES 解出来是垃圾，LZMA/Deflate 解码器会很快报错，进程非零退出且 stderr 含密码相关关键字。
+        - 密码对：能稳定吐出解压数据，读够阈值就主动结束。
+        返回值：
+          - 'ok'             探测通过，建议进入完整解压
+          - 'wrong_password' 命中加密相关错误关键字
+          - 'corrupt'        命中疑似损坏关键字
+          - 'unknown'        无法定性（超时 / 输出特殊），让上层走原有完整流程兜底
+        """
+        cmd = [
+            self.seven_zip, 'x', '-so', '-y',
+            '-bso0', '-bsp0',  # 关掉进度/消息，stdout 只剩解压数据
+            *self._get_mcp_args(archive_path),
+        ]
+        cmd.append(f'-p{password}' if password else '-p')
+        cmd.append(archive_path)
+
+        kwargs = {
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.PIPE,
+            'stdin': subprocess.DEVNULL,
+        }
+        if sys.platform == 'win32':
+            from subprocess import CREATE_NO_WINDOW as _CNW
+            kwargs['creationflags'] = _CNW
+
+        semaphore = self._get_7z_semaphore()
+        async with semaphore:
+            try:
+                process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+            except Exception as e:
+                logger.warning(f"密码探测无法启动 7z 进程，回退完整解压: {e}")
+                return 'unknown'
+            if task is not None:
+                task.register_process(process)
+
+            stdout_bytes = 0
+            stderr_chunks: List[bytes] = []
+            threshold_reached = False
+
+            async def consume_stdout():
+                nonlocal stdout_bytes, threshold_reached
+                try:
+                    while True:
+                        chunk = await process.stdout.read(65536)
+                        if not chunk:
+                            return
+                        stdout_bytes += len(chunk)
+                        if stdout_bytes >= probe_bytes:
+                            threshold_reached = True
+                            return
+                except Exception:
+                    return
+
+            async def consume_stderr():
+                try:
+                    while True:
+                        chunk = await process.stderr.read(4096)
+                        if not chunk:
+                            return
+                        stderr_chunks.append(chunk)
+                        if sum(len(c) for c in stderr_chunks) > 64 * 1024:
+                            return
+                except Exception:
+                    return
+
+            stdout_task = asyncio.create_task(consume_stdout())
+            stderr_task = asyncio.create_task(consume_stderr())
+            wait_task = asyncio.create_task(process.wait())
+
+            try:
+                await asyncio.wait(
+                    {stdout_task, wait_task},
+                    timeout=timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except Exception:
+                pass
+
+            async def _terminate():
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=2.0)
+                    except Exception:
+                        pass
+                for t in (stdout_task, stderr_task, wait_task):
+                    if not t.done():
+                        t.cancel()
+                        try:
+                            await t
+                        except Exception:
+                            pass
+
+            # 分支 1：阈值达成 → 密码正确
+            if threshold_reached:
+                await _terminate()
+                if task is not None:
+                    task.unregister_process(process)
+                return 'ok'
+
+            # 分支 2：进程仍在跑 → 超时或被外部 kill（如 cancel/pause）
+            if process.returncode is None:
+                await _terminate()
+                if task is not None:
+                    task.unregister_process(process)
+                logger.warning(
+                    "密码探测超时或被中断（%.1fs），回退到完整解压验证: %s",
+                    timeout,
+                    os.path.basename(archive_path),
+                )
+                return 'unknown'
+
+            # 分支 3：进程已退出，等 stderr 读完做关键字判定
+            try:
+                await asyncio.wait_for(stderr_task, timeout=2.0)
+            except Exception:
+                pass
+            for t in (stdout_task, wait_task):
+                if not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except Exception:
+                        pass
+
+            stderr_text = b''.join(stderr_chunks).decode('utf-8', errors='ignore')
+            stderr_lower = stderr_text.lower()
+
+            if task is not None:
+                task.unregister_process(process)
+
+            # 进程正常结束（returncode == 0）且有数据吐出 → 包很小已经全部输出，密码正确
+            if process.returncode == 0 and stdout_bytes > 0:
+                return 'ok'
+
+            encryption_markers = (
+                "wrong password",
+                "password is incorrect",
+                "password?",
+                "passphrase",
+                "cannot open encrypted",
+                "is encrypted",
+                "data error in encrypted",
+                "crc failed in encrypted",
+            )
+            if any(m in stderr_lower for m in encryption_markers):
+                return 'wrong_password'
+
+            corrupt_markers = (
+                "headers error",
+                "unexpected end of archive",
+                "unexpected end of data",
+                "is not archive",
+                "cannot open the file as archive",
+                "can not open the file as archive",
+            )
+            if any(m in stderr_lower for m in corrupt_markers):
+                return 'corrupt'
+
+            # 兜底：无法定性，让上层走原有 x 流程，避免漏掉真密码
+            return 'unknown'
 
     async def _run_subprocess_command(self, cmd: List[str]) -> subprocess.CompletedProcess:
         semaphore = self._get_7z_semaphore()
