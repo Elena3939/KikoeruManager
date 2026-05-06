@@ -4,11 +4,21 @@ E1 最小闭环：header_status / summary_card / rich_text / divider / spacer
 
 每个渲染器签名：renderer(props: dict, payload: dict) -> str
 输出 email-safe table-based HTML。
+
+移动端兼容性约定（QQ 邮箱 / 网易邮箱 / Outlook Mobile）：
+  - 不使用 <details>/<summary>（移动端 webview 会整段剥离 children）
+  - 不使用内联 <svg>（QQ Mail mobile 会显示为 broken-image，改用 emoji）
+  - 不使用 overflow-y:auto + max-height（移动端会折叠容器并隐藏内容）
+  - 不使用 linear-gradient 容器背景（部分老版客户端会连同元素一起丢弃）
+  - 桌面 web 端继续保持原有体验，下面的渲染器选择 email-safe 的最大公约数。
 """
 import html as _html
+import logging as _logging
 import re as _re
 from ..variable_registry import resolve_variable, substitute_variables
 from ..html_sanitizer import sanitize_html
+
+logger = _logging.getLogger(__name__)
 
 # 富文本里的"变量 pill"节点：把 <span data-var="任务标题">...</span>
 # 还原为 {任务标题}，后续 substitute_variables 再替换为真实值。
@@ -172,6 +182,35 @@ def render_stats_grid(props: dict, payload: dict) -> str:
 # ---------------------------------------------------------------------------
 # file_tree —— 文件 / 目录树
 # ---------------------------------------------------------------------------
+# QQ Mail mobile / 网易邮箱 mobile 会把内联 <svg> 渲染成 broken-image 占位图。
+# 这里把会出现在树状文件清单里的图标统一映射到 emoji（系统字体即可显示），
+# 邮件场景里 emoji 比 SVG 在移动端有更好的兼容性，桌面端也能正常显示。
+_EMOJI_ICONS = {
+    "folder":       "📁",
+    "folder-open":  "📂",
+    "file":         "📄",
+    "file-text":    "📝",
+    "music":        "🎵",
+    "image":        "🖼",
+    "archive":      "📦",
+    "clock":        "🕒",
+    "chevron-right":"›",
+    "filter-x":     "⊘",
+    "x-circle":     "✕",
+    "check-circle": "✓",
+    "hard-drive":   "💾",
+    "link":         "🔗",
+}
+
+
+def _emoji_icon(name: str, color: str, size: int = 16) -> str:
+    glyph = _EMOJI_ICONS.get(name, "•")
+    return (
+        f'<span style="display:inline-block;font-size:{size}px;line-height:1;'
+        f'vertical-align:middle;color:{color};">{glyph}</span>'
+    )
+
+
 def _lucide_icon(name: str, color: str, size: int = 16) -> str:
     paths = {
         "chevron-right": '<path d="m9 18 6-6-6-6"/>',
@@ -362,23 +401,25 @@ def render_file_tree(props: dict, payload: dict) -> str:
             folder_icon = (
                 f'<span style="display:inline-block;width:18px;text-align:center;'
                 f'line-height:1;vertical-align:middle;">'
-                f'{_lucide_icon("folder-open", folder_color, 15)}</span>'
+                f'{_emoji_icon("folder-open", folder_color, 14)}</span>'
             )
             badge_html = _render_badges(node.get("badges") or [])
             size_text = str(node.get("size_text") or "")
             size_badge = f'<span style="float:right;color:#94a3b8;font-size:12px;font-weight:500;">{_esc(size_text)}</span>' if size_text else ""
             child_chunks: list[str] = []
             _render_rows(node.get("children") or [], depth + 1, child_chunks, is_muted)
+            # 移动端邮件客户端（QQ Mail / 网易邮箱 mobile）会把 <details>/<summary>
+            # 整段折叠并隐藏 children，导致文件清单整段丢失。这里改成始终展开的
+            # 平铺 div 行，保证 desktop / mobile 渲染一致。
             out.append(
-                f'<details {"open" if depth > 0 else ""} style="margin:0;padding:0;">'
-                f'<summary style="list-style-position:inside;cursor:pointer;{row_base_style}color:{dir_color};'
-                f'padding-left:{indent_px}px;">'
+                f'<div style="margin:0;padding:0;">'
+                f'<div style="{row_base_style}color:{dir_color};padding-left:{indent_px}px;">'
                 f'{folder_icon}'
                 f'<span style="{tree_name_base}{dir_label_extra}">{_esc(label)}</span>'
                 f'{badge_html}{size_badge}'
-                f'</summary>'
+                f'</div>'
                 f'{"".join(child_chunks)}'
-                f'</details>'
+                f'</div>'
             )
 
         for node in files:
@@ -403,7 +444,7 @@ def render_file_tree(props: dict, payload: dict) -> str:
             icon_html = (
                 f'<span style="display:inline-block;width:18px;text-align:center;'
                 f'line-height:1;vertical-align:middle;">'
-                f'{_lucide_icon(_file_tree_icon_name(label), icon_color, 15)}</span>'
+                f'{_emoji_icon(_file_tree_icon_name(label), icon_color, 14)}</span>'
             )
             size_text = str(node.get("size_text") or "")
             size_html = (
@@ -431,15 +472,21 @@ def render_file_tree(props: dict, payload: dict) -> str:
     body_chunks: list[str] = []
     _render_rows(items, 0, body_chunks)
 
+    # 容器背景使用纯色：linear-gradient 在部分移动端邮件客户端
+    # 会被整段丢弃（连同 children）。box-shadow 保留但移动端忽略。
     tree_html = (
         f'<div style="margin:10px 0;">'
         f'<div style="font-size:11px;font-weight:600;color:#64748b;'
         f'letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;'
         f'padding:0 4px;">{title}</div>'
-        f'<div style="background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%);border:1px solid #dde6f0;border-radius:12px;'
+        f'<div style="background:#ffffff;border:1px solid #dde6f0;border-radius:12px;'
         f'overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,0.06);">'
         f'{"".join(body_chunks)}'
         f'</div></div>\n'
+    )
+    logger.debug(
+        "[block.file_tree] 渲染完成 source=%s title=%s rows=%d body_size=%d",
+        source_key, title, len(body_chunks), len(tree_html),
     )
     return card_html + tree_html
 
@@ -794,8 +841,14 @@ def render_task_log(props: dict, payload: dict) -> str:
         f'<div style="font-size:11px;color:#7a7a7e;margin-bottom:6px;'
         f'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">'
         f'共 {len(items)} 行'
-        + (f'，滚动查看全部' if len(items) > 12 else '')
         + f'</div>'
+    )
+    # 移动端邮件客户端（QQ Mail / 网易邮箱 mobile）会把带 overflow-y:auto +
+    # max-height 的容器整体折叠或隐藏 children，导致执行日志在手机上彻底
+    # 消失。改成自然高度展开 + truncated_html 提示，让所有客户端都能看到。
+    logger.debug(
+        "[block.task_log] 渲染完成 source=%s title=%s rows=%d total=%d",
+        source_key, title, len(rows), len(items),
     )
     return (
         f'<div style="margin:10px 0;">'
@@ -806,11 +859,8 @@ def render_task_log(props: dict, payload: dict) -> str:
         f'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;'
         f'line-height:1.55;color:#a1a1a6;">'
         f'{meta_line}'
-        f'<div style="max-height:360px;overflow-y:auto;padding-right:4px;'
-        f'scrollbar-width:thin;scrollbar-color:#4a4a4f #1d1d1f;">'
         f'{"".join(rows)}'
         f'{truncated_html}'
-        f'</div>'
         f'</div></div>\n'
     )
 

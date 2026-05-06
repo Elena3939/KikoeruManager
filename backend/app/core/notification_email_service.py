@@ -2,6 +2,7 @@ import asyncio
 import logging
 import smtplib
 import ssl
+import time
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -23,35 +24,74 @@ def _build_message(from_email: str, from_name: str, to_email: str, subject: str,
 
 
 def _send_smtp_sync(cfg, subject: str, html_body: str, text_body: str = None):
-    """同步 SMTP 发送，在线程池中调用"""
+    """同步 SMTP 发送，在线程池中调用。
+
+    日志原则：主机 / 端口 / 加密方式 / 发件人 / 收件人 / 主题、html、text 长度
+    以及各阶段耗时、异常类型都要落到 logger.info / warning / error。密码绝不输出。
+    """
     from_email = cfg.from_email or cfg.username
+    mode = "SSL" if cfg.smtp_ssl else ("STARTTLS" if cfg.smtp_starttls else "PLAIN")
+    html_len = len(html_body or "")
+    text_len = len(text_body or "")
+    logger.info(
+        "[通知邮件] 准备发送 host=%s port=%s mode=%s from=%s to=%s subject=%r html_len=%d text_len=%d",
+        cfg.smtp_host, cfg.smtp_port, mode, from_email, cfg.to_email, subject, html_len, text_len,
+    )
     msg = _build_message(from_email, cfg.from_name, cfg.to_email, subject, html_body, text_body)
-    if cfg.smtp_ssl:
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port, context=context, timeout=cfg.connect_timeout_seconds) as server:
-            if cfg.username:
-                server.login(cfg.username, cfg.password)
-            server.sendmail(from_email, [cfg.to_email], msg.as_string())
-    elif cfg.smtp_starttls:
-        with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=cfg.connect_timeout_seconds) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            if cfg.username:
-                server.login(cfg.username, cfg.password)
-            server.sendmail(from_email, [cfg.to_email], msg.as_string())
-    else:
-        with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=cfg.connect_timeout_seconds) as server:
-            if cfg.username:
-                server.login(cfg.username, cfg.password)
-            server.sendmail(from_email, [cfg.to_email], msg.as_string())
+    msg_size = len(msg.as_string())
+    logger.debug("[通知邮件] MIME 包装完成 size=%d bytes", msg_size)
+
+    t_start = time.perf_counter()
+    try:
+        if cfg.smtp_ssl:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port, context=context, timeout=cfg.connect_timeout_seconds) as server:
+                t_conn = time.perf_counter()
+                logger.debug("[通知邮件] SSL 握手完成 host=%s port=%s elapsed=%.2fs", cfg.smtp_host, cfg.smtp_port, t_conn - t_start)
+                if cfg.username:
+                    server.login(cfg.username, cfg.password)
+                    logger.debug("[通知邮件] 登录成功 user=%s", cfg.username)
+                server.sendmail(from_email, [cfg.to_email], msg.as_string())
+        elif cfg.smtp_starttls:
+            with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=cfg.connect_timeout_seconds) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                t_conn = time.perf_counter()
+                logger.debug("[通知邮件] STARTTLS 握手完成 host=%s port=%s elapsed=%.2fs", cfg.smtp_host, cfg.smtp_port, t_conn - t_start)
+                if cfg.username:
+                    server.login(cfg.username, cfg.password)
+                    logger.debug("[通知邮件] 登录成功 user=%s", cfg.username)
+                server.sendmail(from_email, [cfg.to_email], msg.as_string())
+        else:
+            with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=cfg.connect_timeout_seconds) as server:
+                if cfg.username:
+                    server.login(cfg.username, cfg.password)
+                    logger.debug("[通知邮件] 登录成功 user=%s", cfg.username)
+                server.sendmail(from_email, [cfg.to_email], msg.as_string())
+    except Exception:
+        elapsed = time.perf_counter() - t_start
+        logger.warning("[通知邮件] SMTP 发送异常 host=%s mode=%s elapsed=%.2fs", cfg.smtp_host, mode, elapsed)
+        raise
+    elapsed = time.perf_counter() - t_start
+    logger.info(
+        "[通知邮件] 发送成功 host=%s mode=%s to=%s size=%d bytes elapsed=%.2fs",
+        cfg.smtp_host, mode, cfg.to_email, msg_size, elapsed,
+    )
 
 
 async def send_notification_email(subject: str, html_body: str, text_body: str = None) -> bool:
-    """异步发送通知邮件，不阻塞事件循环"""
+    """异步发送通知邮件，不阻塞事件循环。
+
+    返回发送是否成功。未启用 / 未配置时会记录 info 日志作为跳过标识。
+    """
     from ..config.settings import get_config
     cfg = get_config().notification_email
-    if not cfg.enabled or not cfg.to_email or not cfg.smtp_host:
+    if not cfg.enabled:
+        logger.info("[通知邮件] 跳过发送：未启用 notification_email.enabled")
+        return False
+    if not cfg.to_email or not cfg.smtp_host:
+        logger.warning("[通知邮件] 跳过发送：配置不完整 to=%r host=%r", cfg.to_email, cfg.smtp_host)
         return False
     loop = asyncio.get_event_loop()
     try:
@@ -61,10 +101,16 @@ async def send_notification_email(subject: str, html_body: str, text_body: str =
         )
         return True
     except asyncio.TimeoutError:
-        logger.error("[通知邮件] 发送超时")
+        logger.error(
+            "[通知邮件] 发送超时 host=%s port=%s timeout=%ss subject=%r",
+            cfg.smtp_host, cfg.smtp_port, cfg.send_timeout_seconds, subject,
+        )
         return False
     except Exception as e:
-        logger.error(f"[通知邮件] 发送失败: {e}", exc_info=True)
+        logger.error(
+            "[通知邮件] 发送失败 host=%s port=%s err_type=%s err=%s subject=%r",
+            cfg.smtp_host, cfg.smtp_port, type(e).__name__, e, subject, exc_info=True,
+        )
         return False
 
 

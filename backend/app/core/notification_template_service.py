@@ -1,5 +1,6 @@
 import html
 import logging
+import time
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -281,6 +282,19 @@ def _template_matches_event(event_types, event_type: str) -> bool:
 
 
 def _render_user_template(tpl, payload: dict) -> tuple:
+    t_start = time.perf_counter()
+    logger.info(
+        "[邮件渲染] mode=html template=%r event=%s domain=%s title=%r "
+        "rj_cards=%d file_tree=%d recent_logs=%d error_logs=%d circle_overview=%d",
+        getattr(tpl, 'name', '?'),
+        payload.get('event_type'), payload.get('domain') or payload.get('domain_label'),
+        payload.get('title'),
+        len(payload.get('rj_work_cards') or []),
+        len(payload.get('file_tree') or []),
+        len(payload.get('recent_logs') or []),
+        len(payload.get('error_logs') or []),
+        len(payload.get('circle_overview') or []),
+    )
     payload_sections = _render_payload_sections(payload)
     stats_grid_section = _render_payload_section(payload, 'stats_grid')
     file_tree_section = _render_payload_section(payload, 'file_tree')
@@ -349,6 +363,13 @@ def _render_user_template(tpl, payload: dict) -> tuple:
     subject = (tpl.subject_template or '').format_map(formatter)
     html_body = (tpl.html_template or '').format_map(formatter)
     text_body = (tpl.text_template or '').format_map(formatter) or variables.get('summary', '')
+    logger.info(
+        "[邮件渲染] mode=html 完成 template=%r html_len=%d sections={file_tree:%d task_log:%d diff:%d stats:%d} elapsed=%.3fs",
+        getattr(tpl, 'name', '?'), len(html_body),
+        len(file_tree_section or ''), len(task_log_section or ''),
+        len(diff_section or ''), len(stats_grid_section or ''),
+        time.perf_counter() - t_start,
+    )
     return subject, html_body, text_body
 
 
@@ -681,11 +702,26 @@ def render_blocks_email(blocks: list, payload: dict) -> tuple:
     """将 blocks 数组渲染成 (subject, html_body, text_body)。
 
     subject 从 payload 中提取，或使用默认模板。
+    日志会输出事件类型 / domain / blocks 数 / 各业务数据块是否命中、渲染耗时。
     """
     from ..core.block_renderers import BLOCK_RENDERERS
     from ..core.html_sanitizer import sanitize_html
 
     event_type = payload.get('event_type', 'completed')
+    t_start = time.perf_counter()
+    enabled_blocks = [b for b in blocks if b.get('enabled', True)]
+    block_types = [b.get('type', '') for b in enabled_blocks]
+    logger.info(
+        "[邮件渲染] mode=blocks event=%s domain=%s title=%r blocks=%d types=%s "
+        "rj_cards=%d file_tree=%d recent_logs=%d error_logs=%d circle_overview=%d",
+        event_type, payload.get('domain') or payload.get('domain_label'), payload.get('title'),
+        len(enabled_blocks), block_types,
+        len(payload.get('rj_work_cards') or []),
+        len(payload.get('file_tree') or []),
+        len(payload.get('recent_logs') or []),
+        len(payload.get('error_logs') or []),
+        len(payload.get('circle_overview') or []),
+    )
 
     # 拼装 payload 补充字段
     enriched = dict(payload)
@@ -708,6 +744,11 @@ def render_blocks_email(blocks: list, payload: dict) -> tuple:
 
     inner_html = sanitize_html(''.join(html_parts))
     html_body = _EMAIL_ENVELOPE.format(content=inner_html)
+    elapsed = time.perf_counter() - t_start
+    logger.info(
+        "[邮件渲染] mode=blocks 完成 event=%s html_len=%d inner_len=%d elapsed=%.3fs",
+        event_type, len(html_body), len(inner_html), elapsed,
+    )
 
     # 主题：优先使用模板自定义的 subject_template；否则用事件默认。
     # 主题里所有 {var} 都通过 substitute_variables 解析，未注册的占位会保留原文。
