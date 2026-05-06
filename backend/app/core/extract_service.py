@@ -128,13 +128,13 @@ class ExtractService:
         "_conflicts",
         "subtitles",
     }
-    
+
     @property
     def config(self):
         """动态获取最新配置"""
         from ..config.settings import get_config
         return get_config()
-    
+
     @property
     def seven_zip(self) -> str:
         """动态获取7z路径"""
@@ -165,28 +165,28 @@ class ExtractService:
     def _find_7z_executable(self) -> str:
         """查找 7z 可执行文件"""
         import shutil
-        
+
         # 首先尝试配置的路径
         configured_path = self.config.extract.seven_zip_path
         if configured_path and configured_path != "7z":
             if os.path.exists(configured_path):
                 return configured_path
-        
+
         # 尝试在 PATH 中查找，Docker 优先使用官方 7zz 以支持 RAR5
         seven_zip_path = shutil.which("7zz") or shutil.which("7z")
         if seven_zip_path:
             return seven_zip_path
-        
+
         # Windows 默认安装路径
         default_paths = [
             r"C:\Program Files\7-Zip\7z.exe",
             r"C:\Program Files (x86)\7-Zip\7z.exe",
         ]
-        
+
         for path in default_paths:
             if os.path.exists(path):
                 return path
-        
+
         # 如果都找不到，返回配置的值（后续会报错）
         logger.error("找不到 7z 可执行文件。请安装 7-Zip 并确保它在 PATH 中，或在配置中指定正确路径。")
         return "7z"
@@ -197,7 +197,7 @@ class ExtractService:
     def _is_rar_archive(self, archive_path: str) -> bool:
         lower_path = str(archive_path).lower()
         return lower_path.endswith(".rar") or bool(re.search(r"\.part0*1\.rar$", lower_path))
-    
+
     async def _ensure_7z_available(self) -> bool:
         """异步检查 7z 是否可用，并缓存结果避免高并发重复探测"""
         executable = self.seven_zip
@@ -250,7 +250,7 @@ class ExtractService:
             task.task_metadata = {}
         for key, value in values.items():
             task.task_metadata[key] = value
-    
+
     async def extract(self, task: Task) -> Optional[str]:
         """
         解压压缩包
@@ -259,14 +259,14 @@ class ExtractService:
         # 首先检查 7z 是否可用
         if not await self._ensure_7z_available():
             raise Exception("找不到 7z 可执行文件。请安装 7-Zip 并确保它在 PATH 中，或在配置中指定正确路径。")
-        
+
         archive_path = task.source_path
-        
+
         # 检查是否被取消
         if task.is_cancelled():
             logger.info(f"任务 {task.id} 已被取消，跳过解压")
             return None
-        
+
         # 1. 等待文件稳定
         self._set_extract_meta(
             task,
@@ -276,13 +276,13 @@ class ExtractService:
         )
         task.update_progress(5, "等待文件写入完成")
         await self._wait_file_stable(archive_path, task)
-        
+
         # 检查暂停和取消
         await task.wait_if_paused()
         if task.is_cancelled():
             logger.info(f"任务 {task.id} 在等待文件稳定后被取消")
             return None
-        
+
         # 2. 修复后缀名
         self._set_extract_meta(task, extract_stage="detect_type")
         task.update_progress(10, "检测文件类型")
@@ -292,7 +292,7 @@ class ExtractService:
         if archive_path != task.source_path:
             logger.info(f"[Extract] 文件路径已更新: {task.source_path} -> {archive_path}")
             task.source_path = archive_path
-        
+
         # 3. 检查是否是分卷
         volume_set = self._detect_volume_set(archive_path)
         if volume_set:
@@ -321,13 +321,13 @@ class ExtractService:
             # 不改源文件名，避免监控链路还在等旧路径导致超时。
             password_candidates = await self._get_password_candidates_for_archive(archive_path)
             hinted_rjcode = self._apply_filename_password_rj_hint(archive_path, task, password_candidates)
-        
+
         # 检查暂停和取消
         await task.wait_if_paused()
         if task.is_cancelled():
             logger.info(f"任务 {task.id} 在等待分卷后被取消")
             return None
-        
+
         # 4. 获取压缩包内文件列表
         self._set_extract_meta(task, extract_stage="list_archive")
         task.update_progress(20, "读取压缩包内容")
@@ -337,7 +337,7 @@ class ExtractService:
             logger.warning("预读取压缩包内容失败，回退为直接尝试解压: %s", archive_path)
             archive_info = ArchiveInfo(archive_path, [], None)
             task.update_progress(24, "压缩包预读失败，尝试直接解压")
-        
+
         # 5. 确定输出路径
         output_name = str(hinted_rjcode or Path(archive_path).stem).strip()  # 去除首尾空格，避免Windows路径错误
         # 移除其他Windows不允许的字符
@@ -346,17 +346,25 @@ class ExtractService:
             prefix=f"{output_name}_{task.id[:8]}_",
             dir=self.config.storage.temp_path
         )
-        
+        task.task_metadata = {
+            **(task.task_metadata or {}),
+            "temp_extract_path": output_path,
+        }
+
         # 6. 尝试解压
-        self._set_extract_meta(task, extract_stage="extract")
-        task.update_progress(30, "开始解压")
-        success, success_password, extract_failure_reason = await self._try_extract(
-            archive_info,
-            output_path,
-            task,
-            password_candidates=password_candidates,
-        )
-        
+        try:
+            self._set_extract_meta(task, extract_stage="extract")
+            task.update_progress(30, "开始解压")
+            success, success_password, extract_failure_reason = await self._try_extract(
+                archive_info,
+                output_path,
+                task,
+                password_candidates=password_candidates,
+            )
+        except Exception:
+            await self._cleanup_extract_path(output_path)
+            raise
+
         if not success:
             # 用户取消：task.cancel() 里已经把状态写成 "用户取消"，不要再 task.fail()
             # 把它覆盖成 "原因未知"。直接清理临时目录后返回。
@@ -379,48 +387,50 @@ class ExtractService:
             # 清理已创建的解压目录（包括部分解压的残留文件）
             await self._cleanup_extract_path(output_path)
             return None
-        
-        # 记录成功使用的密码
-        self._set_extract_meta(task, extract_stage="extracted")
-        logger.info(f"外层压缩包解压成功，使用密码: {success_password or '无密码'}")
-        
-        # 检查暂停和取消
-        await task.wait_if_paused()
-        if task.is_cancelled():
-            logger.info(f"任务 {task.id} 在解压完成后被取消，清理已解压文件")
-            import shutil
-            if os.path.exists(output_path):
-                await asyncio.to_thread(shutil.rmtree, output_path)
-            return None
-        
-        # 7. 验证解压完整性
-        if archive_info_from_listing:
-            verify_mode = "sample" if len([item for item in archive_info.file_list if not item.get('is_dir')]) > self.VERIFY_FULL_FILE_LIMIT else "full"
-            self._set_extract_meta(task, extract_stage="verify", verify_mode=verify_mode)
-            task.update_progress(90, "验证解压完整性")
-            if not await self._verify_extraction(archive_info, output_path):
-                raise Exception("解压验证失败，文件不完整")
-        else:
-            logger.warning("解压前未能读取到压缩包目录，跳过基于清单的完整性校验: %s", archive_path)
-        
-        # 8. 检查并解压嵌套压缩包
-        if self.config.extract.extract_nested_archives:
-            self._set_extract_meta(task, extract_stage="nested_scan")
-            task.update_progress(95, "检查嵌套压缩包")
-            nested_count = await self._extract_nested_archives(
-                output_path, 
-                task, 
-                max_depth=self.config.extract.max_nested_depth,
-                parent_password=success_password  # 传递成功使用的密码给嵌套压缩包
-            )
-            if nested_count > 0:
-                logger.info(f"解压了 {nested_count} 个嵌套压缩包")
-            self._set_extract_meta(task, nested_archive_count=nested_count)
-        else:
-            logger.debug("嵌套压缩包解压已禁用")
-        
-        self._set_extract_meta(task, extract_stage="done", extract_finished_at=datetime.now().isoformat())
-        return output_path
+
+        try:
+            # 记录成功使用的密码
+            self._set_extract_meta(task, extract_stage="extracted")
+            logger.info(f"外层压缩包解压成功，使用密码: {success_password or '无密码'}")
+
+            # 检查暂停和取消
+            await task.wait_if_paused()
+            if task.is_cancelled():
+                logger.info(f"任务 {task.id} 在解压完成后被取消，清理已解压文件")
+                await self._cleanup_extract_path(output_path)
+                return None
+
+            # 7. 验证解压完整性
+            if archive_info_from_listing:
+                verify_mode = "sample" if len([item for item in archive_info.file_list if not item.get('is_dir')]) > self.VERIFY_FULL_FILE_LIMIT else "full"
+                self._set_extract_meta(task, extract_stage="verify", verify_mode=verify_mode)
+                task.update_progress(90, "验证解压完整性")
+                if not await self._verify_extraction(archive_info, output_path):
+                    raise Exception("解压验证失败，文件不完整")
+            else:
+                logger.warning("解压前未能读取到压缩包目录，跳过基于清单的完整性校验: %s", archive_path)
+
+            # 8. 检查并解压嵌套压缩包
+            if self.config.extract.extract_nested_archives:
+                self._set_extract_meta(task, extract_stage="nested_scan")
+                task.update_progress(95, "检查嵌套压缩包")
+                nested_count = await self._extract_nested_archives(
+                    output_path,
+                    task,
+                    max_depth=self.config.extract.max_nested_depth,
+                    parent_password=success_password  # 传递成功使用的密码给嵌套压缩包
+                )
+                if nested_count > 0:
+                    logger.info(f"解压了 {nested_count} 个嵌套压缩包")
+                self._set_extract_meta(task, nested_archive_count=nested_count)
+            else:
+                logger.debug("嵌套压缩包解压已禁用")
+
+            self._set_extract_meta(task, extract_stage="done", extract_finished_at=datetime.now().isoformat())
+            return output_path
+        except Exception:
+            await self._cleanup_extract_path(output_path)
+            raise
 
     def _pick_filename_matched_rjcode(self, password_candidates: List[Dict[str, Optional[str]]]) -> Optional[str]:
         for item in password_candidates or []:
@@ -596,11 +606,11 @@ class ExtractService:
             except OSError:
                 pass
         raise RuntimeError("选择性解压失败：未能使用现有密码策略提取目标条目")
-    
+
     async def _extract_nested_archives(self, directory: str, task: Task, max_depth: int = 5, current_depth: int = 0, processed_paths: Optional[set] = None, parent_password: Optional[str] = None) -> int:
         """
         递归解压目录中的嵌套压缩包
-        
+
         Args:
             directory: 要检查的目录
             task: 任务对象
@@ -608,29 +618,29 @@ class ExtractService:
             current_depth: 当前递归深度
             processed_paths: 已处理的文件路径集合（防止循环）
             parent_password: 外层压缩包使用的密码（优先尝试）
-        
+
         Returns:
             解压的嵌套压缩包数量
         """
         if processed_paths is None:
             processed_paths = set()
-        
+
         # 检查深度限制
         if current_depth >= max_depth:
             logger.warning(f"达到最大嵌套深度 {max_depth}，停止解压嵌套压缩包")
             return 0
-        
+
         # 检查任务状态
         if task.is_cancelled():
             logger.info("任务被取消，停止解压嵌套压缩包")
             return 0
         await task.wait_if_paused()
-        
+
         extracted_count = 0
         scanned_files = 0
         scanned_dirs = 0
         archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}
-        
+
         # 扫描目录中的所有文件
         try:
             for root, dirs, files in os.walk(directory):
@@ -647,30 +657,30 @@ class ExtractService:
                 if task.is_cancelled():
                     break
                 await task.wait_if_paused()
-                
+
                 for filename in files:
                     scanned_files += 1
                     if scanned_files > self.NESTED_SCAN_FILE_BUDGET:
                         logger.warning("嵌套压缩包文件扫描达到预算上限，停止扫描: %s", directory)
                         return extracted_count
                     file_path = os.path.join(root, filename)
-                    
+
                     # 检查是否已经处理过（防止循环）
                     file_real_path = os.path.realpath(file_path)
                     if file_real_path in processed_paths:
                         logger.debug(f"跳过已处理的文件: {filename}")
                         continue
-                    
+
                     # 检查后缀名或通过魔数检测
                     is_archive = False
                     ext = Path(filename).suffix.lower()
-                    
+
                     if ext in archive_extensions:
                         is_archive = True
                     else:
                         # 通过后缀名无法识别，尝试魔数检测
                         is_archive = await self._detect_by_magic_bytes(file_path) is not None
-                    
+
                     if is_archive:
                         # 检查是否是分卷文件（跳过非首卷）
                         import re
@@ -679,7 +689,7 @@ class ExtractService:
                             continue
                         if re.search(r'\.z\d{2}$', filename, re.IGNORECASE):
                             continue
-                        
+
                         logger.info(f"发现嵌套压缩包: {filename} (深度: {current_depth + 1}, 父密码: {parent_password or '无'})")
 
                         # 小型压缩包（< NESTED_SUBTITLE_SIZE_THRESHOLD）视为潜在字幕源，
@@ -716,21 +726,21 @@ class ExtractService:
                         if task.is_cancelled():
                             break
                         await task.wait_if_paused()
-                        
+
                         # 确定解压目标目录
                         # 如果压缩包名是 123.zip，解压到 123/ 目录
                         archive_name = Path(filename).stem
                         nested_output_dir = os.path.join(root, archive_name)
-                        
+
                         # 如果目录已存在，添加序号
                         counter = 1
                         original_output_dir = nested_output_dir
                         while os.path.exists(nested_output_dir):
                             nested_output_dir = f"{original_output_dir}_{counter}"
                             counter += 1
-                        
+
                         os.makedirs(nested_output_dir, exist_ok=True)
-                        
+
                         # 尝试解压嵌套压缩包（一次性收集所有密码候选，直接尝试提取，跳过多余的 list 步骤）
                         try:
                             task.update_progress(
@@ -788,10 +798,10 @@ class ExtractService:
                             # 清理失败的解压目录
                             if os.path.exists(nested_output_dir):
                                 await asyncio.to_thread(shutil.rmtree, nested_output_dir)
-        
+
         except Exception as e:
             logger.error(f"扫描嵌套压缩包时出错: {e}")
-        
+
         return extracted_count
 
     async def _collapse_wrapper_dir(self, nested_dir: str, parent_dir: str) -> None:
@@ -844,17 +854,17 @@ class ExtractService:
         """
         # 构建密码列表：父密码优先，然后无密码，最后通用密码
         password_list = []
-        
+
         # 1. 优先尝试父密码
         if parent_password:
             password_list.append(parent_password)
-        
+
         # 2. 尝试无密码
         password_list.append("")
-        
+
         # 3. 尝试通用密码
         password_list.extend(self.config.extract.password_list)
-        
+
         # 去重（保持顺序）
         seen = set()
         unique_passwords = []
@@ -862,7 +872,7 @@ class ExtractService:
             if pwd not in seen:
                 seen.add(pwd)
                 unique_passwords.append(pwd)
-        
+
         # 尝试所有密码，找到能读取内容的
         for password in unique_passwords:
             file_list = await self._list_archive_contents(archive_path, password)
@@ -870,9 +880,9 @@ class ExtractService:
                 source = "父密码" if password == parent_password else ("无密码" if password == "" else "通用密码")
                 logger.info(f"成功读取嵌套压缩包内容，使用: {source} ({password or '无密码'})")
                 return ArchiveInfo(archive_path, file_list, password)
-        
+
         return None
-    
+
     async def _try_extract_nested(self, archive_info: ArchiveInfo, output_path: str, task: Task, parent_password: Optional[str] = None) -> tuple[bool, Optional[str]]:
         """
         尝试解压嵌套压缩包
@@ -881,26 +891,26 @@ class ExtractService:
         """
         # 构建完整的密码列表
         password_list = []
-        
+
         # 1. 首先尝试已知的密码（从 _get_nested_archive_info 获取的）
         if archive_info.password:
             password_list.append((archive_info.password, "已知密码"))
-        
+
         # 2. 尝试父密码（如果和已知密码不同）
         if parent_password and parent_password != archive_info.password:
             password_list.append((parent_password, "父密码"))
-        
+
         # 3. 尝试无密码（如果还没试过）
         if "" != archive_info.password and "" != parent_password:
             password_list.append(("", "无密码"))
-        
+
         # 4. 尝试通用密码（配置中的密码列表）
         for pwd in self.config.extract.password_list:
             if pwd and pwd != archive_info.password and pwd != parent_password:
                 password_list.append((pwd, "通用密码"))
-        
+
         logger.info(f"开始尝试解压嵌套压缩包，共 {len(password_list)} 个密码")
-        
+
         for password, source in password_list:
             cmd = [
                 self.seven_zip, 'x',
@@ -909,16 +919,16 @@ class ExtractService:
                 *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效）
                 archive_info.path
             ]
-            
+
             if password:
                 cmd.append(f'-p{password}')
             else:
                 cmd.append('-p')  # 空密码
-            
+
             try:
                 logger.info(f"尝试解压嵌套压缩包使用: {source} ({password or '无密码'})")
                 result = await self._run_7z_command(cmd, capture_stdout=False)
-                
+
                 if result.returncode == 0:
                     logger.info(f"嵌套压缩包解压成功，使用: {source} ({password or '无密码'})")
                     # 更新archive_info中的密码，用于传递给下一层
@@ -926,11 +936,11 @@ class ExtractService:
                     return True, password
                 else:
                     logger.warning(f"密码 {source} ({password or '无密码'}) 解压失败")
-                
+
             except Exception as e:
                 logger.warning(f"嵌套压缩包解压尝试失败: {e}")
                 continue
-        
+
         logger.error(f"嵌套压缩包解压失败，已尝试所有 {len(password_list)} 个密码")
         return False, None
 
@@ -1001,40 +1011,40 @@ class ExtractService:
         stable_count = 0
         start_time = asyncio.get_event_loop().time()
         last_progress_time = start_time
-        
+
         logger.info(f"开始等待文件复制完成: {file_path}")
-        
+
         while stable_count < config.file_stable_checks:
             current_time = asyncio.get_event_loop().time()
-            
+
             # 检查总超时
             if current_time - start_time > max_wait:
                 raise TimeoutError(f"等待文件复制完成超时 ({max_wait}秒): {file_path}")
-            
+
             # 检查任务是否被取消
             if task and task.is_cancelled():
                 logger.info(f"任务在等待文件复制时被取消: {file_path}")
                 return
-            
+
             # 检查任务是否暂停
             if task:
                 await task.wait_if_paused()
-            
+
             try:
                 # 检查文件是否存在
                 if not os.path.exists(file_path):
                     await asyncio.sleep(config.file_stable_interval)
                     continue
-                
+
                 # 获取文件大小
                 current_size = os.path.getsize(file_path)
-                
+
                 # 检查文件是否为空或太小（可能是刚开始复制）
                 if current_size < 1024:  # 小于1KB认为可能是刚开始复制
                     logger.debug(f"文件太小 ({current_size} bytes)，等待更多数据写入...")
                     await asyncio.sleep(config.file_stable_interval)
                     continue
-                
+
                 # 检查文件大小是否稳定
                 if current_size == previous_size:
                     stable_count += 1
@@ -1057,53 +1067,53 @@ class ExtractService:
                         logger.info(f"文件仍在复制中，当前大小: {current_size} bytes")
                     stable_count = 0
                     last_progress_time = current_time
-                
+
                 previous_size = current_size
-                
+
                 # 如果长时间没有进度，发出警告
                 if current_time - last_progress_time > 60:  # 1分钟没有变化
                     logger.warning(f"文件复制可能已停滞: {file_path}, 当前大小: {current_size} bytes")
-                    
+
             except Exception as e:
                 logger.warning(f"等待文件稳定时出错: {e}")
                 await asyncio.sleep(config.file_stable_interval)
                 continue
-            
+
             await asyncio.sleep(config.file_stable_interval)
-    
+
     async def _repair_extension(self, file_path: str) -> str:
         """修复文件后缀名和文件名
-        
+
         处理情况：
         1. 有常见压缩后缀名但类型不匹配 → 修复后缀名
         2. 无后缀名或后缀名不常见，但检测到是压缩文件 → 规范化文件名并添加正确的后缀名
-        
+
         文件名规范化：
         - 39.RJ01570159 → RJ01570159.rar
         - 01503161 → RJ01503161.zip
         """
         if not self.config.extract.auto_repair_extension:
             return file_path
-        
+
         filename = Path(file_path).name
         current_ext = Path(file_path).suffix.lower()
-        
+
         # 跳过自解压文件（.exe）
         if filename.lower().endswith('.exe'):
             logger.info(f"跳过自解压文件后缀名修复: {file_path}")
             return file_path
-        
+
         # 跳过分卷压缩文件
         import re
         if re.search(r'\.part\d+\.(rar|zip|7z)$', filename, re.IGNORECASE):
             logger.info(f"跳过分卷压缩文件后缀名修复: {file_path}")
             return file_path
-        
+
         # 跳过无扩展名的分卷压缩文件 (.part1, .part2, ...)
         if re.search(r'\.part\d+$', filename, re.IGNORECASE):
             logger.info(f"跳过无扩展名的分卷压缩文件后缀名修复: {file_path}")
             return file_path
-        
+
         # 跳过 ZIP 分卷压缩文件 (.z01, .z02, ...)
         if re.search(r'\.z\d+$', filename, re.IGNORECASE):
             logger.info(f"跳过 ZIP 分卷压缩文件后缀名修复: {file_path}")
@@ -1116,15 +1126,15 @@ class ExtractService:
 
         # 常见压缩后缀名
         common_archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.z01', '.z'}
-        
+
         # 检测真实文件类型
         real_type = await self._detect_real_type(file_path)
         if not real_type:
             logger.warning(f"无法检测文件类型: {file_path}")
             return file_path
-        
+
         correct_ext = self._get_correct_extension(real_type)
-        
+
         # 情况1: 文件有常见压缩后缀名，检查是否需要修复
         if current_ext in common_archive_extensions:
             if current_ext != f".{correct_ext}":
@@ -1132,7 +1142,7 @@ class ExtractService:
                 logger.info(f"修复后缀名: {file_path} -> {new_path}")
                 return new_path
             return file_path
-        
+
         # 情况2: 文件无后缀名或后缀名不常见，但检测到是压缩文件
         # 需要规范化文件名并添加后缀名
         # 注意：使用完整文件名而不是 stem，因为 Path.suffix 可能误识别
@@ -1142,10 +1152,10 @@ class ExtractService:
         new_path = self._rename_with_normalized_name(file_path, normalized_name, correct_ext)
         logger.info(f"规范文件名并添加后缀: {file_path} -> {new_path}")
         return new_path
-    
+
     def _normalize_filename(self, filename: str) -> str:
         """规范化文件名，提取或构造RJ号
-        
+
         例如:
         - 39.RJ01570159 → RJ01570159
         - 01503161 → RJ01503161
@@ -1155,29 +1165,29 @@ class ExtractService:
         rj_match = re.search(r'[RVB]J(\d{8}|\d{6})(?!\d)', filename, re.IGNORECASE)
         if rj_match:
             return rj_match.group(0).upper()
-        
+
         # 匹配纯数字，8位优先于6位
         num_match = re.search(r'(\d{8}|\d{6})(?!\d)', filename)
         if num_match:
             return f"RJ{num_match.group(1)}"
-        
+
         return filename
-    
+
     def _rename_with_normalized_name(self, file_path: str, new_name: str, ext: str) -> str:
         """用规范化的文件名重命名文件并添加后缀"""
         path = Path(file_path)
         new_filename = f"{new_name}.{ext}"
         new_path = path.parent / new_filename
-        
+
         counter = 1
         while new_path.exists():
             new_filename = f"{new_name}({counter}).{ext}"
             new_path = path.parent / new_filename
             counter += 1
-        
+
         os.rename(file_path, new_path)
         return str(new_path)
-    
+
     async def normalize_archive_filename(self, file_path: str) -> str:
         """规范化压缩包文件名（在任务创建前调用）
 
@@ -1208,7 +1218,7 @@ class ExtractService:
         # 如果文件已有常见压缩后缀名，不需要规范化文件名
         if current_ext in common_archive_extensions:
             return file_path
-        
+
         # 检测真实文件类型
         real_type = await self._detect_real_type(file_path)
         if not real_type:
@@ -1252,7 +1262,7 @@ class ExtractService:
         new_path = await asyncio.to_thread(self._rename_with_normalized_name, file_path, normalized_name, correct_ext)
         logger.info(f"[RENAME] 文件名规范化: {file_path} -> {new_path}")
         return new_path
-    
+
     async def _normalize_volume_set(self, file_path: str, volume_set: 'VolumeSet') -> str:
         """规范化分卷压缩包组的文件名
 
@@ -1309,7 +1319,7 @@ class ExtractService:
             if old_path == target_entry_path:
                 return new_path
         return rename_map[0][1]
-    
+
     def _get_volume_pattern(self, filename: str) -> Optional[re.Match]:
         """获取分卷后缀模式匹配"""
         patterns = [
@@ -1328,69 +1338,69 @@ class ExtractService:
             if match:
                 return match
         return None
-    
+
     def _get_volume_set_normalized_filename(self, file_path: str, volume_set: 'VolumeSet') -> Optional[str]:
         """获取分卷组规范化后的首卷文件名（不执行重命名）
-        
+
         返回首卷的规范化文件名，如果不需要规范化则返回 None
         """
         base_name = volume_set.base_name
         normalized_base = self._normalize_filename(base_name)
-        
+
         if normalized_base == base_name:
             logger.debug(f"[Normalize] 分卷组文件名无需规范化: {base_name}")
             return None
-        
+
         first_volume = volume_set.entry_path or (volume_set.volumes[0] if volume_set.volumes else file_path)
         first_filename = os.path.basename(first_volume)
         pattern = self._get_volume_pattern(first_filename)
-        
+
         if pattern:
             suffix = pattern.group(0)
             result = f"{normalized_base}{suffix}"
             logger.info(f"[Normalize] 需要规范化分卷组: {base_name} -> {normalized_base}, 首卷: {first_filename} -> {result}")
             return result
-        
+
         return None
-    
+
     async def get_normalized_filename(self, file_path: str) -> Optional[str]:
         """获取规范化后的文件名（不执行重命名）
-        
+
         返回规范化后的完整文件名，如果不需要规范化则返回 None
-        
+
         对于分卷压缩文件，返回首卷的规范化文件名
         """
         if not self.config.extract.auto_repair_extension:
             logger.debug(f"[Normalize] auto_repair_extension 未启用")
             return None
-        
+
         path = Path(file_path)
         filename = path.name
         current_ext = path.suffix.lower()
-        
+
         logger.debug(f"[Normalize] 检查文件: {filename}, 当前后缀: {current_ext}")
-        
+
         # 检查是否是分卷压缩文件
         volume_set = self._detect_volume_set(file_path)
         if volume_set:
             return self._get_volume_set_normalized_filename(file_path, volume_set)
-        
+
         # 常见压缩后缀名
         common_archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.z01', '.z'}
-        
+
         # 如果文件已有常见压缩后缀名，不需要规范化
         if current_ext in common_archive_extensions:
             logger.debug(f"[Normalize] 已有常见压缩后缀，跳过: {current_ext}")
             return None
-        
+
         # 规范化文件名
         normalized_name = self._normalize_filename(filename)
         logger.debug(f"[Normalize] 规范化结果: {filename} -> {normalized_name}")
-        
+
         if normalized_name == filename:
             logger.debug(f"[Normalize] 文件名不需要变化")
             return None
-        
+
         # 检测真实文件类型
         real_type = await self._detect_real_type(file_path)
         if real_type:
@@ -1405,11 +1415,11 @@ class ExtractService:
                 # 默认使用 rar
                 correct_ext = 'rar'
             logger.debug(f"[Normalize] 无法检测类型，使用默认: {correct_ext}")
-        
+
         result = f"{normalized_name}.{correct_ext}"
         logger.info(f"[Normalize] 需要规范化: {filename} -> {result}")
         return result
-    
+
     async def _detect_real_type(self, file_path: str) -> Optional[str]:
         """检测文件真实类型"""
         # 方法1: 使用 filetype 库（添加重试机制）
@@ -1426,7 +1436,7 @@ class ExtractService:
                     await asyncio.sleep(2)  # 等待2秒再试
                 else:
                     logger.error(f"文件访问被拒绝，跳过 filetype 检测: {file_path}")
-        
+
         # 方法2: 使用 7z 测试
         try:
             result = await self._run_7z_command([self.seven_zip, 'l', file_path])
@@ -1441,11 +1451,11 @@ class ExtractService:
                     return 'rar'
         except Exception as e:
             logger.error(f"7z检测失败: {e}")
-        
+
         # 方法3: 魔数检测
         magic_result = await self._detect_by_magic_bytes(file_path)
         return magic_result
-    
+
     async def _detect_by_magic_bytes(self, file_path: str) -> Optional[str]:
         """通过魔数检测文件类型"""
         magic_bytes = {
@@ -1455,7 +1465,7 @@ class ExtractService:
             b'Rar!': 'rar',
             b'7z\xBC\xAF\x27\x1C': '7z',
         }
-        
+
         # 添加重试机制
         max_retries = 3
         for retry in range(max_retries):
@@ -1475,9 +1485,9 @@ class ExtractService:
             except Exception as e:
                 logger.error(f"魔数检测失败: {e}")
                 break
-        
+
         return None
-    
+
     def _get_correct_extension(self, file_type: str) -> str:
         """获取正确的后缀名"""
         extension_map = {
@@ -1489,41 +1499,41 @@ class ExtractService:
             'xz': 'xz',
         }
         return extension_map.get(file_type, file_type)
-    
+
     def _rename_with_extension(self, file_path: str, new_ext: str) -> str:
         """重命名文件并修改后缀（用于已有错误后缀的文件）"""
         path = Path(file_path)
         new_name = f"{path.stem}.{new_ext}"
         new_path = path.parent / new_name
-        
+
         counter = 1
         while new_path.exists():
             new_name = f"{path.stem}({counter}).{new_ext}"
             new_path = path.parent / new_name
             counter += 1
-        
+
         os.rename(file_path, new_path)
         return str(new_path)
-    
+
     def _add_extension(self, file_path: str, ext: str) -> str:
         """为文件添加后缀名（用于无后缀或后缀不正确的压缩文件）
-        
+
         例如: 39.RJ01570159 -> 39.RJ01570159.rar
               01503161 -> 01503161.zip
         """
         path = Path(file_path)
         new_name = f"{path.name}.{ext}"
         new_path = path.parent / new_name
-        
+
         counter = 1
         while new_path.exists():
             new_name = f"{path.name}({counter}).{ext}"
             new_path = path.parent / new_name
             counter += 1
-        
+
         os.rename(file_path, new_path)
         return str(new_path)
-    
+
     def _detect_volume_set(self, file_path: str) -> Optional['VolumeSet']:
         """检测是否是分卷压缩包"""
         directory = os.path.dirname(file_path)
@@ -1575,7 +1585,7 @@ class ExtractService:
                     return VolumeSet(base_name, volumes, vtype, entry_path=volumes[0])
 
         return None
-    
+
     def _build_zip_volume_set(self, directory: str, base_name: str) -> Optional['VolumeSet']:
         zip_path = os.path.join(directory, f"{base_name}.zip")
         if not os.path.exists(zip_path):
@@ -1667,22 +1677,22 @@ class ExtractService:
         result = sorted(volumes, key=self._volume_sort_key)
         logger.info(f"[FindVolumes] 找到 {len(result)} 个分卷: {[os.path.basename(v) for v in result]}")
         return result
-    
+
     async def _wait_for_complete_set(self, volume_set: 'VolumeSet', task: Optional[Task] = None, max_wait: int = 3600) -> bool:
         """等待分卷组完整"""
         start_time = asyncio.get_event_loop().time()
         check_interval = 5
-        
+
         while asyncio.get_event_loop().time() - start_time < max_wait:
             # 检查任务是否被取消
             if task and task.is_cancelled():
                 logger.info(f"任务在等待分卷组时被取消")
                 return False
-            
+
             # 检查任务是否暂停
             if task:
                 await task.wait_if_paused()
-            
+
             all_stable = True
             for volume in volume_set.volumes:
                 if not os.path.exists(volume):
@@ -1691,14 +1701,14 @@ class ExtractService:
                 if not await self._is_file_stable_quick(volume):
                     all_stable = False
                     break
-            
+
             if all_stable:
                 return True
-            
+
             await asyncio.sleep(check_interval)
-        
+
         return False
-    
+
     async def _is_file_stable_quick(self, file_path: str) -> bool:
         """快速检查文件是否稳定（只检查一次）"""
         try:
@@ -1708,7 +1718,7 @@ class ExtractService:
             return size1 == size2
         except OSError:
             return False
-    
+
     def _build_filename_candidates(self, archive_path: str) -> List[str]:
         path_obj = Path(archive_path)
         filename = path_obj.name
@@ -2176,11 +2186,11 @@ class ExtractService:
                     await asyncio.to_thread(shutil.rmtree, temp_dir, True)
 
         return None
-    
+
     async def _record_password_usage(self, password: str, archive_path: str, entry_id: Optional[str] = None):
         """记录密码使用情况"""
         from ..models.database import PasswordEntry, get_db
-        
+
         db = next(get_db())
         try:
             # 查找并更新使用记录
@@ -2203,7 +2213,7 @@ class ExtractService:
             logger.warning(f"记录密码使用情况失败: {e}")
         finally:
             db.close()
-    
+
     def _get_rj_passwords(self, archive_path: str) -> List[str]:
         """从压缩包路径提取RJ号并生成密码列表
 
@@ -2268,7 +2278,7 @@ class ExtractService:
             password_list.extend(vault_passwords)  # 密码库密码
             password_list.append("")  # 无密码
             password_list.extend(self.config.extract.password_list)  # 默认密码
-        
+
         # 去重（保持顺序）
         seen = set()
         unique_passwords = []
@@ -2276,7 +2286,7 @@ class ExtractService:
             if pwd not in seen:
                 seen.add(pwd)
                 unique_passwords.append(pwd)
-        
+
         for password in unique_passwords:
             file_list = await self._list_archive_contents(archive_path, password)
             if file_list is not None:
@@ -2303,7 +2313,7 @@ class ExtractService:
 
         logger.warning("无法预读取压缩包内容，后续将尝试直接解压: %s", archive_path)
         return None
-    
+
     async def _list_archive_contents(self, archive_path: str, password: str = "") -> Optional[List[Dict]]:
         """列出压缩包内容，自动检测最佳编码"""
         password_args = [f'-p{password}'] if password else []
@@ -2409,13 +2419,13 @@ class ExtractService:
                 score -= 20
 
         return int(score)
-    
+
     def _parse_7z_list_output(self, output: str) -> List[Dict]:
         """解析7z列表输出"""
         files = []
         # 7z l -ba 输出格式: 日期 时间 属性 大小 压缩大小 文件名
         pattern = r'^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+([D.][R.][H.][S.][A.])\s+(\d+)\s+(\d+)?\s+(.+)$'
-        
+
         for line in output.strip().split('\n'):
             match = re.match(pattern, line)
             if match:
@@ -2426,7 +2436,7 @@ class ExtractService:
                     'size': size,
                     'is_dir': 'D' in match.group(3)
                 })
-        
+
         return files
 
     def _parse_7z_technical_output(self, output: str) -> List[Dict]:
@@ -2463,7 +2473,7 @@ class ExtractService:
 
         flush_current()
         return files
-    
+
     async def _try_extract(
         self,
         archive_info: ArchiveInfo,
@@ -2507,7 +2517,7 @@ class ExtractService:
             password_list.extend(vault_passwords)  # 密码库密码
             password_list.append("")  # 无密码
             password_list.extend(self.config.extract.password_list)  # 默认密码
-            
+
             # 去重（保持顺序）
             seen = set()
             unique_passwords = []
@@ -2515,7 +2525,7 @@ class ExtractService:
                 if pwd not in seen:
                     seen.add(pwd)
                     unique_passwords.append(pwd)
-        
+
         # 预读目录可用说明压缩包结构至少可读；后续若遇疑似"损坏"特征，
         # 更可能是头加密 + 错密码，而不是真的坏包，用于最后定性判断。
         listing_available = bool(getattr(archive_info, "file_list", None))
@@ -2629,7 +2639,7 @@ class ExtractService:
                     # 'ok' / 'unknown' 都让其继续走完整解压：
                     #   - ok: 大概率密码正确，直接进入 x
                     #   - unknown: 探测无法定性（如超时 / 7zz 输出特殊），保持旧行为兜底
-                
+
                 # 创建进度解析回调
                 start_time = datetime.now()
                 last_update = 0
@@ -2643,13 +2653,13 @@ class ExtractService:
                         raw_percent = int(percent_match.group(1))
                         # 解压阶段占 10% - 95%
                         mapped = 10 + int(raw_percent * 0.85)
-                        
+
                         now = datetime.now()
                         elapsed = (now - start_time).total_seconds()
-                        
+
                         speed_str = ""
                         eta_str = ""
-                        
+
                         # 提取已处理字节数以计算速度
                         # 7z 的进度行通常包含多个 x/y 部分，通常最后一个是字节
                         matches = re.findall(r"(\d+)/\d+", line)
@@ -2662,7 +2672,7 @@ class ExtractService:
                                 speed_str = f"{speed / 1024:.2f} KB/s"
                             else:
                                 speed_str = f"{speed:.0f} B/s"
-                            
+
                             if raw_percent > 0:
                                 total_seconds = elapsed * 100 / raw_percent
                                 remaining = total_seconds - elapsed
@@ -2702,7 +2712,7 @@ class ExtractService:
                             return False, None, "cancelled"
                         continue  # 重跑同一个 cmd
                     break
-                
+
                 if result.returncode == 0:
                     # 记录成功使用的密码
                     if password and password in vault_passwords:
@@ -2818,11 +2828,11 @@ class ExtractService:
                         stderr_text[:300] if stderr_text else "(无错误文本)",
                     )
                     continue
-                
+
             except Exception as e:
                 logger.warning(f"解压尝试失败: {e}")
                 continue
-        
+
         # 所有密码都失败后的统一定性：
         # 1) 预读目录成功 或 曾经命中明确的加密错误 → 视为密码错误（用户多半是密码库没录对）
         # 2) 否则若曾遇到疑似损坏特征 → 判损坏
@@ -2841,7 +2851,7 @@ class ExtractService:
             )
             return False, None, "archive_corrupt"
         return False, None, "wrong_password"
-    
+
     async def _verify_extraction(self, archive_info: ArchiveInfo, output_path: str) -> bool:
         """验证解压完整性"""
         if not self.config.extract.verify_after_extract:
@@ -2875,10 +2885,10 @@ class ExtractService:
                 total_files,
                 archive_info.path,
             )
-        
+
         missing_files = []
         size_mismatch_files = []
-        
+
         for expected in file_entries:
             # 尝试多种可能的路径（处理编码问题）
             possible_paths = [
@@ -2886,7 +2896,7 @@ class ExtractService:
                 os.path.join(output_path, expected['name'].encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')),  # UTF-8
                 os.path.join(output_path, expected['name'].encode('cp932', errors='ignore').decode('cp932', errors='ignore')),  # Shift_JIS
             ]
-            
+
             found = False
             for actual_path in set(possible_paths):  # 去重
                 if os.path.exists(actual_path):
@@ -2899,20 +2909,20 @@ class ExtractService:
                             'actual': actual_size
                         })
                     break
-            
+
             if not found:
                 missing_files.append(expected['name'])
-        
+
         # 如果有文件缺失，记录警告但不失败（可能是编码问题）
         if missing_files:
             logger.warning(f"以下文件可能因编码问题无法验证: {missing_files[:5]}")
             if len(missing_files) > 5:
                 logger.warning(f"... 还有 {len(missing_files) - 5} 个文件")
-        
+
         if size_mismatch_files:
             for mismatch in size_mismatch_files[:5]:
                 logger.warning(f"文件大小不匹配: {mismatch['name']} (期望: {mismatch['expected']}, 实际: {mismatch['actual']})")
-        
+
         # 只要没有大小不匹配，就认为是成功的
         # （缺失文件可能是编码问题导致的误报）
         if size_mismatch_files:
@@ -2926,9 +2936,9 @@ class ExtractService:
             total_files,
             archive_info.path,
         )
-        
+
         return True
-    
+
     async def _cleanup_extract_path(self, output_path: str):
         """异步清理解压路径，避免高并发失败时阻塞事件循环"""
         if not os.path.exists(output_path):
@@ -2947,7 +2957,7 @@ class ExtractService:
                     await asyncio.sleep(1)
                 else:
                     logger.error(f"清理解压目录失败: {output_path}, {e}")
-    
+
     async def _run_7z_command(
         self,
         cmd: List[str],

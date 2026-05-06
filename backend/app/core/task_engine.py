@@ -1006,6 +1006,54 @@ class TaskEngine:
             logger.error("自动收敛已恢复失败任务失败: %s", exc, exc_info=True)
         finally:
             db.close()
+
+    async def _cleanup_task_temp_extract_path(self, task: Task):
+        metadata = dict(task.task_metadata or {})
+        temp_path = str(metadata.get("temp_extract_path") or "").strip()
+        if not temp_path:
+            return
+
+        try:
+            from ..config.settings import get_config
+            config = get_config()
+            temp_root = os.path.abspath(str(config.storage.temp_path or ""))
+            target = os.path.abspath(temp_path)
+        except Exception:
+            logger.warning("[清理] 解析临时解压目录失败: task_id=%s path=%s", task.id, temp_path, exc_info=True)
+            return
+
+        if not os.path.exists(target):
+            return
+        if not temp_root or os.path.commonpath([temp_root, target]) != temp_root:
+            logger.warning("[清理] 跳过非配置临时目录: task_id=%s path=%s", task.id, target)
+            return
+
+        output_path = str(getattr(task, "output_path", "") or "").strip()
+        if output_path:
+            try:
+                output_abs = os.path.abspath(output_path)
+                if os.path.commonpath([target, output_abs]) == target:
+                    logger.warning(
+                        "[清理] 最终产物仍位于临时目录内，跳过删除避免误删: task_id=%s temp=%s output=%s",
+                        task.id,
+                        target,
+                        output_abs,
+                    )
+                    return
+            except Exception:
+                logger.warning("[清理] 判断最终产物路径失败，跳过临时目录清理: task_id=%s", task.id, exc_info=True)
+                return
+
+        try:
+            await asyncio.to_thread(shutil.rmtree, target)
+            logger.info("[清理] 已删除任务临时解压目录: task_id=%s path=%s", task.id, target)
+            metadata["temp_extract_path_cleaned"] = True
+            metadata["temp_extract_path_cleaned_at"] = datetime.now().isoformat()
+            task.task_metadata = metadata
+        except FileNotFoundError:
+            return
+        except Exception:
+            logger.warning("[清理] 删除任务临时解压目录失败: task_id=%s path=%s", task.id, target, exc_info=True)
     
     async def _process_task(self, task: Task):
         """处理单个任务"""
@@ -1784,6 +1832,7 @@ class TaskEngine:
             self._resolve_retry_extract_conflict(task)
             self._resolve_completed_failure_followups(task)
             self._finalize_conflict_resolution_task(task)
+            await self._cleanup_task_temp_extract_path(task)
             await self._cleanup_failed_task(task)
             self.processing.discard(task.id)
             # 清除RJ号处理标记
