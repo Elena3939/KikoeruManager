@@ -54,13 +54,16 @@ class ExtractService:
     _seven_zip_semaphore: Optional[asyncio.Semaphore] = None
     _seven_zip_semaphore_limit: Optional[int] = None
     # ------- 密码探测 / 负缓存 -------
-    # #1 流式预验证：解压前先用 `7zz x -so` 把数据流到管道，只读前 PROBE_BYTES 字节。
-    #   - 密码错：AES 解出来的是垃圾，LZMA/Deflate 解码器会很快报错，进程提前退出。
-    #   - 密码对：能持续吐出有效解压数据，达到阈值后主动 kill，认为密码正确再跑正式 x。
-    # 这样错密码场景的耗时从"全部解压完才发现 CRC Failed" 降到秒级。
+    # 优先走 `7zz t archive <最小条目>`：只测一个小文件的完整 CRC，
+    # 密码错秒级非零退出。能抓住 store+AES（压缩包里装 zip）这种用
+    # 流式探测拿不住的场景：那种场景 AES 解出来的垃圾数据能一直吐到
+    # 尾部才在 CRC 阶段报错，流式探测的"读够 N MB 就重放"会误判为 ok。
+    # 拿不到 file_list（如头加密 / 尚未成功读取目录）时回退用流式探测。
     PROBE_BEFORE_EXTRACT: bool = True
-    PROBE_BYTES: int = 2 * 1024 * 1024            # 单次探测读到 2MB 即认为解压流可信
-    PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次探测最多等 30s，超时回退完整解压
+    PROBE_ENTRY_MAX_SIZE: int = 5 * 1024 * 1024   # 选条目探测时，最小条目超过这个大小就不选它
+    PROBE_ENTRY_TIMEOUT: float = 30.0             # 单条目 t 命令的最大耗时
+    PROBE_BYTES: int = 2 * 1024 * 1024            # 流式探测读到 2MB 即认为解压流可信
+    PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次流式探测最多等 30s，超时回退完整解压
     # #3 负缓存：按 "压缩包指纹 × 密码哈希" 记忆失败组合，进程内重试任务时直接跳过。
     _password_negative_cache: Dict[Tuple[str, str], float] = {}
     PASSWORD_NEGATIVE_CACHE_MAX: int = 4096       # 简单兜底，避免长跑任务无限增长
@@ -2527,7 +2530,7 @@ class ExtractService:
                 if task.is_cancelled():
                     return False, None, "cancelled"
 
-                # #1 流式预验证：错密码秒级淘汰，避免跑完整解压才发现 CRC Failed
+                # 流式预验证：错密码秒级淘汰，避免跑完整解压才发现 CRC Failed
                 if self.PROBE_BEFORE_EXTRACT:
                     task.update_progress(38, f"探测密码 (来源: {password_source})")
                     probe_result = await self._probe_password(
@@ -2535,6 +2538,7 @@ class ExtractService:
                         password,
                         probe_bytes=self.PROBE_BYTES,
                         timeout=self.PROBE_TIMEOUT_SECONDS,
+                        file_list=getattr(archive_info, 'file_list', None),
                         task=task,
                     )
                     # 探测期间被 cancel/pause kill 掉，按 stop_reason 决策
@@ -3015,25 +3019,172 @@ class ExtractService:
                 cache.clear()
         cache[cache_key] = time.time()
 
+    def _pick_probe_entry(self, file_list: Optional[List[Dict]]) -> Optional[Dict]:
+        """从压缩包目录里选一个适合拿来探测的条目：非目录、非空、尺寸不超阈值。按大小升序选最小。"""
+        if not file_list:
+            return None
+        candidates = []
+        for f in file_list:
+            try:
+                if f.get('is_dir'):
+                    continue
+                size = int(f.get('size') or 0)
+                name = f.get('name') or ''
+                if size <= 0 or not name:
+                    continue
+                if size > self.PROBE_ENTRY_MAX_SIZE:
+                    continue
+                candidates.append((size, name))
+            except Exception:
+                continue
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0])
+        size, name = candidates[0]
+        return {'name': name, 'size': size}
+
+    async def _probe_by_smallest_entry(
+        self,
+        archive_path: str,
+        password: str,
+        entry: Dict,
+        timeout: float,
+        task: Optional[Task] = None,
+    ) -> str:
+        """用 `7zz t archive <entry>` 对单个小条目跑完整 CRC 测试。
+
+        这是针对 store + AES（无压缩加密）压缩包的正确探测方式：
+        这种压缩包里的子文件（例如 .zip / .mp3 / 已编码媒体）不再走压缩器，
+        错密码解出垃圾数据后 LZMA 没机会报错，必须等 CRC 校验才能发现密码错。测单
+        个小条目能把这种场景的探测耗时压到秒级。
+        """
+        entry_name = entry['name']
+        cmd = [
+            self.seven_zip, 't',
+            '-bso0', '-bsp0',
+            *self._get_mcp_args(archive_path),
+        ]
+        cmd.append(f'-p{password}' if password else '-p')
+        cmd.append(archive_path)
+        # 用 `-i!条目` 缩小范围，比直接带文件名参数对 7zz 较新版本更稳。
+        cmd.append(f'-i!{entry_name}')
+
+        kwargs = {
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.PIPE,
+            'stdin': subprocess.DEVNULL,
+        }
+        if sys.platform == 'win32':
+            from subprocess import CREATE_NO_WINDOW as _CNW
+            kwargs['creationflags'] = _CNW
+
+        semaphore = self._get_7z_semaphore()
+        async with semaphore:
+            try:
+                process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+            except Exception as e:
+                logger.warning(f"密码探测（条目）无法启动 7z 进程，回退流式探测: {e}")
+                return 'unknown'
+            if task is not None:
+                task.register_process(process)
+
+            try:
+                try:
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        process.communicate(), timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except Exception:
+                            pass
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=2.0)
+                        except Exception:
+                            pass
+                    logger.warning(
+                        "密码探测（条目）超时（%.1fs），返回 unknown 由上层兜底: %s",
+                        timeout,
+                        os.path.basename(archive_path),
+                    )
+                    return 'unknown'
+            finally:
+                if task is not None:
+                    task.unregister_process(process)
+
+        stderr_text = (stderr_bytes or b'').decode('utf-8', errors='ignore')
+        stderr_lower = stderr_text.lower()
+
+        if process.returncode == 0:
+            # 条目完整 CRC 验证通过 → 密码正确。
+            return 'ok'
+
+        encryption_markers = (
+            "wrong password",
+            "password is incorrect",
+            "password?",
+            "passphrase",
+            "cannot open encrypted",
+            "is encrypted",
+            "data error in encrypted",
+            "crc failed in encrypted",
+            "crc failed",          # store + AES 错密码的典型文案
+            "data error",          # 同上
+        )
+        if any(m in stderr_lower for m in encryption_markers):
+            return 'wrong_password'
+
+        corrupt_markers = (
+            "headers error",
+            "unexpected end of archive",
+            "unexpected end of data",
+            "is not archive",
+            "cannot open the file as archive",
+            "can not open the file as archive",
+        )
+        if any(m in stderr_lower for m in corrupt_markers):
+            return 'corrupt'
+
+        return 'unknown'
+
     async def _probe_password(
         self,
         archive_path: str,
         password: str,
         probe_bytes: int = 2 * 1024 * 1024,
         timeout: float = 30.0,
+        file_list: Optional[List[Dict]] = None,
         task: Optional[Task] = None,
     ) -> str:
         """轻量探测密码是否正确。
 
-        通过 `7zz x -so` 把解压数据流到 stdout，只读前 probe_bytes 字节就主动 kill。
-        - 密码错：AES 解出来是垃圾，LZMA/Deflate 解码器会很快报错，进程非零退出且 stderr 含密码相关关键字。
-        - 密码对：能稳定吐出解压数据，读够阈值就主动结束。
+        优先走条目测试分支（`_probe_by_smallest_entry`）：能处理 store+AES。
+        拿不到 file_list 或没有合适小条目时，回退到原流式探测。
+
         返回值：
           - 'ok'             探测通过，建议进入完整解压
-          - 'wrong_password' 命中加密相关错误关键字
+          - 'wrong_password' 命中加密相关错误关键字 / CRC 失败
           - 'corrupt'        命中疑似损坏关键字
           - 'unknown'        无法定性（超时 / 输出特殊），让上层走原有完整流程兜底
         """
+        entry = self._pick_probe_entry(file_list)
+        if entry is not None:
+            result = await self._probe_by_smallest_entry(
+                archive_path,
+                password,
+                entry,
+                timeout=self.PROBE_ENTRY_TIMEOUT,
+                task=task,
+            )
+            # 条目测试能出明确结果就采纳；unknown 时回退到流式探测。
+            if result != 'unknown':
+                return result
+            logger.debug(
+                "条目测试对 %s 无法定性，回退到流式探测",
+                os.path.basename(archive_path),
+            )
+        # ---- 以下是原有流式探测逻辑（无 file_list 时的兜底） ----
         cmd = [
             self.seven_zip, 'x', '-so', '-y',
             '-bso0', '-bsp0',  # 关掉进度/消息，stdout 只剩解压数据
