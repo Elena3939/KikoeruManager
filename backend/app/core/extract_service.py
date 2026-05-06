@@ -60,10 +60,52 @@ class ExtractService:
     # 尾部才在 CRC 阶段报错，流式探测的"读够 N MB 就重放"会误判为 ok。
     # 拿不到 file_list（如头加密 / 尚未成功读取目录）时回退用流式探测。
     PROBE_BEFORE_EXTRACT: bool = True
-    PROBE_ENTRY_MAX_SIZE: int = 5 * 1024 * 1024   # 选条目探测时，最小条目超过这个大小就不选它
+    # 策略：魔数探测 → 小条目 t 探测 → 流式探测
+    PROBE_ENTRY_MAX_SIZE: int = 5 * 1024 * 1024   # 小条目 t 探测的尺寸上限
     PROBE_ENTRY_TIMEOUT: float = 30.0             # 单条目 t 命令的最大耗时
+    PROBE_MAGIC_TIMEOUT: float = 20.0             # 魔数探测（只读前几十字节）超时
     PROBE_BYTES: int = 2 * 1024 * 1024            # 流式探测读到 2MB 即认为解压流可信
     PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次流式探测最多等 30s，超时回退完整解压
+
+    # 按文件后缀识别的魔数表：(偏移量, (候选签名, ...))。
+    # 有后缀在这里就能用“解压前几十字节 + 对照魔数”秒级判定密码是否正确，
+    # 不受文件大小影响。对 store+AES（压缩包里装 zip/mp3/音视频）这种场景特别有用。
+    _KNOWN_MAGIC_TABLE: Dict[str, Tuple[int, Tuple[bytes, ...]]] = {
+        '.zip':  (0, (b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08')),
+        '.jar':  (0, (b'PK\x03\x04',)),
+        '.apk':  (0, (b'PK\x03\x04',)),
+        '.docx': (0, (b'PK\x03\x04',)),
+        '.xlsx': (0, (b'PK\x03\x04',)),
+        '.pptx': (0, (b'PK\x03\x04',)),
+        '.7z':   (0, (b'7z\xbc\xaf\x27\x1c',)),
+        '.rar':  (0, (b'Rar!\x1a\x07',)),
+        '.gz':   (0, (b'\x1f\x8b',)),
+        '.bz2':  (0, (b'BZh',)),
+        '.xz':   (0, (b'\xfd7zXZ',)),
+        '.tar':  (257, (b'ustar',)),  # POSIX tar 头标志在 257偏移
+        '.mp3':  (0, (b'ID3', b'\xff\xfb', b'\xff\xf3', b'\xff\xf2', b'\xff\xfa')),
+        '.flac': (0, (b'fLaC',)),
+        '.wav':  (0, (b'RIFF',)),
+        '.avi':  (0, (b'RIFF',)),
+        '.webp': (0, (b'RIFF',)),
+        '.ogg':  (0, (b'OggS',)),
+        '.opus': (0, (b'OggS',)),
+        '.wma':  (0, (b'\x30\x26\xb2\x75',)),
+        '.asf':  (0, (b'\x30\x26\xb2\x75',)),
+        '.mp4':  (4, (b'ftyp',)),
+        '.m4a':  (4, (b'ftyp',)),
+        '.m4b':  (4, (b'ftyp',)),
+        '.mov':  (4, (b'ftyp',)),
+        '.mkv':  (0, (b'\x1a\x45\xdf\xa3',)),
+        '.webm': (0, (b'\x1a\x45\xdf\xa3',)),
+        '.png':  (0, (b'\x89PNG\r\n\x1a\n',)),
+        '.jpg':  (0, (b'\xff\xd8\xff',)),
+        '.jpeg': (0, (b'\xff\xd8\xff',)),
+        '.gif':  (0, (b'GIF87a', b'GIF89a')),
+        '.bmp':  (0, (b'BM',)),
+        '.pdf':  (0, (b'%PDF-',)),
+        '.psd':  (0, (b'8BPS',)),
+    }
     # #3 负缓存：按 "压缩包指纹 × 密码哈希" 记忆失败组合，进程内重试任务时直接跳过。
     _password_negative_cache: Dict[Tuple[str, str], float] = {}
     PASSWORD_NEGATIVE_CACHE_MAX: int = 4096       # 简单兜底，避免长跑任务无限增长
@@ -3020,7 +3062,7 @@ class ExtractService:
         cache[cache_key] = time.time()
 
     def _pick_probe_entry(self, file_list: Optional[List[Dict]]) -> Optional[Dict]:
-        """从压缩包目录里选一个适合拿来探测的条目：非目录、非空、尺寸不超阈值。按大小升序选最小。"""
+        """从压缩包目录里选一个适合拿来 t 探测的条目：非目录、非空、尺寸不超阈值。按大小升序选最小。"""
         if not file_list:
             return None
         candidates = []
@@ -3042,6 +3084,231 @@ class ExtractService:
         candidates.sort(key=lambda x: x[0])
         size, name = candidates[0]
         return {'name': name, 'size': size}
+
+    def _pick_magic_entry(self, file_list: Optional[List[Dict]]) -> Optional[Dict]:
+        """挑一个后缀在魔数表里的条目，用于流式读前几十字节做魔数校验。
+
+        不限制大小：反正只读文件头，单一大包也能快速出结论。按尺寸升序选最小
+        那个，减少 7z 内部定位开销。
+        """
+        if not file_list:
+            return None
+        candidates = []
+        for f in file_list:
+            try:
+                if f.get('is_dir'):
+                    continue
+                size = int(f.get('size') or 0)
+                name = f.get('name') or ''
+                if size <= 0 or not name:
+                    continue
+                ext = os.path.splitext(name)[1].lower()
+                magic_info = self._KNOWN_MAGIC_TABLE.get(ext)
+                if not magic_info:
+                    continue
+                candidates.append((size, name, magic_info))
+            except Exception:
+                continue
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0])
+        size, name, (offset, magics) = candidates[0]
+        return {
+            'name': name,
+            'size': size,
+            'magic_offset': offset,
+            'magics': magics,
+        }
+
+    async def _probe_by_magic(
+        self,
+        archive_path: str,
+        password: str,
+        entry: Dict,
+        timeout: float,
+        task: Optional[Task] = None,
+    ) -> str:
+        """用 `7zz x -so archive -i!<entry>` 流式解压指定条目，只读前几十字节对照魔数。
+
+        密码错时 AES 输出是随机字节，魔数绝不会碰巧命中→直接判 wrong_password。
+        密码对时前几十字节就是真实文件头，解压出来的 magic 和表里对得上→ok。
+        整个过程读盘量极小，单个大文件也不需要拆出来完整 t。
+        """
+        entry_name = entry['name']
+        magic_offset: int = entry['magic_offset']
+        magics: Tuple[bytes, ...] = entry['magics']
+        max_magic_len = max(len(m) for m in magics)
+        need_bytes = magic_offset + max_magic_len + 4  # 多读几字节容错
+
+        cmd = [
+            self.seven_zip, 'x', '-so', '-y',
+            '-bso0', '-bsp0',
+            *self._get_mcp_args(archive_path),
+        ]
+        cmd.append(f'-p{password}' if password else '-p')
+        cmd.append(archive_path)
+        cmd.append(f'-i!{entry_name}')
+
+        kwargs = {
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.PIPE,
+            'stdin': subprocess.DEVNULL,
+        }
+        if sys.platform == 'win32':
+            from subprocess import CREATE_NO_WINDOW as _CNW
+            kwargs['creationflags'] = _CNW
+
+        def _match_magic(data: bytes) -> Optional[bool]:
+            """返回 True=命中、False=不命中、None=数据不够无法判断。"""
+            if len(data) < magic_offset:
+                return None
+            for m in magics:
+                need = magic_offset + len(m)
+                if len(data) >= need:
+                    if data[magic_offset:need] == m:
+                        return True
+            # 数据够长但一条 magic 都没对上 → 不命中
+            if len(data) >= magic_offset + max_magic_len:
+                return False
+            return None
+
+        semaphore = self._get_7z_semaphore()
+        async with semaphore:
+            try:
+                process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+            except Exception as e:
+                logger.warning(f"密码探测（magic）无法启动 7z 进程，回退: {e}")
+                return 'unknown'
+            if task is not None:
+                task.register_process(process)
+
+            stdout_buf = bytearray()
+            stderr_chunks: List[bytes] = []
+            enough_data = False
+
+            async def consume_stdout():
+                nonlocal enough_data
+                try:
+                    while len(stdout_buf) < need_bytes:
+                        chunk = await process.stdout.read(256)
+                        if not chunk:
+                            return
+                        stdout_buf.extend(chunk)
+                    enough_data = True
+                except Exception:
+                    return
+
+            async def consume_stderr():
+                try:
+                    while True:
+                        chunk = await process.stderr.read(4096)
+                        if not chunk:
+                            return
+                        stderr_chunks.append(chunk)
+                        if sum(len(c) for c in stderr_chunks) > 32 * 1024:
+                            return
+                except Exception:
+                    return
+
+            stdout_task = asyncio.create_task(consume_stdout())
+            stderr_task = asyncio.create_task(consume_stderr())
+            wait_task = asyncio.create_task(process.wait())
+
+            try:
+                await asyncio.wait(
+                    {stdout_task, wait_task},
+                    timeout=timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except Exception:
+                pass
+
+            async def _terminate():
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=2.0)
+                    except Exception:
+                        pass
+                for t in (stdout_task, stderr_task, wait_task):
+                    if not t.done():
+                        t.cancel()
+                        try:
+                            await t
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            pass
+
+            # 读够了魔数需要的字节数 → 立即对照并摄停进程
+            if enough_data:
+                await _terminate()
+                if task is not None:
+                    task.unregister_process(process)
+                verdict = _match_magic(bytes(stdout_buf))
+                if verdict is True:
+                    return 'ok'
+                if verdict is False:
+                    return 'wrong_password'
+                return 'unknown'
+
+            # 进程仍在跑（高于阈值的巨大文件头很罕见，正常是由于解压极慢/中断）
+            if process.returncode is None:
+                await _terminate()
+                if task is not None:
+                    task.unregister_process(process)
+                return 'unknown'
+
+            # 进程已退出但字节不够：读完 stderr 做关键字判定
+            try:
+                await asyncio.wait_for(stderr_task, timeout=2.0)
+            except Exception:
+                pass
+            for t in (stdout_task, wait_task):
+                if not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+            if task is not None:
+                task.unregister_process(process)
+
+        stderr_text = b''.join(stderr_chunks).decode('utf-8', errors='ignore').lower()
+
+        # 小于 need_bytes 的小文件：即使密码正确也可能字节不够。退得干净 +
+        # 已有的字节能匹配魔数前缀 → ok；全不匹配 → wrong_password。
+        if process.returncode == 0 and stdout_buf:
+            for m in magics:
+                match_len = min(len(stdout_buf) - magic_offset, len(m))
+                if match_len <= 0:
+                    continue
+                if bytes(stdout_buf[magic_offset:magic_offset + match_len]) == m[:match_len]:
+                    return 'ok'
+            return 'wrong_password'
+
+        encryption_markers = (
+            "wrong password", "password is incorrect", "password?",
+            "passphrase", "cannot open encrypted", "is encrypted",
+            "data error in encrypted", "crc failed in encrypted", "crc failed",
+        )
+        if any(m in stderr_text for m in encryption_markers):
+            return 'wrong_password'
+
+        corrupt_markers = (
+            "headers error", "unexpected end of archive", "unexpected end of data",
+            "is not archive", "cannot open the file as archive",
+            "can not open the file as archive",
+        )
+        if any(m in stderr_text for m in corrupt_markers):
+            return 'corrupt'
+
+        return 'unknown'
 
     async def _probe_by_smallest_entry(
         self,
@@ -3164,10 +3431,31 @@ class ExtractService:
 
         返回值：
           - 'ok'             探测通过，建议进入完整解压
-          - 'wrong_password' 命中加密相关错误关键字 / CRC 失败
+          - 'wrong_password' 命中加密相关错误关键字 / CRC 失败 / 魔数不匹配
           - 'corrupt'        命中疑似损坏关键字
           - 'unknown'        无法定性（超时 / 输出特殊），让上层走原有完整流程兜底
+
+        优先级：
+          1. 魔数探测（有已知后缀条目时）：不受文件大小影响，最快最准。
+          2. 小条目 t 探测（有 <=5MB 的条目但无已知后缀时）：运行单文件 CRC。
+          3. 流式探测（没 file_list 的头加密包兜底）：注意对 store+AES 可能漏判。
         """
+        magic_entry = self._pick_magic_entry(file_list)
+        if magic_entry is not None:
+            result = await self._probe_by_magic(
+                archive_path,
+                password,
+                magic_entry,
+                timeout=self.PROBE_MAGIC_TIMEOUT,
+                task=task,
+            )
+            if result != 'unknown':
+                return result
+            logger.debug(
+                "魔数探测对 %s 无法定性，回退到小条目 t 探测",
+                os.path.basename(archive_path),
+            )
+
         entry = self._pick_probe_entry(file_list)
         if entry is not None:
             result = await self._probe_by_smallest_entry(
@@ -3177,11 +3465,10 @@ class ExtractService:
                 timeout=self.PROBE_ENTRY_TIMEOUT,
                 task=task,
             )
-            # 条目测试能出明确结果就采纳；unknown 时回退到流式探测。
             if result != 'unknown':
                 return result
             logger.debug(
-                "条目测试对 %s 无法定性，回退到流式探测",
+                "小条目测试对 %s 无法定性，回退到流式探测",
                 os.path.basename(archive_path),
             )
         # ---- 以下是原有流式探测逻辑（无 file_list 时的兜底） ----
