@@ -71,6 +71,158 @@ class TestExtractService:
         assert len(volume_set.volumes) == 3
     
     @pytest.mark.asyncio
+    async def test_detect_exe_e_sequence_volume_set(self, extract_service, temp_dir):
+        """国产 SFX 工具的 .exe + .eNN 分卷组应被识别为 exe_e_sequence。"""
+        base = os.path.join(temp_dir, '新建压缩')
+        # 创建 .exe + .e01 + .e02
+        for suffix in ('.exe', '.e01', '.e02'):
+            with open(base + suffix, 'wb') as f:
+                f.write(b'M' if suffix == '.exe' else b'X')
+
+        # 从 .exe 主入口检测
+        vs_from_exe = extract_service._detect_volume_set(base + '.exe')
+        assert vs_from_exe is not None
+        assert vs_from_exe.type == 'exe_e_sequence'
+        assert len(vs_from_exe.volumes) == 3
+        assert vs_from_exe.entry_path == base + '.exe'
+        # 顺序：exe, e01, e02
+        assert vs_from_exe.volumes[0].endswith('.exe')
+        assert vs_from_exe.volumes[1].endswith('.e01')
+        assert vs_from_exe.volumes[2].endswith('.e02')
+
+        # 从 .e01 也能反查到同一个分卷组
+        vs_from_e01 = extract_service._detect_volume_set(base + '.e01')
+        assert vs_from_e01 is not None
+        assert vs_from_e01.type == 'exe_e_sequence'
+
+    @pytest.mark.asyncio
+    async def test_detect_exe_e_sequence_requires_companion(self, extract_service, temp_dir):
+        """单独的 .exe 没有 .eNN 伴随时不应被识别为分卷组。"""
+        with open(os.path.join(temp_dir, 'foo.exe'), 'wb') as f:
+            f.write(b'MZ')
+        result = extract_service._detect_volume_set(os.path.join(temp_dir, 'foo.exe'))
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_remap_exe_e_sequence_7z_inner(self, extract_service, temp_dir):
+        """7z 内嵌档：remap 应改名为 .7z.001 / .7z.002 / ..."""
+        base = os.path.join(temp_dir, 'arc')
+        # 在 .exe 头部塞一个 7z 魔数，让探测命中 '7z'
+        with open(base + '.exe', 'wb') as f:
+            f.write(b'MZ\x00\x00')
+            f.write(b'\x00' * 512)
+            f.write(b'7z\xBC\xAF\x27\x1C')
+            f.write(b'\x00' * 1024)
+        for suffix in ('.e01', '.e02'):
+            with open(base + suffix, 'wb') as f:
+                f.write(b'\x00' * 32)
+
+        original_set = extract_service._detect_volume_set(base + '.exe')
+        assert original_set is not None and original_set.type == 'exe_e_sequence'
+
+        from unittest.mock import Mock
+        task = Mock()
+        task.task_metadata = {}
+
+        new_set = await extract_service._remap_exe_e_sequence(original_set, task)
+        assert new_set.type == '7z_volume_with_ext'
+        assert new_set.entry_path == base + '.7z.001'
+        assert new_set.volumes == [base + '.7z.001', base + '.7z.002', base + '.7z.003']
+
+        # task_metadata 应该记录了 remap 映射，便于失败回滚
+        assert 'exe_e_remap' in task.task_metadata
+        assert task.task_metadata['exe_e_remap']['inner_format'] == '7z'
+        assert task.task_metadata['exe_e_remap']['naming'] == '7z_volume_with_ext'
+        assert len(task.task_metadata['exe_e_remap']['rename_map']) == 3
+
+        # 旧文件不应该再存在
+        for suffix in ('.exe', '.e01', '.e02'):
+            assert not os.path.exists(base + suffix)
+        # 新文件应该存在
+        for suffix in ('.7z.001', '.7z.002', '.7z.003'):
+            assert os.path.exists(base + suffix)
+
+    @pytest.mark.asyncio
+    async def test_remap_exe_e_sequence_rar_inner(self, extract_service, temp_dir):
+        """RAR 内嵌档：remap 应改名为 .part1.rar / .part2.rar / ..."""
+        base = os.path.join(temp_dir, 'arc')
+        with open(base + '.exe', 'wb') as f:
+            f.write(b'MZ\x00\x00')
+            f.write(b'\x00' * 1024)
+            f.write(b'Rar!\x1A\x07\x01\x00')
+            f.write(b'\x00' * 1024)
+        for suffix in ('.e01',):
+            with open(base + suffix, 'wb') as f:
+                f.write(b'\x00' * 32)
+
+        original_set = extract_service._detect_volume_set(base + '.exe')
+        assert original_set.type == 'exe_e_sequence'
+
+        from unittest.mock import Mock
+        task = Mock()
+        task.task_metadata = {}
+
+        new_set = await extract_service._remap_exe_e_sequence(original_set, task)
+        assert new_set.type == 'part'
+        assert new_set.entry_path == base + '.part1.rar'
+        assert new_set.volumes == [base + '.part1.rar', base + '.part2.rar']
+        assert task.task_metadata['exe_e_remap']['inner_format'] == 'rar'
+        assert task.task_metadata['exe_e_remap']['naming'] == 'part'
+
+        for suffix in ('.exe', '.e01'):
+            assert not os.path.exists(base + suffix)
+        for suffix in ('.part1.rar', '.part2.rar'):
+            assert os.path.exists(base + suffix)
+
+    @pytest.mark.asyncio
+    async def test_probe_sfx_inner_format(self, extract_service, temp_dir):
+        """探测 SFX 内嵌档魔数：7z / RAR / unknown"""
+        path_7z = os.path.join(temp_dir, 'a.exe')
+        with open(path_7z, 'wb') as f:
+            f.write(b'MZ' + b'\x00' * 200 + b'7z\xBC\xAF\x27\x1C' + b'\x00' * 100)
+        assert extract_service._probe_sfx_inner_format(path_7z) == '7z'
+
+        path_rar = os.path.join(temp_dir, 'b.exe')
+        with open(path_rar, 'wb') as f:
+            f.write(b'MZ' + b'\x00' * 200 + b'Rar!\x1A\x07\x01\x00' + b'\x00' * 100)
+        assert extract_service._probe_sfx_inner_format(path_rar) == 'rar'
+
+        path_unknown = os.path.join(temp_dir, 'c.exe')
+        with open(path_unknown, 'wb') as f:
+            f.write(b'MZ' + b'\x00' * 1000)
+        assert extract_service._probe_sfx_inner_format(path_unknown) == 'unknown'
+
+    @pytest.mark.asyncio
+    async def test_rollback_exe_e_remap(self, extract_service, temp_dir):
+        """失败回滚：把 .7z.NNN 改回原 .exe + .eNN"""
+        base = os.path.join(temp_dir, 'arc')
+        # 模拟已经 remap 后的状态：仅 .7z.001 / .7z.002 存在
+        for suffix in ('.7z.001', '.7z.002'):
+            with open(base + suffix, 'wb') as f:
+                f.write(b'data')
+
+        from unittest.mock import Mock
+        task = Mock()
+        task.task_metadata = {
+            'exe_e_remap': {
+                'inner_format': '7z',
+                'naming': '7z_volume_with_ext',
+                'rename_map': [
+                    {'original': base + '.exe', 'renamed': base + '.7z.001'},
+                    {'original': base + '.e01', 'renamed': base + '.7z.002'},
+                ],
+            }
+        }
+        await extract_service._rollback_exe_e_remap(task)
+
+        for suffix in ('.7z.001', '.7z.002'):
+            assert not os.path.exists(base + suffix)
+        for suffix in ('.exe', '.e01'):
+            assert os.path.exists(base + suffix)
+        # metadata 标记被清掉
+        assert 'exe_e_remap' not in task.task_metadata
+
+    @pytest.mark.asyncio
     async def test_get_archive_info(self, extract_service, temp_dir):
         """测试获取压缩包信息"""
         zip_path = os.path.join(temp_dir, 'test.zip')

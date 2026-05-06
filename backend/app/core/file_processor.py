@@ -313,6 +313,19 @@ class FileProcessor:
             logger.debug(f"[FileProcessor] 跳过旧式 RAR 分卷文件，等待 *.rar 主文件: {filename}")
             return False
 
+        # 自解压分卷（国产 SFX 工具）: .exe + .e01, .e02, ... 的 .eNN 部分
+        # 由 *.exe 主文件触发处理；仅当同目录下确有同名 *.exe 时才视为分卷，
+        # 避免误吞与压缩包无关的 .e01/.e02 杂项文件。
+        exe_e_match = re.fullmatch(r'(?P<base>.+)\.e\d{2}', filename, re.IGNORECASE)
+        if exe_e_match:
+            base_name = exe_e_match.group('base')
+            sibling_exe = os.path.join(os.path.dirname(file_path), f"{base_name}.exe")
+            if os.path.exists(sibling_exe):
+                logger.debug(
+                    f"[FileProcessor] 跳过自解压分卷非首卷文件，等待 *.exe 主文件: {filename}"
+                )
+                return False
+
         # 7z 分卷: .7z.001, .7z.002, ... (.7z.001 是首卷)
         sevenzip_match = re.search(r'\.7z\.(\d{3})$', filename)
         if sevenzip_match:
@@ -386,6 +399,16 @@ class FileProcessor:
             volume_set = self._build_rar_old_volume_set(directory, base_name)
             if volume_set:
                 logger.info(f"[FileProcessor] 检测到旧式 RAR 分卷组: {base_name}")
+                return volume_set
+
+        # 自解压 .exe + .eNN 国产 SFX 分卷组（如 新建压缩.exe + 新建压缩.e01 + .e02 ...）
+        exe_main_match = re.search(r'^(?P<base>.+)\.exe$', filename, re.IGNORECASE)
+        exe_part_match = re.search(r'^(?P<base>.+)\.e\d{2}$', filename, re.IGNORECASE)
+        if exe_main_match or exe_part_match:
+            base_name = (exe_main_match or exe_part_match).group('base')
+            volume_set = self._build_exe_e_volume_set(directory, base_name)
+            if volume_set:
+                logger.info(f"[FileProcessor] 检测到自解压分卷组(.exe + .eNN): {base_name}")
                 return volume_set
 
         # 分卷模式识别（按优先级排序，更具体的模式在前）
@@ -635,6 +658,36 @@ class FileProcessor:
         volumes.append(zip_path)
         ordered = sorted(volumes, key=self._volume_sort_key)
         return VolumeSet(base_name, ordered, 'zip_volume_main', entry_path=zip_path)
+
+    def _build_exe_e_volume_set(self, directory: str, base_name: str) -> Optional[VolumeSet]:
+        """构建自解压 .exe + .eNN 分卷组。
+
+        触发条件：同名 .exe 必须存在，且至少有一个 .eNN 伴随文件。
+        否则视为普通单体 SFX，由 7z 自行处理。
+        """
+        exe_path = os.path.join(directory, f"{base_name}.exe")
+        if not os.path.exists(exe_path):
+            return None
+
+        try:
+            siblings = os.listdir(directory)
+        except Exception as exc:
+            logger.error(f"[FileProcessor] 查找自解压分卷失败: {exc}")
+            return None
+
+        e_volumes: List[tuple] = []
+        e_pattern = re.compile(rf'^{re.escape(base_name)}\.e(\d{{2}})$', re.IGNORECASE)
+        for file in siblings:
+            match = e_pattern.fullmatch(file)
+            if match:
+                e_volumes.append((int(match.group(1)), os.path.join(directory, file)))
+
+        if not e_volumes:
+            return None
+
+        e_volumes.sort(key=lambda item: item[0])
+        ordered = [exe_path] + [path for _, path in e_volumes]
+        return VolumeSet(base_name, ordered, 'exe_e_sequence', entry_path=exe_path)
 
     def _build_rar_old_volume_set(self, directory: str, base_name: str) -> Optional[VolumeSet]:
         rar_path = os.path.join(directory, f"{base_name}.rar")

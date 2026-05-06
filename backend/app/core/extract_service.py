@@ -302,6 +302,21 @@ class ExtractService:
                 raise Exception("分卷组不完整或等待超时")
             archive_path = volume_set.entry_path or volume_set.volumes[0]
 
+            # 自解压 .exe + .eNN 国产 SFX 工具命名 7z/RAR 都不能直接识别多卷
+            # （`7zz l x.exe` 报 returncode=2）。先探测内嵌档真实格式，再按
+            # 7z 多卷（.7z.NNN）或 RAR 多卷（.partN.rar）规范重命名，让现有
+            # 7zz / unar fallback 通道正常工作。
+            if volume_set.type == 'exe_e_sequence':
+                self._set_extract_meta(task, extract_stage="remap_exe_e_sfx")
+                task.update_progress(17, "重命名自解压分卷为标准多卷格式")
+                volume_set = await self._remap_exe_e_sequence(volume_set, task)
+                archive_path = volume_set.entry_path or volume_set.volumes[0]
+                if archive_path != task.source_path:
+                    logger.info(
+                        f"[Extract] 自解压分卷已重命名: {task.source_path} -> {archive_path}"
+                    )
+                    task.source_path = archive_path
+
         manual_retry_password = normalize_password_value(
             (task.task_metadata or {}).get("manual_retry_password")
         )
@@ -363,6 +378,7 @@ class ExtractService:
             )
         except Exception:
             await self._cleanup_extract_path(output_path)
+            await self._rollback_exe_e_remap(task)
             raise
 
         if not success:
@@ -371,6 +387,8 @@ class ExtractService:
             if extract_failure_reason == "cancelled" or task.is_cancelled():
                 logger.info(f"任务 {task.id}: 用户取消，跳过失败标记")
                 await self._cleanup_extract_path(output_path)
+                # 取消时也尝试把自解压分卷文件名还原（避免 .exe + .eNN 留下乱七八糟改名结果）
+                await self._rollback_exe_e_remap(task)
                 return None
             # 更新任务状态为失败，并设置更准确的错误信息
             if extract_failure_reason == "disk_full":
@@ -386,6 +404,8 @@ class ExtractService:
             logger.error(f"任务 {task.id}: {error_msg}")
             # 清理已创建的解压目录（包括部分解压的残留文件）
             await self._cleanup_extract_path(output_path)
+            # 自解压分卷重命名失败时，把文件名还原回 .exe + .eNN，方便用户手工排查
+            await self._rollback_exe_e_remap(task)
             return None
 
         try:
@@ -430,6 +450,7 @@ class ExtractService:
             return output_path
         except Exception:
             await self._cleanup_extract_path(output_path)
+            await self._rollback_exe_e_remap(task)
             raise
 
     def _pick_filename_matched_rjcode(self, password_candidates: List[Dict[str, Optional[str]]]) -> Optional[str]:
@@ -1557,6 +1578,16 @@ class ExtractService:
                 logger.info(f"[VolumeSet] 检测到旧式 RAR 分卷组: {base_name}")
                 return volume_set
 
+        # 自解压 .exe + .eNN 国产 SFX 分卷组
+        exe_main_match = re.search(r'^(?P<base>.+)\.exe$', filename, re.IGNORECASE)
+        exe_part_match = re.search(r'^(?P<base>.+)\.e\d{2}$', filename, re.IGNORECASE)
+        if exe_main_match or exe_part_match:
+            base_name = (exe_main_match or exe_part_match).group('base')
+            volume_set = self._build_exe_e_volume_set(directory, base_name)
+            if volume_set:
+                logger.info(f"[VolumeSet] 检测到自解压分卷组(.exe + .eNN): {base_name}")
+                return volume_set
+
         # 分卷模式识别（按优先级排序，更具体的模式在前）
         patterns = [
             (r'\.7z\.(\d{3})$', '7z_volume_with_ext'),  # .7z.001, .7z.002 (7z分卷，带.7z扩展名)
@@ -1606,6 +1637,211 @@ class ExtractService:
         volumes.append(zip_path)
         ordered = sorted(volumes, key=self._volume_sort_key)
         return VolumeSet(base_name, ordered, 'zip_volume_main', entry_path=zip_path)
+
+    def _build_exe_e_volume_set(self, directory: str, base_name: str) -> Optional['VolumeSet']:
+        """构建自解压 .exe + .eNN 分卷组（国产 SFX 工具特有命名）。
+
+        触发条件：同名 .exe 必须存在，且至少有一个 .eNN 伴随文件。
+        否则视为普通 SFX，由 7z 自行处理。
+        """
+        exe_path = os.path.join(directory, f"{base_name}.exe")
+        if not os.path.exists(exe_path):
+            return None
+
+        try:
+            siblings = os.listdir(directory)
+        except Exception as exc:
+            logger.error(f"[VolumeSet] 查找自解压分卷失败: {exc}")
+            return None
+
+        e_volumes: List[tuple] = []
+        e_pattern = re.compile(rf'^{re.escape(base_name)}\.e(\d{{2}})$', re.IGNORECASE)
+        for file in siblings:
+            match = e_pattern.fullmatch(file)
+            if match:
+                e_volumes.append((int(match.group(1)), os.path.join(directory, file)))
+
+        if not e_volumes:
+            return None
+
+        e_volumes.sort(key=lambda item: item[0])
+        ordered = [exe_path] + [path for _, path in e_volumes]
+        return VolumeSet(base_name, ordered, 'exe_e_sequence', entry_path=exe_path)
+
+    def _probe_sfx_inner_format(self, exe_path: str) -> str:
+        """扫描 SFX 头部，识别内嵌档真实格式。
+
+        国产 .exe + .eNN 工具的 SFX 头部通常较小（几 KB），内嵌档魔数会在前几 MB
+        出现。这里扫前 8MB 找到第一个匹配即返回。
+
+        Returns: '7z' / 'rar' / 'unknown'
+        """
+        SCAN_SIZE = 8 * 1024 * 1024  # 8MB
+        signatures = (
+            (b'7z\xBC\xAF\x27\x1C', '7z'),
+            (b'Rar!\x1A\x07\x01\x00', 'rar'),  # RAR5
+            (b'Rar!\x1A\x07\x00', 'rar'),       # RAR4
+        )
+        try:
+            with open(exe_path, 'rb') as f:
+                chunk = f.read(SCAN_SIZE)
+        except Exception as exc:
+            logger.warning(f"[ExeESequence] 扫描 SFX 头部失败: {exc}")
+            return 'unknown'
+
+        best_offset = None
+        best_fmt = 'unknown'
+        for sig, fmt in signatures:
+            idx = chunk.find(sig)
+            if idx >= 0 and (best_offset is None or idx < best_offset):
+                best_offset = idx
+                best_fmt = fmt
+        if best_offset is not None:
+            logger.info(
+                f"[ExeESequence] 探测 SFX 内嵌档格式: {best_fmt} "
+                f"(offset={best_offset}, file={os.path.basename(exe_path)})"
+            )
+        else:
+            logger.warning(
+                f"[ExeESequence] 前 {SCAN_SIZE//1024//1024}MB 未找到 7z/RAR 魔数: "
+                f"{os.path.basename(exe_path)}"
+            )
+        return best_fmt
+
+    async def _remap_exe_e_sequence(
+        self,
+        volume_set: 'VolumeSet',
+        task: Optional[Task] = None,
+    ) -> 'VolumeSet':
+        """把 .exe + .eNN 国产 SFX 分卷组重命名为标准多卷格式。
+
+        策略：
+        1. 扫描 .exe 内嵌档魔数（_probe_sfx_inner_format）。
+        2. 7z 流 → 重命名为 .7z.001 / .7z.002 / ...，类型 7z_volume_with_ext。
+        3. RAR 流（或探测失败默认）→ 重命名为 .part1.rar / .part2.rar / ...，
+           类型 part。这样能让现有 unar fallback 在 7zz 失败时自动接管。
+        4. 重命名失败任何一卷都整体回滚，返回原 volume_set，上层走原失败链路。
+        5. 在 task_metadata 里记录原始/重命名映射，便于解压最终失败时还原文件名。
+        """
+        if volume_set.type != 'exe_e_sequence' or not volume_set.volumes:
+            return volume_set
+
+        exe_path = volume_set.entry_path or volume_set.volumes[0]
+        inner_format = self._probe_sfx_inner_format(exe_path)
+
+        if inner_format == 'rar':
+            new_type = 'part'
+
+            def make_name(idx: int) -> str:
+                return f"{volume_set.base_name}.part{idx}.rar"
+        else:
+            # 7z 或 unknown 都默认走 7z 命名（实测国产 SFX 大多是 7z 流）；
+            # 若实际是 RAR 但探测失败，最终走到 unar 兜底也能多救一次。
+            new_type = '7z_volume_with_ext'
+
+            def make_name(idx: int) -> str:
+                return f"{volume_set.base_name}.7z.{idx:03d}"
+
+        directory = os.path.dirname(volume_set.volumes[0])
+        rename_map: List[Tuple[str, str]] = []
+        new_volumes: List[str] = []
+        for idx, volume_path in enumerate(volume_set.volumes, start=1):
+            new_path = os.path.join(directory, make_name(idx))
+            new_volumes.append(new_path)
+            if os.path.abspath(volume_path) != os.path.abspath(new_path):
+                rename_map.append((volume_path, new_path))
+
+        # 预检：目标文件名不能已经存在（除非就是源自己）。
+        for _, new_path in rename_map:
+            if os.path.exists(new_path):
+                logger.warning(
+                    f"[ExeESequence] 目标文件名已存在，跳过重命名以防覆盖: {new_path}"
+                )
+                return volume_set
+
+        completed: List[Tuple[str, str]] = []
+        for old_path, new_path in rename_map:
+            try:
+                await asyncio.to_thread(os.rename, old_path, new_path)
+                completed.append((old_path, new_path))
+                logger.info(f"[ExeESequence] 重命名: {old_path} -> {new_path}")
+            except Exception as exc:
+                logger.error(
+                    f"[ExeESequence] 重命名失败，开始回滚: "
+                    f"{old_path} -> {new_path}, error={exc}"
+                )
+                for done_old, done_new in completed:
+                    try:
+                        await asyncio.to_thread(os.rename, done_new, done_old)
+                        logger.info(f"[ExeESequence] 回滚重命名: {done_new} -> {done_old}")
+                    except Exception as rollback_exc:
+                        logger.error(
+                            f"[ExeESequence] 回滚重命名失败: "
+                            f"{done_new} -> {done_old}, error={rollback_exc}"
+                        )
+                return volume_set
+
+        # 把映射记到 task_metadata，方便解压最终失败时把文件名还原。
+        if task is not None:
+            self._set_extract_meta(
+                task,
+                exe_e_remap={
+                    'inner_format': inner_format,
+                    'naming': new_type,
+                    'rename_map': [
+                        {'original': old, 'renamed': new}
+                        for old, new in completed
+                    ],
+                },
+            )
+
+        return VolumeSet(
+            volume_set.base_name,
+            new_volumes,
+            new_type,
+            entry_path=new_volumes[0],
+        )
+
+    async def _rollback_exe_e_remap(self, task: Task) -> None:
+        """解压最终失败时，把 .7z.NNN / .partN.rar 改回原始 .exe + .eNN。
+
+        只在文件还在原目录、且目标名未被占用时回滚；否则保留现状并记日志，
+        避免覆盖用户其他文件。
+        """
+        meta = (task.task_metadata or {}).get('exe_e_remap')
+        if not meta or not isinstance(meta, dict):
+            return
+        rename_map = meta.get('rename_map') or []
+        if not rename_map:
+            return
+
+        # 反向重命名：先收集再做，避免顺序导致中间撞名
+        for entry in reversed(rename_map):
+            original = entry.get('original')
+            renamed = entry.get('renamed')
+            if not original or not renamed:
+                continue
+            if not os.path.exists(renamed):
+                logger.info(
+                    f"[ExeESequence] 跳过回滚（文件已不在原位）: {renamed}"
+                )
+                continue
+            if os.path.exists(original):
+                logger.warning(
+                    f"[ExeESequence] 跳过回滚（原文件名已被占用）: {original}"
+                )
+                continue
+            try:
+                await asyncio.to_thread(os.rename, renamed, original)
+                logger.info(f"[ExeESequence] 失败回滚: {renamed} -> {original}")
+            except Exception as exc:
+                logger.error(
+                    f"[ExeESequence] 失败回滚出错: {renamed} -> {original}, error={exc}"
+                )
+
+        # 清掉 metadata 标记，避免重试时再次回滚
+        if task.task_metadata is not None:
+            task.task_metadata.pop('exe_e_remap', None)
 
     def _build_rar_old_volume_set(self, directory: str, base_name: str) -> Optional['VolumeSet']:
         rar_path = os.path.join(directory, f"{base_name}.rar")
