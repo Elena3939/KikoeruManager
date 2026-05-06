@@ -356,7 +356,27 @@ class ConflictResolutionService:
         existing = description.get("existing") or {}
         source = description.get("source") or {}
 
-        if include_stats and existing.get("is_remote"):
+        # 如果 existing_path 是 Kikoeru 预检写入的显示标签（如"[远程服务器] 作品名"），
+        # 尝试通过 RJ 号在所有库存中搜索实际路径并重新计算统计信息。
+        existing_path = str(existing.get("path") or "").strip()
+        stats_already_computed = False
+        if existing_path.startswith("[远程服务器]") and not existing.get("library_id"):
+            rjcode = str(getattr(conflict, "rjcode", "") or "").strip()
+            if rjcode:
+                resolved = await self._resolve_kikoeru_server_path(rjcode)
+                if resolved:
+                    existing.update(resolved)
+                    if include_stats:
+                        if resolved.get("is_remote"):
+                            existing["stats"] = await self._describe_remote_path_stats(
+                                resolved.get("library_id"),
+                                resolved.get("path"),
+                            )
+                        else:
+                            existing["stats"] = self._describe_local_path_stats(resolved.get("path"))
+                        stats_already_computed = True
+
+        if include_stats and not stats_already_computed and existing.get("is_remote"):
             existing["stats"] = await self._describe_remote_path_stats(
                 existing.get("library_id"),
                 existing.get("path"),
@@ -367,6 +387,66 @@ class ConflictResolutionService:
                 source.get("path"),
             )
         return description
+
+    async def _resolve_kikoeru_server_path(self, rjcode: str) -> Optional[dict[str, Any]]:
+        """用 RJ 号在所有库存中并行搜索实际文件夹路径，用于解析 Kikoeru 写入的显示标签路径。
+        - 本地库：各库并行用 list_files 搜索
+        - 远程群晖库：通过 global_search_files 并行搜索所有远程库
+        """
+        try:
+            manager = get_library_manager()
+            libraries = list(self._iter_libraries())
+            lib_type_map = {lib.id: lib.type for lib in libraries}
+
+            local_libs = [lib for lib in libraries if lib.type == "local"]
+            remote_libs = [lib for lib in libraries if lib.type == "synology_filestation"]
+
+            async def _search_one(lib_id: str) -> dict:
+                return await manager.list_files(
+                    lib_id,
+                    page=1,
+                    page_size=50,
+                    search=rjcode,
+                    sort_by="name",
+                    sort_order="asc",
+                    search_result_kind="folder",
+                )
+
+            tasks: list = [asyncio.create_task(_search_one(lib.id)) for lib in local_libs]
+            if remote_libs:
+                tasks.append(asyncio.create_task(
+                    manager.global_search_files(
+                        None, rjcode, page=1, page_size=50, search_result_kind="folder"
+                    )
+                ))
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, Exception):
+                    continue
+                files = result.get("files") or []
+                for item in files:
+                    if not item.get("is_directory", True):
+                        continue
+                    item_rjcode = str(item.get("rjcode") or "")
+                    if item_rjcode.upper() != rjcode.upper():
+                        continue
+                    item_path = item.get("path") or ""
+                    item_lib_id = str(item.get("library_id") or "")
+                    if not item_path or not item_lib_id:
+                        continue
+                    item_lib_type = lib_type_map.get(item_lib_id, "local")
+                    return {
+                        "library_id": item_lib_id,
+                        "library_type": item_lib_type,
+                        "library_name": item.get("library_name") or "",
+                        "path": item_path,
+                        "is_remote": item_lib_type == "synology_filestation",
+                    }
+        except Exception:
+            logger.warning("无法通过 RJ 号解析 Kikoeru 服务器路径: rjcode=%s", rjcode, exc_info=True)
+        return None
 
     def get_available_actions(self, conflict) -> list[str]:
         metadata = dict(conflict.new_metadata or {})
@@ -395,7 +475,7 @@ class ConflictResolutionService:
         return ["SKIP"]
 
     async def get_delete_preview(self, conflict) -> dict[str, Any]:
-        description = self.describe_conflict(conflict)
+        description = await self.describe_conflict_async(conflict)
         existing = description["existing"]
         manager = get_library_manager()
         if existing["library_id"]:
@@ -408,7 +488,7 @@ class ConflictResolutionService:
         return preview
 
     async def create_merge_preview(self, conflict) -> dict[str, Any]:
-        description = self.describe_conflict(conflict)
+        description = await self.describe_conflict_async(conflict)
         existing = description["existing"]
         if not existing["path"]:
             raise RuntimeError("Missing existing target path")
@@ -460,7 +540,7 @@ class ConflictResolutionService:
         }
 
     async def resolve_keep_new(self, conflict) -> dict[str, Any]:
-        description = self.describe_conflict(conflict)
+        description = await self.describe_conflict_async(conflict)
         existing = description["existing"]
         staged_root = await self._stage_new_source(conflict, self._create_workspace(conflict.id))
 
