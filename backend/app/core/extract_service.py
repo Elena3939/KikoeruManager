@@ -80,12 +80,26 @@ class ExtractService:
         """动态获取7z路径"""
         return self._find_7z_executable()
 
+    def _get_mcp_args(self, archive_path: Optional[str] = None) -> list:
+        """返回 ZIP 文件名代码页参数。
+
+        只对 .zip 生效：7zz 24.08 之后对 RAR 解析器传 -mcp 会直接
+        E_INVALIDARG（One or more arguments are invalid），而 .7z 格式
+        文件名是 UTF-8，传 -mcp 也无意义。所以非 zip 一律不传。
+        archive_path 为 None 时（兼容旧调用）按"未知格式"处理，不传。
+        """
+        cp = int(self.config.extract.zip_encoding or 0)
+        if cp <= 0:
+            return []
+        if not archive_path:
+            return []
+        if str(archive_path).lower().endswith(".zip"):
+            return [f"-mcp={cp}"]
+        return []
+
     @property
     def _mcp_args(self) -> list:
-        """返回 ZIP 文件名代码页参数，0 表示不传"""
-        cp = int(self.config.extract.zip_encoding or 0)
-        if cp > 0:
-            return [f"-mcp={cp}"]
+        """旧调用兼容入口，无路径上下文时不传 -mcp，避免 7zz 24.08 对 RAR 报错。"""
         return []
 
     def _find_7z_executable(self) -> str:
@@ -498,7 +512,7 @@ class ExtractService:
                 "x",
                 "-y",
                 f"-o{output_path}",
-                *self._mcp_args,  # ZIP 文件名编码
+                *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效，避免 7zz 24.08 对 RAR 报 E_INVALIDARG）
                 *password_args,
                 archive_info.path,
                 f"@{list_file_path}",
@@ -826,7 +840,7 @@ class ExtractService:
                 self.seven_zip, 'x',
                 '-y',  # 自动确认
                 '-o' + output_path,  # 输出目录
-                *self._mcp_args,  # ZIP 文件名编码
+                *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效）
                 archive_info.path
             ]
             
@@ -900,7 +914,7 @@ class ExtractService:
 
         for password in password_list:
             await asyncio.to_thread(clean_output)
-            cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._mcp_args, archive_path]
+            cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._get_mcp_args(archive_path), archive_path]
             cmd.append(f"-p{password}" if password else "-p")
             try:
                 result = await self._run_7z_command(cmd, capture_stdout=False)
@@ -2450,7 +2464,7 @@ class ExtractService:
                 '-o' + output_path,  # 输出目录
                 '-bsp1', # 启用进度输出
                 '-bso1', # 将进度输出到 stdout
-                *self._mcp_args,  # ZIP 文件名编码
+                *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效）
                 *password_args,
                 archive_info.path
             ]
