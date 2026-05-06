@@ -243,7 +243,7 @@ export const logApi = {
     const response = await apiClient.get('/logs', { params })
     return response.data
   },
-  search: async (q = '', levels = [], limit = 3000, cursor = 0) => {
+  search: async (q = '', levels = [], limit = 500, cursor = 0) => {
     const params = { limit, cursor }
     if (q) params.q = q
     if (levels.length) params.levels = levels.join(',')

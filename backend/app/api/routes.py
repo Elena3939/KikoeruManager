@@ -1984,12 +1984,18 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
 
 @app.get("/api/logs/search")
-async def search_logs(q: str = '', levels: str = '', limit: int = 3000, cursor: int = 0):
-    """在完整日志文件中全文检索，不受 tail 行数限制。
+async def search_logs(
+    q: str = '',
+    levels: str = '',
+    limit: int = 500,
+    cursor: int = 0,
+    max_scan_mb: int = 8,
+):
+    """在日志尾部扫描窗口中全文检索，避免超大日志全文件扫描拖垮后端。
 
     - ``q``：关键词（大小写不敏感，空则不过滤）
     - ``levels``：逗号分隔的级别列表，如 ``INFO,ERROR``（空则不过滤）
-        - ``limit``：单页返回条数（默认 3000，上限 20000）
+        - ``limit``：单页返回条数（默认 500，上限 1000）
         - ``cursor``：匹配游标偏移（默认 0）
         响应格式：
             ``{ "logs": [...], "total_matched": N, "next_cursor": M, "has_more": bool }``
@@ -2005,10 +2011,11 @@ async def search_logs(q: str = '', levels: str = '', limit: int = 3000, cursor: 
         return {"logs": [], "total_matched": 0, "next_cursor": 0, "has_more": False}
 
     try:
-        max_limit = max(100, min(int(limit or 3000), 20000))
+        max_limit = max(50, min(int(limit or 500), 1000))
         safe_cursor = max(0, int(cursor or 0))
         kw = q.strip().lower() if q else ''
         lvl_set = {v.strip().upper() for v in levels.split(',') if v.strip()} if levels else set()
+        scan_bytes = max(1024 * 1024, min(int(max_scan_mb or 8), 64) * 1024 * 1024)
         _log_file = log_file
 
         _lvl_re = _re.compile(
@@ -2018,32 +2025,44 @@ async def search_logs(q: str = '', levels: str = '', limit: int = 3000, cursor: 
 
         def _search():
             results = []
-            total = 0
-            with open(_log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                for raw in f:
-                    line = raw.strip()
-                    if not line:
+            matched_seen = 0
+            has_more = False
+            file_size = os.path.getsize(_log_file)
+            start_offset = max(0, file_size - scan_bytes)
+            with open(_log_file, 'rb') as f:
+                f.seek(start_offset)
+                if start_offset > 0:
+                    f.readline()
+                raw_data = f.read(scan_bytes)
+            text = raw_data.decode('utf-8', errors='ignore')
+            for raw in text.splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                if lvl_set:
+                    m = _lvl_re.match(line)
+                    lvl = (m.group(2) or m.group(4) or '').upper() if m else 'INFO'
+                    if lvl not in lvl_set:
                         continue
-                    # 级别过滤
-                    if lvl_set:
-                        m = _lvl_re.match(line)
-                        lvl = (m.group(2) or m.group(4) or '').upper() if m else 'INFO'
-                        if lvl not in lvl_set:
-                            continue
-                    # 关键词过滤
-                    if kw and kw not in line.lower():
-                        continue
-                    total += 1
-                    if total <= safe_cursor:
-                        continue
-                    if len(results) < max_limit:
-                        results.append(line)
+                if kw and kw not in line.lower():
+                    continue
+                matched_seen += 1
+                if matched_seen <= safe_cursor:
+                    continue
+                if len(results) < max_limit:
+                    results.append(line)
+                else:
+                    has_more = True
+                    break
             next_cursor = safe_cursor + len(results)
+            total_estimate = next_cursor + (1 if has_more else 0)
             return {
                 "logs": results,
-                "total_matched": total,
+                "total_matched": total_estimate,
                 "next_cursor": next_cursor,
-                "has_more": next_cursor < total,
+                "has_more": has_more,
+                "total_is_estimate": True,
+                "scan_bytes": min(file_size, scan_bytes),
             }
 
         return await asyncio.to_thread(_search)

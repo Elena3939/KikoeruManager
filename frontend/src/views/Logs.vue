@@ -302,9 +302,11 @@ const fullSearchTotal = ref(0)
 const fullSearchCursor = ref(0)
 const fullSearchHasMore = ref(false)
 const fullSearchPageStart = ref(0)
-const FULL_SEARCH_PAGE_SIZE = 2000
+const FULL_SEARCH_PAGE_SIZE = 500
+const MIN_FULL_SEARCH_KEYWORD_LENGTH = 2
 const isSearchLoading = ref(false)
 const smoothScrollInertia = ref(0.22)
+let fullSearchRequestSeq = 0
 
 const parseCache = new Map()
 const highlightCache = new Map()
@@ -416,7 +418,7 @@ function onSearchInput() {
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
   searchDebounceTimer = setTimeout(() => {
     doFullSearch()
-  }, 260)
+  }, 500)
 }
 
 function clearSearchKeyword() {
@@ -807,18 +809,32 @@ function onWindowKeydown(e) {
 }
 
 async function doFullSearch(reset = true) {
-  if (!searchKeyword.value.trim() && !selectedLevels.value.length) return
+  const keyword = searchKeyword.value.trim()
+  const broadLevelFilter = selectedLevels.value.length > 2
+  if (!keyword && broadLevelFilter) {
+    ElMessage.info('请输入关键词，或只选择 1-2 个日志级别后再检索')
+    return
+  }
+  if (keyword && keyword.length < MIN_FULL_SEARCH_KEYWORD_LENGTH) {
+    ElMessage.warning(`检索关键词至少 ${MIN_FULL_SEARCH_KEYWORD_LENGTH} 个字符`)
+    return
+  }
   const cursor = reset ? 0 : fullSearchPageStart.value
   await gotoFullSearchPage(cursor)
 }
 
 async function gotoFullSearchPage(cursor) {
-  if (!searchKeyword.value.trim() && !selectedLevels.value.length) return
+  const keyword = searchKeyword.value.trim()
+  const broadLevelFilter = selectedLevels.value.length > 2
+  if (!keyword && broadLevelFilter) return
+  if (keyword && keyword.length < MIN_FULL_SEARCH_KEYWORD_LENGTH) return
+  const requestSeq = ++fullSearchRequestSeq
   isSearchLoading.value = true
   try {
     const t0 = performance.now()
     lastFetchMode.value = 'search'
-    const data = await logApi.search(searchKeyword.value.trim(), selectedLevels.value, FULL_SEARCH_PAGE_SIZE, cursor)
+    const data = await logApi.search(keyword, selectedLevels.value, FULL_SEARCH_PAGE_SIZE, cursor)
+    if (requestSeq !== fullSearchRequestSeq) return
     const lines = Array.isArray(data.logs) ? data.logs : []
     fullSearchTotal.value = data.total_matched ?? lines.length
     fullSearchCursor.value = typeof data.next_cursor === 'number' ? data.next_cursor : (cursor + lines.length)
