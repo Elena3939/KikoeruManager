@@ -254,7 +254,7 @@ export const logApi = {
 
 export const conflictApi = {
   list: async () => {
-    const response = await apiClient.get('/conflicts')
+    const response = await apiClient.get('/conflicts', { params: { include_stats: true } })
     return response.data
   },
 
