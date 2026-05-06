@@ -2155,7 +2155,53 @@ class LibraryManager:
         library = self.get_library_definition(library_id)
         if library.type == "local":
             return await asyncio.to_thread(self._local_folder_contents, library, path)
-        raise RuntimeError("远程库暂不支持递归文件明细预览")
+        if library.type == "synology_filestation":
+            return await self._remote_folder_contents(library, path)
+        raise RuntimeError(f"不支持此库存类型的文件树预览: {library.type}")
+
+    async def _remote_folder_contents(self, library: LibraryDefinition, path: str) -> dict[str, Any]:
+        if not library.synology:
+            raise RuntimeError("远程库缺少群晖连接配置")
+        client = self.get_cached_synology_client(library.synology)
+        normalized_path = self._normalize_remote_path(path)
+        browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
+        if not self._remote_path_is_within_root(normalized_path, browse_root):
+            raise PermissionError("只能查看当前库存根目录内的文件夹")
+        all_raw = await self._list_remote_directory_recursive(client, normalized_path)
+        items: list[dict[str, Any]] = []
+        item_id = 0
+        prefix = normalized_path.rstrip("/") + "/"
+        for raw in all_raw:
+            if raw.get("isdir", False):
+                continue
+            name = raw.get("name") or ""
+            if name.startswith("."):
+                continue
+            item_path = self._normalize_remote_path(raw.get("path") or raw.get("real_path") or name)
+            if item_path.startswith(prefix):
+                relative_path = item_path[len(prefix):]
+            else:
+                relative_path = name
+            additional = raw.get("additional") or {}
+            size = additional.get("size") or raw.get("size") or 0
+            mtime = (additional.get("time") or {}).get("mtime") or 0
+            items.append({
+                "id": f"{library.id}:content:{item_id}",
+                "name": name,
+                "path": item_path,
+                "relative_path": relative_path,
+                "size": int(size),
+                "modified_time": datetime.fromtimestamp(mtime).isoformat() if mtime else None,
+            })
+            item_id += 1
+        items.sort(key=lambda x: x["relative_path"])
+        folder_name = PurePosixPath(normalized_path).name
+        return {
+            "folder_name": folder_name,
+            "folder_path": normalized_path,
+            "total_files": len(items),
+            "items": items,
+        }
 
     def _local_folder_contents(self, library: LibraryDefinition, path: str) -> dict[str, Any]:
         library_root = os.path.abspath(library.root_path)
