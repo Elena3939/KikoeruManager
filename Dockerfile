@@ -18,22 +18,37 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 安装系统依赖（包括官方 7-Zip、unar 和 opencc）
+# 安装系统依赖（官方 7-Zip 24.08、unar 和 opencc）
+# - 用 TARGETARCH（buildx 自动注入）选择 x64 / arm64 包，兼容 amd64 群晖和 ARM64 群晖。
+# - 显式 uninstall p7zip-full，避免 /usr/bin/7z 覆盖 /usr/local/bin/7zz 的 PATH 优先级。
+# - 构建末尾打印 `7zz -version`，构建失败或版本错位时立刻暴露，不会悄悄回退到旧 p7zip。
+ARG TARGETARCH
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && apt-get install -y \
-    ca-certificates \
-    wget \
-    xz-utils \
-    unar \
-    libopencc-dev \
+    apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        wget \
+        xz-utils \
+        unar \
+        libopencc-dev \
+    && apt-get purge -y --auto-remove p7zip-full p7zip p7zip-rar 2>/dev/null || true \
+    && case "${TARGETARCH:-amd64}" in \
+        amd64|x86_64) SEVENZIP_PKG=7z2408-linux-x64.tar.xz ;; \
+        arm64|aarch64) SEVENZIP_PKG=7z2408-linux-arm64.tar.xz ;; \
+        arm|armv7l) SEVENZIP_PKG=7z2408-linux-arm.tar.xz ;; \
+        *) echo "Unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
     && wget --retry-connrefused --waitretry=5 --tries=3 -O /tmp/7z.tar.xz \
-        https://github.com/ip7z/7zip/releases/download/24.08/7z2408-linux-x64.tar.xz \
+        "https://github.com/ip7z/7zip/releases/download/24.08/${SEVENZIP_PKG}" \
     && mkdir -p /opt/7zip \
     && tar -xJf /tmp/7z.tar.xz -C /opt/7zip \
     && ln -sf /opt/7zip/7zz /usr/local/bin/7zz \
     && ln -sf /opt/7zip/7zz /usr/local/bin/7z \
-    && rm -f /tmp/7z.tar.xz \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -f /tmp/7z.tar.xz /usr/bin/7z /usr/bin/7za /usr/bin/7zr \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo "===== 7-Zip version check =====" \
+    && /usr/local/bin/7zz --help | head -3 \
+    && /usr/local/bin/7zz --help | grep -q "24.08" \
+    && echo "===== 7-Zip 24.08 installed OK ====="
 
 # 复制后端依赖
 COPY backend/requirements.txt .

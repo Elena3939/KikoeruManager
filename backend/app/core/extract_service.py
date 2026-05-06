@@ -2436,6 +2436,12 @@ class ExtractService:
                     seen.add(pwd)
                     unique_passwords.append(pwd)
         
+        # 预读目录可用说明压缩包结构至少可读；后续若遇疑似"损坏"特征，
+        # 更可能是头加密 + 错密码，而不是真的坏包，用于最后定性判断。
+        listing_available = bool(getattr(archive_info, "file_list", None))
+        encountered_wrong_password = False
+        last_corrupt_stderr: Optional[str] = None
+
         for password in unique_passwords:
             password_args = [f'-p{password}'] if password else []
             cmd = [
@@ -2560,7 +2566,18 @@ class ExtractService:
                     )
                     return False, None, "disk_full"
 
-                if "wrong password" in stderr_lower:
+                # 扩展加密错误识别：不同版本 p7zip / 7zz 的密码错措辞差异较大，
+                # 只靠 "wrong password" 一个关键字会漏判，导致后面误走损坏分支。
+                encryption_markers = (
+                    "wrong password",
+                    "password is incorrect",
+                    "password?",                 # "Wrong password?" / "Enter password?"
+                    "passphrase",
+                    "cannot open encrypted",
+                    "is encrypted",
+                )
+                if any(marker in stderr_lower for marker in encryption_markers):
+                    encountered_wrong_password = True
                     logger.warning(f"密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
                     continue
 
@@ -2599,15 +2616,24 @@ class ExtractService:
                             return True, password, ""
                         unar_stderr = (unar_result.stderr or b"").decode('utf-8', errors='ignore').lower()
                         if "password" in unar_stderr or "passphrase" in unar_stderr:
+                            encountered_wrong_password = True
                             logger.warning(f"RAR fallback 密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
                             continue
-                    logger.error(
-                        "检测到压缩包损坏特征，停止密码重试: %s",
-                        stderr_text[:300] if stderr_text else "(无错误文本)",
+                    # 不再立刻判定损坏：头加密 7z + 错密码同样会输出 "Headers Error" /
+                    # "Cannot open the file as archive"（p7zip/7zz 多版本文案不稳定），
+                    # 立刻 return 会导致密码库里剩下的真密码永远没机会被试到。
+                    # 改为记录最后一次疑似损坏的 stderr，把剩余密码跑完再统一定性。
+                    last_corrupt_stderr = stderr_text or stderr_lower
+                    logger.warning(
+                        "密码 %s (%s) 返回疑似损坏/头加密特征，继续尝试下一个密码: %s",
+                        password_source,
+                        password or '无密码',
+                        (stderr_text or stderr_lower)[:300] if (stderr_text or stderr_lower) else "(无错误文本)",
                     )
-                    return False, None, "archive_corrupt"
+                    continue
 
                 if "data error" in stderr_lower:
+                    last_corrupt_stderr = stderr_text or stderr_lower
                     logger.warning(
                         "7z 返回 Data Error，按密码失败继续尝试，避免把加密包误判为损坏: source=%s stderr=%s",
                         password_source,
@@ -2619,6 +2645,23 @@ class ExtractService:
                 logger.warning(f"解压尝试失败: {e}")
                 continue
         
+        # 所有密码都失败后的统一定性：
+        # 1) 预读目录成功 或 曾经命中明确的加密错误 → 视为密码错误（用户多半是密码库没录对）
+        # 2) 否则若曾遇到疑似损坏特征 → 判损坏
+        # 3) 其他兜底 → 密码错误
+        if listing_available or encountered_wrong_password:
+            if last_corrupt_stderr:
+                logger.warning(
+                    "所有密码尝试失败，但压缩包结构看似可读/曾命中加密错误，判为密码错误而非损坏。最后一次疑似损坏 stderr: %s",
+                    last_corrupt_stderr[:300],
+                )
+            return False, None, "wrong_password"
+        if last_corrupt_stderr:
+            logger.error(
+                "所有密码尝试均失败，且全程未能读取压缩包目录，判定为损坏：%s",
+                last_corrupt_stderr[:300],
+            )
+            return False, None, "archive_corrupt"
         return False, None, "wrong_password"
     
     async def _verify_extraction(self, archive_info: ArchiveInfo, output_path: str) -> bool:
@@ -2790,8 +2833,15 @@ class ExtractService:
                 if return_code != 0:
                     logger.error(f"7z命令执行失败，返回码: {return_code}")
                     try:
-                        err_text = bytes(stderr_data).decode('gbk', errors='ignore')
-                        logger.error(f"错误输出: {err_text[:200]}")
+                        # Linux 容器 stderr 是 UTF-8，Windows 7-Zip 多为 GBK。
+                        # 优先 UTF-8，失败再按平台回退，避免把 UTF-8 中文路径
+                        # 误当 GBK 解出一堆乱码（例如把 `解压码0504` 错成 `瑙ｅ帇鐮0504`）。
+                        fallback_encoding = 'gbk' if sys.platform == 'win32' else 'utf-8'
+                        try:
+                            err_text = bytes(stderr_data).decode('utf-8')
+                        except UnicodeDecodeError:
+                            err_text = bytes(stderr_data).decode(fallback_encoding, errors='replace')
+                        logger.error(f"错误输出: {err_text[:500]}")
                     except Exception as e:
                         logger.error(f"执行7z命令失败: {e}")
                     return subprocess.CompletedProcess(
