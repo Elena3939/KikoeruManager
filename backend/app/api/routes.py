@@ -80,8 +80,11 @@ async def health_check():
     }
 
 
+# 注意：以下高频读接口刻意保持同步 def，让 FastAPI 调度到 starlette threadpool，
+# 而不是 async def 直接占用事件循环。配合 run.py 的 anyio threadpool=80，群晖
+# 慢 IO 场景下接口之间不再连环阻塞。
 @app.get("/api/activity-logs")
-async def list_activity_logs(
+def list_activity_logs(
     page: int = 1,
     limit: int = 50,
     category: Optional[str] = None,
@@ -277,7 +280,7 @@ async def list_activity_logs(
 
 
 @app.get("/api/activity-logs/stats")
-async def activity_logs_stats(
+def activity_logs_stats(
     days: int = 14,
     db: Session = Depends(get_db),
 ):
@@ -492,7 +495,7 @@ async def create_filter_delete_activity_log(request: Request):
 
 
 @app.get("/api/activity-logs/{log_id}/children")
-async def get_activity_log_children(
+def get_activity_log_children(
     log_id: str,
     limit: int = 200,
     db: Session = Depends(get_db),
@@ -631,6 +634,15 @@ async def _periodic_notification_cleanup():
 @app.on_event("startup")
 async def startup_event():
     """应用启动时执行"""
+    # 抬高 starlette 默认 threadpool 上限：FastAPI 的同步路由（def 而非 async def）
+    # 都跑在这个池里，默认 40 在群晖 + SMB + 多任务并发时容易顶满，连环超时。
+    # 80 对单实例桌面 / 中小 NAS 已经很宽裕，CPU / 内存压力可控。
+    try:
+        from anyio import to_thread as _anyio_to_thread
+        _anyio_to_thread.current_default_thread_limiter().total_tokens = 80
+    except Exception:
+        logger.warning("[启动] 调整 anyio threadpool 上限失败，沿用默认值", exc_info=True)
+
     # 初始化数据库
     init_db()
 
@@ -985,7 +997,7 @@ async def _scan_and_create_tasks(
     }
 
 @app.get("/api/backup/history")
-async def get_backup_history():
+def get_backup_history():
     """获取备份历史记录"""
     from ..models.database import BackupRecord, get_db
     
@@ -1186,7 +1198,7 @@ def _read_notification_email_password_from_disk() -> str:
 
 
 @app.get("/api/config", response_model=ConfigResponse)
-async def get_configuration():
+def get_configuration():
     """获取配置"""
     config = get_config()
     storage_data = config.storage.model_dump()
@@ -1220,7 +1232,7 @@ async def get_configuration():
     )
 
 @app.get("/api/config/state")
-async def get_configuration_state():
+def get_configuration_state():
     """获取配置运行态，便于排查首屏配置抖动。"""
     from ..config.settings import get_config_runtime_state
 
@@ -2276,7 +2288,7 @@ async def get_conflicts(include_stats: bool = False):
         db.close()
 
 @app.get("/api/conflicts/count")
-async def get_conflicts_count(db: Session = Depends(get_db)):
+def get_conflicts_count(db: Session = Depends(get_db)):
     """获取问题作品数量（轻量接口，供首页轮询使用）。"""
     from ..models.database import ConflictWork
 

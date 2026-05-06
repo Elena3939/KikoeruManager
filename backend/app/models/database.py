@@ -1,6 +1,7 @@
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, JSON, Index, text, Float
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, JSON, Index, text, Float, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import QueuePool
 from datetime import datetime, timezone
 import os
 import shutil
@@ -1103,15 +1104,58 @@ def _ensure_db_writable(db_path: str) -> None:
 _db_path = get_db_path()
 
 # 数据库连接，确保支持UTF-8
+# 关键调优（特别是部署在 Synology / NAS Docker 这种慢 IO 环境时）：
+#   - QueuePool + pool_size=5/max_overflow=10：避免默认 SingletonThreadPool 把所有
+#     线程的查询串到一根连接上，FastAPI 多任务并发时这是主要的接口超时来源。
+#   - check_same_thread=False + 30s timeout：sqlite3 driver 层先等 30s 再抛
+#     `database is locked`，给 WAL 写者完成事务的时间，避免一接到锁就立刻 500。
+#   - pool_pre_ping=True：连接被 NAS / 网络抖动断开后能自动重连。
 engine = create_engine(
     f'sqlite:///{_db_path}',
     connect_args={
         'check_same_thread': False,
+        'timeout': 30,  # 秒；sqlite3 driver 内部 busy_timeout 的初值
     },
+    poolclass=QueuePool,
+    pool_size=5,
+    max_overflow=10,
+    pool_recycle=3600,
+    pool_pre_ping=True,
     json_serializer=_orjson_dumps,
     json_deserializer=_orjson_loads,
     echo=False
 )
+
+
+# SQLite PRAGMA 调优：每个新建的物理连接都执行一次。
+# - journal_mode=WAL：读写不再互斥，读者只读快照，写者另开 -wal，大幅缓解
+#   `database is locked`，是这次群晖卡顿的根因修复。
+# - synchronous=NORMAL：WAL 下安全，且把 fsync 次数从每次提交降为 checkpoint，
+#   群晖机械盘 / btrfs 上写吞吐能翻几倍。
+# - busy_timeout=30000：WAL 仍可能在 checkpoint 时短暂互斥；30s 容忍窗口够用。
+# - temp_store=MEMORY / cache_size=-20000：临时表与 ~20MB 页缓存放内存，加速
+#   activity_logs 这类大表的扫描 / 排序。
+# - foreign_keys=ON / wal_autocheckpoint=1000：保持外键检查，控制 -wal 文件尺寸。
+@event.listens_for(engine, "connect")
+def _sqlite_pragma_on_connect(dbapi_connection, connection_record):
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.execute("PRAGMA cache_size=-20000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA wal_autocheckpoint=1000")
+        cursor.close()
+    except Exception:
+        # PRAGMA 设置失败不应阻断连接建立；下游真有冲突会通过 busy_timeout 兜底。
+        try:
+            cursor.close()
+        except Exception:
+            pass
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():

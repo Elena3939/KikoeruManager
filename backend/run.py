@@ -247,13 +247,21 @@ def main():
     if IS_FROZEN:
         threading.Thread(target=check_stop, daemon=True).start()
 
+    # uvicorn 调优（针对群晖 / NAS Docker 这种慢 IO 场景）：
+    #   - limit_concurrency=128：并发请求超过这个数直接 503，避免 SSE 风暴 / 慢 SMB
+    #     堆积请求把内存吃光，进而让所有接口集体超时。
+    #   - timeout_keep_alive=15：keep-alive 短一点，前面挂 nginx/反代时空闲连接更早释放。
+    #   - backlog=512：监听队列加深，瞬时连接洪峰不至于直接被 OS 拒掉。
     config = uvicorn.Config(
         app,
         host="0.0.0.0",
         port=ACTUAL_PORT,
         log_level="warning",
         access_log=False,
-        log_config=None
+        log_config=None,
+        limit_concurrency=128,
+        timeout_keep_alive=15,
+        backlog=512,
     )
     server = uvicorn.Server(config)
     server.run()
