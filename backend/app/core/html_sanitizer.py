@@ -14,6 +14,9 @@ _ALLOWED_TAGS = frozenset({
     "img",
     "hr", "blockquote", "pre", "code",
     "details", "summary",
+    # Lucide 图标用的 SVG 子集：我们自己生成，只包含静态路径，
+    # 不含 script / foreignObject / href 等危险元素。
+    "svg", "path", "circle", "rect", "line", "polyline", "polygon", "g", "ellipse",
 })
 
 _ALLOWED_ATTRS = frozenset({
@@ -24,10 +27,17 @@ _ALLOWED_ATTRS = frozenset({
     # 变量 pill 标记：富文本里的变量节点用 data-var 存储变量 key，
     # 后端在 substitute 前会还原为 {key}
     "data-var",
+    # SVG 几何与样式属性，nh3 对属性大小写不敏感；这里统一小写
+    "xmlns", "viewbox", "fill", "stroke", "stroke-width",
+    "stroke-linecap", "stroke-linejoin", "fill-rule", "clip-rule",
+    "d", "cx", "cy", "r", "x", "y", "x1", "x2", "y1", "y2",
+    "rx", "ry", "points", "transform",
 })
 
+# SVG 从危险块正则里剔除：我们通过 nh3 白名单严格控制它的子标签和属性，
+# 不会再有 <script>、on* 事件、href=javascript: 等注入面。
 _DANGEROUS_BLOCK_RE = re.compile(
-    r'<\s*(script|iframe|object|embed|form|input|textarea|select|button|link|meta|base|svg|math)\b'
+    r'<\s*(script|iframe|object|embed|form|input|textarea|select|button|link|meta|base|math)\b'
     r'[^>]*>.*?<\s*/\s*\1\s*>',
     re.IGNORECASE | re.DOTALL,
 )

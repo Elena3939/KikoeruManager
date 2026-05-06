@@ -135,10 +135,41 @@ class Task:
         return self._cancelled
     
     def update_progress(self, progress: int, step: str):
-        """更新进度"""
+        """更新进度，同时追加一条 progress_log 条目供邮件 / 详情面板回放。
+
+        之前只更新 current_step，结果邮件里 recent_logs 只能拿到最后一个
+        步骤（"完成"），整个执行链路看不到。这里改为每次 update_progress
+        都写入 task_metadata['progress_log']，限长 60 条防止无限增长。
+        同一句紧邻重复（常见于多次刷新进度）直接跳过，避免大量"解压中"刷屏。
+        """
         self.progress = min(100, max(0, progress))
         self.current_step = step
         logger.info(f"任务 {self.id}: {step} ({progress}%)")
+
+        try:
+            if not isinstance(self.task_metadata, dict):
+                self.task_metadata = dict(self.task_metadata or {})
+            logs = list(self.task_metadata.get("progress_log") or [])
+            text = str(step or "").strip()
+            if not text:
+                return
+            last = logs[-1] if logs else None
+            if isinstance(last, dict):
+                last_text = str(last.get("message") or last.get("text") or "").strip()
+                last_progress = last.get("progress")
+                if last_text == text and last_progress == self.progress:
+                    return
+            logs.append({
+                "ts": datetime.now().strftime("%H:%M:%S"),
+                "progress": self.progress,
+                "message": text,
+                "level": "info",
+            })
+            # 限长 60 条：解压/入库平均 15~20 条，留足余量给重试场景。
+            self.task_metadata["progress_log"] = logs[-60:]
+        except Exception:
+            # 日志写入失败不能影响主流程
+            logger.debug("append progress_log 失败", exc_info=True)
 
     def reset_for_rerun(self, step: str = "等待重新执行"):
         """重置任务运行态，保留任务 ID 原地重跑。"""

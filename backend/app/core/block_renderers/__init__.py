@@ -6,11 +6,13 @@ E1 最小闭环：header_status / summary_card / rich_text / divider / spacer
 输出 email-safe table-based HTML。
 
 移动端兼容性约定（QQ 邮箱 / 网易邮箱 / Outlook Mobile）：
-  - 不使用 <details>/<summary>（移动端 webview 会整段剥离 children）
-  - 不使用内联 <svg>（QQ Mail mobile 会显示为 broken-image，改用 emoji）
   - 不使用 overflow-y:auto + max-height（移动端会折叠容器并隐藏内容）
   - 不使用 linear-gradient 容器背景（部分老版客户端会连同元素一起丢弃）
-  - 桌面 web 端继续保持原有体验，下面的渲染器选择 email-safe 的最大公约数。
+  - 使用内联 Lucide <svg>：QQ 邮箱网页版 / 网易邮箱 / Gmail / Apple Mail 均可
+    正常渲染；少数老版移动客户端会显示为 broken image，属可接受损失。
+  - 使用 <details>/<summary>：现代 webview / Chromium 内核邮箱支持展开折叠；
+    老客户端会把 <details> 当普通 <div> 处理，children 仍会原样展示不丢失。
+    所以"最坏情况下等价于全部展开"，不会丢内容。
 """
 import html as _html
 import logging as _logging
@@ -386,7 +388,8 @@ def render_file_tree(props: dict, payload: dict) -> str:
         dirs.sort(key=lambda n: str(n.get("name") or "").lower())
         files.sort(key=lambda n: str(n.get("path") or n.get("name") or "").lower())
 
-        indent_px = max(0, depth) * 14 + 8
+        # 每多一级深度往右缩 18px，搭配 details 的灰色 dashed 左边框形成层级视觉线。
+        indent_px = max(0, depth) * 18 + 6
         for node in dirs:
             label = str(node.get("name") or node.get("path") or "")
             dir_status = str(node.get("status") or "kept")
@@ -398,28 +401,44 @@ def render_file_tree(props: dict, payload: dict) -> str:
                 if is_muted else "color:#1e293b;"
             )
             folder_color = "#94a3b8" if is_muted else "#f59e0b"
+            # 文件夹图标用 Lucide folder-open SVG；展开标记用 ▸ 文本三角
             folder_icon = (
                 f'<span style="display:inline-block;width:18px;text-align:center;'
-                f'line-height:1;vertical-align:middle;">'
-                f'{_emoji_icon("folder-open", folder_color, 14)}</span>'
+                f'line-height:1;vertical-align:middle;margin-right:4px;">'
+                f'{_lucide_icon("folder-open", folder_color, 15)}</span>'
+            )
+            chevron_icon = (
+                f'<span class="tree-chevron" style="display:inline-block;width:12px;color:#94a3b8;'
+                f'font-size:10px;margin-right:2px;transition:transform .15s;vertical-align:middle;">▸</span>'
             )
             badge_html = _render_badges(node.get("badges") or [])
             size_text = str(node.get("size_text") or "")
-            size_badge = f'<span style="float:right;color:#94a3b8;font-size:12px;font-weight:500;">{_esc(size_text)}</span>' if size_text else ""
+            size_badge = (
+                f'<span style="float:right;color:#94a3b8;font-size:12px;font-weight:500;'
+                f'margin-left:8px;">{_esc(size_text)}</span>'
+                if size_text else ""
+            )
             child_chunks: list[str] = []
             _render_rows(node.get("children") or [], depth + 1, child_chunks, is_muted)
-            # 移动端邮件客户端（QQ Mail / 网易邮箱 mobile）会把 <details>/<summary>
-            # 整段折叠并隐藏 children，导致文件清单整段丢失。这里改成始终展开的
-            # 平铺 div 行，保证 desktop / mobile 渲染一致。
-            out.append(
-                f'<div style="margin:0;padding:0;">'
-                f'<div style="{row_base_style}color:{dir_color};padding-left:{indent_px}px;">'
-                f'{folder_icon}'
-                f'<span style="{tree_name_base}{dir_label_extra}">{_esc(label)}</span>'
-                f'{badge_html}{size_badge}'
-                f'</div>'
+            # `<details open>` 默认展开，用户仍可点击折叠；不支持 details 的老客户端
+            # 会退化成普通 block，children 全部展开显示，行为降级但不丢内容。
+            # summary 的 `list-style:none` 是为 WebKit/Chromium 去掉默认三角。
+            child_wrapper = (
+                f'<div style="padding-left:14px;border-left:1px dashed #d8dee6;'
+                f'margin:2px 0 4px 10px;">'
                 f'{"".join(child_chunks)}'
                 f'</div>'
+            ) if child_chunks else ""
+            out.append(
+                f'<details open style="margin:0;padding:0;">'
+                f'<summary style="{row_base_style}color:{dir_color};padding-left:{indent_px}px;'
+                f'list-style:none;cursor:pointer;outline:none;">'
+                f'{chevron_icon}{folder_icon}'
+                f'<span style="{tree_name_base}{dir_label_extra}font-weight:600;">{_esc(label)}</span>'
+                f'{badge_html}{size_badge}'
+                f'</summary>'
+                f'{child_wrapper}'
+                f'</details>'
             )
 
         for node in files:
@@ -438,13 +457,14 @@ def render_file_tree(props: dict, payload: dict) -> str:
             icon_color = "#94a3b8" if is_muted else (
                 "#2563eb" if label.lower().endswith((".flac", ".wav")) else
                 "#7c3aed" if label.lower().endswith((".mp3", ".m4a", ".ogg", ".aac", ".wma")) else
+                "#22c55e" if label.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif")) else
                 "#64748b" if label.lower().endswith((".txt", ".lrc", ".srt", ".vtt", ".ass", ".ssa", ".cue", ".json", ".md")) else
                 "#94a3b8"
             )
             icon_html = (
                 f'<span style="display:inline-block;width:18px;text-align:center;'
-                f'line-height:1;vertical-align:middle;">'
-                f'{_emoji_icon(_file_tree_icon_name(label), icon_color, 14)}</span>'
+                f'line-height:1;vertical-align:middle;margin-right:4px;">'
+                f'{_lucide_icon(_file_tree_icon_name(label), icon_color, 14)}</span>'
             )
             size_text = str(node.get("size_text") or "")
             size_html = (
