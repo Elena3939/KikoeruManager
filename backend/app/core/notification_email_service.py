@@ -1,13 +1,41 @@
 import asyncio
+import concurrent.futures
 import logging
 import smtplib
 import ssl
+import threading
 import time
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# 专用 SMTP 线程池：和 default ThreadPoolExecutor 完全隔离。
+# 原因：smtplib 是同步阻塞的，卡死时整线程会一直占着不动，
+# 默认池被 FastAPI 同步路由、_write_sync、其他 run_in_executor 共用，
+# 容器里默认池只有 cpu_count+4 ≈ 6-8 槽，SMTP 一旦卡 30 秒就把槽吃光，
+# 表现为整个 API 集体超时（用户描述的"邮箱拖跨整个系统"）。
+# 这里 max_workers=2 给 SMTP 留足并发，但和外界隔离——
+# 即使两个 SMTP 同时卡死，也只是邮件发不出去，其他系统功能不受影响。
+_smtp_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_smtp_executor_lock = threading.Lock()
+
+
+def get_smtp_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """返回专用 SMTP 发送线程池（懒加载单例）。"""
+    global _smtp_executor
+    if _smtp_executor is None:
+        with _smtp_executor_lock:
+            if _smtp_executor is None:
+                _smtp_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=2,
+                    thread_name_prefix="smtp-sender",
+                )
+                logger.info("[通知邮件] 创建专用 SMTP 线程池 max_workers=2")
+    return _smtp_executor
 
 
 def _build_message(from_email: str, from_name: str, to_email: str, subject: str, html_body: str, text_body: str = None) -> MIMEMultipart:
@@ -96,7 +124,7 @@ async def send_notification_email(subject: str, html_body: str, text_body: str =
     loop = asyncio.get_event_loop()
     try:
         await asyncio.wait_for(
-            loop.run_in_executor(None, _send_smtp_sync, cfg, subject, html_body, text_body),
+            loop.run_in_executor(get_smtp_executor(), _send_smtp_sync, cfg, subject, html_body, text_body),
             timeout=cfg.send_timeout_seconds
         )
         return True

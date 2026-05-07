@@ -537,16 +537,29 @@ async def _process_outbox_once() -> None:
         return
 
     logger.info(f"[通知] outbox 准备发送 {len(pending_snapshots)} 封邮件")
-    for snap in pending_snapshots:
+
+    # 有限并发：串行 await 时单封 SMTP 30 秒超时会把整批邮件全部卡住，
+    # 一次性炸出多封通知就会引发用户感知的"接口都不动了"现象。
+    # 用 Semaphore(2) 控制并发数：足以让单封超时不影响其他通道，
+    # 同时保守避免 QQ/163 SMTP 单 IP 限速。
+    send_sem = asyncio.Semaphore(2)
+
+    async def _send_one(snap: dict) -> None:
         item_id = snap['id']
-        try:
-            subject, html_body, text_body = render_email_for_outbox(snap['payload'])
-            ok = await send_notification_email(subject, html_body, text_body)
-            _update_outbox_status(item_id, ok, cfg, error='' if ok else '发送失败')
-            logger.info(f"[通知] outbox 发送结果 id={item_id} ok={ok}")
-        except Exception as e:
-            logger.error(f"[通知] outbox 发送异常 id={item_id}: {e}", exc_info=True)
-            _update_outbox_status(item_id, False, cfg, error=str(e))
+        async with send_sem:
+            try:
+                subject, html_body, text_body = render_email_for_outbox(snap['payload'])
+                ok = await send_notification_email(subject, html_body, text_body)
+                _update_outbox_status(item_id, ok, cfg, error='' if ok else '发送失败')
+                logger.info(f"[通知] outbox 发送结果 id={item_id} ok={ok}")
+            except Exception as e:
+                logger.error(f"[通知] outbox 发送异常 id={item_id}: {e}", exc_info=True)
+                _update_outbox_status(item_id, False, cfg, error=str(e))
+
+    await asyncio.gather(
+        *[_send_one(s) for s in pending_snapshots],
+        return_exceptions=True,
+    )
 
 
 def _update_outbox_status(item_id: str, ok: bool, cfg, error: str = '') -> None:

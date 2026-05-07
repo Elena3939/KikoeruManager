@@ -643,6 +643,21 @@ async def startup_event():
     except Exception:
         logger.warning("[启动] 调整 anyio threadpool 上限失败，沿用默认值", exc_info=True)
 
+    # 抬高 asyncio 默认 ThreadPoolExecutor 上限：
+    # asyncio.to_thread 和 loop.run_in_executor(None, ...) 走这个池——
+    # 和 anyio 那个池是两个独立的池！
+    # 默认大小 = min(32, cpu_count + 4)，Docker 容器里 cpu_count 常常只有 2-4，
+    # 真实槽位只有 6-8 个。一旦多个并发 IO（shutil.move / rmtree、SQLite 写、
+    # task_engine 的清理动作）撞上来，槽就吃光了，新调用得排队。
+    # 这里固定 32 槽，兜底防止再出现"邮件卡死把整个后台 IO 拖跨"那种连锁。
+    try:
+        import concurrent.futures as _cf
+        _default_pool = _cf.ThreadPoolExecutor(max_workers=32, thread_name_prefix="asyncio-default")
+        asyncio.get_event_loop().set_default_executor(_default_pool)
+        logger.info("[启动] asyncio 默认线程池扩容: max_workers=32")
+    except Exception:
+        logger.warning("[启动] 调整 asyncio 默认线程池失败，沿用默认值", exc_info=True)
+
     # 初始化数据库
     init_db()
 
@@ -9427,13 +9442,15 @@ class TestEmailRequest(BaseModel):
 @app.post("/api/notifications/test-email")
 async def test_notification_email(body: TestEmailRequest):
     """测试 SMTP 发送配置"""
-    from ..core.notification_email_service import test_smtp_connection
+    from ..core.notification_email_service import test_smtp_connection, get_smtp_executor
     cfg_dict = body.config or {}
     if not cfg_dict:
         config = get_config()
         cfg_dict = config.notification_email.model_dump()
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, test_smtp_connection, cfg_dict)
+    # 用专用 SMTP 线程池，防止用户点测试按钮时一旦卡住把 default executor 污染掉，
+    # 拖累其他同步路由 / 后台 run_in_executor 调用。
+    result = await loop.run_in_executor(get_smtp_executor(), test_smtp_connection, cfg_dict)
     return result
 
 
@@ -9539,25 +9556,6 @@ mimetypes.add_type("application/javascript", ".mjs")
 mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("application/wasm", ".wasm")
 
-STATIC_MEDIA_TYPES = {
-    ".js": "application/javascript",
-    ".mjs": "application/javascript",
-    ".css": "text/css",
-    ".wasm": "application/wasm",
-}
-
-
-class AppStaticFiles(StaticFiles):
-    def file_response(self, full_path, stat_result, scope, status_code=200):
-        ext = os.path.splitext(full_path)[1].lower()
-        media_type = STATIC_MEDIA_TYPES.get(ext)
-        return FileResponse(
-            full_path,
-            status_code=status_code,
-            stat_result=stat_result,
-            media_type=media_type,
-        )
-
 def get_base_path():
     if getattr(sys, 'frozen', False):
         return sys._MEIPASS
@@ -9593,7 +9591,7 @@ for path in possible_paths:
 # 注册静态文件服务（放在子路径，避免覆盖 API）
 if frontend_build_path:
     # 提供静态资源文件（JS、CSS、图片等）
-    app.mount("/assets", AppStaticFiles(directory=os.path.join(frontend_build_path, "assets")), name="assets")
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_build_path, "assets")), name="assets")
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def serve_favicon():
