@@ -2,9 +2,10 @@ import asyncio
 import uuid
 import os
 import shutil
+import tempfile
 import threading
 from datetime import datetime
-from typing import Optional, Callable, List
+from typing import Any, Callable, Dict, List, Optional
 from enum import Enum
 from pathlib import Path
 import logging
@@ -1354,6 +1355,130 @@ class TaskEngine:
                     logger.info(f"[{rjcode}] 任务已取消")
                     return
 
+                # 步骤1.4: 多作品压缩包检测 —— 当压缩包按「社团/RJ 作品/...」组织时，
+                # 解压根目录里会同时存在多个独立 RJ 子目录。原流程会把整个临时目录
+                # 当作单作品入库，导致只有第一个 RJ 留下、其余 RJ 被吞并。这里在重复
+                # 检查之前先做一次多 RJ 扫描：若发现 >=2 个独立 RJ 顶层目录，把每个
+                # 子目录搬到独立临时位置并派发为 PROCESS_EXISTING_FOLDER 子任务，
+                # 父任务负责归档原压缩包后即标记完成，剩下的元数据/重命名/分类全部
+                # 由各 RJ 自己的子任务独立完成，互不影响。
+                if not bool((task.task_metadata or {}).get('rjcode_lock')):
+                    try:
+                        multi_rj_dirs = self._detect_multi_rj_subfolders(extracted_path)
+                    except Exception:
+                        multi_rj_dirs = []
+                        logger.warning(f"[{rjcode}] 多作品包检测失败，回退到单作品流程", exc_info=True)
+                    if multi_rj_dirs and len(multi_rj_dirs) >= 2:
+                        rj_list = [d.get("rjcode") for d in multi_rj_dirs]
+                        logger.info(
+                            f"[{rjcode}] 检测到压缩包内含 {len(multi_rj_dirs)} 个独立 RJ 作品: {rj_list}"
+                        )
+                        task.update_progress(45, f"检测到 {len(multi_rj_dirs)} 个独立作品，正在拆分子任务")
+                        subtask_ids = await self._dispatch_multi_rj_subtasks(
+                            task, extracted_path, multi_rj_dirs
+                        )
+                        if subtask_ids:
+                            # 派发成功 —— 父任务直接进入归档/完成阶段，不再走单作品的
+                            # 元数据 / 重命名 / 扁平化 / 分类 / 字幕等链路。
+                            task.update_progress(90, f"已拆分为 {len(subtask_ids)} 个独立入库子任务")
+                            if config.auto_process.archive and not task.skip_archive:
+                                try:
+                                    await self._archive_source_file(task)
+                                except Exception:
+                                    logger.warning(
+                                        f"[{rjcode}] 多作品拆分后归档原压缩包失败",
+                                        exc_info=True,
+                                    )
+                            else:
+                                if task.skip_archive:
+                                    logger.info(f"[{rjcode}] 多作品拆分（重新处理模式），跳过归档")
+                                else:
+                                    logger.info(f"[{rjcode}] 多作品拆分，步骤[归档压缩包]已禁用")
+                            task.update_progress(100, f"已拆分为 {len(subtask_ids)} 个独立入库子任务")
+                            task.complete()
+                            try:
+                                from .notification_helper import (
+                                    build_recent_logs,
+                                    set_notification_extra,
+                                )
+                                dispatch_records = list(
+                                    (task.task_metadata or {}).get("multi_rj_dispatch_records") or []
+                                )
+                                dispatch_failures = list(
+                                    (task.task_metadata or {}).get("multi_rj_dispatch_failures") or []
+                                )
+                                rj_list_text = "、".join(
+                                    str(r.get("rjcode") or "?") for r in dispatch_records
+                                )
+                                summary_text = (
+                                    f"压缩包内含 {len(subtask_ids)} 个独立 RJ 作品，"
+                                    f"已自动拆分为独立入库子任务：{rj_list_text}"
+                                )
+                                multi_cards: list[dict] = []
+                                for rec in dispatch_records:
+                                    sub_rj_value = str(rec.get("rjcode") or "").strip().upper()
+                                    sub_id_value = str(rec.get("task_id") or "").strip()
+                                    multi_cards.append({
+                                        "rjcode": sub_rj_value,
+                                        "title": sub_rj_value or "拆分子任务",
+                                        "cover_url": "",
+                                        "circle_name": "",
+                                        "size_text": "",
+                                        "file_count": 0,
+                                        "count_label": "",
+                                        "changes": [{
+                                            "icon": "git-branch",
+                                            "text": f"已派发独立子任务 {sub_id_value[:8]}" if sub_id_value else "已派发独立子任务",
+                                        }],
+                                        "status": "pending",
+                                        "error": "",
+                                    })
+                                # 失败派发的 RJ 也单独成卡，方便邮件里立刻看到
+                                for fail in dispatch_failures:
+                                    multi_cards.append({
+                                        "rjcode": str(fail.get("rjcode") or "").strip().upper(),
+                                        "title": str(fail.get("rjcode") or "派发失败"),
+                                        "cover_url": "",
+                                        "circle_name": "",
+                                        "size_text": "",
+                                        "file_count": 0,
+                                        "count_label": "",
+                                        "changes": [{
+                                            "icon": "x-circle",
+                                            "text": str(fail.get("error") or "派发失败"),
+                                        }],
+                                        "status": "failed",
+                                        "error": str(fail.get("error") or ""),
+                                    })
+                                set_notification_extra(
+                                    task,
+                                    summary=summary_text,
+                                    recent_logs=build_recent_logs(task, max_lines=30),
+                                    rj_work_cards=multi_cards,
+                                    stats={
+                                        "total_files": 0,
+                                        "total_size": "",
+                                        "filtered_count": 0,
+                                        "filtered_size": "",
+                                        "duration": "",
+                                        "multi_rj_subtask_count": len(subtask_ids),
+                                        "multi_rj_dispatch_failed": len(dispatch_failures),
+                                    },
+                                )
+                            except Exception:
+                                logger.warning(
+                                    f"[{rjcode}] 多作品拆分通知 payload 构建失败",
+                                    exc_info=True,
+                                )
+                            logger.info(
+                                f"[{rjcode}] ========== 任务完成（多作品拆分: {len(subtask_ids)} 个子任务） =========="
+                            )
+                            return
+                        else:
+                            logger.warning(
+                                f"[{rjcode}] 多作品包检测命中但未派发任何子任务，回退到单作品流程"
+                            )
+
                 # 步骤1.5: 解压后重复检查（如果预检时无法提取 RJ 号）
                 # 从解压后的文件夹路径提取 RJ 号
                 rjcode_locked = bool((task.task_metadata or {}).get('rjcode_lock'))
@@ -2349,6 +2474,256 @@ class TaskEngine:
             
         return None
 
+    def _detect_multi_rj_subfolders(
+        self,
+        root_path: str,
+        max_scan_depth: int = 4,
+    ) -> List[Dict[str, str]]:
+        """检测解压后临时根目录下是否存在多个独立的 RJ 顶层子作品。
+
+        典型场景：压缩包里是「社团/RJ 作品/...」二级以上结构（按社团分类的合集包）。
+        返回结构 ``[{"rjcode": "RJxxxx", "path": "/abs/path"}, ...]``：
+        - 一旦某层目录被识别为 RJ 作品目录（自身或直接子项含 RJ 号），
+          就把该目录整体当成一个独立 RJ，不再继续向其内部递归。
+        - 同一 RJ 号只保留最浅一层匹配，避免嵌套重复识别。
+        - 仅当返回 >=2 个结果时才视为「多作品包」，调用方再决定是否拆分。
+        - ``max_scan_depth`` 限制扫描层数，防止异常深嵌套时耗时过长。
+        """
+        import re
+
+        try:
+            if not root_path or not os.path.isdir(root_path):
+                return []
+        except Exception:
+            return []
+
+        rj_pattern = re.compile(r'[RVB]J(\d{8}|\d{6})(?!\d)', re.IGNORECASE)
+
+        def _match_rj(name: str) -> Optional[str]:
+            text = str(name or "")
+            if not text:
+                return None
+            match = rj_pattern.search(text)
+            if match:
+                return match.group(0).upper()
+            # 兼容纯数字目录名 / 带前缀，例如 39.RJ01570159、01503161
+            base = re.sub(r'^\d+\.', '', text)
+            num_match = re.match(r'^(\d{8}|\d{6})$', base)
+            if num_match:
+                return f"RJ{num_match.group(1)}"
+            return None
+
+        def _distinct_children_rjs(directory: str, max_children: int = 400) -> set:
+            """该目录直接子项的名字里出现的不同 RJ 集合。
+
+            这里不能像之前那样「找到一个 RJ 就返回」——社团目录下会同时有多个
+            RJ 子作品，那种场景必须能识别出 >=2 个 RJ 才能正确决定向内深入扫描，
+            而不是把整个社团目录错认成单作品的壳。
+            """
+            try:
+                entries = list(os.listdir(directory))[:max_children]
+            except OSError:
+                return set()
+            collected: set = set()
+            for name in entries:
+                rj = _match_rj(name)
+                if rj:
+                    collected.add(rj)
+            return collected
+
+        discovered: Dict[str, Dict[str, str]] = {}
+
+        def _walk(current: str, depth: int) -> None:
+            if depth > max_scan_depth:
+                return
+            try:
+                entries = list(os.scandir(current))
+            except OSError:
+                return
+            for entry in entries:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                name = entry.name
+                # 常见无关目录直接跳过
+                if name.startswith('.') or name.lower() in {"__macosx", "_conflicts", "subtitles"}:
+                    continue
+                child_path = entry.path
+                # 1) 目录名直接含 RJ → 该目录就是 RJ 作品根目录，不再深入
+                rj_in_name = _match_rj(name)
+                if rj_in_name:
+                    if rj_in_name not in discovered:
+                        discovered[rj_in_name] = {
+                            "rjcode": rj_in_name,
+                            "path": os.path.abspath(child_path),
+                            "match_kind": "name",
+                        }
+                    continue
+                # 2) 目录名不含 RJ，看其直接子项里能定位多少个不同 RJ：
+                #    - 恰好 1 个 → 视为单作品壳目录（典型如 [社团][RJxxx]/雪荷風ノ宿/ ）
+                #    - 多于 1 个 → 视为社团 / 合集容器，向内继续深入扫描每个 RJ 子作品
+                #    - 0 个 → 继续深入，期待更深层的 RJ
+                child_rj_set = _distinct_children_rjs(child_path)
+                if len(child_rj_set) == 1:
+                    only_rj = next(iter(child_rj_set))
+                    if only_rj not in discovered:
+                        discovered[only_rj] = {
+                            "rjcode": only_rj,
+                            "path": os.path.abspath(child_path),
+                            "match_kind": "children",
+                        }
+                    continue
+                # 否则继续向下扫描，期待找到更深层的 RJ
+                _walk(child_path, depth + 1)
+
+        _walk(root_path, depth=1)
+
+        results = list(discovered.values())
+        if len(results) < 2:
+            return []
+
+        # 稳定顺序：按路径字符串排序，便于日志和测试可重复
+        results.sort(key=lambda item: item.get("path") or "")
+        return results
+
+    async def _dispatch_multi_rj_subtasks(
+        self,
+        parent_task: Task,
+        extracted_path: str,
+        multi_rj_dirs: List[Dict[str, str]],
+    ) -> List[str]:
+        """把每个 RJ 子目录从父任务的临时根目录搬到独立位置，并创建子任务入队。
+
+        返回成功派发的子任务 ID 列表。任何子目录派发失败都不会中止整体流程，
+        而是写到父任务 metadata 的 ``multi_rj_dispatch_failures`` 中由通知体现。
+        """
+        from ..config.settings import get_config
+
+        config = get_config()
+        try:
+            temp_root = str(getattr(getattr(config, "storage", None), "temp_path", "") or "").strip()
+        except Exception:
+            temp_root = ""
+        if not temp_root or not os.path.isdir(temp_root):
+            # 临时目录不可用就不强行搬运，回退到原流程
+            logger.warning(
+                "[多作品拆分] 任务 %s 临时根目录不可用，跳过拆分: temp_root=%s",
+                parent_task.id, temp_root,
+            )
+            return []
+
+        parent_metadata = dict(parent_task.task_metadata or {})
+        target_library_id = parent_metadata.get("target_library_id")
+        # 父任务的来源标签，给子任务通知用
+        parent_source_label = parent_metadata.get("source_label") or os.path.basename(
+            str(parent_task.source_path or "").rstrip("\\/")
+        )
+
+        subtask_ids: List[str] = []
+        dispatched_records: List[Dict[str, Any]] = []
+        dispatch_failures: List[Dict[str, str]] = []
+
+        for index, entry in enumerate(multi_rj_dirs):
+            sub_rj = str(entry.get("rjcode") or "").strip().upper()
+            sub_src = str(entry.get("path") or "").strip()
+            if not sub_rj or not sub_src or not os.path.isdir(sub_src):
+                dispatch_failures.append({
+                    "rjcode": sub_rj or "未知",
+                    "path": sub_src,
+                    "error": "源目录不存在或无 RJ 号",
+                })
+                continue
+
+            try:
+                # 给每个子任务一个独立的临时容器目录，避免与父任务清理路径冲突
+                holder = await asyncio.to_thread(
+                    tempfile.mkdtemp,
+                    prefix=f"{sub_rj}_subtask_{parent_task.id[:8]}_",
+                    dir=temp_root,
+                )
+                target_path = os.path.join(holder, os.path.basename(sub_src.rstrip("\\/")))
+                # 同步搬运目录（数据较大时阻塞，但已经在线程里）
+                await asyncio.to_thread(shutil.move, sub_src, target_path)
+            except Exception as exc:
+                logger.error(
+                    "[多作品拆分] 移动 RJ 子目录失败: parent=%s rj=%s src=%s err=%s",
+                    parent_task.id, sub_rj, sub_src, exc,
+                )
+                dispatch_failures.append({
+                    "rjcode": sub_rj,
+                    "path": sub_src,
+                    "error": f"移动失败: {exc}",
+                })
+                continue
+
+            # 构造子任务 metadata，复用 PROCESS_EXISTING_FOLDER 流程
+            child_metadata: Dict[str, Any] = {
+                "rjcode": sub_rj,
+                "inferred_rjcode": sub_rj,
+                "rjcode_source": "multi_rj_archive_split",
+                "rjcode_lock": True,  # 锁定 RJ，避免在子任务中再次推断
+                "is_extract_subtask": True,
+                "extract_subtask_temp_holder": holder,
+                "extract_subtask_match_kind": entry.get("match_kind") or "name",
+                "parent_task_id": parent_task.id,
+                "parent_archive_path": parent_task.source_path,
+                "parent_archive_label": parent_source_label,
+                "source_action": "multi_rj_extract_subtask",
+                "source_label": f"{parent_source_label} → {sub_rj}",
+                "source_page": parent_metadata.get("source_page") or "tasks",
+                "queue_priority": parent_metadata.get("queue_priority") or 50,
+            }
+            if target_library_id:
+                child_metadata["target_library_id"] = target_library_id
+
+            child_task = Task(
+                task_type=TaskType.PROCESS_EXISTING_FOLDER,
+                source_path=target_path,
+                auto_classify=parent_task.auto_classify,
+                metadata=child_metadata,
+                rjcode=sub_rj,
+            )
+            try:
+                child_task_id = await self.submit(child_task)
+            except Exception as exc:
+                logger.error(
+                    "[多作品拆分] 子任务入队失败: parent=%s rj=%s err=%s",
+                    parent_task.id, sub_rj, exc,
+                )
+                dispatch_failures.append({
+                    "rjcode": sub_rj,
+                    "path": target_path,
+                    "error": f"子任务入队失败: {exc}",
+                })
+                # 入队失败也别留临时目录残骸
+                try:
+                    await asyncio.to_thread(shutil.rmtree, holder, ignore_errors=True)
+                except Exception:
+                    pass
+                continue
+
+            subtask_ids.append(child_task_id)
+            dispatched_records.append({
+                "rjcode": sub_rj,
+                "task_id": child_task_id,
+                "source_path": target_path,
+                "match_kind": entry.get("match_kind") or "name",
+            })
+            logger.info(
+                "[多作品拆分] 已派发子任务: parent=%s rj=%s task=%s path=%s",
+                parent_task.id, sub_rj, child_task_id[:8], target_path,
+            )
+
+        # 把派发结果写回父任务 metadata，便于通知 / 历史展示
+        parent_task.task_metadata = {
+            **(parent_task.task_metadata or {}),
+            "multi_rj_dispatched": True,
+            "multi_rj_subtask_ids": subtask_ids,
+            "multi_rj_subtask_count": len(subtask_ids),
+            "multi_rj_dispatch_records": dispatched_records,
+            "multi_rj_dispatch_failures": dispatch_failures,
+        }
+        return subtask_ids
+
     async def _cleanup_failed_task(self, task: Task):
         """清理失败任务产生的临时文件"""
         from ..config.settings import get_config
@@ -2359,6 +2734,24 @@ class TaskEngine:
         # 对于 PROCESS_EXISTING_FOLDER 类型，成功完成的任务不需要清理
         # 因为文件夹是直接从已有目录处理的，不是临时文件
         if task.type == TaskType.PROCESS_EXISTING_FOLDER:
+            # 多作品包派发出来的子任务例外：source_path 是父任务从临时目录搬过来的
+            # 容器路径，无论成功失败都必须把对应 holder 清掉，否则会留下临时残骸。
+            metadata = task.task_metadata or {}
+            if metadata.get("is_extract_subtask"):
+                holder = str(metadata.get("extract_subtask_temp_holder") or "").strip()
+                if holder and os.path.isdir(holder):
+                    try:
+                        await asyncio.to_thread(shutil.rmtree, holder, ignore_errors=True)
+                        logger.info(
+                            "[多作品拆分] 清理子任务临时容器: task_id=%s holder=%s",
+                            task.id, holder,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[多作品拆分] 清理子任务临时容器失败: task_id=%s holder=%s",
+                            task.id, holder, exc_info=True,
+                        )
+                return
             if task.status == TaskStatus.COMPLETED:
                 # 成功完成的已有文件夹处理任务，不需要清理任何文件
                 logger.info(f"已有文件夹处理任务成功完成，跳过清理: {task.source_path}")
