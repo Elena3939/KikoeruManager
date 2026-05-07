@@ -9,6 +9,7 @@ import logging
 
 from ..config.settings import get_config
 from ..core.task_engine import Task
+from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,8 @@ class RenameService:
     def __init__(self):
         # 不缓存配置，每次都获取最新配置
         # 因为 save_config 会创建新的 AppConfig 对象
-        self._japanese_metadata_cache = {}  # 缓存日语元数据，避免重复请求
+        # 原裸 dict 每个 RJ 永久驻留；TTL+LRU 限制上限，避免长期运行下内存持续增长
+        self._japanese_metadata_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=86400, name="rename.jp_metadata")
 
     @property
     def config(self):

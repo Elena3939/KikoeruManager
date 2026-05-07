@@ -2197,7 +2197,10 @@ async def get_conflicts(include_stats: bool = False):
             ConflictWork.status.in_(["PENDING", "PROCESSING"]),
             ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
         ).all()
-        conflict_items = []
+
+        # ---- 第一阶段：串行处理 DB 写入（状态恢复）和纯计算字段 ----
+        # SQLAlchemy session 不能并发使用，所以这一段保持串行。
+        per_conflict_actions: list[list[str]] = []
         for conflict in conflicts:
             try:
                 conflict.new_metadata = _normalize_conflict_metadata(conflict.new_metadata)
@@ -2225,7 +2228,7 @@ async def get_conflicts(include_stats: bool = False):
                 conflict.new_metadata = _normalize_conflict_metadata(getattr(conflict, "new_metadata", None))
 
             try:
-                available_actions = resolution_service.get_available_actions(conflict)
+                actions = resolution_service.get_available_actions(conflict)
             except Exception as exc:
                 logger.error(
                     "计算问题作品可用操作失败 conflict_id=%s error=%s",
@@ -2233,38 +2236,55 @@ async def get_conflicts(include_stats: bool = False):
                     exc,
                     exc_info=True,
                 )
-                available_actions = ["SKIP"]
+                actions = ["SKIP"]
+            per_conflict_actions.append(actions)
 
-            try:
-                context = await resolution_service.describe_conflict_async(conflict, include_stats=include_stats)
-            except Exception as exc:
-                logger.error(
-                    "构建问题作品上下文失败 conflict_id=%s error=%s",
-                    getattr(conflict, "id", None),
-                    exc,
-                    exc_info=True,
-                )
-                context = {
-                    "existing": {
-                        "library_id": None,
-                        "library_type": "local",
-                        "library_name": "",
-                        "path": str(conflict.existing_path or "").strip(),
-                        "is_remote": False,
-                        "stats": None,
-                    },
-                    "source": {
-                        "library_id": None,
-                        "library_type": "local",
-                        "library_name": "",
-                        "path": str(conflict.new_path or "").strip(),
-                        "is_remote": False,
-                        "stats": None,
-                    },
-                    "new_path_kind": "archive" if os.path.isfile(str(conflict.new_path or "")) else "folder",
-                    "metadata": _normalize_conflict_metadata(conflict.new_metadata),
-                    "context_error": str(exc),
-                }
+        # ---- 第二阶段：并行计算 conflict 上下文（远程 stat 是 IO 密集，并发能显著降低串行延迟） ----
+        # 用信号量限制群晖并发，避免对 NAS 造成压力或触发限流。
+        gather_semaphore = asyncio.Semaphore(8)
+
+        async def _build_context(conflict_obj):
+            async with gather_semaphore:
+                try:
+                    return await resolution_service.describe_conflict_async(
+                        conflict_obj, include_stats=include_stats,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "构建问题作品上下文失败 conflict_id=%s error=%s",
+                        getattr(conflict_obj, "id", None),
+                        exc,
+                        exc_info=True,
+                    )
+                    return {
+                        "existing": {
+                            "library_id": None,
+                            "library_type": "local",
+                            "library_name": "",
+                            "path": str(conflict_obj.existing_path or "").strip(),
+                            "is_remote": False,
+                            "stats": None,
+                        },
+                        "source": {
+                            "library_id": None,
+                            "library_type": "local",
+                            "library_name": "",
+                            "path": str(conflict_obj.new_path or "").strip(),
+                            "is_remote": False,
+                            "stats": None,
+                        },
+                        "new_path_kind": "archive" if os.path.isfile(str(conflict_obj.new_path or "")) else "folder",
+                        "metadata": _normalize_conflict_metadata(conflict_obj.new_metadata),
+                        "context_error": str(exc),
+                    }
+
+        contexts = await asyncio.gather(*(_build_context(c) for c in conflicts)) if conflicts else []
+
+        # ---- 第三阶段：装配响应 ----
+        conflict_items = []
+        for index, conflict in enumerate(conflicts):
+            available_actions = per_conflict_actions[index]
+            context = contexts[index]
 
             linked_task_info = None
             linked_task_id = str(
@@ -3393,6 +3413,33 @@ async def get_library_browser_folder_contents(request: Request):
         raise HTTPException(status_code=_synology_http_status(e), detail=f"获取库存文件夹内容失败: {str(e)}")
 
 
+class LibraryListSubdirectoriesRequest(BaseModel):
+    """列出库存路径下一级子目录请求"""
+    library_id: str
+    path: Optional[str] = ""
+
+
+@app.post("/api/library/list-subdirectories")
+async def list_library_subdirectories(request: LibraryListSubdirectoriesRequest):
+    """列出指定库存路径下一级子目录（不递归）。"""
+    if not str(request.library_id or "").strip():
+        raise HTTPException(status_code=400, detail="缺少 library_id")
+    try:
+        manager = get_library_manager()
+        return await manager.list_first_level_directories(request.library_id, request.path)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        _log_synology_err(f"列子目录失败: {e}", e)
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"列子目录失败: {str(e)}")
+
+
 @app.post("/api/library/browser/mojibake-preview")
 async def get_library_browser_mojibake_preview(request: Request):
     try:
@@ -3855,6 +3902,78 @@ async def batch_delete_library_browser_items(request: Request):
         except Exception:
             logger.debug("[操作记录] 库存批量删除异常记录失败", exc_info=True)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"库存批量删除失败: {str(e)}")
+
+
+class LibraryBrowserListFoldersRequest(BaseModel):
+    """轻量目录浏览请求（仅本地库，仅返回子目录，不计算 size）。"""
+    library_id: str
+    path: Optional[str] = ""
+
+
+@app.post("/api/library/browser/list-folders")
+async def list_library_browser_folders(request: LibraryBrowserListFoldersRequest):
+    """供"移动到..."对话框使用：只列出指定路径下的一级子目录，不算 size、不递归。"""
+    if not str(request.library_id or "").strip():
+        raise HTTPException(status_code=400, detail="缺少 library_id")
+    try:
+        manager = get_library_manager()
+        return await manager.list_local_folders_only(request.library_id, request.path or None)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log_synology_err(f"列出本地子目录失败: {e}", e)
+        raise HTTPException(status_code=500, detail=f"列出本地子目录失败: {str(e)}")
+
+
+class LibraryBrowserMoveRequest(BaseModel):
+    """本地库批量移动请求（源/目标都必须是本地库）。"""
+    source_library_id: str
+    target_library_id: str
+    paths: list[str]
+    target_path: Optional[str] = ""
+    conflict_strategy: Optional[str] = "suffix"  # suffix / overwrite / skip
+    overwrite: bool = False  # 兼容旧字段
+
+
+@app.post("/api/library/browser/move")
+async def move_library_browser_items(request: LibraryBrowserMoveRequest):
+    if not request.paths:
+        raise HTTPException(status_code=400, detail="待移动项不能为空")
+    if not str(request.source_library_id or "").strip():
+        raise HTTPException(status_code=400, detail="缺少源库存")
+    if not str(request.target_library_id or "").strip():
+        raise HTTPException(status_code=400, detail="缺少目标库存")
+    try:
+        manager = get_library_manager()
+        return await manager.move_local_items(
+            source_library_id=request.source_library_id,
+            target_library_id=request.target_library_id,
+            paths=list(request.paths or []),
+            target_path=request.target_path or None,
+            conflict_strategy=str(request.conflict_strategy or "suffix"),
+            overwrite=bool(request.overwrite),
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log_synology_err(f"库存批量移动失败: {e}", e)
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"库存批量移动失败: {str(e)}")
 
 
 @app.post("/api/library/browser/open-folder")
@@ -7560,6 +7679,12 @@ class ASMRReimportLocalDownloadRequest(BaseModel):
     target_subdir: str = ""
 
 
+class ASMRSyncLocateRJRequest(BaseModel):
+    """跨库存按 RJ 号定位作品文件夹请求"""
+    rjcodes: List[str]
+    library_ids: Optional[List[str]] = None
+
+
 _circle_completion_refresh_history: dict[str, deque[float]] = defaultdict(deque)
 
 
@@ -7845,32 +7970,39 @@ async def asmr_sync_enhanced_start(request: ASMRSyncEnhancedStartRequest):
         if not selected_resources:
             raise HTTPException(status_code=400, detail=f"{rjcode} 没有选中任何资源")
 
+        raw_postprocess_options = dict(item.get("postprocess_options") or {})
+        raw_download_base_path = str(item.get("download_base_path") or "").strip()
+        task_metadata = {
+            "rjcode": rjcode,
+            "work_title": str(item.get("work_title") or ""),
+            "cover_url": str(item.get("cover_url") or item.get("image_url") or item.get("mainCoverUrl") or ""),
+            "folder_path": str(item.get("folder_path") or ""),
+            "download_mode": "enhanced",
+            "session_id": session_id,
+            "selected_resources": selected_resources,
+            "selected_resource_count": len(selected_resources),
+            "upload_options": dict(item.get("upload_options") or {}),
+            "verify_md5_after_download": bool(item.get("verify_md5_after_download", True)),
+            "download_timeout_seconds": int(item.get("download_timeout_seconds") or 0),
+            "priority": int(item.get("queue_priority") or item.get("priority") or 100),
+            "queue_priority": int(item.get("queue_priority") or item.get("priority") or 100),
+            "verify_summary": {},
+            "upload_summary": {},
+            "retry_summary": {},
+            "resource_filter_snapshot": dict(item.get("resource_filter_snapshot") or {}),
+            "source_page": "asmr-sync",
+            "source_action": "enhanced_download",
+            "source_label": str(item.get("work_title") or rjcode),
+        }
+        if raw_postprocess_options:
+            task_metadata["postprocess_options"] = raw_postprocess_options
+        if raw_download_base_path:
+            task_metadata["download_base_path"] = raw_download_base_path
         task = Task(
             task_type=TaskType.ASMR_SYNC_DOWNLOAD,
             source_path=str(item.get("folder_path") or rjcode),
             auto_classify=bool(request.auto_classify),
-            metadata={
-                "rjcode": rjcode,
-                "work_title": str(item.get("work_title") or ""),
-                "cover_url": str(item.get("cover_url") or item.get("image_url") or item.get("mainCoverUrl") or ""),
-                "folder_path": str(item.get("folder_path") or ""),
-                "download_mode": "enhanced",
-                "session_id": session_id,
-                "selected_resources": selected_resources,
-                "selected_resource_count": len(selected_resources),
-                "upload_options": dict(item.get("upload_options") or {}),
-                "verify_md5_after_download": bool(item.get("verify_md5_after_download", True)),
-                "download_timeout_seconds": int(item.get("download_timeout_seconds") or 0),
-                "priority": int(item.get("queue_priority") or item.get("priority") or 100),
-                "queue_priority": int(item.get("queue_priority") or item.get("priority") or 100),
-                "verify_summary": {},
-                "upload_summary": {},
-                "retry_summary": {},
-                "resource_filter_snapshot": dict(item.get("resource_filter_snapshot") or {}),
-                "source_page": "asmr-sync",
-                "source_action": "enhanced_download",
-                "source_label": str(item.get("work_title") or rjcode),
-            }
+            metadata=task_metadata,
         )
         await engine.submit(task)
         service._update_session(
@@ -7899,6 +8031,54 @@ async def asmr_sync_enhanced_start(request: ASMRSyncEnhancedStartRequest):
         "message": f"已创建 {len(created_tasks)} 个增强下载任务",
         "tasks": created_tasks,
     }
+
+
+_LOCATE_RJ_CONCURRENCY = 4
+_locate_rj_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_locate_rj_semaphore() -> asyncio.Semaphore:
+    global _locate_rj_semaphore
+    if _locate_rj_semaphore is None:
+        _locate_rj_semaphore = asyncio.Semaphore(_LOCATE_RJ_CONCURRENCY)
+    return _locate_rj_semaphore
+
+
+@app.post("/api/asmr-sync/enhanced/locate-rj")
+async def asmr_sync_enhanced_locate_rj(request: ASMRSyncLocateRJRequest):
+    """跨库存按 RJ 号定位作品文件夹（用于"直放已有路径"模式）。
+
+    多个 RJ 用 asyncio.gather 并发，但加全局信号量限流，避免对群晖 / NAS
+    打出过多并发请求；本地搜索靠 LibraryManager 内部的结果 TTL 缓存复用。
+    """
+    from ..core.library_manager import get_library_manager
+
+    manager = get_library_manager()
+    rjcodes_norm: list[str] = []
+    seen: set[str] = set()
+    for raw in request.rjcodes or []:
+        normalized = str(raw or "").strip().upper()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        rjcodes_norm.append(normalized)
+    if not rjcodes_norm:
+        return {"success": True, "results": []}
+
+    library_ids = list(request.library_ids) if request.library_ids else None
+    semaphore = _get_locate_rj_semaphore()
+
+    async def _locate_one(rj: str) -> dict[str, Any]:
+        async with semaphore:
+            try:
+                matches = await manager.find_rj_in_libraries(rj, library_ids=library_ids)
+            except Exception as exc:
+                logger.warning("locate-rj 失败: rj=%s err=%s", rj, exc, exc_info=True)
+                matches = []
+            return {"rjcode": rj, "matches": matches}
+
+    results = await asyncio.gather(*[_locate_one(rj) for rj in rjcodes_norm])
+    return {"success": True, "results": list(results)}
 
 
 @app.get("/api/asmr-sync/enhanced/dashboard")

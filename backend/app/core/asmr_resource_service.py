@@ -2484,6 +2484,21 @@ class ASMRResourceService:
                 task.output_path = final_output_path
                 task.task_metadata["final_output_path"] = final_output_path
                 self._append_task_log(task, f"已入库到: {final_output_path}")
+            elif (
+                upload_options.get("enabled")
+                and upload_options.get("target_path")
+                and uploaded_files
+                and len(uploaded_files) == len(success_files)
+                and not failed_files
+            ):
+                # 模式 B：直放已有路径 / 即时上传到指定 target_path，无后处理归类
+                final_output_path = str(upload_options.get("target_path") or "").strip()
+                task.output_path = final_output_path
+                task.task_metadata["final_output_path"] = final_output_path
+                self._finalize_upload_runtime(task, "completed")
+                if os.path.isdir(download_root):
+                    await asyncio.to_thread(shutil.rmtree, download_root, True)
+                self._append_task_log(task, f"已上传到: {final_output_path}")
 
             final_status = "partial_failed" if failed_files or verification_failures else "completed"
             target_owned_library_id = str(

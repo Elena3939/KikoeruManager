@@ -52,112 +52,217 @@
 
       <div class="content-grid flex-1 flex gap-6 px-8 py-2 min-h-0">
         <div class="left-column w-[380px] flex flex-col gap-6">
+          <div v-if="enableDirectMode" class="mode-switch flex items-center gap-1 p-1 rounded-xl bg-white/55 border border-slate-200/70">
+            <button
+              type="button"
+              class="mode-tab flex-1 h-8 px-3 rounded-lg text-sm font-medium transition-all"
+              :class="settings.mode === 'classify' ? 'mode-tab-active' : 'mode-tab-idle'"
+              @click="setMode('classify')"
+            >入库归类</button>
+            <button
+              type="button"
+              class="mode-tab flex-1 h-8 px-3 rounded-lg text-sm font-medium transition-all"
+              :class="settings.mode === 'direct' ? 'mode-tab-active' : 'mode-tab-idle'"
+              @click="setMode('direct')"
+            >直放已有路径</button>
+          </div>
+
           <section ref="selectRoot" class="glass-panel glass-card settings-card flex-1 rounded-2xl p-6 overflow-y-auto no-scrollbar">
-            <div class="space-y-6">
+            <div v-if="!enableDirectMode || settings.mode === 'classify'" class="space-y-6">
               <section class="space-y-4">
                 <div class="section-head space-y-1">
-              <h2>落地设置</h2>
-              <p>在地的设置，请置下临时下载的文件，并根据需要调整保存位置。</p>
+                  <h2>落地设置</h2>
+                  <p>先下载到临时目录，下载完成后入库到目标库存内。</p>
                 </div>
 
-            <div class="field-group space-y-2">
-              <label>下载临时目录</label>
-              <input v-model="settings.downloadBasePath" type="text" class="field-input h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-sm text-slate-800 outline-none" placeholder="默认临时路径" />
-            </div>
+                <div class="field-group space-y-2">
+                  <label>下载临时目录</label>
+                  <input v-model="settings.downloadBasePath" type="text" class="field-input h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-sm text-slate-800 outline-none" placeholder="留空使用默认临时路径" />
+                </div>
 
-            <div class="select-grid grid grid-cols-2 gap-4">
-              <div class="field-group space-y-2">
-                <label>目标库存</label>
-                <div class="select-wrap relative">
-                  <button type="button" class="interactive-field field-input select-button flex h-9 w-full items-center justify-between rounded-lg border border-slate-200/70 bg-white/55 py-2 pr-2 pl-2.5 text-sm text-slate-800" @click.stop="toggleSelectMenu('inventory')">
-                    <span class="line-clamp-1 text-left">{{ inventoryLabel }}</span>
-                    <ChevronDown :size="18" class="select-arrow size-4 text-slate-400" />
-                  </button>
+                <div class="select-grid grid grid-cols-2 gap-4">
+                  <div class="field-group space-y-2">
+                    <label>目标库存</label>
+                    <div class="select-wrap relative">
+                      <button type="button" class="interactive-field field-input select-button flex h-9 w-full items-center justify-between rounded-lg border border-slate-200/70 bg-white/55 py-2 pr-2 pl-2.5 text-sm text-slate-800" @click.stop="toggleSelectMenu('inventory')">
+                        <span class="line-clamp-1 text-left" :class="settings.targetLibraryId ? 'text-slate-800' : 'text-slate-400'">{{ inventoryLabel }}</span>
+                        <ChevronDown :size="18" class="select-arrow size-4 text-slate-400" />
+                      </button>
 
-                  <div v-if="openSelect === 'inventory'" class="dropdown-panel dropdown-menu absolute z-50 mt-1 w-full min-w-36 origin-top rounded-lg bg-white/88 border border-white/80 text-slate-800 shadow-lg ring-1 ring-slate-200/80 p-1">
-                    <button
-                      v-for="option in targetLibraries"
-                      :key="option.id"
-                      type="button"
-                      class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors hover:bg-slate-100/80"
-                      @click.stop="chooseOption('inventory', option.id)"
-                    >
-                      <span class="truncate">{{ option.name }}</span>
-                      <span v-if="settings.targetLibraryId === option.id" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
-                        <Check :size="16" />
-                      </span>
-                    </button>
+                      <div v-if="openSelect === 'inventory'" class="dropdown-panel dropdown-menu absolute z-50 mt-1 w-full min-w-36 origin-top rounded-lg bg-white/88 border border-white/80 text-slate-800 shadow-lg ring-1 ring-slate-200/80 p-1">
+                        <button
+                          v-for="option in targetLibraries"
+                          :key="option.id"
+                          type="button"
+                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors hover:bg-slate-100/80"
+                          @click.stop="chooseOption('inventory', option.id)"
+                        >
+                          <span class="truncate">{{ option.name }}</span>
+                          <span v-if="settings.targetLibraryId === option.id" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                            <Check :size="16" />
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="field-group space-y-2">
+                    <label>库存内前缀目录</label>
+                    <div class="select-wrap relative">
+                      <button type="button" class="interactive-field field-input select-button flex h-9 w-full items-center justify-between rounded-lg border border-slate-200/70 bg-white/55 py-2 pr-2 pl-2.5 text-sm text-slate-800" @click.stop="toggleSelectMenu('prefix')">
+                        <span class="line-clamp-1 text-left" :class="settings.targetSubdir ? 'text-slate-800' : 'text-slate-400'">{{ prefixLabel || '按社团名自动归类' }}</span>
+                        <ChevronDown :size="18" class="select-arrow size-4 text-slate-400" />
+                      </button>
+
+                      <div v-if="openSelect === 'prefix'" class="dropdown-panel dropdown-menu absolute z-50 mt-1 w-full min-w-36 origin-top rounded-lg bg-white/88 border border-white/80 text-slate-800 shadow-lg ring-1 ring-slate-200/80 p-1">
+                        <button
+                          type="button"
+                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors hover:bg-slate-100/80"
+                          @click.stop="chooseOption('prefix', '')"
+                        >
+                          <span class="truncate">按社团名自动归类</span>
+                          <span v-if="settings.targetSubdir === ''" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                            <Check :size="16" />
+                          </span>
+                        </button>
+                        <button
+                          v-for="option in targetSubdirOptions"
+                          :key="option"
+                          type="button"
+                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors hover:bg-slate-100/80"
+                          @click.stop="chooseOption('prefix', option)"
+                        >
+                          <span class="truncate">{{ option }}</span>
+                          <span v-if="settings.targetSubdir === option" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                            <Check :size="16" />
+                          </span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-
-              <div class="field-group space-y-2">
-                <label>库存内前缀目录</label>
-                <div class="select-wrap relative">
-                  <button type="button" class="interactive-field field-input select-button flex h-9 w-full items-center justify-between rounded-lg border border-slate-200/70 bg-white/55 py-2 pr-2 pl-2.5 text-sm text-slate-800" @click.stop="toggleSelectMenu('prefix')">
-                    <span class="line-clamp-1 text-left" :class="settings.targetSubdir ? 'text-slate-800' : 'text-slate-400'">{{ prefixLabel || '按社团名自动归类' }}</span>
-                    <ChevronDown :size="18" class="select-arrow size-4 text-slate-400" />
-                  </button>
-
-                  <div v-if="openSelect === 'prefix'" class="dropdown-panel dropdown-menu absolute z-50 mt-1 w-full min-w-36 origin-top rounded-lg bg-white/88 border border-white/80 text-slate-800 shadow-lg ring-1 ring-slate-200/80 p-1">
-                    <button
-                      type="button"
-                      class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors hover:bg-slate-100/80"
-                      @click.stop="chooseOption('prefix', '')"
-                    >
-                      <span class="truncate">按社团名自动归类</span>
-                      <span v-if="settings.targetSubdir === ''" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
-                        <Check :size="16" />
-                      </span>
-                    </button>
-                    <button
-                      v-for="option in targetSubdirOptions"
-                      :key="option"
-                      type="button"
-                      class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors hover:bg-slate-100/80"
-                      @click.stop="chooseOption('prefix', option)"
-                    >
-                      <span class="truncate">{{ option }}</span>
-                      <span v-if="settings.targetSubdir === option" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
-                        <Check :size="16" />
-                      </span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
               </section>
 
               <section class="space-y-4">
                 <div class="section-head compact-head">
-              <h2>最终行为</h2>
+                  <h2>最终行为</h2>
+                  <p>下载完成后如何重命名 / 归类文件夹。</p>
                 </div>
 
-            <div class="action-buttons grid grid-cols-2 gap-3">
-              <button 
-                type="button" 
-                class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700" 
-                :class="{'active': settings.classifyMode === 'circle'}"
-                @click="settings.classifyMode = settings.classifyMode === 'circle' ? '' : 'circle'"
-              >
-                直接按社团名入库
-              </button>
-              <button 
-                type="button" 
-                class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
-                :class="{'active': settings.namingMode === 'api'}"
-                @click="settings.namingMode = settings.namingMode === 'api' ? '' : 'api'"
-              >
-                API 命名后的文件
-              </button>
+                <div class="action-buttons grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                    :class="{'active': settings.classifyMode === 'circle'}"
+                    @click="settings.classifyMode = settings.classifyMode === 'circle' ? '' : 'circle'"
+                  >
+                    按社团自动归类
+                  </button>
+                  <button
+                    type="button"
+                    class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                    :class="{'active': settings.namingMode === 'api'}"
+                    @click="settings.namingMode = settings.namingMode === 'api' ? '' : 'api'"
+                  >
+                    API 命名作品目录
+                  </button>
+                </div>
+
+                <div class="space-y-1">
+                  <p class="target-path text-xs text-slate-500 leading-relaxed">
+                    入库路径: <span class="text-slate-700 break-all">{{ resolvedTargetRoot || '-' }}</span>
+                    <span class="text-slate-400"> / {作品目录}</span>
+                  </p>
+                </div>
+              </section>
             </div>
 
-            <div class="space-y-1">
-              <p class="target-path text-xs text-slate-500 leading-relaxed">
-                入库路径: <span class="text-slate-700 break-all">{{ resolvedTargetRoot || '-' }}</span>
-                <span class="text-slate-400"> / {作品目录}</span>
-              </p>
-            </div>
+            <div v-else class="space-y-6">
+              <section class="space-y-3">
+                <div class="section-head space-y-1">
+                  <h2>直放已有路径</h2>
+                  <p>从已有库存定位本作品目录，直接把所选文件放进去。</p>
+                </div>
+
+                <div v-if="directLoading" class="text-xs text-slate-500">正在跨库存定位 RJ 路径…</div>
+
+                <div v-else-if="directRJOptions.length === 0" class="rounded-xl border border-amber-200 bg-amber-50/80 p-3 text-xs text-amber-700 leading-relaxed">
+                  没有从已有库存里找到匹配的 RJ 文件夹。请使用「入库归类」模式，或先在库存里建立目录。
+                </div>
+
+                <template v-else>
+                  <div class="field-group space-y-2">
+                    <label>选择 RJ 路径</label>
+                    <div class="select-wrap relative">
+                      <button type="button" class="interactive-field field-input select-button flex h-9 w-full items-center justify-between rounded-lg border border-slate-200/70 bg-white/55 py-2 pr-2 pl-2.5 text-sm text-slate-800" @click.stop="toggleSelectMenu('directPath')">
+                        <span class="line-clamp-1 text-left" :class="selectedDirectPathLabel === '请选择' ? 'text-slate-400' : 'text-slate-800'">{{ selectedDirectPathLabel }}</span>
+                        <ChevronDown :size="18" class="select-arrow size-4 text-slate-400" />
+                      </button>
+
+                      <div v-if="openSelect === 'directPath'" class="dropdown-panel dropdown-menu absolute z-50 mt-1 w-full origin-top rounded-lg bg-white/88 border border-white/80 text-slate-800 shadow-lg ring-1 ring-slate-200/80 p-1 max-h-64 overflow-y-auto">
+                        <template v-for="option in directRJOptions" :key="option.key">
+                          <button
+                            type="button"
+                            class="dropdown-item flex w-full items-center rounded-md py-1.5 pr-8 pl-2 text-sm transition-colors hover:bg-slate-100/80 relative"
+                            @click.stop="chooseDirectPath(option)"
+                          >
+                            <div class="flex flex-col items-start min-w-0 w-full text-left">
+                              <span class="truncate font-medium text-slate-800">{{ option.rjcode }} · {{ option.libraryName }}</span>
+                              <span class="truncate text-[11px] text-slate-500">{{ option.path }}</span>
+                            </div>
+                            <span v-if="isDirectPathSelected(option)" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                              <Check :size="16" />
+                            </span>
+                          </button>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="field-group space-y-2">
+                    <label>目标子目录（可空 = RJ 根目录）</label>
+                    <div class="select-wrap relative">
+                      <button type="button" class="interactive-field field-input select-button flex h-9 w-full items-center justify-between rounded-lg border border-slate-200/70 bg-white/55 py-2 pr-2 pl-2.5 text-sm text-slate-800" :disabled="!hasDirectSelection" @click.stop="hasDirectSelection && toggleSelectMenu('directSub')">
+                        <span class="line-clamp-1 text-left" :class="settings.directSubPath ? 'text-slate-800' : 'text-slate-400'">{{ settings.directSubPath || (hasDirectSelection ? '放在 RJ 根目录' : '先选 RJ 路径') }}</span>
+                        <ChevronDown :size="18" class="select-arrow size-4 text-slate-400" />
+                      </button>
+
+                      <div v-if="openSelect === 'directSub'" class="dropdown-panel dropdown-menu absolute z-50 mt-1 w-full origin-top rounded-lg bg-white/88 border border-white/80 text-slate-800 shadow-lg ring-1 ring-slate-200/80 p-1 max-h-64 overflow-y-auto">
+                        <button
+                          type="button"
+                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-2 text-sm transition-colors hover:bg-slate-100/80"
+                          @click.stop="chooseDirectSubdir('')"
+                        >
+                          <span class="truncate">放在 RJ 根目录</span>
+                          <span v-if="!settings.directSubPath" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                            <Check :size="16" />
+                          </span>
+                        </button>
+                        <button
+                          v-for="sub in directSubdirOptions"
+                          :key="sub.path || sub.name"
+                          type="button"
+                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-2 text-sm transition-colors hover:bg-slate-100/80"
+                          @click.stop="chooseDirectSubdir(sub.name)"
+                        >
+                          <span class="truncate">{{ sub.name }}</span>
+                          <span v-if="settings.directSubPath === sub.name" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                            <Check :size="16" />
+                          </span>
+                        </button>
+                        <div v-if="directSubdirLoading" class="px-2 py-1.5 text-[11px] text-slate-500">加载子目录…</div>
+                        <div v-else-if="!directSubdirOptions.length" class="px-2 py-1.5 text-[11px] text-slate-400">RJ 路径下无子目录</div>
+                      </div>
+                    </div>
+                    <input v-model="settings.directSubPath" type="text" class="field-input h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-sm text-slate-800 outline-none" placeholder="或手动输入相对路径" />
+                  </div>
+
+                  <div class="space-y-1">
+                    <p class="target-path text-xs text-slate-500 leading-relaxed">
+                      最终路径: <span class="text-slate-700 break-all">{{ resolvedDirectFinalPath || '-' }}</span>
+                    </p>
+                  </div>
+                </template>
               </section>
             </div>
           </section>
@@ -251,7 +356,7 @@
         <div class="summary text-sm text-slate-500 font-medium"><span class="summary-strong text-slate-900">{{ selectedFileCount }}</span> 已选，共 <span class="summary-strong text-slate-900">{{ formatSize(selectedTotalBytes) }}</span></div>
 
         <div class="footer-actions flex items-center gap-3">
-          <button type="button" class="primary-cta px-10 h-11 rounded-xl font-bold text-white" :disabled="selectedFileCount === 0 || starting || (requiresTargetLibrary && !props.settings.targetLibraryId)" @click="emitSubmit">
+          <button type="button" class="primary-cta px-10 h-11 rounded-xl font-bold text-white" :disabled="primaryActionDisabled" @click="emitSubmit">
             <span v-if="starting" class="inline-flex items-center"><AppLoadingAnimation variant="inline" :size="30" class="mr-1" />处理中</span>
             <span v-else>{{ primaryActionLabel }}</span>
           </button>
@@ -275,7 +380,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
-import { configApi } from '../../api'
+import { configApi, libraryApi } from '../../api'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -286,7 +391,10 @@ const props = defineProps({
   libraries: { type: Array, default: () => [] },
   targetSubdirOptions: { type: Array, default: () => [] },
   settings: { type: Object, required: true },
-  circleName: { type: String, default: '' }
+  circleName: { type: String, default: '' },
+  enableDirectMode: { type: Boolean, default: false },
+  existingPaths: { type: Object, default: () => ({}) },
+  directLoading: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['submit', 'update:visible'])
@@ -356,7 +464,20 @@ const prefixLabel = computed(() => {
   return props.settings.targetSubdir || ''
 })
 const requiresTargetLibrary = computed(() => props.actionMode === 'reimport')
-const primaryActionLabel = computed(() => props.actionMode === 'reimport' ? '跳过下载直接入库' : '下载')
+const primaryActionLabel = computed(() => {
+  if (props.actionMode === 'reimport') return '跳过下载直接入库'
+  if (props.enableDirectMode && props.settings?.mode === 'direct') return '直接下载到选中的库存路径'
+  return '下载'
+})
+const primaryActionDisabled = computed(() => {
+  if (props.starting) return true
+  if (selectedFileCount.value === 0) return true
+  if (requiresTargetLibrary.value && !props.settings?.targetLibraryId) return true
+  if (props.enableDirectMode && props.settings?.mode === 'direct') {
+    return !props.settings?.directLibraryId || !props.settings?.directBasePath
+  }
+  return false
+})
 
 const openSelect = ref(null)
 const selectRoot = ref(null)
@@ -374,6 +495,133 @@ function chooseOption(menu, value) {
   openSelect.value = null
 }
 
+function setMode(mode) {
+  props.settings.mode = mode
+  openSelect.value = null
+}
+
+const directSubdirOptions = ref([])
+const directSubdirLoading = ref(false)
+const directSubdirCache = new Map()
+
+const directRJOptions = computed(() => {
+  if (!props.enableDirectMode) return []
+  const planRjset = new Set((props.plans || []).map(plan => String(plan?.rjcode || '').toUpperCase()).filter(Boolean))
+  const options = []
+  Object.entries(props.existingPaths || {}).forEach(([rjcode, info]) => {
+    const upperRj = String(rjcode || '').toUpperCase()
+    if (!upperRj || (planRjset.size > 0 && !planRjset.has(upperRj))) return
+    const matches = (info && Array.isArray(info.matches)) ? info.matches : []
+    matches.forEach(match => {
+      const path = String(match?.path || '').trim()
+      if (!path) return
+      options.push({
+        key: `${upperRj}::${match.library_id}::${path}`,
+        rjcode: upperRj,
+        libraryId: String(match.library_id || ''),
+        libraryName: String(match.library_name || match.library_id || ''),
+        libraryType: String(match.library_type || 'local'),
+        libraryRootPath: String(match.library_root_path || ''),
+        path,
+        name: String(match.name || ''),
+        size: match.size
+      })
+    })
+  })
+  return options
+})
+
+const directSelectionMap = computed(() => {
+  const map = new Map()
+  const selected = directRJOptions.value.find(opt => opt.libraryId === props.settings.directLibraryId && opt.path === props.settings.directBasePath)
+  // 单一 RJ 场景下默认应用同一个 selection 给所有 plan
+  if (selected) {
+    directRJOptions.value
+      .filter(opt => opt.rjcode === selected.rjcode && opt.libraryId === selected.libraryId && opt.path === selected.path)
+      .forEach(opt => map.set(opt.rjcode, opt))
+  }
+  // 多 RJ 场景下，对每个 RJ 取首选项；如果与 settings 一致则覆盖
+  const grouped = new Map()
+  directRJOptions.value.forEach(opt => {
+    if (!grouped.has(opt.rjcode)) grouped.set(opt.rjcode, opt)
+  })
+  grouped.forEach((opt, rjcode) => {
+    if (!map.has(rjcode)) map.set(rjcode, opt)
+  })
+  return map
+})
+
+const selectedDirectPathLabel = computed(() => {
+  const rjset = new Set([...directSelectionMap.value.keys()])
+  if (rjset.size === 0) return '请选择'
+  const samples = []
+  rjset.forEach(rj => {
+    const opt = directSelectionMap.value.get(rj)
+    if (opt) samples.push(`${rj} · ${opt.libraryName}`)
+  })
+  if (samples.length === 1) return samples[0]
+  return `${samples.length} 个 RJ 已匹配`
+})
+
+const hasDirectSelection = computed(() => directSelectionMap.value.size > 0)
+
+const resolvedDirectFinalPath = computed(() => {
+  if (!hasDirectSelection.value) return ''
+  const selection = directSelectionMap.value.values().next().value
+  if (!selection) return ''
+  return joinDirectFinalPath(selection.path, props.settings.directSubPath, selection.libraryType)
+})
+
+function isDirectPathSelected(option) {
+  return option.libraryId === props.settings.directLibraryId && option.path === props.settings.directBasePath
+}
+
+function chooseDirectPath(option) {
+  props.settings.directLibraryId = option.libraryId
+  props.settings.directBasePath = option.path
+  props.settings.directLibraryType = option.libraryType
+  openSelect.value = null
+  loadDirectSubdirectories(option.libraryId, option.path)
+}
+
+function chooseDirectSubdir(name) {
+  props.settings.directSubPath = String(name || '')
+  openSelect.value = null
+}
+
+async function loadDirectSubdirectories(libraryId, path) {
+  if (!libraryId || !path) {
+    directSubdirOptions.value = []
+    return
+  }
+  const cacheKey = `${libraryId}::${path}`
+  if (directSubdirCache.has(cacheKey)) {
+    directSubdirOptions.value = directSubdirCache.get(cacheKey) || []
+    return
+  }
+  directSubdirLoading.value = true
+  try {
+    const data = await libraryApi.listSubdirectories(libraryId, path)
+    const dirs = Array.isArray(data?.directories) ? data.directories : []
+    directSubdirCache.set(cacheKey, dirs)
+    directSubdirOptions.value = dirs
+  } catch (error) {
+    directSubdirOptions.value = []
+  } finally {
+    directSubdirLoading.value = false
+  }
+}
+
+watch(
+  () => [props.settings?.mode, props.enableDirectMode, props.settings?.directLibraryId, props.settings?.directBasePath],
+  () => {
+    if (props.enableDirectMode && props.settings?.mode === 'direct' && props.settings?.directLibraryId && props.settings?.directBasePath) {
+      loadDirectSubdirectories(props.settings.directLibraryId, props.settings.directBasePath)
+    }
+  },
+  { immediate: true }
+)
+
 function handleDocumentClick(event) {
   if (!selectRoot.value?.contains(event.target)) {
     openSelect.value = null
@@ -382,6 +630,13 @@ function handleDocumentClick(event) {
 
 onMounted(() => {
   document.addEventListener('click', handleDocumentClick)
+  if (props.enableDirectMode && props.settings) {
+    if (typeof props.settings.mode !== 'string' || !props.settings.mode) props.settings.mode = 'classify'
+    if (typeof props.settings.directLibraryId !== 'string') props.settings.directLibraryId = ''
+    if (typeof props.settings.directBasePath !== 'string') props.settings.directBasePath = ''
+    if (typeof props.settings.directSubPath !== 'string') props.settings.directSubPath = ''
+    if (typeof props.settings.directLibraryType !== 'string') props.settings.directLibraryType = ''
+  }
 })
 
 onBeforeUnmount(() => {
@@ -402,18 +657,47 @@ watch(() => props.plans, (plans) => {
 
 function emitSubmit() {
   const action = props.actionMode === 'reimport' ? 'reimport' : 'download'
-  const useImmediateSynologyUpload = selectedTargetLibrary.value?.type === 'synology_filestation' && String(props.settings.targetLibraryId || '').trim()
+  const isDirectMode = props.enableDirectMode && props.settings.mode === 'direct'
+
   const items = planStates.value
-    .map(plan => ({
-      session_id: plan.session_id,
-      rjcode: plan.rjcode,
-      canonical_rjcode: plan.canonical_rjcode,
-      display_rjcodes: plan.display_rjcodes || [],
-      work_title: plan.title,
-      cover_url: plan.cover_url || plan.image_url || '',
-      image_url: plan.image_url || plan.cover_url || '',
-      folder_path: plan.folder_path || '',
-      selected_resources: plan.selectable_resources.filter(item => item.selected),
+    .map(plan => buildSubmitItem(plan, isDirectMode))
+    .filter(item => item && item.selected_resources.length > 0)
+
+  emit('submit', {
+    action,
+    mode: isDirectMode ? 'direct' : 'classify',
+    items,
+    batchOptions: {
+      download_base_path: props.settings.downloadBasePath || '',
+      target_library_id: props.settings.targetLibraryId || '',
+      target_subdir: props.settings.targetSubdir || '',
+      naming_mode: props.settings.namingMode,
+      classify_mode: props.settings.classifyMode,
+      mode: isDirectMode ? 'direct' : 'classify'
+    }
+  })
+}
+
+function buildSubmitItem(plan, isDirectMode) {
+  const baseItem = {
+    session_id: plan.session_id,
+    rjcode: plan.rjcode,
+    canonical_rjcode: plan.canonical_rjcode,
+    display_rjcodes: plan.display_rjcodes || [],
+    work_title: plan.title,
+    cover_url: plan.cover_url || plan.image_url || '',
+    image_url: plan.image_url || plan.cover_url || '',
+    folder_path: plan.folder_path || '',
+    selected_resources: plan.selectable_resources.filter(item => item.selected),
+    resource_filter_snapshot: {},
+    verify_md5_after_download: true,
+    download_base_path: props.settings.downloadBasePath || ''
+  }
+
+  if (!isDirectMode) {
+    const useImmediateSynologyUpload = selectedTargetLibrary.value?.type === 'synology_filestation' && String(props.settings.targetLibraryId || '').trim()
+    return {
+      ...baseItem,
       upload_options: {
         enabled: useImmediateSynologyUpload,
         mode: useImmediateSynologyUpload ? 'synology' : 'disabled',
@@ -427,23 +711,51 @@ function emitSubmit() {
         naming_mode: props.settings.namingMode,
         classify_mode: props.settings.classifyMode,
         circle_name: props.circleName || ''
-      },
-      resource_filter_snapshot: {},
-      verify_md5_after_download: true
-    }))
-    .filter(item => item.selected_resources.length > 0)
-
-  emit('submit', {
-    action,
-    items,
-    batchOptions: {
-      download_base_path: props.settings.downloadBasePath || '',
-      target_library_id: props.settings.targetLibraryId || '',
-      target_subdir: props.settings.targetSubdir || '',
-      naming_mode: props.settings.namingMode,
-      classify_mode: props.settings.classifyMode
+      }
     }
-  })
+  }
+
+  // direct 模式：用每个 RJ 自己的 selected match
+  const selection = directSelectionMap.value.get(plan.rjcode) || directSelectionMap.value.get((plan.canonical_rjcode || '').toUpperCase())
+  if (!selection) {
+    return null
+  }
+  const finalPath = joinDirectFinalPath(selection.path, props.settings.directSubPath, selection.libraryType)
+  const uploadMode = selection.libraryType === 'synology_filestation' ? 'synology' : 'local'
+  return {
+    ...baseItem,
+    upload_options: {
+      enabled: true,
+      mode: uploadMode,
+      target_path: finalPath,
+      library_id: selection.libraryId
+    },
+    postprocess_options: {
+      enabled: false,
+      target_library_id: '',
+      target_subdir: '',
+      naming_mode: '',
+      classify_mode: 'direct_target',
+      circle_name: props.circleName || '',
+      direct_target: {
+        library_id: selection.libraryId,
+        library_type: selection.libraryType,
+        rj_root_path: selection.path,
+        sub_path: props.settings.directSubPath || '',
+        final_path: finalPath
+      }
+    }
+  }
+}
+
+function joinDirectFinalPath(rjRootPath, subPath, libraryType) {
+  const rj = String(rjRootPath || '').trim()
+  const sub = String(subPath || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
+  if (!rj) return ''
+  if (!sub) return rj
+  const sep = libraryType === 'synology_filestation' ? '/' : (rj.includes('/') ? '/' : (rj.includes('\\') ? '\\' : '/'))
+  const trimmed = rj.replace(/[\\/]+$/, '')
+  return `${trimmed}${sep}${sub}`
 }
 
 function buildPlanState(plan) {
@@ -749,6 +1061,29 @@ function formatSize(bytes) {
   padding: 24px;
   flex: 1 1 auto;
   overflow-y: auto;
+}
+
+.mode-switch {
+  flex: 0 0 auto;
+}
+
+.mode-tab {
+  border: 0;
+  cursor: pointer;
+  color: rgb(100, 116, 139);
+  background: transparent;
+  transition: all 0.18s ease;
+}
+
+.mode-tab-active {
+  background: rgba(255, 255, 255, 0.95);
+  color: rgb(30, 41, 59);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.mode-tab-idle:hover {
+  background: rgba(248, 250, 252, 0.65);
+  color: rgb(30, 41, 59);
 }
 
 .action-card {

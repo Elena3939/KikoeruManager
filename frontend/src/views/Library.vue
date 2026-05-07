@@ -567,6 +567,26 @@
 
             <button
 
+              v-if="!isRemoteCurrentLibrary"
+
+              type="button"
+
+              class="lib-btn lib-btn-icon-tinted lib-icon-batch-move lib-batch-action-btn"
+
+              :disabled="!isWritableCurrentLibrary || moveDialogState.submitting || !selectedRows.length"
+
+              @click="openMoveDialog(selectedRows)"
+
+            >
+
+              <IconFolderInput :size="14" :stroke-width="2.2" />
+
+              <span>批量移动</span>
+
+            </button>
+
+            <button
+
               type="button"
 
               :class="['lib-btn lib-btn-icon-tinted lib-icon-api-rename lib-batch-action-btn', { 'is-executing': batchRenaming }]"
@@ -726,6 +746,10 @@
         :disable-manage="!libraryRowContextMenu.row?.is_directory"
 
         :disable-delete="!isWritableCurrentLibrary"
+
+        :show-move="Boolean(libraryRowContextMenu.row && !isRemoteCurrentLibrary)"
+
+        :disable-move="!isWritableCurrentLibrary || moveDialogState.submitting"
 
         :show-compute-size="Boolean(libraryRowContextMenu.row?.is_directory && !isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value))"
 
@@ -1110,6 +1134,28 @@
 
 
 
+    <LibraryMoveDialog
+
+      :visible="moveDialogState.visible"
+
+      :source-library-id="moveDialogState.sourceLibraryId"
+
+      :items="moveDialogState.items"
+
+      :libraries="libraries"
+
+      :submitting="moveDialogState.submitting"
+
+      @update:visible="value => { if (!value) closeMoveDialog() }"
+
+      @close="closeMoveDialog"
+
+      @submit="handleMoveSubmit"
+
+    />
+
+
+
     <div v-if="showSubtitleBackgroundCard" class="floating-card">
 
       <div class="flex items-start justify-between gap-3">
@@ -1331,6 +1377,8 @@ import {
 
   Layers as IconLayers,
 
+  FolderInput as IconFolderInput,
+
 } from 'lucide-vue-next'
 
 import { ElMessage } from 'element-plus'
@@ -1363,6 +1411,8 @@ import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchD
 import FilterDeleteDialog from '../components/library/FilterDeleteDialog.vue'
 
 import FolderContentsDialog from '../components/library/FolderContentsDialog.vue'
+
+import LibraryMoveDialog from '../components/library/LibraryMoveDialog.vue'
 
 import LibraryRowContextMenu from '../components/library/LibraryRowContextMenu.vue'
 
@@ -1437,6 +1487,8 @@ const batchRenaming = ref(false)
 const tableRef = ref(null)
 
 const libraryRowContextMenu = ref({ visible: false, x: 0, y: 0, row: null, renderKey: 0 })
+
+const moveDialogState = ref({ visible: false, sourceLibraryId: '', items: [], submitting: false })
 
 const filterDeleteDialogRef = ref(null)
 
@@ -10481,7 +10533,7 @@ async function refreshStatsAfterMutation (options = {}) {
 
   }
 
-  await refreshStats(true, { refreshLibraryId: libraryId })
+  await refreshStats(false, { silent: true, refreshLibraryId: libraryId })
 
 }
 
@@ -12575,7 +12627,11 @@ async function handleLibraryRowContextMenuAction (action) {
 
   if (action === 'open_direct') return openFolderDirect(row)
 
+  if (action === 'copy_name') return copyRowName(row)
+
   if (action === 'rename') return renameItem(row)
+
+  if (action === 'move') return openMoveDialog([row])
 
   if (action === 'api_rename') return apiRenameItem(row)
 
@@ -12586,6 +12642,200 @@ async function handleLibraryRowContextMenuAction (action) {
   if (action === 'compute_size') return computeFolderSize(row)
 
   if (action === 'delete') return deleteItem(row)
+
+}
+
+
+
+async function copyRowName (row) {
+
+  const name = String(row?.name || '').trim()
+
+  if (!name) {
+
+    ElMessage.warning('该行没有可复制的名称')
+
+    return
+
+  }
+
+  try {
+
+    if (navigator?.clipboard?.writeText) {
+
+      await navigator.clipboard.writeText(name)
+
+    } else {
+
+      const textarea = document.createElement('textarea')
+
+      textarea.value = name
+
+      textarea.setAttribute('readonly', '')
+
+      textarea.style.position = 'fixed'
+
+      textarea.style.left = '-9999px'
+
+      document.body.appendChild(textarea)
+
+      textarea.select()
+
+      document.execCommand('copy')
+
+      document.body.removeChild(textarea)
+
+    }
+
+    ElMessage.success('已复制：' + name)
+
+  } catch (_err) {
+
+    ElMessage.error('复制失败：浏览器拒绝访问剪贴板')
+
+  }
+
+}
+
+
+
+function openMoveDialog (rows) {
+
+  if (isRemoteCurrentLibrary.value) {
+
+    ElMessage.warning('远程库存暂不支持此操作')
+
+    return
+
+  }
+
+  if (!isWritableCurrentLibrary.value) {
+
+    ElMessage.warning('当前库存只读，无法移动')
+
+    return
+
+  }
+
+  const sourceRows = (Array.isArray(rows) ? rows : []).filter(row => row?.path)
+
+  if (!sourceRows.length) {
+
+    ElMessage.warning('未选中可移动的项')
+
+    return
+
+  }
+
+  moveDialogState.value = {
+
+    visible: true,
+
+    sourceLibraryId: selectedLibraryId.value,
+
+    items: sourceRows.map(row => ({
+
+      path: row.path,
+
+      name: row.name || '',
+
+      is_directory: !!row.is_directory
+
+    })),
+
+    submitting: false
+
+  }
+
+}
+
+
+
+function closeMoveDialog () {
+
+  moveDialogState.value = { visible: false, sourceLibraryId: '', items: [], submitting: false }
+
+}
+
+
+
+async function handleMoveSubmit (payload) {
+
+  if (!payload?.targetLibraryId || !payload?.targetPath) return
+
+  if (moveDialogState.value.submitting) return
+
+  const items = moveDialogState.value.items.slice()
+
+  if (!items.length) return
+
+  const sourceLibraryId = moveDialogState.value.sourceLibraryId
+
+  const targetLibraryId = payload.targetLibraryId
+
+  const targetPath = payload.targetPath
+
+  moveDialogState.value = { ...moveDialogState.value, submitting: true }
+
+  try {
+
+    const result = await libraryApi.browserMove(
+
+      sourceLibraryId,
+
+      items.map(item => item.path),
+
+      targetLibraryId,
+
+      targetPath
+
+    )
+
+    const successCount = Number(result?.success_count || 0)
+
+    const skippedCount = Number(result?.skipped_count || (Array.isArray(result?.skipped) ? result.skipped.length : 0))
+
+    const failedCount = Number(result?.failed_count || (Array.isArray(result?.failed) ? result.failed.length : 0))
+
+    if (failedCount > 0) {
+
+      const firstError = (Array.isArray(result?.failed) && result.failed[0]?.error) || ''
+
+      ElMessage.warning(`移动完成：成功 ${successCount} 项，跳过 ${skippedCount} 项，失败 ${failedCount} 项${firstError ? '。首个错误：' + firstError : ''}`)
+
+    } else if (skippedCount > 0) {
+
+      ElMessage.success(`移动完成：成功 ${successCount} 项，跳过 ${skippedCount} 项`)
+
+    } else {
+
+      ElMessage.success(`移动完成：成功 ${successCount} 项`)
+
+    }
+
+    closeMoveDialog()
+
+    clearSelection()
+
+    const refreshJobs = [refreshLibrary({ silent: true })]
+
+    refreshJobs.push(refreshStats(false, { silent: true, refreshLibraryId: sourceLibraryId }))
+
+    if (targetLibraryId !== sourceLibraryId) {
+
+      refreshJobs.push(refreshStats(false, { silent: true, refreshLibraryId: targetLibraryId }))
+
+    }
+
+    await Promise.all(refreshJobs)
+
+  } catch (error) {
+
+    ElMessage.error('批量移动失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+
+    moveDialogState.value = { ...moveDialogState.value, submitting: false }
+
+  }
 
 }
 
@@ -12659,7 +12909,7 @@ async function renameItem (row) {
 
       refreshLibrary(),
 
-      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(true, { refreshLibraryId: selectedLibraryId.value })
+      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
 
     ])
 
@@ -12693,7 +12943,7 @@ async function apiRenameItem (row) {
 
       refreshLibrary(),
 
-      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(true, { refreshLibraryId: selectedLibraryId.value })
+      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
 
     ])
 
@@ -13033,7 +13283,7 @@ async function handleBatchApiRename () {
 
       refreshLibrary(),
 
-      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(true, { refreshLibraryId: selectedLibraryId.value })
+      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
 
     ])
 
@@ -14853,6 +15103,7 @@ function statsStatusTextDisplay (stats) {
 .lib-btn-icon-tinted.lib-icon-upload svg { color: #0284c7; }
 .lib-btn-icon-tinted.lib-icon-compute-size svg { color: #0ea5e9; }
 .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48; }
+.lib-btn-icon-tinted.lib-icon-batch-move svg { color: #0ea5e9; }
 .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed; }
 
 .lib-batch-action-btn {

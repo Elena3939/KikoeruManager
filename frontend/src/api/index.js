@@ -398,6 +398,14 @@ export const libraryApi = {
     return response.data
   },
 
+  listSubdirectories: async (libraryId, path = '') => {
+    const response = await apiClient.post('/library/list-subdirectories', {
+      library_id: libraryId,
+      path: path || ''
+    })
+    return response.data
+  },
+
   browserMojibakePreview: async (libraryId, path, options = {}) => {
     const response = await apiClient.post('/library/browser/mojibake-preview', {
       library_id: libraryId,
@@ -572,6 +580,26 @@ export const libraryApi = {
       library_id: libraryId,
       path,
       force_local: forceLocal
+    })
+    return response.data
+  },
+
+  browserListFolders: async (libraryId, path = '') => {
+    const response = await apiClient.post('/library/browser/list-folders', {
+      library_id: libraryId,
+      path: path || ''
+    })
+    return response.data
+  },
+
+  browserMove: async (sourceLibraryId, paths, targetLibraryId, targetPath = '', options = {}) => {
+    const response = await apiClient.post('/library/browser/move', {
+      source_library_id: sourceLibraryId,
+      target_library_id: targetLibraryId,
+      paths,
+      target_path: targetPath || '',
+      conflict_strategy: options.conflictStrategy || 'suffix',
+      overwrite: !!options.overwrite
     })
     return response.data
   }
@@ -798,6 +826,14 @@ export const asmrSyncApi = {
     const response = await apiClient.post('/asmr-sync/enhanced/start', {
       items,
       auto_classify: autoClassify
+    })
+    return response.data
+  },
+
+  locateRJ: async (rjcodes, libraryIds = null) => {
+    const response = await apiClient.post('/asmr-sync/enhanced/locate-rj', {
+      rjcodes,
+      library_ids: libraryIds || undefined
     })
     return response.data
   },

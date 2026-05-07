@@ -191,77 +191,70 @@ class ConflictResolutionService:
         library_id: Optional[str],
         path: Optional[str],
     ) -> dict[str, Any]:
+        missing = {
+            "exists": False,
+            "kind": "missing",
+            "size": None,
+            "created_at": None,
+            "modified_at": None,
+            "file_count": None,
+            "folder_count": None,
+        }
         normalized_path = str(path or "").strip()
         if not library_id or not normalized_path:
-            return {
-                "exists": False,
-                "kind": "missing",
-                "size": None,
-                "created_at": None,
-                "modified_at": None,
-                "file_count": None,
-                "folder_count": None,
-            }
+            return dict(missing)
 
         manager = get_library_manager()
-        library = manager._find_library(library_id)
+        library = next(
+            (lib for lib in self._iter_libraries() if lib.id == library_id),
+            None,
+        )
         if not library or library.type != "synology_filestation" or not library.synology:
-            return {
-                "exists": False,
-                "kind": "missing",
-                "size": None,
-                "created_at": None,
-                "modified_at": None,
-                "file_count": None,
-                "folder_count": None,
-            }
+            return dict(missing)
 
         client = manager.get_cached_synology_client(library.synology)
         try:
             info = await client.stat(manager._normalize_remote_path(normalized_path))
             item = manager._first_remote_info_item(info) or {}
             if not item:
-                return {
-                    "exists": False,
-                    "kind": "missing",
-                    "size": None,
-                    "created_at": None,
-                    "modified_at": None,
-                    "file_count": None,
-                    "folder_count": None,
-                }
+                return dict(missing)
 
             additional = item.get("additional", {}) or {}
             timestamps = additional.get("time", {}) or {}
             is_directory = bool(item.get("isdir"))
-            size = await manager._remote_path_size(
-                client,
-                normalized_path,
-                is_directory,
-                timestamps.get("mtime"),
-                initial_size=additional.get("size") or item.get("size"),
-                max_wait_seconds=max(int(client.config.timeout) * 10, 300),
-            )
+            modified_ts = timestamps.get("mtime")
+
+            if is_directory:
+                # 列表加载时不阻塞等待群晖 dir_size 计算：
+                # 命中缓存就直接拿真实大小，没命中就触发后台刷新，本次返回 size=None。
+                cached_size, status = manager._get_remote_cached_size(
+                    normalized_path, modified_ts, True,
+                )
+                if cached_size is None or status != "ready":
+                    try:
+                        manager._ensure_remote_size_task(library, normalized_path, modified_ts)
+                    except Exception:
+                        logger.debug("触发远程目录大小后台刷新失败 path=%s", normalized_path, exc_info=True)
+                size_value: Optional[int] = int(cached_size) if cached_size is not None else None
+            else:
+                raw_size = additional.get("size") or item.get("size") or 0
+                try:
+                    size_value = int(raw_size)
+                except (TypeError, ValueError):
+                    size_value = None
+
             return {
                 "exists": True,
                 "kind": "folder" if is_directory else "file",
-                "size": int(size or 0),
+                "size": size_value,
                 "created_at": timestamps.get("crtime") or timestamps.get("ctime"),
-                "modified_at": timestamps.get("mtime"),
+                "modified_at": modified_ts,
                 "file_count": None,
                 "folder_count": None,
             }
         except Exception as exc:
             logger.warning("读取远程冲突路径统计失败 path=%s error=%s", normalized_path, exc)
-            return {
-                "exists": False,
-                "kind": "missing",
-                "size": None,
-                "created_at": None,
-                "modified_at": None,
-                "file_count": None,
-                "folder_count": None,
-            }
+            return dict(missing)
 
     async def _load_existing_remote_items(self, existing: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
         manager = get_library_manager()

@@ -18,6 +18,7 @@ from urllib.parse import quote, unquote
 import aiohttp
 
 from ..config.settings import get_config, get_config_file_path
+from .ttl_cache import TTLCache
 
 
 def _robust_rmtree(path: str, retries: int = 3, delay: float = 1.0) -> None:
@@ -810,13 +811,20 @@ class SynologyFileStationClient:
         )
 
     async def start_search(self, folder_path: str, keyword: str, recursive: bool = True):
+        # 群晖 FileStation Search 的 pattern 是 glob 模式（默认完整匹配），
+        # 要让它做"包含"匹配必须显式包通配符；否则像 [社团][RJ01214501] 这种
+        # 含 RJ 号的文件夹会被判定为不匹配。
+        raw_pattern = str(keyword or "").strip()
+        pattern = raw_pattern
+        if pattern and "*" not in pattern and "?" not in pattern:
+            pattern = f"*{pattern}*"
         return await self._request(
             "SYNO.FileStation.Search",
             "start",
             2,
             {
                 "folder_path": folder_path,
-                "pattern": keyword,
+                "pattern": pattern,
                 "recursive": "true" if recursive else "false",
             },
         )
@@ -1269,12 +1277,19 @@ class LibraryManager:
     def __init__(self):
         self._stats_cache: dict[str, dict[str, Any]] = {}
         self._stats_tasks: dict[str, asyncio.Task] = {}
-        self._size_cache: dict[str, dict[str, Any]] = {}
+        # 路径 size 缓存：每查过 size 的目录都会落库 ⇒ 必须有上限 + TTL
+        # 4h TTL 配合签名校验（mtime / hash），既保住命中率又不至于无限增长
+        self._size_cache: TTLCache = TTLCache(max_size=4096, ttl_seconds=14400, name="library.size")
         self._remote_size_tasks: dict[str, asyncio.Task] = {}
         self._remote_search_tasks: dict[tuple[str, str, str, int, str, str], asyncio.Task] = {}
         self._remote_search_result_cache: dict[tuple[str, str, str, str, str, int, int], dict[str, Any]] = {}
+        # 本地搜索结果缓存：缓存完整返回值，TTL 由 local_search_cache_ttl_seconds 控制
+        self._local_search_result_cache: dict[tuple, dict[str, Any]] = {}
+        # 群晖 share 列表缓存：避免多 RJ 并发时重复 list_share；key=auth_sig，TTL 5 分钟
+        self._share_list_cache: dict[str, dict[str, Any]] = {}
         self._filter_preview_cancel_flags: dict[str, bool] = {}
-        self._filter_preview_jobs: dict[str, dict[str, Any]] = {}
+        # 删除过滤预审任务：完成后不会被显式清理 ⇒ 用 LRU 上限兜底（不设 TTL，避免进行中任务被清）
+        self._filter_preview_jobs: TTLCache = TTLCache(max_size=32, ttl_seconds=0, name="library.filter_preview_jobs")
         self._filter_preview_tasks: dict[str, asyncio.Task] = {}
         # 全局 Synology client 缓存：避免每次操作重复登录（key = base_url::username::auth_sig）
         self._synology_client_cache: dict[str, SynologyFileStationClient] = {}
@@ -1416,6 +1431,113 @@ class LibraryManager:
         }
         return copy.deepcopy(data)
 
+    # ---------------------- 本地搜索 TTL 缓存 ----------------------
+    def _local_search_cache_ttl_seconds(self) -> int:
+        raw = self.load_config().get("local_search_cache_ttl_seconds", 10)
+        try:
+            ttl = int(raw)
+        except Exception:
+            ttl = 10
+        return max(0, min(ttl, 120))
+
+    def _build_local_search_cache_key(
+        self,
+        *,
+        library_id: str,
+        search_root: str,
+        keyword: str,
+        sort_by: str,
+        sort_order: str,
+        page: int,
+        page_size: int,
+        search_exact: bool,
+        search_result_kind: str,
+    ) -> tuple:
+        return (
+            library_id,
+            os.path.normcase(os.path.abspath(search_root)),
+            str(keyword or "").strip().lower(),
+            sort_by,
+            sort_order,
+            int(page),
+            int(page_size),
+            bool(search_exact),
+            self._normalize_search_result_kind(search_result_kind),
+        )
+
+    def _get_cached_local_search_result(self, cache_key: tuple) -> Optional[dict[str, Any]]:
+        cached = self._local_search_result_cache.get(cache_key)
+        if not cached:
+            return None
+        expires_at = float(cached.get("expires_at", 0) or 0)
+        if expires_at <= time.time():
+            self._local_search_result_cache.pop(cache_key, None)
+            return None
+        return copy.deepcopy(cached.get("data") or {})
+
+    def _set_cached_local_search_result(self, cache_key: tuple, data: dict[str, Any]) -> dict[str, Any]:
+        ttl = self._local_search_cache_ttl_seconds()
+        if ttl <= 0:
+            return data
+        # 命中数过大时仍然缓存，但不复制超大对象 — 用 deepcopy 隔离调用方修改
+        self._local_search_result_cache[cache_key] = {
+            "expires_at": time.time() + ttl,
+            "data": copy.deepcopy(data),
+        }
+        # 简单上限：超 256 条不同 key 时清掉过期项
+        if len(self._local_search_result_cache) > 256:
+            now_ts = time.time()
+            stale_keys = [k for k, v in self._local_search_result_cache.items() if float(v.get("expires_at", 0) or 0) <= now_ts]
+            for stale in stale_keys:
+                self._local_search_result_cache.pop(stale, None)
+        return data
+
+    def _invalidate_local_search_cache(self, library_id: Optional[str] = None) -> None:
+        """文件结构变更（rename/move/delete/导入完成）后调用，让缓存失效。"""
+        if not self._local_search_result_cache:
+            return
+        if not library_id:
+            self._local_search_result_cache.clear()
+            return
+        keys_to_drop = [k for k in self._local_search_result_cache if k and k[0] == library_id]
+        for k in keys_to_drop:
+            self._local_search_result_cache.pop(k, None)
+
+    # ---------------------- 群晖 share 列表 TTL 缓存 ----------------------
+    def _share_list_cache_ttl_seconds(self) -> int:
+        raw = self.load_config().get("share_list_cache_ttl_seconds", 300)
+        try:
+            ttl = int(raw)
+        except Exception:
+            ttl = 300
+        return max(30, min(ttl, 3600))
+
+    def _share_list_cache_key(self, client: "SynologyFileStationClient") -> str:
+        cfg = client.config
+        base = (cfg.base_url or "").rstrip("/")
+        username = cfg.username or ""
+        return f"{base}::{username}"
+
+    def _get_cached_share_list(self, client: "SynologyFileStationClient") -> Optional[list[str]]:
+        key = self._share_list_cache_key(client)
+        cached = self._share_list_cache.get(key)
+        if not cached:
+            return None
+        expires_at = float(cached.get("expires_at", 0) or 0)
+        if expires_at <= time.time():
+            self._share_list_cache.pop(key, None)
+            return None
+        return list(cached.get("shares") or [])
+
+    def _set_cached_share_list(self, client: "SynologyFileStationClient", shares: list[str]) -> list[str]:
+        key = self._share_list_cache_key(client)
+        ttl = self._share_list_cache_ttl_seconds()
+        self._share_list_cache[key] = {
+            "expires_at": time.time() + ttl,
+            "shares": list(shares),
+        }
+        return shares
+
     def _active_libraries(self, cfg: Optional[dict[str, Any]] = None) -> list[LibraryDefinition]:
         cfg = cfg or self.load_config()
         active = [library for library in cfg["libraries"] if library.enabled]
@@ -1431,11 +1553,15 @@ class LibraryManager:
             remote_stats = data.get("remote_stats") or {}
             if isinstance(remote_stats, dict):
                 self._stats_cache.update(remote_stats)
+            library_stats = data.get("library_stats") or {}
+            if isinstance(library_stats, dict):
+                self._stats_cache.update(library_stats)
         except Exception:
             return
 
     def _persist_stats(self):
         payload = {
+            "library_stats": dict(self._stats_cache),
             "remote_stats": {
                 key: value
                 for key, value in self._stats_cache.items()
@@ -1672,6 +1798,162 @@ class LibraryManager:
         if library.type == "local":
             return await asyncio.to_thread(self._list_local_files, library, page, page_size, search, current_path, sort_by, sort_order)
         return await self._list_remote_files(library, page, page_size, search, current_path, sort_by, sort_order)
+
+    async def find_rj_in_libraries(
+        self,
+        rjcode: str,
+        *,
+        library_ids: Optional[list[str]] = None,
+        per_library_timeout: float = 8.0,
+        include_remote: bool = True,
+    ) -> list[dict[str, Any]]:
+        """跨所有活跃库存按 RJ 号定位作品文件夹。
+
+        仅返回 entry.rjcode == rjcode 且 is_directory=True 的命中。
+        若没有任何配置完整的远程库存，则只走本地库存搜索；
+        远程库凭据缺失时也会跳过该库以免触发无效请求。
+        """
+
+        normalized_rj = (rjcode or "").strip().upper()
+        if not normalized_rj:
+            return []
+        libraries = self._active_libraries()
+        if library_ids:
+            wanted = {str(lid).strip() for lid in library_ids if lid}
+            libraries = [lib for lib in libraries if lib.id in wanted]
+        if not libraries:
+            return []
+
+        def _is_remote_library_searchable(library: LibraryDefinition) -> bool:
+            if library.type != "synology_filestation":
+                return True
+            syn = library.synology
+            if not syn:
+                return False
+            base_url = str(getattr(syn, "base_url", "") or "").strip()
+            account = str(getattr(syn, "username", "") or getattr(syn, "account", "") or "").strip()
+            password = str(getattr(syn, "password", "") or getattr(syn, "passwd", "") or "").strip()
+            return bool(base_url and account and password)
+
+        filtered_libraries: list[LibraryDefinition] = []
+        skipped_remote = 0
+        for library in libraries:
+            if library.type == "synology_filestation":
+                if not include_remote:
+                    skipped_remote += 1
+                    continue
+                if not _is_remote_library_searchable(library):
+                    logger.info(
+                        "find_rj_in_libraries 跳过未完整配置的远程库: rj=%s lib=%s",
+                        normalized_rj,
+                        library.id,
+                    )
+                    skipped_remote += 1
+                    continue
+            filtered_libraries.append(library)
+        if skipped_remote:
+            logger.debug(
+                "find_rj_in_libraries 跳过 %s 个远程库 (无远程仓库或凭据缺失) rj=%s",
+                skipped_remote,
+                normalized_rj,
+            )
+        if not filtered_libraries:
+            return []
+        libraries = filtered_libraries
+
+        async def _search_one(library: LibraryDefinition) -> tuple[LibraryDefinition, list[dict[str, Any]]]:
+            try:
+                data = await asyncio.wait_for(
+                    self.list_files(
+                        library.id,
+                        page=1,
+                        page_size=200,
+                        search=normalized_rj,
+                        current_path=None,
+                        sort_by="name",
+                        sort_order="asc",
+                        search_exact=False,
+                        search_result_kind="folder_only",
+                    ),
+                    timeout=per_library_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("跨库查 RJ 超时: rj=%s lib=%s", normalized_rj, library.id)
+                return library, []
+            except Exception:
+                logger.warning("跨库查 RJ 失败: rj=%s lib=%s", normalized_rj, library.id, exc_info=True)
+                return library, []
+            return library, list(data.get("files") or [])
+
+        results = await asyncio.gather(*[_search_one(lib) for lib in libraries], return_exceptions=False)
+        matches: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        for library, files in results:
+            for entry in files:
+                entry_rj = str(entry.get("rjcode") or "").upper()
+                if entry_rj != normalized_rj:
+                    continue
+                if not entry.get("is_directory", False):
+                    continue
+                full_path = str(entry.get("path") or "")
+                if not full_path:
+                    continue
+                dedupe_key = f"{library.id}::{full_path}"
+                if dedupe_key in seen_paths:
+                    continue
+                seen_paths.add(dedupe_key)
+                matches.append({
+                    "library_id": library.id,
+                    "library_name": library.name,
+                    "library_type": library.type,
+                    "library_root_path": library.root_path,
+                    "library_writable": bool(library.writable),
+                    "path": full_path,
+                    "name": str(entry.get("name") or ""),
+                    "size": entry.get("size"),
+                    "modified_time": entry.get("modified_time"),
+                })
+        return matches
+
+    async def list_first_level_directories(
+        self,
+        library_id: str,
+        path: Optional[str] = None,
+        *,
+        page_size: int = 500,
+    ) -> dict[str, Any]:
+        """列出指定路径下的一级子目录（不递归）。"""
+
+        library = self.get_library_definition(library_id)
+        target_path = (path or "").strip() or None
+        data = await self.list_files(
+            library.id,
+            page=1,
+            page_size=page_size,
+            search="",
+            current_path=target_path,
+            sort_by="name",
+            sort_order="asc",
+        )
+        directories: list[dict[str, Any]] = []
+        for entry in list(data.get("files") or []):
+            if not entry.get("is_directory", False):
+                continue
+            directories.append({
+                "name": str(entry.get("name") or ""),
+                "path": str(entry.get("path") or ""),
+                "size": entry.get("size"),
+                "modified_time": entry.get("modified_time"),
+            })
+        return {
+            "library_id": library.id,
+            "library_name": library.name,
+            "library_type": library.type,
+            "current_path": data.get("current_path") or target_path or library.root_path,
+            "browse_root_path": data.get("browse_root_path") or library.browse_root_path,
+            "directories": directories,
+            "total": len(directories),
+        }
 
     async def global_search_files(
         self,
@@ -1920,10 +2202,36 @@ class LibraryManager:
         if not os.path.isdir(search_root):
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": search_root, "browse_root_path": browse_root, "search_mode": True}
 
+        # 命中缓存就直接返回，避免重复扫盘
+        cache_key = self._build_local_search_cache_key(
+            library_id=library.id,
+            search_root=search_root,
+            keyword=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+            search_exact=search_exact,
+            search_result_kind=search_result_kind,
+        )
+        cached = self._get_cached_local_search_result(cache_key)
+        if cached is not None:
+            logger.debug(
+                "本地搜索命中缓存: library=%s keyword=%s page=%s",
+                library.id,
+                search,
+                page,
+            )
+            return cached
+
         keyword = str(search or "").strip()
         rj_only_search = self._is_rj_search_keyword(keyword)
+        normalized_result_kind = self._normalize_search_result_kind(search_result_kind)
+        treat_rj_dir_as_terminal = rj_only_search and normalized_result_kind != "file"
         matches: list[dict[str, Any]] = []
         seen_paths: set[str] = set()
+        # pruned_dirs：已命中 RJ 目录后剪枝（不再深入这个 RJ 目录树），避免重复 IO。
+        pruned_dirs: set[str] = set()
         queue: list[str] = [search_root]
         visited_dirs = 0
         truncated = False
@@ -1948,21 +2256,34 @@ class LibraryManager:
                     continue
 
                 full_path = entry.path
-                relative_path = os.path.relpath(full_path, search_root).replace("\\", "/")
-                rjcode = self._extract_rjcode(relative_path) or self._extract_rjcode(name)
+                # 优先用文件名直接提取 RJ 号；只有当文件名没有时才回退到相对路径，
+                # 避免每个深层文件都做重复的 relpath 计算。
+                rjcode = self._extract_rjcode(name)
+                relative_path: Optional[str] = None
+                if not rjcode:
+                    relative_path = os.path.relpath(full_path, search_root).replace("\\", "/")
+                    rjcode = self._extract_rjcode(relative_path)
+                if relative_path is None:
+                    relative_path = name  # _search_match_text 仅用于 keyword 匹配，name 已足够
+
+                should_dive = is_directory  # 默认是否进入这个目录递归
                 if self._search_match_text(keyword, name, relative_path, rjcode, exact=search_exact):
                     target_path = full_path
                     target_name = name
                     target_is_directory = is_directory
-                    if rj_only_search and self._normalize_search_result_kind(search_result_kind) != "file":
+                    if treat_rj_dir_as_terminal:
                         nearest_rj_dir = self._find_nearest_local_rj_directory(full_path, search_root)
                         if not nearest_rj_dir:
+                            # 命中但不在 RJ 目录里（如 share 顶层散文件），允许继续往下找
                             if is_directory:
                                 queue.append(full_path)
                             continue
                         target_path = nearest_rj_dir
                         target_name = os.path.basename(nearest_rj_dir)
                         target_is_directory = True
+                        # 关键剪枝：找到 RJ 目录后不再扫它的子项（音轨 / 字幕 / 封面 …）。
+                        should_dive = False
+                        pruned_dirs.add(target_path)
                     if target_path not in seen_paths:
                         try:
                             stat_result = os.stat(target_path)
@@ -1970,25 +2291,32 @@ class LibraryManager:
                             stat_result = None
                         if stat_result:
                             if not self._matches_search_result_kind(target_is_directory, search_result_kind):
-                                continue
-                            seen_paths.add(target_path)
-                            matches.append(
-                                self._build_local_search_entry(
-                                    library,
-                                    item_id=len(matches),
-                                    search_root=search_root,
-                                    full_path=target_path,
-                                    name=target_name,
-                                    is_directory=target_is_directory,
-                                    stat_result=stat_result,
+                                # 类型不匹配跳过，但也别再深入扫这个分支
+                                if treat_rj_dir_as_terminal:
+                                    continue
+                            else:
+                                seen_paths.add(target_path)
+                                matches.append(
+                                    self._build_local_search_entry(
+                                        library,
+                                        item_id=len(matches),
+                                        search_root=search_root,
+                                        full_path=target_path,
+                                        name=target_name,
+                                        is_directory=target_is_directory,
+                                        stat_result=stat_result,
+                                    )
                                 )
-                            )
-                            if len(matches) >= LIBRARY_SEARCH_RESULT_LIMIT:
-                                truncated = True
-                                queue.clear()
-                                break
+                                if len(matches) >= LIBRARY_SEARCH_RESULT_LIMIT:
+                                    truncated = True
+                                    queue.clear()
+                                    break
+                    # 命中即视为"这个分支已经处理"，不再深入
+                    if not should_dive:
+                        continue
 
-                if is_directory:
+                # 没命中或不需剪枝，按需进入子目录
+                if is_directory and full_path not in pruned_dirs:
                     queue.append(full_path)
 
             if truncated:
@@ -2001,7 +2329,7 @@ class LibraryManager:
         page_items = matches[start:end]
         for item in page_items:
             item.pop("_sort_time", None)
-        return {
+        result = {
             "files": page_items,
             "page": page,
             "page_size": page_size,
@@ -2017,6 +2345,7 @@ class LibraryManager:
             "search_exact": bool(search_exact),
             "search_result_kind": self._normalize_search_result_kind(search_result_kind),
         }
+        return self._set_cached_local_search_result(cache_key, result)
 
     def _list_local_files(
         self,
@@ -2346,6 +2675,11 @@ class LibraryManager:
         if normalized_root != "/":
             return [normalized_root]
 
+        # 命中 share 列表缓存（多 RJ 并发时不必重复打 list_share）
+        cached_shares = self._get_cached_share_list(client)
+        if cached_shares is not None:
+            return cached_shares or [normalized_root]
+
         scopes: list[str] = []
         seen_paths: set[str] = set()
         offset = 0
@@ -2364,6 +2698,7 @@ class LibraryManager:
             offset += len(raw_items)
             if not raw_items or offset >= total:
                 break
+        self._set_cached_share_list(client, scopes)
         return scopes or [normalized_root]
 
     async def _run_remote_search_scope(
@@ -2808,6 +3143,8 @@ class LibraryManager:
         parent_dir = os.path.dirname(path)
         new_path = os.path.join(parent_dir, new_name)
         os.rename(path, new_path)
+        # 文件夹改名后 keyword→matches 里旧 path 不再有效
+        self._invalidate_local_search_cache(library.id)
         self._append_stats_log(library, "INFO", f"重命名 path={path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -2828,10 +3165,13 @@ class LibraryManager:
                 "size": size,
             }
 
+        was_top_level_dir = os.path.isdir(path)
         if os.path.isdir(path):
             _robust_rmtree(path)
         else:
             os.remove(path)
+        if was_top_level_dir:
+            self._local_top_level_delta(library, path, -1)
         self._append_stats_log(library, "INFO", f"删除完成 path={path}")
         return {"message": "删除成功", "path": path}
 
@@ -2852,10 +3192,13 @@ class LibraryManager:
         failed_paths = []
         for path in paths:
             try:
+                was_top_level_dir = os.path.isdir(path)
                 if os.path.isdir(path):
                     _robust_rmtree(path)
                 else:
                     os.remove(path)
+                if was_top_level_dir:
+                    self._local_top_level_delta(library, path, -1)
                 success_count += 1
             except Exception as exc:
                 failed_paths.append({"path": path, "error": str(exc)})
@@ -2865,6 +3208,227 @@ class LibraryManager:
             f"批删完成 success={success_count} failed={len(failed_paths)} total={len(paths)}",
         )
         return {"message": "批量删除完成", "success_count": success_count, "failed_paths": failed_paths}
+
+    # ---------------------- 本地库浏览 / 批量移动（移动对话框专用） ----------------------
+    async def list_local_folders_only(
+        self,
+        library_id: str,
+        path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """轻量浏览：仅返回当前目录下的子目录名，不计算 size，不递归。
+
+        给"移动到..."对话框使用，避免触碰慢速 size 计算路径。
+        """
+        library = self.get_library_definition(library_id)
+        if library.type != "local":
+            raise RuntimeError("仅支持本地库浏览目录树")
+        return await asyncio.to_thread(self._list_local_folders_only, library, path)
+
+    def _list_local_folders_only(
+        self,
+        library: LibraryDefinition,
+        path: Optional[str],
+    ) -> dict[str, Any]:
+        browse_root = os.path.abspath(library.browse_root_path or library.root_path)
+        target_path = os.path.abspath(path) if path else browse_root
+        empty_payload = {
+            "library_id": library.id,
+            "library_name": library.name,
+            "library_type": library.type,
+            "library_root_path": library.root_path,
+            "current_path": target_path,
+            "browse_root_path": browse_root,
+            "parent_path": None,
+            "folders": [],
+        }
+        if not os.path.exists(browse_root):
+            empty_payload["current_path"] = browse_root
+            return empty_payload
+        if not self._local_path_is_within_root(target_path, browse_root):
+            target_path = browse_root
+            empty_payload["current_path"] = target_path
+        if not os.path.isdir(target_path):
+            empty_payload["current_path"] = target_path
+            return empty_payload
+
+        folders: list[dict[str, Any]] = []
+        try:
+            with os.scandir(target_path) as iterator:
+                for entry in iterator:
+                    if self._should_skip_entry(entry.name):
+                        continue
+                    try:
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    try:
+                        stat = entry.stat(follow_symlinks=False)
+                        mtime_iso = datetime.fromtimestamp(stat.st_mtime).isoformat()
+                    except OSError:
+                        mtime_iso = ""
+                    cached_size, size_status = self._get_cached_size_info(entry.path)
+                    folders.append({
+                        "name": entry.name,
+                        "path": entry.path,
+                        "modified_time": mtime_iso,
+                        "size": cached_size,
+                        "size_status": size_status,
+                    })
+        except OSError as exc:
+            raise RuntimeError(f"读取目录失败: {exc}") from exc
+
+        folders.sort(key=lambda item: (item.get("name") or "").lower())
+        parent_path = (
+            None
+            if os.path.normcase(target_path) == os.path.normcase(browse_root)
+            else os.path.dirname(target_path)
+        )
+        return {
+            "library_id": library.id,
+            "library_name": library.name,
+            "library_type": library.type,
+            "library_root_path": library.root_path,
+            "current_path": target_path,
+            "browse_root_path": browse_root,
+            "parent_path": parent_path,
+            "folders": folders,
+        }
+
+    async def move_local_items(
+        self,
+        *,
+        source_library_id: str,
+        target_library_id: str,
+        paths: list[str],
+        target_path: Optional[str] = None,
+        conflict_strategy: str = "suffix",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        if not paths:
+            raise ValueError("缺少待移动项")
+        source_library = self.get_library_definition(source_library_id)
+        target_library = self.get_library_definition(target_library_id)
+        if source_library.type != "local":
+            raise RuntimeError("仅支持本地库内/之间移动")
+        if target_library.type != "local":
+            raise RuntimeError("仅支持移动到本地库")
+        # 兼容旧 overwrite=True 的调用
+        strategy = (conflict_strategy or "").strip().lower()
+        if overwrite and strategy not in {"overwrite", "skip", "suffix"}:
+            strategy = "overwrite"
+        if strategy not in {"suffix", "overwrite", "skip"}:
+            strategy = "suffix"
+        return await asyncio.to_thread(
+            self._move_local_items_sync,
+            source_library,
+            target_library,
+            list(paths),
+            target_path,
+            strategy,
+        )
+
+    def _move_local_items_sync(
+        self,
+        source_library: LibraryDefinition,
+        target_library: LibraryDefinition,
+        paths: list[str],
+        target_path: Optional[str],
+        conflict_strategy: str,
+    ) -> dict[str, Any]:
+        target_root = os.path.abspath(target_library.root_path)
+        target_dir = os.path.abspath(target_path) if target_path else target_root
+        if not self._local_path_is_within_root(target_dir, target_root):
+            raise PermissionError("目标目录必须在所选库存内")
+        if not os.path.isdir(target_dir):
+            raise FileNotFoundError(f"目标目录不存在: {target_dir}")
+
+        normalized_paths: list[str] = []
+        for raw in paths:
+            normalized = os.path.abspath(raw)
+            self._assert_local_path_in_library(source_library, normalized)
+            if not os.path.exists(normalized):
+                raise FileNotFoundError(f"源路径不存在: {normalized}")
+            normalized_paths.append(normalized)
+
+        target_dir_norm = os.path.normcase(target_dir)
+        success: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        for path in normalized_paths:
+            try:
+                base_name = os.path.basename(path)
+                is_dir = os.path.isdir(path)
+                parent_norm = os.path.normcase(os.path.dirname(path))
+                # 目标目录与源所在父目录相同 -> 等于不动，跳过
+                if parent_norm == target_dir_norm:
+                    skipped.append({"path": path, "name": base_name, "reason": "目标目录与源相同"})
+                    continue
+                # 不能把目录移入自身或自身的子目录
+                if is_dir:
+                    source_norm = os.path.normcase(path)
+                    if target_dir_norm == source_norm or target_dir_norm.startswith(source_norm + os.sep):
+                        failed.append({"path": path, "name": base_name, "error": "无法将目录移入自身或其子目录"})
+                        continue
+
+                dest_path = os.path.join(target_dir, base_name)
+                if os.path.exists(dest_path):
+                    if conflict_strategy == "skip":
+                        skipped.append({"path": path, "name": base_name, "reason": "目标已存在同名项，按策略跳过"})
+                        continue
+                    if conflict_strategy == "overwrite":
+                        if os.path.isdir(dest_path):
+                            _robust_rmtree(dest_path)
+                        else:
+                            os.remove(dest_path)
+                    else:  # suffix（默认）
+                        if is_dir:
+                            stem, ext = base_name, ""
+                        else:
+                            stem, ext = os.path.splitext(base_name)
+                        counter = 1
+                        candidate = os.path.join(target_dir, f"{stem}_{counter}{ext}")
+                        while os.path.exists(candidate):
+                            counter += 1
+                            candidate = os.path.join(target_dir, f"{stem}_{counter}{ext}")
+                        dest_path = candidate
+
+                shutil.move(path, dest_path)
+
+                # 顶层判定 / search cache 失效 / folder_count 增减全部由 _local_top_level_delta 内部处理
+                if is_dir:
+                    self._local_top_level_delta(source_library, path, -1)
+                    self._local_top_level_delta(target_library, dest_path, 1)
+                success.append({
+                    "source": path,
+                    "destination": dest_path,
+                    "name": base_name,
+                })
+            except Exception as exc:
+                failed.append({"path": path, "name": os.path.basename(path), "error": str(exc)})
+
+        # 文件级移动不会触发 _local_top_level_delta，这里兜底再清一次本地搜索缓存
+        self._invalidate_local_search_cache(source_library.id)
+        if target_library.id != source_library.id:
+            self._invalidate_local_search_cache(target_library.id)
+
+        self._append_stats_log(
+            source_library,
+            "INFO",
+            f"批量移动 -> {target_library.id}:{target_dir} success={len(success)} skipped={len(skipped)} failed={len(failed)}",
+        )
+
+        return {
+            "message": "批量移动完成",
+            "success_count": len(success),
+            "skipped_count": len(skipped),
+            "failed_count": len(failed),
+            "moved": success,
+            "skipped": skipped,
+            "failed": failed,
+            "target_path": target_dir,
+            "target_library_id": target_library.id,
+        }
 
     async def open_folder(self, library_id: str, path: str, force_local: bool = False) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
@@ -2912,7 +3476,7 @@ class LibraryManager:
             task = self._stats_tasks.get(library.id)
             if library.type == "synology_filestation" and cached and cached.get("status") == "pending" and (task is None or task.done()):
                 cached["status"] = "error"
-                cached["warning"] = "Remote stats task was interrupted; please refresh again"
+                cached["warning"] = "库存统计任务已中断，请手动重新统计"
                 cached["updated_at"] = time.time()
                 self._stats_cache[library.id] = cached
                 self._persist_stats()
@@ -2951,7 +3515,7 @@ class LibraryManager:
                     "library_id": library.id,
                     "library_name": library.name,
                     "library_type": library.type,
-                    "status": "idle" if library.type == "synology_filestation" else "pending",
+                    "status": "idle",
                     "folder_count": 0,
                     "total_size_bytes": 0,
                     "total_size_gb": 0,
@@ -2985,13 +3549,12 @@ class LibraryManager:
         cached["updated_at"] = time.time()
         cached["health"] = self._health_for_library(library, float(self.load_config()["health_warning_free_gb"]))
         self._stats_cache[library.id] = cached
-        if library.type == "synology_filestation":
-            self._persist_stats()
+        self._persist_stats()
         return {
             "ok": True,
             "library_id": library.id,
             "status": "canceled",
-            "message": "Stats task canceled",
+            "message": "统计任务已取消",
         }
 
     async def _refresh_stats_for_library(self, library: LibraryDefinition):
@@ -3089,6 +3652,7 @@ class LibraryManager:
             final_path = os.path.join(target_root, f"{os.path.basename(source_dir)}_{counter}")
             counter += 1
         shutil.move(source_dir, final_path)
+        self._local_top_level_delta(library, final_path, 1)
         return final_path
 
     async def _upload_directory_to_synology(
@@ -3977,7 +4541,10 @@ class LibraryManager:
         running = self._remote_size_tasks.get(cache_key)
         if running and not running.done():
             return
-        self._remote_size_tasks[cache_key] = asyncio.create_task(self._refresh_remote_path_size(library, path, modified_ts))
+        task = asyncio.create_task(self._refresh_remote_path_size(library, path, modified_ts))
+        self._remote_size_tasks[cache_key] = task
+        # task 完成后自动 pop，避免长期运行下 dict 只增不减
+        task.add_done_callback(lambda _t: self._remote_size_tasks.pop(cache_key, None))
 
     async def _refresh_remote_path_size(self, library: LibraryDefinition, path: str, modified_ts: Optional[int]):
         try:
@@ -4022,6 +4589,28 @@ class LibraryManager:
 
         cached["total_size_bytes"] = next_total_size
         cached["total_size_gb"] = _gb(next_total_size)
+        cached["folder_count"] = next_folder_count
+        cached["updated_at"] = time.time()
+        self._stats_cache[library.id] = cached
+        self._persist_stats()
+
+    def _local_top_level_delta(self, library: LibraryDefinition, path: str, delta: int) -> None:
+        # 顶层目录数量发生变化 ⇒ 本地搜索缓存里的 keyword→matches 可能不再准确，主动失效
+        self._invalidate_local_search_cache(library.id)
+        cached = self._stats_cache.get(library.id)
+        if library.type != "local" or not cached or cached.get("status") == "pending":
+            return
+        if cached.get("scan_mode") != "manual_persisted" and not cached.get("last_completed_at"):
+            return
+        try:
+            root = os.path.abspath(library.browse_root_path or library.root_path)
+            target = os.path.abspath(path)
+            parent = os.path.abspath(os.path.dirname(target))
+            if os.path.normcase(parent) != os.path.normcase(root):
+                return
+        except Exception:
+            return
+        next_folder_count = max(0, int(cached.get("folder_count", 0) or 0) + int(delta or 0))
         cached["folder_count"] = next_folder_count
         cached["updated_at"] = time.time()
         self._stats_cache[library.id] = cached
@@ -5848,8 +6437,7 @@ class LibraryManager:
         else:
             stats["last_completed_at"] = stats.get("last_completed_at") or previous.get("last_completed_at")
         self._stats_cache[library.id] = stats
-        if library.type == "synology_filestation":
-            self._persist_stats()
+        self._persist_stats()
         self._stats_tasks.pop(library.id, None)
 
     def _extract_rjcode(self, value: str) -> Optional[str]:

@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from ..config.settings import get_config, save_config
 from ..core.dlsite_service import get_dlsite_service
+from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +72,12 @@ class KikoeruDuplicateService:
     
     def __init__(self, config: Optional[KikoeruServerConfig] = None):
         self.config = config or self._load_config()
-        self._cache: Dict[str, tuple] = {}  # 缓存: rjcode -> (result, timestamp)
-        self._circle_id_cache: Dict[str, tuple[int, datetime]] = {}
+        # rjcode -> (result, timestamp)；原裸 dict 只在 hit 时清过期项，长期运行会累积。
+        # TTLCache + LRU 上限 2048，TTL 从 config 或默认 5min 派生；payload 保留 timestamp 兼容旧判断。
+        cache_ttl = max(int(getattr(self.config, "cache_ttl", 300) or 300), 60)
+        self._cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=cache_ttl, name="kikoeru.result")
+        # circle_id 缓存条目很小，但同样需要有上限。TTL 取 max(cache_ttl, 300)。
+        self._circle_id_cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=max(cache_ttl, 300), name="kikoeru.circle_id")
         self._session: Optional[aiohttp.ClientSession] = None
 
     def _get_circle_id_cache(self, keyword: str) -> int:

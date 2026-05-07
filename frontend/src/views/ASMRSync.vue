@@ -167,6 +167,9 @@
       :target-subdir-options="[]"
       :settings="downloadSettings"
       circle-name=""
+      :enable-direct-mode="true"
+      :existing-paths="existingRJPaths"
+      :direct-loading="locatingRJ"
       @submit="handlePreviewSubmit"
     />
 
@@ -575,12 +578,19 @@ const previewStarting = ref(false)
 const previewPlans = ref([])
 const libraries = ref([])
 const downloadSettings = ref({
+  mode: 'classify',
   targetLibraryId: '',
   targetSubdir: '',
   namingMode: 'api',
   classifyMode: 'none',
-  downloadBasePath: ''
+  downloadBasePath: '',
+  directLibraryId: '',
+  directBasePath: '',
+  directLibraryType: '',
+  directSubPath: ''
 })
+const existingRJPaths = ref({})
+const locatingRJ = ref(false)
 const enhancedDashboard = ref({
   total_rj: 0,
   total_resources: 0,
@@ -841,13 +851,38 @@ async function loadLibraries() {
   } catch { /* ignore */ }
 }
 
-function openEnhancedPreview() {
+async function openEnhancedPreview() {
   const selectedRjs = selectedPlanSet.value
   const plans = enhancedPlans.value.filter(plan => selectedRjs.has(plan.rjcode))
   if (!plans.length) return ElMessage.warning('请先选中至少一个计划')
   previewPlans.value = plans
   enhancedPreviewVisible.value = true
   loadLibraries()
+  loadExistingRJPaths(plans.map(plan => plan.rjcode))
+}
+
+async function loadExistingRJPaths(rjcodes) {
+  const list = Array.from(new Set((rjcodes || []).map(rj => String(rj || '').trim().toUpperCase()).filter(Boolean)))
+  if (!list.length) {
+    existingRJPaths.value = {}
+    return
+  }
+  locatingRJ.value = true
+  try {
+    const data = await asmrSyncApi.locateRJ(list)
+    const map = {}
+    ;(data?.results || []).forEach(item => {
+      const rj = String(item?.rjcode || '').toUpperCase()
+      if (!rj) return
+      map[rj] = { matches: Array.isArray(item?.matches) ? item.matches : [] }
+    })
+    existingRJPaths.value = map
+  } catch (error) {
+    console.error('locate-rj 失败:', error)
+    existingRJPaths.value = {}
+  } finally {
+    locatingRJ.value = false
+  }
 }
 
 async function handlePreviewSubmit(payload) {

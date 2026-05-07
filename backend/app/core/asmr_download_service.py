@@ -15,6 +15,7 @@ from datetime import datetime
 from yarl import URL
 
 from ..config.settings import get_config
+from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,9 @@ class ASMRDownloadService:
         self.config = config
         self._session: Optional[aiohttp.ClientSession] = None
         self._current_api_index = 0
-        self._cache: Dict = {}
-        self._cache_ttl = 300  # 5分钟缓存
+        # linked_* 关联作品信息缓存：key=f"linked_{workno}"；TTL+LRU 控上限
+        self._cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=300, name="asmr_download.linked")
+        self._cache_ttl = 300  # 5分钟缓存（给现有内层 TTL 判定用，兼容）
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """获取或创建 HTTP 会话"""

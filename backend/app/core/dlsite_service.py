@@ -17,6 +17,8 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from urllib.parse import parse_qs, urlparse
 
+from .ttl_cache import TTLCache
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,13 +56,16 @@ class DLsiteApiService:
     
     def __init__(self):
         self.client: Optional[httpx.AsyncClient] = None
-        self.cache: Dict[str, Dict] = {}  # 缓存 API 响应
-        self.cache_ttl = timedelta(hours=24)  # 缓存 24 小时
+        # 原 dict cache 在长期运行下会无界增长（HTML 页面 key 尤其大，单条 20-200KB）。
+        # 换成 TTL+LRU：容量上限 512，TTL 24h；payload 里仍保留 timestamp 字段，
+        # 原代码里自己对比 cache_ttl 的逻辑可以继续生效，功能零侵入。
+        self.cache: TTLCache = TTLCache(max_size=512, ttl_seconds=86400, name="dlsite.cache")
+        self.cache_ttl = timedelta(hours=24)  # 缓存 24 小时（沿用给现有代码做内层 TTL 判定）
         self._http_semaphore: Optional[asyncio.Semaphore] = None  # 并发限制，惰性初始化
         # 进行中的 HTTP 请求 Task，key=url，实现并发去重（参考 view.txt WorkPromise 机制）
         self._inflight: Dict[str, asyncio.Task] = {}
         # translation_info 专项缓存，key=workno，避免重复走 get_product_info
-        self._translation_info_cache: Dict[str, tuple] = {}
+        self._translation_info_cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=86400, name="dlsite.translation_info")
 
     def _normalize_workno(self, rjcode: str) -> str:
         value = str(rjcode or '').strip().upper()

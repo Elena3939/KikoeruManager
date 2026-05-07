@@ -656,18 +656,36 @@
                   class="email-watch-item"
                   :class="`is-${item.statusKey}`"
                 >
-                  <div class="email-watch-item-top">
-                    <span class="email-watch-rj mono">{{ item.rjcode || '—' }}</span>
-                    <span class="email-watch-status" :class="`is-${item.statusKey}`">{{ item.statusLabel }}</span>
+                  <div class="email-watch-cover">
+                    <img
+                      v-if="item.coverUrl"
+                      :src="item.coverUrl"
+                      :alt="item.title || item.rjcode || '新作封面'"
+                      loading="lazy"
+                      @error="handleEmailWatchCoverError($event, item)"
+                    >
+                    <div v-else class="email-watch-cover-fallback">
+                      <ImageIcon :size="22" />
+                    </div>
                   </div>
-                  <div class="email-watch-item-title">{{ item.title || item.rjcode || '未命名作品' }}</div>
-                  <div class="email-watch-item-circle">{{ item.circleName || '未知社团' }}</div>
-                  <div class="email-watch-item-meta">
-                    <span v-if="item.priceText" class="email-watch-meta-pill">{{ item.priceText }}</span>
-                    <span v-if="item.workType" class="email-watch-meta-pill">{{ item.workType }}</span>
-                    <span v-if="item.indexMode" class="email-watch-meta-pill">{{ item.indexMode }}</span>
+                  <div class="email-watch-body">
+                    <div class="email-watch-item-top">
+                      <span class="email-watch-rj mono">{{ item.rjcode || '—' }}</span>
+                      <span class="email-watch-status" :class="`is-${item.statusKey}`">{{ item.statusLabel }}</span>
+                    </div>
+                    <div class="email-watch-item-title">{{ item.title || item.rjcode || '未命名作品' }}</div>
+                    <div class="email-watch-info-list">
+                      <span><Users :size="13" /> {{ item.circleName || '未知社团' }}</span>
+                      <span><Clock :size="13" /> {{ item.releaseDate || '发售日待定' }}</span>
+                    </div>
+                    <div class="email-watch-item-meta">
+                      <span v-if="item.priceText" class="email-watch-meta-pill">{{ item.priceText }}</span>
+                      <span v-if="item.workType" class="email-watch-meta-pill">{{ item.workType }}</span>
+                      <span v-if="item.indexMode" class="email-watch-meta-pill">{{ item.indexMode }}</span>
+                      <span v-if="item.backfillMode" class="email-watch-meta-pill" :class="{ 'is-warning': item.backfillTriggered }">{{ item.backfillMode }}</span>
+                    </div>
+                    <div class="email-watch-item-note">{{ item.note }}</div>
                   </div>
-                  <div class="email-watch-item-note">{{ item.note }}</div>
                 </article>
               </div>
             </div>
@@ -3441,12 +3459,16 @@ function emailWatcherBatchModel(row) {
       circleName: String(childDetail.circle_name || childDetail.mail_circle_name || '').trim(),
       priceText: String(childDetail.price_text || '').trim(),
       workType: String(childDetail.work_type || '').trim(),
+      coverUrl: String(childDetail.image_url || '').trim(),
+      releaseDate: formatReleaseDate(childDetail.release_date),
       productUrl: String(childDetail.product_url || '').trim(),
       indexMode: String(childDetail.index_mode || '').trim(),
+      backfillMode: String(childDetail.backfill_mode || '').trim(),
+      backfillTriggered: Boolean(childDetail.backfill_triggered),
       statusKey: status === 'success' ? 'success' : 'failed',
       statusLabel: status === 'success' ? '索引完成' : '索引失败',
       note: status === 'success'
-        ? (String(childDetail.circle_name || '').trim() || '已完成社团索引')
+        ? (String(childDetail.backfill_mode || childDetail.circle_name || '').trim() || '已完成社团索引')
         : (String(childDetail.error || item?.summary || '').trim() || '索引失败'),
     }
   })
@@ -3457,8 +3479,12 @@ function emailWatcherBatchModel(row) {
     circleName: String(item?.circle_name || '').trim(),
     priceText: String(item?.price_text || '').trim(),
     workType: String(item?.work_type || '').trim(),
+    coverUrl: String(item?.image_url || '').trim(),
+    releaseDate: formatReleaseDate(item?.release_date),
     productUrl: String(item?.product_url || '').trim(),
     indexMode: '',
+    backfillMode: '',
+    backfillTriggered: false,
     statusKey: 'default',
     statusLabel: '待处理',
     note: String(item?.mail_subject || '').trim() || '等待异步索引结果',
@@ -3858,6 +3884,36 @@ function buildSubtitleBatchDirectoryRows(detail) {
 function formatDateTime(iso) {
   if (!iso) return '—'
   return dayjs(iso).format('YYYY-MM-DD HH:mm')
+}
+
+function formatReleaseDate(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const parsed = dayjs(raw)
+  if (parsed.isValid()) return parsed.format('YYYY-MM-DD')
+  return raw
+}
+
+function buildDlsiteCoverUrl(rjcode) {
+  const normalized = String(rjcode || '').trim().toUpperCase()
+  const match = normalized.match(/^RJ(\d{6}|\d{8})$/)
+  if (!match) return ''
+  const folderUpper = (Math.floor(Number(match[1]) / 1000) + 1) * 1000
+  const folder = match[1].length === 8
+    ? `RJ${String(folderUpper).padStart(8, '0')}`
+    : `RJ${String(folderUpper).padStart(6, '0')}`
+  return `https://img.dlsite.jp/modpub/images2/work/doujin/${folder}/${normalized}_img_sam.jpg`
+}
+
+function handleEmailWatchCoverError(event, item) {
+  const target = event?.currentTarget
+  if (!target) return
+  const fallback = buildDlsiteCoverUrl(item?.rjcode)
+  if (fallback && target.src !== fallback) {
+    target.src = fallback
+    return
+  }
+  item.coverUrl = ''
 }
 
 function displayRowTime(row) {
@@ -5394,12 +5450,10 @@ watch(selectedRow, (row) => {
   flex-direction: column;
   gap: 14px;
   padding: 18px;
-  border-radius: 22px;
-  border: 1px solid rgba(125, 211, 252, 0.24);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,252,255,0.94)),
-    radial-gradient(circle at top right, rgba(103,232,249,0.12), transparent 48%);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.07);
 }
 
 .email-watch-head {
@@ -5456,21 +5510,66 @@ watch(selectedRow, (row) => {
   background: rgba(254, 242, 242, 0.92);
 }
 
+.email-watch-meta-pill.is-warning {
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.25);
+  background: rgba(255, 251, 235, 0.95);
+}
+
 .email-watch-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   gap: 14px;
 }
 
 .email-watch-item {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px;
+  gap: 14px;
+  padding: 12px;
   border-radius: 18px;
   border: 1px solid rgba(226, 232, 240, 0.85);
   background: rgba(255,255,255,0.92);
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.email-watch-item:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+}
+
+.email-watch-cover {
+  width: 112px;
+  min-width: 112px;
+  height: 112px;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: #f8fafc;
+}
+
+.email-watch-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.email-watch-cover-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+}
+
+.email-watch-body {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .email-watch-item.is-success {
@@ -5525,10 +5624,20 @@ watch(selectedRow, (row) => {
   color: #0f172a;
 }
 
-.email-watch-item-circle {
-  font-size: 13px;
-  font-weight: 600;
-  color: #2563eb;
+.email-watch-info-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #475569;
+}
+
+.email-watch-info-list span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
 }
 
 .email-watch-item-note {

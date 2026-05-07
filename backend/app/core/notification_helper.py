@@ -1,7 +1,54 @@
 """任务通知 payload 辅助工具。"""
 import os
+import re
 from datetime import datetime
 from typing import Any
+
+
+_DLSITE_RJ_RE = re.compile(r'^RJ(\d{6}|\d{8})$', re.IGNORECASE)
+
+
+def dlsite_cover_url(rjcode: Any, *, hd: bool = True) -> str:
+    """根据 RJ 号拼出 DLsite 公开封面 URL。
+
+    DLsite 图片资源是按 RJ 号规则化命名的：
+      - 高清主图：``https://img.dlsite.jp/modpub/images2/work/doujin/{folder}/{rj}_img_main.jpg``
+      - 240x240 缩略图：``https://img.dlsite.jp/resize/images2/work/doujin/{folder}/{rj}_img_main_240x240.jpg``
+    其中 ``folder`` 是把 RJ 数字部分按 1000 向上取整再补齐位数得到的目录段。
+    用于在没有 ``circle_works`` 元数据时给邮件兜底一张可访问的封面。
+    """
+    normalized = str(rjcode or "").strip().upper()
+    match = _DLSITE_RJ_RE.match(normalized)
+    if not match:
+        return ""
+    digits = match.group(1)
+    number = int(digits)
+    folder_upper = ((number // 1000) + 1) * 1000
+    folder = f"RJ{folder_upper:08d}" if len(digits) == 8 else f"RJ{folder_upper:06d}"
+    if hd:
+        return f"https://img.dlsite.jp/modpub/images2/work/doujin/{folder}/{normalized}_img_main.jpg"
+    return f"https://img.dlsite.jp/resize/images2/work/doujin/{folder}/{normalized}_img_main_240x240.jpg"
+
+
+def upgrade_dlsite_cover_to_hd(url: Any, rjcode: Any = "") -> str:
+    """把 DLsite 240x240 缩略图 URL 升级为高清主图 URL。
+
+    `circle_completion_service._normalize_dlsite_cover_url` 默认把所有 DLsite
+    封面归一到 240x240 缩略图（界面列表用），但邮件里需要更大尺寸来避免拉伸
+    模糊。这里把 ``_img_main_240x240.jpg`` 替换回 ``_img_main.jpg``，并把
+    ``/resize/images2/`` 路径改回 ``/modpub/images2/``。如果 URL 不是 DLsite
+    标准格式但 ``rjcode`` 提供了，回落到 :func:`dlsite_cover_url` 重新拼。
+    """
+    text = str(url or "").strip()
+    if text:
+        if "_img_main_240x240.jpg" in text:
+            text = text.replace("_img_main_240x240.jpg", "_img_main.jpg")
+        if "/resize/images2/" in text:
+            text = text.replace("/resize/images2/", "/modpub/images2/")
+        if "_img_sam.jpg" in text:
+            text = text.replace("_img_sam.jpg", "_img_main.jpg")
+        return text
+    return dlsite_cover_url(rjcode) if rjcode else ""
 
 
 def set_notification_extra(task, **kwargs) -> None:

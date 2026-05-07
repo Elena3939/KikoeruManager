@@ -1398,8 +1398,11 @@ class TaskEngine:
                             task.complete()
                             try:
                                 from .notification_helper import (
+                                    _load_circle_work_map,
                                     build_recent_logs,
+                                    dlsite_cover_url,
                                     set_notification_extra,
+                                    upgrade_dlsite_cover_to_hd,
                                 )
                                 dispatch_records = list(
                                     (task.task_metadata or {}).get("multi_rj_dispatch_records") or []
@@ -1414,31 +1417,65 @@ class TaskEngine:
                                     f"压缩包内含 {len(subtask_ids)} 个独立 RJ 作品，"
                                     f"已自动拆分为独立入库子任务：{rj_list_text}"
                                 )
+                                # 一次性查 circle_works 把所有子 RJ 的封面 / 标题 / 社团名补出来；
+                                # 查不到的 RJ 用 DLsite 公开 URL 兜底，避免邮件出现一堆“无封面”。
+                                rj_work_codes = [
+                                    str(rec.get("rjcode") or "").strip().upper()
+                                    for rec in dispatch_records
+                                    if rec.get("rjcode")
+                                ]
+                                try:
+                                    work_map = _load_circle_work_map("", rj_work_codes)
+                                except Exception:
+                                    work_map = {}
+                                    logger.warning(
+                                        f"[{rjcode}] 拆分子任务卡片补元数据失败，回退仅展示 RJ 号",
+                                        exc_info=True,
+                                    )
                                 multi_cards: list[dict] = []
                                 for rec in dispatch_records:
                                     sub_rj_value = str(rec.get("rjcode") or "").strip().upper()
                                     sub_id_value = str(rec.get("task_id") or "").strip()
+                                    work_row = work_map.get(sub_rj_value) or {}
+                                    work_title_value = str(work_row.get("title") or "").strip() or sub_rj_value or "拆分子任务"
+                                    circle_name_value = str(work_row.get("maker_name") or "").strip()
+                                    cover_value = upgrade_dlsite_cover_to_hd(
+                                        work_row.get("image_url") or "",
+                                        sub_rj_value,
+                                    ) or dlsite_cover_url(sub_rj_value)
+                                    badges_text: list[str] = []
+                                    if work_row.get("has_asmr_one"):
+                                        badges_text.append("ASMR.one 可下载")
+                                    if work_row.get("has_kikoeru"):
+                                        badges_text.append("KIKOERU 已有")
+                                    changes_list: list[dict] = []
+                                    if circle_name_value:
+                                        changes_list.append({"icon": "users", "text": f"社团：{circle_name_value}"})
+                                    if badges_text:
+                                        changes_list.append({"icon": "tag", "text": " · ".join(badges_text)})
+                                    changes_list.append({
+                                        "icon": "git-branch",
+                                        "text": f"已派发独立子任务 {sub_id_value[:8]}" if sub_id_value else "已派发独立子任务",
+                                    })
                                     multi_cards.append({
                                         "rjcode": sub_rj_value,
-                                        "title": sub_rj_value or "拆分子任务",
-                                        "cover_url": "",
-                                        "circle_name": "",
+                                        "title": work_title_value,
+                                        "cover_url": cover_value,
+                                        "circle_name": circle_name_value,
                                         "size_text": "",
                                         "file_count": 0,
                                         "count_label": "",
-                                        "changes": [{
-                                            "icon": "git-branch",
-                                            "text": f"已派发独立子任务 {sub_id_value[:8]}" if sub_id_value else "已派发独立子任务",
-                                        }],
+                                        "changes": changes_list,
                                         "status": "pending",
                                         "error": "",
                                     })
                                 # 失败派发的 RJ 也单独成卡，方便邮件里立刻看到
                                 for fail in dispatch_failures:
+                                    fail_rj = str(fail.get("rjcode") or "").strip().upper()
                                     multi_cards.append({
-                                        "rjcode": str(fail.get("rjcode") or "").strip().upper(),
-                                        "title": str(fail.get("rjcode") or "派发失败"),
-                                        "cover_url": "",
+                                        "rjcode": fail_rj,
+                                        "title": fail_rj or "派发失败",
+                                        "cover_url": dlsite_cover_url(fail_rj) if fail_rj else "",
                                         "circle_name": "",
                                         "size_text": "",
                                         "file_count": 0,

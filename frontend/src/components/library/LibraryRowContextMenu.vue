@@ -43,6 +43,15 @@
           <span>直接打开</span>
         </button>
 
+        <button
+          type="button"
+          class="menu-item"
+          @click="emit('action', 'copy_name')"
+        >
+          <Copy :size="14" :stroke-width="2.2" class="menu-item-icon text-slate-500" />
+          <span>复制文件名</span>
+        </button>
+
         <div class="my-1 border-t border-slate-200"></div>
 
         <button
@@ -53,6 +62,17 @@
         >
           <Pencil :size="14" :stroke-width="2.2" class="menu-item-icon text-violet-600" />
           <span>重命名</span>
+        </button>
+
+        <button
+          v-if="showMove"
+          type="button"
+          class="menu-item"
+          :disabled="disableMove"
+          @click="emit('action', 'move')"
+        >
+          <FolderInput :size="14" :stroke-width="2.2" class="menu-item-icon text-sky-600" />
+          <span>移动到...</span>
         </button>
 
         <button
@@ -116,7 +136,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, ExternalLink, FolderCog, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Trash2 } from 'lucide-vue-next'
+import { Captions, Copy, ExternalLink, FolderCog, FolderInput, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Trash2 } from 'lucide-vue-next'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -135,6 +155,8 @@ const props = defineProps({
   disableDelete: { type: Boolean, default: false },
   showComputeSize: { type: Boolean, default: false },
   computingSizeId: { type: String, default: null },
+  showMove: { type: Boolean, default: false },
+  disableMove: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['close', 'action'])

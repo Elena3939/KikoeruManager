@@ -343,11 +343,20 @@ def _build_new_release_email_card_html(circle_name: str, items: List[Dict[str, o
     def esc(value: object) -> str:
         return html.escape(str(value or "").strip(), quote=True)
 
+    # 与默认邮件 / 设置邮件保持一致的浅色调色板，避免出现“全黑邮件”
     rows: List[str] = []
     for item in items:
         rjcode = esc(item.get("mail_rjcode") or item.get("display_rjcode") or item.get("canonical_rjcode") or item.get("rjcode"))
         title = esc(item.get("title") or rjcode or "新作")
-        image_url = esc(item.get("image_url") or "")
+        # DLsite 在我们存储时归一到了 240x240 缩略图，邮件里直接放会模糊，
+        # 这里统一升级为 _img_main 高清主图（同时兜底 RJ 拼接）。
+        try:
+            from .notification_helper import upgrade_dlsite_cover_to_hd
+            raw_image = str(item.get("image_url") or "").strip()
+            image_url_value = upgrade_dlsite_cover_to_hd(raw_image, item.get("canonical_rjcode") or item.get("display_rjcode") or item.get("rjcode") or "")
+        except Exception:
+            image_url_value = str(item.get("image_url") or "").strip()
+        image_url = esc(image_url_value)
         product_url = esc(item.get("product_url") or "")
         price_text = esc(item.get("price_text") or "")
         work_type = esc(item.get("work_type") or "")
@@ -355,32 +364,32 @@ def _build_new_release_email_card_html(circle_name: str, items: List[Dict[str, o
         display = esc(item.get("display_rjcode") or "")
         badges = []
         if price_text:
-            badges.append(f'<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 8px;border-radius:7px;background:#fff7ed;color:#c2410c;font-size:12px;font-weight:700;">{price_text}</span>')
+            badges.append(f'<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 10px;border-radius:999px;background:#fff7ed;color:#c2410c;font-size:12px;font-weight:700;border:1px solid #fed7aa;">{price_text}</span>')
         if work_type:
-            badges.append(f'<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 8px;border-radius:7px;background:#ecfeff;color:#0e7490;font-size:12px;font-weight:700;">{work_type}</span>')
+            badges.append(f'<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 10px;border-radius:999px;background:#ecfeff;color:#0e7490;font-size:12px;font-weight:700;border:1px solid #a5f3fc;">{work_type}</span>')
         if item.get("has_asmr_one"):
-            badges.append('<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 8px;border-radius:7px;background:#dcfce7;color:#15803d;font-size:12px;font-weight:700;">可下载</span>')
+            badges.append('<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 10px;border-radius:999px;background:#dcfce7;color:#15803d;font-size:12px;font-weight:700;border:1px solid #bbf7d0;">可下载</span>')
         if item.get("has_kikoeru"):
-            badges.append('<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 8px;border-radius:7px;background:#dbeafe;color:#1d4ed8;font-size:12px;font-weight:700;">服务器已有</span>')
+            badges.append('<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 10px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:12px;font-weight:700;border:1px solid #bfdbfe;">服务器已有</span>')
 
         image_cell = (
-            f'<img src="{image_url}" alt="{title}" style="display:block;width:100%;max-width:520px;height:auto;border-radius:12px;border:1px solid rgba(148,163,184,.25);object-fit:cover;">'
+            f'<img src="{image_url}" alt="{title}" style="display:block;width:100%;max-width:560px;height:auto;border-radius:12px;border:1px solid #e8ebf0;background:#f7f8fa;object-fit:contain;">'
             if image_url
-            else '<div style="width:100%;max-width:520px;height:180px;border-radius:12px;background:#1f2937;color:#94a3b8;font-size:13px;font-weight:700;text-align:center;line-height:180px;">No Cover</div>'
+            else '<div style="width:100%;max-width:560px;height:180px;border-radius:12px;background:#f7f8fa;color:#8a9099;font-size:13px;font-weight:700;text-align:center;line-height:180px;border:1px solid #e8ebf0;">无封面</div>'
         )
-        title_html = f'<a href="{product_url}" style="color:#f8fafc;text-decoration:none;" target="_blank">{title}</a>' if product_url else title
-        relation = f'<div style="margin-top:7px;color:#94a3b8;font-size:12px;font-weight:700;">{canonical} → {display}</div>' if canonical and display and canonical != display else ""
+        title_html = f'<a href="{product_url}" style="color:#151922;text-decoration:none;" target="_blank">{title}</a>' if product_url else title
+        relation = f'<div style="margin-top:7px;color:#7a828d;font-size:12px;font-weight:600;">{canonical} → {display}</div>' if canonical and display and canonical != display else ""
 
         rows.append(f'''
           <tr>
-            <td style="padding:14px 0;border-top:1px solid #1f2937;">
-              <div style="border-radius:16px;background:#020617;border:1px solid #1e293b;overflow:hidden;">
+            <td style="padding:14px 0;border-top:1px solid #eceef3;">
+              <div style="border-radius:16px;background:#ffffff;border:1px solid #e8ebf0;overflow:hidden;">
                 <div style="padding:14px 14px 0 14px;">{image_cell}</div>
                 <div style="padding:14px 16px 16px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;">
-                  <div style="margin-bottom:8px;color:#a5b4fc;font-size:13px;font-weight:900;letter-spacing:.04em;">{rjcode}</div>
-                  <div style="margin-bottom:10px;color:#f8fafc;font-size:20px;font-weight:900;line-height:1.38;word-break:break-word;">{title_html}</div>
+                  <div style="margin-bottom:8px;color:#7b4fb4;font-size:13px;font-weight:800;letter-spacing:.04em;">{rjcode}</div>
+                  <div style="margin-bottom:10px;color:#151922;font-size:20px;font-weight:760;line-height:1.38;word-break:break-word;">{title_html}</div>
                   <div style="margin-bottom:10px;">{''.join(badges)}</div>
-                  <div style="color:#cbd5e1;font-size:14px;line-height:1.7;word-break:break-word;">社团：{esc(item.get("circle_name") or circle_name)}</div>
+                  <div style="color:#596272;font-size:14px;line-height:1.7;word-break:break-word;">社团：{esc(item.get("circle_name") or circle_name)}</div>
                   {relation}
                 </div>
               </div>
@@ -389,16 +398,17 @@ def _build_new_release_email_card_html(circle_name: str, items: List[Dict[str, o
         ''')
 
     return f'''
-      <div style="margin:0;padding:14px;background:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#f8fafc;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;margin:0 auto;border-collapse:collapse;">
+      <div style="margin:0;padding:32px 14px;background:#f7f8fa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#151922;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:660px;margin:0 auto;border-collapse:collapse;">
           <tr>
-            <td style="padding:18px 16px;border-radius:18px;background:#020617;border:1px solid #1f2937;box-shadow:0 10px 30px rgba(0,0,0,.25);">
-              <div style="margin-bottom:6px;color:#22c55e;font-size:13px;font-weight:900;letter-spacing:.08em;">NEW RELEASE</div>
-              <div style="margin-bottom:10px;color:#f8fafc;font-size:24px;font-weight:900;line-height:1.28;word-break:break-word;">{esc(circle_name)} 有新作品发售</div>
-              <div style="margin-bottom:6px;color:#cbd5e1;font-size:14px;line-height:1.7;">已写入社团补全索引，可在 Prekikoeru 查看状态。</div>
+            <td style="padding:24px 28px;border-radius:18px;background:#ffffff;border:1px solid #e8ebf0;box-shadow:0 18px 48px rgba(20,24,31,.08);">
+              <div style="margin-bottom:8px;color:#15803d;font-size:13px;font-weight:900;letter-spacing:.08em;">NEW RELEASE</div>
+              <div style="margin-bottom:10px;color:#151922;font-size:24px;font-weight:760;line-height:1.28;word-break:break-word;">{esc(circle_name)} 有新作品发售</div>
+              <div style="margin-bottom:6px;color:#596272;font-size:14px;line-height:1.7;">已写入社团补全索引，可在 Prekikoeru 查看状态。</div>
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin-top:14px;">
                 {''.join(rows)}
               </table>
+              <div style="margin-top:18px;padding-top:14px;border-top:1px solid #eceef3;text-align:center;color:#8a9099;font-size:12px;line-height:1.7;">此邮件由 <strong style="color:#4f5661;font-weight:650;">Prekikoeru</strong> 自动生成。</div>
             </td>
           </tr>
         </table>
@@ -870,6 +880,7 @@ class EmailWatcherService:
                 "price_text": str(item.get("price_text") or "").strip(),
                 "work_type": str(item.get("work_type") or "").strip(),
                 "image_url": str(row.image_url or item.get("image_url") or "").strip(),
+                "release_date": product_release_date or str(metadata.get("release_date") or "").strip(),
                 "product_url": str(item.get("product_url") or "").strip(),
                 "has_asmr_one": bool(row.has_asmr_one),
                 "has_kikoeru": bool(row.has_kikoeru),
@@ -1430,8 +1441,11 @@ class EmailWatcherService:
                         "price_text": str(item.get("price_text") or "").strip(),
                         "work_type": str(item.get("work_type") or "").strip(),
                         "image_url": str(direct_result.get("image_url") or item.get("image_url") or "").strip(),
+                        "release_date": str(direct_result.get("release_date") or item.get("release_date") or "").strip(),
                         "product_url": str(item.get("product_url") or "").strip(),
                         "direct_upsert": True,
+                        "backfill_mode": "新社团全量补档" if direct_result.get("is_new_circle") else "新作直入",
+                        "backfill_triggered": bool(direct_result.get("is_new_circle")),
                     },
                 )
             except Exception:
@@ -1496,7 +1510,8 @@ class EmailWatcherService:
                         "mail_circle_name": str(item.get("circle_name") or "").strip(),
                         "price_text": str(item.get("price_text") or "").strip(),
                         "work_type": str(item.get("work_type") or "").strip(),
-                        "image_url": str(item.get("image_url") or "").strip(),
+                        "image_url": str(item.get("image_url") or tagged_work.get("image_url") or "").strip(),
+                        "release_date": str(item.get("release_date") or tagged_work.get("release_date") or "").strip(),
                         "product_url": str(item.get("product_url") or "").strip(),
                         "tagged_work": tagged_work,
                     },
@@ -1515,6 +1530,7 @@ class EmailWatcherService:
                 "price_text": str(item.get("price_text") or "").strip(),
                 "work_type": str(item.get("work_type") or "").strip(),
                 "image_url": str(item.get("image_url") or "").strip(),
+                "release_date": str(item.get("release_date") or tagged_work.get("release_date") or "").strip(),
                 "product_url": str(item.get("product_url") or "").strip(),
             }
         except Exception as exc:

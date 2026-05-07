@@ -34,6 +34,7 @@ from .asmr_resource_service import get_asmr_resource_service
 from .dlsite_service import get_dlsite_service
 from .kikoeru_duplicate_service import get_kikoeru_service
 from .metadata_service import MetadataService
+from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +48,17 @@ class CircleCompletionService:
         self.dlsite_service = get_dlsite_service()
         self.asmr_service = get_asmr_download_service()
         self.asmr_resource_service = get_asmr_resource_service()
-        self._index_jobs: Dict[str, Dict[str, Any]] = {}
-        self._public_variant_cache: Dict[str, bool] = {}
-        self._asmr_probe_cache: Dict[str, tuple[str, Optional[Dict[str, Any]]]] = {}
-        self._metadata_cache: Dict[str, Dict[str, Any]] = {}
-        self._canonical_cache: Dict[str, Dict[str, Any]] = {}
-        self._kikoeru_state_cache: Dict[str, Dict[str, Any]] = {}
+        # 长期运行下原裸 dict 会无界增长，全部换成 TTL+LRU 受控缓存：
+        # 索引任务保留 24h，足够前端轮询；超 64 个并发任务才挤掉最老。
+        self._index_jobs: TTLCache = TTLCache(max_size=64, ttl_seconds=86400, name="circle.index_jobs")
+        # variant / probe 是 RJ × link_type × lang 维度，量大但单条小，给较大上限。
+        self._public_variant_cache: TTLCache = TTLCache(max_size=4096, ttl_seconds=3600, name="circle.public_variant")
+        self._asmr_probe_cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=3600, name="circle.asmr_probe")
+        # metadata / canonical 单条体积大，限严些；1h TTL 足以覆盖一次社团补全流程。
+        self._metadata_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=3600, name="circle.metadata")
+        self._canonical_cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=3600, name="circle.canonical")
+        self._kikoeru_state_cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=600, name="circle.kikoeru_state")
+        # 下面两个原本就有 expires_at 字段，结构不变以兼容现有读写。
         self._kikoeru_circle_id_cache: Dict[str, tuple[str, float]] = {}
         self._local_download_fallback_cache: Dict[str, Any] = {"expires_at": 0.0, "data": {}}
 
@@ -3038,6 +3044,37 @@ class CircleCompletionService:
                 stored_display_rjcode = self.normalize_rjcode(row.display_rjcode) or self.normalize_rjcode(row.canonical_rjcode)
                 item["display_rjcode"] = stored_display_rjcode
                 item["linked_rjcodes"] = list(row.linked_rjcodes or [stored_display_rjcode or row.canonical_rjcode])
+                if not bool(item.get("has_kikoeru")):
+                    probe_candidates = [
+                        stored_display_rjcode,
+                        row.canonical_rjcode,
+                        row.asmr_available_rjcode,
+                        *(item.get("linked_rjcodes") or []),
+                        *list((link_map_by_canonical.get(row.canonical_rjcode) or {}).keys()),
+                        *(item.get("kikoeru_found_rjcodes") or []),
+                    ]
+                    kikoeru_state = await self._probe_kikoeru_state_for_candidates(probe_candidates, use_cache=False)
+                    found_rjcodes = []
+                    for code in list(kikoeru_state.get("found_rjcodes") or []):
+                        normalized_code = self.normalize_rjcode(code)
+                        if normalized_code and normalized_code not in found_rjcodes:
+                            found_rjcodes.append(normalized_code)
+                    subtitle_rjcodes = []
+                    for code in list(kikoeru_state.get("subtitle_rjcodes") or []):
+                        normalized_code = self.normalize_rjcode(code)
+                        if normalized_code and normalized_code not in subtitle_rjcodes:
+                            subtitle_rjcodes.append(normalized_code)
+                    if found_rjcodes:
+                        source_flags = {flag for flag in str(row.source_mask or "").split(",") if flag}
+                        source_flags.add("kikoeru")
+                        row.has_kikoeru = True
+                        row.kikoeru_found_rjcodes = found_rjcodes
+                        row.kikoeru_subtitle_rjcodes = subtitle_rjcodes
+                        row.source_mask = ",".join(sorted(source_flags))
+                        row.updated_at = datetime.now()
+                        item["has_kikoeru"] = True
+                        item["kikoeru_found_rjcodes"] = found_rjcodes
+                        item["kikoeru_subtitle_rjcodes"] = subtitle_rjcodes
                 if not str(item.get("title") or "").strip():
                     item["title"] = str((metadata_map.get(stored_display_rjcode) or {}).get("work_name") or row.title or "").strip()
                 release_date = str((metadata_map.get(stored_display_rjcode) or {}).get("release_date") or "").strip()
@@ -3139,6 +3176,7 @@ class CircleCompletionService:
                 "filtered_count": len(visible_items),
                 "works": visible_items,
             }
+            db.commit()
         finally:
             db.close()
         return result

@@ -188,7 +188,7 @@
                         </div>
                         <div class="v1-path-card">
                           <div class="v1-path-label">最终路径</div>
-                          <div class="v1-path-value">{{ getFinalOutputPath(task) }}</div>
+                          <div class="v1-path-value">{{ getFinalOutputDisplay(task) }}</div>
                         </div>
                       </div>
 
@@ -972,6 +972,16 @@ function getDownloadRoot(task) {
 
 function getFinalOutputPath(task) {
   return task?.task_metadata?.final_output_path || task?.output_path || task?.task_metadata?.target_path || '处理中'
+}
+
+function getFinalOutputDisplay(task) {
+  const resolved = String(task?.task_metadata?.final_output_path || task?.output_path || task?.task_metadata?.target_path || '').trim()
+  if (resolved) return resolved
+  const status = String(task?.display_status || task?.status || '')
+  if (status === 'completed' || status === 'partial_failed' || status === 'failed') {
+    return '未配置入库目标 · 仍在下载目录'
+  }
+  return '处理中'
 }
 
 function canRetryDownloadTask(task) {
