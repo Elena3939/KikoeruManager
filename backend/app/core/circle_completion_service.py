@@ -2078,31 +2078,121 @@ class CircleCompletionService:
         return {"owned_count": len(merged)}
 
     async def sync_owned_for_rj(self, rjcode: str, folder_path: str = "", library_id: str = "") -> None:
+        """单 RJ 入库后增量同步本地拥有态索引。
+
+        相对于早期实现，这里多做了两件事：
+
+        1. **反向匹配 linked_rjcodes**：CircleWork 索引时算出来的 canonical 与
+           入库时 `resolve_canonical_rj` 算出来的 canonical 可能因为 DLsite
+           数据更新或解析逻辑差异而不一致，单写一条 `LibraryOwnedWork(canonical=A)`
+           会让 LEFT JOIN 在另一个 canonical 上漏匹配。这里用 SQLite JSON LIKE
+           兜底：只要 `CircleWork.linked_rjcodes` 含当前 RJ，就把这条 row 的
+           `canonical_rjcode` 也写进 LibraryOwnedWork。
+
+        2. **完成后通过 SSE 广播 `circle_owned_synced`**：让正在浏览社团补全
+           页的前端可以秒级看到状态翻转，无需手动刷新。
+        """
         normalized_rj = self.normalize_rjcode(rjcode)
         if not normalized_rj:
             return
-        canonical_info = await self.resolve_canonical_rj(normalized_rj)
-        canonical = canonical_info["canonical_rjcode"] or normalized_rj
+        try:
+            canonical_info = await self.resolve_canonical_rj(normalized_rj)
+        except Exception:
+            logger.warning(
+                "[社团补全] sync_owned_for_rj canonical 解析失败 rj=%s，回退使用自身",
+                normalized_rj,
+                exc_info=True,
+            )
+            canonical_info = {}
+        canonical = self.normalize_rjcode(
+            (canonical_info or {}).get("canonical_rjcode") or normalized_rj
+        ) or normalized_rj
+
+        # 函数内部局部 import，与本文件其他位置（search_circles）一致，避免污染顶层 import。
+        from sqlalchemy import or_ as sa_or
+
+        affected_circle_ids: set[str] = set()
+        target_canonicals: set[str] = {canonical}
+        reverse_match_count = 0
 
         db = SessionLocal()
         try:
-            row = db.query(LibraryOwnedWork).filter(LibraryOwnedWork.canonical_rjcode == canonical).first()
-            owned_rjcodes = set(row.owned_rjcodes or []) if row else set()
-            owned_rjcodes.add(normalized_rj)
-            if row is None:
-                row = LibraryOwnedWork(canonical_rjcode=canonical)
-                db.add(row)
-            row.owned_rjcodes = sorted(owned_rjcodes)
-            row.primary_folder_path = folder_path or row.primary_folder_path
-            row.library_id = library_id or row.library_id
-            row.folder_count = max(int(row.folder_count or 0), 1)
-            row.updated_at = datetime.now()
+            # === 反向匹配：找出所有 CircleWork 行，其 canonical 或 linked_rjcodes 关联到本次 RJ ===
+            # 优先索引点查；linked_rjcodes JSON LIKE 仅作为兜底（覆盖 canonical 不一致的边界）。
+            json_pattern = f'%"{normalized_rj}"%'
+            related_rows = (
+                db.query(
+                    CircleWork.canonical_rjcode.label("canonical_rjcode"),
+                    CircleWork.circle_id.label("circle_id"),
+                )
+                .filter(
+                    sa_or(
+                        CircleWork.canonical_rjcode == canonical,
+                        CircleWork.canonical_rjcode == normalized_rj,
+                        CircleWork.display_rjcode == normalized_rj,
+                        CircleWork.linked_rjcodes.like(json_pattern),
+                    )
+                )
+                .all()
+            )
+            reverse_match_count = len(related_rows)
+            for related in related_rows:
+                related_canonical = self.normalize_rjcode(related.canonical_rjcode)
+                if related_canonical:
+                    target_canonicals.add(related_canonical)
+                related_circle_id = str(related.circle_id or "").strip()
+                if related_circle_id:
+                    affected_circle_ids.add(related_circle_id)
+
+            # === 对每个 canonical upsert LibraryOwnedWork ===
+            now_ts = datetime.now()
+            for c in target_canonicals:
+                row = db.query(LibraryOwnedWork).filter(LibraryOwnedWork.canonical_rjcode == c).first()
+                owned_rjcodes = set(row.owned_rjcodes or []) if row else set()
+                owned_rjcodes.add(normalized_rj)
+                if c != normalized_rj:
+                    # 覆盖 canonical 自身也存进 owned_rjcodes，便于 owned_rjcodes 里既能看到
+                    # 入库的具体 RJ，又能看到该作品的 canonical RJ。
+                    owned_rjcodes.add(c)
+                if row is None:
+                    row = LibraryOwnedWork(canonical_rjcode=c)
+                    db.add(row)
+                row.owned_rjcodes = sorted(owned_rjcodes)
+                row.primary_folder_path = folder_path or row.primary_folder_path
+                row.library_id = library_id or row.library_id
+                row.folder_count = max(int(row.folder_count or 0), 1)
+                row.updated_at = now_ts
             db.commit()
         except Exception:
             db.rollback()
             logger.warning("[社团补全] 增量更新拥有态失败 %s", normalized_rj, exc_info=True)
+            return
         finally:
             db.close()
+
+        logger.info(
+            "[社团补全] 入库同步 rj=%s canonical=%s -> 写入 %d 个 canonical(反向匹配 %d 行)，影响社团=%s",
+            normalized_rj,
+            canonical,
+            len(target_canonicals),
+            reverse_match_count,
+            ",".join(sorted(affected_circle_ids)) if affected_circle_ids else "<无>",
+        )
+
+        # === SSE 广播：通知前端"该 RJ 已入库，请刷新相关社团" ===
+        # 不挂 NotificationInbox（不是真正的"通知"，只是数据变更信号），所以走轻量事件类型。
+        # 任何异常都不能反向影响入库主流程。
+        try:
+            from .task_notification_service import _sse_broadcast
+
+            _sse_broadcast({
+                "type": "circle_owned_synced",
+                "rjcode": normalized_rj,
+                "canonicals": sorted(target_canonicals),
+                "circle_ids": sorted(affected_circle_ids),
+            })
+        except Exception:
+            logger.debug("[社团补全] SSE 广播失败 rj=%s", normalized_rj, exc_info=True)
 
     async def index_circle_catalog(
         self,
@@ -2828,84 +2918,143 @@ class CircleCompletionService:
         }
 
     async def search_circles(self, keyword: str = "", limit: int = 30) -> List[Dict[str, Any]]:
+        """
+        返回最近索引的社团目录卡片数据（左侧目录用）。
+
+        关键修复（vs. 旧版）：
+        - SQL 端 LIKE 过滤 + 排序 + LIMIT，不再 .all() 拉全表后再 Python 过滤；
+          社团数量大时显著降低延迟、降低数据库锁占用。
+        - server_owned / missing 与 build_circle_completion_view 对齐：
+          通过 LEFT JOIN LibraryOwnedWork 把"本地已有但服务器没有"的作品也算进
+          完整 owned，否则左侧"缺失 N 个"和右侧"缺失 M 个"长期对不上。
+        - 新作判定改为 48h 窗口；时间基准用 CircleWork.email_watcher_first_seen_at
+          （只在邮件首次发现时写入，不会被 onupdate 刷新），fallback 到 created_at。
+          避免老作品被全量索引刷新 updated_at 后被误判为"新作"的 BUG。
+        """
+        from sqlalchemy import or_ as sa_or, func as sa_func
+
         normalized = self.normalize_circle_name(keyword)
+        safe_limit = max(1, int(limit))
+
         db = SessionLocal()
         try:
-            rows = db.query(CircleCatalog).order_by(CircleCatalog.last_indexed_at.desc()).all()
-            out = []
-            seen_keys = set()
-            collected_ids = []
+            catalog_query = db.query(CircleCatalog).order_by(CircleCatalog.last_indexed_at.desc())
+            if normalized:
+                pattern = f"%{normalized}%"
+                # circle_name_normalized 列在写入时已 NFKC + lower 化；
+                # circle_name / circle_id 用 SQL lower() 兜底，避免漏匹配。
+                catalog_query = catalog_query.filter(
+                    sa_or(
+                        CircleCatalog.circle_name_normalized.like(pattern),
+                        sa_func.lower(CircleCatalog.circle_name).like(pattern),
+                        sa_func.lower(CircleCatalog.circle_id).like(pattern),
+                    )
+                )
+            # 留少量冗余给同名去重，避免去重后不足 safe_limit。
+            rows = catalog_query.limit(safe_limit * 2 + 16).all()
+
+            out: List[Dict[str, Any]] = []
+            seen_keys: Set[str] = set()
+            collected_ids: List[str] = []
             for row in rows:
-                if normalized:
-                    haystack = f"{row.circle_name or ''} {row.circle_id or ''} {row.circle_name_normalized or ''}".lower()
-                    if normalized not in haystack:
-                        continue
                 dedupe_key = str(row.circle_name_normalized or "").strip() or str(row.circle_id or "").strip()
                 if dedupe_key in seen_keys:
                     continue
                 seen_keys.add(dedupe_key)
                 out.append(row.to_dict())
                 collected_ids.append(row.circle_id)
-                if len(out) >= max(1, int(limit)):
+                if len(out) >= safe_limit:
                     break
 
-            # 批量查询每个社团的作品计数
             if collected_ids:
-                from sqlalchemy import func as sa_func, Integer
-                count_rows = (
+                # === 完整 owned 计算（与右侧详情对齐）===
+                # LEFT JOIN LibraryOwnedWork：CircleWork × LibraryOwnedWork 是 1 对 1，
+                # 不会膨胀；在 Python 端做聚合，避免 SQLite case-when 跨方言复杂度。
+                work_join_rows = (
                     db.query(
-                        CircleWork.circle_id,
-                        sa_func.count(CircleWork.id).label("total"),
-                        sa_func.sum(sa_func.cast(CircleWork.has_kikoeru, Integer)).label("kikoeru"),
-                        sa_func.sum(sa_func.cast(CircleWork.has_asmr_one, Integer)).label("asmr"),
-                        sa_func.sum(sa_func.cast(CircleWork.has_dlsite, Integer)).label("dlsite"),
+                        CircleWork.circle_id.label("circle_id"),
+                        CircleWork.has_kikoeru.label("has_kikoeru"),
+                        CircleWork.has_asmr_one.label("has_asmr_one"),
+                        CircleWork.has_dlsite.label("has_dlsite"),
+                        LibraryOwnedWork.canonical_rjcode.label("local_canonical"),
+                    )
+                    .outerjoin(
+                        LibraryOwnedWork,
+                        LibraryOwnedWork.canonical_rjcode == CircleWork.canonical_rjcode,
                     )
                     .filter(CircleWork.circle_id.in_(collected_ids))
-                    .group_by(CircleWork.circle_id)
                     .all()
                 )
-                counts_map = {
-                    r.circle_id: {
-                        "total_works": int(r.total or 0),
-                        "server_owned": int(r.kikoeru or 0),
-                        "asmr_available": int(r.asmr or 0),
-                        "dl_works": int(r.dlsite or 0),
-                    }
-                    for r in count_rows
-                }
-                for item in out:
-                    stats = counts_map.get(item["circle_id"], {})
-                    item["total_works"] = stats.get("total_works", 0)
-                    item["server_owned_count"] = stats.get("server_owned", 0)
-                    item["server_owned"] = stats.get("server_owned", 0)
-                    item["missing"] = max(0, item["total_works"] - item["server_owned"])
-                    item["asmr_available"] = stats.get("asmr_available", 0)
-                    item["dl_works"] = stats.get("dl_works", 0)
+                stats_map: Dict[str, Dict[str, int]] = {}
+                for r in work_join_rows:
+                    s = stats_map.setdefault(r.circle_id, {
+                        "total_works": 0,
+                        "kikoeru_owned": 0,
+                        "asmr_available": 0,
+                        "dl_works": 0,
+                        "owned": 0,
+                        "local_owned": 0,
+                    })
+                    s["total_works"] += 1
+                    if r.has_kikoeru:
+                        s["kikoeru_owned"] += 1
+                    if r.has_asmr_one:
+                        s["asmr_available"] += 1
+                    if r.has_dlsite:
+                        s["dl_works"] += 1
+                    is_server_owned = bool(r.has_kikoeru)
+                    is_local_owned = r.local_canonical is not None
+                    if is_local_owned:
+                        s["local_owned"] += 1
+                    if is_server_owned or is_local_owned:
+                        s["owned"] += 1
 
-                # 批量统计邮件新作数量（source_tags）
+                for item in out:
+                    stats = stats_map.get(item["circle_id"], {})
+                    total = int(stats.get("total_works", 0))
+                    owned = int(stats.get("owned", 0))
+                    item["total_works"] = total
+                    item["dl_works"] = int(stats.get("dl_works", 0))
+                    item["asmr_available"] = int(stats.get("asmr_available", 0))
+                    # server_owned 在新口径下表示"完整已满足"，与右侧 owned_count 对齐；
+                    # 同时给前端将来需要分维度展示时用的纯 kikoeru / 本地两个独立字段。
+                    item["server_owned"] = owned
+                    item["server_owned_count"] = owned
+                    item["owned_count"] = owned
+                    item["kikoeru_owned_count"] = int(stats.get("kikoeru_owned", 0))
+                    item["local_owned_count"] = int(stats.get("local_owned", 0))
+                    item["missing"] = max(0, total - owned)
+
+                # === 新作判定：48h 窗口 + email_watcher_first_seen_at 时间锚 ===
                 tag_rows = (
-                    db.query(CircleWork.circle_id, CircleWork.source_tags, CircleWork.updated_at, CircleWork.created_at)
+                    db.query(
+                        CircleWork.circle_id,
+                        CircleWork.source_tags,
+                        CircleWork.email_watcher_first_seen_at,
+                        CircleWork.created_at,
+                    )
                     .filter(CircleWork.circle_id.in_(collected_ids))
                     .all()
                 )
                 new_work_map: Dict[str, int] = {}
-                new_work_24h_map: Dict[str, int] = {}
+                new_work_48h_map: Dict[str, int] = {}
                 now_local = get_local_now()
-                window_seconds = 24 * 60 * 60
+                window_seconds = 48 * 60 * 60
                 for tr in tag_rows:
                     tags = tr.source_tags
                     if not (isinstance(tags, list) and "email_watcher" in tags):
                         continue
                     new_work_map[tr.circle_id] = new_work_map.get(tr.circle_id, 0) + 1
-                    seen_at = tr.updated_at or tr.created_at
-                    if seen_at and hasattr(seen_at, "timestamp"):
-                        age_seconds = now_local.timestamp() - seen_at.timestamp()
+                    # 优先 email_watcher_first_seen_at（专用稳定锚），fallback 到 created_at；
+                    # 不再使用 updated_at —— 它会被 onupdate 刷新，导致老作品被误判为新作。
+                    anchor = tr.email_watcher_first_seen_at or tr.created_at
+                    if anchor and hasattr(anchor, "timestamp"):
+                        age_seconds = now_local.timestamp() - anchor.timestamp()
                         if 0 <= age_seconds <= window_seconds:
-                            new_work_24h_map[tr.circle_id] = new_work_24h_map.get(tr.circle_id, 0) + 1
+                            new_work_48h_map[tr.circle_id] = new_work_48h_map.get(tr.circle_id, 0) + 1
 
                 # 批量统计未发售（join WorkMetadata.release_date）
-                from datetime import date as _date
-                today_str = _date.today().isoformat()
+                today_str = date.today().isoformat()
                 unreleased_rows = (
                     db.query(CircleWork.circle_id, WorkMetadata.release_date)
                     .join(WorkMetadata, WorkMetadata.rjcode == CircleWork.canonical_rjcode)
@@ -2922,7 +3071,11 @@ class CircleCompletionService:
                     cid = item["circle_id"]
                     item["unreleased_count"] = unreleased_map.get(cid, 0)
                     item["new_works_count"] = new_work_map.get(cid, 0)
-                    item["new_works_24h_count"] = new_work_24h_map.get(cid, 0)
+                    item["new_works_48h_count"] = new_work_48h_map.get(cid, 0)
+                    # 兼容字段：老前端 bundle 仍可能读 new_works_24h_count；
+                    # 新口径下让它指向 48h 数值，不会出现"显示 24h 但其实是 48h"
+                    # 之外的语义偏差，因为本来产品定义就是 48h 内为新作。
+                    item["new_works_24h_count"] = new_work_48h_map.get(cid, 0)
 
             return out
         finally:
@@ -3016,6 +3169,22 @@ class CircleCompletionService:
                         metadata_lookup_rjcodes.append(normalized_candidate)
             metadata_map_all = self._load_cached_metadata_map(db, metadata_lookup_rjcodes)
 
+            # 注意：详情视图是"纯数据库读"路径，不再做任何 kikoeru / 外部 API 探测。
+            # 旧实现里曾经在这里对每个 has_kikoeru=False 的作品同步去 kikoeru 服务器
+            # 探一遍（以"顺便回填 has_kikoeru"），结果就是用户点一次社团卡片要等
+            # N 个 HTTP 请求，体验和"索引"行为混淆。状态写入应该集中在三个写路径：
+            #   - index_circle_catalog（建立 / 刷新整个社团索引）
+            #   - refresh_circle_works（刷新选中作品）
+            #   - email_watcher 直入（_upsert_email_release_work）
+            # 浏览路径只把数据库里的现状直接呈现出来。
+            #
+            # 这里也顺便给每个作品打 is_new_work 标记，使用与左侧 search_circles
+            # 完全一致的口径（email_watcher 来源 + 48h 窗口 + email_watcher_first_seen_at
+            # 锚，fallback 到 created_at）。前端 WorkCard / WorkListRow / 工具栏
+            # "新作 N" 统一读这一个字段，避免左右两侧出现"左边没有新作但右边
+            # 还闪新作特效"这种口径漂移。
+            now_local_for_view = get_local_now()
+            new_work_window_seconds = 48 * 60 * 60
             items = []
             for row in works:
                 owned_row = owned_rows.get(row.canonical_rjcode)
@@ -3023,6 +3192,15 @@ class CircleCompletionService:
                 item = row.to_dict()
                 item["circle_name"] = catalog.circle_name
                 item["local_owned"] = local_owned
+                # is_new_work 计算：必须同时满足 email_watcher 来源 + 锚在 48h 内
+                row_tags = row.source_tags
+                row_has_email_watcher = isinstance(row_tags, list) and "email_watcher" in row_tags
+                row_anchor = row.email_watcher_first_seen_at or row.created_at
+                _is_new = False
+                if row_has_email_watcher and row_anchor and hasattr(row_anchor, "timestamp"):
+                    _age = now_local_for_view.timestamp() - row_anchor.timestamp()
+                    _is_new = 0 <= _age <= new_work_window_seconds
+                item["is_new_work"] = _is_new
                 item["owned_rjcodes"] = list((owned_row.owned_rjcodes or []) if owned_row else [])
                 item["primary_folder_path"] = owned_row.primary_folder_path if owned_row else ""
                 item["has_dlsite"] = True
@@ -3044,37 +3222,6 @@ class CircleCompletionService:
                 stored_display_rjcode = self.normalize_rjcode(row.display_rjcode) or self.normalize_rjcode(row.canonical_rjcode)
                 item["display_rjcode"] = stored_display_rjcode
                 item["linked_rjcodes"] = list(row.linked_rjcodes or [stored_display_rjcode or row.canonical_rjcode])
-                if not bool(item.get("has_kikoeru")):
-                    probe_candidates = [
-                        stored_display_rjcode,
-                        row.canonical_rjcode,
-                        row.asmr_available_rjcode,
-                        *(item.get("linked_rjcodes") or []),
-                        *list((link_map_by_canonical.get(row.canonical_rjcode) or {}).keys()),
-                        *(item.get("kikoeru_found_rjcodes") or []),
-                    ]
-                    kikoeru_state = await self._probe_kikoeru_state_for_candidates(probe_candidates, use_cache=False)
-                    found_rjcodes = []
-                    for code in list(kikoeru_state.get("found_rjcodes") or []):
-                        normalized_code = self.normalize_rjcode(code)
-                        if normalized_code and normalized_code not in found_rjcodes:
-                            found_rjcodes.append(normalized_code)
-                    subtitle_rjcodes = []
-                    for code in list(kikoeru_state.get("subtitle_rjcodes") or []):
-                        normalized_code = self.normalize_rjcode(code)
-                        if normalized_code and normalized_code not in subtitle_rjcodes:
-                            subtitle_rjcodes.append(normalized_code)
-                    if found_rjcodes:
-                        source_flags = {flag for flag in str(row.source_mask or "").split(",") if flag}
-                        source_flags.add("kikoeru")
-                        row.has_kikoeru = True
-                        row.kikoeru_found_rjcodes = found_rjcodes
-                        row.kikoeru_subtitle_rjcodes = subtitle_rjcodes
-                        row.source_mask = ",".join(sorted(source_flags))
-                        row.updated_at = datetime.now()
-                        item["has_kikoeru"] = True
-                        item["kikoeru_found_rjcodes"] = found_rjcodes
-                        item["kikoeru_subtitle_rjcodes"] = subtitle_rjcodes
                 if not str(item.get("title") or "").strip():
                     item["title"] = str((metadata_map.get(stored_display_rjcode) or {}).get("work_name") or row.title or "").strip()
                 release_date = str((metadata_map.get(stored_display_rjcode) or {}).get("release_date") or "").strip()
@@ -3176,7 +3323,8 @@ class CircleCompletionService:
                 "filtered_count": len(visible_items),
                 "works": visible_items,
             }
-            db.commit()
+            # 详情视图全程纯读，不再需要 db.commit()。
+            # 写入由 index_circle_catalog / refresh_circle_works / email_watcher 直入负责。
         finally:
             db.close()
         return result

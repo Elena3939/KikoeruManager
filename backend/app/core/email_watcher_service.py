@@ -533,6 +533,10 @@ class EmailWatcherService:
                 if "email_watcher" not in tags:
                     tags.append("email_watcher")
                     work.source_tags = tags
+                    # 与 _upsert_email_release_work 对齐：首次添加 email_watcher tag 时
+                    # 同步记录 first_seen_at，让 48h 新作窗口拥有稳定时间锚。
+                    if not getattr(work, "email_watcher_first_seen_at", None):
+                        work.email_watcher_first_seen_at = datetime.now()
                     db.commit()
                     logger.info(
                         "[邮件监听] 已为 %s 添加 email_watcher 来源标签 -> circle=%s canonical=%s",
@@ -862,6 +866,10 @@ class EmailWatcherService:
             if "email_watcher" not in tags:
                 tags.append("email_watcher")
             row.source_tags = tags
+            # email_watcher_first_seen_at 仅在首次发现时写入，后续重复命中不刷新；
+            # 这样 48h 新作窗口才能稳定地从"首次出现时间"开始计时。
+            if not getattr(row, "email_watcher_first_seen_at", None):
+                row.email_watcher_first_seen_at = datetime.now()
             row.dlsite_cached_at = datetime.now()
             row.asmr_one_cached_at = datetime.now() if actual_norm else row.asmr_one_cached_at
             row.updated_at = datetime.now()

@@ -14,7 +14,57 @@ logger = logging.getLogger(__name__)
 class TaskCenterService:
     """统一聚合业务任务与引擎任务，供任务中心页面使用。"""
 
+    # detail 模式给 get_item / 详情面板用，需要完整 metadata + 文件树
     CACHE_TTL_SECONDS = 1.2
+    # summary 模式给 list / overview 用，可容忍稍长的延迟换取明显更轻的开销
+    SUMMARY_CACHE_TTL_SECONDS = 2.5
+    # pending / conflict 走数据库 + 可能有远程查询，单独缓存避免每次重建都触发
+    PENDING_CACHE_TTL_SECONDS = 5.0
+    CONFLICT_CACHE_TTL_SECONDS = 3.0
+
+    # summary 模式输出的 details.metadata 仅保留这些键，避免对完整 task_metadata 做 json_safe 深拷贝
+    # 注意：必须涵盖任务中心内部 dedup / merge 逻辑会读的字段，否则会破坏行为
+    SUMMARY_METADATA_KEYS: tuple = (
+        # 既有 _summary_item 已使用
+        "recovered_notice",
+        "extract_stage",
+        "archive_size",
+        "extract_started_at",
+        "extract_finished_at",
+        "nested_archive_count",
+        "verify_mode",
+        "failure_stage",
+        "conflict_resolution_action",
+        "retry_result",
+        "retry_completed_at",
+        "manual_retry_password_requested",
+        "linked_conflict_retrying",
+        # dedup / superseded 判定
+        "superseded_by_task_id",
+        "recovered_failure_ids",
+        "recovered_failure_count",
+        "recovered_conflict_count",
+        "task_domain",
+        # 联动字幕补配 / 串联流水线 merge
+        "source_mode",
+        "source_archive_path",
+        "manual_match_completed",
+        "linked_workbench_applied",
+        # 前端 list 页 getTaskSummary / getOutputPath 直接读
+        "subtitle_dir",
+    )
+
+    # summary 模式下 pending preview 仅保留这些键
+    SUMMARY_PREVIEW_KEYS: tuple = (
+        "source_rjcode",
+        "target_rjcode",
+        "subtitle_count",
+        "candidate_count",
+        "ready_candidate_count",
+        "selected_candidate",
+        "execute_reason",
+        "source_label",
+    )
 
     DOMAIN_LABELS = {
         "all": "全部",
@@ -85,9 +135,19 @@ class TaskCenterService:
     }
 
     def __init__(self):
-        self._items_cache: Optional[List[Dict[str, Any]]] = None
-        self._items_cache_key: Optional[Tuple[Any, ...]] = None
-        self._items_cache_at = 0.0
+        # detail 模式缓存（给 get_item 用）
+        self._detail_cache: Optional[List[Dict[str, Any]]] = None
+        self._detail_cache_signature: Optional[Tuple[Any, ...]] = None
+        self._detail_cache_at = 0.0
+        # summary 模式缓存（给 list / overview 用）
+        self._summary_cache: Optional[List[Dict[str, Any]]] = None
+        self._summary_cache_signature: Optional[Tuple[Any, ...]] = None
+        self._summary_cache_at = 0.0
+        # 子集缓存：pending imports / active conflicts，单独 TTL，避免每次重建都查库
+        self._pending_cache: Optional[List[Dict[str, Any]]] = None
+        self._pending_cache_at = 0.0
+        self._conflict_cache: Optional[List[ConflictWork]] = None
+        self._conflict_cache_at = 0.0
 
     def _safe_iso(self, value: Optional[datetime]) -> Optional[str]:
         return value.isoformat() if value else None
@@ -176,6 +236,26 @@ class TaskCenterService:
         except Exception:
             logger.debug("任务中心回填文件树失败: %s", normalized_root, exc_info=True)
         return items
+
+    def _build_summary_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """summary 模式专用：只挑 SUMMARY_METADATA_KEYS 里面的键做 json_safe，避免全量深拷贝。"""
+        if not isinstance(metadata, dict) or not metadata:
+            return {}
+        out: Dict[str, Any] = {}
+        for key in self.SUMMARY_METADATA_KEYS:
+            if key in metadata:
+                out[key] = self._json_safe(metadata.get(key))
+        return out
+
+    def _build_summary_preview(self, preview: Dict[str, Any]) -> Dict[str, Any]:
+        """summary 模式下 pending preview 只保留前端 list 页会读的字段。"""
+        if not isinstance(preview, dict) or not preview:
+            return {}
+        out: Dict[str, Any] = {}
+        for key in self.SUMMARY_PREVIEW_KEYS:
+            if key in preview:
+                out[key] = self._json_safe(preview.get(key))
+        return out
 
     def _ensure_file_tree_metadata(self, metadata: Dict[str, Any], resolved_target_path: str, source_path: str) -> Dict[str, Any]:
         if metadata.get("file_tree_items"):
@@ -309,7 +389,12 @@ class TaskCenterService:
             "details": summary_details,
         }
 
-    def _cache_key(self) -> Tuple[Any, ...]:
+    def _engine_signature(self) -> Tuple[Any, ...]:
+        """内存里就能算出的引擎任务签名，避免每次缓存校验都查库。
+
+        变化敏感字段（status / progress / current_step / error / completed_at）足以驱动
+        UI 刷新；conflict / pending 走自己的 TTL 缓存，整体缓存仍受 TTL 兜底。
+        """
         engine = get_task_engine()
         tasks = engine.get_all_tasks()
         task_signature = tuple(
@@ -327,46 +412,7 @@ class TaskCenterService:
             len(tasks),
             task_signature,
             len(getattr(engine, "processing", set()) or set()),
-            self._active_conflict_signature(),
         )
-
-    def _active_conflict_signature(self) -> Tuple[Any, ...]:
-        db = SessionLocal()
-        try:
-            rows = (
-                db.query(
-                    ConflictWork.id,
-                    ConflictWork.task_id,
-                    ConflictWork.rjcode,
-                    ConflictWork.conflict_type,
-                    ConflictWork.status,
-                    ConflictWork.created_at,
-                    ConflictWork.new_path,
-                )
-                .filter(
-                    ConflictWork.status.in_(["PENDING", "PROCESSING"]),
-                    ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
-                )
-                .order_by(ConflictWork.created_at.desc())
-                .all()
-            )
-            return tuple(
-                (
-                    self._safe_text(row[0]),
-                    self._safe_text(row[1]),
-                    self._safe_text(row[2]),
-                    self._safe_text(row[3]),
-                    self._safe_text(row[4]),
-                    self._safe_iso(row[5]) if isinstance(row[5], datetime) else self._safe_text(row[5]),
-                    self._safe_text(row[6]),
-                )
-                for row in rows
-            )
-        except Exception:
-            logger.exception("[任务中心] 生成问题作品缓存签名失败，当前轮次按空列表处理")
-            return tuple()
-        finally:
-            db.close()
 
     def _item_metadata(self, item: Dict[str, Any]) -> Dict[str, Any]:
         details = dict(item.get("details") or {})
@@ -710,7 +756,7 @@ class TaskCenterService:
                 return TaskStatus.PENDING.value
         return task.status.value
 
-    def _serialize_engine_task(self, task: Task) -> Dict[str, Any]:
+    def _serialize_engine_task(self, task: Task, *, mode: str = "detail") -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
         domain = self._infer_domain(task)
         source_path = self._safe_text(task.source_path)
@@ -721,7 +767,9 @@ class TaskCenterService:
             or self._safe_text(metadata.get("target_folder_path"))
             or self._safe_text(metadata.get("folder_path"))
         )
-        metadata = self._ensure_file_tree_metadata(metadata, resolved_target_path, source_path)
+        # 关键优化：summary 模式跳过 os.walk，它只给详情面板的文件树用
+        if mode == "detail":
+            metadata = self._ensure_file_tree_metadata(metadata, resolved_target_path, source_path)
         route_hint = self.DOMAIN_ROUTE_HINT.get(domain, "/tasks")
         rjcode = self._normalize_rjcode(
             self._safe_text(getattr(task, "rjcode", ""))
@@ -915,6 +963,12 @@ class TaskCenterService:
         if task.status == TaskStatus.COMPLETED and recovered_notice:
             current_step = recovered_notice
 
+        # 关键优化：summary 模式下只挑几个必要的键，跳过全量深拷贝
+        if mode == "detail":
+            details_metadata = self._json_safe(metadata)
+        else:
+            details_metadata = self._build_summary_metadata(metadata)
+
         return {
             "id": f"engine:{task.id}",
             "entity_id": task.id,
@@ -944,7 +998,7 @@ class TaskCenterService:
             "actions": self._build_engine_actions(task, domain),
             "details": {
                 "type": task.type.value,
-                "metadata": self._json_safe(metadata),
+                "metadata": details_metadata,
             },
         }
 
@@ -1009,7 +1063,7 @@ class TaskCenterService:
 
         return False
 
-    def _serialize_pending_subtitle_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _serialize_pending_subtitle_item(self, item: Dict[str, Any], *, mode: str = "detail") -> Dict[str, Any]:
         preview = dict(item.get("preview") or {})
         selected_candidate = dict(preview.get("selected_candidate") or {})
         source_rjcode = self._safe_text(preview.get("source_rjcode"))
@@ -1022,6 +1076,12 @@ class TaskCenterService:
         self._append_metric(metrics, "候选目录", preview.get("candidate_count"))
         self._append_metric(metrics, "可执行候选", preview.get("ready_candidate_count"))
         self._append_metric(metrics, "目标库", selected_candidate.get("library_id"))
+
+        # summary 模式下 preview 只保留几个前端 list 页会读的字段
+        if mode == "detail":
+            details_preview = self._json_safe(preview)
+        else:
+            details_preview = self._build_summary_preview(preview)
 
         return {
             "id": f"subtitle-pending:{item.get('id')}",
@@ -1052,19 +1112,25 @@ class TaskCenterService:
             "metrics": metrics,
             "actions": ["open_subtitle_import"],
             "details": {
-                "preview": self._json_safe(preview),
+                "preview": details_preview,
                 "can_execute": bool(item.get("can_execute")),
                 "source_mode": self._safe_text(item.get("source_mode")),
             },
         }
 
-    def _serialize_waiting_retry_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _serialize_waiting_retry_item(self, item: Dict[str, Any], *, mode: str = "detail") -> Dict[str, Any]:
         metadata = dict(item.get("task_metadata") or {})
         retry_reason = self._safe_text(item.get("retry_reason")) or self._safe_text(metadata.get("retry_reason"))
         retry_after = self._safe_text(item.get("retry_after")) or self._safe_text(metadata.get("retry_after"))
         metrics: List[Dict[str, str]] = []
         self._append_metric(metrics, "重试次数", item.get("retry_count") or metadata.get("retry_count"))
         self._append_metric(metrics, "下次重试", retry_after)
+
+        # summary 模式下不需要完整 task_metadata
+        if mode == "detail":
+            details_metadata = self._json_safe(metadata)
+        else:
+            details_metadata = self._build_summary_metadata(metadata)
 
         return {
             "id": f"waiting-retry:{item.get('id')}",
@@ -1094,7 +1160,7 @@ class TaskCenterService:
             "metrics": metrics,
             "actions": ["retry_waiting", "delete_waiting_retry"],
             "details": {
-                "task_metadata": self._json_safe(metadata),
+                "task_metadata": details_metadata,
                 "retry_reason": retry_reason,
                 "retry_after": retry_after,
             },
@@ -1158,9 +1224,9 @@ class TaskCenterService:
             )
         )
 
-    def _safe_serialize_engine_task(self, task: Task) -> Optional[Dict[str, Any]]:
+    def _safe_serialize_engine_task(self, task: Task, *, mode: str = "detail") -> Optional[Dict[str, Any]]:
         try:
-            return self._serialize_engine_task(task)
+            return self._serialize_engine_task(task, mode=mode)
         except Exception:
             logger.exception(
                 "[任务中心] 序列化引擎任务失败，已跳过: task_id=%s type=%s source=%s",
@@ -1170,9 +1236,9 @@ class TaskCenterService:
             )
             return None
 
-    def _safe_serialize_pending_item(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _safe_serialize_pending_item(self, item: Dict[str, Any], *, mode: str = "detail") -> Optional[Dict[str, Any]]:
         try:
-            return self._serialize_pending_subtitle_item(item)
+            return self._serialize_pending_subtitle_item(item, mode=mode)
         except Exception:
             logger.exception(
                 "[任务中心] 序列化字幕补配预检项失败，已跳过: id=%s task_id=%s source=%s",
@@ -1182,9 +1248,9 @@ class TaskCenterService:
             )
             return None
 
-    def _safe_serialize_waiting_retry_item(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _safe_serialize_waiting_retry_item(self, item: Dict[str, Any], *, mode: str = "detail") -> Optional[Dict[str, Any]]:
         try:
-            return self._serialize_waiting_retry_item(item)
+            return self._serialize_waiting_retry_item(item, mode=mode)
         except Exception:
             logger.exception(
                 "[任务中心] 序列化等待重试任务失败，已跳过: id=%s rj=%s",
@@ -1193,47 +1259,100 @@ class TaskCenterService:
             )
             return None
 
-    async def _build_all_items(self) -> List[Dict[str, Any]]:
+    async def _get_pending_items_cached(self) -> List[Dict[str, Any]]:
+        """pending imports 单独 TTL 缓存，避免每次 _build_all_items 都走 DB + 可能的远程查询。"""
         now = time.monotonic()
-        cache_key = self._cache_key()
         if (
-            self._items_cache is not None
-            and self._items_cache_key == cache_key
-            and now - self._items_cache_at <= self.CACHE_TTL_SECONDS
+            self._pending_cache is not None
+            and now - self._pending_cache_at <= self.PENDING_CACHE_TTL_SECONDS
         ):
-            return list(self._items_cache)
+            return list(self._pending_cache)
+        try:
+            subtitle_import_service = get_linked_subtitle_import_service()
+            fetched = await subtitle_import_service.list_pending_imports()
+            self._pending_cache = list(fetched or [])
+            self._pending_cache_at = now
+            return list(self._pending_cache)
+        except Exception:
+            logger.exception("[任务中心] 读取字幕补配预检列表失败，当前轮次已跳过 pending items")
+            return list(self._pending_cache or [])
 
+    def _get_active_conflicts_cached(self) -> List[ConflictWork]:
+        """active conflicts 单独 TTL 缓存，避免每次重建都查一次 ConflictWork 表。"""
+        now = time.monotonic()
+        if (
+            self._conflict_cache is not None
+            and now - self._conflict_cache_at <= self.CONFLICT_CACHE_TTL_SECONDS
+        ):
+            return list(self._conflict_cache)
+        try:
+            fetched = self._load_active_conflicts()
+            self._conflict_cache = list(fetched or [])
+            self._conflict_cache_at = now
+            return list(self._conflict_cache)
+        except Exception:
+            logger.exception("[任务中心] 读取问题作品列表失败，当前轮次已跳过 conflict items")
+            return list(self._conflict_cache or [])
+
+    async def _build_all_items(self, *, mode: str = "detail") -> List[Dict[str, Any]]:
+        """根据 mode 选择 detail / summary 两套独立缓存。summary 跳过重 IO。"""
+        now = time.monotonic()
+        is_summary = self._safe_text(mode).lower() == "summary"
+
+        if is_summary:
+            cache_data = self._summary_cache
+            cache_signature = self._summary_cache_signature
+            cache_at = self._summary_cache_at
+            ttl = self.SUMMARY_CACHE_TTL_SECONDS
+        else:
+            cache_data = self._detail_cache
+            cache_signature = self._detail_cache_signature
+            cache_at = self._detail_cache_at
+            ttl = self.CACHE_TTL_SECONDS
+
+        # 热路径：缓存未过期且引擎签名未变，直接返回。签名计算只走内存。
+        if cache_data is not None and now - cache_at <= ttl:
+            engine_signature_now = self._engine_signature()
+            if engine_signature_now == cache_signature:
+                return list(cache_data)
+        else:
+            engine_signature_now = None
+
+        if engine_signature_now is None:
+            engine_signature_now = self._engine_signature()
+
+        # 冷路径：重建。engine tasks 走对应 mode 的序列化；pending / conflict 走子集缓存。
         engine = get_task_engine()
-        items = [
+        items: List[Dict[str, Any]] = [
             serialized
-            for serialized in (self._safe_serialize_engine_task(task) for task in engine.get_all_tasks())
+            for serialized in (
+                self._safe_serialize_engine_task(task, mode=mode)
+                for task in engine.get_all_tasks()
+            )
             if serialized
         ]
 
-        subtitle_import_service = get_linked_subtitle_import_service()
-        try:
-            pending_items = await subtitle_import_service.list_pending_imports()
-        except Exception:
-            logger.exception("[任务中心] 读取字幕补配预检列表失败，当前轮次已跳过 pending items")
-            pending_items = []
+        pending_items_raw = await self._get_pending_items_cached()
         items.extend(
             serialized
-            for serialized in (self._safe_serialize_pending_item(item) for item in pending_items)
+            for serialized in (
+                self._safe_serialize_pending_item(item, mode=mode)
+                for item in pending_items_raw
+            )
             if serialized
         )
 
         waiting_retry_items = engine.get_waiting_retry_tasks_from_db()
         items.extend(
             serialized
-            for serialized in (self._safe_serialize_waiting_retry_item(item) for item in waiting_retry_items)
+            for serialized in (
+                self._safe_serialize_waiting_retry_item(item, mode=mode)
+                for item in waiting_retry_items
+            )
             if serialized
         )
 
-        try:
-            active_conflicts = self._load_active_conflicts()
-        except Exception:
-            logger.exception("[任务中心] 读取问题作品列表失败，当前轮次已跳过 conflict items")
-            active_conflicts = []
+        active_conflicts = self._get_active_conflicts_cached()
         conflict_items = [
             serialized
             for serialized in (self._safe_serialize_conflict_item(conflict) for conflict in active_conflicts)
@@ -1245,9 +1364,16 @@ class TaskCenterService:
         items = self._dedupe_items(items)
         items = [item for item in items if not self._is_superseded_failed_item(item)]
         items = self._sort_items(items)
-        self._items_cache = list(items)
-        self._items_cache_key = cache_key
-        self._items_cache_at = time.monotonic()
+
+        completed_at = time.monotonic()
+        if is_summary:
+            self._summary_cache = list(items)
+            self._summary_cache_signature = engine_signature_now
+            self._summary_cache_at = completed_at
+        else:
+            self._detail_cache = list(items)
+            self._detail_cache_signature = engine_signature_now
+            self._detail_cache_at = completed_at
         return items
 
     async def diagnose_serialization_failures(self) -> Dict[str, Any]:
@@ -1320,20 +1446,21 @@ class TaskCenterService:
         offset: int = 0,
         mode: str = "detail",
     ) -> Dict[str, Any]:
-        items = await self._build_all_items()
+        normalized_mode = self._safe_text(mode).lower() or "detail"
+        items = await self._build_all_items(mode=normalized_mode)
         items = self._filter_items(items, domain=domain, status=status, search=search)
         total = len(items)
         safe_limit = max(1, min(int(limit or 200), 500))
         safe_offset = max(0, int(offset or 0))
         page_items = items[safe_offset:safe_offset + safe_limit]
-        if self._safe_text(mode).lower() == "summary":
+        if normalized_mode == "summary":
             page_items = [self._summary_item(item) for item in page_items]
         return {
             "items": page_items,
             "total": total,
             "offset": safe_offset,
             "limit": safe_limit,
-            "mode": self._safe_text(mode).lower() or "detail",
+            "mode": normalized_mode,
             "generated_at": datetime.now().isoformat(),
         }
 
@@ -1348,7 +1475,8 @@ class TaskCenterService:
         if not normalized_item_id and not normalized_engine_task_id:
             raise ValueError("item_id 和 engine_task_id 不能同时为空")
 
-        items = await self._build_all_items()
+        # get_item 需要完整 metadata + 文件树，走 detail 模式
+        items = await self._build_all_items(mode="detail")
         for item in items:
             if normalized_item_id and self._safe_text(item.get("id")) == normalized_item_id:
                 return item
@@ -1357,7 +1485,8 @@ class TaskCenterService:
         return None
 
     async def get_overview(self) -> Dict[str, Any]:
-        items = await self._build_all_items()
+        # overview 只用来统计 + 提取 top items，summary 模式足矣
+        items = await self._build_all_items(mode="summary")
         counts_by_domain = {
             key: 0 for key in self.DOMAIN_LABELS.keys()
             if key != "all"

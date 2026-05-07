@@ -119,7 +119,7 @@
               <div class="circle-list-header">
                 <div class="circle-list-name">
                   <span>{{ circle.circle_name || circle.circle_id }}</span>
-                  <span v-if="(circle.new_works_24h_count || 0) > 0" class="circle-inline-new-badge">NEW</span>
+                  <span v-if="(circle.new_works_48h_count || 0) > 0" class="circle-inline-new-badge">NEW</span>
                 </div>
                 <div class="circle-list-id">{{ circle.circle_id }}</div>
               </div>
@@ -141,10 +141,10 @@
                 </div>
                 <span class="circle-list-percent">{{ getCircleOwnedPercent(circle) }}%</span>
               </div>
-              <div v-if="(circle.unreleased_count > 0) || (circle.new_works_24h_count > 0) || (circle.new_works_count > 0)" class="circle-list-tag-row">
+              <div v-if="(circle.unreleased_count > 0) || (circle.new_works_48h_count > 0) || (circle.new_works_count > 0)" class="circle-list-tag-row">
                 <span v-if="circle.unreleased_count > 0" class="circle-list-tag unreleased"><Calendar :size="9" /> {{ circle.unreleased_count }} 未发售</span>
-                <span v-if="(circle.new_works_24h_count || 0) > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_24h_count }} 新作(24h)</span>
-                <span v-else-if="circle.new_works_count > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_count }} 新作</span>
+                <span v-if="(circle.new_works_48h_count || 0) > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_48h_count }} 新作</span>
+                <span v-else-if="circle.new_works_count > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_count }} 过期新作</span>
               </div>
             </button>
           </div>
@@ -452,54 +452,41 @@
               </div>
 
               <!-- List -->
-              <div v-auto-animate class="owned-works-list grid grid-cols-1 xl:grid-cols-2 gap-3 pb-2 min-h-[300px] content-start">
-                <div v-if="pagedOwnedWorks.length === 0" class="col-span-full flex flex-col items-center justify-center py-12 text-slate-400 bg-white/50 rounded-xl border border-slate-200/50 border-dashed">
+              <!-- 改成和"缺失作品" tab 一样的双模式（card / list），共用 viewMode 开关，
+                   保持上面 stats / 筛选 chip / 搜索框不变。已满足作品默认走 cornerLabel
+                   = "已收录" 让卡片角标和原配色（绿色）统一。 -->
+              <template v-if="pagedOwnedWorks.length === 0">
+                <div class="flex flex-col items-center justify-center py-12 text-slate-400 bg-white/50 rounded-xl border border-slate-200/50 border-dashed">
                   <LibraryBig :size="32" class="mb-3 opacity-40" />
                   <p class="text-sm font-medium">没有找到符合条件的作品</p>
                 </div>
-                
-                <article v-for="item in pagedOwnedWorks" :key="item.canonical_rjcode" class="group flex items-center justify-between p-3.5 rounded-xl border border-slate-200/60 bg-white hover:border-slate-300 hover:shadow-sm transition-all duration-200">
-                  <div class="flex items-center gap-3.5 min-w-0">
-                    <div class="flex-shrink-0 w-8 h-8 rounded-full bg-emerald-50/80 border border-emerald-100/50 flex items-center justify-center text-emerald-500">
-                      <CheckCircle2 :size="16" stroke-width="2" />
-                    </div>
-                    <div class="flex flex-col gap-0.5 min-w-0">
-                      <h3 class="text-[14px] font-semibold text-slate-800 truncate" :title="item.title || item.canonical_rjcode">
-                        {{ item.title || item.canonical_rjcode }}
-                      </h3>
-                      <div class="flex items-center gap-2 text-xs text-slate-500">
-                        <span class="font-mono text-slate-500">{{ item.source_compare?.work_rjcode || item.canonical_rjcode }}</span>
-                        <template v-if="true">
-                          <span class="text-slate-300">•</span>
-                          <span
-                            class="inline-flex items-center px-1.5 py-0.5 rounded-md font-medium border"
-                            :class="[
-                              (item.preferred_variant?.group_short_label || '原作') === '简中' ? 'text-sky-600 bg-sky-50/80 border-sky-100/50' :
-                              (item.preferred_variant?.group_short_label || '原作') === '繁中' ? 'text-violet-600 bg-violet-50/80 border-violet-100/50' :
-                              (item.preferred_variant?.group_short_label || '原作') === '英' || (item.preferred_variant?.group_short_label || '原作') === '英文' ? 'text-rose-600 bg-rose-50/80 border-rose-100/50' :
-                              'text-slate-500 bg-slate-100/50 border-slate-200/50'
-                            ]"
-                          >
-                            {{ item.preferred_variant?.group_short_label || '原作' }}
-                          </span>
-                        </template>
-                        <template v-if="(!item.preferred_variant?.group_short_label || item.preferred_variant?.group_short_label === '原作') && item.subtitle_present">
-                          <span class="text-slate-300">•</span>
-                          <span class="inline-flex items-center gap-1 text-indigo-600 bg-indigo-50/80 px-1.5 py-0.5 rounded-md font-medium border border-indigo-100/50">
-                            <MessageSquareText :size="12" stroke-width="2.5" />
-                            字幕
-                          </span>
-                        </template>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="flex-shrink-0 ml-4 flex items-center">
-                    <span class="inline-flex items-center px-2 py-1 rounded-md bg-emerald-50 text-emerald-600 text-[11px] font-medium border border-emerald-100/50">
-                      已收录
-                    </span>
-                  </div>
-                </article>
-              </div>
+              </template>
+              <template v-else>
+                <div v-if="viewMode === 'card'" class="work-grid">
+                  <WorkCard
+                    v-for="(item, cardIdx) in pagedOwnedWorks"
+                    :key="item.canonical_rjcode"
+                    :item="item"
+                    :card-index="cardIdx"
+                    corner-label="已收录"
+                    :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
+                    @preview="openBatchPreview"
+                    @reimport="openReimportDialogForWork"
+                  />
+                </div>
+                <div v-else class="work-list">
+                  <WorkListRow
+                    v-for="(item, rowIdx) in pagedOwnedWorks"
+                    :key="item.canonical_rjcode"
+                    :item="item"
+                    :row-index="rowIdx"
+                    corner-label="已收录"
+                    :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
+                    @preview="openBatchPreview"
+                    @reimport="openReimportDialogForWork"
+                  />
+                </div>
+              </template>
               <div class="works-pager">
                 <el-pagination
                   v-model:current-page="ownedPage"
@@ -997,6 +984,39 @@ async function handleNewReleaseNotification(event) {
     await refreshActiveCircle()
   }
 }
+
+// === 入库 → 社团补全状态实时刷新 ===
+// 后端 sync_owned_for_rj 在写完 LibraryOwnedWork 后会通过 SSE 广播
+// circle_owned_synced 事件，useNotifications 转发为 prekikoeru:circle:owned-synced
+// 自定义事件。这里订阅后做两件事：
+//   1. 永远刷新左侧目录的 missing 计数（loadRecentCircles）
+//   2. 仅当事件命中当前打开的社团时刷新右侧详情（refreshActiveCircle）
+//
+// 用 300ms debounce + 命中集合，避免批量入库（一次几十条）触发刷新风暴；
+// 命中判断推迟到 timer fire 时点，避免 300ms 内 activeCircleId 切换导致用陈旧值。
+let _circleOwnedSyncedTimer = null
+const _circleOwnedSyncedHits = new Set()
+function handleCircleOwnedSynced(event) {
+  const detail = event?.detail || {}
+  const circleIds = Array.isArray(detail.circle_ids) ? detail.circle_ids : []
+  for (const cid of circleIds) {
+    const normalized = String(cid || '').trim()
+    if (normalized) _circleOwnedSyncedHits.add(normalized)
+  }
+  if (_circleOwnedSyncedTimer) clearTimeout(_circleOwnedSyncedTimer)
+  _circleOwnedSyncedTimer = setTimeout(async () => {
+    _circleOwnedSyncedTimer = null
+    const hits = new Set(_circleOwnedSyncedHits)
+    _circleOwnedSyncedHits.clear()
+    try {
+      const tasks = [loadRecentCircles()]
+      if (activeCircleId.value && hits.has(activeCircleId.value)) {
+        tasks.push(refreshActiveCircle())
+      }
+      await Promise.all(tasks)
+    } catch (_) { /* 静默：不影响其他交互 */ }
+  }, 300)
+}
 const uploadWorkbenchBackgroundActive = ref(false)
 const uploadWorkbenchRefreshing = ref(false)
 const worksPageSizes = [12, 24, 48, 96]
@@ -1106,10 +1126,11 @@ const unreleasedWorksCount = computed(() =>
   }).length
 )
 
+// 工具栏"新作 N"统计：直接读后端打的 item.is_new_work（与 WorkCard / WorkListRow
+// 同一来源），保证左侧 search_circles 的 new_works_48h_count、右侧卡片特效、
+// 以及这里的工具栏数字三方永远对齐，不会再出现"卡片闪新作但左侧没标记"。
 const newWorksCount = computed(() =>
-  (detail.works || []).filter(item =>
-    Array.isArray(item?.source_tags) && item.source_tags.includes('email_watcher')
-  ).length
+  (detail.works || []).filter(item => Boolean(item?.is_new_work)).length
 )
 
 function getCircleWorksCount(circle) {
@@ -1226,8 +1247,11 @@ const displayCircleList = computed(() => {
   }
 
   list.sort((left, right) => {
-    const newWork24hDiff = Number(right?.new_works_24h_count || 0) - Number(left?.new_works_24h_count || 0)
-    if (newWork24hDiff !== 0) return newWork24hDiff
+    // 优先按 48h 新作数 (邮件首次发现扣除 48h 之后就不再算"新")排序，
+    // 再按“过期新作”总量。保留两个字段避免“有邮件标记但超过 48h”的
+    // 社团被完全隐藏，可以随后补充 UI 区分。
+    const newWork48hDiff = Number(right?.new_works_48h_count || 0) - Number(left?.new_works_48h_count || 0)
+    if (newWork48hDiff !== 0) return newWork48hDiff
 
     const newWorkDiff = Number(right?.new_works_count || 0) - Number(left?.new_works_count || 0)
     if (newWorkDiff !== 0) return newWorkDiff
@@ -1668,6 +1692,7 @@ const canCancelRefreshJob = computed(() => isRefreshJobActive.value)
 
 onMounted(async () => {
   window.addEventListener('prekikoeru:notification:new', handleNewReleaseNotification)
+  window.addEventListener('prekikoeru:circle:owned-synced', handleCircleOwnedSynced)
   hydrateIndexJobState()
   hydrateRefreshJobState()
   hydrateDownloadWorkbenchState()
@@ -1717,6 +1742,11 @@ onActivated(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('prekikoeru:notification:new', handleNewReleaseNotification)
+  window.removeEventListener('prekikoeru:circle:owned-synced', handleCircleOwnedSynced)
+  if (_circleOwnedSyncedTimer) {
+    clearTimeout(_circleOwnedSyncedTimer)
+    _circleOwnedSyncedTimer = null
+  }
   if (completeConfettiTimer) {
     clearTimeout(completeConfettiTimer)
     completeConfettiTimer = null
@@ -2946,7 +2976,9 @@ async function startIndexCircleJob({ circleQuery: targetQuery, circleQueries: ra
     const result = await circleCompletionApi.startIndexCircle({
       circle_query: finalCircleQueries[0],
       circle_queries: finalCircleQueries,
-      force_refresh: true,
+      // 只索引新作时让 metadata / canonical 缓存生效，避免每次都把整社团 DLsite 列表重爬一遍；
+      // "建立 / 刷新索引"路径仍走 force_refresh，符合用户主动"刷新"的语义。
+      force_refresh: !onlyNewWorks,
       include_dlsite: true,
       include_kikoeru: true,
       only_new_works: Boolean(onlyNewWorks)

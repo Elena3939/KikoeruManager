@@ -157,9 +157,11 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
     """构建通知摘要和路由信息"""
     context_task = _select_notification_context_task(current_task, group_key, group_type)
     try:
-        from .task_center_service import TaskCenterService
-        tcs = TaskCenterService()
-        serialized = tcs._serialize_engine_task(context_task)
+        # 这里只需要 domain / title / rjcode / route_hint 等轻量字段，
+        # 走 summary 序列化避免触发文件树 os.walk；并且复用单例不重复建实例
+        from .task_center_service import get_task_center_service
+        tcs = get_task_center_service()
+        serialized = tcs._serialize_engine_task(context_task, mode="summary")
         domain = serialized.get('domain', 'task')
         domain_label = serialized.get('domain_label') or tcs.DOMAIN_LABELS.get(domain, domain)
         title = serialized.get('title') or serialized.get('source_label') or context_task.id[:8]

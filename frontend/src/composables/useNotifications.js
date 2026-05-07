@@ -46,6 +46,14 @@ function _connectSSE() {
             }
           }
         }
+        return
+      }
+      // 数据变更类信号事件：不进通知中心，只透传给关心它的页面/组件。
+      // - circle_owned_synced：某 RJ 已成功入库并写入 LibraryOwnedWork，前端 CircleCompletion 收到后可秒级刷新对应社团。
+      //   payload: { type, rjcode, canonicals: string[], circle_ids: string[] }
+      if (data.type === 'circle_owned_synced') {
+        window.dispatchEvent(new CustomEvent('prekikoeru:circle:owned-synced', { detail: data }))
+        return
       }
     } catch { /* ignore */ }
   }

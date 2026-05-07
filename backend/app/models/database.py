@@ -236,6 +236,9 @@ class CircleWork(Base):
     asmr_one_cached_at = Column(DateTime)
     dlsite_cached_at = Column(DateTime)
     source_tags = Column(JSON, default=list)  # 来源标签，如 ["email_watcher"]，用于"新作"标识
+    # 邮件监听首次发现该作品的时间。专用字段，不会被 onupdate 刷新；
+    # 配合 48h 窗口判定"是否仍属于新作"，避免被全量索引刷新 updated_at 后被误判。
+    email_watcher_first_seen_at = Column(DateTime, index=True)
     created_at = Column(DateTime, default=get_local_now)
     updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
 
@@ -265,6 +268,7 @@ class CircleWork(Base):
             'asmr_one_cached_at': self.asmr_one_cached_at.isoformat() if self.asmr_one_cached_at else None,
             'dlsite_cached_at': self.dlsite_cached_at.isoformat() if self.dlsite_cached_at else None,
             'source_tags': self.source_tags or [],
+            'email_watcher_first_seen_at': self.email_watcher_first_seen_at.isoformat() if self.email_watcher_first_seen_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -1218,12 +1222,24 @@ def init_db():
                 circle_work_missing_columns.append(("image_url", "VARCHAR(500)", "NULL"))
             if 'source_tags' not in circle_work_columns:
                 circle_work_missing_columns.append(("source_tags", "JSON", "'[]'"))
+            if 'email_watcher_first_seen_at' not in circle_work_columns:
+                circle_work_missing_columns.append(("email_watcher_first_seen_at", "DATETIME", "NULL"))
         for column_name, column_type, default_value in circle_work_missing_columns:
             conn.execute(
                 text(
                     f"ALTER TABLE circle_works ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
                 )
             )
+        # 为新增的 email_watcher_first_seen_at 创建索引（IF NOT EXISTS 兼容多次启动）
+        try:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_circle_works_email_watcher_first_seen_at "
+                    "ON circle_works(email_watcher_first_seen_at)"
+                )
+            )
+        except Exception:
+            _db_logger.warning("[数据库] circle_works.email_watcher_first_seen_at 索引创建失败", exc_info=True)
         result = conn.execute(text("PRAGMA table_info(asmr_download_sessions)"))
         session_columns = {row[1] for row in result.fetchall()}
         session_missing_columns = []

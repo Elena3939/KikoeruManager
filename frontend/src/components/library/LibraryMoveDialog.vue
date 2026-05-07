@@ -5,10 +5,13 @@
     destroy-on-close
     class="custom-preview-modal lib-move-modal"
     align-center
-    modal-class="custom-preview-overlay"
+    modal-class="custom-preview-overlay lib-move-overlay"
     @update:model-value="handleVisibleUpdate"
   >
-    <div class="window panel-enter glass-shell relative w-full max-w-[1100px] h-[640px] rounded-3xl flex flex-col overflow-hidden">
+    <div
+      class="window panel-enter glass-shell relative w-full rounded-3xl flex flex-col overflow-hidden"
+      :class="{ 'is-resizing': isResizingNav }"
+    >
       <!-- 顶部：标题 + 关闭 -->
       <div class="window-header flex items-center justify-between px-7 py-4">
         <div class="min-w-0">
@@ -52,18 +55,7 @@
 
         <!-- 面包屑路径栏 -->
         <div class="path-bar flex items-center gap-0.5 flex-1 min-w-0 overflow-x-auto no-scrollbar">
-          <button
-            type="button"
-            class="crumb-btn crumb-btn-root"
-            :disabled="loading || submitting"
-            @click="resetToHome"
-            title="本地库存"
-          >
-            <Monitor :size="13" :stroke-width="2.2" class="text-slate-500" />
-            <span class="ml-1">此电脑</span>
-          </button>
           <template v-if="currentLibrary">
-            <ChevronRight :size="13" :stroke-width="2.4" class="text-slate-300 shrink-0" />
             <button
               type="button"
               class="crumb-btn crumb-btn-disk"
@@ -72,22 +64,23 @@
               :title="rootPath"
             >
               <HardDrive :size="13" :stroke-width="2.2" class="text-amber-500" />
-              <span class="ml-1 truncate max-w-[220px]">{{ currentLibrary.name }}</span>
+              <span class="ml-1 truncate crumb-text crumb-text-disk">{{ currentLibrary.name }}</span>
             </button>
+            <template v-for="(crumb, idx) in breadcrumbs" :key="crumb.path">
+              <ChevronRight :size="13" :stroke-width="2.4" class="text-slate-300 shrink-0" />
+              <button
+                type="button"
+                class="crumb-btn"
+                :disabled="loading || submitting"
+                :class="{ 'crumb-btn-current': idx === breadcrumbs.length - 1 }"
+                @click="navigateToPath(crumb.path)"
+                :title="crumb.path"
+              >
+                <span class="truncate crumb-text">{{ crumb.name }}</span>
+              </button>
+            </template>
           </template>
-          <template v-for="(crumb, idx) in breadcrumbs" :key="crumb.path">
-            <ChevronRight :size="13" :stroke-width="2.4" class="text-slate-300 shrink-0" />
-            <button
-              type="button"
-              class="crumb-btn"
-              :disabled="loading || submitting"
-              :class="{ 'crumb-btn-current': idx === breadcrumbs.length - 1 }"
-              @click="navigateToPath(crumb.path)"
-              :title="crumb.path"
-            >
-              <span class="truncate max-w-[200px]">{{ crumb.name }}</span>
-            </button>
-          </template>
+          <span v-else class="path-empty text-[12px] text-slate-400 px-2">请在左侧选择一个本地库存</span>
         </div>
 
         <!-- 搜索框 -->
@@ -104,10 +97,13 @@
         </div>
       </div>
 
-      <!-- 主区：左 nav + 右 list -->
+      <!-- 主区：左 nav + 拖拽分割线 + 右 list -->
       <div class="explorer-main flex-1 flex min-h-0">
         <!-- 左侧：库存 / 目录树 -->
-        <aside class="explorer-nav flex flex-col min-w-0">
+        <aside
+          class="explorer-nav flex flex-col min-w-0"
+          :style="{ width: navWidth + 'px' }"
+        >
           <div class="nav-section-title px-4 pt-3 pb-1">本地库存</div>
           <div class="nav-scroll flex-1 min-h-0 overflow-y-auto no-scrollbar pb-3">
             <div v-if="!localLibraries.length" class="px-4 py-6 text-[12px] text-slate-400">
@@ -118,11 +114,12 @@
                 <div
                   class="nav-row"
                   :class="{
-                    'nav-row-active': lib.id === currentLibraryId && normalizePath(currentPath) === normalizePath(lib.root_path || lib.path)
+                    'nav-row-active': lib.id === currentLibraryId && normalizePath(currentPath) === normalizePath(lib.root_path || lib.path),
+                    'nav-row-source': lib.id === sourceLibraryId
                   }"
                   :style="{ paddingLeft: '12px' }"
                   @click="selectLibraryRoot(lib)"
-                  :title="lib.root_path || lib.path"
+                  :title="lib.id === sourceLibraryId ? `源所在库：${lib.root_path || lib.path}` : (lib.root_path || lib.path)"
                 >
                   <button
                     type="button"
@@ -145,7 +142,6 @@
                   </button>
                   <HardDrive :size="14" :stroke-width="2.2" class="nav-disk-icon" />
                   <span class="nav-row-name">{{ lib.name }}</span>
-                  <span v-if="lib.id === sourceLibraryId" class="nav-row-tag">源</span>
                 </div>
 
                 <!-- 子目录递归 -->
@@ -170,6 +166,23 @@
           </div>
         </aside>
 
+        <!-- 拖拽分割条：左右拉伸左侧导航宽度，双击重置 -->
+        <div
+          class="nav-splitter"
+          :class="{ 'nav-splitter-active': isResizingNav }"
+          role="separator"
+          aria-orientation="vertical"
+          :aria-valuenow="navWidth"
+          :aria-valuemin="NAV_MIN_WIDTH"
+          :aria-valuemax="NAV_MAX_WIDTH"
+          aria-label="拖动调整左侧导航宽度"
+          tabindex="-1"
+          @pointerdown="onSplitterPointerDown"
+          @dblclick="resetNavWidth"
+        >
+          <span class="nav-splitter-line" />
+        </div>
+
         <!-- 右侧：当前目录文件列表 -->
         <section class="explorer-list flex-1 flex flex-col min-w-0">
           <div class="fm-head">
@@ -192,10 +205,13 @@
               <span class="text-rose-600">{{ error }}</span>
               <button type="button" class="fm-retry-btn" @click="reload">重试</button>
             </div>
-            <div v-else-if="!filteredFolders.length" class="fm-state fm-state-col">
-              <FolderOpen :size="26" :stroke-width="1.6" class="text-slate-300" />
-              <span>{{ searchKeyword ? '没有匹配的子目录' : '此目录下没有子目录' }}</span>
-              <span class="text-[11px] text-slate-400">点击"移动到此处"将移到当前目录</span>
+            <div v-else-if="!filteredFolders.length" class="fm-empty-wrap">
+              <AppEmptyState
+                :description="searchKeyword ? '没有匹配的子目录' : '此目录下没有子目录'"
+                size="default"
+              >
+                <span class="text-[11px] text-slate-400">点击"移动到此处"将移到当前目录</span>
+              </AppEmptyState>
             </div>
             <div
               v-for="(folder, idx) in filteredFolders"
@@ -206,19 +222,25 @@
               :class="{
                 'fm-row-selected': selectedFolderPath === folder.path,
                 'fm-row-self': isSourceFolder(folder.path),
-                'fm-row-conflict': conflictNameSet.has(folder.name)
+                'fm-row-conflict': isFolderEntry(folder) && conflictNameSet.has(folder.name),
+                'fm-row-file': !isFolderEntry(folder)
               }"
-              @click="selectFolder(folder.path)"
-              @dblclick="navigateToPath(folder.path)"
-              :title="folder.path"
+              :title="folderRowTitle(folder)"
+              @click="selectFolder(folder)"
+              @dblclick="isFolderEntry(folder) && navigateToPath(folder.path)"
             >
               <div class="fm-cell fm-cell-name">
                 <span class="fm-icon-shell">
-                  <Folder :size="16" :stroke-width="2.2" class="fm-folder-icon" />
+                  <component
+                    :is="folderIconComponent(folder)"
+                    :size="16"
+                    :stroke-width="2.2"
+                    :class="folderIconClass(folder)"
+                  />
                 </span>
                 <span class="fm-name">{{ folder.name }}</span>
-                <span v-if="isSourceFolder(folder.path)" class="fm-tag fm-tag-self">源</span>
-                <span v-else-if="conflictNameSet.has(folder.name)" class="fm-tag fm-tag-conflict">同名</span>
+                <!-- 源不再用文字 chip 标识，依靠左侧 2px 琥珀色细条 + opacity 表达 -->
+                <span v-if="isFolderEntry(folder) && !isSourceFolder(folder.path) && conflictNameSet.has(folder.name)" class="fm-tag fm-tag-conflict">同名</span>
               </div>
               <div class="fm-cell fm-cell-size">{{ formatFolderSize(folder) }}</div>
               <div class="fm-cell fm-cell-time">{{ formatFolderTime(folder.modified_time) }}</div>
@@ -324,7 +346,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   AlertCircle,
   ArrowRight,
@@ -332,11 +354,11 @@ import {
   ChevronDown,
   ChevronRight,
   File as FileIcon,
+  FileText,
   Folder,
-  FolderOpen,
   HardDrive,
   Loader2,
-  Monitor,
+  Music,
   Plus,
   RefreshCw,
   Search,
@@ -347,8 +369,16 @@ import { ElMessage } from 'element-plus'
 
 import { libraryApi } from '../../api'
 import LibraryMoveNavNode from './LibraryMoveNavNode.vue'
+import AppEmptyState from '../common/AppEmptyState.vue'
 
 const MAX_ITEMS_PREVIEW = 12
+
+// 左侧导航宽度（可拖拽）：默认 280，区间 [200, 520]，双击恢复默认
+const NAV_DEFAULT_WIDTH = 280
+const NAV_MIN_WIDTH = 200
+const NAV_MAX_WIDTH = 520
+// 进入子目录时一次性算大小的上限，避免一次扫数千个 RJ 把磁盘 IO 打满
+const FOLDER_SIZE_COMPUTE_CAP = 256
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -373,6 +403,11 @@ const listScrollRef = ref(null)
 
 const conflictDialogOpen = ref(false)
 const pendingTargetSnapshot = ref(null)
+
+// 左侧导航宽度 + 拖拽状态
+const navWidth = ref(NAV_DEFAULT_WIDTH)
+const isResizingNav = ref(false)
+const navResizeStart = { x: 0, width: NAV_DEFAULT_WIDTH }
 
 // 库存导航树状态： navTreeState[libraryId] = { rootExpanded, rootChildren, rootLoading, rootError, nodes: { [path]: { expanded, children, loading, error } } }
 const navTreeState = reactive({})
@@ -656,20 +691,27 @@ async function selectLibraryRoot (lib) {
   if (entry.rootChildren === null) await loadNavChildrenForRoot(lib)
 }
 
-function resetToHome () {
-  if (loading.value || props.submitting) return
-  // “此电脑”面包屑：隐藏当前路径，但不需要真的重置，只但动作要提示用户点左侧选一个库
-  // 这里仅提示一下，不重置状态
-  ElMessage.info('请在左侧选择一个本地库存')
-}
-
 async function loadFolders (path) {
   if (!currentLibraryId.value) return
   loading.value = true
   error.value = ''
   selectedFolderPath.value = ''
   try {
-    const data = await libraryApi.browserListFolders(currentLibraryId.value, path || '')
+    // 进入"非根目录"（即用户点进了某个社团/合集子目录，下一层通常就是 RJ 作品）后，
+    // 才让后端按需统计 size。避免在 root 顶层一次性扫几千个社团目录把磁盘 IO 打满。
+    const targetPath = path || ''
+    const knownRoot = rootPath.value || ''
+    const isAtRoot = !targetPath || (knownRoot && normalizePath(targetPath) === normalizePath(knownRoot))
+    const data = await libraryApi.browserListFolders(
+      currentLibraryId.value,
+      targetPath,
+      {
+        computeSize: !isAtRoot,
+        computeSizeCap: FOLDER_SIZE_COMPUTE_CAP,
+        // 右侧文件列表既显示子目录也显示文件（参考库存页风格），文件不可作为目标
+        includeFiles: true
+      }
+    )
     rootPath.value = data?.browse_root_path || data?.library_root_path || ''
     currentPath.value = data?.current_path || rootPath.value
     pathInput.value = currentPath.value
@@ -690,7 +732,10 @@ async function loadFolders (path) {
 function syncNavTreeFromLoad (libraryId, path, root, list) {
   if (!libraryId) return
   const entry = ensureLibraryEntry(libraryId)
-  const simplified = (list || []).map(item => ({ name: item.name, path: item.path }))
+  // 导航树只展示目录：过滤掉 is_directory=false 的文件项；旧数据没有该字段时按目录处理
+  const simplified = (list || [])
+    .filter(item => item?.is_directory !== false)
+    .map(item => ({ name: item.name, path: item.path }))
   // 是否在根
   if (!root || normalizePath(path) === normalizePath(root)) {
     entry.rootChildren = simplified
@@ -742,22 +787,51 @@ async function navigateToInput () {
   await loadFolders(value)
 }
 
-function selectFolder (path) {
+// 是否为目录条目：旧数据没有 is_directory 字段时按目录处理（兼容性）
+function isFolderEntry (item) {
+  return item?.is_directory !== false
+}
+
+// 库存页风格的图标选择：目录 → Folder（琥珀填充），音频/文本/其他文件用对应 lucide 图标
+function folderIconComponent (item) {
+  if (isFolderEntry(item)) return Folder
+  const name = String(item?.name || '').toLowerCase()
+  if (/\.(wav|flac|mp3|m4a|ogg|aac|wma|opus)$/.test(name)) return Music
+  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc|xml|yaml|yml|log)$/.test(name)) return FileText
+  return FileIcon
+}
+
+function folderIconClass (item) {
+  if (isFolderEntry(item)) return 'fm-folder-icon'
+  const name = String(item?.name || '').toLowerCase()
+  if (/\.(wav|flac|alac|aiff)$/.test(name)) return 'fm-file-icon-audio-lossless'
+  if (/\.(mp3|m4a|ogg|aac|wma|opus)$/.test(name)) return 'fm-file-icon-audio'
+  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc|xml|yaml|yml|log)$/.test(name)) return 'fm-file-icon-text'
+  return 'fm-file-icon-default'
+}
+
+function selectFolder (folder) {
+  if (!folder) return
+  // 文件不能作为移动目标，点击文件不改变选中态
+  if (!isFolderEntry(folder)) return
+  const path = folder.path
   if (!path) return
   selectedFolderPath.value = path === selectedFolderPath.value ? '' : path
 }
 
 function handleListKeydown (event) {
   if (loading.value || !filteredFolders.value.length) return
-  const list = filteredFolders.value
+  // 方向键 / 回车只在"目录条目"上跳转，跳过文件
+  const dirList = filteredFolders.value.filter(isFolderEntry)
+  if (!dirList.length) return
   if (event.key === 'ArrowDown') {
     event.preventDefault()
-    const idx = list.findIndex(f => f.path === selectedFolderPath.value)
-    selectedFolderPath.value = list[Math.min(list.length - 1, idx + 1)].path
+    const idx = dirList.findIndex(f => f.path === selectedFolderPath.value)
+    selectedFolderPath.value = dirList[Math.min(dirList.length - 1, idx + 1)].path
   } else if (event.key === 'ArrowUp') {
     event.preventDefault()
-    const idx = list.findIndex(f => f.path === selectedFolderPath.value)
-    selectedFolderPath.value = list[Math.max(0, idx - 1)].path
+    const idx = dirList.findIndex(f => f.path === selectedFolderPath.value)
+    selectedFolderPath.value = dirList[Math.max(0, idx - 1)].path
   } else if (event.key === 'Enter') {
     if (!selectedFolderPath.value) return
     event.preventDefault()
@@ -767,6 +841,16 @@ function handleListKeydown (event) {
 
 function isSourceFolder (path) {
   return sourcePathSet.value.has(normalizePath(path))
+}
+
+function folderRowTitle (folder) {
+  // 把"是否是源 / 是否同名 / 完整路径"合并到一个 title 提示里，
+  // 替代之前在行内放"源"文字 chip 的方案，视觉更克制。
+  if (!folder) return ''
+  const path = folder.path || ''
+  if (isSourceFolder(path)) return `当前的待移动项 · ${path}`
+  if (conflictNameSet.value.has(folder.name)) return `与源同名 · ${path}`
+  return path
 }
 
 function handleCancel () {
@@ -870,6 +954,65 @@ function parentOf (path) {
 function normalizePath (path) {
   return String(path || '').replace(/[\\/]+$/, '').toLowerCase()
 }
+
+// ----- 左侧导航宽度拖拽 -----
+function clampNavWidth (value) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return NAV_DEFAULT_WIDTH
+  return Math.max(NAV_MIN_WIDTH, Math.min(NAV_MAX_WIDTH, num))
+}
+
+function onSplitterPointerDown (event) {
+  if (!event || event.button !== 0) return
+  event.preventDefault()
+  isResizingNav.value = true
+  navResizeStart.x = event.clientX
+  navResizeStart.width = navWidth.value
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pointermove', onSplitterPointerMove, { passive: false })
+    window.addEventListener('pointerup', onSplitterPointerUp, { passive: false })
+    window.addEventListener('pointercancel', onSplitterPointerUp, { passive: false })
+  }
+  if (typeof document !== 'undefined' && document.body) {
+    document.body.dataset.libMoveResizing = '1'
+  }
+}
+
+function onSplitterPointerMove (event) {
+  if (!isResizingNav.value) return
+  event.preventDefault()
+  const delta = event.clientX - navResizeStart.x
+  navWidth.value = clampNavWidth(navResizeStart.width + delta)
+}
+
+function onSplitterPointerUp () {
+  if (!isResizingNav.value) return
+  isResizingNav.value = false
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pointermove', onSplitterPointerMove)
+    window.removeEventListener('pointerup', onSplitterPointerUp)
+    window.removeEventListener('pointercancel', onSplitterPointerUp)
+  }
+  if (typeof document !== 'undefined' && document.body) {
+    delete document.body.dataset.libMoveResizing
+  }
+}
+
+function resetNavWidth () {
+  navWidth.value = NAV_DEFAULT_WIDTH
+}
+
+onBeforeUnmount(() => {
+  // 兜底卸载时清理拖拽监听，避免泄漏
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pointermove', onSplitterPointerMove)
+    window.removeEventListener('pointerup', onSplitterPointerUp)
+    window.removeEventListener('pointercancel', onSplitterPointerUp)
+  }
+  if (typeof document !== 'undefined' && document.body) {
+    delete document.body.dataset.libMoveResizing
+  }
+})
 </script>
 
 <style scoped>
@@ -884,16 +1027,25 @@ function normalizePath (path) {
 
 /* 玻璃外壳 -------------------------------------------------------- */
 .glass-shell {
+  /* 弹框主体进一步透明：让背后页面尽量"看穿"，再用 backdrop blur 把穿过来的内容糊掉，
+     这才是真正的毛玻璃质感（弹框区域内糊，弹框区域外清晰）。 */
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.6)),
-    rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.62);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.24)),
+    rgba(255, 255, 255, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.5);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.5),
-    0 16px 36px rgba(15, 23, 42, 0.08),
-    0 28px 80px rgba(15, 23, 42, 0.12);
-  backdrop-filter: blur(22px) saturate(150%);
-  -webkit-backdrop-filter: blur(22px) saturate(150%);
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 22px 50px rgba(15, 23, 42, 0.12),
+    0 38px 110px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(38px) saturate(190%);
+  -webkit-backdrop-filter: blur(38px) saturate(190%);
+}
+
+/* 拖拽时禁用文本选中和过渡，避免抖动 */
+.is-resizing,
+.is-resizing * {
+  user-select: none !important;
+  cursor: col-resize !important;
 }
 
 .panel-enter {
@@ -990,6 +1142,22 @@ function normalizePath (path) {
 
 .crumb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* 面包屑文本宽度：默认中间级 280px，库存名 260px，当前级（最末一级）放宽到 460px。
+   path-bar 已经 overflow-x scroll，超长会滚，不会挤掉搜索框。 */
+.crumb-text {
+  display: inline-block;
+  max-width: 280px;
+  vertical-align: middle;
+}
+
+.crumb-text-disk {
+  max-width: 260px;
+}
+
+.crumb-btn-current .crumb-text {
+  max-width: 460px;
+}
+
 /* 搜索框 -------------------------------------------------------- */
 .search-wrap {
   position: relative;
@@ -1022,10 +1190,55 @@ function normalizePath (path) {
 }
 
 .explorer-nav {
-  width: 260px;
+  /* 宽度由 navWidth ref 通过 inline :style 控制；此处只定边框与背景 */
   flex-shrink: 0;
   border-right: 1px solid rgba(15, 23, 42, 0.06);
   background: rgba(248, 250, 252, 0.5);
+}
+
+/* 拖拽分割条：视觉始终是一根 1px 细线，命中区域用透明伪元素扩到 ~9px 方便鼠标抓取，
+   hover/拖拽只换颜色不变粗，避免看起来像一条粗带子。 */
+.nav-splitter {
+  position: relative;
+  flex: 0 0 auto;
+  width: 1px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  user-select: none;
+  touch-action: none;
+  z-index: 2;
+}
+
+/* 透明命中区域：左右各扩 4px，让鼠标更容易抓到，但视觉宽度仍是 1px */
+.nav-splitter::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+  background: transparent;
+}
+
+.nav-splitter-line {
+  display: block;
+  width: 1px;
+  height: 100%;
+  background: rgba(15, 23, 42, 0.08);
+  transition: background-color 0.18s ease;
+}
+
+.nav-splitter:hover .nav-splitter-line {
+  background: rgba(14, 165, 233, 0.55);
+}
+
+.nav-splitter-active .nav-splitter-line,
+.nav-splitter:active .nav-splitter-line {
+  background: rgba(14, 165, 233, 0.9);
 }
 
 .nav-section-title {
@@ -1100,16 +1313,20 @@ function normalizePath (path) {
   white-space: nowrap;
 }
 
-.nav-row-tag {
-  flex-shrink: 0;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: rgba(254, 243, 199, 0.85);
-  color: #92400e;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.4px;
-  margin-left: 4px;
+/* 源所在库存：行最左侧嵌入一道 2px 琥珀色细条（替代原来"源"字胶囊），
+   视觉更克制；hover/active 时色条略加深 */
+.nav-row-source {
+  box-shadow: inset 2px 0 0 rgba(245, 158, 11, 0.55);
+}
+
+.nav-row-source:hover {
+  box-shadow: inset 2px 0 0 rgba(245, 158, 11, 0.7);
+}
+
+.nav-row-active.nav-row-source,
+.nav-row-active.nav-row-source:hover {
+  /* 选中态以蓝色高亮为主，保留少量琥珀提示但让位给主色 */
+  box-shadow: inset 2px 0 0 rgba(245, 158, 11, 0.85);
 }
 
 .nav-children {
@@ -1143,7 +1360,10 @@ function normalizePath (path) {
   padding-left: 12px;
 }
 
+/* fm-body 改成 flex column，让"加载中 / 错误 / 空态"等单行子元素能 flex:1 撑满剩余高度并垂直居中 */
 .fm-body {
+  display: flex;
+  flex-direction: column;
   padding: 4px 0;
   outline: none;
 }
@@ -1153,6 +1373,7 @@ function normalizePath (path) {
 }
 
 .fm-state {
+  flex: 1 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1164,6 +1385,16 @@ function normalizePath (path) {
 .fm-state-col {
   flex-direction: column;
   gap: 6px;
+}
+
+/* 空目录容器：撑满 fm-body 剩余高度，把 AppEmptyState 居中 */
+.fm-empty-wrap {
+  flex: 1 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  min-height: 240px;
 }
 
 .fm-retry-btn {
@@ -1224,11 +1455,17 @@ function normalizePath (path) {
   flex-shrink: 0;
 }
 
+/* 库存页风格：目录琥珀色填充，文件按类型用语义色（无填充） */
 .fm-folder-icon {
   color: #f59e0b;
   fill: currentColor;
   stroke: currentColor;
 }
+
+.fm-file-icon-audio-lossless { color: #0f766e; }
+.fm-file-icon-audio { color: #0ea5e9; }
+.fm-file-icon-text { color: #8b5cf6; }
+.fm-file-icon-default { color: #94a3b8; }
 
 .fm-name {
   flex: 1 1 auto;
@@ -1241,22 +1478,23 @@ function normalizePath (path) {
 
 .fm-tag {
   flex-shrink: 0;
-  padding: 1px 7px;
+  padding: 0 7px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
   border-radius: 999px;
+  border: 1px solid transparent;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.4px;
   margin-left: 6px;
 }
 
-.fm-tag-self {
-  background: rgba(254, 243, 199, 0.85);
-  color: #92400e;
-}
-
+/* 同名标签：低饱和红 + 细描边（保留这个文字提示，因为表达"同名冲突"用图形不易理解） */
 .fm-tag-conflict {
-  background: rgba(254, 226, 226, 0.85);
+  background: rgba(239, 68, 68, 0.10);
   color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.30);
 }
 
 .fm-row-selected {
@@ -1271,11 +1509,37 @@ function normalizePath (path) {
   color: #0c4a6e;
 }
 
-.fm-row-self { opacity: 0.55; }
+/* 源所在行：用左侧 2px 琥珀色细条 + 轻度 opacity 表达"这是待移动项"，
+   不再依赖"源"文字 chip，视觉更克制；hover 时恢复对比度方便阅读 */
+.fm-row-self {
+  opacity: 0.82;
+  box-shadow: inset 2px 0 0 rgba(245, 158, 11, 0.55);
+}
+
+.fm-row-self:hover { opacity: 0.96; }
+
+/* 同时选中且为源时，主选中蓝色优先，保证选中态可识别 */
+.fm-row-selected.fm-row-self {
+  opacity: 1;
+  box-shadow: inset 2px 0 0 rgba(2, 132, 199, 0.7);
+}
 
 .fm-row-conflict { background: rgba(254, 215, 170, 0.18); }
 
 .fm-row-conflict:hover { background: rgba(254, 215, 170, 0.32); }
+
+/* 文件行：不能作为移动目标，光标改成默认；hover 反馈做轻一点表示"看得见但不可选" */
+.fm-row-file {
+  cursor: default;
+  color: #475569;
+}
+
+.fm-row-file:hover { background: rgba(15, 23, 42, 0.025); }
+
+.fm-row-file .fm-cell-size,
+.fm-row-file .fm-cell-time {
+  color: #94a3b8;
+}
 
 /* 待移动条目 chip ----------------------------------------------- */
 .src-chip {
@@ -1537,5 +1801,38 @@ function normalizePath (path) {
 .conflict-list::-webkit-scrollbar-thumb:hover {
   background: rgba(15, 23, 42, 0.24);
   background-clip: content-box;
+}
+</style>
+
+<!--
+  非 scoped 全局样式：el-dialog 通过 teleport 把根元素挂到 body 下，
+  scoped 选择器 + :deep 对它不可靠；这里通过 .lib-move-modal / .lib-move-overlay
+  这种弹框独占的 class 局部覆盖，保证不会污染其他弹框。
+-->
+<style>
+/* 弹框尺寸：原 1100×640，按用户要求整体放大 ~20% 到 1320×768，并随 viewport 自适应 */
+.lib-move-modal.el-dialog {
+  width: min(1320px, calc(100vw - 32px)) !important;
+  max-width: min(1320px, calc(100vw - 32px)) !important;
+}
+
+.lib-move-modal .window {
+  height: min(768px, calc(100vh - 64px));
+  max-height: calc(100vh - 64px);
+}
+
+/* 弹框外的页面保持清晰：不再做暗色衬底，也不对页面做 blur，
+   毛玻璃感只由弹框自身的 backdrop-filter 提供（弹框区域内糊，外部清晰）。 */
+.lib-move-overlay.custom-preview-overlay,
+.lib-move-overlay {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 拖拽过程中给整个 body 设置 col-resize，避免鼠标移出 splitter 时光标抖动 */
+body[data-lib-move-resizing="1"] {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 </style>

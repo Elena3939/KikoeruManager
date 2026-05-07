@@ -86,6 +86,14 @@ const isUnreleased = computed(() => {
   today.setHours(0, 0, 0, 0)
   return releaseDate > today
 })
+
+// "新作"判定：直接用后端 build_circle_completion_view 算好的 is_new_work。
+// 后端口径 = email_watcher 来源 + 48h 窗口 + email_watcher_first_seen_at（fallback created_at）。
+// 早期版本前端自己用 email_watcher_first_seen_at + 48h 单独算，会和左侧
+// search_circles 的 new_works_48h_count 出现口径漂移（左侧已不显示"新作"
+// 但右侧卡片还在闪"新作"特效）。这里改成统一读后端字段，左右两侧永远一致。
+const isNewWork = computed(() => Boolean(props.item?.is_new_work))
+
 const coverUrl = computed(() => {
   const value = rawCoverUrl.value
   const rjcode = props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
@@ -152,7 +160,7 @@ function onCoverError(event) {
       selected: props.selected,
       'is-downloaded': item.local_download_ready && !cornerLabel,
       'is-unreleased': isUnreleased,
-      'is-new-work': item.source_tags && item.source_tags.includes('email_watcher'),
+      'is-new-work': isNewWork,
       'status-flash': props.statusFlash,
       disabled: props.disabled,
       'work-card--lg': props.size === 'lg',
@@ -175,7 +183,7 @@ function onCoverError(event) {
         <Calendar :size="12" />
         <span>未发售</span>
       </div>
-      <div v-if="item.source_tags && item.source_tags.includes('email_watcher')" :class="['work-new-flag', isUnreleased ? 'work-new-flag--below' : '']">
+      <div v-if="isNewWork" :class="['work-new-flag', isUnreleased ? 'work-new-flag--below' : '']">
         <span>✦ 新作</span>
       </div>
 

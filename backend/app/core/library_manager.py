@@ -3214,20 +3214,41 @@ class LibraryManager:
         self,
         library_id: str,
         path: Optional[str] = None,
+        *,
+        compute_size: bool = False,
+        compute_size_cap: int = 256,
+        include_files: bool = False,
     ) -> dict[str, Any]:
-        """轻量浏览：仅返回当前目录下的子目录名，不计算 size，不递归。
+        """轻量浏览：返回当前目录下的子目录（可选地也返回文件）。
 
         给"移动到..."对话框使用，避免触碰慢速 size 计算路径。
+
+        - 默认仅读 size 缓存，不主动递归计算大小。
+        - 当 ``compute_size=True`` 且当前路径不是浏览根（社团目录之类的层级）时，
+          允许按需计算未命中缓存的子目录大小，单次最多计算 ``compute_size_cap`` 个，
+          其余保持 ``size_status='pending'``，下次浏览再补。
+        - 当 ``include_files=True`` 时，文件也作为返回项加入 ``folders`` 数组，
+          每项带 ``is_directory`` 字段区分；文件大小从 stat 取，不走递归缓存。
         """
         library = self.get_library_definition(library_id)
         if library.type != "local":
             raise RuntimeError("仅支持本地库浏览目录树")
-        return await asyncio.to_thread(self._list_local_folders_only, library, path)
+        return await asyncio.to_thread(
+            self._list_local_folders_only,
+            library,
+            path,
+            compute_size,
+            compute_size_cap,
+            include_files,
+        )
 
     def _list_local_folders_only(
         self,
         library: LibraryDefinition,
         path: Optional[str],
+        compute_size: bool = False,
+        compute_size_cap: int = 256,
+        include_files: bool = False,
     ) -> dict[str, Any]:
         browse_root = os.path.abspath(library.browse_root_path or library.root_path)
         target_path = os.path.abspath(path) if path else browse_root
@@ -3251,6 +3272,18 @@ class LibraryManager:
             empty_payload["current_path"] = target_path
             return empty_payload
 
+        # 只有进入子目录（即非浏览根）后才允许按需算 size，跟库存页主流程对齐：
+        # root 下通常是社团/合集目录，子目录里才是 RJ 作品级；这层算 size 的代价相对可控。
+        at_root = os.path.normcase(target_path) == os.path.normcase(browse_root)
+        allow_compute = bool(compute_size) and not at_root
+        try:
+            cap_value = int(compute_size_cap)
+        except (TypeError, ValueError):
+            cap_value = 256
+        if cap_value <= 0:
+            cap_value = 256
+        cap_remaining = cap_value if allow_compute else 0
+
         folders: list[dict[str, Any]] = []
         try:
             with os.scandir(target_path) as iterator:
@@ -3258,27 +3291,55 @@ class LibraryManager:
                     if self._should_skip_entry(entry.name):
                         continue
                     try:
-                        if not entry.is_dir(follow_symlinks=False):
-                            continue
+                        is_dir = entry.is_dir(follow_symlinks=False)
                     except OSError:
+                        continue
+                    if not is_dir and not include_files:
                         continue
                     try:
                         stat = entry.stat(follow_symlinks=False)
                         mtime_iso = datetime.fromtimestamp(stat.st_mtime).isoformat()
                     except OSError:
+                        stat = None
                         mtime_iso = ""
-                    cached_size, size_status = self._get_cached_size_info(entry.path)
-                    folders.append({
-                        "name": entry.name,
-                        "path": entry.path,
-                        "modified_time": mtime_iso,
-                        "size": cached_size,
-                        "size_status": size_status,
-                    })
+                    if is_dir:
+                        cached_size, size_status = self._get_cached_size_info(entry.path)
+                        if allow_compute and size_status != "ready" and cap_remaining > 0:
+                            # _cached_path_size 内部带 mtime 签名缓存，命中即返；未命中才走 walk。
+                            try:
+                                size_value = self._cached_path_size(entry.path)
+                            except Exception:
+                                size_value = cached_size or 0
+                            cached_size = int(size_value or 0)
+                            size_status = "ready"
+                            cap_remaining -= 1
+                        folders.append({
+                            "name": entry.name,
+                            "path": entry.path,
+                            "is_directory": True,
+                            "modified_time": mtime_iso,
+                            "size": cached_size,
+                            "size_status": size_status,
+                        })
+                    else:
+                        # 文件大小直接来自 stat，开销可忽略
+                        file_size = int(stat.st_size) if stat is not None else 0
+                        folders.append({
+                            "name": entry.name,
+                            "path": entry.path,
+                            "is_directory": False,
+                            "modified_time": mtime_iso,
+                            "size": file_size,
+                            "size_status": "ready",
+                        })
         except OSError as exc:
             raise RuntimeError(f"读取目录失败: {exc}") from exc
 
-        folders.sort(key=lambda item: (item.get("name") or "").lower())
+        # 排序：目录优先（is_directory=True 排在前），同类按名字字母序
+        folders.sort(key=lambda item: (
+            0 if item.get("is_directory") else 1,
+            (item.get("name") or "").lower(),
+        ))
         parent_path = (
             None
             if os.path.normcase(target_path) == os.path.normcase(browse_root)

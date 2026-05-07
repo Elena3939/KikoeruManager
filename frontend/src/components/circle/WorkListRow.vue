@@ -34,9 +34,10 @@ const downloadRjcode = computed(() =>
   props.item.download_plan?.rjcode || props.item.display_rjcode || props.item.canonical_rjcode || ''
 )
 
-const isNewWork = computed(() =>
-  Array.isArray(props.item.source_tags) && props.item.source_tags.includes('email_watcher')
-)
+// "新作"判定：直接用后端 build_circle_completion_view 算好的 is_new_work。
+// 后端口径 = email_watcher 来源 + 48h 窗口 + email_watcher_first_seen_at（fallback created_at）。
+// 不再前端自己算时间窗口，避免左右两侧出现"左边没有新作但右边还在闪新作"的不一致。
+const isNewWork = computed(() => Boolean(props.item?.is_new_work))
 
 const isUnreleased = computed(() => {
   if (props.item.is_unreleased) return true

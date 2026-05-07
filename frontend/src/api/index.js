@@ -584,11 +584,20 @@ export const libraryApi = {
     return response.data
   },
 
-  browserListFolders: async (libraryId, path = '') => {
-    const response = await apiClient.post('/library/browser/list-folders', {
+  browserListFolders: async (libraryId, path = '', options = {}) => {
+    const payload = {
       library_id: libraryId,
       path: path || ''
-    })
+    }
+    if (options && typeof options === 'object') {
+      if (options.computeSize !== undefined) payload.compute_size = !!options.computeSize
+      if (options.computeSizeCap !== undefined && options.computeSizeCap !== null) {
+        const cap = Number(options.computeSizeCap)
+        if (Number.isFinite(cap) && cap > 0) payload.compute_size_cap = Math.floor(cap)
+      }
+      if (options.includeFiles !== undefined) payload.include_files = !!options.includeFiles
+    }
+    const response = await apiClient.post('/library/browser/list-folders', payload)
     return response.data
   },
 

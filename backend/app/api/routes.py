@@ -3905,19 +3905,40 @@ async def batch_delete_library_browser_items(request: Request):
 
 
 class LibraryBrowserListFoldersRequest(BaseModel):
-    """轻量目录浏览请求（仅本地库，仅返回子目录，不计算 size）。"""
+    """轻量目录浏览请求（仅本地库）。
+
+    - 默认仅返回子目录；当 ``include_files=True`` 时文件也会作为返回项加入,
+      每条带 ``is_directory`` 字段区分。
+    - 默认仅读 size 缓存，不主动递归计算大小，避免压垮慢速盘。
+    - 当 ``compute_size=True`` 且当前路径不是浏览根（即进入了 RJ 父级目录之类的层级）时，
+      允许对未命中缓存的子目录按需计算大小，并通过 ``compute_size_cap`` 限制最大计算条目数。
+    """
     library_id: str
     path: Optional[str] = ""
+    compute_size: bool = False
+    compute_size_cap: int = 256
+    include_files: bool = False
 
 
 @app.post("/api/library/browser/list-folders")
 async def list_library_browser_folders(request: LibraryBrowserListFoldersRequest):
-    """供"移动到..."对话框使用：只列出指定路径下的一级子目录，不算 size、不递归。"""
+    """供"移动到..."对话框使用：列出指定路径下的一级子项（默认仅子目录，可选包含文件）。
+
+    - 默认不算 size，靠后台 ensure_stats 填充缓存。
+    - 进入子目录后，前端可以传 ``compute_size=true`` 让接口对未命中缓存的项按需计算。
+    - 传 ``include_files=true`` 时，返回的 folders 数组里会同时包含文件，每项带 ``is_directory`` 字段。
+    """
     if not str(request.library_id or "").strip():
         raise HTTPException(status_code=400, detail="缺少 library_id")
     try:
         manager = get_library_manager()
-        return await manager.list_local_folders_only(request.library_id, request.path or None)
+        return await manager.list_local_folders_only(
+            request.library_id,
+            request.path or None,
+            compute_size=bool(request.compute_size),
+            compute_size_cap=int(request.compute_size_cap or 0),
+            include_files=bool(request.include_files),
+        )
     except HTTPException:
         raise
     except ValueError as e:
