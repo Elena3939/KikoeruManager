@@ -2655,6 +2655,24 @@ class TaskEngine:
             str(parent_task.source_path or "").rstrip("\\/")
         )
 
+        # 让父任务和后续派发的所有子任务共享通知聚合键：
+        # 没有这个，task_notification_service 的 _resolve_group_key 会给每个子任务回落到
+        # group_type='task' 并立刻为每个 waiting_manual 写一封邮件，
+        # 一个合集包能瞬间炸出 N 封通知 + N 套 inbox / outbox 写库，
+        # 把 SQLite 写锁、ThreadPoolExecutor、QQ SMTP 同时打爆，
+        # 表现为问题作品列表接口超时、铃铛刷一长串。
+        # 共享 group key 后，所有兄弟任务全部到终态时 _is_group_terminal=True，
+        # 由 aggregate_import_batch_extras 合并出一封多 RJ 卡片的批量邮件。
+        notification_group_key = str(
+            parent_metadata.get("notification_group_key") or parent_task.id
+        )
+        notification_batch_id = str(
+            parent_metadata.get("batch_id") or parent_task.id
+        )
+        parent_metadata.setdefault("notification_group_key", notification_group_key)
+        parent_metadata.setdefault("batch_id", notification_batch_id)
+        parent_task.task_metadata = parent_metadata
+
         subtask_ids: List[str] = []
         dispatched_records: List[Dict[str, Any]] = []
         dispatch_failures: List[Dict[str, str]] = []
@@ -2708,6 +2726,12 @@ class TaskEngine:
                 "source_label": f"{parent_source_label} → {sub_rj}",
                 "source_page": parent_metadata.get("source_page") or "tasks",
                 "queue_priority": parent_metadata.get("queue_priority") or 50,
+                # 共享通知聚合键 → 同一合集包派出的所有兄弟子任务和父任务共用
+                # 一个 group_key + group_run_id，由 task_notification_service 自动归并成
+                # 一封批量邮件，避免 N 个 waiting_manual 各自轰炸 SMTP / inbox。
+                "notification_group_key": notification_group_key,
+                "batch_id": notification_batch_id,
+                "parent_session_id": notification_group_key,
             }
             if target_library_id:
                 child_metadata["target_library_id"] = target_library_id
