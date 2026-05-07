@@ -121,6 +121,10 @@ def get_server_url() -> str:
     return f"http://localhost:{ACTUAL_PORT}"
 
 def open_browser():
+    auto_open_browser = os.environ.get('PREKIKOERU_AUTO_OPEN_BROWSER', '').strip().lower()
+    if auto_open_browser not in {'1', 'true', 'yes', 'on'}:
+        logging.getLogger(__name__).info("浏览器自动打开已禁用")
+        return
     time.sleep(1.5)
     webbrowser.open(get_server_url())
 

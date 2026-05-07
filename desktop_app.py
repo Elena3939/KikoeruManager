@@ -126,6 +126,7 @@ class DesktopApp:
 
     def open_browser(self, icon=None, item=None):
         """在浏览器中打开应用"""
+        logger.info(f"打开浏览器界面: {self.url}")
         webbrowser.open(self.url)
 
     def show_status(self, icon, item):
@@ -243,9 +244,13 @@ class DesktopApp:
         self.backend_thread = threading.Thread(target=self.run_backend, daemon=True)
         self.backend_thread.start()
 
-        # 4. 等待后端启动后打开浏览器 (如果是初次运行)
+        # 4. 等待后端启动完成，默认不主动抢占浏览器焦点
         if self.wait_for_backend():
-            self.open_browser()
+            auto_open_browser = os.environ.get('PREKIKOERU_AUTO_OPEN_BROWSER', '').strip().lower()
+            if auto_open_browser in {'1', 'true', 'yes', 'on'}:
+                self.open_browser()
+            else:
+                logger.info(f"后端已启动，浏览器自动打开已禁用，可通过托盘菜单访问: {self.url}")
         else:
             logger.error("后端未在预期时间内启动")
             if self.backend_error:
