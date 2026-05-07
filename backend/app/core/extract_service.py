@@ -632,6 +632,11 @@ class ExtractService:
         """
         递归解压目录中的嵌套压缩包
 
+        实现策略：先一次性扫描完本层目录树，收集到所有需要解压的嵌套压缩包，
+        然后用 asyncio.gather 并发执行解压 + 删源 + 递归。底层 7z 子进程并发数
+        仍由 ``_seven_zip_semaphore`` 限流（默认 2-3），所以不会把磁盘 / CPU 打爆，
+        但能避免合集包场景下「7 个独立 RJ 内嵌包逐个 await」导致的串行阻塞。
+
         Args:
             directory: 要检查的目录
             task: 任务对象
@@ -662,7 +667,11 @@ class ExtractService:
         scanned_dirs = 0
         archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}
 
-        # 扫描目录中的所有文件
+        # 阶段 1：扫描整个目录树，收集本层所有需要解压的嵌套压缩包。
+        # 此阶段只做 IO 元数据扫描和魔数探测，不动 7z 子进程，逐项加入 ``pending``。
+        # 字幕小包、分卷非首卷、已处理文件等仍按原规则就地跳过。
+        pending: List[Dict[str, object]] = []
+        stop_scan = False
         try:
             for root, dirs, files in os.walk(directory):
                 dirs[:] = [
@@ -674,7 +683,6 @@ class ExtractService:
                 if scanned_dirs > self.NESTED_SCAN_DIR_BUDGET:
                     logger.warning("嵌套压缩包目录扫描达到预算上限，停止扫描: %s", directory)
                     break
-                # 检查任务状态
                 if task.is_cancelled():
                     break
                 await task.wait_if_paused()
@@ -683,7 +691,8 @@ class ExtractService:
                     scanned_files += 1
                     if scanned_files > self.NESTED_SCAN_FILE_BUDGET:
                         logger.warning("嵌套压缩包文件扫描达到预算上限，停止扫描: %s", directory)
-                        return extracted_count
+                        stop_scan = True
+                        break
                     file_path = os.path.join(root, filename)
 
                     # 检查是否已经处理过（防止循环）
@@ -695,133 +704,176 @@ class ExtractService:
                     # 检查后缀名或通过魔数检测
                     is_archive = False
                     ext = Path(filename).suffix.lower()
-
                     if ext in archive_extensions:
                         is_archive = True
                     else:
                         # 通过后缀名无法识别，尝试魔数检测
                         is_archive = await self._detect_by_magic_bytes(file_path) is not None
 
-                    if is_archive:
-                        # 检查是否是分卷文件（跳过非首卷）
-                        import re
-                        part_match = re.search(r'\.part(\d+)\.', filename, re.IGNORECASE)
-                        if part_match and int(part_match.group(1)) > 1:
-                            continue
-                        if re.search(r'\.z\d{2}$', filename, re.IGNORECASE):
-                            continue
+                    if not is_archive:
+                        continue
 
-                        logger.info(f"发现嵌套压缩包: {filename} (深度: {current_depth + 1}, 父密码: {parent_password or '无'})")
+                    # 分卷非首卷一律跳过
+                    part_match = re.search(r'\.part(\d+)\.', filename, re.IGNORECASE)
+                    if part_match and int(part_match.group(1)) > 1:
+                        continue
+                    if re.search(r'\.z\d{2}$', filename, re.IGNORECASE):
+                        continue
 
-                        # 小型压缩包（< NESTED_SUBTITLE_SIZE_THRESHOLD）视为潜在字幕源，
-                        # 不做常规嵌套解压，记录到 task_metadata 后续走字幕补配预检
-                        try:
-                            nested_archive_size = os.path.getsize(file_path)
-                        except OSError:
-                            nested_archive_size = 0
-                        if 0 < nested_archive_size < self.NESTED_SUBTITLE_SIZE_THRESHOLD:
-                            # subtitle_probe_mode：专门用于字幕补配预检的临时解包，直接展开小包
-                            # 正常流程：标记为潜在字幕源，留给后续字幕补配链路处理
-                            _is_probe = bool((task.task_metadata or {}).get("subtitle_probe_mode"))
-                            if not _is_probe:
-                                logger.info(
-                                    "嵌套压缩包 %.1fMB < 阈值 %.0fMB，标记为潜在字幕源，跳过常规解压: %s",
-                                    nested_archive_size / 1024 / 1024,
-                                    self.NESTED_SUBTITLE_SIZE_THRESHOLD / 1024 / 1024,
-                                    filename,
-                                )
-                                if task.task_metadata is None:
-                                    task.task_metadata = {}
-                                pending_subtitles = task.task_metadata.setdefault("nested_subtitle_archive_filenames", [])
-                                if filename not in pending_subtitles:
-                                    pending_subtitles.append(filename)
-                                processed_paths.add(file_real_path)
-                                continue  # 跳过常规嵌套解压
+                    logger.info(
+                        f"发现嵌套压缩包: {filename} "
+                        f"(深度: {current_depth + 1}, 父密码: {parent_password or '无'})"
+                    )
+
+                    # 小型压缩包（< NESTED_SUBTITLE_SIZE_THRESHOLD）视为潜在字幕源，
+                    # 不做常规嵌套解压，记录到 task_metadata 后续走字幕补配预检
+                    try:
+                        nested_archive_size = os.path.getsize(file_path)
+                    except OSError:
+                        nested_archive_size = 0
+                    if 0 < nested_archive_size < self.NESTED_SUBTITLE_SIZE_THRESHOLD:
+                        # subtitle_probe_mode：专门用于字幕补配预检的临时解包，直接展开小包
+                        # 正常流程：标记为潜在字幕源，留给后续字幕补配链路处理
+                        _is_probe = bool((task.task_metadata or {}).get("subtitle_probe_mode"))
+                        if not _is_probe:
                             logger.info(
-                                "[字幕预检] 嵌套小包 %.1fMB，字幕预检模式直接展开: %s",
+                                "嵌套压缩包 %.1fMB < 阈值 %.0fMB，标记为潜在字幕源，跳过常规解压: %s",
                                 nested_archive_size / 1024 / 1024,
+                                self.NESTED_SUBTITLE_SIZE_THRESHOLD / 1024 / 1024,
                                 filename,
                             )
+                            if task.task_metadata is None:
+                                task.task_metadata = {}
+                            pending_subtitles = task.task_metadata.setdefault("nested_subtitle_archive_filenames", [])
+                            if filename not in pending_subtitles:
+                                pending_subtitles.append(filename)
+                            processed_paths.add(file_real_path)
+                            continue  # 跳过常规嵌套解压
+                        logger.info(
+                            "[字幕预检] 嵌套小包 %.1fMB，字幕预检模式直接展开: %s",
+                            nested_archive_size / 1024 / 1024,
+                            filename,
+                        )
 
-                        # 检查任务状态
-                        if task.is_cancelled():
-                            break
-                        await task.wait_if_paused()
+                    if task.is_cancelled():
+                        stop_scan = True
+                        break
 
-                        # 确定解压目标目录
-                        # 如果压缩包名是 123.zip，解压到 123/ 目录
-                        archive_name = Path(filename).stem
-                        nested_output_dir = os.path.join(root, archive_name)
+                    # 决定解压目标目录（避免重名）
+                    archive_name = Path(filename).stem
+                    nested_output_dir = os.path.join(root, archive_name)
+                    counter = 1
+                    original_output_dir = nested_output_dir
+                    while os.path.exists(nested_output_dir):
+                        nested_output_dir = f"{original_output_dir}_{counter}"
+                        counter += 1
+                    os.makedirs(nested_output_dir, exist_ok=True)
 
-                        # 如果目录已存在，添加序号
-                        counter = 1
-                        original_output_dir = nested_output_dir
-                        while os.path.exists(nested_output_dir):
-                            nested_output_dir = f"{original_output_dir}_{counter}"
-                            counter += 1
+                    # 提前标记 processed，避免后续递归 / 折叠路径再次命中本文件。
+                    # 即使阶段 2 失败，processed_paths 里多一个标记不会有副作用。
+                    processed_paths.add(file_real_path)
 
-                        os.makedirs(nested_output_dir, exist_ok=True)
+                    pending.append({
+                        "file_path": file_path,
+                        "filename": filename,
+                        "root": root,
+                        "nested_output_dir": nested_output_dir,
+                    })
 
-                        # 尝试解压嵌套压缩包（一次性收集所有密码候选，直接尝试提取，跳过多余的 list 步骤）
-                        try:
-                            task.update_progress(
-                                95,
-                                f"解压嵌套压缩包 {filename} (层{current_depth + 1})"
-                            )
-                            success, nested_success_password = await self._try_extract_nested_direct(
-                                file_path, nested_output_dir, parent_password
-                            )
-
-                            if success:
-                                logger.info(f"成功解压嵌套压缩包: {filename} (使用密码: {nested_success_password or '无密码'})")
-                                extracted_count += 1
-
-                                # 标记为已处理
-                                processed_paths.add(file_real_path)
-
-                                # 删除原始的嵌套压缩包文件
-                                try:
-                                    # 检查是否是分卷压缩包
-                                    volume_set = self._detect_volume_set(file_path)
-                                    if volume_set:
-                                        # 如果是分卷压缩包，删除所有相关分卷
-                                        for volume_path in volume_set.volumes:
-                                            if os.path.exists(volume_path):
-                                                await asyncio.to_thread(os.remove, volume_path)
-                                                logger.info(f"已删除嵌套压缩包分卷文件: {volume_path}")
-                                    else:
-                                        # 只是普通单文件压缩包
-                                        await asyncio.to_thread(os.remove, file_path)
-                                        logger.info(f"已删除嵌套压缩包文件: {file_path}")
-                                except Exception as e:
-                                    logger.warning(f"删除嵌套压缩包文件失败: {file_path}, 错误: {e}")
-
-                                # 递归检查解压出来的目录，传递成功使用的密码
-                                sub_count = await self._extract_nested_archives(
-                                    nested_output_dir,
-                                    task,
-                                    max_depth,
-                                    current_depth + 1,
-                                    processed_paths,
-                                    nested_success_password  # 传递成功使用的密码给下一层
-                                )
-                                extracted_count += sub_count
-                                # 若解压目录为纯容器（无直接文件），折叠到父目录以节省磁盘空间
-                                await self._collapse_wrapper_dir(nested_output_dir, root)
-                            else:
-                                logger.warning(f"无法解压嵌套压缩包: {filename} (已尝试所有密码)")
-                                # 清理失败的解压目录
-                                if os.path.exists(nested_output_dir):
-                                    await asyncio.to_thread(shutil.rmtree, nested_output_dir)
-
-                        except Exception as e:
-                            logger.error(f"解压嵌套压缩包失败 {filename}: {e}")
-                            # 清理失败的解压目录
-                            if os.path.exists(nested_output_dir):
-                                await asyncio.to_thread(shutil.rmtree, nested_output_dir)
-
+                if stop_scan:
+                    break
         except Exception as e:
             logger.error(f"扫描嵌套压缩包时出错: {e}")
+
+        if not pending:
+            return 0
+
+        # 阶段 2：并发解压。每个并发单元独立解压 → 删源 → 递归 → 折叠目录。
+        # 底层 7z 子进程并发数仍由 ``_seven_zip_semaphore`` 控制，
+        # 上层 gather 只是消除 await 串行阻塞。
+        if len(pending) > 1:
+            logger.info(
+                "本层共发现 %d 个嵌套压缩包，启动并发解压（深度 %d）",
+                len(pending), current_depth + 1,
+            )
+
+        async def _process_one(item: Dict[str, object]) -> int:
+            file_path = str(item["file_path"])
+            filename = str(item["filename"])
+            root_dir = str(item["root"])
+            nested_output_dir = str(item["nested_output_dir"])
+
+            if task.is_cancelled():
+                return 0
+            await task.wait_if_paused()
+
+            try:
+                task.update_progress(
+                    95,
+                    f"解压嵌套压缩包 {filename} (层{current_depth + 1})",
+                )
+                success, nested_success_password = await self._try_extract_nested_direct(
+                    file_path, nested_output_dir, parent_password
+                )
+
+                if not success:
+                    logger.warning(f"无法解压嵌套压缩包: {filename} (已尝试所有密码)")
+                    if os.path.exists(nested_output_dir):
+                        try:
+                            await asyncio.to_thread(shutil.rmtree, nested_output_dir, ignore_errors=True)
+                        except Exception:
+                            pass
+                    return 0
+
+                logger.info(
+                    f"成功解压嵌套压缩包: {filename} "
+                    f"(使用密码: {nested_success_password or '无密码'})"
+                )
+
+                # 删除原始的嵌套压缩包文件（含分卷）
+                try:
+                    volume_set = self._detect_volume_set(file_path)
+                    if volume_set:
+                        for volume_path in volume_set.volumes:
+                            if os.path.exists(volume_path):
+                                await asyncio.to_thread(os.remove, volume_path)
+                                logger.info(f"已删除嵌套压缩包分卷文件: {volume_path}")
+                    else:
+                        await asyncio.to_thread(os.remove, file_path)
+                        logger.info(f"已删除嵌套压缩包文件: {file_path}")
+                except Exception as e:
+                    logger.warning(f"删除嵌套压缩包文件失败: {file_path}, 错误: {e}")
+
+                # 递归检查解压出来的目录，传递成功使用的密码
+                sub_count = await self._extract_nested_archives(
+                    nested_output_dir,
+                    task,
+                    max_depth,
+                    current_depth + 1,
+                    processed_paths,
+                    nested_success_password,
+                )
+                # 若解压目录为纯容器（无直接文件），折叠到父目录以节省磁盘空间
+                await self._collapse_wrapper_dir(nested_output_dir, root_dir)
+                return 1 + sub_count
+            except Exception as e:
+                logger.error(f"解压嵌套压缩包失败 {filename}: {e}")
+                if os.path.exists(nested_output_dir):
+                    try:
+                        await asyncio.to_thread(shutil.rmtree, nested_output_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+                return 0
+
+        results = await asyncio.gather(
+            *[_process_one(item) for item in pending],
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, int):
+                extracted_count += r
+            elif isinstance(r, Exception):
+                logger.error("嵌套解压并发任务异常: %s", r)
 
         return extracted_count
 

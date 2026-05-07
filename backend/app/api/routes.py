@@ -9530,8 +9530,33 @@ async def preview_notification_blocks(body: PreviewBlocksRequest):
 
 
 
+import mimetypes
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("application/wasm", ".wasm")
+
+STATIC_MEDIA_TYPES = {
+    ".js": "application/javascript",
+    ".mjs": "application/javascript",
+    ".css": "text/css",
+    ".wasm": "application/wasm",
+}
+
+
+class AppStaticFiles(StaticFiles):
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        ext = os.path.splitext(full_path)[1].lower()
+        media_type = STATIC_MEDIA_TYPES.get(ext)
+        return FileResponse(
+            full_path,
+            status_code=status_code,
+            stat_result=stat_result,
+            media_type=media_type,
+        )
 
 def get_base_path():
     if getattr(sys, 'frozen', False):
@@ -9568,7 +9593,7 @@ for path in possible_paths:
 # 注册静态文件服务（放在子路径，避免覆盖 API）
 if frontend_build_path:
     # 提供静态资源文件（JS、CSS、图片等）
-    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_build_path, "assets")), name="assets")
+    app.mount("/assets", AppStaticFiles(directory=os.path.join(frontend_build_path, "assets")), name="assets")
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def serve_favicon():

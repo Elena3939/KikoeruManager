@@ -12,7 +12,8 @@ REM 可自定义图标路径
 REM ========================================
 set "BACKEND=%ROOT%\backend"
 set "FRONTEND=%ROOT%\frontend"
-set "ICON=%BACKEND%\app.ico"
+set "ICON_PNG=%FRONTEND%\src\assets\icon\appIcon.png"
+set "ICON_ICO=%BACKEND%\build\appIcon.ico"
 set "PYTHON_EXE=%BACKEND%\venv\Scripts\python.exe"
 set "DIST_EXE=%BACKEND%\dist\%PROJECT_NAME%.exe"
 set "TARGET_EXE=%ROOT%\..\%PROJECT_NAME%.exe"
@@ -23,8 +24,8 @@ if not exist "%PYTHON_EXE%" (
   exit /b 1
 )
 
-if not exist "%ICON%" (
-  echo 未找到图标文件: %ICON%
+if not exist "%ICON_PNG%" (
+  echo 未找到图标文件: %ICON_PNG%
   exit /b 1
 )
 
@@ -67,7 +68,15 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import orjson --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "app.ico;backend" ..\desktop_app.py
+if not exist "build" mkdir build
+call "%PYTHON_EXE%" -c "from PIL import Image; img=Image.open(r'%ICON_PNG%').convert('RGBA'); sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]; img.save(r'%ICON_ICO%', format='ICO', sizes=sizes)"
+if errorlevel 1 (
+  popd
+  echo 图标转换失败: %ICON_PNG%
+  exit /b 1
+)
+
+call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON_ICO%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import orjson --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON_PNG%;backend/appIcon.png" ..\desktop_app.py
 if errorlevel 1 (
   popd
   echo 打包失败

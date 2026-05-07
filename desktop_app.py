@@ -72,12 +72,14 @@ class DesktopApp:
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
             candidate_paths.extend([
+                os.path.join(base_path, "backend", "appIcon.png"),
                 os.path.join(base_path, "backend", "app.ico"),
                 os.path.join(base_path, "app.ico"),
             ])
         else:
             project_root = os.path.dirname(os.path.abspath(__file__))
             candidate_paths.extend([
+                os.path.join(project_root, "frontend", "src", "assets", "icon", "appIcon.png"),
                 os.path.join(project_root, "backend", "app.ico"),
                 os.path.join(project_root, "app.ico"),
             ])
