@@ -1,374 +1,252 @@
 <template>
-  <div class="existing-folders">
-    <h1 class="page-title">已存在文件夹处理</h1>
-    <p class="page-description">
-      处理已经存在于文件夹中的作品（非软件解压的压缩包），这些文件夹通常以 <code>{RJCode} {work_name}</code> 格式命名。
-      <br>
-      <el-tag type="info" size="small" style="margin-top: 8px;">处理流程：查重检查 → 获取元数据 → 重命名 → 过滤 → 扁平化 → 分类移动</el-tag>
-    </p>
-    
-    <el-card>
+  <div class="existing-page">
+    <section class="existing-hero">
+      <div class="hero-title-block">
+        <div class="hero-icon-box">
+          <FolderInput :size="15" :stroke-width="2.1" />
+        </div>
+        <div class="hero-text">
+          <h1>已有文件夹</h1>
+          <p class="hero-desc">把已解压的 RJ 文件夹放入已有目录，自动识别 RJ、抓取元数据、重命名并按分类规则入库</p>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <div class="hero-search-wrap">
+          <Search :size="13" class="hero-search-icon" />
+          <input v-model="searchQuery" class="hero-search-input" type="text" placeholder="搜索文件夹名或 RJ 号" />
+        </div>
+        <button type="button" class="hero-btn hero-btn-primary" :disabled="loading" @click="refreshWithCache">
+          <RefreshCw :size="13" :class="{ 'animate-spin': loading }" />
+          刷新列表
+        </button>
+        <button type="button" class="hero-btn hero-btn-secondary" :disabled="loading" @click="refreshForce">
+          <RotateCcw :size="13" />
+          重新抓取
+        </button>
+      </div>
+    </section>
+
+    <section class="existing-shell">
+      <aside class="existing-sidebar">
+        <div class="sidebar-card">
+          <div class="sidebar-head">
+            <div>
+              <div class="sidebar-overline">处理策略</div>
+              <div class="sidebar-title">入库流水线</div>
+            </div>
+            <span class="sidebar-count">{{ folders.length }}</span>
+          </div>
+
+          <div class="pipeline-list">
+            <div v-for="step in pipelineSteps" :key="step.label" class="pipeline-item">
+              <div class="pipeline-dot" :class="step.tone"><component :is="step.icon" :size="12" /></div>
+              <div>
+                <div class="pipeline-title">{{ step.label }}</div>
+                <div class="pipeline-desc">{{ step.desc }}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="option-stack">
+            <div class="option-row">
+              <div class="option-row-main">
+                <MoveRight :size="14" />
+                <div>
+                  <div class="option-row-title">自动分类入库</div>
+                  <div class="option-row-desc">处理完成后移动到库存分类目录</div>
+                </div>
+              </div>
+              <el-switch v-model="autoClassify" size="small" />
+            </div>
+            <div class="option-row">
+              <div class="option-row-main">
+                <ShieldCheck :size="14" />
+                <div>
+                  <div class="option-row-title">扫描时查重</div>
+                  <div class="option-row-desc">刷新列表时检查重复与关联作品</div>
+                </div>
+              </div>
+              <el-switch v-model="checkDuplicates" size="small" />
+            </div>
+          </div>
+
+          <div class="sidebar-actions">
+            <el-button class="side-ep-action primary" :disabled="selectedFolders.length === 0" :loading="processing" @click="handleProcess">
+              <Play :size="13" class="side-button-icon" />
+              处理选中 {{ selectedFolders.length ? `(${selectedFolders.length})` : '' }}
+            </el-button>
+            <el-button class="side-ep-action" :disabled="selectedFolders.length === 0" :loading="checkingDuplicates" @click="checkSelectedDuplicates">
+              <SearchCheck :size="13" class="side-button-icon" />
+              检查选中项
+            </el-button>
+          </div>
+        </div>
+      </aside>
+
+      <main class="existing-main">
+        <section class="toolbar-card">
+          <div class="toolbar-main">
+            <div class="toolbar-copy">
+              <div class="toolbar-title">待处理目录</div>
+              <div class="toolbar-subtitle">{{ loading ? '正在扫描已有目录' : `已发现 ${folders.length} 个文件夹，${conflictCount} 个可能冲突` }}</div>
+            </div>
+            <div class="toolbar-actions">
+              <span class="metric-pill total"><Folder :size="12" /> 总数 {{ folders.length }}</span>
+              <span class="metric-pill owned"><CheckCircle2 :size="12" /> 可处理 {{ readyCount }}</span>
+              <span class="metric-pill warn"><AlertTriangle :size="12" /> 冲突 {{ conflictCount }}</span>
+              <span class="metric-pill muted"><Hash :size="12" /> 已选 {{ selectedFolders.length }}</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="folders-card">
+          <div v-if="loading" class="scan-banner">
+            <AppLoadingAnimation variant="inline" :size="34" />
+            <div>
+              <div class="scan-title">正在扫描文件夹</div>
+              <div class="scan-desc">已发现 {{ folders.length }} 个目录，查重结果会分批更新</div>
+            </div>
+          </div>
+
+          <div v-if="filteredFolders.length" class="folder-grid">
+            <article v-for="folder in filteredFolders" :key="folder.path" class="folder-card" :class="{ selected: isSelected(folder), conflict: isConflict(folder) }">
+              <div class="folder-card-head">
+                <button type="button" class="select-toggle" :class="{ active: isSelected(folder) }" :aria-label="isSelected(folder) ? '取消选择' : '选择文件夹'" @click="toggleFolderSelection(folder)">
+                  <Check :size="13" />
+                </button>
+                <div class="folder-main-info">
+                  <div class="folder-name" :title="folder.name">{{ folder.name }}</div>
+                  <div class="folder-path" :title="folder.path">{{ folder.path }}</div>
+                </div>
+                <span class="status-pill" :class="getFolderState(folder).tone">
+                  <AlertTriangle v-if="getFolderState(folder).icon === 'alert'" :size="11" />
+                  <RefreshCw v-else-if="getFolderState(folder).icon === 'refresh'" :size="11" />
+                  <Clock3 v-else-if="getFolderState(folder).icon === 'clock'" :size="11" />
+                  <XCircle v-else-if="getFolderState(folder).icon === 'x'" :size="11" />
+                  <ShieldCheck v-else-if="getFolderState(folder).icon === 'shield'" :size="11" />
+                  <CheckCircle2 v-else :size="11" />
+                  {{ getFolderState(folder).label }}
+                </span>
+              </div>
+
+              <div class="folder-meta-row">
+                <span class="folder-meta rj"><Hash :size="11" /> {{ folder.rjcode || '未识别 RJ' }}</span>
+                <span class="folder-meta"><HardDrive :size="11" /> 大小 {{ formatFileSize(folder.folder_size || folder.size) }}</span>
+                <span class="folder-meta"><Clock3 :size="11" /> 修改 {{ formatDate(folder.modified_time) }}</span>
+              </div>
+
+              <div v-if="isConflict(folder)" class="conflict-box">
+                <AlertTriangle :size="14" />
+                <div>
+                  <div class="conflict-title">{{ getConflictTypeLabel(folder.duplicate_info?.conflict_type) }}</div>
+                  <div class="conflict-desc">库中已有相同或关联作品，请查看冲突后选择处理方案</div>
+                </div>
+              </div>
+
+              <div class="folder-actions">
+                <button v-if="isConflict(folder)" type="button" class="card-action warning" @click="showDuplicateDetail(folder)">
+                  <Eye :size="13" /> 查看冲突
+                </button>
+                <button v-else type="button" class="card-action primary" :disabled="processing" @click="handleProcessSingle(folder)">
+                  <Play :size="13" /> 重命名并入库
+                </button>
+                <button type="button" class="card-action" :disabled="checkingDuplicates" @click="handleRefreshFolder(folder)">
+                  <RefreshCw :size="13" /> 查重
+                </button>
+                <button type="button" class="card-action danger" @click="handleDeleteFolder(folder)">
+                  <Trash2 :size="13" /> 删除
+                </button>
+              </div>
+            </article>
+          </div>
+
+          <AppEmptyState v-else :description="loading ? '正在读取已有文件夹目录' : '暂无可处理文件夹，请把 RJ 文件夹放入已存在文件夹目录后刷新'" />
+        </section>
+      </main>
+    </section>
+
+    <el-dialog v-model="resultDialogVisible" width="560px" class="existing-dialog result-dialog" :show-close="false">
       <template #header>
-        <div class="card-header">
-          <div class="header-left">
-            <span>文件夹列表</span>
-            <el-tag type="info" v-if="folders.length > 0" style="margin-left: 10px;">
-              {{ selectedFolders.length }}/{{ folders.length }}
-            </el-tag>
+        <div class="dialog-header">
+          <div class="dialog-title-wrap">
+            <div class="dialog-icon" :class="resultData.success ? 'success' : 'warning'">
+              <CheckCircle2 v-if="resultData.success" :size="18" />
+              <AlertTriangle v-else :size="18" />
+            </div>
+            <div>
+              <div class="dialog-title">任务创建结果</div>
+              <div class="dialog-subtitle">{{ resultData.success ? '任务已进入队列，可在任务中心查看进度' : '请检查错误信息后重试' }}</div>
+            </div>
           </div>
-          <div class="header-actions">
-            <el-button @click="refreshFolders" :loading="loading">
-              <el-icon><Refresh /></el-icon> 刷新
-            </el-button>
-            <el-button type="primary" @click="handleProcess" :disabled="selectedFolders.length === 0" :loading="processing">
-              <el-icon><VideoPlay /></el-icon>
-              处理选中文件夹 ({{ selectedFolders.length }})
-            </el-button>
-          </div>
+          <button type="button" class="dialog-close" @click="resultDialogVisible = false">
+            <XCircle :size="18" />
+          </button>
         </div>
       </template>
-      
-      <div class="toolbar">
-        <el-input
-          v-model="searchQuery"
-          placeholder="搜索文件夹名或RJ号"
-          style="width: 300px;"
-          clearable
-        >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-        </el-input>
-        <el-checkbox v-model="autoClassify" style="margin-left: 20px;">
-          自动分类移动到库
-        </el-checkbox>
-        <el-checkbox v-model="checkDuplicates" style="margin-left: 20px;">
-          扫描时检查重复
-        </el-checkbox>
-        <el-button 
-          @click="checkSelectedDuplicates" 
-          :disabled="selectedFolders.length === 0"
-          :loading="checkingDuplicates"
-          style="margin-left: 20px;"
-        >
-          <el-icon><Search /></el-icon>
-          检查选中项重复
-        </el-button>
-        <el-button 
-          @click="refreshWithCache" 
-          :loading="loading"
-          style="margin-left: 20px;"
-          type="info"
-        >
-          <el-icon><Refresh /></el-icon>
-          刷新信息（使用缓存）
-        </el-button>
-        <el-button 
-          @click="refreshForce" 
-          :loading="loading"
-          style="margin-left: 10px;"
-          type="warning"
-        >
-          <el-icon><RefreshRight /></el-icon>
-          重新抓取
-        </el-button>
+
+      <div class="result-panel" :class="resultData.success ? 'success' : 'warning'">
+        <div class="result-title">{{ resultData.success ? '已创建处理任务' : '创建失败' }}</div>
+        <div class="result-message">{{ resultData.message }}</div>
       </div>
 
-      <!-- 冲突警告 -->
-      <el-alert
-        v-if="conflictCount > 0"
-        :title="`发现 ${conflictCount} 个可能有冲突的文件夹`"
-        type="warning"
-        :closable="false"
-        style="margin-bottom: 20px;"
-      >
-        <template #default>
-          <p>这些文件夹对应的RJ号在库中已存在或有相关联的作品。</p>
-          <p>请仔细查看冲突详情后再决定是否处理。</p>
-        </template>
-      </el-alert>
-      
-      <el-alert
-        v-if="folders.length === 0 && !loading"
-        title="暂无文件夹"
-        type="info"
-          description="请将文件夹放入配置中设置的「已存在文件夹目录」中，然后点击刷新"
-        show-icon
-        :closable="false"
-        style="margin: 20px 0;"
-      />
-      
-      <!-- 扫描进度提示 -->
-      <el-alert
-        v-if="loading"
-        :title="folders.length > 0 ? `正在扫描... 已找到 ${folders.length} 个文件夹` : '正在扫描文件夹...'"
-        type="info"
-        :closable="false"
-        show-icon
-        style="margin-bottom: 10px;"
-      />
-      
-      <el-table
-        v-if="folders.length > 0"
-        :data="filteredFolders"
-        style="width: 100%"
-        empty-text="暂无文件夹"
-        row-key="path"
-        @selection-change="handleSelectionChange"
-      >
-        <el-table-column type="selection" width="55" />
-        
-        <el-table-column prop="name" label="文件夹名" show-overflow-tooltip>
-          <template #default="{ row }">
-            <el-icon class="folder-icon"><Folder /></el-icon>
-            <span>{{ row.name }}</span>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="rjcode" label="RJ号" width="120">
-          <template #default="{ row }">
-            <el-tag v-if="row.rjcode" type="primary" size="small">{{ row.rjcode }}</el-tag>
-            <span v-else class="no-rjcode">未识别</span>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="size" label="大小" width="100">
-          <template #default="{ row }">
-            {{ formatFileSize(row.size) }}
-          </template>
-        </el-table-column>
-        
-         <el-table-column prop="modified_time" label="修改时间" width="180">
-          <template #default="{ row }">
-            {{ formatDate(row.modified_time) }}
-          </template>
-        </el-table-column>
-        
-        <el-table-column label="查重状态" width="150">
-          <template #default="{ row }">
-            <!-- 有冲突 -->
-            <el-tag 
-              v-if="row.duplicate_info && row.duplicate_info.is_duplicate" 
-              type="danger" 
-              size="small"
-              @click="showDuplicateDetail(row)"
-              style="cursor: pointer;"
-            >
-              <el-icon><Warning /></el-icon>
-              {{ getConflictTypeLabel(row.duplicate_info.conflict_type) }}
-            </el-tag>
-            <!-- 等待检查（初始状态） -->
-            <el-tag v-else-if="!row.status || row.status === 'pending'" type="info" size="small">
-              <AppLoadingAnimation variant="inline" :size="28" />
-              等待检查...
-            </el-tag>
-            <!-- 检查中 -->
-            <el-tag v-else-if="row.status === 'checking'" type="warning" size="small">
-              <AppLoadingAnimation variant="inline" :size="28" />
-              检查中...
-            </el-tag>
-            <!-- 无冲突（包括从缓存加载的无冲突数据） -->
-            <el-tag v-else type="success" size="small">
-              <el-icon><Check /></el-icon>
-              无冲突
-              <el-tooltip v-if="row.status === 'cached'" content="来自缓存" placement="top">
-                <el-icon style="margin-left: 2px; font-size: 10px;"><Clock /></el-icon>
-              </el-tooltip>
-            </el-tag>
-          </template>
-        </el-table-column>
-        
-        <el-table-column label="操作" width="180">
-          <template #default="{ row }">
-            <!-- 有冲突时显示查看冲突按钮 -->
-            <el-button 
-              v-if="row.duplicate_info && row.duplicate_info.is_duplicate"
-              type="warning" 
-              size="small"
-              @click="showDuplicateDetail(row)"
-            >
-              查看冲突
-            </el-button>
-            <!-- 无冲突时显示操作按钮组 -->
-            <el-button-group v-else>
-              <el-tooltip content="迁移到库" placement="top">
-                <el-button 
-                  type="success" 
-                  size="small"
-                  @click="handleProcessSingle(row)"
-                >
-                  <el-icon><VideoPlay /></el-icon>
-                </el-button>
-              </el-tooltip>
-              <el-tooltip content="删除文件夹" placement="top">
-                <el-button 
-                  type="danger" 
-                  size="small"
-                  @click="handleDeleteFolder(row)"
-                >
-                  <AppLottieIcon :src="deleteIconAnimation" :size="48" tone="danger" />
-                </el-button>
-              </el-tooltip>
-              <el-tooltip content="强制刷新查重" placement="top">
-                <el-button 
-                  type="primary" 
-                  size="small"
-                  @click="handleRefreshFolder(row)"
-                >
-                  <el-icon><RefreshRight /></el-icon>
-                </el-button>
-              </el-tooltip>
-            </el-button-group>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-    
-    <!-- 处理结果对话框 -->
-    <el-dialog
-      v-model="resultDialogVisible"
-      title="处理结果"
-      width="500px"
-    >
-      <el-result
-        :icon="resultData.success ? 'success' : 'warning'"
-        :title="resultData.success ? '任务创建成功' : '部分任务创建失败'"
-        :sub-title="resultData.message"
-      >
-        <template #extra>
-          <div class="result-details" v-if="resultData.tasks && resultData.tasks.length > 0">
-            <p>已创建 {{ resultData.tasks.length }} 个处理任务：</p>
-            <el-scrollbar max-height="200px">
-              <ul class="task-list">
-                <li v-for="task in resultData.tasks" :key="task.task_id">
-                  <el-tag type="success" size="small">{{ task.task_id.substring(0, 8) }}...</el-tag>
-                  <span class="task-path">{{ getFolderName(task.folder_path) }}</span>
-                </li>
-              </ul>
-            </el-scrollbar>
-          </div>
-          <el-button type="primary" @click="resultDialogVisible = false">确定</el-button>
-          <el-button @click="goToTasks">查看任务队列</el-button>
-        </template>
-      </el-result>
-    </el-dialog>
-    
-    <!-- 查重详情对话框 -->
-    <el-dialog
-      v-model="duplicateDetailVisible"
-      title="冲突详情"
-      width="700px"
-    >
-      <div v-if="duplicateDetailData" class="duplicate-detail">
-        <!-- 冲突类型 -->
-        <el-alert
-          :title="getConflictTypeLabel(duplicateDetailData.conflict_type)"
-          :type="duplicateDetailData.conflict_type === 'DUPLICATE' ? 'error' : 'warning'"
-          :description="duplicateDetailData.analysis_info?.current_work ? 
-            `当前作品类型: ${duplicateDetailData.analysis_info.current_work.work_type} (${duplicateDetailData.analysis_info.current_work.lang})` : ''"
-          show-icon
-          style="margin-bottom: 20px;"
-        />
-        
-        <!-- 直接重复 -->
-        <div v-if="duplicateDetailData.direct_duplicate" class="detail-section">
-          <h4>已存在的相同RJ号作品</h4>
-          <el-descriptions border :column="1">
-            <el-descriptions-item label="RJ号">{{ duplicateDetailData.direct_duplicate.rjcode }}</el-descriptions-item>
-            <el-descriptions-item label="路径">{{ duplicateDetailData.direct_duplicate.path }}</el-descriptions-item>
-            <el-descriptions-item label="大小">{{ formatFileSize(duplicateDetailData.direct_duplicate.size) }}</el-descriptions-item>
-          </el-descriptions>
-        </div>
-        
-        <!-- 关联作品 -->
-        <div v-if="duplicateDetailData.linked_works_found && duplicateDetailData.linked_works_found.length > 0" class="detail-section">
-          <h4>库中已存在的关联作品</h4>
-          <el-table :data="duplicateDetailData.linked_works_found" border size="small">
-            <el-table-column prop="rjcode" label="RJ号" width="120" />
-            <el-table-column prop="work_name" label="作品名称" show-overflow-tooltip />
-            <el-table-column prop="work_type" label="类型" width="100">
-              <template #default="{ row }">
-                <el-tag :type="row.work_type === 'original' ? 'success' : 'info'" size="small">
-                  {{ row.work_type === 'original' ? '原作' : row.work_type === 'parent' ? '翻译父级' : '翻译子级' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="lang" label="语言" width="80" />
-            <el-table-column prop="size" label="大小" width="100">
-              <template #default="{ row }">
-                {{ formatFileSize(row.size) }}
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-        
-        <!-- 分析报告 -->
-        <div v-if="duplicateDetailData.analysis_info" class="detail-section">
-          <h4>分析报告</h4>
-          <el-descriptions border :column="2">
-            <el-descriptions-item label="有原作品">{{ duplicateDetailData.analysis_info.has_original ? '是' : '否' }}</el-descriptions-item>
-            <el-descriptions-item label="有翻译版本">{{ duplicateDetailData.analysis_info.has_translation ? '是' : '否' }}</el-descriptions-item>
-            <el-descriptions-item label="有父级作品">{{ duplicateDetailData.analysis_info.has_parent ? '是' : '否' }}</el-descriptions-item>
-            <el-descriptions-item label="有子级作品">{{ duplicateDetailData.analysis_info.has_child ? '是' : '否' }}</el-descriptions-item>
-          </el-descriptions>
-          
-          <!-- 语言统计 -->
-          <div v-if="duplicateDetailData.analysis_info.lang_stats" class="lang-stats">
-            <h5>语言版本统计</h5>
-            <el-tag 
-              v-for="(count, lang) in duplicateDetailData.analysis_info.lang_stats" 
-              :key="lang"
-              size="small"
-              style="margin-right: 8px; margin-bottom: 8px;"
-            >
-              {{ lang }}: {{ count }}
-            </el-tag>
-          </div>
-        </div>
-        
-        <!-- 建议操作 -->
-        <div v-if="duplicateDetailData.resolution_options && duplicateDetailData.resolution_options.length > 0" class="detail-section">
-          <h4>
-            建议操作
-            <el-tooltip content="优先级：简体中文 > 繁体中文 > 日文 > 其他语言" placement="top">
-              <el-icon><Info-Filled /></el-icon>
-            </el-tooltip>
-          </h4>
-          <el-alert
-            v-if="getRecommendedOption()"
-            :title="getRecommendedOption().description"
-            type="success"
-            :closable="false"
-            style="margin-bottom: 15px;"
-          />
-          <el-radio-group v-model="selectedResolution" style="display: flex; flex-direction: column; gap: 10px;">
-            <el-radio 
-              v-for="option in duplicateDetailData.resolution_options" 
-              :key="option.action"
-              :label="option.action"
-              style="height: auto; align-items: flex-start; padding: 12px; border: 2px solid #e4e7ed; border-radius: 8px; transition: all 0.3s;"
-              :style="option.recommend ? 'border-color: #67c23a; background-color: #f0f9eb;' : 'border-color: #dcdfe6;'"
-            >
-              <div style="display: flex; flex-direction: column; gap: 5px; width: 100%;">
-                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                  <strong style="font-size: 14px;">{{ option.label }}</strong>
-                  <el-tag v-if="option.recommend" type="success" size="small" effect="dark">
-                    <el-icon><Check /></el-icon> 智能推荐
-                  </el-tag>
-                  <el-tag v-if="option.action === 'SKIP'" type="danger" size="small">删除</el-tag>
-                  <el-tag v-else-if="option.action === 'KEEP_NEW'" type="primary" size="small">保留新版</el-tag>
-                  <el-tag v-else-if="option.action === 'KEEP_OLD'" type="warning" size="small">保留旧版</el-tag>
-                  <el-tag v-else-if="option.action === 'KEEP_BOTH'" type="info" size="small">保留两者</el-tag>
-                </div>
-                <span style="color: #606266; font-size: 13px; line-height: 1.5;">{{ option.description }}</span>
-              </div>
-            </el-radio>
-          </el-radio-group>
+      <div v-if="resultData.tasks?.length" class="task-list">
+        <div class="task-list-title">任务明细</div>
+        <div v-for="task in resultData.tasks" :key="task.task_id" class="task-row">
+          <span class="task-id">{{ task.task_id.substring(0, 8) }}</span>
+          <span class="task-path">{{ getFolderName(task.folder_path) }}</span>
+          <span class="task-status">已排队</span>
         </div>
       </div>
       <template #footer>
-        <el-button @click="duplicateDetailVisible = false">关闭</el-button>
-        <el-button type="primary" @click="handleProcessWithResolution">确认处理</el-button>
+        <div class="dialog-footer">
+          <el-button class="dialog-ep-btn" @click="resultDialogVisible = false">关闭</el-button>
+          <el-button class="dialog-ep-btn primary" @click="goToTasks">查看任务队列</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="duplicateDetailVisible" title="冲突详情" width="720px" class="existing-dialog">
+      <div v-if="duplicateDetailData" class="duplicate-panel">
+        <div class="conflict-box large">
+          <AlertTriangle :size="16" />
+          <div>
+            <div class="conflict-title">{{ getConflictTypeLabel(duplicateDetailData.conflict_type) }}</div>
+            <div class="conflict-desc">{{ duplicateDetailData.analysis_info?.current_work ? `当前作品类型：${duplicateDetailData.analysis_info.current_work.work_type} / ${duplicateDetailData.analysis_info.current_work.lang}` : '请选择处理方案后继续' }}</div>
+          </div>
+        </div>
+
+        <div v-if="duplicateDetailData.direct_duplicate" class="detail-card">
+          <div class="detail-title">直接重复</div>
+          <div class="detail-line">RJ：{{ duplicateDetailData.direct_duplicate.rjcode }}</div>
+          <div class="detail-line">路径：{{ duplicateDetailData.direct_duplicate.path }}</div>
+        </div>
+
+        <div v-if="duplicateDetailData.linked_works_found?.length" class="detail-card">
+          <div class="detail-title">关联作品</div>
+          <div v-for="work in duplicateDetailData.linked_works_found" :key="work.rjcode" class="linked-row">
+            <span>{{ work.rjcode }}</span>
+            <span>{{ work.work_name }}</span>
+            <span>{{ work.lang || '-' }}</span>
+          </div>
+        </div>
+
+        <div v-if="duplicateDetailData.resolution_options?.length" class="resolution-list">
+          <button
+            v-for="option in duplicateDetailData.resolution_options"
+            :key="option.action"
+            type="button"
+            class="resolution-option"
+            :class="{ active: selectedResolution === option.action, recommend: option.recommend }"
+            @click="selectedResolution = option.action"
+          >
+            <span class="resolution-title">{{ option.label }}</span>
+            <span class="resolution-desc">{{ option.description }}</span>
+          </button>
+        </div>
+      </div>
+      <template #footer>
+        <button type="button" class="dialog-btn" @click="duplicateDetailVisible = false">关闭</button>
+        <button type="button" class="dialog-btn primary" @click="handleProcessWithResolution">确认处理</button>
       </template>
     </el-dialog>
   </div>
@@ -376,13 +254,35 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { Refresh, RefreshRight, Search, Folder, VideoPlay, Warning, Check, InfoFilled, Clock, Delete } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  Clock3,
+  Eye,
+  FileSearch,
+  Folder,
+  FolderInput,
+  HardDrive,
+  Hash,
+  MoveRight,
+  PencilLine,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  SearchCheck,
+  ShieldCheck,
+  Tags,
+  Trash2,
+  XCircle
+} from 'lucide-vue-next'
 import { existingFolderApi } from '../api'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
-import AppLottieIcon from '../components/common/AppLottieIcon.vue'
-import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
+import AppEmptyState from '../components/common/AppEmptyState.vue'
+import { showSystemConfirm } from '../composables/useSystemPrompt'
 
 const router = useRouter()
 
@@ -395,209 +295,78 @@ const searchQuery = ref('')
 const autoClassify = ref(true)
 const checkDuplicates = ref(true)
 const conflictCount = ref(0)
-
-// 结果对话框
 const resultDialogVisible = ref(false)
-const resultData = ref({
-  success: true,
-  message: '',
-  tasks: []
-})
-
-// 查重详情对话框
+const resultData = ref({ success: true, message: '', tasks: [] })
 const duplicateDetailVisible = ref(false)
 const duplicateDetailData = ref(null)
 const selectedResolution = ref('')
 const currentConflictFolder = ref(null)
 
-// 过滤后的文件夹列表
+const pipelineSteps = [
+  { label: '识别 RJ', desc: '从文件夹名提取作品编号', icon: Tags, tone: 'info' },
+  { label: '抓取元数据', desc: '补齐标题、社团与发售日', icon: FileSearch, tone: 'ok' },
+  { label: '重命名', desc: '按模板规范化目录名', icon: PencilLine, tone: 'warn' },
+  { label: '分类入库', desc: '移动到库存分类目录', icon: MoveRight, tone: 'done' }
+]
+
 const filteredFolders = computed(() => {
-  let result = folders.value
-  
-  if (searchQuery.value) {
-    const query = searchQuery.value.toLowerCase()
-    result = result.filter(folder => 
-      folder.name.toLowerCase().includes(query) || 
-      (folder.rjcode && folder.rjcode.toLowerCase().includes(query))
-    )
-  }
-  
-  return result
+  const query = searchQuery.value.trim().toLowerCase()
+  if (!query) return folders.value
+  return folders.value.filter((folder) =>
+    String(folder.name || '').toLowerCase().includes(query) ||
+    String(folder.rjcode || '').toLowerCase().includes(query)
+  )
 })
+
+const readyCount = computed(() => folders.value.filter((folder) => !isConflict(folder)).length)
 
 onMounted(() => {
-  refreshWithCache() // 默认使用缓存刷新
+  refreshWithCache()
 })
 
-async function refreshFolders() {
-  loading.value = true
-  folders.value = [] // 清空列表
-  conflictCount.value = 0
-  
-  try {
-    const response = await fetch(`/api/existing-folders/scan?check_duplicates=${checkDuplicates.value}`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/x-ndjson'
-      }
-    })
-    
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() // 保留不完整的最后一行
-      
-      for (const line of lines) {
-        if (line.trim()) {
-          try {
-            const data = JSON.parse(line)
-            
-            if (data.type === 'start') {
-              ElMessage.info(data.message)
-            } else if (data.type === 'folder') {
-              // 实时添加文件夹到列表（使用展开运算符确保Vue检测到变化）
-              folders.value = [...folders.value, data.folder]
-              if (data.folder.duplicate_info) {
-                conflictCount.value++
-              }
-            } else if (data.type === 'complete') {
-              let msg = data.message
-              ElMessage.success(msg)
-            } else if (data.type === 'error') {
-              ElMessage.error(data.error)
-            }
-          } catch (e) {
-            console.error('解析数据失败:', e, line)
-          }
+async function consumeNdjsonResponse(response, { forceRefresh = false } = {}) {
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      const data = JSON.parse(line)
+      if (data.type === 'folder') {
+        folders.value = [...folders.value, data.folder]
+      } else if (data.type === 'folder_update') {
+        const index = folders.value.findIndex((folder) => folder.path === data.folder.path)
+        if (index !== -1) {
+          folders.value[index] = { ...folders.value[index], ...data.folder }
+          folders.value = [...folders.value]
         }
+      } else if (data.type === 'complete') {
+        conflictCount.value = folders.value.filter(isConflict).length
+        let msg = data.message || `扫描完成，找到 ${folders.value.length} 个文件夹`
+        if (forceRefresh) msg += '，已重新抓取'
+        ElMessage.success(msg)
+      } else if (data.type === 'error') {
+        ElMessage.error(data.error || '扫描失败')
       }
     }
-  } catch (error) {
-    console.error('获取文件夹列表失败:', error)
-    ElMessage.error('获取失败: ' + (error.message || '未知错误'))
-  } finally {
-    loading.value = false
   }
 }
 
-// 使用缓存刷新
-async function refreshWithCache() {
-  // 使用缓存，不传 force_refresh 参数
-  await refreshFoldersWithOptions(false)
-}
-
-// 强制刷新（重新抓取API）
-async function refreshForce() {
-  try {
-    await ElMessageBox.confirm(
-      '确定要重新抓取所有信息吗？这将清除缓存并重新调用API查询，可能需要较长时间。',
-      '确认重新抓取',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-    
-    await existingFolderApi.refreshCache()
-    ElMessage.success('已标记缓存需要刷新')
-    
-    await refreshFoldersWithOptions(true)
-  } catch (error) {
-    if (error === 'cancel' || error?.message === 'cancel') {
-      return
-    }
-    console.error('刷新缓存失败:', error)
-    ElMessage.error('刷新失败: ' + (error.message || '未知错误'))
-  }
-}
-
-// 带参数的刷新方法
 async function refreshFoldersWithOptions(forceRefresh = false) {
   loading.value = true
-  folders.value = [] // 清空列表
+  folders.value = []
+  selectedFolders.value = []
   conflictCount.value = 0
-  
   try {
     const url = `/api/existing-folders/scan?check_duplicates=${checkDuplicates.value}&force_refresh=${forceRefresh}`
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/x-ndjson'
-      }
-    })
-    
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let cachedCount = 0
-    let apiCount = 0
-    let checkingStarted = false
-    
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() // 保留不完整的最后一行
-      
-      for (const line of lines) {
-        if (line.trim()) {
-          try {
-            const data = JSON.parse(line)
-            
-            if (data.type === 'start') {
-              ElMessage.info(data.message)
-            } else if (data.type === 'folder') {
-              // 第一阶段：快速列出所有文件夹（立即可见，可操作）
-              folders.value = [...folders.value, data.folder]
-            } else if (data.type === 'checking_start') {
-              // 第二阶段开始：后台查重
-              checkingStarted = true
-              ElMessage.info(data.message)
-            } else if (data.type === 'folder_update') {
-              // 第二阶段：更新查重结果
-              const index = folders.value.findIndex(f => f.path === data.folder.path)
-              if (index !== -1) {
-                // 更新对应文件夹的信息
-                folders.value[index] = { ...folders.value[index], ...data.folder }
-                // 触发更新
-                folders.value = [...folders.value]
-                
-                if (data.folder.duplicate_info) {
-                  conflictCount.value++
-                }
-                
-                // 统计
-                if (data.from_cache) {
-                  cachedCount++
-                } else {
-                  apiCount++
-                }
-              }
-            } else if (data.type === 'complete') {
-              let msg = data.message
-              if (cachedCount > 0 || apiCount > 0) {
-                msg += `（缓存: ${cachedCount}, API: ${apiCount}）`
-              }
-              ElMessage.success(msg)
-            } else if (data.type === 'error') {
-              ElMessage.error(data.error)
-            }
-          } catch (e) {
-            console.error('解析数据失败:', e, line)
-          }
-        }
-      }
-    }
+    const response = await fetch(url, { method: 'POST', headers: { Accept: 'application/x-ndjson' } })
+    await consumeNdjsonResponse(response, { forceRefresh })
   } catch (error) {
     console.error('获取文件夹列表失败:', error)
     ElMessage.error('获取失败: ' + (error.message || '未知错误'))
@@ -606,39 +375,182 @@ async function refreshFoldersWithOptions(forceRefresh = false) {
   }
 }
 
-function handleSelectionChange(selection) {
-  selectedFolders.value = selection
+function refreshWithCache() {
+  return refreshFoldersWithOptions(false)
+}
+
+async function refreshForce() {
+  try {
+    await showSystemConfirm({
+      title: '重新抓取已有文件夹',
+      message: '将清除已有文件夹缓存并重新查询查重信息，目录较多时会更慢。',
+      tone: 'warning',
+      confirmText: '重新抓取'
+    })
+    await existingFolderApi.refreshCache()
+    await refreshFoldersWithOptions(true)
+  } catch (error) {
+    if (error !== 'cancel') ElMessage.error('刷新失败: ' + (error.message || '未知错误'))
+  }
+}
+
+function isConflict(folder) {
+  return Boolean(folder?.duplicate_info?.is_duplicate)
+}
+
+function isSelected(folder) {
+  return selectedFolders.value.some((item) => item.path === folder.path)
+}
+
+function toggleFolderSelection(folder) {
+  if (isSelected(folder)) {
+    selectedFolders.value = selectedFolders.value.filter((item) => item.path !== folder.path)
+  } else {
+    selectedFolders.value = [...selectedFolders.value, folder]
+  }
+}
+
+function getFolderState(folder) {
+  if (isConflict(folder)) return { label: getConflictTypeLabel(folder.duplicate_info?.conflict_type), tone: 'danger', icon: 'alert' }
+  if (folder.status === 'checking') return { label: '检查中', tone: 'warning', icon: 'refresh' }
+  if (folder.status === 'pending') return { label: '待检查', tone: 'muted', icon: 'clock' }
+  if (folder.status === 'error') return { label: '检查失败', tone: 'danger', icon: 'x' }
+  if (folder.status === 'cached') return { label: '已检查', tone: 'info', icon: 'shield' }
+  return { label: '可处理', tone: 'success', icon: 'check' }
 }
 
 async function handleProcess() {
-  if (selectedFolders.value.length === 0) {
-    ElMessage.warning('请先选择要处理的文件夹')
-    return
-  }
-  
+  if (!selectedFolders.value.length) return
   processing.value = true
   try {
-    const data = await existingFolderApi.process(
-      selectedFolders.value.map(f => f.path),
-      autoClassify.value
-    )
-    
-    resultData.value = {
-      success: true,
-      message: data.message,
-      tasks: data.tasks || []
-    }
+    const data = await existingFolderApi.process(selectedFolders.value.map((folder) => folder.path), autoClassify.value)
+    resultData.value = { success: true, message: data.message, tasks: data.tasks || [] }
     resultDialogVisible.value = true
     selectedFolders.value = []
-    
   } catch (error) {
-    console.error('处理文件夹失败:', error)
-    resultData.value = {
-      success: false,
-      message: error.response?.data?.detail || error.message,
-      tasks: []
-    }
+    resultData.value = { success: false, message: error.response?.data?.detail || error.message, tasks: [] }
     resultDialogVisible.value = true
+  } finally {
+    processing.value = false
+  }
+}
+
+async function checkSelectedDuplicates() {
+  if (!selectedFolders.value.length) return
+  checkingDuplicates.value = true
+  try {
+    const data = await existingFolderApi.checkDuplicates(selectedFolders.value.map((folder) => folder.path), { checkLinkedWorks: true })
+    applyDuplicateResults(data.results || [])
+    ElMessage[data.duplicate_count > 0 ? 'warning' : 'success'](data.message || '查重完成')
+  } catch (error) {
+    ElMessage.error('查重检查失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    checkingDuplicates.value = false
+  }
+}
+
+function applyDuplicateResults(results) {
+  results.forEach((result) => {
+    const index = folders.value.findIndex((folder) => folder.path === result.folder_path)
+    if (index === -1) return
+    folders.value[index] = {
+      ...folders.value[index],
+      status: result.error ? 'error' : 'checked',
+      duplicate_info: result.error ? { error: result.error } : {
+        is_duplicate: result.is_duplicate,
+        conflict_type: result.conflict_type,
+        direct_duplicate: result.direct_duplicate,
+        linked_works_found: result.linked_works_found,
+        related_rjcodes: result.related_rjcodes,
+        analysis_info: result.analysis_info,
+        resolution_options: result.resolution_options
+      }
+    }
+  })
+  folders.value = [...folders.value]
+  conflictCount.value = folders.value.filter(isConflict).length
+}
+
+function showDuplicateDetail(row) {
+  currentConflictFolder.value = row
+  duplicateDetailData.value = row.duplicate_info
+  const options = row.duplicate_info?.resolution_options || []
+  selectedResolution.value = options.find((option) => option.recommend)?.action || options[0]?.action || ''
+  duplicateDetailVisible.value = true
+}
+
+async function handleProcessWithResolution() {
+  if (!selectedResolution.value) {
+    ElMessage.warning('请先选择一个处理方案')
+    return
+  }
+  const selectedOption = duplicateDetailData.value?.resolution_options?.find((option) => option.action === selectedResolution.value)
+  try {
+    await showSystemConfirm({
+      title: '确认处理冲突',
+      message: `确定要执行「${selectedOption?.label || selectedResolution.value}」吗？`,
+      tone: selectedResolution.value === 'SKIP' ? 'danger' : 'info',
+      confirmText: '确认处理'
+    })
+    const data = await existingFolderApi.processWithResolution(currentConflictFolder.value?.path, selectedResolution.value, autoClassify.value)
+    ElMessage.success(data.message || '操作成功')
+    duplicateDetailVisible.value = false
+    await refreshWithCache()
+  } catch (error) {
+    if (error !== 'cancel') ElMessage.error('处理失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
+async function handleDeleteFolder(row) {
+  try {
+    await showSystemConfirm({
+      title: '删除已有文件夹',
+      message: `确定要删除「${row.name}」吗？此操作不可恢复。`,
+      tone: 'danger',
+      confirmText: '确认删除'
+    })
+    await existingFolderApi.delete(row.path)
+    ElMessage.success('文件夹已删除')
+    await refreshWithCache()
+  } catch (error) {
+    if (error !== 'cancel') ElMessage.error('删除失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
+async function handleRefreshFolder(row) {
+  checkingDuplicates.value = true
+  try {
+    const index = folders.value.findIndex((folder) => folder.path === row.path)
+    if (index !== -1) folders.value[index] = { ...folders.value[index], status: 'checking' }
+    folders.value = [...folders.value]
+    const data = await existingFolderApi.checkDuplicates([row.path], { checkLinkedWorks: true })
+    applyDuplicateResults(data.results || [])
+    ElMessage[data.duplicate_count > 0 ? 'warning' : 'success'](data.duplicate_count > 0 ? '发现冲突' : '查重完成，无冲突')
+  } catch (error) {
+    ElMessage.error('刷新失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    checkingDuplicates.value = false
+  }
+}
+
+async function handleProcessSingle(row) {
+  try {
+    await showSystemConfirm({
+      title: '处理已有文件夹',
+      message: `将对「${row.name}」执行元数据抓取、重命名、过滤和分类入库。`,
+      tone: 'info',
+      confirmText: '开始处理'
+    })
+    processing.value = true
+    const data = await existingFolderApi.process([row.path], autoClassify.value)
+    resultData.value = { success: true, message: data.message, tasks: data.tasks || [] }
+    resultDialogVisible.value = true
+    setTimeout(() => refreshWithCache(), 1000)
+  } catch (error) {
+    if (error !== 'cancel') {
+      resultData.value = { success: false, message: error.response?.data?.detail || error.message, tasks: [] }
+      resultDialogVisible.value = true
+    }
   } finally {
     processing.value = false
   }
@@ -656,403 +568,137 @@ function goToTasks() {
 }
 
 function formatFileSize(bytes) {
-  if (!bytes || bytes === 0) return '-'
-  const k = 1024
+  const value = Number(bytes || 0)
+  if (!value) return '未知'
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+  const i = Math.floor(Math.log(value) / Math.log(1024))
+  return `${parseFloat((value / Math.pow(1024, i)).toFixed(2))} ${sizes[i]}`
 }
 
 function formatDate(dateStr) {
-  if (!dateStr) return '-'
-  let date
-  if (typeof dateStr === 'string') {
-    const raw = dateStr.trim()
-    const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)
-    const normalized = hasExplicitTimezone ? raw : raw.replace(' ', 'T')
-    date = new Date(normalized)
-  } else {
-    date = new Date(dateStr)
-  }
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  })
+  if (!dateStr) return '时间未知'
+  const date = new Date(String(dateStr).trim().replace(' ', 'T'))
+  if (Number.isNaN(date.getTime())) return '时间未知'
+  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
 function getConflictTypeLabel(conflictType) {
   const labels = {
-    'DUPLICATE': '直接重复',
-    'LINKED_WORK_ORIGINAL': '原作已存在',
-    'LINKED_WORK_TRANSLATION': '翻译版已存在',
-    'LINKED_WORK_CHILD': '子版本已存在',
-    'LINKED_WORK': '关联作品',
-    'LANGUAGE_VARIANT': '语言变体',
-    'MULTIPLE_VERSIONS': '多版本'
+    DUPLICATE: '直接重复',
+    LINKED_WORK_ORIGINAL: '原作已存在',
+    LINKED_WORK_TRANSLATION: '翻译版已存在',
+    LINKED_WORK_CHILD: '子版本已存在',
+    LINKED_WORK: '关联作品',
+    LANGUAGE_VARIANT: '语言变体',
+    MULTIPLE_VERSIONS: '多版本'
   }
   return labels[conflictType] || '冲突'
-}
-
-async function checkSelectedDuplicates() {
-  if (selectedFolders.value.length === 0) {
-    ElMessage.warning('请先选择要检查的文件夹')
-    return
-  }
-  
-  checkingDuplicates.value = true
-  try {
-    const data = await existingFolderApi.checkDuplicates(
-      selectedFolders.value.map(f => f.path),
-      { checkLinkedWorks: true }
-    )
-    
-    data.results.forEach(result => {
-      const folder = folders.value.find(f => f.path === result.folder_path)
-      if (folder) {
-        if (result.error) {
-          folder.duplicate_info = { error: result.error }
-        } else {
-          folder.duplicate_info = {
-            is_duplicate: result.is_duplicate,
-            conflict_type: result.conflict_type,
-            direct_duplicate: result.direct_duplicate,
-            linked_works_found: result.linked_works_found,
-            related_rjcodes: result.related_rjcodes,
-            analysis_info: result.analysis_info,
-            resolution_options: result.resolution_options
-          }
-        }
-      }
-    })
-    
-    conflictCount.value = folders.value.filter(f => 
-      f.duplicate_info && f.duplicate_info.is_duplicate
-    ).length
-    
-    if (data.duplicate_count > 0) {
-      ElMessage.warning(`发现 ${data.duplicate_count} 个冲突`)
-    } else {
-      ElMessage.success('未发现冲突')
-    }
-    
-  } catch (error) {
-    console.error('查重检查失败:', error)
-    ElMessage.error('查重检查失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    checkingDuplicates.value = false
-  }
-}
-
-function showDuplicateDetail(row) {
-  currentConflictFolder.value = row
-  duplicateDetailData.value = row.duplicate_info
-  // 设置默认选择推荐的选项
-  if (row.duplicate_info.resolution_options) {
-    const recommendOption = row.duplicate_info.resolution_options.find(o => o.recommend)
-    selectedResolution.value = recommendOption ? recommendOption.action : row.duplicate_info.resolution_options[0]?.action
-  }
-  duplicateDetailVisible.value = true
-}
-
-function getRecommendedOption() {
-  if (!duplicateDetailData.value || !duplicateDetailData.value.resolution_options) return null
-  return duplicateDetailData.value.resolution_options.find(o => o.recommend)
-}
-
-async function handleProcessWithResolution() {
-  if (!selectedResolution.value) {
-    ElMessage.warning('请先选择一个处理方案')
-    return
-  }
-  
-  const selectedOption = duplicateDetailData.value?.resolution_options?.find(o => o.action === selectedResolution.value)
-  
-  if (selectedResolution.value === 'SKIP') {
-    try {
-      await ElMessageBox.confirm(
-        `确定要抛弃新版吗？这将删除文件夹：${currentConflictFolder.value?.name}`,
-        '确认删除',
-        {
-          confirmButtonText: '确认删除',
-          cancelButtonText: '取消',
-          type: 'warning'
-        }
-      )
-      
-      await existingFolderApi.delete(currentConflictFolder.value?.path)
-      
-      ElMessage.success('已删除新版文件夹')
-      duplicateDetailVisible.value = false
-      await refreshFolders()
-    } catch (error) {
-      if (error !== 'cancel') {
-        console.error('删除失败:', error)
-        ElMessage.error('删除失败: ' + (error.response?.data?.detail || error.message))
-      }
-    }
-    return
-  }
-  
-  try {
-    await ElMessageBox.confirm(
-      `确定要执行"${selectedOption?.label}"操作吗？`,
-      '确认操作',
-      {
-        confirmButtonText: '确认',
-        cancelButtonText: '取消',
-        type: 'info'
-      }
-    )
-    
-    const data = await existingFolderApi.processWithResolution(
-      currentConflictFolder.value?.path,
-      selectedResolution.value,
-      autoClassify.value
-    )
-    
-    ElMessage.success(data.message || '操作成功')
-    duplicateDetailVisible.value = false
-    await refreshFolders()
-  } catch (error) {
-    if (error !== 'cancel') {
-      console.error('处理失败:', error)
-      ElMessage.error('处理失败: ' + (error.response?.data?.detail || error.message))
-    }
-  }
-}
-
-async function handleDeleteFolder(row) {
-  try {
-    await ElMessageBox.confirm(
-      `确定要删除文件夹 "${row.name}" 吗？\n此操作不可恢复！`,
-      '确认删除',
-      {
-        confirmButtonText: '确认删除',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-    
-    await existingFolderApi.delete(row.path)
-    
-    ElMessage.success('文件夹已删除')
-    await refreshFolders()
-  } catch (error) {
-    if (error !== 'cancel') {
-      console.error('删除失败:', error)
-      ElMessage.error('删除失败: ' + (error.response?.data?.detail || error.message))
-    }
-  }
-}
-
-async function handleRefreshFolder(row) {
-  try {
-    const index = folders.value.findIndex(f => f.path === row.path)
-    if (index === -1) return
-    
-    folders.value[index].status = 'checking'
-    
-    const data = await existingFolderApi.checkDuplicates([row.path], { checkLinkedWorks: true })
-    
-    const result = data.results[0]
-    if (result) {
-      if (result.error) {
-        folders.value[index].duplicate_info = { error: result.error }
-      } else {
-        folders.value[index].duplicate_info = {
-          is_duplicate: result.is_duplicate,
-          conflict_type: result.conflict_type,
-          direct_duplicate: result.direct_duplicate,
-          linked_works_found: result.linked_works_found,
-          related_rjcodes: result.related_rjcodes,
-          analysis_info: result.analysis_info,
-          resolution_options: result.resolution_options
-        }
-      }
-      folders.value[index].status = 'checked'
-      
-      conflictCount.value = folders.value.filter(f => 
-        f.duplicate_info && f.duplicate_info.is_duplicate
-      ).length
-      
-      if (result.is_duplicate) {
-        ElMessage.warning('发现冲突')
-      } else {
-        ElMessage.success('查重完成，无冲突')
-      }
-    }
-  } catch (error) {
-    console.error('刷新失败:', error)
-    ElMessage.error('刷新失败: ' + (error.response?.data?.detail || error.message))
-    const index = folders.value.findIndex(f => f.path === row.path)
-    if (index !== -1) {
-      folders.value[index].status = 'cached'
-    }
-  }
-}
-
-async function handleProcessSingle(row) {
-  try {
-    await ElMessageBox.confirm(
-      `确定要处理文件夹 "${row.name}" 吗？\n\n将执行以下操作：\n• 重命名（根据元数据）\n• 过滤文件\n• 扁平化处理\n• 移动到库\n\n是否继续？`,
-      '确认处理',
-      {
-        confirmButtonText: '确认处理',
-        cancelButtonText: '取消',
-        type: 'info'
-      }
-    )
-    
-    processing.value = true
-    
-    const data = await existingFolderApi.process([row.path], autoClassify.value)
-    
-    resultData.value = {
-      success: true,
-      message: data.message,
-      tasks: data.tasks || []
-    }
-    resultDialogVisible.value = true
-    
-    setTimeout(() => {
-      refreshFolders()
-    }, 1000)
-    
-  } catch (error) {
-    if (error !== 'cancel') {
-      console.error('处理失败:', error)
-      resultData.value = {
-        success: false,
-        message: error.response?.data?.detail || error.message,
-        tasks: []
-      }
-      resultDialogVisible.value = true
-    }
-  } finally {
-    processing.value = false
-  }
 }
 </script>
 
 <style scoped>
-.existing-folders {
-  max-width: 1400px;
-  margin: 0 auto;
-}
-
-.page-title {
-  font-size: 28px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0 0 12px;
-}
-
-.page-description {
-  color: #64748b;
-  margin-bottom: 24px;
-  line-height: 1.6;
-}
-
-.page-description code {
-  background-color: #f1f5f9;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: 'Consolas', 'Monaco', monospace;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.toolbar {
-  margin-bottom: 20px;
-  display: flex;
-  align-items: center;
-}
-
-.folder-icon {
-  margin-right: 8px;
-  color: #409eff;
-}
-
-.no-rjcode {
-  color: #909399;
-  font-size: 12px;
-}
-
-.result-details {
-  text-align: left;
-  margin: 20px 0;
-}
-
-.task-list {
-  list-style: none;
-  padding: 0;
-  margin: 10px 0;
-}
-
-.task-list li {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px;
-  background-color: #f5f7fa;
-  border-radius: 4px;
-  margin-bottom: 8px;
-}
-
-.task-path {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.duplicate-detail {
-  max-height: 600px;
-  overflow-y: auto;
-}
-
-.detail-section {
-  margin-bottom: 20px;
-}
-
-.detail-section h4 {
-  margin: 0 0 12px 0;
-  font-size: 16px;
-  color: #303133;
-  border-left: 4px solid #409eff;
-  padding-left: 8px;
-}
-
-.detail-section h5 {
-  margin: 12px 0 8px 0;
-  font-size: 14px;
-  color: #606266;
-}
-
-.lang-stats {
-  margin-top: 12px;
-  padding: 12px;
-  background-color: #f5f7fa;
-  border-radius: 4px;
-}
+.existing-page { max-width: 1480px; margin: 0 auto; padding: 22px; color: #0f172a; background: #fff; }
+.existing-hero { display: flex; justify-content: space-between; gap: 18px; align-items: center; padding: 18px; border: 1px solid #e5e7eb; border-radius: 20px; background: #fff; box-shadow: 0 10px 26px rgba(15,23,42,.05); }
+.hero-title-block { display: flex; align-items: center; gap: 13px; }
+.hero-icon-box { width: 38px; height: 38px; border-radius: 16px; display: grid; place-items: center; background: #111827; color: white; box-shadow: 0 12px 28px rgba(15,23,42,.22); }
+.hero-text h1 { margin: 0; font-size: 24px; line-height: 1.1; font-weight: 900; letter-spacing: -.04em; }
+.hero-desc { margin: 5px 0 0; color: #64748b; font-size: 13px; }
+.hero-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.hero-search-wrap { position: relative; width: min(360px, 42vw); }
+.hero-search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #94a3b8; }
+.hero-search-input { width: 100%; height: 38px; padding: 0 14px 0 34px; border: 1px solid #e2e8f0; border-radius: 14px; outline: none; background: rgba(255,255,255,.88); font-size: 13px; transition: all .3s cubic-bezier(.34,1.56,.64,1); }
+.hero-search-input:focus { border-color: #94a3b8; box-shadow: 0 0 0 3px rgba(148,163,184,.16); }
+.hero-btn, .side-ep-action, .card-action, .dialog-btn, .dialog-close, .dialog-ep-btn, .select-toggle, .resolution-option { cursor: pointer; transition: all .3s cubic-bezier(.34,1.56,.64,1); }
+.hero-btn { height: 38px; border: 1px solid #e2e8f0; border-radius: 14px; padding: 0 14px; display: inline-flex; align-items: center; gap: 7px; background: white; color: #334155; font-weight: 800; font-size: 12px; }
+.hero-btn:hover, .side-ep-action:hover, .card-action:hover, .dialog-btn:hover, .dialog-close:hover, .dialog-ep-btn:hover, .resolution-option:hover { transform: translateY(-2px) scale(1.02); }
+.hero-btn:active, .side-ep-action:active, .card-action:active, .dialog-btn:active, .dialog-close:active, .dialog-ep-btn:active, .resolution-option:active { transform: scale(.96); }
+.hero-btn-primary { background: #111827; color: white; border-color: #111827; box-shadow: 0 12px 24px rgba(15,23,42,.18); }
+.hero-btn-secondary { background: #f8fafc; }
+.hero-btn:disabled, .side-ep-action.is-disabled, .card-action:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+.existing-shell { display: grid; grid-template-columns: 310px minmax(0,1fr); gap: 18px; margin-top: 18px; }
+.sidebar-card, .toolbar-card, .folders-card { border: 1px solid #e5e7eb; border-radius: 20px; background: #fff; box-shadow: 0 10px 26px rgba(15,23,42,.04); }
+.sidebar-card { padding: 16px; position: sticky; top: 18px; }
+.sidebar-head, .toolbar-main, .folder-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.sidebar-overline { color: #94a3b8; font-size: 11px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
+.sidebar-title, .toolbar-title { font-size: 17px; font-weight: 900; letter-spacing: -.03em; }
+.sidebar-count { min-width: 30px; height: 24px; border-radius: 999px; display: grid; place-items: center; background: #f1f5f9; color: #334155; font-size: 12px; font-weight: 900; }
+.pipeline-list { margin-top: 16px; display: grid; gap: 12px; }
+.pipeline-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border-radius: 14px; background: #fff; border: 1px solid #e5e7eb; }
+.pipeline-dot { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 11px; display: grid; place-items: center; }
+.pipeline-dot.info { background: #eff6ff; color: #2563eb; } .pipeline-dot.ok { background: #ecfdf5; color: #059669; } .pipeline-dot.warn { background: #fffbeb; color: #d97706; } .pipeline-dot.done { background: #f1f5f9; color: #0f172a; }
+.pipeline-title { font-size: 13px; font-weight: 900; } .pipeline-desc { margin-top: 2px; font-size: 11px; color: #64748b; line-height: 1.45; }
+.option-stack { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 16px; }
+.option-row { min-height: 58px; border: 1px solid #e5e7eb; border-radius: 14px; background: #fff; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; }
+.option-row-main { min-width: 0; display: flex; align-items: center; gap: 10px; color: #475569; }
+.option-row-title { color: #0f172a; font-size: 13px; font-weight: 900; line-height: 1.2; }
+.option-row-desc { margin-top: 3px; color: #94a3b8; font-size: 11px; line-height: 1.35; }
+.sidebar-actions { margin-top: 16px; display: grid; gap: 9px; }
+.side-ep-action { width: 100%; height: 38px; margin-left: 0 !important; border-radius: 14px; font-weight: 900; }
+.side-ep-action.primary { --el-button-bg-color: #111827; --el-button-border-color: #111827; --el-button-text-color: #fff; --el-button-hover-bg-color: #1f2937; --el-button-hover-border-color: #1f2937; --el-button-hover-text-color: #fff; }
+.side-button-icon { margin-right: 4px; }
+.toolbar-card { padding: 16px; }
+.toolbar-subtitle { margin-top: 4px; color: #64748b; font-size: 12px; }
+.toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.metric-pill { height: 28px; border-radius: 999px; padding: 0 10px; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 900; border: 1px solid #e5e7eb; background: #fff; color: #475569; }
+.metric-pill.owned { background: #ecfdf5; color: #047857; border-color: #bbf7d0; } .metric-pill.warn { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.folders-card { margin-top: 14px; padding: 16px; min-height: 420px; }
+.scan-banner { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; padding: 12px; border-radius: 16px; background: #fff; border: 1px dashed #cbd5e1; }
+.scan-title { font-weight: 900; font-size: 13px; } .scan-desc { color: #64748b; font-size: 12px; margin-top: 2px; }
+.folder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 13px; }
+.folder-card { border: 1px solid #dbe3ef; border-radius: 18px; padding: 14px; background: #fff; transition: all .3s cubic-bezier(.34,1.56,.64,1); }
+.folder-card:hover { transform: translateY(-2px); box-shadow: 0 16px 30px rgba(15,23,42,.08); }
+.folder-card.selected { border-color: #111827; box-shadow: inset 0 0 0 1px #111827; }
+.folder-card.conflict { background: #fff; border-color: #fed7aa; }
+.select-toggle { width: 26px; height: 26px; border-radius: 10px; border: 1px solid #cbd5e1; background: #fff; color: #cbd5e1; display: grid; place-items: center; flex: 0 0 auto; }
+.select-toggle:hover { border-color: #111827; color: #111827; background: #f8fafc; }
+.select-toggle.active { background: #111827; color: white; border-color: #111827; }
+.folder-main-info { min-width: 0; flex: 1; }
+.folder-name { font-weight: 900; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folder-path { margin-top: 3px; color: #94a3b8; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status-pill { height: 24px; border-radius: 999px; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; font-size: 11px; font-weight: 900; white-space: nowrap; }
+.status-pill.success { background: #ecfdf5; color: #047857; } .status-pill.warning { background: #fffbeb; color: #b45309; } .status-pill.danger { background: #fef2f2; color: #dc2626; } .status-pill.info { background: #eff6ff; color: #2563eb; } .status-pill.muted { background: #f1f5f9; color: #64748b; }
+.folder-meta-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.folder-meta { display: inline-flex; align-items: center; gap: 4px; height: 24px; border-radius: 999px; background: #fff; border: 1px solid #e5e7eb; padding: 0 8px; color: #64748b; font-size: 11px; font-weight: 800; }
+.folder-meta.rj { color: #0f172a; background: #fff; }
+.conflict-box { margin-top: 12px; display: flex; gap: 9px; padding: 10px; border-radius: 16px; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; }
+.conflict-box.large { margin-top: 0; }
+.conflict-title { font-size: 13px; font-weight: 900; } .conflict-desc { margin-top: 2px; font-size: 12px; color: #b45309; }
+.folder-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.card-action { height: 32px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; color: #475569; font-size: 12px; font-weight: 900; }
+.card-action.primary { background: #111827; color: white; border-color: #111827; } .card-action.warning { background: #fffbeb; color: #b45309; border-color: #fde68a; } .card-action.danger { background: #fef2f2; color: #dc2626; border-color: #fecaca; }
+.result-dialog :deep(.el-dialog) { border-radius: 22px; overflow: hidden; box-shadow: 0 24px 70px rgba(15,23,42,.2); }
+.result-dialog :deep(.el-dialog__header) { margin: 0; padding: 18px 18px 0; }
+.result-dialog :deep(.el-dialog__body) { padding: 16px 18px; }
+.result-dialog :deep(.el-dialog__footer) { padding: 0 18px 18px; }
+.dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.dialog-title-wrap { display: flex; align-items: center; gap: 12px; }
+.dialog-icon { width: 38px; height: 38px; border-radius: 14px; display: grid; place-items: center; }
+.dialog-icon.success { background: #ecfdf5; color: #059669; } .dialog-icon.warning { background: #fffbeb; color: #d97706; }
+.dialog-title { color: #0f172a; font-size: 17px; font-weight: 900; letter-spacing: -.03em; }
+.dialog-subtitle { margin-top: 3px; color: #64748b; font-size: 12px; }
+.dialog-close { width: 32px; height: 32px; border: 1px solid #e5e7eb; border-radius: 12px; background: #fff; color: #94a3b8; display: grid; place-items: center; }
+.dialog-close:hover { color: #0f172a; border-color: #cbd5e1; background: #f8fafc; }
+.result-panel { padding: 14px; border-radius: 16px; margin-bottom: 12px; border: 1px solid; }
+.result-panel.success { background: #f0fdf4; color: #047857; border-color: #bbf7d0; } .result-panel.warning { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.result-title { font-weight: 900; } .result-message { font-size: 13px; margin-top: 4px; line-height: 1.6; }
+.task-list, .duplicate-panel { display: grid; gap: 10px; }
+.task-list-title { color: #0f172a; font-size: 12px; font-weight: 900; }
+.task-row, .linked-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 14px; background: #fff; border: 1px solid #e5e7eb; color: #475569; font-size: 12px; }
+.task-id { font-weight: 900; color: #0f172a; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.task-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-status { height: 22px; border-radius: 999px; display: inline-flex; align-items: center; padding: 0 8px; background: #eff6ff; color: #2563eb; font-size: 11px; font-weight: 900; }
+.dialog-footer { display: flex; justify-content: flex-end; gap: 9px; }
+.dialog-ep-btn { height: 34px; border-radius: 12px; font-weight: 900; }
+.dialog-ep-btn.primary { --el-button-bg-color: #111827; --el-button-border-color: #111827; --el-button-text-color: #fff; --el-button-hover-bg-color: #1f2937; --el-button-hover-border-color: #1f2937; --el-button-hover-text-color: #fff; }
+.detail-card { border: 1px solid #e2e8f0; border-radius: 16px; padding: 12px; background: #fff; }
+.detail-title { font-weight: 900; margin-bottom: 8px; } .detail-line { font-size: 12px; color: #475569; line-height: 1.7; word-break: break-all; }
+.resolution-list { display: grid; gap: 9px; }
+.resolution-option { text-align: left; border: 1px solid #e2e8f0; border-radius: 16px; padding: 12px; background: #fff; display: grid; gap: 4px; }
+.resolution-option.active { border-color: #111827; box-shadow: inset 0 0 0 1px #111827; } .resolution-option.recommend { background: #f0fdf4; }
+.resolution-title { font-weight: 900; color: #0f172a; } .resolution-desc { color: #64748b; font-size: 12px; }
+.dialog-btn { height: 34px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; padding: 0 14px; font-weight: 900; color: #475569; }
+.dialog-btn.primary { background: #111827; color: white; border-color: #111827; }
+.animate-spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 980px) { .existing-shell { grid-template-columns: 1fr; } .sidebar-card { position: static; } .existing-hero { align-items: stretch; flex-direction: column; } .hero-search-wrap { width: 100%; } }
 </style>

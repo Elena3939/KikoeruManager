@@ -551,7 +551,7 @@ class TaskEngine:
                     task_type=task_type,
                     source_path=row.source_path or metadata.get("folder_path") or "",
                     output_path=row.output_path,
-                    auto_classify=False,
+                    auto_classify=bool(metadata.get("auto_classify", False)),
                     metadata=metadata,
                     task_id=row.id,
                     status=self._coerce_task_status(row.status),
@@ -1680,53 +1680,60 @@ class TaskEngine:
 
                 # 步骤4.5: 从 Subtitles 目录导入 LRC 字幕（如果存在且启用）
                 subtitle_folder = None
-                if config.process_existing.import_lrc and hasattr(config, 'asmr_sync') and config.asmr_sync.asmr_subtitle_path:
-                    subtitle_base = config.asmr_sync.asmr_subtitle_path
-                    if os.path.exists(subtitle_base) and rjcode:
-                        # 查找匹配 RJ 号的字幕文件夹
-                        from .subtitle_sync_service import get_subtitle_sync_service
-                        subtitle_svc = get_subtitle_sync_service()
-                        for item in os.listdir(subtitle_base):
-                            item_path = os.path.join(subtitle_base, item)
-                            if os.path.isdir(item_path):
-                                folder_rj = subtitle_svc.extract_rjcode_from_folder(item)
-                                if folder_rj and folder_rj.upper() == rjcode.upper():
-                                    subtitle_folder = item_path
-                                    logger.info(f"[{rjcode}] 找到匹配的字幕文件夹: {item}")
-                                    break
+                subtitle_base = getattr(getattr(config, 'storage', None), 'asmr_subtitle_path', '')
+                if config.process_existing.import_lrc and subtitle_base:
+                    try:
+                        if os.path.exists(subtitle_base) and rjcode:
+                            # 查找匹配 RJ 号的字幕文件夹
+                            from .subtitle_sync_service import get_subtitle_sync_service
+                            subtitle_svc = get_subtitle_sync_service()
+                            for item in os.listdir(subtitle_base):
+                                item_path = os.path.join(subtitle_base, item)
+                                if os.path.isdir(item_path):
+                                    folder_rj = subtitle_svc.extract_rjcode_from_folder(item)
+                                    if folder_rj and folder_rj.upper() == rjcode.upper():
+                                        subtitle_folder = item_path
+                                        logger.info(f"[{rjcode}] 找到匹配的字幕文件夹: {item}")
+                                        break
 
-                        if subtitle_folder:
-                            # LRC 广告清理
-                            if config.asmr_sync.lrc_clean_enabled:
-                                task.update_progress(79, "清理LRC广告")
-                                custom_patterns = config.asmr_sync.lrc_clean_patterns if hasattr(config.asmr_sync, 'lrc_clean_patterns') else None
-                                lrc_clean_result = subtitle_svc.clean_lrc_files_in_folder(subtitle_folder, custom_patterns)
-                                if lrc_clean_result['cleaned_files'] > 0:
-                                    logger.info(f"[{rjcode}] LRC广告清理完成: 处理 {lrc_clean_result['total_files']} 个文件, "
-                                               f"清理 {lrc_clean_result['cleaned_files']} 个文件")
+                            if subtitle_folder:
+                                # LRC 广告清理
+                                if config.asmr_sync.lrc_clean_enabled:
+                                    task.update_progress(79, "清理LRC广告")
+                                    custom_patterns = config.asmr_sync.lrc_clean_patterns if hasattr(config.asmr_sync, 'lrc_clean_patterns') else None
+                                    lrc_clean_result = subtitle_svc.clean_lrc_files_in_folder(subtitle_folder, custom_patterns)
+                                    if lrc_clean_result['cleaned_files'] > 0:
+                                        logger.info(f"[{rjcode}] LRC广告清理完成: 处理 {lrc_clean_result['total_files']} 个文件, "
+                                                   f"清理 {lrc_clean_result['cleaned_files']} 个文件")
 
-                            # 字幕繁简转换（字幕源文件夹）
-                            if getattr(config.asmr_sync, 'simplify_chinese_enabled', False):
-                                task.update_progress(79, "字幕繁简转换中")
-                                simplify_result = subtitle_svc.convert_subtitles_to_simplified_in_folder(subtitle_folder)
-                                if simplify_result['converted_files'] > 0:
-                                    logger.info(f"[{rjcode}] 字幕繁简转换完成: 处理 {simplify_result['total_files']} 个文件, "
-                                               f"转换 {simplify_result['converted_files']} 个文件")
+                                # 字幕繁简转换（字幕源文件夹）
+                                if getattr(config.asmr_sync, 'simplify_chinese_enabled', False):
+                                    task.update_progress(79, "字幕繁简转换中")
+                                    simplify_result = subtitle_svc.convert_subtitles_to_simplified_in_folder(subtitle_folder)
+                                    if simplify_result['converted_files'] > 0:
+                                        logger.info(f"[{rjcode}] 字幕繁简转换完成: 处理 {simplify_result['total_files']} 个文件, "
+                                                   f"转换 {simplify_result['converted_files']} 个文件")
 
-                            # 同步字幕到作品目录
-                            task.update_progress(79, "同步字幕到作品目录")
-                            sync_result = subtitle_svc.sync_subtitles_to_download(
-                                renamed_path,
-                                subtitle_folder
-                            )
-                            if sync_result['success']:
-                                logger.info(f"[{rjcode}] 字幕同步完成: 重命名 {len(sync_result['renamed_files'])} 个文件, "
-                                           f"复制 {len(sync_result['copied_subtitles'])} 个字幕")
-                            else:
-                                logger.warning(f"[{rjcode}] 字幕同步失败: {sync_result.get('errors', [])}")
+                                # 同步字幕到作品目录
+                                task.update_progress(79, "同步字幕到作品目录")
+                                sync_result = subtitle_svc.sync_subtitles_to_download(
+                                    renamed_path,
+                                    subtitle_folder
+                                )
+                                if sync_result['success']:
+                                    logger.info(f"[{rjcode}] 字幕同步完成: 重命名 {len(sync_result['renamed_files'])} 个文件, "
+                                               f"复制 {len(sync_result['copied_subtitles'])} 个字幕")
+                                else:
+                                    logger.warning(f"[{rjcode}] 字幕同步失败: {sync_result.get('errors', [])}")
+                        elif not os.path.exists(subtitle_base):
+                            logger.info(f"[{rjcode}] ASMR 字幕目录不存在，跳过 LRC 导入: {subtitle_base}")
+                    except Exception as subtitle_error:
+                        logger.warning(f"[{rjcode}] 可选 LRC 导入失败，继续已有文件夹入库: {subtitle_error}", exc_info=True)
                 else:
                     if not config.process_existing.import_lrc:
                         logger.info(f"[{rjcode}] 步骤[LRC导入]已禁用，跳过")
+                    else:
+                        logger.info(f"[{rjcode}] 未配置 ASMR 字幕目录，跳过 LRC 导入")
 
                 await task.wait_if_paused()
                 if task.is_cancelled():

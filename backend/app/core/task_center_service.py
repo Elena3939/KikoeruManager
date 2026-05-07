@@ -19,6 +19,7 @@ class TaskCenterService:
     DOMAIN_LABELS = {
         "all": "全部",
         "import": "导入处理",
+        "existing_folder": "已有文件夹",
         "rj_subtitle": "RJ 字幕",
         "subtitle_import": "字幕补配",
         "asmr_sync": "ASMR 同步",
@@ -49,17 +50,18 @@ class TaskCenterService:
 
     DOMAIN_PRIORITY = {
         "import": 0,
-        "rj_subtitle": 1,
-        "subtitle_import": 2,
-        "asmr_sync": 3,
-        "upload": 4,
-        "circle_completion": 5,
-        "system": 6,
+        "existing_folder": 1,
+        "rj_subtitle": 2,
+        "subtitle_import": 3,
+        "asmr_sync": 4,
+        "upload": 5,
+        "circle_completion": 6,
+        "system": 7,
     }
 
     TASK_TYPE_TO_DOMAIN = {
         TaskType.AUTO_PROCESS: "import",
-        TaskType.PROCESS_EXISTING_FOLDER: "import",
+        TaskType.PROCESS_EXISTING_FOLDER: "existing_folder",
         TaskType.RJ_SUBTITLE_FETCH: "rj_subtitle",
         TaskType.ASMR_SYNC_DOWNLOAD: "asmr_sync",
         TaskType.LOCAL_LIBRARY_UPLOAD: "upload",
@@ -73,6 +75,7 @@ class TaskCenterService:
 
     DOMAIN_ROUTE_HINT = {
         "import": "/library",
+        "existing_folder": "/existing-folders",
         "rj_subtitle": "/library",
         "subtitle_import": "/subtitle-import",
         "asmr_sync": "/asmr-sync",
@@ -743,6 +746,16 @@ class TaskCenterService:
             source_page = source_page or "dashboard"
             self._append_metric(metrics, "RJ", rjcode)
             self._append_metric(metrics, "输出", self._basename(output_path))
+            self._append_metric(metrics, "目标库", metadata.get("target_library_id"))
+        elif domain == "existing_folder":
+            title = self._safe_text(metadata.get("folder_name")) or self._basename(source_path) or rjcode or "已有文件夹任务"
+            subtitle = self._safe_text(metadata.get("folder_path")) or source_path
+            source_label = source_label or "已有文件夹 / 批量处理"
+            source_action = source_action or "process_existing_folder"
+            source_page = source_page or "existing-folders"
+            self._append_metric(metrics, "RJ", rjcode or metadata.get("inferred_rjcode"))
+            self._append_metric(metrics, "目录", self._basename(source_path))
+            self._append_metric(metrics, "自动分类", "是" if bool(metadata.get("auto_classify")) else "否")
             self._append_metric(metrics, "目标库", metadata.get("target_library_id"))
         elif domain == "rj_subtitle":
             title = self._safe_text(metadata.get("folder_name")) or self._basename(metadata.get("folder_path")) or self._basename(source_path) or "RJ 字幕任务"

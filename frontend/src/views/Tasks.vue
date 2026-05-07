@@ -73,6 +73,7 @@ import {
   Captions,
   Database,
   FileArchive,
+  FolderInput,
   ListChecks,
   PauseCircle,
   RotateCcw,
@@ -121,6 +122,7 @@ let lastDetailSyncSignature = ''
 const domainOptions = [
   { value: 'all', label: '全部', icon: ListChecks },
   { value: 'import', label: '导入处理', icon: FileArchive },
+  { value: 'existing_folder', label: '已有文件夹', icon: FolderInput },
   { value: 'rj_subtitle', label: 'RJ 字幕', icon: Captions },
   { value: 'subtitle_import', label: '字幕补配', icon: Sparkles },
   { value: 'asmr_sync', label: 'ASMR 同步', icon: UploadCloud },
@@ -695,6 +697,15 @@ function getTaskSummary(item) {
     if (!pieces.length && normalizedRJ && !containsRJ(item.title) && !containsRJ(item.subtitle)) {
       pieces.push(normalizedRJ)
     }
+  } else if (item.domain === 'existing_folder') {
+    const normalizedRJ = formatRJCode(item.rjcode)
+    const directoryName = pickMetricValue(item, '目录') || getFileName(item.subtitle || item.source_path || '')
+    const autoClassify = pickMetricValue(item, '自动分类')
+    const targetLibrary = pickMetricValue(item, '目标库')
+    if (normalizedRJ) pieces.push(`RJ ${normalizedRJ}`)
+    if (directoryName) pieces.push(`目录 ${directoryName}`)
+    if (autoClassify) pieces.push(`自动分类 ${autoClassify}`)
+    if (targetLibrary) pieces.push(`目标库 ${targetLibrary}`)
   } else if (item.domain === 'rj_subtitle') {
     const downloadCount = pickMetricValue(item, '下载')
     const writtenCount = pickMetricValue(item, '写入')

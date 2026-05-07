@@ -4363,6 +4363,20 @@ def _robust_rmtree(path: str, retries: int = 3, delay: float = 1.0) -> None:
         raise last_exc
 
 
+def _is_path_under_base(path: str, base_path: str) -> bool:
+    try:
+        if not path or not base_path:
+            return False
+        target = os.path.abspath(os.path.normpath(path))
+        base = os.path.abspath(os.path.normpath(base_path))
+        if os.name == "nt":
+            target = os.path.normcase(target)
+            base = os.path.normcase(base)
+        return os.path.commonpath([base, target]) == base
+    except Exception:
+        return False
+
+
 @app.post("/api/library/delete")
 async def delete_library_file(request: Request):
     """删除库内文件或文件夹（需要确认）"""
@@ -5484,7 +5498,7 @@ async def process_existing_folders(request: Request):
         valid_folders = []
         for folder_path in folders:
             # 安全检查：确保路径在 existing_folders_path 目录下
-            if not folder_path.startswith(existing_folders_path):
+            if not _is_path_under_base(folder_path, existing_folders_path):
                 logger.warning(f"路径不在已存在文件夹目录下，跳过: {folder_path}")
                 continue
             
@@ -5503,6 +5517,9 @@ async def process_existing_folders(request: Request):
         batch_id = str(uuid.uuid4())
 
         for folder_path in valid_folders:
+            folder_name = os.path.basename(str(folder_path).rstrip("\\/"))
+            rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', folder_name, re.IGNORECASE)
+            inferred_rjcode = rj_match.group(0).upper() if rj_match else None
             task = Task(
                 task_type=TaskType.PROCESS_EXISTING_FOLDER,
                 source_path=folder_path,
@@ -5517,6 +5534,11 @@ async def process_existing_folders(request: Request):
                     "source_page": "existing-folders",
                     "source_action": "process_existing_batch",
                     "source_label": "已有目录页 / 批量处理",
+                    "folder_path": folder_path,
+                    "folder_name": folder_name,
+                    "inferred_rjcode": inferred_rjcode,
+                    "rjcode": inferred_rjcode,
+                    "auto_classify": bool(auto_classify),
                 }
             )
             await engine.submit(task)
@@ -5583,7 +5605,7 @@ async def delete_existing_folder(request: Request):
         config = get_config()
         existing_folders_path = config.storage.existing_folders_path
         
-        if not folder_path.startswith(existing_folders_path):
+        if not _is_path_under_base(folder_path, existing_folders_path):
             raise HTTPException(status_code=400, detail="路径不在已存在文件夹目录下")
         
         if not os.path.exists(folder_path):
@@ -5616,7 +5638,7 @@ async def get_existing_folder_merge_preview(request: Request):
 
         config = get_config()
         existing_folders_path = config.storage.existing_folders_path
-        if not folder_path.startswith(existing_folders_path):
+        if not _is_path_under_base(folder_path, existing_folders_path):
             raise HTTPException(status_code=400, detail="路径不在已存在文件夹目录中")
         if not os.path.exists(folder_path):
             raise HTTPException(status_code=404, detail="待处理文件夹不存在")
@@ -5691,7 +5713,7 @@ async def process_existing_folder_with_resolution(request: Request):
         config = get_config()
         existing_folders_path = config.storage.existing_folders_path
         
-        if not folder_path.startswith(existing_folders_path):
+        if not _is_path_under_base(folder_path, existing_folders_path):
             raise HTTPException(status_code=400, detail="路径不在已存在文件夹目录下")
         
         if not os.path.exists(folder_path):
@@ -5743,6 +5765,11 @@ async def process_existing_folder_with_resolution(request: Request):
                         "existing_folder_resolution": normalized_resolution,
                         "existing_path": resolved_existing_path,
                         "merge_decisions": merge_decisions if normalized_resolution == "MERGE" else {},
+                        "folder_path": folder_path,
+                        "folder_name": folder_name,
+                        "inferred_rjcode": rjcode,
+                        "rjcode": rjcode,
+                        "auto_classify": bool(auto_classify),
                     }
                 )
                 await engine.submit(task)
