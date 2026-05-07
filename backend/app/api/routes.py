@@ -2131,83 +2131,18 @@ async def get_conflicts(include_stats: bool = False):
         db_task = db.query(TaskRecord.status).filter(TaskRecord.id == normalized_task_id).first()
         return str((db_task[0] if db_task else "") or "").strip().lower()
 
-    def _backfill_failed_import_conflicts() -> None:
-        """把历史漏写的问题导入任务补进问题作品列表。"""
-        failed_rows = (
-            db.query(TaskRecord)
-            .filter(
-                TaskRecord.status == "failed",
-                TaskRecord.type.in_(["extract", "auto_process", "process_existing_folder"]),
-            )
-            .order_by(TaskRecord.completed_at.desc(), TaskRecord.created_at.desc())
-            .limit(200)
-            .all()
-        )
-        for task_row in failed_rows:
-            source_path = str(task_row.source_path or "").strip()
-            if not source_path:
-                continue
-            exists = (
-                db.query(ConflictWork.id)
-                .filter(
-                    ConflictWork.conflict_type.in_(["EXTRACT_FAILED", "PROCESS_FAILED"]),
-                    or_(
-                        ConflictWork.task_id == task_row.id,
-                        ConflictWork.new_path == source_path,
-                    ),
-                    ConflictWork.status.in_(["PENDING", "PROCESSING"]),
-                )
-                .first()
-            )
-            if exists:
-                continue
-
-            metadata = _normalize_conflict_metadata(task_row.task_metadata)
-            reason = str(task_row.error_message or metadata.get("error_message") or task_row.current_step or "任务失败").strip()
-            step = str(task_row.current_step or "").strip()
-            combined = f"{step} {reason}".lower()
-            is_extract_failure = (
-                str(task_row.type or "") == "extract"
-                or any(keyword in combined for keyword in ["解压", "密码", "压缩包"])
-            )
-            rjcode = (
-                normalize_rjcode_value(metadata.get("rjcode"))
-                or normalize_rjcode_value(metadata.get("inferred_rjcode"))
-                or normalize_rjcode_value(source_path)
-            )
-            failure_metadata = {
-                **metadata,
-                "failure_stage": "extract" if is_extract_failure else "process",
-                "error_message": reason,
-                "available_actions": ["RETRY", "SKIP"],
-                "source_task_type": str(task_row.type or "auto_process"),
-                "failed_task_id": task_row.id,
-                "failed_step": step,
-                "failed_progress": int(task_row.progress or 0),
-                "backfilled_from_failed_task": True,
-                "source_missing": not os.path.exists(source_path),
-            }
-            db.add(ConflictWork(
-                id=str(uuid.uuid4()),
-                task_id=task_row.id,
-                rjcode=rjcode or None,
-                conflict_type="EXTRACT_FAILED" if is_extract_failure else "PROCESS_FAILED",
-                existing_path="",
-                new_path=source_path,
-                new_metadata=failure_metadata,
-                status="PENDING",
-                linked_works_info=[],
-                analysis_info={},
-                related_rjcodes=[],
-                created_at=datetime.now(),
-            ))
-        db.commit()
-
     db = next(get_db())
     try:
         resolution_service = get_conflict_resolution_service()
         engine = get_task_engine()
-        _backfill_failed_import_conflicts()
+        # 之前这里有一个 _backfill_failed_import_conflicts 兜底回扫：
+        # 每次列表请求都拉最近 200 条 failed task → 200×N+1 ConflictWork.exists query
+        # → 200 次同步 os.path.exists(source_path)（远程挂载累计 60s+ 直接打死接口）
+        # → 写一个名为 source_missing 的字段。
+        # 经全局 grep 确认 source_missing 字段在前后端 0 处读取（死字段），
+        # 任务失败 → 写问题作品的主路径已经在 task_engine._record_problem_work_for_*
+        # 稳定运行（产物：当前 conflict_works 285 条全是主路径写的）。
+        # 这个函数只是历史包袱，删掉。
         conflicts = db.query(ConflictWork).filter(
             ConflictWork.status.in_(["PENDING", "PROCESSING"]),
             ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
@@ -3030,52 +2965,71 @@ async def scan_processed_archives():
         
         # 重新获取清理后的记录
         db_archives = {a.filename: a for a in db.query(ProcessedArchive).all()}
-        
-        # 扫描目录中的文件
+
+        # 把目录扫描 + 每个文件的 isfile / getsize 一次性下放到线程池，
+        # 远程挂载（NAS / SMB）大目录时 N 次同步 stat 会阻塞 event loop。
+        def _collect_processed_files() -> list[tuple[str, str, int]]:
+            """同步扫描 processed_dir，返回 [(filename, file_path, file_size), ...]"""
+            try:
+                names = os.listdir(processed_dir)
+            except Exception as exc:
+                logger.warning(f"列出已处理压缩包目录失败: {processed_dir} - {exc}")
+                return []
+            collected: list[tuple[str, str, int]] = []
+            for name in names:
+                fp = os.path.join(processed_dir, name)
+                try:
+                    if not os.path.isfile(fp):
+                        continue
+                    collected.append((name, fp, os.path.getsize(fp)))
+                except Exception as exc:
+                    logger.warning(f"获取压缩包元信息失败: {fp} - {exc}")
+            return collected
+
+        scanned_files = await asyncio.to_thread(_collect_processed_files)
+
+        # 扫描目录中的文件（DB 写入留在 event loop，操作短，不会阻塞）
         found_files = []
-        for filename in await asyncio.to_thread(os.listdir, processed_dir):
-            file_path = os.path.join(processed_dir, filename)
-            if os.path.isfile(file_path):
-                found_files.append(filename)
-                file_size = os.path.getsize(file_path)
-                
-                # 提取RJ号
-                rjcode = None
-                match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', filename, re.IGNORECASE)
-                if match:
-                    rjcode = match.group(0).upper()
-                
-                if filename in db_archives:
-                    # 更新现有记录（只更新路径和大小，不更新时间）
-                    archive = db_archives[filename]
-                    archive.current_path = file_path
-                    archive.file_size = file_size
-                    # 注意：不要在这里更新 processed_at，扫描只是同步文件状态，不是重新处理
-                    logger.info(f"更新已处理压缩包记录路径: {filename}")
-                else:
-                    # 创建新记录
-                    new_archive = ProcessedArchive(
-                        id=str(uuid.uuid4()),
-                        original_path=file_path,
-                        current_path=file_path,
-                        filename=filename,
-                        rjcode=rjcode or '',
-                        file_size=file_size,
-                        processed_at=datetime.now(),
-                        process_count=1,
-                        task_id='',
-                        status='completed'
-                    )
-                    db.add(new_archive)
-                    logger.info(f"添加新的已处理压缩包记录: {filename}")
-        
+        for filename, file_path, file_size in scanned_files:
+            found_files.append(filename)
+
+            # 提取RJ号
+            rjcode = None
+            match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', filename, re.IGNORECASE)
+            if match:
+                rjcode = match.group(0).upper()
+
+            if filename in db_archives:
+                # 更新现有记录（只更新路径和大小，不更新时间）
+                archive = db_archives[filename]
+                archive.current_path = file_path
+                archive.file_size = file_size
+                # 注意：不要在这里更新 processed_at，扫描只是同步文件状态，不是重新处理
+                logger.info(f"更新已处理压缩包记录路径: {filename}")
+            else:
+                # 创建新记录
+                new_archive = ProcessedArchive(
+                    id=str(uuid.uuid4()),
+                    original_path=file_path,
+                    current_path=file_path,
+                    filename=filename,
+                    rjcode=rjcode or '',
+                    file_size=file_size,
+                    processed_at=datetime.now(),
+                    process_count=1,
+                    task_id='',
+                    status='completed'
+                )
+                db.add(new_archive)
+                logger.info(f"添加新的已处理压缩包记录: {filename}")
+
         # 清理数据库中不存在的记录
+        # found_files 已经覆盖了"目录里实际存在的文件"，db 中其他 filename 直接判定为缺失。
+        # 不再做额外的 os.path.exists 同步 IO（也避免 db_archives 数量大时 N 次远程 stat）。
         for filename, archive in list(db_archives.items()):
             if filename not in found_files:
-                archive_path = os.path.join(processed_dir, filename)
-                if not os.path.exists(archive_path):
-                    logger.info(f"删除不存在的压缩包记录: {filename}")
-                    db.delete(archive)
+                logger.info(f"删除不存在的压缩包记录: {filename}")
+                db.delete(archive)
         
         db.commit()
         logger.info(f"已处理压缩包目录扫描完成，共发现 {len(found_files)} 个文件")
@@ -4036,110 +3990,108 @@ async def get_library_files():
     try:
         config = get_config()
         library_path = config.storage.library_path
-        
+
         if not os.path.exists(library_path):
             return {"files": []}
-        
-        # 查询 ProcessedArchive 数据库获取解压时间
+
+        # 查询 ProcessedArchive 数据库获取解压时间（DB 操作走主 event loop，本身够快）
         from ..models.database import ProcessedArchive, get_db
         db = next(get_db())
-        
+
         # 构建文件名到解压时间的映射
         archive_times = {}
         for archive in db.query(ProcessedArchive).all():
             archive_name = os.path.basename(archive.current_path)
             archive_times[archive_name] = archive.processed_at
-        
-        items = []
-        item_id = 0
-        
-        # 只遍历前两级目录
-        for item in os.listdir(library_path):
-            item_path = os.path.join(library_path, item)
-            
-            # 跳过冲突文件夹和隐藏文件
-            if item.startswith('_') or item.startswith('.'):
-                continue
-            
-            # 如果是文件夹（如 RJ012xxxxx），遍历其子目录
-            if os.path.isdir(item_path):
-                for subitem in os.listdir(item_path):
-                    subitem_path = os.path.join(item_path, subitem)
-                    
-                    # 跳过隐藏文件
-                    if subitem.startswith('.'):
-                        continue
-                    
+
+        # 整库扫描包含三层嵌套同步 IO（os.listdir × 2 + os.walk + 每个文件 os.stat / getsize），
+        # 远程挂载或大库存上能阻塞 event loop 几分钟。整段下放到线程池跑，
+        # 期间 API 仍可正常响应其他请求。
+        def _scan_library_two_levels() -> list[dict]:
+            collected: list[dict] = []
+            local_id = 0
+            for item in os.listdir(library_path):
+                item_path = os.path.join(library_path, item)
+                # 跳过冲突文件夹和隐藏文件
+                if item.startswith('_') or item.startswith('.'):
+                    continue
+
+                if os.path.isdir(item_path):
+                    # 二级：RJ 文件夹下面的子目录 / 单个文件
+                    for subitem in os.listdir(item_path):
+                        subitem_path = os.path.join(item_path, subitem)
+                        if subitem.startswith('.'):
+                            continue
+                        try:
+                            st = os.stat(subitem_path)
+                            rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', subitem, re.IGNORECASE)
+                            rjcode = rj_match.group(0).upper() if rj_match else None
+
+                            # 计算文件夹大小或获取文件大小
+                            size = 0
+                            sub_is_dir = os.path.isdir(subitem_path)
+                            if sub_is_dir:
+                                for dirpath, _, filenames in os.walk(subitem_path):
+                                    for f in filenames:
+                                        fp = os.path.join(dirpath, f)
+                                        try:
+                                            size += os.path.getsize(fp)
+                                        except Exception:
+                                            pass
+                            else:
+                                size = st.st_size
+
+                            # 解压时间（优先 processed_at，否则文件系统 mtime）
+                            if subitem in archive_times:
+                                unzip_time = archive_times[subitem].isoformat()
+                            else:
+                                unzip_time = datetime.fromtimestamp(st.st_mtime).isoformat()
+
+                            collected.append({
+                                "id": str(local_id),
+                                "name": subitem,
+                                "path": subitem_path,
+                                "rjcode": rjcode,
+                                "size": size,
+                                "modified_time": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                "unzip_time": unzip_time,
+                                "is_directory": sub_is_dir,
+                            })
+                            local_id += 1
+                        except Exception as e:
+                            logger.warning(f"获取项目信息失败: {subitem_path}, {e}")
+                else:
+                    # 根目录下的文件
                     try:
-                        stat = os.stat(subitem_path)
-                        # 提取RJ号
-                        rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', subitem, re.IGNORECASE)
+                        st = os.stat(item_path)
+                        rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', item, re.IGNORECASE)
                         rjcode = rj_match.group(0).upper() if rj_match else None
-                        
-                        # 计算文件夹大小或获取文件大小
-                        size = 0
-                        if os.path.isdir(subitem_path):
-                            for dirpath, dirnames, filenames in os.walk(subitem_path):
-                                for f in filenames:
-                                    fp = os.path.join(dirpath, f)
-                                    try:
-                                        size += os.path.getsize(fp)
-                                    except:
-                                        pass
+
+                        if item in archive_times:
+                            unzip_time = archive_times[item].isoformat()
                         else:
-                            size = stat.st_size
-                        
-                        # 获取解压时间（优先使用 processed_at，否则使用文件系统时间）
-                        unzip_time = None
-                        if subitem in archive_times:
-                            unzip_time = archive_times[subitem].isoformat()
-                        else:
-                            unzip_time = datetime.fromtimestamp(stat.st_mtime).isoformat()
-                        
-                        items.append({
-                            "id": str(item_id),
-                            "name": subitem,
-                            "path": subitem_path,
+                            unzip_time = datetime.fromtimestamp(st.st_mtime).isoformat()
+
+                        collected.append({
+                            "id": str(local_id),
+                            "name": item,
+                            "path": item_path,
                             "rjcode": rjcode,
-                            "size": size,
-                            "modified_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                            "size": st.st_size,
+                            "modified_time": datetime.fromtimestamp(st.st_mtime).isoformat(),
                             "unzip_time": unzip_time,
-                            "is_directory": os.path.isdir(subitem_path)
+                            "is_directory": False,
                         })
-                        item_id += 1
+                        local_id += 1
                     except Exception as e:
-                        logger.warning(f"获取项目信息失败: {subitem_path}, {e}")
-            else:
-                # 根目录下的文件
-                try:
-                    stat = os.stat(item_path)
-                    rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', item, re.IGNORECASE)
-                    rjcode = rj_match.group(0).upper() if rj_match else None
-                    
-                    # 获取解压时间
-                    unzip_time = None
-                    if item in archive_times:
-                        unzip_time = archive_times[item].isoformat()
-                    else:
-                        unzip_time = datetime.fromtimestamp(stat.st_mtime).isoformat()
-                    
-                    items.append({
-                        "id": str(item_id),
-                        "name": item,
-                        "path": item_path,
-                        "rjcode": rjcode,
-                        "size": stat.st_size,
-                        "modified_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                        "unzip_time": unzip_time,
-                        "is_directory": False
-                    })
-                    item_id += 1
-                except Exception as e:
-                    logger.warning(f"获取项目信息失败: {item_path}, {e}")
-        
+                        logger.warning(f"获取项目信息失败: {item_path}, {e}")
+            return collected
+
+        items = await asyncio.to_thread(_scan_library_two_levels)
+
         # 按解压时间排序（最新的在前）
         items.sort(key=lambda x: x["unzip_time"] or x["modified_time"], reverse=True)
-        
+
         return {"files": items}
         
     except Exception as e:
@@ -4158,32 +4110,43 @@ async def get_library_folder_contents(request: Request):
 
         target_path = os.path.abspath(folder_path)
 
-        if not os.path.exists(target_path):
-            raise HTTPException(status_code=404, detail="文件夹不存在")
-        if not os.path.isdir(target_path):
-            raise HTTPException(status_code=400, detail="目标不是文件夹")
+        # 远程挂载（NAS / SMB）目录上 os.walk + 每个文件 os.stat 单次几十到几百 ms，
+        # 大目录直接阻塞 event loop 几分钟。整段同步 IO 全部下放到线程池，
+        # 否则光这一个接口就能拖垮 outbox / SSE / 其他路由。
+        def _walk_and_stat() -> tuple[bool, bool, list[dict]]:
+            """同步遍历目录并采集文件元信息。返回 (exists, is_dir, items)。"""
+            if not os.path.exists(target_path):
+                return False, False, []
+            if not os.path.isdir(target_path):
+                return True, False, []
+            collected: list[dict] = []
+            local_id = 0
+            for root, _, files in os.walk(target_path):
+                for filename in files:
+                    if filename.startswith('.'):
+                        continue
+                    file_path = os.path.join(root, filename)
+                    try:
+                        st = os.stat(file_path)
+                        relative_path = os.path.relpath(file_path, target_path).replace("\\", "/")
+                        collected.append({
+                            "id": str(local_id),
+                            "name": filename,
+                            "path": file_path,
+                            "relative_path": relative_path,
+                            "size": st.st_size,
+                            "modified_time": datetime.fromtimestamp(st.st_mtime).isoformat()
+                        })
+                        local_id += 1
+                    except Exception as e:
+                        logger.warning(f"读取子文件失败: {file_path}, {e}")
+            return True, True, collected
 
-        items = []
-        item_id = 0
-        for root, _, files in os.walk(target_path):
-            for filename in files:
-                if filename.startswith('.'):
-                    continue
-                file_path = os.path.join(root, filename)
-                try:
-                    stat = os.stat(file_path)
-                    relative_path = os.path.relpath(file_path, target_path).replace("\\", "/")
-                    items.append({
-                        "id": str(item_id),
-                        "name": filename,
-                        "path": file_path,
-                        "relative_path": relative_path,
-                        "size": stat.st_size,
-                        "modified_time": datetime.fromtimestamp(stat.st_mtime).isoformat()
-                    })
-                    item_id += 1
-                except Exception as e:
-                    logger.warning(f"读取子文件失败: {file_path}, {e}")
+        path_exists, path_is_dir, items = await asyncio.to_thread(_walk_and_stat)
+        if not path_exists:
+            raise HTTPException(status_code=404, detail="文件夹不存在")
+        if not path_is_dir:
+            raise HTTPException(status_code=400, detail="目标不是文件夹")
 
         items.sort(key=lambda x: x["relative_path"])
         return {

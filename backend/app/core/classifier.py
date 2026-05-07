@@ -501,11 +501,11 @@ class SmartClassifier:
             if not os.path.exists(new_path) and conflict_type not in {'EXTRACT_FAILED', 'PROCESS_FAILED'}:
                 logger.info(f"新文件已不存在，跳过添加冲突记录: {rjcode}, 路径: {new_path}")
                 return
-            if not os.path.exists(new_path):
-                metadata = dict(metadata or {})
-                metadata["source_missing"] = True
-                metadata["source_missing_path"] = new_path
-            
+            # 注：以前这里还会再做一次 os.path.exists(new_path) 然后写
+            # metadata['source_missing'] / 'source_missing_path' 字段。
+            # 经全局 grep 确认这两个 key 在前后端 0 处读取（死字段），删除以省掉
+            # EXTRACT_FAILED / PROCESS_FAILED 路径上的额外远程 stat 开销。
+
             conflict = ConflictWork(
                 id=str(uuid.uuid4()),
                 task_id=task_id,
