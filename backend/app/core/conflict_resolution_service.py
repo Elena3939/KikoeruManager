@@ -591,61 +591,34 @@ class ConflictResolutionService:
         }
 
     async def _resolve_kikoeru_server_path(self, rjcode: str) -> Optional[dict[str, Any]]:
-        """用 RJ 号在所有库存中并行搜索实际文件夹路径，用于解析 Kikoeru 写入的显示标签路径。
-        - 本地库：各库并行用 list_files 搜索
-        - 远程群晖库：通过 global_search_files 并行搜索所有远程库
+        """用 RJ 号解析 Kikoeru 写入的显示标签路径为库内真实路径。
+
+        优先走 LibraryManager.find_rj_in_libraries（已接入 LibraryIndexService、起走索引快速路径、
+        未 ready 的库走 SYNO.Search / os.walk fallback）。加总超时 20s 兑底远程 NAS
+        崩块 / 占线场景，避免一条 conflict 拖垃整个列表响应。
         """
         try:
             manager = get_library_manager()
-            libraries = list(self._iter_libraries())
-            lib_type_map = {lib.id: lib.type for lib in libraries}
-
-            local_libs = [lib for lib in libraries if lib.type == "local"]
-            remote_libs = [lib for lib in libraries if lib.type == "synology_filestation"]
-
-            async def _search_one(lib_id: str) -> dict:
-                return await manager.list_files(
-                    lib_id,
-                    page=1,
-                    page_size=50,
-                    search=rjcode,
-                    sort_by="name",
-                    sort_order="asc",
-                    search_result_kind="folder",
-                )
-
-            tasks: list = [asyncio.create_task(_search_one(lib.id)) for lib in local_libs]
-            if remote_libs:
-                tasks.append(asyncio.create_task(
-                    manager.global_search_files(
-                        None, rjcode, page=1, page_size=50, search_result_kind="folder"
-                    )
-                ))
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for result in results:
-                if isinstance(result, Exception):
-                    continue
-                files = result.get("files") or []
-                for item in files:
-                    if not item.get("is_directory", True):
-                        continue
-                    item_rjcode = str(item.get("rjcode") or "")
-                    if item_rjcode.upper() != rjcode.upper():
-                        continue
-                    item_path = item.get("path") or ""
-                    item_lib_id = str(item.get("library_id") or "")
-                    if not item_path or not item_lib_id:
-                        continue
-                    item_lib_type = lib_type_map.get(item_lib_id, "local")
-                    return {
-                        "library_id": item_lib_id,
-                        "library_type": item_lib_type,
-                        "library_name": item.get("library_name") or "",
-                        "path": item_path,
-                        "is_remote": item_lib_type == "synology_filestation",
-                    }
+            matches = await asyncio.wait_for(
+                manager.find_rj_in_libraries(rjcode),
+                timeout=20.0,
+            )
+            if not matches:
+                return None
+            first = matches[0]
+            lib_type = first.get("library_type") or "local"
+            return {
+                "library_id": first.get("library_id"),
+                "library_type": lib_type,
+                "library_name": first.get("library_name") or "",
+                "path": first.get("path") or "",
+                "is_remote": lib_type == "synology_filestation",
+            }
+        except asyncio.TimeoutError:
+            logger.warning(
+                "解析 Kikoeru 服务器路径超时 20s，跳过该条 conflict 的路径拾回： rjcode=%s",
+                rjcode,
+            )
         except Exception:
             logger.warning("无法通过 RJ 号解析 Kikoeru 服务器路径: rjcode=%s", rjcode, exc_info=True)
         return None

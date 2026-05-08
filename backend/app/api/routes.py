@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -2133,10 +2134,11 @@ async def get_conflicts(include_stats: bool = False):
         return str((db_task[0] if db_task else "") or "").strip().lower()
 
     db = next(get_db())
+    _route_t_start = time.monotonic()
     try:
         resolution_service = get_conflict_resolution_service()
         engine = get_task_engine()
-        # 之前这里有一个 _backfill_failed_import_conflicts 兜底回扫：
+        # 之前这里有一个 _backfill_failed_import_conflicts 兑底回扫：
         # 每次列表请求都拉最近 200 条 failed task → 200×N+1 ConflictWork.exists query
         # → 200 次同步 os.path.exists(source_path)（远程挂载累计 60s+ 直接打死接口）
         # → 写一个名为 source_missing 的字段。
@@ -2144,13 +2146,20 @@ async def get_conflicts(include_stats: bool = False):
         # 任务失败 → 写问题作品的主路径已经在 task_engine._record_problem_work_for_*
         # 稳定运行（产物：当前 conflict_works 285 条全是主路径写的）。
         # 这个函数只是历史包袱，删掉。
+        _t_query_start = time.monotonic()
         conflicts = db.query(ConflictWork).filter(
             ConflictWork.status.in_(["PENDING", "PROCESSING"]),
             ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
         ).all()
+        _t_query_ms = (time.monotonic() - _t_query_start) * 1000
+        logger.info(
+            "[/api/conflicts] include_stats=%s db_query=%.0fms count=%s",
+            include_stats, _t_query_ms, len(conflicts),
+        )
 
         # ---- 第一阶段：串行处理 DB 写入（状态恢复）和纯计算字段 ----
         # SQLAlchemy session 不能并发使用，所以这一段保持串行。
+        _t_phase1_start = time.monotonic()
         per_conflict_actions: list[list[str]] = []
         for conflict in conflicts:
             try:
@@ -2190,8 +2199,15 @@ async def get_conflicts(include_stats: bool = False):
                 actions = ["SKIP"]
             per_conflict_actions.append(actions)
 
+        _t_phase1_ms = (time.monotonic() - _t_phase1_start) * 1000
+        logger.info(
+            "[/api/conflicts] phase1_serial=%.0fms (status_recover + actions × %s)",
+            _t_phase1_ms, len(conflicts),
+        )
+
         # ---- 第二阶段：并行计算 conflict 上下文（远程 stat 是 IO 密集，并发能显著降低串行延迟） ----
         # 用信号量限制群晖并发，避免对 NAS 造成压力或触发限流。
+        _t_phase2_start = time.monotonic()
         gather_semaphore = asyncio.Semaphore(8)
 
         async def _build_context(conflict_obj):
@@ -2230,6 +2246,11 @@ async def get_conflicts(include_stats: bool = False):
                     }
 
         contexts = await asyncio.gather(*(_build_context(c) for c in conflicts)) if conflicts else []
+        _t_phase2_ms = (time.monotonic() - _t_phase2_start) * 1000
+        logger.info(
+            "[/api/conflicts] phase2_parallel_context=%.0fms (× %s)",
+            _t_phase2_ms, len(conflicts),
+        )
 
         # ---- 第三阶段：装配响应 ----
         conflict_items = []
@@ -2268,6 +2289,11 @@ async def get_conflicts(include_stats: bool = False):
                     "context": context,
                 }
             )
+        _t_total_ms = (time.monotonic() - _route_t_start) * 1000
+        logger.info(
+            "[/api/conflicts] 完成 total=%.0fms include_stats=%s items=%s",
+            _t_total_ms, include_stats, len(conflict_items),
+        )
         return {
             "conflicts": conflict_items
         }
