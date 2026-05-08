@@ -332,6 +332,42 @@ export const libraryApi = {
     return response.data
   },
 
+  // ===== 库存搜索索引（批次 5）=====
+  // 在 SQLite 里常驻"库存→条目"快照，让 RJ 定位 / 名字搜索从分钟级降到毫秒级。
+  // rebuild 是异步的，立即返回 syncing 状态；用 getIndexStatus 轮询 ready / error。
+  rebuildIndex: async (libraryId) => {
+    const response = await apiClient.post('/library/index/rebuild', {
+      library_id: libraryId,
+    })
+    return response.data
+  },
+
+  getIndexStatus: async (libraryId = null) => {
+    const response = await apiClient.get('/library/index/status', {
+      params: libraryId ? { library_id: libraryId } : {},
+    })
+    return response.data
+  },
+
+  searchIndex: async ({
+    libraryId = null,
+    rjcode = null,
+    name = null,
+    entryType = null,
+    limit = 100,
+  } = {}) => {
+    const response = await apiClient.get('/library/index/search', {
+      params: {
+        library_id: libraryId || undefined,
+        rjcode: rjcode || undefined,
+        name: name || undefined,
+        entry_type: entryType || undefined,
+        limit,
+      },
+    })
+    return response.data
+  },
+
   browseFiles: async ({
     libraryId = null,
     page = 1,

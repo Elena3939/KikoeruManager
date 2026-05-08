@@ -38,6 +38,8 @@
 
         </span>
 
+        <LibraryIndexBadge :library="currentLibrary" />
+
       </div>
 
     </header>
@@ -1415,6 +1417,8 @@ import FolderContentsDialog from '../components/library/FolderContentsDialog.vue
 import LibraryMoveDialog from '../components/library/LibraryMoveDialog.vue'
 
 import LibraryRowContextMenu from '../components/library/LibraryRowContextMenu.vue'
+
+import LibraryIndexBadge from '../components/library/LibraryIndexBadge.vue'
 
 import SubtitleWorkbenchStage from '../components/library/subtitle-workbench/SubtitleWorkbenchStage.vue'
 

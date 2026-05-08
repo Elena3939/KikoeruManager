@@ -32,6 +32,7 @@ from ..core.processed_archive_cleanup import get_processed_archive_cleanup_servi
 from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
 from ..core.library_manager import get_library_manager, SynologyError
+from ..core.library_index import get_library_index_service
 from ..core.password_utils import (
     normalize_filename_value,
     normalize_optional_text,
@@ -3226,6 +3227,176 @@ async def get_library_storage_info(library_id: str):
     except Exception as e:
         _log_synology_err(f"获取库存空间失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"获取库存空间失败: {str(e)}")
+
+
+# ========== 库存搜索索引 API ==========
+# 由 library_index 模块提供：在 SQLite 里常驻一份"库存 → 条目"快照，
+# 用 SQL 查询替代群晖几十万级目录上的实时 walk / SYNO.FileStation.Search。
+# 当前批次仅支持 local 库存的重建与查询，synology_filestation 库存
+# 由后续批次新增 RemoteScanner 后再扩展。
+
+class LibraryIndexRebuildRequest(BaseModel):
+    """重建库存搜索索引请求。"""
+    library_id: str
+
+
+def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> Dict[str, Any]:
+    if status is None:
+        return {
+            "library_id": fallback_library_id or "",
+            "status": "idle",
+            "watcher_mode": None,
+            "total_entries": 0,
+            "last_full_scan_at": None,
+            "last_event_at": None,
+            "error": None,
+            "updated_at": None,
+        }
+    return {
+        "library_id": status.library_id,
+        "status": status.status,
+        "watcher_mode": status.watcher_mode,
+        "total_entries": status.total_entries,
+        "last_full_scan_at": status.last_full_scan_at,
+        "last_event_at": status.last_event_at,
+        "error": status.error,
+        "updated_at": status.updated_at,
+    }
+
+
+def _index_entry_to_dict(entry) -> Dict[str, Any]:
+    return {
+        "library_id": entry.library_id,
+        "entry_type": entry.entry_type,
+        "relative_path": entry.relative_path,
+        "absolute_path": entry.absolute_path,
+        "name": entry.name,
+        "rjcode": entry.rjcode,
+        "parent_path": entry.parent_path,
+        "size": entry.size,
+        "file_count": entry.file_count,
+        "mtime": entry.mtime,
+        "depth": entry.depth,
+    }
+
+
+@app.post("/api/library/index/rebuild")
+async def post_library_index_rebuild(request: LibraryIndexRebuildRequest):
+    """异步触发库存搜索索引的全量重建。
+
+    支持 local 与 synology_filestation 两种库存类型：
+    - local：本地 os.scandir 扫描，后台 thread 跑
+    - synology_filestation：SYNO.FileStation.Search 扫描，后台 asyncio task 跑
+
+    立即把状态置为 syncing 并返回，前端通过 /api/library/index/status 轮询
+    status 字段判断 ready / error。
+    """
+    library_id = (request.library_id or "").strip()
+    if not library_id:
+        raise HTTPException(status_code=400, detail="library_id 不能为空")
+
+    manager = get_library_manager()
+    try:
+        library = manager.get_library_definition(library_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"未找到库存: {exc}")
+
+    service = get_library_index_service()
+
+    if library.type == "local":
+        if not library.path:
+            raise HTTPException(status_code=400, detail="本地库存未配置 path")
+        status = await service.schedule_rebuild_local(library.id, library.path)
+    elif library.type == "synology_filestation":
+        if not library.synology:
+            raise HTTPException(status_code=400, detail="群晖库存未配置 synology 连接信息")
+        # 后台 task 启动时再取 client，避免 token 提前过期
+        # 闭包捕获当前的 manager / library，后台 task 跑时仍然有效
+        captured_synology = library.synology
+
+        def _client_factory():
+            return manager.get_cached_synology_client(captured_synology)
+
+        status = await service.schedule_rebuild_remote(
+            library.id,
+            _client_factory,
+            library.root_path or "/",
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未支持的库存类型：{library.type}",
+        )
+
+    payload = _index_status_to_dict(status, fallback_library_id=library.id)
+    payload["library_name"] = library.name
+    payload["library_type"] = library.type
+    return payload
+
+
+@app.get("/api/library/index/status")
+async def get_library_index_status(library_id: Optional[str] = None):
+    """查询索引状态。
+
+    - 传 library_id：返回单库状态；从未重建过会返回伪 idle 状态
+    - 不传 library_id：返回 status 表里所有库的状态列表
+    """
+    service = get_library_index_service()
+    if library_id:
+        normalized = library_id.strip()
+        if not normalized:
+            raise HTTPException(status_code=400, detail="library_id 不能为空字符串")
+        return _index_status_to_dict(service.get_status(normalized), fallback_library_id=normalized)
+
+    statuses = service.list_all_status()
+    return {
+        "items": [_index_status_to_dict(item) for item in statuses],
+        "count": len(statuses),
+    }
+
+
+@app.get("/api/library/index/search")
+async def search_library_index(
+    library_id: Optional[str] = None,
+    rjcode: Optional[str] = None,
+    name: Optional[str] = None,
+    entry_type: Optional[str] = None,
+    limit: int = 100,
+):
+    """基于本地索引的搜索接口。rjcode 优先匹配，否则按 name 模糊。
+
+    供前端调试 + 后续业务接入前的快速验证。批次 5 会把库存浏览 / RJ
+    字幕扫描 / 大小统计这些业务点切到此索引上。
+    """
+    service = get_library_index_service()
+    rjcode_normalized = (rjcode or "").strip().upper()
+    name_normalized = (name or "").strip()
+    if not rjcode_normalized and not name_normalized:
+        raise HTTPException(status_code=400, detail="请至少传 rjcode 或 name 之一")
+    capped_limit = max(1, min(int(limit or 100), 1000))
+    library_scope = (library_id or "").strip() or None
+
+    if rjcode_normalized:
+        entries = service.find_by_rjcode(
+            rjcode_normalized,
+            library_scope,
+            entry_type=entry_type,
+            limit=capped_limit,
+        )
+    else:
+        if not library_scope:
+            raise HTTPException(status_code=400, detail="按 name 搜索时 library_id 必填")
+        entries = service.find_by_name(
+            library_scope,
+            name_normalized,
+            entry_type=entry_type,
+            limit=capped_limit,
+        )
+
+    return {
+        "items": [_index_entry_to_dict(entry) for entry in entries],
+        "count": len(entries),
+    }
 
 
 @app.get("/api/library/browser/files")

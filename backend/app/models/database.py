@@ -968,6 +968,76 @@ class NotificationOutbox(Base):
         }
 
 
+class LibraryIndexEntry(Base):
+    """库存搜索索引表（library_index 模块专用）。
+
+    为"本地搜索文件路径 / 统计文件夹大小"业务专门建立的常驻索引。
+    数据来源：
+    - local 库存走 os.scandir 全量扫 + watchdog 增量维护
+    - synology_filestation 库存走 SYNO.FileStation.Search 快照 + 定期 rescan
+
+    设计要点：
+    - (library_id, relative_path) 作为自然主键保证幂等
+    - rjcode / name / parent_path 都建索引，覆盖 RJ 搜索、按名搜索、子目录列举
+    - 目录行 size 存递归大小，避免运行时反复 os.walk
+    - 与 LibrarySnapshot 不冲突：LibrarySnapshot 是业务缓存（按 RJ 号单射），
+      这张表是搜索索引（按多库存 + 完整路径组织）。
+    """
+    __tablename__ = 'library_index_entries'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(String(60), nullable=False, index=True)
+    entry_type = Column(String(10), nullable=False)  # 'dir' / 'file'
+    relative_path = Column(Text, nullable=False)
+    absolute_path = Column(Text, nullable=False)
+    name = Column(String(255), nullable=False)
+    rjcode = Column(String(20))
+    parent_path = Column(Text)
+    size = Column(BigInteger, default=0)
+    file_count = Column(Integer, default=0)
+    mtime = Column(BigInteger)  # 毫秒时间戳
+    depth = Column(Integer)
+    indexed_at = Column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        Index('idx_lie_library_rel', 'library_id', 'relative_path', unique=True),
+        Index('idx_lie_library_rj', 'library_id', 'rjcode'),
+        Index('idx_lie_library_name', 'library_id', 'name'),
+        Index('idx_lie_library_parent', 'library_id', 'parent_path'),
+    )
+
+
+class LibraryIndexStatus(Base):
+    """库存搜索索引状态表。
+
+    每个 library_id 一行，跟踪索引的构建 / 失效 / 运行模式。
+    """
+    __tablename__ = 'library_index_status'
+
+    library_id = Column(String(60), primary_key=True)
+    # 'idle' / 'syncing' / 'ready' / 'error' / 'disabled'
+    status = Column(String(20), nullable=False, default='idle')
+    # 'watchdog' / 'polling' / 'remote_rescan' / 'disabled'
+    watcher_mode = Column(String(30))
+    last_full_scan_at = Column(BigInteger)
+    last_event_at = Column(BigInteger)
+    total_entries = Column(Integer, default=0)
+    error = Column(Text)
+    updated_at = Column(BigInteger, nullable=False)
+
+    def to_dict(self):
+        return {
+            'library_id': self.library_id,
+            'status': self.status,
+            'watcher_mode': self.watcher_mode,
+            'last_full_scan_at': self.last_full_scan_at,
+            'last_event_at': self.last_event_at,
+            'total_entries': int(self.total_entries or 0),
+            'error': self.error,
+            'updated_at': int(self.updated_at or 0),
+        }
+
+
 # 数据库连接
 def _count_password_entries(db_path):
     if not os.path.exists(db_path):

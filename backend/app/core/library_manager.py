@@ -1812,6 +1812,10 @@ class LibraryManager:
         仅返回 entry.rjcode == rjcode 且 is_directory=True 的命中。
         若没有任何配置完整的远程库存，则只走本地库存搜索；
         远程库凭据缺失时也会跳过该库以免触发无效请求。
+
+        批次 5 索引加速：每个库独立判断 LibraryIndexService.is_ready，
+        ready 的库直接走 SQLite 查询（毫秒级），其余仍走原 SYNO.Search /
+        os.walk 路径并合并去重。索引层任意异常都自动 fallback，保证零回归。
         """
 
         normalized_rj = (rjcode or "").strip().upper()
@@ -1859,8 +1863,22 @@ class LibraryManager:
             )
         if not filtered_libraries:
             return []
-        libraries = filtered_libraries
 
+        # === 批次 5：索引优先 ===
+        indexed_matches, libraries_for_fallback = self._find_rj_via_index(
+            normalized_rj, filtered_libraries,
+        )
+        if indexed_matches:
+            logger.info(
+                "find_rj_in_libraries 索引命中: rj=%s indexed=%s fallback_libs=%s",
+                normalized_rj,
+                len(indexed_matches),
+                len(libraries_for_fallback),
+            )
+        if not libraries_for_fallback:
+            return indexed_matches
+
+        # === fallback：原 SYNO.Search / os.walk 路径，处理仍未 ready 的库 ===
         async def _search_one(library: LibraryDefinition) -> tuple[LibraryDefinition, list[dict[str, Any]]]:
             try:
                 data = await asyncio.wait_for(
@@ -1885,9 +1903,12 @@ class LibraryManager:
                 return library, []
             return library, list(data.get("files") or [])
 
-        results = await asyncio.gather(*[_search_one(lib) for lib in libraries], return_exceptions=False)
-        matches: list[dict[str, Any]] = []
-        seen_paths: set[str] = set()
+        results = await asyncio.gather(
+            *[_search_one(lib) for lib in libraries_for_fallback],
+            return_exceptions=False,
+        )
+        matches: list[dict[str, Any]] = list(indexed_matches)
+        seen_paths: set[str] = {f"{m['library_id']}::{m['path']}" for m in matches}
         for library, files in results:
             for entry in files:
                 entry_rj = str(entry.get("rjcode") or "").upper()
@@ -1914,6 +1935,446 @@ class LibraryManager:
                     "modified_time": entry.get("modified_time"),
                 })
         return matches
+
+    def _find_rj_via_index(
+        self,
+        normalized_rj: str,
+        libraries: list[LibraryDefinition],
+    ) -> tuple[list[dict[str, Any]], list[LibraryDefinition]]:
+        """对索引 ready 的库直接走 SQL 查询。
+
+        返回二元组：(已命中的 match 列表, 仍需要 fallback 扫描的库列表)。
+        任意异常都把对应库丢回 fallback，保证零回归。
+        """
+        try:
+            from .library_index import get_library_index_service
+            service = get_library_index_service()
+        except Exception:
+            logger.debug("library_index 不可用，全部库走 fallback", exc_info=True)
+            return [], list(libraries)
+
+        indexed: list[dict[str, Any]] = []
+        fallback: list[LibraryDefinition] = []
+        seen: set[str] = set()
+
+        for library in libraries:
+            try:
+                if not service.is_ready(library.id):
+                    fallback.append(library)
+                    continue
+                entries = service.find_by_rjcode(
+                    normalized_rj,
+                    library.id,
+                    entry_type='dir',
+                    limit=50,
+                )
+            except Exception:
+                logger.warning(
+                    "索引查询异常，转 fallback: rj=%s lib=%s",
+                    normalized_rj, library.id, exc_info=True,
+                )
+                fallback.append(library)
+                continue
+
+            for entry in entries:
+                key = f"{library.id}::{entry.absolute_path}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                indexed.append({
+                    "library_id": library.id,
+                    "library_name": library.name,
+                    "library_type": library.type,
+                    "library_root_path": library.root_path,
+                    "library_writable": bool(library.writable),
+                    "path": entry.absolute_path,
+                    "name": entry.name,
+                    "size": entry.size or None,
+                    "modified_time": None,
+                })
+
+        return indexed, fallback
+
+    def _index_relative_path(
+        self,
+        library: LibraryDefinition,
+        absolute_path: str,
+    ) -> Optional[str]:
+        """把库存绝对路径转为索引用的 posix relative_path（用于 self_mutation 通知）。
+
+        - 群晖远程库：原生 posix，简单字符串前缀剥离
+        - 本地库：os.path.relpath 后把 OS sep 替换成 /
+        - 路径不在库存根下 / 越界 / 路径就是库存根本身：都返回 None
+          根路径返回 None 是安全设计：避免业务在异常调用路径时
+          误把"" 传到 SnapshotStore.delete_subtree 触发整库删除。
+        """
+        if not absolute_path:
+            return None
+        root = library.root_path
+        if not root:
+            return None
+        if library.type == "synology_filestation":
+            norm_root = root.rstrip("/")
+            norm_path = absolute_path.rstrip("/")
+            if norm_path == norm_root:
+                return None  # 根路径不参与 self_mutation
+            prefix = norm_root + "/" if norm_root else "/"
+            if norm_path.startswith(prefix):
+                return norm_path[len(prefix):]
+            return None
+        try:
+            rel = os.path.relpath(absolute_path, root)
+        except ValueError:
+            return None
+        if rel in {".", ""} or rel.startswith(".."):
+            return None
+        return rel.replace(os.sep, "/")
+
+    def _notify_index_self_mutation_delete(
+        self,
+        library: LibraryDefinition,
+        absolute_path: str,
+    ) -> None:
+        """本地 / 远程写操作（删除 / 重命名）完成后，主动通知索引同步单条删除。
+
+        - 索引未就绪 / 模块异常时静默跳过，不影响业务返回值
+        - 路径不在库存根下时静默跳过（不应发生但兜底）
+        """
+        try:
+            from .library_index import get_library_index_service
+            service = get_library_index_service()
+            if not service.is_ready(library.id):
+                return
+            posix_rel = self._index_relative_path(library, absolute_path)
+            if posix_rel is None:
+                return
+            service.handle_self_mutation_delete(library.id, posix_rel)
+        except Exception:
+            logger.debug(
+                "通知索引删除失败 library=%s path=%s",
+                library.id, absolute_path, exc_info=True,
+            )
+
+    def _notify_index_self_mutation_delete_batch(
+        self,
+        library: LibraryDefinition,
+        absolute_paths: list[str],
+    ) -> None:
+        """批量通知索引删除：单事务执行，避免 N 次 commit。"""
+        try:
+            if not absolute_paths:
+                return
+            from .library_index import get_library_index_service
+            service = get_library_index_service()
+            if not service.is_ready(library.id):
+                return
+            relatives: list[str] = []
+            for path in absolute_paths:
+                rel = self._index_relative_path(library, path)
+                if rel:
+                    relatives.append(rel)
+            if relatives:
+                service.handle_self_mutation_batch(
+                    library.id, deletes=relatives,
+                )
+        except Exception:
+            logger.debug(
+                "批量通知索引删除失败 library=%s count=%s",
+                library.id, len(absolute_paths or []), exc_info=True,
+            )
+
+    # ========== 第一梯队接入 1：库存浏览搜索走索引 ==========
+    # _search_local_files / _search_remote_files 在 RJ 关键字进来时优先走
+    # 索引查询，绕过 os.walk / SYNO.FileStation.Search 。
+    # 不 ready 或 file 类型搜索都 fallback 到原逻辑。
+
+    def _build_search_entry_from_index(
+        self,
+        library: LibraryDefinition,
+        *,
+        item_id: int,
+        search_root: str,
+        entry,
+    ) -> dict[str, Any]:
+        """IndexEntry → list_files 输出格式的 file dict。"""
+        is_directory = entry.entry_type == 'dir'
+        full_path = entry.absolute_path
+
+        if library.type == "synology_filestation":
+            norm_search = (search_root or "/").rstrip("/") or "/"
+            if full_path == norm_search:
+                relative_path = entry.name
+            elif norm_search and full_path.startswith(norm_search + "/"):
+                relative_path = full_path[len(norm_search) + 1:]
+            else:
+                relative_path = entry.relative_path or entry.name
+            try:
+                parent_path = (
+                    str(PurePosixPath(full_path).parent)
+                    if full_path and full_path != "/"
+                    else "/"
+                )
+            except Exception:
+                parent_path = ""
+        else:
+            try:
+                relative_path = os.path.relpath(full_path, search_root).replace("\\", "/")
+            except ValueError:
+                relative_path = entry.relative_path or entry.name
+            parent_path = os.path.dirname(full_path)
+
+        if entry.mtime:
+            try:
+                mtime_iso = datetime.fromtimestamp(entry.mtime / 1000.0).isoformat()
+            except (OSError, ValueError, OverflowError):
+                mtime_iso = None
+        else:
+            mtime_iso = None
+
+        if is_directory:
+            if library.type == "synology_filestation":
+                size = None
+                size_status = "disabled"
+            else:
+                size = int(entry.size or 0)
+                size_status = "ready"
+        else:
+            size = int(entry.size or 0)
+            size_status = "ready"
+
+        return {
+            "id": f"{library.id}:search:{item_id}",
+            "name": entry.name,
+            "path": full_path,
+            "relative_path": relative_path,
+            "parent_path": parent_path,
+            "rjcode": entry.rjcode,
+            "size": size,
+            "size_status": size_status,
+            "modified_time": mtime_iso,
+            "unzip_time": mtime_iso,
+            "is_directory": is_directory,
+            "library_id": library.id,
+            "library_name": library.name,
+            "search_hit": True,
+            "search_via_index": True,
+        }
+
+    def _build_index_search_result(
+        self,
+        library: LibraryDefinition,
+        *,
+        files: list[dict[str, Any]],
+        total: int,
+        page: int,
+        page_size: int,
+        current_path: str,
+        browse_root: str,
+        keyword: str,
+        search_exact: bool,
+        search_result_kind: str,
+    ) -> dict[str, Any]:
+        """为 list_files 走索引快速路径返回与原状一致的结构。"""
+        result = {
+            "files": files,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "current_path": current_path,
+            "browse_root_path": browse_root,
+            "search_mode": True,
+            "search_root_path": current_path,
+            "search_query": keyword,
+            "search_truncated": False,
+            "search_exact": bool(search_exact),
+            "search_result_kind": self._normalize_search_result_kind(search_result_kind),
+            "search_via_index": True,
+        }
+        if library.type == "synology_filestation":
+            try:
+                result["parent_path"] = (
+                    None
+                    if current_path == browse_root
+                    else str(PurePosixPath(current_path).parent)
+                )
+            except Exception:
+                result["parent_path"] = None
+            result["search_scope_count"] = 0
+            result["library_id"] = library.id
+            result["search_global_remote"] = False
+        else:
+            result["parent_path"] = (
+                None
+                if current_path == browse_root
+                else os.path.dirname(current_path)
+            )
+            result["scanned_directories"] = 0
+        return result
+
+    def _search_files_via_index(
+        self,
+        library: LibraryDefinition,
+        *,
+        keyword: str,
+        search_root: str,
+        browse_root: str,
+        sort_by: str,
+        sort_order: str,
+        page: int,
+        page_size: int,
+        search_exact: bool,
+        search_result_kind: str,
+    ) -> Optional[dict[str, Any]]:
+        """RJ 搜索走索引的快速路径。返回 None 表示 fallback。"""
+        try:
+            if not self._is_rj_search_keyword(keyword):
+                return None
+            kind = self._normalize_search_result_kind(search_result_kind)
+            if kind == "file":
+                return None  # 文件类型搜索让原逻辑处理
+            from .library_index import get_library_index_service
+            service = get_library_index_service()
+            if not service.is_ready(library.id):
+                return None
+            normalized_rj = keyword.strip().upper()
+            entries = service.find_by_rjcode(
+                normalized_rj,
+                library.id,
+                entry_type='dir',
+                limit=LIBRARY_SEARCH_RESULT_LIMIT,
+            )
+            items = [
+                self._build_search_entry_from_index(
+                    library, item_id=i, search_root=search_root, entry=entry,
+                )
+                for i, entry in enumerate(entries)
+            ]
+            if library.type == "synology_filestation":
+                items = self._sort_remote_page_items(items, sort_by, sort_order)
+            else:
+                items = self._sort_local_items(items, sort_by, sort_order)
+            total = len(items)
+            start = max(0, (page - 1) * page_size)
+            end = start + page_size
+            page_items = items[start:end]
+            for it in page_items:
+                it.pop("_sort_time", None)
+                it.pop("_mtime", None)
+            logger.info(
+                "库存搜索走索引: lib=%s rj=%s hits=%s page=%s",
+                library.id, normalized_rj, total, page,
+            )
+            return self._build_index_search_result(
+                library,
+                files=page_items,
+                total=total,
+                page=page,
+                page_size=page_size,
+                current_path=search_root,
+                browse_root=browse_root,
+                keyword=normalized_rj,
+                search_exact=search_exact,
+                search_result_kind=kind,
+            )
+        except Exception:
+            logger.warning(
+                "索引快速搜索异常转 fallback: lib=%s keyword=%s",
+                library.id, keyword, exc_info=True,
+            )
+            return None
+
+    def _collect_local_stats_via_index(
+        self, library: LibraryDefinition,
+    ) -> Optional[dict[str, Any]]:
+        """索引 ready 时直接返回 stats（total_size_bytes 走 SQL SUM）。"""
+        try:
+            from .library_index import get_library_index_service
+            service = get_library_index_service()
+            if not service.is_ready(library.id):
+                return None
+            target_root = os.path.abspath(library.browse_root_path or library.root_path)
+            folder_count = 0
+            if os.path.exists(target_root):
+                try:
+                    folder_count = sum(
+                        1 for e in os.scandir(target_root)
+                        if e.is_dir() and not self._should_skip_entry(e.name)
+                    )
+                except OSError:
+                    pass
+            total_size = int(service.get_library_size(library.id) or 0)
+            return {
+                "library_id": library.id,
+                "library_name": library.name,
+                "library_type": library.type,
+                "status": "ready",
+                "folder_count": folder_count,
+                "total_size_bytes": total_size,
+                "total_size_gb": _gb(total_size),
+                "scan_mode": "library_index",
+            }
+        except Exception:
+            logger.warning("本地 stats 走索引异常，fallback lib=%s",
+                           library.id, exc_info=True)
+            return None
+
+    async def _collect_remote_stats_via_index(
+        self, library: LibraryDefinition,
+    ) -> Optional[dict[str, Any]]:
+        """远程 stats 索引快速路径：size 走 SQL，folder_count 走一次 list_directory。
+
+        原逻辑需要对每个顶层目录走 _remote_path_size（可能几十个，
+        每个几秒）；这里拿顽层 folder_count + 索引 SUM 一次出结果。
+        """
+        try:
+            from .library_index import get_library_index_service
+            service = get_library_index_service()
+            if not service.is_ready(library.id):
+                return None
+            if not library.synology:
+                return None
+            client = self.get_cached_synology_client(library.synology)
+            start_path = self._normalize_remote_path(
+                library.browse_root_path or library.root_path
+            )
+            try:
+                top_level_items = await self._list_remote_directory(client, start_path)
+            except Exception:
+                logger.warning(
+                    "远程 stats 拿顶层列表失败，fallback lib=%s",
+                    library.id, exc_info=True,
+                )
+                return None
+            folder_count = sum(
+                1 for item in top_level_items
+                if item.get("isdir")
+                and not self._should_skip_entry(item.get("name") or "")
+            )
+            total_size = int(service.get_library_size(library.id) or 0)
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"远程统计走索引 folders={folder_count} size={_gb(total_size)}GB",
+            )
+            return {
+                "library_id": library.id,
+                "library_name": library.name,
+                "library_type": library.type,
+                "status": "ready",
+                "folder_count": folder_count,
+                "total_size_bytes": total_size,
+                "total_size_gb": _gb(total_size),
+                "scan_mode": "library_index",
+                "progress_done": 1,
+                "progress_total": 1,
+                "progress_percent": 100.0,
+                "warning_count": 0,
+                "last_error": None,
+            }
+        except Exception:
+            logger.warning("远程 stats 走索引异常，fallback lib=%s",
+                           library.id, exc_info=True)
+            return None
 
     async def list_first_level_directories(
         self,
@@ -2226,6 +2687,22 @@ class LibraryManager:
 
         keyword = str(search or "").strip()
         rj_only_search = self._is_rj_search_keyword(keyword)
+
+        # === 第一梯队接入 1：RJ 搜索走索引快速路径 ===
+        indexed_result = self._search_files_via_index(
+            library,
+            keyword=keyword,
+            search_root=search_root,
+            browse_root=browse_root,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+            search_exact=search_exact,
+            search_result_kind=search_result_kind,
+        )
+        if indexed_result is not None:
+            return self._set_cached_local_search_result(cache_key, indexed_result)
         normalized_result_kind = self._normalize_search_result_kind(search_result_kind)
         treat_rj_dir_as_terminal = rj_only_search and normalized_result_kind != "file"
         matches: list[dict[str, Any]] = []
@@ -2897,6 +3374,22 @@ class LibraryManager:
         keyword = str(search or "").strip()
         rj_only_search = self._is_rj_search_keyword(keyword)
         api_search_root = browse_root if keyword else search_root
+
+        # === 第一梯队接入 1：RJ 搜索走索引快速路径 ===
+        indexed_result = self._search_files_via_index(
+            library,
+            keyword=keyword,
+            search_root=api_search_root,
+            browse_root=browse_root,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+            search_exact=search_exact,
+            search_result_kind=search_result_kind,
+        )
+        if indexed_result is not None:
+            return self._set_cached_remote_search_result(cache_key, indexed_result)
         normalized_sort_by = self._normalize_library_sort_by(sort_by)
         normalized_sort_order = self._normalize_library_sort_order(sort_order)
         remote_sort_by = "name" if normalized_sort_by == "name" else "mtime"
@@ -3135,6 +3628,8 @@ class LibraryManager:
                 )
             raise
         new_path = str(PurePosixPath(target_path).parent / new_name)
+        # 索引同步：先 delete 旧子树，新子树交给下次 rebuild / fallback 扫描回填
+        self._notify_index_self_mutation_delete(library, target_path)
         self._append_stats_log(library, "INFO", f"重命名 path={target_path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -3145,6 +3640,9 @@ class LibraryManager:
         os.rename(path, new_path)
         # 文件夹改名后 keyword→matches 里旧 path 不再有效
         self._invalidate_local_search_cache(library.id)
+        # 索引同步：先 delete 旧子树；新子树由下次 rebuild / fallback 扫描回填。
+        # （在 rename 时重扫新子树会在大目录上造成可观测的阻塞，留到后续批次补）
+        self._notify_index_self_mutation_delete(library, path)
         self._append_stats_log(library, "INFO", f"重命名 path={path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -3172,6 +3670,8 @@ class LibraryManager:
             os.remove(path)
         if was_top_level_dir:
             self._local_top_level_delta(library, path, -1)
+        # 索引同步：删除完成后立即同步索引（不依赖 watcher）
+        self._notify_index_self_mutation_delete(library, path)
         self._append_stats_log(library, "INFO", f"删除完成 path={path}")
         return {"message": "删除成功", "path": path}
 
@@ -3189,7 +3689,8 @@ class LibraryManager:
             self._append_stats_log(library, "INFO", f"批删预检 total={len(paths)} size={total_size}")
             return {"need_confirm": True, "total_count": len(paths), "total_size": total_size}
         success_count = 0
-        failed_paths = []
+        failed_paths: list[dict[str, str]] = []
+        successful_paths: list[str] = []
         for path in paths:
             try:
                 was_top_level_dir = os.path.isdir(path)
@@ -3200,8 +3701,11 @@ class LibraryManager:
                 if was_top_level_dir:
                     self._local_top_level_delta(library, path, -1)
                 success_count += 1
+                successful_paths.append(path)
             except Exception as exc:
                 failed_paths.append({"path": path, "error": str(exc)})
+        # 索引同步：批量通知删除（单事务一次提交）
+        self._notify_index_self_mutation_delete_batch(library, successful_paths)
         self._append_stats_log(
             library,
             "INFO",
@@ -6228,6 +6732,8 @@ class LibraryManager:
             deleted_bytes=int(preview.get("size") or 0),
             deleted_folder_count=int(preview.get("folder_count") or 0),
         )
+        # 索引同步：远程删除完成后立即通知索引
+        self._notify_index_self_mutation_delete(library, target_path)
         self._append_stats_log(
             library,
             "INFO",
@@ -6266,7 +6772,8 @@ class LibraryManager:
         success_count = 0
         deleted_bytes = 0
         deleted_folder_count = 0
-        failed_paths = []
+        failed_paths: list[dict[str, str]] = []
+        successful_paths: list[str] = []
         for path, preview in zip(paths, previews):
             if isinstance(preview, Exception):
                 failed_paths.append({"path": path, "error": str(preview)})
@@ -6275,6 +6782,7 @@ class LibraryManager:
             try:
                 await client.delete(path)
                 success_count += 1
+                successful_paths.append(path)
                 deleted_bytes += int(preview.get("size") or 0)
                 deleted_folder_count += int(preview.get("folder_count") or 0)
                 self._append_stats_log(
@@ -6291,6 +6799,8 @@ class LibraryManager:
                 deleted_bytes=deleted_bytes,
                 deleted_folder_count=deleted_folder_count,
             )
+        # 索引同步：批量通知远程删除后的路径
+        self._notify_index_self_mutation_delete_batch(library, successful_paths)
         self._append_stats_log(
             library,
             "INFO",
@@ -6316,6 +6826,10 @@ class LibraryManager:
 
     def _collect_local_stats(self, library: LibraryDefinition) -> dict[str, Any]:
         # 只统计顶层目录数量，不做递归 os.walk 大小计算，避免在 SMB 映射盘等慢速路径上阻塞。
+        # 第一梯队接入 2：索引 ready 时 total_size 走 SQL SUM 一次拿出。
+        indexed = self._collect_local_stats_via_index(library)
+        if indexed is not None:
+            return indexed
         target_root = os.path.abspath(library.browse_root_path or library.root_path)
         if not os.path.exists(target_root):
             return {
@@ -6347,6 +6861,11 @@ class LibraryManager:
     async def _collect_remote_stats(self, library: LibraryDefinition) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
+        # 第一梯队接入 2：索引 ready 时 size 走 SQL，folder_count 走一次 list_directory。
+        # 跳过逐个顶层目录调 _remote_path_size（原逻辑几十个顶层 × 几秒 = 分钟级）。
+        indexed = await self._collect_remote_stats_via_index(library)
+        if indexed is not None:
+            return indexed
         client = self.get_cached_synology_client(library.synology)
         start_path = self._normalize_remote_path(library.browse_root_path or library.root_path)
         top_level_items = [
