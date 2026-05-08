@@ -106,10 +106,27 @@ class LibraryIndexService:
                 logger.info("[索引] 清掉旧索引 library=%s removed=%s", library_id, removed)
 
             scanner = self._local_scanner_factory()
-            written = self._store.bulk_upsert(
-                scanner.scan(library_id, root_path),
-                chunk_size=chunk_size,
-            )
+            # 手动分块，每足块写盘 + 每 0.5s 上报一次 syncing 进度
+            # （total_entries 在 syncing 期间语义 = 已扫描数，ready 后 = 总数）。
+            buffer: list[IndexEntry] = []
+            written = 0
+            last_progress_report = time.time()
+            for entry in scanner.scan(library_id, root_path):
+                buffer.append(entry)
+                if len(buffer) >= chunk_size:
+                    written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                    buffer.clear()
+                    now = time.time()
+                    if now - last_progress_report >= 0.5:
+                        self._store.upsert_status(
+                            library_id,
+                            status='syncing',
+                            watcher_mode='disabled',
+                            total_entries=written,
+                        )
+                        last_progress_report = now
+            if buffer:
+                written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
 
             now_ms = int(time.time() * 1000)
             status = self._store.upsert_status(
@@ -126,7 +143,7 @@ class LibraryIndexService:
                 library_id, written, elapsed,
             )
             return status
-        except Exception as exc:  # noqa: BLE001 顶层兜底
+        except Exception as exc:  # noqa: BLE001 顶层兑底
             logger.exception("[索引] 重建失败 library=%s", library_id)
             return self._store.upsert_status(
                 library_id,
@@ -218,14 +235,25 @@ class LibraryIndexService:
 
             scanner = self._remote_scanner_factory()
 
-            # 流式：每攒满 chunk_size 就 bulk_upsert 一次，避免内存堆积
+            # 流式：每攒满 chunk_size 就 bulk_upsert 一次，避免内存堆积。
+            # 同时每 0.5s 上报一次 syncing 进度，让前端圆环能看到实时增长。
             buffer: list[IndexEntry] = []
             written = 0
+            last_progress_report = time.time()
             async for entry in scanner.scan(library_id, client, root_path):
                 buffer.append(entry)
                 if len(buffer) >= chunk_size:
                     written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
                     buffer.clear()
+                    now = time.time()
+                    if now - last_progress_report >= 0.5:
+                        self._store.upsert_status(
+                            library_id,
+                            status='syncing',
+                            watcher_mode='disabled',
+                            total_entries=written,
+                        )
+                        last_progress_report = now
             if buffer:
                 written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
 

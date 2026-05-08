@@ -14433,6 +14433,9 @@ function statsStatusTextDisplay (stats) {
 
 /* 小 chip */
 
+/* lib-chip：库存类型 / 健康状态等小标签
+   渐变底 + inset 1px 顶部高光 + 同色微 glow，告别"纯色塑料感" */
+
 .lib-chip {
 
   display: inline-flex;
@@ -14451,17 +14454,119 @@ function statsStatusTextDisplay (stats) {
 
   font-weight: 500;
 
-  letter-spacing: 0;
+  letter-spacing: 0.01em;
+
+  border: 1px solid transparent;
+
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 
 }
 
-.lib-chip-success { background: rgba(220, 252, 231, 0.8); color: #047857; border: 1px solid rgba(134, 239, 172, 0.5); }
+.lib-chip:hover { transform: translateY(-1px) scale(1.04); }
 
-.lib-chip-warning { background: rgba(254, 243, 199, 0.8); color: #b45309; border: 1px solid rgba(253, 224, 71, 0.5); }
+.lib-chip-success {
 
-.lib-chip-danger { background: rgba(254, 226, 226, 0.8); color: #b91c1c; border: 1px solid rgba(252, 165, 165, 0.5); }
+  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
 
-.lib-chip-info { background: rgba(224, 231, 255, 0.8); color: #4338ca; border: 1px solid rgba(165, 180, 252, 0.5); }
+  color: #047857;
+
+  border-color: rgba(110, 231, 183, 0.55);
+
+  box-shadow:
+
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+
+    0 1px 2px rgba(16, 185, 129, 0.1);
+
+}
+
+.lib-chip-success:hover {
+
+  box-shadow:
+
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+
+    0 4px 10px -2px rgba(16, 185, 129, 0.28);
+
+}
+
+.lib-chip-warning {
+
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+
+  color: #b45309;
+
+  border-color: rgba(251, 191, 36, 0.5);
+
+  box-shadow:
+
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+
+    0 1px 2px rgba(245, 158, 11, 0.1);
+
+}
+
+.lib-chip-warning:hover {
+
+  box-shadow:
+
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+
+    0 4px 10px -2px rgba(245, 158, 11, 0.3);
+
+}
+
+.lib-chip-danger {
+
+  background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
+
+  color: #b91c1c;
+
+  border-color: rgba(248, 113, 113, 0.5);
+
+  box-shadow:
+
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+
+    0 1px 2px rgba(239, 68, 68, 0.12);
+
+}
+
+.lib-chip-danger:hover {
+
+  box-shadow:
+
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+
+    0 4px 10px -2px rgba(239, 68, 68, 0.32);
+
+}
+
+.lib-chip-info {
+
+  background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
+
+  color: #4338ca;
+
+  border-color: rgba(165, 180, 252, 0.55);
+
+  box-shadow:
+
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+
+    0 1px 2px rgba(99, 102, 241, 0.12);
+
+}
+
+.lib-chip-info:hover {
+
+  box-shadow:
+
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+
+    0 4px 10px -2px rgba(99, 102, 241, 0.3);
+
+}
 
 
 

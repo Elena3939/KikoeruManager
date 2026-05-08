@@ -5,7 +5,17 @@
       :class="chipColorClass"
       :title="tooltip"
     >
-      <IconDatabase :size="11" :stroke-width="2.4" />
+      <!-- syncing 走圆环 spinner，其余状态走 Database 图标 -->
+      <svg
+        v-if="statusName === 'syncing'"
+        class="lib-index-spinner"
+        viewBox="0 0 16 16"
+        aria-hidden="true"
+      >
+        <circle class="lib-index-spinner-track" cx="8" cy="8" r="6" />
+        <circle class="lib-index-spinner-arc" cx="8" cy="8" r="6" />
+      </svg>
+      <IconDatabase v-else :size="11" :stroke-width="2.4" />
       <span class="font-medium">{{ statusLabel }}</span>
       <span v-if="totalEntriesText" class="lib-index-chip-meta">{{ totalEntriesText }}</span>
     </span>
@@ -74,11 +84,19 @@ const chipColorClass = computed(() => STATUS_CLASSES[statusName.value])
 
 const busy = computed(() => rebuilding.value || statusName.value === 'syncing')
 
+// syncing 期间 total_entries 表示已扫描数，ready 后表示总数
 const totalEntriesText = computed(() => {
   const total = Number(status.value?.total_entries || 0)
-  if (statusName.value !== 'ready' || total <= 0) return ''
-  if (total >= 10000) return `· ${(total / 10000).toFixed(1)}w 项`
-  return `· ${total} 项`
+  const name = statusName.value
+  if (name === 'ready' && total > 0) {
+    if (total >= 10000) return `· ${(total / 10000).toFixed(1)}w 项`
+    return `· ${total.toLocaleString()} 项`
+  }
+  if (name === 'syncing' && total > 0) {
+    if (total >= 10000) return `· ${(total / 10000).toFixed(1)}w 项`
+    return `· ${total.toLocaleString()} 项`
+  }
+  return ''
 })
 
 const tooltip = computed(() => {
@@ -138,7 +156,9 @@ async function fetchStatus() {
 
 function startPolling() {
   stopPolling()
-  pollTimer = setInterval(fetchStatus, 2500)
+  // syncing 期间 1.2s 一次轮询，让圆环还能看到数字补跳增长。
+  // 后端每 0.5s 上报一次，前后端一起构成“近似实时”进度。
+  pollTimer = setInterval(fetchStatus, 1200)
 }
 
 function stopPolling() {
@@ -195,48 +215,117 @@ defineExpose({ refresh: fetchStatus })
   align-items: center;
   gap: 4px;
   height: 22px;
-  padding: 0 8px;
+  padding: 0 9px;
   border-radius: 999px;
   font-size: 11px;
   line-height: 1;
+  letter-spacing: 0.01em;
   white-space: nowrap;
   border: 1px solid transparent;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .lib-index-chip-meta {
-  opacity: 0.7;
+  opacity: 0.72;
   font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 
 .lib-index-chip-idle {
-  background: #f1f5f9;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
   color: #475569;
-  border-color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.35);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .lib-index-chip-syncing {
-  background: #eff6ff;
+  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
   color: #1d4ed8;
-  border-color: #bfdbfe;
-  animation: lib-index-pulse 1.6s ease-in-out infinite;
+  border-color: rgba(96, 165, 250, 0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 2px rgba(37, 99, 235, 0.12),
+    0 0 0 0 rgba(59, 130, 246, 0.35);
+  animation: lib-index-pulse 1.8s ease-in-out infinite;
 }
 
 .lib-index-chip-ready {
-  background: #ecfdf5;
+  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
   color: #047857;
-  border-color: #a7f3d0;
+  border-color: rgba(110, 231, 183, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 2px rgba(16, 185, 129, 0.12);
 }
 
 .lib-index-chip-error {
-  background: #fef2f2;
+  background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
   color: #b91c1c;
-  border-color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    0 1px 2px rgba(239, 68, 68, 0.15);
 }
 
 @keyframes lib-index-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
+  0%, 100% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.7),
+      0 1px 2px rgba(37, 99, 235, 0.12),
+      0 0 0 0 rgba(59, 130, 246, 0.4);
+  }
+  50% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.85),
+      0 1px 2px rgba(37, 99, 235, 0.18),
+      0 0 0 4px rgba(59, 130, 246, 0);
+  }
+}
+
+/* 圆环 spinner：双层 SVG（背景轨道 + 旋转弧） */
+.lib-index-spinner {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  animation: lib-index-spinner-rotate 1.4s linear infinite;
+}
+
+.lib-index-spinner-track {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  opacity: 0.22;
+}
+
+.lib-index-spinner-arc {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 14 28;
+  stroke-dashoffset: 0;
+  animation: lib-index-spinner-dash 1.4s ease-in-out infinite;
+}
+
+@keyframes lib-index-spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes lib-index-spinner-dash {
+  0% {
+    stroke-dasharray: 4 36;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 24 16;
+    stroke-dashoffset: -8;
+  }
+  100% {
+    stroke-dasharray: 4 36;
+    stroke-dashoffset: -36;
+  }
 }
 
 .lib-index-rebuild-btn {
