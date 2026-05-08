@@ -20,6 +20,11 @@ from ..core.task_engine import Task, TaskType
 logger = logging.getLogger(__name__)
 
 
+async def _noop_stats() -> Optional[dict[str, Any]]:
+    """asyncio.gather 的占位 awaitable：不需要计算 stats 时返回 None，避免分支写两套 gather。"""
+    return None
+
+
 @dataclass
 class ConflictMergeSession:
     id: str
@@ -116,6 +121,14 @@ class ConflictResolutionService:
             "is_remote": raw_path.startswith("/"),
         }
 
+    # 单次本地目录 stat 的硬上限：
+    # - 群晖 / Docker / 网络挂载下 os.walk 单文件 stat 可能 5~50ms；
+    # - 6 个 conflict × 2 路径 × 上千文件 → 60s 直接打死前端。
+    # 这里给一个软超时 + 文件数兜底，超过即返回当前累计值并标记 truncated，
+    # 让 UI 至少能把列表渲染出来，不要让一个超大目录把整个接口锁死。
+    _LOCAL_STAT_MAX_FILES = 5000
+    _LOCAL_STAT_MAX_SECONDS = 4.0
+
     def _describe_local_path_stats(self, path: Optional[str]) -> dict[str, Any]:
         target_path = str(path or "").strip()
         if not target_path:
@@ -166,6 +179,8 @@ class ConflictResolutionService:
         total_size = 0
         file_count = 0
         folder_count = 1
+        truncated = False
+        deadline = time.monotonic() + self._LOCAL_STAT_MAX_SECONDS
         for root, dirs, files in os.walk(target_path):
             folder_count += len(dirs)
             file_count += len(files)
@@ -175,6 +190,15 @@ class ConflictResolutionService:
                     total_size += os.path.getsize(file_path)
                 except OSError:
                     continue
+            if file_count >= self._LOCAL_STAT_MAX_FILES or time.monotonic() >= deadline:
+                truncated = True
+                logger.info(
+                    "本地目录扫描触发上限保护，提前返回累计值: path=%s files=%s deadline_exceeded=%s",
+                    target_path,
+                    file_count,
+                    time.monotonic() >= deadline,
+                )
+                break
 
         return {
             "exists": True,
@@ -184,6 +208,7 @@ class ConflictResolutionService:
             "modified_at": modified_at,
             "file_count": file_count,
             "folder_count": folder_count,
+            "truncated": truncated,
         }
 
     async def _describe_remote_path_stats(
@@ -345,41 +370,71 @@ class ConflictResolutionService:
         }
 
     async def describe_conflict_async(self, conflict, include_stats: bool = False) -> dict[str, Any]:
-        description = self.describe_conflict(conflict, include_stats=include_stats)
-        existing = description.get("existing") or {}
-        source = description.get("source") or {}
+        # 和 sync describe_conflict 的核心区别：
+        # 这里所有可能阻塞的本地 IO（os.walk / os.path.isfile）必须走 asyncio.to_thread，
+        # 否则 /api/conflicts 列表加载时多个 conflict 会被 sync 调用串行卡死事件循环，
+        # 在群晖 / Docker / 网络挂载下极易把整个接口拖到 60s 超时。
+        metadata = dict(conflict.new_metadata or {})
+        existing_context = self.infer_library_context(
+            conflict.existing_path,
+            preferred_library_id=metadata.get("existing_library_id"),
+        )
+        source_context = self.infer_library_context(
+            conflict.new_path,
+            preferred_library_id=metadata.get("source_library_id") or metadata.get("target_library_id"),
+        )
 
-        # 如果 existing_path 是 Kikoeru 预检写入的显示标签（如"[远程服务器] 作品名"），
+        existing: dict[str, Any] = {**existing_context, "stats": None}
+        source: dict[str, Any] = {**source_context, "stats": None}
+
+        # 如果 existing_path 是 Kikoeru 预检写入的显示标签（兼容旧 "[远程服务器]" 与新 "[Kikoeru 服务器]"），
         # 尝试通过 RJ 号在所有库存中搜索实际路径并重新计算统计信息。
         existing_path = str(existing.get("path") or "").strip()
-        stats_already_computed = False
-        if existing_path.startswith("[远程服务器]") and not existing.get("library_id"):
+        existing_resolved_remote = False
+        if (
+            (existing_path.startswith("[Kikoeru 服务器]") or existing_path.startswith("[远程服务器]"))
+            and not existing.get("library_id")
+        ):
             rjcode = str(getattr(conflict, "rjcode", "") or "").strip()
             if rjcode:
                 resolved = await self._resolve_kikoeru_server_path(rjcode)
                 if resolved:
                     existing.update(resolved)
-                    if include_stats:
-                        if resolved.get("is_remote"):
-                            existing["stats"] = await self._describe_remote_path_stats(
-                                resolved.get("library_id"),
-                                resolved.get("path"),
-                            )
-                        else:
-                            existing["stats"] = self._describe_local_path_stats(resolved.get("path"))
-                        stats_already_computed = True
+                    existing_resolved_remote = bool(resolved.get("is_remote"))
 
-        if include_stats and not stats_already_computed and existing.get("is_remote"):
-            existing["stats"] = await self._describe_remote_path_stats(
-                existing.get("library_id"),
-                existing.get("path"),
+        # 为 existing 与 source 并行计算 stats：
+        # - 远程：await 现成 async _describe_remote_path_stats
+        # - 本地：os.walk 走 asyncio.to_thread，不阻塞事件循环
+        new_path_kind_task = asyncio.to_thread(
+            lambda: "archive" if os.path.isfile(str(conflict.new_path or "")) else "folder",
+        )
+
+        async def _resolve_stats(side: dict[str, Any]) -> Optional[dict[str, Any]]:
+            if not include_stats:
+                return None
+            if side.get("is_remote"):
+                return await self._describe_remote_path_stats(
+                    side.get("library_id"),
+                    side.get("path"),
+                )
+            return await asyncio.to_thread(
+                self._describe_local_path_stats, side.get("path"),
             )
-        if include_stats and source.get("is_remote"):
-            source["stats"] = await self._describe_remote_path_stats(
-                source.get("library_id"),
-                source.get("path"),
-            )
-        return description
+
+        existing_stats, source_stats, new_path_kind = await asyncio.gather(
+            _resolve_stats(existing) if existing_resolved_remote or include_stats else _noop_stats(),
+            _resolve_stats(source) if include_stats else _noop_stats(),
+            new_path_kind_task,
+        )
+        existing["stats"] = existing_stats
+        source["stats"] = source_stats
+
+        return {
+            "existing": existing,
+            "source": source,
+            "new_path_kind": new_path_kind,
+            "metadata": metadata,
+        }
 
     async def _resolve_kikoeru_server_path(self, rjcode: str) -> Optional[dict[str, Any]]:
         """用 RJ 号在所有库存中并行搜索实际文件夹路径，用于解析 Kikoeru 写入的显示标签路径。
