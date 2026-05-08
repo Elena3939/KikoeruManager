@@ -1735,7 +1735,7 @@ button:disabled {
 }
 .conflicts-mini-btn:disabled { opacity: 0.5; }
 
-/* 批量动作按钮 */
+/* 批量动作按钮：列表区紧凑型 */
 .conflicts-batch-actions {
   display: flex;
   gap: 6px;
@@ -1748,26 +1748,68 @@ button:disabled {
   justify-content: center;
   gap: 5px;
   height: 30px;
+  padding: 0 10px;
   border-radius: 9px;
   border: 1px solid transparent;
   font-size: 11.5px;
   font-weight: 600;
+  letter-spacing: 0.01em;
   color: #fff;
-  transition: all 0.2s ease;
+  position: relative;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
+.conflicts-batch-btn :deep(svg) {
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.conflicts-batch-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+}
+.conflicts-batch-btn:hover:not(:disabled) { transform: translateY(-2px); }
+.conflicts-batch-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.96);
+  transition: all 0.12s ease;
+}
+
+/* 批量重试：emerald 三段渐变 + inset 高光 + 双层 glow */
 .conflicts-batch-btn.is-emerald {
-  background: linear-gradient(135deg, #10b981, #059669);
-  border-color: #047857;
-  box-shadow: 0 2px 6px -2px rgba(16, 185, 129, 0.4);
+  background: linear-gradient(180deg, #34d399 0%, #10b981 55%, #059669 100%);
+  border-color: rgba(4, 120, 87, 0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 1px 2px rgba(16, 185, 129, 0.35),
+    0 3px 8px -2px rgba(16, 185, 129, 0.28);
 }
-.conflicts-batch-btn.is-emerald:hover:not(:disabled) { background: linear-gradient(135deg, #059669, #047857); transform: translateY(-1px); }
+.conflicts-batch-btn.is-emerald:hover:not(:disabled) {
+  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 55%, #10b981 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 2px 4px rgba(16, 185, 129, 0.5),
+    0 8px 18px -4px rgba(16, 185, 129, 0.5);
+}
+.conflicts-batch-btn.is-emerald:hover:not(:disabled) :deep(svg) {
+  transform: rotate(-180deg);
+}
+
+/* 批量跳过：白底 ghost，与主操作拉开视觉权重 */
 .conflicts-batch-btn.is-slate {
-  background: linear-gradient(135deg, #475569, #334155);
-  border-color: #1e293b;
-  box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.3);
+  background: #ffffff;
+  color: #475569;
+  border-color: rgba(15, 23, 42, 0.14);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
-.conflicts-batch-btn.is-slate:hover:not(:disabled) { background: linear-gradient(135deg, #334155, #1e293b); transform: translateY(-1px); }
-.conflicts-batch-btn:disabled { opacity: 0.5; }
+.conflicts-batch-btn.is-slate:hover:not(:disabled) {
+  background: #f8fafc;
+  color: #0f172a;
+  border-color: rgba(15, 23, 42, 0.24);
+  box-shadow:
+    0 2px 4px rgba(15, 23, 42, 0.06),
+    0 6px 14px -4px rgba(15, 23, 42, 0.08);
+}
+.conflicts-batch-btn.is-slate:hover:not(:disabled) :deep(svg) {
+  transform: translateX(2px);
+}
 
 .conflicts-list-hint {
   margin: 0;
@@ -1960,7 +2002,7 @@ button:disabled {
 .conflicts-detail-dot.is-info { background: #0284c7; box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15); }
 .conflicts-detail-dot.is-danger { background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15); }
 
-/* 顶部操作按钮 */
+/* 顶部操作按钮：详情区主变量 */
 .conflicts-detail-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1971,39 +2013,109 @@ button:disabled {
   align-items: center;
   gap: 6px;
   height: 36px;
-  padding: 0 14px;
+  padding: 0 16px;
   border-radius: 10px;
   border: 1px solid transparent;
   font-size: 12.5px;
   font-weight: 600;
+  letter-spacing: 0.01em;
   color: #fff;
-  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: relative;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.conflicts-action-btn:disabled { opacity: 0.5; }
-.conflicts-action-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 14px -6px rgba(15, 23, 42, 0.3);
+.conflicts-action-btn :deep(svg) {
+  transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.conflicts-action-btn:active:not(:disabled) { transform: scale(0.97); }
+.conflicts-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+}
+.conflicts-action-btn:hover:not(:disabled) { transform: translateY(-2px); }
+.conflicts-action-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+  transition: all 0.12s ease;
+}
+
+/* 保留新版：indigo 主色（主决定） */
 .conflicts-action-btn.is-primary {
-  background: linear-gradient(135deg, #6366f1, #4f46e5);
-  border-color: #4338ca;
-  box-shadow: 0 2px 6px -2px rgba(99, 102, 241, 0.4);
+  background: linear-gradient(180deg, #818cf8 0%, #6366f1 55%, #4f46e5 100%);
+  border-color: rgba(67, 56, 202, 0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 1px 2px rgba(99, 102, 241, 0.4),
+    0 4px 12px -2px rgba(99, 102, 241, 0.32);
 }
+.conflicts-action-btn.is-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #a5b4fc 0%, #818cf8 55%, #6366f1 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 2px 4px rgba(99, 102, 241, 0.5),
+    0 10px 22px -4px rgba(99, 102, 241, 0.55);
+}
+.conflicts-action-btn.is-primary:hover:not(:disabled) :deep(svg) {
+  transform: scale(1.1) rotate(-3deg);
+}
+
+/* 重试：emerald 主色，hover 时图标逆旋起 */
 .conflicts-action-btn.is-emerald {
-  background: linear-gradient(135deg, #10b981, #059669);
-  border-color: #047857;
-  box-shadow: 0 2px 6px -2px rgba(16, 185, 129, 0.4);
+  background: linear-gradient(180deg, #34d399 0%, #10b981 55%, #059669 100%);
+  border-color: rgba(4, 120, 87, 0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 1px 2px rgba(16, 185, 129, 0.4),
+    0 4px 12px -2px rgba(16, 185, 129, 0.3);
 }
+.conflicts-action-btn.is-emerald:hover:not(:disabled) {
+  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 55%, #10b981 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 2px 4px rgba(16, 185, 129, 0.5),
+    0 10px 22px -4px rgba(16, 185, 129, 0.5);
+}
+.conflicts-action-btn.is-emerald:hover:not(:disabled) :deep(svg) {
+  transform: rotate(-180deg);
+}
+
+/* 跳过：次操作 → 白底 ghost，避免与主操作争夺视线 */
 .conflicts-action-btn.is-slate {
-  background: linear-gradient(135deg, #475569, #334155);
-  border-color: #1e293b;
-  box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.3);
+  background: #ffffff;
+  color: #475569;
+  border-color: rgba(15, 23, 42, 0.14);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
+.conflicts-action-btn.is-slate:hover:not(:disabled) {
+  background: #f8fafc;
+  color: #0f172a;
+  border-color: rgba(15, 23, 42, 0.24);
+  box-shadow:
+    0 2px 4px rgba(15, 23, 42, 0.06),
+    0 10px 22px -4px rgba(15, 23, 42, 0.1);
+}
+.conflicts-action-btn.is-slate:hover:not(:disabled) :deep(svg) {
+  transform: translateX(3px);
+}
+
+/* 合并：amber 蜂蜜色，hover 图标轻跳 */
 .conflicts-action-btn.is-amber {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
-  border-color: #b45309;
-  box-shadow: 0 2px 6px -2px rgba(245, 158, 11, 0.4);
+  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 55%, #d97706 100%);
+  border-color: rgba(180, 83, 9, 0.45);
+  color: #ffffff;
+  text-shadow: 0 1px 0 rgba(180, 83, 9, 0.25);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 1px 2px rgba(245, 158, 11, 0.4),
+    0 4px 12px -2px rgba(245, 158, 11, 0.3);
+}
+.conflicts-action-btn.is-amber:hover:not(:disabled) {
+  background: linear-gradient(180deg, #fcd34d 0%, #fbbf24 55%, #f59e0b 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 2px 4px rgba(245, 158, 11, 0.5),
+    0 10px 22px -4px rgba(245, 158, 11, 0.5);
+}
+.conflicts-action-btn.is-amber:hover:not(:disabled) :deep(svg) {
+  transform: scale(1.1) rotate(8deg);
 }
 
 /* 详情正文：透明，让外层 pane 的半透明白透出来 */
