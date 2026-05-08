@@ -254,7 +254,13 @@ export const logApi = {
 
 export const conflictApi = {
   list: async () => {
-    const response = await apiClient.get('/conflicts', { params: { include_stats: true } })
+    // 问题作品列表带 include_stats=true 时，每条 conflict 都要算 existing/source 路径的目录大小，
+    // 群晖 Docker / 网络挂载下这一步可能比较慢；后端已加上限保护 + 并发，但前端也给 120s 兜底，
+    // 避免 axios 默认 60s 在慢盘上误杀。
+    const response = await apiClient.get('/conflicts', {
+      params: { include_stats: true },
+      timeout: 120 * 1000
+    })
     return response.data
   },
 
