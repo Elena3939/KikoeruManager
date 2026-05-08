@@ -162,31 +162,21 @@
 
 
 
-            <div class="lib-search">
+            <LibrarySearchBox
 
-              <IconSearch :size="14" :stroke-width="2.2" class="lib-search-icon" />
+              ref="librarySearchBoxRef"
 
-              <input
+              v-model="searchQuery"
 
-                v-model="searchQuery"
+              :library-ids="globalSearchLibraryIds"
 
-                type="text"
+              @legacy-search="onLegacySearch"
 
-                class="lib-search-input"
+              @locate="onSuggestLocate"
 
-                placeholder="搜索文件名或 RJ 号"
+              @open-overlay="onOpenSearchOverlay"
 
-                @keyup.enter="handleSearch"
-
-              />
-
-              <button v-if="searchQuery" type="button" class="lib-search-clear" @click="searchQuery = ''; handleSearch()" title="清除">
-
-                <IconX :size="13" :stroke-width="2.4" />
-
-              </button>
-
-            </div>
+            />
 
 
 
@@ -1136,6 +1126,24 @@
 
 
 
+    <LibrarySearchOverlay
+
+      :visible="searchOverlayVisible"
+
+      :initial-keyword="searchOverlayInitialKeyword"
+
+      :libraries="libraries"
+
+      @update:visible="value => { searchOverlayVisible = value }"
+
+      @locate="onOverlayLocate"
+
+      @close="searchOverlayVisible = false"
+
+    />
+
+
+
     <LibraryMoveDialog
 
       :visible="moveDialogState.visible"
@@ -1420,6 +1428,10 @@ import LibraryRowContextMenu from '../components/library/LibraryRowContextMenu.v
 
 import LibraryIndexBadge from '../components/library/LibraryIndexBadge.vue'
 
+import LibrarySearchBox from '../components/library/LibrarySearchBox.vue'
+
+import LibrarySearchOverlay from '../components/library/LibrarySearchOverlay.vue'
+
 import SubtitleWorkbenchStage from '../components/library/subtitle-workbench/SubtitleWorkbenchStage.vue'
 
 
@@ -1493,6 +1505,12 @@ const tableRef = ref(null)
 const libraryRowContextMenu = ref({ visible: false, x: 0, y: 0, row: null, renderKey: 0 })
 
 const moveDialogState = ref({ visible: false, sourceLibraryId: '', items: [], submitting: false })
+
+const librarySearchBoxRef = ref(null)
+
+const searchOverlayVisible = ref(false)
+
+const searchOverlayInitialKeyword = ref('')
 
 const filterDeleteDialogRef = ref(null)
 
@@ -5313,6 +5331,124 @@ async function handleSearch () {
   }
 
 }
+
+
+
+// LibrarySearchBox 触发的"回车 = 在当前库筛选"，行为与原 lib-search 一致
+
+function onLegacySearch (payload) {
+
+  const next = (payload?.keyword ?? searchQuery.value ?? '').trim()
+
+  if (next !== searchQuery.value) searchQuery.value = next
+
+  handleSearch()
+
+}
+
+
+
+// suggest 弹层 / overlay 跳转回来都走这一条：
+
+// IndexEntry 形态 → 模拟 search-result 行 → 复用现成的 navigateLibraryEntry
+
+async function navigateToIndexEntry (entry) {
+
+  if (!entry) return
+
+  const libraryId = entry.library_id || selectedLibraryId.value
+
+  const isDirectory = entry.entry_type !== 'file'
+
+  const absolutePath = entry.absolute_path || entry.relative_path || ''
+
+  if (!absolutePath) return
+
+  // 文件 → 跳到父目录；目录 → 直接跳到该目录
+
+  let parentAbsolutePath = ''
+
+  if (!isDirectory) {
+
+    const sep = absolutePath.includes('\\') && !absolutePath.includes('/') ? '\\' : '/'
+
+    const idx = absolutePath.lastIndexOf(sep)
+
+    parentAbsolutePath = idx > 0 ? absolutePath.slice(0, idx) : absolutePath
+
+  }
+
+  const targetPath = isDirectory ? absolutePath : (parentAbsolutePath || absolutePath)
+
+  const highlightPath = absolutePath
+
+
+
+  searchQuery.value = ''
+
+  librarySearchState.value = createLibrarySearchState()
+
+  clearSelection()
+
+  locatedLibraryPath.value = highlightPath
+
+
+
+  if (libraryId && libraryId !== selectedLibraryId.value) {
+
+    pendingLibraryLocate.value = { libraryId, path: targetPath, highlightPath }
+
+    selectedLibraryId.value = libraryId
+
+    return
+
+  }
+
+  currentPath.value = targetPath
+
+  const shouldRefreshNow = currentPage.value === 1
+
+  currentPage.value = 1
+
+  if (shouldRefreshNow) await refreshLibrary()
+
+}
+
+
+
+async function onSuggestLocate (entry) {
+
+  if (!entry) return
+
+  await navigateToIndexEntry(entry)
+
+}
+
+
+
+function onOpenSearchOverlay (payload = {}) {
+
+  searchOverlayInitialKeyword.value = (payload?.keyword || searchQuery.value || '').trim()
+
+  searchOverlayVisible.value = true
+
+}
+
+
+
+async function onOverlayLocate (entry) {
+
+  searchOverlayVisible.value = false
+
+  await navigateToIndexEntry(entry)
+
+}
+
+
+
+// 搜索框默认跨全部启用库；这里留个 hook，未来要支持"仅在当前库内 suggest"时可改 [selectedLibraryId.value]
+
+const globalSearchLibraryIds = computed(() => [])
 
 
 

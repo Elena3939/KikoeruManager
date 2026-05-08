@@ -37,6 +37,11 @@
           复制可见窗口
         </button>
 
+        <button type="button" class="log-action-btn log-action-btn--default" @click="openLogManager">
+          <Settings2 :size="13" />
+          日志管理
+        </button>
+
         <button type="button" class="log-action-btn log-action-btn--danger" @click="clearLogs">
           <AppLottieIcon :src="deleteIconAnimation" :size="26" tone="danger" />
           清空视图
@@ -201,9 +206,20 @@
           <div class="flex items-center gap-2">
             <button
               type="button"
-              class="px-2 py-1 rounded border border-slate-500/40 text-slate-200 hover:bg-slate-700/40 transition"
+              class="px-2.5 py-1 rounded border border-indigo-400/40 bg-indigo-400/10 text-indigo-200 hover:bg-indigo-400/25 transition inline-flex items-center gap-1"
               @click="copyLogLine(selectedLog)"
-            >复制</button>
+              title="复制包含时间戳 / 级别 / 模块的完整单行（不截断）"
+            >
+              <ClipboardCopy :size="12" />复制原文
+            </button>
+            <button
+              type="button"
+              class="px-2.5 py-1 rounded border border-slate-500/40 text-slate-200 hover:bg-slate-700/40 transition inline-flex items-center gap-1"
+              @click="copyLogWithContext(selectedLog, 15)"
+              title="复制前后各 15 行（共 31 行）上下文"
+            >
+              <ClipboardList :size="12" />复制上下文 ±15
+            </button>
             <button
               type="button"
               class="px-2 py-1 rounded border border-slate-500/40 text-slate-300 hover:bg-slate-700/40 transition"
@@ -215,8 +231,11 @@
           <span>{{ selectedLog.time || '--:--:--' }}</span>
           <span class="px-1.5 py-0.5 rounded bg-slate-700/60">{{ selectedLog.level }}</span>
           <span v-if="selectedLog.module" class="px-1.5 py-0.5 rounded bg-slate-700/60">{{ selectedLog.module }}</span>
+          <span class="text-slate-500">提示：下方文本可鼠标直接选中复制，不受虚拟滚动影响</span>
         </div>
-        <pre class="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap break-all leading-5 text-slate-100 no-scrollbar">{{ selectedLog.message }}</pre>
+        <pre
+          class="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap break-all leading-5 text-slate-100 no-scrollbar select-text"
+        >{{ selectedLog.message }}</pre>
       </div>
 
       <div v-if="isFullSearch" class="border-t border-white/10 px-4 py-2 bg-black/20 flex items-center gap-2">
@@ -248,13 +267,152 @@
         class="py-8"
       />
     </div>
+
+    <el-dialog
+      v-model="logManagerVisible"
+      title="日志管理"
+      width="640px"
+      :close-on-click-modal="false"
+      :z-index="2200"
+      append-to-body
+    >
+      <div class="text-[13px] text-slate-700">
+        <div class="grid grid-cols-3 gap-3 mb-4">
+          <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <div class="text-[11px] text-slate-500">主日志大小</div>
+            <div class="text-[16px] font-bold text-slate-800">{{ formatLogBytes(logInfo?.main_bytes) }}</div>
+          </div>
+          <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <div class="text-[11px] text-slate-500">备份合计</div>
+            <div class="text-[16px] font-bold text-slate-800">{{ formatLogBytes(logInfo?.backup_bytes) }}</div>
+          </div>
+          <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <div class="text-[11px] text-slate-500">总占用</div>
+            <div class="text-[16px] font-bold text-slate-800">{{ formatLogBytes(logInfo?.total_bytes) }}</div>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-slate-200 mb-4 max-h-[260px] overflow-auto">
+          <table class="w-full text-[12.5px]">
+            <thead class="bg-slate-50 text-slate-500">
+              <tr>
+                <th class="text-left px-3 py-2 font-semibold">文件</th>
+                <th class="text-right px-3 py-2 font-semibold">大小</th>
+                <th class="text-right px-3 py-2 font-semibold">最后修改</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="logInfoLoading">
+                <td colspan="3" class="text-center text-slate-400 px-3 py-4">加载中…</td>
+              </tr>
+              <tr
+                v-for="file in (logInfo?.files || [])"
+                :key="file.path"
+                class="border-t border-slate-100"
+              >
+                <td class="px-3 py-2 text-slate-700 font-mono text-[12px]">
+                  <span class="inline-flex items-center gap-1">
+                    <HardDrive :size="12" class="text-slate-400" />
+                    {{ file.name }}
+                    <span v-if="file.is_main" class="ml-1 text-[10px] text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-full px-1.5">主</span>
+                    <span v-else-if="file.is_backup" class="ml-1 text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-full px-1.5">备份</span>
+                  </span>
+                </td>
+                <td class="px-3 py-2 text-right text-slate-700">{{ formatLogBytes(file.size_bytes) }}</td>
+                <td class="px-3 py-2 text-right text-slate-500">{{ formatLogTime(file.modified_ts) }}</td>
+              </tr>
+              <tr v-if="!logInfoLoading && !(logInfo?.files || []).length">
+                <td colspan="3" class="text-center text-slate-400 px-3 py-4">暂无日志文件</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 mb-4 text-[12px] text-slate-600 leading-5">
+          <div class="font-semibold text-slate-700 mb-1">轮转策略</div>
+          单文件上限 <span class="font-bold">{{ logInfo?.max_mb_per_file ?? 20 }} MB</span>，最多保留
+          <span class="font-bold">{{ logInfo?.backup_count ?? 5 }}</span> 份备份，理论上限
+          <span class="font-bold">{{ ((logInfo?.max_mb_per_file ?? 20) * ((logInfo?.backup_count ?? 5) + 1)).toFixed(0) }} MB</span>。
+          可通过环境变量 <code>PREKIKOERU_LOG_MAX_MB</code> / <code>PREKIKOERU_LOG_BACKUPS</code> 调整。
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="log-action-btn log-action-btn--default"
+            :disabled="cleanupLoading"
+            @click="loadLogInfo"
+          >
+            <RefreshCw :size="13" />刷新
+          </button>
+          <button
+            type="button"
+            class="log-action-btn log-action-btn--success"
+            :disabled="cleanupLoading"
+            @click="runLogCleanup('rotate')"
+            title="把当前 app.log 滚到 .1，新日志写入空文件；不删除任何内容"
+          >
+            <RefreshCw :size="13" />立即轮转
+          </button>
+          <button
+            type="button"
+            class="log-action-btn log-action-btn--warning"
+            :disabled="cleanupLoading"
+            @click="runLogCleanup('purge_backups')"
+            title="删除所有 app.log.N 备份文件"
+          >
+            <Trash2 :size="13" />清理所有备份
+          </button>
+          <button
+            type="button"
+            class="log-action-btn log-action-btn--warning"
+            :disabled="cleanupLoading"
+            @click="runLogCleanup('truncate')"
+            title="把主日志保留最近 2MB，丢弃前面所有内容（应急救急）"
+          >
+            <Trash2 :size="13" />截断主日志到 2MB
+          </button>
+          <button
+            type="button"
+            class="log-action-btn log-action-btn--danger"
+            :disabled="cleanupLoading"
+            @click="runLogCleanup('rotate_and_purge')"
+            title="先轮转再清理全部备份；当前 app.log 会被清空，旧日志将无法恢复"
+          >
+            <Trash2 :size="13" />一键瘦身
+          </button>
+        </div>
+      </div>
+
+      <template #footer>
+        <button
+          type="button"
+          class="log-action-btn log-action-btn--default"
+          @click="logManagerVisible = false"
+        >关闭</button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, triggerRef } from 'vue'
-import { ArrowDown, Copy, Download, FileSearch, PauseCircle, Play, RefreshCw, Search } from 'lucide-vue-next'
-import { ElMessage } from 'element-plus'
+import {
+  ArrowDown,
+  ClipboardCopy,
+  ClipboardList,
+  Copy,
+  Download,
+  FileSearch,
+  HardDrive,
+  PauseCircle,
+  Play,
+  RefreshCw,
+  Search,
+  Settings2,
+  Trash2,
+} from 'lucide-vue-next'
+import { ElDialog, ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { logApi } from '../api'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
@@ -343,16 +501,24 @@ const availableModules = computed(() => {
 const filteredLogs = computed(() => {
   const terms = searchTerms.value
   const lvlSet = new Set(selectedLevels.value)
-  const hasModuleFilter = selectedModules.value.length > 0
+  const moduleSet = selectedModules.value.length
+    ? new Set(selectedModules.value)
+    : null
+  const termCount = terms.length
 
   return logs.value.filter((log) => {
     if (!lvlSet.has(log.level)) return false
-    if (hasModuleFilter && !selectedModules.value.includes(log.module)) return false
-    if (!terms.length) return true
-    const msg = (log.message || '').toLowerCase()
-    const mod = (log.module || '').toLowerCase()
-    // 多关键词采用 AND 语义：每个关键词都要在 message 或 module 中命中
-    return terms.every((term) => msg.includes(term) || mod.includes(term))
+    if (moduleSet && !moduleSet.has(log.module)) return false
+    if (!termCount) return true
+    // 消费解析阶段预先缓存的 lower-case（messageLower / moduleLower），
+    // 这里不再 toLowerCase，单次过滤开销从 O(n·m) 降到 O(n·k)。
+    const msg = log.messageLower || ''
+    const mod = log.moduleLower || ''
+    for (let i = 0; i < termCount; i += 1) {
+      const term = terms[i]
+      if (!msg.includes(term) && !mod.includes(term)) return false
+    }
+    return true
   })
 })
 
@@ -525,55 +691,47 @@ function buildDisplayMessage(message) {
 function parseLogLine(line) {
   if (parseCache.has(line)) {
     parseCacheHits.value += 1
-    const cached = parseCache.get(line)
-    return { ...cached }
+    return parseCache.get(line)
   }
   parseCacheMisses.value += 1
   trimMapByOldest(parseCache, parseCacheMax.value, Math.max(1000, Math.floor(parseCacheMax.value / 4)))
 
-  let match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s+\S+\s+-\s+(.+)$/)
-  if (match) {
-    const message = match[3]
-    const obj = { id: ++logIdCounter, rawKey: buildLogKey(line), rawLine: line, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message, ...buildDisplayMessage(message) }
-    parseCache.set(line, obj)
-    return obj
+  // 统一构造解析对象；预先缓存 lower-case 版本，避免 filteredLogs 过滤时每帧
+  // 都对 2000 条日志重复 toLowerCase（此前是主要的 filter 卡点）。
+  const buildParsed = (time, level, message) => {
+    const mod = parseModule(message, line)
+    const levelUpper = (level || 'INFO').toUpperCase()
+    const parsed = {
+      rawLine: line,
+      time: time || '',
+      level: levelUpper,
+      module: mod,
+      message,
+      messageLower: (message || '').toLowerCase(),
+      moduleLower: (mod || '').toLowerCase(),
+      ...buildDisplayMessage(message),
+    }
+    parseCache.set(line, parsed)
+    return parsed
   }
+
+  let match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s+\S+\s+-\s+(.+)$/)
+  if (match) return buildParsed(match[1], match[2], match[3])
 
   match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-\s+(.+)$/)
-  if (match) {
-    const message = match[3]
-    const obj = { id: ++logIdCounter, rawKey: buildLogKey(line), rawLine: line, time: match[1], level: match[2].toUpperCase(), module: parseModule(message, line), message, ...buildDisplayMessage(message) }
-    parseCache.set(line, obj)
-    return obj
-  }
+  if (match) return buildParsed(match[1], match[2], match[3])
 
-  const obj = { id: ++logIdCounter, rawKey: buildLogKey(line), rawLine: line, time: '', level: 'INFO', module: parseModule(line, line), message: line, ...buildDisplayMessage(line) }
-  parseCache.set(line, obj)
-  return obj
+  return buildParsed('', 'INFO', line)
 }
 
 function parseLogLines(lines, keyPrefix = '') {
-  const duplicateCounter = new Map()
-  return lines.map((line, index) => {
+  // 改用"键前缀 + 单调自增 id"作为 Vue :key，干掉原先 FNV 哈希的逐字符计算。
+  // 同时避免长消息生成几百字节的 key，让 virtual-list diff 更轻。
+  return lines.map((line) => {
     const parsed = parseLogLine(line)
-    const rawKey = parsed.rawKey || buildLogKey(line)
-    const seen = duplicateCounter.get(rawKey) || 0
-    duplicateCounter.set(rawKey, seen + 1)
-    return {
-      ...parsed,
-      key: `${keyPrefix}${index}-${seen}-${rawKey}`,
-    }
+    const id = ++logIdCounter
+    return { ...parsed, id, key: `${keyPrefix}${id}` }
   })
-}
-
-function buildLogKey(line) {
-  let hash = 2166136261
-  const text = String(line || '')
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return `${text.length}-${(hash >>> 0).toString(36)}`
 }
 
 function isNearBottom() {
@@ -744,14 +902,68 @@ function onLimitChange() {
   refreshLogs(true)
 }
 
-async function copyLogLine(log) {
-  const text = [log.time, log.level, log.module, log.message].filter(Boolean).join('  ')
+function formatLogLineForCopy(log) {
+  if (!log) return ''
+  const parts = []
+  if (log.time) parts.push(log.time)
+  if (log.level) parts.push(`[${log.level}]`)
+  if (log.module) parts.push(`[${log.module}]`)
+  parts.push(log.message ?? '')
+  return parts.join(' ')
+}
+
+async function writeToClipboard(text, successMessage) {
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage({ message: '已复制到剪贴板', type: 'success', duration: 1200 })
+    if (successMessage) {
+      ElMessage({ message: successMessage, type: 'success', duration: 1200 })
+    }
+    return true
   } catch {
-    ElMessage.warning('复制失败，请手动选中')
+    // 不安全上下文（http 局域网 / 部分桌面包装）下 navigator.clipboard 不可用，
+    // 回退到旧 API + 隐藏 textarea，确保能复制完整长度。
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      if (!ok) throw new Error('execCommand failed')
+      if (successMessage) {
+        ElMessage({ message: successMessage, type: 'success', duration: 1200 })
+      }
+      return true
+    } catch {
+      ElMessage.warning('复制失败，请手动选中详情里的文本')
+      return false
+    }
   }
+}
+
+async function copyLogLine(log) {
+  // 注意 log.message 是完整原文，虚拟滚动不会裁短；此处拼上时间 / 级别 / 模块，
+  // 方便丢到 issue 里让团队按时间点定位问题，而不是只有一行裸消息。
+  await writeToClipboard(formatLogLineForCopy(log), '已复制当前日志原文')
+}
+
+async function copyLogWithContext(log, span = 15) {
+  if (!log) return
+  const all = logs.value
+  const idx = all.findIndex((item) => item.key === log.key)
+  if (idx < 0) {
+    ElMessage.warning('未找到该日志的上下文')
+    return
+  }
+  const from = Math.max(0, idx - span)
+  const to = Math.min(all.length, idx + span + 1)
+  const lines = all.slice(from, to).map(formatLogLineForCopy)
+  const text = lines.join('\n')
+  await writeToClipboard(text, `已复制上下文共 ${lines.length} 行`)
 }
 
 function exportFilteredLogs() {
@@ -833,7 +1045,13 @@ async function gotoFullSearchPage(cursor) {
   try {
     const t0 = performance.now()
     lastFetchMode.value = 'search'
-    const data = await logApi.search(keyword, selectedLevels.value, FULL_SEARCH_PAGE_SIZE, cursor)
+    const data = await logApi.search(
+      keyword,
+      selectedLevels.value,
+      FULL_SEARCH_PAGE_SIZE,
+      cursor,
+      { maxScanMb: 32 },
+    )
     if (requestSeq !== fullSearchRequestSeq) return
     const lines = Array.isArray(data.logs) ? data.logs : []
     fullSearchTotal.value = data.total_matched ?? lines.length
@@ -880,6 +1098,106 @@ async function toggleFullSearch() {
   } else {
     isFullSearch.value = true
     await doFullSearch(true)
+  }
+}
+
+// ========== 日志管理（/api/logs/info、/api/logs/cleanup） ==========
+
+const logManagerVisible = ref(false)
+const logInfo = ref(null)
+const logInfoLoading = ref(false)
+const cleanupLoading = ref(false)
+
+function formatLogBytes(bytes) {
+  const n = Number(bytes || 0)
+  if (!n) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let idx = 0
+  let value = n
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024
+    idx += 1
+  }
+  return idx === 0 ? `${value.toFixed(0)} ${units[idx]}` : `${value.toFixed(2)} ${units[idx]}`
+}
+
+function formatLogTime(ts) {
+  if (!ts) return '--'
+  try {
+    return new Date(Number(ts) * 1000).toLocaleString()
+  } catch {
+    return '--'
+  }
+}
+
+async function loadLogInfo() {
+  logInfoLoading.value = true
+  try {
+    logInfo.value = await logApi.info()
+  } catch (err) {
+    ElMessage.error('获取日志信息失败，请确认后端已启动')
+  } finally {
+    logInfoLoading.value = false
+  }
+}
+
+async function openLogManager() {
+  logManagerVisible.value = true
+  await loadLogInfo()
+}
+
+async function runLogCleanup(action) {
+  let confirmMessage = ''
+  let payload = {}
+  switch (action) {
+    case 'rotate':
+      confirmMessage = '立即对主日志进行一次轮转？\n\n当前 app.log 会被改名为 app.log.1，之后新日志写入空文件。'
+      payload = { rotate: true }
+      break
+    case 'purge_backups':
+      confirmMessage = '删除所有 app.log.N 备份文件？\n\n该操作不可恢复。'
+      payload = { purgeBackups: true }
+      break
+    case 'truncate':
+      confirmMessage = '把主日志截断到最近 2MB？\n\n现有文件超出尾部 2MB 的内容会被丢弃。'
+      payload = { truncateMain: true, keepTailMb: 2 }
+      break
+    case 'rotate_and_purge':
+      confirmMessage = '先轮转再清理全部备份？\n\n当前 app.log 会先滚到 app.log.1，然后所有 .1~.N 备份全部删除。'
+      payload = { rotate: true, purgeBackups: true }
+      break
+    default:
+      return
+  }
+
+  try {
+    await showSystemConfirm({ title: '确认日志清理', message: confirmMessage, tone: 'warning' })
+  } catch {
+    return
+  }
+
+  cleanupLoading.value = true
+  try {
+    const result = await logApi.cleanup(payload)
+    const cleanupSummary = result?.cleanup || {}
+    const purgedBytes = Number(cleanupSummary.purged_bytes || 0)
+    const truncatedFrom = Number(cleanupSummary.truncated_from_bytes || 0)
+    const truncatedTo = Number(cleanupSummary.truncated_to_bytes || 0)
+    const parts = []
+    if (action === 'rotate' || action === 'rotate_and_purge') parts.push('已触发轮转')
+    if (purgedBytes > 0) parts.push(`清理备份 ${formatLogBytes(purgedBytes)}`)
+    if (cleanupSummary.truncated_main) {
+      parts.push(`主日志 ${formatLogBytes(truncatedFrom)} → ${formatLogBytes(truncatedTo)}`)
+    }
+    ElMessage.success(parts.length ? parts.join('；') : '清理完成')
+    await loadLogInfo()
+    // 清理后本地视图还指向旧 byte offset，强制全量刷新避免读不到数据
+    nextOffset = -1
+    await refreshLogs(true)
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '清理失败')
+  } finally {
+    cleanupLoading.value = false
   }
 }
 

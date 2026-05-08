@@ -25,6 +25,17 @@ export default defineConfig({
           })
         }
       },
+      // 跨库搜索流：NDJSON 渐进推送，确保不被任何中间层缓冲
+      '/api/library/index/global-search/stream': {
+        target: 'http://localhost:5555',
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['x-accel-buffering'] = 'no'
+            proxyRes.headers['cache-control'] = 'no-cache, no-store, must-revalidate'
+          })
+        }
+      },
       '/api': {
         target: 'http://localhost:5555',
         changeOrigin: true

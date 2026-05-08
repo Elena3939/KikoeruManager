@@ -704,6 +704,7 @@ class EmailWatcherService:
         maker_id: str,
     ) -> Dict[str, object]:
         from .circle_completion_service import get_circle_completion_service
+        from .circle_image_cache_service import get_circle_image_cache_service
         from ..models.database import CircleCatalog, CircleExternalIdentity, CircleWork, SessionLocal
 
         circle_service = get_circle_completion_service()
@@ -874,6 +875,27 @@ class EmailWatcherService:
             row.asmr_one_cached_at = datetime.now() if actual_norm else row.asmr_one_cached_at
             row.updated_at = datetime.now()
             db.commit()
+
+            # 顺手把这条新作封面缓存到 data/img/，避免用户从社团补全页打开时
+            # 还要走 dlsite 远程拉一次。
+            # 注意：CircleWork.image_url 字段保持远程 URL 不动，邮件 / 通知模板
+            # 仍直接读 row.image_url 走 dlsite 公网 URL，不能让本地 API path
+            # 污染 db（否则邮件被发到其他机器就会出现 broken image）。
+            remote_cover_for_cache = str(row.image_url or "").strip()
+            display_rj_for_cache = (
+                circle_service.normalize_rjcode(row.display_rjcode) or canonical
+            )
+            if remote_cover_for_cache.startswith(("http://", "https://")) and display_rj_for_cache:
+                try:
+                    await get_circle_image_cache_service().download_one(
+                        display_rj_for_cache, remote_cover_for_cache,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[邮件监听] 缓存新作封面失败 rj=%s",
+                        display_rj_for_cache,
+                        exc_info=True,
+                    )
 
             return {
                 "success": True,

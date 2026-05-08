@@ -129,6 +129,21 @@ export const activityLogApi = {
     return response.data
   },
 
+  detail: async (logId) => {
+    const response = await apiClient.get(`/activity-logs/${logId}/detail`)
+    return response.data
+  },
+
+  compactEstimate: async (params = {}) => {
+    const response = await apiClient.get('/activity-logs/compact/estimate', { params })
+    return response.data
+  },
+
+  compact: async (params = {}) => {
+    const response = await apiClient.post('/activity-logs/compact', null, { params })
+    return response.data
+  },
+
   logFilterDelete: async (payload = {}) => {
     const response = await apiClient.post('/activity-logs/filter-delete', payload)
     return response.data
@@ -243,13 +258,31 @@ export const logApi = {
     const response = await apiClient.get('/logs', { params })
     return response.data
   },
-  search: async (q = '', levels = [], limit = 500, cursor = 0) => {
+  search: async (q = '', levels = [], limit = 500, cursor = 0, options = {}) => {
     const params = { limit, cursor }
     if (q) params.q = q
     if (levels.length) params.levels = levels.join(',')
-    const response = await apiClient.get('/logs/search', { params })
+    if (options.maxScanMb) params.max_scan_mb = options.maxScanMb
+    if (options.includeBackups === false) params.include_backups = false
+    const response = await apiClient.get('/logs/search', {
+      params,
+      signal: options.signal,
+    })
     return response.data
-  }
+  },
+  info: async () => {
+    const response = await apiClient.get('/logs/info')
+    return response.data
+  },
+  cleanup: async ({ purgeBackups = false, truncateMain = false, keepTailMb = 2, rotate = false } = {}) => {
+    const response = await apiClient.post('/logs/cleanup', {
+      purge_backups: purgeBackups,
+      truncate_main: truncateMain,
+      keep_tail_mb: keepTailMb,
+      rotate,
+    })
+    return response.data
+  },
 }
 
 export const conflictApi = {
@@ -366,6 +399,111 @@ export const libraryApi = {
       },
     })
     return response.data
+  },
+
+  // 跨库存索引搜索：默认对所有启用库存生效，可通过 libraryIds 收窄。
+  // - mode='suggest' → 仅取前 N 条（搜索框下拉）
+  // - mode='full'    → 全屏面板用，limit 上限 500
+  // 调用方负责传 AbortController.signal 来取消上一次飞行的请求。
+  searchIndexGlobal: async ({
+    keyword = '',
+    libraryIds = null,
+    entryType = 'all',
+    mode = 'full',
+    limit = 50,
+    signal = undefined,
+  } = {}) => {
+    const csv = Array.isArray(libraryIds)
+      ? libraryIds.filter(Boolean).join(',')
+      : (libraryIds || '')
+    const response = await apiClient.get('/library/index/global-search', {
+      params: {
+        keyword,
+        library_ids: csv || undefined,
+        entry_type: entryType || 'all',
+        mode: mode || 'full',
+        limit,
+      },
+      signal,
+    })
+    return response.data
+  },
+
+  // 流式跨库搜索：先推索引结果，未就绪库的兜底扫描按完成顺序逐库推送。
+  // 用法：
+  //   for await (const evt of libraryApi.searchIndexGlobalStream({ keyword, signal })) {
+  //     if (evt.type === 'initial') ...
+  //     if (evt.type === 'library') ...
+  //     if (evt.type === 'done') ...
+  //   }
+  // 协议：NDJSON（一行一 JSON），客户端断开会触发后端 cancel。
+  searchIndexGlobalStream: async function* ({
+    keyword = '',
+    libraryIds = null,
+    entryType = 'all',
+    mode = 'full',
+    limit = 50,
+    signal = undefined,
+  } = {}) {
+    const csv = Array.isArray(libraryIds)
+      ? libraryIds.filter(Boolean).join(',')
+      : (libraryIds || '')
+    const params = new URLSearchParams()
+    params.set('keyword', keyword || '')
+    if (csv) params.set('library_ids', csv)
+    if (entryType) params.set('entry_type', entryType)
+    if (mode) params.set('mode', mode)
+    if (limit != null) params.set('limit', String(limit))
+
+    // apiClient 是 axios 实例，但 axios 不支持读 ReadableStream。这里直接走 fetch。
+    // 用 apiClient.defaults.baseURL 拼出绝对 URL，与其它接口同源。
+    const baseURL = (apiClient?.defaults?.baseURL || '').replace(/\/$/, '')
+    const url = `${baseURL}/library/index/global-search/stream?${params.toString()}`
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Accept: 'application/x-ndjson' },
+      signal,
+      credentials: 'same-origin',
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      const err = new Error(`HTTP ${response.status}: ${text || response.statusText}`)
+      err.status = response.status
+      throw err
+    }
+    if (!response.body) {
+      throw new Error('Streaming response missing body')
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let nlIdx
+        // 一次循环把缓冲里所有完整行都吐出去
+        while ((nlIdx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nlIdx).trim()
+          buffer = buffer.slice(nlIdx + 1)
+          if (!line) continue
+          try {
+            yield JSON.parse(line)
+          } catch (parseErr) {
+            // 单行解析失败不打断整流，记录后跳过
+            console.warn('[streamSearch] 跳过无法解析的行', parseErr, line)
+          }
+        }
+      }
+      const tail = buffer.trim()
+      if (tail) {
+        try { yield JSON.parse(tail) } catch (_) { /* ignore */ }
+      }
+    } finally {
+      try { reader.cancel() } catch (_e) { /* ignore */ }
+    }
   },
 
   browseFiles: async ({

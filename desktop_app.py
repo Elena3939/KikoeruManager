@@ -215,18 +215,10 @@ class DesktopApp:
         config_path = os.path.join(config_dir, 'config.yaml')
 
         os.environ['CONFIG_PATH'] = config_path
-        log_path = os.path.join(data_dir, 'app.log')
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        root_logger = logging.getLogger()
-        root_logger.setLevel(logging.INFO)
-        root_logger.handlers = []
-        file_handler = logging.FileHandler(log_path, encoding='utf-8')
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
-        if sys.stdout:
-            console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setFormatter(formatter)
-            root_logger.addHandler(console_handler)
+
+        # 统一使用 RotatingFileHandler，避免桌面运行态 app.log 无限膨胀。
+        from backend.app.core.app_logging import configure_app_logging
+        configure_app_logging(log_dir=data_dir, use_console=bool(sys.stdout))
 
         logger.info(f"当前数据目录: {data_dir}")
         logger.info(f"当前配置文件: {config_path}")

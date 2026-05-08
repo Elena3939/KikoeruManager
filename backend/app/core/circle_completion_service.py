@@ -10,7 +10,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from datetime import date, datetime
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
 
@@ -31,6 +31,7 @@ from ..models.database import (
 from .activity_log_service import log_circle_completion_event
 from .asmr_download_service import get_asmr_download_service
 from .asmr_resource_service import get_asmr_resource_service
+from .circle_image_cache_service import get_circle_image_cache_service
 from .dlsite_service import get_dlsite_service
 from .kikoeru_duplicate_service import get_kikoeru_service
 from .metadata_service import MetadataService
@@ -2804,7 +2805,38 @@ class CircleCompletionService:
                 kikoeru_owned_count=kikoeru_owned,
             )
 
-        report(92, "写入社团索引")
+        # 把封面图同步缓存到本地 data/img/，避免前端每次都从 dlsite 加载，
+        # dlsite 图片 CDN 在国内偶发抖动 / 代理掉链时整个社团页都会"白板"。
+        # 这里只下载小图（_img_main_240x240），单张 < 50KB；并发 8，失败不阻断。
+        cover_download_pairs: List[Tuple[str, str]] = []
+        for canonical_rj, item in aggregated.items():
+            cover_url = str(item.get("image_url") or "").strip()
+            display_rj = self.normalize_rjcode(item.get("display_rjcode")) or canonical_rj
+            if not display_rj or not cover_url.startswith(("http://", "https://")):
+                continue
+            cover_download_pairs.append((display_rj, cover_url))
+        if cover_download_pairs:
+            report(
+                92,
+                f"缓存社团封面 {len(cover_download_pairs)}",
+                cover_total=len(cover_download_pairs),
+            )
+            try:
+                cover_results = await get_circle_image_cache_service().download_many(
+                    cover_download_pairs,
+                )
+                cover_cached_count = sum(1 for ok in cover_results.values() if ok)
+                report(
+                    93,
+                    f"封面缓存完成 {cover_cached_count}/{len(cover_download_pairs)}",
+                    cover_total=len(cover_download_pairs),
+                    cover_cached=cover_cached_count,
+                )
+            except Exception:
+                # 封面缓存失败属于"非关键"路径，远程 URL 仍能展示；只 warning 不抛。
+                logger.warning("[社团补全] 批量缓存封面失败", exc_info=True)
+
+        report(94, "写入社团索引")
         db = SessionLocal()
         try:
             ensure_not_cancelled()
@@ -3185,6 +3217,9 @@ class CircleCompletionService:
             # 还闪新作特效"这种口径漂移。
             now_local_for_view = get_local_now()
             new_work_window_seconds = 48 * 60 * 60
+            # 提到循环外拿一次实例，循环里只调 has_local（一次 stat 调用），
+            # 200 个作品的额外开销 ~1ms，可以忽略。
+            image_cache_service = get_circle_image_cache_service()
             items = []
             for row in works:
                 owned_row = owned_rows.get(row.canonical_rjcode)
@@ -3232,11 +3267,21 @@ class CircleCompletionService:
                             break
                 item["release_date"] = release_date
                 item["is_unreleased"] = self._is_future_release_date(release_date)
-                item["image_url"] = self._normalize_dlsite_cover_url(
+                normalized_remote_cover = self._normalize_dlsite_cover_url(
                     item.get("image_url"),
                     row.display_rjcode or row.canonical_rjcode,
                     is_unreleased=item["is_unreleased"],
                 )
+                # 优先返回本地缓存的 API path（/api/circle-completion/cover/RJxxxxxx.jpg），
+                # 没缓存就退回到 dlsite 公开 URL；前端 WorkCard.onCoverError 还有第二层
+                # fallback（按 RJ 推算多个 dlsite 地址），所以单点失败不会让整页白板。
+                local_cover_url = image_cache_service.get_local_url(
+                    stored_display_rjcode or row.canonical_rjcode
+                )
+                item["image_url"] = local_cover_url or normalized_remote_cover
+                # 远程 URL 单独再露一份给邮件 / 复制链接等场景使用，前端目前没用，
+                # 但保留这个字段成本极低，以后扩展邮件预览 / 复制图片链接时不用回头改 API。
+                item["remote_image_url"] = normalized_remote_cover
                 # 补充 CV 名列表（来自 work_metadata.cvs）
                 if not item.get("cvs"):
                     cvs = list((metadata_map.get(stored_display_rjcode) or {}).get("cvs") or [])
@@ -3753,6 +3798,26 @@ class CircleCompletionService:
                     kikoeru_owned_count=kikoeru_owned_count,
                     force_refresh=bool(force_refresh),
                 )
+
+            # 把刷新后的封面图同步到本地缓存。force_refresh=True 时强制重新拉一次，
+            # 普通刷新有本地缓存会 short-circuit，几乎免费跳过。
+            cover_pairs: List[Tuple[str, str]] = []
+            for refreshed_row in rows:
+                cover_url = str(refreshed_row.image_url or "").strip()
+                display_rj = (
+                    self.normalize_rjcode(refreshed_row.display_rjcode)
+                    or self.normalize_rjcode(refreshed_row.canonical_rjcode)
+                )
+                if not display_rj or not cover_url.startswith(("http://", "https://")):
+                    continue
+                cover_pairs.append((display_rj, cover_url))
+            if cover_pairs:
+                try:
+                    await get_circle_image_cache_service().download_many(
+                        cover_pairs, force=bool(force_refresh),
+                    )
+                except Exception:
+                    logger.warning("[社团补全] refresh 阶段缓存封面失败", exc_info=True)
 
             catalog.last_indexed_at = datetime.now()
             catalog.updated_at = datetime.now()

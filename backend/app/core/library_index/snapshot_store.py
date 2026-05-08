@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import contextmanager
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, Optional, Sequence, Union
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -180,19 +180,37 @@ class SnapshotStore:
 
     def find_by_rjcode(
         self,
-        library_id: Optional[str],
+        library_id: Optional[Union[str, Sequence[str]]],
         rjcode: str,
         *,
         entry_type: Optional[str] = 'dir',
         limit: int = 100,
     ) -> list[IndexEntry]:
-        """按 RJ 号精确查。library_id 为 None 时跨全部库存。"""
+        """按 RJ 号精确查。
+
+        library_id：
+        - str → 仅该库存
+        - None / 空序列 → 跨全部库存
+        - Sequence[str] → 多库存（IN 子查询）
+        """
         if not rjcode:
             return []
+        scope_ids: Optional[list[str]]
+        if library_id is None:
+            scope_ids = None
+        elif isinstance(library_id, str):
+            scope_ids = [library_id] if library_id else None
+        else:
+            scope_ids = [str(item) for item in library_id if item]
+            if not scope_ids:
+                scope_ids = None
         with self._session() as db:
             q = db.query(LibraryIndexEntry).filter(LibraryIndexEntry.rjcode == rjcode)
-            if library_id:
-                q = q.filter(LibraryIndexEntry.library_id == library_id)
+            if scope_ids:
+                if len(scope_ids) == 1:
+                    q = q.filter(LibraryIndexEntry.library_id == scope_ids[0])
+                else:
+                    q = q.filter(LibraryIndexEntry.library_id.in_(scope_ids))
             if entry_type:
                 q = q.filter(LibraryIndexEntry.entry_type == entry_type)
             q = q.order_by(
@@ -203,21 +221,51 @@ class SnapshotStore:
 
     def find_by_name(
         self,
-        library_id: str,
+        library_id: Optional[Union[str, Sequence[str]]],
         name_like: str,
         *,
         entry_type: Optional[str] = None,
         limit: int = 200,
     ) -> list[IndexEntry]:
-        """按名称模糊搜索。LIKE 大小写敏感与否依赖 SQLite 默认 NOCASE 校对。"""
+        """按名称模糊搜索。
+
+        关键性能优化：
+        - 之前用 `func.lower(name) LIKE`，会强制 SQLite 对每一行计算 LOWER()，
+          直接绕过 `idx_lie_library_name` 索引、做全表扫描，1M 级数据上要 5+ 秒。
+        - 改成 `name COLLATE NOCASE LIKE`：去掉了 per-row 函数调用，匹配方式
+          交给 SQLite 的 NOCASE 校对（对 ASCII 大小写不敏感，CJK 本身无大小写
+          所以无影响）。leading-wildcard 仍无法走 B-tree，但每行成本下降一个
+          数量级，总耗时显著改善。
+        - keyword 中的 `_` / `%` 做 escape，避免被当成 SQL 通配符。
+
+        library_id：
+        - str → 仅该库存
+        - None / 空序列 → 跨全部库存（库存维度由调用方上层保证可见性）
+        - Sequence[str] → 多库存命中（IN 子查询）
+        """
         if not name_like:
             return []
-        pattern = f"%{name_like.lower()}%"
+        # 转义 SQL 通配符，让用户输入的 _ % 真正只匹配自身
+        escaped = name_like.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        pattern = f"%{escaped}%"
+        scope_ids: Optional[list[str]]
+        if library_id is None:
+            scope_ids = None
+        elif isinstance(library_id, str):
+            scope_ids = [library_id] if library_id else None
+        else:
+            scope_ids = [str(item) for item in library_id if item]
+            if not scope_ids:
+                scope_ids = None
         with self._session() as db:
             q = db.query(LibraryIndexEntry).filter(
-                LibraryIndexEntry.library_id == library_id,
-                func.lower(LibraryIndexEntry.name).like(pattern),
+                LibraryIndexEntry.name.collate('NOCASE').like(pattern, escape='\\'),
             )
+            if scope_ids:
+                if len(scope_ids) == 1:
+                    q = q.filter(LibraryIndexEntry.library_id == scope_ids[0])
+                else:
+                    q = q.filter(LibraryIndexEntry.library_id.in_(scope_ids))
             if entry_type:
                 q = q.filter(LibraryIndexEntry.entry_type == entry_type)
             q = q.order_by(

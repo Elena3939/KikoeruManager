@@ -1,0 +1,1958 @@
+/**
+ * useActivityDetailModels
+ * -----------------------
+ * 操作记录详情抽屉所需的全部派生数据 / 辅助函数。
+ * 接收 row ref（lite 或 detail merged row 都行），返回业务面板所需模型。
+ */
+import { computed, ref, watch } from 'vue'
+import dayjs from 'dayjs'
+import {
+  AlertCircle, CheckCircle2, File as FileIcon, FileArchive, FileText,
+  Film, Folder, Image as ImageIcon, MinusCircle, Music,
+} from 'lucide-vue-next'
+
+// ===================== 通用工具 =====================
+function safeDetail(row) {
+  return row?.detail && typeof row.detail === 'object' ? row.detail : {}
+}
+
+export function compactPath(p) {
+  if (!p) return '—'
+  const s = String(p)
+  if (s.length <= 60) return s
+  return `${s.slice(0, 28)}…${s.slice(-26)}`
+}
+
+export function formatBytes(size) {
+  const value = Number(size || 0)
+  if (Number.isNaN(value) || value < 1024) return `${Math.max(0, Math.round(value || 0))} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let cur = value / 1024
+  let i = 0
+  while (cur >= 1024 && i < units.length - 1) { cur /= 1024; i += 1 }
+  return `${cur.toFixed(2)} ${units[i]}`
+}
+
+export function formatDurationMs(ms) {
+  const value = Math.max(0, Number(ms || 0))
+  if (value < 1000) return `${Math.round(value)} ms`
+  const seconds = value / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)} 秒`
+  const minutes = Math.floor(seconds / 60)
+  const remain = Math.round(seconds % 60)
+  return `${minutes} 分 ${remain} 秒`
+}
+
+function formatReleaseDate(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const parsed = dayjs(raw)
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD') : raw
+}
+
+function buildDlsiteCoverUrl(rjcode) {
+  const normalized = String(rjcode || '').trim().toUpperCase()
+  const m = normalized.match(/^RJ(\d{6}|\d{8})$/)
+  if (!m) return ''
+  const folderUpper = (Math.floor(Number(m[1]) / 1000) + 1) * 1000
+  const folder = m[1].length === 8
+    ? `RJ${String(folderUpper).padStart(8, '0')}`
+    : `RJ${String(folderUpper).padStart(6, '0')}`
+  return `https://img.dlsite.jp/modpub/images2/work/doujin/${folder}/${normalized}_img_sam.jpg`
+}
+
+function normalizeRjcode(value) {
+  const text = String(value || '').trim().toUpperCase()
+  if (!text) return ''
+  const repeated = text.match(/(?:RJ)+(\d{4,})/i)
+  if (repeated) return `RJ${repeated[1]}`
+  const m = text.match(/RJ\d{4,}/i)
+  return m ? m[0].toUpperCase() : text
+}
+
+function extractRjFromText(value) {
+  const text = String(value || '')
+  const m = text.match(/RJ\d{4,}/i)
+  return m ? m[0].toUpperCase() : ''
+}
+
+function inferRjcodeFromRow(row) {
+  if (!row) return ''
+  const detail = safeDetail(row)
+  const candidates = [
+    row.rjcode, detail.rjcode, detail.source_rjcode, detail.preview_source_rjcode,
+    detail.target_rjcode, detail.old_name, detail.new_name, detail.old_path, detail.new_path,
+    row.source_path, row.summary, row.task_id,
+  ]
+  for (const item of candidates) {
+    const byValue = normalizeRjcode(item)
+    if (byValue.startsWith('RJ')) return byValue
+    const byText = extractRjFromText(item)
+    if (byText) return byText
+  }
+  return ''
+}
+
+export function displayRjcode(row) {
+  return inferRjcodeFromRow(row) || '—'
+}
+
+// ===================== 子任务遍历 =====================
+function collectChildRowsFromParent(row) {
+  const out = []
+  const seen = new Set()
+  const direct = Array.isArray(row?.child_rows) ? row.child_rows : []
+  const fromDetail = Array.isArray(row?.detail?.child_rows) ? row.detail.child_rows : []
+  for (const child of [...direct, ...fromDetail]) {
+    const id = String(child?.id || '')
+    if (id && seen.has(id)) continue
+    if (id) seen.add(id)
+    out.push(child)
+  }
+  return out.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+}
+
+function rowHasChildren(row) {
+  return collectChildRowsFromParent(row).length > 0
+}
+
+function collectDescendantRows(row) {
+  const rows = []
+  const walk = (node) => {
+    for (const child of collectChildRowsFromParent(node)) {
+      rows.push(child)
+      walk(child)
+    }
+  }
+  walk(row)
+  return rows
+}
+
+function collectDescendantStatuses(row) {
+  const statuses = []
+  const walk = (nodes = []) => {
+    for (const n of nodes) {
+      statuses.push(String(n?.status || ''))
+      if (Array.isArray(n?.child_rows) && n.child_rows.length) walk(n.child_rows)
+    }
+  }
+  walk(collectChildRowsFromParent(row))
+  return statuses
+}
+
+// ===================== 配对 / 字幕识别 =====================
+function hasMergedPair(row) {
+  return Boolean(row?.merged_pair || row?.detail?.pair_linked)
+}
+
+function hasMergedSubtitleImport(row) {
+  return Boolean(row?.merged_subtitle_import || row?.detail?.import_linked)
+}
+
+function batchPairRollup(row) {
+  const d = safeDetail(row)
+  const paired = Math.max(0, Number(d.paired_child_count || 0))
+  const awaiting = Math.max(0, Number(d.awaiting_manual_child_count || 0))
+  const unpaired = Math.max(0, Number(d.unpaired_child_count || 0))
+  return {
+    pairedChildCount: paired,
+    awaitingManualChildCount: awaiting,
+    unpairedChildCount: unpaired,
+    totalTrackedCount: Math.max(paired + unpaired, Number(d.child_row_count || 0)),
+    fullyPaired: paired > 0 && awaiting <= 0 && unpaired <= 0,
+    partiallyPaired: paired > 0 && (awaiting > 0 || unpaired > 0),
+  }
+}
+
+export function isSubtitleBatchRootRow(row) {
+  return Boolean(row && !row.is_tree_child && row.category === 'subtitle_crawl' && row.action === 'batch_start')
+}
+
+function isSubtitleBatchRootPaired(row) {
+  return isSubtitleBatchRootRow(row) && batchPairRollup(row).fullyPaired
+}
+
+function isSubtitleBatchRootPartiallyPaired(row) {
+  return isSubtitleBatchRootRow(row) && batchPairRollup(row).partiallyPaired
+}
+
+function isBatchChildCrawlRow(row) {
+  if (!row || !row.is_tree_child) return false
+  if (row.category !== 'subtitle_crawl' || row.action === 'batch_start') return false
+  return row?.parent_row?.category === 'subtitle_crawl' && row?.parent_row?.action === 'batch_start'
+}
+
+function latestPairRow(row) {
+  return collectDescendantRows(row)
+    .filter((r) => r?.relation === 'pair' || r?.category === 'subtitle_pair')
+    .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+    .at(-1) || null
+}
+
+function isBatchChildPaired(row) {
+  if (!isBatchChildCrawlRow(row)) return false
+  const p = latestPairRow(row)
+  return Boolean(p && p.status === 'success')
+}
+
+function isPairCompletedRow(row) {
+  if (!row) return false
+  if (row?.category === 'subtitle_pair' && row?.status === 'success') return true
+  if (row?.category === 'subtitle_crawl' && hasMergedPair(row) &&
+      String(row?.merged_pair_status || row?.detail?.pair_status || '') === 'success') return true
+  if (isSubtitleBatchRootPaired(row)) return true
+  return isBatchChildPaired(row)
+}
+
+function pairDetailRow(row) {
+  if (!row) return null
+  if (row.category === 'subtitle_pair') return row
+  return latestPairRow(row)
+}
+
+function pairDetailPayload(row) {
+  const p = pairDetailRow(row)
+  if (p?.detail && typeof p.detail === 'object') return p.detail
+  return safeDetail(row)
+}
+
+function isSubtitlePairRelatedRow(row) {
+  if (!row) return false
+  if (['subtitle_crawl', 'subtitle_pair'].includes(String(row.category || ''))) return true
+  if (['pair', 'subtitle_import'].includes(String(row.relation || ''))) return true
+  return Boolean(pairDetailRow(row))
+}
+
+function pairSummaryText(row) {
+  if (!row) return ''
+  const ds = String(row?.detail?.pair_summary || '').trim()
+  if (ds) return ds
+  return String(latestPairRow(row)?.summary || '').trim()
+}
+
+function pairChangeRows(row) {
+  const d = row?.detail
+  const changes = Array.isArray(d?.pair_changes) ? d.pair_changes : []
+  return changes
+    .map((it) => ({
+      audio_before: String(it?.audio_before || '').trim(),
+      audio_after: String(it?.audio_after || '').trim(),
+      subtitle_before: String(it?.subtitle_before || '').trim(),
+      subtitle_after: String(it?.subtitle_after || '').trim(),
+    }))
+    .filter((it) => it.audio_before || it.audio_after || it.subtitle_before || it.subtitle_after)
+}
+
+function unmatchedAudioCount(row) {
+  const d = safeDetail(row)
+  const pd = pairDetailPayload(row)
+  const summary = String(row?.summary || '').trim()
+  const ps = pairSummaryText(row)
+  const mr = d.match_result && typeof d.match_result === 'object' ? d.match_result : {}
+  const pmr = pd.match_result && typeof pd.match_result === 'object' ? pd.match_result : {}
+  const direct = [
+    d.unmatched_audio_count, pd.unmatched_audio_count,
+    Array.isArray(mr.unmatched_audio) ? mr.unmatched_audio.length : null,
+    Array.isArray(pmr.unmatched_audio) ? pmr.unmatched_audio.length : null,
+  ].find((v) => Number.isFinite(Number(v)))
+  if (Number.isFinite(Number(direct))) return Number(direct)
+  const m = `${summary} ${ps}`.match(/未匹配音频\s*(\d+)/)
+  return m ? Number(m[1] || 0) : 0
+}
+
+function isManualPairCompleted(row) {
+  const d = safeDetail(row)
+  const pd = pairDetailPayload(row)
+  return Boolean(d.manual_match_completed || pd.manual_match_completed || pairDetailRow(row)?.status === 'success')
+}
+
+function isAwaitingManualPair(row) {
+  if (!row) return false
+  if (isManualPairCompleted(row)) return false
+  const d = safeDetail(row)
+  const pd = pairDetailPayload(row)
+  if (d.awaiting_manual_match || pd.awaiting_manual_match) return true
+  if (row.category === 'subtitle_crawl' && unmatchedAudioCount(row) > 0) return true
+  return false
+}
+
+function pickFirstNonEmpty(...candidates) {
+  for (const c of candidates) {
+    const v = String(c || '').trim()
+    if (v) return v
+  }
+  return ''
+}
+
+function resolveSubtitleTaskId(row) {
+  const p = pairDetailRow(row)
+  return pickFirstNonEmpty(row?.task_id, safeDetail(row).task_id, p?.task_id, safeDetail(p).task_id)
+}
+
+function resolveSubtitleFolderPath(row) {
+  const p = pairDetailRow(row)
+  return pickFirstNonEmpty(safeDetail(row).folder_path, safeDetail(p).folder_path, row?.source_path, p?.source_path)
+}
+
+function resolveSubtitleLibraryId(row) {
+  const p = pairDetailRow(row)
+  const d = safeDetail(row), pd = safeDetail(p)
+  return pickFirstNonEmpty(d.library_id, d.subtitle_library_id, pd.library_id, pd.subtitle_library_id)
+}
+
+// ===================== 标签 / 状态 =====================
+function isApiRenameAction(row) {
+  const a = String(row?.action || '').trim()
+  return a === 'api_rename' || a === 'batch_api_rename' || a === 'batch_api_rename_item'
+}
+
+function isManualRenameAction(row) {
+  const a = String(row?.action || '').trim()
+  return a === 'rename' || a === 'manual_rename' || a === 'batch_rename_item'
+}
+
+function renameOpTag(row) {
+  if (isApiRenameAction(row)) return 'API重命名'
+  return '重命名'
+}
+
+function renameOpTagClass(row) {
+  if (isApiRenameAction(row)) return 'is-api-rename'
+  if (isManualRenameAction(row)) return 'is-manual-rename'
+  return 'is-rename'
+}
+
+function filterDeleteRetryStatus(row) {
+  return String(row?.detail?.repair_status || row?.detail?.retry_status || '').trim()
+}
+
+function isFilterDeleteRetriedSuccess(row) { return filterDeleteRetryStatus(row) === 'success' }
+function isFilterDeleteRetriedPartial(row) { return filterDeleteRetryStatus(row) === 'partial_success' }
+function isFilterDeleteRetriedFailed(row) { return filterDeleteRetryStatus(row) === 'failed' }
+
+function mergedSubtitleImportTag(row) {
+  const s = String(row?.detail?.import_status || row?.merged_subtitle_import_status || '')
+  if (s === 'success') return '配对✔'
+  if (s === 'failed') return '补配失败'
+  return '字幕补配'
+}
+
+function isSubtitleBatchMiss(row) {
+  if (!row || row.category !== 'subtitle_crawl' || row.action !== 'batch_start') return false
+  const d = safeDetail(row)
+  const hit = Math.max(Number(d.recognized_rj_count || 0), Number(d.created_count || 0) + Number(d.skipped_total || 0))
+  return hit <= 0
+}
+
+function mergedCategoryTags(row) {
+  const tags = []
+  if (hasMergedSubtitleImport(row)) tags.push(mergedSubtitleImportTag(row))
+  if (isSubtitleBatchMiss(row)) tags.push('未命中')
+  if (isFilterDeleteRetriedSuccess(row)) tags.push('已修复')
+  else if (isFilterDeleteRetriedPartial(row)) tags.push('部分修复')
+  else if (isFilterDeleteRetriedFailed(row)) tags.push('未修复')
+  return tags
+}
+
+function rowCategoryTags(row) {
+  const tags = row?.is_tree_child ? [] : mergedCategoryTags(row)
+  if (!row?.is_tree_child && row?.category === 'circle_completion' && row?.action === 'refresh_selected_works') {
+    tags.push(Number(safeDetail(row)?.changed_count || 0) > 0 ? '有更新' : '无变化')
+  }
+  if (row?.category === 'pipeline_rename') tags.unshift(renameOpTag(row))
+  if (!row?.is_tree_child && isSubtitleBatchRootPartiallyPaired(row)) tags.push('部分配对✔')
+  if (!row?.is_tree_child && row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) tags.push('配对✔')
+  else if (isBatchChildPaired(row)) tags.push('配对✔')
+  return tags
+}
+
+function actionTagClass(row, tag) {
+  if (tag === 'API重命名') return 'is-api-rename'
+  if (tag === '重命名') return 'is-manual-rename'
+  if (tag === '删除') return 'is-delete'
+  if (tag === '有更新') return 'is-updated'
+  if (tag === '无变化') return 'is-unchanged'
+  return ''
+}
+
+function isRerunRow(row) {
+  return Boolean(row?.rerun || row?.detail?.rerun_linked || Number(row?.detail?.rerun_count || 0) > 0)
+}
+
+function isRecoveredFailure(row) {
+  if (!row || row.status !== 'failed') return false
+  if (!['extract', 'auto_import', 'process_existing', 'asmr_sync'].includes(String(row.category || '').trim())) return false
+  return Boolean(row?.detail?.recovered_by_success)
+}
+
+function finalStatusLabel(row) {
+  if (!row || row.is_tree_child || !rowHasChildren(row)) return ''
+  if (isSubtitleBatchRootPaired(row)) return '配对✔'
+  if (isSubtitleBatchRootPartiallyPaired(row)) return '部分配对✔'
+  if (row?.category === 'pipeline_filter' && row?.action === 'filter_delete_preview') {
+    if (isFilterDeleteRetriedSuccess(row)) return '删除✔'
+    if (isFilterDeleteRetriedPartial(row)) return '部分删除✔'
+    if (isFilterDeleteRetriedFailed(row)) return '未修复'
+  }
+  if (row?.category === 'subtitle_crawl' && isPairCompletedRow(row)) return '配对✔'
+  const ss = [String(row.status || ''), ...collectDescendantStatuses(row)]
+  if (ss[0] === 'failed' && (ss.includes('success') || ss.includes('partial_success'))) return '已修复✔'
+  if (ss.includes('failed') && !ss.includes('success') && !ss.includes('partial_success')) return '异常'
+  if (!ss.includes('waiting')) {
+    if (row?.category === 'subtitle_crawl') return '配对✔'
+    if (row?.category === 'pipeline_filter') return '删除✔'
+    if (row?.category === 'subtitle_import') return '配对✔'
+    if (['extract', 'auto_import', 'process_existing'].includes(String(row?.category || ''))) return '入库✔'
+    return '完成✔'
+  }
+  return ''
+}
+
+function finalStatusClass(row) {
+  const l = finalStatusLabel(row)
+  if (['配对✔', '删除✔', '入库✔', '完成✔', '已修复✔'].includes(l)) return 'is-final-success'
+  if (l.includes('部分')) return 'is-final-partial'
+  return 'is-final-failed'
+}
+
+// ===================== 摘要 =====================
+function subtitleImportSourceSuffix(row) {
+  const sr = String(row?.detail?.source_rjcode || row?.detail?.preview_source_rjcode || '').trim().toUpperCase()
+  return sr ? `，来源于 ${sr}` : ''
+}
+
+export function displaySummary(row) {
+  if (row?.category === 'pipeline_rename' && row?.action === 'batch_manual_rename') {
+    const d = safeDetail(row)
+    return `修复 ${Number(d.success_count || 0)} 项，失败 ${Number(d.failed_count || 0)} 项`
+  }
+  if (isSubtitleBatchRootRow(row)) {
+    const r = batchPairRollup(row)
+    const base = String(row?.summary || '—').trim() || '—'
+    if (r.pairedChildCount > 0) {
+      return `${base}，后续已完成 ${r.pairedChildCount} 项配对，剩余 ${Math.max(0, r.awaitingManualChildCount || r.unpairedChildCount)} 项待处理`
+    }
+    return base
+  }
+  if (isPairCompletedRow(row)) return pairSummaryText(row) || row?.summary || '—'
+  if (row?.category === 'subtitle_import' || row?.relation === 'subtitle_import') {
+    const base = String(row?.summary || '—').trim() || '—'
+    const suffix = subtitleImportSourceSuffix(row)
+    if (suffix) {
+      const sr = String(row?.detail?.source_rjcode || row?.detail?.preview_source_rjcode || '').trim().toUpperCase()
+      if (!base.includes(`来源于 ${sr}`)) return `${base}${suffix}`
+    }
+    return base
+  }
+  if (row?.category === 'pipeline_filter') {
+    const rj = displayRjcode(row)
+    const base = String(row?.summary || '—').trim() || '—'
+    if (rj && rj !== '—' && base.includes('未知RJ')) {
+      return base.replace(/未知RJ号?|未知RJ/gi, rj)
+    }
+    return base
+  }
+  return row?.summary || '—'
+}
+
+// ===================== 路径对比 =====================
+function pathCompareModel(row) {
+  if (!row) return null
+  const d = safeDetail(row)
+  const sourcePath = String(row.source_path || d.path || '').trim()
+  if (row.category === 'pipeline_rename') {
+    const beforePath = String(sourcePath || d.old_path || '').trim()
+    const afterPath = String(d.new_path || '').trim()
+    const oldName = String(d.old_name || '').trim()
+    const newName = String(d.new_name || '').trim()
+    const reason = String(d.error || d.reason || '').trim()
+    if (!beforePath && !afterPath && !oldName && !newName && !reason) return null
+    return {
+      kind: 'rename', title: '重命名前后路径对比',
+      beforePath: beforePath || oldName, afterPath: afterPath || newName,
+      reason, opTag: renameOpTag(row), opTagClass: renameOpTagClass(row),
+    }
+  }
+  if (row.category === 'pipeline_delete') {
+    const beforePath = String(sourcePath || d.path || '').trim()
+    const reason = String(d.error || d.reason || '').trim()
+    if (!beforePath && !reason) return null
+    return {
+      kind: 'delete', title: '删除前后路径对比',
+      beforePath, afterPath: row.status === 'success' ? '（已删除）' : '（删除失败，原路径保留）',
+      reason, opTag: '删除', opTagClass: 'is-delete',
+    }
+  }
+  return null
+}
+
+function pathCompareReasonClass(row) {
+  const s = String(row?.status || '').trim()
+  if (s === 'success') return 'is-success'
+  if (s === 'partial_success') return 'is-warn'
+  return 'is-fail'
+}
+
+function pathCompareDefaultReason(row) {
+  const s = String(row?.status || '').trim()
+  if (row?.category === 'pipeline_rename') {
+    if (s === 'success') return '重命名成功：新路径已生效'
+    if (s === 'partial_success') return '重命名部分成功：请检查失败项原因'
+    return '重命名失败：原路径保持不变'
+  }
+  if (row?.category === 'pipeline_delete') {
+    if (s === 'success') return '删除成功：目标已移除'
+    if (s === 'partial_success') return '删除部分成功：请检查失败项原因'
+    return '删除失败：目标仍保留在原路径'
+  }
+  return '执行完成'
+}
+
+// ===================== 关键字段 / metric =====================
+const HIGHLIGHT_LABELS = {
+  rjcode: 'RJ', source_rjcode: '来源 RJ', target_rjcode: '目标 RJ',
+  linked_source_rjcode: '关联来源 RJ', linked_target_rjcode: '关联目标 RJ',
+  downloaded_count: '抓取字幕数', written_files_count: '写入字幕数',
+  awaiting_manual_match: '待手动配对', output_path: '输出目录',
+  source_basename: '压缩包文件', archive_size_bytes: '压缩包大小',
+  extract_output_bytes: '解压产物大小', filtered_count: '过滤文件数',
+  filtered_size: '过滤体积', final_file_count: '最终文件数', record_id: '记录 ID',
+  import_final_file_count: '导入文件数', recovered_failure_count: '修复失败数',
+  duration_ms: '耗时', selected_count: '命中数量', selected_size: '命中体积',
+  success_count: '成功数量', failed_count: '失败数量', deleted_bytes: '删除体积',
+  retry_target_count: '重试目标数', retry_success_count: '重试成功数',
+  retry_failed_count: '重试失败数', retry_recovered_item_count: '重试补回项数',
+  recovered_item_count: '补回项数', recovered_selected_size: '补回体积',
+  batch_task_count: '下载任务数', downloaded_bytes: '下载大小', uploaded_bytes: '上传大小',
+  average_upload_speed_bytes: '平均上传速度', download_root: '下载目录',
+  final_output_path: '最终入库路径', target_path: '上传目标', target_library_id: '目标库存',
+  target_subdir: '库存前缀目录', source_base_path: '来源根目录', upload_mode: '上传模式',
+  uploaded_count: '上传文件数', selected_dir_count: '上传目录数', circle_name: '社团名',
+  resource_name: '文件名', resource_path: '相对路径', local_path: '本地路径',
+  upload_path: '上传路径', size_bytes: '文件大小', local_owned_count: '本地已有',
+  owned_count: '服务器已有', missing_count: '缺失数量', downloadable_count: '可下载数量',
+  dl_count: 'DL 数量', works_count: '作品总数', scan_directory_count: '扫描目录数',
+  recognized_rj_count: '识别 RJ 数', created_count: '创建任务数', skipped_total: '跳过数量',
+  skipped_existing: '已存在跳过', skipped_duplicate: '重复跳过',
+  skipped_no_subtitle: '无字幕跳过', batch_duration_ms: '批量总耗时',
+  archive_count: '压缩包总数', requested_count: '候选数量',
+  extract_completed_count: '完成解压数', failed_child_count: '失败项数',
+  partial_child_count: '部分成功项数',
+  aggregate_archive_size_bytes: '批量压缩包大小',
+  aggregate_extract_output_bytes: '批量解压产物大小',
+}
+
+const HIGHLIGHT_BYTE_KEYS = new Set([
+  'selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes',
+  'recovered_selected_size', 'filtered_size', 'aggregate_archive_size_bytes',
+  'aggregate_extract_output_bytes', 'uploaded_bytes', 'downloaded_bytes', 'size_bytes',
+])
+
+function detailHighlights(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  const out = []
+  for (const k of Object.keys(HIGHLIGHT_LABELS)) {
+    if (d[k] === undefined || d[k] === null) continue
+    let value = d[k]
+    if (k === 'duration_ms' || k === 'batch_duration_ms') value = formatDurationMs(value)
+    else if (k === 'awaiting_manual_match') value = value ? '是' : '否'
+    else if (HIGHLIGHT_BYTE_KEYS.has(k)) value = formatBytes(value)
+    else if (k === 'average_upload_speed_bytes') value = `${formatBytes(value)}/s`
+    else if (k.includes('rjcode')) value = normalizeRjcode(value)
+    if (!String(value || '').trim()) continue
+    out.push({ k: HIGHLIGHT_LABELS[k], v: String(value) })
+    if (out.length >= 12) break
+  }
+  return out
+}
+
+function filterDeleteMetricCards(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (!String(d.mode || '').startsWith('filter_delete_')) return []
+  const items = []
+  if (d.duration_ms !== undefined) items.push({ k: '耗时', v: formatDurationMs(d.duration_ms) })
+  if (d.selected_count !== undefined) items.push({ k: '命中/选中', v: String(d.selected_count) })
+  if (d.selected_size !== undefined) items.push({ k: '预计大小', v: formatBytes(d.selected_size) })
+  if (d.deleted_bytes !== undefined) items.push({ k: '实际删除', v: formatBytes(d.deleted_bytes) })
+  if (d.success_count !== undefined) items.push({ k: '成功', v: String(d.success_count) })
+  if (d.failed_count !== undefined) items.push({ k: '失败', v: String(d.failed_count) })
+  if (d.retry_target_count !== undefined) items.push({ k: '重试目录', v: String(d.retry_target_count) })
+  if (d.retry_success_count !== undefined) items.push({ k: '重试成功', v: String(d.retry_success_count) })
+  if (d.retry_failed_count !== undefined) items.push({ k: '重试失败', v: String(d.retry_failed_count) })
+  if (d.recovered_item_count !== undefined) items.push({ k: '补回项数', v: String(d.recovered_item_count) })
+  if (d.recovered_selected_size !== undefined) items.push({ k: '补回大小', v: formatBytes(d.recovered_selected_size) })
+  if (d.scanned_entries !== undefined) items.push({ k: '扫描数', v: String(d.scanned_entries) })
+  if (d.rule_count !== undefined) items.push({ k: '规则数', v: String(d.rule_count) })
+  return items.slice(0, 8)
+}
+
+function uploadMetricCards(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (String(row?.category || '').trim() !== 'upload') return []
+  const items = []
+  if (d.uploaded_count !== undefined) items.push({ k: '上传文件', v: String(d.uploaded_count) })
+  if (d.selected_dir_count !== undefined) items.push({ k: '上传目录', v: String(d.selected_dir_count) })
+  if (d.uploaded_bytes !== undefined) items.push({ k: '上传大小', v: formatBytes(d.uploaded_bytes) })
+  if (d.average_upload_speed_bytes !== undefined && Number(d.average_upload_speed_bytes || 0) > 0) {
+    items.push({ k: '平均速度', v: `${formatBytes(d.average_upload_speed_bytes)}/s` })
+  }
+  if (d.duration_ms !== undefined) items.push({ k: '耗时', v: formatDurationMs(d.duration_ms) })
+  if (d.target_path) items.push({ k: '目标路径', v: String(d.target_path) })
+  if (d.target_library_id) items.push({ k: '目标库存', v: String(d.target_library_id) })
+  return items.slice(0, 8)
+}
+
+// ===================== 文件树 =====================
+function normalizeEntryTreePath(value) {
+  return String(value || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+}
+
+function buildFilteredPathSet(items) {
+  const out = new Set()
+  for (const item of Array.isArray(items) ? items : []) {
+    const p = normalizeEntryTreePath(item?.relative_path || item?.path || item?.name || '')
+    if (p) out.add(p.toLowerCase())
+  }
+  return out
+}
+
+function mapFilterDeleteItems(items) {
+  if (!Array.isArray(items)) return []
+  return items.map((item) => ({
+    key: item?.relative_path || item?.path || item?.name || '',
+    path: item?.path || '',
+    relative_path: item?.relative_path || '',
+    name: item?.name || '',
+    type: item?.type || 'file',
+    sizeText: item?.size !== undefined && item?.size !== null ? formatBytes(item.size) : '',
+    error: item?.error || '',
+  }))
+}
+
+function buildFilterDeleteTreeRows(items) {
+  const roots = []
+  const nodeMap = new Map()
+  const ensureNode = (key, label, type, parentKey = '') => {
+    if (nodeMap.has(key)) return nodeMap.get(key)
+    const node = { key, label, type, sizeText: '', metaText: '', error: '', badges: [], children: [] }
+    nodeMap.set(key, node)
+    if (parentKey && nodeMap.has(parentKey)) nodeMap.get(parentKey).children.push(node)
+    else roots.push(node)
+    return node
+  }
+  for (const item of items) {
+    const rawPath = String(item.relative_path || item.name || item.path || '').replace(/^\/+|\/+$/g, '')
+    if (!rawPath) continue
+    const parts = rawPath.split('/').filter(Boolean)
+    let parentKey = ''
+    let joined = ''
+    parts.forEach((part, index) => {
+      joined = joined ? `${joined}/${part}` : part
+      const isLeaf = index === parts.length - 1
+      const node = ensureNode(joined, part, isLeaf ? item.type : 'dir', parentKey)
+      if (isLeaf) {
+        node.type = item.type
+        node.sizeText = item.sizeText || ''
+        node.metaText = item.metaText || ''
+        node.error = item.error || ''
+        node.badges = Array.isArray(item.badges) ? [...item.badges] : []
+        node.variant = item.variant || ''
+      }
+      parentKey = joined
+    })
+  }
+  const markParentVariant = (node) => {
+    if (!Array.isArray(node.children) || !node.children.length) return node.variant || ''
+    const cv = node.children.map((c) => markParentVariant(c)).filter(Boolean)
+    if (!cv.length) return node.variant || ''
+    if (cv.every((v) => v === 'deleted')) return 'deleted'
+    if (cv.every((v) => v === 'failed')) return 'failed'
+    return node.variant || ''
+  }
+  roots.forEach(markParentVariant)
+
+  // 压掉重复同名 / RJ 前缀的包装目录
+  const dirKey = (n) => String(n || '').toLowerCase().replace(/rj0?/g, '').replace(/[^a-z0-9]/g, '')
+  const dedupeTreeDirs = (xs, parentName = '') => {
+    const out = []
+    const pk = dirKey(parentName)
+    for (const item of xs || []) {
+      if (!item.children || !item.children.length) { out.push(item); continue }
+      item.children = dedupeTreeDirs(item.children, item.label)
+      const ck = dirKey(item.label)
+      if (pk && ck && (ck === pk || ck.includes(pk) || pk.includes(ck))) out.push(...item.children)
+      else if (item.children.length === 1 && item.children[0].children && item.children[0].children.length) {
+        const cck = dirKey(item.children[0].label)
+        if (cck && ck && (cck === ck || cck.includes(ck) || ck.includes(cck))) {
+          out.push({ ...item.children[0], label: item.label || item.children[0].label, key: item.key })
+        } else out.push(item)
+      } else out.push(item)
+    }
+    return out
+  }
+  const dedupedRoots = dedupeTreeDirs(roots)
+
+  const rows = []
+  const walk = (nodes, depth = 0) => {
+    const sorted = [...nodes].sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+      return a.label.localeCompare(b.label, 'zh-Hans-CN-u-kn-true')
+    })
+    for (const node of sorted) {
+      rows.push({
+        key: node.key, label: node.label, type: node.type,
+        sizeText: node.sizeText, metaText: node.metaText, error: node.error,
+        badges: node.badges, variant: node.variant || '',
+        depth, children: node.children.length ? [...node.children] : [],
+        expandable: node.children.length > 0,
+      })
+    }
+  }
+  walk(dedupedRoots)
+  return rows
+}
+
+function commonPathPrefix(paths) {
+  const norm = (Array.isArray(paths) ? paths : []).map((p) => String(p || '').trim().replace(/\\/g, '/')).filter(Boolean)
+  if (!norm.length) return ''
+  const split = norm.map((p) => p.split('/').filter(Boolean))
+  const first = split[0]
+  const prefix = []
+  for (let i = 0; i < first.length; i += 1) {
+    const seg = first[i]
+    if (split.every((parts) => parts[i] === seg)) prefix.push(seg)
+    else break
+  }
+  const drive = norm[0].match(/^[A-Za-z]:/)?.[0] || ''
+  const joined = prefix.join('/')
+  if (!joined) return drive
+  return drive && !joined.toLowerCase().startsWith(drive.toLowerCase()) ? `${drive}/${joined}` : joined
+}
+
+function getFileName(path) {
+  const norm = String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  if (!norm) return ''
+  return norm.split('/').filter(Boolean).pop() || norm
+}
+
+function normalizeDeleteTreePath(p) {
+  return String(p || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
+}
+
+function buildDeleteTreeRows(items) {
+  const list = Array.isArray(items) ? items.filter((it) => String(it?.path || '').trim()) : []
+  if (!list.length) return []
+  const paths = list.map((it) => normalizeDeleteTreePath(it.path)).filter(Boolean)
+  const rootPath = commonPathPrefix(paths)
+  const rootLabel = getFileName(rootPath) || rootPath || '删除目标'
+  const normalized = list.map((item) => {
+    const fp = normalizeDeleteTreePath(item.path)
+    const nr = normalizeDeleteTreePath(rootPath)
+    let rel = fp
+    if (nr && fp.toLowerCase().startsWith(`${nr.toLowerCase()}/`)) rel = fp.slice(nr.length + 1)
+    else if (nr && fp.toLowerCase() === nr.toLowerCase()) rel = ''
+    const display = [rootLabel, rel].filter(Boolean).join('/')
+    return { ...item, relative_path: display || rootLabel }
+  })
+  return buildFilterDeleteTreeRows(normalized)
+}
+
+function inferDeleteTreeItemType(path, itemType) {
+  const t = String(itemType || '').trim().toLowerCase()
+  if (t === 'dir' || t === 'folder') return 'dir'
+  const np = String(path || '').trim().replace(/\\/g, '/')
+  const base = np.split('/').pop() || ''
+  return /\.[^./]+$/.test(base) ? 'file' : 'dir'
+}
+
+// ===================== Entry sections （文件树面板的数据源） =====================
+function filterDeleteEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  const sections = []
+  if (Array.isArray(d.items) && d.items.length) {
+    sections.push({
+      key: 'preview-items',
+      title: `预审命中项（${d.item_total_count || d.items.length}）`,
+      rows: buildFilterDeleteTreeRows(mapFilterDeleteItems(d.items)),
+    })
+  }
+  if (Array.isArray(d.succeeded_items) && d.succeeded_items.length) {
+    const items = mapFilterDeleteItems(d.succeeded_items).map((it) => ({ ...it, variant: 'deleted' }))
+    sections.push({
+      key: 'success-items',
+      title: `已删除项（${d.success_count || d.succeeded_items.length}）`,
+      rows: buildFilterDeleteTreeRows(items),
+    })
+  }
+  if (Array.isArray(d.failed_items) && d.failed_items.length) {
+    const items = mapFilterDeleteItems(d.failed_items).map((it) => ({ ...it, variant: 'failed' }))
+    sections.push({
+      key: 'failed-items',
+      title: `失败项（${d.failed_count || d.failed_items.length}）`,
+      rows: buildFilterDeleteTreeRows(items),
+    })
+  }
+  if (Array.isArray(d.retry_targets) && d.retry_targets.length) {
+    sections.push({
+      key: 'retry-targets',
+      title: `重试目录（${d.retry_target_count || d.retry_targets.length}）`,
+      rows: buildFilterDeleteTreeRows(mapFilterDeleteItems(d.retry_targets)),
+    })
+  }
+  if (Array.isArray(d.recovered_items) && d.recovered_items.length) {
+    sections.push({
+      key: 'recovered-items',
+      title: `重试补回项（${d.recovered_item_count || d.recovered_items.length}）`,
+      rows: buildFilterDeleteTreeRows(mapFilterDeleteItems(d.recovered_items)),
+    })
+  }
+  if (Array.isArray(d.failed_targets) && d.failed_targets.length) {
+    sections.push({
+      key: 'retry-failed-targets',
+      title: `重试后仍失败目录（${d.retry_failed_count || d.failed_targets.length}）`,
+      rows: buildFilterDeleteTreeRows(mapFilterDeleteItems(d.failed_targets)),
+    })
+  }
+  return sections
+}
+
+function importFilteredEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (!['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return []
+  const rawItems = Array.isArray(d.filtered_items) ? d.filtered_items : []
+  const rawTreeItems = Array.isArray(d.file_tree_items) ? d.file_tree_items : []
+  if (!rawTreeItems.length && !rawItems.length) return []
+  const filteredPathSet = buildFilteredPathSet(rawItems)
+  const baseItems = rawTreeItems.length ? rawTreeItems : rawItems
+  const items = mapFilterDeleteItems(baseItems).map((item) => {
+    const p = normalizeEntryTreePath(item.relative_path || item.path || item.name)
+    return filteredPathSet.has(p.toLowerCase()) ? { ...item, variant: 'deleted' } : item
+  })
+  const filteredCount = items.filter((i) => i.variant === 'deleted').length
+  const titleSuffix = filteredCount > 0 ? `${items.length} 项，过滤 ${filteredCount}` : `${items.length}`
+  return [{
+    key: 'import-file-tree',
+    title: `文件树（${titleSuffix}）`,
+    rows: buildFilterDeleteTreeRows(items),
+  }]
+}
+
+function mapAsmrSyncFileItems(items, mode) {
+  return (Array.isArray(items) ? items : []).slice(0, 200).map((item, index) => {
+    const path = String(item?.relative_path || item?.path || item?.upload_path || item?.resource_path || item?.name || '')
+    const fb = path.split('/').pop() || path.split('\\').pop() || '未命名文件'
+    return {
+      key: `${mode}-${index}-${path || fb}`,
+      path, relative_path: path, name: String(item?.name || fb), type: 'file',
+      sizeText: item?.size_bytes !== undefined && item?.size_bytes !== null
+        ? formatBytes(item.size_bytes)
+        : (item?.size !== undefined && item?.size !== null ? formatBytes(item.size) : ''),
+      error: String(item?.error || item?.failure_reason || '').trim(),
+    }
+  }).filter((it) => it.relative_path || it.name)
+}
+
+function normalizeAsmrMatchPath(value) {
+  return String(value || '').trim().replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+function collectAsmrMatchInfo(item) {
+  const raw = [item?.relative_path, item?.path, item?.name].map(normalizeAsmrMatchPath).filter(Boolean)
+  const exact = Array.from(new Set(raw.filter((v) => v.includes('/'))))
+  const basenames = Array.from(new Set(raw.map((v) => getFileName(v)).filter(Boolean)))
+  return { exact, basenames }
+}
+
+function buildAsmrUploadedMatchIndex(items) {
+  const exact = new Set()
+  const basenameCount = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    const info = collectAsmrMatchInfo(item)
+    info.exact.forEach((v) => exact.add(v))
+    info.basenames.forEach((v) => basenameCount.set(v, (basenameCount.get(v) || 0) + 1))
+  }
+  return { exact, basenameCount }
+}
+
+function isAsmrFileUploaded(item, idx) {
+  const info = collectAsmrMatchInfo(item)
+  if (info.exact.some((v) => idx.exact.has(v))) return true
+  return info.basenames.some((v) => idx.basenameCount.get(v) === 1)
+}
+
+function extractAsmrSummaryResourceName(summary) {
+  const text = String(summary || '').trim()
+  if (!text) return ''
+  const i = text.indexOf('/')
+  if (i >= 0) return text.slice(i + 1).replace(/\s+(已上传|下载完成|上传完成|上传失败|下载失败).*$/u, '').trim()
+  return text.replace(/^(文件下载完成|文件上传完成|文件下载|文件上传)\s*/u, '').replace(/\s+(已上传|下载完成|上传完成|上传失败|下载失败).*$/u, '').trim()
+}
+
+function collectAsmrSyncFiles(row, mode) {
+  const d = safeDetail(row)
+  if (mode === 'download') {
+    const direct = mapAsmrSyncFileItems(d.download_files, mode)
+    if (direct.length) return direct
+    return mapAsmrSyncFileItems(
+      (Array.isArray(d.child_rows) ? d.child_rows : [])
+        .filter((it) => String(it?.relation || it?.action || '').trim() === 'asmr_resource' || String(it?.action || '').trim() === 'resource_downloaded')
+        .map((it) => {
+          const cd = safeDetail(it)
+          return {
+            name: cd.resource_name || cd.relative_path || extractAsmrSummaryResourceName(it?.summary),
+            relative_path: cd.relative_path || cd.resource_path || cd.resource_name || extractAsmrSummaryResourceName(it?.summary),
+            size_bytes: cd.size_bytes,
+            error: it?.status === 'failed' ? (cd.failure_reason || it?.summary || '') : '',
+          }
+        }), mode)
+  }
+  if (mode === 'upload') {
+    return mapAsmrSyncFileItems(d.upload_files, mode)
+  }
+  // uploaded
+  const direct = mapAsmrSyncFileItems(d.uploaded_files, mode)
+  if (direct.length) return direct
+  return mapAsmrSyncFileItems(
+    (Array.isArray(d.child_rows) ? d.child_rows : [])
+      .filter((it) => String(it?.relation || it?.action || '').trim() === 'asmr_upload' || String(it?.action || '').trim() === 'resource_uploaded')
+      .map((it) => {
+        const cd = safeDetail(it)
+        return {
+          name: cd.relative_path || cd.upload_path || cd.target_path || extractAsmrSummaryResourceName(it?.summary),
+          relative_path: cd.relative_path || cd.upload_path || cd.target_path || extractAsmrSummaryResourceName(it?.summary),
+          size_bytes: cd.size_bytes,
+          error: it?.status === 'failed' ? (cd.failure_reason || it?.summary || '') : '',
+        }
+      }), mode)
+}
+
+function buildMergedAsmrSyncFileItems(row) {
+  const dl = collectAsmrSyncFiles(row, 'download')
+  const upd = collectAsmrSyncFiles(row, 'uploaded')
+  const up = collectAsmrSyncFiles(row, 'upload')
+  const base = dl.length ? dl : (upd.length ? upd : up)
+  if (!base.length) return []
+  const idx = buildAsmrUploadedMatchIndex(upd)
+  const shouldMark = upd.length > 0
+  return base.map((item, i) => {
+    const uploaded = shouldMark && (base === upd || isAsmrFileUploaded(item, idx))
+    return { ...item, key: item?.key || `asmr-file-${i}`, badges: uploaded ? ['已上传'] : [] }
+  })
+}
+
+function sumAsmrSyncFileBytes(items) {
+  return (Array.isArray(items) ? items : []).reduce((sum, it) => {
+    const text = String(it?.sizeText || '').trim()
+    if (!text) return sum
+    const m = text.match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i)
+    if (!m) return sum
+    const power = { B: 0, KB: 1, MB: 2, GB: 3, TB: 4 }[m[2].toUpperCase()] ?? 0
+    return sum + Number(m[1] || 0) * (1024 ** power)
+  }, 0)
+}
+
+function resolveAsmrSyncSectionDescription(detail) {
+  const final = String(detail?.final_output_path || detail?.target_path || '').trim()
+  const root = String(detail?.source_base_path || '').trim()
+  if (root && final) return `来源根目录：${root} → 上传目标：${final}`
+  if (final) return `上传目标：${final}`
+  if (root) return `来源根目录：${root}`
+  return ''
+}
+
+function asmrSyncEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (!['asmr_sync', 'upload'].includes(String(row?.category || '').trim())) return []
+  const merged = buildMergedAsmrSyncFileItems(row)
+  if (!merged.length) return []
+  const totalBytes = sumAsmrSyncFileBytes(merged)
+  const uploadedCount = merged.filter((it) => Array.isArray(it.badges) && it.badges.includes('已上传')).length
+  const titleParts = [String(Number(d.success_count || merged.length))]
+  if (totalBytes > 0) titleParts.push(formatBytes(totalBytes))
+  if (uploadedCount > 0) titleParts.push(`已上传 ${uploadedCount}`)
+  return [{
+    key: String(row?.category || '').trim() === 'upload' ? 'upload-file-tree' : 'asmr-file-tree',
+    title: `文件清单（${titleParts.join(' / ')}）`,
+    description: resolveAsmrSyncSectionDescription(d),
+    rows: buildFilterDeleteTreeRows(merged),
+  }]
+}
+
+function deleteEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (String(row?.category || '').trim() !== 'pipeline_delete') return []
+  const succeeded = []
+  const failed = []
+  if (Array.isArray(d.results) && d.results.length) {
+    for (const it of d.results) {
+      const path = String(it?.path || '').trim()
+      if (!path) continue
+      const mapped = {
+        key: path, path, relative_path: path,
+        name: getFileName(path) || path,
+        type: inferDeleteTreeItemType(path, ''),
+        sizeText: '',
+        error: String(it?.error || '').trim(),
+        variant: it?.success === false || String(it?.error || '').trim() ? 'failed' : 'deleted',
+      }
+      if (it?.success === false || mapped.error) failed.push(mapped)
+      else succeeded.push(mapped)
+    }
+  }
+  if (!succeeded.length && !failed.length && Array.isArray(d.child_rows) && d.child_rows.length) {
+    for (const it of d.child_rows) {
+      const cd = safeDetail(it)
+      const path = String(it?.source_path || cd.path || '').trim()
+      if (!path) continue
+      const mapped = {
+        key: `${it?.id || path}`, path, relative_path: path,
+        name: String(cd.item_name || getFileName(path) || path),
+        type: inferDeleteTreeItemType(path, cd.item_type || ''),
+        sizeText: '',
+        error: String(cd.error || '').trim(),
+        variant: String(it?.status || '').trim() === 'failed' || String(cd.error || '').trim() ? 'failed' : 'deleted',
+      }
+      if (String(it?.status || '').trim() === 'failed' || mapped.error) failed.push(mapped)
+      else succeeded.push(mapped)
+    }
+  }
+  if (!succeeded.length && !failed.length && String(row?.action || '').trim() === 'delete') {
+    const path = String(row?.source_path || d.path || '').trim()
+    if (path) {
+      const mapped = {
+        key: path, path, relative_path: path,
+        name: String(d.item_name || getFileName(path) || path),
+        type: inferDeleteTreeItemType(path, d.item_type || ''),
+        sizeText: '',
+        error: String(d.error || '').trim(),
+        variant: String(row?.status || '').trim() === 'failed' || String(d.error || '').trim() ? 'failed' : 'deleted',
+      }
+      if (String(row?.status || '').trim() === 'failed' || mapped.error) failed.push(mapped)
+      else succeeded.push(mapped)
+    }
+  }
+  const out = []
+  if (succeeded.length) {
+    const suffix = d.deleted_bytes ? ` / ${formatBytes(d.deleted_bytes)}` : ''
+    out.push({ key: 'delete-succeeded-items', title: `删除文件（${succeeded.length}${suffix}）`, rows: buildDeleteTreeRows(succeeded) })
+  }
+  if (failed.length) {
+    out.push({ key: 'delete-failed-items', title: `删除失败（${failed.length}）`, rows: buildDeleteTreeRows(failed) })
+  }
+  return out
+}
+
+function normalizePathForCompare(p) {
+  return String(p || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+function findSubtitleBatchSourceDirectory(folderPath, directories) {
+  const needle = normalizePathForCompare(folderPath)
+  if (!needle) return null
+  let matched = null
+  let matchedLen = -1
+  for (const it of directories) {
+    const base = String(it?.folder_path || it?.path || '').trim()
+    const nb = normalizePathForCompare(base)
+    if (!nb) continue
+    if ((needle === nb || needle.startsWith(`${nb}/`)) && nb.length > matchedLen) {
+      matched = it
+      matchedLen = nb.length
+    }
+  }
+  return matched
+}
+
+function buildSubtitleBatchDirectoryRows(detail) {
+  const sourceDirs = Array.isArray(detail?.source_directories) ? detail.source_directories : []
+  const scanTargets = Array.isArray(detail?.scan_targets) ? detail.scan_targets : []
+  const created = Array.isArray(detail?.created_tasks) ? detail.created_tasks : []
+  const skipped = Array.isArray(detail?.skipped_items) ? detail.skipped_items : []
+  const dirMap = new Map()
+  for (const [i, it] of sourceDirs.slice(0, 120).entries()) {
+    const path = String(it?.folder_path || it?.path || '').trim()
+    const key = path || `source-${i}`
+    dirMap.set(key, {
+      key: `subtitle-dir-${key}`, path,
+      label: String(it?.folder_name || it?.name || path || '未命名目录'),
+      type: 'dir', variant: 'dir', sizeText: path, metaText: '', error: '',
+      depth: 0, expandable: true, children: [], createdCount: 0, failedCount: 0,
+    })
+  }
+  for (const t of scanTargets.slice(0, 160)) {
+    const path = String(t?.path || '').trim()
+    const ex = dirMap.get(path)
+    if (ex) {
+      ex.metaText = t?.message || ''
+      if (String(t?.status || '').trim() === 'failed') ex.variant = 'warning'
+    }
+  }
+  const ensureDir = (folderPath, fb = '') => {
+    const m = findSubtitleBatchSourceDirectory(folderPath, sourceDirs)
+    const sp = String(m?.folder_path || m?.path || folderPath || '').trim()
+    const key = sp || folderPath || fb || `other-${dirMap.size}`
+    if (!dirMap.has(key)) {
+      dirMap.set(key, {
+        key: `subtitle-dir-${key}`, path: sp,
+        label: String(m?.folder_name || m?.name || fb || sp || '未命名目录'),
+        type: 'dir', variant: 'dir', sizeText: sp, metaText: '', error: '',
+        depth: 0, expandable: true, children: [], createdCount: 0, failedCount: 0,
+      })
+    }
+    return dirMap.get(key)
+  }
+  for (const [i, it] of created.slice(0, 200).entries()) {
+    const fp = String(it?.folder_path || '').trim()
+    const parent = ensureDir(fp, it?.folder_name || '')
+    parent.createdCount += 1
+    parent.children.push({
+      key: `created-${i}-${it?.task_id || fp || it?.rjcode || ''}`,
+      label: `${it?.rjcode ? `[${it.rjcode}] ` : ''}${it?.folder_name || fp || '未命名 RJ'}`,
+      type: 'rj', variant: 'success', depth: 1,
+      metaText: '已创建爬取任务', sizeText: fp, error: '',
+    })
+  }
+  for (const [i, it] of skipped.slice(0, 200).entries()) {
+    const fp = String(it?.folder_path || '').trim()
+    const parent = ensureDir(fp, it?.folder_name || '')
+    parent.failedCount += 1
+    parent.variant = 'warning'
+    parent.children.push({
+      key: `skipped-${i}-${fp || it?.rjcode || it?.folder_name || ''}`,
+      label: `${it?.rjcode ? `[${it.rjcode}] ` : ''}${it?.folder_name || fp || '未命名 RJ'}`,
+      type: 'rj', variant: 'warning', depth: 1,
+      metaText: it?.queue_state === 'existing_task' ? '加入失败：任务已存在' : '加入失败',
+      sizeText: fp, error: String(it?.queue_message || '').trim(),
+    })
+  }
+  return Array.from(dirMap.values()).map((it) => {
+    const sp = []
+    if (it.metaText) sp.push(it.metaText)
+    if (it.createdCount) sp.push(`成功 ${it.createdCount}`)
+    if (it.failedCount) sp.push(`失败 ${it.failedCount}`)
+    return { ...it, metaText: sp.join(' · '), children: it.children }
+  })
+}
+
+function subtitleBatchEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object' || d.mode !== 'subtitle_batch_start') return []
+  const rows = buildSubtitleBatchDirectoryRows(d)
+  if (!rows.length) return []
+  return [{ key: 'batch-directory-tree', title: `扫描详情（${rows.length}）`, rows }]
+}
+
+function activityEntrySections(row) {
+  return [
+    ...asmrSyncEntrySections(row),
+    ...deleteEntrySections(row),
+    ...importFilteredEntrySections(row),
+    ...subtitleBatchEntrySections(row),
+    ...filterDeleteEntrySections(row),
+  ]
+}
+
+function activityEntrySectionTitle(row) {
+  const d = row?.detail
+  if (d && typeof d === 'object' && d.mode === 'subtitle_batch_start') return '批量详情'
+  if (['asmr_sync', 'upload'].includes(String(row?.category || '').trim())) return '文件树'
+  if (String(row?.category || '').trim() === 'pipeline_delete') return '文件树'
+  if (['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return '处理清单'
+  return '删除清单'
+}
+
+// ===================== 文件树图标 =====================
+function resolveEntryIcon(item) {
+  if (item?.icon) return item.icon
+  const v = String(item?.variant || '').trim()
+  if (v === 'warning') return AlertCircle
+  if (v === 'success') return CheckCircle2
+  if (String(item?.type || '').trim() === 'dir') return Folder
+  const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
+  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(name)) return Music
+  if (/\.(jpg|jpeg|png|webp|gif|bmp|avif)$/i.test(name)) return ImageIcon
+  if (/\.(mp4|mkv|avi|mov|wmv|webm|m4v)$/i.test(name)) return Film
+  if (/\.(zip|7z|rar|tar|gz|bz2|xz)$/i.test(name)) return FileArchive
+  if (/\.(srt|ass|ssa|vtt|lrc|txt|md|json)$/i.test(name)) return FileText
+  return FileIcon
+}
+
+function entryIconClass(item) {
+  const v = String(item?.variant || '').trim()
+  if (v === 'warning') return 'is-warning'
+  if (v === 'success') return 'is-success'
+  if (String(item?.type || '').trim() === 'dir') return 'is-dir'
+  const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
+  if (/\.(wav|flac)$/i.test(name)) return 'is-audio-blue'
+  if (/\.(mp3|m4a|ogg|aac|wma|opus|cue)$/i.test(name)) return 'is-audio-purple'
+  if (/\.(jpg|jpeg|png|webp|gif|bmp|avif)$/i.test(name)) return 'is-image'
+  if (/\.(mp4|mkv|avi|mov|wmv|webm|m4v)$/i.test(name)) return 'is-video'
+  if (/\.(pdf)$/i.test(name)) return 'is-pdf'
+  if (/\.(zip|7z|rar|tar|gz|bz2|xz)$/i.test(name)) return 'is-archive'
+  if (/\.(srt|ass|ssa|vtt|lrc|txt|md|json)$/i.test(name)) return 'is-text'
+  return 'is-file'
+}
+
+// ===================== 配对 / 字幕批量工作台模型 =====================
+function pairWorkbenchModel(row) {
+  if (isSubtitleBatchRootRow(row)) return null
+  if (!isSubtitlePairRelatedRow(row)) return null
+  const taskId = resolveSubtitleTaskId(row)
+  const folderPath = resolveSubtitleFolderPath(row)
+  if (!taskId && !folderPath) return null
+  const awaiting = isAwaitingManualPair(row)
+  const chips = []
+  const unmatched = unmatchedAudioCount(row)
+  const downloaded = Number(row?.detail?.downloaded_count || pairDetailPayload(row)?.downloaded_count || 0)
+  const written = Number(row?.detail?.written_files_count || pairDetailPayload(row)?.written_files_count || 0)
+  const rj = displayRjcode(row)
+  if (rj && rj !== '—') chips.push(rj)
+  if (downloaded > 0) chips.push(`抓到 ${downloaded}`)
+  if (written > 0) chips.push(`写入 ${written}`)
+  if (unmatched > 0) chips.push(`未配对音频 ${unmatched}`)
+  return {
+    awaiting,
+    title: awaiting ? '这条记录还有字幕没完成配对' : '这条记录可回到字幕工作台查看',
+    description: awaiting
+      ? '直接打开库存里的字幕配对面板，继续处理还没来得及配对的音频和字幕。'
+      : '会定位到对应字幕任务，方便复查当前配对状态和字幕目录。',
+    buttonText: awaiting ? '继续配对' : '打开配对面板',
+    chips,
+  }
+}
+
+function pairResultModel(row) {
+  if (!row) return null
+  if (isSubtitleBatchRootRow(row)) return null
+  if (!isSubtitlePairRelatedRow(row)) return null
+  const detail = safeDetail(row)
+  const pairRow = pairDetailRow(row)
+  const pairDetail = pairDetailPayload(row)
+  const changes = pairChangeRows(pairRow || row)
+  const appliedPairs = Number(pairDetail.applied_pairs ?? pairDetail.manual_match_applied_pairs
+    ?? detail.applied_pairs ?? detail.manual_match_applied_pairs ?? changes.length ?? 0)
+  const deletedSubtitles = Number(pairDetail.deleted_subtitles ?? pairDetail.manual_match_deleted_subtitles
+    ?? detail.deleted_subtitles ?? detail.manual_match_deleted_subtitles ?? 0)
+  const unmatched = unmatchedAudioCount(row)
+  const namingStrategy = String(pairDetail.naming_strategy || detail.naming_strategy || '').trim()
+  const downloaded = Number(detail.downloaded_count || pairDetail.downloaded_count || 0)
+  const written = Number(detail.written_files_count || pairDetail.written_files_count || 0)
+  const summary = pairSummaryText(row) || String(row?.summary || '').trim()
+  const hasData = Boolean(summary || changes.length || appliedPairs || deletedSubtitles || downloaded || written || unmatched)
+  if (!hasData) return null
+  const awaiting = isAwaitingManualPair(row)
+  const completed = isManualPairCompleted(row)
+  const status = completed ? 'success' : (awaiting ? 'warning' : 'default')
+  const statusLabel = completed ? '已完成配对' : (awaiting ? '待手动配对' : '已抓取未继续')
+  const metrics = [
+    { label: '已配对', value: `${Math.max(0, appliedPairs)} 组` },
+    { label: '未配对音频', value: `${Math.max(0, unmatched)} 个` },
+    { label: '删除字幕', value: `${Math.max(0, deletedSubtitles)} 个` },
+    { label: '抓取字幕', value: `${Math.max(0, downloaded)} 个` },
+  ]
+  if (written > 0) metrics.push({ label: '写入字幕', value: `${written} 个` })
+  if (namingStrategy) metrics.push({ label: '命名策略', value: namingStrategy === 'audio' ? '按音频名' : namingStrategy })
+  return {
+    title: completed ? '字幕配对已落地' : '字幕配对状态',
+    status, statusLabel, summary, metrics, changes,
+  }
+}
+
+function subtitleBatchWorkbenchItems(row) {
+  if (!isSubtitleBatchRootRow(row)) return []
+  return collectChildRowsFromParent(row)
+    .filter((it) => String(it?.category || '').trim() === 'subtitle_crawl')
+    .map((it) => {
+      const key = String(it?.id || it?.task_id || it?.source_path || '')
+      const paired = isPairCompletedRow(it)
+      const awaiting = isAwaitingManualPair(it)
+      const d = safeDetail(it)
+      const pd = pairDetailPayload(it)
+      return {
+        key,
+        activityId: String(it?.id || ''),
+        taskId: resolveSubtitleTaskId(it),
+        folderPath: resolveSubtitleFolderPath(it),
+        libraryId: resolveSubtitleLibraryId(it),
+        rjcode: displayRjcode(it),
+        folderName: String(d.folder_name || '').trim() || compactPath(it?.source_path || ''),
+        createdAt: String(it?.created_at || '').trim(),
+        sourceLabel: String(it?.source_label || d.source_label || humanAction(it) || '操作记录').trim(),
+        summary: displaySummary(it),
+        awaiting, paired,
+        queueState: paired ? 'manual_match_completed' : (awaiting ? 'awaiting_manual_match' : 'queued'),
+        downloadedCount: Number(d.downloaded_count || pd.downloaded_count || 0),
+        existingSubtitleCount: Number(d.existing_subtitle_count || pd.existing_subtitle_count || 0),
+        stateLabel: paired ? '配对✔' : (awaiting ? '待配对' : '已抓取'),
+        stateClass: paired ? 'success' : (awaiting ? 'warning' : 'default'),
+      }
+    })
+    .filter((it) => it.key && (it.taskId || it.folderPath))
+}
+
+function subtitleBatchWorkbenchModel(row) {
+  if (!isSubtitleBatchRootRow(row)) return null
+  const items = subtitleBatchWorkbenchItems(row)
+  if (!items.length) return null
+  return {
+    items,
+    pairedCount: items.filter((it) => it.stateClass === 'success').length,
+    awaitingCount: items.filter((it) => it.stateClass === 'warning').length,
+  }
+}
+
+// ===================== 操作动作中文化（humanAction） =====================
+function humanAction(row) {
+  const detail = safeDetail(row)
+  const sourceAction = String(row?.source_action || detail.source_action || '').trim()
+  const isReimport = sourceAction === 'reimport_local_download_root' || sourceAction === 'reimport_downloaded_session'
+  if (row?.is_tree_child) {
+    if (row.relation === 'rerun') return row.status === 'success' ? '重试完成' : (row.status === 'failed' ? '重试失败' : '重试')
+    if (row.relation === 'subtitle_import') return row.status === 'success' ? '字幕补配完成' : (row.status === 'failed' ? '字幕补配失败' : '字幕补配')
+    if (row.relation === 'pair') return row.status === 'success' ? '字幕手动配对完成' : '字幕手动配对'
+    if (row.relation === 'delete_apply') {
+      if (row.status === 'success') return '删除执行完成'
+      if (row.status === 'partial_success') return '删除执行部分成功'
+      if (row.status === 'cancelled') return '删除执行已停止'
+      if (row.status === 'failed') return '删除执行失败'
+      return '删除执行'
+    }
+    if (row.relation === 'retry_apply' || row.relation === 'retry_preview' || row.action === 'filter_delete_preview_retry') {
+      if (row.status === 'success') return '补充删除完成'
+      if (row.status === 'partial_success') return '补充删除部分成功'
+      if (row.status === 'cancelled') return '补充删除已停止'
+      if (row.status === 'failed') return '补充删除失败'
+      return '补充删除'
+    }
+    if (row.relation === 'asmr_resource') return row.status === 'success' ? '文件下载完成' : '文件下载'
+    if (row.relation === 'asmr_upload') return row.status === 'success' ? '文件上传完成' : '文件上传'
+    if (row.relation === 'asmr_verify_failed') return '文件校验失败'
+    if (row.relation === 'asmr_plan') return '下载计划已生成'
+    if (row.relation === 'asmr_session') return displaySummary(row) || '下载会话'
+  }
+  const cat = row?.category, status = row?.status, action = row?.action
+  if (cat === 'pipeline_filter') {
+    if (action === 'filter_delete_preview') {
+      if (status === 'success') return '删除过滤预审完成'
+      if (status === 'cancelled') return '删除过滤预审已取消'
+      if (status === 'failed') return '删除过滤预审失败'
+      return '删除过滤预审'
+    }
+    if (action === 'filter_delete_apply') {
+      if (status === 'success') return '删除过滤执行完成'
+      if (status === 'partial_success') return '删除过滤执行部分成功'
+      if (status === 'cancelled') return '删除过滤执行已停止'
+      if (status === 'failed') return '删除过滤执行失败'
+      return '删除过滤执行'
+    }
+    if (action === 'filter_delete_preview_retry') {
+      if (status === 'success') return '删除过滤失败项重试完成'
+      if (status === 'partial_success') return '删除过滤失败项重试部分成功'
+      if (status === 'failed') return '删除过滤失败项重试失败'
+      return '删除过滤失败项重试'
+    }
+    return '作品筛选处理'
+  }
+  if (cat === 'subtitle_crawl') {
+    if (action === 'batch_start') {
+      if (status === 'success') return '批量字幕任务创建完成'
+      if (status === 'partial_success') return '批量字幕任务创建部分成功'
+      if (status === 'failed') return '批量字幕任务创建失败'
+      return '批量字幕任务创建'
+    }
+    if (status === 'success') return 'RJ 字幕爬取完成'
+    if (status === 'failed') return 'RJ 字幕爬取失败'
+    if (status === 'waiting') return 'RJ 字幕任务等待中'
+  }
+  if (cat === 'subtitle_pair') return status === 'success' ? '字幕手动配对完成' : '字幕手动配对'
+  if (cat === 'subtitle_import') {
+    if (action === 'archive_import') return status === 'success' ? '压缩包字幕补配完成' : '压缩包字幕补配失败'
+    if (action === 'folder_import') return status === 'success' ? '文件夹字幕补配完成' : '文件夹字幕补配失败'
+    if (action === 'pending_execute') return status === 'success' ? '预检单字幕补配完成' : '预检单字幕补配失败'
+    return '字幕补配'
+  }
+  if (cat === 'extract') return status === 'success' ? '压缩包解压完成' : '压缩包解压失败'
+  if (cat === 'auto_import') {
+    if (status === 'success') return '解压入库完成'
+    if (status === 'partial_success') return '解压入库部分成功'
+    if (status === 'failed') return '解压入库失败'
+    if (status === 'incomplete') return '解压入库未正常结束'
+  }
+  if (cat === 'process_existing') return status === 'success' ? '已有目录处理完成' : '已有目录处理失败'
+  if (cat === 'upload') {
+    if (status === 'success') return '库存上传完成'
+    if (status === 'failed') return '库存上传失败'
+    if (status === 'cancelled') return '库存上传已取消'
+    if (status === 'incomplete') return '库存上传未正常结束'
+    return '库存上传'
+  }
+  if (cat === 'pipeline_metadata') return '元数据整理'
+  if (cat === 'pipeline_rename') {
+    if (action === 'batch_api_rename') {
+      if (status === 'success') return '批量 API 重命名完成'
+      if (status === 'partial_success') return '批量 API 重命名部分成功'
+      if (status === 'failed') return '批量 API 重命名失败'
+      return '批量 API 重命名'
+    }
+    if (action === 'batch_manual_rename') {
+      if (status === 'success') return '批量乱码修复完成'
+      if (status === 'partial_success') return '批量乱码修复部分成功'
+      if (status === 'failed') return '批量乱码修复失败'
+      return '批量乱码修复'
+    }
+    if (isApiRenameAction(row)) {
+      if (status === 'success') return 'API重命名完成'
+      if (status === 'failed') return 'API重命名失败'
+      return 'API重命名'
+    }
+    if (isManualRenameAction(row)) {
+      if (status === 'success') return '重命名完成'
+      if (status === 'failed') return '重命名失败'
+      return '重命名'
+    }
+    return '重命名处理'
+  }
+  if (cat === 'pipeline_delete') {
+    if (action === 'batch_api_delete') {
+      if (status === 'success') return '批量删除完成'
+      if (status === 'partial_success') return '批量删除部分成功'
+      if (status === 'failed') return '批量删除失败'
+      return '批量删除'
+    }
+    if (action === 'delete' || action === 'batch_delete_item') {
+      if (status === 'success') return '删除完成'
+      if (status === 'failed') return '删除失败'
+      return '删除'
+    }
+    return '删除处理'
+  }
+  if (cat === 'asmr_sync') {
+    if (isReimport) {
+      if (action === 'task_retried') return '直接入库任务已创建'
+      if (action === 'session_started') return '直接入库任务开始'
+      if (action === 'session_partial_failed') return '直接入库部分失败'
+      if (action === 'session_completed') return '直接入库完成'
+      if (status === 'success') return '直接入库完成'
+      if (status === 'failed') return '直接入库失败'
+    }
+    if (action === 'enhanced_plan_created') return '增强下载计划已生成'
+    if (action === 'enhanced_plan_failed') return '增强下载计划生成失败'
+    if (action === 'session_started') return 'ASMR 下载任务开始'
+    if (action === 'session_partial_failed') return 'ASMR 下载任务部分失败'
+    if (action === 'session_completed') return 'ASMR 下载任务完成'
+    if (status === 'success') return 'ASMR 同步下载完成'
+    if (status === 'failed') return 'ASMR 同步下载失败'
+  }
+  if (cat === 'circle_completion') {
+    if (action === 'index_completed') return status === 'success' ? '创建索引检索成功' : '创建索引检索失败'
+    if (action === 'index_failed') return '创建索引检索失败'
+    if (action === 'refresh_selected_works') return status === 'success' ? '社团作品信息更新' : '社团作品信息更新失败'
+    if (action === 'download_batch_start') return '创建下载任务'
+    if (action === 'download_item_queued') return '下载任务已加入队列'
+    if (action === 'task_finished' || action === 'task_finished_incomplete') {
+      if (sourceAction === 'refresh_selected') {
+        if (status === 'success') return '社团作品信息更新完成'
+        if (status === 'incomplete') return '社团作品信息更新未正常结束'
+        if (status === 'failed') return '社团作品信息更新失败'
+        return '社团作品信息更新'
+      }
+      if (sourceAction === 'index_circle' || sourceAction === 'circle_index') {
+        if (status === 'success') return '社团补全完成'
+        if (status === 'incomplete') return '社团补全未正常结束'
+        if (status === 'failed') return '社团补全失败'
+        return '社团补全'
+      }
+    }
+    if (status === 'success') return '社团补全完成'
+    if (status === 'failed') return '社团补全失败'
+  }
+  if (cat === 'email_watcher') {
+    if (action === 'fetch_check') return '监视新作'
+    if (action === 'circle_index_triggered') return status === 'success' ? '新作索引完成' : '新作索引失败'
+    return '邮件监听'
+  }
+  if (status === 'waiting' && (action === 'task_finished' || action === 'task_finished_incomplete')) return '等待处理'
+  // 兜底：用 status 转中文，绝不再 expose 像 task_finished / batch_start 这种 raw English action
+  const statusLabel = ({
+    success: '完成',
+    completed: '完成',
+    failed: '失败',
+    error: '失败',
+    cancelled: '已取消',
+    aborted: '已取消',
+    partial_success: '部分成功',
+    waiting: '等待中',
+    queued: '排队中',
+    running: '执行中',
+    incomplete: '未完成'
+  })[status]
+  if (statusLabel) return statusLabel
+  return '关联操作'
+}
+
+// ===================== 社团补全模型 =====================
+function circleCompletionIndexModel(row) {
+  if (!row || row.category !== 'circle_completion' || row.action !== 'index_completed') return null
+  const d = safeDetail(row)
+  const sourceBreakdown = Array.isArray(d.source_breakdown)
+    ? d.source_breakdown
+        .map((it) => ({
+          key: String(it?.key || '').trim(),
+          label: String(it?.label || it?.key || '未命名'),
+          count: Number(it?.count || 0),
+        }))
+        .filter((it) => it.key)
+    : []
+  const workSections = Array.isArray(d.work_sections)
+    ? d.work_sections
+        .map((s) => ({
+          key: String(s?.key || '').trim(),
+          count: Number(s?.count || 0),
+          rows: Array.isArray(s?.rows) ? s.rows.map((it) => ({
+            canonical_rjcode: String(it?.canonical_rjcode || '').trim(),
+            workRjcode: String(it?.work_rjcode || it?.canonical_rjcode || '').trim(),
+            display_rjcode: String(it?.display_rjcode || '').trim(),
+            title: String(it?.title || '').trim(),
+            preferred_variant_label: String(it?.preferred_variant_label || '').trim(),
+            statusLabel: String(it?.status_label || '').trim() || '未标记',
+            statusKey: String(it?.status_key || '').trim() || 'unknown',
+            sourceCompare: {
+              kikoeru: {
+                primary_rjcode: String(it?.source_compare?.kikoeru?.primary_rjcode || '').trim(),
+                primaryBadge: String(it?.source_compare?.kikoeru?.primary_badge || '').trim(),
+                variantBadges: Array.isArray(it?.source_compare?.kikoeru?.variant_badges) && it.source_compare.kikoeru.variant_badges.length
+                  ? it.source_compare.kikoeru.variant_badges.filter(Boolean)
+                  : (String(it?.source_compare?.kikoeru?.primary_badge || '').trim() ? [String(it.source_compare.kikoeru.primary_badge).trim()] : []),
+                all_rjcodes: Array.isArray(it?.source_compare?.kikoeru?.all_rjcodes) ? it.source_compare.kikoeru.all_rjcodes.filter(Boolean) : [],
+                tags: Array.isArray(it?.source_compare?.kikoeru?.tags) ? it.source_compare.kikoeru.tags.filter(Boolean) : [],
+              },
+              dlsite: {
+                all_rjcodes: Array.isArray(it?.source_compare?.dlsite?.all_rjcodes) ? it.source_compare.dlsite.all_rjcodes.filter(Boolean) : [],
+              },
+              asmr_one: {
+                primary_rjcode: String(it?.source_compare?.asmr_one?.primary_rjcode || '').trim(),
+                primaryBadge: String(it?.source_compare?.asmr_one?.primary_badge || '').trim(),
+                all_rjcodes: Array.isArray(it?.source_compare?.asmr_one?.all_rjcodes) ? it.source_compare.asmr_one.all_rjcodes.filter(Boolean) : [],
+              },
+            },
+          })) : [],
+        }))
+        .filter((s) => s.key && s.rows.length)
+    : []
+  const rows = workSections.flatMap((s) => s.rows || [])
+  if (!sourceBreakdown.length && !rows.length) return null
+  return {
+    priorityRule: String(d.priority_rule || '简体 > 繁体 > 原作'),
+    forceRefresh: Boolean(d.force_refresh),
+    includeDlsite: Boolean(d.include_dlsite),
+    includeKikoeru: Boolean(d.include_kikoeru),
+    sourceBreakdown,
+    rows,
+  }
+}
+
+function buildCircleCompletionRefreshModel(row, refreshFilter) {
+  if (!row || row.category !== 'circle_completion' || row.action !== 'refresh_selected_works') return null
+  const d = safeDetail(row)
+  const rawItems = Array.isArray(d.refreshed_items)
+    ? d.refreshed_items
+        .map((it) => ({
+          canonical_rjcode: String(it?.canonical_rjcode || '').trim(),
+          title: String(it?.title || '').trim(),
+          display_rjcode: String(it?.display_rjcode || it?.canonical_rjcode || '').trim(),
+          preferred_variant_label: String(it?.preferred_variant_label || '').trim(),
+          has_kikoeru: Boolean(it?.has_kikoeru),
+          has_asmr_one: Boolean(it?.has_asmr_one),
+          asmrAvailableRjcode: String(it?.asmr_available_rjcode || '').trim(),
+          serverMatchPrimaryRjcode: String(it?.server_match_primary_rjcode || '').trim(),
+          serverMatchRjcodes: Array.isArray(it?.server_match_rjcodes) ? it.server_match_rjcodes.map((c) => String(c || '').trim()).filter(Boolean) : [],
+          subtitlePresent: Boolean(it?.subtitle_present),
+          changed: Boolean(it?.changed),
+          resultStatus: it?.has_kikoeru ? 'owned' : (it?.has_asmr_one ? 'downloadable' : 'missing'),
+          resultLabel: it?.has_kikoeru ? '服务器已有' : (it?.has_asmr_one ? 'asmr.one 可下载' : '无来源'),
+          changeDetails: Array.isArray(it?.change_details)
+            ? it.change_details
+                .map((c) => ({
+                  key: String(c?.key || '').trim(),
+                  label: String(c?.label || '').trim() || '状态变更',
+                  before: c?.before, after: c?.after,
+                }))
+                .filter((c) => c.key)
+            : [],
+        }))
+        .filter((it) => it.canonical_rjcode)
+    : []
+  if (!rawItems.length) return null
+  const filtered = rawItems.filter((it) => {
+    if (refreshFilter === 'changed') return it.changed
+    if (refreshFilter === 'unchanged') return !it.changed
+    return true
+  })
+  const items = [...filtered].sort((l, r) => {
+    const lc = l.changeDetails.some((c) => c.key === 'server_state')
+    const rc = r.changeDetails.some((c) => c.key === 'server_state')
+    if (l.changed !== r.changed) return l.changed ? -1 : 1
+    if (lc !== rc) return lc ? -1 : 1
+    return String(l.display_rjcode || l.canonical_rjcode).localeCompare(String(r.display_rjcode || r.canonical_rjcode))
+  })
+  return {
+    selectedCount: Number(d.selected_count || rawItems.length),
+    refreshedCount: Number(d.refreshed_count || rawItems.length),
+    changedCount: Number(d.changed_count || rawItems.filter((it) => it.changed).length),
+    serverMatchedCount: Number(d.kikoeru_owned_count || rawItems.filter((it) => it.has_kikoeru).length),
+    filteredCount: items.length,
+    items,
+  }
+}
+
+function formatRefreshChangeValue(value) {
+  if (Array.isArray(value)) {
+    const norm = value.map((it) => String(it || '').trim()).filter(Boolean)
+    return norm.length ? norm.join(' / ') : '—'
+  }
+  return String(value ?? '').trim() || '—'
+}
+
+function normalizeKikoeruTags(tags) {
+  const source = Array.isArray(tags) ? tags : []
+  const norm = []
+  for (const tag of source) {
+    const text = String(tag || '').trim()
+    if (!text) continue
+    const value = text.startsWith('字幕') ? '字幕' : text
+    if (!norm.includes(value)) norm.push(value)
+  }
+  return norm
+}
+
+function circleIndexSourceTone(sourceKey, item) {
+  if (sourceKey === 'kikoeru') return item?.sourceCompare?.kikoeru?.primary_rjcode ? 'check' : 'empty'
+  if (sourceKey === 'dlsite') return Array.isArray(item?.sourceCompare?.dlsite?.all_rjcodes) && item.sourceCompare.dlsite.all_rjcodes.length ? 'check' : 'empty'
+  if (sourceKey === 'asmr_one') return item?.sourceCompare?.asmr_one?.primary_rjcode ? 'check' : 'empty'
+  return 'empty'
+}
+
+function circleIndexSourceIcon(sourceKey, item) {
+  return circleIndexSourceTone(sourceKey, item) === 'check' ? CheckCircle2 : MinusCircle
+}
+
+// ===================== 邮件监听新作模型 =====================
+function emailWatcherBatchModel(row) {
+  if (!row || String(row.category || '').trim() !== 'email_watcher') return null
+  if (String(row.action || '').trim() !== 'fetch_check') return null
+  const d = safeDetail(row)
+  const childRows = collectChildRowsFromParent(row)
+    .filter((it) => String(it?.category || '').trim() === 'email_watcher')
+
+  const childItems = childRows.map((it) => {
+    const cd = safeDetail(it)
+    const status = String(it?.status || '').trim()
+    return {
+      rjcode: String(it?.rjcode || cd.rjcode || '').trim().toUpperCase(),
+      title: String(cd.work_title || cd.title || '').trim(),
+      circleName: String(cd.circle_name || cd.mail_circle_name || '').trim(),
+      priceText: String(cd.price_text || '').trim(),
+      workType: String(cd.work_type || '').trim(),
+      coverUrl: String(cd.image_url || '').trim(),
+      releaseDate: formatReleaseDate(cd.release_date),
+      productUrl: String(cd.product_url || '').trim(),
+      indexMode: String(cd.index_mode || '').trim(),
+      backfillMode: String(cd.backfill_mode || '').trim(),
+      backfillTriggered: Boolean(cd.backfill_triggered),
+      statusKey: status === 'success' ? 'success' : 'failed',
+      statusLabel: status === 'success' ? '索引完成' : '索引失败',
+      note: status === 'success'
+        ? (String(cd.backfill_mode || cd.circle_name || '').trim() || '已完成社团索引')
+        : (String(cd.error || it?.summary || '').trim() || '索引失败'),
+    }
+  })
+
+  const fallbackItems = (Array.isArray(d.items) ? d.items : []).map((it) => ({
+    rjcode: String(it?.rjcode || '').trim().toUpperCase(),
+    title: String(it?.title || '').trim(),
+    circleName: String(it?.circle_name || '').trim(),
+    priceText: String(it?.price_text || '').trim(),
+    workType: String(it?.work_type || '').trim(),
+    coverUrl: String(it?.image_url || '').trim(),
+    releaseDate: formatReleaseDate(it?.release_date),
+    productUrl: String(it?.product_url || '').trim(),
+    indexMode: '', backfillMode: '', backfillTriggered: false,
+    statusKey: 'default', statusLabel: '待处理',
+    note: String(it?.mail_subject || '').trim() || '等待异步索引结果',
+  }))
+
+  const items = childItems.length ? childItems : fallbackItems
+  if (!items.length) return null
+  const circleNames = Array.from(new Set(items.map((it) => String(it.circleName || '').trim()).filter(Boolean)))
+  const mailSubjects = Array.from(new Set(
+    (Array.isArray(d.mail_summaries) ? d.mail_summaries : []).map((it) => String(it?.subject || '').trim()).filter(Boolean)
+  ))
+  return {
+    items,
+    totalCount: items.length,
+    successCount: items.filter((it) => it.statusKey === 'success').length,
+    failedCount: items.filter((it) => it.statusKey === 'failed').length,
+    mailCount: Number(d.unseen_total || mailSubjects.length || 0),
+    mailSubjects,
+    circleNamesText: circleNames.join(' / '),
+  }
+}
+
+function handleEmailWatchCoverError(event, item) {
+  const target = event?.currentTarget
+  if (!target) return
+  const fallback = buildDlsiteCoverUrl(item?.rjcode)
+  if (fallback && target.src !== fallback) {
+    target.src = fallback
+    return
+  }
+  item.coverUrl = ''
+}
+
+// ===================== 原始 JSON =====================
+function stringifyDetailPreview(detail) {
+  const seen = new WeakSet()
+  const maxDepth = 4, maxArr = 80, maxObj = 80, maxStr = 1200, maxOut = 60000
+  const compact = (v, depth = 0) => {
+    if (v === null || typeof v !== 'object') {
+      if (typeof v === 'string' && v.length > maxStr) return `${v.slice(0, maxStr)}...（已截断 ${v.length - maxStr} 字符）`
+      return v
+    }
+    if (seen.has(v)) return '[Circular]'
+    if (depth >= maxDepth) return Array.isArray(v) ? `[Array(${v.length})]` : `[Object(${Object.keys(v).length})]`
+    seen.add(v)
+    if (Array.isArray(v)) {
+      const out = v.slice(0, maxArr).map((x) => compact(x, depth + 1))
+      if (v.length > maxArr) out.push(`...（已省略 ${v.length - maxArr} 项）`)
+      return out
+    }
+    const entries = Object.entries(v)
+    const out = {}
+    for (const [k, c] of entries.slice(0, maxObj)) out[k] = compact(c, depth + 1)
+    if (entries.length > maxObj) out.__truncated_keys__ = `已省略 ${entries.length - maxObj} 个字段`
+    return out
+  }
+  const text = JSON.stringify(compact(detail), null, 2)
+  if (text.length <= maxOut) return text
+  return `${text.slice(0, maxOut)}\n...（原始 JSON 过大，已截断 ${text.length - maxOut} 字符）`
+}
+
+function prettyDetail(row) {
+  if (!row?.detail || typeof row.detail !== 'object') return ''
+  if (String(row?.detail?.mode || '').startsWith('filter_delete_')) return ''
+  try {
+    return stringifyDetailPreview(row.detail)
+  } catch {
+    return ''
+  }
+}
+
+// ===================== 主 composable =====================
+export function useActivityDetailModels(rowRef) {
+  // 受 row 影响但有自己 UI 状态的 ref
+  const compareSearchQuery = ref('')
+  const compareSourceFilter = ref('all')
+  const compareExpanded = ref(true)
+  const circleRefreshFilter = ref('all')
+  const circleRefreshPage = ref(1)
+  const circleRefreshPageSize = 10
+  const collapsedEntrySectionKeys = ref(new Set())
+  const collapsedEntryTreeRowKeys = ref(new Set())
+  const batchWorkbenchAwaitingOnly = ref(false)
+  const selectedBatchWorkbenchKeys = ref([])
+
+  // 切换 row 时重置所有 UI 状态
+  watch(rowRef, (next) => {
+    compareSearchQuery.value = ''
+    compareSourceFilter.value = 'all'
+    compareExpanded.value = true
+    circleRefreshFilter.value = 'all'
+    circleRefreshPage.value = 1
+    collapsedEntrySectionKeys.value = new Set()
+    collapsedEntryTreeRowKeys.value = new Set()
+    batchWorkbenchAwaitingOnly.value = false
+    // 默认勾选所有可定位项
+    const items = subtitleBatchWorkbenchItems(next)
+    selectedBatchWorkbenchKeys.value = items.map((it) => it.key)
+  }, { immediate: true })
+
+  // ========= computed =========
+  const summaryText = computed(() => displaySummary(rowRef.value))
+  const rjText = computed(() => displayRjcode(rowRef.value))
+  const tags = computed(() => rowCategoryTags(rowRef.value))
+  const finalLabel = computed(() => finalStatusLabel(rowRef.value))
+  const finalCls = computed(() => finalStatusClass(rowRef.value))
+  const isRerun = computed(() => isRerunRow(rowRef.value))
+  const isRecovered = computed(() => isRecoveredFailure(rowRef.value))
+
+  const pathCompare = computed(() => pathCompareModel(rowRef.value))
+  const pathCompareCls = computed(() => pathCompareReasonClass(rowRef.value))
+  const pathCompareReason = computed(() => pathCompareDefaultReason(rowRef.value))
+
+  const highlights = computed(() => detailHighlights(rowRef.value))
+  const filterDeleteMetrics = computed(() => filterDeleteMetricCards(rowRef.value))
+  const uploadMetrics = computed(() => uploadMetricCards(rowRef.value))
+  const rawJson = computed(() => prettyDetail(rowRef.value))
+
+  const entrySections = computed(() => activityEntrySections(rowRef.value))
+  const entrySectionTitle = computed(() => activityEntrySectionTitle(rowRef.value))
+
+  const pairWorkbench = computed(() => pairWorkbenchModel(rowRef.value))
+  const pairResult = computed(() => pairResultModel(rowRef.value))
+
+  const subtitleBatchModel = computed(() => subtitleBatchWorkbenchModel(rowRef.value))
+  const visibleBatchItems = computed(() => {
+    if (!subtitleBatchModel.value) return []
+    const items = subtitleBatchModel.value.items
+    return batchWorkbenchAwaitingOnly.value ? items.filter((it) => it.stateClass === 'warning') : items
+  })
+  const allBatchSelected = computed(() => {
+    const items = visibleBatchItems.value
+    if (!items.length) return false
+    const sel = new Set(selectedBatchWorkbenchKeys.value)
+    return items.every((it) => sel.has(it.key))
+  })
+  const selectedBatchItems = computed(() => {
+    if (!subtitleBatchModel.value) return []
+    const sel = new Set(selectedBatchWorkbenchKeys.value)
+    return subtitleBatchModel.value.items.filter((it) => sel.has(it.key))
+  })
+
+  function toggleAllBatchItems(checked) {
+    selectedBatchWorkbenchKeys.value = checked ? visibleBatchItems.value.map((it) => it.key) : []
+  }
+  function selectAwaitingBatchItems() {
+    if (!subtitleBatchModel.value) return
+    selectedBatchWorkbenchKeys.value = subtitleBatchModel.value.items
+      .filter((it) => it.stateClass === 'warning').map((it) => it.key)
+  }
+
+  const circleIndexModel = computed(() => circleCompletionIndexModel(rowRef.value))
+  const filteredCircleIndexRows = computed(() => {
+    const rows = Array.isArray(circleIndexModel.value?.rows) ? circleIndexModel.value.rows : []
+    const q = String(compareSearchQuery.value || '').trim().toLowerCase()
+    return rows.filter((it) => {
+      const sm = compareSourceFilter.value === 'all'
+        || (compareSourceFilter.value === 'kikoeru' && it?.sourceCompare?.kikoeru?.primary_rjcode)
+        || (compareSourceFilter.value === 'dlsite' && Array.isArray(it?.sourceCompare?.dlsite?.all_rjcodes) && it.sourceCompare.dlsite.all_rjcodes.length)
+        || (compareSourceFilter.value === 'asmr_one' && it?.sourceCompare?.asmr_one?.primary_rjcode)
+        || (compareSourceFilter.value === 'missing' && !it?.sourceCompare?.kikoeru?.primary_rjcode
+            && !(Array.isArray(it?.sourceCompare?.dlsite?.all_rjcodes) && it.sourceCompare.dlsite.all_rjcodes.length)
+            && !it?.sourceCompare?.asmr_one?.primary_rjcode)
+      if (!sm) return false
+      if (!q) return true
+      const hay = [
+        it?.title, it?.workRjcode, it?.display_rjcode, it?.preferred_variant_label,
+        it?.sourceCompare?.kikoeru?.primary_rjcode,
+        ...(Array.isArray(it?.sourceCompare?.dlsite?.all_rjcodes) ? it.sourceCompare.dlsite.all_rjcodes : []),
+        it?.sourceCompare?.asmr_one?.primary_rjcode,
+      ].map((v) => String(v || '').toLowerCase())
+      return hay.some((v) => v.includes(q))
+    })
+  })
+  const circleIndexSummary = computed(() => {
+    const m = circleIndexModel.value
+    if (!m) return ''
+    const total = Array.isArray(m.rows) ? m.rows.length : 0
+    const visible = filteredCircleIndexRows.value.length
+    const breakdown = Array.isArray(m.sourceBreakdown) ? m.sourceBreakdown : []
+    const sourceText = breakdown.filter((it) => Number(it.count || 0) > 0).map((it) => `${it.label} ${it.count}`).join(' · ')
+    const scope = visible === total ? `共 ${total} 项作品` : `共 ${total} 项作品，当前筛出 ${visible} 项`
+    return sourceText ? `${scope} · ${sourceText}` : scope
+  })
+
+  const circleRefreshModel = computed(() => buildCircleCompletionRefreshModel(rowRef.value, circleRefreshFilter.value))
+  const pagedCircleRefreshItems = computed(() => {
+    const rows = Array.isArray(circleRefreshModel.value?.items) ? circleRefreshModel.value.items : []
+    const start = (circleRefreshPage.value - 1) * circleRefreshPageSize
+    return rows.slice(start, start + circleRefreshPageSize)
+  })
+  function setCircleRefreshFilter(value) {
+    circleRefreshFilter.value = String(value || 'all')
+    circleRefreshPage.value = 1
+  }
+  function setCircleRefreshPage(next) {
+    circleRefreshPage.value = Math.max(1, Number(next || 1))
+  }
+
+  const emailWatcherModel = computed(() => emailWatcherBatchModel(rowRef.value))
+
+  // entry section / row 折叠态
+  const isEntrySectionExpanded = (key) => !collapsedEntrySectionKeys.value.has(String(key || ''))
+  const toggleEntrySection = (key) => {
+    const k = String(key || '')
+    if (!k) return
+    const next = new Set(collapsedEntrySectionKeys.value)
+    if (next.has(k)) next.delete(k); else next.add(k)
+    collapsedEntrySectionKeys.value = next
+  }
+  const isEntryTreeRowExpanded = (key) => !collapsedEntryTreeRowKeys.value.has(String(key || ''))
+  const toggleEntryTreeRow = (key) => {
+    const k = String(key || '')
+    if (!k) return
+    const next = new Set(collapsedEntryTreeRowKeys.value)
+    if (next.has(k)) next.delete(k); else next.add(k)
+    collapsedEntryTreeRowKeys.value = next
+  }
+  function flattenEntryRows(rows) {
+    const out = []
+    const visit = (xs, depth = 0) => {
+      for (const item of Array.isArray(xs) ? xs : []) {
+        const hasChildren = Array.isArray(item.children) && item.children.length > 0
+        const cur = { ...item, depth, expandable: hasChildren }
+        out.push(cur)
+        if (hasChildren && isEntryTreeRowExpanded(cur.key)) visit(item.children, depth + 1)
+      }
+    }
+    visit(rows, 0)
+    return out
+  }
+
+  return {
+    // refs
+    compareSearchQuery, compareSourceFilter, compareExpanded,
+    circleRefreshFilter, circleRefreshPage, circleRefreshPageSize,
+    batchWorkbenchAwaitingOnly, selectedBatchWorkbenchKeys,
+    // basic computeds
+    summaryText, rjText, tags, finalLabel, finalCls, isRerun, isRecovered,
+    // path compare
+    pathCompare, pathCompareCls, pathCompareReason,
+    // highlights & metrics
+    highlights, filterDeleteMetrics, uploadMetrics, rawJson,
+    // file tree
+    entrySections, entrySectionTitle, flattenEntryRows,
+    isEntrySectionExpanded, toggleEntrySection,
+    isEntryTreeRowExpanded, toggleEntryTreeRow,
+    resolveEntryIcon, entryIconClass,
+    // pair
+    pairWorkbench, pairResult,
+    // subtitle batch workbench
+    subtitleBatchModel, visibleBatchItems, allBatchSelected, selectedBatchItems,
+    toggleAllBatchItems, selectAwaitingBatchItems,
+    // circle
+    circleIndexModel, filteredCircleIndexRows, circleIndexSummary,
+    circleRefreshModel, pagedCircleRefreshItems,
+    setCircleRefreshFilter, setCircleRefreshPage,
+    formatRefreshChangeValue, normalizeKikoeruTags,
+    circleIndexSourceTone, circleIndexSourceIcon,
+    // email watcher
+    emailWatcherModel, handleEmailWatchCoverError,
+    // navigation helpers (resolvers, actually do the navigation in parent)
+    resolveSubtitleTaskId, resolveSubtitleFolderPath, resolveSubtitleLibraryId,
+    isSubtitlePairRelatedRow, isSubtitleBatchRootRow,
+    // tag helpers
+    actionTagClass, humanAction, displaySummary, displayRjcode,
+  }
+}
+
+export {
+  humanAction, actionTagClass, rowCategoryTags, finalStatusLabel, finalStatusClass,
+  isRecoveredFailure, isRerunRow,
+}

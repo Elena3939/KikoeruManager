@@ -78,12 +78,17 @@ update_dialog.py
 
 # Backup artifacts
 *.bak-perf-*
+*.bak
+_orig_*.vue
+_orig_*.bak
+_commit_msg.txt
 
 # Frontend temporary work directories
 frontend/.Uploading_to_cloud/
 frontend/.download_icon/
 frontend/.npm-cache/
 frontend/.tmp*/
+frontend/src/assets/temp/
 frontend/src/assets/tempView/
 frontend/src/assets/anime/tempView/
 frontend/vite.config.js.timestamp-*.mjs

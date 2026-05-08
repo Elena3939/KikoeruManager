@@ -85,6 +85,23 @@ async def health_check():
 # 注意：以下高频读接口刻意保持同步 def，让 FastAPI 调度到 starlette threadpool，
 # 而不是 async def 直接占用事件循环。配合 run.py 的 anyio threadpool=80，群晖
 # 慢 IO 场景下接口之间不再连环阻塞。
+# lite 模式默认会从时间线里隐藏的"子动作"——它们由 merge_activity_rows 在
+# 详情接口里挂回到父行内，前端不需要在时间线里再摆一遍。
+_LITE_HIDDEN_ACTIONS = (
+    "resource_downloaded",
+    "resource_uploaded",
+    "resource_verify_failed",
+    "download_item_queued",
+    "queue_reordered",
+    "task_paused",
+    "task_resumed",
+    "task_retried",
+    "session_started",
+    "enhanced_plan_created",
+    "view_built",
+)
+
+
 @app.get("/api/activity-logs")
 def list_activity_logs(
     page: int = 1,
@@ -95,6 +112,8 @@ def list_activity_logs(
     since_days: Optional[int] = None,
     batch_id: Optional[str] = None,
     session_key: Optional[str] = None,
+    lite: bool = False,
+    show_subactions: bool = False,
     db: Session = Depends(get_db),
 ):
     """分页查询操作审计记录。
@@ -107,6 +126,9 @@ def list_activity_logs(
       不存在 FTS5 时回退为原来的 LIKE 多列匹配。
     - Phase 2：新增 batch_id / session_key 查询参数，用于 workbench 里
       "拉取某批次全部子任务"这种精准场景，直接走新索引。
+    - Phase 5：``lite=true`` 进入快速路径：跳过 1700+ 行合并算法和整段 detail
+      回传，只在数据库层做 ORDER BY + LIMIT 分页，配合 ``activity_log_lite``
+      抽 metric chips。响应体从 ~5MB 压到 ~150KB，主要面向新版时间线视图。
     """
     from ..core.activity_log_service import CATEGORY_LABELS
     from ..core.activity_log_writer import (
@@ -120,7 +142,7 @@ def list_activity_logs(
     writer = get_activity_log_writer()
     query_cache = get_activity_log_query_cache()
     cache_key = (
-        "list",
+        "list" if not lite else "list_lite",
         int(page or 1),
         int(limit or 50),
         (category or "").strip(),
@@ -129,6 +151,7 @@ def list_activity_logs(
         int(since_days) if since_days is not None else None,
         (batch_id or "").strip(),
         (session_key or "").strip(),
+        bool(show_subactions),
     )
     cached = query_cache.get(cache_key, writer.last_write_ts)
     if cached is not None:
@@ -138,6 +161,7 @@ def list_activity_logs(
     # Phase 4D: 用 merge_activity_rows_from_dicts 入口配合 row-dict 缓存，避免每请求重新
     # orjson.loads 所有 detail
     from ..core.activity_log_aggregator import merge_activity_rows_from_dicts
+    from ..core.activity_log_lite import build_lite_item
 
     page = max(1, page)
     limit = max(1, min(200, limit))
@@ -222,6 +246,63 @@ def list_activity_logs(
     if effective_since_days is not None:
         cutoff = datetime.now() - timedelta(days=effective_since_days)
         query = query.filter(ActivityLog.created_at >= cutoff)
+
+    # Phase 5：lite 快速路径——SQL 层直接 LIMIT/OFFSET 分页，不再加载 5000 行。
+    # 对于新版时间线视图，列表只需要 chips + 摘要，不再走合并算法。
+    if lite:
+        # 默认隐藏"子动作"行（resource_downloaded / resource_uploaded 等），它们在详情接口里会通过 merge_activity_rows 重新挂回父行的 child_rows。
+        # 用户显式带 show_subactions=true 时可以打破这层过滤，看完整事件流。
+        if not show_subactions:
+            query = query.filter(~ActivityLog.action.in_(_LITE_HIDDEN_ACTIONS))
+        total = query.with_entities(func.count(ActivityLog.id)).scalar() or 0
+        offset = max(0, (page - 1) * limit)
+        page_id_rows = (
+            query.with_entities(ActivityLog.id)
+            .order_by(desc(ActivityLog.created_at))
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        page_ids = [row[0] for row in page_id_rows if row and row[0]]
+
+        row_cache = get_activity_log_row_dict_cache()
+        cache_hits = row_cache.get_many(page_ids)
+        missing_ids = [rid for rid in page_ids if str(rid) not in cache_hits]
+        fresh_dict_map: Dict[str, Dict[str, Any]] = {}
+        if missing_ids:
+            fresh_orm_rows = (
+                db.query(ActivityLog)
+                .filter(ActivityLog.id.in_(missing_ids))
+                .all()
+            )
+            fresh_pairs = []
+            for orm_row in fresh_orm_rows:
+                rid = str(orm_row.id)
+                row_dict = orm_row.to_dict()
+                fresh_dict_map[rid] = row_dict
+                fresh_pairs.append((rid, row_dict))
+            row_cache.put_many(fresh_pairs)
+
+        items: List[Dict[str, Any]] = []
+        for rid in page_ids:
+            key = str(rid)
+            row_dict = cache_hits.get(key) or fresh_dict_map.get(key)
+            if row_dict is not None:
+                items.append(build_lite_item(row_dict))
+
+        payload = {
+            "total": int(total),
+            "page": page,
+            "limit": limit,
+            "items": items,
+            "window": {
+                "lite": True,
+                "search_backend": search_backend,
+                "since_days": effective_since_days,
+            },
+        }
+        query_cache.set(cache_key, writer.last_write_ts, payload)
+        return payload
 
     # Phase 4D：ID 先筛 → 行缓存命中 → 只拉未命中行。以前是 `.all()` 整列物化把所有 detail
     # JSON 都 orjson.loads 一遍（~90ms/762行，5000 行上 ~460ms）。现在稳态下 95%+ 请求
@@ -574,6 +655,210 @@ def get_activity_log_children(
     }
 
 
+@app.get("/api/activity-logs/{log_id}/detail")
+def get_activity_log_detail(
+    log_id: str,
+    db: Session = Depends(get_db),
+):
+    """单行详情接口（Phase 5）。
+
+    新版时间线列表用 lite 模式拉条目，点开抽屉时再调本接口拿完整 detail：
+    - 单行返回，开销可忽略；
+    - 顺手把同链路子行（合并算法的复杂结果）一起塞进 ``children`` 数组，
+      复用现有 ``/children`` 的关联策略，保证抽屉渲染和旧版一致。
+    """
+    from ..core.activity_log_aggregator import merge_activity_rows
+
+    parent = db.query(ActivityLog).filter(ActivityLog.id == log_id).first()
+    if parent is None:
+        raise HTTPException(status_code=404, detail="未找到对应操作记录")
+
+    related_rows: List[ActivityLog] = []
+    seen_ids = {parent.id}
+
+    def _extend(rows):
+        for row in rows:
+            if row.id in seen_ids:
+                continue
+            seen_ids.add(row.id)
+            related_rows.append(row)
+
+    if parent.batch_id:
+        _extend(
+            db.query(ActivityLog)
+            .filter(ActivityLog.batch_id == parent.batch_id)
+            .order_by(desc(ActivityLog.created_at))
+            .limit(500)
+            .all()
+        )
+    _extend(
+        db.query(ActivityLog)
+        .filter(ActivityLog.parent_id == parent.id)
+        .order_by(desc(ActivityLog.created_at))
+        .limit(500)
+        .all()
+    )
+    if parent.session_key:
+        _extend(
+            db.query(ActivityLog)
+            .filter(ActivityLog.session_key == parent.session_key)
+            .order_by(desc(ActivityLog.created_at))
+            .limit(500)
+            .all()
+        )
+    # 1) subtitle_crawl / subtitle_pair / subtitle_import 用 task_id 关联
+    # 2) asmr_sync 的 resource_downloaded / resource_uploaded 子行也通过 task_id 关联
+    # 3) circle_completion 的 download_item_queued 也走 task_id
+    if parent.task_id and parent.category in {
+        "subtitle_crawl", "subtitle_pair", "subtitle_import",
+        "asmr_sync", "circle_completion",
+        "auto_import", "process_existing", "extract", "upload", "pipeline_rename", "pipeline_delete",
+    }:
+        _extend(
+            db.query(ActivityLog)
+            .filter(ActivityLog.task_id == parent.task_id)
+            .order_by(desc(ActivityLog.created_at))
+            .limit(500)
+            .all()
+        )
+
+    # session_id 是 detail JSON 里常见的强关联字段（asmr_sync / circle_completion / pipeline_filter）
+    # SQL 层用 json_extract 反查出来，避免漏拉子行
+    parent_detail = parent.detail if isinstance(parent.detail, dict) else {}
+    related_session_id = str(
+        parent_detail.get("session_id")
+        or parent_detail.get("execution_key")
+        or ""
+    ).strip()
+    if related_session_id and len(related_session_id) >= 8:
+        try:
+            session_rows = (
+                db.query(ActivityLog)
+                .filter(
+                    or_(
+                        ActivityLog.session_key == related_session_id,
+                        func.json_extract(ActivityLog.detail, "$.session_id") == related_session_id,
+                    )
+                )
+                .order_by(desc(ActivityLog.created_at))
+                .limit(500)
+                .all()
+            )
+            _extend(session_rows)
+        except Exception:
+            logger.debug("[操作记录] 按 session_id 反查关联行失败", exc_info=True)
+
+    merged = merge_activity_rows([parent] + related_rows)
+
+    # 三种情况：
+    # 1) parent 自己就是 merge 的顶级行（多数情况）→ 直接拿
+    # 2) parent 被合并成 root 的某个 child_rows 节点 → 返回那个 root，更完整
+    # 3) parent 没被合并 / merge 没产生输出 → 兜底返回 parent.to_dict()
+    main_row = None
+    container_root = None
+
+    def _find_in_tree(node):
+        if not isinstance(node, dict):
+            return False
+        if str(node.get("id")) == str(parent.id):
+            return True
+        children = node.get("detail", {}).get("child_rows") if isinstance(node.get("detail"), dict) else None
+        if isinstance(children, list):
+            for child in children:
+                if _find_in_tree(child):
+                    return True
+        return False
+
+    for item in merged:
+        if str(item.get("id")) == str(parent.id):
+            main_row = item
+            break
+        if _find_in_tree(item):
+            container_root = item
+            # 不立刻 break：继续看后面是不是有 parent 自己作为 root（更精确）
+
+    if main_row is None and container_root is not None:
+        main_row = container_root
+    if main_row is None:
+        main_row = parent.to_dict()
+
+    return {
+        "row": main_row,
+    }
+
+
+@app.post("/api/activity-logs/compact")
+async def compact_activity_logs(
+    older_than_days: int = 30,
+    min_detail_bytes: int = 8192,
+    max_rows: Optional[int] = None,
+    chunk_size: int = 200,
+    time_budget_seconds: float = 5.0,
+):
+    """归档压缩老的操作记录 detail。
+
+    用户场景：长期使用后 ``activity_logs.detail`` 会被批量任务 / 删除预审 / 社团补全
+    塞进大量"全量 items"，单条最高 660KB。本接口把 ``older_than_days`` 之前的
+    detail 中可裁剪的列表 / 大字符串字段清掉，只保留 metric / 摘要 / 关键字段。
+
+    特点：
+    - **不删除任何行**——所有操作记录都还在，只是详情瘦身了；
+    - 分批执行，可多次调用直到 ``done=True``；
+    - 仅压缩 ``detail`` 大于 ``min_detail_bytes`` 的记录；
+    - 每条压缩后的记录会标 ``__compacted=True``，前端可显示"已归档"小标签。
+    """
+    from ..core.activity_log_compactor import compact_old_activity_logs
+    from ..core.activity_log_writer import get_activity_log_query_cache, get_activity_log_row_dict_cache
+
+    try:
+        result = compact_old_activity_logs(
+            older_than_days=older_than_days,
+            min_detail_bytes=min_detail_bytes,
+            max_rows=max_rows,
+            chunk_size=chunk_size,
+            time_budget_seconds=time_budget_seconds,
+        )
+        # 压缩动了底表 → 让缓存失效，避免下次列表请求拿到旧的合并结果
+        if result.get("updated"):
+            try:
+                get_activity_log_query_cache().invalidate()
+                get_activity_log_row_dict_cache().invalidate()
+            except Exception:
+                logger.debug("[操作记录] 压缩后失效缓存出错（非致命）", exc_info=True)
+        return {
+            "message": (
+                f"压缩完成，更新 {result.get('updated', 0)} 行，节省约 "
+                f"{result.get('saved_bytes', 0) / 1024 / 1024:.2f} MB"
+                if result.get("done")
+                else f"本轮处理 {result.get('scanned')} 行，仍未结束，请再次调用"
+            ),
+            **result,
+        }
+    except Exception as e:
+        logger.error(f"压缩操作记录失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"压缩操作记录失败: {str(e)}")
+
+
+@app.get("/api/activity-logs/compact/estimate")
+def estimate_activity_logs_compact(
+    older_than_days: int = 30,
+    min_detail_bytes: int = 8192,
+    sample_limit: int = 200,
+):
+    """快速估算"压缩老操作记录"能省多少空间，不写表。前端用于显示按钮文案。"""
+    from ..core.activity_log_compactor import estimate_compact_savings
+
+    try:
+        return estimate_compact_savings(
+            older_than_days=older_than_days,
+            min_detail_bytes=min_detail_bytes,
+            sample_limit=sample_limit,
+        )
+    except Exception as e:
+        logger.error(f"估算操作记录压缩收益失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"估算操作记录压缩收益失败: {str(e)}")
+
+
 @app.post("/api/activity-logs/backfill-auto-import-extract")
 async def backfill_auto_import_extract_activity_logs(
     start_offset: int = 0,
@@ -630,6 +915,34 @@ async def _periodic_notification_cleanup():
             break
         except Exception as e:
             logger.warning(f"[通知清理] 定期清理异常: {e}")
+
+
+# 操作记录后台压缩协程（每 24h 跑一次，把 30 天前的大 detail 瘦身）
+async def _periodic_activity_log_compact():
+    # 启动 30 分钟后再开第一次，避免和首屏抢 IO
+    await asyncio.sleep(30 * 60)
+    while True:
+        try:
+            from ..core.activity_log_compactor import compact_old_activity_logs
+
+            # 单次最多扫 5000 行，超时 8 秒后让出。剩下的下次再来。
+            result = compact_old_activity_logs(
+                older_than_days=30,
+                min_detail_bytes=8 * 1024,
+                max_rows=5000,
+                time_budget_seconds=8.0,
+            )
+            if result.get("updated"):
+                logger.info(
+                    "[操作记录] 自动压缩 %d 行，节省 %.2f MB",
+                    result.get("updated", 0),
+                    result.get("saved_bytes", 0) / 1024 / 1024,
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[操作记录] 自动压缩异常: {e}")
+        await asyncio.sleep(24 * 3600)
 
 
 # 启动事件
@@ -701,6 +1014,9 @@ async def startup_event():
 
     # 启动通知定期清理任务（每天清理超7天的旧通知）
     asyncio.create_task(_periodic_notification_cleanup())
+
+    # 启动操作记录定期压缩任务（每天压缩 30 天前的大 detail，避免无限膨胀）
+    asyncio.create_task(_periodic_activity_log_compact())
 
 # 关闭事件
 @app.on_event("shutdown")
@@ -1935,6 +2251,84 @@ async def import_passwords_from_text(request: Request):
     finally:
         db.close()
 
+_LOG_LINE_LEVEL_RE = re.compile(
+    r'^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]'
+    r'|^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-'
+)
+
+
+def _resolve_main_log_path() -> Optional[str]:
+    """返回当前应使用的主日志文件路径，找不到时回退为 None。"""
+    from ..core.app_logging import get_main_log_path, get_log_dir
+    main = get_main_log_path()
+    if os.path.exists(main):
+        return main
+    # 桌面独立入口可能仍然使用 desktop_app.log
+    fallback = os.path.join(get_log_dir(), 'desktop_app.log')
+    if os.path.exists(fallback):
+        return fallback
+    return None
+
+
+def _iter_log_files_for_search() -> List[str]:
+    """返回搜索时应该扫描的文件列表：主日志 + 轮转备份 + 旧 desktop_app.log。
+
+    优先级（从"新"到"旧"）：主 app.log -> app.log.1 -> app.log.2 -> ...
+    -> desktop_app.log。按这个顺序扫描，用户搜关键词时通常关心最近的命中。
+    """
+    from ..core.app_logging import list_log_files
+    infos = list_log_files()
+    ordered: List[str] = []
+    # 主日志
+    for info in infos:
+        if info.is_main:
+            ordered.append(info.path)
+            break
+    # 按 app.log.N 的 N 从小到大（即时间上从近到远）
+    backups = [info for info in infos if info.is_backup]
+
+    def _backup_index(name: str) -> int:
+        # app.log.3 -> 3；解析不到放最大值，保证它排最后
+        try:
+            return int(name.rsplit('.', 1)[-1])
+        except (ValueError, TypeError):
+            return 10_000
+
+    backups.sort(key=lambda info: _backup_index(info.name))
+    ordered.extend(info.path for info in backups)
+
+    # 额外兜底：非轮转命名的历史文件
+    for info in infos:
+        if not info.is_main and not info.is_backup and info.path not in ordered:
+            ordered.append(info.path)
+
+    return ordered
+
+
+def _tail_lines(path: str, n: int) -> List[str]:
+    """反向块读取文件末尾 n 行。避免大文件全文遍历。"""
+    if n <= 0:
+        return []
+    chunk_size = 64 * 1024
+    data = b''
+    with open(path, 'rb') as bf:
+        bf.seek(0, os.SEEK_END)
+        pos = bf.tell()
+        lines_found = 0
+        while pos > 0 and lines_found <= n * 2:
+            read_size = chunk_size if pos >= chunk_size else pos
+            pos -= read_size
+            bf.seek(pos)
+            block = bf.read(read_size)
+            data = block + data
+            lines_found = data.count(b'\n')
+            if lines_found >= n + 1:
+                break
+    text = data.decode('utf-8', errors='ignore')
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-n:]
+
+
 @app.get("/api/logs")
 async def get_logs(lines: int = 100, since_offset: int = -1):
     """获取日志文件内容。
@@ -1944,13 +2338,7 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
       若文件已轮转（size < since_offset），自动退回全量模式。
     响应格式：``{ "logs": [...], "next_offset": N, "is_full": bool }``
     """
-    import os
-    log_dir = os.environ.get('DATA_PATH', './data')
-    log_files = [
-        os.path.join(log_dir, 'app.log'),
-        os.path.join(log_dir, 'desktop_app.log'),
-    ]
-    log_file = next((path for path in log_files if os.path.exists(path)), None)
+    log_file = _resolve_main_log_path()
     if not log_file:
         return {"logs": [], "next_offset": 0, "is_full": True}
 
@@ -1960,39 +2348,16 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
 
         def _read_log():
             file_size = os.path.getsize(_log_file)
-            with open(_log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                # 增量模式：文件未轮转且有新内容
-                if 0 <= since_offset <= file_size:
-                    if since_offset == file_size:
-                        return {"logs": [], "next_offset": file_size, "is_full": False}
+            # 增量模式：文件未轮转且有新内容
+            if 0 <= since_offset <= file_size:
+                if since_offset == file_size:
+                    return {"logs": [], "next_offset": file_size, "is_full": False}
+                with open(_log_file, 'r', encoding='utf-8', errors='ignore') as f:
                     f.seek(since_offset)
                     new_lines = [l.strip() for l in f.read().splitlines() if l.strip()]
-                    return {"logs": new_lines, "next_offset": file_size, "is_full": False}
+                return {"logs": new_lines, "next_offset": file_size, "is_full": False}
 
-            # 全量模式：首次请求或文件已轮转
-            # 使用二进制反向块读取，仅扫描文件尾部，避免超大日志全文件遍历。
-            def _tail_lines(path: str, n: int):
-                if n <= 0:
-                    return []
-                chunk_size = 64 * 1024
-                data = b''
-                with open(path, 'rb') as bf:
-                    bf.seek(0, os.SEEK_END)
-                    pos = bf.tell()
-                    lines_found = 0
-                    while pos > 0 and lines_found <= n * 2:
-                        read_size = chunk_size if pos >= chunk_size else pos
-                        pos -= read_size
-                        bf.seek(pos)
-                        block = bf.read(read_size)
-                        data = block + data
-                        lines_found = data.count(b'\n')
-                        if lines_found >= n + 1:
-                            break
-                text = data.decode('utf-8', errors='ignore')
-                lines = [line.strip() for line in text.splitlines() if line.strip()]
-                return lines[-n:]
-
+            # 全量模式（首次请求或文件已轮转）：反向块读取末尾
             result = _tail_lines(_log_file, line_limit)
             return {"logs": result, "next_offset": file_size, "is_full": True}
 
@@ -2000,77 +2365,100 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
 
+
 @app.get("/api/logs/search")
 async def search_logs(
     q: str = '',
     levels: str = '',
     limit: int = 500,
     cursor: int = 0,
-    max_scan_mb: int = 8,
+    max_scan_mb: int = 16,
+    include_backups: bool = True,
 ):
-    """在日志尾部扫描窗口中全文检索，避免超大日志全文件扫描拖垮后端。
+    """全文检索，跨主日志 + 所有轮转备份。
 
     - ``q``：关键词（大小写不敏感，空则不过滤）
     - ``levels``：逗号分隔的级别列表，如 ``INFO,ERROR``（空则不过滤）
-        - ``limit``：单页返回条数（默认 500，上限 1000）
-        - ``cursor``：匹配游标偏移（默认 0）
-        响应格式：
-            ``{ "logs": [...], "total_matched": N, "next_cursor": M, "has_more": bool }``
+    - ``limit``：单页返回条数（默认 500，上限 1000）
+    - ``cursor``：已跳过的匹配数（默认 0，翻页时用上一次的 next_cursor）
+    - ``max_scan_mb``：单文件扫描窗口上限（默认 16MB，最高 64MB）
+    - ``include_backups``：是否搜索轮转备份（关闭时只扫主日志）
+
+    响应：``{ logs, total_matched, next_cursor, has_more, scan_bytes, scanned_files }``
     """
-    import os, re as _re
-    log_dir = os.environ.get('DATA_PATH', './data')
-    log_files = [
-        os.path.join(log_dir, 'app.log'),
-        os.path.join(log_dir, 'desktop_app.log'),
-    ]
-    log_file = next((path for path in log_files if os.path.exists(path)), None)
-    if not log_file:
-        return {"logs": [], "total_matched": 0, "next_cursor": 0, "has_more": False}
+    candidates = _iter_log_files_for_search() if include_backups else []
+    if not candidates:
+        main = _resolve_main_log_path()
+        candidates = [main] if main else []
+    if not candidates:
+        return {
+            "logs": [],
+            "total_matched": 0,
+            "next_cursor": 0,
+            "has_more": False,
+            "scan_bytes": 0,
+            "scanned_files": [],
+        }
 
     try:
         max_limit = max(50, min(int(limit or 500), 1000))
         safe_cursor = max(0, int(cursor or 0))
         kw = q.strip().lower() if q else ''
         lvl_set = {v.strip().upper() for v in levels.split(',') if v.strip()} if levels else set()
-        scan_bytes = max(1024 * 1024, min(int(max_scan_mb or 8), 64) * 1024 * 1024)
-        _log_file = log_file
-
-        _lvl_re = _re.compile(
-            r'^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]'
-            r'|^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-'
-        )
+        scan_bytes = max(1024 * 1024, min(int(max_scan_mb or 16), 64) * 1024 * 1024)
 
         def _search():
-            results = []
+            results: List[str] = []
             matched_seen = 0
             has_more = False
-            file_size = os.path.getsize(_log_file)
-            start_offset = max(0, file_size - scan_bytes)
-            with open(_log_file, 'rb') as f:
-                f.seek(start_offset)
-                if start_offset > 0:
-                    f.readline()
-                raw_data = f.read(scan_bytes)
-            text = raw_data.decode('utf-8', errors='ignore')
-            for raw in text.splitlines():
-                line = raw.strip()
-                if not line:
+            total_scan_bytes = 0
+            scanned_files: List[Dict[str, Any]] = []
+
+            for path in candidates:
+                try:
+                    file_size = os.path.getsize(path)
+                except OSError:
                     continue
-                if lvl_set:
-                    m = _lvl_re.match(line)
-                    lvl = (m.group(2) or m.group(4) or '').upper() if m else 'INFO'
-                    if lvl not in lvl_set:
+                start_offset = max(0, file_size - scan_bytes)
+                try:
+                    with open(path, 'rb') as f:
+                        f.seek(start_offset)
+                        if start_offset > 0:
+                            f.readline()
+                        raw_data = f.read(scan_bytes)
+                except OSError:
+                    continue
+                effective = len(raw_data)
+                total_scan_bytes += effective
+                scanned_files.append({
+                    "name": os.path.basename(path),
+                    "bytes": effective,
+                    "total_bytes": file_size,
+                })
+
+                text = raw_data.decode('utf-8', errors='ignore')
+                for raw in text.splitlines():
+                    line = raw.strip()
+                    if not line:
                         continue
-                if kw and kw not in line.lower():
-                    continue
-                matched_seen += 1
-                if matched_seen <= safe_cursor:
-                    continue
-                if len(results) < max_limit:
-                    results.append(line)
-                else:
-                    has_more = True
+                    if lvl_set:
+                        m = _LOG_LINE_LEVEL_RE.match(line)
+                        lvl = (m.group(2) or m.group(4) or '').upper() if m else 'INFO'
+                        if lvl not in lvl_set:
+                            continue
+                    if kw and kw not in line.lower():
+                        continue
+                    matched_seen += 1
+                    if matched_seen <= safe_cursor:
+                        continue
+                    if len(results) < max_limit:
+                        results.append(line)
+                    else:
+                        has_more = True
+                        break
+                if has_more:
                     break
+
             next_cursor = safe_cursor + len(results)
             total_estimate = next_cursor + (1 if has_more else 0)
             return {
@@ -2079,12 +2467,107 @@ async def search_logs(
                 "next_cursor": next_cursor,
                 "has_more": has_more,
                 "total_is_estimate": True,
-                "scan_bytes": min(file_size, scan_bytes),
+                "scan_bytes": total_scan_bytes,
+                "scanned_files": scanned_files,
             }
 
         return await asyncio.to_thread(_search)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"日志检索失败: {str(e)}")
+
+
+@app.get("/api/logs/info")
+async def get_logs_info():
+    """返回日志目录下所有 app.log / app.log.N / desktop_app.log 的尺寸信息。
+
+    前端的"日志管理"面板据此展示，并给出"清理备份 / 截断主日志"入口。
+    """
+    from ..core.app_logging import list_log_files, get_log_dir, get_main_log_path
+
+    def _collect():
+        files = [info.to_dict() for info in list_log_files()]
+        total = sum(int(item.get("size_bytes") or 0) for item in files)
+        main_size = 0
+        backup_size = 0
+        for item in files:
+            size = int(item.get("size_bytes") or 0)
+            if item.get("is_main"):
+                main_size += size
+            elif item.get("is_backup"):
+                backup_size += size
+        return {
+            "log_dir": get_log_dir(),
+            "main_log_path": get_main_log_path(),
+            "files": files,
+            "total_bytes": total,
+            "main_bytes": main_size,
+            "backup_bytes": backup_size,
+            "max_mb_per_file": int(
+                os.environ.get("PREKIKOERU_LOG_MAX_MB", "20") or 20
+            ),
+            "backup_count": int(
+                os.environ.get("PREKIKOERU_LOG_BACKUPS", "5") or 5
+            ),
+        }
+
+    return await asyncio.to_thread(_collect)
+
+
+class LogCleanupRequest(BaseModel):
+    purge_backups: bool = False
+    truncate_main: bool = False
+    keep_tail_mb: float = 2.0
+    rotate: bool = False
+
+
+@app.post("/api/logs/cleanup")
+async def cleanup_logs(payload: LogCleanupRequest):
+    """清理日志文件。
+
+    参数均为布尔开关，可叠加（按 rotate -> purge_backups -> truncate_main 顺序执行）：
+    - ``rotate``：立即触发一次 RotatingFileHandler.doRollover，把当前主日志滚到 .1。
+    - ``purge_backups``：删除所有 app.log.N 备份文件。
+    - ``truncate_main``：把主日志截断到最后 ``keep_tail_mb`` MB（默认 2MB）。
+    """
+    from ..core.app_logging import (
+        cleanup_log_files,
+        force_rotate_main_log,
+    )
+
+    if not (payload.purge_backups or payload.truncate_main or payload.rotate):
+        raise HTTPException(status_code=400, detail="至少要选一种清理动作")
+
+    keep_bytes = max(0, int(float(payload.keep_tail_mb or 0) * 1024 * 1024))
+
+    def _run() -> Dict[str, Any]:
+        rotate_summary: Dict[str, Any] = {}
+        if payload.rotate:
+            rotate_summary = force_rotate_main_log()
+
+        cleanup_summary = cleanup_log_files(
+            purge_backups=payload.purge_backups,
+            truncate_main=payload.truncate_main,
+            keep_tail_bytes=keep_bytes,
+        )
+        return {
+            "rotate": rotate_summary,
+            "cleanup": cleanup_summary,
+        }
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:  # pragma: no cover - 兜底
+        logger.exception("[日志管理] 清理日志失败")
+        raise HTTPException(status_code=500, detail=f"清理日志失败: {exc}")
+
+    logger.info(
+        "[日志管理] cleanup rotate=%s purge_backups=%s truncate_main=%s keep_tail_mb=%s",
+        payload.rotate,
+        payload.purge_backups,
+        payload.truncate_main,
+        payload.keep_tail_mb,
+    )
+    return {"ok": True, **result}
 
 @app.get("/api/conflicts")
 async def get_conflicts(include_stats: bool = False):
@@ -3423,6 +3906,845 @@ async def search_library_index(
         "items": [_index_entry_to_dict(entry) for entry in entries],
         "count": len(entries),
     }
+
+
+_GLOBAL_INDEX_SEARCH_LIMIT_MAX = 500
+_GLOBAL_INDEX_SEARCH_LIMIT_DEFAULT = 50
+_GLOBAL_INDEX_SEARCH_RJ_RE = re.compile(r"^RJ\d{4,12}$", re.IGNORECASE)
+_GLOBAL_INDEX_SEARCH_RJ_DIGITS_RE = re.compile(r"^\d{6,12}$")
+
+
+def _normalize_global_index_entry_type(value: Optional[str]) -> Optional[str]:
+    normalized = (value or "").strip().lower()
+    if normalized in ("", "all", "any"):
+        return None
+    if normalized in ("dir", "folder", "directory"):
+        return "dir"
+    if normalized in ("file", "files"):
+        return "file"
+    return None
+
+
+def _detect_global_index_rjcode(keyword: str) -> Optional[str]:
+    if not keyword:
+        return None
+    text = keyword.strip().upper().replace(" ", "")
+    if _GLOBAL_INDEX_SEARCH_RJ_RE.match(text):
+        return text
+    if _GLOBAL_INDEX_SEARCH_RJ_DIGITS_RE.match(text):
+        return f"RJ{text}"
+    return None
+
+
+def _resolve_global_index_library_scope(
+    manager,
+    library_ids_csv: Optional[str],
+) -> tuple[list[str], list[Dict[str, Any]]]:
+    """把传入的 library_ids（CSV 字符串）解析成实际可用的 library_id 列表 +
+    库存信息字典列表，便于结果里塞 library_name / library_type。
+
+    - 不传 / 空 → 默认全部启用的库存
+    - 任意一个未在配置中的 ID 都会被过滤掉，避免越权访问
+    """
+    libraries = manager.list_libraries()  # 已按可见性过滤
+    library_map: Dict[str, Dict[str, Any]] = {
+        str(item.get("id") or ""): item for item in libraries if item.get("id")
+    }
+    if not library_ids_csv or not library_ids_csv.strip():
+        scoped = list(library_map.values())
+    else:
+        wanted = {
+            piece.strip()
+            for piece in library_ids_csv.split(",")
+            if piece.strip()
+        }
+        scoped = [library_map[item_id] for item_id in wanted if item_id in library_map]
+    library_ids = [str(item.get("id") or "") for item in scoped if item.get("id")]
+    return library_ids, scoped
+
+
+# ===== 全局跨库搜索：未就绪库的非索引兜底 =====
+# 让索引未建好（比如远程库刚加上、扫描还没跑完）的库也能搜出来：
+# 直接复用 LibraryManager.list_files 的搜索能力——本地走 os.walk，远程走 SYNO.Search。
+# 每个库独立计时，超时 / 出错只影响该库，不拖垮整体响应。
+#
+# 现在的设计是"索引零命中才回退到这条路径"，所以这是用户搜索"未匹配"时的等待上限。
+# 5s 是平衡点：足够慢的远程库返回，也不会让"明明搜不到"等太久。
+_GLOBAL_FALLBACK_PER_LIBRARY_TIMEOUT_S = 5.0
+
+
+def _entry_type_to_search_kind(normalized: Optional[str]) -> str:
+    if normalized == "dir":
+        return "folder"
+    if normalized == "file":
+        return "file"
+    return "all"
+
+
+def _build_uniform_search_item(
+    *,
+    library_id: str,
+    library_name: str,
+    library_type: str,
+    entry_type: str,
+    name: str,
+    relative_path: str,
+    absolute_path: str,
+    parent_path: str,
+    depth: Optional[int],
+    size: Optional[int],
+    mtime: Optional[int],
+    rjcode: Optional[str],
+    file_count: Optional[int] = None,
+    source: str = "index",
+) -> Dict[str, Any]:
+    return {
+        "library_id": library_id,
+        "library_name": library_name,
+        "library_type": library_type,
+        "entry_type": entry_type,
+        "name": name,
+        "relative_path": relative_path,
+        "absolute_path": absolute_path,
+        "parent_path": parent_path,
+        "depth": depth,
+        "size": size,
+        "file_count": file_count,
+        "mtime": mtime,
+        "rjcode": rjcode,
+        "source": source,  # 'index' / 'fallback' —— 前端可据此提示该结果来自非索引搜索
+    }
+
+
+def _index_entry_to_uniform_item(entry, library_info: Dict[str, Any]) -> Dict[str, Any]:
+    return _build_uniform_search_item(
+        library_id=entry.library_id,
+        library_name=str(library_info.get("name") or entry.library_id),
+        library_type=str(library_info.get("type") or "local"),
+        entry_type=entry.entry_type,
+        name=entry.name,
+        relative_path=entry.relative_path,
+        absolute_path=entry.absolute_path,
+        parent_path=entry.parent_path or "",
+        depth=entry.depth,
+        size=entry.size,
+        file_count=entry.file_count,
+        mtime=entry.mtime,
+        rjcode=entry.rjcode,
+        source="index",
+    )
+
+
+def _fallback_entry_to_uniform_item(
+    raw_entry: Dict[str, Any],
+    library_info: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """list_files 返回的一条记录 → 统一形态。无法识别的条目返回 None。"""
+    abs_path = str(raw_entry.get("path") or "").strip()
+    name = str(raw_entry.get("name") or "").strip()
+    if not name and abs_path:
+        name = os.path.basename(abs_path.rstrip("/")) or abs_path
+    if not name and not abs_path:
+        return None
+    is_dir = bool(raw_entry.get("is_directory"))
+
+    library_type = str(library_info.get("type") or "local")
+    library_id = str(library_info.get("id") or "")
+    library_name = str(library_info.get("name") or library_id)
+    root = str(library_info.get("root_path") or library_info.get("path") or "").strip()
+
+    rel = ""
+    if abs_path:
+        if library_type == "synology_filestation":
+            norm_root = root.rstrip("/")
+            norm_path = abs_path.rstrip("/") or abs_path
+            if norm_root and norm_path == norm_root:
+                rel = ""
+            elif norm_root and norm_path.startswith(norm_root + "/"):
+                rel = norm_path[len(norm_root) + 1:]
+            else:
+                rel = norm_path.lstrip("/") or name
+        else:
+            try:
+                rel_local = os.path.relpath(abs_path, root) if root else ""
+            except ValueError:
+                rel_local = ""
+            if not rel_local or rel_local in {".", ""} or rel_local.startswith(".."):
+                rel = name
+            else:
+                rel = rel_local.replace(os.sep, "/")
+    else:
+        rel = name
+
+    parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+    depth = rel.count("/") if rel else 0
+
+    mtime_ms: Optional[int] = None
+    mtime_iso = raw_entry.get("modified_time") or raw_entry.get("unzip_time")
+    if mtime_iso:
+        try:
+            mtime_ms = int(datetime.fromisoformat(str(mtime_iso)).timestamp() * 1000)
+        except Exception:
+            mtime_ms = None
+
+    rjcode_raw = raw_entry.get("rjcode")
+    rjcode = str(rjcode_raw).strip().upper() if rjcode_raw else None
+
+    return _build_uniform_search_item(
+        library_id=library_id,
+        library_name=library_name,
+        library_type=library_type,
+        entry_type="dir" if is_dir else "file",
+        name=name,
+        relative_path=rel,
+        absolute_path=abs_path,
+        parent_path=parent,
+        depth=depth,
+        size=raw_entry.get("size"),
+        mtime=mtime_ms,
+        rjcode=rjcode,
+        source="fallback",
+    )
+
+
+async def _global_search_fallback_one_library(
+    manager,
+    library_info: Dict[str, Any],
+    keyword: str,
+    normalized_entry_type: Optional[str],
+    fetch_limit: int,
+) -> tuple[str, list[Dict[str, Any]], Optional[str]]:
+    """对单个未就绪的库走 list_files 兜底搜索。
+
+    返回 (library_id, items, error_or_none)：
+    - error == 'timeout'：超过 _GLOBAL_FALLBACK_PER_LIBRARY_TIMEOUT_S
+    - error == '<exc str>'：业务异常
+    - error is None：成功（items 可能为空）
+    """
+    library_id = str(library_info.get("id") or "")
+    if not library_id:
+        return library_id, [], "missing_library_id"
+    search_kind = _entry_type_to_search_kind(normalized_entry_type)
+    try:
+        data = await asyncio.wait_for(
+            manager.list_files(
+                library_id,
+                page=1,
+                page_size=max(50, min(fetch_limit, 200)),
+                search=keyword,
+                current_path=None,
+                sort_by="name",
+                sort_order="asc",
+                search_exact=False,
+                search_result_kind=search_kind,
+            ),
+            timeout=_GLOBAL_FALLBACK_PER_LIBRARY_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.info(
+            "[索引搜索] 兜底搜索超时：library_id=%s keyword=%r",
+            library_id, keyword,
+        )
+        return library_id, [], "timeout"
+    except Exception as exc:  # noqa: BLE001 - 单库异常不能拖垮整体
+        logger.warning(
+            "[索引搜索] 兜底搜索异常：library_id=%s keyword=%r err=%s",
+            library_id, keyword, exc, exc_info=True,
+        )
+        return library_id, [], (str(exc) or exc.__class__.__name__)
+
+    items: list[Dict[str, Any]] = []
+    for raw_entry in (data.get("files") or []):
+        normalized = _fallback_entry_to_uniform_item(raw_entry, library_info)
+        if normalized is not None:
+            items.append(normalized)
+    return library_id, items, None
+
+
+@app.get("/api/library/index/global-search")
+async def global_search_library_index(
+    keyword: str = "",
+    library_ids: Optional[str] = None,
+    entry_type: str = "all",
+    limit: int = _GLOBAL_INDEX_SEARCH_LIMIT_DEFAULT,
+    mode: str = "full",
+):
+    """跨库存的索引搜索，专为库存页搜索框 / 全屏搜索面板服务。
+
+    特性：
+    - 默认跨全部启用库存（local + synology_filestation）；可通过 library_ids
+      （CSV）收窄到指定库
+    - 关键字会自动尝试 RJ 号识别（"RJ01234567" / "01234567" 都会命中）+
+      名字模糊匹配，结果合并去重
+    - 全程只读 SQLite 索引，IO 压力恒定，不触发任何 fs / FileStation 调用
+    - mode=suggest 时只返回前 limit 条用于自动补全；mode=full 时按 cap
+      返回更多条目用于全屏搜索结果列表
+
+    返回字段：
+    - items：每条带 library_name / library_type，便于 UI 直接渲染来源标签
+    - library_status：被搜索的库的索引就绪状态，UI 可据此提示"索引未就绪"
+    - matched_rjcode：检测到的 RJ 号（如有），方便 UI 高亮
+    """
+    started_at = time.perf_counter()
+    keyword_raw = (keyword or "").strip()
+    if not keyword_raw:
+        return {
+            "items": [],
+            "count": 0,
+            "limit": 0,
+            "truncated": False,
+            "library_scope": [],
+            "library_status": [],
+            "matched_rjcode": None,
+            "elapsed_ms": 0,
+            "mode": mode or "full",
+        }
+
+    normalized_mode = "suggest" if (mode or "").strip().lower() == "suggest" else "full"
+    raw_limit = max(1, int(limit or _GLOBAL_INDEX_SEARCH_LIMIT_DEFAULT))
+    if normalized_mode == "suggest":
+        capped_limit = min(raw_limit, 20)
+    else:
+        capped_limit = min(raw_limit, _GLOBAL_INDEX_SEARCH_LIMIT_MAX)
+
+    manager = get_library_manager()
+    library_ids_list, scoped_libraries = _resolve_global_index_library_scope(
+        manager, library_ids
+    )
+    library_lookup: Dict[str, Dict[str, Any]] = {
+        str(item.get("id") or ""): item for item in scoped_libraries if item.get("id")
+    }
+
+    if not library_ids_list:
+        return {
+            "items": [],
+            "count": 0,
+            "limit": capped_limit,
+            "truncated": False,
+            "library_scope": [],
+            "library_status": [],
+            "matched_rjcode": None,
+            "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+            "mode": normalized_mode,
+        }
+
+    service = get_library_index_service()
+    normalized_entry_type = _normalize_global_index_entry_type(entry_type)
+    matched_rjcode = _detect_global_index_rjcode(keyword_raw)
+
+    # ===== Phase 1：先抓每个库的索引就绪状态，决定走索引还是走兜底 =====
+    library_status_map: Dict[str, Dict[str, Any]] = {}
+    ready_library_ids: list[str] = []
+    unready_library_infos: list[Dict[str, Any]] = []
+    for library_id in library_ids_list:
+        info = library_lookup.get(library_id, {})
+        try:
+            status_obj = service.get_status(library_id)
+        except Exception:  # noqa: BLE001 - 状态查询独立兜底
+            logger.debug(
+                "[索引搜索] 读取库存索引状态失败：library_id=%s",
+                library_id,
+                exc_info=True,
+            )
+            status_obj = None
+        index_status_name = status_obj.status if status_obj else "idle"
+        library_status_map[library_id] = {
+            "library_id": library_id,
+            "library_name": info.get("name") or library_id,
+            "library_type": info.get("type") or "local",
+            "index_status": index_status_name,
+            "total_entries": int(getattr(status_obj, "total_entries", 0) or 0) if status_obj else 0,
+            "search_mode": "index",  # 默认假设走索引；下面会根据 ready / fallback 调整
+            "fallback_error": None,
+        }
+        if index_status_name == "ready":
+            ready_library_ids.append(library_id)
+        else:
+            # syncing / idle / error 都视为未就绪 → 走非索引兜底
+            unready_library_infos.append(info or {"id": library_id})
+            library_status_map[library_id]["search_mode"] = "fallback_pending"
+
+    # 给非索引库的状态先打个标，未就绪的库按 fallback 处理
+    for info in unready_library_infos:
+        lid = str(info.get("id") or "")
+        if lid in library_status_map:
+            library_status_map[lid]["search_mode"] = "fallback"
+
+    # 拉一份比 limit 略大的中间结果，方便后续合并 / 排序后再裁剪
+    fetch_limit = min(_GLOBAL_INDEX_SEARCH_LIMIT_MAX, max(capped_limit * 3, capped_limit + 50))
+
+    # ===== Phase 2：对就绪的库走索引（毫秒级 SQL） =====
+    # 关键性能优化：
+    # 1) RJ 搜索时**只**跑 find_by_rjcode（exact match + 索引覆盖，~ms 级）；
+    #    跳过 find_by_name(`%RJ01234567%`)——这是个不走索引的全表扫描，
+    #    在 1M 级索引上要 1~2 秒，且 rjcode 已经精确命中，name LIKE 命中是噪声。
+    # 2) 索引层任何异常都不让接口 500，转 200 + error 字段。
+    error_payload: Optional[Dict[str, Any]] = None
+    index_items: list[Dict[str, Any]] = []
+    rj_hit_keys: set[tuple[str, str]] = set()
+
+    def _run_phase2_index_sync() -> tuple[list[Any], list[Any], Optional[Dict[str, Any]]]:
+        """同步索引查询，返回 (rj_entries, name_entries, error_payload)。
+        放在 to_thread 里跑，避免阻塞 event loop。"""
+        if not ready_library_ids:
+            return [], [], None
+        scope_param: Any = ready_library_ids[0] if len(ready_library_ids) == 1 else ready_library_ids
+        try:
+            rj_entries: list[Any] = []
+            name_entries: list[Any] = []
+            if matched_rjcode:
+                rj_entries = service.find_by_rjcode(
+                    matched_rjcode,
+                    scope_param,
+                    entry_type="dir" if normalized_entry_type in (None, "dir") else normalized_entry_type,
+                    limit=fetch_limit,
+                ) or []
+                # RJ 已命中：跳过 find_by_name 的全表扫描（性能关键）
+            else:
+                name_entries = service.find_by_name(
+                    scope_param,
+                    keyword_raw,
+                    entry_type=normalized_entry_type,
+                    limit=fetch_limit,
+                ) or []
+            return rj_entries, name_entries, None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[索引搜索] 索引查询失败，已降级：keyword=%r ready=%s err=%s",
+                keyword_raw, ready_library_ids, exc, exc_info=True,
+            )
+            return [], [], {
+                "code": "index_search_failed",
+                "message": str(exc) or exc.__class__.__name__,
+            }
+
+    # ===== Phase 2：先跑索引（同步走 to_thread，不阻塞 event loop） =====
+    # 设计原则：索引搜索是"快路径"，本地库存扫描（list_files / SYNO.Search）是"慢兜底"。
+    # 两者不能并行——并行的话索引哪怕秒回，整体响应仍要等慢扫描，索引就失去意义了。
+    # 流程：
+    #   1) 先在所有 ready 的库里走索引（毫秒级 SQL）
+    #   2) 命中任一条结果 → 立即返回，未就绪的库标 "skipped_index_hit"，不去扫描
+    #   3) 索引一无所获 → 才把未就绪的库的 list_files 兜底跑起来
+    try:
+        rj_entries, name_entries, error_payload = await asyncio.to_thread(_run_phase2_index_sync)
+    except Exception as exc:  # noqa: BLE001 - 极端兜底
+        logger.warning(
+            "[索引搜索] Phase 2 任务异常：keyword=%r err=%s",
+            keyword_raw, exc, exc_info=True,
+        )
+        rj_entries, name_entries, error_payload = [], [], {
+            "code": "index_search_failed",
+            "message": str(exc) or exc.__class__.__name__,
+        }
+
+    # 索引挂了 → 把就绪库也丢回 fallback 候选（让兜底能覆盖它们）
+    if error_payload is not None:
+        for lid in ready_library_ids:
+            if not any(str(x.get("id") or "") == lid for x in unready_library_infos):
+                info = library_lookup.get(lid, {}) or {"id": lid}
+                unready_library_infos.append(info)
+                library_status_map[lid]["search_mode"] = "fallback"
+
+    rj_hit_keys = {(e.library_id, e.relative_path) for e in rj_entries}
+    seen_index: set[tuple[str, str]] = set()
+    for entry in list(rj_entries) + list(name_entries):
+        key = (entry.library_id, entry.relative_path)
+        if key in seen_index:
+            continue
+        seen_index.add(key)
+        info = library_lookup.get(entry.library_id, {})
+        index_items.append(_index_entry_to_uniform_item(entry, info))
+
+    # ===== Phase 3：仅在索引一无所获时才跑兜底扫描 =====
+    # - 索引命中（index_items 非空）：未就绪的库标 skipped_index_hit，**不扫描**
+    # - 索引零结果 + 有未就绪库：才跑 list_files 兜底（远程走 SYNO.Search、本地走 os.walk）
+    # - 没有未就绪库：自然没有 Phase 3
+    fallback_items: list[Dict[str, Any]] = []
+    if not unready_library_infos:
+        pass  # 全部库都已就绪，索引说啥就是啥
+    elif index_items:
+        # 索引已经给出答案 → 跳过慢扫描，让响应保持索引级速度
+        for info in unready_library_infos:
+            lid = str(info.get("id") or "")
+            if lid in library_status_map:
+                library_status_map[lid]["search_mode"] = "skipped_index_hit"
+                library_status_map[lid]["fallback_error"] = None
+    else:
+        # 索引零命中，进入兜底扫描；并行 + 单库超时
+        try:
+            results = await asyncio.gather(
+                *[
+                    _global_search_fallback_one_library(
+                        manager, info, keyword_raw, normalized_entry_type, fetch_limit,
+                    )
+                    for info in unready_library_infos
+                ],
+                return_exceptions=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - 极端兜底
+            logger.warning(
+                "[索引搜索] 全部兜底搜索 gather 失败：keyword=%r err=%s",
+                keyword_raw, exc, exc_info=True,
+            )
+            results = []
+        for library_id_done, items_done, err in results:
+            if library_id_done in library_status_map:
+                library_status_map[library_id_done]["search_mode"] = (
+                    "fallback_failed" if err else "fallback"
+                )
+                library_status_map[library_id_done]["fallback_error"] = err
+            fallback_items.extend(items_done)
+
+    # ===== Phase 4：合并 + 去重 + 排序 + 裁剪 =====
+    seen_global: set[tuple[str, str]] = set()
+    merged_items: list[Dict[str, Any]] = []
+    for item in index_items + fallback_items:
+        # 优先用 (library_id, relative_path) 作为去重键；relative_path 可能为空时退回 absolute_path
+        rel = item.get("relative_path") or item.get("absolute_path") or item.get("name") or ""
+        key = (item.get("library_id") or "", str(rel))
+        if key in seen_global:
+            continue
+        seen_global.add(key)
+        merged_items.append(item)
+
+    def _sort_item(item: Dict[str, Any]):
+        rj_key = (item.get("library_id") or "", item.get("relative_path") or "")
+        is_rj_hit = rj_key in rj_hit_keys or (
+            matched_rjcode is not None
+            and (item.get("rjcode") or "").upper() == matched_rjcode
+        )
+        is_dir = item.get("entry_type") == "dir"
+        depth = item.get("depth")
+        depth_val = depth if isinstance(depth, int) else 99
+        # index 来源略优先于 fallback，给用户更稳定的 ranking
+        is_index = item.get("source") == "index"
+        name_lower = str(item.get("name") or "").lower()
+        return (
+            0 if is_rj_hit else 1,
+            0 if is_index else 1,
+            0 if is_dir else 1,
+            depth_val,
+            name_lower,
+        )
+
+    merged_items.sort(key=_sort_item)
+    truncated = len(merged_items) > capped_limit
+    capped_items = merged_items[:capped_limit]
+
+    library_status: list[Dict[str, Any]] = [library_status_map[lid] for lid in library_ids_list]
+
+    response: Dict[str, Any] = {
+        "items": capped_items,
+        "count": len(capped_items),
+        "total": len(merged_items),
+        "limit": capped_limit,
+        "truncated": truncated,
+        "library_scope": library_ids_list,
+        "library_status": library_status,
+        "matched_rjcode": matched_rjcode,
+        "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+        "mode": normalized_mode,
+        # 让前端区分：是否走过 fallback、有几个库走 fallback、有几个 fallback 失败
+        "fallback_used": bool(unready_library_infos),
+        "fallback_failed": [
+            entry["library_id"]
+            for entry in library_status
+            if entry.get("search_mode") == "fallback_failed"
+        ],
+    }
+    if error_payload is not None:
+        response["error"] = error_payload
+    return response
+
+
+@app.get("/api/library/index/global-search/stream")
+async def global_search_library_index_stream(
+    keyword: str = "",
+    library_ids: Optional[str] = None,
+    entry_type: str = "all",
+    limit: int = _GLOBAL_INDEX_SEARCH_LIMIT_DEFAULT,
+    mode: str = "full",
+):
+    """流式版本的跨库搜索：先把索引结果推回去，再把每个未就绪库的兜底扫描结果
+    按完成顺序逐条推回，让前端在第一个库返回时就能看到结果，而不是等所有库扫完。
+
+    NDJSON 协议（每行一个事件）：
+    - {"type": "initial", "items": [...index 结果...], "library_status": [...],
+       "matched_rjcode": "RJxxx", "elapsed_ms": N, "will_run_fallback": bool, ...}
+    - {"type": "library", "library_id": "xxx", "items": [...该库 fallback 结果...],
+       "error": null|"timeout"|"<exc>", "library_status": {...}, "elapsed_ms": N}
+    - {"type": "done", "elapsed_ms": N, "fallback_used": bool, "fallback_failed": [...]}
+
+    设计与同步版 /api/library/index/global-search 一致：索引为快路径、fallback 为慢
+    兜底；区别是 fallback 阶段改为流式推送，不再阻塞到全部完成才响应。
+    """
+    started_at = time.perf_counter()
+    keyword_raw = (keyword or "").strip()
+    normalized_mode = "suggest" if (mode or "").strip().lower() == "suggest" else "full"
+    raw_limit = max(1, int(limit or _GLOBAL_INDEX_SEARCH_LIMIT_DEFAULT))
+    if normalized_mode == "suggest":
+        capped_limit = min(raw_limit, 20)
+    else:
+        capped_limit = min(raw_limit, _GLOBAL_INDEX_SEARCH_LIMIT_MAX)
+
+    async def stream_events():
+        # 空 keyword：直接发 done
+        if not keyword_raw:
+            yield json.dumps({
+                "type": "done",
+                "elapsed_ms": 0,
+                "fallback_used": False,
+                "fallback_failed": [],
+            }) + "\n"
+            return
+
+        manager = get_library_manager()
+        library_ids_list, scoped_libraries = _resolve_global_index_library_scope(
+            manager, library_ids
+        )
+        library_lookup: Dict[str, Dict[str, Any]] = {
+            str(item.get("id") or ""): item for item in scoped_libraries if item.get("id")
+        }
+        if not library_ids_list:
+            yield json.dumps({
+                "type": "initial",
+                "items": [],
+                "total": 0,
+                "library_scope": [],
+                "library_status": [],
+                "matched_rjcode": None,
+                "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                "mode": normalized_mode,
+                "limit": capped_limit,
+                "will_run_fallback": False,
+            }) + "\n"
+            yield json.dumps({
+                "type": "done",
+                "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                "fallback_used": False,
+                "fallback_failed": [],
+            }) + "\n"
+            return
+
+        service = get_library_index_service()
+        normalized_entry_type = _normalize_global_index_entry_type(entry_type)
+        matched_rjcode = _detect_global_index_rjcode(keyword_raw)
+
+        # === Phase 1：库就绪状态分组 ===
+        library_status_map: Dict[str, Dict[str, Any]] = {}
+        ready_library_ids: list[str] = []
+        unready_library_infos: list[Dict[str, Any]] = []
+        for lib_id in library_ids_list:
+            info = library_lookup.get(lib_id, {})
+            try:
+                status_obj = service.get_status(lib_id)
+            except Exception:  # noqa: BLE001
+                status_obj = None
+            index_status_name = status_obj.status if status_obj else "idle"
+            library_status_map[lib_id] = {
+                "library_id": lib_id,
+                "library_name": info.get("name") or lib_id,
+                "library_type": info.get("type") or "local",
+                "index_status": index_status_name,
+                "total_entries": int(getattr(status_obj, "total_entries", 0) or 0) if status_obj else 0,
+                "search_mode": "index",
+                "fallback_error": None,
+            }
+            if index_status_name == "ready":
+                ready_library_ids.append(lib_id)
+            else:
+                unready_library_infos.append(info or {"id": lib_id})
+                library_status_map[lib_id]["search_mode"] = "fallback_pending"
+
+        fetch_limit = min(_GLOBAL_INDEX_SEARCH_LIMIT_MAX, max(capped_limit * 3, capped_limit + 50))
+
+        # === Phase 2：索引（毫秒级，跑在 to_thread） ===
+        def _phase2_sync():
+            if not ready_library_ids:
+                return [], [], None
+            scope_param: Any = ready_library_ids[0] if len(ready_library_ids) == 1 else ready_library_ids
+            try:
+                rj_inner: list[Any] = []
+                name_inner: list[Any] = []
+                if matched_rjcode:
+                    rj_inner = service.find_by_rjcode(
+                        matched_rjcode,
+                        scope_param,
+                        entry_type="dir" if normalized_entry_type in (None, "dir") else normalized_entry_type,
+                        limit=fetch_limit,
+                    ) or []
+                else:
+                    name_inner = service.find_by_name(
+                        scope_param,
+                        keyword_raw,
+                        entry_type=normalized_entry_type,
+                        limit=fetch_limit,
+                    ) or []
+                return rj_inner, name_inner, None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[索引搜索·流式] 索引查询失败：keyword=%r ready=%s err=%s",
+                    keyword_raw, ready_library_ids, exc, exc_info=True,
+                )
+                return [], [], {
+                    "code": "index_search_failed",
+                    "message": str(exc) or exc.__class__.__name__,
+                }
+
+        try:
+            rj_entries, name_entries, error_payload = await asyncio.to_thread(_phase2_sync)
+        except Exception as exc:  # noqa: BLE001
+            rj_entries, name_entries, error_payload = [], [], {
+                "code": "index_search_failed",
+                "message": str(exc) or exc.__class__.__name__,
+            }
+
+        # 索引整段挂了：把就绪库丢回 fallback 候选
+        if error_payload is not None:
+            for lid in ready_library_ids:
+                if not any(str(x.get("id") or "") == lid for x in unready_library_infos):
+                    info = library_lookup.get(lid, {}) or {"id": lid}
+                    unready_library_infos.append(info)
+                    library_status_map[lid]["search_mode"] = "fallback"
+
+        # 合并 + 去重 + 排序索引结果
+        rj_hit_keys = {(e.library_id, e.relative_path) for e in rj_entries}
+        seen_global: set[tuple[str, str]] = set()
+        index_items: list[Dict[str, Any]] = []
+        for entry in list(rj_entries) + list(name_entries):
+            key = (entry.library_id, entry.relative_path)
+            if key in seen_global:
+                continue
+            seen_global.add(key)
+            info = library_lookup.get(entry.library_id, {})
+            index_items.append(_index_entry_to_uniform_item(entry, info))
+
+        def _sort_item(item: Dict[str, Any]):
+            rj_key = (item.get("library_id") or "", item.get("relative_path") or "")
+            is_rj_hit = rj_key in rj_hit_keys or (
+                matched_rjcode is not None
+                and (item.get("rjcode") or "").upper() == matched_rjcode
+            )
+            is_dir = item.get("entry_type") == "dir"
+            depth = item.get("depth")
+            depth_val = depth if isinstance(depth, int) else 99
+            is_index = item.get("source") == "index"
+            name_lower = str(item.get("name") or "").lower()
+            return (
+                0 if is_rj_hit else 1,
+                0 if is_index else 1,
+                0 if is_dir else 1,
+                depth_val,
+                name_lower,
+            )
+
+        index_items.sort(key=_sort_item)
+
+        # 决定是否要跑 Phase 3：仅当索引零命中 + 有未就绪库
+        will_run_fallback = bool(unready_library_infos) and not index_items
+        if not will_run_fallback and unready_library_infos:
+            # 索引有命中 → 标记跳过远程，不打扰用户
+            for info in unready_library_infos:
+                lid = str(info.get("id") or "")
+                if lid in library_status_map:
+                    library_status_map[lid]["search_mode"] = "skipped_index_hit"
+                    library_status_map[lid]["fallback_error"] = None
+
+        # ===== 推送 initial 事件（带索引结果） =====
+        initial_event: Dict[str, Any] = {
+            "type": "initial",
+            "items": index_items[:capped_limit],
+            "total": len(index_items),
+            "truncated": len(index_items) > capped_limit,
+            "library_scope": library_ids_list,
+            "library_status": [library_status_map[lid] for lid in library_ids_list],
+            "matched_rjcode": matched_rjcode,
+            "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+            "mode": normalized_mode,
+            "limit": capped_limit,
+            "will_run_fallback": will_run_fallback,
+        }
+        if error_payload is not None:
+            initial_event["error"] = error_payload
+        yield json.dumps(initial_event, ensure_ascii=False) + "\n"
+
+        # 不需要兜底：done
+        if not will_run_fallback:
+            yield json.dumps({
+                "type": "done",
+                "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                "fallback_used": False,
+                "fallback_failed": [],
+            }, ensure_ascii=False) + "\n"
+            return
+
+        # ===== Phase 3：每个未就绪库各自独立扫描，按完成顺序流式推送 =====
+        fallback_failed: list[str] = []
+        # 用 task 关联回 library_info，便于在出错或取消时快速定位
+        per_task_info: Dict[asyncio.Task, Dict[str, Any]] = {
+            asyncio.create_task(
+                _global_search_fallback_one_library(
+                    manager, info, keyword_raw, normalized_entry_type, fetch_limit,
+                )
+            ): info
+            for info in unready_library_infos
+        }
+        try:
+            for finished in asyncio.as_completed(list(per_task_info.keys())):
+                try:
+                    library_id_done, items_done, err = await finished
+                except Exception as exc:  # noqa: BLE001
+                    library_id_done, items_done, err = "", [], (str(exc) or "fallback_error")
+
+                if library_id_done in library_status_map:
+                    library_status_map[library_id_done]["search_mode"] = (
+                        "fallback_failed" if err else "fallback"
+                    )
+                    library_status_map[library_id_done]["fallback_error"] = err
+                    if err:
+                        fallback_failed.append(library_id_done)
+
+                # 去掉与索引结果 / 之前 fallback 重复的项
+                deduped: list[Dict[str, Any]] = []
+                for item in items_done:
+                    rel = item.get("relative_path") or item.get("absolute_path") or item.get("name") or ""
+                    key = (item.get("library_id") or "", str(rel))
+                    if key in seen_global:
+                        continue
+                    seen_global.add(key)
+                    deduped.append(item)
+
+                yield json.dumps({
+                    "type": "library",
+                    "library_id": library_id_done,
+                    "items": deduped,
+                    "error": err,
+                    "library_status": library_status_map.get(library_id_done),
+                    "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                }, ensure_ascii=False) + "\n"
+        finally:
+            # 客户端断开 / generator 退出：cancel 还在跑的库扫描，避免后台空跑
+            for t in per_task_info:
+                if not t.done():
+                    t.cancel()
+
+        yield json.dumps({
+            "type": "done",
+            "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+            "fallback_used": True,
+            "fallback_failed": fallback_failed,
+            "library_status": [library_status_map[lid] for lid in library_ids_list],
+        }, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        stream_events(),
+        media_type="application/x-ndjson",
+        headers={
+            # 避免代理 / 浏览器缓冲，让事件能尽快推到前端
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/library/browser/files")
@@ -8681,6 +10003,31 @@ async def circle_completion_detail(
     except Exception as exc:
         logger.error("查询社团补全详情失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"查询社团补全详情失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/cover/{filename}")
+async def circle_completion_cover(filename: str):
+    """返回社团补全本地缓存的封面图（``data/img/RJxxxxxx.jpg``）。
+
+    - 文件名通过 ``CircleImageCacheService.resolve_filename`` 做严格白名单
+      校验（只允许 ``RJ\\d{6,8}.jpg``），杜绝 ``../`` 路径穿越。
+    - 文件不存在直接 404，前端 ``WorkCard.onCoverError`` 会自动 fallback
+      到 dlsite 公网 URL，所以这里不做服务端 redirect，让快路径只做"读本地"。
+    - 30 天 ``public`` 缓存：索引刷新会原子重写同名文件，浏览器拿旧缓存的
+      代价仅是封面没及时换，可接受。
+    """
+    from ..core.circle_image_cache_service import get_circle_image_cache_service
+
+    cache_path = get_circle_image_cache_service().resolve_filename(filename)
+    if cache_path is None or not cache_path.is_file():
+        raise HTTPException(status_code=404, detail="封面未缓存")
+    return FileResponse(
+        str(cache_path),
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "public, max-age=2592000, immutable",
+        },
+    )
 
 
 @app.post("/api/circle-completion/download/preview")

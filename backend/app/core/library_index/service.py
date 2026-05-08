@@ -23,7 +23,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Sequence, Union
 
 from .local_scanner import LocalScanner
 from .remote_scanner import RemoteScanner
@@ -385,23 +385,37 @@ class LibraryIndexService:
     def find_by_rjcode(
         self,
         rjcode: str,
-        library_id: Optional[str] = None,
+        library_id: Optional[Union[str, Sequence[str]]] = None,
         *,
         entry_type: Optional[str] = 'dir',
         limit: int = 100,
     ) -> list[IndexEntry]:
+        """按 RJ 号精确查。
+
+        library_id 透传到 SnapshotStore.find_by_rjcode：
+        - str → 单库存
+        - None / 空序列 → 跨全部库存
+        - Sequence[str] → 多库存（IN 查询）
+        """
         return self._store.find_by_rjcode(
             library_id, rjcode, entry_type=entry_type, limit=limit,
         )
 
     def find_by_name(
         self,
-        library_id: str,
+        library_id: Optional[Union[str, Sequence[str]]],
         name_like: str,
         *,
         entry_type: Optional[str] = None,
         limit: int = 200,
     ) -> list[IndexEntry]:
+        """按名称模糊搜索。
+
+        library_id 透传到 SnapshotStore.find_by_name：
+        - str → 单库存
+        - None / 空序列 → 跨全部库存
+        - Sequence[str] → 多库存（IN 查询）
+        """
         return self._store.find_by_name(
             library_id, name_like, entry_type=entry_type, limit=limit,
         )
