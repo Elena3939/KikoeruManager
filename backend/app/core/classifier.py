@@ -51,8 +51,8 @@ class SmartClassifier:
         
         logger.info(f"[预检] 跳过本地库重复扫描，仅检查 Kikoeru: {rjcode}")
 
-        # 2. 检查远程 Kikoeru 服务器
-        logger.info(f"[预检] 检查远程服务器: {rjcode}")
+        # 2. 检查 Kikoeru 在线索引服务器（不是用户配置的远程库存）
+        logger.info(f"[预检] 检查 Kikoeru 服务器: {rjcode}")
         kikoeru_result = await self._check_kikoeru_server(rjcode, task)
         if kikoeru_result:
             return True
@@ -67,10 +67,11 @@ class SmartClassifier:
     
     async def _check_kikoeru_server(self, rjcode: str, task: Task) -> bool:
         """
-        检查远程 Kikoeru 服务器是否存在该作品
+        检查 Kikoeru 在线索引服务器是否存在该作品
+        （注意：这里指的是 Kikoeru 在线 API 服务，不是用户配置的远程库存）
         
         Returns:
-            bool: True 表示在远程服务器找到重复，应停止处理
+            bool: True 表示在 Kikoeru 服务器找到重复，应停止处理
         """
         try:
             config = get_config()
@@ -81,7 +82,7 @@ class SmartClassifier:
             
             kikoeru_config = config.kikoeru_server
             if not kikoeru_config.enabled:
-                logger.debug(f"[Kikoeru预检] 远程查重未启用，跳过")
+                logger.debug(f"[Kikoeru预检] Kikoeru 查重未启用，跳过")
                 return False
             
             # 检查是否在预检中启用
@@ -89,7 +90,7 @@ class SmartClassifier:
                 logger.debug(f"[Kikoeru预检] 预检查重未启用，跳过")
                 return False
             
-            logger.info(f"[Kikoeru预检] 开始检查远程服务器: {rjcode}")
+            logger.info(f"[Kikoeru预检] 开始检查 Kikoeru 服务器: {rjcode}")
             
             from .kikoeru_duplicate_service import get_kikoeru_service
             service = get_kikoeru_service()
@@ -172,7 +173,7 @@ class SmartClassifier:
                         task.id,
                         rjcode,
                         'DUPLICATE',
-                        f"[远程服务器] 翻译作品已存在字幕: {hit.title}",
+                        f"[Kikoeru 服务器] 翻译作品已存在字幕: {hit.title}",
                         task.source_path,
                         {
                             'work_name': hit.title,
@@ -204,7 +205,7 @@ class SmartClassifier:
                     task.id,
                     rjcode,
                     'DUPLICATE',
-                    f"[远程服务器] 同语种翻译作品已存在字幕: {', '.join([h['rjcode'] for h in linked_hits])}",
+                    f"[Kikoeru 服务器] 同语种翻译作品已存在字幕: {', '.join([h['rjcode'] for h in linked_hits])}",
                     task.source_path,
                     {
                         'work_name': rjcode,
@@ -216,14 +217,14 @@ class SmartClassifier:
                 return True
 
             if primary_result and primary_result.is_found:
-                logger.info(f"[Kikoeru预检] 在远程服务器找到作品: {rjcode} - {primary_result.title}")
+                logger.info(f"[Kikoeru预检] 在 Kikoeru 服务器找到作品: {rjcode} - {primary_result.title}")
                 
                 # 添加到问题作品表
                 self._add_to_conflict_works(
                     task.id,
                     rjcode,
                     'DUPLICATE',
-                    f"[远程服务器] {primary_result.title}",
+                    f"[Kikoeru 服务器] {primary_result.title}",
                     task.source_path,
                     {
                         'work_name': primary_result.title,
@@ -243,7 +244,7 @@ class SmartClassifier:
             # 检查关联作品是否找到
             found_linked = [r for r, res in result.items() if res.is_found and r != rjcode]
             if found_linked:
-                logger.info(f"[Kikoeru预检] 在远程服务器找到关联作品: {found_linked}")
+                logger.info(f"[Kikoeru预检] 在 Kikoeru 服务器找到关联作品: {found_linked}")
                 
                 # 添加到问题作品表
                 linked_info = [{
@@ -256,7 +257,7 @@ class SmartClassifier:
                     task.id,
                     rjcode,
                     'DUPLICATE',
-                    f"[远程服务器] 关联作品已存在: {', '.join(found_linked)}",
+                    f"[Kikoeru 服务器] 关联作品已存在: {', '.join(found_linked)}",
                     task.source_path,
                     {
                         'work_name': primary_result.title if primary_result else rjcode,
@@ -268,11 +269,11 @@ class SmartClassifier:
                 logger.info(f"[Kikoeru预检] 因关联作品存在，已添加到问题作品列表: {rjcode}")
                 return True
             
-            logger.info(f"[Kikoeru预检] 远程服务器未找到: {rjcode}")
+            logger.info(f"[Kikoeru预检] Kikoeru 服务器未找到: {rjcode}")
             return False
             
         except Exception as e:
-            logger.error(f"[Kikoeru预检] 远程查重失败: {e}")
+            logger.error(f"[Kikoeru预检] Kikoeru 查重失败: {e}")
             # 查重失败不阻止处理，继续解压
             return False
     
