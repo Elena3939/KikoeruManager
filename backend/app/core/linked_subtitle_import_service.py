@@ -1729,9 +1729,11 @@ class LinkedSubtitleImportService:
         elif not is_linked_subtitle_source:
             stage_reason = "当前作品不是可补配到原作的翻译作品"
         elif target_has_subtitle_in_kikoeru:
-            stage_reason = "Kikoeru 显示原作已有字幕，不需要触发字幕补配"
+            # 服务器原作已有字幕：当前翻译作没有字幕补配价值，统一走"原作已有字幕"
+            # 重复路径，由 _is_existing_subtitle_duplicate_preview 识别后转入 LINKED_WORK 问题作品。
+            stage_reason = self.EXISTING_SUBTITLE_REASON
         elif candidates and not ready_candidates:
-            stage_reason = "原作目录已有字幕，按重复作品处理"
+            stage_reason = self.EXISTING_SUBTITLE_REASON
         execute_reason = ""
         if stage_reason:
             execute_reason = stage_reason

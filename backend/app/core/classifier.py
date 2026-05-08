@@ -105,8 +105,11 @@ class SmartClassifier:
                 use_cache=True
             )
 
-            # 读取 DLsite 关联信息，用于识别“当前是否翻译作品”以及同语种筛选。
-            # 约定：翻译作品只有在远程存在字幕文件时才算重复；否则应继续后续补配流程。
+            # 读取 DLsite 关联信息，用于识别"当前是否翻译作品"。
+            # 重复判定按以下三规则（与字幕补配预检保持一致）：
+            #   - 规则 A：服务器拥有原作（无字幕）→ 翻译作走字幕补配；原作进重复。
+            #   - 规则 B：服务器拥有原作（有字幕）→ 翻译作和原作都进重复。
+            #   - 规则 C：服务器拥有任意翻译作 → 所有关联作品都进重复。
             linked_works = {}
             is_translation_work = False
             requested_lang = ""
@@ -127,99 +130,143 @@ class SmartClassifier:
                 subtitle_count = int(getattr(check_result, 'subtitle_file_count', 0) or 0)
                 return subtitle_count > 0
 
-            def _is_same_language_translation(candidate_rj: str) -> bool:
-                if candidate_rj == rjcode:
-                    return True
+            def _candidate_type(candidate_rj: str) -> str:
                 linked = linked_works.get(candidate_rj)
-                if linked is None:
-                    # 由 related_translation 补查返回的候选，服务端已按同语种过滤。
-                    return True
-                candidate_type = str(getattr(linked, 'work_type', '') or '').strip().lower()
-                if candidate_type not in {'translation', 'child_translation'}:
-                    return False
-                candidate_lang = str(getattr(linked, 'lang', '') or '').strip().upper()
-                if requested_lang and candidate_lang and candidate_lang != requested_lang:
-                    return False
-                return True
-            
+                return str(getattr(linked, 'work_type', '') or '').strip().lower() if linked else ''
+
             # 检查是否找到
             primary_result = result.get(rjcode)
 
             if is_translation_work:
-                subtitle_hits = []
+                # 收集服务器命中：任意翻译作（规则 C）+ 原作（规则 A/B）。
+                # 注意：当前 RJ 自身命中也归入翻译命中，确保规则 C 兜底自身。
+                translation_hits: list = []  # 含同语种 / 跨语种 / 当前 RJ 自身
+                original_hit = None          # 原作命中（携带字幕状态）
+                unknown_hits: list = []      # DLsite 未识别 work_type，但服务器命中
+
                 for candidate_rj, candidate_result in result.items():
                     if not getattr(candidate_result, 'is_found', False):
                         continue
-                    if not _is_same_language_translation(candidate_rj):
-                        continue
-                    if _has_remote_subtitles(candidate_result):
-                        subtitle_hits.append((candidate_rj, candidate_result))
+                    candidate_type = _candidate_type(candidate_rj)
+                    if candidate_rj == rjcode or candidate_type in {'translation', 'child_translation'}:
+                        translation_hits.append((candidate_rj, candidate_result))
+                    elif candidate_type == 'original':
+                        original_hit = (candidate_rj, candidate_result)
+                    else:
+                        # 由 related_translation 补查或 DLsite 未给 work_type 的命中：
+                        # 服务端已按同语种过滤，这里也按"翻译命中"处理（规则 C）。
+                        unknown_hits.append((candidate_rj, candidate_result))
 
-                if not subtitle_hits:
-                    logger.info(
-                        f"[Kikoeru预检] 翻译作品远程无字幕，不判重复: {rjcode} "
-                        f"(requested_lang={requested_lang or 'UNKNOWN'})"
-                    )
-                    return False
+                # 规则 C：服务器拥有翻译作（含当前 RJ 自身或任意关联翻译作） → 重复
+                if translation_hits or unknown_hits:
+                    all_translation_hits = translation_hits + unknown_hits
+                    primary_match = next((item for item in all_translation_hits if item[0] == rjcode), None)
+                    if primary_match:
+                        _, hit = primary_match
+                        current_subtitle_count = int(getattr(hit, 'subtitle_file_count', 0) or 0)
+                        logger.info(
+                            f"[Kikoeru预检] 当前翻译作品已在服务器: {rjcode} "
+                            f"subtitle_count={current_subtitle_count}"
+                        )
+                        self._add_to_conflict_works(
+                            task.id,
+                            rjcode,
+                            'DUPLICATE',
+                            f"[Kikoeru 服务器] 当前翻译作品已存在: {hit.title}",
+                            task.source_path,
+                            {
+                                'work_name': hit.title,
+                                'circle_name': hit.circle_name,
+                                'source': 'kikoeru_server',
+                                'subtitle_file_count': current_subtitle_count,
+                                'subtitle_check_source': str(getattr(hit, 'subtitle_check_source', '') or ''),
+                            },
+                            linked_works_info=[{
+                                'rjcode': rjcode,
+                                'title': hit.title,
+                                'circle_name': hit.circle_name,
+                                'subtitle_file_count': current_subtitle_count,
+                            }]
+                        )
+                        return True
 
-                primary_hit = next((item for item in subtitle_hits if item[0] == rjcode), None)
-                if primary_hit:
-                    _, hit = primary_hit
+                    linked_hits = [
+                        {
+                            'rjcode': hit_rj,
+                            'title': hit_res.title,
+                            'circle_name': hit_res.circle_name,
+                            'subtitle_file_count': int(getattr(hit_res, 'subtitle_file_count', 0) or 0),
+                        }
+                        for hit_rj, hit_res in all_translation_hits
+                    ]
                     logger.info(
-                        f"[Kikoeru预检] 翻译作品在远程找到同作且有字幕: {rjcode}, "
-                        f"subtitle_count={getattr(hit, 'subtitle_file_count', 0)}"
+                        f"[Kikoeru预检] 服务器存在关联翻译作: {rjcode}, hits={linked_hits}"
                     )
                     self._add_to_conflict_works(
                         task.id,
                         rjcode,
                         'DUPLICATE',
-                        f"[Kikoeru 服务器] 翻译作品已存在字幕: {hit.title}",
+                        f"[Kikoeru 服务器] 已存在翻译作品: {', '.join([h['rjcode'] for h in linked_hits])}",
                         task.source_path,
                         {
-                            'work_name': hit.title,
-                            'circle_name': hit.circle_name,
-                            'source': 'kikoeru_server',
-                            'subtitle_file_count': int(getattr(hit, 'subtitle_file_count', 0) or 0),
-                            'subtitle_check_source': str(getattr(hit, 'subtitle_check_source', '') or ''),
+                            'work_name': rjcode,
+                            'source': 'kikoeru_server_linked',
+                            'requested_lang': requested_lang,
+                        },
+                        linked_works_info=linked_hits
+                    )
+                    return True
+
+                # 规则 B：服务器拥有原作（有字幕） → 翻译作进重复
+                if original_hit and _has_remote_subtitles(original_hit[1]):
+                    original_rj, original_res = original_hit
+                    original_subtitle_count = int(getattr(original_res, 'subtitle_file_count', 0) or 0)
+                    logger.info(
+                        f"[Kikoeru预检] 服务器原作已有字幕，翻译作按重复处理: "
+                        f"current={rjcode} original={original_rj} subtitle_count={original_subtitle_count}"
+                    )
+                    self._add_to_conflict_works(
+                        task.id,
+                        rjcode,
+                        'DUPLICATE',
+                        f"[Kikoeru 服务器] 原作已有字幕，无需补配: {original_rj}",
+                        task.source_path,
+                        {
+                            'work_name': original_res.title,
+                            'circle_name': original_res.circle_name,
+                            'source': 'kikoeru_server_linked',
+                            'subtitle_file_count': original_subtitle_count,
+                            'subtitle_check_source': str(getattr(original_res, 'subtitle_check_source', '') or ''),
                         },
                         linked_works_info=[{
-                            'rjcode': rjcode,
-                            'title': hit.title,
-                            'circle_name': hit.circle_name,
-                            'subtitle_file_count': int(getattr(hit, 'subtitle_file_count', 0) or 0),
+                            'rjcode': original_rj,
+                            'title': original_res.title,
+                            'circle_name': original_res.circle_name,
+                            'subtitle_file_count': original_subtitle_count,
                         }]
                     )
                     return True
 
-                linked_hits = [
-                    {
-                        'rjcode': hit_rj,
-                        'title': hit_res.title,
-                        'circle_name': hit_res.circle_name,
-                        'subtitle_file_count': int(getattr(hit_res, 'subtitle_file_count', 0) or 0),
-                    }
-                    for hit_rj, hit_res in subtitle_hits
-                ]
-                logger.info(f"[Kikoeru预检] 翻译作品命中同语种关联且有字幕: {rjcode}, hits={linked_hits}")
-                self._add_to_conflict_works(
-                    task.id,
-                    rjcode,
-                    'DUPLICATE',
-                    f"[Kikoeru 服务器] 同语种翻译作品已存在字幕: {', '.join([h['rjcode'] for h in linked_hits])}",
-                    task.source_path,
-                    {
-                        'work_name': rjcode,
-                        'source': 'kikoeru_server_linked',
-                        'requested_lang': requested_lang,
-                    },
-                    linked_works_info=linked_hits
-                )
-                return True
+                # 规则 A：服务器原作存在但无字幕 → 翻译作继续走字幕补配（不算重复）
+                if original_hit:
+                    logger.info(
+                        f"[Kikoeru预检] 服务器原作存在但无字幕，翻译作继续后续字幕补配流程: "
+                        f"current={rjcode} original={original_hit[0]}"
+                    )
+                    return False
 
+                # 服务器既无原作也无翻译命中 → 不重复
+                logger.info(
+                    f"[Kikoeru预检] 翻译作品远程无任何关联命中，不判重复: {rjcode} "
+                    f"(requested_lang={requested_lang or 'UNKNOWN'})"
+                )
+                return False
+
+            # ── 当前是原作 / 非翻译作品的判定 ──
+            # 规则 C / B / A 的原作分支：服务器拥有当前 RJ 或任意关联（含翻译作） → 重复
             if primary_result and primary_result.is_found:
                 logger.info(f"[Kikoeru预检] 在 Kikoeru 服务器找到作品: {rjcode} - {primary_result.title}")
-                
-                # 添加到问题作品表
+
                 self._add_to_conflict_works(
                     task.id,
                     rjcode,
@@ -237,22 +284,21 @@ class SmartClassifier:
                         'circle_name': primary_result.circle_name
                     }]
                 )
-                
                 logger.info(f"[Kikoeru预检] 已添加到问题作品列表: {rjcode}")
                 return True
-            
-            # 检查关联作品是否找到
+
+            # 关联作品（任意原作 / 翻译作）命中 → 当前是原作时一律按重复处理
             found_linked = [r for r, res in result.items() if res.is_found and r != rjcode]
             if found_linked:
                 logger.info(f"[Kikoeru预检] 在 Kikoeru 服务器找到关联作品: {found_linked}")
-                
-                # 添加到问题作品表
+
                 linked_info = [{
                     'rjcode': rj,
                     'title': result[rj].title,
-                    'circle_name': result[rj].circle_name
+                    'circle_name': result[rj].circle_name,
+                    'subtitle_file_count': int(getattr(result[rj], 'subtitle_file_count', 0) or 0),
                 } for rj in found_linked]
-                
+
                 self._add_to_conflict_works(
                     task.id,
                     rjcode,
@@ -265,10 +311,9 @@ class SmartClassifier:
                     },
                     linked_works_info=linked_info
                 )
-                
                 logger.info(f"[Kikoeru预检] 因关联作品存在，已添加到问题作品列表: {rjcode}")
                 return True
-            
+
             logger.info(f"[Kikoeru预检] Kikoeru 服务器未找到: {rjcode}")
             return False
             
@@ -305,20 +350,21 @@ class SmartClassifier:
         if existing and not (resolution in {"KEEP_NEW", "MERGE"} and resolution_existing_path and os.path.abspath(existing['path']) == os.path.abspath(str(resolution_existing_path))):
             # 使用DUPLICATE类型（解压后的重复检测，已有元数据但统一标记为重复）
             conflict_type = 'DUPLICATE'
-            
+
             logger.info(f"解压后发现重复: RJ={rjcode}, 类型={conflict_type}, 已存在={existing['path']}")
-            
-            # 添加到问题作品表
-            self._add_to_conflict_works(task.id, rjcode, conflict_type, existing['path'], source_path, metadata)
-            
-            # 等待用户处理（这里需要UI交互，简化处理）
-            logger.info(f"发现重复作品: {rjcode}, 已添加到问题列表")
-            # 临时移动到一个待处理目录
-            # 使用重命名后的文件夹名称，而不是RJ号
-            source_folder_name = os.path.basename(source_path)
+
+            # 关键顺序：必须先把临时解压目录搬到 _conflicts/，再写问题作品记录。
+            # 否则 conflict.new_path 会指向 /temp/RJxxx_subtask/...，
+            # 这个临时目录会在任务结束 / 容器重启时被清掉，
+            # 之后用户点"合并 / 保留新版"预览就会 404 New source does not exist。
             conflict_base_path = os.path.join(self.config.storage.library_path, '_conflicts')
             os.makedirs(conflict_base_path, exist_ok=True)
             final_path = await asyncio.to_thread(self._move_with_rename, source_path, conflict_base_path)
+
+            # 用搬迁后的稳定路径写入 conflict 记录
+            self._add_to_conflict_works(task.id, rjcode, conflict_type, existing['path'], final_path, metadata)
+
+            logger.info(f"发现重复作品: {rjcode}, 已添加到问题列表，待处理路径: {final_path}")
             return final_path
         
         # 2. 应用分类规则（传入源路径以提取文件夹名中的社团名）

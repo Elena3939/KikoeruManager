@@ -970,10 +970,20 @@ function normalizeKikoeruCheckResult(result = {}, requestedRJCode = '') {
   const foundLinkedWorks = Array.isArray(result?.linked_works_found)
     ? result.linked_works_found.filter(Boolean)
     : []
+  // 后端 /api/kikoeru-server/check 已合并主作品和关联作品命中（is_found = primary.is_found || linked_works_found.length > 0）。
+  // 旧代码用 `primary?.is_found ?? result?.found` 会因为 `primary.is_found = false`（不是 nullish）而短路掉，
+  // 导致 UI 出现 "整条链路未命中 + 主命中 RJxxx + 关联命中 RJxxx" 的矛盾结果。
+  const mergedFound = Boolean(
+    result?.is_found
+    || result?.found
+    || result?.exists
+    || primary?.is_found
+    || foundLinkedWorks.length > 0
+  )
 
   return {
     requested_rjcode: String(result?.rjcode || requestedRJCode || '').trim(),
-    found: Boolean(primary?.is_found ?? result?.found ?? result?.exists),
+    found: mergedFound,
     matched_rjcode: String(primary?.matched_rjcode || result?.matched_rjcode || primary?.rjcode || '').trim(),
     title: String(primary?.title || result?.title || '').trim(),
     source: String(primary?.source || result?.source || '').trim(),
