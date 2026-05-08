@@ -253,13 +253,15 @@ export const logApi = {
 }
 
 export const conflictApi = {
-  list: async () => {
-    // 问题作品列表带 include_stats=true 时，每条 conflict 都要算 existing/source 路径的目录大小，
-    // 群晖 Docker / 网络挂载下这一步可能比较慢；后端已加上限保护 + 并发，但前端也给 120s 兜底，
-    // 避免 axios 默认 60s 在慢盘上误杀。
+  // includeStats=false 时跳过远程 stat（目录大小、文件数、创建时间），列表秒回；
+  // includeStats=true 时算完整统计，群晖 Docker / 网络挂载下可能比较慢，前端给 120s 兜底，
+  // 避免 axios 默认 60s 在慢盘上误杀。前端通常先发 false 拿列表，再后台异步发 true 补齐 stats。
+  // 接受 signal 让调用方能 abort 旧请求（用户连续刷新时，避免后端跑多次 + 占用网络）。
+  list: async ({ includeStats = true, signal } = {}) => {
     const response = await apiClient.get('/conflicts', {
-      params: { include_stats: true },
-      timeout: 120 * 1000
+      params: { include_stats: includeStats },
+      timeout: 120 * 1000,
+      signal
     })
     return response.data
   },

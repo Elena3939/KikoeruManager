@@ -342,6 +342,139 @@ class ConflictResolutionService:
 
         return candidates
 
+    # ---------- conflict 路径修复 + stats 缓存 helpers ----------
+    #
+    # 历史 bug：classifier.py 解压后发现重复时，先用 /temp/RJxxx_subtask/... 写
+    # conflict 记录，再把这个临时目录搬到 {library_path}/_conflicts/。导致 DB 里
+    # conflict.new_path 永远指向已经不存在的临时路径，用户点合并/保留新版预览
+    # 就 404 New source does not exist。
+    #
+    # 写入端 (classifier.py) 已经修成"先搬迁再写记录"。但 DB 里的老数据还得兜底：
+    # _resolve_conflict_new_path 在 new_path 不存在时尝试 _conflicts/{basename} 备用路径，
+    # 命中后通过 _maybe_persist_resolved_new_path 异步回写真实路径。
+    #
+    # 同时为了避免列表页每次刷新都对每条 conflict 重跑 os.walk 算大小，把 stats
+    # 持久化到 conflict.new_metadata.{side}_stats_cache，按 (path, mtime) 失效。
+    def _resolve_conflict_new_path(self, conflict) -> str:
+        candidate = str(getattr(conflict, "new_path", "") or "").strip()
+        if not candidate:
+            return candidate
+        if os.path.exists(candidate):
+            return candidate
+        basename = os.path.basename(candidate)
+        if not basename:
+            return candidate
+        try:
+            library_path = str(getattr(get_config().storage, "library_path", "") or "").strip()
+        except Exception:
+            return candidate
+        if not library_path:
+            return candidate
+        fallback = os.path.join(library_path, "_conflicts", basename)
+        if os.path.exists(fallback):
+            return fallback
+        return candidate
+
+    def _maybe_persist_resolved_new_path(
+        self, conflict_id: str, original_path: str, resolved_path: str,
+    ) -> None:
+        if not conflict_id or not resolved_path:
+            return
+        if resolved_path == original_path:
+            return
+        try:
+            from ..models.database import ConflictWork, get_db
+            db = next(get_db())
+            try:
+                row = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+                if not row or str(row.new_path or "") != original_path:
+                    return
+                row.new_path = resolved_path
+                metadata = dict(row.new_metadata or {})
+                metadata["new_path_recovered_from"] = original_path
+                metadata["new_path_recovered_at"] = time.time()
+                row.new_metadata = metadata
+                db.commit()
+                logger.info(
+                    "问题作品 new_path 已自动修正: conflict=%s old=%s -> new=%s",
+                    conflict_id, original_path, resolved_path,
+                )
+            except Exception:
+                db.rollback()
+                logger.warning("修正 conflict.new_path 失败 conflict=%s", conflict_id, exc_info=True)
+            finally:
+                db.close()
+        except Exception:
+            logger.warning("修正 conflict.new_path 外层异常 conflict=%s", conflict_id, exc_info=True)
+
+    def _read_stats_cache(self, conflict, side_key: str, current_path: str) -> Optional[dict[str, Any]]:
+        if not current_path:
+            return None
+        metadata = dict(getattr(conflict, "new_metadata", None) or {})
+        cache = metadata.get(f"{side_key}_stats_cache")
+        if not isinstance(cache, dict):
+            return None
+        if str(cache.get("path") or "") != str(current_path):
+            return None
+        try:
+            if not os.path.exists(current_path):
+                return None
+            current_mtime = os.path.getmtime(current_path)
+        except OSError:
+            return None
+        cached_mtime = cache.get("mtime")
+        if cached_mtime is None:
+            return None
+        try:
+            if abs(float(cached_mtime) - current_mtime) > 1.0:
+                return None
+        except (TypeError, ValueError):
+            return None
+        stats = cache.get("stats")
+        if not isinstance(stats, dict):
+            return None
+        return dict(stats)
+
+    def _write_stats_cache(
+        self, conflict_id: str, side_key: str, path: str, stats: dict[str, Any],
+    ) -> None:
+        if not conflict_id or not path or not isinstance(stats, dict):
+            return
+        # 失败/不存在/截断的 stats 不进缓存：下次刷新让其重新尝试算。
+        if not stats.get("exists"):
+            return
+        if stats.get("truncated"):
+            return
+        try:
+            from ..models.database import ConflictWork, get_db
+            try:
+                mtime = os.path.getmtime(path) if os.path.exists(path) else None
+            except OSError:
+                mtime = None
+            db = next(get_db())
+            try:
+                row = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+                if not row:
+                    return
+                metadata = dict(row.new_metadata or {})
+                metadata[f"{side_key}_stats_cache"] = {
+                    "path": path,
+                    "mtime": mtime,
+                    "computed_at": time.time(),
+                    "stats": dict(stats),
+                }
+                row.new_metadata = metadata
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.warning(
+                    "写入 conflict %s 的 %s stats 缓存失败", conflict_id, side_key, exc_info=True,
+                )
+            finally:
+                db.close()
+        except Exception:
+            logger.warning("写入 conflict stats 缓存外层失败", exc_info=True)
+
     def describe_conflict(self, conflict, include_stats: bool = False) -> dict[str, Any]:
         metadata = dict(conflict.new_metadata or {})
         existing_context = self.infer_library_context(
@@ -371,16 +504,28 @@ class ConflictResolutionService:
 
     async def describe_conflict_async(self, conflict, include_stats: bool = False) -> dict[str, Any]:
         # 和 sync describe_conflict 的核心区别：
-        # 这里所有可能阻塞的本地 IO（os.walk / os.path.isfile）必须走 asyncio.to_thread，
-        # 否则 /api/conflicts 列表加载时多个 conflict 会被 sync 调用串行卡死事件循环，
-        # 在群晖 / Docker / 网络挂载下极易把整个接口拖到 60s 超时。
+        # 1) 所有可能阻塞的本地 IO（os.walk / os.path.isfile）走 asyncio.to_thread，
+        #    避免 /api/conflicts 列表加载时多个 conflict 串行卡死事件循环。
+        # 2) source 路径用 _resolve_conflict_new_path 兜底找回（修复历史 bug 留下的死路径）。
+        # 3) stats 走 (path, mtime) 持久化缓存：每个 conflict 只算一次，下次刷新直接拿。
         metadata = dict(conflict.new_metadata or {})
+
+        # 兜底找回 source 路径：DB 里 conflict.new_path 可能是 /temp/RJxxx_subtask/... 死路径，
+        # 真身已经在 {library_path}/_conflicts/{basename} 下。
+        original_new_path = str(getattr(conflict, "new_path", "") or "").strip()
+        resolved_new_path = self._resolve_conflict_new_path(conflict)
+        if resolved_new_path and resolved_new_path != original_new_path:
+            # 异步写回 DB（用独立 session）。这一步是 IO，但单条 SQL 很快，直接同步做完。
+            self._maybe_persist_resolved_new_path(
+                getattr(conflict, "id", ""), original_new_path, resolved_new_path,
+            )
+
         existing_context = self.infer_library_context(
             conflict.existing_path,
             preferred_library_id=metadata.get("existing_library_id"),
         )
         source_context = self.infer_library_context(
-            conflict.new_path,
+            resolved_new_path,
             preferred_library_id=metadata.get("source_library_id") or metadata.get("target_library_id"),
         )
 
@@ -404,12 +549,14 @@ class ConflictResolutionService:
 
         # 为 existing 与 source 并行计算 stats：
         # - 远程：await 现成 async _describe_remote_path_stats
-        # - 本地：os.walk 走 asyncio.to_thread，不阻塞事件循环
+        # - 本地：先查 (path, mtime) 持久化缓存，命中直接返回；未命中走 asyncio.to_thread + os.walk
         new_path_kind_task = asyncio.to_thread(
-            lambda: "archive" if os.path.isfile(str(conflict.new_path or "")) else "folder",
+            lambda: "archive" if os.path.isfile(str(resolved_new_path or "")) else "folder",
         )
 
-        async def _resolve_stats(side: dict[str, Any]) -> Optional[dict[str, Any]]:
+        conflict_id = str(getattr(conflict, "id", "") or "")
+
+        async def _resolve_stats(side: dict[str, Any], side_key: str) -> Optional[dict[str, Any]]:
             if not include_stats:
                 return None
             if side.get("is_remote"):
@@ -417,13 +564,20 @@ class ConflictResolutionService:
                     side.get("library_id"),
                     side.get("path"),
                 )
-            return await asyncio.to_thread(
-                self._describe_local_path_stats, side.get("path"),
+            local_path = str(side.get("path") or "").strip()
+            cached = self._read_stats_cache(conflict, side_key, local_path)
+            if cached is not None:
+                return cached
+            stats = await asyncio.to_thread(self._describe_local_path_stats, local_path)
+            # 写缓存：os.walk 已经付费过了，写一次 DB 不阻塞调用方太多。
+            await asyncio.to_thread(
+                self._write_stats_cache, conflict_id, side_key, local_path, stats,
             )
+            return stats
 
         existing_stats, source_stats, new_path_kind = await asyncio.gather(
-            _resolve_stats(existing) if existing_resolved_remote or include_stats else _noop_stats(),
-            _resolve_stats(source) if include_stats else _noop_stats(),
+            _resolve_stats(existing, "existing") if existing_resolved_remote or include_stats else _noop_stats(),
+            _resolve_stats(source, "source") if include_stats else _noop_stats(),
             new_path_kind_task,
         )
         existing["stats"] = existing_stats
@@ -612,11 +766,13 @@ class ConflictResolutionService:
     async def resolve_skip(self, conflict) -> dict[str, Any]:
         description = self.describe_conflict(conflict)
         source = description["source"]
-        await self._delete_source_path(conflict.new_path, source.get("library_id"))
+        # 走 fallback 路径，避免老 conflict 数据 new_path 死路径导致 _conflicts/ 残留。
+        delete_target = self._resolve_conflict_new_path(conflict) or conflict.new_path
+        await self._delete_source_path(delete_target, source.get("library_id"))
         await self.cleanup_conflict_sessions(conflict.id)
         return {
             "message": "已跳过当前压缩包或目录，并删除待处理来源",
-            "deleted_path": conflict.new_path,
+            "deleted_path": delete_target,
         }
 
     async def resolve_merge(
@@ -677,7 +833,14 @@ class ConflictResolutionService:
         return tempfile.mkdtemp(prefix=f"conflict_{conflict_id}_", dir=temp_root)
 
     async def _stage_new_source(self, conflict, workspace: str) -> str:
-        source_path = str(conflict.new_path or "")
+        # 兜底找回 source：DB 里 conflict.new_path 可能是已经被搬走 / 清理的临时路径，
+        # 真实数据其实在 {library_path}/_conflicts/{basename}。
+        source_path = self._resolve_conflict_new_path(conflict)
+        original = str(getattr(conflict, "new_path", "") or "")
+        if source_path and source_path != original:
+            self._maybe_persist_resolved_new_path(
+                getattr(conflict, "id", ""), original, source_path,
+            )
         if not source_path or not os.path.exists(source_path):
             raise FileNotFoundError("New source does not exist")
 
@@ -710,7 +873,10 @@ class ConflictResolutionService:
     async def _finalize_new_source(self, conflict) -> None:
         description = self.describe_conflict(conflict)
         source = description["source"]
-        await self._delete_source_path(conflict.new_path, source.get("library_id"))
+        # 走 fallback 路径，否则 conflict.new_path 还是 /temp/RJxxx_subtask 死路径时
+        # 不会真正清掉 {library_path}/_conflicts/{basename} 的数据。
+        delete_target = self._resolve_conflict_new_path(conflict) or conflict.new_path
+        await self._delete_source_path(delete_target, source.get("library_id"))
 
     async def _delete_source_path(self, path: Optional[str], library_id: Optional[str]) -> None:
         target_path = str(path or "").strip()

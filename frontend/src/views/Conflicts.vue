@@ -1,41 +1,66 @@
 <template>
-  <div class="h-full flex flex-col bg-slate-50 overflow-hidden">
-    <!-- Header -->
-    <header class="flex-none px-8 py-6 bg-white border-b border-slate-200/60 flex items-center justify-between z-10">
-      <div>
-        <h1 class="text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-3">
-          问题作品
-          <span v-if="conflicts.length > 0" class="px-2.5 py-0.5 bg-slate-100 text-slate-600 text-sm font-medium border border-slate-200 rounded-md">
-            {{ pendingConflicts.length }} 项待处理
-          </span>
-          <span v-if="retryingConflicts.length > 0" class="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 text-sm font-medium border border-emerald-200 rounded-md">
-            {{ retryingConflicts.length }} 项重试中
-          </span>
-          <span v-if="processingConflicts.length > 0" class="px-2.5 py-0.5 bg-blue-50 text-blue-600 text-sm font-medium border border-blue-200 rounded-md">
-            {{ processingConflicts.length }} 项处理中
-          </span>
-        </h1>
-        <p class="text-sm text-slate-500 mt-1">重复作品以及解压或处理失败作品的集中处理站</p>
+  <div class="conflicts-page">
+    <!-- 页面头部：对齐库存页 lib-page-header 设计语言 -->
+    <header class="lib-page-header">
+      <div class="lib-page-head-left">
+        <div class="lib-page-icon"><ShieldAlert :size="20" :stroke-width="2.2" /></div>
+        <div>
+          <h1 class="lib-page-title">问题作品</h1>
+          <p class="lib-page-subtitle">重复作品、解压失败、处理失败的集中处理站</p>
+        </div>
       </div>
-      <div class="flex items-center gap-4">
-        <span v-if="batchRunning" class="text-sm font-medium text-indigo-600 flex items-center gap-2">
-          <AppLoadingAnimation variant="inline" :size="32" />
-          批量处理中: {{ batchActionLabel }}
+      <div class="lib-page-head-right">
+        <span v-if="batchRunning" class="lib-chip lib-chip-info">
+          <AppLoadingAnimation variant="inline" :size="14" />
+          {{ batchActionLabel || '批量处理中' }}
         </span>
         <button
           type="button"
-          class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 hover:border-slate-400 hover:bg-slate-50 text-slate-700 text-sm font-medium shadow-sm transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed group rounded-xl"
+          class="conflicts-refresh-btn"
           :disabled="loading || batchRunning"
           @click="fetchConflicts"
         >
-          <RefreshCw class="w-4 h-4 transition-transform duration-500 group-hover:rotate-180" :class="{ 'animate-spin': loading }" />
-          刷新列表
+          <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': loading }" />
+          刷新
         </button>
       </div>
     </header>
 
-    <!-- Error Alert -->
-    <div v-if="errorMessage" class="flex-none mx-8 mt-6 p-4 bg-red-50 border border-red-100 flex items-start gap-3 text-red-700 rounded-2xl">
+    <!-- 状态信息条：替代原顶部 inline chip -->
+    <section class="lib-info-strip conflicts-info-strip">
+      <div class="lib-info-item">
+        <Hourglass :size="15" :stroke-width="2.2" class="lib-info-icon text-amber-500" />
+        <div class="lib-info-body">
+          <div class="lib-info-label">待处理</div>
+          <div class="lib-info-value">
+            <b>{{ pendingConflicts.length }}</b>
+            <span class="lib-info-meta">/ 共 {{ conflicts.length }}</span>
+          </div>
+          <div class="lib-info-sub">需要人工决定的重复 / 失败作品</div>
+        </div>
+      </div>
+      <div class="lib-info-divider"></div>
+      <div class="lib-info-item">
+        <RotateCcw :size="15" :stroke-width="2.2" class="lib-info-icon text-emerald-500" />
+        <div class="lib-info-body">
+          <div class="lib-info-label">重试中</div>
+          <div class="lib-info-value"><b>{{ retryingConflicts.length }}</b></div>
+          <div class="lib-info-sub">指定密码或一键重试触发的后台任务</div>
+        </div>
+      </div>
+      <div class="lib-info-divider"></div>
+      <div class="lib-info-item">
+        <Loader2 :size="15" :stroke-width="2.2" class="lib-info-icon text-blue-500" />
+        <div class="lib-info-body">
+          <div class="lib-info-label">处理中</div>
+          <div class="lib-info-value"><b>{{ processingConflicts.length }}</b></div>
+          <div class="lib-info-sub">保留新版 / 合并 / 跳过 正在执行</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 错误提示 -->
+    <div v-if="errorMessage" class="conflicts-error-alert">
       <AlertCircle class="w-5 h-5 flex-shrink-0 mt-0.5 text-red-500" />
       <div>
         <h3 class="font-medium">获取问题作品失败</h3>
@@ -43,92 +68,101 @@
       </div>
     </div>
 
-    <!-- Main Content Area -->
-    <div class="flex-1 min-h-0 p-6 lg:p-8 flex gap-6 overflow-hidden" v-if="!loading || conflicts.length > 0">
-      <template v-if="filteredConflicts.length === 0">
-        <div class="flex-1 flex flex-col items-center justify-center text-slate-400 bg-white border border-slate-200/60 shadow-sm border-dashed rounded-3xl">
-          <CheckCircle2 class="w-16 h-16 mb-4 text-emerald-400" stroke-width="1.5" />
-          <p class="text-lg font-medium text-slate-600">{{ conflictFilter === 'processing' ? '当前没有处理中问题项' : '当前没有待处理的问题作品' }}</p>
-          <p class="text-sm mt-1">{{ conflictFilter === 'processing' ? '新提交的保留新版或指定密码重试会在这里短暂显示。' : '所有作品都在正常导入或库中已处于良好状态' }}</p>
+    <!-- 主工作区：整体没有问题作品时显示大空态，否则永远渲染左侧 pane（含筛选条），避免筛选为空时用户找不回筛选按钮 -->
+    <div class="conflicts-main" v-if="!loading || conflicts.length > 0">
+      <template v-if="conflicts.length === 0">
+        <div class="conflicts-empty">
+          <CheckCircle2 class="w-14 h-14 mb-3 text-emerald-400" stroke-width="1.5" />
+          <p class="text-base font-medium text-slate-700">当前没有待处理的问题作品</p>
+          <p class="text-sm text-slate-400 mt-1.5">所有作品都在正常导入或库中已处于良好状态</p>
         </div>
       </template>
 
       <template v-else>
-        <!-- Left List -->
-        <aside class="w-[360px] lg:w-[400px] flex-shrink-0 flex flex-col bg-white border border-slate-200/60 shadow-sm overflow-hidden rounded-3xl">
-          <div class="p-4 border-b border-slate-100 bg-slate-50/50">
-            <div class="flex items-center justify-between mb-3">
-              <h3 class="font-medium text-slate-800">待处理列表</h3>
-              <span class="text-xs font-medium px-2 py-1 bg-white border border-slate-200 text-slate-500 shadow-sm rounded-md">
-                已选 {{ selectedCount }} / {{ filteredConflicts.length }}
-              </span>
+        <!-- 左侧列表 -->
+        <aside class="conflicts-list-pane">
+          <div class="conflicts-list-header">
+            <div class="flex items-center justify-between">
+              <h3 class="conflicts-list-title">待处理列表</h3>
+              <span class="lib-chip lib-chip-info">已选 {{ selectedCount }} / {{ filteredConflicts.length }}</span>
             </div>
-            <div class="flex gap-2 mb-3">
+            <div class="conflicts-segmented">
               <button
                 v-for="option in filterOptions"
                 :key="option.value"
                 type="button"
-                class="px-3 py-1.5 text-xs font-medium transition-all duration-300 border shadow-sm flex-1 rounded-xl"
-                :class="conflictFilter === option.value ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400'"
+                class="conflicts-segmented-item"
+                :class="{ 'is-active': conflictFilter === option.value }"
                 @click="conflictFilter = option.value"
               >
                 {{ option.label }}
               </button>
             </div>
-            <div class="flex flex-wrap gap-2 mb-2">
+            <div class="conflicts-list-actions">
               <button
-                class="px-3 py-1.5 text-xs font-medium transition-all duration-300 border shadow-sm flex-1 group flex items-center justify-center gap-1.5 rounded-xl"
-                :class="isAllSelected ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400'"
+                type="button"
+                class="conflicts-mini-btn"
+                :class="{ 'is-active': isAllSelected }"
                 :disabled="batchRunning"
                 @click="toggleSelectAll"
               >
-                <CheckSquare class="w-3.5 h-3.5 transition-transform duration-300 group-hover:scale-110" />
+                <CheckSquare class="w-3.5 h-3.5" />
                 {{ isAllSelected ? '取消全选' : '全选' }}
               </button>
               <button
-                class="px-3 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400 transition-all duration-300 shadow-sm disabled:opacity-50 flex-1 group flex items-center justify-center gap-1.5 rounded-xl"
+                type="button"
+                class="conflicts-mini-btn"
                 :disabled="batchRunning || !selectedCount"
                 @click="clearSelection"
               >
-                <XSquare class="w-3.5 h-3.5 transition-transform duration-300 group-hover:rotate-90" />
+                <XSquare class="w-3.5 h-3.5" />
                 清空选择
               </button>
             </div>
-            <!-- Batch Actions Toolbar -->
-            <div v-if="selectedCount > 0" class="flex gap-2 animate-in fade-in slide-in-from-top-2 duration-200">
+            <!-- 批量动作 -->
+            <div v-if="selectedCount > 0" class="conflicts-batch-actions">
               <button
                 v-if="selectedActionCount('RETRY') > 0"
-                class="px-3 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700 transition-all duration-300 shadow-sm disabled:opacity-50 flex-1 flex items-center justify-center gap-1.5 group rounded-xl"
+                type="button"
+                class="conflicts-batch-btn is-emerald"
                 :disabled="batchRunning"
                 @click="handleBatchRetry"
               >
-                <RotateCcw class="w-3.5 h-3.5 transition-transform duration-300 group-hover:-rotate-90" />
+                <RotateCcw class="w-3.5 h-3.5" />
                 一键重试
               </button>
               <button
                 v-if="selectedActionCount('SKIP') > 0"
-                class="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-900 text-white border border-slate-900 transition-all duration-300 shadow-sm disabled:opacity-50 flex-1 flex items-center justify-center gap-1.5 group rounded-xl"
+                type="button"
+                class="conflicts-batch-btn is-slate"
                 :disabled="batchRunning"
                 @click="handleBatchSkip"
               >
-                <SkipForward class="w-3.5 h-3.5 transition-transform duration-300 group-hover:translate-x-1" />
+                <SkipForward class="w-3.5 h-3.5" />
                 批量跳过
               </button>
             </div>
-            <p class="text-[11px] text-slate-400 mt-2 text-center">单击聚焦，Ctrl/⌘ 多选，Shift 连选</p>
+            <p class="conflicts-list-hint">单击聚焦，Ctrl/⌘ 多选，Shift 连选</p>
           </div>
 
-          <div class="flex-1 overflow-y-auto p-3 space-y-2 no-scrollbar">
+          <div class="conflicts-list-scroll no-scrollbar">
+            <!-- 筛选结果为空时的小空态（仍保留左侧筛选按钮，允许用户切回其他 tab） -->
+            <div v-if="filteredConflicts.length === 0" class="conflicts-list-empty">
+              <CheckCircle2 class="w-8 h-8 mb-2 text-emerald-300" stroke-width="1.5" />
+              <p class="text-sm font-medium text-slate-600">
+                {{ conflictFilter === 'processing' ? '当前没有处理中项' : conflictFilter === 'pending' ? '没有待处理项' : '没有匹配项' }}
+              </p>
+              <p class="text-xs text-slate-400 mt-1">切换上方筛选查看其他分类</p>
+            </div>
             <button
               v-for="conflict in filteredConflicts"
               :key="conflict.id"
               :disabled="isConflictRetrying(conflict)"
-              class="w-full text-left p-3.5 border transition-all duration-300 relative group overflow-hidden rounded-2xl"
+              type="button"
+              class="conflicts-list-card group"
               :class="[
-                isConflictSelected(conflict.id)
-                  ? 'bg-indigo-50/50 border-indigo-300 shadow-sm ring-1 ring-indigo-500/20'
-                  : 'bg-white border-slate-200 hover:border-indigo-400 hover:shadow-md hover:-translate-y-0.5',
-                conflict.id === activeConflictId ? 'before:absolute before:left-0 before:top-0 before:bottom-0 before:w-1 before:bg-indigo-500 pl-4.5' : '',
+                isConflictSelected(conflict.id) ? 'is-selected' : '',
+                conflict.id === activeConflictId ? 'is-active' : '',
                 isConflictProcessing(conflict) ? 'processing-conflict-card' : '',
                 isConflictRetrying(conflict) ? 'retry-conflict-card' : ''
               ]"
@@ -137,123 +171,119 @@
               <span v-if="isConflictRetrying(conflict)" class="retry-card-orbit" aria-hidden="true">
                 <RotateCcw class="w-3.5 h-3.5" />
               </span>
-              <div class="flex items-center justify-between gap-3 mb-2" :class="conflict.id === activeConflictId ? 'pl-2' : ''">
-                <strong class="text-sm font-bold text-slate-800 tracking-tight truncate flex items-center gap-1">
+              <div class="conflicts-list-card-row">
+                <strong class="conflicts-list-card-title">
                   {{ conflict.rjcode || conflict.new_metadata?.work_name || conflict.new_path || '未识别项目' }}
                   <ChevronRight class="w-3.5 h-3.5 opacity-0 -translate-x-2 transition-all duration-300 group-hover:opacity-100 group-hover:translate-x-0 text-indigo-500" />
                 </strong>
-                <span
-                  class="shrink-0 px-1.5 py-0.5 flex items-center gap-1 text-[10px] font-medium border rounded-md"
-                  :class="conflict.context?.existing?.is_remote ? 'bg-amber-50 text-amber-600 border-amber-200/60' : 'bg-slate-100 text-slate-500 border-slate-200'"
-                >
-                  <Cloud v-if="conflict.context?.existing?.is_remote" class="w-3 h-3" />
-                  <HardDrive v-else class="w-3 h-3" />
+                <span class="lib-chip" :class="conflict.context?.existing?.is_remote ? 'lib-chip-warning' : 'lib-chip-info'">
+                  <Cloud v-if="conflict.context?.existing?.is_remote" :size="11" :stroke-width="2.4" />
+                  <HardDrive v-else :size="11" :stroke-width="2.4" />
                   {{ conflict.context?.existing?.is_remote ? '远程' : '本地' }}
                 </span>
               </div>
-              <div class="flex items-center justify-between mt-1 text-xs" :class="conflict.id === activeConflictId ? 'pl-2' : ''">
-                <span class="text-slate-500 flex items-center gap-1.5 font-medium">
-                  <FileWarning v-if="isFailureConflict(conflict)" class="w-3.5 h-3.5 text-red-400" />
-                  <Copy v-else class="w-3.5 h-3.5 text-indigo-400" />
+              <div class="conflicts-list-card-meta">
+                <span class="conflicts-list-card-type">
+                  <FileWarning v-if="isFailureConflict(conflict)" :size="13" :stroke-width="2.2" class="text-red-400" />
+                  <Copy v-else :size="13" :stroke-width="2.2" class="text-indigo-400" />
                   {{ getConflictTypeLabel(conflict.conflict_type) }}
                 </span>
-                <div class="flex items-center gap-2">
-                  <span
-                    class="px-1.5 py-0.5 text-[10px] font-semibold border rounded-md"
-                    :class="getConflictStatusClass(conflict)"
-                  >
-                    {{ getConflictStatusLabel(conflict) }}
-                  </span>
-                  <span class="text-slate-400">{{ formatDate(conflict.created_at).split(' ')[0] }}</span>
-                </div>
+                <span class="lib-chip" :class="getConflictStatusChipClass(conflict)">
+                  {{ getConflictStatusLabel(conflict) }}
+                </span>
+                <span class="conflicts-list-card-date">{{ formatDate(conflict.created_at).split(' ')[0] }}</span>
               </div>
-              <div v-if="isConflictRetrying(conflict)" class="mt-2 flex items-center gap-2" :class="conflict.id === activeConflictId ? 'pl-2' : ''">
-                <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-emerald-100">
-                  <div class="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-500 transition-all duration-700" :style="{ width: `${getConflictRetryProgress(conflict)}%` }" />
+              <div v-if="isConflictRetrying(conflict)" class="conflicts-list-card-progress">
+                <div class="conflicts-list-progress-track">
+                  <div class="conflicts-list-progress-bar" :style="{ width: `${getConflictRetryProgress(conflict)}%` }" />
                 </div>
-                <span class="text-[10px] font-bold tabular-nums text-emerald-700">{{ getConflictRetryProgress(conflict) }}%</span>
+                <span class="conflicts-list-progress-num">{{ getConflictRetryProgress(conflict) }}%</span>
               </div>
             </button>
           </div>
         </aside>
 
-        <!-- Right Detail -->
-        <section class="flex-1 flex flex-col bg-white border border-slate-200/60 shadow-sm overflow-hidden rounded-3xl" v-if="activeConflict">
-          <!-- Detail Header -->
-          <div class="p-6 border-b border-slate-100 bg-gradient-to-br from-slate-50 to-white relative overflow-hidden flex-shrink-0">
-            <div class="absolute -top-4 -right-4 p-8 opacity-5 pointer-events-none">
-              <FileWarning v-if="isFailureConflict(activeConflict)" class="w-64 h-64" />
-              <Copy v-else class="w-64 h-64" />
+        <!-- 右侧详情 -->
+        <section class="conflicts-detail-pane" v-if="activeConflict">
+          <!-- 详情顶栏 -->
+          <div class="conflicts-detail-header">
+            <div class="conflicts-detail-bg-glyph">
+              <FileWarning v-if="isFailureConflict(activeConflict)" :size="220" :stroke-width="1.4" />
+              <Copy v-else :size="220" :stroke-width="1.4" />
             </div>
-            <div class="relative z-10 flex flex-col xl:flex-row justify-between gap-6 items-start xl:items-center">
-              <div>
-                <div class="flex items-center gap-3 mb-2">
-                  <h2 class="text-2xl font-bold text-slate-900 tracking-tight">{{ activeConflict.rjcode || '未识别项目' }}</h2>
-                  <span v-if="isConflictSelected(activeConflict.id)" class="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-semibold border border-indigo-200 rounded-md">
-                    已选入批量
+            <div class="conflicts-detail-header-inner">
+              <div class="conflicts-detail-title-block">
+                <div class="flex items-center gap-3">
+                  <h2 class="conflicts-detail-title">{{ activeConflict.rjcode || '未识别项目' }}</h2>
+                  <span v-if="isConflictSelected(activeConflict.id)" class="lib-chip lib-chip-info">
+                    <CheckSquare :size="12" :stroke-width="2.4" />已选入批量
                   </span>
                 </div>
-                <p class="text-slate-500 flex items-center gap-2 text-sm font-medium">
-                  <span class="inline-flex w-2 h-2 rounded-full" :class="isFailureConflict(activeConflict) ? 'bg-red-400' : 'bg-indigo-400'"></span>
+                <p class="conflicts-detail-subtitle">
+                  <span class="conflicts-detail-dot" :class="isFailureConflict(activeConflict) ? 'is-danger' : 'is-info'"></span>
                   {{ getConflictTypeLabel(activeConflict.conflict_type) }}
                 </p>
               </div>
 
-              <div class="flex flex-wrap gap-3">
+              <div class="conflicts-detail-actions">
                 <button
                   v-if="canUseAction(activeConflict, 'KEEP_NEW')"
-                  class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium shadow-sm transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed group rounded-xl"
+                  type="button"
+                  class="conflicts-action-btn is-primary"
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleKeepNew(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'KEEP_NEW')" variant="inline" :size="32" />
-                  <Save v-else class="w-4 h-4 transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:scale-110" />
+                  <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'KEEP_NEW')" variant="inline" :size="20" />
+                  <Save v-else class="w-4 h-4" />
                   {{ isActionLoading(activeConflict.id, 'KEEP_NEW') ? '保留新版中' : '保留新版' }}
                 </button>
                 <button
                   v-if="canUseAction(activeConflict, 'RETRY')"
-                  class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium shadow-sm transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed group rounded-xl"
+                  type="button"
+                  class="conflicts-action-btn is-emerald"
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleRetry(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="isConflictRetrying(activeConflict)" variant="inline" :size="32" />
-                  <RotateCcw v-else class="w-4 h-4 transition-transform duration-300 group-hover:-rotate-90" />
+                  <AppLoadingAnimation v-if="isConflictRetrying(activeConflict)" variant="inline" :size="20" />
+                  <RotateCcw v-else class="w-4 h-4" />
                   {{ isConflictRetrying(activeConflict) ? '重试中' : '重试' }}
                 </button>
                 <button
                   v-if="canUseAction(activeConflict, 'SKIP')"
-                  class="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-sm font-medium shadow-sm transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed group rounded-xl"
+                  type="button"
+                  class="conflicts-action-btn is-slate"
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleSkip(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'SKIP')" variant="inline" :size="32" />
-                  <SkipForward v-else class="w-4 h-4 transition-transform duration-300 group-hover:translate-x-1" />
+                  <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'SKIP')" variant="inline" :size="20" />
+                  <SkipForward v-else class="w-4 h-4" />
                   跳过
                 </button>
                 <button
                   v-if="canUseAction(activeConflict, 'MERGE')"
-                  class="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium shadow-sm transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed group rounded-xl"
+                  type="button"
+                  class="conflicts-action-btn is-amber"
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="openMergeWorkbench(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="mergeLoading && mergeConflictId === activeConflict.id" variant="inline" :size="32" />
-                  <GitMerge v-else class="w-4 h-4 transition-transform duration-300 group-hover:rotate-12 group-hover:scale-110" />
+                  <AppLoadingAnimation v-if="mergeLoading && mergeConflictId === activeConflict.id" variant="inline" :size="20" />
+                  <GitMerge v-else class="w-4 h-4" />
                   合并
                 </button>
               </div>
             </div>
           </div>
 
-          <div class="flex-1 overflow-y-auto p-6 no-scrollbar bg-slate-50/30">
-            <!-- Alert for failure conflicts -->
+          <div class="conflicts-detail-body no-scrollbar">
+            <!-- 失败提醒 -->
             <div
               v-if="isFailureConflict(activeConflict)"
-              class="mb-6 p-4 flex items-start gap-3 border shadow-sm rounded-2xl"
-              :class="isExtractFailed(activeConflict) ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-red-50 border-red-200 text-red-800'"
+              class="conflicts-detail-alert"
+              :class="isExtractFailed(activeConflict) ? 'is-warning' : 'is-danger'"
             >
               <AlertTriangle class="w-5 h-5 flex-shrink-0 mt-0.5" :class="isExtractFailed(activeConflict) ? 'text-amber-500' : 'text-red-500'" />
               <div>
-                <h4 class="font-bold mb-1">
+                <h4 class="font-semibold mb-1">
                   {{ isExtractFailed(activeConflict) ? '解压阶段失败，非重复冲突' : '处理中途失败，非重复冲突' }}
                 </h4>
                 <p class="text-sm opacity-90 leading-relaxed">
@@ -262,130 +292,133 @@
               </div>
             </div>
 
-            <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-              <!-- Source Card -->
-              <div class="bg-white border border-slate-200/80 overflow-hidden shadow-sm flex flex-col rounded-2xl">
-                <div class="px-5 py-3 border-b border-slate-100 bg-slate-50 flex items-center gap-2">
+            <div class="conflicts-detail-grid">
+              <!-- 当前新内容 -->
+              <div class="conflicts-info-card">
+                <div class="conflicts-info-card-header">
                   <FolderOpen class="w-4 h-4 text-slate-400" />
-                  <h3 class="font-bold text-slate-700 text-sm">{{ isFailureConflict(activeConflict) ? '失败来源' : '当前新内容' }}</h3>
+                  <h3>{{ isFailureConflict(activeConflict) ? '失败来源' : '当前新内容' }}</h3>
                 </div>
-                <div class="p-5 space-y-4 flex-1">
-                  <div>
-                    <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">来源路径</span>
-                    <div class="bg-slate-50 border border-slate-100 p-3 text-xs text-slate-700 font-mono break-all leading-relaxed max-h-32 overflow-y-auto no-scrollbar rounded-xl">
-                      {{ getConflictSourcePath(activeConflict) }}
-                    </div>
-                  </div>
-                  
-                  <div class="grid grid-cols-2 gap-4">
-                    <div>
-                      <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">类型</span>
-                      <p class="text-sm text-slate-800 font-medium">{{ activeConflict.context?.new_path_kind === 'archive' ? '压缩包' : '目录' }}</p>
-                    </div>
-                    <div>
-                      <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">大小</span>
-                      <p class="text-sm text-slate-800 font-medium">{{ formatFileSize(activeConflict.context?.source?.stats?.size) }}</p>
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">创建时间</span>
-                    <p class="text-sm text-slate-600">{{ formatTimestamp(activeConflict.context?.source?.stats?.created_at) }}</p>
+                <div class="conflicts-info-card-body">
+                  <div class="conflicts-info-section">
+                    <span class="conflicts-info-label">来源路径</span>
+                    <div class="conflicts-info-path">{{ getConflictSourcePath(activeConflict) }}</div>
                   </div>
 
-                  <div v-if="activeConflict.new_metadata" class="pt-3 border-t border-slate-100">
-                    <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-                      {{ isFailureConflict(activeConflict) ? '附带信息' : '作品信息' }}
-                    </span>
-                    <div class="space-y-2">
-                      <div class="flex items-start gap-2 text-sm" v-if="activeConflict.new_metadata.work_name">
-                        <span class="text-slate-500 min-w-[40px]">名称:</span>
-                        <span class="text-slate-800 font-medium break-all">{{ activeConflict.new_metadata.work_name }}</span>
+                  <div class="conflicts-info-cols">
+                    <div>
+                      <span class="conflicts-info-label">类型</span>
+                      <p class="conflicts-info-value">{{ activeConflict.context?.new_path_kind === 'archive' ? '压缩包' : '目录' }}</p>
+                    </div>
+                    <div>
+                      <span class="conflicts-info-label">大小</span>
+                      <p class="conflicts-info-value">{{ displayStatSize(activeConflict.context?.source?.stats) }}</p>
+                    </div>
+                  </div>
+
+                  <div class="conflicts-info-section">
+                    <span class="conflicts-info-label">创建时间</span>
+                    <p class="conflicts-info-value-muted">{{ displayStatTime(activeConflict.context?.source?.stats) }}</p>
+                  </div>
+
+                  <div v-if="activeConflict.new_metadata" class="conflicts-info-block">
+                    <span class="conflicts-info-label">{{ isFailureConflict(activeConflict) ? '附带信息' : '作品信息' }}</span>
+                    <div class="conflicts-info-meta-list">
+                      <div v-if="activeConflict.new_metadata.work_name" class="conflicts-info-meta-row">
+                        <span class="conflicts-info-meta-key">名称</span>
+                        <span class="conflicts-info-meta-val break-all">{{ activeConflict.new_metadata.work_name }}</span>
                       </div>
-                      <div class="flex items-start gap-2 text-sm" v-if="activeConflict.new_metadata.maker_name">
-                        <span class="text-slate-500 min-w-[40px]">社团:</span>
-                        <span class="text-slate-800">{{ activeConflict.new_metadata.maker_name }}</span>
+                      <div v-if="activeConflict.new_metadata.maker_name" class="conflicts-info-meta-row">
+                        <span class="conflicts-info-meta-key">社团</span>
+                        <span class="conflicts-info-meta-val">{{ activeConflict.new_metadata.maker_name }}</span>
                       </div>
-                      <div class="flex items-start gap-2 text-sm" v-if="activeConflict.new_metadata.cvs?.length">
-                        <span class="text-slate-500 min-w-[40px]">声优:</span>
-                        <span class="text-slate-800">{{ activeConflict.new_metadata.cvs.join(' / ') }}</span>
+                      <div v-if="activeConflict.new_metadata.cvs?.length" class="conflicts-info-meta-row">
+                        <span class="conflicts-info-meta-key">声优</span>
+                        <span class="conflicts-info-meta-val">{{ activeConflict.new_metadata.cvs.join(' / ') }}</span>
                       </div>
                     </div>
                   </div>
-                  
-                  <div v-if="activeConflict.new_metadata?.error_message" class="pt-3 border-t border-slate-100">
-                    <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">失败原因</span>
+
+                  <div v-if="activeConflict.new_metadata?.error_message" class="conflicts-info-block">
+                    <span class="conflicts-info-label">失败原因</span>
                     <p class="text-sm text-red-600 font-medium">{{ activeConflict.new_metadata.error_message }}</p>
                   </div>
                 </div>
               </div>
 
-              <!-- Target Card -->
-              <div class="bg-white border border-slate-200/80 overflow-hidden shadow-sm flex flex-col rounded-2xl">
-                <div class="px-5 py-3 border-b border-slate-100 bg-slate-50 flex items-center gap-2">
+              <!-- 已存在目录 -->
+              <div class="conflicts-info-card">
+                <div class="conflicts-info-card-header">
                   <Archive class="w-4 h-4 text-slate-400" />
-                  <h3 class="font-bold text-slate-700 text-sm">{{ isFailureConflict(activeConflict) ? '处理建议' : '已存在目录' }}</h3>
+                  <h3>{{ isFailureConflict(activeConflict) ? '处理建议' : '已存在目录' }}</h3>
                 </div>
-                <div class="p-5 space-y-4 flex-1">
-                  <div>
-                    <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                      {{ isFailureConflict(activeConflict) ? '建议动作' : '目标路径' }}
-                    </span>
-                    <div v-if="!isFailureConflict(activeConflict)" class="bg-indigo-50/50 border border-indigo-100 p-3 text-xs text-indigo-900 font-mono break-all leading-relaxed max-h-32 overflow-y-auto no-scrollbar rounded-xl">
+                <div class="conflicts-info-card-body">
+                  <div class="conflicts-info-section">
+                    <span class="conflicts-info-label">{{ isFailureConflict(activeConflict) ? '建议动作' : '目标路径' }}</span>
+                    <div v-if="!isFailureConflict(activeConflict)" class="conflicts-info-path is-target">
                       {{ getExistingConflictPath(activeConflict) }}
                     </div>
-                    <p v-else class="text-sm text-slate-700 leading-relaxed bg-slate-50 p-3 border border-slate-200 rounded-xl">
+                    <p v-else class="conflicts-info-suggest">
                       {{ isExtractFailed(activeConflict) ? '可直接跳过并删除当前失败来源；如果你已经补充了正确密码或完整分卷，建议回到任务列表重新处理。' : '可先根据失败原因修复来源内容后重试；如果确认不再处理，也可以直接跳过删除当前失败来源。' }}
                     </p>
                   </div>
 
-                  <div v-if="!isFailureConflict(activeConflict)" class="grid grid-cols-2 gap-4">
+                  <div v-if="!isFailureConflict(activeConflict)" class="conflicts-info-cols">
                     <div>
-                      <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">落地位置</span>
-                      <p class="text-sm text-slate-800 font-medium flex items-center gap-1.5">
+                      <span class="conflicts-info-label">落地位置</span>
+                      <p class="conflicts-info-value flex items-center gap-1.5">
                         {{ activeConflict.context?.existing?.library_name || '默认库存' }}
-                        <span class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md">{{ activeConflict.context?.existing?.is_remote ? '远程' : '本地' }}</span>
+                        <span class="lib-chip" :class="activeConflict.context?.existing?.is_remote ? 'lib-chip-warning' : 'lib-chip-info'">
+                          {{ activeConflict.context?.existing?.is_remote ? '远程' : '本地' }}
+                        </span>
                       </p>
                     </div>
                     <div>
-                      <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">大小</span>
-                      <p class="text-sm text-slate-800 font-medium">{{ formatFileSize(activeConflict.context?.existing?.stats?.size) }}</p>
+                      <span class="conflicts-info-label">大小</span>
+                      <p class="conflicts-info-value">{{ displayStatSize(activeConflict.context?.existing?.stats) }}</p>
                     </div>
                   </div>
 
-                  <div class="pt-3 border-t border-slate-100 grid grid-cols-2 gap-4">
+                  <div class="conflicts-info-block conflicts-info-cols">
                     <div>
-                      <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                        {{ isFailureConflict(activeConflict) ? '记录时间' : '检测时间' }}
-                      </span>
-                      <p class="text-sm text-slate-600">{{ formatDate(activeConflict.created_at) }}</p>
+                      <span class="conflicts-info-label">{{ isFailureConflict(activeConflict) ? '记录时间' : '检测时间' }}</span>
+                      <p class="conflicts-info-value-muted">{{ formatDate(activeConflict.created_at) }}</p>
                     </div>
                     <div v-if="!isFailureConflict(activeConflict)">
-                      <span class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">目标创建时间</span>
-                      <p class="text-sm text-slate-600">{{ formatTimestamp(activeConflict.context?.existing?.stats?.created_at) }}</p>
+                      <span class="conflicts-info-label">目标创建时间</span>
+                      <p class="conflicts-info-value-muted">{{ displayStatTime(activeConflict.context?.existing?.stats) }}</p>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            <!-- Help Card -->
-            <div class="mt-6 bg-white border border-slate-200/80 p-5 shadow-sm rounded-2xl">
-              <h4 class="flex items-center gap-2 text-sm font-bold text-slate-700 mb-3">
+            <!-- 帮助说明 -->
+            <div class="conflicts-help-card">
+              <h4 class="conflicts-help-title">
                 <Info class="w-4 h-4 text-slate-400" />
                 {{ isFailureConflict(activeConflict) ? '失败说明' : '动作说明' }}
               </h4>
-              <ul v-if="!isFailureConflict(activeConflict)" class="space-y-2 text-sm text-slate-600 list-disc list-inside marker:text-slate-400 ml-1">
-                <li><strong class="text-slate-800">保留新版：</strong>先经过删除审查，再安全替换已有目录，失败时走最小化破坏路径。</li>
-                <li><strong class="text-slate-800">跳过：</strong>不解压，直接删除当前压缩包或待处理目录，原有目录保持不变。</li>
-                <li><strong class="text-slate-800">合并：</strong>进入组件文件夹对比视图，逐文件决定保留新文件、旧文件或删除。</li>
+              <ul v-if="!isFailureConflict(activeConflict)" class="conflicts-help-list">
+                <li><strong>保留新版：</strong>先经过删除审查，再安全替换已有目录，失败时走最小化破坏路径。</li>
+                <li><strong>跳过：</strong>不解压，直接删除当前压缩包或待处理目录，原有目录保持不变。</li>
+                <li><strong>合并：</strong>进入组件文件夹对比视图，逐文件决定保留新文件、旧文件或删除。</li>
               </ul>
-              <ul v-else class="space-y-2 text-sm text-slate-600 list-disc list-inside marker:text-slate-400 ml-1">
+              <ul v-else class="conflicts-help-list">
                 <li>{{ isExtractFailed(activeConflict) ? '当前问题发生在解压阶段，不代表库存中已经有重复作品。' : '当前问题发生在导入处理链路中，不代表库存中已经有重复作品。' }}</li>
                 <li>{{ isExtractFailed(activeConflict) ? '如果错误是密码不正确、分卷缺失或压缩包损坏，修复后重新处理通常更合适。' : '如果错误发生在元数据、重命名、过滤或分类阶段，优先按当前失败原因排查对应链路。' }}</li>
-                <li>如果确认不再处理这个包，可以直接点击“跳过”删除失败来源。</li>
+                <li>如果确认不再处理这个包，可以直接点击"跳过"删除失败来源。</li>
               </ul>
             </div>
+          </div>
+        </section>
+
+        <!-- 未选中时的右侧占位：鼓励用户从左侧挑选 -->
+        <section v-else class="conflicts-detail-pane conflicts-detail-placeholder">
+          <div class="conflicts-detail-placeholder-inner">
+            <FileWarning class="w-10 h-10 mb-3 text-slate-300" stroke-width="1.4" />
+            <p class="text-sm font-medium text-slate-500">请从左侧选择一个问题作品</p>
+            <p class="text-xs text-slate-400 mt-1">点击列表项查看详情并处理</p>
           </div>
         </section>
       </template>
@@ -416,13 +449,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   RefreshCw, AlertCircle, CheckCircle2, Cloud, HardDrive,
   FileWarning, Copy, Save, RotateCcw, SkipForward,
   GitMerge, AlertTriangle, FolderOpen, Archive, Info,
-  CheckSquare, XSquare, ChevronRight
+  CheckSquare, XSquare, ChevronRight,
+  ShieldAlert, Hourglass, Loader2
 } from 'lucide-vue-next'
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
 import BatchRetryPasswordDialog from '../components/conflicts/BatchRetryPasswordDialog.vue'
@@ -435,6 +469,17 @@ const ACTIVE_CONFLICT_STORAGE_KEY = 'prekikoeru-conflicts-active-id'
 const conflicts = ref([])
 const loading = ref(false)
 const errorMessage = ref('')
+// stats 后台补齐进行中：阶段 1 拿到列表后会立即变 true，阶段 2 完成后变 false。
+// 模板里详情区的"大小 / 创建时间"字段在 stats 缺失 + statsBackfilling 时显示"统计中…"。
+const statsBackfilling = ref(false)
+// 防止 backfill 请求乱序：用户连续点刷新或快速切换页面时，只保留最新一次的结果。
+let backfillRequestId = 0
+// AbortController 主动取消上一次未完成的 backfill：避免后端跑多遍（即使有缓存也要 DB 查询 +
+// Semaphore 排队），减轻群晖 NAS / 慢盘 / Python ThreadPoolExecutor 的负担。
+let backfillAbortController = null
+// in-flight promise 复用：retry 轮询 / SSE 推送 / 用户手动刷新可能并发触发 fetchConflicts，
+// 这里让所有调用方共享同一个 promise，确保后端只跑一次完整列表查询 + 状态恢复。
+let pendingFetchPromise = null
 const activeConflictId = ref(localStorage.getItem(ACTIVE_CONFLICT_STORAGE_KEY) || '')
 const selectedConflictIds = ref([])
 const selectionAnchorId = ref('')
@@ -495,6 +540,15 @@ onMounted(() => {
   fetchConflicts()
 })
 
+// 路由启用了 keep-alive（router/index.js 中 cache: true），切走再切回来组件不会重新 mount，
+// 只会触发 onActivated。这里兜底：每次激活都刷新一次数据，避免用户看到老缓存误以为没数据。
+onActivated(() => {
+  // 避免和首次 mount 的 fetchConflicts 重复：首次挂载时 loading 已为 true 或刚结束，这里只在空闲时触发。
+  if (!loading.value) {
+    fetchConflicts()
+  }
+})
+
 onUnmounted(() => {
   for (const timerId of retryPollers.values()) {
     clearTimeout(timerId)
@@ -503,22 +557,79 @@ onUnmounted(() => {
   for (const key of Object.keys(localRetryingConflictIds)) {
     delete localRetryingConflictIds[key]
   }
+  // 防御：组件被真正销毁（而非 keep-alive 缓存）时取消未完成的 backfill。
+  if (backfillAbortController) {
+    backfillAbortController.abort()
+    backfillAbortController = null
+  }
 })
 
 
 async function fetchConflicts() {
-  loading.value = true
-  errorMessage.value = ''
+  // in-flight 复用：已有 fetch 在跑则共享同一个 promise，避免重复 list 请求 / DB 查询 / Semaphore 排队。
+  if (pendingFetchPromise) {
+    return pendingFetchPromise
+  }
+  pendingFetchPromise = (async () => {
+    loading.value = true
+    errorMessage.value = ''
+    try {
+      // 阶段 1：不带 stats 立即拿列表（远程 stat 跳过，秒回），保证界面先渲染出来。
+      const data = await conflictApi.list({ includeStats: false })
+      conflicts.value = data.conflicts || []
+      syncSelectedConflicts()
+      syncActiveConflict()
+    } catch (error) {
+      console.error('获取问题作品失败:', error)
+      errorMessage.value = resolveErrorMessage(error, '获取问题作品失败')
+      return
+    } finally {
+      loading.value = false
+    }
+    // 阶段 2：后台异步补齐 stats（目录大小 / 创建时间），不阻塞 UI、失败不打扰。
+    // 注意 backfill 不 await，它内部有 abort + requestId 双重去重机制，自我管理。
+    void backfillConflictStats()
+  })()
   try {
-    const data = await conflictApi.list()
-    conflicts.value = data.conflicts || []
-    syncSelectedConflicts()
-    syncActiveConflict()
-  } catch (error) {
-    console.error('获取问题作品失败:', error)
-    errorMessage.value = resolveErrorMessage(error, '获取问题作品失败')
+    await pendingFetchPromise
   } finally {
-    loading.value = false
+    pendingFetchPromise = null
+  }
+}
+
+async function backfillConflictStats() {
+  if (!conflicts.value.length) return
+  // 主动 abort 上一次未完成的 backfill，避免后端跑多遍 + 浪费 NAS IO + 占线程池。
+  if (backfillAbortController) {
+    backfillAbortController.abort()
+  }
+  const controller = new AbortController()
+  backfillAbortController = controller
+  const requestId = ++backfillRequestId
+  statsBackfilling.value = true
+  try {
+    const data = await conflictApi.list({ includeStats: true, signal: controller.signal })
+    // 期间用户可能又点了刷新，本次结果已过时则丢弃，避免覆盖更新的数据。
+    if (requestId !== backfillRequestId) return
+    const incomingMap = new Map((data.conflicts || []).map(item => [item.id, item]))
+    // 只 merge context（含 stats），保持其他字段引用不变，最大限度避免列表 re-render 闪烁。
+    conflicts.value = conflicts.value.map(existing => {
+      const incoming = incomingMap.get(existing.id)
+      if (!incoming) return existing
+      return { ...existing, context: incoming.context }
+    })
+  } catch (error) {
+    // 主动 abort 走的是 axios 'CanceledError'（code 'ERR_CANCELED'），属于正常流程，静默丢弃。
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+      return
+    }
+    // 阶段 2 失败不影响列表展示，只在 console 留痕，下一次刷新会再试。
+    console.warn('后台补齐问题作品 stats 失败（不影响列表展示）:', error)
+  } finally {
+    if (requestId === backfillRequestId) {
+      statsBackfilling.value = false
+      backfillAbortController = null
+    }
   }
 }
 
@@ -624,6 +735,12 @@ function getConflictStatusClass(conflict) {
   if (isConflictRetrying(conflict)) return 'bg-emerald-50 text-emerald-700 border-emerald-200'
   if (isConflictProcessing(conflict)) return 'bg-blue-50 text-blue-600 border-blue-200'
   return 'bg-slate-100 text-slate-500 border-slate-200'
+}
+
+function getConflictStatusChipClass(conflict) {
+  if (isConflictRetrying(conflict)) return 'lib-chip-success'
+  if (isConflictProcessing(conflict)) return 'lib-chip-info'
+  return 'lib-chip-info'
 }
 
 function isConflictSelected(conflictId) {
@@ -1286,6 +1403,17 @@ function formatFileSize(size) {
   }
   return `${current.toFixed(current >= 10 ? 1 : 2)} ${units[unitIndex]}`
 }
+
+// 详情区 stats 字段展示器：stats 缺失 + 后台正在补齐 → "统计中…"，否则按原格式化走。
+// 把"未知"和"正在算"区分开，避免用户看到 "-" 误以为没数据。
+function displayStatSize(stats) {
+  if (stats?.size != null) return formatFileSize(stats.size)
+  return statsBackfilling.value ? '统计中…' : '-'
+}
+function displayStatTime(stats) {
+  if (stats?.created_at != null) return formatTimestamp(stats.created_at)
+  return statsBackfilling.value ? '统计中…' : '-'
+}
 </script>
 
 <style scoped>
@@ -1297,6 +1425,792 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* ==============================================================
+ * 页面整体布局
+ * ============================================================ */
+.conflicts-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding: 18px 24px 24px;
+  /* App.vue 已有 #fbfbfd → #f2f2f5 全局渐变，这里不要再叠灰，避免双层灰过度 */
+  background: transparent;
+}
+
+/* ==============================================================
+ * 页面头部 + 信息条：玻璃质感升级，参考 LibraryMoveDialog .glass-shell
+ * 双层 background + inset 顶部高光 + 多层柔阴影 + 强 saturate
+ * ============================================================ */
+.lib-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.lib-page-head-left { display: flex; align-items: center; gap: 14px; }
+.lib-page-head-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* 顶部图标：纯 amber 色块，不走玻璃感 */
+.lib-page-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #fef3c7;
+  border: 1px solid rgba(245, 158, 11, 0.18);
+  color: #b45309;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.lib-page-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  color: #0f172a;
+  line-height: 1.2;
+}
+.lib-page-subtitle {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: #64748b;
+  letter-spacing: 0.01em;
+}
+
+/* 刷新按钮：纯白底 + hover 上浮动画 + 图标旋转 */
+.conflicts-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #fff;
+  color: #475569;
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.25s ease,
+              border-color 0.18s ease,
+              background-color 0.18s ease,
+              color 0.18s ease;
+}
+.conflicts-refresh-btn :deep(svg) {
+  transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.conflicts-refresh-btn:hover:not(:disabled) {
+  border-color: rgba(15, 23, 42, 0.18);
+  background: #fff;
+  color: #0f172a;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -6px rgba(15, 23, 42, 0.18);
+}
+.conflicts-refresh-btn:hover:not(:disabled) :deep(svg) {
+  transform: rotate(180deg);
+}
+.conflicts-refresh-btn:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.conflicts-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 信息条：纯白 + 极淡黑灰边 + 一层柔阴影 */
+.lib-info-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 0;
+  margin-bottom: 18px;
+  padding: 16px 20px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+}
+.lib-info-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 18px;
+}
+.lib-info-item:first-child { padding-left: 0; }
+.lib-info-item:last-child { padding-right: 0; }
+.lib-info-icon { flex-shrink: 0; margin-top: 3px; }
+.lib-info-body { min-width: 0; flex: 1 1 auto; }
+.lib-info-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+.lib-info-value {
+  font-size: 13.5px;
+  color: #475569;
+  line-height: 1.3;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* 数字加重：更大字号 + tabular-nums 避免跳动 */
+.lib-info-value :deep(b),
+.lib-info-value b {
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: -0.4px;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.lib-info-meta { color: #94a3b8; font-size: 12px; }
+.lib-info-sub {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lib-info-divider {
+  width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(15, 23, 42, 0.1), transparent);
+  align-self: stretch;
+}
+
+@media (max-width: 980px) {
+  .lib-info-strip { grid-template-columns: 1fr; gap: 14px; padding: 16px 18px; }
+  .lib-info-divider { display: none; }
+  .lib-info-item { padding: 0; }
+}
+
+/* 小 chip */
+.lib-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.lib-chip-success { background: rgba(220, 252, 231, 0.8); color: #047857; border: 1px solid rgba(134, 239, 172, 0.5); }
+.lib-chip-warning { background: rgba(254, 243, 199, 0.8); color: #b45309; border: 1px solid rgba(253, 224, 71, 0.5); }
+.lib-chip-danger { background: rgba(254, 226, 226, 0.8); color: #b91c1c; border: 1px solid rgba(252, 165, 165, 0.5); }
+.lib-chip-info { background: rgba(224, 231, 255, 0.8); color: #4338ca; border: 1px solid rgba(165, 180, 252, 0.5); }
+
+/* 错误提示：纯色红底 */
+.conflicts-error-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #fef2f2;
+  border: 1px solid rgba(239, 68, 68, 0.18);
+  color: #991b1b;
+}
+
+/* ==============================================================
+ * 主工作区
+ * ============================================================ */
+.conflicts-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 18px;
+  overflow: hidden;
+}
+
+.conflicts-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px dashed rgba(15, 23, 42, 0.12);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  padding: 60px 20px;
+  text-align: center;
+}
+
+/* ==============================================================
+ * 左侧列表
+ * ============================================================ */
+.conflicts-list-pane {
+  width: 360px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+@media (min-width: 1280px) {
+  .conflicts-list-pane { width: 400px; }
+}
+
+.conflicts-list-header {
+  flex-shrink: 0;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  background: rgba(248, 250, 252, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.conflicts-list-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #1e293b;
+  letter-spacing: -0.2px;
+}
+
+/* 分段筛选 */
+.conflicts-segmented {
+  display: flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+.conflicts-segmented-item {
+  flex: 1;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #64748b;
+  transition: all 0.2s ease;
+}
+.conflicts-segmented-item:hover { color: #334155; }
+.conflicts-segmented-item.is-active {
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  font-weight: 600;
+}
+
+/* 列表小动作按钮 */
+.conflicts-list-actions {
+  display: flex;
+  gap: 6px;
+}
+.conflicts-mini-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #fff;
+  color: #475569;
+  font-size: 11.5px;
+  font-weight: 500;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.conflicts-mini-btn:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.18);
+  color: #0f172a;
+}
+.conflicts-mini-btn.is-active {
+  background: #e0f2fe;
+  border-color: rgba(2, 132, 199, 0.3);
+  color: #0c4a6e;
+}
+.conflicts-mini-btn:disabled { opacity: 0.5; }
+
+/* 批量动作按钮 */
+.conflicts-batch-actions {
+  display: flex;
+  gap: 6px;
+  animation: conflicts-fade-in 0.2s ease;
+}
+.conflicts-batch-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #fff;
+  transition: all 0.2s ease;
+}
+.conflicts-batch-btn.is-emerald {
+  background: linear-gradient(135deg, #10b981, #059669);
+  border-color: #047857;
+  box-shadow: 0 2px 6px -2px rgba(16, 185, 129, 0.4);
+}
+.conflicts-batch-btn.is-emerald:hover:not(:disabled) { background: linear-gradient(135deg, #059669, #047857); transform: translateY(-1px); }
+.conflicts-batch-btn.is-slate {
+  background: linear-gradient(135deg, #475569, #334155);
+  border-color: #1e293b;
+  box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.3);
+}
+.conflicts-batch-btn.is-slate:hover:not(:disabled) { background: linear-gradient(135deg, #334155, #1e293b); transform: translateY(-1px); }
+.conflicts-batch-btn:disabled { opacity: 0.5; }
+
+.conflicts-list-hint {
+  margin: 0;
+  font-size: 10.5px;
+  color: #94a3b8;
+  text-align: center;
+}
+
+/* 列表滚动区 */
+.conflicts-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 筛选为空时的列表内嵌空态（保留上方筛选按钮可见）*/
+.conflicts-list-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+  color: #94a3b8;
+}
+
+/* 列表卡片：中性灰选中态，macOS Finder / Notion 风格 —— 克制、不刺眼、不加竖条 */
+.conflicts-list-card {
+  position: relative;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background-color 0.18s ease, border-color 0.18s ease;
+  overflow: hidden;
+}
+.conflicts-list-card:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.04);
+  border-color: rgba(15, 23, 42, 0.06);
+}
+/* 多选勾选（非焦点项）：最浅的灰底 */
+.conflicts-list-card.is-selected {
+  background: #f1f5f9;
+  border-color: rgba(15, 23, 42, 0.1);
+}
+/* 当前查看项（焦点）：稍深灰底 + 加深边 + 标题加粗更重 */
+.conflicts-list-card.is-active {
+  background: #e2e8f0;
+  border-color: rgba(15, 23, 42, 0.18);
+}
+.conflicts-list-card.is-active .conflicts-list-card-title {
+  color: #0f172a;
+}
+
+.conflicts-list-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.conflicts-list-card-title {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conflicts-list-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.conflicts-list-card-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #64748b;
+  font-weight: 500;
+}
+.conflicts-list-card-date {
+  color: #94a3b8;
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.conflicts-list-card-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.conflicts-list-progress-track {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(220, 252, 231, 0.6);
+  overflow: hidden;
+}
+.conflicts-list-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #14b8a6);
+  border-radius: 999px;
+  transition: width 0.5s ease;
+}
+.conflicts-list-progress-num {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #047857;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==============================================================
+ * 右侧详情
+ * ============================================================ */
+.conflicts-detail-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.conflicts-detail-header {
+  position: relative;
+  flex-shrink: 0;
+  padding: 22px 26px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  background: #f8fafc;
+  overflow: hidden;
+}
+.conflicts-detail-bg-glyph {
+  position: absolute;
+  top: -20px;
+  right: -20px;
+  color: #cbd5e1;
+  opacity: 0.08;
+  pointer-events: none;
+}
+.conflicts-detail-header-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+@media (min-width: 1280px) {
+  .conflicts-detail-header-inner { flex-direction: row; align-items: center; justify-content: space-between; gap: 20px; }
+}
+
+.conflicts-detail-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  color: #0f172a;
+  line-height: 1.2;
+}
+.conflicts-detail-subtitle {
+  margin: 6px 0 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #64748b;
+}
+.conflicts-detail-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+.conflicts-detail-dot.is-info { background: #0284c7; box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15); }
+.conflicts-detail-dot.is-danger { background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15); }
+
+/* 顶部操作按钮 */
+.conflicts-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.conflicts-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.conflicts-action-btn:disabled { opacity: 0.5; }
+.conflicts-action-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px -6px rgba(15, 23, 42, 0.3);
+}
+.conflicts-action-btn:active:not(:disabled) { transform: scale(0.97); }
+.conflicts-action-btn.is-primary {
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  border-color: #4338ca;
+  box-shadow: 0 2px 6px -2px rgba(99, 102, 241, 0.4);
+}
+.conflicts-action-btn.is-emerald {
+  background: linear-gradient(135deg, #10b981, #059669);
+  border-color: #047857;
+  box-shadow: 0 2px 6px -2px rgba(16, 185, 129, 0.4);
+}
+.conflicts-action-btn.is-slate {
+  background: linear-gradient(135deg, #475569, #334155);
+  border-color: #1e293b;
+  box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.3);
+}
+.conflicts-action-btn.is-amber {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border-color: #b45309;
+  box-shadow: 0 2px 6px -2px rgba(245, 158, 11, 0.4);
+}
+
+/* 详情正文：透明，让外层 pane 的半透明白透出来 */
+.conflicts-detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 26px 28px;
+  background: transparent;
+}
+
+/* 未选中时的右侧占位（复用 detail-pane 容器样式）*/
+.conflicts-detail-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.conflicts-detail-placeholder-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 28px;
+}
+
+/* 失败提示框 */
+.conflicts-detail-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid;
+}
+.conflicts-detail-alert.is-warning {
+  background: rgba(254, 243, 199, 0.55);
+  border-color: rgba(245, 158, 11, 0.2);
+  color: #92400e;
+}
+.conflicts-detail-alert.is-danger {
+  background: rgba(254, 226, 226, 0.55);
+  border-color: rgba(239, 68, 68, 0.18);
+  color: #991b1b;
+}
+
+/* 双卡网格 */
+.conflicts-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+@media (min-width: 1280px) {
+  .conflicts-detail-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* 信息卡片：纯白 + 极淡黑灰边 */
+.conflicts-info-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+.conflicts-info-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
+  background: #f8fafc;
+}
+.conflicts-info-card-header h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  letter-spacing: -0.2px;
+}
+.conflicts-info-card-body {
+  flex: 1;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.conflicts-info-section { display: flex; flex-direction: column; gap: 6px; }
+.conflicts-info-block {
+  padding-top: 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.conflicts-info-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.conflicts-info-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+.conflicts-info-value {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #0f172a;
+}
+.conflicts-info-value-muted {
+  margin: 0;
+  font-size: 12.5px;
+  color: #64748b;
+}
+.conflicts-info-suggest {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+  font-size: 12.5px;
+  color: #475569;
+  line-height: 1.6;
+}
+
+/* 路径展示框 */
+.conflicts-info-path {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+  font-size: 11.5px;
+  color: #334155;
+  line-height: 1.6;
+  word-break: break-all;
+  max-height: 96px;
+  overflow-y: auto;
+}
+.conflicts-info-path::-webkit-scrollbar { width: 4px; }
+.conflicts-info-path::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.4); border-radius: 4px; }
+.conflicts-info-path.is-target {
+  background: #e0f2fe;
+  border-color: rgba(2, 132, 199, 0.18);
+  color: #0c4a6e;
+}
+
+/* 元数据 */
+.conflicts-info-meta-list { display: flex; flex-direction: column; gap: 6px; }
+.conflicts-info-meta-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.conflicts-info-meta-key {
+  flex-shrink: 0;
+  width: 36px;
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+.conflicts-info-meta-val { color: #1e293b; flex: 1; }
+
+/* 帮助卡：纯白 */
+.conflicts-help-card {
+  margin-top: 16px;
+  padding: 16px 20px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+.conflicts-help-title {
+  margin: 0 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+.conflicts-help-list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #475569;
+  line-height: 1.7;
+}
+.conflicts-help-list li::marker { color: #cbd5e1; }
+.conflicts-help-list strong { color: #0f172a; font-weight: 600; }
+
+@keyframes conflicts-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ==============================================================
+ * 已有动画（处理中 / 重试中）保留
+ * ============================================================ */
 .processing-conflict-card {
   border-color: rgba(74, 222, 128, 0.72) !important;
   box-shadow:
@@ -1310,7 +2224,7 @@ button:disabled {
   content: "";
   position: absolute;
   inset: -2px;
-  border-radius: 18px;
+  border-radius: 14px;
   pointer-events: none;
   box-shadow:
     0 0 0 1px rgba(134, 239, 172, 0.28),
