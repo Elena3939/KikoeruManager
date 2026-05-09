@@ -58,6 +58,7 @@
 - Lottie 通用组件：`frontend/src/components/common/AppLoadingAnimation.vue`、`AppLottieIcon.vue`、`AppLottieSwitch.vue`、`AppLottieProgressBar.vue`
 - 统一空态：`frontend/src/components/common/AppEmptyState.vue`
 - 库存索引徽章：`frontend/src/components/library/LibraryIndexBadge.vue`（chip + 圆环 SVG spinner + 实时已扫描数字 + 重建按钮，库存页头部右侧）
+- **统一筛选下拉**：`frontend/src/components/common/AppDropdown.vue`，所有页面的单选筛选 / 排序 / 范围选择器都走这个，不要再新增 `el-select`（只在多选 + collapse-tags 场景才允许保留 `el-select`）。
 
 ### 桌面 / 发布
 
@@ -114,6 +115,9 @@
 - 禁止用 Element Plus 默认表格当核心页面布局。
 - 新做任务面板、工作台、预览、批量处理、详情抽屉时，默认对齐 `DownloadTaskWorkbenchDialog.vue`。
 - 系统确认 / 输入 / 提醒统一走 `useSystemPrompt`，不要新增散落的 `ElMessageBox.*`。
+- 页头按钮（刷新 / 重建 / 归档 等）统一走 `.page-head-btn` 规范（定义在 `frontend/src/index.css`）：黑 primary 三段渐变、inset 高光、按下 `scale(0.94)` + `inset shadow` + 短暂白色 flash 高光。**不要**再给页头另写一套自制按钮样式，尤其不要用 Element Plus 默认按钮。
+- loading / busy 切换时，图标用 220ms 淡入淡出 swap（参考 `ActivityHistory.vue` 的 `.page-head-btn-icon-swap`），**不要**加载中隐藏整个按钮（会触发被点击→按钮消失→按下态丢失的"闪烁"Bug）。
+- `v-app-loading` 遮罩**必须**绑定到「页面内容区」或「Modal 主体区」，而不是整页 / 整 Dialog。典型错误：绑到顶级 section 会盖住头部的「刷新 / 关闭」按钮，用户看到的是"转圈时按钮点不了还在闪"。页头按钮自带按钮级 spinner（`Loader2 animate-spin`），遮罩只负责主内容区。
 
 ## 5. 业务链路红线
 
@@ -184,6 +188,7 @@
 - `_resolve_kikoeru_server_path` 已统一走 `LibraryManager.find_rj_in_libraries`（接索引快速路径） + `asyncio.wait_for(timeout=20.0)` 兑底慢盘。**不要**回退到原来的 `list_files + global_search_files` 多库并行循环（N 条 conflict 串行会打死接口）。
 - `/api/conflicts` 列表分三阶段：`db_query` → `phase1_serial`（SQLAlchemy 串行 status 恢复 + actions 计算）→ `phase2_parallel_context`（信号量 8 限流的 `describe_conflict_async`）。三阶段都打 INFO 耗时日志（前缀 `[/api/conflicts]`），慢盘排查先看日志再动代码。
 - 详情区主操作按钮（保留新版 / 重试 / 合并）已落“主按钮设计语言”（三段渐变 + inset 高光 + 双层 glow），跳过用 ghost 拉低视觉权重。改样式前先看 `.conflicts-action-btn` 现有 class。
+- 问题作品 resolve 后必须联动操作记录：`/api/conflicts/{id}/resolve` 成功时调用 `mark_task_conflict_resolved_activity_log(task_id, action)`，把原任务那条 `task_finished/waiting` 行回写成 `已跳过 / 已保留新版 / 已合并`。否则操作记录会一直停在"等待处理"——用户觉得"拍完板了记录还在卡"。改 `KEEP_NEW / SKIP / MERGE` 任一分支都要确认这条联动还在。
 
 ### ASMR 同步
 
@@ -204,6 +209,15 @@
 - 批量下载入口优先用 `asmr_available_rjcode`，不要默认拿 `display_rjcode`。
 - DLsite 关联链统一复用 `dlsite_service.get_linked_works()`，不能只信 `language_editions`。
 
+### 密码工作台
+
+- 入口：`frontend/src/views/PasswordVault.vue`；后端聚合在 `routes.py` 的 `/api/passwords/*`。
+- **创建密码接口已内置去重合并**：
+  - 同时有 `rjcode + filename` 时，命中现有同 RJ + 同文件名条目则更新密码 / 备注 / 刷新 `updated_at`。
+  - **没有 RJ 和文件名（通用密码）**时，按 `password` 字段精确匹配合并；仅原备注为空、新输入带备注才补写备注。不改任何字段时连 `updated_at` 都不刷新，避免排序跳动。
+  - 合并命中时响应会带 `merged: true`，前端据此显示"已合并到现有密码"，而不是"已新建"。改 `create_password` 分支时不要抹掉这段 dedup 逻辑。
+- 排序字段由下拉控制（`passwordSortBy`：`created_at / updated_at / rjcode / filename / use_count`），必须走统一 `AppDropdown`，不要再用 `el-select`。
+
 ### 下载 / 上传与大文件
 
 - 群晖上传核心在 `library_manager.py`，ASMR 增强下载上传在 `asmr_resource_service.py`。
@@ -213,6 +227,7 @@
 - Synology 客户端按配置签名缓存，配置变化会自动重建客户端；改群晖配置后不需要重启服务。
 - `local_download_ready` 只认数据库明确标志。只有任务 `completed` 才写 `True`，失败 / 异常都写 `False`。
 - 工作台依赖字段：`download_files`、`upload_files`、`uploaded_files`、`progress_log`、`failure_reason`、`final_output_path`、`download_root`。
+- `LibraryManager.upload_directory_to_remote_library` 已同时支持「单文件」和「目录」上传：单文件时直接落到 `target_root_path/<basename>`，不再套一层同名子目录。改上传链路时注意保留 `isfile(source_dir)` 分支，否则单文件会被当成"空目录"失败。
 
 ### 群晖 / 远程库存
 
@@ -408,3 +423,51 @@
 ### 库存页标签视觉升级
 
 - `lib-chip-success / warning / danger / info` 从纯色 0.8 透明改为 180deg 双段渐变 + inset 1px 顶部高光 + 同色微 glow + hover `translateY(-1px) scale(1.04)`，告别“塑料感”.
+
+### 统一筛选下拉 `AppDropdown` 全系统落地
+
+- 引入 `frontend/src/components/common/AppDropdown.vue` 作为单选筛选 / 排序 / 范围选择的项目统一下拉。风格 = trigger 按钮 + 弹出菜单 + icon + label + badge，跟页头按钮、主按钮设计语言一致.
+- 已替换 8/9 处 `<el-select>`（整站仅 `Logs.vue` 的 `selectedModules` 多选 + collapse-tags 保留 `el-select`）：
+  - `views/ActivityHistory.vue`：时间范围 `statsDays` + 分类 + 状态 三处.
+  - `views/Logs.vue`：日志条数 `logLimit`.
+  - `views/PasswordVault.vue`：密码排序 `passwordSortBy`.
+  - `views/CircleCompletion.vue`：社团排序 `circleSortKey`.
+  - `components/settings/RulesSettingsPanel.vue`：过滤规则作用域 / 分类规则类型（v-for 内各一处）.
+  - `components/subtitle-import/SubtitleImportWorkbench.vue`、`components/library/subtitle-workbench/SubtitleConfigRail.vue`：字幕过滤作用范围.
+- 新增单选筛选一律走 `AppDropdown`；只有 `multiple + collapse-tags + tag 渲染` 这种 AppDropdown 没覆盖的复杂场景，才允许继续用 `el-select`.
+
+### 全局按钮反闪烁 + `page-head-btn` 规范传播
+
+- 页头「刷新 / 重建 / 归档 / 返回」按钮统一落 `.page-head-btn` 规范（class 在 `frontend/src/index.css`）：黑 primary 三段渐变 + inset 高光 + 按下 `scale(0.94)` + `inset shadow` + 短暂白色 flash 高光 + hover `translateY(-2px)`.
+- loading 态不再隐藏整个按钮，而是用 220ms 淡入淡出 swap `RefreshCcw ↔ Loader2 animate-spin`（`.page-head-btn-icon-swap`），文字同步切换（`刷新` ↔ `刷新中…`），彻底消灭"按下→按钮消失→按下态丢失"闪烁 Bug.
+- 已传播到 `ActivityHistory.vue`、`ASMRSync.vue`、`SubtitleImport.vue`、`LibraryBackup.vue`、`ExistingFolders.vue`、`Conflicts.vue`、`Library.vue`、`CircleCompletion.vue`、`PasswordVault.vue`；未来新页面必须对齐这套 class，不要再手搓自制页头按钮.
+
+### `v-app-loading` 遮罩不再盖头部 / 关闭按钮
+
+- 修正了原先把 `v-app-loading` 绑到页面 / Dialog 顶层 section 导致遮罩盖住「刷新 / 关闭 / 归档」按钮、用户点不了又看到按钮闪烁的 Bug.
+- 规则：`v-app-loading` **只绑到"主内容区"**（例如 `timeline-shell`、`dialog-body`），头部和工具栏始终可见可点；头部按钮自带按钮级 `Loader2` spinner，遮罩只负责主体.
+- 已修复页面：`ActivityHistory.vue`、`Library.vue`、`FolderContentsDialog.vue`、`FilterDeleteDialog.vue`、`SubtitleImportWorkbench.vue`.
+
+### 操作记录页重构（`ActivityHistory.vue` + `useActivityDetailModels.js`）
+
+- 筛选栏：时间范围 / 分类 / 状态 全部换成 `AppDropdown`；下拉选择即触发查询；筛选命中条件时显示重置按钮，没筛选时不显示（减少视觉噪音）.
+- 页头「刷新」按钮走 `.page-head-btn` + 图标 swap，loading 态按钮永远可见，不再闪烁.
+- 加载遮罩只绑在 `timeline-shell` 上，不影响头部按钮点击.
+- `activity_log_lite.py` 的 `build_lite_item` 针对单条 `pipeline_rename` 补 `compact_detail`（`old_name / new_name / error / reason`）；前端 `useActivityDetailModels.js` 读取这段字段渲染「原 / 新」对比块。批量重命名（`batch_api_rename / batch_manual_rename`）不挂这个字段，保留 summary 走批量路径.
+
+### 问题作品联动操作记录（后端 + 前端）
+
+- 新增 `backend/app/core/activity_log_service.py::mark_task_conflict_resolved_activity_log`：问题作品 `/api/conflicts/{id}/resolve` 成功后，把原任务那条 `task_finished/waiting` 行回写成 `已跳过 / 已保留新版 / 已合并`，同时更新 `status`（SKIP→cancelled / KEEP_NEW / MERGE→success），让操作记录页不再停留在"等待处理".
+- `routes.py` 的 `resolve_conflict` 在成功分支里统一调用这个 writer；改 `KEEP_NEW / SKIP / MERGE` 任一分支时都要确认联动还在.
+
+### 密码工作台去重合并（`routes.py::create_password`）
+
+- 同 `rjcode + filename` 已有条目 → 更新密码 / 备注 / 刷新 `updated_at`.
+- 通用密码（无 RJ 无 filename）按 `password` 精确匹配合并；仅当原备注为空且新输入带备注时补写备注，**不**刷 `updated_at`，避免"每次保存相同通用密码都把条目顶到排序最前面".
+- 响应体新增 `merged: bool` 字段，前端据此显示"已合并到现有密码"而不是"已新建".
+
+### 单文件上传支持（`library_manager.py::upload_directory_to_remote_library`）
+
+- 原本只支持目录上传，传入单文件时把 `basename` 当目录塞，结果远程生成"空目录 / 文件跑到同名子目录里".
+- 现改为先判断 `os.path.isfile(source_dir)`：单文件时构造一条 `file_row` 走同套并发通道，`final_remote_path = target_root_path/<filename>`，不再多套一层目录；成功后按需 `os.unlink(source_dir)`.
+- 目录场景逻辑完全不变（`os.walk` + 并发）。
