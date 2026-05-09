@@ -1087,7 +1087,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-.fm-icon-btn:hover:not(:disabled) {
+.fm-icon-btn:hover {
   background: white;
   color: #0f172a;
   border-color: rgba(15, 23, 42, 0.18);
@@ -1125,7 +1125,7 @@ onBeforeUnmount(() => {
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.crumb-btn:hover:not(:disabled) {
+.crumb-btn:hover {
   background: rgba(15, 23, 42, 0.06);
   color: #0f172a;
 }
@@ -1294,7 +1294,7 @@ onBeforeUnmount(() => {
   transition: background-color 0.15s ease;
 }
 
-.nav-expander:hover:not(:disabled) { background: rgba(15, 23, 42, 0.08); }
+.nav-expander:hover { background: rgba(15, 23, 42, 0.08); }
 
 .nav-expander:disabled { opacity: 0.4; cursor: not-allowed; }
 

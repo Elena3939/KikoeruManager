@@ -76,6 +76,29 @@
         </button>
 
         <button
+          v-if="showUpload"
+          type="button"
+          class="menu-item"
+          :disabled="disableUpload"
+          @click="emit('action', 'upload')"
+        >
+          <UploadCloud :size="14" :stroke-width="2.2" class="menu-item-icon text-blue-600" />
+          <span>上传到服务器</span>
+        </button>
+
+        <button
+          v-if="showAutoCircleGroup"
+          type="button"
+          class="menu-item"
+          :disabled="disableAutoCircleGroup"
+          @click="emit('action', 'auto_circle_group')"
+        >
+          <Tags :size="14" :stroke-width="2.2" class="menu-item-icon text-violet-600" />
+          <span>按社团分类</span>
+          <span v-if="autoCircleGroupRunning" class="ml-auto text-[10px] text-violet-600">运行中</span>
+        </button>
+
+        <button
           type="button"
           class="menu-item"
           :class="{ 'bg-amber-50/70': apiBatchTarget }"
@@ -136,7 +159,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, Copy, ExternalLink, FolderCog, FolderInput, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Trash2 } from 'lucide-vue-next'
+import { Captions, Copy, ExternalLink, FolderCog, FolderInput, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -157,6 +180,11 @@ const props = defineProps({
   computingSizeId: { type: String, default: null },
   showMove: { type: Boolean, default: false },
   disableMove: { type: Boolean, default: false },
+  showUpload: { type: Boolean, default: false },
+  disableUpload: { type: Boolean, default: false },
+  showAutoCircleGroup: { type: Boolean, default: false },
+  disableAutoCircleGroup: { type: Boolean, default: false },
+  autoCircleGroupRunning: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['close', 'action'])
@@ -247,7 +275,7 @@ onBeforeUnmount(() => {
     box-shadow 0.2s ease;
 }
 
-.menu-item:hover:not(:disabled) {
+.menu-item:hover {
   background: rgb(248 250 252);
   color: #0f172a;
   transform: translateX(2px);
@@ -263,7 +291,7 @@ onBeforeUnmount(() => {
   transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.2s ease;
 }
 
-.menu-item:hover:not(:disabled) .menu-item-icon {
+.menu-item:hover .menu-item-icon {
   transform: translateY(-1px) scale(1.12) rotate(-4deg);
 }
 
@@ -281,7 +309,7 @@ onBeforeUnmount(() => {
   color: #be123c;
 }
 
-.menu-item-danger:hover:not(:disabled) {
+.menu-item-danger:hover {
   background: rgb(255 241 242);
   color: #9f1239;
   box-shadow: inset 0 0 0 1px rgb(254 205 211);

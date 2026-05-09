@@ -9,8 +9,6 @@
   >
     <div
       class="window panel-enter glass-shell relative flex w-full max-w-[1536px] aspect-[16/10] flex-col overflow-hidden rounded-3xl"
-      v-app-loading="{ loading: filterDeleteBusy, text: '正在生成删除预审...', size: 120 }"
-      :element-loading-text="filterDeleteLoadingText"
     >
       <div class="window-header flex items-center justify-between px-6 py-4">
         <div class="fm-header-main min-w-0">
@@ -38,7 +36,11 @@
         </div>
       </div>
 
-      <div class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5">
+      <!-- 加载遮罩仅覆盖 body 区，避免遮住「隐藏到后台」和「关闭」按钮 -->
+      <div
+        class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5"
+        v-app-loading="{ loading: filterDeleteBusy, text: '正在生成删除预审...', size: 120 }"
+      >
         <div class="space-y-2 mb-3">
           <el-alert type="warning" :closable="false" show-icon class="filter-delete-alert !rounded-xl !border !border-amber-200/60 !bg-amber-50/50" :title="text.tipReview" />
           <el-alert
@@ -2080,14 +2082,14 @@ onBeforeUnmount(() => {
   transition: transform 0.2s ease, opacity 0.2s ease;
 }
 
-.action-card:hover:not(:disabled) {
+.action-card:hover {
   border-color: rgba(255, 255, 255, 0.72);
   background: rgba(255, 255, 255, 0.58);
   box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
   transform: translateY(-1px);
 }
 
-.action-card:hover:not(:disabled) .action-icon {
+.action-card:hover .action-icon {
   transform: scale(1.08);
 }
 
@@ -2102,7 +2104,7 @@ onBeforeUnmount(() => {
   color: #b91c1c;
 }
 
-.action-card-danger:hover:not(:disabled) {
+.action-card-danger:hover {
   border-color: rgba(248, 113, 113, 0.48);
   background: rgba(254, 226, 226, 0.56);
   box-shadow: 0 10px 24px rgba(239, 68, 68, 0.16);
@@ -2119,7 +2121,7 @@ onBeforeUnmount(() => {
   box-shadow: 0 12px 30px rgba(59, 130, 246, 0.24);
 }
 
-.action-card-primary:hover:not(:disabled) {
+.action-card-primary:hover {
   border-color: rgba(37, 99, 235, 0.32);
   background: rgba(37, 99, 235, 0.94);
   box-shadow: 0 14px 34px rgba(37, 99, 235, 0.3);
@@ -2131,7 +2133,7 @@ onBeforeUnmount(() => {
   color: #d97706;
 }
 
-.action-card-warning:hover:not(:disabled) {
+.action-card-warning:hover {
   background: #fef3c7;
   border-color: #fcd34d;
   color: #b45309;
@@ -2269,7 +2271,7 @@ onBeforeUnmount(() => {
   transition: background-color 0.15s ease, transform 0.15s ease;
 }
 
-.tree-expander:hover:not(:disabled) {
+.tree-expander:hover {
   background: rgba(148, 163, 184, 0.12);
 }
 
@@ -2380,7 +2382,7 @@ onBeforeUnmount(() => {
   border-color: #cbd5e1;
 }
 
-.tree-checkbox-off:hover:not(:disabled) {
+.tree-checkbox-off:hover {
   border-color: #94a3b8;
 }
 

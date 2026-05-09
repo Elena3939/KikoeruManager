@@ -798,6 +798,15 @@ export const libraryApi = {
       overwrite: !!options.overwrite
     })
     return response.data
+  },
+
+  autoCircleGroup: async (libraryId, rowPath, { preview = false } = {}) => {
+    const response = await apiClient.post('/library/auto-circle-group', {
+      library_id: libraryId,
+      row_path: rowPath,
+      preview
+    })
+    return response.data
   }
 }
 

@@ -345,7 +345,7 @@ defineExpose({ refresh: fetchStatus })
   user-select: none;
 }
 
-.lib-index-rebuild-btn:hover:not(:disabled) {
+.lib-index-rebuild-btn:hover {
   transform: translateY(-2px) scale(1.02);
   border-color: #94a3b8;
   background: #f8fafc;
@@ -371,7 +371,7 @@ defineExpose({ refresh: fetchStatus })
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.lib-index-rebuild-btn:hover:not(:disabled) .lib-index-rebuild-icon {
+.lib-index-rebuild-btn:hover .lib-index-rebuild-icon {
   transform: rotate(90deg);
 }
 </style>

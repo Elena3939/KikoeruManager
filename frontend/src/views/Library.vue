@@ -1,12 +1,6 @@
 <template>
 
-  <div
-
-    class="library library-page-loading-shell"
-
-    v-app-loading="{ loading, text: '正在刷新库存内容...', description: '同步目录、搜索结果和当前作用域', size: 176, minHeight: 360, delay: 0, minVisible: 360, maskClass: 'library-page-loading-mask' }"
-
-  >
+  <div class="library library-page-loading-shell">
 
     <AppPageHeader
 
@@ -126,7 +120,11 @@
 
 
 
-    <el-card shadow="never" class="main-card">
+    <el-card
+      shadow="never"
+      class="main-card"
+      v-app-loading="{ loading, text: '正在刷新库存内容...', description: '同步目录、搜索结果和当前作用域', size: 176, minHeight: 360, delay: 0, minVisible: 360, maskClass: 'library-page-loading-mask' }"
+    >
 
       <template #header>
 
@@ -384,7 +382,7 @@
 
             :disabled="selectedUploadCount === 0 || !hasRemoteUploadLibraries"
 
-            @click="openLocalUploadDialog"
+            @click="() => openLocalUploadDialog()"
 
           >
 
@@ -571,7 +569,7 @@
 
               :disabled="selectedUploadCount === 0 || !hasRemoteUploadLibraries"
 
-              @click="openLocalUploadDialog"
+              @click="() => openLocalUploadDialog()"
 
             >
 
@@ -709,6 +707,16 @@
 
         :disable-move="!isWritableCurrentLibrary || moveDialogState.submitting"
 
+        :show-upload="Boolean(libraryRowContextMenu.row?.path && !isRemoteCurrentLibrary)"
+
+        :disable-upload="!hasRemoteUploadLibraries || localUploadSubmitting"
+
+        :show-auto-circle-group="canAutoCircleGroupRow(libraryRowContextMenu.row)"
+
+        :disable-auto-circle-group="!isWritableCurrentLibrary || Boolean(autoCircleGroupRunningId)"
+
+        :auto-circle-group-running="Boolean(libraryRowContextMenu.row && autoCircleGroupRunningId === libraryRowContextMenu.row.id)"
+
         :show-compute-size="Boolean(libraryRowContextMenu.row?.is_directory && !isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value))"
 
         :computing-size-id="computingSizeId"
@@ -753,7 +761,7 @@
 
       :initial-target-subdir="localUploadForm.targetSubdir"
 
-      @update:visible="value => localUploadDialogVisible = value"
+      @update:visible="value => { localUploadDialogVisible = value; if (!value) pendingUploadOverrideRows = null }"
 
       @submit="submitLocalUpload"
 
@@ -1500,6 +1508,8 @@ const suppressSelectionChange = ref(false)
 const apiRenamingId = ref(null)
 
 const batchApiRenameRunningIds = ref(new Set())
+
+const autoCircleGroupRunningId = ref(null)
 
 const currentPath = ref('')
 
@@ -2856,17 +2866,28 @@ const canProcessCurrentFolder = computed(() => {
 
 const selectedFilterDeleteRows = computed(() => selectedRows.value.filter(row => row?.is_directory))
 
-const selectedUploadRows = computed(() => (Array.isArray(selectedRows.value) ? selectedRows.value : []).filter(row => row?.is_directory && row?.path))
+const selectedUploadRows = computed(() => (Array.isArray(selectedRows.value) ? selectedRows.value : []).filter(row => row?.path))
 
 const selectedUploadCount = computed(() => selectedUploadRows.value.length)
 
-const selectedUploadSourceItems = computed(() => selectedUploadRows.value.map(row => ({
+// 右键菜单走单行上传时使用的临时源，避免与批量勾选状态互相干扰
+const pendingUploadOverrideRows = ref(null)
+
+const effectiveUploadSourceRows = computed(() => {
+  const override = pendingUploadOverrideRows.value
+  if (Array.isArray(override) && override.length) return override.filter(row => row?.path)
+  return selectedUploadRows.value
+})
+
+const selectedUploadSourceItems = computed(() => effectiveUploadSourceRows.value.map(row => ({
 
   name: row?.name || getFileName(row?.path || ''),
 
   path: row?.path || '',
 
   size: Number(row?.size || 0),
+
+  is_directory: row?.is_directory !== false,
 
 })).filter(item => item.path))
 
@@ -5625,6 +5646,96 @@ function canApiRenameRow (row) {
 
 
 
+function canAutoCircleGroupRow (row) {
+
+  if (!row?.is_directory || !row?.path) return false
+
+  if (isRemoteCurrentLibrary.value || !isWritableCurrentLibrary.value) return false
+
+  const detectedRJ = String(row?.rjcode || extractRJCode(row?.path || row?.name) || '').trim()
+
+  return Boolean(detectedRJ)
+
+}
+
+
+
+async function autoCircleGroup (row) {
+
+  if (!row?.path || !canAutoCircleGroupRow(row)) {
+
+    ElMessage.warning('当前行无法按社团分类')
+
+    return
+
+  }
+
+  if (autoCircleGroupRunningId.value) return
+
+  autoCircleGroupRunningId.value = row.id
+
+  try {
+
+    let currentPath = row.path
+
+    let data = await libraryApi.autoCircleGroup(selectedLibraryId.value, currentPath)
+
+    // 文件夹名里没识别到社团前缀 → 先做 API 重命名再重试
+
+    if (data?.need_api_rename) {
+
+      ElMessage.info('未识别到社团前缀，正在先执行 API 重命名...')
+
+      const renameData = await libraryApi.apiRename(currentPath, selectedLibraryId.value)
+
+      const newPath = String(renameData?.path || '').trim()
+
+      if (!newPath) throw new Error('API 重命名后未拿到新路径')
+
+      currentPath = newPath
+
+      data = await libraryApi.autoCircleGroup(selectedLibraryId.value, currentPath)
+
+      if (data?.need_api_rename) {
+
+        throw new Error('API 重命名后仍未识别到社团前缀，请检查重命名模板')
+
+      }
+
+    }
+
+    if (data?.skipped) {
+
+      ElMessage.info(data.message || '已经在所属社团目录下')
+
+    } else if (data?.success) {
+
+      ElMessage.success(data?.message || `已按社团分类: ${data?.safe_circle_name || ''}`)
+
+    }
+
+    await Promise.all([
+
+      refreshLibrary(),
+
+      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
+
+    ])
+
+  } catch (error) {
+
+    ElMessage.error('按社团分类失败: ' + (error.response?.data?.detail || error.message || '未知错误'))
+
+  } finally {
+
+    autoCircleGroupRunningId.value = null
+
+  }
+
+}
+
+
+
 function toRJSubtitleItem (row) {
 
   if (!row) return null
@@ -5671,7 +5782,7 @@ function clearSelection () {
 
 
 
-function openLocalUploadDialog () {
+function openLocalUploadDialog (rowOverride = null) {
 
   if (isRemoteCurrentLibrary.value) {
 
@@ -5681,9 +5792,31 @@ function openLocalUploadDialog () {
 
   }
 
-  if (!selectedUploadRows.value.length) {
+  // rowOverride 可以是单个 row 或 row 数组（来自右键菜单），优先使用它作为上传源
 
-    ElMessage.warning('请先选中要上传的目录')
+  if (rowOverride) {
+
+    const overrideRows = (Array.isArray(rowOverride) ? rowOverride : [rowOverride]).filter(row => row?.path)
+
+    if (!overrideRows.length) {
+
+      ElMessage.warning('行数据无效无法上传')
+
+      return
+
+    }
+
+    pendingUploadOverrideRows.value = overrideRows
+
+  } else {
+
+    pendingUploadOverrideRows.value = null
+
+  }
+
+  if (!effectiveUploadSourceRows.value.length) {
+
+    ElMessage.warning('请先选中要上传的项目')
 
     return
 
@@ -5719,7 +5852,7 @@ async function submitLocalUpload () {
 
     ? payload.selected_paths
 
-    : selectedUploadRows.value.map(row => row.path)
+    : effectiveUploadSourceRows.value.map(row => row.path)
 
   const targetLibraryId = String(payload?.target_library_id || localUploadForm.value.targetLibraryId || '').trim()
 
@@ -12627,9 +12760,10 @@ function openLibraryRowContextMenuAtPosition (row, x, y) {
 
   tableRef.value?.setCurrentRow?.(row)
 
-  const menuWidth = 180
+  const menuWidth = 200
 
-  const menuHeight = 360
+  // 估值偏大避免菜单底部超出视口（实际项数变多时常见 12+ 项），随后再用真实 DOM 尺寸二次校准
+  const estimatedMenuHeight = 480
 
   const viewportPadding = 10
 
@@ -12639,7 +12773,7 @@ function openLibraryRowContextMenuAtPosition (row, x, y) {
 
   const safeX = Math.min(Math.max(viewportPadding, Number(x || 0)), Math.max(viewportPadding, viewportWidth - menuWidth - viewportPadding))
 
-  const safeY = Math.min(Math.max(viewportPadding, Number(y || 0)), Math.max(viewportPadding, viewportHeight - menuHeight - viewportPadding))
+  const safeY = Math.min(Math.max(viewportPadding, Number(y || 0)), Math.max(viewportPadding, viewportHeight - estimatedMenuHeight - viewportPadding))
 
   libraryRowContextMenu.value = {
     visible: true,
@@ -12648,6 +12782,21 @@ function openLibraryRowContextMenuAtPosition (row, x, y) {
     row,
     renderKey: Number(libraryRowContextMenu.value.renderKey || 0) + 1
   }
+
+  // 二次校准：实际渲染后量出菜单真实高度，必要时上移避免遮挡分页等下方控件
+  nextTick(() => {
+    const panel = document.querySelector('[data-library-row-menu="1"]')
+    if (!panel || !libraryRowContextMenu.value.visible) return
+    const rect = panel.getBoundingClientRect()
+    const actualHeight = rect.height || estimatedMenuHeight
+    const adjustedY = Math.min(
+      Math.max(viewportPadding, Number(y || 0)),
+      Math.max(viewportPadding, viewportHeight - actualHeight - viewportPadding)
+    )
+    if (Math.abs(adjustedY - libraryRowContextMenu.value.y) > 1) {
+      libraryRowContextMenu.value = { ...libraryRowContextMenu.value, y: adjustedY }
+    }
+  })
 
 }
 
@@ -12730,6 +12879,10 @@ async function handleLibraryRowContextMenuAction (action) {
   if (action === 'rename') return renameItem(row)
 
   if (action === 'move') return openMoveDialog([row])
+
+  if (action === 'upload') return openLocalUploadDialog(row)
+
+  if (action === 'auto_circle_group') return autoCircleGroup(row)
 
   if (action === 'api_rename') return apiRenameItem(row)
 
@@ -14031,6 +14184,7 @@ function isLibraryRowOperating (row) {
 
   return apiRenamingId.value === row.id ||
     computingSizeId.value === row.id ||
+    autoCircleGroupRunningId.value === row.id ||
     isBatchApiRenameRunning(row)
 
 }
@@ -15035,11 +15189,11 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-btn:hover:not(:disabled) { transform: translateY(-2px) scale(1.02); }
+.lib-btn:hover { transform: translateY(-2px) scale(1.02); }
 
 .lib-btn:active:not(:disabled) { transform: scale(0.96); }
 
-.lib-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.lib-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .lib-btn-compact { min-height: 30px; padding: 0 10px; font-size: 12.5px; }
 
@@ -15055,7 +15209,7 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-btn-primary:hover:not(:disabled) { box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35); }
+.lib-btn-primary:hover { box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35); }
 
 
 
@@ -15069,7 +15223,7 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-btn-ghost:hover:not(:disabled) {
+.lib-btn-ghost:hover {
 
   background: #fff;
 
@@ -15093,7 +15247,7 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-btn-success:hover:not(:disabled) {
+.lib-btn-success:hover {
 
   background: #fff;
 
@@ -15117,7 +15271,7 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-btn-danger:hover:not(:disabled) {
+.lib-btn-danger:hover {
 
   background: #fff;
 
@@ -15177,7 +15331,7 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-btn-icon-tinted:hover:not(:disabled) {
+.lib-btn-icon-tinted:hover {
 
   background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(255, 255, 255, 0.96));
 
@@ -15191,7 +15345,7 @@ function statsStatusTextDisplay (stats) {
 
 .lib-btn-icon-tinted svg { transition: transform 0.25s ease, color 0.25s ease; }
 
-.lib-btn-icon-tinted:hover:not(:disabled) svg { transform: scale(1.08); }
+.lib-btn-icon-tinted:hover svg { transform: scale(1.08); }
 
 
 
@@ -16973,60 +17127,7 @@ function statsStatusTextDisplay (stats) {
 
 
 .pagination-wrap { margin-top: 18px; display: flex; justify-content: flex-end; }
-
-
-
-:deep(.el-pagination) {
-
-  gap: 6px;
-
-  font-size: 12px;
-
-}
-
-
-
-:deep(.el-pagination .btn-prev),
-
-:deep(.el-pagination .btn-next),
-
-:deep(.el-pagination .el-pager li) {
-
-  min-width: 30px;
-
-  height: 30px;
-
-  line-height: 30px;
-
-  border-radius: 10px;
-
-  background: #f5f5f7;
-
-}
-
-
-
-:deep(.el-pagination .el-pager li.is-active) {
-
-  background: #0071e3;
-
-  color: #fff;
-
-}
-
-
-
-:deep(.el-pagination .el-pagination__sizes .el-select__wrapper),
-
-:deep(.el-pagination .el-pagination__jump .el-input__wrapper) {
-
-  min-height: 30px;
-
-  border-radius: 10px;
-
-  background: #f5f5f7;
-
-}
+/* el-pagination 走 index.css 全局规范，本页不再覆盖 */
 
 
 
@@ -17126,198 +17227,7 @@ function statsStatusTextDisplay (stats) {
 
 .name-preview { padding: 8px 12px; background: #f8f9fa; border: 1px solid #e4e7ed; border-radius: 4px; color: #606266; }
 
-.floating-card {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 2100;
-  isolation: isolate;
-  overflow: hidden;
-  width: min(92vw, 420px);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 16px;
-  background: #ffffff;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.10), 0 2px 8px rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(16px);
-  animation: floating-card-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-@keyframes floating-card-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-.floating-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 7px;
-  border-radius: 6px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: #ffffff;
-  font-size: 10.5px;
-  color: #64748b;
-  letter-spacing: -0.01em;
-}
-
-.floating-chip-row-compact {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  align-items: center;
-}
-
-.floating-chip-icon {
-  width: 12px;
-  height: 12px;
-  flex-shrink: 0;
-}
-
-.floating-chip-icon.chip-blue { color: #2563eb; }
-.floating-chip-icon.chip-amber { color: #d97706; }
-.floating-chip-icon.chip-emerald { color: #059669; }
-.floating-chip-icon.chip-rose { color: #e11d48; }
-.floating-chip-icon.chip-indigo { color: #4f46e5; }
-.floating-chip-icon.chip-violet { color: #7c3aed; }
-
-.floating-chip b {
-  font-weight: 600;
-  color: #334155;
-}
-
-.floating-chip-danger {
-  color: #b91c1c;
-  background: #fff1f2;
-  border-color: #fecaca;
-}
-
-.floating-chip-danger b {
-  color: #b91c1c;
-}
-
-.floating-chip-title {
-  padding: 1px 6px;
-  font-size: 10px;
-  border-radius: 999px;
-  color: #2563eb;
-  border-color: #bfdbfe;
-  background: #eff6ff;
-}
-
-.floating-card-upload {
-  position: fixed;
-}
-
-.upload-floating-head {
-  display: flex;
-  align-items: flex-start;
-  padding-right: 90px;
-  min-width: 0;
-}
-
-.upload-floating-title {
-  min-width: 0;
-  white-space: normal;
-  word-break: break-word;
-}
-
-.floating-hero-icon {
-  display: inline-flex;
-  width: 38px;
-  height: 38px;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0;
-  border: 0;
-  background: transparent;
-  overflow: hidden;
-}
-
-.floating-hero-lottie {
-  width: 36px;
-  height: 36px;
-}
-
-.floating-progress-lottie {
-  position: absolute;
-  right: 10px;
-  top: 7px;
-  width: 56px;
-  height: 56px;
-  display: block;
-  pointer-events: none;
-  object-fit: contain;
-  transform-origin: top right;
-}
-
-.floating-progress-lottie-progress {
-  width: 56px;
-  height: 56px;
-}
-
-.floating-progress-lottie-success {
-  right: 4px;
-  top: 2px;
-  width: 72px;
-  height: 72px;
-}
-
-.floating-action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 13px;
-  border-radius: 8px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  background: #f8fafc;
-  color: #475569;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.floating-action-btn:hover {
-  background: #f1f5f9;
-  color: #1e293b;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(15, 23, 42, 0.08);
-}
-
-.floating-action-btn:active {
-  transform: scale(0.96);
-}
-
-.floating-action-btn-primary {
-  background: linear-gradient(135deg, #3b82f6, #2563eb);
-  border-color: transparent;
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.30);
-}
-
-.floating-action-btn-primary:hover {
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  color: #fff;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.38);
-}
-
-.floating-action-btn-emerald {
-  background: linear-gradient(135deg, #10b981, #059669);
-  border-color: transparent;
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.30);
-}
-
-.floating-action-btn-emerald:hover {
-  background: linear-gradient(135deg, #059669, #047857);
-  color: #fff;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.38);
-}
+/* .floating-card / .floating-chip / .floating-action-btn 等系列样式已迁移到 index.css 全局规范，本页不再重复定义 */
 
 .mapped-path-box { display: flex; flex-direction: column; gap: 10px; }
 

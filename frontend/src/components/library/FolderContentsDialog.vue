@@ -9,8 +9,6 @@
   >
     <div
       class="window panel-enter glass-shell relative flex w-full max-w-[1280px] aspect-[16/10] flex-col overflow-hidden rounded-3xl"
-      v-app-loading="{ loading: folderLoading, text: '正在读取目录内容...', size: 120 }"
-      element-loading-text="正在加载目录内容..."
     >
       <div class="window-header flex items-center justify-between px-6 py-4">
         <div class="fm-header-main min-w-0">
@@ -36,7 +34,11 @@
         </button>
       </div>
 
-      <div class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5">
+      <!-- 加载遮罩仅覆盖 body 区，避免遮住 window-header 里的关闭按钮 -->
+      <div
+        class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5"
+        v-app-loading="{ loading: folderLoading, text: '正在读取目录内容...', size: 120 }"
+      >
         <div class="toolbar-row flex items-center justify-between gap-3 border-b border-slate-200/70 py-3">
           <div class="toolbar-actions flex items-center gap-2">
             <button
@@ -1227,14 +1229,14 @@ onMounted(() => {
   transition: transform 0.2s ease, opacity 0.2s ease;
 }
 
-.action-card:hover:not(:disabled) {
+.action-card:hover {
   border-color: rgba(255, 255, 255, 0.72);
   background: rgba(255, 255, 255, 0.58);
   box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
   transform: translateY(-1px);
 }
 
-.action-card:hover:not(:disabled) .action-icon {
+.action-card:hover .action-icon {
   transform: scale(1.08);
 }
 
@@ -1249,7 +1251,7 @@ onMounted(() => {
   color: #b91c1c;
 }
 
-.action-card-danger:hover:not(:disabled) {
+.action-card-danger:hover {
   border-color: rgba(248, 113, 113, 0.48);
   background: rgba(254, 226, 226, 0.56);
   box-shadow: 0 10px 24px rgba(239, 68, 68, 0.16);
@@ -1266,7 +1268,7 @@ onMounted(() => {
   box-shadow: 0 12px 30px rgba(59, 130, 246, 0.24);
 }
 
-.action-card-primary:hover:not(:disabled) {
+.action-card-primary:hover {
   border-color: rgba(37, 99, 235, 0.32);
   background: rgba(37, 99, 235, 0.94);
   box-shadow: 0 14px 34px rgba(37, 99, 235, 0.3);
@@ -1601,7 +1603,7 @@ onMounted(() => {
   transition: background-color 0.15s ease, transform 0.15s ease;
 }
 
-.tree-expander:hover:not(:disabled) {
+.tree-expander:hover {
   background: rgba(148, 163, 184, 0.12);
 }
 
@@ -1620,7 +1622,7 @@ onMounted(() => {
   transition: transform 0.15s ease, background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.row-action:hover:not(:disabled) {
+.row-action:hover {
   color: #fff;
   background: rgba(239, 68, 68, 0.88);
   box-shadow: 0 10px 20px rgba(239, 68, 68, 0.18);

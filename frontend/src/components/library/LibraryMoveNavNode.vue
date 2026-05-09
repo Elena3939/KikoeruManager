@@ -148,7 +148,7 @@ function normalizePath (path) {
   transition: background-color 0.15s ease;
 }
 
-.nav-expander:hover:not(:disabled) { background: rgba(15, 23, 42, 0.08); }
+.nav-expander:hover { background: rgba(15, 23, 42, 0.08); }
 
 .nav-expander:disabled { opacity: 0.4; cursor: not-allowed; }
 
