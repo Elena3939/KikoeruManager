@@ -109,13 +109,14 @@
 
       <div class="flex items-center gap-2 ml-auto" :class="{ 'opacity-50 pointer-events-none': isFullSearch }">
         <span class="text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">条数</span>
-        <el-select v-model="logLimit" size="small" style="width: 100px" @change="onLimitChange">
-          <el-option :value="100" label="100 条" />
-          <el-option :value="300" label="300 条" />
-          <el-option :value="500" label="500 条" />
-          <el-option :value="1000" label="1000 条" />
-          <el-option :value="2000" label="2000 条" />
-        </el-select>
+        <AppDropdown
+          v-model="logLimit"
+          :options="logLimitOptions"
+          :width="110"
+          :menu-min-width="130"
+          :show-trigger-badge="false"
+          @update:model-value="onLimitChange"
+        />
       </div>
 
       <button
@@ -418,6 +419,7 @@ import { logApi } from '../api'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
+import AppDropdown from '../components/common/AppDropdown.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const LOG_POLL_INTERVAL = 5000
@@ -430,6 +432,15 @@ const logContainer = ref(null)
 const isPaused = ref(false)
 const autoFollowLogs = ref(true)
 const logLimit = ref(300)
+
+// 「条数」下拉选项
+const logLimitOptions = [
+  { value: 100, label: '100 条' },
+  { value: 300, label: '300 条' },
+  { value: 500, label: '500 条' },
+  { value: 1000, label: '1000 条' },
+  { value: 2000, label: '2000 条' },
+]
 const selectedLevels = ref(['INFO', 'WARNING', 'ERROR'])
 const selectedModules = ref([])
 const searchKeyword = ref('')

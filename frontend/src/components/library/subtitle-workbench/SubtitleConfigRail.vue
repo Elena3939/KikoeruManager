@@ -154,11 +154,14 @@
               <div class="subtitle-filter-form-grid">
                 <label class="subtitle-filter-field">
                   <span>匹配范围</span>
-                  <el-select v-model="activeSubtitleFilterRule.target" size="small" class="subtitle-filter-target">
-                    <el-option label="文件名" value="name" />
-                    <el-option label="路径" value="path" />
-                    <el-option label="全部" value="all" />
-                  </el-select>
+                  <AppDropdown
+                    v-model="activeSubtitleFilterRule.target"
+                    :options="subtitleFilterTargetOptions"
+                    class="subtitle-filter-target"
+                    :width="110"
+                    :menu-min-width="130"
+                    :show-trigger-badge="false"
+                  />
                 </label>
                 <label class="subtitle-filter-field">
                   <span>规则名称</span>
@@ -401,6 +404,14 @@ import {
   Download,
   AlertCircle
 } from 'lucide-vue-next'
+import AppDropdown from '../../common/AppDropdown.vue'
+
+// 字幕过滤规则匹配范围选项
+const subtitleFilterTargetOptions = [
+  { value: 'name', label: '文件名' },
+  { value: 'path', label: '路径' },
+  { value: 'all', label: '全部' },
+]
 
 const props = defineProps({
   ctx: {

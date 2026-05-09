@@ -8,11 +8,14 @@
         </div>
         <div class="rule-stack">
           <div v-for="(rule, index) in config.filter.rules" :key="`filter-${index}`" class="rule-row">
-            <el-select v-model="rule.target" class="rule-target">
-              <el-option label="文件" value="file" />
-              <el-option label="文件夹" value="folder" />
-              <el-option label="全部" value="all" />
-            </el-select>
+            <AppDropdown
+              v-model="rule.target"
+              :options="filterRuleTargetOptions"
+              class="rule-target"
+              :width="110"
+              :menu-min-width="130"
+              :show-trigger-badge="false"
+            />
             <input v-model="rule.name" class="field-input" type="text" placeholder="规则名称">
             <input v-model="rule.pattern" class="field-input" type="text" placeholder="正则表达式">
             <el-switch v-model="rule.enabled" />
@@ -49,12 +52,14 @@
         <div class="card-title">分类规则</div>
         <div class="rule-stack">
           <div v-for="(rule, index) in config.classification" :key="rule.id || index" class="classification-row">
-            <el-select v-model="rule.type" class="rule-target">
-              <el-option label="不分类" value="none" />
-              <el-option label="按社团" value="maker" />
-              <el-option label="按系列" value="series" />
-              <el-option label="按 RJ 段" value="rjcode" />
-            </el-select>
+            <AppDropdown
+              v-model="rule.type"
+              :options="classificationTypeOptions"
+              class="rule-target"
+              :width="120"
+              :menu-min-width="140"
+              :show-trigger-badge="false"
+            />
             <input v-model="rule.path_template" class="field-input" type="text" placeholder="路径模板">
             <input v-model="rule.custom_name" class="field-input" type="text" placeholder="自定义目录名">
             <input v-model="rule.rjcode_range" class="field-input" type="text" placeholder="RJ 段，例如 RJ01000000-RJ01999999">
@@ -85,6 +90,22 @@
 import { Plus, Trash2 } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
+import AppDropdown from '../common/AppDropdown.vue'
+
+// 「过滤规则」作用范围选项
+const filterRuleTargetOptions = [
+  { value: 'file', label: '文件' },
+  { value: 'folder', label: '文件夹' },
+  { value: 'all', label: '全部' },
+]
+
+// 「分类规则」类型选项
+const classificationTypeOptions = [
+  { value: 'none', label: '不分类' },
+  { value: 'maker', label: '按社团' },
+  { value: 'series', label: '按系列' },
+  { value: 'rjcode', label: '按 RJ 段' },
+]
 
 const props = defineProps({
   config: { type: Object, required: true }

@@ -93,13 +93,14 @@
             </div>
             <div class="sidebar-sort-row">
               <span class="sidebar-sort-label">排序</span>
-              <el-select v-model="circleSortKey" class="sidebar-sort-select" size="small">
-                <el-option label="收集程度" value="completion" />
-                <el-option label="刷新时间" value="refreshed_at" />
-                <el-option label="作品数量" value="works" />
-                <el-option label="缺失数量" value="missing" />
-                <el-option label="服务器拥有数量" value="owned" />
-              </el-select>
+              <AppDropdown
+                v-model="circleSortKey"
+                :options="circleSortKeyOptions"
+                class="sidebar-sort-select"
+                :width="140"
+                :menu-min-width="170"
+                :show-trigger-badge="false"
+              />
             </div>
           </div>
           <div v-if="displayCircleList.length" class="circle-list">
@@ -776,68 +777,98 @@
       @close="closeUploadWorkbench"
     />
 
-    <div v-if="showDownloadBackgroundCard" class="circle-download-floating-card">
-      <div class="circle-download-floating-head">
-        <div>
-          <div class="circle-download-floating-title">社团补全下载正在后台运行</div>
-          <div class="circle-download-floating-mode">
-            {{ activeBackgroundDownloadTask ? `${activeBackgroundDownloadTask.rjcode || 'RJ'} · ${activeBackgroundDownloadTask.work_title || activeBackgroundDownloadTask.source_label || '-'}` : '保留当前下载队列与进度状态' }}
+    <!-- 社团补全下载后台浮窗（统一 floating-card 规范） -->
+    <div v-if="showDownloadBackgroundCard" class="floating-card">
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <div class="floating-icon-box is-blue">
+            <Download class="h-3.5 w-3.5" :stroke-width="2.2" />
+          </div>
+          <div class="min-w-0">
+            <div class="text-[13px] font-semibold text-slate-900 leading-tight">社团补全下载正在后台运行</div>
+            <div class="mt-0.5 text-[11px] text-slate-500 leading-snug break-all">
+              {{ activeBackgroundDownloadTask ? `${activeBackgroundDownloadTask.rjcode || 'RJ'} · ${activeBackgroundDownloadTask.work_title || activeBackgroundDownloadTask.source_label || '-'}` : '保留当前下载队列与进度状态' }}
+            </div>
           </div>
         </div>
-        <div class="circle-download-floating-count">{{ backgroundDownloadPercent }}%</div>
+        <div class="floating-percent-badge"
+             :class="{
+               'is-emerald': completedDownloadTasks.length === trackedDownloadTasks.length && trackedDownloadTasks.length > 0,
+               'is-rose': failedDownloadTasks.length > 0 && !processingDownloadTasks.length && !pendingDownloadTasks.length
+             }">
+          {{ backgroundDownloadPercent }}%
+        </div>
       </div>
-      <el-progress
-        :percentage="backgroundDownloadPercent"
-        :status="failedDownloadTasks.length && !processingDownloadTasks.length && !pendingDownloadTasks.length ? 'exception' : (completedDownloadTasks.length === trackedDownloadTasks.length && trackedDownloadTasks.length ? 'success' : '')"
-        :stroke-width="8"
-        :show-text="false"
-      />
-      <div class="circle-download-floating-chip-row">
-        <span class="circle-download-floating-chip">进行中 {{ processingDownloadTasks.length }}</span>
-        <span class="circle-download-floating-chip">等待中 {{ pendingDownloadTasks.length }}</span>
-        <span class="circle-download-floating-chip">完成 {{ completedDownloadTasks.length }}</span>
-        <span class="circle-download-floating-chip danger">失败 {{ failedDownloadTasks.length }}</span>
-        <span class="circle-download-floating-chip">速度 {{ formatSpeed(getDownloadSpeedBytes(activeBackgroundDownloadTask)) }}</span>
-        <span class="circle-download-floating-chip">剩余 {{ formatDownloadTaskEta(activeBackgroundDownloadTask) }}</span>
+
+      <div class="floating-progress-bar">
+        <div class="floating-progress-bar-fill"
+             :class="{
+               'is-emerald': completedDownloadTasks.length === trackedDownloadTasks.length && trackedDownloadTasks.length > 0,
+               'is-danger': failedDownloadTasks.length > 0 && !processingDownloadTasks.length && !pendingDownloadTasks.length
+             }"
+             :style="{ width: backgroundDownloadPercent + '%' }" />
       </div>
-      <div class="circle-download-floating-text">
+
+      <div class="floating-chip-row-compact">
+        <span class="floating-chip"><RefreshCw class="floating-chip-icon chip-blue" :stroke-width="2.2" />进行中 <b>{{ processingDownloadTasks.length }}</b></span>
+        <span class="floating-chip"><Clock class="floating-chip-icon chip-amber" :stroke-width="2.2" />等待中 <b>{{ pendingDownloadTasks.length }}</b></span>
+        <span class="floating-chip"><CheckCircle2 class="floating-chip-icon chip-emerald" :stroke-width="2.2" />完成 <b>{{ completedDownloadTasks.length }}</b></span>
+        <span class="floating-chip" :class="{ 'floating-chip-danger': failedDownloadTasks.length > 0 }"><X class="floating-chip-icon chip-rose" :stroke-width="2.2" />失败 <b>{{ failedDownloadTasks.length }}</b></span>
+        <span class="floating-chip"><BarChart3 class="floating-chip-icon chip-indigo" :stroke-width="2.2" />{{ formatSpeed(getDownloadSpeedBytes(activeBackgroundDownloadTask)) }}</span>
+        <span class="floating-chip"><Timer class="floating-chip-icon chip-violet" :stroke-width="2.2" />{{ formatDownloadTaskEta(activeBackgroundDownloadTask) }}</span>
+      </div>
+
+      <div class="floating-detail-box">
         {{ activeBackgroundDownloadTask?.current_step || '隐藏后继续保留下载队列和进度。' }}
       </div>
-      <div class="circle-download-floating-actions">
-        <el-button size="small" type="primary" @click="resumeDownloadWorkbenchFromBackground">恢复工作台</el-button>
-        <el-button size="small" @click="closeDownloadWorkbench">关闭</el-button>
+
+      <div class="floating-actions-row">
+        <button type="button" class="floating-action-btn" @click="closeDownloadWorkbench">关闭</button>
+        <button type="button" class="floating-action-btn floating-action-btn-primary" @click="resumeDownloadWorkbenchFromBackground">
+          <Download class="h-3 w-3" :stroke-width="2.3" />恢复工作台
+        </button>
       </div>
     </div>
 
-    <div v-if="showUploadBackgroundCard" class="circle-download-floating-card reimport-floating-card">
-      <div class="circle-download-floating-head">
-        <div>
-          <div class="circle-download-floating-title">直接入库上传正在后台运行</div>
-          <div class="circle-download-floating-mode">
-            {{ activeBackgroundUploadTask ? `${activeBackgroundUploadTask.work_title || activeBackgroundUploadTask.source_label || '-'} · ${getUploadBackgroundTargetLabel(activeBackgroundUploadTask)}` : '保留当前上传队列与进度状态' }}
+    <!-- 社团直接入库上传后台浮窗（统一 floating-card 规范） -->
+    <div v-if="showUploadBackgroundCard" class="floating-card">
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <div class="floating-icon-box is-emerald">
+            <Upload class="h-3.5 w-3.5" :stroke-width="2.2" />
+          </div>
+          <div class="min-w-0">
+            <div class="text-[13px] font-semibold text-slate-900 leading-tight">直接入库上传正在后台运行</div>
+            <div class="mt-0.5 text-[11px] text-slate-500 leading-snug break-all">
+              {{ activeBackgroundUploadTask ? `${activeBackgroundUploadTask.work_title || activeBackgroundUploadTask.source_label || '-'} · ${getUploadBackgroundTargetLabel(activeBackgroundUploadTask)}` : '保留当前上传队列与进度状态' }}
+            </div>
           </div>
         </div>
-        <div class="circle-download-floating-count">{{ uploadBackgroundPercent }}%</div>
+        <div class="floating-percent-badge is-emerald">{{ uploadBackgroundPercent }}%</div>
       </div>
-      <el-progress
-        :percentage="uploadBackgroundPercent"
-        :stroke-width="8"
-        :show-text="false"
-      />
-      <div class="circle-download-floating-chip-row">
-        <span class="circle-download-floating-chip">进行中 {{ processingUploadTasks.length }}</span>
-        <span class="circle-download-floating-chip">等待中 {{ pendingUploadTasks.length }}</span>
-        <span class="circle-download-floating-chip">完成 {{ completedUploadTasks.length }}</span>
-        <span class="circle-download-floating-chip danger">失败 {{ failedUploadTasks.length }}</span>
-        <span class="circle-download-floating-chip">速度 {{ formatSpeed(getUploadBackgroundSpeed(activeBackgroundUploadTask)) }}</span>
-        <span class="circle-download-floating-chip">剩余 {{ formatTaskEta(activeBackgroundUploadTask) }}</span>
+
+      <div class="floating-progress-bar">
+        <div class="floating-progress-bar-fill is-emerald" :style="{ width: uploadBackgroundPercent + '%' }" />
       </div>
-      <div class="circle-download-floating-text">
+
+      <div class="floating-chip-row-compact">
+        <span class="floating-chip"><RefreshCw class="floating-chip-icon chip-blue" :stroke-width="2.2" />进行中 <b>{{ processingUploadTasks.length }}</b></span>
+        <span class="floating-chip"><Clock class="floating-chip-icon chip-amber" :stroke-width="2.2" />等待中 <b>{{ pendingUploadTasks.length }}</b></span>
+        <span class="floating-chip"><CheckCircle2 class="floating-chip-icon chip-emerald" :stroke-width="2.2" />完成 <b>{{ completedUploadTasks.length }}</b></span>
+        <span class="floating-chip" :class="{ 'floating-chip-danger': failedUploadTasks.length > 0 }"><X class="floating-chip-icon chip-rose" :stroke-width="2.2" />失败 <b>{{ failedUploadTasks.length }}</b></span>
+        <span class="floating-chip"><BarChart3 class="floating-chip-icon chip-indigo" :stroke-width="2.2" />{{ formatSpeed(getUploadBackgroundSpeed(activeBackgroundUploadTask)) }}</span>
+        <span class="floating-chip"><Timer class="floating-chip-icon chip-violet" :stroke-width="2.2" />{{ formatTaskEta(activeBackgroundUploadTask) }}</span>
+      </div>
+
+      <div class="floating-detail-box">
         {{ activeBackgroundUploadTask?.current_step || '隐藏后继续保留上传队列和进度。' }}
       </div>
-      <div class="circle-download-floating-actions">
-        <el-button size="small" type="primary" @click="resumeUploadWorkbenchFromBackground">恢复工作台</el-button>
-        <el-button size="small" @click="closeUploadWorkbench">关闭</el-button>
+
+      <div class="floating-actions-row">
+        <button type="button" class="floating-action-btn" @click="closeUploadWorkbench">关闭</button>
+        <button type="button" class="floating-action-btn floating-action-btn-emerald" @click="resumeUploadWorkbenchFromBackground">
+          <Upload class="h-3 w-3" :stroke-width="2.3" />恢复工作台
+        </button>
       </div>
     </div>
 
@@ -849,7 +880,7 @@ import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { CheckCircle2, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar } from 'lucide-vue-next'
+import { CheckCircle2, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, RefreshCw, BarChart3, Timer, Upload } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api, { asmrSyncApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
@@ -860,6 +891,7 @@ import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
+import AppDropdown from '../components/common/AppDropdown.vue'
 import WorkCard from '../components/circle/WorkCard.vue'
 import WorkListRow from '../components/circle/WorkListRow.vue'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
@@ -880,6 +912,15 @@ const circleSearch = ref('')
 const circleSearchRequestSeq = ref(0)
 const circleCompletionFilter = ref('all')
 const circleSortKey = ref('refreshed_at')
+
+// 侧边栏「排序」下拉选项
+const circleSortKeyOptions = [
+  { value: 'completion', label: '收集程度' },
+  { value: 'refreshed_at', label: '刷新时间' },
+  { value: 'works', label: '作品数量' },
+  { value: 'missing', label: '缺失数量' },
+  { value: 'owned', label: '服务器拥有数量' },
+]
 const indexing = ref(false)
 const emailCheckLoading = ref(false)
 const previewing = ref(false)
@@ -3820,88 +3861,7 @@ function getUploadBackgroundTargetLabel(task) {
   font-weight: 700;
   color: #6a7e97;
 }
-.circle-download-floating-card {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  width: min(420px, calc(100vw - 32px));
-  z-index: 90;
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 18px;
-  border: 1px solid #d7e6fb;
-  background:
-    radial-gradient(circle at top right, rgba(87, 149, 255, 0.16), transparent 28%),
-    linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(246,250,255,0.98) 100%);
-  box-shadow: 0 18px 40px rgba(32, 62, 105, 0.18);
-  backdrop-filter: blur(12px);
-}
-.circle-download-floating-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-.circle-download-floating-title {
-  font-size: 14px;
-  font-weight: 800;
-  color: #203d61;
-}
-.circle-download-floating-mode {
-  margin-top: 2px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #6a7f98;
-  word-break: break-all;
-}
-.circle-download-floating-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 36px;
-  height: 36px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: #edf4ff;
-  color: #2458a6;
-  border: 1px solid #d3e2ff;
-  font-size: 13px;
-  font-weight: 800;
-}
-.circle-download-floating-chip-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.circle-download-floating-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 10px;
-  border-radius: 999px;
-  background: #f3f7fd;
-  border: 1px solid #dde7f4;
-  font-size: 12px;
-  font-weight: 700;
-  color: #536a84;
-}
-.circle-download-floating-chip.danger {
-  background: #fff3f1;
-  border-color: #ffd7d2;
-  color: #bf4636;
-}
-.circle-download-floating-text {
-  font-size: 12px;
-  line-height: 1.6;
-  color: #51657f;
-  word-break: break-all;
-}
-.circle-download-floating-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-}
+/* .circle-download-floating-* 已迁移至 index.css 全局 .floating-card 规范 */
 :deep(.circle-reimport-dialog .el-dialog) {
   border-radius: 22px;
   overflow: hidden;
@@ -6309,8 +6269,7 @@ function getUploadBackgroundTargetLabel(task) {
   }
   .workbench-toolbar,
   .download-task-head,
-  .download-file-row,
-  .circle-download-floating-head {
+  .download-file-row {
     flex-direction: column;
     align-items: stretch;
   }
@@ -6323,11 +6282,6 @@ function getUploadBackgroundTargetLabel(task) {
   .compare-row {
     grid-template-columns: minmax(220px, 1.2fr) repeat(3, minmax(150px, 1fr));
   }
-  .circle-download-floating-card {
-    right: 12px;
-    left: 12px;
-    bottom: 12px;
-    width: auto;
-  }
+  /* .floating-card 已在全局 index.css 用 min(92vw, 420px) 自适应宽度，无需 mobile 覆盖 */
 }
 </style>
