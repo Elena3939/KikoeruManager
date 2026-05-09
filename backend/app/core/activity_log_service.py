@@ -1344,6 +1344,105 @@ def _mark_filter_delete_failed_preview_retried(payload: Dict[str, Any], retry_st
         db.close()
 
 
+def mark_task_conflict_resolved_activity_log(
+    task_id: Optional[str],
+    conflict_action: str,
+    *,
+    conflict_id: Optional[str] = None,
+) -> bool:
+    """把原任务那条 ``task_finished/waiting`` 行回写成已跳过 / 已保留新版 / 已合并。
+
+    用户在问题作品页面拍板后，原任务在写日志时还是 ``status=waiting`` +
+    summary “…，请在问题作品页面处理”。这一行不会再被 task 引擎自动覆盖，
+    操作记录的关联事件就一直停留在“等待处理”——本函数就是把这条行就地改写。
+
+    Args:
+        task_id: 原始问题作品对应的任务 ID（KEEP_NEW 已经把 ``conflict.task_id`` 换成了
+            新任务，调用方需要自己保留更早期的旧 task_id）。
+        conflict_action: ``SKIP`` / ``KEEP_NEW`` / ``MERGE``，会决定写回的 status / 标签。
+        conflict_id: 关联的 ``ConflictWork.id``，写到 detail 便于排查。
+
+    Returns:
+        bool: 是否更新到至少一行。
+    """
+    from ..models.database import ActivityLog, SessionLocal
+    from .activity_log_writer import (
+        get_activity_log_query_cache,
+        get_activity_log_row_dict_cache,
+    )
+
+    raw_task_id = (str(task_id or "").strip())
+    if not raw_task_id:
+        return False
+    raw_action = (conflict_action or "").strip().upper()
+    label_map = {"SKIP": "已跳过", "KEEP_NEW": "已保留新版", "MERGE": "已合并"}
+    status_map = {"SKIP": "cancelled", "KEEP_NEW": "success", "MERGE": "success"}
+    if raw_action not in label_map:
+        return False
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(ActivityLog)
+            .filter(
+                ActivityLog.task_id == raw_task_id,
+                ActivityLog.action.in_(("task_finished", "task_finished_incomplete")),
+                ActivityLog.status == "waiting",
+            )
+            .order_by(ActivityLog.created_at.desc())
+            .all()
+        )
+        if not rows:
+            return False
+
+        new_status = status_map[raw_action]
+        new_label = label_map[raw_action]
+        resolved_at = datetime.now().isoformat()
+        for row in rows:
+            row.status = new_status
+            existing_summary = (row.summary or "").strip()
+            if existing_summary and not existing_summary.startswith(new_label):
+                merged_summary = f"{new_label}：{existing_summary}"
+            else:
+                merged_summary = existing_summary or new_label
+            row.summary = merged_summary[:4000]
+            detail = row.detail if isinstance(row.detail, dict) else {}
+            updated_detail = {
+                **detail,
+                "conflict_resolution_action": raw_action,
+                "conflict_resolution_label": new_label,
+                "conflict_resolved_at": resolved_at,
+            }
+            if conflict_id:
+                updated_detail["conflict_id"] = str(conflict_id)
+            row.detail = _sanitize_for_db_json(updated_detail)
+            # detail 是 JSON 列，bulk update 时 SQLAlchemy 不一定能识别 dict 内变更，
+            # 这里显式打 dirty 标记，和现有 _mark_filter_delete_failed_preview_retried 行为对齐。
+            flag_modified(row, "detail")
+
+        db.commit()
+        # 行级 dict 缓存按 id 持久缓存（注释里写的“rows 不可变”假设在这里被打破），
+        # 必须手动 invalidate 一下，否则下次列表请求会一直命中旧的“等待处理”。
+        # 列表查询缓存也走兜底失效，避免拿到旧合并结果。
+        try:
+            get_activity_log_row_dict_cache().invalidate()
+            get_activity_log_query_cache().invalidate()
+        except Exception:
+            logger.debug("[操作记录] 失效问题作品解决缓存失败（非致命）", exc_info=True)
+        return True
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "[操作记录] 回写问题作品解决状态失败 task_id=%s action=%s",
+            raw_task_id,
+            raw_action,
+            exc_info=True,
+        )
+        return False
+    finally:
+        db.close()
+
+
 def log_subtitle_batch_start_result(payload: Dict[str, Any]) -> None:
     batch_id = str(payload.get("batch_id") or "").strip()
     requested_count = int(payload.get("requested_count") or 0)

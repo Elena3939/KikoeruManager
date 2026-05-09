@@ -4047,6 +4047,27 @@ class TaskEngine:
             if not normalized_source_dir:
                 continue
             task_scope = os.path.basename(os.path.abspath(normalized_source_dir))
+            # 单文件来源：作为唯一一条 upload_file 直接登记，UI 任务面板也能看到该文件
+            if os.path.isfile(normalized_source_dir):
+                try:
+                    file_size = int(os.path.getsize(normalized_source_dir))
+                except OSError:
+                    file_size = 0
+                filename = os.path.basename(normalized_source_dir)
+                upload_files.append({
+                    "task_scope": task_scope,
+                    "source_dir": normalized_source_dir,
+                    "name": filename,
+                    "relative_path": filename,
+                    "local_path": normalized_source_dir,
+                    "status": "pending",
+                    "progress": 0,
+                    "size": file_size,
+                    "uploaded_bytes": 0,
+                })
+                total_files += 1
+                total_bytes += file_size
+                continue
             for root, _, files in os.walk(normalized_source_dir):
                 for filename in files:
                     local_path = os.path.join(root, filename)

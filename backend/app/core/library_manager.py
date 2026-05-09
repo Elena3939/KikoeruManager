@@ -4185,7 +4185,25 @@ class LibraryManager:
         normalized_source_dir = str(source_dir or "").rstrip("\\/")
         source_name = os.path.basename(os.path.abspath(normalized_source_dir))
         if not source_name:
-            raise RuntimeError("来源目录名称无效，无法上传到远程库存")
+            raise RuntimeError("来源名称无效，无法上传到远程库存")
+
+        # 单文件场景：直接将文件上传到 target_root_path，不再套一层同名子目录
+        if os.path.isfile(normalized_source_dir):
+            final_remote_path = self._normalize_remote_path(str(PurePosixPath(target_root_path) / source_name))
+            await self._upload_directory_to_synology(
+                client,
+                source_dir,
+                target_root_path,
+                progress_callback=progress_callback,
+                file_completed_callback=file_completed_callback,
+            )
+            if delete_source_on_success and os.path.isfile(source_dir):
+                try:
+                    os.unlink(source_dir)
+                except Exception as exc:
+                    logger.warning("上传成功后删除本地文件失败: source=%s error=%s", source_dir, exc, exc_info=True)
+                    raise RuntimeError(f"上传完成，但删除本地文件失败: {source_dir}，{exc}") from exc
+            return final_remote_path
 
         final_remote_path = self._normalize_remote_path(str(PurePosixPath(target_root_path) / source_name))
         if not await self._remote_path_exists(client, final_remote_path):
@@ -4246,7 +4264,26 @@ class LibraryManager:
                 "speed_bytes_per_sec": 0,
             })
         file_rows = []
-        for root, dirs, files in os.walk(source_dir):
+        # 单文件场景：直接构造唯一一条 file_row，复用下面的并发上传通道
+        if os.path.isfile(source_dir):
+            try:
+                file_size = int(os.path.getsize(source_dir))
+            except OSError:
+                file_size = 0
+            filename = os.path.basename(source_dir)
+            file_rows.append({
+                "local_path": source_dir,
+                "relative_path": filename,
+                "name": filename,
+                "size": file_size,
+                "remote_dir": remote_root,
+                "source_dir": source_dir,
+            })
+            file_iteration = []
+        else:
+            file_iteration = list(os.walk(source_dir))
+
+        for root, dirs, files in file_iteration:
             relative = os.path.relpath(root, source_dir)
             remote_dir = remote_root if relative == "." else f"{remote_root}/{relative.replace(os.sep, '/')}"
             if dirs:

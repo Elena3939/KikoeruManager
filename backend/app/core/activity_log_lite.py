@@ -339,7 +339,7 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
     category = row.get("category")
     action = row.get("action")
     status = row.get("status")
-    return {
+    item: Dict[str, Any] = {
         "id": row.get("id"),
         "category": category,
         "category_label": CATEGORY_LABELS.get(category, category),
@@ -359,3 +359,29 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
         "rerun": bool(detail.get("rerun_linked") or detail.get("rerun_count")),
         "compacted": bool(detail.get("__compacted")),
     }
+
+    # 单条重命名行：列表 UI 需要 old_name / new_name 才能渲染"原 / 新"对比块。
+    # lite 路径默认不回传 detail，这里只挑必要字段精简下发，避免又把整段 detail JSON
+    # 塞回响应里推高 TTFB。批量行（batch_*）保留原 summary 即可，不挂这个字段。
+    if (
+        category == "pipeline_rename"
+        and action not in ("batch_api_rename", "batch_manual_rename")
+        and (detail.get("old_name") or detail.get("new_name"))
+    ):
+        compact_detail: Dict[str, Any] = {}
+        old_name = str(detail.get("old_name") or "").strip()
+        new_name = str(detail.get("new_name") or "").strip()
+        error_text = str(detail.get("error") or "").strip()
+        reason_text = str(detail.get("reason") or "").strip()
+        if old_name:
+            compact_detail["old_name"] = old_name
+        if new_name:
+            compact_detail["new_name"] = new_name
+        if error_text:
+            compact_detail["error"] = error_text
+        if reason_text:
+            compact_detail["reason"] = reason_text
+        if compact_detail:
+            item["detail"] = compact_detail
+
+    return item

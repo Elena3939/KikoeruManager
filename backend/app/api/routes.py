@@ -1981,6 +1981,8 @@ class PasswordEntryResponse(BaseModel):
     last_used_at: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
+    # 仅 create 接口在命中通用密码合并分支时返回 True，其他场景默认 False
+    merged: bool = False
 
 class PasswordListResponse(BaseModel):
     total: int
@@ -2103,7 +2105,35 @@ async def create_password(entry: PasswordEntryCreate):
             db.commit()
             logger.info(f"更新密码成功: RJ={normalized_rjcode}, File={normalized_filename}")
             return PasswordEntryResponse(**existing.to_dict())
-        
+
+        # 通用密码去重：未填 RJ号 / 文件名 时，把 password 字段相同的通用条目视为重复，自动合并
+        if not normalized_rjcode and not normalized_filename:
+            generic_existing = (
+                db.query(PasswordEntry)
+                .filter(
+                    PasswordEntry.rjcode.is_(None),
+                    PasswordEntry.filename.is_(None),
+                    PasswordEntry.password == normalized_password,
+                )
+                .first()
+            )
+            if generic_existing:
+                # 仅在原备注为空且新输入有备注时补充，避免覆盖已有备注
+                changed = False
+                if normalized_description and not (generic_existing.description or "").strip():
+                    generic_existing.description = normalized_description
+                    changed = True
+                if changed:
+                    generic_existing.updated_at = datetime.now()
+                    db.commit()
+                else:
+                    # 不修改任何字段就不要刷新 updated_at，避免误触发"最近更新"排序
+                    db.rollback()
+                logger.info(
+                    f"通用密码已存在，自动合并: id={generic_existing.id}, 备注补充={changed}"
+                )
+                return PasswordEntryResponse(**generic_existing.to_dict(), merged=True)
+
         # 创建新密码条目
         new_entry = PasswordEntry(
             id=str(uuid.uuid4()),
@@ -3070,6 +3100,7 @@ async def preview_conflict_resolution(conflict_id: str, payload: dict):
 @app.post("/api/conflicts/{conflict_id}/resolve")
 async def resolve_conflict(conflict_id: str, action: dict):
     """处理问题作品"""
+    from ..core.activity_log_service import mark_task_conflict_resolved_activity_log
     from ..core.conflict_resolution_service import get_conflict_resolution_service
     from ..core.task_engine import Task, TaskStatus, TaskType, get_task_engine
     from ..models.database import ConflictWork, ProcessedArchive, get_db
@@ -3086,6 +3117,9 @@ async def resolve_conflict(conflict_id: str, action: dict):
             raise HTTPException(status_code=400, detail="当前问题项不支持该操作")
         confirmed = bool(action.get("confirmed"))
         engine = get_task_engine()
+        # KEEP_NEW 分支会用新任务 ID 覆盖 conflict.task_id，必须在覆盖前
+        # 记下原任务 ID 才能定位到那条 task_finished/waiting 的活动日志。
+        original_task_id = str(conflict.task_id).strip() if conflict.task_id else None
 
         try:
             if action_type == "KEEP_NEW":
@@ -3104,6 +3138,13 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 if conflict.task_id:
                     existing_task = engine.get_task(str(conflict.task_id))
                 if existing_task and existing_task.status == TaskStatus.PROCESSING:
+                    # 任务还在跑也代表用户已经拍板"保留新版"——把原 waiting
+                    # 那条活动日志同步回写，避免操作记录上一直挂着"等待处理"。
+                    mark_task_conflict_resolved_activity_log(
+                        original_task_id,
+                        action_type,
+                        conflict_id=conflict.id,
+                    )
                     return {
                         "success": True,
                         "conflict_id": conflict.id,
@@ -3144,6 +3185,13 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 await engine.submit(task)
                 conflict.task_id = task.id
                 db.commit()
+                # 提交完新任务后，再把原 waiting 那条活动日志改写为"已保留新版"，
+                # 避免操作记录里关联事件长期停留在"等待处理"。
+                mark_task_conflict_resolved_activity_log(
+                    original_task_id,
+                    action_type,
+                    conflict_id=conflict.id,
+                )
                 return {
                     "success": True,
                     "conflict_id": conflict.id,
@@ -3201,6 +3249,13 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 archive_record.processed_at = datetime.now()
 
         db.commit()
+        # MERGE / SKIP 完成后同步把原 waiting 那条 task_finished 行回写成
+        # "已合并" / "已跳过"，否则操作记录的关联事件依然停留在"等待处理"。
+        mark_task_conflict_resolved_activity_log(
+            original_task_id,
+            action_type,
+            conflict_id=conflict.id,
+        )
         return {
             "success": True,
             "conflict_id": conflict.id,
@@ -5571,6 +5626,158 @@ async def move_library_browser_items(request: LibraryBrowserMoveRequest):
     except Exception as e:
         _log_synology_err(f"库存批量移动失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"库存批量移动失败: {str(e)}")
+
+
+class LibraryAutoCircleGroupRequest(BaseModel):
+    """根据 RJ 号把目录自动归类到《库根》/《社团名》/ 下。"""
+    library_id: str
+    row_path: str
+    preview: bool = False
+
+
+def _parse_circle_name_from_folder(folder_name: str) -> str:
+    """从文件夹名解析社团名。
+    
+    主模板（默认）：[社团][RJxxxxxx]xxx
+    兼容模板：[RJxxxxxx][社团]xxx
+    解析失败返回空字符串。
+    """
+    if not folder_name:
+        return ""
+    # 默认模板：开头 [maker_name] 紧跟 [RJxxxxxx]
+    main_match = re.match(r'^\s*\[([^\[\]]+)\]\s*\[[RVB]J\d{6,8}', folder_name, re.IGNORECASE)
+    if main_match:
+        candidate = (main_match.group(1) or "").strip()
+        # 排除把 RJxxx 当成社团名误报的情况
+        if candidate and not re.match(r'^[RVB]J\d{6,8}$', candidate, re.IGNORECASE):
+            return candidate
+    # 兼容：[RJxxx][maker_name]
+    fallback_match = re.search(r'\[[RVB]J\d{6,8}[^\[\]]*\]\s*\[([^\[\]]+)\]', folder_name, re.IGNORECASE)
+    if fallback_match:
+        candidate = (fallback_match.group(1) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+@app.post("/api/library/auto-circle-group")
+async def auto_circle_group_by_rj(request: LibraryAutoCircleGroupRequest):
+    """自动按社团把 RJ 文件夹移动到 库根/社团名/ 下。
+
+    社团名从文件夹名直接解析（默认模板 [社团][RJxxx]xxx）。
+    解析失败则返回 need_api_rename=True，由前端串联先调 API 重命名后再次发起。
+    """
+    from ..core.library_manager import get_library_manager
+
+    library_id = str(request.library_id or "").strip()
+    row_path = str(request.row_path or "").strip()
+    if not library_id:
+        raise HTTPException(status_code=400, detail="缺少 library_id")
+    if not row_path:
+        raise HTTPException(status_code=400, detail="缺少 row_path")
+
+    manager = get_library_manager()
+    try:
+        library = manager.get_library_definition(library_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"库存不存在: {exc}")
+    if library.type != "local":
+        raise HTTPException(status_code=400, detail="按社团分类仅支持本地库")
+
+    abs_row_path = os.path.abspath(row_path)
+    if not os.path.isdir(abs_row_path):
+        raise HTTPException(status_code=400, detail="目标必须是文件夹")
+
+    library_root = os.path.abspath(library.root_path)
+    try:
+        if os.path.commonpath([library_root, abs_row_path]) != library_root:
+            raise HTTPException(status_code=400, detail="目标文件夹不在所选库存内")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="目标文件夹不在所选库存内")
+
+    folder_name = os.path.basename(abs_row_path)
+    rj_match = re.search(r'[RVB]J\d{6,8}', folder_name, re.IGNORECASE)
+    rjcode = rj_match.group(0).upper() if rj_match else ""
+
+    circle_name = _parse_circle_name_from_folder(folder_name)
+    if not circle_name:
+        # 文件夹名里没有社团前缀 → 让前端先做 API 重命名再重试
+        return {
+            "success": False,
+            "need_api_rename": True,
+            "rjcode": rjcode,
+            "row_path": abs_row_path,
+            "folder_name": folder_name,
+            "message": "未在文件夹名中识别到社团前缀，请先执行 API 重命名后再试",
+        }
+
+    safe_circle_name = re.sub(r'[<>:"/\\|?*]', '_', circle_name)
+    safe_circle_name = re.sub(r'[\x00-\x1f\x7f]', '', safe_circle_name).rstrip(' .')
+    if not safe_circle_name:
+        raise HTTPException(status_code=500, detail=f"社团名 '{circle_name}' 无法转换为合法文件夹名")
+
+    target_circle_dir = os.path.join(library_root, safe_circle_name)
+
+    parent_norm = os.path.normcase(os.path.dirname(abs_row_path))
+    target_norm = os.path.normcase(target_circle_dir)
+    if parent_norm == target_norm:
+        return {
+            "success": True,
+            "skipped": True,
+            "rjcode": rjcode,
+            "circle_name": circle_name,
+            "safe_circle_name": safe_circle_name,
+            "target_dir": target_circle_dir,
+            "final_path": abs_row_path,
+            "message": f"已经在《{safe_circle_name}》目录下，无需移动",
+        }
+
+    if request.preview:
+        return {
+            "success": True,
+            "preview": True,
+            "rjcode": rjcode,
+            "circle_name": circle_name,
+            "safe_circle_name": safe_circle_name,
+            "target_dir": target_circle_dir,
+            "final_path": os.path.join(target_circle_dir, os.path.basename(abs_row_path)),
+            "message": f"将移动到 {target_circle_dir}",
+        }
+
+    try:
+        os.makedirs(target_circle_dir, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"创建社团目录失败: {exc}")
+
+    try:
+        result = await manager.move_local_items(
+            source_library_id=library_id,
+            target_library_id=library_id,
+            paths=[abs_row_path],
+            target_path=target_circle_dir,
+            conflict_strategy="suffix",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[auto-circle-group][%s] 移动失败: %s", rjcode, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"移动失败: {exc}")
+
+    final_path = ""
+    moved = (result or {}).get("moved") or []
+    if moved:
+        final_path = str((moved[0] or {}).get("destination") or "")
+
+    return {
+        "success": True,
+        "rjcode": rjcode,
+        "circle_name": circle_name,
+        "safe_circle_name": safe_circle_name,
+        "target_dir": target_circle_dir,
+        "final_path": final_path or os.path.join(target_circle_dir, os.path.basename(abs_row_path)),
+        "message": f"已移动到《{safe_circle_name}》",
+        "result": result,
+    }
 
 
 @app.post("/api/library/browser/open-folder")
