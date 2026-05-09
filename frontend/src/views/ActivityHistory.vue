@@ -1,8 +1,5 @@
 <template>
-  <div
-    class="activity-page"
-    v-app-loading="{ loading, text: '正在加载操作记录…', description: '同步索引、统计与状态聚合', size: 168, minHeight: 360, delay: 80, minVisible: 360, maskClass: 'activity-loading-mask' }"
-  >
+  <div class="activity-page">
     <!-- 页头走共享组件 AppPageHeader，右侧 slot 保留原本的搜索框 + 两个操作按钮 -->
     <AppPageHeader
       :icon="History"
@@ -23,19 +20,29 @@
         </button>
       </div>
       <button
-        class="page-head-btn ghost"
+        class="page-head-btn ghost btn-archive"
         type="button"
         :disabled="loading"
         :title="compactHint"
         @click="onCompactClick"
       >
-        <Archive :size="13" :stroke-width="2.4" />
-        <span>归档老记录</span>
+        <span class="page-head-btn-icon-wrap">
+          <Archive :size="13" :stroke-width="2.4" class="page-head-btn-icon" />
+        </span>
+        <span class="page-head-btn-label">归档老记录</span>
         <span v-if="compactSavingsLabel" class="page-head-btn-hint">{{ compactSavingsLabel }}</span>
       </button>
-      <button class="page-head-btn primary" type="button" :disabled="loading" @click="loadAll">
-        <RefreshCcw :size="13" :stroke-width="2.6" />
-        <span>刷新</span>
+      <button class="page-head-btn primary btn-refresh" type="button" :disabled="loading" @click="loadAll">
+        <span class="page-head-btn-icon-wrap">
+          <!-- 两个图标始终在 DOM 中，通过 opacity + scale 平滑切换显示，避免 v-if 瞬切 -->
+          <span class="page-head-btn-icon-slot" :class="{ 'is-visible': loading }">
+            <Loader2 :size="13" :stroke-width="2.6" class="animate-spin" />
+          </span>
+          <span class="page-head-btn-icon-slot" :class="{ 'is-visible': !loading }">
+            <RefreshCcw :size="13" :stroke-width="2.6" class="page-head-btn-icon" />
+          </span>
+        </span>
+        <span class="page-head-btn-label">{{ loading ? '刷新中…' : '刷新' }}</span>
       </button>
     </AppPageHeader>
 
@@ -43,17 +50,14 @@
     <section class="metric-strip">
       <div class="metric-strip-head">
         <span class="metric-strip-label">关键指标</span>
-        <el-select
+        <AppDropdown
           v-model="statsDays"
-          class="metric-strip-select"
-          size="small"
-          @change="loadStats"
-        >
-          <el-option :value="0" label="所有时间" />
-          <el-option :value="7" label="近 7 天" />
-          <el-option :value="14" label="近 14 天" />
-          <el-option :value="30" label="近 30 天" />
-        </el-select>
+          :options="statsDaysOptions"
+          :width="140"
+          :menu-min-width="160"
+          :show-trigger-badge="false"
+          @update:model-value="loadStats"
+        />
       </div>
       <div class="metric-strip-row">
         <div
@@ -130,46 +134,43 @@
       </article>
     </section>
 
-    <!-- 筛选栏：分类 / 状态 / 应用按钮，三列均匀填满 -->
+    <!-- 筛选栏：使用项目统一 AppDropdown，与任务中心 / 设置页保持一致 -->
     <section class="filter-bar">
-      <el-select
+      <AppDropdown
         v-model="filters.category"
-        class="filter-select"
-        clearable
+        :options="categoryDropdownOptions"
+        label="分类"
         placeholder="全部分类"
-        size="default"
-        @change="applyFilters"
-      >
-        <el-option
-          v-for="opt in categoryOptions"
-          :key="opt.value"
-          :label="opt.label"
-          :value="opt.value"
-        />
-      </el-select>
-      <el-select
+        :width="220"
+        :menu-min-width="240"
+        @update:model-value="applyFilters"
+      />
+      <AppDropdown
         v-model="filters.status"
-        class="filter-select"
-        clearable
+        :options="statusDropdownOptions"
+        label="状态"
         placeholder="全部状态"
-        size="default"
-        @change="applyFilters"
+        :width="190"
+        :menu-min-width="200"
+        @update:model-value="applyFilters"
+      />
+      <button
+        v-if="hasActiveFilters"
+        class="filter-reset"
+        type="button"
+        title="清空所有筛选条件"
+        @click="resetFilters"
       >
-        <el-option value="success" label="成功" />
-        <el-option value="partial_success" label="部分成功" />
-        <el-option value="failed" label="失败" />
-        <el-option value="cancelled" label="已取消" />
-        <el-option value="waiting" label="等待中" />
-        <el-option value="incomplete" label="未完成" />
-      </el-select>
-      <button class="filter-apply" type="button" @click="applyFilters">
-        <Filter :size="14" :stroke-width="2.6" />
-        <span>应用筛选</span>
+        <FilterX :size="13" :stroke-width="2.4" />
+        <span>重置筛选</span>
       </button>
     </section>
 
-    <!-- 时间线主体 -->
-    <section class="timeline-shell">
+    <!-- 时间线主体：加载遮罩仅覆盖这一区，不影响顶部「刷新/归档」按钮点击 -->
+    <section
+      class="timeline-shell"
+      v-app-loading="{ loading, text: '正在加载操作记录…', description: '同步索引、统计与状态聚合', size: 168, minHeight: 360, delay: 80, minVisible: 360, maskClass: 'activity-loading-mask' }"
+    >
       <AppEmptyState
         v-if="!timelineGroups.length && !loading"
         description="没有匹配的操作记录"
@@ -258,7 +259,22 @@
                     已修复
                   </span>
                 </div>
-                <div class="event-summary">{{ row.summary || '—' }}</div>
+                <div
+                  v-if="renameSegments(row)"
+                  class="event-summary rename-summary"
+                  :class="{ 'is-failed': renameSegments(row).failed }"
+                >
+                  <!-- 单条重命名行：灰名（删除线）＋ 醒目箭头胶囊 ＋ 绿名（加粗），让目光聚焦在改动差异 -->
+                  <span class="rename-old" :title="renameSegments(row).oldName">{{ renameSegments(row).oldName }}</span>
+                  <span class="rename-arrow">--&gt;</span>
+                  <span class="rename-new" :title="renameSegments(row).newName">{{ renameSegments(row).newName }}</span>
+                  <span
+                    v-if="renameSegments(row).reason"
+                    class="rename-reason-inline"
+                    :title="renameSegments(row).reason"
+                  >· {{ renameSegments(row).reason }}</span>
+                </div>
+                <div v-else class="event-summary">{{ row.summary || '—' }}</div>
                 <div v-if="row.chips?.length || row.source_path" class="event-meta">
                   <span
                     v-for="chip in row.chips || []"
@@ -355,11 +371,13 @@ import {
   AlertCircle,
   Archive,
   CheckCircle2,
+  Loader2,
   ChevronRight,
   Clock,
   Database,
   FileDown,
   ListFilter as Filter,
+  FilterX,
   Folder,
   FolderOpen,
   History,
@@ -383,6 +401,7 @@ import { useActivityHistoryLite } from '../composables/useActivityHistoryLite'
 import api from '../api'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
+import AppDropdown from '../components/common/AppDropdown.vue'
 import ActivityDetailBody from '../components/activity/ActivityDetailBody.vue'
 
 const router = useRouter()
@@ -427,21 +446,24 @@ const categoryOptions = [
   { value: 'email_watcher', label: '邮件监听' }
 ]
 
+// category → tone 映射：每个 category 独占一个 tone，避免视觉撞色看不出区别。
+// 颜色语义大致按"业务领域"分组：字幕系（紫蓝系）、库存系（绿系）、Pipeline 工具系（暖色 / 灰）、
+// 远端通信系（蓝青粉）。即使列表里多种 category 混排，也能一眼定位到自己关心的那一类。
 const categoryConfigs = {
   subtitle_crawl: { icon: Search, label: '字幕爬取', tone: 'indigo' },
   subtitle_pair: { icon: LinkIcon, label: '字幕配对', tone: 'violet' },
-  subtitle_import: { icon: FileDown, label: '字幕补配', tone: 'amber' },
-  extract: { icon: Package, label: '解压', tone: 'emerald' },
+  subtitle_import: { icon: FileDown, label: '字幕补配', tone: 'fuchsia' },
+  extract: { icon: Package, label: '解压', tone: 'teal' },
   auto_import: { icon: Database, label: '解压入库', tone: 'emerald' },
-  process_existing: { icon: Folder, label: '已有目录处理', tone: 'slate' },
+  process_existing: { icon: Folder, label: '已有目录处理', tone: 'lime' },
   pipeline_filter: { icon: Filter, label: '筛选', tone: 'amber' },
   pipeline_metadata: { icon: Tag, label: '元数据', tone: 'slate' },
-  pipeline_rename: { icon: Tag, label: '重命名', tone: 'sky' },
+  pipeline_rename: { icon: Tag, label: '重命名', tone: 'orange' },
   pipeline_delete: { icon: Scissors, label: '删除', tone: 'rose' },
-  asmr_sync: { icon: RefreshCw, label: 'ASMR 同步', tone: 'indigo' },
+  asmr_sync: { icon: RefreshCw, label: 'ASMR 同步', tone: 'cyan' },
   upload: { icon: Upload, label: '库存上传', tone: 'sky' },
   circle_completion: { icon: Users, label: '社团补全', tone: 'blue' },
-  email_watcher: { icon: Mail, label: '邮件监听', tone: 'cyan' },
+  email_watcher: { icon: Mail, label: '邮件监听', tone: 'pink' },
   default: { icon: Tag, label: '其他', tone: 'slate' }
 }
 
@@ -480,6 +502,50 @@ function statusIcon(status) {
 
 function statusLabel(status) {
   return statusConfig(status).label
+}
+
+// ==================== AppDropdown 选项数据 ====================
+// 给「分类」筛选准备 dropdown 数据：以 categoryOptions 为基础，从 categoryConfigs 拿 icon
+// '' value 表示"全部分类"，匹配 useActivityHistoryLite 里 filters.category 默认值
+const categoryDropdownOptions = computed(() => [
+  { value: '', label: '全部分类', icon: Filter },
+  ...categoryOptions.map((opt) => ({
+    value: opt.value,
+    label: opt.label,
+    icon: categoryConfig(opt.value).icon,
+  })),
+])
+
+// 给「状态」筛选准备 dropdown 数据，icon 取自 statusConfigs
+const statusDropdownOptions = computed(() => [
+  { value: '', label: '全部状态', icon: Filter },
+  { value: 'success', label: '成功', icon: CheckCircle2 },
+  { value: 'partial_success', label: '部分成功', icon: AlertCircle },
+  { value: 'failed', label: '失败', icon: XCircle },
+  { value: 'cancelled', label: '已取消', icon: MinusCircle },
+  { value: 'waiting', label: '等待中', icon: Clock },
+  { value: 'incomplete', label: '未完成', icon: PlayCircle },
+])
+
+// 是否存在活动筛选条件，用于控制「重置筛选」按钮的显示
+const hasActiveFilters = computed(() =>
+  Boolean(filters.category) || Boolean(filters.status) || Boolean((filters.q || '').trim())
+)
+
+// 「关键指标」下拉：时间范围选项
+const statsDaysOptions = [
+  { value: 0, label: '所有时间' },
+  { value: 7, label: '近 7 天' },
+  { value: 14, label: '近 14 天' },
+  { value: 30, label: '近 30 天' },
+]
+
+// 一键重置所有筛选条件并立即重新查询
+function resetFilters() {
+  filters.category = ''
+  filters.status = ''
+  filters.q = ''
+  applyFilters()
 }
 
 // 列表渲染统一走这个 effective status：兜底把"实际进了问题作品列表但 status 写成 success"的
@@ -527,12 +593,19 @@ function isRowRecovered(row) {
 }
 
 // 分类标签 tone → Tailwind 配色（柔和底色 + 内嵌细 ring，避免后台 pill 感）
+// 14 种 tone 让 14 个 category 各占一色（含 default = slate），新增 fuchsia / teal /
+// lime / orange / pink 5 个，避免之前 sky / indigo / amber / emerald / slate 撞色。
 const CATEGORY_TONE_CLASS = {
   indigo: 'bg-indigo-50 text-indigo-700 ring-indigo-200/60',
   violet: 'bg-violet-50 text-violet-700 ring-violet-200/60',
+  fuchsia: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200/60',
   amber: 'bg-amber-50 text-amber-700 ring-amber-200/60',
+  orange: 'bg-orange-50 text-orange-700 ring-orange-200/60',
   emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-200/60',
+  teal: 'bg-teal-50 text-teal-700 ring-teal-200/60',
+  lime: 'bg-lime-50 text-lime-700 ring-lime-200/60',
   rose: 'bg-rose-50 text-rose-700 ring-rose-200/60',
+  pink: 'bg-pink-50 text-pink-700 ring-pink-200/60',
   sky: 'bg-sky-50 text-sky-700 ring-sky-200/60',
   blue: 'bg-blue-50 text-blue-700 ring-blue-200/60',
   cyan: 'bg-cyan-50 text-cyan-700 ring-cyan-200/60',
@@ -1051,8 +1124,15 @@ function humanAction(row) {
     if (action === 'filter_delete_preview_retry') return '失败项重试'
     return statusLabel(status)
   }
-  if (cat === 'pipeline_rename') return '重命名'
-  if (cat === 'pipeline_delete') return '删除'
+  // 重命名 / 删除：左侧 category chip 已经写了"重命名 / 删除"，右侧再写一遍纯属噪音。
+  // 这里只输出状态文案（完成 / 失败 / 部分成功），让用户的注意力直接落到下面的对比块。
+  if (cat === 'pipeline_rename' || cat === 'pipeline_delete') {
+    if (status === 'success') return '完成'
+    if (status === 'partial_success') return '部分成功'
+    if (status === 'failed') return '失败'
+    if (status === 'cancelled') return '已取消'
+    return statusLabel(status)
+  }
   if (cat === 'circle_completion') {
     if (action === 'index_completed') return '索引完成'
     if (action === 'refresh_selected_works') return '刷新作品'
@@ -1065,6 +1145,53 @@ function humanAction(row) {
     return statusLabel(status)
   }
   return statusLabel(status)
+}
+
+// ==================== 重命名行：单行高亮 ====================
+// 截图反馈：摘要里 'oldName -> newName' 一行平铺直叙，箭头不显眼。
+// 这里把 oldName / newName 拆出来，让模板渲染成一行内"灰名 + 醒目箭头 + 绿名"。
+// 单条 api_rename / 单条 manual_rename 才需要美化；批量行 (batch_*) 仍用普通 summary。
+//
+// 数据来源优先级：
+// 1) row.detail.old_name / new_name —— 后端 lite 路径会精简下发（routes.py / activity_log_lite.py）
+// 2) 从 row.summary 字符串里解析 " -> " —— 后端没重启 / 旧数据兜底用
+function renameSegments(row) {
+  if (!row || row.category !== 'pipeline_rename') return null
+  const action = String(row.action || '')
+  if (action === 'batch_api_rename' || action === 'batch_manual_rename') return null
+
+  const failed = String(row.status || '') === 'failed'
+  const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+  let oldName = String(detail.old_name || '').trim()
+  let newName = String(detail.new_name || '').trim()
+  let reason = String(detail.error || detail.reason || '').trim()
+
+  // 兜底：从 summary 字符串里 split ' -> '。后端模板写的就是 'old -> new'，失败时尾巴加 '：err'。
+  if (!oldName && !newName) {
+    const summary = String(row.summary || '').trim()
+    const arrowIdx = summary.indexOf(' -> ')
+    if (arrowIdx > 0) {
+      oldName = summary.slice(0, arrowIdx).trim()
+      let rest = summary.slice(arrowIdx + 4).trim()
+      if (failed && !reason) {
+        // failed summary 形态：'old -> new：错误描述'，把 '：' 后面切给 reason
+        const colonIdx = rest.lastIndexOf('：')
+        if (colonIdx > 0) {
+          reason = rest.slice(colonIdx + 1).trim()
+          rest = rest.slice(0, colonIdx).trim()
+        }
+      }
+      newName = rest
+    }
+  }
+
+  if (!oldName && !newName) return null
+  return {
+    oldName: oldName || '原名称未知',
+    newName: newName || (failed ? '（保留原名）' : '未命名'),
+    failed,
+    reason: failed ? reason : '',
+  }
 }
 
 // ==================== 归档压缩 ====================
@@ -1251,10 +1378,12 @@ watch(() => filters.q, (val, old) => {
   color: #0f172a;
 }
 
-/* 操作按钮 */
+/* 操作按钮（对齐 ASMRSync.vue / LibraryBackup.vue page-head-btn 规范） */
 .page-head-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   height: 36px;
   padding: 0 14px;
@@ -1264,26 +1393,70 @@ watch(() => filters.q, (val, old) => {
   color: #1e293b;
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  overflow: hidden;
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease,
+    opacity 0.25s ease;
+  will-change: transform, opacity;
 }
+
+/* 图标包裹层：14×14 容器锁定尺寸，避免 swap Transition 影响按钮宽高 */
+.page-head-btn-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  position: relative;
+}
+
+/* 图标基础动效（Loader2 spin 不在此选择器范围，避免冲突） */
+.page-head-btn :deep(.page-head-btn-icon) {
+  flex-shrink: 0;
+  transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.3s ease;
+}
+.page-head-btn :deep(svg) { flex-shrink: 0; }
 
 .page-head-btn:hover {
   transform: translateY(-2px) scale(1.02);
   box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
 }
 
+/* :active 不依赖 :not(:disabled)，让按下反馈在 click → disabled 切换瞬间也保留 */
 .page-head-btn:active {
-  transform: scale(0.96);
+  transform: translateY(0) scale(0.94);
+  box-shadow:
+    0 4px 10px rgba(15, 23, 42, 0.12),
+    inset 0 2px 6px rgba(15, 23, 42, 0.18);
+  transition:
+    transform 0.08s ease-out,
+    box-shadow 0.08s ease-out;
 }
 
+.page-head-btn.primary:active {
+  box-shadow:
+    0 4px 10px rgba(15, 23, 42, 0.3),
+    inset 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.page-head-btn:active :deep(.page-head-btn-icon) {
+  transform: scale(0.78);
+  transition: transform 0.08s ease-out;
+}
+
+/* disabled：仅 opacity + cursor，不重置 transform/shadow，避免 hover 中点击瞬间塌回闪烁 */
 .page-head-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.7;
   cursor: not-allowed;
-  transform: none !important;
-  box-shadow: none !important;
 }
 
+/* === Primary 黑灰渐变 + shimmer 高光扫光 === */
 .page-head-btn.primary {
   background: linear-gradient(135deg, #111827, #1e293b);
   color: #fff;
@@ -1291,8 +1464,131 @@ watch(() => filters.q, (val, old) => {
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
 }
 
+.page-head-btn.primary::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -120%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.05) 30%,
+    rgba(255, 255, 255, 0.28) 50%,
+    rgba(255, 255, 255, 0.05) 70%,
+    transparent 100%
+  );
+  transform: skewX(-18deg);
+  transition: left 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: none;
+}
+
 .page-head-btn.primary:hover {
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22);
+  background: linear-gradient(135deg, #1e293b, #334155);
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.28), 0 0 0 4px rgba(15, 23, 42, 0.05);
+}
+
+.page-head-btn.primary:hover::before {
+  left: 130%;
+}
+
+/* === Ghost 白底纯色 transition（gradient 不能 transition 会瞬切） === */
+.page-head-btn.ghost {
+  background-color: #fff;
+}
+
+.page-head-btn.ghost:hover {
+  background-color: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.2);
+}
+
+/* === 各按钮专属图标动效 === */
+/* 刷新：RefreshCcw hover 时反向旋转一整圈
+ *  - 仅在 :not(:disabled) 时触发：loading 中按钮 disabled，避免 hover rotate 与 swap leave Transition 冲突造成图标消失
+ *  - :not(.animate-spin) 进一步排除 Loader2，让 spin 动画独立运行
+ */
+.page-head-btn.btn-refresh:hover:not(:disabled) :deep(.page-head-btn-icon:not(.animate-spin)) {
+  transform: rotate(-360deg) scale(1.1);
+  transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 归档：Archive 图标 hover 时轻微下沉 + 缩放（模拟"归档落盘"动作）+ 蓝光（同样仅 :not(:disabled)） */
+.page-head-btn.btn-archive:hover:not(:disabled) :deep(.page-head-btn-icon) {
+  transform: translateY(1px) scale(1.12);
+  filter: drop-shadow(0 2px 4px rgba(59, 130, 246, 0.35));
+  color: #2563eb;
+}
+
+/* 文本 label：min-width + 居中，避免「刷新」→「刷新中…」宽度跳变 */
+.page-head-btn-label {
+  display: inline-block;
+  text-align: center;
+  transition: opacity 0.2s ease, letter-spacing 0.3s ease;
+}
+.page-head-btn.primary .page-head-btn-label { min-width: 56px; }
+.page-head-btn.ghost .page-head-btn-label { min-width: 70px; }
+
+/* hover 时文字微微展开间距 */
+.page-head-btn:hover .page-head-btn-label {
+  letter-spacing: 0.04em;
+}
+
+/* === 图标双 layer 平滑切换：Loader2 ↔ RefreshCcw 通过 opacity + scale 渐变 ===
+ *  - 两个 slot 都常驻 DOM，避免 v-if 瞬切 / Vue Transition 初始挂载阶段不稳定
+ *  - .is-visible 控制显示态（opacity 1, scale 1），未激活时 opacity 0 + scale 0.5 + rotate 隐藏
+ *  - spin 动画在 svg 内层，与外层 transform 不冲突
+ *  - 切换时间缩短到 200ms，让点击后 loader 立即出现，反馈更即时
+ */
+.page-head-btn-icon-slot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -50%) scale(0.5) rotate(-90deg);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: transform, opacity;
+}
+
+.page-head-btn-icon-slot.is-visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1) rotate(0deg);
+}
+
+/* === 按下 flash：一次性白色高光从中心扩散，给点击清晰即时反馈 === */
+.page-head-btn::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle at center,
+    rgba(255, 255, 255, 0.6) 0%,
+    rgba(255, 255, 255, 0.2) 40%,
+    transparent 70%
+  );
+  transform: translate(-50%, -50%) scale(0);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.page-head-btn:active::after {
+  animation: page-head-btn-flash 0.4s ease-out;
+}
+
+@keyframes page-head-btn-flash {
+  0%   { transform: translate(-50%, -50%) scale(0);   opacity: 0.9; }
+  60%  { transform: translate(-50%, -50%) scale(1.4); opacity: 0.45; }
+  100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
 }
 
 .page-head-btn-hint {
@@ -1331,13 +1627,7 @@ watch(() => filters.q, (val, old) => {
   text-transform: uppercase;
 }
 
-.metric-strip-select {
-  width: 130px;
-}
-
-.metric-strip-select :deep(.el-input__wrapper) {
-  border-radius: 8px;
-}
+/* statsDays AppDropdown 已接管宁广与状态样式（参考 width prop），这里仅保留上下文占位 */
 
 /* 数据条本体：8 列等宽，hairline 分隔 */
 .metric-strip-row {
@@ -1569,7 +1859,7 @@ watch(() => filters.q, (val, old) => {
   font-weight: 600;
 }
 
-/* ============= 筛选栏：靠右对齐，控件保持紧凑固定宽度，不撑满整行 ============= */
+/* ============= 筛选栏：靠右对齐 + 项目统一 AppDropdown ============= */
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1584,23 +1874,8 @@ watch(() => filters.q, (val, old) => {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
-.filter-select {
-  width: 200px;
-  flex: 0 0 auto;
-}
-
-.filter-select :deep(.el-input__wrapper) {
-  border-radius: 10px;
-  background: #f8fafc;
-  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.1) inset;
-}
-
-.filter-select :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.28) inset, 0 0 0 3px rgba(15, 23, 42, 0.06);
-}
-
-/* 应用筛选按钮：深石板灰，跟页头 primary 呼应；保持紧凑宽度 */
-.filter-apply {
+/* 重置筛选按钮：仅在有活动筛选时出现，hover 微动效统一规范 */
+.filter-reset {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1608,35 +1883,41 @@ watch(() => filters.q, (val, old) => {
   flex: 0 0 auto;
   height: 36px;
   padding: 0 18px;
-  border: 0;
   border-radius: 10px;
-  background: linear-gradient(135deg, #1e293b, #334155);
-  color: #fff;
-  font-size: 13px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  color: #475569;
+  font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
   cursor: pointer;
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.16);
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease;
 }
 
-.filter-apply:hover {
+.filter-reset:hover {
   transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.22);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  background: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.2);
+  color: #0f172a;
 }
 
-.filter-apply:active {
+.filter-reset:active {
   transform: scale(0.96);
+  transition: transform 0.1s ease;
 }
 
 @media (max-width: 720px) {
   .filter-bar {
     justify-content: stretch;
   }
-  .filter-select {
-    width: 100%;
-  }
-  .filter-apply {
+  .filter-reset {
     flex: 1 0 100%;
   }
 }
@@ -1867,6 +2148,85 @@ watch(() => filters.q, (val, old) => {
   overflow: hidden;
 }
 
+/* ============= 重命名行：'黄底原名 + 箭头 + 绿底新名' 单行高亮 ============= */
+.rename-summary {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  letter-spacing: 0.01em;
+  word-break: break-all;
+}
+
+/* 旧名：amber 渐变胶囊 + 加粗，第一眼就吸引到"被改掉的旧值" */
+.rename-summary .rename-old {
+  display: inline-block;
+  padding: 1px 8px;
+  font-weight: 600;
+  color: #92400e; /* amber-800 */
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.22) 0%, rgba(251, 191, 36, 0.10) 100%);
+  border-radius: 6px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  transition: all 0.2s ease;
+}
+
+/* 中间箭头：slate plain text，不抢前后两个胶囊的视觉焦点 */
+.rename-summary .rename-arrow {
+  display: inline-block;
+  margin: 0 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: -0.08em;
+  color: rgba(71, 85, 105, 0.78); /* slate-600 */
+  vertical-align: baseline;
+}
+
+/* 新名：emerald 渐变胶囊 + 加粗，目光最终落到"改成了什么" */
+.rename-summary .rename-new {
+  display: inline-block;
+  padding: 1px 8px;
+  font-weight: 600;
+  color: #065f46; /* emerald-800 */
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.20) 0%, rgba(16, 185, 129, 0.08) 100%);
+  border-radius: 6px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  transition: all 0.2s ease;
+}
+
+/* 失败：箭头 + 新名都切到 rose 系，旧名 amber 保持不变（语义：改之前的状态没问题，是改这一步出错） */
+.rename-summary.is-failed .rename-arrow {
+  color: #b91c1c;
+}
+
+.rename-summary.is-failed .rename-new {
+  color: #991b1b;
+  background: linear-gradient(180deg, rgba(244, 63, 94, 0.18) 0%, rgba(244, 63, 94, 0.08) 100%);
+}
+
+.rename-summary .rename-reason-inline {
+  margin-left: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 11.5px;
+  color: rgba(190, 18, 60, 0.85);
+  letter-spacing: 0.02em;
+}
+
+/* hover：两个胶囊轻微抬升 + 微 glow，对齐项目主操作"渐变 + glow"的交互语言 */
+.event-row:hover .rename-summary .rename-old {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 2px 6px rgba(251, 191, 36, 0.22);
+  transform: translateY(-1px);
+}
+
+.event-row:hover .rename-summary .rename-new {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 2px 6px rgba(16, 185, 129, 0.18);
+  transform: translateY(-1px);
+}
+
+.event-row:hover .rename-summary.is-failed .rename-new {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 2px 6px rgba(244, 63, 94, 0.22);
+}
+
 .event-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1930,9 +2290,7 @@ watch(() => filters.q, (val, old) => {
   opacity: 0.55;
 }
 
-.footer-pager :deep(.el-pagination) {
-  --el-pagination-button-bg-color: transparent;
-}
+/* footer-pager 走 index.css 全局规范（small 尺寸自动适配 28px 紧凑版） */
 
 /* ============= Drawer ============= */
 :deep(.activity-drawer) {

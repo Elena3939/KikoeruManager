@@ -1370,6 +1370,17 @@ function humanAction(row) {
   // 父任务 / 主行：用 effectiveRowStatus 把"实际进了问题作品列表的 success"降级成 partial_success。
   // 子任务（is_tree_child）保留原 status，因为它们一般是细粒度记录，不需要兜底翻转。
   const cat = row?.category, status = effectiveRowStatus(row), action = row?.action
+
+  // 用户在问题作品页面拍板后，原任务的 task_finished 行被回写为已跳过 / 已保留新版 / 已合并；
+  // detail.conflict_resolution_action 是后端写回的标记，这里优先按它出文案，
+  // 否则各 category 分支会把 cancelled 映射成笼统的"已取消"，看不出是用户主动决断的结果。
+  const conflictAction = String(detail?.conflict_resolution_action || '').trim().toUpperCase()
+  if (conflictAction && (action === 'task_finished' || action === 'task_finished_incomplete')) {
+    if (conflictAction === 'SKIP') return '已跳过'
+    if (conflictAction === 'KEEP_NEW') return '已保留新版'
+    if (conflictAction === 'MERGE') return '已合并'
+  }
+
   if (cat === 'pipeline_filter') {
     if (action === 'filter_delete_preview') {
       if (status === 'success') return '删除过滤预审完成'
