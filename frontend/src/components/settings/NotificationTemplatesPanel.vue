@@ -337,7 +337,7 @@ defineExpose({ reload })
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.tpl-panel-action:hover:not(:disabled) {
+.tpl-panel-action:hover {
   transform: translateY(-2px) scale(1.02);
   border-color: rgba(0, 113, 227, 0.3);
   color: #0071e3;
@@ -359,7 +359,7 @@ defineExpose({ reload })
   border-color: #1d1d1f;
 }
 
-.tpl-panel-action--primary:hover:not(:disabled) {
+.tpl-panel-action--primary:hover {
   background: #000;
   border-color: #000;
   color: #fff;

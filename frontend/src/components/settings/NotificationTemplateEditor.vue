@@ -1573,7 +1573,7 @@ function onCancel() {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.tpl-preview-refresh:hover:not(:disabled) {
+.tpl-preview-refresh:hover {
   transform: translateY(-2px) scale(1.02);
   border-color: rgba(0, 113, 227, 0.3);
   color: #0071e3;
@@ -1694,7 +1694,7 @@ function onCancel() {
   border: 1px solid transparent;
 }
 
-.tpl-btn:hover:not(:disabled) {
+.tpl-btn:hover {
   transform: translateY(-2px) scale(1.02);
 }
 
@@ -1713,7 +1713,7 @@ function onCancel() {
   border-color: rgba(29, 29, 31, 0.12);
 }
 
-.tpl-btn--ghost:hover:not(:disabled) {
+.tpl-btn--ghost:hover {
   border-color: rgba(29, 29, 31, 0.24);
   color: #1d1d1f;
 }
@@ -1724,7 +1724,7 @@ function onCancel() {
   border-color: #1d1d1f;
 }
 
-.tpl-btn--primary:hover:not(:disabled) {
+.tpl-btn--primary:hover {
   background: #000;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
 }
@@ -2252,7 +2252,7 @@ function onCancel() {
   cursor: pointer;
   transition: all 0.15s ease;
 }
-.tpl-fullscreen-btn:hover:not(:disabled) {
+.tpl-fullscreen-btn:hover {
   border-color: rgba(0, 113, 227, 0.4);
   color: #0071e3;
   background: rgba(0, 113, 227, 0.04);

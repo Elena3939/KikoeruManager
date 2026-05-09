@@ -437,7 +437,7 @@ async function doTestEmail() {
   transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.notif-domain-chip:hover:not(:disabled) {
+.notif-domain-chip:hover {
   transform: translateY(-1px) scale(1.04);
   border-color: rgba(148, 163, 184, 0.75);
   color: #1d1d1f;
@@ -455,7 +455,7 @@ async function doTestEmail() {
     0 4px 10px -4px rgba(2, 6, 23, 0.5);
 }
 
-.notif-domain-chip.is-active:hover:not(:disabled) {
+.notif-domain-chip.is-active:hover {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
     0 8px 18px -6px rgba(2, 6, 23, 0.55);
@@ -482,7 +482,7 @@ async function doTestEmail() {
   transition: color 0.18s;
 }
 
-.notif-domain-link:hover:not(:disabled) {
+.notif-domain-link:hover {
   color: #3730a3;
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -506,9 +506,10 @@ async function doTestEmail() {
   transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.action-btn:not(:disabled):hover { transform: translateY(-1px); }
-.action-btn:not(:disabled):active { transform: scale(0.97); }
-.action-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.action-btn:hover { transform: translateY(-1px); }
+.action-btn:active:not(:disabled) { transform: scale(0.97); }
+/* disabled：仅 opacity + cursor，不重置 transform/shadow，避免 hover 中点击瞬间塌回闪烁 */
+.action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .action-btn--secondary {
   background: #ffffff;
@@ -516,7 +517,7 @@ async function doTestEmail() {
   border: 1px solid rgba(226, 232, 240, 0.85);
 }
 
-.action-btn--secondary:not(:disabled):hover {
+.action-btn--secondary:hover {
   border-color: rgba(99, 102, 241, 0.55);
   color: #4f46e5;
   background: linear-gradient(135deg, rgba(238, 242, 255, 0.85) 0%, #ffffff 100%);

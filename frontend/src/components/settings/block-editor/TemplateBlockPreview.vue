@@ -160,7 +160,7 @@ defineExpose({ fetchPreview })
   cursor: pointer;
   transition: all 0.2s;
 }
-.blk-preview-refresh:hover:not(:disabled) {
+.blk-preview-refresh:hover {
   border-color: rgba(0, 113, 227, 0.3);
   color: #0071e3;
 }
