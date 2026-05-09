@@ -168,6 +168,33 @@ def _strip_html_tags(value: str) -> str:
     return text
 
 
+# DLsite 新作通知邮件常见主题模板：
+#   【DLsite】「あとりえスターズ」から新着作品が販売開始されました！
+#   【DLsite】「悪女名鑑(常世常闇所々)」から新着作品が販売開始されました！
+#   【DLsite】「○○」の新作が登録されました
+# 这里抓「」内的社团名，要求其后跟 “から/の” + “新着/新作”，避免误把作品名当社团。
+_SUBJECT_CIRCLE_NAME_PATTERN = re.compile(
+    r"「(?P<name>[^」]+)」\s*(?:から|の)\s*新(?:着|作)"
+)
+
+
+def _extract_circle_name_from_subject(subject: str) -> str:
+    """
+    从 DLsite 新作通知邮件主题中提取社团名作为兜底。
+    HTML 解析失败、或邮件正文里抓不到 circle_name 时使用。
+    """
+    if not subject:
+        return ""
+    text = str(subject or "").strip()
+    if not text:
+        return ""
+    match = _SUBJECT_CIRCLE_NAME_PATTERN.search(text)
+    if not match:
+        return ""
+    name = match.group("name").strip()
+    return name[:160]
+
+
 def _extract_html_parts(msg: "email.message.Message") -> List[str]:
     html_parts: List[str] = []
     if msg.is_multipart():
@@ -456,10 +483,71 @@ class EmailWatcherService:
             logger.info("[邮件监听] 已禁用，跳过启动")
             return
 
+        # dedup 暖启动：从最近 24h 的 fetch_check 活动日志恢复 message_id / RJ 缓存。
+        # 进程重启会清空内存 dedup，再叠加 RJ 异步索引尚未给 CircleWork 打 source_tag，
+        # 就会导致同一封邮件、同一个 RJ 在重启后再次被识别为“新作”，
+        # 用户会看到重复的 fetch_check 记录。这里把历史结果灌回内存即可治本。
+        try:
+            await asyncio.to_thread(self._warmup_dedup_from_activity_log)
+        except Exception as exc:
+            logger.warning("[邮件监听] dedup 暖启动失败（不影响主流程）: %s", exc)
+
         self._loop = asyncio.get_event_loop()
         self._stop_event.clear()
         self._task = asyncio.create_task(self._idle_loop(), name="email_watcher_idle_loop")
         logger.info("[邮件监听] 服务启动，IMAP: %s:%s", config.email_watcher.imap_host, config.email_watcher.imap_port)
+
+    def _warmup_dedup_from_activity_log(self) -> None:
+        """
+        从最近 24h 的 fetch_check 活动日志恢复内存 dedup（message_id + RJ）。
+        服务首次启动 / 进程重启时调用，避免重复触发同一邮件、同一 RJ。
+        """
+        try:
+            from ..models.database import ActivityLog, SessionLocal
+        except Exception:
+            logger.debug("[邮件监听] 无法导入 ActivityLog 模型，跳过 dedup 暖启动")
+            return
+
+        cutoff_dt = datetime.now() - timedelta(seconds=self._dedup_ttl)
+        db = SessionLocal()
+        rows = []
+        try:
+            rows = (
+                db.query(ActivityLog)
+                .filter(
+                    ActivityLog.category == "email_watcher",
+                    ActivityLog.action == "fetch_check",
+                    ActivityLog.created_at >= cutoff_dt,
+                )
+                .order_by(ActivityLog.created_at.desc())
+                .limit(200)
+                .all()
+            )
+        except Exception as exc:
+            logger.warning("[邮件监听] 读取最近 fetch_check 活动日志失败: %s", exc)
+        finally:
+            db.close()
+
+        now = time.time()
+        restored_rj = 0
+        restored_msg = 0
+        for row in rows:
+            detail = row.detail if isinstance(row.detail, dict) else {}
+            for rjcode in (detail.get("rjcodes") or []):
+                code = str(rjcode or "").strip().upper()
+                if code and code not in self._processed_rjcodes:
+                    self._processed_rjcodes[code] = now
+                    restored_rj += 1
+            for summary in (detail.get("mail_summaries") or []):
+                mid = str((summary or {}).get("message_id") or "").strip()
+                if mid and mid not in self._processed_message_ids:
+                    self._processed_message_ids.add(mid)
+                    restored_msg += 1
+        if restored_rj or restored_msg:
+            logger.info(
+                "[邮件监听] dedup 暖启动：恢复 %d 个 RJ / %d 个 message_id（来自最近 %d 条 fetch_check 活动日志）",
+                restored_rj, restored_msg, len(rows)
+            )
 
     async def stop(self):
         """停止后台 IDLE 监听任务。"""
@@ -1230,6 +1318,15 @@ class EmailWatcherService:
                     }
                     for code in fallback_rjcodes
                 ]
+
+            # 主题兜底：DLsite 新作通知邮件主题里通常带「社团名」，
+            # 当 HTML 解析失败、或解析出来的 circle_name 为空时，从主题里把社团名补上，
+            # 避免操作记录里出现 “本批次未解析到社团名”。
+            subject_circle_name = _extract_circle_name_from_subject(subject)
+            if subject_circle_name:
+                for item in message_items:
+                    if not str(item.get("circle_name") or "").strip():
+                        item["circle_name"] = subject_circle_name
 
             diag["matched_mails"] += 1
             if message_items:

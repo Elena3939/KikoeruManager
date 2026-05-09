@@ -1,16 +1,17 @@
 <template>
-  <section class="flex flex-shrink-0 flex-wrap gap-2 px-5 py-2">
-    <el-button
+  <section class="flex flex-shrink-0 flex-wrap gap-1.5 px-5 pt-3">
+    <button
       v-for="(metric, index) in metrics"
       :key="metric.key"
-      class="tasks-metric-btn"
+      type="button"
+      class="tasks-metric-pill"
       :style="{ animationDelay: `${index * 40}ms` }"
       @click="metric.click?.()"
     >
-      <component :is="metric.icon" :size="13" :stroke-width="2.2" :class="iconColor(metric.key)" />
+      <span class="tasks-metric-dot" :class="dotClass(metric.key)" />
       <span class="tasks-metric-label">{{ metric.label }}</span>
       <span class="tasks-metric-count">{{ metric.value }}</span>
-    </el-button>
+    </button>
   </section>
 </template>
 
@@ -19,51 +20,51 @@ defineProps({
   metrics: { type: Array, default: () => [] },
 })
 
-function iconColor(key) {
-  if (key === 'processing') return 'text-amber-500'
-  if (key === 'waiting_manual') return 'text-indigo-500'
-  if (key === 'waiting_retry') return 'text-orange-500'
-  if (key === 'failed') return 'text-rose-500'
-  return 'text-slate-400'
+function dotClass(key) {
+  if (key === 'processing') return 'bg-amber-500'
+  if (key === 'waiting_manual') return 'bg-indigo-500'
+  if (key === 'waiting_retry') return 'bg-orange-500'
+  if (key === 'failed') return 'bg-rose-500'
+  return 'bg-slate-400'
 }
 </script>
 
 <style scoped>
-.tasks-metric-btn {
-  --el-button-size: 28px;
-  height: 28px;
-  padding: 0 10px;
-  margin: 0 !important;
-  border-radius: 8px;
-  border: 1px solid rgb(226 232 240);
-  background: #fff;
-  color: rgb(51 65 85);
-  font-size: 12px;
-  font-weight: 500;
-  gap: 6px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-  animation: tasks-fade-up 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-}
-.tasks-metric-btn :deep(span),
-.tasks-metric-btn :deep(> span) {
+/* 极简 pill：火底圆角 + 彩色 dot + 签名 + count */
+.tasks-metric-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(241 245 249);
+  color: rgb(71 85 105);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
+  animation: tasks-fade-up 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
-.tasks-metric-btn:hover {
-  transform: translateY(-1px);
-  border-color: rgb(203 213 225);
-  background: rgb(248 250 252);
+.tasks-metric-pill:hover {
+  background: rgb(226 232 240);
   color: rgb(15 23 42);
-  box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.18);
 }
-.tasks-metric-btn:active {
-  transform: translateY(0) scale(0.96);
+.tasks-metric-pill:active {
+  transform: scale(0.97);
+}
+
+.tasks-metric-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
 }
 
 .tasks-metric-label {
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0.01em;
 }
 
@@ -71,20 +72,20 @@ function iconColor(key) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 18px;
   height: 16px;
-  min-width: 16px;
-  padding: 0 4px;
-  border-radius: 4px;
-  background: rgb(241 245 249);
-  color: rgb(51 65 85);
-  font-size: 10px;
-  font-weight: 700;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+  color: rgb(71 85 105);
+  font-size: 10.5px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1;
-  transition: all 0.3s ease;
+  transition: color 0.2s ease, background-color 0.2s ease;
 }
-.tasks-metric-btn:hover .tasks-metric-count {
-  background: rgb(15 23 42);
+.tasks-metric-pill:hover .tasks-metric-count {
+  background: rgba(15, 23, 42, 0.9);
   color: #fff;
 }
 

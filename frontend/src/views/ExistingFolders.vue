@@ -1,30 +1,24 @@
 <template>
   <div class="existing-page">
-    <section class="existing-hero">
-      <div class="hero-title-block">
-        <div class="hero-icon-box">
-          <FolderInput :size="15" :stroke-width="2.1" />
-        </div>
-        <div class="hero-text">
-          <h1>已有文件夹</h1>
-          <p class="hero-desc">把已解压的 RJ 文件夹放入已有目录，自动识别 RJ、抓取元数据、重命名并按分类规则入库</p>
-        </div>
+    <AppPageHeader
+      :icon="FolderInput"
+      icon-color="#16a34a"
+      title="已有文件夹"
+      subtitle="把已解压的 RJ 文件夹放入已有目录，自动识别 RJ、抓取元数据、重命名并按分类规则入库"
+    >
+      <div class="hero-search-wrap">
+        <Search :size="13" class="hero-search-icon" />
+        <input v-model="searchQuery" class="hero-search-input" type="text" placeholder="搜索文件夹名或 RJ 号" />
       </div>
-      <div class="hero-actions">
-        <div class="hero-search-wrap">
-          <Search :size="13" class="hero-search-icon" />
-          <input v-model="searchQuery" class="hero-search-input" type="text" placeholder="搜索文件夹名或 RJ 号" />
-        </div>
-        <button type="button" class="hero-btn hero-btn-primary" :disabled="loading" @click="refreshWithCache">
-          <RefreshCw :size="13" :class="{ 'animate-spin': loading }" />
-          刷新列表
-        </button>
-        <button type="button" class="hero-btn hero-btn-secondary" :disabled="loading" @click="refreshForce">
-          <RotateCcw :size="13" />
-          重新抓取
-        </button>
-      </div>
-    </section>
+      <button type="button" class="hero-btn hero-btn-primary" :disabled="loading" @click="refreshWithCache">
+        <RefreshCw :size="13" :class="{ 'animate-spin': loading }" />
+        刷新列表
+      </button>
+      <button type="button" class="hero-btn hero-btn-secondary" :disabled="loading" @click="refreshForce">
+        <RotateCcw :size="13" />
+        重新抓取
+      </button>
+    </AppPageHeader>
 
     <section class="existing-shell">
       <aside class="existing-sidebar">
@@ -282,6 +276,7 @@ import {
 import { existingFolderApi } from '../api'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 
 const router = useRouter()
@@ -598,12 +593,7 @@ function getConflictTypeLabel(conflictType) {
 
 <style scoped>
 .existing-page { max-width: 1480px; margin: 0 auto; padding: 22px; color: #0f172a; background: #fff; }
-.existing-hero { display: flex; justify-content: space-between; gap: 18px; align-items: center; padding: 18px; border: 1px solid #e5e7eb; border-radius: 20px; background: #fff; box-shadow: 0 10px 26px rgba(15,23,42,.05); }
-.hero-title-block { display: flex; align-items: center; gap: 13px; }
-.hero-icon-box { width: 38px; height: 38px; border-radius: 16px; display: grid; place-items: center; background: #111827; color: white; box-shadow: 0 12px 28px rgba(15,23,42,.22); }
-.hero-text h1 { margin: 0; font-size: 24px; line-height: 1.1; font-weight: 900; letter-spacing: -.04em; }
-.hero-desc { margin: 5px 0 0; color: #64748b; font-size: 13px; }
-.hero-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+/* 页头现在走共享组件 components/common/AppPageHeader.vue，仅保留右侧 slot 里的搜索框 + 按钮内嵌样式 */
 .hero-search-wrap { position: relative; width: min(360px, 42vw); }
 .hero-search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #94a3b8; }
 .hero-search-input { width: 100%; height: 38px; padding: 0 14px 0 34px; border: 1px solid #e2e8f0; border-radius: 14px; outline: none; background: rgba(255,255,255,.88); font-size: 13px; transition: all .3s cubic-bezier(.34,1.56,.64,1); }
@@ -700,5 +690,5 @@ function getConflictTypeLabel(conflictType) {
 .dialog-btn.primary { background: #111827; color: white; border-color: #111827; }
 .animate-spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (max-width: 980px) { .existing-shell { grid-template-columns: 1fr; } .sidebar-card { position: static; } .existing-hero { align-items: stretch; flex-direction: column; } .hero-search-wrap { width: 100%; } }
+@media (max-width: 980px) { .existing-shell { grid-template-columns: 1fr; } .sidebar-card { position: static; } .hero-search-wrap { width: 100%; } }
 </style>

@@ -28,6 +28,7 @@
 - 通知模板：`backend/app/core/notification_template_service.py`、`backend/app/core/notification_helper.py`、`backend/app/core/task_notification_service.py`、`backend/app/core/variable_registry.py`、`backend/app/core/block_renderers/__init__.py`、`backend/app/core/html_sanitizer.py`
 - 邮件监听 / IMAP：`backend/app/core/email_watcher_service.py`（如有）以及 `routes.py` 内 `/api/notifications/*`、`/api/email-watcher/*` 接口
 - 群晖错误体系：`backend/app/core/synology_*.py` 中的 `SynologyError`，群晖通信相关运行时错误统一走它，不再裸抛 `RuntimeError`
+- 库存搜索索引：`backend/app/core/library_index/`（`service.py` 调度 / `local_scanner.py` / `remote_scanner.py` / `snapshot_store.py` SQLite 持久化 / `types.py` 数据类）、DB 表 `library_index_entries` + `library_index_status`（在 `models/database.py`）、API 聚合在 `routes.py` 的 `/api/library/index/*`
 
 ### 前端
 
@@ -56,6 +57,7 @@
 - 系统弹窗：`frontend/src/components/system/SystemPromptDialog.vue`、`frontend/src/components/system/SystemPromptHost.vue`、`frontend/src/composables/useSystemPrompt.js`
 - Lottie 通用组件：`frontend/src/components/common/AppLoadingAnimation.vue`、`AppLottieIcon.vue`、`AppLottieSwitch.vue`、`AppLottieProgressBar.vue`
 - 统一空态：`frontend/src/components/common/AppEmptyState.vue`
+- 库存索引徽章：`frontend/src/components/library/LibraryIndexBadge.vue`（chip + 圆环 SVG spinner + 实时已扫描数字 + 重建按钮，库存页头部右侧）
 
 ### 桌面 / 发布
 
@@ -105,6 +107,9 @@
 - 所有按钮、都要有交互动效：hover `translateY(-2px) scale(1.02)`，active `scale(0.96)`，图标轻旋转。
 - 统一动画曲线：`all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)`。
 - 按钮优先自定义渐变 / 弱边框 / 小阴影，不要直接交付默认按钮样式。
+- 主操作按钮（保留新版 / 重试 / 合并 / 主表单 submit）默认走“180deg 三段渐变 + inset 1px 顶部高光 + 双层 glow shadow”，hover `translateY(-2px)` + 阴影展开，active `translateY(0) scale(0.97)`；参考 `Conflicts.vue` 的 `.conflicts-action-btn.is-primary/is-emerald/is-amber`。
+- 次操作按钮（跳过 / 取消 / 关闭）走“白底 ghost”（白底 + 灰文字 + 极淡边），避免和主操作争夺视觉权重。参考 `.conflicts-action-btn.is-slate`。
+- 状态 chip / 类型标签（库存 success/warning/danger/info、索引 ready/syncing/error 等）也按“180deg 双段渐变 + inset 1px 顶部高光 + 同色微 glow + hover translateY(-1px) scale(1.04)”出货，不要再用纯色 0.8 透明度的塑料感。
 - 页面默认结构：顶部标题区、工具栏、筛选区、卡片主内容、展开详情区。
 - 禁止用 Element Plus 默认表格当核心页面布局。
 - 新做任务面板、工作台、预览、批量处理、详情抽屉时，默认对齐 `DownloadTaskWorkbenchDialog.vue`。
@@ -128,8 +133,10 @@
 ### 库存页
 
 - `Library.vue` 是主工作台，不是普通列表页。
-- 已集成多库存、本地 + 群晖、搜索定位、文件管理、批量操作、删除过滤预审、RJ 字幕入口。
+- 已集成多库存、本地 + 群晖、搜索定位、文件管理、批量操作、删除过滤预审、RJ 字幕入口、库存索引徽章。
 - 改样式前先读现有 class；不要退回默认 Element 风。
+- 头部右侧的 `LibraryIndexBadge.vue` 是当前库存搜索索引的状态入口：syncing 时切换 SVG 圆环 spinner，每 1.2s 轮询；后端每 0.5s 上报一次。**不要**关轮询 / 随意改 polling 频率，会破坏“近似实时”体感。
+- `lib-chip-success/warning/danger/info` 已升级为渐变 + inset 高光 + glow + hover lift；新增状态标签优先复用这套 class，不要再发明纯色塑料 chip。
 
 ### RJ 字幕工作台
 
@@ -174,6 +181,9 @@
 - 冲突项允许 `PROCESSING`；列表页会对已结束但仍卡住的关联任务做回退和恢复元数据，别删这段逻辑。
 - `classifier._check_existing()` 必须排除运行态目录：`待处理`、`_conflicts`、`temp`、`tmp`。
 - 失败项重试链路要看 `cleanup_retry_output_artifacts()`，避免留下上次重试产物。
+- `_resolve_kikoeru_server_path` 已统一走 `LibraryManager.find_rj_in_libraries`（接索引快速路径） + `asyncio.wait_for(timeout=20.0)` 兑底慢盘。**不要**回退到原来的 `list_files + global_search_files` 多库并行循环（N 条 conflict 串行会打死接口）。
+- `/api/conflicts` 列表分三阶段：`db_query` → `phase1_serial`（SQLAlchemy 串行 status 恢复 + actions 计算）→ `phase2_parallel_context`（信号量 8 限流的 `describe_conflict_async`）。三阶段都打 INFO 耗时日志（前缀 `[/api/conflicts]`），慢盘排查先看日志再动代码。
+- 详情区主操作按钮（保留新版 / 重试 / 合并）已落“主按钮设计语言”（三段渐变 + inset 高光 + 双层 glow），跳过用 ghost 拉低视觉权重。改样式前先看 `.conflicts-action-btn` 现有 class。
 
 ### ASMR 同步
 
@@ -214,6 +224,21 @@
 - 常见群晖错误码：`119`、`121`、`401`、`408`。
 - 群晖通信相关错误统一抛 `SynologyError`，**不要**裸抛 `RuntimeError`。库存接口对 `SynologyError` 走 `WARNING` 不打堆栈；OTP 过期由前端库存页横幅引导用户重新登录，别在后端日志里刷红。
 
+### 库存搜索索引（LibraryIndexService）
+
+- 2026-05 新加的常驻基础设施。**所有 RJ 跨库搜索 / 库存大小统计 / 问题作品路径拾回**优先走索引快速路径，索引就绪（`status='ready'`）时 ms 级；未 ready 时 fallback 原 SYNO.Search / `os.walk` 路径，**不要**直接调底层 fallback API。
+- 入口在 `backend/app/core/library_index/`：`service.py`（重建调度 + self_mutation 通知）、`local_scanner.py`（`os.scandir` 后序遍历）、`remote_scanner.py`（SYNO.FileStation.Search 分页）、`snapshot_store.py`（SQLite 持久化）、`types.py`（`IndexEntry` / `IndexStatus` 数据类）。
+- DB 表：`library_index_entries`（索引条目）、`library_index_status`（状态机 + 总数 + 上次扫描时间 + 错误）。**不要**往这两张表里塞业务字段。
+- `LibraryManager` 的 `find_rj_in_libraries`、`list_files`（搜索）、`get_library_size` 都已自动接入：ready 走 `LibraryIndexService.search_*`，未 ready 走原 fallback。`conflict_resolution_service` 等业务**直接调 `LibraryManager`**，不要绕开它去拼 `LibraryIndexService`。
+- self_mutation：`LibraryManager` 的写操作（删除 / 重命名 / 批量删除 / 移动 / 解压落地 / 字幕落盘）必须**操作完立即**调用 `handle_self_mutation_upsert / delete / batch`，让索引和真实磁盘保持一致；watcher 只兑底外部变更。新增写操作必须补 self_mutation 通知，否则用户重启服务前索引会过期。
+- 重建语义：`status='syncing'` 期间 `total_entries` 表示**已扫描数**（实时增长），`status='ready'` 后表示**总条数**。前端徽章按 status 区分文案，**不要**反过来用 `total_entries=0` 判断空库。
+- 重建进度上报：本地 / 远程都是 `chunk_size=500` 分块写盘 + 每 0.5s `upsert_status(status='syncing', total_entries=written)`。前端 `LibraryIndexBadge.vue` 轮询 1.2s 配套，**不要**单方面改频率。
+- 同库存并发由 `_get_lock(library_id)` 保护：本地阻塞等待，远程立即返回当前状态（避免远程扫描互相挤占）。
+- 新部署 / 新加库存：用户必须**手动触发一次重建**才能享受 ms 级查询，**不要**在启动时自动重建（远程库可能 30 分钟）。重建期间业务可正常工作，`LibraryManager` 同时支持 ready 路径和 fallback 路径。
+- API：`POST /api/library/index/rebuild?library_id=xxx`（本地走 thread，远程走 async task）、`GET /api/library/index/status?library_id=xxx`、`GET /api/library/index/search?library_id=xxx&q=xxx`。
+- 所有索引相关日志都加了 `[索引]` 前缀，慢盘排查直接 `grep [索引]`。
+- 测试：`backend/tests/test_library_index_*.py` 共 6 个文件 54 个 case，改这套基础设施前先跑一遍。
+
 ## 6. 常见需求先看哪里
 
 - “改配置文件”：默认看 `backend/config/config.yaml`。
@@ -240,6 +265,7 @@
 
 - 改前端：至少在 `frontend` 执行 `npm run build`。
 - 改后端核心：至少执行 `py -3 -m py_compile backend/app/api/routes.py backend/app/core/task_engine.py backend/app/core/rj_subtitle_service.py backend/app/core/task_center_service.py backend/app/core/activity_log_service.py`。
+- 改库存搜索索引 / `library_manager.py` 写操作 / `find_rj_in_libraries`：在 `backend` 下跑 `venv\Scripts\python.exe -m pytest tests/test_library_index_*.py tests/test_library_manager_index_integration.py -q`，54 个 case 必须全过。
 - 改通知模板 / 邮件渲染：补 `py -3 -m py_compile backend/app/core/notification_template_service.py backend/app/core/notification_helper.py backend/app/core/task_notification_service.py backend/app/core/variable_registry.py backend/app/core/block_renderers/__init__.py backend/app/core/html_sanitizer.py`，前端 `npm run build`。
 - 改社团补全后端：补跑 `py -3 -m py_compile backend/app/core/circle_completion_service.py backend/app/core/asmr_resource_service.py backend/app/models/database.py`，前端仍跑 `npm run build`。
 - 改下载 / 上传链路：前端跑 `npm run build`；如改后端，补对应 `py_compile`。
@@ -258,6 +284,18 @@
 - `row_cache` 的设计前提是 `activity_logs` 只有 INSERT，没有 UPDATE / DELETE。以后如果支持编辑审计行或软删除，必须同步 invalidate 缓存。
 - 新增后端运行时依赖，尤其二进制扩展，必须同步：`requirements.txt`、五个启动自检脚本、`backend/build.py`、`build-release.bat`。
 - profile 脚本保留在 `.codex-backups/`，改 list 接口 / merge 算法 / writer 缓存后，至少跑 `_profile_cached_endpoint.py` 看热命中是否仍在 `~10ms` 量级。
+
+## 9.5 库存搜索索引性能栈
+
+`LibraryIndexService` 是 2026-05 新基础设施，所有 RJ 跨库搜索、库存大小统计、问题作品路径拾回都依赖它。动这片代码前理解约束。
+
+- 索引数据由 SQLite 持久化（`library_index_entries` + `library_index_status`），不依赖内存。重启服务索引仍在。
+- 索引就绪（`status='ready'`）时 RJ 搜索是 ms 级；未 ready 时 fallback 原 SYNO.Search / `os.walk`，慢但功能等价，业务无感。
+- self_mutation 是为了“业务自身改了文件后索引立刻同步”，避免 watcher 延迟。新加的删除 / 重命名 / 移动 / 解压 / 字幕落盘代码都必须挂上 self_mutation 通知。
+- 单条 search 是 ms 级，但**前端不要无脑高频调用**：`/api/conflicts` 这种 N 条 conflict × N 次跨库 search 的场景必须配信号量限流（已用 `Semaphore(8)`） + 总超时（已用 `asyncio.wait_for(timeout=20)`），否则远端 NAS 占线时单条会拖死整个请求。
+- 重建本地库 `chunk_size=500` 分块写盘 + 每 0.5s `upsert_status` 一次；远程也是这个节奏。前端轮询 1.2s，合起来是“近似实时”。不要把重建改成全量扫完再一次写盘。
+- 跨库查询 `LibraryManager.find_rj_in_libraries` 内部并行调用 `LibraryIndexService.search_rj_per_library`，仅对 ready 的库走索引、未 ready 的库走原 fallback。**不要**为了走索引背面强迫重建。
+- 阅后端日志：所有 `LibraryIndexService` 所发日志都以 `[索引]` 开头。前端可以调 `/api/library/index/status` 验证状态。
 
 ## 10. 当前优先级
 
@@ -335,9 +373,38 @@
 
 ### 字幕检查工作台（`SubtitleInspectorWorkbench.vue`、`SubtitleTaskStage.vue`、`SubtitleWorkbenchStage.vue`）
 
-- 顺序配对模式 UI 升级：音频选中序号徽章改为蓝色圆形胶囊（`bg-blue-600`），字幕序号改为紫色（`bg-violet-600`），视觉区分更清晰。
-- 左侧音频行 hover 改为蓝色系，字幕行 hover 改为紫色系，已进入序列的行用渐变高亮+阴影区分。
-- 顺序配对提示文案更新，明确说明"左侧蓝色序号=音频顺序，右侧紫色序号=字幕顺序"。
-- 中间三栏改用 `overflow-x-auto` + `min-w-[980px]` 包裹，解决小屏幕下三列被压缩至不可用的问题。
-- 操作按钮改用可选链调用（`view.xxx?.()`），避免 `ctx` 为空时 mounted 报错连锁打断父组件更新。
-- `view` computed 补全了完整的空值默认对象，防止 `props.ctx` 为 `null` 时模板访问属性报错。
+- 顺序配对模式 UI 升级：音频选中序号徽章改为蓝色圆形胶囊（`bg-blue-600`），字幕序号改为紫色（`bg-violet-600`），视觉区分更清晰.
+- 左侧音频行 hover 改为蓝色系，字幕行 hover 改为紫色系，已进入序列的行用渐变高亮+阴影区分.
+- 顺序配对提示文案更新，明确说明"左侧蓝色序号=音频顺序，右侧紫色序号=字幕顺序".
+- 中间三栏改用 `overflow-x-auto` + `min-w-[980px]` 包裹，解决小屏幕下三列被压缩至不可用的问题.
+- 操作按钮改用可选链调用（`view.xxx?.()`），避免 `ctx` 为空时 mounted 报错连锁打断父组件更新.
+- `view` computed 补全了完整的空值默认对象，防止 `props.ctx` 为 `null` 时模板访问属性报错.
+
+### 库存搜索索引（新基础设施 `LibraryIndexService`）
+
+- 新增模块 `backend/app/core/library_index/`（`service` / `local_scanner` / `remote_scanner` / `snapshot_store` / `types`）+ DB 表 `library_index_entries` / `library_index_status`，所有 RJ 跨库搜索 / 库存大小统计 / 问题作品路径拾回都走它.
+- `LibraryManager.find_rj_in_libraries` / `list_files` 搜索分支 / `get_library_size` 已接入：ready 时 ms 级走索引，未 ready 走原 SYNO.Search / `os.walk` fallback，业务无感.
+- `LibraryManager` 的本地与远程写操作（删除 / 重命名 / 批量删除 / 移动 / 解压落地 / 字幕落盘）全部挂 `handle_self_mutation_*`，索引随业务实时同步，不依赖 watcher 兜底.
+- 重建支持每 0.5s 进度上报：`chunk_size=500` 分块写盘 + `upsert_status(status='syncing', total_entries=written)`，syncing 期间 `total_entries` 表示**已扫描数**，ready 后表示**总条数**.
+- 同库存并发由 `_get_lock(library_id)` 保护：本地阻塞等待，远程立即返回当前状态避免互相挤占.
+- 接口 `POST /api/library/index/rebuild` / `GET /api/library/index/status` / `GET /api/library/index/search`，全部聚合在 `routes.py`，所有日志加 `[索引]` 前缀.
+- 测试覆盖 `backend/tests/test_library_index_*.py` + `test_library_manager_index_integration.py` 共 54 个 case.
+
+### 库存索引徽章（`LibraryIndexBadge.vue`）
+
+- 库存页头部右侧新组件，展示当前库存索引状态：idle / syncing / ready / error 四态.
+- syncing 时把 `IconDatabase` 切换为双层 SVG 圆环 spinner（背景轨道 + 旋转弧 dasharray 动画），同步显示已扫描数（千分位 + `tabular-nums` 防跳）.
+- 轮询 1.2s 配后端 0.5s 上报，成“近似实时”体感.
+- chip 升级渐变底 + inset 1px 顶部高光 + syncing 呼吸式扩散环.
+- 重建按钮内置确认弹窗（`useSystemConfirm`），远程库给“可能数分钟到数十分钟”的预期.
+
+### 问题作品列表性能与视觉
+
+- `_resolve_kikoeru_server_path` 改走 `LibraryManager.find_rj_in_libraries`（享受索引快速路径），加 `asyncio.wait_for(timeout=20.0)` 兑底慢盘.
+- `/api/conflicts` 加三阶段 INFO 日志（前缀 `[/api/conflicts]`）：`db_query` / `phase1_serial` / `phase2_parallel_context` / `完成 total`，慢盘排查直接看日志.
+- 详情区主操作按钮（保留新版 / 重试 / 合并 / 跳过）重设计：主按钮三段渐变（180deg 三色） + inset 顶部高光 + 双层 glow shadow + hover translateY(-2px) + 图标独立动效（重试图标逆旋 180°、合并图标轻跳、保留图标 scale + 微旋）；跳过改白底 ghost 拉低视觉权重.
+- 批量按钮（批量重试 / 批量跳过）同步对齐新设计语言，紧凑款 30px 高.
+
+### 库存页标签视觉升级
+
+- `lib-chip-success / warning / danger / info` 从纯色 0.8 透明改为 180deg 双段渐变 + inset 1px 顶部高光 + 同色微 glow + hover `translateY(-1px) scale(1.04)`，告别“塑料感”.

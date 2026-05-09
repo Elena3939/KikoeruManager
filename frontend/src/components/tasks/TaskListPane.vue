@@ -1,63 +1,36 @@
 <template>
-  <div class="flex min-h-0 flex-col rounded-[12px] border border-slate-200/80 bg-white shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] overflow-hidden">
-    <header class="flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2">
-      <span class="text-[11.5px] font-bold tracking-tight text-slate-900">任务列表</span>
-      <span class="inline-flex h-5 items-center rounded-full bg-slate-100 px-1.5 text-[10px] font-bold tabular-nums text-slate-700">
-        {{ totalItems }} 项
-      </span>
-    </header>
-
-    <!-- 摘要 chips -->
-    <div class="flex flex-wrap gap-1 border-b border-slate-200 bg-slate-50/40 px-2.5 py-1.5">
-      <span class="inline-flex h-5 items-center rounded-md border border-slate-200 bg-white px-1.5 text-[10px] font-medium tabular-nums text-slate-700">
-        当前页 <b class="ml-1 text-slate-900">{{ filteredItems.length }}</b>
-      </span>
-      <span class="inline-flex h-5 items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 text-[10px] font-medium tabular-nums text-slate-700">
-        <span class="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
-        活跃 <b class="text-slate-900">{{ digest.active }}</b>
-      </span>
-      <span class="inline-flex h-5 items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 text-[10px] font-medium tabular-nums text-slate-700">
-        <span class="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-        完成 <b class="text-slate-900">{{ digest.completed }}</b>
-      </span>
-      <span class="inline-flex h-5 items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 text-[10px] font-medium tabular-nums text-slate-700">
-        <span class="h-1.5 w-1.5 rounded-full bg-rose-500" />
-        失败 <b class="text-slate-900">{{ digest.failed }}</b>
-      </span>
-    </div>
-
+  <div class="task-list-pane">
     <TransitionGroup
       v-if="filteredItems.length"
       tag="div"
       name="task-card"
-      class="flex flex-1 min-h-0 flex-col gap-1.5 overflow-auto p-2 task-list-scroll"
+      class="task-list-scroll flex flex-1 min-h-0 flex-col gap-2 overflow-auto p-2.5"
     >
       <button
         v-for="item in filteredItems"
         :key="item.id"
         type="button"
-        class="task-card group grid w-full grid-cols-[22px_minmax(0,1fr)] gap-1.5 rounded-[8px] border bg-white p-1.5 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-[border-color,box-shadow,transform] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5"
-        :class="selectedId === item.id
-          ? 'border-slate-900 bg-slate-50 shadow-[0_6px_14px_-10px_rgba(15,23,42,0.3)]'
-          : 'border-slate-200 hover:border-slate-300 hover:shadow-[0_6px_14px_-10px_rgba(15,23,42,0.18)]'"
+        class="task-card group"
+        :class="{ 'is-active': selectedId === item.id }"
         @click="$emit('select', item.id)"
       >
-        <span
-          class="mt-0.5 inline-flex h-[22px] w-[22px] items-center justify-center rounded-[6px] border border-slate-200 bg-white transition-all duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
-        >
-          <component :is="domainMeta(item.domain).icon" :size="11" :stroke-width="2.3" :class="domainMeta(item.domain).chipIcon" />
-        </span>
+        <component
+          :is="domainMeta(item.domain).icon"
+          :size="16"
+          :stroke-width="2"
+          class="mt-[3px] flex-shrink-0 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
+          :class="domainMeta(item.domain).chipIcon"
+        />
 
         <div class="flex min-w-0 flex-col gap-1">
-          <!-- 第一行：标题 | 域 chip + 状态 -->
+          <!-- 第一行：标题 | 域 chip（无 icon） + 状态 -->
           <div class="flex items-center justify-between gap-2">
-            <span class="truncate text-[12px] font-bold text-slate-900 leading-tight">{{ item.title }}</span>
+            <span class="truncate text-[12.5px] font-bold text-slate-900 leading-tight">{{ item.title }}</span>
             <div class="flex flex-shrink-0 items-center gap-1">
               <span
-                class="inline-flex h-[18px] items-center gap-0.5 rounded-md px-1.5 text-[10px] font-semibold"
+                class="inline-flex h-[18px] items-center rounded-full px-2 text-[10px] font-semibold"
                 :class="[domainMeta(item.domain).chipBg, domainMeta(item.domain).chipText]"
               >
-                <component :is="domainMeta(item.domain).icon" :size="9" :stroke-width="2.4" />
                 {{ item.domain_label }}
               </span>
               <StatusPill :status="item.status" :label="item.status_label" />
@@ -229,7 +202,45 @@ function summaryColor(piece, domain) {
 </script>
 
 <style scoped>
-/* 入场：仅在新插入卡片时触发，已存在的轮询更新不会重放 */
+/* ============================================================
+ * 任务列表面板：简约白底容器 + 无边框卡片
+ * ============================================================ */
+
+.task-list-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 2px 8px -6px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+/* ---- 任务卡片 ---- */
+.task-card {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 10px;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+.task-card:hover {
+  background: rgb(248 250 252);
+}
+.task-card.is-active {
+  background: rgba(15, 23, 42, 0.04);
+  border-left-color: #0f172a;
+}
+
+/* ---- 动画过渡 ---- */
 .task-card-enter-from {
   opacity: 0;
   transform: translateY(6px);
@@ -242,11 +253,11 @@ function summaryColor(piece, domain) {
   transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* 列表内重新排序时平滑滑动 */
 .task-card-move {
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/* ---- 滚动条 ---- */
 .task-list-scroll::-webkit-scrollbar {
   width: 6px;
 }

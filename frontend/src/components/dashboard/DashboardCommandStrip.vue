@@ -1,26 +1,26 @@
 <template>
-  <section class="mb-3 flex flex-wrap items-center gap-1.5" data-section="dashboard-command">
+  <section class="mb-3 flex flex-wrap items-center gap-2" data-section="dashboard-command">
       <!-- 主操作：扫描 -->
       <button
         type="button"
-        class="dash-cmd-btn group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[8px] bg-blue-600 px-3 text-xs font-semibold text-white shadow-[0_1px_4px_rgba(37,99,235,0.3)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0 active:scale-95 disabled:pointer-events-none disabled:opacity-60"
+        class="dash-cmd-btn group inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-[9px] bg-blue-600 px-3.5 text-[13px] font-semibold text-white shadow-[0_1px_4px_rgba(37,99,235,0.3)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0 active:scale-95 disabled:pointer-events-none disabled:opacity-60"
         :disabled="scanning"
         @click="$emit('scan')"
       >
-        <span class="dash-icon-swap relative inline-flex h-[14px] w-[14px] items-center justify-center">
+        <span class="dash-icon-swap relative inline-flex h-[15px] w-[15px] items-center justify-center">
           <Search
             v-if="!scanning"
-            :size="14"
+            :size="15"
             :stroke-width="2"
             class="dash-icon-default"
           />
           <Search
             v-else
-            :size="14"
+            :size="15"
             :stroke-width="2"
             class="animate-spin"
           />
-          <SearchCheck v-if="!scanning" :size="14" :stroke-width="2" class="dash-icon-hover" />
+          <SearchCheck v-if="!scanning" :size="15" :stroke-width="2" class="dash-icon-hover" />
         </span>
         <span>{{ scanning ? '扫描中' : '扫描处理' }}</span>
       </button>
@@ -28,19 +28,19 @@
       <!-- 监视器开关 -->
       <button
         type="button"
-        class="dash-cmd-btn group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[8px] border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 active:translate-y-0 active:scale-95"
+        class="dash-cmd-btn group inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-[9px] border border-slate-200 bg-white px-3.5 text-[13px] font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 active:translate-y-0 active:scale-95"
         @click="$emit('toggle-watcher')"
       >
-        <span class="dash-icon-swap relative inline-flex h-[14px] w-[14px] items-center justify-center">
+        <span class="dash-icon-swap relative inline-flex h-[15px] w-[15px] items-center justify-center">
           <component
             :is="watcherRunning ? PauseCircle : PlayCircle"
-            :size="14"
+            :size="15"
             :stroke-width="2"
             :class="['dash-icon-default', watcherRunning ? 'text-emerald-600' : 'text-slate-500']"
           />
           <component
             :is="watcherRunning ? StopCircle : Play"
-            :size="14"
+            :size="15"
             :stroke-width="2"
             :class="['dash-icon-hover', watcherRunning ? 'text-rose-600' : 'text-emerald-600']"
           />
@@ -48,15 +48,17 @@
         <span>{{ watcherRunning ? '停止监视' : '启动监视' }}</span>
       </button>
 
+      <div class="mx-1 h-5 w-px bg-slate-200" aria-hidden="true" />
+
       <!-- 问题作品 -->
       <button
         type="button"
-        class="dash-cmd-btn group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[8px] border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 active:translate-y-0 active:scale-95"
+        class="dash-cmd-btn group inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-[9px] border border-slate-200 bg-white px-3.5 text-[13px] font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 active:translate-y-0 active:scale-95"
         @click="$emit('go', '/conflicts')"
       >
-        <span class="dash-icon-swap relative inline-flex h-[14px] w-[14px] items-center justify-center">
-          <AlertTriangle :size="14" :stroke-width="2" class="dash-icon-default text-rose-500" />
-          <ShieldAlert :size="14" :stroke-width="2" class="dash-icon-hover text-rose-600" />
+        <span class="dash-icon-swap relative inline-flex h-[15px] w-[15px] items-center justify-center">
+          <AlertTriangle :size="15" :stroke-width="2" class="dash-icon-default text-rose-500" />
+          <ShieldAlert :size="15" :stroke-width="2" class="dash-icon-hover text-rose-600" />
         </span>
         <span>问题作品</span>
       </button>
@@ -64,12 +66,12 @@
       <!-- 任务中心 -->
       <button
         type="button"
-        class="dash-cmd-btn group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[8px] border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 active:translate-y-0 active:scale-95"
+        class="dash-cmd-btn group inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-[9px] border border-slate-200 bg-white px-3.5 text-[13px] font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 active:translate-y-0 active:scale-95"
         @click="$emit('go', '/tasks')"
       >
-        <span class="dash-icon-swap relative inline-flex h-[14px] w-[14px] items-center justify-center">
-          <ListChecks :size="14" :stroke-width="2" class="dash-icon-default text-indigo-500" />
-          <ListTodo :size="14" :stroke-width="2" class="dash-icon-hover text-indigo-600" />
+        <span class="dash-icon-swap relative inline-flex h-[15px] w-[15px] items-center justify-center">
+          <ListChecks :size="15" :stroke-width="2" class="dash-icon-default text-indigo-500" />
+          <ListTodo :size="15" :stroke-width="2" class="dash-icon-hover text-indigo-600" />
         </span>
         <span>任务中心</span>
       </button>

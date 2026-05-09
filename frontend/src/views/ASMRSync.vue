@@ -1,12 +1,11 @@
 <template>
   <div class="min-h-0 p-6 space-y-6">
-    <!-- Page Header -->
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-xl font-bold text-slate-900 tracking-tight">ASMR 同步下载</h1>
-        <p class="text-sm text-slate-500 mt-1">根据字幕文件自动下载并匹配，或手动输入 RJ 号查询下载</p>
-      </div>
-      <div class="flex items-center gap-2">
+    <AppPageHeader
+      :icon="DownloadIcon"
+      icon-color="#1d4ed8"
+      title="ASMR 同步下载"
+      subtitle="根据字幕文件自动下载并匹配，或手动输入 RJ 号查询下载"
+    >
         <button
           class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none"
           @click="scanFolder" :disabled="scanning || !subtitleFolder"
@@ -27,8 +26,7 @@
         >
           <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': refreshing }" />
         </button>
-      </div>
-    </div>
+    </AppPageHeader>
 
     <!-- Scan Input -->
     <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
@@ -534,6 +532,7 @@ import { showSystemConfirm } from '../composables/useSystemPrompt'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import WorkCard from '../components/circle/WorkCard.vue'

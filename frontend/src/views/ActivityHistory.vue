@@ -3,47 +3,41 @@
     class="activity-page"
     v-app-loading="{ loading, text: '正在加载操作记录…', description: '同步索引、统计与状态聚合', size: 168, minHeight: 360, delay: 80, minVisible: 360, maskClass: 'activity-loading-mask' }"
   >
-    <!-- 顶部：图3 紧凑页头 —— 图标 + 标题 + 短描述 + 搜索 + 操作 -->
-    <header class="page-head">
-      <div class="page-head-left">
-        <div class="page-head-icon" aria-hidden="true">
-          <History :size="22" :stroke-width="2.2" />
-        </div>
-        <div class="page-head-titles">
-          <h1 class="page-head-title">操作记录</h1>
-          <p class="page-head-desc">字幕、解压、入库、删除、ASMR 同步等任务的完整审计</p>
-        </div>
-      </div>
-      <div class="page-head-right">
-        <div class="page-head-search">
-          <Search :size="14" :stroke-width="2.4" class="page-head-search-icon" />
-          <input
-            v-model="filters.q"
-            class="page-head-search-input"
-            placeholder="搜索 RJ、摘要、路径、任务 ID…"
-            @keyup.enter="applyFilters"
-          />
-          <button v-if="filters.q" class="page-head-search-clear" type="button" @click="onClearSearch">
-            <X :size="13" :stroke-width="2.6" />
-          </button>
-        </div>
-        <button
-          class="page-head-btn ghost"
-          type="button"
-          :disabled="loading"
-          :title="compactHint"
-          @click="onCompactClick"
-        >
-          <Archive :size="13" :stroke-width="2.4" />
-          <span>归档老记录</span>
-          <span v-if="compactSavingsLabel" class="page-head-btn-hint">{{ compactSavingsLabel }}</span>
-        </button>
-        <button class="page-head-btn primary" type="button" :disabled="loading" @click="loadAll">
-          <RefreshCcw :size="13" :stroke-width="2.6" />
-          <span>刷新</span>
+    <!-- 页头走共享组件 AppPageHeader，右侧 slot 保留原本的搜索框 + 两个操作按钮 -->
+    <AppPageHeader
+      :icon="History"
+      icon-color="#059669"
+      title="操作记录"
+      subtitle="字幕、解压、入库、删除、ASMR 同步等任务的完整审计"
+    >
+      <div class="page-head-search">
+        <Search :size="14" :stroke-width="2.4" class="page-head-search-icon" />
+        <input
+          v-model="filters.q"
+          class="page-head-search-input"
+          placeholder="搜索 RJ、摘要、路径、任务 ID…"
+          @keyup.enter="applyFilters"
+        />
+        <button v-if="filters.q" class="page-head-search-clear" type="button" @click="onClearSearch">
+          <X :size="13" :stroke-width="2.6" />
         </button>
       </div>
-    </header>
+      <button
+        class="page-head-btn ghost"
+        type="button"
+        :disabled="loading"
+        :title="compactHint"
+        @click="onCompactClick"
+      >
+        <Archive :size="13" :stroke-width="2.4" />
+        <span>归档老记录</span>
+        <span v-if="compactSavingsLabel" class="page-head-btn-hint">{{ compactSavingsLabel }}</span>
+      </button>
+      <button class="page-head-btn primary" type="button" :disabled="loading" @click="loadAll">
+        <RefreshCcw :size="13" :stroke-width="2.6" />
+        <span>刷新</span>
+      </button>
+    </AppPageHeader>
 
     <!-- 关键指标：紧凑横向数据条，hairline 分隔，不再是一个个独立卡片 -->
     <section class="metric-strip">
@@ -197,14 +191,14 @@
               v-for="row in group.items"
               :key="row.id"
               class="event-row"
-              :class="[`tone-${statusTone(row.status)}`, { 'is-active': selectedRowId === row.id }]"
+              :class="[`tone-${statusTone(effectiveStatus(row))}`, { 'is-active': selectedRowId === row.id }]"
               @click="openDetail(row)"
             >
               <div class="event-rail">
                 <span class="event-time">{{ formatTime(row.created_at) }}</span>
-                <span class="event-dot" :class="`tone-${statusTone(row.status)}`">
+                <span class="event-dot" :class="`tone-${statusTone(effectiveStatus(row))}`">
                   <component
-                    :is="statusIcon(row.status)"
+                    :is="statusIcon(effectiveStatus(row))"
                     :size="10"
                     :stroke-width="3"
                   />
@@ -231,7 +225,7 @@
                   </span>
                   <span
                     class="text-[12px] font-bold leading-none tracking-tight"
-                    :class="actionToneClasses(statusTone(row.status))"
+                    :class="actionToneClasses(statusTone(effectiveStatus(row)))"
                   >
                     {{ humanAction(row) }}
                   </span>
@@ -253,6 +247,15 @@
                     class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-medium tracking-wide text-indigo-600 bg-indigo-50/40 ring-1 ring-inset ring-indigo-200/70"
                   >
                     有子任务
+                  </span>
+                  <!-- 失败但被后续重试 / 重新爬取 / 同 RJ 成功记录覆盖的，挂"已修复"绿底徽章 -->
+                  <span
+                    v-if="isRowRecovered(row)"
+                    class="recovery-chip inline-flex items-center gap-1 px-1.5 py-[2px] rounded text-[10px] font-semibold leading-none tracking-tight text-emerald-700 bg-emerald-50 ring-1 ring-inset ring-emerald-200/70"
+                    title="此次失败后被人工处理或重试修复"
+                  >
+                    <CheckCircle2 :size="10" :stroke-width="2.6" />
+                    已修复
                   </span>
                 </div>
                 <div class="event-summary">{{ row.summary || '—' }}</div>
@@ -306,8 +309,9 @@
     <el-drawer
       v-model="detailDrawerVisible"
       class="activity-drawer"
+      :class="{ 'is-resizing': isDrawerResizing }"
       direction="rtl"
-      size="640px"
+      :size="`${detailDrawerWidth}px`"
       :show-close="false"
       :with-header="false"
       :before-close="onDrawerBeforeClose"
@@ -327,6 +331,19 @@
         @navigate="handleDetailNavigate"
       />
     </el-drawer>
+
+    <!-- 抽屉左缘的拖拽手柄：fixed 定位到抽屉外面，不受 el-drawer 内部 DOM 影响 -->
+    <Teleport to="body">
+      <div
+        v-if="detailDrawerVisible"
+        ref="drawerResizerRef"
+        class="activity-drawer-resizer-fixed"
+        :class="{ 'is-active': isDrawerResizing }"
+        :style="{ right: `${detailDrawerWidth}px` }"
+        title="拖拽调整面板宽度"
+        @mousedown.prevent="onDrawerResizeStart"
+      ></div>
+    </Teleport>
   </div>
 </template>
 
@@ -365,6 +382,7 @@ import { useRouter } from 'vue-router'
 import { useActivityHistoryLite } from '../composables/useActivityHistoryLite'
 import api from '../api'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
 import ActivityDetailBody from '../components/activity/ActivityDetailBody.vue'
 
 const router = useRouter()
@@ -464,6 +482,50 @@ function statusLabel(status) {
   return statusConfig(status).label
 }
 
+// 列表渲染统一走这个 effective status：兜底把"实际进了问题作品列表但 status 写成 success"的
+// 任务降级成 partial_success，避免列表里出现"入库完成✔"和摘要"已加入问题作品列表"自相矛盾。
+const PARTIAL_SUCCESS_KEYWORDS = [
+  '加入问题作品列表',
+  '已转入问题作品',
+  '按重复作品处理',
+  '转入问题作品列表'
+]
+
+function effectiveStatus(row) {
+  if (!row) return ''
+  const raw = String(row.status || '')
+  if (raw !== 'success') return raw
+  const summary = String(row.summary || '')
+  if (PARTIAL_SUCCESS_KEYWORDS.some(kw => summary.includes(kw))) return 'partial_success'
+  const detail = row.detail || {}
+  if (detail && (detail.linked_subtitle_problem || detail.existing_subtitle_problem)) {
+    return 'partial_success'
+  }
+  const sourceMode = String((detail && detail.source_mode) || '')
+  if (sourceMode.endsWith('_existing_subtitle_conflict')) return 'partial_success'
+  return raw
+}
+
+// 列表行是否要挂"已修复"徽章：后端 aggregator 给覆盖的失败行写了 detail.recovered_by_success
+// （或顶层 recovered_badge），lite 路径里 chip 也会带"已恢复"。这里聚合一次，方便模板调用。
+const RECOVERY_CATEGORIES = new Set(['extract', 'auto_import', 'process_existing', 'asmr_sync'])
+
+function isRowRecovered(row) {
+  if (!row) return false
+  const status = String(row.status || '')
+  // 只在明确失败的行上挂"已修复"，避免和"成功"行抢眼球
+  if (status !== 'failed') return false
+  const cat = String(row.category || '')
+  if (!RECOVERY_CATEGORIES.has(cat)) return false
+  // lite 路径直接给顶层加了 recovered_by_success / recovered_badge；
+  // 非 lite（聚合）路径会把同样的标记藏在 detail 里。两条路都兼容。
+  if (row.recovered_by_success) return true
+  if (row.recovered_badge) return true
+  const detail = row.detail || {}
+  if (detail && detail.recovered_by_success) return true
+  return false
+}
+
 // 分类标签 tone → Tailwind 配色（柔和底色 + 内嵌细 ring，避免后台 pill 感）
 const CATEGORY_TONE_CLASS = {
   indigo: 'bg-indigo-50 text-indigo-700 ring-indigo-200/60',
@@ -516,7 +578,104 @@ const selectedRow = ref(null)
 const selectedRowId = ref('')
 
 const selectedCategoryConfig = computed(() => categoryConfig(selectedRow.value?.category))
-const selectedStatusConfig = computed(() => statusConfig(selectedRow.value?.status))
+// 状态徽章统一走 effectiveStatus，让"已加入问题作品列表"这种特殊 success 也能在详情面板里
+// 显示成"部分成功"，与列表行保持一致。
+const selectedStatusConfig = computed(() => statusConfig(effectiveStatus(selectedRow.value)))
+
+// ===== 详情抽屉宽度：用户可拖拽，记忆到 localStorage =====
+const DRAWER_WIDTH_MIN = 480
+const DRAWER_WIDTH_DEFAULT = 640
+const DRAWER_WIDTH_STORAGE_KEY = 'prekikoeru.activityDetailDrawerWidth'
+
+function getMaxDrawerWidth() {
+  if (typeof window === 'undefined') return 1600
+  // 留 80px 给左侧主页面，避免拖到完全遮住列表
+  return Math.max(DRAWER_WIDTH_MIN, Math.floor(window.innerWidth - 80))
+}
+
+function loadDrawerWidth() {
+  if (typeof window === 'undefined') return DRAWER_WIDTH_DEFAULT
+  try {
+    const saved = Number(window.localStorage.getItem(DRAWER_WIDTH_STORAGE_KEY))
+    if (Number.isFinite(saved) && saved >= DRAWER_WIDTH_MIN) {
+      return Math.min(saved, getMaxDrawerWidth())
+    }
+  } catch {}
+  return DRAWER_WIDTH_DEFAULT
+}
+
+const detailDrawerWidth = ref(loadDrawerWidth())
+const isDrawerResizing = ref(false)
+const drawerResizerRef = ref(null)
+
+let _drawerResizeStartX = 0
+let _drawerResizeStartWidth = 0
+let _drawerResizeMaxWidth = 0
+let _drawerResizeEl = null
+let _drawerResizeHandleEl = null
+let _drawerResizePendingWidth = 0
+let _drawerResizeRafId = 0
+
+function _flushDrawerResize() {
+  _drawerResizeRafId = 0
+  const w = _drawerResizePendingWidth
+  if (_drawerResizeEl) {
+    _drawerResizeEl.style.width = `${w}px`
+  }
+  if (_drawerResizeHandleEl) {
+    _drawerResizeHandleEl.style.right = `${w}px`
+  }
+}
+
+function onDrawerResizeStart(event) {
+  _drawerResizeStartX = event.clientX
+  _drawerResizeStartWidth = detailDrawerWidth.value
+  _drawerResizeMaxWidth = getMaxDrawerWidth()
+  // 拖拽过程中只改实际 DOM，不走 Vue 响应式，避免每帧重新渲染整个 drawer 内容
+  _drawerResizeEl = document.querySelector('.activity-drawer .el-drawer')
+  _drawerResizeHandleEl = drawerResizerRef.value || event.currentTarget
+  _drawerResizePendingWidth = _drawerResizeStartWidth
+  isDrawerResizing.value = true
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+  document.addEventListener('mousemove', onDrawerResizeMove)
+  document.addEventListener('mouseup', onDrawerResizeEnd, { once: true })
+}
+
+function onDrawerResizeMove(event) {
+  // RTL 抽屉：鼠标向左拖（clientX 减小）= 抽屉变宽
+  const delta = _drawerResizeStartX - event.clientX
+  const next = Math.min(_drawerResizeMaxWidth, Math.max(DRAWER_WIDTH_MIN, _drawerResizeStartWidth + delta))
+  _drawerResizePendingWidth = next
+  // 用 rAF 合并多次 mousemove，单帧只改一次 DOM，丝滑很多
+  if (!_drawerResizeRafId) {
+    _drawerResizeRafId = requestAnimationFrame(_flushDrawerResize)
+  }
+}
+
+function onDrawerResizeEnd() {
+  if (_drawerResizeRafId) {
+    cancelAnimationFrame(_drawerResizeRafId)
+    _drawerResizeRafId = 0
+  }
+  // 把最终宽度同步回响应式状态，下次开抽屉用这个值
+  if (_drawerResizeEl) {
+    _drawerResizeEl.style.width = `${_drawerResizePendingWidth}px`
+  }
+  if (_drawerResizeHandleEl) {
+    _drawerResizeHandleEl.style.right = `${_drawerResizePendingWidth}px`
+  }
+  detailDrawerWidth.value = _drawerResizePendingWidth
+  _drawerResizeEl = null
+  _drawerResizeHandleEl = null
+  isDrawerResizing.value = false
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+  document.removeEventListener('mousemove', onDrawerResizeMove)
+  try {
+    window.localStorage.setItem(DRAWER_WIDTH_STORAGE_KEY, String(detailDrawerWidth.value))
+  } catch {}
+}
 
 async function openDetail(row) {
   if (!row || !row.id) return
@@ -847,7 +1006,8 @@ function humanAction(row) {
   if (!row) return ''
   const cat = String(row.category || '')
   const action = String(row.action || '')
-  const status = String(row.status || '')
+  // 走 effectiveStatus，让"已加入问题作品列表"等情况也能展示"部分入库"
+  const status = effectiveStatus(row)
 
   // 一些高频组合给个更友好的中文动作名（足够在 chip 行展示）
   if (cat === 'subtitle_crawl') {
@@ -988,6 +1148,12 @@ onBeforeUnmount(() => {
     document.removeEventListener('visibilitychange', visibilityHandler)
     visibilityHandler = null
   }
+  // 兜底：组件销毁时清掉可能残留的抽屉拖拽监听
+  document.removeEventListener('mousemove', onDrawerResizeMove)
+  if (typeof document !== 'undefined' && document.body) {
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+  }
 })
 
 watch(() => filters.q, (val, old) => {
@@ -1022,61 +1188,7 @@ watch(() => filters.q, (val, old) => {
   z-index: 10;
 }
 
-/* ============= 紧凑页头（image 3 风格） ============= */
-.page-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 18px;
-  align-items: center;
-  padding: 4px 4px 16px;
-}
-
-.page-head-left {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-}
-
-.page-head-icon {
-  width: 48px;
-  height: 48px;
-  flex-shrink: 0;
-  border-radius: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #ecfdf5, #d1fae5);
-  color: #059669;
-  box-shadow: 0 1px 2px rgba(16, 185, 129, 0.08), inset 0 0 0 1px rgba(16, 185, 129, 0.18);
-}
-
-.page-head-titles {
-  min-width: 0;
-}
-
-.page-head-title {
-  margin: 0;
-  font-size: 22px;
-  line-height: 1.15;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #0f172a;
-}
-
-.page-head-desc {
-  margin: 4px 0 0;
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: rgba(15, 23, 42, 0.55);
-}
-
-.page-head-right {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
+/* 页头现在走共享组件 components/common/AppPageHeader.vue，这里只保留页头右侧 slot 里的搜索框 + 按钮内嵌样式 */
 
 /* 头部内嵌搜索框 */
 .page-head-search {
@@ -1721,6 +1833,28 @@ watch(() => filters.q, (val, old) => {
   font-size: 12px;
 }
 
+/* "已修复"徽章：失败行的复原标记，加一层柔和呼吸光晕，让用户在长列表里能注意到 */
+.recovery-chip {
+  position: relative;
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45);
+  animation: recoveryPulse 2.4s ease-in-out infinite;
+  transition: transform 0.2s ease;
+}
+
+.recovery-chip:hover {
+  transform: translateY(-1px);
+}
+
+@keyframes recoveryPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  50%      { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.18); }
+}
+
+/* 失败但已修复的行：把卡片左边的色条由"红"切到"红→绿"的柔和渐变，告诉用户这条已经被覆盖 */
+.event-row.tone-danger:has(.recovery-chip) .event-card::before {
+  background: linear-gradient(180deg, #f87171 0%, #fb923c 45%, #34d399 100%);
+}
+
 .event-summary {
   font-size: 13px;
   line-height: 1.5;
@@ -1814,6 +1948,44 @@ watch(() => filters.q, (val, old) => {
   overflow: hidden;
 }
 
+/* 拖拽手柄：fixed 到抽屉外面、贴左边缘，z-index 高于 el-overlay (默认 2000+) */
+/* transform: translateX(50%) 让 10px 宽的命中区横跨抽屉左边缘（5px 在外、5px 在内）*/
+.activity-drawer-resizer-fixed {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  transform: translateX(50%);
+  cursor: col-resize;
+  z-index: 3000;
+  background: transparent;
+  user-select: none;
+}
+
+.activity-drawer-resizer-fixed::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  right: 4px;
+  background: rgba(15, 23, 42, 0.08);
+  transition: background 0.18s ease, left 0.18s ease, right 0.18s ease;
+}
+
+.activity-drawer-resizer-fixed:hover::before,
+.activity-drawer-resizer-fixed.is-active::before {
+  background: #3b82f6;
+  left: 3px;
+  right: 3px;
+}
+
+/* 拖拽过程中关掉抽屉自身的动画过渡，让宽度跟随鼠标实时贴合 */
+:deep(.activity-drawer.is-resizing .el-drawer) {
+  transition: none !important;
+  will-change: width;
+}
+
 @media (max-width: 1080px) {
   .overview-strip {
     grid-template-columns: 1fr;
@@ -1824,12 +1996,6 @@ watch(() => filters.q, (val, old) => {
 }
 
 @media (max-width: 720px) {
-  .page-head {
-    grid-template-columns: 1fr;
-  }
-  .page-head-right {
-    flex-wrap: wrap;
-  }
   .page-head-search {
     width: 100%;
   }

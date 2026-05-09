@@ -17,38 +17,37 @@
       @go="(path) => router.push(path)"
     />
 
-    <main class="grid min-h-0 flex-1 grid-cols-1 items-stretch gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_340px]">
+    <main class="grid min-h-0 flex-1 grid-cols-1 items-stretch gap-3 overflow-hidden lg:grid-cols-[minmax(0,1fr)_360px]">
       <DashboardActiveTasks
         :tasks="recentTasks"
+        :status-cards="statusCards"
         class="min-h-0"
         @go="(path) => router.push(path)"
         @action="handleTaskCenterAction"
       />
 
-      <aside class="flex min-h-0 flex-col gap-2">
-        <DashboardStatusPanel :cards="statusCards" />
-        <DashboardArchive
-          :archives="displayedArchives"
-          :filtered-archives="filteredArchives"
-          :tabs="archiveDomainTabs"
-          :domain-filter="archiveDomainFilter"
-          :search-query="archiveSearchQuery"
-          :archives-loading="archivesLoading"
-          :reprocessing-id="reprocessingId"
-          :total="filteredArchives.length"
-          :page="archivePage"
-          :page-size="archivePageSize"
-          :get-meta="getArchiveTaskMeta"
-          :get-status-meta="getArchiveStatusMeta"
-          :format-date="formatDate"
-          :format-file-size="formatFileSize"
-          @refresh="refreshArchivePanel"
-          @reprocess="reprocessArchive"
-          @change-page="handleArchivePageChange"
-          @update:search-query="onArchiveSearchInput"
-          @update:domain-filter="(v) => (archiveDomainFilter = v)"
-        />
-      </aside>
+      <DashboardArchive
+        :archives="displayedArchives"
+        :filtered-archives="filteredArchives"
+        :tabs="archiveDomainTabs"
+        :domain-filter="archiveDomainFilter"
+        :search-query="archiveSearchQuery"
+        :archives-loading="archivesLoading"
+        :reprocessing-id="reprocessingId"
+        :total="filteredArchives.length"
+        :page="archivePage"
+        :page-size="archivePageSize"
+        :get-meta="getArchiveTaskMeta"
+        :get-status-meta="getArchiveStatusMeta"
+        :format-date="formatDate"
+        :format-file-size="formatFileSize"
+        class="min-h-0"
+        @refresh="refreshArchivePanel"
+        @reprocess="reprocessArchive"
+        @change-page="handleArchivePageChange"
+        @update:search-query="onArchiveSearchInput"
+        @update:domain-filter="(v) => (archiveDomainFilter = v)"
+      />
     </main>
   </div>
 </template>
@@ -73,7 +72,6 @@ import { getTaskDomainMeta } from '../components/common/taskDomainMeta.js'
 import DashboardHero from '../components/dashboard/DashboardHero.vue'
 import DashboardCommandStrip from '../components/dashboard/DashboardCommandStrip.vue'
 import DashboardActiveTasks from '../components/dashboard/DashboardActiveTasks.vue'
-import DashboardStatusPanel from '../components/dashboard/DashboardStatusPanel.vue'
 import DashboardArchive from '../components/dashboard/DashboardArchive.vue'
 
 const router = useRouter()
@@ -564,6 +562,8 @@ function getArchiveTaskMeta(archive) {
     iconWrap: meta.iconWrap,
     chip: meta.chip,
     chipIcon: meta.chipIcon,
+    chipBg: meta.chipBg,
+    chipText: meta.chipText,
     bar: meta.bar,
   }
 }

@@ -1,44 +1,37 @@
 <template>
   <section
     ref="panelRef"
-    class="dashboard-archive flex min-h-0 flex-1 flex-col rounded-[12px] border border-slate-200/80 bg-white p-2.5 shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] transition-shadow duration-500 hover:shadow-[0_6px_16px_-10px_rgba(15,23,42,0.14)]"
+    class="dashboard-archive flex min-h-0 flex-1 flex-col rounded-[14px] border border-slate-200/80 bg-white p-3.5 shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] transition-shadow duration-500 hover:shadow-[0_6px_16px_-10px_rgba(15,23,42,0.14)]"
     data-section="dashboard-archive"
   >
-    <header class="dash-archive-head mb-1.5 flex items-center justify-between gap-2 rounded-[8px] border border-slate-100 bg-white px-2 py-1.5">
-      <div class="flex min-w-0 items-center gap-2">
-        <span class="inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[7px] border border-slate-200 bg-white">
-          <Archive :size="12" :stroke-width="2" class="text-slate-700" />
-        </span>
+    <header class="dash-archive-head flex flex-shrink-0 items-center justify-between gap-2">
+      <div class="flex min-w-0 items-center gap-2.5">
+        <Archive :size="20" :stroke-width="2" class="flex-shrink-0 text-slate-700" />
         <div class="min-w-0 leading-tight">
-          <h2 class="m-0 text-[13px] font-semibold text-slate-900">最近归档</h2>
-          <p class="m-0 mt-px text-[10px] text-slate-500">
-            {{ archives.length ? `${archives.length} 条记录` : '暂无记录' }}
+          <h2 class="m-0 text-[14px] font-bold tracking-tight text-slate-900">最近归档</h2>
+          <p class="m-0 mt-0.5 text-[11.5px] text-slate-500">
+            {{ archives.length ? `共 ${archives.length} 条记录` : '暂无归档记录' }}
           </p>
         </div>
       </div>
-      <div class="flex items-center gap-1.5">
-        <el-tag size="small" type="info" effect="plain" round class="dash-archive-count-tag">
-          {{ archives.length }}
-        </el-tag>
-        <el-button
-          class="dash-archive-refresh-btn"
-          :loading="archivesLoading"
-          :disabled="archivesLoading"
-          circle
-          plain
-          size="small"
-          title="刷新归档记录"
-          @click="$emit('refresh')"
-        >
-          <template #icon>
-            <RefreshCw :size="12" :stroke-width="2.2" />
-          </template>
-        </el-button>
-      </div>
+      <el-button
+        class="dash-archive-refresh-btn"
+        :loading="archivesLoading"
+        :disabled="archivesLoading"
+        circle
+        plain
+        size="small"
+        title="刷新归档记录"
+        @click="$emit('refresh')"
+      >
+        <template #icon>
+          <RefreshCw :size="14" :stroke-width="2.2" />
+        </template>
+      </el-button>
     </header>
 
     <!-- 搜索 -->
-    <div class="mb-1.5">
+    <div class="mt-3 flex-shrink-0">
       <el-input
         :model-value="searchQuery"
         size="small"
@@ -48,17 +41,17 @@
         @update:model-value="$emit('update:searchQuery', $event)"
       >
         <template #prefix>
-          <Search :size="12" :stroke-width="2.2" class="text-slate-400" />
+          <Search :size="13" :stroke-width="2.2" class="text-slate-400" />
         </template>
       </el-input>
     </div>
 
-    <!-- 域 tabs -->
-    <div class="mb-2">
+    <!-- 域 tabs：极简 pill、无图标、活动态黑底白字、count 紧贴 label 的圆形 badge -->
+    <div class="mt-2 flex-shrink-0">
       <el-radio-group
         :model-value="domainFilter"
         size="small"
-        class="dash-archive-tabs flex flex-wrap gap-1"
+        class="dash-archive-tabs flex flex-wrap gap-1.5"
         @update:model-value="$emit('update:domainFilter', $event)"
       >
         <el-radio-button
@@ -67,17 +60,11 @@
           :value="tab.key"
           class="dash-archive-tab"
         >
-          <span class="inline-flex items-center gap-1">
-            <component
-              :is="tab.icon"
-              :size="11"
-              :stroke-width="2.2"
-              :class="domainFilter === tab.key ? 'text-white' : (tab.chipIcon || 'text-slate-500')"
-            />
+          <span class="inline-flex items-center gap-1.5">
             <span>{{ tab.label }}</span>
             <span
               v-if="tab.count > 0"
-              class="dash-archive-tab-count inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[4px] px-1 text-[9px] tabular-nums"
+              class="dash-archive-tab-count"
               :class="domainFilter === tab.key ? 'dash-archive-tab-count--on' : 'dash-archive-tab-count--off'"
             >
               {{ tab.count }}
@@ -88,64 +75,68 @@
     </div>
 
     <!-- 归档列表（前端分页切片，pageSize 按容器高度动态计算） -->
-    <div v-if="filteredArchives.length" class="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden">
+    <div v-if="filteredArchives.length" class="mt-2.5 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
       <article
         v-for="(archive, index) in pagedArchives"
         :key="archive.id"
-        class="dash-fade-up group grid grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-2 rounded-[8px] border border-slate-100 bg-white p-2 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
+        class="dash-fade-up group grid grid-cols-[22px_minmax(0,1fr)_auto] items-start gap-2.5 rounded-[10px] border border-slate-100 bg-white p-2.5 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
         :style="{ animationDelay: `${index * 35}ms` }"
       >
-        <span
-          class="mt-0.5 inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[7px] border border-slate-200 bg-white transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
-        >
-          <component :is="getMeta(archive).icon" :size="12" :stroke-width="1.7" :class="getMeta(archive).chipIcon || 'text-slate-500'" />
-        </span>
+        <component
+          :is="getMeta(archive).icon"
+          :size="18"
+          :stroke-width="2"
+          class="mt-0.5 flex-shrink-0 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
+          :class="getMeta(archive).chipIcon || 'text-slate-500'"
+        />
 
         <div class="min-w-0">
           <!-- 标题行：文件名 + (解压入库 RJ 号紧邻) + 日期右对齐 -->
           <div class="flex items-start gap-2">
             <div class="flex min-w-0 flex-1 items-center gap-1.5">
-              <h3 class="m-0 min-w-0 truncate text-[12px] font-semibold leading-tight text-slate-900">{{ archive.filename }}</h3>
+              <h3 class="m-0 min-w-0 truncate text-[13px] font-semibold leading-tight text-slate-900">{{ archive.filename }}</h3>
               <span
                 v-if="archive.rjcode && getMeta(archive).key === 'import'"
-                class="inline-flex flex-shrink-0 items-center rounded-[4px] bg-slate-100 px-1.5 py-px text-[10px] font-bold tabular-nums text-slate-600"
+                class="inline-flex flex-shrink-0 items-center rounded-[5px] bg-slate-100 px-1.5 py-0.5 text-[11px] font-bold tabular-nums text-slate-600"
               >{{ archive.rjcode }}</span>
             </div>
             <div class="flex flex-shrink-0 flex-col items-end gap-0.5">
               <span
                 v-if="archive.rjcode && getMeta(archive).key !== 'import'"
-                class="text-[10px] font-bold tabular-nums text-slate-500"
+                class="text-[11px] font-bold tabular-nums text-slate-500"
               >{{ archive.rjcode }}</span>
-              <span class="text-[10px] tabular-nums text-slate-400">{{ formatDate(archive.processed_at) }}</span>
+              <span class="text-[11px] tabular-nums text-slate-400">{{ formatDate(archive.processed_at) }}</span>
             </div>
           </div>
-          <!-- 标签行：domain + status + 文件大小 -->
-          <div class="mt-1 flex items-center justify-between gap-1">
-            <div class="flex flex-wrap items-center gap-1">
-              <span class="inline-flex h-[18px] items-center gap-1 rounded-[4px] border border-slate-200 bg-white px-1.5 text-[10px] font-medium text-slate-600">
-                <component :is="getMeta(archive).icon" :size="10" :stroke-width="1.7" :class="getMeta(archive).chipIcon || 'text-slate-500'" />
+          <!-- 标签行：domain（同色系无 icon，与左侧色块呼应） + status（留 icon） + 文件大小 -->
+          <div class="mt-1.5 flex items-center justify-between gap-1.5">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span
+                class="inline-flex h-[20px] items-center rounded-[5px] px-1.5 text-[11px] font-semibold"
+                :class="[getMeta(archive).chipBg || 'bg-slate-100', getMeta(archive).chipText || 'text-slate-600']"
+              >
                 {{ getMeta(archive).label }}
               </span>
-              <span class="inline-flex h-[18px] items-center gap-1 rounded-[4px] border border-slate-200 bg-white px-1.5 text-[10px] font-medium text-slate-600">
-                <component :is="statusIcon(getStatusMeta(archive.status).key)" :size="10" :stroke-width="1.7" :class="statusIconColor(getStatusMeta(archive.status).key)" />
+              <span class="inline-flex h-[20px] items-center gap-1 rounded-[5px] bg-slate-50 px-1.5 text-[11px] font-medium text-slate-600">
+                <component :is="statusIcon(getStatusMeta(archive.status).key)" :size="11" :stroke-width="2" :class="statusIconColor(getStatusMeta(archive.status).key)" />
                 {{ getStatusMeta(archive.status).label }}
               </span>
-              <span v-if="archive.isVolumeGroup" class="inline-flex h-[18px] items-center rounded-[4px] bg-amber-50 px-1.5 text-[10px] font-semibold text-amber-700">{{ archive.volumes.length }} 分卷</span>
+              <span v-if="archive.isVolumeGroup" class="inline-flex h-[20px] items-center rounded-[5px] bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-700">{{ archive.volumes.length }} 分卷</span>
             </div>
-            <span v-if="archive.file_size" class="flex-shrink-0 text-[10px] tabular-nums text-slate-400">{{ formatFileSize(archive.file_size) }}</span>
+            <span v-if="archive.file_size" class="flex-shrink-0 text-[11px] tabular-nums text-slate-400">{{ formatFileSize(archive.file_size) }}</span>
           </div>
         </div>
 
         <button
           v-if="archive.source === 'processed_archive' && getStatusMeta(archive.status).key === 'failed'"
           type="button"
-          class="group/btn inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-[6px] border border-slate-300 bg-slate-50 text-slate-600 shadow-[0_1px_0_rgba(15,23,42,0.04),inset_0_1px_0_rgba(255,255,255,0.8)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-110 hover:border-slate-400 hover:bg-white hover:text-slate-900 hover:shadow-[0_4px_10px_-4px_rgba(15,23,42,0.18)] active:scale-90 disabled:pointer-events-none disabled:opacity-50"
+          class="group/btn inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-[7px] border border-slate-300 bg-slate-50 text-slate-600 shadow-[0_1px_0_rgba(15,23,42,0.04),inset_0_1px_0_rgba(255,255,255,0.8)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-110 hover:border-slate-400 hover:bg-white hover:text-slate-900 hover:shadow-[0_4px_10px_-4px_rgba(15,23,42,0.18)] active:scale-90 disabled:pointer-events-none disabled:opacity-50"
           :disabled="reprocessingId === archive.id"
           title="重新解压"
           @click="$emit('reprocess', archive.id)"
         >
           <RotateCcw
-            :size="11"
+            :size="13"
             :stroke-width="2.4"
             :class="reprocessingId === archive.id ? 'animate-spin' : 'transition-transform duration-500 group-hover/btn:-rotate-180'"
           />
@@ -153,13 +144,15 @@
       </article>
     </div>
 
-    <AppEmptyState v-else description="暂无归档记录" size="default" />
+    <div v-else class="mt-3 flex flex-1 items-center justify-center">
+      <AppEmptyState description="暂无归档记录" size="default" />
+    </div>
 
     <div
       v-if="showPager"
-      class="dash-archive-pager mt-2 flex flex-shrink-0 items-center justify-between gap-2 border-t border-slate-100 pt-2"
+      class="dash-archive-pager mt-2.5 flex flex-shrink-0 items-center justify-between gap-2 border-t border-slate-100 pt-2.5"
     >
-      <span class="text-[10px] font-medium tracking-wide text-slate-400">
+      <span class="text-[11px] font-medium tracking-wide text-slate-400">
         共 <b class="text-slate-700 tabular-nums">{{ filteredArchives.length }}</b> 条
       </span>
 
@@ -230,10 +223,10 @@ const props = defineProps({
 
 defineEmits(['refresh', 'reprocess', 'change-page', 'update:searchQuery', 'update:domainFilter'])
 
-// 单条卡片估算高度（含 6px gap）：article p-2 + 两行内容 ≈ 56px + 6px gap = 62px
-const ITEM_HEIGHT = 62
+// 单条卡片估算高度（含 8px gap）：article p-2.5 + 两行内容 ≈ 66px + 8px gap = 74px
+const ITEM_HEIGHT = 74
 // 面板内除列表区以外固定占用的高度（header + search + tabs + pager + 内外边距估算）
-const FIXED_OVERHEAD = 38 + 36 + 30 + 40 + 24
+const FIXED_OVERHEAD = 44 + 38 + 34 + 46 + 28
 
 const panelRef = ref(null)
 const panelHeight = ref(0)
@@ -348,28 +341,14 @@ function statusChipClass(key) {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* 顶部计数 tag */
-.dash-archive-count-tag :deep(.el-tag__content),
-.dash-archive-count-tag {
-  height: 18px;
-  line-height: 16px;
-  padding: 0 8px;
-  font-size: 10px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: rgb(51 65 85);
-  border-color: rgba(148, 163, 184, 0.32);
-  background: rgba(255, 255, 255, 0.92);
-}
-
 /* 刷新按钮 */
 .dash-archive-refresh-btn {
-  --el-button-size: 24px;
-  width: 24px;
-  height: 24px;
-  min-height: 24px;
+  --el-button-size: 28px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
   padding: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   border-color: rgba(148, 163, 184, 0.48);
   color: rgb(71 85 105);
   background: rgba(255, 255, 255, 0.95);
@@ -400,8 +379,8 @@ function statusChipClass(key) {
   box-shadow: 0 0 0 1px rgb(148 163 184) inset;
 }
 .dash-archive-search :deep(.el-input__inner) {
-  height: 26px;
-  font-size: 12px;
+  height: 28px;
+  font-size: 13px;
   color: rgb(30 41 59);
 }
 .dash-archive-search :deep(.el-input__inner::placeholder) {
@@ -411,27 +390,26 @@ function statusChipClass(key) {
   margin-right: 4px;
 }
 
-/* 域 tabs：用 el-radio-button 重写成 chip 风格 */
+/* 域 tabs：用 el-radio-button 重写成极简 pill 风格 */
 .dash-archive-tabs {
-  --el-border-radius-base: 8px;
+  --el-border-radius-base: 999px;
 }
 .dash-archive-tabs :deep(.el-radio-button__inner) {
-  height: 22px;
-  padding: 0 8px;
-  font-size: 11px;
+  height: 26px;
+  padding: 0 11px;
+  font-size: 12px;
   font-weight: 500;
-  line-height: 20px;
-  border-radius: 8px !important;
-  border: 1px solid rgb(241 245 249);
-  background: rgb(255 255 255);
+  line-height: 24px;
+  border-radius: 999px !important;
+  border: 1px solid transparent;
+  background: rgb(241 245 249);
   color: rgb(71 85 105);
   box-shadow: none;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 .dash-archive-tabs :deep(.el-radio-button__inner:hover) {
   color: rgb(15 23 42);
-  border-color: rgb(226 232 240);
-  background: rgb(248 250 252);
+  background: rgb(226 232 240);
 }
 .dash-archive-tabs :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
   color: #fff;
@@ -443,13 +421,28 @@ function statusChipClass(key) {
   margin: 0;
 }
 
-.dash-archive-tab-count--on {
-  color: rgba(255, 255, 255, 0.92);
-  background: rgba(255, 255, 255, 0.18);
+/* count badge：圆形、跟 label 紧贴 */
+.dash-archive-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  transition: color 0.2s ease, background-color 0.2s ease;
 }
 .dash-archive-tab-count--off {
   color: rgb(100 116 139);
-  background: rgb(241 245 249);
+  background: rgba(148, 163, 184, 0.22);
+}
+.dash-archive-tab-count--on {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.2);
 }
 
 /* 分页 */

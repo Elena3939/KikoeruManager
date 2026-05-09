@@ -353,10 +353,10 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Captions, Minimize2, RefreshCw, Trash2, X } from 'lucide-vue-next'
+import { Captions, Folder, FolderOpen, Minimize2, RefreshCw, Trash2, X } from 'lucide-vue-next'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
-import { Folder, FolderOpened, Document, Picture, VideoPlay, Headset, Tickets } from '@element-plus/icons-vue'
 import { libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
+import { libraryEntryIconFor, libraryEntryMetaFor } from '../library/_libraryFileKind'
 import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
 import SubtitleInspectorWorkbench from '../library/SubtitleInspectorWorkbench.vue'
 import SubtitleWorkbenchStage from '../library/subtitle-workbench/SubtitleWorkbenchStage.vue'
@@ -1231,13 +1231,10 @@ function flattenTree(nodes, depth, openIds) {
   return result
 }
 
+// 原本这里是个局部 fileIcon，调 element-plus 的 Headset / Picture / Tickets / VideoPlay / Document。
+// 现在完全交给 _libraryFileKind helper，走 9 类色盘（与操作记录文件树对齐）。
 function fileIcon(name = '') {
-  const lower = String(name || '').toLowerCase()
-  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(lower)) return Headset
-  if (/\.(png|jpg|jpeg|webp|bmp|gif)$/i.test(lower)) return Picture
-  if (/\.(mp4|mkv|avi|mov|wmv|webm)$/i.test(lower)) return VideoPlay
-  if (/\.(lrc|srt|ass|ssa|vtt)$/i.test(lower)) return Tickets
-  return Document
+  return libraryEntryIconFor({ type: 'file', name })
 }
 
 function formatFileSize(bytes) {
@@ -1392,9 +1389,18 @@ function collapseSubtitleInspectorTree() {
 
 function resolveSubtitleTreeIcon(row) {
   if (row?.type === 'dir') {
-    return subtitleInspectorExpandedIds.value.has(row.id) ? FolderOpened : Folder
+    return subtitleInspectorExpandedIds.value.has(row.id) ? FolderOpen : Folder
   }
-  return fileIcon(row?.name || '')
+  return libraryEntryIconFor(row)
+}
+
+// 同步提供推荐着色（交给消费方以 inline :style 上色）
+function resolveSubtitleTreeIconStyle(row) {
+  const meta = libraryEntryMetaFor(row)
+  return {
+    color: meta.color,
+    fill: meta.fillIcon ? 'currentColor' : 'none',
+  }
 }
 
 function getSubtitleInspectorSelectableIds() {
@@ -2479,6 +2485,7 @@ const subtitleWorkbenchCtx = computed(() => ({
   toggleSubtitleInspectorSelect,
   toggleSubtitleInspectorExpand,
   resolveSubtitleTreeIcon,
+  resolveSubtitleTreeIconStyle,
   formatDate,
   openSubtitleRenameDialog,
   deleteSubtitleTreeEntry

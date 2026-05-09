@@ -9,13 +9,33 @@
       >
         <transition name="lib-panel-slide" appear @after-enter="handleOpened">
           <div
+            ref="panelRef"
             v-if="visible"
             class="lib-search-panel"
             @mousedown.stop
           >
-            <!-- 顶部：单一搜索框（图标 + 输入 + 关闭），不放任何多余元素 -->
+            <!-- 顶部：单一搜索框（筛选按钮 + 输入 + 关闭），不放任何多余元素 -->
             <div class="lib-panel-input-row">
-              <Search :size="18" :stroke-width="2.4" class="lib-panel-input-icon" />
+              <!-- filter 按钮：菜单已 Teleport 到 body，避免被 .lib-search-panel 的 overflow:hidden 裁切 -->
+              <button
+                ref="filterButtonRef"
+                type="button"
+                class="lib-panel-filter"
+                :class="{ 'is-active': kindFilter !== 'all', 'is-open': isFilterMenuOpen }"
+                :title="filterButtonTitle"
+                :style="{ color: currentFilterMeta.color }"
+                @mousedown.prevent
+                @click="toggleFilterMenu"
+              >
+                <component
+                  :is="currentFilterMeta.icon"
+                  :size="18"
+                  :stroke-width="2.4"
+                  :class="{ 'lib-panel-row-icon-fill': currentFilterMeta.fillIcon }"
+                />
+                <span v-if="kindFilter !== 'all'" class="lib-panel-filter-dot" />
+              </button>
+
               <input
                 ref="inputRef"
                 v-model="keyword"
@@ -80,8 +100,16 @@
                     @click="onSelectRow(item)"
                     @dblclick="onSelectRow(item)"
                   >
-                    <span class="lib-panel-row-icon" :class="iconShellClassFor(item)">
-                      <component :is="iconForRow(item)" :size="14" :stroke-width="2.2" />
+                    <span
+                      class="lib-panel-row-icon"
+                      :style="{ color: rowIconMeta(item).color }"
+                    >
+                      <component
+                        :is="rowIconMeta(item).icon"
+                        :size="15"
+                        :stroke-width="2.2"
+                        :class="{ 'lib-panel-row-icon-fill': rowIconMeta(item).fillIcon }"
+                      />
                     </span>
                     <div class="lib-panel-row-main">
                       <div class="lib-panel-row-title">
@@ -106,7 +134,7 @@
                   </li>
                 </TransitionGroup>
 
-                <!-- 空状态：无结果 -->
+                <!-- loading 占位 -->
                 <div
                   v-else-if="loading"
                   class="lib-panel-state"
@@ -114,6 +142,8 @@
                   <Loader2 :size="14" :stroke-width="2.4" class="animate-spin" />
                   <span>查询索引中…</span>
                 </div>
+
+                <!-- keyword 非空 + 无结果 + 无错误 -->
                 <div
                   v-else-if="!errorMessage"
                   class="lib-panel-state"
@@ -128,32 +158,73 @@
       </div>
     </transition>
   </Teleport>
+
+  <!-- Filter menu：独立 Teleport 到 body，避免被 .lib-search-panel 的 overflow:hidden 裁切 -->
+  <Teleport to="body">
+    <transition name="panel-filter-fade">
+      <div
+        v-if="visible && isFilterMenuOpen"
+        class="lib-panel-filter-menu"
+        :style="filterMenuStyle"
+        @mousedown.prevent
+      >
+        <header class="lib-panel-filter-menu-head">
+          <FilterIcon :size="12" :stroke-width="2.4" />
+          <span>按文件类型筛选</span>
+        </header>
+        <ul class="lib-panel-filter-menu-list">
+          <li
+            v-for="opt in LIBRARY_FILTER_OPTIONS"
+            :key="opt.value"
+            class="lib-panel-filter-menu-row"
+            :class="{ 'is-active': kindFilter === opt.value }"
+            @mousedown.prevent
+            @click="onSelectFilter(opt.value)"
+          >
+            <span class="lib-panel-filter-menu-icon" :style="{ color: opt.color }">
+              <component
+                :is="opt.icon"
+                :size="15"
+                :stroke-width="2.2"
+                :class="{ 'lib-panel-row-icon-fill': opt.fillIcon }"
+              />
+            </span>
+            <span class="lib-panel-filter-menu-label">{{ opt.label }}</span>
+            <CheckIcon
+              v-if="kindFilter === opt.value"
+              :size="14"
+              :stroke-width="2.4"
+              class="lib-panel-filter-menu-check"
+            />
+          </li>
+        </ul>
+      </div>
+    </transition>
+  </Teleport>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AlertCircle,
-  Archive,
-  BookOpen,
+  Check as CheckIcon,
   Cloud,
   CornerDownLeft,
-  File as FileIcon,
-  FileCode,
-  FileText,
-  Film,
-  Folder,
+  Filter as FilterIcon,
   HardDrive,
-  Image as ImageIcon,
   Loader2,
-  Music2,
   RefreshCcw,
-  Search,
   SearchX,
   X,
 } from 'lucide-vue-next'
 
 import { libraryApi } from '../../api'
+import {
+  LIBRARY_FILTER_OPTIONS,
+  applyLibraryFrontendFilter,
+  libraryEntryMetaFor,
+  libraryFilterToEntryType,
+} from './_libraryFileKind'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -162,6 +233,9 @@ const props = defineProps({
   // 父组件初始化时可以传一个默认的 scope，例如刚从某个库点的"在该库内搜索"
   initialScopeMode: { type: String, default: 'all' },
   initialSingleLibraryId: { type: String, default: '' },
+  // 从 LibrarySearchBox 顶层有选不同文件类型筛选进来时，这里也能继承那个 kindFilter。
+  // 取值集合参 _libraryFileKind.js 的 LIBRARY_FILTER_OPTIONS
+  initialKindFilter: { type: String, default: 'all' },
   fullLimit: { type: Number, default: 200 },
 })
 
@@ -169,6 +243,9 @@ const emit = defineEmits(['update:visible', 'locate', 'close'])
 
 const inputRef = ref(null)
 const listRef = ref(null)
+const panelRef = ref(null)
+const filterButtonRef = ref(null)
+const filterMenuStyle = ref({})
 const keyword = ref('')
 const items = ref([])
 const totalCount = ref(0)
@@ -185,7 +262,9 @@ const libraryStatusMap = ref({})
 // 当前 UI 没有暴露切换入口（用户要求"默认只要一个搜索框"），后端按 scopeMode 走全部库
 const scopeMode = ref('all')
 const singleLibraryId = ref('')
-const entryType = ref('all')
+// kindFilter 同时决定后端 entry_type 参数与前端二次过滤（audio / text 这种细分靠扩展名）
+const kindFilter = ref('all')
+const isFilterMenuOpen = ref(false)
 
 let debounceTimer = null
 let activeAbort = null
@@ -206,7 +285,8 @@ const scopedLibraryIds = computed(() => {
   return [] // all → 不传 library_ids，让后端默认全部
 })
 
-// 结果区只在用户输入了关键字、或者有错误信息时才展开，平时面板就是单条搜索框
+// 结果区只在有 keyword 或有错误信息时展开。
+// Overlay 默认就是"一个搜索框 + 点前面图标弹下拉"的极简交互。
 const hasResultsArea = computed(() => Boolean(keyword.value.trim()) || Boolean(errorMessage.value))
 
 watch(() => props.visible, (next) => {
@@ -214,7 +294,8 @@ watch(() => props.visible, (next) => {
     keyword.value = props.initialKeyword || ''
     scopeMode.value = props.initialScopeMode || 'all'
     singleLibraryId.value = props.initialSingleLibraryId || ''
-    entryType.value = 'all'
+    kindFilter.value = props.initialKindFilter || 'all'
+    isFilterMenuOpen.value = false
     libraryStatusMap.value = {}
     activeIndex.value = -1
     elapsedMs.value = null
@@ -229,6 +310,7 @@ watch(() => props.visible, (next) => {
     }
   } else {
     cleanupRequests()
+    isFilterMenuOpen.value = false
   }
 })
 
@@ -238,7 +320,7 @@ watch(scopeMode, () => {
 watch(singleLibraryId, () => {
   if (props.visible && keyword.value.trim() && scopeMode.value === 'single') scheduleSearch(true)
 })
-watch(entryType, () => {
+watch(kindFilter, () => {
   if (props.visible && keyword.value.trim()) scheduleSearch(true)
 })
 
@@ -303,44 +385,93 @@ function onSelectRow (row) {
   // overlay 由父组件决定是否关闭；通常 locate 即关闭
 }
 
-// === 文件类型识别（仅前端，复用扩展名启发；服务端不需要回传） ===
-// 注意：lossless 与 lossy 用不同色，便于一眼区分；其余按媒体大类着色
-const FILE_TYPE_PATTERNS = [
-  { test: /\.(flac|wav|aiff|alac|dsd|dff|dsf|ape|tak|wv)$/i, icon: Music2, kind: 'audio-lossless' },
-  { test: /\.(mp3|m4a|aac|ogg|opus|wma)$/i, icon: Music2, kind: 'audio' },
-  { test: /\.(mp4|mkv|avi|mov|webm|wmv|flv|m4v)$/i, icon: Film, kind: 'video' },
-  { test: /\.(jpg|jpeg|png|webp|gif|bmp|tif|tiff|heic|heif|avif)$/i, icon: ImageIcon, kind: 'image' },
-  { test: /\.(zip|rar|7z|tar|gz|bz2|xz|zst)$/i, icon: Archive, kind: 'archive' },
-  { test: /\.(srt|ass|ssa|vtt|lrc|sub|cue)$/i, icon: FileText, kind: 'subtitle' },
-  { test: /\.(txt|md|rst|log|nfo|json|xml|yaml|yml|toml|ini|cfg)$/i, icon: FileText, kind: 'text' },
-  { test: /\.(pdf|epub|mobi|azw3)$/i, icon: BookOpen, kind: 'book' },
-  { test: /\.(html|htm|css|js|ts|py|rb|go|rs|java|c|cpp|h|hpp|sh|bat|ps1)$/i, icon: FileCode, kind: 'code' },
-]
+// 行图标 / 颜色 与库存页主文件树保持同一套色盘（参 _libraryFileKind.js）：
+// 文件夹 / 无损音频 / 普通音频 / 文档-字幕 / 其他文件 五类。
+// 不再使用原来的十几种扩展名色块，避免"主文件树一套 / 搜索结果另一套"的割裂。
+function rowIconMeta (item) {
+  return libraryEntryMetaFor(item)
+}
 
-function _matchFileType (item) {
-  if (!item || item.entry_type !== 'file') return null
-  const name = String(item.name || '').toLowerCase()
-  for (const p of FILE_TYPE_PATTERNS) {
-    if (p.test.test(name)) return p
+// 顶部输入框左侧的“按文件类型筛选”下拉触发器：跟 LibrarySearchBox 用同一套状态与菜单逻辑
+const currentFilterMeta = computed(() => {
+  return LIBRARY_FILTER_OPTIONS.find(opt => opt.value === kindFilter.value) || LIBRARY_FILTER_OPTIONS[0]
+})
+
+const filterButtonTitle = computed(() => {
+  const label = currentFilterMeta.value.label
+  return kindFilter.value === 'all'
+    ? `按文件类型筛选（当前：${label}）`
+    : `已筛选：${label}（点击切换）`
+})
+
+function updateFilterMenuPosition () {
+  const btn = filterButtonRef.value
+  if (!btn) return
+  const rect = btn.getBoundingClientRect()
+  const padding = 8
+  const menuMinWidth = 240 // 跟 CSS .lib-panel-filter-menu min-width 同步
+  const viewportWidth = window.innerWidth
+
+  // 水平：默认以 filter button 左边缘对齐；超出视口右边界时回密
+  let left = rect.left
+  if (left + menuMinWidth > viewportWidth - padding) {
+    left = viewportWidth - padding - menuMinWidth
   }
-  return null
-}
+  if (left < padding) left = padding
 
-function iconForRow (item) {
-  if (!item) return Folder
-  if (item.entry_type !== 'file') return Folder
-  return _matchFileType(item)?.icon || FileIcon
-}
-
-function iconShellClassFor (item) {
-  if (!item) return 'fm-icon-folder'
-  if (item.entry_type !== 'file') {
-    return item.rjcode ? 'fm-icon-folder fm-icon-folder-rj' : 'fm-icon-folder'
+  filterMenuStyle.value = {
+    left: `${left}px`,
+    top: `${rect.bottom + 8}px`,
+    minWidth: `${menuMinWidth}px`,
   }
-  const matched = _matchFileType(item)
-  if (!matched) return 'fm-icon-default'
-  return `fm-icon-${matched.kind}`
 }
+
+async function toggleFilterMenu () {
+  if (isFilterMenuOpen.value) {
+    isFilterMenuOpen.value = false
+    return
+  }
+  isFilterMenuOpen.value = true
+  await nextTick()
+  updateFilterMenuPosition()
+}
+
+function onSelectFilter (value) {
+  const next = String(value || 'all')
+  kindFilter.value = next
+  isFilterMenuOpen.value = false
+  // kindFilter 上面已经有 watch 启动重搜，这里只需重新聚焦输入框
+  inputRef.value?.focus?.()
+}
+
+function handleDocumentMousedown (event) {
+  if (!isFilterMenuOpen.value) return
+  const target = event.target
+  if (!target?.closest) return
+  // 点击在筛选触发按钮 / 菜单本体内 → 不关；其余位置（包括 panel 内的输入框 / 结果列表 / overlay 空白处）→ 关闭菜单
+  if (target.closest('.lib-panel-filter') || target.closest('.lib-panel-filter-menu')) return
+  isFilterMenuOpen.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleDocumentMousedown, true)
+})
+
+// filter menu 打开期间跟踪窗口变化，确保 Teleport 后的 fixed 菜单位置
+// 在 viewport 变化（滚动 / 缩放 / DPR 变化）时保持跟 filter 按钮对齐。
+function handleFilterMenuReflow () {
+  if (isFilterMenuOpen.value) updateFilterMenuPosition()
+}
+
+watch(isFilterMenuOpen, (next) => {
+  if (next) {
+    window.addEventListener('scroll', handleFilterMenuReflow, true)
+    window.addEventListener('resize', handleFilterMenuReflow)
+  } else {
+    window.removeEventListener('scroll', handleFilterMenuReflow, true)
+    window.removeEventListener('resize', handleFilterMenuReflow)
+  }
+})
 
 function isRjHit (item) {
   if (!matchedRjcode.value || !item) return false
@@ -461,11 +592,19 @@ async function runSearch (kw) {
   const fallbackFailedSet = new Set()
   let sawAnyEvent = false
 
+  // 后端 、 前端联合筛选：后端只负责 dir / file / all 粗范围；audio / text 这种细分类靠前端。
+  // applyLibraryFrontendFilter 同时会干掉"name 不含 keyword 但路径含的兜底子文件误命中"。
+  const filterArgs = (extraKeyword) => ({
+    filter: kindFilter.value,
+    keyword: extraKeyword,
+    matchedRjcode: matchedRjcode.value,
+  })
+
   try {
     for await (const evt of libraryApi.searchIndexGlobalStream({
       keyword: kw,
       libraryIds: scopedLibraryIds.value,
-      entryType: entryType.value,
+      entryType: libraryFilterToEntryType(kindFilter.value),
       mode: 'full',
       limit: props.fullLimit,
       signal: controller ? controller.signal : undefined,
@@ -474,12 +613,12 @@ async function runSearch (kw) {
       sawAnyEvent = true
 
       if (evt.type === 'initial') {
-        // 第一波：索引结果，直接铺到 items（替代式）
+        // 第一波：索引结果。这里先记下 matched_rjcode，后续子文件过滤会靠它放过 RJ 命中。
         const initialItems = Array.isArray(evt.items) ? evt.items : []
-        items.value = initialItems
-        totalCount.value = Number(evt.total ?? initialItems.length) || 0
-        truncated.value = Boolean(evt.truncated)
         matchedRjcode.value = evt.matched_rjcode || null
+        items.value = applyLibraryFrontendFilter(initialItems, filterArgs(kw))
+        totalCount.value = items.value.length
+        truncated.value = Boolean(evt.truncated)
         elapsedMs.value = Number.isFinite(Number(evt.elapsed_ms)) ? Number(evt.elapsed_ms) : null
         // 不默认高亮首行。原因同 LibrarySearchBox：默认高亮 + Enter
         // 跳转会让粘贴/输入法场景下出现意外导航。
@@ -498,10 +637,11 @@ async function runSearch (kw) {
             : '索引暂不可用'
         }
       } else if (evt.type === 'library') {
-        // 兜底库逐个返回：增量追加，不闪屏
+        // 兜底库逐个返回：增量追加 —— 这里也走二次过滤。
         const libItems = Array.isArray(evt.items) ? evt.items : []
-        if (libItems.length) {
-          items.value = [...items.value, ...libItems]
+        const filtered = applyLibraryFrontendFilter(libItems, filterArgs(kw))
+        if (filtered.length) {
+          items.value = [...items.value, ...filtered]
           totalCount.value = items.value.length
           // 同样不再自动选中第一行。需要手动高亮才能回车跳转。
         }
@@ -570,6 +710,7 @@ function cleanupRequests () {
 }
 
 onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleDocumentMousedown, true)
   cleanupRequests()
 })
 </script>
@@ -608,6 +749,7 @@ onBeforeUnmount(() => {
        * 中性灰描边（rgba(15,23,42, .08)）→ 边缘清晰
        * 多层下投影 → 浮起感 */
 .lib-search-panel {
+  position: relative; /* 让 .lib-panel-filter-menu 的 absolute 以面板为锚点 */
   width: min(920px, 100%);
   max-height: calc(100vh - 96px);
   display: flex;
@@ -645,13 +787,52 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 
-.lib-panel-input-icon {
+/* 顶部：可点击的"按文件类型筛选"下拉触发按钮，
+   占用原 Search 装饰的位置；hover / active / open 都有动效。 */
+.lib-panel-filter {
+  position: relative;
   flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+  cursor: pointer;
   color: #64748b;
-  transition: color 0.25s ease;
+  transition: all 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.lib-panel-input-row:focus-within .lib-panel-input-icon { color: #4f46e5; }
+.lib-panel-filter:hover {
+  background: rgba(99, 102, 241, 0.10);
+  transform: scale(1.08);
+}
+
+.lib-panel-filter:active {
+  background: rgba(99, 102, 241, 0.18);
+  transform: scale(0.94);
+}
+
+.lib-panel-filter.is-active {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.lib-panel-filter.is-open {
+  background: rgba(99, 102, 241, 0.18);
+  transform: rotate(-4deg) scale(1.06);
+}
+
+.lib-panel-filter-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.96);
+}
 
 .lib-panel-input {
   flex: 1;
@@ -698,6 +879,104 @@ onBeforeUnmount(() => {
 
 .lib-panel-input-close:active {
   transform: rotate(90deg) scale(0.94);
+}
+
+/* 顶部"按文件类型筛选"下拉菜单：
+ * Teleport 到 body + position: fixed，逃离 .lib-search-panel 的 overflow:hidden。
+ * 位置由 inline style（filterMenuStyle）控制，跟随 filter 按钮 rect。 */
+.lib-panel-filter-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 240px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.86));
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow:
+    0 18px 36px -18px rgba(15, 23, 42, 0.32),
+    0 28px 56px -28px rgba(15, 23, 42, 0.36);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  overflow: hidden;
+  transform-origin: top left;
+}
+
+.lib-panel-filter-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.85), rgba(248, 250, 252, 0.4));
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #475569;
+  font-weight: 700;
+}
+
+.lib-panel-filter-menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.lib-panel-filter-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #1f2937;
+  transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.lib-panel-filter-menu-row:hover {
+  background: rgb(241 245 249);
+  color: #0f172a;
+}
+
+.lib-panel-filter-menu-row.is-active {
+  background: rgb(241 245 249);
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.lib-panel-filter-menu-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lib-panel-filter-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.lib-panel-filter-menu-check {
+  flex-shrink: 0;
+  color: rgb(37 99 235); /* sky-600，与 AppDropdown 的 ✓ 一致 */
+}
+
+.panel-filter-fade-enter-active,
+.panel-filter-fade-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: top left;
+}
+
+.panel-filter-fade-enter-from,
+.panel-filter-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
 }
 
 /* ===== 结果区：从输入行下方平滑展开的横幅 ===== */
@@ -807,67 +1086,25 @@ onBeforeUnmount(() => {
   color: #6b21a8;
 }
 
-/* 行图标外壳 + 各类型颜色 */
+/* 行图标：扁平彩色图标（颜色由 inline :style 控制，与主文件树色盘对齐） */
 .lib-panel-row-icon {
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: rgba(148, 163, 184, 0.16);
-  color: #64748b;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .lib-panel-row:hover .lib-panel-row-icon,
 .lib-panel-row.is-active .lib-panel-row-icon {
-  transform: rotate(-4deg) scale(1.05);
+  transform: rotate(-4deg) scale(1.08);
 }
 
-.lib-panel-row-icon.fm-icon-folder {
-  background: rgba(56, 189, 248, 0.2);
-  color: #0284c7;
-}
-
-.lib-panel-row-icon.fm-icon-folder-rj {
-  background: linear-gradient(135deg, rgba(168, 85, 247, 0.24), rgba(217, 70, 239, 0.18));
-  color: #9333ea;
-}
-
-.lib-panel-row-icon.fm-icon-audio,
-.lib-panel-row-icon.fm-icon-audio-lossless {
-  background: rgba(236, 72, 153, 0.2);
-  color: #db2777;
-}
-.lib-panel-row-icon.fm-icon-audio-lossless { background: rgba(244, 114, 182, 0.24); }
-
-.lib-panel-row-icon.fm-icon-video {
-  background: rgba(59, 130, 246, 0.2);
-  color: #2563eb;
-}
-
-.lib-panel-row-icon.fm-icon-image {
-  background: rgba(34, 197, 94, 0.2);
-  color: #16a34a;
-}
-
-.lib-panel-row-icon.fm-icon-archive {
-  background: rgba(245, 158, 11, 0.2);
-  color: #d97706;
-}
-
-.lib-panel-row-icon.fm-icon-text,
-.lib-panel-row-icon.fm-icon-code,
-.lib-panel-row-icon.fm-icon-subtitle,
-.lib-panel-row-icon.fm-icon-doc {
-  background: rgba(100, 116, 139, 0.18);
-  color: #475569;
-}
-
-.lib-panel-row-icon.fm-icon-book {
-  background: rgba(20, 184, 166, 0.18);
-  color: #0d9488;
+/* lucide 默认 fill="none"，文件夹要呈现"实心橙"得显式 fill currentColor */
+.lib-panel-row-icon-fill {
+  fill: currentColor;
 }
 
 /* 行主区 */

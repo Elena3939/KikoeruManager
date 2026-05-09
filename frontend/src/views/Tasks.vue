@@ -1,28 +1,28 @@
 <template>
-  <div class="flex h-full min-h-0 flex-col overflow-hidden text-neutral-900">
-    <!-- 顶部一体化卡片：标题 + 概览 + 筛选 -->
-    <div class="flex flex-shrink-0 flex-col rounded-[14px] border border-slate-200/80 bg-white shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] overflow-hidden">
-      <TasksHeader />
-      <TasksMetricsBar :metrics="metricsPanel" />
-      <TasksFilters
-        :domain-options="domainOptions"
-        :status-options="statusOptions"
-        :current-domain="currentDomain"
-        :current-status="currentStatus"
-        :search-query="searchQuery"
-        :sort-key="sortKey"
-        :active-only="activeOnly"
-        :get-domain-count="getDomainCount"
-        @update:current-domain="(v) => (currentDomain = v)"
-        @update:current-status="(v) => (currentStatus = v)"
-        @update:search-query="(v) => (searchQuery = v)"
-        @update:sort-key="(v) => (sortKey = v)"
-        @update:active-only="(v) => (activeOnly = v)"
-        @reset="resetFilters"
-      />
-    </div>
+  <div class="tasks-page">
+    <!-- 页头：与库存 / 问题作品 / 操作记录 等同款 AppPageHeader -->
+    <TasksHeader />
 
-    <section class="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden pt-2 lg:grid-cols-[minmax(280px,0.75fr)_minmax(0,1.5fr)]">
+    <!-- 工具栏：域 / 搜索 / 排序 / 仅活跃 / 重置 -->
+    <TasksFilters
+      :domain-options="domainOptions"
+      :status-options="statusOptions"
+      :current-domain="currentDomain"
+      :current-status="currentStatus"
+      :search-query="searchQuery"
+      :sort-key="sortKey"
+      :active-only="activeOnly"
+      :get-domain-count="getDomainCount"
+      @update:current-domain="(v) => (currentDomain = v)"
+      @update:current-status="(v) => (currentStatus = v)"
+      @update:search-query="(v) => (searchQuery = v)"
+      @update:sort-key="(v) => (sortKey = v)"
+      @update:active-only="(v) => (activeOnly = v)"
+      @reset="resetFilters"
+    />
+
+    <!-- 主内容：列表 + 详情 -->
+    <section class="tasks-main">
       <TaskListPane
         :filtered-items="filteredItems"
         :total-items="totalItems"
@@ -75,16 +75,12 @@ import {
   FileArchive,
   FolderInput,
   ListChecks,
-  PauseCircle,
-  RotateCcw,
   Sparkles,
   Upload,
   UploadCloud,
-  XCircle,
 } from 'lucide-vue-next'
 import { taskCenterApi } from '../api'
 import TasksHeader from '../components/tasks/TasksHeader.vue'
-import TasksMetricsBar from '../components/tasks/TasksMetricsBar.vue'
 import TasksFilters from '../components/tasks/TasksFilters.vue'
 import TaskListPane from '../components/tasks/TaskListPane.vue'
 import TaskDetailPane from '../components/tasks/TaskDetailPane.vue'
@@ -145,37 +141,6 @@ const statusOptions = [
 function getDomainCount(domain) {
   return Number(overviewDomainCounts.value[domain] || 0) || ''
 }
-
-const metricsPanel = computed(() => [
-  {
-    key: 'processing',
-    label: '处理中',
-    value: Number(overviewHighlightCounts.value.processing || 0),
-    icon: Activity,
-    click: () => { currentStatus.value = 'processing' },
-  },
-  {
-    key: 'waiting_manual',
-    label: '等待人工',
-    value: Number(overviewHighlightCounts.value.waiting_manual || 0),
-    icon: PauseCircle,
-    click: () => { currentStatus.value = 'waiting_manual' },
-  },
-  {
-    key: 'waiting_retry',
-    label: '等待重试',
-    value: Number(overviewHighlightCounts.value.waiting_retry || 0),
-    icon: RotateCcw,
-    click: () => { currentStatus.value = 'waiting_retry' },
-  },
-  {
-    key: 'failed',
-    label: '失败',
-    value: Number(overviewHighlightCounts.value.failed || 0),
-    icon: XCircle,
-    click: () => { currentStatus.value = 'failed' },
-  },
-])
 
 const ACTIVE_STATUSES = new Set(['processing', 'pending', 'paused', 'waiting_manual', 'waiting_retry'])
 
@@ -988,3 +953,45 @@ function formatDateTime(value) {
   })
 }
 </script>
+
+<style scoped>
+/* ============================================================
+ * 任务中心：对齐库存页简约现代风格
+ * - 外容器 max-width + 左右留白
+ * - info-strip 横向 5 列（点击快捷筛选状态）
+ * - main 两栏 grid
+ * ============================================================ */
+
+.tasks-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px 24px 24px;
+  color: #0f172a;
+  background: transparent;
+}
+
+/* ---------- 主区：list + detail 两栏 ---------- */
+.tasks-main {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+@media (min-width: 1024px) {
+  .tasks-main {
+    grid-template-columns: minmax(280px, 1fr) minmax(0, 3fr);
+  }
+}
+
+@media (max-width: 980px) {
+  .tasks-page {
+    padding: 8px 12px 16px;
+  }
+}
+</style>

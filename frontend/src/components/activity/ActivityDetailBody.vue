@@ -1,12 +1,12 @@
 <template>
-  <div class="detail-body" :class="row ? `tone-${statusTone(row?.status)}` : ''">
+  <div class="detail-body" :class="row ? `tone-${statusTone(effectiveRowStatus(row))}` : ''">
     <!-- 顶部：分类 / 状态 / 关闭 -->
     <header class="detail-head">
       <button class="detail-close" type="button" @click="$emit('close')">
         <X :size="16" :stroke-width="2.6" />
       </button>
       <div class="detail-head-row">
-        <div class="detail-icon" :class="`tone-${statusTone(row?.status)}`">
+        <div class="detail-icon" :class="`tone-${statusTone(effectiveRowStatus(row))}`">
           <component
             :is="categoryConfig.icon"
             :size="18"
@@ -29,7 +29,7 @@
           <div class="detail-subtitle">
             <span
               class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[11px] font-semibold leading-none ring-1 ring-inset"
-              :class="subtitleStatusClasses(statusTone(row?.status))"
+              :class="subtitleStatusClasses(statusTone(effectiveRowStatus(row)))"
             >
               <component :is="statusConfig.icon" :size="12" :stroke-width="2.6" />
               <span>{{ statusConfig.label }}</span>
@@ -298,7 +298,8 @@ import {
   isRecoveredFailure,
   isRerunRow,
   displayRjcode,
-  humanAction as humanActionFn
+  humanAction as humanActionFn,
+  effectiveRowStatus
 } from '../../composables/useActivityDetailModels'
 
 const props = defineProps({

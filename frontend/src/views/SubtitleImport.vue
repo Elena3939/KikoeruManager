@@ -1,22 +1,19 @@
 ﻿<template>
   <div class="flex flex-col gap-4 min-h-full pb-8 subtitle-import-page">
-    <div class="flex items-center gap-3 flex-wrap">
-      <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-2 flex-wrap">
-          <h1 class="text-xl font-bold tracking-tight text-slate-900">字幕补配</h1>
-          <span v-if="pendingItems.length" class="inline-flex items-center px-2 py-0.5 rounded-[6px] bg-slate-100 text-slate-600 text-[10.5px] font-semibold border border-slate-200">{{ pendingItems.length }} 待处理</span>
-          <span v-if="(workbenchBackgroundSummary.processing||0)>0" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] bg-slate-100 text-slate-600 text-[10.5px] font-semibold border border-slate-200"><span class="w-1.5 h-1.5 bg-slate-500 rounded-full animate-pulse"></span>{{ workbenchBackgroundSummary.processing }} 进行中</span>
-          <span v-if="workbenchBackgroundSummary.total" class="text-[10.5px] text-slate-400 font-medium">累计 {{ workbenchBackgroundSummary.total }} 次</span>
-        </div>
-        <p class="text-[11.5px] text-slate-400 mt-0.5 max-w-xl">自动检测的压缩包来源进入预检单；手动字幕目录也可以在这里补进库存。</p>
-      </div>
-      <div class="flex items-center gap-2 flex-shrink-0">
-        <button class="h-8 px-3.5 rounded-[8px] text-[12.5px] font-semibold bg-slate-900 hover:bg-slate-800 text-white transition-all hover:-translate-y-0.5 active:scale-95 shadow-sm" @click="openImportWorkbench()">打开工作台</button>
-        <button class="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-[8px] text-[12.5px] font-medium border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all hover:-translate-y-0.5 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed" :disabled="pendingLoading" @click="loadPendingImports">
-          <span v-if="pendingLoading" class="animate-spin w-3 h-3 border-2 border-slate-300 border-t-slate-600 rounded-full"></span>刷新
-        </button>
-      </div>
-    </div>
+    <AppPageHeader
+      :icon="Captions"
+      icon-color="#0f766e"
+      title="字幕补配"
+      subtitle="自动检测的压缩包来源进入预检单；手动字幕目录也可以在这里补进库存。"
+    >
+      <span v-if="pendingItems.length" class="inline-flex items-center px-2 py-0.5 rounded-[6px] bg-slate-100 text-slate-600 text-[10.5px] font-semibold border border-slate-200">{{ pendingItems.length }} 待处理</span>
+      <span v-if="(workbenchBackgroundSummary.processing||0)>0" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] bg-slate-100 text-slate-600 text-[10.5px] font-semibold border border-slate-200"><span class="w-1.5 h-1.5 bg-slate-500 rounded-full animate-pulse"></span>{{ workbenchBackgroundSummary.processing }} 进行中</span>
+      <span v-if="workbenchBackgroundSummary.total" class="text-[10.5px] text-slate-400 font-medium">累计 {{ workbenchBackgroundSummary.total }} 次</span>
+      <button class="h-8 px-3.5 rounded-[8px] text-[12.5px] font-semibold bg-slate-900 hover:bg-slate-800 text-white transition-all hover:-translate-y-0.5 active:scale-95 shadow-sm" @click="openImportWorkbench()">打开工作台</button>
+      <button class="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-[8px] text-[12.5px] font-medium border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all hover:-translate-y-0.5 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed" :disabled="pendingLoading" @click="loadPendingImports">
+        <span v-if="pendingLoading" class="animate-spin w-3 h-3 border-2 border-slate-300 border-t-slate-600 rounded-full"></span>刷新
+      </button>
+    </AppPageHeader>
 
     <div v-show="!workbenchDialogVisible" class="flex flex-col gap-3">
       <div class="inline-flex gap-0.5 p-0.5 rounded-[10px] bg-slate-100 border border-slate-200 self-start">
@@ -239,6 +236,8 @@ import { useSubtitleImportArchive } from '../composables/useSubtitleImportArchiv
 import { useSubtitleImportFolder } from '../composables/useSubtitleImportFolder'
 import { useSubtitleImportWorkbench } from '../composables/useSubtitleImportWorkbench'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
+import { Captions } from 'lucide-vue-next'
 
 const route = useRoute()
 const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'

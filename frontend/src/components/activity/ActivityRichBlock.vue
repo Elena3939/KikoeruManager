@@ -219,46 +219,46 @@
         <div class="text-[14px] font-bold tracking-tight text-slate-900">监视新作</div>
         <div class="text-[12.5px] leading-relaxed text-slate-600 mt-1">{{ emailWatcherModel.circleNamesText || '本批次未解析到社团名' }}</div>
       </div>
-      <div class="flex flex-wrap gap-1.5 shrink-0">
-        <span class="inline-flex items-center px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">邮件 {{ emailWatcherModel.mailCount }}</span>
-        <span class="inline-flex items-center px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">新作 {{ emailWatcherModel.totalCount }}</span>
-        <span class="inline-flex items-center px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-emerald-50/80 text-emerald-700 ring-1 ring-inset ring-emerald-200/60">成功 {{ emailWatcherModel.successCount }}</span>
-        <span v-if="emailWatcherModel.failedCount" class="inline-flex items-center px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-rose-50/80 text-rose-700 ring-1 ring-inset ring-rose-200/60">失败 {{ emailWatcherModel.failedCount }}</span>
+      <div class="flex flex-wrap gap-1 shrink-0">
+        <span class="email-watch-stat is-stat-default">邮件 {{ emailWatcherModel.mailCount }}</span>
+        <span class="email-watch-stat is-stat-default">新作 {{ emailWatcherModel.totalCount }}</span>
+        <span class="email-watch-stat is-stat-success">成功 {{ emailWatcherModel.successCount }}</span>
+        <span v-if="emailWatcherModel.failedCount" class="email-watch-stat is-stat-failed">失败 {{ emailWatcherModel.failedCount }}</span>
       </div>
     </div>
-    <div v-if="emailWatcherModel.mailSubjects.length" class="flex flex-wrap gap-1.5 mb-2.5">
+    <div v-if="emailWatcherModel.mailSubjects.length" class="flex flex-wrap gap-1 mb-2.5">
       <span
         v-for="subject in emailWatcherModel.mailSubjects"
         :key="`mws-${subject}`"
-        class="inline-flex items-center px-2 py-[3px] rounded-md text-[11px] font-medium tracking-tight bg-sky-50/60 text-sky-700 ring-1 ring-inset ring-sky-200/40"
+        class="email-watch-subject"
       >{{ subject }}</span>
     </div>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+    <div class="flex flex-col gap-3">
       <article
         v-for="item in emailWatcherModel.items"
         :key="`ew-${item.rjcode}-${item.productUrl || item.title}`"
-        class="flex gap-3 p-3 rounded-xl bg-white ring-1 ring-inset transition-all hover:-translate-y-0.5 hover:shadow-md"
-        :class="item.statusKey === 'failed' ? 'ring-rose-200/40' : (item.statusKey === 'success' ? 'ring-emerald-200/40' : 'ring-slate-200/50')"
+        class="email-watch-card group flex gap-3.5 p-3 bg-white"
+        :class="item.statusKey === 'failed' ? 'is-failed' : (item.statusKey === 'success' ? 'is-success' : 'is-default')"
       >
-        <div class="w-[112px] h-[112px] shrink-0 rounded-lg overflow-hidden bg-slate-100/80 ring-1 ring-inset ring-slate-200/40">
+        <div class="email-watch-cover w-[120px] h-[120px] shrink-0 overflow-hidden bg-slate-100">
           <img
             v-if="item.coverUrl"
             :src="item.coverUrl"
             :alt="item.title || item.rjcode"
             loading="lazy"
-            class="w-full h-full object-cover"
+            class="w-full h-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.03]"
             @error="onEmailWatchCoverError($event, item)"
           >
           <div v-else class="w-full h-full flex items-center justify-center text-slate-400">
-            <ImageIcon :size="22" :stroke-width="2" />
+            <ImageIcon :size="22" :stroke-width="1.8" />
           </div>
         </div>
         <div class="flex-1 min-w-0 flex flex-col gap-1">
           <div class="flex items-center justify-between gap-2">
-            <span class="inline-flex items-center px-1.5 py-[2px] rounded text-[11px] font-mono font-semibold tracking-tight bg-slate-100/70 text-slate-700 ring-1 ring-inset ring-slate-200/60">{{ item.rjcode || '—' }}</span>
+            <span class="email-watch-rj">{{ item.rjcode || '—' }}</span>
             <span
-              class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset"
-              :class="item.statusKey === 'success' ? 'bg-emerald-50/80 text-emerald-700 ring-emerald-200/60' : (item.statusKey === 'failed' ? 'bg-rose-50/80 text-rose-700 ring-rose-200/60' : 'bg-slate-50/80 text-slate-600 ring-slate-200/60')"
+              class="email-watch-status"
+              :class="item.statusKey === 'success' ? 'is-status-success' : (item.statusKey === 'failed' ? 'is-status-failed' : 'is-status-default')"
             >{{ item.statusLabel }}</span>
           </div>
           <a
@@ -269,21 +269,26 @@
             class="text-[14px] font-bold leading-snug tracking-tight text-slate-900 hover:text-sky-700 transition-colors line-clamp-2"
           >{{ item.title || item.rjcode || '未命名作品' }}</a>
           <div v-else class="text-[14px] font-bold leading-snug tracking-tight text-slate-900 line-clamp-2">{{ item.title || item.rjcode || '未命名作品' }}</div>
-          <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-[11.5px] text-slate-500">
-            <span class="inline-flex items-center gap-1"><Users :size="11" :stroke-width="2.4" />{{ item.circleName || '未知社团' }}</span>
-            <span class="inline-flex items-center gap-1"><Clock :size="11" :stroke-width="2.4" />{{ item.releaseDate || '发售日待定' }}</span>
+          <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] text-slate-600 leading-relaxed">
+            <span class="inline-flex items-center gap-1 min-w-0 max-w-full">
+              <Users :size="12" :stroke-width="2" class="text-slate-400 shrink-0" />
+              <span class="truncate">{{ item.circleName || '未知社团' }}</span>
+            </span>
+            <span class="inline-flex items-center gap-1">
+              <Clock :size="12" :stroke-width="2" class="text-slate-400 shrink-0" />
+              <span class="tabular-nums">{{ item.releaseDate || '发售日待定' }}</span>
+            </span>
           </div>
-          <div class="flex flex-wrap gap-1 mt-0.5">
-            <span v-if="item.priceText" class="inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-medium tracking-wide bg-slate-50/80 text-slate-600 ring-1 ring-inset ring-slate-200/40">{{ item.priceText }}</span>
-            <span v-if="item.workType" class="inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-medium tracking-wide bg-slate-50/80 text-slate-600 ring-1 ring-inset ring-slate-200/40">{{ item.workType }}</span>
-            <span v-if="item.indexMode" class="inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-medium tracking-wide bg-slate-50/80 text-slate-600 ring-1 ring-inset ring-slate-200/40">{{ item.indexMode }}</span>
+          <div class="flex flex-wrap gap-1 mt-auto pt-0.5">
+            <span v-if="item.priceText" class="email-watch-chip is-chip-price">{{ item.priceText }}</span>
+            <span v-if="item.workType" class="email-watch-chip is-chip-type">{{ item.workType }}</span>
+            <span v-if="item.indexMode" class="email-watch-chip is-chip-index">{{ item.indexMode }}</span>
             <span
               v-if="item.backfillMode"
-              class="inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-medium tracking-wide ring-1 ring-inset"
-              :class="item.backfillTriggered ? 'bg-amber-50/80 text-amber-700 ring-amber-200/40' : 'bg-slate-50/80 text-slate-600 ring-slate-200/40'"
+              class="email-watch-chip"
+              :class="item.backfillTriggered ? 'is-chip-backfill-on' : 'is-chip-backfill-off'"
             >{{ item.backfillMode }}</span>
           </div>
-          <div v-if="item.note" class="text-[11.5px] leading-relaxed text-slate-500 mt-0.5 line-clamp-2">{{ item.note }}</div>
         </div>
       </article>
     </div>
@@ -599,7 +604,8 @@
           >{{ work.statusLabel }}</span>
         </div>
         <div class="flex flex-wrap gap-1">
-          <span v-if="work.preferred_variant_label" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">{{ work.preferred_variant_label }}</span>
+          <span v-if="work.variantTypeTag" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">{{ work.variantTypeTag }}</span>
+          <span v-if="work.hasSubtitleTag" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">字幕</span>
           <span v-if="work.sourceCompare.kikoeru.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">Kikoeru<span v-if="work.sourceCompare.kikoeru.primaryBadge"> · {{ work.sourceCompare.kikoeru.primaryBadge }}</span></span>
           <span v-if="work.sourceCompare.dlsite.all_rjcodes.length" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('warn')">DLsite × {{ work.sourceCompare.dlsite.all_rjcodes.length }}</span>
           <span v-if="work.sourceCompare.asmr_one.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">asmr.one<span v-if="work.sourceCompare.asmr_one.primaryBadge"> · {{ work.sourceCompare.asmr_one.primaryBadge }}</span></span>
@@ -681,7 +687,8 @@
           <span v-if="work.status_label" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="circleFlagClasses(statusBadgeClass(work.status_key))">{{ work.status_label }}</span>
         </div>
         <div class="circle-sources">
-          <span v-if="work.preferred_variant_label" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">{{ work.preferred_variant_label }}</span>
+          <span v-if="work.variant_type_tag" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">{{ work.variant_type_tag }}</span>
+          <span v-if="work.has_subtitle_tag" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">字幕</span>
           <span v-if="workSrc(work).kikoeru" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')" :title="workSrc(work).kikoeruTitle">Kikoeru<span v-if="workSrc(work).kikoeruBadge"> · {{ workSrc(work).kikoeruBadge }}</span></span>
           <span v-if="workSrc(work).dlsiteCount" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('warn')">DLsite × {{ workSrc(work).dlsiteCount }}</span>
           <span v-if="workSrc(work).asmr" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">asmr.one<span v-if="workSrc(work).asmrBadge"> · {{ workSrc(work).asmrBadge }}</span></span>
@@ -814,8 +821,7 @@ const CIRCLE_SOURCE_FILTERS = [
   { value: 'all', label: '全部' },
   { value: 'kikoeru', label: 'Kikoeru' },
   { value: 'dlsite', label: 'DLsite' },
-  { value: 'asmr_one', label: 'asmr.one' },
-  { value: 'missing', label: '都没收录' }
+  { value: 'asmr_one', label: 'asmr.one' }
 ]
 
 // 抛出导航事件给父级（ActivityHistory.vue 里再 router.push）
@@ -980,18 +986,53 @@ const circleRefreshItems = computed(() => {
 })
 
 // ===== 社团索引：work_sections =====
+// 用户诉求：下方“原作优先 / 其他语言”分组是冗余信息，
+// 顶部主列表已经能看到完整作品 + 类型 tag，这两个 section 直接不渲染。
+// 同时把每个 section 里的 ENG 版本作品过滤掉，与顶部主列表保持一致。
+const HIDDEN_WORK_SECTION_KEYS = new Set(['original', 'other'])
+const ENG_VARIANT_RE = /(\bENG\b|英文|english)/i
+
+function deriveVariantTypeTag(label) {
+  const text = String(label || '').trim()
+  if (!text) return ''
+  if (/简中/.test(text)) return '翻译作·简中'
+  if (/繁中/.test(text)) return '翻译作·繁中'
+  if (/原版|日文原版|\bJPN\b/i.test(text)) return '原作'
+  return text.replace(/^优先版本\s*/, '') || text
+}
+
 const workSections = computed(() => {
   if (category.value !== 'circle_completion') return []
   const arr = Array.isArray(detail.value.work_sections) ? detail.value.work_sections : []
   return arr
-    .map(section => ({
-      key: String(section?.key || ''),
-      label: section?.label || section?.key || '',
-      description: section?.description || '',
-      count: Number(section?.count || 0),
-      rows: Array.isArray(section?.rows) ? section.rows : []
-    }))
-    .filter(section => section.rows.length > 0)
+    .map(section => {
+      const key = String(section?.key || '')
+      if (HIDDEN_WORK_SECTION_KEYS.has(key)) {
+        return null
+      }
+      const rawRows = Array.isArray(section?.rows) ? section.rows : []
+      // 过滤 ENG 版本，并就地补出 variantTypeTag / hasSubtitleTag，与顶部主列表口径一致
+      const rows = rawRows
+        .filter(row => !ENG_VARIANT_RE.test(String(row?.preferred_variant_label || '')))
+        .map(row => {
+          const kikoeruTags = Array.isArray(row?.source_compare?.kikoeru?.tags)
+            ? row.source_compare.kikoeru.tags
+            : []
+          return {
+            ...row,
+            variant_type_tag: deriveVariantTypeTag(row?.preferred_variant_label),
+            has_subtitle_tag: kikoeruTags.includes('字幕') || Boolean(row?.source_compare?.kikoeru?.subtitle_present)
+          }
+        })
+      return {
+        key,
+        label: section?.label || key,
+        description: section?.description || '',
+        count: rows.length,
+        rows
+      }
+    })
+    .filter(section => section && section.rows.length > 0)
 })
 
 function isSectionExpanded(key) {
@@ -1135,6 +1176,171 @@ function formatBytes(size) {
   background: rgba(248, 250, 252, 0.96);
   color: #334155;
   border-color: rgba(148, 163, 184, 0.32);
+}
+
+/* ===== 邮件监听新作卡片 =====
+   参照邮件 HTML 卡片：方块 + 8px 圆角 + 浅边框 + 极简动效（不要胶囊圆条）
+*/
+.email-watch-card {
+  position: relative;
+  border-radius: 8px;
+  border: 1px solid #e8ebf0;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.email-watch-card.is-success {
+  border-color: rgba(5, 150, 105, 0.28);
+}
+
+.email-watch-card.is-failed {
+  border-color: rgba(225, 29, 72, 0.32);
+}
+
+.email-watch-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(15, 23, 42, 0.18);
+  box-shadow: 0 6px 16px -10px rgba(15, 23, 42, 0.18);
+}
+
+.email-watch-card.is-success:hover {
+  border-color: rgba(5, 150, 105, 0.45);
+}
+
+.email-watch-card.is-failed:hover {
+  border-color: rgba(225, 29, 72, 0.5);
+}
+
+.email-watch-cover {
+  border-radius: 6px;
+  border: 1px solid #e8ebf0;
+}
+
+/* 顶部统计 chip（邮件 / 新作 / 成功 / 失败）：方形小标签 */
+.email-watch-stat {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.email-watch-stat.is-stat-success {
+  background: #ecfdf5;
+  color: #047857;
+  border-color: #a7f3d0;
+}
+
+.email-watch-stat.is-stat-failed {
+  background: #fff1f2;
+  color: #be123c;
+  border-color: #fecdd3;
+}
+
+/* 邮件主题标签：方形浅蓝小卡 */
+.email-watch-subject {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  background: #f0f9ff;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+  white-space: nowrap;
+}
+
+/* 卡内 RJ 号：紫色文字（贴合邮件配色） */
+.email-watch-rj {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #7b4fb4;
+}
+
+/* 状态徽章：方形小色块（不要胶囊） */
+.email-watch-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.email-watch-status.is-status-success {
+  background: #ecfdf5;
+  color: #047857;
+  border-color: #a7f3d0;
+}
+
+.email-watch-status.is-status-failed {
+  background: #fff1f2;
+  color: #be123c;
+  border-color: #fecdd3;
+}
+
+.email-watch-status.is-status-default {
+  background: #f1f5f9;
+  color: #475569;
+  border-color: #e2e8f0;
+}
+
+/* 信息底排 chip：方形小色块，配色对齐邮件 HTML */
+.email-watch-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.email-watch-chip.is-chip-price {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fed7aa;
+}
+
+.email-watch-chip.is-chip-type {
+  background: #ecfeff;
+  color: #0e7490;
+  border-color: #a5f3fc;
+}
+
+.email-watch-chip.is-chip-index {
+  background: #f0f9ff;
+  color: #0369a1;
+  border-color: #bae6fd;
+}
+
+.email-watch-chip.is-chip-backfill-on {
+  background: #fefce8;
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+.email-watch-chip.is-chip-backfill-off {
+  background: #f8fafc;
+  color: #475569;
+  border-color: #e2e8f0;
 }
 
 /* ===== 文件路径列表 ===== */

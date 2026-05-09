@@ -1,14 +1,14 @@
 <template>
-  <div class="flex min-h-0 flex-col overflow-auto rounded-[12px] border border-slate-200/80 bg-white shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] detail-scroll">
+  <div class="flex min-h-0 flex-col overflow-auto rounded-[14px] border border-slate-200/90 bg-white shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] detail-scroll">
     <header class="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-100 bg-white/95 px-4 py-3 backdrop-blur">
       <span class="text-[13px] font-bold tracking-tight text-slate-900">任务详情</span>
       <button
         v-if="item?.route_hint"
         type="button"
-        class="group inline-flex h-7 cursor-pointer items-center gap-1 rounded-[8px] border border-slate-200 bg-white px-2.5 text-[11.5px] font-medium text-slate-700 shadow-[0_1px_3px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.03] hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 active:scale-95"
+        class="group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3 text-[12px] font-medium text-slate-700 transition-all duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:border-slate-400 hover:bg-slate-50 hover:text-slate-900 active:scale-95"
         @click="$emit('open-route', item)"
       >
-        <ArrowRight :size="12" :stroke-width="2.4" class="transition-transform duration-300 group-hover:translate-x-1" />
+        <ArrowRight :size="13" :stroke-width="2.4" class="transition-transform duration-300 group-hover:translate-x-0.5" />
         <span>打开关联页面</span>
       </button>
     </header>
@@ -19,24 +19,26 @@
         <span>正在读取完整任务详情...</span>
       </div>
 
-      <!-- Hero -->
-      <div class="flex items-start gap-3 px-4 pt-3.5 pb-3">
-        <span
-          class="mt-0.5 inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] border border-slate-200 bg-white transition-all duration-300 hover:scale-105 hover:rotate-[-6deg]"
-        >
-          <component :is="domainMeta(item.domain).icon" :size="16" :stroke-width="2.2" :class="domainMeta(item.domain).chipIcon" />
-        </span>
+      <!-- Hero：纯色图标无背景框，和任务列表卡片呼应 -->
+      <div class="flex items-start gap-3 px-5 pt-4 pb-3">
+        <component
+          :is="domainMeta(item.domain).icon"
+          :size="22"
+          :stroke-width="2"
+          class="mt-[3px] flex-shrink-0 transition-transform duration-300 hover:scale-110 hover:rotate-[-4deg]"
+          :class="domainMeta(item.domain).chipIcon"
+        />
         <div class="flex-1 min-w-0">
           <div class="flex items-start justify-between gap-2.5">
-            <h2 class="m-0 text-[16px] font-bold tracking-tight text-slate-900 leading-tight">{{ item.title }}</h2>
+            <h2 class="m-0 text-[17px] font-bold tracking-tight text-slate-900 leading-tight">{{ item.title }}</h2>
             <StatusPill :status="item.status" :label="item.status_label" />
           </div>
-          <p v-if="item.subtitle" class="m-0 mt-1 text-[12px] leading-snug text-slate-500">{{ item.subtitle }}</p>
-          <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
-            <span class="inline-flex items-center gap-1 font-medium" :class="domainMeta(item.domain).chipIcon">
-              <component :is="domainMeta(item.domain).icon" :size="11" :stroke-width="2.3" />
-              <span class="text-slate-700">{{ item.domain_label }}</span>
-            </span>
+          <p v-if="item.subtitle" class="m-0 mt-1 text-[12.5px] leading-snug text-slate-500">{{ item.subtitle }}</p>
+          <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
+            <span
+              class="inline-flex h-[20px] items-center rounded-full px-2 text-[11px] font-semibold"
+              :class="[domainMeta(item.domain).chipBg, domainMeta(item.domain).chipText]"
+            >{{ item.domain_label }}</span>
             <span v-if="formatRJCode(item.rjcode)" class="font-bold tabular-nums text-slate-700">{{ formatRJCode(item.rjcode) }}</span>
           </div>
         </div>

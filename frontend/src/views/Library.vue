@@ -8,23 +8,19 @@
 
   >
 
-    <header class="lib-page-header">
+    <AppPageHeader
 
-      <div class="lib-page-head-left">
+      :icon="IconDatabase"
 
-        <div class="lib-page-icon"><IconDatabase :size="20" :stroke-width="2.2" /></div>
+      icon-color="#1d4ed8"
 
-        <div>
+      :title="labels.pageTitle"
 
-          <h1 class="lib-page-title">{{ labels.pageTitle }}</h1>
+      subtitle="多库存、本地 + 群晖、搜索定位、批量处理的一体化工作台"
 
-          <p class="lib-page-subtitle">多库存、本地 + 群晖、搜索定位、批量处理的一体化工作台</p>
+    >
 
-        </div>
-
-      </div>
-
-      <div class="lib-page-head-right" v-if="currentLibrary">
+      <template v-if="currentLibrary">
 
         <span class="lib-chip" :class="isRemoteCurrentLibrary ? 'lib-chip-warning' : 'lib-chip-success'">
 
@@ -40,9 +36,9 @@
 
         <LibraryIndexBadge :library="currentLibrary" />
 
-      </div>
+      </template>
 
-    </header>
+    </AppPageHeader>
 
 
 
@@ -140,25 +136,14 @@
 
           <div class="lib-toolbar">
 
-            <el-select v-model="selectedLibraryId" class="lib-library-select !w-[220px]" placeholder="选择库存">
-
-              <el-option v-for="library in libraries" :key="library.id" :label="library.name" :value="library.id">
-
-                <div class="flex items-center justify-between gap-3">
-
-                  <span class="truncate">{{ library.name }}</span>
-
-                  <el-tag size="small" effect="plain" :type="library.type === 'synology_filestation' ? 'warning' : 'success'">
-
-                    {{ library.type === 'synology_filestation' ? '远程' : '本地' }}
-
-                  </el-tag>
-
-                </div>
-
-              </el-option>
-
-            </el-select>
+            <AppDropdown
+              v-model="selectedLibraryId"
+              :options="libraryDropdownOptions"
+              :width="220"
+              :menu-min-width="260"
+              placeholder="选择库存"
+              :show-trigger-badge="false"
+            />
 
 
 
@@ -170,37 +155,18 @@
 
               :library-ids="globalSearchLibraryIds"
 
-              @legacy-search="onLegacySearch"
-
               @locate="onSuggestLocate"
 
               @open-overlay="onOpenSearchOverlay"
 
             />
 
-
-
-            <el-select v-model="searchResultKind" class="!w-[96px]">
-
-              <el-option label="全部" value="all" />
-
-              <el-option label="文件夹" value="folder" />
-
-              <el-option label="文件" value="file" />
-
-            </el-select>
-
-            <AppLottieSwitch v-model="searchExact" :show-text="true" active-text="精确" inactive-text="模糊" />
-
-
-
-            <button type="button" class="lib-btn lib-btn-primary" @click="handleSearch">
-
-              <IconSearch :size="14" :stroke-width="2.4" />
-
-              <span>查询</span>
-
-            </button>
+            <!--
+              原有的 “全部 / 文件夹 / 文件” select 、 “精确 / 模糊” switch 、 “查询” 按钮
+              已于“搜索完全走 LibrarySearchBox 下拉 + 全屏 overlay”重构后下架。
+              文件类型筛选现在是点击 LibrarySearchBox 左侧搜索图标弹出的下拉菜单；
+              下面文件列表只会“点击某个搜到的项”才跳转，输入本身不再驱动列表。
+            -->
 
 
 
@@ -1132,6 +1098,8 @@
 
       :initial-keyword="searchOverlayInitialKeyword"
 
+      :initial-kind-filter="searchOverlayInitialKindFilter"
+
       :libraries="libraries"
 
       @update:visible="value => { searchOverlayVisible = value }"
@@ -1343,7 +1311,7 @@ import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 
 import { useRoute, useRouter } from 'vue-router'
 
-import { Refresh, Search, Folder, FolderOpened, Delete, Edit, Files, Document, Picture, VideoPlay, Headset, Tickets, ArrowDown } from '@element-plus/icons-vue'
+import { Refresh, Search, Folder, Delete, Edit, Files, ArrowDown } from '@element-plus/icons-vue'
 
 import {
 
@@ -1352,8 +1320,6 @@ import {
   Minimize2,
 
   X as IconX,
-
-  Search as IconSearch,
 
   RefreshCw as IconRefreshCw,
 
@@ -1389,7 +1355,11 @@ import {
 
   FolderInput as IconFolderInput,
 
+  FolderOpen as IconFolderOpen,
+
 } from 'lucide-vue-next'
+
+import { classifyLibraryEntryKind, libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
 
 import { ElMessage } from 'element-plus'
 
@@ -1406,6 +1376,8 @@ import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppLottieSwitch from '../components/common/AppLottieSwitch.vue'
 
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+
+import AppPageHeader from '../components/common/AppPageHeader.vue'
 
 import clipboardIconAnimation from '../assets/anime/Clipboard.lottie'
 
@@ -1429,6 +1401,8 @@ import LibraryRowContextMenu from '../components/library/LibraryRowContextMenu.v
 import LibraryIndexBadge from '../components/library/LibraryIndexBadge.vue'
 
 import LibrarySearchBox from '../components/library/LibrarySearchBox.vue'
+
+import AppDropdown from '../components/common/AppDropdown.vue'
 
 import LibrarySearchOverlay from '../components/library/LibrarySearchOverlay.vue'
 
@@ -1511,6 +1485,9 @@ const librarySearchBoxRef = ref(null)
 const searchOverlayVisible = ref(false)
 
 const searchOverlayInitialKeyword = ref('')
+
+// LibrarySearchBox 右侧全屏 / Shift+回车 打开 overlay 时，把当前选中的文件类型筛选取值一起透传过去
+const searchOverlayInitialKindFilter = ref('all')
 
 const filterDeleteDialogRef = ref(null)
 
@@ -2576,6 +2553,16 @@ const {
 
 
 const currentLibrary = computed(() => libraries.value.find(item => item.id === selectedLibraryId.value) || null)
+
+const libraryDropdownOptions = computed(() => (Array.isArray(libraries.value) ? libraries.value : []).map(library => {
+  const isRemote = library?.type === 'synology_filestation'
+  return {
+    value: library.id,
+    label: library.name,
+    description: library.path || (isRemote ? '远程服务器库存' : '本地库存'),
+    badge: { label: isRemote ? '远程' : '本地', tone: isRemote ? 'amber' : 'emerald' },
+  }
+}))
 
 const currentStats = computed(() => statsMap.value[selectedLibraryId.value] || null)
 
@@ -3684,6 +3671,8 @@ const subtitleWorkbenchCtx = computed(() => ({
   toggleSubtitleInspectorExpand,
 
   resolveSubtitleTreeIcon,
+
+  resolveSubtitleTreeIconStyle,
 
   formatDate,
 
@@ -5158,6 +5147,10 @@ async function refreshLibrary (options = {}) {
 
   try {
 
+    // 重要：不再把 searchQuery / searchExact / searchResultKind 送给 browseFiles。
+    // 后重构后“库内文件列表的跳转只能由点击搜索下拉 / overlay 项驱动”，
+    // browseFiles 仅负责“按 currentPath 的普通浏览”模式。这也令 librarySearchState
+    // 永远为 inactive，上方“真实搜索 banner” / “退出搜索” 这类 UI 自然不再出现。
     const data = await libraryApi.browseFiles({
 
       libraryId: selectedLibraryId.value,
@@ -5166,11 +5159,11 @@ async function refreshLibrary (options = {}) {
 
       pageSize: pageSize.value,
 
-      search: searchQuery.value.trim(),
+      search: '',
 
-      searchExact: searchExact.value,
+      searchExact: false,
 
-      searchResultKind: searchResultKind.value,
+      searchResultKind: 'all',
 
       currentPath: currentPath.value,
 
@@ -5216,29 +5209,8 @@ async function refreshLibrary (options = {}) {
 
     parentPath.value = data.parent_path || ''
 
-    librarySearchState.value = createLibrarySearchState({
-
-      active: Boolean(data.search_mode),
-
-      query: data.search_query || searchQuery.value.trim(),
-
-      rootPath: data.search_root_path || '',
-
-      truncated: Boolean(data.search_truncated),
-
-      scannedDirectories: Number(data.scanned_directories || 0),
-
-      globalRemote: Boolean(data.search_global_remote),
-
-      searchedLibraries: Number(data.searched_library_count || 0),
-
-      hitLibraries: Number(data.hit_library_count || 0),
-
-      exactSearch: Boolean(data.search_exact ?? searchExact.value),
-
-      resultKind: data.search_result_kind || searchResultKind.value || 'all'
-
-    })
+    // 不再让 browseFiles 驱动“真实搜索”状态：baby step 重置到空。
+    librarySearchState.value = createLibrarySearchState()
 
     scheduleListPoll(files.value)
 
@@ -5308,43 +5280,9 @@ async function applyTableSortIndicator () {
 
 
 
-async function handleSearch () {
-
-  searchResultReturnState.value = createSearchResultReturnState()
-
-  pendingLibrarySearchRestore.value = null
-
-  locatedLibraryPath.value = ''
-
-  const shouldRefreshNow = currentPage.value === 1
-
-  forceLibraryRefreshOnce = true
-
-  currentPage.value = 1
-
-  if (shouldRefreshNow) {
-
-    await refreshLibrary({ forceRefresh: true })
-
-    forceLibraryRefreshOnce = false
-
-  }
-
-}
-
-
-
-// LibrarySearchBox 触发的"回车 = 在当前库筛选"，行为与原 lib-search 一致
-
-function onLegacySearch (payload) {
-
-  const next = (payload?.keyword ?? searchQuery.value ?? '').trim()
-
-  if (next !== searchQuery.value) searchQuery.value = next
-
-  handleSearch()
-
-}
+// 原 handleSearch / onLegacySearch 走的是“在当前库做真实搜索 + 把结果铺到下面表格”路径，
+// 重构后这条路径下架。搜索完全走 LibrarySearchBox 下拉 + 全屏 overlay；
+// 下面文件列表只能由点击建议行 / overlay 行 跳转。
 
 
 
@@ -5430,6 +5368,8 @@ function onOpenSearchOverlay (payload = {}) {
 
   searchOverlayInitialKeyword.value = (payload?.keyword || searchQuery.value || '').trim()
 
+  searchOverlayInitialKindFilter.value = String(payload?.kindFilter || 'all')
+
   searchOverlayVisible.value = true
 
 }
@@ -5500,21 +5440,15 @@ function getFileName (path) {
 
 }
 
+// 库存页主文件列表的行图标，现在全部交给共享 helper。
+// 9 类：dir / audio-lossless / audio / image / video / pdf / archive / text / file
+// 与优先序 / 颜色与操作记录 ActivityRichBlock + 其他对话框一致。
 function getLibraryRowIconComponent (row) {
-  if (row?.is_directory) return IconFolderTree
-  const name = String(row?.name || '').toLowerCase()
-  if (/\.(wav|flac|mp3|m4a|ogg|aac|wma)$/.test(name)) return IconMusic
-  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc)$/.test(name)) return IconFileText
-  return IconFile
+  return libraryEntryIconFor(row)
 }
 
 function getLibraryRowIconClass (row) {
-  if (row?.is_directory) return 'icon-folder'
-  const name = String(row?.name || '').toLowerCase()
-  if (/\.(wav|flac)$/.test(name)) return 'icon-audio-lossless'
-  if (/\.(mp3|m4a|ogg|aac|wma)$/.test(name)) return 'icon-audio'
-  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc)$/.test(name)) return 'icon-text'
-  return 'icon-file'
+  return `icon-${classifyLibraryEntryKind(row)}`
 }
 
 
@@ -12451,11 +12385,35 @@ function resolveSubtitleTreeIcon (row) {
 
   if (row?.type === 'dir') {
 
-    return subtitleInspectorExpandedIds.value.has(row.id) ? FolderOpened : Folder
+    // 原本 dir 展开用 element-plus 的 FolderOpened，现在统一走 lucide IconFolderOpen。
+
+    // dir 收起也对齐到 lucide（IconFolderTree 就是 lucide Folder），避免两套图标库混用。
+
+    return subtitleInspectorExpandedIds.value.has(row.id) ? IconFolderOpen : IconFolderTree
 
   }
 
-  return fileIcon(row?.name || '')
+  return libraryEntryIconFor(row)
+
+}
+
+
+
+// 与 resolveSubtitleTreeIcon 配套的推荐色（inline :style 上色），
+
+// 让消费方能拿到与操作记录文件树一致的颜色。
+
+function resolveSubtitleTreeIconStyle (row) {
+
+  const meta = libraryEntryMetaFor(row)
+
+  return {
+
+    color: meta.color,
+
+    fill: meta.fillIcon ? 'currentColor' : 'none',
+
+  }
 
 }
 
@@ -14011,19 +13969,13 @@ function stopBackgroundFilterDelete () {
 
 
 
+// 原本走的是 element-plus 的 Headset / Picture / VideoPlay / Tickets / Document，
+
+// 现在完全交给 _libraryFileKind helper，走 9 类色盘。
+
 function fileIcon (name = '') {
 
-  const lower = name.toLowerCase()
-
-  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(lower)) return Headset
-
-  if (/\.(png|jpg|jpeg|webp|bmp|gif)$/i.test(lower)) return Picture
-
-  if (/\.(mp4|mkv|avi|mov|wmv|webm)$/i.test(lower)) return VideoPlay
-
-  if (/\.(lrc|srt|ass|ssa|vtt)$/i.test(lower)) return Tickets
-
-  return Document
+  return libraryEntryIconFor({ type: 'file', name })
 
 }
 
@@ -14371,71 +14323,7 @@ function statsStatusTextDisplay (stats) {
 
 
 
-/* 页面头部 */
-
-.lib-page-header {
-
-  display: flex;
-
-  align-items: center;
-
-  justify-content: space-between;
-
-  gap: 14px;
-
-  margin-bottom: 14px;
-
-}
-
-.lib-page-head-left { display: flex; align-items: center; gap: 12px; }
-
-.lib-page-head-right { display: flex; flex-wrap: wrap; gap: 6px; }
-
-.lib-page-icon {
-
-  display: grid;
-
-  place-items: center;
-
-  width: 44px;
-
-  height: 44px;
-
-  border-radius: 14px;
-
-  background: linear-gradient(135deg, rgba(219, 234, 254, 0.9), rgba(196, 181, 253, 0.7));
-
-  color: #1d4ed8;
-
-  box-shadow: 0 6px 16px -6px rgba(59, 130, 246, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
-
-}
-
-.lib-page-title {
-
-  margin: 0;
-
-  font-size: 22px;
-
-  font-weight: 700;
-
-  letter-spacing: -0.4px;
-
-  color: #0f172a;
-
-  line-height: 1.2;
-
-}
-
-.lib-page-subtitle {
-
-  margin: 2px 0 0;
-
-  font-size: 12.5px;
-
-  color: #64748b;
-
-}
+/* 页面头部现在走共享组件 components/common/AppPageHeader.vue，这里不再重复定义 */
 
 
 
@@ -14986,35 +14874,8 @@ function statsStatusTextDisplay (stats) {
 
 
 
-.lib-library-select :deep(.el-select__wrapper),
-
-.lib-toolbar :deep(.el-select__wrapper) {
-
-  border-radius: 10px;
-
-  box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.7);
-
-  background: rgba(248, 250, 252, 0.7);
-
-  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
-
-}
-
-.lib-toolbar :deep(.el-select__wrapper:hover) {
-
-  background: #fff;
-
-  box-shadow: inset 0 0 0 1px #94a3b8;
-
-}
-
-.lib-toolbar :deep(.el-select__wrapper.is-focused) {
-
-  box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.5) !important;
-
-  background: #fff;
-
-}
+/* 库存切换器（AppDropdown）的 trigger 在 toolbar 中作为主入口，
+ * 这里给它增加一点视觉层级以呼应卡片标题，紧贴库存名 + 远程/本地徽章。*/
 
 
 
@@ -16761,19 +16622,34 @@ function statsStatusTextDisplay (stats) {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/*
+ * 库存主文件列表行图标 9 类色盘，与 _libraryFileKind helper 对齐。
+ * dir 保持原本的黄填充风格；color / fill 均听 helper 的 meta。
+ * 色值严格跟 _libraryFileKind.LIBRARY_ENTRY_KIND_META 一致，避免其他对话框、
+ * 操作记录文件树与主列表三处颜色不一致。
+ */
+.file-icon.icon-dir,
 .file-icon.icon-folder {
-  color: #f59e0b;
+  color: #f6b73c;
   fill: currentColor;
   stroke: currentColor;
 }
 
-.file-icon.icon-audio-lossless { color: #0f766e; }
+.file-icon.icon-audio-lossless { color: #2563eb; }
 
-.file-icon.icon-audio { color: #0ea5e9; }
+.file-icon.icon-audio { color: #7c3aed; }
 
-.file-icon.icon-text { color: #8b5cf6; }
+.file-icon.icon-image { color: #f97316; }
 
-.file-icon.icon-file { color: #64748b; }
+.file-icon.icon-video { color: #6366f1; }
+
+.file-icon.icon-pdf { color: #dc2626; }
+
+.file-icon.icon-archive { color: #d97706; }
+
+.file-icon.icon-text { color: #64748b; }
+
+.file-icon.icon-file { color: #94a3b8; }
 
 .file-name { vertical-align: middle; font-weight: 500; color: #1d1d1f; }
 

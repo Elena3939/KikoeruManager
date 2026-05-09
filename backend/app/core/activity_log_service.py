@@ -635,6 +635,33 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
         status = "waiting"
     elif st == TaskStatus.COMPLETED:
         status = "success"
+        # 解压入库走“原作目录已有字幕 / 加入问题作品列表”分支时，task 在引擎里被设为 COMPLETED
+        # 让任务列表收尾，但作品其实进了问题作品列表，操作记录不能再标记成纯成功，否则会和“入库✓”
+        # 冲突。这里覆盖几种来源都降级为 partial_success：
+        #   1. source_mode 显式标了 *_existing_subtitle_conflict
+        #   2. metadata 上挂了 linked_subtitle_problem / existing_subtitle_problem 字段
+        #   3. current_step 里出现“加入问题作品列表 / 转入问题作品 / 按重复作品处理” 等兜底关键词
+        _meta_for_status = task.task_metadata or {}
+        _source_mode_for_status = str(_meta_for_status.get("source_mode") or "").strip()
+        _has_problem_marker = bool(
+            _meta_for_status.get("linked_subtitle_problem")
+            or _meta_for_status.get("existing_subtitle_problem")
+        )
+        _step_text_for_status = str(getattr(task, "current_step", "") or "")
+        _PARTIAL_KEYWORDS = (
+            "加入问题作品列表",
+            "已转入问题作品",
+            "按重复作品处理",
+            "转入问题作品列表",
+        )
+        _step_hits_partial = any(kw in _step_text_for_status for kw in _PARTIAL_KEYWORDS)
+        if (
+            _source_mode_for_status.endswith("_existing_subtitle_conflict")
+            or _source_mode_for_status == "linked_translation_archive_existing_subtitle_conflict"
+            or _has_problem_marker
+            or _step_hits_partial
+        ):
+            status = "partial_success"
 
     rj = (getattr(task, "rjcode", None) or (task.task_metadata or {}).get("rjcode") or "").strip().upper()
     action = "task_finished"

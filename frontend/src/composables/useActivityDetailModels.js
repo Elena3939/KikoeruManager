@@ -402,8 +402,13 @@ function finalStatusLabel(row) {
     if (row?.category === 'subtitle_crawl') return '配对✔'
     if (row?.category === 'pipeline_filter') return '删除✔'
     if (row?.category === 'subtitle_import') return '配对✔'
-    if (['extract', 'auto_import', 'process_existing'].includes(String(row?.category || ''))) return '入库✔'
-    return '完成✔'
+    if (['extract', 'auto_import', 'process_existing'].includes(String(row?.category || ''))) {
+      // 子任务里出现 partial_success（典型：原作目录已有字幕，作品转入问题作品列表），
+      // 整批不能再标成纯“入库✔”，回退为“部分入库”。finalStatusClass 中含“部分”关键字
+      // 会自动落到 is-final-partial 黄色徽章，与 status pill “部分成功”视觉一致。
+      return ss.includes('partial_success') ? '部分入库' : '入库✔'
+    }
+    return ss.includes('partial_success') ? '部分完成' : '完成✔'
   }
   return ''
 }
@@ -1309,6 +1314,31 @@ function subtitleBatchWorkbenchModel(row) {
 }
 
 // ===================== 操作动作中文化（humanAction） =====================
+// 部分场景后端把 status 写成 'success'，但 summary / detail 显示已进了问题作品列表。
+// 这里和 ActivityHistory.vue 的 effectiveStatus 保持同一套兜底关键词，避免列表 / 详情
+// / 子任务列表三处状态文案不一致。
+const _PARTIAL_SUCCESS_KEYWORDS_DETAIL = [
+  '加入问题作品列表',
+  '已转入问题作品',
+  '按重复作品处理',
+  '转入问题作品列表',
+]
+
+function effectiveRowStatus(row) {
+  if (!row) return ''
+  const raw = String(row.status || '')
+  if (raw !== 'success') return raw
+  const summary = String(row.summary || '')
+  if (_PARTIAL_SUCCESS_KEYWORDS_DETAIL.some(kw => summary.includes(kw))) return 'partial_success'
+  const detail = row.detail || {}
+  if (detail && (detail.linked_subtitle_problem || detail.existing_subtitle_problem)) {
+    return 'partial_success'
+  }
+  const sourceMode = String((detail && detail.source_mode) || '')
+  if (sourceMode.endsWith('_existing_subtitle_conflict')) return 'partial_success'
+  return raw
+}
+
 function humanAction(row) {
   const detail = safeDetail(row)
   const sourceAction = String(row?.source_action || detail.source_action || '').trim()
@@ -1337,7 +1367,9 @@ function humanAction(row) {
     if (row.relation === 'asmr_plan') return '下载计划已生成'
     if (row.relation === 'asmr_session') return displaySummary(row) || '下载会话'
   }
-  const cat = row?.category, status = row?.status, action = row?.action
+  // 父任务 / 主行：用 effectiveRowStatus 把"实际进了问题作品列表的 success"降级成 partial_success。
+  // 子任务（is_tree_child）保留原 status，因为它们一般是细粒度记录，不需要兜底翻转。
+  const cat = row?.category, status = effectiveRowStatus(row), action = row?.action
   if (cat === 'pipeline_filter') {
     if (action === 'filter_delete_preview') {
       if (status === 'success') return '删除过滤预审完成'
@@ -1498,6 +1530,24 @@ function humanAction(row) {
 }
 
 // ===================== 社团补全模型 =====================
+// 用户的诉求：列表里只保留对自己有用的“服务器收录类型”，
+// ENG 等英语翻译版本不展示；preferred_variant_label 转成更直观的“原作 / 翻译作·简中”等。
+const _ENG_VARIANT_RE = /(\bENG\b|英文|english)/i
+
+function _isEnglishVariant(label) {
+  return _ENG_VARIANT_RE.test(String(label || ''))
+}
+
+function _deriveVariantTypeTag(label) {
+  const text = String(label || '').trim()
+  if (!text) return ''
+  if (/简中/.test(text)) return '翻译作·简中'
+  if (/繁中/.test(text)) return '翻译作·繁中'
+  if (/原版|日文原版|\bJPN\b/i.test(text)) return '原作'
+  // 兜底：去掉“优先版本”前缀，保留语种字样
+  return text.replace(/^优先版本\s*/, '') || text
+}
+
 function circleCompletionIndexModel(row) {
   if (!row || row.category !== 'circle_completion' || row.action !== 'index_completed') return null
   const d = safeDetail(row)
@@ -1515,34 +1565,44 @@ function circleCompletionIndexModel(row) {
         .map((s) => ({
           key: String(s?.key || '').trim(),
           count: Number(s?.count || 0),
-          rows: Array.isArray(s?.rows) ? s.rows.map((it) => ({
-            canonical_rjcode: String(it?.canonical_rjcode || '').trim(),
-            workRjcode: String(it?.work_rjcode || it?.canonical_rjcode || '').trim(),
-            display_rjcode: String(it?.display_rjcode || '').trim(),
-            title: String(it?.title || '').trim(),
-            preferred_variant_label: String(it?.preferred_variant_label || '').trim(),
-            statusLabel: String(it?.status_label || '').trim() || '未标记',
-            statusKey: String(it?.status_key || '').trim() || 'unknown',
-            sourceCompare: {
-              kikoeru: {
-                primary_rjcode: String(it?.source_compare?.kikoeru?.primary_rjcode || '').trim(),
-                primaryBadge: String(it?.source_compare?.kikoeru?.primary_badge || '').trim(),
-                variantBadges: Array.isArray(it?.source_compare?.kikoeru?.variant_badges) && it.source_compare.kikoeru.variant_badges.length
-                  ? it.source_compare.kikoeru.variant_badges.filter(Boolean)
-                  : (String(it?.source_compare?.kikoeru?.primary_badge || '').trim() ? [String(it.source_compare.kikoeru.primary_badge).trim()] : []),
-                all_rjcodes: Array.isArray(it?.source_compare?.kikoeru?.all_rjcodes) ? it.source_compare.kikoeru.all_rjcodes.filter(Boolean) : [],
-                tags: Array.isArray(it?.source_compare?.kikoeru?.tags) ? it.source_compare.kikoeru.tags.filter(Boolean) : [],
-              },
-              dlsite: {
-                all_rjcodes: Array.isArray(it?.source_compare?.dlsite?.all_rjcodes) ? it.source_compare.dlsite.all_rjcodes.filter(Boolean) : [],
-              },
-              asmr_one: {
-                primary_rjcode: String(it?.source_compare?.asmr_one?.primary_rjcode || '').trim(),
-                primaryBadge: String(it?.source_compare?.asmr_one?.primary_badge || '').trim(),
-                all_rjcodes: Array.isArray(it?.source_compare?.asmr_one?.all_rjcodes) ? it.source_compare.asmr_one.all_rjcodes.filter(Boolean) : [],
-              },
-            },
-          })) : [],
+          rows: Array.isArray(s?.rows) ? s.rows
+            .filter((it) => !_isEnglishVariant(it?.preferred_variant_label))
+            .map((it) => {
+              const rawLabel = String(it?.preferred_variant_label || '').trim()
+              const kikoeruTags = Array.isArray(it?.source_compare?.kikoeru?.tags)
+                ? it.source_compare.kikoeru.tags.filter(Boolean)
+                : []
+              return {
+                canonical_rjcode: String(it?.canonical_rjcode || '').trim(),
+                workRjcode: String(it?.work_rjcode || it?.canonical_rjcode || '').trim(),
+                display_rjcode: String(it?.display_rjcode || '').trim(),
+                title: String(it?.title || '').trim(),
+                preferred_variant_label: rawLabel,
+                variantTypeTag: _deriveVariantTypeTag(rawLabel),
+                hasSubtitleTag: kikoeruTags.includes('字幕') || Boolean(it?.source_compare?.kikoeru?.subtitle_present),
+                statusLabel: String(it?.status_label || '').trim() || '未标记',
+                statusKey: String(it?.status_key || '').trim() || 'unknown',
+                sourceCompare: {
+                  kikoeru: {
+                    primary_rjcode: String(it?.source_compare?.kikoeru?.primary_rjcode || '').trim(),
+                    primaryBadge: String(it?.source_compare?.kikoeru?.primary_badge || '').trim(),
+                    variantBadges: Array.isArray(it?.source_compare?.kikoeru?.variant_badges) && it.source_compare.kikoeru.variant_badges.length
+                      ? it.source_compare.kikoeru.variant_badges.filter(Boolean)
+                      : (String(it?.source_compare?.kikoeru?.primary_badge || '').trim() ? [String(it.source_compare.kikoeru.primary_badge).trim()] : []),
+                    all_rjcodes: Array.isArray(it?.source_compare?.kikoeru?.all_rjcodes) ? it.source_compare.kikoeru.all_rjcodes.filter(Boolean) : [],
+                    tags: kikoeruTags,
+                  },
+                  dlsite: {
+                    all_rjcodes: Array.isArray(it?.source_compare?.dlsite?.all_rjcodes) ? it.source_compare.dlsite.all_rjcodes.filter(Boolean) : [],
+                  },
+                  asmr_one: {
+                    primary_rjcode: String(it?.source_compare?.asmr_one?.primary_rjcode || '').trim(),
+                    primaryBadge: String(it?.source_compare?.asmr_one?.primary_badge || '').trim(),
+                    all_rjcodes: Array.isArray(it?.source_compare?.asmr_one?.all_rjcodes) ? it.source_compare.asmr_one.all_rjcodes.filter(Boolean) : [],
+                  },
+                },
+              }
+            }) : [],
         }))
         .filter((s) => s.key && s.rows.length)
     : []
@@ -1644,6 +1704,19 @@ function circleIndexSourceIcon(sourceKey, item) {
 }
 
 // ===================== 邮件监听新作模型 =====================
+// DLsite 新作通知邮件主题里通常带「社团名」，
+// 后端旧记录里 detail.items / 子任务的 circle_name 可能为空，
+// 这里做前端兜底，从 mail_subject 解析社团名，避免详情里出现 “本批次未解析到社团名”。
+const _SUBJECT_CIRCLE_NAME_RE = /「([^」]+)」\s*(?:から|の)\s*新(?:着|作)/
+
+function extractCircleNameFromSubject(subject) {
+  const text = String(subject || '').trim()
+  if (!text) return ''
+  const match = text.match(_SUBJECT_CIRCLE_NAME_RE)
+  if (!match) return ''
+  return String(match[1] || '').trim().slice(0, 160)
+}
+
 function emailWatcherBatchModel(row) {
   if (!row || String(row.category || '').trim() !== 'email_watcher') return null
   if (String(row.action || '').trim() !== 'fetch_check') return null
@@ -1654,10 +1727,12 @@ function emailWatcherBatchModel(row) {
   const childItems = childRows.map((it) => {
     const cd = safeDetail(it)
     const status = String(it?.status || '').trim()
+    const rawCircleName = String(cd.circle_name || cd.mail_circle_name || '').trim()
+    const circleName = rawCircleName || extractCircleNameFromSubject(cd.mail_subject)
     return {
       rjcode: String(it?.rjcode || cd.rjcode || '').trim().toUpperCase(),
       title: String(cd.work_title || cd.title || '').trim(),
-      circleName: String(cd.circle_name || cd.mail_circle_name || '').trim(),
+      circleName,
       priceText: String(cd.price_text || '').trim(),
       workType: String(cd.work_type || '').trim(),
       coverUrl: String(cd.image_url || '').trim(),
@@ -1669,31 +1744,40 @@ function emailWatcherBatchModel(row) {
       statusKey: status === 'success' ? 'success' : 'failed',
       statusLabel: status === 'success' ? '索引完成' : '索引失败',
       note: status === 'success'
-        ? (String(cd.backfill_mode || cd.circle_name || '').trim() || '已完成社团索引')
+        ? (String(cd.backfill_mode || circleName || '').trim() || '已完成社团索引')
         : (String(cd.error || it?.summary || '').trim() || '索引失败'),
     }
   })
 
-  const fallbackItems = (Array.isArray(d.items) ? d.items : []).map((it) => ({
-    rjcode: String(it?.rjcode || '').trim().toUpperCase(),
-    title: String(it?.title || '').trim(),
-    circleName: String(it?.circle_name || '').trim(),
-    priceText: String(it?.price_text || '').trim(),
-    workType: String(it?.work_type || '').trim(),
-    coverUrl: String(it?.image_url || '').trim(),
-    releaseDate: formatReleaseDate(it?.release_date),
-    productUrl: String(it?.product_url || '').trim(),
-    indexMode: '', backfillMode: '', backfillTriggered: false,
-    statusKey: 'default', statusLabel: '待处理',
-    note: String(it?.mail_subject || '').trim() || '等待异步索引结果',
-  }))
+  const fallbackItems = (Array.isArray(d.items) ? d.items : []).map((it) => {
+    const rawCircleName = String(it?.circle_name || '').trim()
+    return {
+      rjcode: String(it?.rjcode || '').trim().toUpperCase(),
+      title: String(it?.title || '').trim(),
+      circleName: rawCircleName || extractCircleNameFromSubject(it?.mail_subject),
+      priceText: String(it?.price_text || '').trim(),
+      workType: String(it?.work_type || '').trim(),
+      coverUrl: String(it?.image_url || '').trim(),
+      releaseDate: formatReleaseDate(it?.release_date),
+      productUrl: String(it?.product_url || '').trim(),
+      indexMode: '', backfillMode: '', backfillTriggered: false,
+      statusKey: 'default', statusLabel: '待处理',
+      note: String(it?.mail_subject || '').trim() || '等待异步索引结果',
+    }
+  })
 
   const items = childItems.length ? childItems : fallbackItems
   if (!items.length) return null
-  const circleNames = Array.from(new Set(items.map((it) => String(it.circleName || '').trim()).filter(Boolean)))
   const mailSubjects = Array.from(new Set(
     (Array.isArray(d.mail_summaries) ? d.mail_summaries : []).map((it) => String(it?.subject || '').trim()).filter(Boolean)
   ))
+  // 顶部社团名展示：合并 items 解析结果 + 邮件主题兜底，
+  // 旧记录即使 item.circleName 全部为空，只要主题能解出社团名也能显示。
+  const circleNamesFromItems = items.map((it) => String(it.circleName || '').trim()).filter(Boolean)
+  const circleNamesFromSubjects = mailSubjects
+    .map((subject) => extractCircleNameFromSubject(subject))
+    .filter(Boolean)
+  const circleNames = Array.from(new Set([...circleNamesFromItems, ...circleNamesFromSubjects]))
   return {
     items,
     totalCount: items.length,
@@ -1954,5 +2038,5 @@ export function useActivityDetailModels(rowRef) {
 
 export {
   humanAction, actionTagClass, rowCategoryTags, finalStatusLabel, finalStatusClass,
-  isRecoveredFailure, isRerunRow,
+  isRecoveredFailure, isRerunRow, effectiveRowStatus,
 }

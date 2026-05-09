@@ -1,7 +1,23 @@
 <template>
-  <div class="lib-search-box" :class="{ 'is-open': isPopupOpen }">
+  <div ref="rootRef" class="lib-search-box" :class="{ 'is-open': isPopupOpen, 'is-filter-open': isFilterMenuOpen }">
     <div class="lib-search">
-      <IconSearch :size="14" :stroke-width="2.2" class="lib-search-icon" />
+      <button
+        type="button"
+        class="lib-search-filter"
+        :class="{ 'is-active': kindFilter !== 'all', 'is-open': isFilterMenuOpen }"
+        :title="filterButtonTitle"
+        :style="{ color: currentFilterMeta.color }"
+        @mousedown.prevent
+        @click="toggleFilterMenu"
+      >
+        <component
+          :is="currentFilterMeta.icon"
+          :size="14"
+          :stroke-width="2.2"
+          :class="{ 'lib-search-filter-fill': currentFilterMeta.fillIcon }"
+        />
+        <span v-if="kindFilter !== 'all'" class="lib-search-filter-dot" />
+      </button>
       <input
         ref="inputRef"
         v-model="innerKeyword"
@@ -35,6 +51,45 @@
         <IconMaximize2 :size="14" :stroke-width="2.2" />
       </button>
     </div>
+
+    <transition name="filter-menu-fade">
+      <div
+        v-if="isFilterMenuOpen"
+        class="lib-filter-menu"
+        @mousedown.prevent
+      >
+        <header class="lib-filter-menu-head">
+          <IconFilter :size="11" :stroke-width="2.4" />
+          <span>按文件类型筛选</span>
+        </header>
+        <ul class="lib-filter-menu-list">
+          <li
+            v-for="opt in LIBRARY_FILTER_OPTIONS"
+            :key="opt.value"
+            class="lib-filter-menu-row"
+            :class="{ 'is-active': kindFilter === opt.value }"
+            @mousedown.prevent
+            @click="onSelectFilter(opt.value)"
+          >
+            <span class="lib-filter-menu-icon" :style="{ color: opt.color }">
+              <component
+                :is="opt.icon"
+                :size="14"
+                :stroke-width="2.2"
+                :class="{ 'lib-search-filter-fill': opt.fillIcon }"
+              />
+            </span>
+            <span class="lib-filter-menu-label">{{ opt.label }}</span>
+            <IconCheck
+              v-if="kindFilter === opt.value"
+              :size="13"
+              :stroke-width="2.4"
+              class="lib-filter-menu-check"
+            />
+          </li>
+        </ul>
+      </div>
+    </transition>
 
     <transition name="suggest-fade">
       <div
@@ -81,8 +136,16 @@
             @mousedown.prevent
             @click="onSelectRow(item)"
           >
-            <span class="lib-suggest-row-icon">
-              <component :is="iconForItem(item)" :size="13" :stroke-width="2.4" :class="iconClassForItem(item)" />
+            <span
+              class="lib-suggest-row-icon"
+              :style="{ color: rowIconMeta(item).color }"
+            >
+              <component
+                :is="rowIconMeta(item).icon"
+                :size="14"
+                :stroke-width="2.2"
+                :class="{ 'lib-search-filter-fill': rowIconMeta(item).fillIcon }"
+              />
             </span>
             <div class="lib-suggest-row-main">
               <div class="lib-suggest-row-title">
@@ -140,25 +203,30 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AlertCircle as IconAlertCircle,
   ArrowUpRight as IconArrowUpRight,
+  Check as IconCheck,
   Cloud as IconCloud,
   CornerDownLeft as IconCornerDownLeft,
-  File as IconFile,
-  Folder as IconFolder,
+  Filter as IconFilter,
   HardDrive as IconHardDrive,
   Layers as IconLayers,
   Loader2 as IconLoader2,
   Maximize2 as IconMaximize2,
-  Search as IconSearch,
   SearchX as IconSearchX,
   X as IconX,
   Zap as IconZap,
 } from 'lucide-vue-next'
 
 import { libraryApi } from '../../api'
+import {
+  LIBRARY_FILTER_OPTIONS,
+  applyLibraryFrontendFilter,
+  libraryEntryMetaFor,
+  libraryFilterToEntryType,
+} from './_libraryFileKind'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -179,6 +247,7 @@ const emit = defineEmits([
 ])
 
 // ====== 输入与建议状态 ======
+const rootRef = ref(null)
 const innerKeyword = ref(props.modelValue || '')
 const inputRef = ref(null)
 const listRef = ref(null)
@@ -195,6 +264,14 @@ const errorMessage = ref('')
 // errorIsSoft = false: 网络/接口本身 5xx 4xx —— 走 error 深色提示，但仍允许 Enter 走本地兜底
 const errorIsSoft = ref(false)
 const activeIndex = ref(-1)
+
+// 文件类型筛选：值集合见 LIBRARY_FILTER_OPTIONS。
+// 这个状态同时控制：
+// 1) 左侧搜索图标显示哪种文件类型图标 + 颜色
+// 2) 调后端 globalSearch 时的 entry_type 参数（dir / file / all）
+// 3) 拿到结果后再按扩展名做一次前端细分（audio / text）
+const kindFilter = ref('all')
+const isFilterMenuOpen = ref(false)
 
 let debounceTimer = null
 let activeAbort = null
@@ -236,15 +313,53 @@ function isRjHit (item) {
   return (item.rjcode || '').toUpperCase() === matchedRjcode.value
 }
 
-function iconForItem (item) {
-  return item?.entry_type === 'file' ? IconFile : IconFolder
+// 行图标 / 颜色 / 是否 fill：与库存页主文件树同一套色盘（参见 _libraryFileKind.js）
+function rowIconMeta (item) {
+  return libraryEntryMetaFor(item)
 }
 
-function iconClassForItem (item) {
-  if (!item) return 'lib-suggest-row-icon-folder'
-  if (item.entry_type === 'file') return 'lib-suggest-row-icon-file'
-  return 'lib-suggest-row-icon-folder'
+const currentFilterMeta = computed(() => {
+  return LIBRARY_FILTER_OPTIONS.find(opt => opt.value === kindFilter.value) || LIBRARY_FILTER_OPTIONS[0]
+})
+
+const filterButtonTitle = computed(() => {
+  const label = currentFilterMeta.value.label
+  return kindFilter.value === 'all' ? `按文件类型筛选（当前：${label}）` : `已筛选：${label}（点击切换）`
+})
+
+function toggleFilterMenu () {
+  isFilterMenuOpen.value = !isFilterMenuOpen.value
+  if (isFilterMenuOpen.value) {
+    isPopupOpen.value = false
+  }
 }
+
+function onSelectFilter (value) {
+  const next = String(value || 'all')
+  const changed = kindFilter.value !== next
+  kindFilter.value = next
+  isFilterMenuOpen.value = false
+  // 切换筛选后重拉一次建议；若没在输入态就不弹出
+  if (changed && innerKeyword.value.trim()) {
+    isPopupOpen.value = true
+    scheduleSuggestFetch(true)
+  }
+  inputRef.value?.focus?.()
+}
+
+function handleDocumentMousedown (event) {
+  if (!isFilterMenuOpen.value) return
+  const target = event.target
+  if (!target) return
+  const rootEl = rootRef.value
+  if (rootEl && !rootEl.contains(target)) {
+    isFilterMenuOpen.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleDocumentMousedown, true)
+})
 
 function formatPath (item) {
   if (!item) return ''
@@ -329,7 +444,7 @@ function onInputKeydown (event) {
       }
       if (event.shiftKey && trimmed) {
         event.preventDefault()
-        emit('open-overlay', { keyword: trimmed })
+        emit('open-overlay', { keyword: trimmed, kindFilter: kindFilter.value })
         isPopupOpen.value = false
         return
       }
@@ -379,7 +494,7 @@ function onSelectRow (row) {
 
 function onOpenOverlay () {
   isPopupOpen.value = false
-  emit('open-overlay', { keyword: innerKeyword.value.trim() })
+  emit('open-overlay', { keyword: innerKeyword.value.trim(), kindFilter: kindFilter.value })
 }
 
 // ====== 数据请求 ======
@@ -455,12 +570,20 @@ async function fetchSuggestions (keyword) {
       libraryIds: Array.isArray(props.libraryIds) && props.libraryIds.length ? props.libraryIds : null,
       mode: 'suggest',
       limit: props.suggestLimit,
-      entryType: 'all',
+      entryType: libraryFilterToEntryType(kindFilter.value),
       signal: controller ? controller.signal : undefined,
     })
     if (requestId !== activeRequestId) return
-    items.value = Array.isArray(data?.items) ? data.items : []
-    totalCount.value = Number(data?.total ?? data?.count ?? items.value.length) || 0
+    const rawItems = Array.isArray(data?.items) ? data.items : []
+    // 前端二次过滤：把"name 不含 keyword 但路径包含 keyword 的子文件兜底命中"丢掉，
+    // 同时按 audio / text 这种细分类按扩展名筛。详细规则见 _libraryFileKind.js。
+    items.value = applyLibraryFrontendFilter(rawItems, {
+      filter: kindFilter.value,
+      keyword,
+      matchedRjcode: data?.matched_rjcode,
+    })
+    // total 用前端过滤后的结果数；truncated 仍由后端提示，因为它代表后端"还有更多"
+    totalCount.value = items.value.length
     truncated.value = Boolean(data?.truncated)
     elapsedMs.value = Number.isFinite(Number(data?.elapsed_ms)) ? Number(data.elapsed_ms) : null
     matchedRjcode.value = data?.matched_rjcode || null
@@ -515,6 +638,7 @@ onBeforeUnmount(() => {
   if (activeAbort) {
     try { activeAbort.abort() } catch (_e) {}
   }
+  document.removeEventListener('mousedown', handleDocumentMousedown, true)
 })
 </script>
 
@@ -531,17 +655,156 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
-.lib-search-icon {
+/* 左侧：可点击的"按文件类型筛选"下拉触发按钮，
+   跳动动效跟右侧 .lib-search-expand 同调。 */
+.lib-search-filter {
   position: absolute;
-  left: 11px;
+  left: 5px;
   top: 50%;
   transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
   color: #94a3b8;
-  pointer-events: none;
-  transition: color 0.25s ease;
+  transition: all 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.lib-search:focus-within .lib-search-icon { color: #3b82f6; }
+.lib-search-filter:hover {
+  background: rgba(99, 102, 241, 0.10);
+  transform: translateY(-50%) scale(1.16);
+}
+
+.lib-search-filter:active {
+  transform: translateY(-50%) scale(0.92);
+  background: rgba(99, 102, 241, 0.18);
+}
+
+.lib-search-filter.is-active {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.lib-search-filter.is-open {
+  background: rgba(99, 102, 241, 0.18);
+  transform: translateY(-50%) rotate(-4deg) scale(1.08);
+}
+
+.lib-search-filter-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 0 2px #fff;
+}
+
+/* lucide 默认 fill="none"，需要 fill 的地方明确赋 currentColor（文件夹主调） */
+.lib-search-filter-fill {
+  fill: currentColor;
+}
+
+/* 文件类型筛选下拉菜单：从筛选按钮下方弹出 */
+.lib-filter-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 70;
+  min-width: 220px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.86));
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow:
+    0 16px 32px -16px rgba(15, 23, 42, 0.28),
+    0 24px 48px -28px rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  overflow: hidden;
+}
+
+.lib-filter-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.85), rgba(248, 250, 252, 0.4));
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #475569;
+  font-weight: 700;
+}
+
+.lib-filter-menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.lib-filter-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: #1f2937;
+  transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.lib-filter-menu-row:hover {
+  background: rgba(99, 102, 241, 0.08);
+  transform: translateX(2px);
+}
+
+.lib-filter-menu-row.is-active {
+  background: rgba(99, 102, 241, 0.12);
+  color: #312e81;
+  font-weight: 600;
+}
+
+.lib-filter-menu-icon {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lib-filter-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.lib-filter-menu-check {
+  flex-shrink: 0;
+  color: #6366f1;
+}
+
+.filter-menu-fade-enter-active,
+.filter-menu-fade-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: top left;
+}
+
+.filter-menu-fade-enter-from,
+.filter-menu-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
+}
 
 .lib-search-input {
   width: 100%;
@@ -740,13 +1003,9 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-.lib-suggest-row-icon-folder {
-  color: #f59e0b;
-  fill: currentColor;
-  stroke: currentColor;
-}
-
-.lib-suggest-row-icon-file { color: #94a3b8; }
+/* 行图标颜色现在由组件里的 inline :style="{ color: ... }" 控制（主文件树色盘），
+   这里只保留"文件夹要 fill currentColor"这个须要仅 stroke 的表现差异。
+   .lib-search-filter-fill 在 SVG 元素上赋 currentColor 填充色。 */
 
 .lib-suggest-row-main { min-width: 0; }
 

@@ -1,40 +1,35 @@
 <template>
   <div class="circle-page">
-    <section class="circle-hero">
-      <div class="hero-title-block">
-        <div class="hero-icon-box">
-          <Tags :size="14" :stroke-width="2.1" />
-        </div>
-        <div class="hero-text">
-          <h1>社团补全</h1>
-          <p class="hero-desc">按社团建立索引，结合 Kikoeru 收录态、DLsite 关联与 asmr.one 下载能力补全缺失作品</p>
-        </div>
+    <AppPageHeader
+      :icon="Tags"
+      icon-color="#0f766e"
+      title="社团补全"
+      subtitle="按社团建立索引，结合 Kikoeru 收录态、DLsite 关联与 asmr.one 下载能力补全缺失作品"
+      class="circle-page-header"
+    >
+      <div class="hero-search-wrap">
+        <Search :size="13" class="hero-search-icon" />
+        <el-input
+          v-model="circleQuery"
+          class="hero-search-input"
+          placeholder="输入社团名，例如 こぐま座 / C_Realization"
+          clearable
+          @keyup.enter="handleIndexCircle"
+        />
       </div>
-      <div class="hero-actions">
-        <div class="hero-search-wrap">
-          <Search :size="13" class="hero-search-icon" />
-          <el-input
-            v-model="circleQuery"
-            class="hero-search-input"
-            placeholder="输入社团名，例如 こぐま座 / C_Realization"
-            clearable
-            @keyup.enter="handleIndexCircle"
-          />
-        </div>
-        <el-button class="hero-btn hero-btn-primary" :loading="indexing" @click="handleIndexCircle">建立 / 刷新索引</el-button>
-        <el-button class="hero-btn hero-btn-secondary" :disabled="indexing" @click="openBatchIndexPrompt">批量创建</el-button>
-        <el-tooltip content="立即检查 DLsite 邮件，提取新作 RJ 号并触发社团补全索引" placement="bottom">
-          <el-button
-            class="hero-btn hero-btn-email"
-            :loading="emailCheckLoading"
-            @click="handleEmailCheck"
-          >
-            <Mail :size="13" style="margin-right:4px" />
-            邮件检查
-          </el-button>
-        </el-tooltip>
-      </div>
-    </section>
+      <el-button class="hero-btn hero-btn-primary" :loading="indexing" @click="handleIndexCircle">建立 / 刷新索引</el-button>
+      <el-button class="hero-btn hero-btn-secondary" :disabled="indexing" @click="openBatchIndexPrompt">批量创建</el-button>
+      <el-tooltip content="立即检查 DLsite 邮件，提取新作 RJ 号并触发社团补全索引" placement="bottom">
+        <el-button
+          class="hero-btn hero-btn-email"
+          :loading="emailCheckLoading"
+          @click="handleEmailCheck"
+        >
+          <Mail :size="13" style="margin-right:4px" />
+          邮件检查
+        </el-button>
+      </el-tooltip>
+    </AppPageHeader>
 
     <section v-if="indexJob.visible" class="index-progress-card">
       <div class="index-progress-head">
@@ -864,6 +859,7 @@ import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchD
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
 import WorkCard from '../components/circle/WorkCard.vue'
 import WorkListRow from '../components/circle/WorkListRow.vue'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
@@ -4080,68 +4076,9 @@ function getUploadBackgroundTargetLabel(task) {
 .reimport-file-result-path {
   text-align: left;
 }
-/* ── 紧凑 hero 区（参照任务中心头部） ── */
-.circle-hero {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
+/* 页头现在走共享组件 components/common/AppPageHeader.vue，这里只保留原 circle-hero 外边距与右侧 slot 内嵌样式 */
+.circle-page-header {
   margin: 8px 8px 0;
-  background: #fff;
-  border-radius: 14px;
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  box-shadow: 0 2px 8px -6px rgba(15, 23, 42, 0.08);
-}
-.hero-title-block {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.hero-icon-box {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: rgb(15 23 42);
-  color: #fff;
-  box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.18);
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.hero-icon-box:hover {
-  transform: translateY(-1px) rotate(-6deg) scale(1.05);
-}
-.hero-text {
-  min-width: 0;
-}
-.circle-hero h1 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.15;
-  color: rgb(15 23 42);
-}
-.hero-desc {
-  margin: 1px 0 0;
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: rgb(100 116 139);
-  max-width: 560px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.hero-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
 }
 .hero-search-wrap {
   position: relative;
@@ -6363,8 +6300,7 @@ function getUploadBackgroundTargetLabel(task) {
   font-size: 12px;
 }
 @media (max-width: 1100px) {
-  .circle-shell,
-  .circle-hero {
+  .circle-shell {
     grid-template-columns: 1fr;
   }
   .index-progress-head {

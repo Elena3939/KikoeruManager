@@ -1,30 +1,26 @@
 <template>
   <div class="conflicts-page">
-    <!-- 页面头部：对齐库存页 lib-page-header 设计语言 -->
-    <header class="lib-page-header">
-      <div class="lib-page-head-left">
-        <div class="lib-page-icon"><ShieldAlert :size="20" :stroke-width="2.2" /></div>
-        <div>
-          <h1 class="lib-page-title">问题作品</h1>
-          <p class="lib-page-subtitle">重复作品、解压失败、处理失败的集中处理站</p>
-        </div>
-      </div>
-      <div class="lib-page-head-right">
-        <span v-if="batchRunning" class="lib-chip lib-chip-info">
-          <AppLoadingAnimation variant="inline" :size="14" />
-          {{ batchActionLabel || '批量处理中' }}
-        </span>
-        <button
-          type="button"
-          class="conflicts-refresh-btn"
-          :disabled="loading || batchRunning"
-          @click="fetchConflicts"
-        >
-          <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': loading }" />
-          刷新
-        </button>
-      </div>
-    </header>
+    <!-- 页头走共享组件 AppPageHeader，保持与其他页面一致 -->
+    <AppPageHeader
+      :icon="ShieldAlert"
+      icon-color="#b45309"
+      title="问题作品"
+      subtitle="重复作品、解压失败、处理失败的集中处理站"
+    >
+      <span v-if="batchRunning" class="lib-chip lib-chip-info">
+        <AppLoadingAnimation variant="inline" :size="14" />
+        {{ batchActionLabel || '批量处理中' }}
+      </span>
+      <button
+        type="button"
+        class="conflicts-refresh-btn"
+        :disabled="loading || batchRunning"
+        @click="fetchConflicts"
+      >
+        <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': loading }" />
+        刷新
+      </button>
+    </AppPageHeader>
 
     <!-- 状态信息条：替代原顶部 inline chip -->
     <section class="lib-info-strip conflicts-info-strip">
@@ -461,6 +457,7 @@ import {
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
 import BatchRetryPasswordDialog from '../components/conflicts/BatchRetryPasswordDialog.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
 import { conflictApi, taskCenterApi } from '../api'
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
@@ -1437,46 +1434,7 @@ button:disabled {
   background: transparent;
 }
 
-/* ==============================================================
- * 页面头部 + 信息条：玻璃质感升级，参考 LibraryMoveDialog .glass-shell
- * 双层 background + inset 顶部高光 + 多层柔阴影 + 强 saturate
- * ============================================================ */
-.lib-page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 14px;
-}
-.lib-page-head-left { display: flex; align-items: center; gap: 14px; }
-.lib-page-head-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-
-/* 顶部图标：纯 amber 色块，不走玻璃感 */
-.lib-page-icon {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: #fef3c7;
-  border: 1px solid rgba(245, 158, 11, 0.18);
-  color: #b45309;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-.lib-page-title {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.4px;
-  color: #0f172a;
-  line-height: 1.2;
-}
-.lib-page-subtitle {
-  margin: 3px 0 0;
-  font-size: 12.5px;
-  color: #64748b;
-  letter-spacing: 0.01em;
-}
+/* 页面头部现在走共享组件 components/common/AppPageHeader.vue，这里不再重复定义 */
 
 /* 刷新按钮：纯白底 + hover 上浮动画 + 图标旋转 */
 .conflicts-refresh-btn {

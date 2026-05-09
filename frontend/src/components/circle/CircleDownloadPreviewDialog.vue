@@ -67,7 +67,7 @@
             >直放已有路径</button>
           </div>
 
-          <section ref="selectRoot" class="glass-panel glass-card settings-card flex-1 rounded-2xl p-6 overflow-y-auto no-scrollbar">
+          <section ref="selectRoot" class="glass-panel glass-card circle-preview-settings-card flex-1 rounded-2xl p-6 overflow-y-auto no-scrollbar">
             <div v-if="!enableDirectMode || settings.mode === 'classify'" class="space-y-6">
               <section class="space-y-4">
                 <div class="section-head space-y-1">
@@ -1057,7 +1057,7 @@ function formatSize(bytes) {
   /* 内层卡片移除过度模糊，依赖外层 window 的高斯模糊，以保证透视感 */
 }
 
-.settings-card {
+.circle-preview-settings-card {
   padding: 24px;
   flex: 1 1 auto;
   overflow-y: auto;

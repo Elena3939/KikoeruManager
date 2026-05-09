@@ -4,6 +4,7 @@
     :show-close="false"
     destroy-on-close
     class="custom-preview-modal activity-detail-dialog"
+    :class="{ 'is-expanded': expanded }"
     align-center
     modal-class="custom-preview-overlay activity-detail-overlay"
     @update:model-value="handleDialogModelValueChange"
@@ -11,6 +12,7 @@
       <div
       v-if="row"
       class="window panel-enter glass-shell activity-window"
+      :class="{ 'is-expanded': expanded }"
     >
       <div class="window-header flex items-center justify-between px-8 py-6">
         <div class="activity-header-main">
@@ -24,13 +26,23 @@
             </div>
           </div>
         </div>
-        <button
-          type="button"
-          class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
-          @click="emit('close')"
-        >
-          <X :size="20" :stroke-width="2" />
-        </button>
+        <div class="flex items-center gap-1.5">
+          <button
+            type="button"
+            class="interactive-chip inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100/70 transition-colors"
+            :title="expanded ? '还原大小' : '放大窗口'"
+            @click="toggleExpanded"
+          >
+            <component :is="expanded ? Minimize2 : Maximize2" :size="18" :stroke-width="2" />
+          </button>
+          <button
+            type="button"
+            class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
+            @click="emit('close')"
+          >
+            <X :size="20" :stroke-width="2" />
+          </button>
+        </div>
       </div>
 
       <div class="top-meta-shell px-8 pb-2">
@@ -92,8 +104,8 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { Clock3, X } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
+import { Clock3, Maximize2, Minimize2, X } from 'lucide-vue-next'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -112,6 +124,22 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close'])
+
+// 详情弹窗放大态：用户点击右上角的放大按钮把窗口拉到接近全屏，
+// 切换详情记录或关闭后自动还原，避免下一次打开时仍是放大态。
+const expanded = ref(false)
+
+function toggleExpanded() {
+  expanded.value = !expanded.value
+}
+
+watch(() => props.visible, (next) => {
+  if (!next) expanded.value = false
+})
+
+watch(() => props.row?.id, () => {
+  expanded.value = false
+})
 
 function handleDialogModelValueChange(nextVisible) {
   if (nextVisible === false) emit('close')
@@ -143,6 +171,14 @@ const statusMetaIconClass = computed(() => {
   margin: 0;
   background: transparent;
   box-shadow: none;
+  transition: width 0.24s ease, height 0.24s ease;
+}
+
+/* 放大态：接近全屏，给用户更宽的查看区域 */
+.activity-detail-dialog.is-expanded :deep(.el-dialog) {
+  width: 98vw;
+  height: 96vh;
+  max-width: none;
 }
 
 .activity-detail-dialog :deep(.el-dialog__header) {
@@ -151,6 +187,7 @@ const statusMetaIconClass = computed(() => {
 
 .activity-detail-dialog :deep(.el-dialog__body) {
   padding: 0;
+  height: 100%;
 }
 
 .activity-window {
@@ -159,10 +196,20 @@ const statusMetaIconClass = computed(() => {
   height: 80vh;
   min-height: 800px;
   max-height: 84vh;
+  transition: max-width 0.24s ease, height 0.24s ease, max-height 0.24s ease;
   border-radius: 28px;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
+}
+
+/* 放大态：和外层 .el-dialog 同步拉到 96vh，避免出现 dialog 比 window 大、四周留空 */
+.activity-window.is-expanded {
+  max-width: none;
+  height: 96vh;
+  min-height: 0;
+  max-height: 96vh;
+  border-radius: 20px;
 }
 
 .custom-preview-modal :deep(.el-dialog__header) { display: none; }

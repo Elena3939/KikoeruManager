@@ -110,6 +110,11 @@ export const configApi = {
   reload: async () => {
     const response = await apiClient.post('/config/reload')
     return response.data
+  },
+
+  state: async () => {
+    const response = await apiClient.get('/config/state')
+    return response.data
   }
 }
 

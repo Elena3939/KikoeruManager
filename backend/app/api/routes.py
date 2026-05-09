@@ -101,6 +101,79 @@ _LITE_HIDDEN_ACTIONS = (
     "view_built",
 )
 
+# 哪些类目下的失败任务，可以由"同 RJ 的后续成功"覆盖修复。
+# 这里和前端 ActivityHistory.vue 的 RECOVERY_CATEGORIES 保持一致。
+_LITE_RECOVERY_CATEGORIES = ("extract", "auto_import", "process_existing", "asmr_sync")
+
+
+def _enrich_lite_items_with_recovery(items: List[Dict[str, Any]], db: Session) -> None:
+    """给 lite 列表里的失败行回填"已被后续成功覆盖"标记。
+
+    aggregator 主流程会按 (source_path, rjcode) 在合并时打这个标记，但 lite 路径
+    没走 aggregator。前端要显示"已修复"绿底徽章 + 红→绿渐变色条，依赖
+    ``recovered_by_success`` / ``recovered_badge`` 这两个直通字段。
+
+    实现思路：
+    1) 找出当前页里 status=failed && category 在恢复白名单里 && 有 RJ 的行；
+    2) 对这些 RJ 批量查一次"任意时间点的最新 success / partial_success 时间"，
+       走 idx_rjcode 索引，单次 GROUP BY 即可；
+    3) 比较时间戳，晚于失败行就打标记。
+    """
+    if not items:
+        return
+    candidates = []
+    rjcodes_seen = set()
+    for it in items:
+        if str(it.get("status") or "").strip() != "failed":
+            continue
+        cat = str(it.get("category") or "").strip()
+        if cat not in _LITE_RECOVERY_CATEGORIES:
+            continue
+        rj = str(it.get("rjcode") or "").strip().upper()
+        if not rj:
+            continue
+        candidates.append((it, rj))
+        rjcodes_seen.add(rj)
+    if not candidates:
+        return
+
+    rjcodes = list(rjcodes_seen)
+    # 单次 GROUP BY：每个 RJ 在恢复类目里最新一次 success / partial_success 的时间
+    rows = (
+        db.query(ActivityLog.rjcode, func.max(ActivityLog.created_at))
+        .filter(
+            ActivityLog.rjcode.in_(rjcodes),
+            ActivityLog.category.in_(list(_LITE_RECOVERY_CATEGORIES)),
+            ActivityLog.status.in_(("success", "partial_success")),
+        )
+        .group_by(ActivityLog.rjcode)
+        .all()
+    )
+    latest_by_rj: Dict[str, Any] = {}
+    for row in rows:
+        if not row or not row[0]:
+            continue
+        latest_by_rj[str(row[0]).strip().upper()] = row[1]
+    if not latest_by_rj:
+        return
+
+    for it, rj in candidates:
+        latest = latest_by_rj.get(rj)
+        if latest is None:
+            continue
+        failed_at_raw = it.get("created_at")
+        try:
+            if isinstance(failed_at_raw, str):
+                failed_at = datetime.fromisoformat(failed_at_raw)
+            else:
+                failed_at = failed_at_raw
+        except Exception:
+            continue
+        if failed_at is None or latest <= failed_at:
+            continue
+        it["recovered_by_success"] = True
+        it["recovered_badge"] = "已覆盖"
+
 
 @app.get("/api/activity-logs")
 def list_activity_logs(
@@ -252,8 +325,15 @@ def list_activity_logs(
     if lite:
         # 默认隐藏"子动作"行（resource_downloaded / resource_uploaded 等），它们在详情接口里会通过 merge_activity_rows 重新挂回父行的 child_rows。
         # 用户显式带 show_subactions=true 时可以打破这层过滤，看完整事件流。
+        # 例外：失败 / 部分失败的子动作（resource_verify_failed 这种）保留在列表里，
+        # 否则用户在时间线里完全看不到失败子任务，体感像"失败任务消失了"。
         if not show_subactions:
-            query = query.filter(~ActivityLog.action.in_(_LITE_HIDDEN_ACTIONS))
+            query = query.filter(
+                or_(
+                    ~ActivityLog.action.in_(_LITE_HIDDEN_ACTIONS),
+                    ActivityLog.status.in_(("failed", "partial_success")),
+                )
+            )
         total = query.with_entities(func.count(ActivityLog.id)).scalar() or 0
         offset = max(0, (page - 1) * limit)
         page_id_rows = (
@@ -289,6 +369,14 @@ def list_activity_logs(
             row_dict = cache_hits.get(key) or fresh_dict_map.get(key)
             if row_dict is not None:
                 items.append(build_lite_item(row_dict))
+
+        # lite 路径不走 aggregator，失败行没人给打"已被覆盖"标记。
+        # 这里对当前页的失败行做一次批量回查：同 RJ 的后续 success / partial_success
+        # 时间晚于该失败行 → 标记为已修复。前端列表行据此显示绿底"已修复"徽章。
+        try:
+            _enrich_lite_items_with_recovery(items, db)
+        except Exception:
+            logger.warning("[操作记录] lite 已修复回填失败（不阻断主流程）", exc_info=True)
 
         payload = {
             "total": int(total),

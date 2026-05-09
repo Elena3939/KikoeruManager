@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from './useSystemPrompt'
 import { useConfigStore } from '../stores'
@@ -444,7 +444,15 @@ function serializeConfig(config) {
   }
 }
 
-export function useSettingsDraft() {
+function pickSectionState(source = {}, keys = []) {
+  const result = {}
+  for (const key of keys) {
+    result[key] = source?.[key]
+  }
+  return result
+}
+
+export function useSettingsDraft(options = {}) {
   const configStore = useConfigStore()
   const config = ref(deepClone(defaultConfig))
   const snapshot = ref(deepClone(defaultConfig))
@@ -453,9 +461,87 @@ export function useSettingsDraft() {
   const reloading = ref(false)
   const lastSavedAt = ref(null)
 
-  const serializedDraft = computed(() => JSON.stringify(serializeConfig(config.value)))
-  const serializedSnapshot = computed(() => JSON.stringify(serializeConfig(snapshot.value)))
-  const hasChanges = computed(() => serializedDraft.value !== serializedSnapshot.value)
+  // 为避免每次按键都跑一次全量 JSON.stringify(serializeConfig(...)) 导致输入卡顿，
+  // 这里把 digest 节流到 120ms：按键期间不算，停手后再算。
+  // snapshot 只在 load/save/reset 时整体替换，digest 立即同步（不需要节流）。
+  const sectionKeyMap = options.sectionKeyMap || {}
+  const debounceMs = Number.isFinite(options.debounceMs) ? options.debounceMs : 120
+
+  const draftDigest = ref('')
+  const snapshotDigest = ref('')
+  const sectionDraftDigests = shallowRef({})
+  const sectionSnapshotDigests = shallowRef({})
+
+  function computeDraftDigest() {
+    draftDigest.value = JSON.stringify(serializeConfig(config.value))
+    const nextSection = {}
+    for (const [sectionId, keys] of Object.entries(sectionKeyMap)) {
+      nextSection[sectionId] = JSON.stringify(pickSectionState(config.value, keys))
+    }
+    sectionDraftDigests.value = nextSection
+  }
+
+  function computeSnapshotDigest() {
+    snapshotDigest.value = JSON.stringify(serializeConfig(snapshot.value))
+    const nextSection = {}
+    for (const [sectionId, keys] of Object.entries(sectionKeyMap)) {
+      nextSection[sectionId] = JSON.stringify(pickSectionState(snapshot.value, keys))
+    }
+    sectionSnapshotDigests.value = nextSection
+  }
+
+  // 初始化基线（config === snapshot 都是 defaultConfig），此刻 hasChanges = false。
+  computeDraftDigest()
+  computeSnapshotDigest()
+
+  let draftDigestTimer = null
+  const draftWatchStop = watch(
+    config,
+    () => {
+      if (draftDigestTimer) clearTimeout(draftDigestTimer)
+      draftDigestTimer = setTimeout(() => {
+        draftDigestTimer = null
+        computeDraftDigest()
+      }, debounceMs)
+    },
+    { deep: true }
+  )
+
+  const snapshotWatchStop = watch(
+    snapshot,
+    () => {
+      computeSnapshotDigest()
+    },
+    { deep: true }
+  )
+
+  onBeforeUnmount(() => {
+    if (draftDigestTimer) {
+      clearTimeout(draftDigestTimer)
+      draftDigestTimer = null
+    }
+    draftWatchStop()
+    snapshotWatchStop()
+  })
+
+  const hasChanges = computed(() => draftDigest.value !== snapshotDigest.value)
+
+  const dirtyMap = computed(() => {
+    const result = {}
+    for (const sectionId of Object.keys(sectionKeyMap)) {
+      result[sectionId] = sectionDraftDigests.value[sectionId] !== sectionSnapshotDigests.value[sectionId]
+    }
+    return result
+  })
+
+  function syncDigestsNow() {
+    if (draftDigestTimer) {
+      clearTimeout(draftDigestTimer)
+      draftDigestTimer = null
+    }
+    computeDraftDigest()
+    computeSnapshotDigest()
+  }
 
   async function loadConfig() {
     const hadLoadedConfig = !!(snapshot.value && Object.keys(snapshot.value || {}).length)
@@ -474,6 +560,7 @@ export function useSettingsDraft() {
       }
     } finally {
       loading.value = false
+      syncDigestsNow()
     }
   }
 
@@ -520,6 +607,7 @@ export function useSettingsDraft() {
       throw error
     } finally {
       saving.value = false
+      syncDigestsNow()
     }
   }
 
@@ -532,6 +620,7 @@ export function useSettingsDraft() {
       tone: 'warning'
     })
     config.value = deepClone(snapshot.value)
+    syncDigestsNow()
   }
 
   function resetSection(sectionKeys = []) {
@@ -551,6 +640,7 @@ export function useSettingsDraft() {
     reloading,
     lastSavedAt,
     hasChanges,
+    dirtyMap,
     loadConfig,
     saveConfig,
     reloadConfigFromServer,

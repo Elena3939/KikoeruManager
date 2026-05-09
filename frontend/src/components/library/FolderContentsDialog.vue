@@ -157,7 +157,7 @@
                       <span v-else-if="isRowIndeterminate(row)" class="checkbox-minus" />
                     </button>
 
-                    <component :is="resolveTreeIcon(row)" :size="17" class="tree-icon" :class="row.type === 'dir' ? 'icon-folder' : ''" />
+                    <component :is="resolveTreeIcon(row)" :size="17" class="tree-icon" :style="resolveTreeIconStyle(row)" />
 
                     <div class="min-w-0 flex-1">
                       <div class="tree-name truncate text-[13px] font-medium text-slate-800">{{ getRowDisplayName(row) }}</div>
@@ -317,20 +317,16 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  File,
-  FileText,
-  FileVideo,
   Folder,
   FolderOpen,
-  Image,
   Info,
-  Music,
   RefreshCw,
   Search,
   Trash2,
   X,
 } from 'lucide-vue-next'
 import { libraryApi } from '../../api'
+import { libraryEntryIconFor, libraryEntryMetaFor } from './_libraryFileKind'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -815,18 +811,17 @@ function isDescendantPath (candidate, parent) {
   return candidate === parent || candidate.startsWith(`${parent}/`)
 }
 
-function fileIcon (name = '') {
-  const lower = String(name || '').toLowerCase()
-  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(lower)) return Music
-  if (/\.(png|jpg|jpeg|webp|bmp|gif)$/i.test(lower)) return Image
-  if (/\.(mp4|mkv|avi|mov|wmv|webm)$/i.test(lower)) return FileVideo
-  if (/\.(lrc|srt|ass|ssa|vtt|txt)$/i.test(lower)) return FileText
-  return File
-}
-
 function resolveTreeIcon (row) {
   if (row?.type === 'dir') return expandedIds.value.has(row.id) ? FolderOpen : Folder
-  return fileIcon(row?.name || '')
+  return libraryEntryIconFor(row)
+}
+
+function resolveTreeIconStyle (row) {
+  const meta = libraryEntryMetaFor(row)
+  return {
+    color: meta.color,
+    fill: meta.fillIcon ? 'currentColor' : 'none',
+  }
 }
 
 function getRowSubtitle (row) {
@@ -1646,12 +1641,11 @@ onMounted(() => {
   scrollbar-gutter: stable;
 }
 
+/* 颜色现在由 _libraryFileKind helper 通过 inline :style 接管，这里只保留兜底色 */
 .tree-icon {
   color: #64748b;
-}
-
-.icon-folder {
-  color: #64748b;
+  flex-shrink: 0;
+  transition: color 0.18s ease;
 }
 
 .tree-checkbox-on {

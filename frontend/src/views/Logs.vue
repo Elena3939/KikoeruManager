@@ -1,11 +1,11 @@
 <template>
   <div class="max-w-[1480px] mx-auto flex flex-col gap-0">
-    <div class="flex items-start justify-between gap-4 mb-4 p-4 rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div>
-        <h1 class="m-0 text-[28px] font-bold text-slate-900 tracking-tight">系统日志</h1>
-        <p class="mt-1.5 text-[13.5px] text-slate-500">实时监控应用运行输出，支持级别过滤、模块筛选与关键词搜索。</p>
-      </div>
-      <div class="flex items-center gap-2 flex-shrink-0">
+    <AppPageHeader
+      :icon="Terminal"
+      icon-color="#475569"
+      title="系统日志"
+      subtitle="实时监控应用运行输出，支持级别过滤、模块筛选与关键词搜索。"
+    >
         <span class="inline-flex items-center gap-1 px-3 py-1 border border-slate-200 rounded-full bg-slate-50 text-xs text-slate-500">
           <span class="font-bold text-blue-500">{{ filteredLogs.length }}</span>
           <span class="text-slate-300">/</span>
@@ -46,8 +46,7 @@
           <AppLottieIcon :src="deleteIconAnimation" :size="26" tone="danger" />
           清空视图
         </button>
-      </div>
-    </div>
+    </AppPageHeader>
 
     <div class="flex flex-wrap items-center gap-3 px-4 py-3 mb-3.5 border border-slate-200 rounded-2xl bg-white shadow-sm">
       <div class="flex items-center gap-2">
@@ -399,6 +398,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, triggerRef } from 'vue'
 import {
   ArrowDown,
+  Terminal,
   ClipboardCopy,
   ClipboardList,
   Copy,
@@ -417,6 +417,7 @@ import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { logApi } from '../api'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const LOG_POLL_INTERVAL = 5000

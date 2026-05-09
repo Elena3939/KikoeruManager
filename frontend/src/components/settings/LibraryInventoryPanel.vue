@@ -50,45 +50,41 @@
         </div>
 
         <div class="field-grid three">
-          <label class="field-card">
-            <span class="field-label">库存 ID</span>
-            <input v-model="selectedLibrary.id" class="field-input" type="text" placeholder="例如 local-main">
-          </label>
-          <label class="field-card">
-            <span class="field-label">库存名称</span>
-            <input v-model="selectedLibrary.name" class="field-input" type="text" placeholder="显示名称">
-          </label>
-          <label class="field-card">
-            <span class="field-label">浏览起始路径</span>
-            <input v-model="selectedLibrary.browse_path" class="field-input" type="text" placeholder="留空则从库存路径开始">
-          </label>
+          <SettingsFieldCard label="库存 ID">
+            <input v-model="selectedLibrary.id" class="lib-input" type="text" placeholder="例如 local-main">
+          </SettingsFieldCard>
+          <SettingsFieldCard label="库存名称">
+            <input v-model="selectedLibrary.name" class="lib-input" type="text" placeholder="显示名称">
+          </SettingsFieldCard>
+          <SettingsFieldCard label="浏览起始路径">
+            <input v-model="selectedLibrary.browse_path" class="lib-input" type="text" placeholder="留空则从库存路径开始">
+          </SettingsFieldCard>
         </div>
 
-        <label class="field-card block">
-          <span class="field-label">说明</span>
-          <input v-model="selectedLibrary.description" class="field-input" type="text" placeholder="可选说明">
-        </label>
+        <SettingsFieldCard label="说明">
+          <input v-model="selectedLibrary.description" class="lib-input" type="text" placeholder="可选说明">
+        </SettingsFieldCard>
 
         <template v-if="selectedLibrary.type !== 'synology_filestation'">
-          <label class="field-card block">
-            <span class="field-label">本地库存路径</span>
-            <input v-model="selectedLibrary.path" class="field-input" type="text" placeholder="例如 D:\Prekikoeru\Library">
-          </label>
+          <SettingsFieldCard label="本地库存路径">
+            <input v-model="selectedLibrary.path" class="lib-input" type="text" placeholder="例如 D:\Prekikoeru\Library">
+          </SettingsFieldCard>
         </template>
 
         <template v-else>
           <div class="field-grid two">
-            <label class="field-card">
-              <span class="field-label">连接模板</span>
-              <el-select v-model="selectedLibrary.synology_profile_id" placeholder="先选择群晖连接模板" class="field-select" @change="$emit('profile-change', selectedLibrary)">
-                <el-option v-for="profile in profiles" :key="profile.id" :label="`${profile.name || profile.id} (${profile.id})`" :value="profile.id" />
-              </el-select>
-              <span class="field-tip">同一台 NAS 只维护一次连接参数。</span>
-            </label>
-            <label class="field-card">
-              <span class="field-label">远程根目录</span>
-              <input v-model="selectedLibrary.synology.root_path" class="field-input" type="text" placeholder="/ASMR" @input="$emit('sync-path', selectedLibrary)">
-            </label>
+            <SettingsFieldCard label="连接模板" hint="同一台 NAS 只维护一次连接参数。">
+              <AppDropdown
+                v-model="selectedLibrary.synology_profile_id"
+                :options="profileDropdownOptions"
+                placeholder="先选择群晖连接模板"
+                class="settings-field-dd"
+                @update:model-value="$emit('profile-change', selectedLibrary)"
+              />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="远程根目录">
+              <input v-model="selectedLibrary.synology.root_path" class="lib-input" type="text" placeholder="/ASMR" @input="$emit('sync-path', selectedLibrary)">
+            </SettingsFieldCard>
           </div>
 
           <div v-if="selectedLibrary.type === 'synology_filestation' && !selectedLibrary.synology_profile_id" class="inline-tip warn">当前远程库存还没绑定连接模板，先选模板再做目录访问测试。</div>
@@ -116,24 +112,18 @@
         </template>
 
         <div class="toggle-row">
-          <div class="toggle-card" @click="emitLibraryFlag(selectedLibrary.id, 'enabled', !selectedLibrary.enabled)">
-            <span>
-              <strong>启用库存</strong>
-              <small>关闭后不会出现在主工作台选择里。</small>
-            </span>
-            <div class="toggle-control" @click.stop>
-              <el-switch :model-value="selectedLibrary.enabled" @update:model-value="emitLibraryFlag(selectedLibrary.id, 'enabled', $event)" />
-            </div>
-          </div>
-          <div class="toggle-card" @click="emitLibraryFlag(selectedLibrary.id, 'writable', !selectedLibrary.writable)">
-            <span>
-              <strong>允许写入</strong>
-              <small>远程上传、落盘和分类会使用这个权限。</small>
-            </span>
-            <div class="toggle-control" @click.stop>
-              <el-switch :model-value="selectedLibrary.writable" @update:model-value="emitLibraryFlag(selectedLibrary.id, 'writable', $event)" />
-            </div>
-          </div>
+          <SettingsToggleRow
+            :model-value="selectedLibrary.enabled"
+            title="启用库存"
+            subtitle="关闭后不会出现在主工作台选择里。"
+            @update:model-value="emitLibraryFlag(selectedLibrary.id, 'enabled', $event)"
+          />
+          <SettingsToggleRow
+            :model-value="selectedLibrary.writable"
+            title="允许写入"
+            subtitle="远程上传、落盘和分类会使用这个权限。"
+            @update:model-value="emitLibraryFlag(selectedLibrary.id, 'writable', $event)"
+          />
         </div>
       </template>
 
@@ -146,8 +136,11 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Box, FolderPlus, HardDriveDownload, LoaderCircle, PlugZap } from 'lucide-vue-next'
+import { FolderPlus, HardDriveDownload, LoaderCircle, PlugZap } from 'lucide-vue-next'
 import AppEmptyState from '../common/AppEmptyState.vue'
+import AppDropdown from '../common/AppDropdown.vue'
+import SettingsFieldCard from './SettingsFieldCard.vue'
+import SettingsToggleRow from './SettingsToggleRow.vue'
 
 const props = defineProps({
   libraries: { type: Array, default: () => [] },
@@ -172,6 +165,10 @@ const emit = defineEmits([
 const libraryCards = computed(() => props.libraries.map((library, index) => props.getLibraryViewModel(library, index + 1)))
 const selectedLibraryIndex = computed(() => props.libraries.findIndex(item => item.id === props.selectedLibraryId))
 const selectedLibrary = computed(() => props.libraries[selectedLibraryIndex.value] || null)
+const profileDropdownOptions = computed(() => props.profiles.map(profile => ({
+  value: profile.id,
+  label: `${profile.name || profile.id} (${profile.id})`
+})))
 const selectedLibraryView = computed(() => {
   if (!selectedLibrary.value) return null
   return props.getLibraryViewModel(selectedLibrary.value, selectedLibraryIndex.value + 1)
@@ -185,281 +182,358 @@ function emitLibraryFlag(libraryId, key, value) {
 <style scoped>
 .inventory-panel {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
 }
 
 .inventory-list {
-  display: grid;
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   align-content: start;
 }
 
+/* 库存列表项保留卡感（列表项需要明确可点击边界），但圆角从 22 降到 12，背景白底 + hairline 边 */
 .library-card,
 .create-btn {
   width: 100%;
-  padding: 16px;
-  border-radius: 22px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(248, 250, 252, 0.88);
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: #ffffff;
   text-align: left;
   cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.library-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(148, 163, 184, 0.75);
+  box-shadow: 0 4px 12px -4px rgba(15, 23, 42, 0.08);
 }
 
 .library-card.active {
-  border-color: rgba(96, 165, 250, 0.55);
-  background: rgba(239, 246, 255, 0.92);
+  border-color: rgba(99, 102, 241, 0.55);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.85) 0%, rgba(255, 255, 255, 0.96) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 4px 12px -4px rgba(79, 70, 229, 0.18);
 }
 
 .library-card.remote {
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(240, 253, 244, 0.88));
+  background: linear-gradient(135deg, rgba(240, 253, 244, 0.6) 0%, rgba(255, 255, 255, 0.96) 100%);
 }
 
-.library-head,
-.editor-header,
-.editor-actions,
-.toggle-row,
-.field-grid {
-  display: flex;
-  gap: 12px;
+.library-card.remote.active {
+  background: linear-gradient(135deg, rgba(220, 252, 231, 0.85) 0%, rgba(255, 255, 255, 0.96) 100%);
+  border-color: rgba(110, 231, 183, 0.55);
 }
 
 .library-head {
+  display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 10px;
 }
 
-.library-title,
+.library-title {
+  color: #1d1d1f;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.05px;
+}
+
 .editor-title {
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 800;
+  color: #1d1d1f;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
 }
 
-.editor-title {
-  font-size: 20px;
+.library-sub {
+  margin-top: 2px;
+  color: rgba(29, 29, 31, 0.55);
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
-.library-sub,
 .editor-desc,
 .empty-desc {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.65;
+  color: rgba(29, 29, 31, 0.55);
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 
-.editor-desc {
-  margin-top: 8px;
-  font-size: 13px;
-}
+.editor-desc { margin-top: 4px; }
 
+/* type-pill / summary-pill 对齐 lib-chip 风：180deg 渐变 + inset 顶高光 + 微 glow */
 .library-type-pill,
 .summary-pill {
   display: inline-flex;
   align-items: center;
-  height: 24px;
-  padding: 0 10px;
+  height: 22px;
+  padding: 0 9px;
   border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   color: #475569;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .library-meta,
 .library-summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-  color: #64748b;
-  font-size: 12px;
+  gap: 6px;
+  margin-top: 10px;
+  color: rgba(29, 29, 31, 0.55);
+  font-size: 11.5px;
 }
 
 .create-row {
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .create-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  color: #2563eb;
-  font-weight: 800;
+  gap: 6px;
+  padding: 10px 14px;
+  color: #4f46e5;
+  font-weight: 500;
+  font-size: 12.5px;
 }
 
-.create-btn.warn {
-  color: #b45309;
+.create-btn:hover {
+  border-color: rgba(99, 102, 241, 0.55);
+  background: linear-gradient(135deg, rgba(238, 242, 255, 0.85) 0%, #ffffff 100%);
 }
 
+.create-btn.warn { color: #d97706; }
+
+.create-btn.warn:hover {
+  border-color: rgba(251, 191, 36, 0.55);
+  background: linear-gradient(135deg, rgba(255, 251, 235, 0.85) 0%, #ffffff 100%);
+}
+
+/* 右侧编辑区去火火灰底大卡，内容直接铺在外层白底上 */
 .inventory-editor {
   min-width: 0;
-  padding: 18px;
-  border-radius: 24px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(248, 250, 252, 0.62);
-}
-
-.field-grid {
-  margin-top: 14px;
-}
-
-.field-grid.two > * {
-  flex: 1;
-}
-
-.field-grid.three > * {
-  flex: 1;
-}
-
-.field-card {
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 0;
   display: flex;
   flex-direction: column;
+  gap: 16px;
+}
+
+.editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  min-width: 0;
-  padding: 14px;
-  border-radius: 18px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.92);
 }
 
-.field-card.block {
-  margin-top: 14px;
+/* 字段网格：二列 / 三列 grid，SettingsFieldCard 负责控件槽、label、hint排版 */
+.field-grid {
+  display: grid;
+  gap: 14px 18px;
+  align-items: start;
+  margin-top: 0;
 }
 
-.field-label {
-  color: #94a3b8;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
+.field-grid.two   { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.field-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
-.field-input {
+/* SettingsFieldCard 默认 slot 里裸 input 的统一外观 */
+.lib-input {
   width: 100%;
-  min-height: 42px;
+  min-height: 38px;
   padding: 0 12px;
-  border: none;
+  border: 1px solid rgba(226, 232, 240, 0.85);
   outline: none;
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.95);
-  color: #0f172a;
-  font-size: 14px;
-  box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.92);
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1d1d1f;
+  font-size: 13.5px;
+  box-shadow: none;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.field-select :deep(.el-select__wrapper) {
-  min-height: 42px;
-  border-radius: 12px;
+.lib-input:hover { border-color: rgba(148, 163, 184, 0.75); }
+
+.lib-input:focus {
+  border-color: rgba(79, 70, 229, 0.5);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
 
-.field-tip,
+.lib-input::placeholder { color: #94a3b8; }
+
+/* AppDropdown 收敛：撑满 SettingsFieldCard 控件槽 + 38px 高 / 10px 圆角 */
+.settings-field-dd {
+  display: block;
+  width: 100%;
+}
+
+.settings-field-dd :deep(.app-dd-root) {
+  display: block;
+  width: 100%;
+}
+
+.settings-field-dd :deep(.app-dd-trigger) {
+  width: 100%;
+  min-height: 38px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  font-size: 13.5px;
+  justify-content: space-between;
+}
+
+.settings-field-dd :deep(.app-dd-trigger:hover) {
+  border-color: rgba(148, 163, 184, 0.75);
+}
+
+.settings-field-dd :deep(.app-dd-trigger.is-open) {
+  border-color: rgba(79, 70, 229, 0.55);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
 .inline-tip {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
+  color: rgba(29, 29, 31, 0.5);
+  font-size: 11.5px;
+  line-height: 1.55;
 }
 
 .inline-tip.warn {
-  margin-top: 14px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: rgba(255, 251, 235, 0.95);
-  border: 1px solid rgba(253, 230, 138, 0.9);
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+  border: 1px solid rgba(251, 191, 36, 0.55);
   color: #b45309;
-}
-
-.toggle-row {
-  margin-top: 14px;
-}
-
-.toggle-card {
-  flex: 1;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: center;
-  padding: 16px 18px;
-  border-radius: 18px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.92);
-}
-
-.toggle-control {
-  position: relative;
-  z-index: 2;
-  flex-shrink: 0;
-  pointer-events: auto;
-}
-
-.toggle-control :deep(.el-switch) {
-  pointer-events: auto;
-}
-
-.toggle-card strong {
-  display: block;
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.toggle-card small {
-  display: block;
-  margin-top: 5px;
-  color: #64748b;
   font-size: 12px;
-  line-height: 1.6;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 2px rgba(245, 158, 11, 0.1);
 }
 
-.bottom {
-  margin-top: 14px;
-  justify-content: flex-end;
+/* toggle 行外层 grid：SettingsToggleRow 负责行内颜值，外层只负责二列排列 */
+.toggle-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+  align-items: start;
+  margin-top: 4px;
 }
 
-.primary-btn,
+.bottom { margin-top: 0; justify-content: flex-end; }
+
+/* 主按钮：AGENTS.md 三段黑色渐变 + inset 顶高光 + 双层 glow */
+.primary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 10px;
+  color: #ffffff;
+  background: linear-gradient(180deg, #1f2937 0%, #0f172a 60%, #020617 100%);
+  border: 1px solid #0f172a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 6px 16px -6px rgba(2, 6, 23, 0.55),
+    0 2px 4px rgba(15, 23, 42, 0.25);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.primary-btn:not(:disabled):hover {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 14px 28px -10px rgba(2, 6, 23, 0.6),
+    0 4px 8px rgba(15, 23, 42, 0.3);
+}
+
+.primary-btn:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+}
+
+.primary-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* ghost / link 按钮：白底 + hairline 边 + hover 微上抬 */
 .ghost-btn,
 .link-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  height: 40px;
-  padding: 0 16px;
-  border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  background: rgba(255, 255, 255, 0.92);
-  color: #334155;
-  font-size: 13px;
-  font-weight: 800;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: #ffffff;
+  color: #475569;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.05px;
   text-decoration: none;
   cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.primary-btn {
-  background: #0f172a;
-  color: #f8fafc;
-  border-color: #0f172a;
+.ghost-btn:not(:disabled):hover,
+.link-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(148, 163, 184, 0.75);
+  background: rgba(248, 250, 252, 0.85);
+  color: #1d1d1f;
 }
 
-.ghost-btn.danger {
+.ghost-btn.danger { color: #e11d48; border-color: rgba(244, 63, 94, 0.4); }
+
+.ghost-btn.danger:hover {
+  background: linear-gradient(135deg, rgba(254, 226, 226, 0.6) 0%, #ffffff 100%);
+  border-color: rgba(244, 63, 94, 0.7);
   color: #be123c;
 }
 
 .empty-state {
   display: grid;
   place-items: center;
-  min-height: 320px;
+  min-height: 240px;
   text-align: center;
-  color: #64748b;
+  color: rgba(29, 29, 31, 0.55);
 }
 
 .empty-title {
-  margin-top: 14px;
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 800;
+  margin-top: 12px;
+  color: #1d1d1f;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .spinning {
@@ -477,10 +551,9 @@ function emitLibraryFlag(libraryId, key, value) {
 }
 
 @media (max-width: 768px) {
-  .field-grid,
-  .toggle-row,
-  .editor-header {
-    flex-direction: column;
-  }
+  .field-grid.two,
+  .field-grid.three,
+  .toggle-row { grid-template-columns: 1fr; }
+  .editor-header { flex-direction: column; }
 }
 </style>

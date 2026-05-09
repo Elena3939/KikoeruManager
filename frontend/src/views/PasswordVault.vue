@@ -1,27 +1,22 @@
 <template>
   <div class="password-vault mx-auto w-full max-w-[1480px] px-1 pb-6 pt-2 text-slate-900">
-    <!-- 顶部标题 -->
-    <header class="mb-5 flex flex-wrap items-end justify-between gap-4">
-      <div class="min-w-0">
-        <div class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-blue-600/80">
-          <IconKey :size="13" :stroke-width="2.2" />
-          <span>密码库</span>
-        </div>
-        <h1 class="m-0 text-[28px] font-semibold leading-tight tracking-tight text-slate-900">解压密码工作台</h1>
-        <p class="mt-1.5 max-w-xl text-[13px] leading-relaxed text-slate-500">集中管理解压密码、作品绑定关系与自动清理规则。<span class="text-slate-600">同时填写文件名 + RJ 号时，系统会把该文件视为该 RJ，查重/命名/包裹目录都以此为准。</span></p>
-      </div>
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="inline-flex h-8 items-center gap-1.5 rounded-full border border-slate-200 bg-white/80 px-3 text-xs font-medium text-slate-600 shadow-sm">
-          <IconShield :size="14" :stroke-width="2.2" class="text-slate-400" />总数 <b class="text-slate-800">{{ totalCount }}</b>
-        </span>
-        <span class="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-200/70 bg-emerald-50/70 px-3 text-xs font-medium text-emerald-700">
-          <IconSparkles :size="14" :stroke-width="2.2" />已生效 <b>{{ usedPasswordCount }}</b>
-        </span>
-        <span class="inline-flex h-8 items-center gap-1.5 rounded-full border border-violet-200/70 bg-violet-50/70 px-3 text-xs font-medium text-violet-700">
-          <IconDoc :size="14" :stroke-width="2.2" />已绑定 <b>{{ scopedPasswordCount }}</b>
-        </span>
-      </div>
-    </header>
+    <!-- 页头走共享组件 AppPageHeader，右侧 slot 保留三个统计 chip -->
+    <AppPageHeader
+      :icon="IconKey"
+      icon-color="#1d4ed8"
+      title="解压密码工作台"
+      subtitle="集中管理解压密码、作品绑定关系与自动清理规则。同时填写文件名 + RJ 号时，系统会把该文件视为该 RJ，查重/命名/包裹目录都以此为准。"
+    >
+      <span class="inline-flex h-8 items-center gap-1.5 rounded-full border border-slate-200 bg-white/80 px-3 text-xs font-medium text-slate-600 shadow-sm">
+        <IconShield :size="14" :stroke-width="2.2" class="text-slate-400" />总数 <b class="text-slate-800">{{ totalCount }}</b>
+      </span>
+      <span class="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-200/70 bg-emerald-50/70 px-3 text-xs font-medium text-emerald-700">
+        <IconSparkles :size="14" :stroke-width="2.2" />已生效 <b>{{ usedPasswordCount }}</b>
+      </span>
+      <span class="inline-flex h-8 items-center gap-1.5 rounded-full border border-violet-200/70 bg-violet-50/70 px-3 text-xs font-medium text-violet-700">
+        <IconDoc :size="14" :stroke-width="2.2" />已绑定 <b>{{ scopedPasswordCount }}</b>
+      </span>
+    </AppPageHeader>
 
     <!-- 工具栏 -->
     <section class="vault-toolbar-shell mb-4">
@@ -353,6 +348,7 @@ import { passwordApi, cleanupApi } from '../api'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 import editIconAnimation from '../assets/anime/Clipboard.lottie'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'

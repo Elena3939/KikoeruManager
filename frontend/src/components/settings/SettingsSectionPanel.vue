@@ -25,12 +25,14 @@ defineProps({
 </script>
 
 <style scoped>
+/* Flat 风：不再是一个独立的大白卡浮窗，直接铺在 settings-page 白底上
+   避免“卡里装内容必须滚动”的下拉浮窗视觉错觉 */
 .settings-section-panel {
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.06);
-  overflow: hidden;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
 }
 
 .panel-header {
@@ -38,38 +40,43 @@ defineProps({
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 26px 28px 18px;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.98));
-  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+  margin-bottom: 18px;
+  padding: 0;
+  background: transparent;
+  border-bottom: none;
 }
 
 .panel-kicker {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   color: #94a3b8;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .panel-title {
   margin: 0;
-  color: #0f172a;
-  font-size: 26px;
-  font-weight: 800;
-  line-height: 1.05;
+  color: #1d1d1f;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.3px;
 }
 
 .panel-desc {
-  margin: 10px 0 0;
+  margin: 6px 0 0;
   max-width: 720px;
-  color: #64748b;
-  font-size: 14px;
-  line-height: 1.7;
+  color: rgba(29, 29, 31, 0.6);
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .panel-body {
-  padding: 24px 28px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 0 0 22px;
 }
 
 .panel-actions {
@@ -81,10 +88,11 @@ defineProps({
 @media (max-width: 960px) {
   .panel-header {
     flex-direction: column;
+    margin-bottom: 12px;
   }
 
   .panel-body {
-    padding: 20px;
+    padding: 0 0 18px;
   }
 }
 </style>

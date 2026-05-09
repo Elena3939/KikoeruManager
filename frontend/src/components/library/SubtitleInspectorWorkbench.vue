@@ -310,13 +310,12 @@
                   <span v-else-if="row.depth > 0" class="inline-block h-5 w-5 shrink-0"></span>
                   <span
                     class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/row:rotate-[6deg] group-hover/row:scale-110"
-                    :class="row.type === 'dir'
-                      ? 'bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-100'
-                      : 'bg-sky-50 text-sky-600 ring-1 ring-inset ring-sky-100'"
+                    :class="row.type === 'dir' ? 'bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-100' : ''"
+                    :style="row.type === 'file' ? subtitleRowChipStyle(row) : null"
                   >
                     <FolderClosed v-if="row.type === 'dir' && !view.subtitleInspectorExpandedIds.has(row.id)" :size="12" :stroke-width="2.2" />
                     <FolderOpen v-else-if="row.type === 'dir'" :size="12" :stroke-width="2.2" />
-                    <FileText v-else :size="12" :stroke-width="2.2" />
+                    <component v-else :is="libraryEntryIconFor(row)" :size="12" :stroke-width="2.2" />
                   </span>
                   <span class="truncate text-[13px] font-medium text-slate-900" :title="row.name">{{ row.name }}</span>
                 </div>
@@ -384,6 +383,28 @@ import {
   XCircle,
   Pencil
 } from 'lucide-vue-next'
+import { libraryEntryIconFor, libraryEntryMetaFor } from './_libraryFileKind'
+
+// chip 颜色：拿 helper meta 的 color，凑出“文字原色 + 10% 深度底 + 22% 深度 inset ring”。
+// hex 说明是 #rrggbb 三节映射，其他格式充当备选。
+function hexToRgba (hex, alpha) {
+  const value = String(hex || '').replace('#', '')
+  if (value.length !== 6) return `rgba(15,23,42,${alpha})`
+  const r = parseInt(value.substring(0, 2), 16)
+  const g = parseInt(value.substring(2, 4), 16)
+  const b = parseInt(value.substring(4, 6), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+function subtitleRowChipStyle (row) {
+  const meta = libraryEntryMetaFor(row)
+  const color = meta.color
+  return {
+    color,
+    backgroundColor: hexToRgba(color, 0.10),
+    boxShadow: `inset 0 0 0 1px ${hexToRgba(color, 0.22)}`,
+  }
+}
 
 const props = defineProps({
   ctx: {

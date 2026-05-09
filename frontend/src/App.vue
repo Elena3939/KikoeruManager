@@ -251,7 +251,7 @@ body {
   height: 100vh;
   padding: 16px;
   gap: 16px;
-  background: linear-gradient(180deg, #fbfbfd 0%, #f2f2f5 100%);
+  background: #ffffff;
 }
 
 .sidebar {

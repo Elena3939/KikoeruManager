@@ -229,7 +229,7 @@
                     </button>
                     <span v-else class="tree-checkbox-placeholder" />
 
-                    <component :is="resolveFilterDeleteTreeIcon(row)" :size="17" class="tree-icon" :class="row.type === 'dir' ? 'icon-folder' : ''" />
+                    <component :is="resolveFilterDeleteTreeIcon(row)" :size="17" class="tree-icon" :style="resolveFilterDeleteTreeIconStyle(row)" />
 
                     <div class="min-w-0 flex-1">
                       <div class="tree-name truncate text-[13px] font-medium text-slate-800">{{ row.name }}</div>
@@ -291,13 +291,8 @@ import {
   Check, 
   ChevronDown, 
   ChevronRight, 
-  File, 
-  FileText, 
-  FileVideo, 
   Folder, 
   FolderOpen, 
-  Image, 
-  Music, 
   RefreshCw, 
   Search, 
   Trash2, 
@@ -310,6 +305,7 @@ import {
   XSquare
 } from 'lucide-vue-next'
 import { activityLogApi, libraryApi } from '../../api'
+import { libraryEntryIconFor, libraryEntryMetaFor } from './_libraryFileKind'
 
 const text = {
   title: '\u5220\u9664\u8fc7\u6ee4\u6587\u4ef6\u9884\u5ba1',
@@ -1347,7 +1343,16 @@ function isFilterDeleteTypePartiallySelected(typeKey) {
 
 function resolveFilterDeleteTreeIcon (row) {
   if (row?.type === 'dir') return filterDeleteExpandedIds.value.has(row.id) ? FolderOpen : Folder
-  return fileIcon(row?.name || '')
+  return libraryEntryIconFor(row)
+}
+
+// dir / 领域色都交给共享 helper走 9 类色盘
+function resolveFilterDeleteTreeIconStyle (row) {
+  const meta = libraryEntryMetaFor(row)
+  return {
+    color: meta.color,
+    fill: meta.fillIcon ? 'currentColor' : 'none',
+  }
 }
 
 function normalizeFilterDeleteComparePath (path) {
@@ -1875,15 +1880,6 @@ function flattenTree (nodes, depth, openIds) {
   return result
 }
 
-function fileIcon (name = '') {
-  const lower = name.toLowerCase()
-  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(lower)) return Music
-  if (/\.(png|jpg|jpeg|webp|bmp|gif)$/i.test(lower)) return Image
-  if (/\.(mp4|mkv|avi|mov|wmv|webm)$/i.test(lower)) return FileVideo
-  if (/\.(lrc|srt|ass|ssa|vtt)$/i.test(lower)) return FileText
-  return File
-}
-
 function formatFileSize (bytes) {
   if (bytes === null || bytes === undefined) return '-'
   if (!bytes) return '0 B'
@@ -2290,8 +2286,11 @@ onBeforeUnmount(() => {
   scrollbar-gutter: stable;
 }
 
+/* 颜色现在由 _libraryFileKind helper 通过 inline :style 接管，这里只保留兜底色 */
 .tree-icon {
   color: #64748b;
+  flex-shrink: 0;
+  transition: color 0.18s ease;
 }
 
 .tree-sort-button {

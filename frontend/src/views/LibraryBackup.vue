@@ -1,12 +1,11 @@
 <template>
   <div class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-    <!-- Header -->
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-bold text-slate-900 tracking-tight">库存打包</h1>
-        <p class="text-sm text-slate-500 mt-1">将当前库存完整打包为压缩文件，支持目录结构快照和自动加密。</p>
-      </div>
-      <div class="flex flex-wrap items-center gap-3">
+    <AppPageHeader
+      :icon="Archive"
+      icon-color="#9333ea"
+      title="库存打包"
+      subtitle="将当前库存完整打包为压缩文件，支持目录结构快照和自动加密。"
+    >
         <button 
           class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-50 hover:text-slate-900 hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
           :disabled="saving"
@@ -53,8 +52,7 @@
         >
           <svg class="w-5 h-5 group-hover:rotate-180 transition-transform duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
         </button>
-      </div>
-    </div>
+    </AppPageHeader>
 
     <!-- Main Layout: 上下流式 -->
     <div class="flex flex-col gap-6">
@@ -244,9 +242,10 @@
 <script setup>
 import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Folder, FolderOpen, KeyRound } from 'lucide-vue-next'
+import { Archive, Folder, FolderOpen, KeyRound } from 'lucide-vue-next'
 import { configApi, backupApi } from '../api'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 
