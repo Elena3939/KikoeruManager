@@ -6,52 +6,57 @@
       title="库存打包"
       subtitle="将当前库存完整打包为压缩文件，支持目录结构快照和自动加密。"
     >
-        <button 
-          class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-50 hover:text-slate-900 hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
-          :disabled="saving"
-          @click="saveBackupConfig"
-        >
-          <svg v-if="saving" class="w-4 h-4 animate-spin text-slate-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-          <svg v-else class="w-4 h-4 text-slate-500 group-hover:text-blue-500 group-hover:scale-110 transition-all duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg>
-          保存配置
-        </button>
+      <button
+        class="page-head-btn ghost btn-save"
+        type="button"
+        :disabled="saving"
+        @click="saveBackupConfig"
+      >
+        <Loader2 v-if="saving" :size="13" :stroke-width="2.4" class="animate-spin" />
+        <Save v-else :size="13" :stroke-width="2.4" class="page-head-btn-icon" />
+        <span class="page-head-btn-label">{{ saving ? '保存中…' : '保存配置' }}</span>
+      </button>
 
-        <button 
-          class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-600 border border-transparent rounded-lg shadow-sm hover:bg-emerald-500 hover:shadow-emerald-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:hover:shadow-none"
-          :disabled="status.running || actionLoading"
-          @click="startBackup"
-        >
-          <svg v-if="actionLoading && !status.running" class="w-4 h-4 animate-spin text-emerald-200" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-          <svg v-else class="w-4 h-4 group-hover:rotate-12 group-hover:scale-110 transition-all duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-          开始打包
-        </button>
+      <button
+        class="page-head-btn primary btn-pack"
+        type="button"
+        :disabled="status.running || actionLoading"
+        @click="startBackup"
+      >
+        <Loader2 v-if="actionLoading && !status.running" :size="13" :stroke-width="2.6" class="animate-spin" />
+        <Play v-else :size="13" :stroke-width="2.6" class="page-head-btn-icon" />
+        <span class="page-head-btn-label">{{ actionLoading && !status.running ? '启动中…' : '开始打包' }}</span>
+      </button>
 
-        <button 
-          class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-amber-500 border border-transparent rounded-lg shadow-sm hover:bg-amber-400 hover:shadow-amber-500/30 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-1 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:hover:shadow-none"
-          :disabled="!status.has_checkpoint || status.running || actionLoading"
-          @click="resumeBackup"
-        >
-          <svg v-if="actionLoading && !status.running" class="w-4 h-4 animate-spin text-amber-200" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-          <svg v-else class="w-4 h-4 group-hover:-translate-y-0.5 group-hover:scale-110 transition-all duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-          恢复任务
-        </button>
+      <button
+        class="page-head-btn ghost is-amber btn-resume"
+        type="button"
+        :disabled="!status.has_checkpoint || status.running || actionLoading"
+        @click="resumeBackup"
+      >
+        <Loader2 v-if="actionLoading && !status.running" :size="13" :stroke-width="2.4" class="animate-spin" />
+        <RotateCcw v-else :size="13" :stroke-width="2.4" class="page-head-btn-icon" />
+        <span class="page-head-btn-label">恢复任务</span>
+      </button>
 
-        <button 
-          class="group relative inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg shadow-sm hover:bg-red-100 hover:text-red-800 hover:border-red-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-red-200 focus:ring-offset-1 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:hover:shadow-none"
-          :disabled="!status.running || actionLoading"
-          @click="cancelBackup"
-        >
-          <svg class="w-4 h-4 text-red-600 group-hover:scale-110 group-hover:rotate-90 transition-all duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path></svg>
-          取消任务
-        </button>
+      <button
+        class="page-head-btn ghost is-danger btn-cancel"
+        type="button"
+        :disabled="!status.running || actionLoading"
+        @click="cancelBackup"
+      >
+        <XCircle :size="13" :stroke-width="2.4" class="page-head-btn-icon" />
+        <span class="page-head-btn-label">取消任务</span>
+      </button>
 
-        <button 
-          class="group relative inline-flex items-center justify-center p-2 text-slate-500 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:text-slate-700 hover:shadow-sm hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-200"
-          title="刷新状态"
-          @click="fetchBackupStatus"
-        >
-          <svg class="w-5 h-5 group-hover:rotate-180 transition-transform duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-        </button>
+      <button
+        class="page-head-btn ghost btn-refresh icon-only"
+        type="button"
+        title="刷新状态"
+        @click="fetchBackupStatus"
+      >
+        <RefreshCw :size="13" :stroke-width="2.6" class="page-head-btn-icon" />
+      </button>
     </AppPageHeader>
 
     <!-- Main Layout: 上下流式 -->
@@ -97,10 +102,11 @@
             </el-form-item>
 
             <el-form-item label="压缩后缀格式">
-              <el-select v-model="backupConfig.archive_format" class="w-full">
-                <el-option label=".zip" value="zip" />
-                <el-option label=".7z" value="7z" />
-              </el-select>
+              <AppDropdown
+                v-model="backupConfig.archive_format"
+                :options="archiveFormatOptions"
+                class="backup-format-dd"
+              />
             </el-form-item>
             
             <el-form-item label="压缩强度">
@@ -185,12 +191,20 @@
       <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
         <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
           <h2 class="text-base font-semibold text-slate-900">历史记录</h2>
-          <button 
-            class="group relative inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 hover:text-slate-900 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-1 active:scale-95 transition-all duration-200"
+          <button
+            class="lib-refresh-btn"
+            :class="{ 'is-loading': historyRefreshing }"
+            type="button"
+            :disabled="historyRefreshing"
             @click="fetchBackupHistory"
           >
-            <svg class="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-500 group-hover:-rotate-180 transition-all duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-            刷新历史
+            <RefreshCw
+              :size="13"
+              :stroke-width="2.4"
+              class="lib-refresh-btn-icon"
+              :class="{ 'animate-spin': historyRefreshing }"
+            />
+            <span class="lib-refresh-btn-label">{{ historyRefreshing ? '刷新中…' : '刷新历史' }}</span>
           </button>
         </div>
         <div class="overflow-hidden p-0" style="min-height: 280px; max-height: 400px;">
@@ -242,15 +256,33 @@
 <script setup>
 import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Archive, Folder, FolderOpen, KeyRound } from 'lucide-vue-next'
+import {
+  Archive,
+  Folder,
+  FolderOpen,
+  KeyRound,
+  Save,
+  Play,
+  RotateCcw,
+  XCircle,
+  RefreshCw,
+  Loader2
+} from 'lucide-vue-next'
 import { configApi, backupApi } from '../api'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
+import AppDropdown from '../components/common/AppDropdown.vue'
+
+const archiveFormatOptions = [
+  { value: 'zip', label: '.zip' },
+  { value: '7z', label: '.7z' }
+]
 
 const saving = ref(false)
 const actionLoading = ref(false)
+const historyRefreshing = ref(false)
 const status = ref({
   state: 'idle',
   running: false,
@@ -306,11 +338,15 @@ async function loadConfig() {
 }
 
 async function fetchBackupHistory() {
+  if (historyRefreshing.value) return
   try {
+    historyRefreshing.value = true
     const data = await backupApi.history()
     backupHistory.value = data || []
   } catch (error) {
     console.error('获取备份历史失败:', error)
+  } finally {
+    historyRefreshing.value = false
   }
 }
 
@@ -468,6 +504,307 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+button:not(:disabled) { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+/* ==============================================================
+ * 页头按钮：page-head-btn 规范（对齐 ASMRSync.vue / ActivityHistory.vue）
+ *  - 基础 ghost 白底
+ *  - .primary 黑灰渐变 + shimmer 扫光
+ *  - .is-amber / .is-danger 为状态色 ghost 变体
+ *  - .icon-only 仅图标圆形按钮
+ * ============================================================ */
+.page-head-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden; /* 容纳 shimmer ::before */
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 0.35s ease,
+    border-color 0.25s ease,
+    color 0.25s ease,
+    opacity 0.25s ease;
+  will-change: transform, opacity;
+}
+.page-head-btn :deep(.page-head-btn-icon) {
+  flex-shrink: 0;
+  transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.3s ease;
+}
+.page-head-btn :deep(svg) { flex-shrink: 0; }
+
+.page-head-btn:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+}
+.page-head-btn:active:not(:disabled) {
+  transform: scale(0.96);
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.18s ease,
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    opacity 0.2s ease;
+}
+.page-head-btn:active:not(:disabled) :deep(.page-head-btn-icon) {
+  transform: scale(0.82);
+  transition: transform 0.12s ease;
+}
+/* disabled：仅 opacity + cursor，不重置 transform/shadow，避免 hover 中点击瞬间塌回闪烁 */
+.page-head-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* === Primary 黑灰渐变按钮 + shimmer 高光扫光 === */
+.page-head-btn.primary {
+  background: linear-gradient(135deg, #111827, #1e293b);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+}
+.page-head-btn.primary::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -120%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.05) 30%,
+    rgba(255, 255, 255, 0.28) 50%,
+    rgba(255, 255, 255, 0.05) 70%,
+    transparent 100%
+  );
+  transform: skewX(-18deg);
+  transition: left 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: none;
+}
+.page-head-btn.primary:hover {
+  background: linear-gradient(135deg, #1e293b, #334155);
+  box-shadow:
+    0 14px 28px rgba(15, 23, 42, 0.28),
+    0 0 0 4px rgba(15, 23, 42, 0.05);
+}
+.page-head-btn.primary:hover::before {
+  left: 130%;
+}
+
+/* === Ghost 白底按钮 hover：纯色 transition（gradient 不能 transition）=== */
+.page-head-btn.ghost {
+  background-color: #fff;
+}
+.page-head-btn.ghost:hover {
+  background-color: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.2);
+}
+
+/* === Ghost amber 状态色变体（恢复任务） === */
+.page-head-btn.ghost.is-amber {
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.35);
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+}
+.page-head-btn.ghost.is-amber:hover {
+  background: linear-gradient(180deg, #fef3c7 0%, #fde68a 100%);
+  border-color: rgba(217, 119, 6, 0.55);
+  color: #92400e;
+  box-shadow: 0 10px 22px rgba(217, 119, 6, 0.18);
+}
+
+/* === Ghost danger 状态色变体（取消任务） === */
+.page-head-btn.ghost.is-danger {
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.32);
+  background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
+}
+.page-head-btn.ghost.is-danger:hover {
+  background: linear-gradient(180deg, #fee2e2 0%, #fecaca 100%);
+  border-color: rgba(220, 38, 38, 0.5);
+  color: #991b1b;
+  box-shadow: 0 10px 22px rgba(220, 38, 38, 0.16);
+}
+
+/* === icon-only：仅图标的圆形按钮（刷新） === */
+.page-head-btn.icon-only {
+  padding: 0;
+  width: 36px;
+  justify-content: center;
+}
+
+/* === 各按钮专属图标动效 === */
+/* 保存：Save 图标 hover 时轻微下沉 + 缩放（模拟落盘动作） */
+.page-head-btn.btn-save:hover:not(:disabled) :deep(.page-head-btn-icon) {
+  transform: translateY(1px) scale(1.12);
+  filter: drop-shadow(0 2px 4px rgba(59, 130, 246, 0.35));
+  color: #2563eb;
+}
+
+/* 开始打包：Play 三角 hover 时右移 + 放大（模拟启动） */
+.page-head-btn.btn-pack:hover:not(:disabled) :deep(.page-head-btn-icon) {
+  transform: translateX(2px) scale(1.18);
+  filter: drop-shadow(0 2px 5px rgba(255, 255, 255, 0.45));
+  animation: pack-icon-bob 1.2s ease-in-out infinite;
+}
+@keyframes pack-icon-bob {
+  0%, 100% { transform: translateX(2px) scale(1.18); }
+  50% { transform: translateX(4px) scale(1.18); }
+}
+
+/* 恢复任务：RotateCcw hover 时反向旋转一圈 */
+.page-head-btn.btn-resume:hover:not(:disabled) :deep(.page-head-btn-icon:not(.animate-spin)) {
+  transform: rotate(-360deg) scale(1.1);
+  transition: transform 0.65s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 取消任务：XCircle hover 时旋转 90° + 缩放（模拟"叉掉"） */
+.page-head-btn.btn-cancel:hover:not(:disabled) :deep(.page-head-btn-icon) {
+  transform: rotate(90deg) scale(1.15);
+}
+
+/* 刷新：RefreshCw hover 时旋转一整圈（非 loading 态） */
+.page-head-btn.btn-refresh:hover:not(:disabled) :deep(.page-head-btn-icon:not(.animate-spin)) {
+  transform: rotate(-360deg) scale(1.1);
+  transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 文本 label：min-width + 居中，避免「保存」→「保存中…」宽度跳变 */
+.page-head-btn-label {
+  display: inline-block;
+  text-align: center;
+  transition: opacity 0.2s ease, letter-spacing 0.3s ease;
+}
+.page-head-btn.primary .page-head-btn-label { min-width: 70px; }
+.page-head-btn.ghost .page-head-btn-label { min-width: 56px; }
+.page-head-btn:hover .page-head-btn-label {
+  letter-spacing: 0.04em;
+}
+
+/* ==============================================================
+ * AppDropdown 在 el-form-item 内的全宽适配（压缩后缀格式）
+ * ============================================================ */
+.backup-format-dd {
+  display: block;
+  width: 100%;
+}
+.backup-format-dd :deep(.app-dd-root) {
+  display: block;
+  width: 100%;
+}
+.backup-format-dd :deep(.app-dd-trigger) {
+  width: 100%;
+  min-height: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: #fff;
+  border-color: rgb(220 226 235);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 0 12px;
+  justify-content: space-between;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+.backup-format-dd :deep(.app-dd-trigger:hover) {
+  border-color: #94a3b8;
+  box-shadow: 0 0 0 1px #94a3b8 inset;
+}
+.backup-format-dd :deep(.app-dd-trigger.is-open) {
+  border-color: rgba(59, 130, 246, 0.55);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5) inset;
+}
+
+/* ==============================================================
+ * 历史记录刷新按钮 lib-refresh-btn
+ *  - 28px 高 ghost 小按钮
+ *  - hover：translateY 抬起 + 边框加深 + 字间距展开 + RefreshCw 反向旋转 360°
+ *  - is-loading 时图标走 animate-spin（无限旋转）
+ * ============================================================ */
+.lib-refresh-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease,
+    opacity 0.25s ease;
+}
+.lib-refresh-btn:hover {
+  transform: translateY(-1px);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border-color: rgba(15, 23, 42, 0.22);
+  color: #0f172a;
+  box-shadow: 0 6px 14px -8px rgba(15, 23, 42, 0.18);
+}
+.lib-refresh-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.96);
+  transition: transform 0.12s ease;
+}
+.lib-refresh-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.lib-refresh-btn-icon {
+  flex-shrink: 0;
+  color: #94a3b8;
+  transition:
+    transform 0.6s cubic-bezier(0.4, 0, 0.2, 1),
+    color 0.25s ease;
+}
+/* hover 时图标变蓝 + 反向旋转 360°（loading 中由 animate-spin 接管，避免冲突） */
+.lib-refresh-btn:hover:not(:disabled) .lib-refresh-btn-icon:not(.animate-spin) {
+  color: #2563eb;
+  transform: rotate(-360deg) scale(1.08);
+}
+
+.lib-refresh-btn-label {
+  display: inline-block;
+  transition: letter-spacing 0.3s ease;
+}
+.lib-refresh-btn:hover .lib-refresh-btn-label {
+  letter-spacing: 0.04em;
+}
+
+/* loading 中按钮整体微微淡化 + 高亮蓝色边框，提示用户正在刷新 */
+.lib-refresh-btn.is-loading {
+  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  border-color: rgba(59, 130, 246, 0.45);
+  color: #1d4ed8;
+}
+.lib-refresh-btn.is-loading .lib-refresh-btn-icon {
+  color: #2563eb;
+}
+
 /* 进度条平滑过渡 */
 :deep(.el-progress-bar__inner) {
   transition: width 0.8s ease-out;
@@ -520,15 +857,4 @@ onBeforeUnmount(() => {
   color: #3b82f6 !important;
 }
 
-/* 选择器优化 */
-:deep(.el-select .el-input__wrapper) {
-  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
-  border-radius: 8px !important;
-}
-:deep(.el-select .el-input__wrapper:hover) {
-  box-shadow: 0 0 0 1px #94a3b8 inset !important;
-}
-:deep(.el-select .el-input.is-focus .el-input__wrapper) {
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5) inset !important;
-}
 </style>

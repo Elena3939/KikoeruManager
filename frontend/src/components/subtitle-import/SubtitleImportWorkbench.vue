@@ -1,5 +1,5 @@
 <template>
-  <div class="import-workbench-modal" v-app-loading="{ loading: workbenchLoading, text: '正在整理字幕工作台...', description: '同步批次、候选字幕和配对状态', size: 136 }">
+  <div class="import-workbench-modal">
     
     <div class="subtitle-workbench-shell relative flex w-full min-h-[78vh] max-h-[92vh] flex-col overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.1)]">
       <header class="subtitle-workbench-header relative flex items-center justify-between gap-4 px-6 py-4 flex-shrink-0 border-b border-slate-100 bg-white">
@@ -37,7 +37,11 @@
           </button>
         </div>
       </header>
-      <div class="subtitle-workbench-body subtitle-workbench-scrollbar flex-1 min-h-0 overflow-auto bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-4">
+      <!-- 加载遮罩仅覆盖 body 区，避免遮住 header 里的「隐藏到后台」/「关闭」按钮 -->
+      <div
+        class="subtitle-workbench-body subtitle-workbench-scrollbar flex-1 min-h-0 overflow-auto bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-4"
+        v-app-loading="{ loading: workbenchLoading, text: '正在整理字幕工作台...', description: '同步批次、候选字幕和配对状态', size: 136 }"
+      >
         <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
       </div>
     </div>
@@ -199,11 +203,14 @@
                   <div v-for="rule in subtitleOptions.subtitleFilterRules" :key="rule.id" class="import-filter-editor">
                     <div class="import-filter-editor-head">
                       <el-switch v-model="rule.enabled" size="small" />
-                      <el-select v-model="rule.target" size="small" class="import-filter-target">
-                        <el-option label="文件名" value="name" />
-                        <el-option label="路径" value="path" />
-                        <el-option label="全部" value="all" />
-                      </el-select>
+                      <AppDropdown
+                        v-model="rule.target"
+                        :options="importFilterTargetOptions"
+                        class="import-filter-target"
+                        :width="110"
+                        :menu-min-width="130"
+                        :show-trigger-badge="false"
+                      />
                       <el-button size="small" text type="danger" @click="removeSubtitleFilterRule(rule.id)">删除</el-button>
                     </div>
                     <el-input v-model="rule.name" size="small" placeholder="规则名，可留空" />
@@ -361,6 +368,14 @@ import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
 import SubtitleInspectorWorkbench from '../library/SubtitleInspectorWorkbench.vue'
 import SubtitleWorkbenchStage from '../library/subtitle-workbench/SubtitleWorkbenchStage.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
+import AppDropdown from '../common/AppDropdown.vue'
+
+// 字幕导入过滤规则作用范围选项
+const importFilterTargetOptions = [
+  { value: 'name', label: '文件名' },
+  { value: 'path', label: '路径' },
+  { value: 'all', label: '全部' },
+]
 
 const props = defineProps({
   taskId: {

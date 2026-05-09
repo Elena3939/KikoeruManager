@@ -461,7 +461,7 @@ function statusChipClass(key) {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.dash-archive-pager-btn:hover:not(:disabled) {
+.dash-archive-pager-btn:hover {
   transform: translateY(-1px);
   border-color: rgb(15 23 42);
   background: rgb(15 23 42);

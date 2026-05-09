@@ -1,72 +1,130 @@
 <template>
-  <div class="min-h-0 p-6 space-y-6">
+  <div class="asmr-page">
+    <!-- 页头：和库存页 / 操作记录页保持一致 -->
     <AppPageHeader
       :icon="DownloadIcon"
       icon-color="#1d4ed8"
       title="ASMR 同步下载"
       subtitle="根据字幕文件自动下载并匹配，或手动输入 RJ 号查询下载"
     >
-        <button
-          class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none"
-          @click="scanFolder" :disabled="scanning || !subtitleFolder"
-        >
-          <Search class="w-4 h-4" />
-          {{ scanning ? '扫描中...' : '扫描' }}
-        </button>
-        <button
-          class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none"
-          @click="startSync" :disabled="syncing || selectedItems.length === 0"
-        >
-          <DownloadIcon class="w-4 h-4" />
-          {{ syncing ? '同步中...' : '开始同步下载' }}
-        </button>
-        <button
-          class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:border-slate-300 active:scale-95 transition-all duration-200"
-          @click="refreshStatus" :disabled="refreshing"
-        >
-          <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': refreshing }" />
-        </button>
+      <button
+        class="page-head-btn ghost btn-scan"
+        type="button"
+        :disabled="scanning || !subtitleFolder"
+        @click="scanFolder"
+      >
+        <span class="page-head-btn-icon-wrap">
+          <Transition name="page-head-icon-swap" mode="out-in">
+            <Loader2 v-if="scanning" key="loader" :size="13" :stroke-width="2.4" class="animate-spin" />
+            <Search v-else key="default" :size="13" :stroke-width="2.4" class="page-head-btn-icon" />
+          </Transition>
+        </span>
+        <span class="page-head-btn-label">{{ scanning ? '扫描中…' : '扫描' }}</span>
+      </button>
+      <button
+        class="page-head-btn primary btn-download"
+        type="button"
+        :disabled="syncing || selectedItems.length === 0"
+        @click="startSync"
+      >
+        <span class="page-head-btn-icon-wrap">
+          <Transition name="page-head-icon-swap" mode="out-in">
+            <Loader2 v-if="syncing" key="loader" :size="13" :stroke-width="2.6" class="animate-spin" />
+            <DownloadIcon v-else key="default" :size="13" :stroke-width="2.6" class="page-head-btn-icon" />
+          </Transition>
+        </span>
+        <span class="page-head-btn-label">{{ syncing ? '同步中…' : '开始同步下载' }}</span>
+      </button>
+      <button
+        class="page-head-btn ghost btn-refresh"
+        type="button"
+        :disabled="refreshing"
+        title="刷新状态"
+        @click="refreshStatus"
+      >
+        <span class="page-head-btn-icon-wrap">
+          <RefreshCw
+            :size="13"
+            :stroke-width="2.6"
+            class="page-head-btn-icon"
+            :class="{ 'animate-spin': refreshing }"
+          />
+        </span>
+        <span class="page-head-btn-label">刷新</span>
+      </button>
     </AppPageHeader>
 
-    <!-- Scan Input -->
-    <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-      <div class="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
-        <h2 class="text-base font-semibold text-slate-900">字幕文件夹扫描</h2>
-      </div>
-      <div class="p-6">
+    <!-- 顶部状态条：6 列指标（接入 enhancedMetricCards） -->
+    <section class="lib-info-strip asmr-info-strip">
+      <template v-for="(metric, idx) in enhancedMetricCards" :key="metric.label">
+        <div class="lib-info-item" :title="metric.help">
+          <component
+            :is="metric.icon"
+            :size="15"
+            :stroke-width="2.2"
+            class="lib-info-icon"
+            :class="metric.iconClass"
+          />
+          <div class="lib-info-body">
+            <div class="lib-info-label">{{ metric.label }}</div>
+            <div class="lib-info-value">
+              <Transition name="asmr-num-flip" mode="out-in">
+                <b :key="String(metric.value)">{{ metric.value }}</b>
+              </Transition>
+            </div>
+          </div>
+        </div>
+        <div v-if="idx < enhancedMetricCards.length - 1" class="lib-info-divider"></div>
+      </template>
+    </section>
+
+    <!-- 字幕文件夹扫描 -->
+    <section class="asmr-card">
+      <header class="asmr-card-head">
+        <div class="asmr-card-head-title">
+          <FolderSearch :size="14" :stroke-width="2.2" class="asmr-card-head-icon" />
+          <h2>字幕文件夹扫描</h2>
+        </div>
+      </header>
+      <div class="asmr-card-body">
         <div class="flex items-center gap-3">
-          <FolderSearch class="w-5 h-5 text-slate-400 shrink-0" />
           <el-input v-model="subtitleFolder" placeholder="输入包含字幕文件的文件夹路径" clearable class="flex-1" />
         </div>
       </div>
     </section>
 
-    <!-- Enhanced Download Workbench -->
-    <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-      <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-        <div>
-          <h2 class="text-base font-semibold text-slate-900">增强下载工作台</h2>
-          <p class="text-xs text-slate-500 mt-0.5">手动输入 RJ 号直接查询并下载</p>
+    <!-- 增强下载工作台 -->
+    <section class="asmr-card">
+      <header class="asmr-card-head">
+        <div class="asmr-card-head-title">
+          <Sparkles :size="14" :stroke-width="2.2" class="asmr-card-head-icon" />
+          <div>
+            <h2>增强下载工作台</h2>
+            <p class="asmr-card-head-subtitle">手动输入 RJ 号直接查询并下载</p>
+          </div>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="asmr-card-head-actions">
           <button
-            class="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 active:scale-95 transition-all duration-200 disabled:opacity-50"
-            @click="buildEnhancedPlans" :disabled="enhancedPlanning"
+            class="asmr-mini-btn"
+            type="button"
+            :disabled="enhancedPlanning"
+            @click="buildEnhancedPlans"
           >
-            <Search class="w-3.5 h-3.5" />
-            {{ enhancedPlanning ? '查询中...' : '查询 RJ' }}
+            <Search :size="12" :stroke-width="2.4" />
+            {{ enhancedPlanning ? '查询中…' : '查询 RJ' }}
           </button>
           <button
             v-if="enhancedDownloadWorkbenchTaskIds.length"
-            class="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all duration-200"
+            class="asmr-mini-btn"
+            type="button"
             @click="enhancedDownloadWorkbenchVisible = true"
           >
-            <DownloadIcon class="w-3.5 h-3.5" />
+            <DownloadIcon :size="12" :stroke-width="2.4" />
             下载工作台
           </button>
         </div>
-      </div>
-      <div class="p-6">
+      </header>
+      <div class="asmr-card-body">
         <el-input
           v-model="enhancedInput"
           type="textarea"
@@ -75,67 +133,76 @@
           class="mb-4"
         />
 
-        <!-- Enhanced Plans -->
-        <div v-if="enhancedPlans.length > 0" class="space-y-4">
-          <!-- Batch Toolbar -->
-          <div class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 shadow-sm backdrop-blur-sm">
-            <div class="flex items-center gap-3">
-              <span class="text-sm font-bold text-slate-700 tracking-wide">批量操作</span>
-              <span class="text-xs font-semibold text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200 shadow-sm">已选 {{ selectedPlanRjcodes.length }} / {{ enhancedPlans.length }}</span>
+        <!-- 计划列表 -->
+        <Transition name="asmr-section">
+          <div v-if="enhancedPlans.length > 0" class="space-y-4">
+            <!-- 批量操作工具条 -->
+            <div class="asmr-batch-toolbar">
+              <div class="asmr-batch-toolbar-info">
+                <span class="asmr-batch-toolbar-title">批量操作</span>
+                <span class="lib-chip lib-chip-info">已选 {{ selectedPlanRjcodes.length }} / {{ enhancedPlans.length }}</span>
+              </div>
+              <div class="asmr-batch-toolbar-actions">
+                <button class="asmr-mini-btn" type="button" @click="selectAllPlans">全选</button>
+                <button class="asmr-mini-btn" type="button" @click="clearPlanSelection">清空</button>
+                <button
+                  class="asmr-mini-btn is-primary"
+                  type="button"
+                  :disabled="enhancedStarting || selectedPlanRjcodes.length === 0"
+                  @click="openEnhancedPreview"
+                >
+                  <DownloadIcon :size="12" :stroke-width="2.4" />
+                  {{ enhancedStarting ? '创建中…' : `下载选中 (${selectedPlanRjcodes.length})` }}
+                </button>
+              </div>
             </div>
-            <div class="flex items-center gap-2">
-              <button class="px-2.5 py-1 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="selectAllPlans">全选</button>
-              <button class="px-2.5 py-1 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="clearPlanSelection">清空</button>
-              <button
-                class="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 active:scale-95 transition-all duration-200 disabled:opacity-50 ml-2"
-                @click="openEnhancedPreview" :disabled="enhancedStarting || selectedPlanRjcodes.length === 0"
-              >
-                <DownloadIcon class="w-3.5 h-3.5" />
-                {{ enhancedStarting ? '创建中...' : `下载选中 (${selectedPlanRjcodes.length})` }}
-              </button>
-            </div>
-          </div>
 
-          <!-- Plan Cards Grid -->
-          <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
-            <WorkCard
-              v-for="(plan, idx) in enhancedPlans"
-              :key="plan.rjcode"
-              :item="plan"
-              :card-index="idx"
-              :selected="selectedPlanSet.has(plan.rjcode)"
-              image-field="cover_url"
-              code-field="rjcode"
-              size="default"
-              class="enhanced-plan-card"
-              @select="(p) => togglePlanSelect(p.rjcode)"
+            <!-- Plan Cards Grid -->
+            <TransitionGroup
+              tag="div"
+              name="asmr-grid"
+              class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3"
             >
-              <template #cover-placeholder>
-                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow">
-                  <DownloadIcon class="w-5 h-5 text-white" />
-                </div>
-              </template>
-              <template #meta>
-                <div class="enhanced-plan-meta">
-                  <span class="enhanced-plan-meta-pill is-code">RJ {{ plan.rjcode }}</span>
-                  <span class="enhanced-plan-meta-pill is-downloadable">{{ plan.summary?.selectable_total || 0 }} 个可下载</span>
-                </div>
-              </template>
-              <template #tags>
-                <div class="enhanced-plan-tags">
-                  <span class="enhanced-plan-tag is-primary">资源构成</span>
-                  <span v-for="group in (plan.grouped_resources || []).slice(0, 3)" :key="group.group_key" class="enhanced-plan-tag is-soft">
-                    {{ getResourceTypeLabel(group.resource_type) }} ×{{ group.count }}
-                  </span>
-                  <span v-if="(plan.grouped_resources || []).length > 3" class="enhanced-plan-tag is-muted">
-                    +{{ (plan.grouped_resources || []).length - 3 }}
-                  </span>
-                </div>
-              </template>
-              <template #actions><span /></template>
-            </WorkCard>
+              <WorkCard
+                v-for="(plan, idx) in enhancedPlans"
+                :key="plan.rjcode"
+                :item="plan"
+                :card-index="idx"
+                :selected="selectedPlanSet.has(plan.rjcode)"
+                image-field="cover_url"
+                code-field="rjcode"
+                size="default"
+                class="enhanced-plan-card"
+                :style="{ '--asmr-grid-delay': `${Math.min(idx, 12) * 35}ms` }"
+                @select="(p) => togglePlanSelect(p.rjcode)"
+              >
+                <template #cover-placeholder>
+                  <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow">
+                    <DownloadIcon class="w-5 h-5 text-white" />
+                  </div>
+                </template>
+                <template #meta>
+                  <div class="enhanced-plan-meta">
+                    <span class="enhanced-plan-meta-pill is-code">RJ {{ plan.rjcode }}</span>
+                    <span class="enhanced-plan-meta-pill is-downloadable">{{ plan.summary?.selectable_total || 0 }} 个可下载</span>
+                  </div>
+                </template>
+                <template #tags>
+                  <div class="enhanced-plan-tags">
+                    <span class="enhanced-plan-tag is-primary">资源构成</span>
+                    <span v-for="group in (plan.grouped_resources || []).slice(0, 3)" :key="group.group_key" class="enhanced-plan-tag is-soft">
+                      {{ getResourceTypeLabel(group.resource_type) }} ×{{ group.count }}
+                    </span>
+                    <span v-if="(plan.grouped_resources || []).length > 3" class="enhanced-plan-tag is-muted">
+                      +{{ (plan.grouped_resources || []).length - 3 }}
+                    </span>
+                  </div>
+                </template>
+                <template #actions><span /></template>
+              </WorkCard>
+            </TransitionGroup>
           </div>
-        </div>
+        </Transition>
       </div>
     </section>
 
@@ -171,53 +238,83 @@
       @submit="handlePreviewSubmit"
     />
 
-    <!-- Enhanced Download Background Card -->
-    <div v-if="showEnhancedDownloadBackgroundCard" class="fixed bottom-6 right-6 z-50 w-80 bg-white/95 backdrop-blur-sm rounded-2xl border border-slate-200 shadow-xl p-4 space-y-3">
-      <div class="flex items-center justify-between">
-        <div>
-          <div class="text-sm font-semibold text-slate-800">增强下载正在后台运行</div>
-          <div class="text-xs text-slate-500 mt-0.5">
-            {{ enhancedActiveBackgroundTask ? `${enhancedActiveBackgroundTask.rjcode || 'RJ'} · ${enhancedActiveBackgroundTask.work_title || '-'}` : '保留下载队列与进度' }}
+    <!-- 增强下载后台浮窗（统一 floating-card 规范） -->
+    <Transition name="floating-card">
+      <div v-if="showEnhancedDownloadBackgroundCard" class="floating-card">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="floating-icon-box is-violet">
+              <CloudDownload class="h-3.5 w-3.5" :stroke-width="2.2" />
+            </div>
+            <div class="min-w-0">
+              <div class="text-[13px] font-semibold text-slate-900 leading-tight">增强下载正在后台运行</div>
+              <div class="mt-0.5 text-[11px] text-slate-500 leading-snug break-all">
+                {{ enhancedActiveBackgroundTask ? `${enhancedActiveBackgroundTask.rjcode || 'RJ'} · ${enhancedActiveBackgroundTask.work_title || '-'}` : '保留下载队列与进度' }}
+              </div>
+            </div>
+          </div>
+          <div class="floating-percent-badge"
+               :class="{
+                 'is-emerald': enhancedCompletedTasks.length === enhancedDownloadWorkbenchTasks.length && enhancedDownloadWorkbenchTasks.length > 0,
+                 'is-rose': enhancedFailedTasks.length > 0 && !enhancedProcessingTasks.length && !enhancedPendingTasks.length
+               }">
+            {{ enhancedBackgroundPercent }}%
           </div>
         </div>
-        <div class="text-lg font-bold text-blue-600">{{ enhancedBackgroundPercent }}%</div>
-      </div>
-      <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-        <div class="h-full bg-blue-500 rounded-full transition-all duration-500" :style="{ width: enhancedBackgroundPercent + '%' }" />
-      </div>
-      <div class="flex flex-wrap gap-1.5">
-        <span class="text-[11px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">进行中 {{ enhancedProcessingTasks.length }}</span>
-        <span class="text-[11px] px-2 py-0.5 rounded-full bg-slate-50 text-slate-600 border border-slate-200">等待 {{ enhancedPendingTasks.length }}</span>
-        <span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100">完成 {{ enhancedCompletedTasks.length }}</span>
-        <span class="text-[11px] px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-100">失败 {{ enhancedFailedTasks.length }}</span>
-      </div>
-      <div class="flex items-center gap-2">
-        <button class="flex-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 active:scale-95 transition-all" @click="resumeEnhancedDownloadWorkbench">恢复工作台</button>
-        <button class="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="closeEnhancedDownloadWorkbench">关闭</button>
-      </div>
-    </div>
 
-    <!-- Scan Results -->
-    <section v-if="scanResults.length > 0" class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-      <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-        <h2 class="text-base font-semibold text-slate-900">扫描结果 <span class="text-sm font-normal text-slate-500">({{ scanResults.length }} 个作品)</span></h2>
-        <label class="inline-flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
-          <input type="checkbox" v-model="selectAll" @change="handleSelectAll($event.target.checked)" class="rounded border-slate-300" />
-          全选
-        </label>
+        <div class="floating-progress-bar">
+          <div class="floating-progress-bar-fill"
+               :class="{
+                 'is-emerald': enhancedCompletedTasks.length === enhancedDownloadWorkbenchTasks.length && enhancedDownloadWorkbenchTasks.length > 0,
+                 'is-danger': enhancedFailedTasks.length > 0 && !enhancedProcessingTasks.length && !enhancedPendingTasks.length
+               }"
+               :style="{ width: enhancedBackgroundPercent + '%' }" />
+        </div>
+
+        <div class="floating-chip-row-compact">
+          <span class="floating-chip"><RefreshCw class="floating-chip-icon chip-blue" :stroke-width="2.2" />进行中 <b>{{ enhancedProcessingTasks.length }}</b></span>
+          <span class="floating-chip"><Clock class="floating-chip-icon chip-amber" :stroke-width="2.2" />等待 <b>{{ enhancedPendingTasks.length }}</b></span>
+          <span class="floating-chip"><CheckCircle2 class="floating-chip-icon chip-emerald" :stroke-width="2.2" />完成 <b>{{ enhancedCompletedTasks.length }}</b></span>
+          <span class="floating-chip" :class="{ 'floating-chip-danger': enhancedFailedTasks.length > 0 }"><X class="floating-chip-icon chip-rose" :stroke-width="2.2" />失败 <b>{{ enhancedFailedTasks.length }}</b></span>
+        </div>
+
+        <div class="floating-actions-row">
+          <button type="button" class="floating-action-btn" @click="closeEnhancedDownloadWorkbench">关闭</button>
+          <button type="button" class="floating-action-btn floating-action-btn-primary" @click="resumeEnhancedDownloadWorkbench">
+            <CloudDownload class="h-3 w-3" :stroke-width="2.3" />恢复工作台
+          </button>
+        </div>
       </div>
-      <div class="overflow-auto" style="max-height: 400px;">
+    </Transition>
+
+    <!-- 扫描结果 -->
+    <Transition name="asmr-section">
+    <section v-if="scanResults.length > 0" class="asmr-card">
+      <header class="asmr-card-head">
+        <div class="asmr-card-head-title">
+          <ListChecks :size="14" :stroke-width="2.2" class="asmr-card-head-icon" />
+          <div>
+            <h2>扫描结果</h2>
+            <p class="asmr-card-head-subtitle">{{ scanResults.length }} 个作品</p>
+          </div>
+        </div>
+        <label class="asmr-card-head-checkbox">
+          <input type="checkbox" v-model="selectAll" @change="handleSelectAll($event.target.checked)" />
+          <span>全选</span>
+        </label>
+      </header>
+      <div class="asmr-table-wrap">
         <el-table :data="scanResults" style="width: 100%" row-key="rjcode" @selection-change="handleSelectionChange">
           <el-table-column type="selection" width="50" />
           <el-table-column prop="rjcode" label="RJ号" width="120">
             <template #default="{ row }">
-              <span class="font-mono font-semibold text-blue-600 text-sm">{{ row.rjcode }}</span>
+              <span class="asmr-rjcode">{{ row.rjcode }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="folder_name" label="文件夹名称" min-width="250">
             <template #default="{ row }">
               <div class="flex items-center gap-2">
-                <FolderIcon class="w-4 h-4 text-slate-400 shrink-0" />
+                <FolderIcon :size="14" :stroke-width="2.2" class="text-slate-400 shrink-0" />
                 <span class="text-sm text-slate-700 truncate">{{ row.folder_name }}</span>
               </div>
             </template>
@@ -229,41 +326,46 @@
           </el-table-column>
           <el-table-column label="预览" width="80" align="center">
             <template #default="{ row }">
-              <button class="text-xs text-blue-600 hover:text-blue-800 hover:underline transition-colors" @click="previewDownload(row)" :disabled="row.previewing">
-                {{ row.previewing ? '...' : '预览' }}
+              <button
+                class="asmr-link-btn"
+                type="button"
+                :disabled="row.previewing"
+                @click="previewDownload(row)"
+              >
+                {{ row.previewing ? '…' : '预览' }}
               </button>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="100" align="center">
             <template #default="{ row }">
-              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border" :class="{
-                'bg-slate-50 text-slate-600 border-slate-200': row.status === 'pending',
-                'bg-amber-50 text-amber-700 border-amber-200': row.status === 'downloading',
-                'bg-emerald-50 text-emerald-700 border-emerald-200': row.status === 'completed',
-                'bg-red-50 text-red-700 border-red-200': row.status === 'failed',
+              <span class="lib-chip" :class="{
+                'lib-chip-slate': row.status === 'pending',
+                'lib-chip-warning': row.status === 'downloading',
+                'lib-chip-success': row.status === 'completed',
+                'lib-chip-danger': row.status === 'failed',
               }">{{ { pending: '待下载', downloading: '下载中', completed: '已完成', failed: '失败' }[row.status] || row.status }}</span>
             </template>
           </el-table-column>
         </el-table>
       </div>
     </section>
+    </Transition>
 
-    <!-- Waiting Retry Tasks -->
-    <section v-if="waitingRetryTasks.length > 0" class="bg-amber-50/50 rounded-2xl border border-amber-200 shadow-sm overflow-hidden">
-      <div class="px-6 py-3 border-b border-amber-100 flex items-center justify-between bg-amber-50">
-        <div class="flex items-center gap-2">
-          <Clock class="w-4 h-4 text-amber-600" />
-          <h2 class="text-sm font-semibold text-amber-800">等待重试 ({{ waitingRetryTasks.length }})</h2>
+    <!-- 等待重试 -->
+    <Transition name="asmr-section">
+    <section v-if="waitingRetryTasks.length > 0" class="asmr-card asmr-card-amber">
+      <header class="asmr-card-head asmr-card-head-amber">
+        <div class="asmr-card-head-title">
+          <Clock :size="14" :stroke-width="2.4" class="asmr-card-head-icon-amber" />
+          <h2>等待重试 <span class="asmr-card-head-count">({{ waitingRetryTasks.length }})</span></h2>
         </div>
-        <span v-if="nextRetryTime" class="text-xs text-slate-500">下次: {{ formatNextRetryTime(nextRetryTime) }}</span>
-      </div>
-      <div class="p-4 space-y-2">
-        <div v-for="task in waitingRetryTasks" :key="task.id"
-          class="flex items-center justify-between gap-3 p-3 bg-white rounded-xl border border-amber-100"
-        >
-          <div class="min-w-0">
+        <span v-if="nextRetryTime" class="text-xs text-slate-500">下次：{{ formatNextRetryTime(nextRetryTime) }}</span>
+      </header>
+      <TransitionGroup tag="div" name="asmr-list" class="asmr-card-body asmr-list">
+        <div v-for="task in waitingRetryTasks" :key="task.id" class="asmr-list-row">
+          <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
-              <span class="font-mono font-semibold text-sm text-blue-600">{{ task.rjcode }}</span>
+              <span class="asmr-rjcode">{{ task.rjcode }}</span>
               <span class="text-sm text-slate-600 truncate">{{ task.work_title || task.task_metadata?.work_title }}</span>
             </div>
             <div class="flex items-center gap-3 mt-1 text-xs text-slate-500">
@@ -272,121 +374,129 @@
             </div>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
-            <button class="px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 active:scale-95 transition-all" @click="retryWaitingTask(task.id)">重试</button>
-            <button class="px-2.5 py-1 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="cancelWaitingTask(task.id)">取消</button>
+            <button class="asmr-mini-btn is-primary" type="button" @click="retryWaitingTask(task.id)">重试</button>
+            <button class="asmr-mini-btn" type="button" @click="cancelWaitingTask(task.id)">取消</button>
           </div>
         </div>
-      </div>
+      </TransitionGroup>
     </section>
+    </Transition>
 
-    <!-- Active Tasks -->
-    <section v-if="activeTasks.length > 0" class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-      <div class="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
-        <h2 class="text-base font-semibold text-slate-900">下载任务</h2>
-      </div>
-      <div class="p-4 space-y-3">
-        <div v-for="task in activeTasks" :key="task.id"
-          class="rounded-xl border p-4 transition-colors" :class="{
-            'border-emerald-200 bg-emerald-50/30': task.status === 'completed',
-            'border-red-200 bg-red-50/30': task.status === 'failed',
-            'border-slate-200 bg-slate-50/30': task.status === 'paused',
-            'border-blue-200 bg-blue-50/20': task.status === 'processing',
-            'border-slate-200': !['completed','failed','paused','processing'].includes(task.status),
+    <!-- 下载任务 -->
+    <Transition name="asmr-section">
+    <section v-if="activeTasks.length > 0" class="asmr-card">
+      <header class="asmr-card-head">
+        <div class="asmr-card-head-title">
+          <ListChecks :size="14" :stroke-width="2.2" class="asmr-card-head-icon" />
+          <div>
+            <h2>下载任务</h2>
+            <p class="asmr-card-head-subtitle">{{ activeTasks.length }} 个进行中 / 历史任务</p>
+          </div>
+        </div>
+      </header>
+      <TransitionGroup tag="div" name="asmr-list" class="asmr-card-body asmr-list">
+        <div
+          v-for="task in activeTasks"
+          :key="task.id"
+          class="asmr-task"
+          :class="{
+            'is-completed': task.status === 'completed',
+            'is-failed': task.status === 'failed',
+            'is-paused': task.status === 'paused',
+            'is-processing': task.status === 'processing',
           }"
         >
-          <!-- Task Header -->
-          <div class="flex items-center justify-between gap-3">
-            <div class="flex items-center gap-2 min-w-0">
-              <span class="font-mono font-bold text-sm text-blue-600">{{ task.actual_rjcode || task.rjcode }}</span>
+          <!-- 任务头：RJ + 标题 + 状态 chip + 操作 -->
+          <div class="asmr-task-head">
+            <div class="asmr-task-head-info">
+              <span class="asmr-rjcode is-bold">{{ task.actual_rjcode || task.rjcode }}</span>
               <span v-if="task.actual_rjcode && task.actual_rjcode !== task.rjcode" class="text-xs text-slate-400">(原: {{ task.rjcode }})</span>
               <span class="text-sm text-slate-600 truncate">{{ task.work_title }}</span>
             </div>
-            <div class="flex items-center gap-1.5 shrink-0">
-              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border" :class="{
-                'bg-emerald-50 text-emerald-700 border-emerald-200': task.status === 'completed',
-                'bg-red-50 text-red-700 border-red-200': task.status === 'failed',
-                'bg-slate-100 text-slate-600 border-slate-200': task.status === 'paused',
-                'bg-amber-50 text-amber-700 border-amber-200': task.status === 'waiting_retry',
-                'bg-blue-50 text-blue-700 border-blue-200': task.status === 'processing',
-                'bg-slate-50 text-slate-600 border-slate-200': task.status === 'pending',
+            <div class="asmr-task-head-actions">
+              <span class="lib-chip" :class="{
+                'lib-chip-success': task.status === 'completed',
+                'lib-chip-danger': task.status === 'failed',
+                'lib-chip-slate': task.status === 'paused' || task.status === 'pending',
+                'lib-chip-warning': task.status === 'waiting_retry',
+                'lib-chip-info': task.status === 'processing',
               }">{{ getStatusText(task.status) }}</span>
-              <button v-if="task.status === 'processing'" class="px-2 py-0.5 text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 active:scale-95 transition-all" @click="pauseTask(task.id)">暂停</button>
-              <button v-if="task.status === 'paused'" class="px-2 py-0.5 text-[11px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 active:scale-95 transition-all" @click="resumeTask(task.id)">继续</button>
-              <button v-if="task.status === 'waiting_retry'" class="px-2 py-0.5 text-[11px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 active:scale-95 transition-all" @click="retryWaitingTask(task.id)">立即重试</button>
-              <button v-if="task.failed_files && task.failed_files.length > 0" class="px-2 py-0.5 text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 active:scale-95 transition-all" @click="retryFailed(task.id)">
+              <button v-if="task.status === 'processing'" class="asmr-mini-btn xs" type="button" @click="pauseTask(task.id)">暂停</button>
+              <button v-if="task.status === 'paused'" class="asmr-mini-btn xs is-primary" type="button" @click="resumeTask(task.id)">继续</button>
+              <button v-if="task.status === 'waiting_retry'" class="asmr-mini-btn xs is-primary" type="button" @click="retryWaitingTask(task.id)">立即重试</button>
+              <button v-if="task.failed_files && task.failed_files.length > 0" class="asmr-mini-btn xs is-warning" type="button" @click="retryFailed(task.id)">
                 重试失败 ({{ task.failed_files.length }})
               </button>
             </div>
           </div>
 
-          <!-- Progress -->
+          <!-- 进度条 -->
           <div class="mt-3">
             <AppLottieProgressBar :percentage="task.progress" size="sm" />
           </div>
 
-          <!-- Step -->
+          <!-- 当前步骤 -->
           <div class="flex items-center gap-1.5 mt-2 text-xs text-slate-500">
             <AppLoadingAnimation v-if="task.status === 'processing'" variant="inline" :size="20" />
             <span>{{ task.current_step }}</span>
           </div>
 
-          <!-- Error -->
-          <div v-if="task.error_message" class="flex items-center gap-1.5 mt-2 px-3 py-2 bg-red-50 rounded-lg border border-red-100">
-            <AlertTriangle class="w-3.5 h-3.5 text-red-500 shrink-0" />
-            <span class="text-xs text-red-700">{{ task.error_message }}</span>
+          <!-- 错误提示 -->
+          <div v-if="task.error_message" class="asmr-task-alert is-error">
+            <AlertTriangle :size="14" :stroke-width="2.4" />
+            <span>{{ task.error_message }}</span>
           </div>
 
-          <!-- Subtitle Sync Result (collapsible) -->
-          <details v-if="task.sync_result?.renamed_files?.length" class="mt-3">
-            <summary class="flex items-center gap-1.5 text-xs font-medium text-emerald-700 cursor-pointer select-none hover:text-emerald-800">
-              <FileText class="w-3.5 h-3.5" />
+          <!-- 字幕同步映射 -->
+          <details v-if="task.sync_result?.renamed_files?.length" class="asmr-task-details">
+            <summary class="asmr-task-details-summary is-success">
+              <FileText :size="13" :stroke-width="2.4" />
               字幕同步映射 ({{ task.sync_result.renamed_files.length }} 对)
             </summary>
-            <div class="mt-2 space-y-2">
-              <div v-for="(item, idx) in task.sync_result.renamed_files" :key="idx" class="p-2.5 bg-emerald-50/50 rounded-lg border border-emerald-100 text-xs space-y-1">
-                <div class="flex items-baseline gap-2"><span class="text-slate-400 w-14 shrink-0">原音频</span><span class="text-amber-600 font-medium truncate">{{ item.original }}</span></div>
-                <div class="text-center text-emerald-500 font-bold">↓</div>
-                <div class="flex items-baseline gap-2"><span class="text-slate-400 w-14 shrink-0">重命名</span><span class="text-blue-600 font-medium truncate">{{ item.new }}</span></div>
-                <div class="flex items-baseline gap-2"><span class="text-slate-400 w-14 shrink-0">字幕</span><span class="text-emerald-600 font-medium truncate">{{ item.subtitle }}</span></div>
+            <div class="asmr-task-details-body">
+              <div v-for="(item, idx) in task.sync_result.renamed_files" :key="idx" class="asmr-task-mapping">
+                <div class="flex items-baseline gap-2"><span class="asmr-task-mapping-label">原音频</span><span class="text-amber-600 font-medium truncate">{{ item.original }}</span></div>
+                <div class="asmr-task-mapping-arrow">↓</div>
+                <div class="flex items-baseline gap-2"><span class="asmr-task-mapping-label">重命名</span><span class="text-blue-600 font-medium truncate">{{ item.new }}</span></div>
+                <div class="flex items-baseline gap-2"><span class="asmr-task-mapping-label">字幕</span><span class="text-emerald-600 font-medium truncate">{{ item.subtitle }}</span></div>
               </div>
             </div>
           </details>
 
-          <!-- Failed Files (collapsible) -->
-          <details v-if="task.failed_files?.length" class="mt-3">
-            <summary class="flex items-center gap-1.5 text-xs font-medium text-red-600 cursor-pointer select-none hover:text-red-700">
-              <AlertTriangle class="w-3.5 h-3.5" />
+          <!-- 失败文件 -->
+          <details v-if="task.failed_files?.length" class="asmr-task-details">
+            <summary class="asmr-task-details-summary is-danger">
+              <AlertTriangle :size="13" :stroke-width="2.4" />
               失败文件 ({{ task.failed_files.length }})
             </summary>
-            <div class="mt-2 space-y-1">
-              <div v-for="(file, idx) in task.failed_files" :key="idx" class="flex items-center justify-between px-2.5 py-1.5 bg-red-50/50 rounded-lg text-xs">
+            <div class="asmr-task-details-body">
+              <div v-for="(file, idx) in task.failed_files" :key="idx" class="asmr-task-failed-item">
                 <span class="text-slate-600 truncate">{{ file.title || file.path }}</span>
                 <span class="text-red-600 shrink-0 ml-2">{{ file.reason }}</span>
               </div>
             </div>
           </details>
 
-          <!-- Download Files (collapsible) -->
-          <details v-if="task.download_files?.length" class="mt-3">
-            <summary class="flex items-center gap-1.5 text-xs font-medium text-slate-700 cursor-pointer select-none hover:text-slate-900">
-              <FolderIcon class="w-3.5 h-3.5" />
+          <!-- 下载文件进度 -->
+          <details v-if="task.download_files?.length" class="asmr-task-details">
+            <summary class="asmr-task-details-summary is-slate">
+              <FolderIcon :size="13" :stroke-width="2.4" />
               文件下载进度 ({{ task.download_files.length }})
             </summary>
-            <div class="mt-2 space-y-1.5">
-              <div v-for="file in task.download_files" :key="file.name" class="flex items-center gap-2 px-2.5 py-1.5 bg-slate-50 rounded-lg text-xs min-w-0">
+            <div class="asmr-task-details-body">
+              <div v-for="file in task.download_files" :key="file.name" class="asmr-task-file-row">
                 <span class="flex-1 min-w-0 truncate text-slate-700">{{ file.name }}</span>
-                <div class="w-20 shrink-0">
-                  <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                    <div class="h-full bg-blue-500 rounded-full transition-all" :style="{ width: file.progress + '%' }" />
-                  </div>
+                <div class="asmr-task-file-progress">
+                  <div class="asmr-task-file-progress-bar" :style="{ width: file.progress + '%' }" />
                 </div>
-                <span class="text-slate-400 shrink-0 whitespace-nowrap font-mono text-[11px] min-w-[132px] text-right">{{ formatSize(file.downloaded) }} / {{ formatSize(file.total) }}</span>
+                <span class="asmr-task-file-size">{{ formatSize(file.downloaded) }} / {{ formatSize(file.total) }}</span>
               </div>
             </div>
           </details>
         </div>
-      </div>
+      </TransitionGroup>
     </section>
+    </Transition>
 
     <!-- Preview Dialog -->
     <el-dialog v-model="previewDialogVisible" title="下载预览" width="900px" class="rounded-2xl">
@@ -526,7 +636,28 @@
 <script setup>
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Search, Download as DownloadIcon, Folder as FolderIcon, RefreshCw, FolderSearch, Clock, AlertTriangle, FileText, File as FileIcon, CheckCircle2 } from 'lucide-vue-next'
+import {
+  Search,
+  Download as DownloadIcon,
+  Folder as FolderIcon,
+  RefreshCw,
+  FolderSearch,
+  Clock,
+  AlertTriangle,
+  FileText,
+  File as FileIcon,
+  CheckCircle2,
+  Sparkles,
+  ListChecks,
+  Database,
+  Package,
+  CloudDownload,
+  Upload,
+  Activity,
+  Hourglass,
+  Loader2,
+  X,
+} from 'lucide-vue-next'
 import { asmrSyncApi, configApi, libraryApi, taskApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
@@ -629,33 +760,45 @@ const enhancedMetricCards = computed(() => {
     {
       label: '已建档 RJ',
       value: dashboard.total_rj || 0,
-      help: '资源库中已记录的作品数'
+      help: '资源库中已记录的作品数',
+      icon: Database,
+      iconClass: 'text-blue-500',
     },
     {
       label: '资源条目',
       value: dashboard.total_resources || 0,
-      help: '已抓取并落库的远端资源'
+      help: '已抓取并落库的远端资源',
+      icon: Package,
+      iconClass: 'text-indigo-500',
     },
     {
       label: '已下载',
       value: dashboard.downloaded_resources || 0,
-      help: '已完成下载的文件数'
+      help: '已完成下载的文件数',
+      icon: CloudDownload,
+      iconClass: 'text-emerald-500',
     },
     {
       label: '已上传',
       value: dashboard.uploaded_resources || 0,
-      help: '已进入自动上传管道的文件数'
+      help: '已进入自动上传管道的文件数',
+      icon: Upload,
+      iconClass: 'text-cyan-500',
     },
     {
       label: '处理中',
       value: dashboard.processing_tasks || 0,
-      help: '当前运行中的增强下载任务'
+      help: '当前运行中的增强下载任务',
+      icon: Activity,
+      iconClass: 'text-amber-500',
     },
     {
-      label: '待处理/失败',
+      label: '待处理 / 失败',
       value: `${dashboard.pending_tasks || 0} / ${dashboard.failed_tasks || 0}`,
-      help: '当前排队与失败任务概况'
-    }
+      help: '当前排队与失败任务概况',
+      icon: Hourglass,
+      iconClass: 'text-rose-500',
+    },
   ]
 })
 
@@ -1429,10 +1572,788 @@ watch(enhancedDownloadWorkbenchTaskIds, () => {
 </script>
 
 <style scoped>
-/* Minimal overrides — Tailwind handles most styling */
-:deep(.el-dialog) {
-  border-radius: 16px !important;
+button:not(:disabled) { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+/* ==============================================================
+ * 页面整体布局：与库存页 / 操作记录页保持一致
+ * ============================================================ */
+.asmr-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding: 18px 24px 24px;
+  gap: 14px;
 }
+.asmr-page > section,
+.asmr-page > div { flex-shrink: 0; }
+
+/* ==============================================================
+ * 页头按钮：page-head-btn 规范（对齐 ActivityHistory.vue）
+ *  - 基础 ghost 白底
+ *  - .primary 黑灰渐变 + 软阴影
+ * ============================================================ */
+.page-head-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden; /* 容纳 shimmer ::before */
+  /* 拆分 transition：transform/shadow 走 spring，颜色/opacity 走线性 */
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 0.35s ease,
+    border-color 0.25s ease,
+    color 0.25s ease,
+    opacity 0.25s ease;
+  will-change: transform, opacity;
+}
+/* 通用图标动画基线（Loader2 spin 不在此选择器范围，避免冲突） */
+.page-head-btn :deep(.page-head-btn-icon) {
+  flex-shrink: 0;
+  transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.3s ease;
+}
+.page-head-btn :deep(svg) { flex-shrink: 0; }
+
+/* 图标包裹层：固定尺寸 + 居中，让 swap Transition 不影响按钮整体宽高 */
+.page-head-btn-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  position: relative;
+}
+
+/* 关键：hover 不依赖 :not(:disabled)，避免点击瞬间 disabled 切换导致按钮塌回 base 闪烁 */
+.page-head-btn:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+}
+.page-head-btn:active:not(:disabled) {
+  transform: scale(0.96);
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.18s ease,
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    opacity 0.2s ease;
+}
+/* 按下瞬间图标短暂缩放反馈 */
+.page-head-btn:active:not(:disabled) :deep(.page-head-btn-icon) {
+  transform: scale(0.82);
+  transition: transform 0.12s ease;
+}
+/* disabled：仅改 opacity / cursor，不重置 transform / box-shadow，让 hover 视觉与 enabled 一致，消除点击瞬间跳变 */
+.page-head-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* === Primary 黑灰渐变按钮 + shimmer 高光扫光 === */
+.page-head-btn.primary {
+  background: linear-gradient(135deg, #111827, #1e293b);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+}
+.page-head-btn.primary::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -120%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.05) 30%,
+    rgba(255, 255, 255, 0.28) 50%,
+    rgba(255, 255, 255, 0.05) 70%,
+    transparent 100%
+  );
+  transform: skewX(-18deg);
+  transition: left 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: none;
+}
+.page-head-btn.primary:hover {
+  background: linear-gradient(135deg, #1e293b, #334155);
+  box-shadow:
+    0 14px 28px rgba(15, 23, 42, 0.28),
+    0 0 0 4px rgba(15, 23, 42, 0.05);
+}
+.page-head-btn.primary:hover::before {
+  left: 130%;
+}
+
+/* === Ghost 白底按钮 hover 时纯色变化（避免 gradient 不能 transition 造成瞬切）=== */
+.page-head-btn.ghost {
+  background-color: #fff;
+}
+.page-head-btn.ghost:hover {
+  background-color: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.2);
+}
+
+/* === 各按钮专属图标动效 === */
+/* 扫描：Search 图标 hover 时左摆 + 放大（模拟搜索动作） */
+.page-head-btn.btn-scan:hover:not(:disabled) :deep(.page-head-btn-icon) {
+  animation: scan-icon-wiggle 0.7s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes scan-icon-wiggle {
+  0%   { transform: rotate(0deg) scale(1); }
+  25%  { transform: rotate(-15deg) scale(1.18); }
+  55%  { transform: rotate(10deg) scale(1.15); }
+  80%  { transform: rotate(-4deg) scale(1.12); }
+  100% { transform: rotate(0deg) scale(1.1); }
+}
+
+/* 开始同步下载：DownloadIcon 箭头 hover 时下移 + 缩放（模拟下载方向）+ 白色发光 */
+.page-head-btn.btn-download:hover:not(:disabled) :deep(.page-head-btn-icon) {
+  transform: translateY(2px) scale(1.18);
+  filter: drop-shadow(0 2px 5px rgba(255, 255, 255, 0.45));
+  animation: download-icon-bob 1.2s ease-in-out infinite;
+}
+@keyframes download-icon-bob {
+  0%, 100% { transform: translateY(2px) scale(1.18); }
+  50%      { transform: translateY(4px) scale(1.18); }
+}
+
+/* 刷新：RefreshCw 图标 hover 时旋转一整圈（非 loading 态）*/
+.page-head-btn.btn-refresh:hover:not(:disabled) :deep(.page-head-btn-icon:not(.animate-spin)) {
+  transform: rotate(-360deg) scale(1.1);
+  transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 文本 label：min-width + 居中，避免「扫描」→「扫描中…」宽度跳变 */
+.page-head-btn-label {
+  display: inline-block;
+  text-align: center;
+  transition: opacity 0.2s ease, letter-spacing 0.3s ease;
+}
+.page-head-btn.primary .page-head-btn-label { min-width: 86px; }
+.page-head-btn.ghost .page-head-btn-label { min-width: 42px; }
+/* hover 时文字微微展开间距（不依赖 :not(:disabled)，避免点击瞬间跳变） */
+.page-head-btn:hover .page-head-btn-label {
+  letter-spacing: 0.04em;
+}
+
+/* === 图标 swap Transition：Loader2 ↔ Search/DownloadIcon 切换时平滑过渡 === */
+.page-head-btn :deep(.page-head-icon-swap-enter-active) {
+  transition:
+    opacity 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.page-head-btn :deep(.page-head-icon-swap-leave-active) {
+  transition:
+    opacity 0.14s ease,
+    transform 0.18s ease;
+  position: absolute;
+}
+.page-head-btn :deep(.page-head-icon-swap-enter-from) {
+  opacity: 0;
+  transform: scale(0.4) rotate(-90deg);
+}
+.page-head-btn :deep(.page-head-icon-swap-leave-to) {
+  opacity: 0;
+  transform: scale(0.4) rotate(90deg);
+}
+
+/* ==============================================================
+ * 区块 / 列表 / 数字 进出过渡：让点击刷新 / 扫描后内容出现更平滑
+ * ============================================================ */
+
+/* Section v-if 进出：fade + 上滑 + 微缩放（弹性曲线） */
+.asmr-section-enter-active {
+  transition:
+    opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
+    max-height 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  overflow: hidden;
+}
+.asmr-section-leave-active {
+  transition:
+    opacity 0.25s ease,
+    transform 0.3s ease,
+    max-height 0.35s cubic-bezier(0.4, 0, 0.6, 1);
+  overflow: hidden;
+}
+.asmr-section-enter-from {
+  opacity: 0;
+  transform: translateY(-14px) scale(0.985);
+}
+.asmr-section-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.99);
+}
+
+/* 列表项进出（TransitionGroup name="asmr-list"） */
+.asmr-list-enter-active {
+  transition:
+    opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.asmr-list-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  /* leave 阶段 absolute 定位避免后续元素跳动 */
+  position: absolute;
+  width: calc(100% - 36px); /* 抵扣 .asmr-card-body 的 padding 估值 */
+}
+.asmr-list-enter-from {
+  opacity: 0;
+  transform: translateX(-18px) scale(0.97);
+}
+.asmr-list-leave-to {
+  opacity: 0;
+  transform: translateX(18px) scale(0.97);
+}
+.asmr-list-move {
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* WorkCard 网格 TransitionGroup name="asmr-grid"，按 idx 阶梯延迟入场 */
+.asmr-grid-enter-active {
+  transition:
+    opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition-delay: var(--asmr-grid-delay, 0ms);
+}
+.asmr-grid-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+  position: absolute;
+}
+.asmr-grid-enter-from {
+  opacity: 0;
+  transform: translateY(20px) scale(0.92);
+}
+.asmr-grid-leave-to {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.95);
+}
+.asmr-grid-move {
+  transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* lib-info-strip 数字翻页过渡（mode="out-in"）*/
+.asmr-num-flip-enter-active {
+  transition:
+    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.asmr-num-flip-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.2s ease;
+}
+.asmr-num-flip-enter-from {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.85);
+}
+.asmr-num-flip-leave-to {
+  opacity: 0;
+  transform: translateY(8px) scale(0.85);
+}
+/* 数字过渡需要相对父级稳定的尺寸，避免 leave/enter 期间塌陷 */
+.lib-info-value { min-height: 1.45em; position: relative; }
+.lib-info-value > b { display: inline-block; transform-origin: center; }
+
+/* 后台浮动卡片 transition 已迁移至 index.css 全局 .floating-card-* 规范 */
+
+/* ==============================================================
+ * 顶部状态条 lib-info-strip（对齐 Library / Conflicts / SubtitleImport）
+ * ============================================================ */
+.lib-info-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr) 1px) minmax(0, 1fr);
+  /* fallback for browsers that don't auto-trim trailing 1px */
+  align-items: stretch;
+  gap: 0;
+  margin-bottom: 0;
+  padding: 16px 20px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+}
+/* 6 项：5 条 divider 即可 */
+.asmr-info-strip {
+  grid-template-columns:
+    minmax(0, 1fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr) 1px
+    minmax(0, 1fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr);
+}
+.lib-info-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 14px;
+}
+.lib-info-item:first-child { padding-left: 0; }
+.lib-info-item:last-child { padding-right: 0; }
+.lib-info-icon { flex-shrink: 0; margin-top: 3px; }
+.lib-info-body { min-width: 0; flex: 1 1 auto; }
+.lib-info-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lib-info-value {
+  font-size: 13.5px;
+  color: #475569;
+  line-height: 1.3;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.lib-info-value :deep(b),
+.lib-info-value b {
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: -0.4px;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.lib-info-divider {
+  width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(15, 23, 42, 0.1), transparent);
+  align-self: stretch;
+}
+@media (max-width: 1180px) {
+  .asmr-info-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px 0;
+    padding: 16px 18px;
+  }
+  .lib-info-divider { display: none; }
+  .lib-info-item { padding: 0 14px; border-right: 1px solid rgba(15, 23, 42, 0.06); }
+  .lib-info-item:nth-child(3n) { border-right: 0; }
+}
+@media (max-width: 720px) {
+  .asmr-info-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lib-info-item:nth-child(3n) { border-right: 1px solid rgba(15, 23, 42, 0.06); }
+  .lib-info-item:nth-child(2n) { border-right: 0; }
+}
+
+/* ==============================================================
+ * lib-chip 通用徽章
+ * ============================================================ */
+.lib-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.lib-chip-success { background: rgba(220, 252, 231, 0.85); color: #047857; border: 1px solid rgba(134, 239, 172, 0.5); }
+.lib-chip-warning { background: rgba(254, 243, 199, 0.85); color: #b45309; border: 1px solid rgba(253, 224, 71, 0.5); }
+.lib-chip-danger  { background: rgba(254, 226, 226, 0.85); color: #b91c1c; border: 1px solid rgba(252, 165, 165, 0.5); }
+.lib-chip-info    { background: rgba(224, 231, 255, 0.85); color: #4338ca; border: 1px solid rgba(165, 180, 252, 0.5); }
+.lib-chip-slate   { background: rgba(241, 245, 249, 0.85); color: #475569; border: 1px solid rgba(203, 213, 225, 0.55); }
+
+/* ==============================================================
+ * 主卡片 asmr-card：和 conflicts-info-card / subtitle-info-card 同款
+ * ============================================================ */
+.asmr-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+.asmr-card-amber {
+  background: rgba(255, 251, 235, 0.6);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+.asmr-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
+  background: linear-gradient(180deg, #fbfcfe 0%, #f8fafc 100%);
+}
+.asmr-card-head-amber {
+  background: linear-gradient(180deg, rgba(255, 251, 235, 0.85) 0%, rgba(254, 243, 199, 0.55) 100%);
+  border-bottom-color: rgba(245, 158, 11, 0.18);
+}
+.asmr-card-head-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.asmr-card-head-title h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  color: #0f172a;
+}
+.asmr-card-head-subtitle {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: #94a3b8;
+  letter-spacing: 0.01em;
+}
+.asmr-card-head-icon { color: #2563eb; flex-shrink: 0; }
+.asmr-card-head-icon-amber { color: #b45309; flex-shrink: 0; }
+.asmr-card-head-count { color: #94a3b8; font-weight: 500; font-size: 12.5px; }
+.asmr-card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.asmr-card-head-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #64748b;
+  cursor: pointer;
+  user-select: none;
+}
+.asmr-card-head-checkbox input { width: 14px; height: 14px; accent-color: #1e293b; }
+.asmr-card-body {
+  padding: 16px 18px;
+}
+.asmr-list { display: flex; flex-direction: column; gap: 10px; }
+.asmr-table-wrap {
+  max-height: 400px;
+  overflow: auto;
+}
+
+/* ==============================================================
+ * asmr-mini-btn：通用小按钮 28px ghost / is-primary 黑色 / is-warning amber / xs 小尺寸
+ * ============================================================ */
+.asmr-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.15s ease, box-shadow 0.18s ease;
+}
+.asmr-mini-btn:hover {
+  background: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.22);
+  color: #0f172a;
+}
+.asmr-mini-btn:active:not(:disabled) { transform: scale(0.96); }
+.asmr-mini-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.asmr-mini-btn.is-primary {
+  background: linear-gradient(135deg, #111827, #1e293b);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18);
+}
+.asmr-mini-btn.is-primary:hover {
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.22);
+  color: #fff;
+}
+
+.asmr-mini-btn.is-warning {
+  background: linear-gradient(180deg, #fef3c7 0%, #fde68a 100%);
+  color: #92400e;
+  border-color: rgba(245, 158, 11, 0.4);
+}
+.asmr-mini-btn.is-warning:hover {
+  background: linear-gradient(180deg, #fde68a 0%, #fcd34d 100%);
+  color: #78350f;
+  border-color: rgba(217, 119, 6, 0.55);
+}
+
+/* xs：更小的尺寸（任务卡片 / 等待重试列表用）*/
+.asmr-mini-btn.xs {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  border-radius: 7px;
+  gap: 4px;
+}
+
+/* ==============================================================
+ * 增强工作台 - 批量操作工具栏
+ * ============================================================ */
+.asmr-batch-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fbfcfe 0%, #f5f7fb 100%);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+.asmr-batch-toolbar-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.asmr-batch-toolbar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  letter-spacing: -0.1px;
+}
+.asmr-batch-toolbar-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ==============================================================
+ * 后台浮窗（.asmr-bg-card-*）已迁移至 index.css 全局 .floating-card 规范
+ * ============================================================ */
+
+/* ==============================================================
+ * 下载任务 asmr-task 卡片
+ * ============================================================ */
+.asmr-task {
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #fff;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+.asmr-task.is-completed {
+  border-color: rgba(16, 185, 129, 0.32);
+  background: rgba(220, 252, 231, 0.22);
+}
+.asmr-task.is-failed {
+  border-color: rgba(248, 113, 113, 0.32);
+  background: rgba(254, 226, 226, 0.22);
+}
+.asmr-task.is-paused {
+  border-color: rgba(148, 163, 184, 0.32);
+  background: rgba(241, 245, 249, 0.45);
+}
+.asmr-task.is-processing {
+  border-color: rgba(59, 130, 246, 0.32);
+  background: rgba(219, 234, 254, 0.18);
+}
+.asmr-task-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.asmr-task-head-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.asmr-task-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.asmr-task-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.asmr-task-alert.is-error {
+  background: rgba(254, 226, 226, 0.6);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  color: #991b1b;
+}
+.asmr-task-alert :deep(svg) { flex-shrink: 0; margin-top: 1px; color: currentColor; }
+
+.asmr-task-details { margin-top: 10px; }
+.asmr-task-details-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+.asmr-task-details-summary:hover { background: rgba(15, 23, 42, 0.04); }
+.asmr-task-details-summary.is-success { color: #047857; }
+.asmr-task-details-summary.is-success:hover { color: #065f46; }
+.asmr-task-details-summary.is-danger { color: #b91c1c; }
+.asmr-task-details-summary.is-danger:hover { color: #991b1b; }
+.asmr-task-details-summary.is-slate { color: #334155; }
+.asmr-task-details-summary.is-slate:hover { color: #0f172a; }
+.asmr-task-details-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.asmr-task-mapping {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(220, 252, 231, 0.32);
+  border: 1px solid rgba(167, 243, 208, 0.45);
+  font-size: 11.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.asmr-task-mapping-label {
+  width: 56px;
+  flex-shrink: 0;
+  color: #94a3b8;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.asmr-task-mapping-arrow { text-align: center; color: #10b981; font-weight: 700; font-size: 10px; }
+
+.asmr-task-failed-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(254, 226, 226, 0.4);
+  font-size: 11.5px;
+}
+
+.asmr-task-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 11.5px;
+  min-width: 0;
+}
+.asmr-task-file-progress {
+  width: 80px;
+  flex-shrink: 0;
+}
+.asmr-task-file-progress-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.8);
+  position: relative;
+  overflow: hidden;
+}
+.asmr-task-file-progress-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: var(--w, 0%);
+  background: linear-gradient(90deg, #3b82f6, #2563eb);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.asmr-task-file-progress-bar { background: rgba(226, 232, 240, 0.8); }
+.asmr-task-file-progress-bar > div,
+.asmr-task-file-row .asmr-task-file-progress > div {
+  height: 6px;
+  background: linear-gradient(90deg, #3b82f6, #2563eb);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.asmr-task-file-size {
+  color: #94a3b8;
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+  font-size: 10.5px;
+  white-space: nowrap;
+  min-width: 132px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* ==============================================================
+ * 列表行（等待重试卡片 / 通用列表行）
+ * ============================================================ */
+.asmr-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid rgba(245, 158, 11, 0.18);
+}
+
+/* ==============================================================
+ * 通用辅助：RJ 号 / 链接按钮
+ * ============================================================ */
+.asmr-rjcode {
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+  font-weight: 600;
+  font-size: 13px;
+  color: #2563eb;
+  letter-spacing: -0.2px;
+  flex-shrink: 0;
+}
+.asmr-rjcode.is-bold { font-weight: 700; }
+
+.asmr-link-btn {
+  background: transparent;
+  border: 0;
+  color: #2563eb;
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: color 0.18s ease, text-decoration 0.18s ease;
+  padding: 4px 6px;
+}
+.asmr-link-btn:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+.asmr-link-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ==============================================================
+ * 增强计划卡片（保留原 enhanced-plan）
+ * ============================================================ */
 .enhanced-plan-card {
   max-width: 248px;
 }
@@ -1499,15 +2420,11 @@ watch(enhancedDownloadWorkbenchTaskIds, () => {
   background: #fafafa;
   border-color: #e5e7eb;
 }
-button {
-  cursor: pointer;
-}
-button:not(:disabled):hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-button:not(:disabled):active {
-  transform: translateY(0) scale(0.97);
-  box-shadow: none;
+
+/* ==============================================================
+ * el-dialog 圆角保留
+ * ============================================================ */
+:deep(.el-dialog) {
+  border-radius: 16px !important;
 }
 </style>

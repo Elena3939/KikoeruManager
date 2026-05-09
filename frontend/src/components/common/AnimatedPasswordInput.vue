@@ -235,7 +235,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.animated-password-input__toggle:hover:not(:disabled) {
+.animated-password-input__toggle:hover {
   transform: translateY(calc(-50% - 2px)) scale(1.06);
 }
 

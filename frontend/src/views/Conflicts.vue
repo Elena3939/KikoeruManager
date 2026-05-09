@@ -1459,7 +1459,7 @@ button:disabled {
 .conflicts-refresh-btn :deep(svg) {
   transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.conflicts-refresh-btn:hover:not(:disabled) {
+.conflicts-refresh-btn:hover {
   border-color: rgba(15, 23, 42, 0.18);
   background: #fff;
   color: #0f172a;
@@ -1681,7 +1681,7 @@ button:disabled {
   font-weight: 500;
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
-.conflicts-mini-btn:hover:not(:disabled) {
+.conflicts-mini-btn:hover {
   background: #f8fafc;
   border-color: rgba(15, 23, 42, 0.18);
   color: #0f172a;
@@ -1719,12 +1719,12 @@ button:disabled {
 .conflicts-batch-btn :deep(svg) {
   transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
+/* disabled：仅 opacity + cursor，不重置 transform/shadow，避免 hover 中点击瞬间塌回闪烁 */
 .conflicts-batch-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: not-allowed;
-  transform: none !important;
 }
-.conflicts-batch-btn:hover:not(:disabled) { transform: translateY(-2px); }
+.conflicts-batch-btn:hover { transform: translateY(-2px); }
 .conflicts-batch-btn:active:not(:disabled) {
   transform: translateY(0) scale(0.96);
   transition: all 0.12s ease;
@@ -1739,7 +1739,7 @@ button:disabled {
     0 1px 2px rgba(16, 185, 129, 0.35),
     0 3px 8px -2px rgba(16, 185, 129, 0.28);
 }
-.conflicts-batch-btn.is-emerald:hover:not(:disabled) {
+.conflicts-batch-btn.is-emerald:hover {
   background: linear-gradient(180deg, #6ee7b7 0%, #34d399 55%, #10b981 100%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.42),
@@ -1757,7 +1757,7 @@ button:disabled {
   border-color: rgba(15, 23, 42, 0.14);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
-.conflicts-batch-btn.is-slate:hover:not(:disabled) {
+.conflicts-batch-btn.is-slate:hover {
   background: #f8fafc;
   color: #0f172a;
   border-color: rgba(15, 23, 42, 0.24);
@@ -1809,7 +1809,7 @@ button:disabled {
   transition: background-color 0.18s ease, border-color 0.18s ease;
   overflow: hidden;
 }
-.conflicts-list-card:hover:not(:disabled) {
+.conflicts-list-card:hover {
   background: rgba(15, 23, 42, 0.04);
   border-color: rgba(15, 23, 42, 0.06);
 }
@@ -1984,50 +1984,57 @@ button:disabled {
 .conflicts-action-btn :deep(svg) {
   transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
+/* disabled：仅 opacity + cursor，不重置 transform/shadow，避免 hover 中点击瞬间塌回闪烁 */
 .conflicts-action-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: not-allowed;
-  transform: none !important;
 }
-.conflicts-action-btn:hover:not(:disabled) { transform: translateY(-2px); }
+.conflicts-action-btn:hover { transform: translateY(-2px); }
 .conflicts-action-btn:active:not(:disabled) {
   transform: translateY(0) scale(0.97);
   transition: all 0.12s ease;
 }
 
-/* 保留新版：indigo 主色（主决定） */
+/* 保留新版：blue 主色（深蓝、专业不游戏感） */
+/* 配色：blue-500 → blue-600 → blue-700。统一加 inset 底部暗影 + text-shadow 增强玻璃质感 */
 .conflicts-action-btn.is-primary {
-  background: linear-gradient(180deg, #818cf8 0%, #6366f1 55%, #4f46e5 100%);
-  border-color: rgba(67, 56, 202, 0.45);
+  background: linear-gradient(180deg, #3b82f6 0%, #2563eb 55%, #1d4ed8 100%);
+  border-color: rgba(29, 78, 216, 0.5);
+  text-shadow: 0 1px 0 rgba(29, 78, 216, 0.28);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.28),
-    0 1px 2px rgba(99, 102, 241, 0.4),
-    0 4px 12px -2px rgba(99, 102, 241, 0.32);
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    inset 0 -1px 0 rgba(29, 78, 216, 0.3),
+    0 1px 2px rgba(37, 99, 235, 0.45),
+    0 4px 12px -2px rgba(37, 99, 235, 0.32);
 }
-.conflicts-action-btn.is-primary:hover:not(:disabled) {
-  background: linear-gradient(180deg, #a5b4fc 0%, #818cf8 55%, #6366f1 100%);
+.conflicts-action-btn.is-primary:hover {
+  background: linear-gradient(180deg, #60a5fa 0%, #3b82f6 55%, #2563eb 100%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    0 2px 4px rgba(99, 102, 241, 0.5),
-    0 10px 22px -4px rgba(99, 102, 241, 0.55);
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0 rgba(29, 78, 216, 0.25),
+    0 2px 4px rgba(37, 99, 235, 0.5),
+    0 10px 22px -4px rgba(37, 99, 235, 0.55);
 }
 .conflicts-action-btn.is-primary:hover:not(:disabled) :deep(svg) {
   transform: scale(1.1) rotate(-3deg);
 }
 
-/* 重试：emerald 主色，hover 时图标逆旋起 */
+/* 重试：emerald 翠绿（截图里未出现，保留原色但补上和其他主操作一致的玻璃质感：底部 inset 暗影 + text-shadow） */
 .conflicts-action-btn.is-emerald {
   background: linear-gradient(180deg, #34d399 0%, #10b981 55%, #059669 100%);
-  border-color: rgba(4, 120, 87, 0.45);
+  border-color: rgba(4, 120, 87, 0.5);
+  text-shadow: 0 1px 0 rgba(4, 120, 87, 0.28);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    0 1px 2px rgba(16, 185, 129, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.36),
+    inset 0 -1px 0 rgba(4, 120, 87, 0.3),
+    0 1px 2px rgba(16, 185, 129, 0.45),
     0 4px 12px -2px rgba(16, 185, 129, 0.3);
 }
-.conflicts-action-btn.is-emerald:hover:not(:disabled) {
+.conflicts-action-btn.is-emerald:hover {
   background: linear-gradient(180deg, #6ee7b7 0%, #34d399 55%, #10b981 100%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0 rgba(4, 120, 87, 0.25),
     0 2px 4px rgba(16, 185, 129, 0.5),
     0 10px 22px -4px rgba(16, 185, 129, 0.5);
 }
@@ -2035,42 +2042,48 @@ button:disabled {
   transform: rotate(-180deg);
 }
 
-/* 跳过：次操作 → 白底 ghost，避免与主操作争夺视线 */
+/* 跳过：次操作 → 浅灰微渐变 ghost（修复纯白 ghost 在白底卡片头部上几乎隐形的对比度问题） */
 .conflicts-action-btn.is-slate {
-  background: #ffffff;
+  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
   color: #475569;
-  border-color: rgba(15, 23, 42, 0.14);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-.conflicts-action-btn.is-slate:hover:not(:disabled) {
-  background: #f8fafc;
-  color: #0f172a;
-  border-color: rgba(15, 23, 42, 0.24);
+  border-color: rgba(15, 23, 42, 0.18);
   box-shadow:
-    0 2px 4px rgba(15, 23, 42, 0.06),
-    0 10px 22px -4px rgba(15, 23, 42, 0.1);
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 2px 6px -1px rgba(15, 23, 42, 0.06);
+}
+.conflicts-action-btn.is-slate:hover {
+  background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+  color: #0f172a;
+  border-color: rgba(15, 23, 42, 0.3);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 2px 4px rgba(15, 23, 42, 0.07),
+    0 10px 22px -4px rgba(15, 23, 42, 0.12);
 }
 .conflicts-action-btn.is-slate:hover:not(:disabled) :deep(svg) {
   transform: translateX(3px);
 }
 
-/* 合并：amber 蜂蜜色，hover 图标轻跳 */
+/* 合并：sober amber（amber-500 → amber-600 → amber-700，比原来 400/500/600 更深沉，搭深蓝主操作不刺眼） */
 .conflicts-action-btn.is-amber {
-  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 55%, #d97706 100%);
-  border-color: rgba(180, 83, 9, 0.45);
+  background: linear-gradient(180deg, #f59e0b 0%, #d97706 55%, #b45309 100%);
+  border-color: rgba(146, 64, 14, 0.5);
   color: #ffffff;
-  text-shadow: 0 1px 0 rgba(180, 83, 9, 0.25);
+  text-shadow: 0 1px 0 rgba(146, 64, 14, 0.32);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.35),
-    0 1px 2px rgba(245, 158, 11, 0.4),
-    0 4px 12px -2px rgba(245, 158, 11, 0.3);
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    inset 0 -1px 0 rgba(146, 64, 14, 0.3),
+    0 1px 2px rgba(217, 119, 6, 0.45),
+    0 4px 12px -2px rgba(217, 119, 6, 0.32);
 }
-.conflicts-action-btn.is-amber:hover:not(:disabled) {
-  background: linear-gradient(180deg, #fcd34d 0%, #fbbf24 55%, #f59e0b 100%);
+.conflicts-action-btn.is-amber:hover {
+  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 55%, #d97706 100%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.45),
-    0 2px 4px rgba(245, 158, 11, 0.5),
-    0 10px 22px -4px rgba(245, 158, 11, 0.5);
+    inset 0 -1px 0 rgba(146, 64, 14, 0.25),
+    0 2px 4px rgba(217, 119, 6, 0.5),
+    0 10px 22px -4px rgba(217, 119, 6, 0.55);
 }
 .conflicts-action-btn.is-amber:hover:not(:disabled) :deep(svg) {
   transform: scale(1.1) rotate(8deg);

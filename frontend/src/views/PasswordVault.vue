@@ -49,13 +49,14 @@
 
       <div class="vault-toolbar-panel vault-toolbar-panel-filters rounded-2xl border border-slate-200/80 bg-white/80 p-2.5 shadow-sm backdrop-blur">
         <span class="text-xs font-medium uppercase tracking-wider text-slate-400">排序</span>
-        <el-select v-model="passwordSortBy" size="small" class="vault-select !w-[128px]" @change="handlePasswordSortChange">
-          <el-option label="创建时间" value="created_at" />
-          <el-option label="更新时间" value="updated_at" />
-          <el-option label="RJ 号" value="rjcode" />
-          <el-option label="文件名" value="filename" />
-          <el-option label="使用次数" value="use_count" />
-        </el-select>
+        <AppDropdown
+          v-model="passwordSortBy"
+          :options="passwordSortByOptions"
+          :width="128"
+          :menu-min-width="160"
+          :show-trigger-badge="false"
+          @update:model-value="handlePasswordSortChange"
+        />
         <button type="button" class="vault-btn vault-btn-ghost !min-w-[84px]" @click="togglePasswordSortOrder">
           <component :is="passwordSortOrder === 'desc' ? IconArrowDown : IconArrowUp" :size="14" :stroke-width="2.4" />
           {{ passwordSortOrder === 'desc' ? '倒序' : '正序' }}
@@ -349,6 +350,7 @@ import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
+import AppDropdown from '../components/common/AppDropdown.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 import editIconAnimation from '../assets/anime/Clipboard.lottie'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
@@ -366,6 +368,15 @@ const selectedRows = ref([])
 const searchQuery = ref('')
 const passwordSortBy = ref('created_at')
 const passwordSortOrder = ref('desc')
+
+// 密码档案排序选项
+const passwordSortByOptions = [
+  { value: 'created_at', label: '创建时间' },
+  { value: 'updated_at', label: '更新时间' },
+  { value: 'rjcode', label: 'RJ 号' },
+  { value: 'filename', label: '文件名' },
+  { value: 'use_count', label: '使用次数' },
+]
 const currentPage = ref(1)
 const pageSize = ref(loadPersistedPageSize(50))
 const totalCount = ref(0)
@@ -432,8 +443,9 @@ async function handleSubmit() {
       await passwordApi.update(form.value.id, { rjcode: form.value.rjcode || null, filename: form.value.filename || null, password: form.value.password, description: form.value.description || null })
       ElMessage.success('密码已更新')
     } else {
-      await passwordApi.create({ rjcode: form.value.rjcode || null, filename: form.value.filename || null, password: form.value.password, description: form.value.description || null, source: 'manual' })
-      ElMessage.success('密码已添加')
+      const result = await passwordApi.create({ rjcode: form.value.rjcode || null, filename: form.value.filename || null, password: form.value.password, description: form.value.description || null, source: 'manual' })
+      if (result?.merged) ElMessage.info('该通用密码已存在，已合并到现有记录')
+      else ElMessage.success('密码已添加')
     }
     const elapsed = Date.now() - startTime
     if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed))
@@ -590,23 +602,24 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.vault-btn:hover:not(:disabled) { transform: translateY(-2px) scale(1.02); }
+.vault-btn:hover { transform: translateY(-2px) scale(1.02); }
 .vault-btn:active:not(:disabled) { transform: scale(0.96); }
-.vault-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+/* disabled：仅 opacity + cursor，不重置 transform/shadow，避免 hover 中点击瞬间塌回闪烁 */
+.vault-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .vault-btn-primary {
   background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
   color: #fff;
   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
 }
-.vault-btn-primary:hover:not(:disabled) { box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35); }
+.vault-btn-primary:hover { box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35); }
 
 .vault-btn-ghost {
   background: rgba(248, 250, 252, 0.8);
   color: #334155;
   border-color: rgba(203, 213, 225, 0.7);
 }
-.vault-btn-ghost:hover:not(:disabled) {
+.vault-btn-ghost:hover {
   background: #ffffff;
   border-color: rgba(148, 163, 184, 0.7);
   color: #0f172a;
@@ -618,7 +631,7 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   color: #dc2626;
   border-color: rgba(252, 165, 165, 0.7);
 }
-.vault-btn-danger:hover:not(:disabled) {
+.vault-btn-danger:hover {
   background: #fff;
   border-color: rgba(239, 68, 68, 0.6);
   box-shadow: 0 6px 14px rgba(220, 38, 38, 0.15);
@@ -668,7 +681,7 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   transition: inherit;
 }
 
-.vault-toolbar-btn:hover:not(:disabled) .vault-btn-icon {
+.vault-toolbar-btn:hover .vault-btn-icon {
   transform: rotate(-8deg) scale(1.08);
 }
 
@@ -684,7 +697,7 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   margin-left: auto;
 }
 
-.vault-btn:hover:not(:disabled) .vault-btn-icon {
+.vault-btn:hover .vault-btn-icon {
   transform: translateY(-1px) scale(1.05);
 }
 

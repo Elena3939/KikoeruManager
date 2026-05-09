@@ -1080,13 +1080,12 @@ function getScanResultIcon(status) {
   color: #0f172a;
 }
 
+/* disabled：仅 opacity + cursor，不重置 transform/shadow，避免 hover 中点击瞬间塌回闪烁 */
 .scan-rail-btn:disabled,
 .scan-rail-filter-pill:disabled,
 .scan-rail-toggle:disabled {
-  opacity: 0.4;
+  opacity: 0.55;
   cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
 }
 
 .scan-rail-btn-ghost {

@@ -136,7 +136,7 @@
                         <Check v-if="isGroupAllSelected(group)" :size="14" />
                         <span v-else-if="isGroupPartiallySelected(group)" class="checkbox-minus" />
                       </button>
-                      <Folder :size="20" class="tree-icon icon-folder" />
+                      <component :is="group.is_file ? FileIcon : Folder" :size="20" class="tree-icon" :class="group.is_file ? 'icon-file' : 'icon-folder'" />
                       <span class="tree-name node-rjcode text-sm text-slate-800 truncate font-medium">
                         {{ getDisplayText(group.name) }}
                         <span class="node-title-muted">{{ getDisplayText(group.path) }}</span>
@@ -410,19 +410,54 @@ async function loadPreviewGroups() {
   try {
     const groups = await Promise.all(sourceItems.map(async (item, index) => {
       const path = String(item.path || '').trim()
-      const name = String(item.name || getFileName(path) || `目录 ${index + 1}`).trim()
+      const name = String(item.name || getFileName(path) || `项目 ${index + 1}`).trim()
+      const isDirectory = item.is_directory !== false
+      const groupId = `group:${index}:${path}`
+
+      // 单文件场景：不调子项 list 接口，直接构造一个“只含自身”的 group
+      if (!isDirectory) {
+        const fileResource = {
+          name,
+          path,
+          relative_path: name,
+          size: Number(item.size || 0),
+          selected: true,
+        }
+        const tree = [{
+          id: `${groupId}::file:${path}`,
+          name,
+          type: 'file',
+          resource: fileResource,
+          size_bytes: Number(item.size || 0),
+          resolved_path: path,
+        }]
+        const group = {
+          id: groupId,
+          name,
+          path,
+          is_file: true,
+          selectable_resources: [fileResource],
+          rootExpanded: false,
+          tree,
+          expandedIds: new Set(),
+          flatRows: [],
+        }
+        refreshPlanTree(group)
+        return group
+      }
+
       const data = props.sourceLibraryId
         ? await libraryApi.browserFolderContents(props.sourceLibraryId, path)
         : await libraryApi.folderContents(path)
       const items = Array.isArray(data?.items) ? data.items : []
       const resources = items.map(item => ({ ...item, selected: true }))
-      const groupId = `group:${index}:${path}`
       const tree = buildTree(resources, path, groupId)
       const expandedIds = new Set(collectDirectoryIds(tree))
       const group = {
         id: groupId,
         name,
         path,
+        is_file: false,
         selectable_resources: resources,
         rootExpanded: true,
         tree,
