@@ -4,7 +4,9 @@
 
 ## 1. 项目基线
 
-- 项目名统一用 `Prekikoeru`。不要把 `KikoeruTool_Elena` 或其他旧名混回新文案、新标题、新打包产物。
+- 项目名统一用 `KikoeruManager`（PascalCase 显示 / 标题 / exe 名 / 品牌）；技术场景（npm package name、Docker image、container name、SMTP 默认发件人 `from_name`、环境变量前缀的小写形式、localStorage key 命名空间、SSE 自定义事件名前缀、临时文件 magic prefix）统一用 `kikoerumanager`（全小写）。
+- 不要把 `Prekikoeru` / `KikoeruTool_Elena` / `kikoeruTool` 这类旧名混回新文案、新标题、新打包产物。环境变量前缀统一为 `KIKOERUMANAGER_*`，自定义事件名 / localStorage key 用 `kikoerumanager.xxx` 或 `kikoerumanager:xxx`。
+- GitHub 仓库当前实际名称仍是 `Elena3939/KikoeruTool_Elena`（GHCR image 因此是 `ghcr.io/elena3939/kikoerutool_elena`），README 里的 clone URL / GHCR image URL 必须保留这个真实路径，**不要**自作主张改成 `kikoerumanager`。仅当用户日后在 GitHub 上把仓库改名时才同步更新这两处。
 - 技术栈：后端 `FastAPI`；前端 `Vue 3 + Vite + Element Plus + Tailwind CSS + lucide-vue-next`；桌面端 `pystray + PyInstaller`。
 - 当前产品形态是多工作台桌面化产品，不是传统后台管理系统。
 - 高频业务区：库存主工作台、RJ 字幕工作台、任务中心、操作历史、社团补全、下载 / 上传工作台。
@@ -97,7 +99,7 @@
 ### 桌面端
 
 - 当前稳定方案是 `pystray` 原生托盘菜单。没明确要求，不要改成自绘菜单 / Win32 假菜单。
-- 桌面包名统一为 `Prekikoeru.exe`。
+- 桌面包名统一为 `KikoeruManager.exe`。
 - 图标必须来自仓库资源，不能依赖外部绝对路径。
 
 ## 4. 前端设计规则
