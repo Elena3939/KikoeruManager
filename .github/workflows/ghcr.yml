@@ -2,18 +2,20 @@ name: Build and Push to GHCR and Docker Hub
 
 on:
   push:
+    # master / main 分支 push 仅用于触发下方 sync-dockerhub-readme 同步 Docker Hub 的 Overview，不会走 image 构建
     branches: [ main, master ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ main, master ]
+    # 仅在打了 vX.Y.Z 形式的版本 tag 时才触发 image 构建与发布
+    tags: [ 'v*.*.*' ]
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
   DOCKERHUB_IMAGE: elena39/kikoerumanager
 
 jobs:
+  # 构建并推送 Docker image——仅在 vX.Y.Z tag 推送时触发
   build-and-push:
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       packages: write
@@ -46,25 +48,23 @@ jobs:
           ${{ env.GHCR_IMAGE }}
           ${{ env.DOCKERHUB_IMAGE }}
         tags: |
-          type=ref,event=branch
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
-          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=latest
 
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
         context: .
-        push: ${{ github.event_name != 'pull_request' }}
+        push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         no-cache: true
         platforms: linux/amd64
 
   # 把 GitHub README 同步到 Docker Hub 仓库的 Overview，避免 Docker Hub 上长期是 "No overview available"
-  # 仅在 master / main 分支 push 时执行（PR / tag push 不重复同步），依赖 build-and-push 成功（确保 image 已就绪）
+  # 仅在 master / main 分支 push 时执行（tag push 走 build-and-push，这里不重复）；独立于构建，不依赖 image 推送是否成功
   sync-dockerhub-readme:
-    needs: build-and-push
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
     steps:
