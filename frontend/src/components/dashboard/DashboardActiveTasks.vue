@@ -75,7 +75,7 @@
             </span>
             <span
               v-if="task.current_step && !isTerminalStatus(task)"
-              class="inline-flex h-[22px] max-w-[180px] items-center truncate rounded-[6px] px-2 text-[11px]"
+              class="inline-flex min-h-[22px] items-center rounded-[6px] px-2 py-0.5 text-[11px] leading-snug whitespace-normal break-all"
               :class="stepChipClass(task)"
             >
               {{ task.current_step }}

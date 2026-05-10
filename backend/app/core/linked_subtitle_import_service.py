@@ -755,6 +755,8 @@ class LinkedSubtitleImportService:
             )
             await asyncio.to_thread(shutil.rmtree, workbench_root_dir, True)
             self._cleanup_empty_workbench_shell(workbench_root_dir)
+            # 索引同步：只重扫 subtitles 子目录（避免重扫整个 RJ 100+ 文件）
+            self._notify_index_after_subtitle_publish(library, target_subtitle_dir)
             return target_subtitle_dir
 
         target_folder = os.path.abspath(normalized_target_folder)
@@ -787,7 +789,42 @@ class LinkedSubtitleImportService:
             self._cleanup_empty_workbench_shell(workbench_root_dir)
         except Exception:
             logger.warning("[字幕补配] 清理本地工作台目录失败: %s", workbench_root_dir, exc_info=True)
+        # 索引同步：只重扫 subtitles 子目录（避免重扫整个 RJ 100+ 文件）
+        self._notify_index_after_subtitle_publish(library, target_subtitle_dir)
         return target_subtitle_dir
+
+    def _notify_index_after_subtitle_publish(
+        self,
+        library: Any,
+        subtitle_directory_absolute_path: str,
+    ) -> None:
+        """字幕落盘后只重扫 subtitles 子目录。
+
+        I/O 优化背景：原本是「delete RJ 整个子树 + upsert RJ 整个子树」，那会
+        重扫 RJ 下 100+ 个音频文件（实际上音频根本没变），而且中间窗口期里
+        整个 RJ 在索引里短暂消失，影响 RJ 号搜索。改成只动 subtitles 子目录：
+        - delete `{RJ}/subtitles` 子树清旧字幕条目
+        - upsert `{RJ}/subtitles` 子树写新字幕条目
+        - RJ 根条目 size 不会刷新，但音频部分根本没变，只有字幕的几十 KB
+          误差，下次完整重建索引会修；不影响 RJ 号搜索（RJ 号查的是 RJ
+          目录条目而不是 subtitles）
+
+        失败静默。
+        """
+        try:
+            if not subtitle_directory_absolute_path:
+                return
+            self.library_manager._notify_index_self_mutation_delete(
+                library, subtitle_directory_absolute_path,
+            )
+            self.library_manager._notify_index_self_mutation_upsert_subtree(
+                library, subtitle_directory_absolute_path,
+            )
+        except Exception:
+            logger.debug(
+                "[索引] 字幕落盘后通知索引失败 path=%s",
+                subtitle_directory_absolute_path, exc_info=True,
+            )
 
     def _count_local_subtitle_files(self, subtitle_dir: str) -> int:
         normalized_dir = str(subtitle_dir or "").strip()

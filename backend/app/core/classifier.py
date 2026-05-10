@@ -322,6 +322,48 @@ class SmartClassifier:
             # 查重失败不阻止处理，继续解压
             return False
     
+    def _notify_library_index_after_classify(
+        self,
+        manager,
+        target_library,
+        final_path: str,
+        *,
+        existing_path: Optional[str] = None,
+    ) -> None:
+        """落地完成后通知索引把新子树 upsert 进去。
+
+        - target_library 为 None 或 final_path 在 _conflicts 下时跳过
+        - KEEP_NEW / MERGE 替换原路径时，先 delete 旧子树再 upsert，避免孤儿条目
+        - 任意异常都吞掉，不影响主流程返回 final_path
+        """
+        try:
+            if not final_path or target_library is None:
+                return
+            normalized_final = str(final_path or "")
+            if not normalized_final:
+                return
+            if target_library.type == 'local':
+                conflict_root = os.path.abspath(
+                    os.path.join(self.config.storage.library_path, '_conflicts')
+                )
+                normalized_abs = os.path.abspath(normalized_final)
+                if (
+                    normalized_abs == conflict_root
+                    or normalized_abs.startswith(conflict_root + os.sep)
+                ):
+                    return  # _conflicts 不参与索引
+            if existing_path and os.path.abspath(existing_path) != os.path.abspath(normalized_final):
+                # KEEP_NEW / MERGE 的 final 路径跟 existing 不同 → 旧路径条目要清掉
+                manager._notify_index_self_mutation_delete(target_library, existing_path)
+            elif existing_path:
+                # final == existing：先把旧子树清掉，等下面 upsert 重新写一遍，避免孤儿
+                manager._notify_index_self_mutation_delete(target_library, existing_path)
+            manager._notify_index_self_mutation_upsert_subtree(target_library, normalized_final)
+        except Exception:
+            logger.debug(
+                "[索引] classify 后通知索引 upsert 失败 path=%s", final_path, exc_info=True,
+            )
+
     async def classify_and_move(self, source_path: str, metadata: Dict, task: Task) -> str:
         """
         智能分类并移动到库存
@@ -373,9 +415,11 @@ class SmartClassifier:
 
         # 3. 移动文件
         task.update_progress(90, "移动到库存")
+        existing_subtree_to_clear: Optional[str] = None
         if resolution == "KEEP_NEW" and resolution_existing_path:
             task.update_progress(92, "替换现有目录")
             final_path = get_folder_compare_service().safe_replace_directory(source_path, str(resolution_existing_path))
+            existing_subtree_to_clear = str(resolution_existing_path)
         elif resolution == "MERGE" and resolution_existing_path:
             task.update_progress(92, "生成并写入合并结果")
             final_path = get_folder_compare_service().apply_merge(
@@ -384,6 +428,7 @@ class SmartClassifier:
                 merge_decisions or {},
                 str(resolution_existing_path),
             )
+            existing_subtree_to_clear = str(resolution_existing_path)
         elif target_library.type == 'local':
             # 跨卷复制时通过 progress 回调把"移动到库存"的真实进度映射到 90~94 区间。
             # 默认 shutil.move 在 NAS 跨卷场景下没有任何进度回报，前端经常停留在
@@ -421,7 +466,17 @@ class SmartClassifier:
         
         # 4. 更新库存快照
         self._update_library_snapshot(rjcode, final_path)
-        
+
+        # 5. 通知索引把新子树扫进去（解压入库 / KEEP_NEW / MERGE / 远程上传共用通路）
+        # 不在 classify_and_move 里 await：本地 upsert 同步即可（小子树 ms 级），
+        # 远程 upsert 由 LibraryManager 自己起后台 task；这里只触发一下。
+        self._notify_library_index_after_classify(
+            manager,
+            target_library,
+            final_path,
+            existing_path=existing_subtree_to_clear,
+        )
+
         return final_path
     
     def _check_existing(self, rjcode: str) -> Optional[Dict]:

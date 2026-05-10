@@ -125,7 +125,7 @@
                 @click="handleBatchRetry"
               >
                 <RotateCcw class="w-3.5 h-3.5" />
-                一键重试
+                {{ batchButtonLabel('RETRY', '一键重试') }}
               </button>
               <button
                 v-if="selectedActionCount('SKIP') > 0"
@@ -135,7 +135,7 @@
                 @click="handleBatchSkip"
               >
                 <SkipForward class="w-3.5 h-3.5" />
-                批量跳过
+                {{ batchButtonLabel('SKIP', '批量跳过') }}
               </button>
             </div>
             <p class="conflicts-list-hint">单击聚焦，Ctrl/⌘ 多选，Shift 连选</p>
@@ -182,7 +182,7 @@
                 <span class="conflicts-list-card-type">
                   <FileWarning v-if="isFailureConflict(conflict)" :size="13" :stroke-width="2.2" class="text-red-400" />
                   <Copy v-else :size="13" :stroke-width="2.2" class="text-indigo-400" />
-                  {{ getConflictTypeLabel(conflict.conflict_type) }}
+                  {{ getConflictTypeDetail(conflict) }}
                 </span>
                 <span class="lib-chip" :class="getConflictStatusChipClass(conflict)">
                   {{ getConflictStatusLabel(conflict) }}
@@ -217,7 +217,7 @@
                 </div>
                 <p class="conflicts-detail-subtitle">
                   <span class="conflicts-detail-dot" :class="isFailureConflict(activeConflict) ? 'is-danger' : 'is-info'"></span>
-                  {{ getConflictTypeLabel(activeConflict.conflict_type) }}
+                  {{ getConflictTypeDetail(activeConflict) }}
                 </p>
               </div>
 
@@ -227,33 +227,33 @@
                   type="button"
                   class="conflicts-action-btn is-primary"
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
-                  @click="handleKeepNew(activeConflict)"
+                  @click="handleKeepNewDispatch(activeConflict)"
                 >
                   <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'KEEP_NEW')" variant="inline" :size="20" />
                   <Save v-else class="w-4 h-4" />
-                  {{ isActionLoading(activeConflict.id, 'KEEP_NEW') ? '保留新版中' : '保留新版' }}
+                  {{ keepNewDispatchLabel(activeConflict) }}
                 </button>
                 <button
                   v-if="canUseAction(activeConflict, 'RETRY')"
                   type="button"
                   class="conflicts-action-btn is-emerald"
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
-                  @click="handleRetry(activeConflict)"
+                  @click="handleRetryDispatch(activeConflict)"
                 >
                   <AppLoadingAnimation v-if="isConflictRetrying(activeConflict)" variant="inline" :size="20" />
                   <RotateCcw v-else class="w-4 h-4" />
-                  {{ isConflictRetrying(activeConflict) ? '重试中' : '重试' }}
+                  {{ retryDispatchLabel(activeConflict) }}
                 </button>
                 <button
                   v-if="canUseAction(activeConflict, 'SKIP')"
                   type="button"
                   class="conflicts-action-btn is-slate"
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
-                  @click="handleSkip(activeConflict)"
+                  @click="handleSkipDispatch(activeConflict)"
                 >
                   <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'SKIP')" variant="inline" :size="20" />
                   <SkipForward v-else class="w-4 h-4" />
-                  跳过
+                  {{ skipDispatchLabel(activeConflict) }}
                 </button>
                 <button
                   v-if="canUseAction(activeConflict, 'MERGE')"
@@ -1282,6 +1282,60 @@ async function handleBatchRetryConfirm(entries) {
   }
 }
 
+// ---- 详情区按钮 batch-aware dispatch ----
+// 之前模板上 SKIP / KEEP_NEW / RETRY 三个按钮直接调单条 handler，导致用户多选后
+// 在详情区按按钮"只跳过一个"——按钮只对 activeConflict 生效。这一组 dispatch
+// 把当前 active 是否在多选集合里的判断包装起来：
+//   - 在多选集合里且 selectedCount > 1 → 走 batch handler（一次跳掉/重试/保留所有勾选）
+//   - 否则维持原单条行为
+// 配套的 *DispatchLabel 让按钮文案在多选状态下变成 "批量跳过 (N)" 之类，
+// 用户能一眼看出来这是一次批量操作。
+function isBatchableActive(conflict, action) {
+  if (!conflict?.id) return false
+  if (selectedCount.value <= 1) return false
+  if (!isConflictSelected(conflict.id)) return false
+  return selectedActionCount(action) > 1
+}
+
+function handleSkipDispatch(conflict) {
+  if (isBatchableActive(conflict, 'SKIP')) return handleBatchSkip()
+  return handleSkip(conflict)
+}
+
+function handleKeepNewDispatch(conflict) {
+  if (isBatchableActive(conflict, 'KEEP_NEW')) return handleBatchKeepNew()
+  return handleKeepNew(conflict)
+}
+
+function handleRetryDispatch(conflict) {
+  if (isBatchableActive(conflict, 'RETRY')) return handleBatchRetry()
+  return handleRetry(conflict)
+}
+
+function skipDispatchLabel(conflict) {
+  if (isActionLoading(conflict?.id, 'SKIP')) return '跳过中'
+  if (isBatchableActive(conflict, 'SKIP')) {
+    return `批量跳过 (${selectedActionCount('SKIP')})`
+  }
+  return '跳过'
+}
+
+function keepNewDispatchLabel(conflict) {
+  if (isActionLoading(conflict?.id, 'KEEP_NEW')) return '保留新版中'
+  if (isBatchableActive(conflict, 'KEEP_NEW')) {
+    return `批量保留新版 (${selectedActionCount('KEEP_NEW')})`
+  }
+  return '保留新版'
+}
+
+function retryDispatchLabel(conflict) {
+  if (isConflictRetrying(conflict)) return '重试中'
+  if (isBatchableActive(conflict, 'RETRY')) {
+    return `批量重试 (${selectedActionCount('RETRY')})`
+  }
+  return '重试'
+}
+
 async function openMergeWorkbench(conflict, forceRefresh = false) {
   mergeConflictId.value = conflict.id
   mergeDialogVisible.value = true
@@ -1354,10 +1408,66 @@ function getConflictTypeLabel(type) {
     DUPLICATE: '完全重复',
     LANGUAGE_VARIANT: '多语言版本',
     MULTIPLE_VERSIONS: '多版本冲突',
+    LINKED_WORK_ORIGINAL: '原作已入库',
+    LINKED_WORK_TRANSLATION: '翻译版已入库',
+    LINKED_WORK_CHILD: '子版本已入库',
     LINKED_WORK: '关联作品',
     EXTRACT_FAILED: '解压失败',
     PROCESS_FAILED: '处理失败'
   }[type] || type || '未知冲突'
+}
+
+// 比 getConflictTypeLabel 更细：根据 analysis_info / linked_works_info 拆出具体子类型，
+// 让用户看到"为什么算关联冲突"。后端有两个写入点：
+//   1) duplicate_service.py 按 DLsite 关联链 + 本地命中的 work_type 给出
+//      LINKED_WORK_ORIGINAL / LINKED_WORK_TRANSLATION / LINKED_WORK_CHILD / LINKED_WORK
+//   2) linked_subtitle_import_service.py 把 conflict_type 直接写成 LINKED_WORK，
+//      但 analysis_info.source_mode 里会带 "existing_subtitle" 字样（原作已含字幕，
+//      翻译版没有补配价值的场景）
+// 这里把这两类都给出比"关联作品"更明确的描述。
+function getConflictTypeDetail(conflict) {
+  const type = String(conflict?.conflict_type || '').toUpperCase()
+  const analysis = conflict?.analysis_info || {}
+  const linked = Array.isArray(conflict?.linked_works_info) ? conflict.linked_works_info : []
+
+  if (type === 'LINKED_WORK_ORIGINAL') {
+    const rj = linked[0]?.rjcode
+    return rj ? `原作已入库（${rj}）` : '原作已入库'
+  }
+  if (type === 'LINKED_WORK_TRANSLATION') {
+    const rj = linked[0]?.rjcode
+    return rj ? `翻译版已入库（${rj}）` : '翻译版已入库'
+  }
+  if (type === 'LINKED_WORK_CHILD') {
+    const rj = linked[0]?.rjcode
+    return rj ? `子版本已入库（${rj}）` : '子版本已入库'
+  }
+
+  if (type === 'LINKED_WORK') {
+    // linked_subtitle_import_service：原作已含字幕场景
+    const sourceMode = String(analysis?.source_mode || '').toLowerCase()
+    if (sourceMode.includes('existing_subtitle')) {
+      return '原作已含字幕，翻译版无需补配'
+    }
+
+    // 兜底用 linked_works_info 给出更具体说明
+    if (linked.length === 1) {
+      const work = linked[0]
+      const wtype = String(work?.work_type || '').toLowerCase()
+      const rj = work?.rjcode || ''
+      if (wtype === 'original') return rj ? `原作已入库（${rj}）` : '原作已入库'
+      if (wtype === 'translation' || wtype === 'child_translation') {
+        return rj ? `翻译版已入库（${rj}）` : '翻译版已入库'
+      }
+      return rj ? `关联作品已入库（${rj}）` : '关联作品已入库'
+    }
+    if (linked.length > 1) {
+      return `已入库 ${linked.length} 个关联作品`
+    }
+    return '关联作品已入库'
+  }
+
+  return getConflictTypeLabel(type)
 }
 
 function formatDate(value) {
