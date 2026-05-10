@@ -60,3 +60,23 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         no-cache: true
         platforms: linux/amd64
+
+  # 把 GitHub README 同步到 Docker Hub 仓库的 Overview，避免 Docker Hub 上长期是 "No overview available"
+  # 仅在 master / main 分支 push 时执行（PR / tag push 不重复同步），依赖 build-and-push 成功（确保 image 已就绪）
+  sync-dockerhub-readme:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sync README to Docker Hub
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_IMAGE }}
+          short-description: "DLsite 同人音声压缩包智能管理工具，覆盖解压 / 元数据 / 分类 / 远程库存 / 字幕 / 任务追踪 全链路"
+          readme-filepath: ./README.md
+          enable-url-completion: true
