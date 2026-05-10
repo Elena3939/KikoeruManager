@@ -363,6 +363,7 @@ import { ElMessage } from 'element-plus'
 import { Captions, Folder, FolderOpen, Minimize2, RefreshCw, Trash2, X } from 'lucide-vue-next'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import { libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
+import { runWithConcurrency } from '../../composables/useAsyncBatch'
 import { libraryEntryIconFor, libraryEntryMetaFor } from '../library/_libraryFileKind'
 import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
 import SubtitleInspectorWorkbench from '../library/SubtitleInspectorWorkbench.vue'
@@ -1020,9 +1021,10 @@ async function clearFinishedTasks() {
 
   queueClearing.value = true
   try {
-    for (const task of targets) {
+    // 之前是串行 await，N 条任务等 N×100-300ms；改并发 6 让"清空队列"几乎瞬完成
+    await runWithConcurrency(targets, 6, async (task) => {
       await rjSubtitleApi.clearTask(task.id)
-    }
+    })
     await refreshTaskStatus(false, { inspect: true, forceInspect: true })
     ElMessage.success(`已清空 ${targets.length} 条历史任务`)
   } catch (error) {
@@ -1037,14 +1039,15 @@ async function closeWorkbenchAndCleanupCompleted() {
   workbenchClosing.value = true
   try {
     const completedTasks = linkedTasks.value.filter(task => isCompletedTask(task))
-    for (const task of completedTasks) {
+    // 并发清理已完成任务，避免关闭工作台时还要逐个等任务清理完
+    await runWithConcurrency(completedTasks, 6, async (task) => {
       try {
         await rjSubtitleApi.clearTask(task.id)
         clearSubtitleTaskDraft(task.id)
       } catch (error) {
         console.warn('[字幕补配] 关闭工作台时清理已完成任务失败', task.id, error)
       }
-    }
+    })
     emit('close')
   } finally {
     workbenchClosing.value = false
@@ -1556,9 +1559,20 @@ async function batchDeleteSubtitleTreeEntries() {
 
   subtitleInspectorDeleting.value = true
   try {
-    for (const row of sortedRows) {
-      const path = resolveSubtitleEntryPath(row)
-      await libraryApi.browserDelete(subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId, path, true)
+    const targetLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId
+    // 全部是文件（无目录）时可以安全并发删除；含目录时保留串行 + 长路径优先，
+    // 避免"父目录已删，子文件路径不存在"导致并发删除时报错。
+    const allFiles = sortedRows.every(row => !(row.is_dir || row.isDir || row.type === 'dir'))
+    if (allFiles) {
+      await runWithConcurrency(sortedRows, 6, async (row) => {
+        const path = resolveSubtitleEntryPath(row)
+        await libraryApi.browserDelete(targetLibraryId, path, true)
+      })
+    } else {
+      for (const row of sortedRows) {
+        const path = resolveSubtitleEntryPath(row)
+        await libraryApi.browserDelete(targetLibraryId, path, true)
+      }
     }
     clearSubtitleInspectorSelection()
     ElMessage.success(`已删除 ${sortedRows.length} 项`)
@@ -1983,28 +1997,90 @@ async function applySubtitleManualPairs() {
         temp_name: `__manual_match_${pair.kind}_${String(index + 1).padStart(3, '0')}_${Date.now()}.tmp${pair.current_name.match(/\.[^.]+$/)?.[0] || ''}`
       }))
 
-    for (const pair of phaseOne) {
-      const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
-    const renameResult = await libraryApi.browserRename(operationLibraryId, pair.source_path, pair.temp_name, {
-      skipActivityLog: true,
-      renameContext: 'subtitle_manual_match_pair'
-    })
-      pair.temp_path = renameResult?.new_path || joinPath(String(pair.source_path || '').replace(/[\\/][^\\/]+$/, ''), pair.temp_name)
-      phaseOneRenamed.push(pair)
+    // ============================================================
+    //  应用配对（性能彻底重做）：
+    //
+    //  之前：30 对配对 = phase1 30 次串行 rename + phase2 30 次串行 rename
+    //        + phase3 N 次串行 delete = 60+ 次 HTTP 往返 + 60+ 次后端
+    //        SQLite commit + 60+ 次清搜索缓存 + 60+ 次 stats_log 写文件。
+    //        群晖 Docker 上单条耗时 50-300ms，整体 5-30 秒。
+    //
+    //  现在：phase1 / phase2 各 1 次 batchRename API 调用（按 library 分桶最多
+    //        2 次），后端在一个事务里完成所有 rename + 1 次索引同步 + 1 次
+    //        缓存清理。整体降到 0.5-2 秒。
+    //
+    //  仍然保留：phase1→phase2 之间的串行（phase2 依赖 phase1 的 temp_path）；
+    //          phase3 删除走并发（删除接口暂无 batch endpoint，延后再批化）。
+    // ============================================================
+    const groupByLibrary = (operations) => {
+      const buckets = new Map()
+      for (const op of operations) {
+        const libId = op.kind === 'audio' ? audioLibraryId : subtitleLibraryId
+        if (!buckets.has(libId)) buckets.set(libId, [])
+        buckets.get(libId).push(op)
+      }
+      return buckets
     }
 
-    for (const pair of phaseOne) {
-      const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
-    const renameResult = await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name, {
-      skipActivityLog: true,
-      renameContext: 'subtitle_manual_match_pair'
-    })
-      pair.final_path = renameResult?.new_path || joinPath(String(pair.temp_path || '').replace(/[\\/][^\\/]+$/, ''), pair.target_name)
-      phaseTwoRenamed.push(pair)
+    // 把 batch 返回的 results 按"原始 items 索引"建表，方便容忍部分失败 + 错位回填
+    const buildResultMap = (result) => {
+      const map = new Map()
+      for (const r of (result?.results || [])) {
+        if (r && Number.isInteger(r.index)) map.set(r.index, r)
+      }
+      return map
     }
 
-    for (const subtitle of unusedSubtitleRows) {
-      await libraryApi.browserDelete(subtitleLibraryId, resolveSubtitleEntryPath(subtitle), true)
+    // —— Phase 1：source_path → temp_name
+    const phaseOneBuckets = groupByLibrary(phaseOne)
+    for (const [libraryId, bucketPairs] of phaseOneBuckets) {
+      const items = bucketPairs.map(pair => ({ path: pair.source_path, new_name: pair.temp_name }))
+      const result = await libraryApi.browserBatchRename(libraryId, items, {
+        skipActivityLog: true,
+        renameContext: 'subtitle_manual_match_pair'
+      })
+      const resultMap = buildResultMap(result)
+      // 先回填成功项到 phaseOneRenamed，确保后续 throw 时回滚能找到这些已 rename 的 pair
+      bucketPairs.forEach((pair, i) => {
+        const r = resultMap.get(i)
+        if (r?.new_path) {
+          pair.temp_path = r.new_path
+          phaseOneRenamed.push(pair)
+        }
+      })
+      const failedFirst = (result?.failed || [])[0]
+      if (failedFirst) {
+        throw new Error(`重命名为临时名失败：${failedFirst.error || '未知错误'}（${failedFirst.path || ''}）`)
+      }
+    }
+
+    // —— Phase 2：temp_path → target_name
+    const phaseTwoBuckets = groupByLibrary(phaseOne)
+    for (const [libraryId, bucketPairs] of phaseTwoBuckets) {
+      const items = bucketPairs.map(pair => ({ path: pair.temp_path, new_name: pair.target_name }))
+      const result = await libraryApi.browserBatchRename(libraryId, items, {
+        skipActivityLog: true,
+        renameContext: 'subtitle_manual_match_pair'
+      })
+      const resultMap = buildResultMap(result)
+      bucketPairs.forEach((pair, i) => {
+        const r = resultMap.get(i)
+        if (r?.new_path) {
+          pair.final_path = r.new_path
+          phaseTwoRenamed.push(pair)
+        }
+      })
+      const failedFirst = (result?.failed || [])[0]
+      if (failedFirst) {
+        throw new Error(`重命名为目标名失败：${failedFirst.error || '未知错误'}（${failedFirst.path || ''}）`)
+      }
+    }
+
+    // —— Phase 3：删除未用字幕（仍走并发，删除接口暂无 batch endpoint）
+    if (unusedSubtitleRows.length) {
+      await runWithConcurrency(unusedSubtitleRows, 6, async (subtitle) => {
+        await libraryApi.browserDelete(subtitleLibraryId, resolveSubtitleEntryPath(subtitle), true)
+      })
     }
 
     const currentTaskId = activeTask.value?.id || props.taskId

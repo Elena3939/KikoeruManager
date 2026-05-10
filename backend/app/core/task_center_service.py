@@ -1359,11 +1359,28 @@ class TaskCenterService:
             if serialized
         ]
 
-        items = self._merge_linked_subtitle_pipeline_items(items)
-        items = self._merge_conflict_pipeline_items(items, conflict_items)
-        items = self._dedupe_items(items)
-        items = [item for item in items if not self._is_superseded_failed_item(item)]
-        items = self._sort_items(items)
+        # 单步出错不阻断整体：每步骤独立 try/except，避免一个 item 字段异常
+        # 把整个任务中心 API 拖成 500。失败步骤回退到上一步的 items 即可。
+        try:
+            items = self._merge_linked_subtitle_pipeline_items(items)
+        except Exception:
+            logger.exception("[任务中心] 合并 linked subtitle pipeline 失败，跳过该步骤")
+        try:
+            items = self._merge_conflict_pipeline_items(items, conflict_items)
+        except Exception:
+            logger.exception("[任务中心] 合并 conflict pipeline 失败，跳过该步骤")
+        try:
+            items = self._dedupe_items(items)
+        except Exception:
+            logger.exception("[任务中心] 去重 items 失败，跳过该步骤")
+        try:
+            items = [item for item in items if not self._is_superseded_failed_item(item)]
+        except Exception:
+            logger.exception("[任务中心] 过滤 superseded failed items 失败，跳过该步骤")
+        try:
+            items = self._sort_items(items)
+        except Exception:
+            logger.exception("[任务中心] 排序 items 失败，使用原始顺序")
 
         completed_at = time.monotonic()
         if is_summary:
@@ -1447,14 +1464,26 @@ class TaskCenterService:
         mode: str = "detail",
     ) -> Dict[str, Any]:
         normalized_mode = self._safe_text(mode).lower() or "detail"
-        items = await self._build_all_items(mode=normalized_mode)
-        items = self._filter_items(items, domain=domain, status=status, search=search)
-        total = len(items)
         safe_limit = max(1, min(int(limit or 200), 500))
         safe_offset = max(0, int(offset or 0))
+        # 顶层防御：底层任意环节抛错都回退到"空列表 + 200"，避免整个任务中心
+        # 因为单条任务序列化异常被拖成 500。具体异常已经在底层 logger.exception 记录。
+        try:
+            items = await self._build_all_items(mode=normalized_mode)
+        except Exception:
+            logger.exception("[任务中心] _build_all_items 顶层异常，返回空列表兜底")
+            items = []
+        try:
+            items = self._filter_items(items, domain=domain, status=status, search=search)
+        except Exception:
+            logger.exception("[任务中心] _filter_items 异常，跳过过滤步骤")
+        total = len(items)
         page_items = items[safe_offset:safe_offset + safe_limit]
         if normalized_mode == "summary":
-            page_items = [self._summary_item(item) for item in page_items]
+            try:
+                page_items = [self._summary_item(item) for item in page_items]
+            except Exception:
+                logger.exception("[任务中心] summary 模式构建失败，回退原始 items")
         return {
             "items": page_items,
             "total": total,
@@ -1486,7 +1515,12 @@ class TaskCenterService:
 
     async def get_overview(self) -> Dict[str, Any]:
         # overview 只用来统计 + 提取 top items，summary 模式足矣
-        items = await self._build_all_items(mode="summary")
+        # 顶层防御：底层异常时返回零数据兜底，避免 dashboard 头部 500。
+        try:
+            items = await self._build_all_items(mode="summary")
+        except Exception:
+            logger.exception("[任务中心] get_overview 顶层异常，返回零数据兜底")
+            items = []
         counts_by_domain = {
             key: 0 for key in self.DOMAIN_LABELS.keys()
             if key != "all"

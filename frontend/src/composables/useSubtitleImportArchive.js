@@ -276,6 +276,15 @@ export function useSubtitleImportArchive({
     if (!item || !candidate) return null
     const { autoTriggered = false } = options
     executingPendingId.value = item.id
+    // 双重保险兜底：极端情况下（浏览器 tab 被休眠 + axios 不抛 timeout）
+    // promise 可能在某些环境下挂起。15 分钟还没结束时强制清空"导入中"状态，
+    // 让用户能再次点击重试，避免按钮永远卡在 loading。
+    const fallbackClearTimer = window.setTimeout(() => {
+      if (executingPendingId.value === item.id) {
+        console.warn('[subtitle-import] 导入操作超过 15 分钟未返回，强制清空 loading 状态')
+        executingPendingId.value = ''
+      }
+    }, 15 * 60 * 1000)
     try {
       const filterOptions = getSubtitleWorkbenchFilterOptions()
       const data = await subtitleImportApi.executePending(item.id, {
@@ -293,6 +302,7 @@ export function useSubtitleImportArchive({
       }
       return data
     } finally {
+      window.clearTimeout(fallbackClearTimer)
       executingPendingId.value = ''
     }
   }

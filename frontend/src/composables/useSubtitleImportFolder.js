@@ -69,6 +69,14 @@ export function useSubtitleImportFolder({
     if (!path || !candidate) return
 
     folderImporting.value = true
+    // 兜底：极端情况下 axios 不抛 timeout 时强制清空 loading，
+    // 避免按钮永远卡在"导入中"。15 分钟覆盖正常的整目录 stage 复制场景。
+    const fallbackClearTimer = window.setTimeout(() => {
+      if (folderImporting.value) {
+        console.warn('[subtitle-import] 文件夹导入超过 15 分钟未返回，强制清空 loading 状态')
+        folderImporting.value = false
+      }
+    }, 15 * 60 * 1000)
     try {
       const filterOptions = getSubtitleWorkbenchFilterOptions()
       const data = await subtitleImportApi.importFolder(path, {
@@ -84,6 +92,7 @@ export function useSubtitleImportFolder({
     } catch (error) {
       ElMessage.error('执行字幕文件夹补配失败: ' + (error.response?.data?.detail || error.message))
     } finally {
+      window.clearTimeout(fallbackClearTimer)
       folderImporting.value = false
     }
   }

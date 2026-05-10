@@ -710,7 +710,13 @@ export const libraryApi = {
     const response = await apiClient.post('/library/browser/batch-rename', {
       library_id: libraryId,
       items,
+      skip_activity_log: options.skipActivityLog ?? false,
+      batch_id: options.batchId || '',
       rename_context: options.renameContext || ''
+    }, {
+      // 批量重命名场景下默认 axios 60s 不一定够，给到 5 分钟
+      timeout: options.timeout || 5 * 60 * 1000,
+      signal: options.signal
     })
     return response.data
   },
@@ -1317,11 +1323,17 @@ export const subtitleImportApi = {
   },
 
   executePending: async (recordId, options = {}) => {
+    // 字幕补配会同步走完整个解压 + 字幕分析 + 写入工作台流程，
+    // 嵌套小包 + 群晖 NAS 慢盘场景下 60s 默认 timeout 经常误杀，
+    // 给到 10 分钟兜底，足够覆盖正常的预检 / 解包 / stage IO。
     const response = await apiClient.post(`/subtitle-import/pending/${recordId}/execute`, {
       target_library_id: options.targetLibraryId || undefined,
       target_folder_path: options.targetFolderPath || undefined,
       use_filter_rules: options.useFilterRules ?? false,
       subtitle_filter_rules: options.subtitleFilterRules || []
+    }, {
+      timeout: 10 * 60 * 1000,
+      signal: options.signal
     })
     return response.data
   },
@@ -1335,6 +1347,7 @@ export const subtitleImportApi = {
   },
 
   importArchive: async (archivePath, options = {}) => {
+    // 同 executePending，慢盘 / 嵌套小包场景需要更长 timeout 兜底
     const response = await apiClient.post('/subtitle-import/archive/import', {
       archive_path: archivePath,
       preferred_library_id: options.preferredLibraryId || undefined,
@@ -1342,6 +1355,9 @@ export const subtitleImportApi = {
       target_folder_path: options.targetFolderPath || undefined,
       use_filter_rules: options.useFilterRules ?? false,
       subtitle_filter_rules: options.subtitleFilterRules || []
+    }, {
+      timeout: 10 * 60 * 1000,
+      signal: options.signal
     })
     return response.data
   },
@@ -1356,6 +1372,7 @@ export const subtitleImportApi = {
   },
 
   importFolder: async (folderPath, options = {}) => {
+    // 同 executePending，整目录扫描 + stage 复制可能耗时较长
     const response = await apiClient.post('/subtitle-import/folder/import', {
       folder_path: folderPath,
       preferred_library_id: options.preferredLibraryId || undefined,
@@ -1364,6 +1381,9 @@ export const subtitleImportApi = {
       source_rjcode_hint: options.sourceRJCodeHint || undefined,
       use_filter_rules: options.useFilterRules ?? false,
       subtitle_filter_rules: options.subtitleFilterRules || []
+    }, {
+      timeout: 10 * 60 * 1000,
+      signal: options.signal
     })
     return response.data
   }

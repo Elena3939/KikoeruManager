@@ -396,7 +396,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, triggerRef } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, triggerRef, watch } from 'vue'
 import {
   ArrowDown,
   Terminal,
@@ -434,12 +434,17 @@ const autoFollowLogs = ref(true)
 const logLimit = ref(300)
 
 // 「条数」下拉选项
+//
+// 上限砍到 1000：之前有 2000 选项，遇到含 traceback / 长堆栈的日志时，
+// `parseCache` (logLimit*8 上限) + `highlightCache` (logLimit*4 上限)
+// 加上每条 parsed 对象的 4 份字符串副本 (rawLine / rawLineLower /
+// message / messageLower)，浏览器内存能膨胀到几百 MB → OOM 白屏。
+// 1000 条对实际排查日志足够，需要更多请用"搜索全历史"或"导出筛选结果"。
 const logLimitOptions = [
   { value: 100, label: '100 条' },
   { value: 300, label: '300 条' },
   { value: 500, label: '500 条' },
   { value: 1000, label: '1000 条' },
-  { value: 2000, label: '2000 条' },
 ]
 const selectedLevels = ref(['INFO', 'WARNING', 'ERROR'])
 const selectedModules = ref([])
@@ -517,18 +522,25 @@ const filteredLogs = computed(() => {
     ? new Set(selectedModules.value)
     : null
   const termCount = terms.length
+  // 全历史搜索模式下，logs.value 已经是后端按整行匹配过滤过的结果。
+  // 前端如果再用 messageLower / moduleLower 过滤，会把后端命中但解析后
+  // message 部分不含关键字的行（例如关键字命中在时间戳 / 路径 / access log）
+  // 重新过滤掉，导致出现"X 总计 0 匹配"。这里在全历史模式下放行 keyword，
+  // 仅保留级别 / 模块过滤，避免二次过滤造成搜索失效。
+  const skipKeywordFilter = isFullSearch.value
 
   return logs.value.filter((log) => {
     if (!lvlSet.has(log.level)) return false
     if (moduleSet && !moduleSet.has(log.module)) return false
-    if (!termCount) return true
-    // 消费解析阶段预先缓存的 lower-case（messageLower / moduleLower），
+    if (!termCount || skipKeywordFilter) return true
+    // 消费解析阶段预先缓存的 lower-case（messageLower / moduleLower / rawLineLower），
     // 这里不再 toLowerCase，单次过滤开销从 O(n·m) 降到 O(n·k)。
     const msg = log.messageLower || ''
     const mod = log.moduleLower || ''
+    const raw = log.rawLineLower || ''
     for (let i = 0; i < termCount; i += 1) {
       const term = terms[i]
-      if (!msg.includes(term) && !mod.includes(term)) return false
+      if (!msg.includes(term) && !mod.includes(term) && !raw.includes(term)) return false
     }
     return true
   })
@@ -570,8 +582,15 @@ const highlightCacheHitRate = computed(() => {
   return total ? Math.round((highlightCacheHits.value / total) * 100) : 0
 })
 
-const parseCacheMax = computed(() => Math.max(6000, logLimit.value * 8))
-const highlightCacheMax = computed(() => Math.max(2500, logLimit.value * 4))
+// 缓存上限大幅缩小（OOM 修复）：
+// 旧值 logLimit*8 / logLimit*4 在 logLimit=2000 时上限 16000 / 8000 条目，
+// 单条 parsed 含 4 份字符串副本（含 4096 字节 rawLineLower），峰值可达数百 MB。
+// 新值按 1.5x 冗余足够覆盖滚动 + 切刷新带来的旧条目重用，超出立即 trim。
+const parseCacheMax = computed(() => Math.max(1500, Math.floor(logLimit.value * 1.5)))
+const highlightCacheMax = computed(() => Math.max(600, logLimit.value))
+// highlight cacheKey 长度上限：超过这个长度的（典型场景：含 traceback 的长日志）
+// 直接不缓存，每次现算，避免 cache key 自身吃几 KB 内存 × 上千条目 → 几十 MB 白白占着。
+const HIGHLIGHT_CACHE_KEY_MAX = 280
 
 function getModuleColor(moduleName) {
   return moduleColors[moduleName] || '#64748b'
@@ -664,8 +683,13 @@ function highlightText(input) {
   const terms = searchTerms.value
   if (!terms.length) return safe
   const termsKey = terms.join('|')
-  const cacheKey = `${termsKey}::${safe}`
-  if (highlightCache.has(cacheKey)) {
+
+  // OOM 防护：safe 太长时（典型场景：traceback / 长 JSON dump），cacheKey 自身就吃几 KB，
+  // 上千条目累积下来能占几十 MB；这种情况直接现算不入 cache，hit 率损失可忽略
+  // （滚动时同一长日志通常只显示 1-2 帧）。
+  const willCache = safe.length <= HIGHLIGHT_CACHE_KEY_MAX
+  const cacheKey = willCache ? `${termsKey}::${safe}` : ''
+  if (willCache && highlightCache.has(cacheKey)) {
     highlightCacheHits.value += 1
     return highlightCache.get(cacheKey)
   }
@@ -676,8 +700,12 @@ function highlightText(input) {
     const cls = meta.classMap.get(matched.toLowerCase()) || 'log-hit-0'
     return `<mark class="log-hit ${cls}">${matched}</mark>`
   })
-  trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(500, Math.floor(highlightCacheMax.value / 4)))
-  highlightCache.set(cacheKey, highlighted)
+  if (willCache) {
+    // 触发更激进的瘦身：超上限时一次 trim 1/2，避免 logLimit=1000 长跑时
+    // map 一直贴着 ceil 触发频繁 micro-trim 但实际没腾出空间。
+    trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(200, Math.floor(highlightCacheMax.value / 2)))
+    highlightCache.set(cacheKey, highlighted)
+  }
   return highlighted
 }
 
@@ -706,15 +734,28 @@ function parseLogLine(line) {
     return parseCache.get(line)
   }
   parseCacheMisses.value += 1
-  trimMapByOldest(parseCache, parseCacheMax.value, Math.max(1000, Math.floor(parseCacheMax.value / 4)))
+  // OOM 修复：trim 一次清掉一半（之前 1/4 太保守，map 长期贴着 ceil 触发频繁
+  // micro-trim 但实际没腾出足够空间）。
+  trimMapByOldest(parseCache, parseCacheMax.value, Math.max(300, Math.floor(parseCacheMax.value / 2)))
 
   // 统一构造解析对象；预先缓存 lower-case 版本，避免 filteredLogs 过滤时每帧
-  // 都对 2000 条日志重复 toLowerCase（此前是主要的 filter 卡点）。
+  // 都重复 toLowerCase（此前是主要的 filter 卡点）。
+  // rawLineLower 用于"关键字命中时间戳 / 模块短标记 / access log 路径"的兜底匹配。
+  //
+  // OOM 修复：rawLineLower 长度阈值从 4096 收紧到 1024 字节。
+  // 长 traceback 日志（典型 2-5 KB）不再缓存 lower 副本——这种长行也几乎不可能
+  // 用作"raw 兜底搜索目标"（搜索关键词通常匹配在 message 部分），而 messageLower
+  // 一直保留，普通搜索仍然命中。这里直接砍 lower 副本能省掉 logLimit 条 × 平均 2KB
+  // = 几 MB 内存。
+  const RAW_LOWER_LIMIT = 1024
   const buildParsed = (time, level, message) => {
     const mod = parseModule(message, line)
     const levelUpper = (level || 'INFO').toUpperCase()
+    const safeRaw = typeof line === 'string' ? line : String(line || '')
+    const rawLower = safeRaw.length && safeRaw.length <= RAW_LOWER_LIMIT ? safeRaw.toLowerCase() : ''
     const parsed = {
-      rawLine: line,
+      rawLine: safeRaw,
+      rawLineLower: rawLower,
       time: time || '',
       level: levelUpper,
       module: mod,
@@ -871,10 +912,14 @@ async function refreshLogs(force = false) {
 
     triggerRef(logs)
     restoreSelectedLog()
-    trimMapByOldest(parseCache, parseCacheMax.value, Math.max(500, Math.floor(parseCacheMax.value / 6)))
-    trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(250, Math.floor(highlightCacheMax.value / 6)))
+    // OOM 修复：每次刷新后兜底瘦身，一次清 1/2 而不是 1/6，避免每 4 秒触发的
+    // 刷新回调让 map 长期贴顶。
+    trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
+    trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(150, Math.floor(highlightCacheMax.value / 2)))
     lastFetchMs.value = Math.round(performance.now() - t0)
-    fetchHistory.value = [...fetchHistory.value.slice(-39), lastFetchMs.value]
+    // 用 push + shift 维持长度，避免每次刷新 spread 创建新数组（小幅 GC 压力优化）
+    if (fetchHistory.value.length >= 40) fetchHistory.value.shift()
+    fetchHistory.value.push(lastFetchMs.value)
     await nextTick()
     if (shouldFollow && !isPaused.value) scrollToBottom(true)
   } catch (error) {
@@ -891,6 +936,9 @@ async function clearLogs() {
     })
     logs.value = []
     triggerRef(logs)
+    // 同时清 parseCache：之前只清 highlightCache，parseCache 残留的几千条 parsed 对象
+    // 直到下次刷新触发 trim 才会被丢弃，是「点了清空但内存没下来」的常见误解。
+    parseCache.clear()
     highlightCache.clear()
     parseCacheHits.value = 0
     parseCacheMisses.value = 0
@@ -911,6 +959,14 @@ async function clearLogs() {
 
 function onLimitChange() {
   nextOffset = -1
+  // OOM 修复：从大 limit 切到小 limit 时主动清空缓存，避免旧条目要等下次刷新
+  // 触发 trim 才被释放（中间窗口内 GC 难以回收，是切换刷条数后内存继续涨的根因）。
+  parseCache.clear()
+  highlightCache.clear()
+  parseCacheHits.value = 0
+  parseCacheMisses.value = 0
+  highlightCacheHits.value = 0
+  highlightCacheMisses.value = 0
   refreshLogs(true)
 }
 
@@ -1213,6 +1269,23 @@ async function runLogCleanup(action) {
   }
 }
 
+// 搜索关键词变化时主动清 highlightCache：旧 termsKey 的条目已经永远不会再被命中
+// （cacheKey 含 termsKey，新 terms 一定走新 cacheKey），但仍占内存直到下次 trim。
+// 直接清掉避免内存继续涨。debounce 一下避免用户快速打字时 cache 反复清空。
+let highlightCacheClearTimer = null
+watch(
+  () => searchKeyword.value,
+  () => {
+    if (highlightCacheClearTimer) clearTimeout(highlightCacheClearTimer)
+    highlightCacheClearTimer = setTimeout(() => {
+      highlightCache.clear()
+      highlightCacheHits.value = 0
+      highlightCacheMisses.value = 0
+      highlightCacheClearTimer = null
+    }, 350)
+  }
+)
+
 onMounted(async () => {
   await refreshLogs(true)
   intervalId = setInterval(refreshLogs, LOG_POLL_INTERVAL)
@@ -1231,8 +1304,12 @@ onUnmounted(() => {
   if (intervalId) clearInterval(intervalId)
   if (resizeObserver) resizeObserver.disconnect()
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  if (highlightCacheClearTimer) clearTimeout(highlightCacheClearTimer)
   if (scrollRafId) cancelAnimationFrame(scrollRafId)
   if (smoothScrollRafId) cancelAnimationFrame(smoothScrollRafId)
+  // 离开页面时主动释放缓存，回到列表 / 库存等其他页面后内存能立即降下来
+  parseCache.clear()
+  highlightCache.clear()
   window.removeEventListener('keydown', onWindowKeydown)
 })
 </script>

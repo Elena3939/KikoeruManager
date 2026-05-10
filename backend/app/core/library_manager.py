@@ -3646,6 +3646,139 @@ class LibraryManager:
         self._append_stats_log(library, "INFO", f"重命名 path={path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
+    async def batch_rename(
+        self,
+        library_id: str,
+        items: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """批量重命名。
+
+        ★ 性能修复（修复用户痛点：字幕工作台应用配对 30 次串行 HTTP 慢到几十秒）：
+        每次单条 ``rename`` API 都要：
+        1. 1 次 HTTP 往返（前端 → 后端）
+        2. 1 次 SQLAlchemy session 创建 / 索引 DELETE / commit / close
+        3. 1 次清搜索缓存
+        4. 1 次 stats_log 写文件
+        N 条 = N 倍开销，单条 5-30ms 在 N=30 时累积到 1-3 秒；HTTP 往返 N=30 时
+        即便受控并发 6 也至少 0.5-1 秒。
+
+        本方法把 N 条 rename 在**一次后端调用**里完成：os.rename 仍然串行（避免
+        同目录下并发 rename 触发的 ENOTDIR 等竞争），但**索引同步 / 缓存清理 /
+        stats_log 全部聚合**，数据库 commit 从 N 次降到 1 次。
+
+        ``items``: ``[{"path": "...", "new_name": "..."}, ...]``
+        返回 ``{"results": [...], "success_count": int, "failed": [...]}``。
+        失败项不影响其他项继续处理。
+        """
+        if not items:
+            return {"success_count": 0, "results": [], "failed": []}
+        library = self.get_library_definition(library_id)
+        if library.type != "local":
+            # 远程库存（群晖 FileStation）走单条 rename 路径，远程 API 没有原生批接口；
+            # 但仍然把索引同步聚合成 1 次。这种场景较少见，先简单循环 + 集中 sync。
+            return await self._batch_rename_remote_collected(library, items)
+        return await asyncio.to_thread(self._local_batch_rename, library, items)
+
+    def _local_batch_rename(
+        self,
+        library: LibraryDefinition,
+        items: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        results: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        success_count = 0
+        deleted_index_paths: list[str] = []
+        log_lines: list[str] = []
+
+        for index, raw in enumerate(items):
+            path = str((raw or {}).get("path") or "").strip()
+            new_name = str((raw or {}).get("new_name") or "").strip()
+            if not path or not new_name:
+                failed.append({"index": index, "path": path, "new_name": new_name, "error": "缺少路径或新名"})
+                continue
+            try:
+                self._assert_local_path_in_library(library, path)
+                parent_dir = os.path.dirname(path)
+                new_path = os.path.join(parent_dir, new_name)
+                os.rename(path, new_path)
+                results.append({"index": index, "path": path, "new_name": new_name, "new_path": new_path})
+                success_count += 1
+                deleted_index_paths.append(path)
+                log_lines.append(f"重命名 path={path} -> {new_name}")
+            except Exception as exc:
+                failed.append({"index": index, "path": path, "new_name": new_name, "error": str(exc)})
+
+        # 一次性清搜索缓存（关键：从 N 次降到 1 次）
+        if success_count:
+            self._invalidate_local_search_cache(library.id)
+
+        # 一次性 batch 索引同步（关键：SQLite commit 从 N 次降到 1 次）
+        if deleted_index_paths:
+            self._notify_index_self_mutation_delete_batch(library, deleted_index_paths)
+
+        # 聚合 stats_log（合并成 1 次 open / write，原本 N 次）
+        if log_lines:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                stats_path = _stats_log_file_path()
+                payload = "".join(
+                    f"[{timestamp}] [INFO] [{library.id}] [{library.name}] {line}\n"
+                    for line in log_lines
+                )
+                payload += (
+                    f"[{timestamp}] [INFO] [{library.id}] [{library.name}] "
+                    f"批量重命名完成 success={success_count} failed={len(failed)} total={len(items)}\n"
+                )
+                with open(stats_path, "a", encoding="utf-8") as handle:
+                    handle.write(payload)
+            except Exception:
+                logger.debug("[批量重命名] stats_log 写入失败", exc_info=True)
+
+        return {
+            "success_count": success_count,
+            "results": results,
+            "failed": failed,
+        }
+
+    async def _batch_rename_remote_collected(
+        self,
+        library: "LibraryDefinition",
+        items: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """远程库批量重命名：单条 rename 走原 API，但索引同步聚合一次。"""
+        results: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        success_count = 0
+        deleted_index_paths: list[str] = []
+
+        client = self.get_cached_synology_client(library.synology)
+        for index, raw in enumerate(items):
+            path = str((raw or {}).get("path") or "").strip()
+            new_name = str((raw or {}).get("new_name") or "").strip()
+            if not path or not new_name:
+                failed.append({"index": index, "path": path, "new_name": new_name, "error": "缺少路径或新名"})
+                continue
+            try:
+                new_name_safe = self._validate_remote_new_name(new_name)
+                _, target_path = self._resolve_remote_operation_path(
+                    library, path, action="批量库存重命名", new_name=new_name_safe,
+                )
+                await self._retry_remote_rename(client, target_path, new_name_safe)
+                new_path = str(PurePosixPath(target_path).parent / new_name_safe)
+                results.append({"index": index, "path": path, "new_name": new_name_safe, "new_path": new_path})
+                success_count += 1
+                deleted_index_paths.append(target_path)
+            except Exception as exc:
+                failed.append({"index": index, "path": path, "new_name": new_name, "error": str(exc)})
+
+        if deleted_index_paths:
+            self._notify_index_self_mutation_delete_batch(library, deleted_index_paths)
+        self._append_stats_log(
+            library, "INFO",
+            f"远程批量重命名完成 success={success_count} failed={len(failed)} total={len(items)}",
+        )
+        return {"success_count": success_count, "results": results, "failed": failed}
+
     def _local_delete(self, library: LibraryDefinition, path: str, confirmed: bool) -> dict[str, Any]:
         self._assert_local_path_in_library(library, path)
         if not confirmed:
