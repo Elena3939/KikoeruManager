@@ -181,7 +181,6 @@ services:
 ├── build-release.bat                # Windows 一键打包发行
 ├── .github/workflows/ghcr.yml       # CI：GHCR + Docker Hub 自动构建
 ├── DISCLAIMER.md                    # 免责声明
-├── AGENTS.md                        # 给后续 AI / 自动化代理的接手说明
 └── README.md
 ```
 
