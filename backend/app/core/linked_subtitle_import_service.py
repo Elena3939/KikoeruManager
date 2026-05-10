@@ -2996,6 +2996,44 @@ class LinkedSubtitleImportService:
             )
         await engine._archive_source_file(task)
 
+    async def _archive_source_after_execute_async(
+        self,
+        *,
+        source_path: str,
+        task_id: str,
+    ) -> None:
+        """``_archive_source_after_execute`` 的"无 ORM 依赖"后台版本。
+
+        ★ 性能修复（修复用户痛点："导入实际成功了，但前端 60s 超时没打开工作台"）：
+        源压缩包归档可能涉及跨卷移动 GB 级文件，串行 ``await`` 会把 HTTP 响应阻塞
+        几十秒到几分钟。HTTP 60s 默认 timeout 切断后，前端拿不到 ``task.id`` →
+        无法 ``openImportedTask`` 跳转工作台，用户感受是"卡死"。
+
+        实际上字幕补配 + 工作台创建在 ``db.commit()`` 时已经完成；源文件归档只是
+        把原始压缩包从 input 目录搬到 archive 目录，**不影响**工作台后续配对流程。
+        因此可以 ``asyncio.create_task`` fire-and-forget 后台跑，让主请求立刻返回。
+
+        本方法接收 plain dict 字段而非 ORM 对象，避免 caller 的 ``db.close()`` 后
+        SQLAlchemy detach 导致属性访问报错。
+        """
+        try:
+            if not source_path or not os.path.exists(source_path):
+                return
+            engine = get_task_engine()
+            task = engine.get_task(task_id) if task_id else None
+            if task is None:
+                task = Task(
+                    task_type=TaskType.AUTO_PROCESS,
+                    source_path=source_path,
+                    auto_classify=False,
+                )
+            await engine._archive_source_file(task)
+        except Exception:
+            logger.warning(
+                "[字幕补配] 后台源文件归档失败 source=%s task_id=%s",
+                source_path, task_id, exc_info=True,
+            )
+
     async def execute_pending_import(
         self,
         record_id: str,
@@ -3061,7 +3099,12 @@ class LinkedSubtitleImportService:
             }
             db.commit()
 
-            await self._archive_source_after_execute(record)
+            # ★ 性能修复：源压缩包归档（可能跨卷搬 GB 文件）改为后台异步执行，
+            # 让 HTTP 响应立刻返回 task.id 给前端跳转工作台。归档本身耗时数十秒
+            # 到数分钟时会把响应卡过 60s HTTP timeout，前端虽然显示"超时"但
+            # backend 实际已经成功导入，工作台没打开造成"卡死"假象。
+            archive_source_path = str(record.new_path or "").strip()
+            archive_task_id = str(record.task_id or "")
 
             engine = get_task_engine()
             if record.task_id:
@@ -3075,6 +3118,20 @@ class LinkedSubtitleImportService:
                         original_task.current_step = "已转入字幕补配并完成原始字幕导入"
                     else:
                         original_task.current_step = "目标目录为空，已按新作品直接导入字幕"
+
+            # fire-and-forget：在主流程返回后继续执行归档，不阻塞 HTTP 响应
+            try:
+                asyncio.create_task(
+                    self._archive_source_after_execute_async(
+                        source_path=archive_source_path,
+                        task_id=archive_task_id,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "[字幕补配] 调度后台源文件归档失败（不影响主流程） source=%s",
+                    archive_source_path, exc_info=True,
+                )
 
             return result
         finally:

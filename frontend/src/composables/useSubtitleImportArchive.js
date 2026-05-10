@@ -315,6 +315,39 @@ export function useSubtitleImportArchive({
     try {
       await executePendingImportRecord(item, candidate, { autoTriggered: false })
     } catch (error) {
+      // ★ 容错兜底：用户痛点"实际后端已经导入成功，但前端 axios 60s timeout 抛错"。
+      //   axios timeout 触发后 backend 仍可能在跑；轮询等几秒再查 pending 列表，
+      //   如果该记录已经 status=IMPORTED，证明导入已成功，自动打开工作台并提示
+      //   用户"已成功 + 后台归档中"，避免用户以为"卡死"重复点导入。
+      const isTimeout = (error?.code === 'ECONNABORTED') ||
+        /timeout of \d+ms exceeded/i.test(String(error?.message || ''))
+
+      if (isTimeout && item?.id) {
+        try {
+          // 后端归档可能还在跑，但 IMPORTED 状态在 db.commit() 之后立刻可见。
+          // 给后端一点缓冲时间，重试 3 次（间隔 2/4/6 秒）。
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, attempt * 2000))
+            await loadPendingImports({ silent: true })
+            const refreshed = pendingItems.value.find(it => it.id === item.id)
+            // 该记录消失了（被搬到已完成）或者状态非 PENDING 都说明导入成功
+            const importedSuccess = !refreshed || (refreshed.status && refreshed.status !== 'PENDING')
+            const importedTaskId = refreshed?.preview?.import_result_summary?.task_id ||
+              refreshed?.preview?.linked_workbench_task_id ||
+              ''
+            if (importedSuccess) {
+              ElMessage.success('字幕补配实际已导入成功（后端归档仍在后台进行）')
+              if (importedTaskId) {
+                openImportedTask(importedTaskId)
+              }
+              return
+            }
+          }
+        } catch (probeError) {
+          console.warn('[subtitle-import] timeout 后兜底查询失败', probeError)
+        }
+      }
+
       ElMessage.error('执行字幕补配失败: ' + (error.response?.data?.detail || error.message))
     }
   }

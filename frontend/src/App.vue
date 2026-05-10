@@ -169,7 +169,7 @@ import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import router from './router'
 
-const appVersion = '1.0.14'
+const appVersion = '1.2.1'
 const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
@@ -274,53 +274,67 @@ body {
 .logo {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 6px 8px 18px;
+  gap: 8px;
+  padding: 6px 4px 18px 8px;
 }
 
 .logo-copy {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .logo-bell {
   flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* 缩小铃铛按钮尺寸：默认 48px 在 248px 侧边栏会挤压品牌名，这里强制 36px */
+.logo-bell :deep(.notif-bell-btn) {
+  width: 36px;
+  height: 36px;
+}
+.logo-bell :deep(.notif-bell-player) {
+  width: 28px;
+  height: 28px;
 }
 
 .logo-mark {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 14px;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
   background: #f3f7ff;
   color: #0071e3;
   box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.08);
+  flex-shrink: 0;
 }
 
 .logo-mark > svg {
   flex-shrink: 0;
 }
 
-.logo-copy {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
 .logo-text {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 600;
-  line-height: 1.1;
+  line-height: 1.15;
   letter-spacing: -0.18px;
   color: #1d1d1f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .logo-subtitle {
-  margin-top: 3px;
-  font-size: 12px;
+  margin-top: 2px;
+  font-size: 11px;
   color: rgba(29, 29, 31, 0.54);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-section-label {
