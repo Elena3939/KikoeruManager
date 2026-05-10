@@ -17,8 +17,34 @@
       <div class="settings-card">
         <div class="card-title">处理与解压</div>
         <div class="field-stack">
-          <SettingsFieldCard label="最大并发数">
+          <SettingsFieldCard label="最大任务并发数">
             <el-slider v-model="config.processing.max_workers" :min="1" :max="10" show-input />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="解压并发数（7z 子进程）">
+            <div class="extract-concurrency-row">
+              <AppDropdown
+                :model-value="config.extract.max_concurrent_extractions"
+                @update:model-value="v => (config.extract.max_concurrent_extractions = v)"
+                :options="concurrencyOptions"
+                :width="220"
+              />
+              <span
+                v-if="storageChip"
+                class="storage-chip"
+                :class="storageChip.tone"
+                :title="storageChip.tooltip"
+              >
+                <HardDrive v-if="storageChip.icon === 'hdd'" :size="12" :stroke-width="2.2" />
+                <Zap v-else-if="storageChip.icon === 'ssd'" :size="12" :stroke-width="2.2" />
+                <HelpCircle v-else :size="12" :stroke-width="2.2" />
+                {{ storageChip.label }}
+              </span>
+            </div>
+            <template #hint>
+              <span v-if="storageInfoLoading">正在探测存储类型…</span>
+              <span v-else-if="storageHintText">{{ storageHintText }}</span>
+              <span v-else>auto 模式下后端会自动根据存储类型选择并发数，HDD=1、SSD 最多 3。</span>
+            </template>
           </SettingsFieldCard>
           <SettingsFieldCard label="7-Zip 路径">
             <input v-model="config.extract.seven_zip_path" class="field-input" type="text" placeholder="例如 C:\Program Files\7-Zip\7z.exe">
@@ -52,11 +78,15 @@
 </template>
 
 <script setup>
+import { computed, onMounted, ref, watch } from 'vue'
+import { HardDrive, HelpCircle, Zap } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import SettingsToggleChip from './SettingsToggleChip.vue'
+import AppDropdown from '../common/AppDropdown.vue'
+import { systemApi } from '../../api'
 
-defineProps({
+const props = defineProps({
   config: { type: Object, required: true }
 })
 
@@ -79,6 +109,98 @@ const processExistingItems = [
   { key: 'import_lrc', label: '导入 LRC' },
   { key: 'classify', label: '智能分类' }
 ]
+
+// ---- 解压并发下拉 + 存储类型探测 ----
+const concurrencyOptions = [
+  {
+    value: 0,
+    label: '自动（推荐）',
+    description: '后端探测 temp_path 所在盘：SSD → 3，HDD / 未知 → 1'
+  },
+  { value: 1, label: '1（HDD 保守）', description: '串行解压，机械盘寿命最友好' },
+  { value: 2, label: '2', description: '中档 SSD 或 HDD 抢吞吐（不推荐）' },
+  { value: 3, label: '3（SSD 推荐）', description: 'SSD / NVMe 推荐，吃满多核' },
+  { value: 4, label: '4（高端 NVMe）', description: 'NVMe + 高核心 CPU 才适合' }
+]
+
+const storageInfo = ref(null)
+const storageInfoLoading = ref(false)
+
+async function loadStorageInfo() {
+  storageInfoLoading.value = true
+  try {
+    storageInfo.value = await systemApi.storageInfo()
+  } catch (err) {
+    console.warn('[settings] 加载存储类型探测结果失败', err)
+    storageInfo.value = null
+  } finally {
+    storageInfoLoading.value = false
+  }
+}
+
+onMounted(loadStorageInfo)
+
+// 配置里 storage.temp_path 改变时，重新探测
+watch(
+  () => props.config?.storage?.temp_path,
+  (next, prev) => {
+    if (next && next !== prev) {
+      loadStorageInfo()
+    }
+  }
+)
+
+// 当前选值变化（从 auto 切到固定，或反之）时刷新 hint 里的 resolved_limit 说明
+watch(
+  () => props.config?.extract?.max_concurrent_extractions,
+  () => {
+    // 这里不重新请求后端（并发值不影响存储类型探测），只是触发 hint 计算。
+  }
+)
+
+const storageChip = computed(() => {
+  if (!storageInfo.value) return null
+  const primary = storageInfo.value.primary_type
+  if (primary === 'ssd') {
+    return {
+      icon: 'ssd',
+      label: 'SSD',
+      tone: 'tone-emerald',
+      tooltip: (storageInfo.value.probes?.[0]?.path) || 'temp_path 所在盘是 SSD'
+    }
+  }
+  if (primary === 'hdd') {
+    return {
+      icon: 'hdd',
+      label: 'HDD',
+      tone: 'tone-amber',
+      tooltip: (storageInfo.value.probes?.[0]?.path) || 'temp_path 所在盘是 HDD'
+    }
+  }
+  return {
+    icon: 'unknown',
+    label: '未知',
+    tone: 'tone-slate',
+    tooltip: '未能探测存储类型，后端会保守退到并发 1（HDD 安全默认）'
+  }
+})
+
+const storageHintText = computed(() => {
+  const info = storageInfo.value
+  if (!info) return ''
+  const configured = Number(props.config?.extract?.max_concurrent_extractions ?? 0)
+  const typeLabel = info.primary_type === 'ssd' ? 'SSD' : info.primary_type === 'hdd' ? 'HDD' : '未知存储'
+  const probePath = info.probes?.[0]?.path || ''
+
+  if (configured === 0) {
+    return `auto 模式：检测到 ${typeLabel}${probePath ? `（${probePath}）` : ''}，实际并发 ${info.resolved_limit}`
+  }
+  // 用户固定值：提示实际会生效的是 configured，但对比 auto 推荐值
+  const autoHint = info.primary_type === 'ssd'
+    ? `auto 模式会推荐 ${Math.min(info.max_workers || 3, 3)}`
+    : 'auto 模式会推荐 1'
+  return `当前固定并发 ${configured}（检测到 ${typeLabel}，${autoHint}；若想让后端自动适配，请改回"自动"）`
+})
 </script>
 
 <style scoped>
@@ -160,6 +282,52 @@ const processExistingItems = [
 }
 
 .field-input::placeholder { color: #94a3b8; }
+
+/* 解压并发：下拉 + 存储类型 chip */
+.extract-concurrency-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.storage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  border: 1px solid transparent;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.storage-chip:hover {
+  transform: translateY(-1px) scale(1.04);
+}
+
+.storage-chip.tone-emerald {
+  background: linear-gradient(180deg, rgba(209, 250, 229, 0.95), rgba(167, 243, 208, 0.85));
+  border-color: rgba(16, 185, 129, 0.25);
+  color: #065f46;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 2px rgba(16, 185, 129, 0.14);
+}
+
+.storage-chip.tone-amber {
+  background: linear-gradient(180deg, rgba(254, 243, 199, 0.95), rgba(253, 230, 138, 0.85));
+  border-color: rgba(217, 119, 6, 0.25);
+  color: #92400e;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 2px rgba(217, 119, 6, 0.14);
+}
+
+.storage-chip.tone-slate {
+  background: linear-gradient(180deg, rgba(241, 245, 249, 0.95), rgba(226, 232, 240, 0.85));
+  border-color: rgba(100, 116, 139, 0.22);
+  color: #475569;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 2px rgba(100, 116, 139, 0.12);
+}
 
 @media (max-width: 1200px) {
   .settings-grid.two,

@@ -2,9 +2,9 @@ name: Build and Push to GHCR and Docker Hub
 
 on:
   push:
-    # master / main 分支 push 仅用于触发下方 sync-dockerhub-readme 同步 Docker Hub 的 Overview，不会走 image 构建
-    branches: [ main, master ]
-    # 仅在打了 vX.Y.Z 形式的版本 tag 时才触发 image 构建与发布
+    # 只在打了 vX.Y.Z 形式的版本 tag 时才触发整个 workflow。
+    # master / main 分支推送不会再触发任何 job（包括 Docker Hub README 同步），
+    # 确保 Actions 只在正式发版时才跑起来。
     tags: [ 'v*.*.*' ]
 
 env:
@@ -12,10 +12,9 @@ env:
   DOCKERHUB_IMAGE: elena39/kikoerumanager
 
 jobs:
-  # 构建并推送 Docker image——仅在 vX.Y.Z tag 推送时触发
+  # 构建并推送 Docker image——只在 vX.Y.Z tag 推送时触发
   build-and-push:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       packages: write
@@ -63,10 +62,9 @@ jobs:
         platforms: linux/amd64
 
   # 把 GitHub README 同步到 Docker Hub 仓库的 Overview，避免 Docker Hub 上长期是 "No overview available"
-  # 仅在 master / main 分支 push 时执行（tag push 走 build-and-push，这里不重复）；独立于构建，不依赖 image 推送是否成功
+  # 每次 vX.Y.Z tag 推送时跟着 image 构建一起跑一次；独立于构建，不依赖 image 推送是否成功
   sync-dockerhub-readme:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

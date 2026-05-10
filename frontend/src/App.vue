@@ -171,7 +171,7 @@ import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import router from './router'
 
-const appVersion = '1.2.3'
+const appVersion = '1.3.0'
 const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
@@ -301,12 +301,12 @@ body {
 
 /* 铃铛放在副标题行右侧，跟 v1.x.x 字号匹配的紧凑尺寸 */
 .logo-bell :deep(.notif-bell-btn) {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
 }
 .logo-bell :deep(.notif-bell-player) {
-  width: 24px;
-  height: 24px;
+  width: 36px;
+  height: 36px;
 }
 
 .logo-mark {

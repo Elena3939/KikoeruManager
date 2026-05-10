@@ -1659,6 +1659,46 @@ def get_configuration_state():
 
     return get_config_runtime_state()
 
+
+@app.get("/api/system/storage-info")
+def get_storage_info():
+    """返回 temp_path / library_path / input_path 所在盘的存储类型探测结果。
+
+    前端设置页用它在"解压并发"下拉旁展示实际生效值（例如 "auto → 检测到 SSD，并发 3"）。
+    """
+    from ..core.extract_service import ExtractService
+
+    cfg = get_config()
+    storage_cfg = getattr(cfg, 'storage', None)
+    probe_targets = []
+    for attr, label in (
+        ("temp_path", "临时目录"),
+        ("library_path", "库存目录"),
+        ("input_path", "待处理目录"),
+    ):
+        value = getattr(storage_cfg, attr, None) if storage_cfg else None
+        if value:
+            probe_targets.append({
+                "label": label,
+                "attr": attr,
+                "path": str(value),
+                "type": ExtractService._detect_storage_type(str(value)),
+            })
+
+    # 再给一个"auto 模式下实际会选的并发值"，方便前端直接显示
+    service = ExtractService()
+    resolved_limit, resolved_reason = service._resolve_extract_concurrency()
+    primary_type = probe_targets[0]["type"] if probe_targets else "unknown"
+
+    return {
+        "primary_type": primary_type,  # 'ssd' / 'hdd' / 'unknown'
+        "probes": probe_targets,
+        "resolved_limit": resolved_limit,
+        "resolved_reason": resolved_reason,
+        "configured": int(getattr(cfg.extract, 'max_concurrent_extractions', 0) or 0),
+        "max_workers": int(getattr(cfg.processing, 'max_workers', 1) or 1),
+    }
+
 @app.post("/api/config")
 async def update_configuration(request: Request):
     """更新配置"""

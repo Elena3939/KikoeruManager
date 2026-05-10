@@ -53,6 +53,11 @@ class ExtractService:
     _seven_zip_check_lock: Optional[asyncio.Lock] = None
     _seven_zip_semaphore: Optional[asyncio.Semaphore] = None
     _seven_zip_semaphore_limit: Optional[int] = None
+    # 存储类型探测结果缓存：{ "C:\\" -> "ssd", "/dev/sda" -> "hdd", ... }
+    # 探测失败的目录会缓存为 "unknown"，下次也不再重复试。
+    _storage_type_cache: Dict[str, str] = {}
+    # 上次构建 semaphore 时所用的"探测目标路径 + 探测结果"，用于热重载时识别变更
+    _seven_zip_semaphore_storage_key: Optional[str] = None
     # ------- 密码探测 / 负缓存 -------
     # 优先走 `7zz t archive <最小条目>`：只测一个小文件的完整 CRC，
     # 密码错秒级非零退出。能抓住 store+AES（压缩包里装 zip）这种用
@@ -279,17 +284,158 @@ class ExtractService:
             self.__class__._seven_zip_available_path = executable
             return available
 
-    def _get_7z_semaphore(self) -> asyncio.Semaphore:
+    @classmethod
+    def _detect_storage_type(cls, path: str) -> str:
+        """探测路径所在物理盘的存储类型，返回 'ssd' / 'hdd' / 'unknown'。
+
+        - Windows: PowerShell 调用 Get-Partition → Get-Disk → Get-PhysicalDisk 取 MediaType。
+        - Linux:   读 /sys/block/<dev>/queue/rotational，1=HDD，0=SSD。
+        - 其他平台 / 检测失败 / 网络盘等 → 'unknown'，调用方按保守策略处理。
+
+        结果按"盘根"缓存（Windows: 盘符；Linux: 块设备名）。
+        """
+        if not path:
+            return "unknown"
+        try:
+            abs_path = os.path.abspath(path)
+        except Exception:
+            return "unknown"
+
+        if sys.platform == "win32":
+            drive_letter = os.path.splitdrive(abs_path)[0].rstrip(":").rstrip("\\")
+            cache_key = drive_letter.upper() if drive_letter else abs_path
+            cached = cls._storage_type_cache.get(cache_key)
+            if cached:
+                return cached
+            if not drive_letter:
+                cls._storage_type_cache[cache_key] = "unknown"
+                return "unknown"
+            # PowerShell 调用偶尔会被 AV 拦截或加载慢，限制 8s 超时；
+            # 失败/超时统一退回 unknown，由上层按 HDD 保守策略处理。
+            cmd = [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    f"$ErrorActionPreference='SilentlyContinue';"
+                    f"(Get-Partition -DriveLetter '{drive_letter}' | "
+                    f"Get-Disk | Get-PhysicalDisk | Select-Object -First 1).MediaType"
+                ),
+            ]
+            try:
+                creationflags = CREATE_NO_WINDOW
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    timeout=8,
+                    text=True,
+                    creationflags=creationflags,
+                )
+                output = (result.stdout or "").strip().lower()
+            except Exception as exc:
+                logger.warning("存储类型探测失败 (Windows, drive=%s): %s", drive_letter, exc)
+                cls._storage_type_cache[cache_key] = "unknown"
+                return "unknown"
+
+            if "ssd" in output:
+                detected = "ssd"
+            elif "hdd" in output:
+                detected = "hdd"
+            else:
+                # MediaType 可能返回 Unspecified / 空字符串：通常出现在 USB / 虚拟盘 / NVMe over USB
+                detected = "unknown"
+            cls._storage_type_cache[cache_key] = detected
+            return detected
+
+        if sys.platform.startswith("linux"):
+            # st_dev → 主次设备号 → /sys/dev/block/<major>:<minor>/queue/rotational
+            try:
+                st = os.stat(abs_path)
+                major = os.major(st.st_dev)
+                minor = os.minor(st.st_dev)
+                cache_key = f"{major}:{minor}"
+                cached = cls._storage_type_cache.get(cache_key)
+                if cached:
+                    return cached
+                rotational_path = f"/sys/dev/block/{major}:{minor}/queue/rotational"
+                if not os.path.exists(rotational_path):
+                    # 尝试逐级回溯到父块设备（partition → disk）
+                    sysfs = os.path.realpath(f"/sys/dev/block/{major}:{minor}")
+                    candidate = os.path.join(sysfs, "..", "queue", "rotational")
+                    rotational_path = candidate if os.path.exists(candidate) else rotational_path
+                if os.path.exists(rotational_path):
+                    with open(rotational_path, "r", encoding="utf-8", errors="ignore") as fh:
+                        flag = fh.read().strip()
+                    detected = "hdd" if flag == "1" else "ssd"
+                else:
+                    detected = "unknown"
+                cls._storage_type_cache[cache_key] = detected
+                return detected
+            except Exception as exc:
+                logger.warning("存储类型探测失败 (Linux, path=%s): %s", abs_path, exc)
+                return "unknown"
+
+        return "unknown"
+
+    def _resolve_extract_concurrency(self) -> Tuple[int, str]:
+        """返回 (并发上限, 决策来源描述)。"""
+        configured_extract = int(getattr(self.config.extract, 'max_concurrent_extractions', 0) or 0)
         configured_workers = max(1, int(self.config.processing.max_workers or 1))
-        limit = max(1, min(configured_workers, 2 if configured_workers <= 4 else 3))
+
+        if configured_extract > 0:
+            return max(1, configured_extract), f"用户固定 {configured_extract}"
+
+        # auto 模式：根据 temp_path 所在盘的存储类型决策。
+        # 优先 storage.temp_path（解压目标，IO 密集点），其次 library_path、input_path。
+        probe_paths: List[str] = []
+        storage_cfg = getattr(self.config, 'storage', None)
+        for attr in ("temp_path", "library_path", "input_path"):
+            value = getattr(storage_cfg, attr, None) if storage_cfg else None
+            if value:
+                probe_paths.append(str(value))
+        probe_paths.append(os.getcwd())
+
+        detected = "unknown"
+        used_path = ""
+        for candidate in probe_paths:
+            detected = self._detect_storage_type(candidate)
+            used_path = candidate
+            if detected in ("ssd", "hdd"):
+                break
+
+        if detected == "ssd":
+            limit = max(1, min(configured_workers, 3))
+            reason = f"auto: 检测到 SSD ({used_path}) → {limit}"
+        elif detected == "hdd":
+            limit = 1
+            reason = f"auto: 检测到 HDD ({used_path}) → 1（机械盘并发寻道伤性能伤寿命）"
+        else:
+            limit = 1
+            reason = f"auto: 存储类型未知 ({used_path}) → 1（保守默认）"
+        return limit, reason
+
+    def _get_7z_semaphore(self) -> asyncio.Semaphore:
+        limit, reason = self._resolve_extract_concurrency()
+        # 把决策来源也作为 cache key 一部分，配置热重载切换 SSD↔HDD 时能重建 semaphore。
+        storage_key = f"{limit}:{reason}"
         if (
             self.__class__._seven_zip_semaphore is None
             or self.__class__._seven_zip_semaphore_limit != limit
+            or self.__class__._seven_zip_semaphore_storage_key != storage_key
         ):
             self.__class__._seven_zip_semaphore = asyncio.Semaphore(limit)
             self.__class__._seven_zip_semaphore_limit = limit
-            logger.info("设置 7z 并发上限: %s", limit)
+            self.__class__._seven_zip_semaphore_storage_key = storage_key
+            logger.info("设置 7z 并发上限: %s (%s)", limit, reason)
         return self.__class__._seven_zip_semaphore
+
+    def _get_seven_zip_mmt_args(self) -> List[str]:
+        """返回给 7z 的多线程参数。空字符串=不传，让 7z 自己决定。"""
+        raw = str(getattr(self.config.extract, 'seven_zip_threads', '') or '').strip()
+        if not raw:
+            return []
+        return [f'-mmt={raw}']
 
     def _set_extract_meta(self, task: Task, **values):
         if task.task_metadata is None:
@@ -655,6 +801,7 @@ class ExtractService:
                 "x",
                 "-y",
                 f"-o{output_path}",
+                *self._get_seven_zip_mmt_args(),  # 指定 7z 多线程（默认 -mmt=on）
                 *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效，避免 7zz 24.08 对 RAR 报 E_INVALIDARG）
                 *password_args,
                 archive_info.path,
@@ -1202,6 +1349,7 @@ class ExtractService:
                 self.seven_zip, 'x',
                 '-y',  # 自动确认
                 '-o' + output_path,  # 输出目录
+                *self._get_seven_zip_mmt_args(),  # 指定 7z 多线程
                 *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效）
                 archive_info.path
             ]
@@ -1276,7 +1424,7 @@ class ExtractService:
 
         for password in password_list:
             await asyncio.to_thread(clean_output)
-            cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._get_mcp_args(archive_path), archive_path]
+            cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._get_seven_zip_mmt_args(), *self._get_mcp_args(archive_path), archive_path]
             cmd.append(f"-p{password}" if password else "-p")
             try:
                 result = await self._run_7z_command(cmd, capture_stdout=False)
@@ -3081,6 +3229,7 @@ class ExtractService:
                 '-o' + output_path,  # 输出目录
                 '-bsp1', # 启用进度输出
                 '-bso1', # 将进度输出到 stdout
+                *self._get_seven_zip_mmt_args(),  # 指定 7z 多线程（默认 -mmt=on）
                 *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效）
                 *password_args,
                 archive_info.path
@@ -3427,29 +3576,64 @@ class ExtractService:
         missing_files = []
         size_mismatch_files = []
 
-        for expected in file_entries:
-            # 尝试多种可能的路径（处理编码问题）
-            possible_paths = [
-                os.path.join(output_path, expected['name']),  # 原始路径
-                os.path.join(output_path, expected['name'].encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')),  # UTF-8
-                os.path.join(output_path, expected['name'].encode('cp932', errors='ignore').decode('cp932', errors='ignore')),  # Shift_JIS
-            ]
+        # 用一次 scandir 递归把 {相对路径(已规范化为正斜杠): 大小} 全部拿到，
+        # 后续匹配走 dict O(1) 查表，避免 per-file os.path.exists + os.path.getsize。
+        # HDD 上原 per-file 路径会触发 N×3 次 stat（可能伴随 MFT 寻道），
+        # 改成一次 scandir 后基本只有顺序 metadata 读取，几千文件从十几秒缩到 1 秒以内。
+        def _scan_actual_files() -> Dict[str, int]:
+            actual: Dict[str, int] = {}
+            stack = [output_path]
+            while stack:
+                current = stack.pop()
+                try:
+                    with os.scandir(current) as it:
+                        for entry in it:
+                            try:
+                                if entry.is_dir(follow_symlinks=False):
+                                    stack.append(entry.path)
+                                    continue
+                                if not entry.is_file(follow_symlinks=False):
+                                    continue
+                                # Windows 上 scandir 返回的 stat 信息已经从 FindFirstFile 取到，
+                                # 不会再产生额外 IO；Linux 上 d_type 不带 size，会走一次 fstatat。
+                                size = entry.stat(follow_symlinks=False).st_size
+                            except OSError:
+                                continue
+                            rel = os.path.relpath(entry.path, output_path).replace('\\', '/')
+                            actual[rel] = size
+                except OSError:
+                    continue
+            return actual
 
-            found = False
-            for actual_path in set(possible_paths):  # 去重
-                if os.path.exists(actual_path):
-                    found = True
-                    actual_size = os.path.getsize(actual_path)
-                    if actual_size != expected['size']:
-                        size_mismatch_files.append({
-                            'name': expected['name'],
-                            'expected': expected['size'],
-                            'actual': actual_size
-                        })
+        actual_files = await asyncio.to_thread(_scan_actual_files)
+
+        for expected in file_entries:
+            expected_name = str(expected.get('name') or '')
+            if not expected_name:
+                continue
+            # 编码兼容：archive 清单可能是 cp932 / utf-8 解释结果，scandir 出来的是
+            # NTFS unicode；把 expected 的多种编码变体都查一遍 dict，找到任一即可。
+            candidates = {
+                expected_name.replace('\\', '/'),
+                expected_name.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore').replace('\\', '/'),
+                expected_name.encode('cp932', errors='ignore').decode('cp932', errors='ignore').replace('\\', '/'),
+            }
+            found_size: Optional[int] = None
+            for variant in candidates:
+                if variant in actual_files:
+                    found_size = actual_files[variant]
                     break
 
-            if not found:
-                missing_files.append(expected['name'])
+            if found_size is None:
+                missing_files.append(expected_name)
+                continue
+
+            if found_size != expected['size']:
+                size_mismatch_files.append({
+                    'name': expected_name,
+                    'expected': expected['size'],
+                    'actual': found_size,
+                })
 
         # 如果有文件缺失，记录警告但不失败（可能是编码问题）
         if missing_files:

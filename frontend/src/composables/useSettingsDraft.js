@@ -120,7 +120,10 @@ export const defaultConfig = {
     verify_after_extract: true,
     password_list: [],
     extract_nested_archives: true,
-    max_nested_depth: 5
+    max_nested_depth: 5,
+    // 0 = auto：后端启动时探测 temp_path 所在盘，SSD → 最多并发 3，HDD / 未知 → 1
+    max_concurrent_extractions: 0,
+    seven_zip_threads: 'on'
   },
   filter: {
     enabled: true,
