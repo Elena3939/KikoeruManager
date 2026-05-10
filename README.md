@@ -68,6 +68,10 @@ npm run dev
 ### Docker 部署
 
 ```bash
+# 拉取镜像（Dockerhub）
+docker pull elena39/kikoerumanager:latest
+```
+```bash
 # 拉取镜像（GHCR）
 docker pull ghcr.io/elena3939/kikoerumanager:latest
 ```
