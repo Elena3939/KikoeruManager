@@ -318,6 +318,13 @@ kikoeru_search:
 
 ## 更新日志
 
+### v1.2.1 - 字幕补配「卡 60s 但实际已导入」修复
+
+- **后端**：`execute_pending_import` 主流程的源压缩包归档（可能跨卷搬 GB 文件）改为 `asyncio.create_task` fire-and-forget 后台执行，HTTP 立刻返回 `task.id` 给前端跳转工作台。修复用户痛点："实际后端已经导入成功了，但前端 60s 超时没打开工作台"
+- **前端**：`executePendingImport` catch axios timeout 时自动重查 pending 列表 3 次（间隔 2/4/6s），若状态已 IMPORTED 自动 `openImportedTask` + 提示"已成功 + 后台归档中"，避免用户以为卡死重复点导入
+- **前端**：侧边栏 logo 区布局调整：品牌名字号 20→16px + nowrap + ellipsis 兜底；铃铛尺寸 48→36px；gap 12→8px；铃铛与 KikoeruManager 不再重叠
+- **前端**：`appVersion` 同步从硬编码 `'1.0.14'` 改为读 package.json 同步值
+
 ### v1.2.0 - 性能与稳定性大修
 
 - 字幕工作台「应用配对」从串行 60+ HTTP 缩到 2-4 次 batch HTTP，群晖 Docker 上 30 对配对从 5-30 秒降到 0.5-1 秒
