@@ -729,6 +729,13 @@ class ConflictResolutionService:
         else:
             final_path = get_folder_compare_service().safe_replace_directory(staged_root, existing["path"])
 
+        # 索引同步：替换完成后先 delete 旧子树（防孤儿），再 upsert 新子树
+        self._notify_index_after_conflict_resolution(
+            existing.get("library_id"),
+            existing.get("path"),
+            final_path,
+        )
+
         await self._finalize_new_source(conflict)
         await self.cleanup_conflict_sessions(conflict.id)
         return {
@@ -781,12 +788,50 @@ class ConflictResolutionService:
                 session.existing_path,
             )
 
+        # 索引同步：合并完成后先 delete 旧子树，再 upsert 新子树
+        self._notify_index_after_conflict_resolution(
+            session.existing_library_id,
+            session.existing_path,
+            final_path,
+        )
+
         await self._finalize_new_source(conflict)
         await self.cleanup_conflict_sessions(conflict.id)
         return {
             "message": "合并结果已生成并写入目标目录",
             "final_path": final_path,
         }
+
+    def _notify_index_after_conflict_resolution(
+        self,
+        library_id: Optional[str],
+        existing_path: Optional[str],
+        final_path: Optional[str],
+    ) -> None:
+        """KEEP_NEW / MERGE 落地后通知索引：先 delete 旧子树，再 upsert 新子树。
+
+        失败静默；任意一步异常都不影响接口返回。
+        """
+        try:
+            if not library_id or not final_path:
+                return
+            manager = get_library_manager()
+            try:
+                library = manager.get_library_definition(library_id)
+            except Exception:
+                logger.debug(
+                    "[索引] 冲突解决：解析库存定义失败 library_id=%s",
+                    library_id, exc_info=True,
+                )
+                return
+            if existing_path:
+                manager._notify_index_self_mutation_delete(library, existing_path)
+            manager._notify_index_self_mutation_upsert_subtree(library, final_path)
+        except Exception:
+            logger.debug(
+                "[索引] 冲突解决后通知索引失败 library_id=%s final=%s",
+                library_id, final_path, exc_info=True,
+            )
 
     async def cleanup_conflict_sessions(self, conflict_id: str) -> None:
         target_conflict_id = str(conflict_id or "")

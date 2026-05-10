@@ -894,21 +894,18 @@ class DLsiteApiService:
                 language_editions = api.get('language_editions', [])
                 if isinstance(language_editions, dict):
                     language_editions = list(language_editions.values())
+                # ★ 修复用户反馈痛点（RJ01407907）：直接信 DLsite 父作品 API 返回的
+                #   ``language_editions`` 列表，不要再用 ``_is_public_work_available``
+                #   做"前台可见性"过滤。R18 翻译版在 DLsite 匿名公开 API 上常 404
+                #   （需要登录 / 年龄校验），但 work 本身明明就在 Kikoeru 上能搜到，
+                #   过滤后这些 RJ 就再也不会被送到 Kikoeru 查重，整条链路误报未命中。
+                #   油猴脚本 view.txt 的 ``getLinkedWorks`` 也是无条件信 ``language_editions``。
+                #   误报代价：把不存在的 RJ 多送一次给 Kikoeru，search 返回 0 即可，无副作用。
                 for edition in language_editions or []:
                     workno = self._normalize_workno(edition.get('workno'))
                     if not workno:
                         continue
                     edition_lang = str(edition.get('lang') or '').strip() or ''
-                    if workno != target_rjcode and edition_lang.upper() != 'JPN':
-                        is_public = await self._is_public_work_available(workno)
-                        if not is_public:
-                            logger.info(
-                                "[DLsite] 跳过前台不可见的翻译版本: parent=%s edition=%s lang=%s",
-                                target_rjcode,
-                                workno,
-                                edition_lang,
-                            )
-                            continue
                     result[workno] = LinkedWork(
                         workno=workno,
                         work_type='translation',

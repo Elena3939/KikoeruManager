@@ -2083,6 +2083,288 @@ class LibraryManager:
                 library.id, len(absolute_paths or []), exc_info=True,
             )
 
+    def _notify_index_self_mutation_upsert_subtree(
+        self,
+        library: LibraryDefinition,
+        absolute_path: str,
+    ) -> None:
+        """业务自身写操作（解压入库 / rename / 远程上传 / 字幕落盘 / 冲突重绑）
+        创建/落地新子树后调用，把子树立即扫 + bulk_upsert 进索引。
+
+        - 索引未就绪 / 模块异常时静默跳过
+        - 路径不在库存根下 / 越界：静默跳过
+        - 本地库：
+            * async 上下文里调用 → 扔到默认 ThreadPool 后台扫，不阻塞 event loop
+            * 同步上下文（worker thread）→ 直接同步扫，本线程接受 IO 阻塞
+        - 远程库（群晖）：起后台 asyncio task；失败不影响主路径
+            * 不在 asyncio 上下文里调用本方法时（如 ThreadPool worker），
+              远程 upsert 会被自动桥接到 LibraryManager 持有的远程异步 loop；
+              没有可用 loop 时退化为日志警告
+        """
+        if not absolute_path:
+            return
+        try:
+            from .library_index import get_library_index_service
+            service = get_library_index_service()
+            if not service.is_ready(library.id):
+                return
+            posix_rel = self._index_relative_path(library, absolute_path)
+            if posix_rel is None:
+                return  # 不在库根下 / 等于库根本身
+            if library.type == "synology_filestation":
+                if not library.synology:
+                    return
+                self._dispatch_remote_upsert_subtree(library, absolute_path)
+            else:
+                self._dispatch_local_upsert_subtree(library, absolute_path)
+        except Exception:
+            logger.debug(
+                "通知索引 upsert 子树失败 library=%s path=%s",
+                library.id, absolute_path, exc_info=True,
+            )
+
+    def _dispatch_local_upsert_subtree(
+        self,
+        library: LibraryDefinition,
+        absolute_path: str,
+    ) -> None:
+        """本地子树 upsert 调度：避免 async 上下文里同步扫盘阻塞 event loop。
+
+        I/O 风险：本地 LocalScanner 对每个文件都会 os.stat。
+        - 本地 SSD 上 100 个文件大约 5-20ms（可忽略）
+        - NAS / SMB / NFS 挂载上同样规模可能 200-1000ms
+        - fastapi async handler 在 event loop 上同步扫盘会 hang 其他请求
+
+        所以：检测到当前有 running loop（即调用方在 event loop 里跑）就扔
+        到默认 ThreadPoolExecutor，让 event loop 继续处理其他请求；同步
+        worker thread（如 to_thread 内部）直接走同步路径，反正 worker 本来
+        就是干这种活的。
+        """
+        from .library_index import get_library_index_service
+        service = get_library_index_service()
+        root = library.root_path or ""
+
+        def _sync_runner() -> None:
+            try:
+                service.upsert_subtree_local(library.id, root, absolute_path)
+            except Exception:
+                logger.warning(
+                    "[索引] 本地 upsert 子树后台任务失败 library=%s path=%s",
+                    library.id, absolute_path, exc_info=True,
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            # async 上下文：扔到默认 ThreadPoolExecutor，不阻塞 event loop
+            try:
+                concurrent_future = loop.run_in_executor(None, _sync_runner)
+                task = asyncio.ensure_future(asyncio.wrap_future(concurrent_future))
+                self._track_index_upsert_task(task)
+            except Exception:
+                # run_in_executor 罕见失败时退化为同步执行（仍优于完全跳过）
+                logger.debug(
+                    "[索引] run_in_executor 调度失败，退化为同步扫盘 library=%s",
+                    library.id, exc_info=True,
+                )
+                _sync_runner()
+            return
+
+        # 同步上下文（worker thread）：直接执行，阻塞当前 worker 但不影响 event loop
+        _sync_runner()
+
+    def _dispatch_remote_upsert_subtree(
+        self,
+        library: LibraryDefinition,
+        absolute_path: str,
+    ) -> None:
+        """远程子树 upsert 调度：fire-and-forget。
+
+        SYNO.FileStation.Search 起一次 task 通常 0.5-3 秒，不能阻塞主路径。
+        这里：
+        1. 优先在当前 running loop 上 create_task
+        2. 不在 asyncio 上下文（如同步 ThreadPool worker）→ 走 LibraryManager
+           已有的远程 watcher loop（如果初始化过），否则记日志放弃
+        """
+        from .library_index import get_library_index_service
+        service = get_library_index_service()
+        client = self.get_cached_synology_client(library.synology)
+        root = library.root_path or "/"
+        coro = service.upsert_subtree_remote(
+            library.id, client, root, absolute_path,
+        )
+
+        async def _runner() -> None:
+            try:
+                await coro
+            except Exception:
+                logger.warning(
+                    "[索引] 远程 upsert 子树后台任务失败 library=%s path=%s",
+                    library.id, absolute_path, exc_info=True,
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            task = loop.create_task(_runner())
+            self._track_index_upsert_task(task)
+            return
+
+        # 没有 running loop：尽量走 LibraryManager 复用的后台 loop（如果存在），
+        # 否则只能 close coroutine 并记日志，等下次手动重建
+        bg_loop = getattr(self, "_remote_upsert_loop", None)
+        if bg_loop is not None and not bg_loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(_runner(), bg_loop)
+            self._track_index_upsert_future(future)
+            return
+
+        logger.warning(
+            "[索引] 没有可用 asyncio loop，跳过远程子树 upsert library=%s path=%s "
+            "（数据已落盘但索引会 stale，建议触发一次重建）",
+            library.id, absolute_path,
+        )
+        coro.close()
+
+    def _track_index_upsert_task(self, task) -> None:
+        """跟踪 fire-and-forget 的 asyncio.Task，避免被 GC 警告。"""
+        bucket = getattr(self, "_index_upsert_tasks", None)
+        if bucket is None:
+            bucket = set()
+            self._index_upsert_tasks = bucket
+        bucket.add(task)
+        task.add_done_callback(bucket.discard)
+
+    def _track_index_upsert_future(self, future) -> None:
+        """跟踪跨线程 run_coroutine_threadsafe 返回的 Future。"""
+        bucket = getattr(self, "_index_upsert_futures", None)
+        if bucket is None:
+            bucket = set()
+            self._index_upsert_futures = bucket
+        bucket.add(future)
+        future.add_done_callback(bucket.discard)
+
+    def _dispatch_remote_upsert_subtrees_serial(
+        self,
+        library: LibraryDefinition,
+        absolute_paths: list[str],
+    ) -> None:
+        """远程批量子树 upsert：把 N 个路径合并成 **1 个串行后台 task**。
+
+        I/O 风险背景：
+        - SYNO.FileStation.Search 起一次 task 通常 0.5-3 秒
+        - 群晖搜索 task pool 上限通常 5-10 个
+        - 批量 rename 30 条用 30 个并发 task 会被群晖端拒一部分
+
+        所以这里串行执行：起 1 个后台 coroutine 顺序 await 每个子树扫描，
+        群晖端最多 1 个搜索 task 在跑，避免打爆 pool。代价是 30 条 = 30×平均
+        ~1s = 30s 的索引追赶时间，但不阻塞用户请求；用户也很少在 batch
+        rename 后立刻搜刚改名的 RJ。
+        """
+        if not absolute_paths or not library.synology:
+            return
+        from .library_index import get_library_index_service
+        service = get_library_index_service()
+        if not service.is_ready(library.id):
+            return
+        client = self.get_cached_synology_client(library.synology)
+        root = library.root_path or "/"
+        # 复制一份路径列表，外部 list 后续修改不影响 task
+        paths = [str(p) for p in absolute_paths if p]
+        if not paths:
+            return
+
+        async def _runner() -> None:
+            for path in paths:
+                try:
+                    await service.upsert_subtree_remote(library.id, client, root, path)
+                except Exception:
+                    logger.warning(
+                        "[索引] 串行远程 upsert 失败 library=%s path=%s",
+                        library.id, path, exc_info=True,
+                    )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            task = loop.create_task(_runner())
+            self._track_index_upsert_task(task)
+            return
+
+        bg_loop = getattr(self, "_remote_upsert_loop", None)
+        if bg_loop is not None and not bg_loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(_runner(), bg_loop)
+            self._track_index_upsert_future(future)
+            return
+
+        logger.warning(
+            "[索引] 没有可用 asyncio loop，跳过批量远程子树 upsert library=%s count=%s",
+            library.id, len(paths),
+        )
+
+    def find_local_library_for_path(self, absolute_path: str) -> Optional[LibraryDefinition]:
+        """按本地绝对路径反查所属 library。
+
+        给那些「没有 library 上下文，只有一个 path」的兜底链路用
+        （比如 ASMRSync 禁用 classify 时直接 shutil.move 到 storage.library_path）。
+        路径不在任何 local 库存根下时返回 None。
+        """
+        if not absolute_path:
+            return None
+        try:
+            normalized = os.path.abspath(absolute_path)
+        except Exception:
+            return None
+        try:
+            config = self.load_config()
+        except Exception:
+            return None
+        candidates = [
+            lib for lib in self._active_libraries(config)
+            if getattr(lib, "type", None) == "local"
+        ]
+        # 选最长前缀匹配，避免一个 library 是另一个 library 的子目录时选错
+        best: Optional[LibraryDefinition] = None
+        best_root_len = -1
+        for lib in candidates:
+            root = getattr(lib, "root_path", None) or ""
+            if not root:
+                continue
+            try:
+                if not self._local_path_is_within_root(normalized, root):
+                    continue
+            except Exception:
+                continue
+            root_len = len(os.path.normcase(os.path.abspath(root)))
+            if root_len > best_root_len:
+                best = lib
+                best_root_len = root_len
+        return best
+
+    def notify_index_upsert_by_path(self, absolute_path: str) -> None:
+        """无 library 上下文时的便捷入口：按路径反查 library 后 upsert 子树。
+
+        路径不在任何已知 local 库存根下时静默忽略。
+        """
+        try:
+            library = self.find_local_library_for_path(absolute_path)
+            if library is None:
+                return
+            self._notify_index_self_mutation_upsert_subtree(library, absolute_path)
+        except Exception:
+            logger.debug(
+                "[索引] 按路径反查 library 后 upsert 失败 path=%s",
+                absolute_path, exc_info=True,
+            )
+
     # ========== 第一梯队接入 1：库存浏览搜索走索引 ==========
     # _search_local_files / _search_remote_files 在 RJ 关键字进来时优先走
     # 索引查询，绕过 os.walk / SYNO.FileStation.Search 。
@@ -3628,8 +3910,9 @@ class LibraryManager:
                 )
             raise
         new_path = str(PurePosixPath(target_path).parent / new_name)
-        # 索引同步：先 delete 旧子树，新子树交给下次 rebuild / fallback 扫描回填
+        # 索引同步：先 delete 旧子树，再 upsert 新子树，确保索引立即可见
         self._notify_index_self_mutation_delete(library, target_path)
+        self._notify_index_self_mutation_upsert_subtree(library, new_path)
         self._append_stats_log(library, "INFO", f"重命名 path={target_path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -3640,9 +3923,9 @@ class LibraryManager:
         os.rename(path, new_path)
         # 文件夹改名后 keyword→matches 里旧 path 不再有效
         self._invalidate_local_search_cache(library.id)
-        # 索引同步：先 delete 旧子树；新子树由下次 rebuild / fallback 扫描回填。
-        # （在 rename 时重扫新子树会在大目录上造成可观测的阻塞，留到后续批次补）
+        # 索引同步：先 delete 旧子树，再同步扫 + bulk_upsert 新子树
         self._notify_index_self_mutation_delete(library, path)
+        self._notify_index_self_mutation_upsert_subtree(library, new_path)
         self._append_stats_log(library, "INFO", f"重命名 path={path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -3688,6 +3971,7 @@ class LibraryManager:
         failed: list[dict[str, Any]] = []
         success_count = 0
         deleted_index_paths: list[str] = []
+        new_index_paths: list[str] = []
         log_lines: list[str] = []
 
         for index, raw in enumerate(items):
@@ -3704,6 +3988,7 @@ class LibraryManager:
                 results.append({"index": index, "path": path, "new_name": new_name, "new_path": new_path})
                 success_count += 1
                 deleted_index_paths.append(path)
+                new_index_paths.append(new_path)
                 log_lines.append(f"重命名 path={path} -> {new_name}")
             except Exception as exc:
                 failed.append({"index": index, "path": path, "new_name": new_name, "error": str(exc)})
@@ -3715,6 +4000,9 @@ class LibraryManager:
         # 一次性 batch 索引同步（关键：SQLite commit 从 N 次降到 1 次）
         if deleted_index_paths:
             self._notify_index_self_mutation_delete_batch(library, deleted_index_paths)
+        # 新子树逐个 upsert：各个 RJ 子树独立扫，不多费多余 stat
+        for new_path in new_index_paths:
+            self._notify_index_self_mutation_upsert_subtree(library, new_path)
 
         # 聚合 stats_log（合并成 1 次 open / write，原本 N 次）
         if log_lines:
@@ -3750,6 +4038,7 @@ class LibraryManager:
         failed: list[dict[str, Any]] = []
         success_count = 0
         deleted_index_paths: list[str] = []
+        new_index_paths: list[str] = []
 
         client = self.get_cached_synology_client(library.synology)
         for index, raw in enumerate(items):
@@ -3768,11 +4057,16 @@ class LibraryManager:
                 results.append({"index": index, "path": path, "new_name": new_name_safe, "new_path": new_path})
                 success_count += 1
                 deleted_index_paths.append(target_path)
+                new_index_paths.append(new_path)
             except Exception as exc:
                 failed.append({"index": index, "path": path, "new_name": new_name, "error": str(exc)})
 
         if deleted_index_paths:
             self._notify_index_self_mutation_delete_batch(library, deleted_index_paths)
+        # 远程批量 upsert：合并成 1 个串行后台 task，避免 N 个并发 SYNO.Search
+        # 打爆群晖搜索 pool（pool 上限通常 5-10 个）。
+        if new_index_paths:
+            self._dispatch_remote_upsert_subtrees_serial(library, new_index_paths)
         self._append_stats_log(
             library, "INFO",
             f"远程批量重命名完成 success={success_count} failed={len(failed)} total={len(items)}",
@@ -4109,6 +4403,16 @@ class LibraryManager:
         self._invalidate_local_search_cache(source_library.id)
         if target_library.id != source_library.id:
             self._invalidate_local_search_cache(target_library.id)
+
+        # 索引同步：源库 delete 旧子树（可批量），目标库逐个 upsert 新子树
+        if success:
+            old_paths = [str(item.get("source") or "") for item in success if item.get("source")]
+            if old_paths:
+                self._notify_index_self_mutation_delete_batch(source_library, old_paths)
+            for item in success:
+                dest = str(item.get("destination") or "")
+                if dest:
+                    self._notify_index_self_mutation_upsert_subtree(target_library, dest)
 
         self._append_stats_log(
             source_library,

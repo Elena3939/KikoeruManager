@@ -1952,6 +1952,14 @@ class ASMRResourceService:
                 self._finalize_upload_runtime(task, "completed")
                 final_path = remote_root
                 await asyncio.to_thread(shutil.rmtree, renamed_root, True)
+                # 索引同步：远程并发上传完成后通知索引把新子树扫进去
+                try:
+                    manager._notify_index_self_mutation_upsert_subtree(target_library, final_path)
+                except Exception:
+                    logger.debug(
+                        "[索引] 社团补全远程入库后通知 upsert 失败 path=%s",
+                        final_path, exc_info=True,
+                    )
                 return final_path
             if target_library:
                 target_root = target_library.root_path
@@ -1962,7 +1970,19 @@ class ASMRResourceService:
 
         target_parts = [part for part in [target_root, target_subdir, circle_dir] if part]
         target_dir = os.path.join(*target_parts)
-        return classifier._move_with_rename(renamed_root, target_dir)
+        final_path = classifier._move_with_rename(renamed_root, target_dir)
+        # 索引同步：本地落地后按路径反查 library 通知（target_library 可能是 None）
+        try:
+            if target_library is not None:
+                manager._notify_index_self_mutation_upsert_subtree(target_library, final_path)
+            else:
+                manager.notify_index_upsert_by_path(final_path)
+        except Exception:
+            logger.debug(
+                "[索引] 社团补全本地入库后通知 upsert 失败 path=%s",
+                final_path, exc_info=True,
+            )
+        return final_path
 
     async def _sync_circle_completion_owned_state(self, rjcode: str, folder_path: str, library_id: str = "") -> None:
         if not rjcode or not folder_path:

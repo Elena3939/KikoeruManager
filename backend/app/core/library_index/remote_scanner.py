@@ -60,18 +60,77 @@ class RemoteScanner:
         - 等待超时：TimeoutError
         - 单条 raw → IndexEntry 失败：日志警告后跳过
         """
-        if not root_path:
-            raise ValueError("root_path 为空")
+        async for entry in self._search_and_yield(
+            library_id=library_id,
+            client=client,
+            search_path=root_path,
+            relative_base=root_path,
+        ):
+            yield entry
 
-        normalized_root = root_path.rstrip("/") or "/"
+    async def scan_subtree(
+        self,
+        library_id: str,
+        client: Any,
+        library_root: str,
+        subtree_path: str,
+    ) -> AsyncIterator[IndexEntry]:
+        """扫指定子树 subtree_path，relative_path 始终基于 library_root 计算。
+
+        给业务自身写操作（远程上传 / 远程 rename / 字幕落盘等）调用，
+        把刚刚创建/落地的子树立即 upsert 到索引，避免依赖全量重建。
+
+        注意：SYNO.FileStation.Search 不返回子树自身那条记录（它只返回
+        子树下的成员）；调用方上层会按需补一条目录条目。
+        """
+        if not library_root:
+            raise ValueError("library_root 为空")
+        if not subtree_path:
+            raise ValueError("subtree_path 为空")
+        norm_root = library_root.rstrip("/") or "/"
+        norm_subtree = subtree_path.rstrip("/") or "/"
+        # 越界保护：子树必须在 library_root 下，否则 relative_path 会变成奇怪的兜底值
+        if norm_subtree != norm_root:
+            prefix = norm_root + "/" if norm_root != "/" else "/"
+            if not norm_subtree.startswith(prefix):
+                raise ValueError(
+                    f"subtree 不在 library_root 下: subtree={subtree_path} "
+                    f"library_root={library_root}"
+                )
+        async for entry in self._search_and_yield(
+            library_id=library_id,
+            client=client,
+            search_path=norm_subtree,
+            relative_base=norm_root,
+        ):
+            yield entry
+
+    async def _search_and_yield(
+        self,
+        *,
+        library_id: str,
+        client: Any,
+        search_path: str,
+        relative_base: str,
+    ) -> AsyncIterator[IndexEntry]:
+        """启动 SYNO 搜索并 yield IndexEntry。
+
+        search_path：起 SYNO.FileStation.Search 的目录（库根 / 子树）
+        relative_base：计算 IndexEntry.relative_path 时的库根
+        """
+        if not search_path:
+            raise ValueError("search_path 为空")
+
+        normalized_search = search_path.rstrip("/") or "/"
+        normalized_base = relative_base.rstrip("/") or "/"
         started_at = time.time()
 
         logger.info(
-            "[RemoteScanner] 启动远程搜索 library=%s root=%s",
-            library_id, normalized_root,
+            "[RemoteScanner] 启动远程搜索 library=%s search=%s base=%s",
+            library_id, normalized_search, normalized_base,
         )
         started = await client.start_search(
-            normalized_root, "*", recursive=True,
+            normalized_search, "*", recursive=True,
         )
         task_id = started.get("taskid") or started.get("task_id")
         if not task_id:
@@ -95,7 +154,7 @@ class RemoteScanner:
                     break
 
                 for raw in files:
-                    entry = self._raw_to_entry(library_id, raw, normalized_root)
+                    entry = self._raw_to_entry(library_id, raw, normalized_base)
                     if entry is None:
                         continue
                     scanned_count += 1
@@ -114,8 +173,8 @@ class RemoteScanner:
                 )
             elapsed = time.time() - started_at
             logger.info(
-                "[RemoteScanner] 扫描结束 library=%s root=%s entries=%s elapsed=%.2fs",
-                library_id, normalized_root, scanned_count, elapsed,
+                "[RemoteScanner] 扫描结束 library=%s search=%s entries=%s elapsed=%.2fs",
+                library_id, normalized_search, scanned_count, elapsed,
             )
 
     async def _wait_finish(self, client: Any, task_id: str) -> None:

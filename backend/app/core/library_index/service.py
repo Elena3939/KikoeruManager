@@ -368,6 +368,176 @@ class LibraryIndexService:
             )
         return result
 
+    # ========== self_mutation：增量 upsert 子树 ==========
+    # 业务自身写操作（解压入库 / rename / 远程上传 / 字幕落盘 / 冲突重绑等）
+    # 完成后调用，把刚刚创建/落地的子树立即扫描 + bulk_upsert 到索引，
+    # 避免依赖手动重建。
+    #
+    # 设计要点：
+    # - 索引未就绪（idle / syncing / error）时跳过：完整扫描完成后会覆盖一切，
+    #   不需要中间状态做 upsert 抢跑
+    # - 不更新 last_event_at / total_entries：和 delete 路径一致，
+    #   状态字段只在全量 rebuild 时刷新
+    # - 任何异常都向上抛，由调用方（library_manager 包装层）catch 后静默
+
+    def upsert_subtree_local(
+        self,
+        library_id: str,
+        library_root: str,
+        subtree_path: str,
+        *,
+        chunk_size: int = 500,
+    ) -> int:
+        """同步全量扫指定本地子树并 bulk_upsert。
+
+        返回 upsert 的条目数。索引未就绪时返回 0。
+        """
+        if not self.is_ready(library_id):
+            return 0
+        scanner = self._local_scanner_factory()
+        buffer: list[IndexEntry] = []
+        written = 0
+        for entry in scanner.scan_subtree(library_id, library_root, subtree_path):
+            buffer.append(entry)
+            if len(buffer) >= chunk_size:
+                written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                buffer.clear()
+        if buffer:
+            written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+        logger.info(
+            "[索引] upsert 本地子树完成 library=%s subtree=%s entries=%s",
+            library_id, subtree_path, written,
+        )
+        return written
+
+    async def upsert_subtree_remote(
+        self,
+        library_id: str,
+        client: Any,
+        library_root: str,
+        subtree_path: str,
+        *,
+        chunk_size: int = 500,
+    ) -> int:
+        """异步全量扫指定远程子树并 bulk_upsert。
+
+        SYNO.FileStation.Search 不返回 folder_path 自身那一行，所以这里会先
+        用 client.stat(subtree_path) 补一条子树根目录的 IndexEntry，避免
+        find_by_rjcode 找不到 RJ 目录本身。
+
+        返回 upsert 的条目数。索引未就绪时返回 0。
+        """
+        if not self.is_ready(library_id):
+            return 0
+
+        # 1) 子树根目录条目：SYNO.Search 不会返回它，必须显式构造
+        root_entry = await self._build_remote_subtree_root_entry(
+            library_id, client, library_root, subtree_path,
+        )
+
+        # 2) 扫所有后代
+        scanner = self._remote_scanner_factory()
+        buffer: list[IndexEntry] = []
+        if root_entry is not None:
+            buffer.append(root_entry)
+        written = 0
+        async for entry in scanner.scan_subtree(
+            library_id, client, library_root, subtree_path,
+        ):
+            buffer.append(entry)
+            if len(buffer) >= chunk_size:
+                written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                buffer.clear()
+        if buffer:
+            written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+        logger.info(
+            "[索引] upsert 远程子树完成 library=%s subtree=%s entries=%s",
+            library_id, subtree_path, written,
+        )
+        return written
+
+    async def _build_remote_subtree_root_entry(
+        self,
+        library_id: str,
+        client: Any,
+        library_root: str,
+        subtree_path: str,
+    ) -> Optional[IndexEntry]:
+        """对子树根目录（SYNO.Search 不会返回的那一行）做一次 stat，
+        构造对应的 IndexEntry。stat 失败返回 None，由调用方自行决定是否
+        放弃整次 upsert。
+        """
+        try:
+            info = await client.stat(subtree_path)
+        except Exception:
+            logger.warning(
+                "[索引] 子树根 stat 失败，跳过补行 library=%s subtree=%s",
+                library_id, subtree_path, exc_info=True,
+            )
+            return None
+
+        item: Optional[dict] = None
+        if isinstance(info, dict):
+            files = info.get("files")
+            if isinstance(files, list) and files:
+                item = files[0]
+            else:
+                item = info
+        if not isinstance(item, dict):
+            return None
+
+        absolute_path = str(item.get("path") or subtree_path).rstrip("/") or "/"
+        is_dir = bool(item.get("isdir", True))
+        name = str(
+            item.get("name")
+            or absolute_path.rsplit("/", 1)[-1]
+            or absolute_path
+        )
+        from ._helpers import extract_rjcode
+
+        norm_root = (library_root or "").rstrip("/") or "/"
+        if absolute_path == norm_root:
+            relative = ""
+            parent: Optional[str] = None
+            depth = 0
+        else:
+            prefix = norm_root + "/" if norm_root != "/" else "/"
+            relative = (
+                absolute_path[len(prefix):]
+                if absolute_path.startswith(prefix)
+                else absolute_path.lstrip("/")
+            )
+            parent = relative.rsplit("/", 1)[0] if "/" in relative else ""
+            depth = relative.count("/") + 1 if relative else 0
+
+        additional = item.get("additional") or {}
+        size_raw = additional.get("size")
+        try:
+            size_value = int(size_raw) if size_raw not in (None, "") else 0
+        except (TypeError, ValueError):
+            size_value = 0
+        time_info = additional.get("time") or {}
+        mtime_seconds_raw = time_info.get("mtime")
+        try:
+            mtime_seconds = int(mtime_seconds_raw) if mtime_seconds_raw else None
+        except (TypeError, ValueError):
+            mtime_seconds = None
+        mtime_ms = mtime_seconds * 1000 if mtime_seconds else None
+
+        return IndexEntry(
+            library_id=library_id,
+            entry_type='dir' if is_dir else 'file',
+            relative_path=relative,
+            absolute_path=absolute_path,
+            name=name,
+            rjcode=extract_rjcode(name),
+            parent_path=parent,
+            size=0 if is_dir else size_value,
+            file_count=0,
+            mtime=mtime_ms,
+            depth=depth,
+        )
+
     # ========== 状态 ==========
 
     def get_status(self, library_id: str) -> Optional[IndexStatus]:

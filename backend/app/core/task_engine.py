@@ -3516,6 +3516,16 @@ class TaskEngine:
                 await asyncio.to_thread(shutil.move, renamed_path, final_path)
                 task.output_path = final_path
                 logger.info(f"[{rjcode}] 移动到: {final_path}")
+                # 索引同步：禁用 classify 的兜底链路里没有 library 上下文，
+                # 用按路径反查的 helper 让索引也能跟上
+                try:
+                    from .library_manager import get_library_manager
+                    get_library_manager().notify_index_upsert_by_path(final_path)
+                except Exception:
+                    logger.debug(
+                        "[索引] ASMRSync 禁用 classify 分支通知索引失败 path=%s",
+                        final_path, exc_info=True,
+                    )
 
             # 步骤6: 移动字幕文件夹到Finished目录
             if config.asmr_sync_step.move_subtitle_folder:
@@ -4238,6 +4248,18 @@ class TaskEngine:
                 file_completed_callback=file_completed_callback,
             )
             uploaded.append({"source": source_dir, "target": target_path})
+            # 索引同步：远程上传完成后立即 fire-and-forget upsert，
+            # 让跨库搜索 / 库存页搜索能立刻找到刚上传的子树
+            try:
+                target_library_def = manager.get_library_definition(target_library_id)
+                manager._notify_index_self_mutation_upsert_subtree(
+                    target_library_def, target_path,
+                )
+            except Exception:
+                logger.debug(
+                    "[索引] PROCESS_EXISTING_FOLDER 上传后通知 upsert 失败 path=%s",
+                    target_path, exc_info=True,
+                )
             append_progress_log(
                 f"目录上传完成: {source_name}",
                 min(99, int((index / max(total_dirs, 1)) * 100)),

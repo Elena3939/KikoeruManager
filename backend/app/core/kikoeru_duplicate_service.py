@@ -254,11 +254,50 @@ class KikoeruDuplicateService:
     def _set_cache(self, rjcode: str, result: KikoeruCheckResult):
         """设置缓存"""
         self._cache[rjcode] = (result, datetime.now())
-    
+
+    def _maybe_cache_result(
+        self,
+        rjcode: str,
+        result: KikoeruCheckResult,
+        use_cache: bool,
+    ) -> None:
+        """按 match_type 决定要不要把结果写入主缓存。
+
+        ★ ``linkage_match`` 是依赖调用方传入 ``extra_match_rjcodes`` 才能产生的
+        广义命中：被广义命中的那个作品的 RJ 不一定等于查询 RJ。如果直接写进
+        以查询 RJ 为 key 的主缓存，无上下文调用方下次再查同一 RJ 会拿到一个
+        ``matched_rjcode`` 指向别的作品的"诡异命中"。所以此处显式跳过缓存写入，
+        让无上下文调用方走一次干净的严格查询，而广义匹配只在调用方再次给出
+        关联链时复算（成本可控，5 分钟 TTL 也足够吃住高频场景）。
+        """
+        if not use_cache:
+            return
+        if getattr(result, "match_type", "") == "linkage_match":
+            return
+        self._set_cache(rjcode, result)
+
     def _build_search_url(self, rjcode: str) -> str:
-        """构建搜索 URL"""
-        # Kikoeru 标准搜索 API: /api/search?page=1&sort=desc&order=release&nsfw=0&keyword={rjcode}
-        return f"{self.config.server_url}/api/search?page=1&sort=desc&order=release&nsfw=0&keyword={rjcode}"
+        """构建按 RJ 号查重的搜索 URL。
+
+        ★ 关键修复（RJ01407907 类痛点终极修正）：完全不带 ``nsfw`` 参数。
+        本工具管的是 ASMR / R18 音声作品，链路里几乎所有 work 都打着 R18 标签；
+        历史上写死 ``nsfw=0`` 只过 SFW，会让 Kikoeru 把所有 NSFW 作品从
+        ``works`` 里剔掉，导致主作品和它的简中翻译版 / 翻译链全军覆没——前端
+        就出现了用户反馈的"整条链路未命中"，但其实简中翻译版明明就在 Kikoeru 上。
+        干脆不限 nsfw，让服务端按当前账号自身的偏好放行结果，避免我们前置过滤
+        把任何作品打掉。
+        ``lyric=`` / ``isAdvance=0`` 仍保留，对齐油猴脚本默认 search 模板，避免
+        部分 Kikoeru 部署在缺省语义下走"高级搜索"模式打偏 keyword。
+        """
+        return (
+            f"{self.config.server_url}/api/search"
+            f"?page=1"
+            f"&sort=desc"
+            f"&order=release"
+            f"&lyric="
+            f"&isAdvance=0"
+            f"&keyword={rjcode}"
+        )
 
     def _build_keyword_search_url(self, keyword: str, page: int = 1) -> str:
         encoded = quote(str(keyword or "").strip())
@@ -915,35 +954,50 @@ class KikoeruDuplicateService:
         return result
     
     async def check_duplicate(
-        self, 
+        self,
         rjcode: str,
-        use_cache: bool = True
+        use_cache: bool = True,
+        extra_match_rjcodes: Optional[Set[str]] = None,
     ) -> KikoeruCheckResult:
-        """
-        检查作品是否在 Kikoeru 服务器中
-        
+        """检查作品是否在 Kikoeru 服务器中。
+
         Args:
             rjcode: RJ号 (格式: RJ123456 或 123456)
             use_cache: 是否使用缓存
-        
+            extra_match_rjcodes: 可选关联 RJ 集合（一般来自 DLsite 完整关联链）。
+                若严格匹配未命中，会让 ``_parse_search_result`` 退而求其次，把
+                返回的某个 work 的候选 RJ 命中本集合视为命中（``match_type``
+                标为 ``linkage_match``）。修复 RJ01407907 类痛点：原作没有上
+                Kikoeru 但简中翻译版上了，搜原作时被 Kikoeru 直接返回翻译版
+                却被严格匹配漏掉。
+
         Returns:
             KikoeruCheckResult: 查重结果
         """
         rjcode = self._normalize_rjcode(rjcode)
-        
+        has_linkage_context = bool(extra_match_rjcodes)
+
         if use_cache:
             cached = self._get_cache(rjcode)
             if cached:
-                logger.debug(f"Kikoeru 查重缓存命中: {rjcode}")
-                return cached
-        
+                # 严格命中或不需要广义匹配的调用方，直接复用缓存即可。
+                # 反之（缓存为未命中且当前调用方提供了关联链），跳过缓存重新查询，
+                # 给广义匹配一次机会，避免被 5 分钟内的旧"未命中"卡死。
+                if cached.is_found or not has_linkage_context:
+                    logger.debug(f"Kikoeru 查重缓存命中: {rjcode}")
+                    return cached
+                logger.debug(
+                    "[Kikoeru] 缓存为未命中，但本次提供了关联链，重新查询尝试广义匹配: %s",
+                    rjcode,
+                )
+
         if not self.config.enabled or not self.config.server_url:
             return KikoeruCheckResult(
                 is_found=False,
                 rjcode=rjcode,
                 source="kikoeru_disabled"
             )
-        
+
         if not await self._ensure_valid_token():
             if not self.config.api_token:
                 logger.warning("[Kikoeru] 无法获取有效 Token")
@@ -952,39 +1006,41 @@ class KikoeruDuplicateService:
                     rjcode=rjcode,
                     source="kikoeru_no_token"
                 )
-        
+
         try:
             url = self._build_search_url(rjcode)
             headers = self._get_headers()
-            
+
             session = await self._get_session()
-            
+
             logger.info(f"[Kikoeru] 正在查询: {rjcode}")
             logger.info(f"[Kikoeru] 请求 URL: {url}")
             logger.info(f"[Kikoeru] 请求头: {headers}")
-            
+
             async with session.get(
-                url, 
-                headers=headers, 
+                url,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout)
             ) as response:
                 logger.info(f"[Kikoeru] 响应状态: {response.status}")
-                
+
                 if response.status == 401:
                     error_text = await response.text()
                     logger.warning(f"[Kikoeru] Token 过期或无效，尝试重新登录: {rjcode}")
-                    
+
                     if self.config.username and self.config.password:
                         if await self._login():
                             headers = self._get_headers()
                             async with session.get(
-                                url, 
-                                headers=headers, 
+                                url,
+                                headers=headers,
                                 timeout=aiohttp.ClientTimeout(total=self.config.timeout)
                             ) as retry_response:
                                 if retry_response.status == 200:
                                     data = await retry_response.json()
-                                    result = self._parse_search_result(rjcode, data)
+                                    result = self._parse_search_result(
+                                        rjcode, data, extra_match_rjcodes=extra_match_rjcodes
+                                    )
                                     result = await self._hydrate_track_subtitle_state(result, session, headers)
                                     # 401 重登路径同样接 work_id 兜底
                                     if not result.is_found:
@@ -997,10 +1053,9 @@ class KikoeruDuplicateService:
                                             if use_cache:
                                                 self._set_cache(rjcode, direct_hit)
                                             return direct_hit
-                                    if use_cache:
-                                        self._set_cache(rjcode, result)
+                                    self._maybe_cache_result(rjcode, result, use_cache)
                                     return result
-                    
+
                     logger.error(f"[Kikoeru] 认证失败: {rjcode}")
                     logger.error(f"[Kikoeru] 响应内容: {error_text[:500]}")
                     return KikoeruCheckResult(
@@ -1008,7 +1063,7 @@ class KikoeruDuplicateService:
                         rjcode=rjcode,
                         source="kikoeru_auth_error"
                     )
-                
+
                 if response.status != 200:
                     error_text = await response.text()
                     logger.warning(f"[Kikoeru] 服务器返回错误: {response.status}")
@@ -1018,13 +1073,15 @@ class KikoeruDuplicateService:
                         rjcode=rjcode,
                         source=f"kikoeru_error_{response.status}"
                     )
-                
+
                 data = await response.json()
                 logger.info(f"[Kikoeru] 响应数据: {data}")
-                
-                result = self._parse_search_result(rjcode, data)
+
+                result = self._parse_search_result(
+                    rjcode, data, extra_match_rjcodes=extra_match_rjcodes
+                )
                 result = await self._hydrate_track_subtitle_state(result, session, headers)
-                
+
                 if not result.is_found:
                     # ★ 硬兜底：search 没命中时，按 work_id 直接打 /api/tracks/{id}。
                     #   修复 v1.2.2 用户痛点：kikoeru 网页能搜到但 API search 漏返回。
@@ -1046,18 +1103,23 @@ class KikoeruDuplicateService:
                             return fuzzy_result
                     else:
                         logger.info(f"[Kikoeru] 精确匹配未找到，已跳过 ±1 宽容搜索: {rjcode}")
-                
-                if use_cache:
-                    self._set_cache(rjcode, result)
-                
+
+                self._maybe_cache_result(rjcode, result, use_cache)
+
                 if result.is_found:
-                    logger.info(f"[Kikoeru] ✓ 精确匹配成功: {rjcode} - {result.title}")
+                    if result.match_type == "linkage_match":
+                        logger.info(
+                            "[Kikoeru] ✓ 关联链广义命中: %s -> %s (work_id=%s title=%s)",
+                            rjcode, result.matched_rjcode, result.work_id, result.title,
+                        )
+                    else:
+                        logger.info(f"[Kikoeru] ✓ 精确匹配成功: {rjcode} - {result.title}")
                 else:
                     if self.config.enable_fuzzy_rj_match:
                         logger.info(f"[Kikoeru] ✗ 未找到: {rjcode}（包括±1宽容搜索）")
                     else:
                         logger.info(f"[Kikoeru] ✗ 未找到: {rjcode}（仅精确匹配）")
-                
+
                 return result
                 
         except asyncio.TimeoutError:
@@ -1153,21 +1215,63 @@ class KikoeruDuplicateService:
         # 未找到模糊匹配
         return KikoeruCheckResult(rjcode=rjcode)
     
-    def _parse_search_result(self, rjcode: str, data: dict) -> KikoeruCheckResult:
-        """解析 Kikoeru 搜索结果"""
+    def _fill_result_from_work(
+        self,
+        result: KikoeruCheckResult,
+        work: Dict,
+        matched_rjcode: str,
+        match_type: str,
+    ) -> None:
+        """把 Kikoeru search 命中的 work 字段灌入查重结果对象。
+
+        统一逻辑给严格命中与 linkage 广义命中复用，避免拷贝粘贴漂移。
+        """
+        result.is_found = True
+        result.work_id = int(work.get('id') or 0)
+        result.title = str(work.get('title') or '')
+        result.lyric_status = str(work.get('lyric_status', '') or '')
+        result.has_lyric_hint = False
+        result.subtitle_file_count = 0
+        result.subtitle_check_source = "search_only"
+        result.matched_rjcode = matched_rjcode
+        result.match_type = match_type
+
+        circle = work.get('circle', {})
+        if isinstance(circle, dict):
+            result.circle_name = str(circle.get('name') or '')
+
+        tags = work.get('tags', [])
+        if isinstance(tags, list):
+            result.tags = [str(tag.get('name') or '') for tag in tags if isinstance(tag, dict)]
+
+    def _parse_search_result(
+        self,
+        rjcode: str,
+        data: dict,
+        extra_match_rjcodes: Optional[Set[str]] = None,
+    ) -> KikoeruCheckResult:
+        """解析 Kikoeru 搜索结果。
+
+        ★ 关键修复（RJ01407907 类痛点）：当 ``extra_match_rjcodes`` 非空（一般是
+        DLsite 完整关联链），严格 1:1 匹配未命中时，会做第二轮"广义关联匹配"——
+        只要返回的某个 work 的候选 RJ 落在关联链里就算命中。这对应了油猴脚本
+        ``getKikoeruSearchResult`` 里 ``linkages[rj]`` 的语义：搜原作 RJ 时
+        Kikoeru 实际可能只回简中翻译版 work（``id`` 是翻译版 RJ 的数字部分，
+        且没有 sourceWorkno 字段），严格匹配会漏掉，导致整条链路误报未命中。
+        """
         result = KikoeruCheckResult(rjcode=rjcode)
-        
+
         # 检查是否有 works 字段
         if not isinstance(data, dict) or 'works' not in data:
             logger.warning(f"Kikoeru 返回格式异常: {rjcode}")
             return result
-        
+
         works = data.get('works', [])
         if not isinstance(works, list):
             return result
-        
+
         result.total_count = len(works)
-        
+
         # 查找匹配的作品。
         # 不能只看 id：不同部署 / 数据源下，搜索结果里更稳定的主键有时是
         # sourceWorkno/source_workno/workno/rjcode。
@@ -1194,36 +1298,57 @@ class KikoeruDuplicateService:
                 rjcode, search_id, normalized_target_rjcode, len(works), preview,
             )
 
+        # ---- 第一轮：严格 1:1 匹配（保留原有行为）----
         for work in works:
             if not isinstance(work, dict):
                 continue
-            
+
             work_id = work.get('id', 0)
             candidate_rjcodes = self._work_to_rjcodes(work)
-            
+
             # 优先认显式 RJ 字段；没有时再退回 id 数字匹配。
             if normalized_target_rjcode in candidate_rjcodes or work_id == search_id:
-                result.is_found = True
-                result.work_id = work_id
-                result.title = work.get('title', '')
-                result.lyric_status = str(work.get('lyric_status', '') or '')
-                result.has_lyric_hint = False
-                result.subtitle_file_count = 0
-                result.subtitle_check_source = "search_only"
-                result.matched_rjcode = normalized_target_rjcode
-                
-                # 获取社团名
-                circle = work.get('circle', {})
-                if isinstance(circle, dict):
-                    result.circle_name = circle.get('name', '')
-                
-                # 获取标签
-                tags = work.get('tags', [])
-                if isinstance(tags, list):
-                    result.tags = [tag.get('name', '') for tag in tags if isinstance(tag, dict)]
-                
-                break
-        
+                self._fill_result_from_work(result, work, normalized_target_rjcode, match_type="exact")
+                return result
+
+        # ---- 第二轮：linkage 广义匹配（新增）----
+        # 仅当调用方提供了 DLsite 关联链才启用。这样不会改变无上下文调用方
+        # 的语义。匹配命中后 ``matched_rjcode`` 会指向真正存在于 Kikoeru
+        # 的关联 RJ（多半是某个翻译版），后续 hydrate 会按这个 RJ 拼 tracks URL。
+        if extra_match_rjcodes:
+            normalized_extra: Set[str] = set()
+            for rj in extra_match_rjcodes:
+                normalized = self._normalize_rjcode(rj or '')
+                if normalized:
+                    normalized_extra.add(normalized)
+            # 主查询 RJ 已经在第一轮处理过；从扩展集合里剔掉避免误报为广义命中
+            normalized_extra.discard(normalized_target_rjcode)
+
+            if normalized_extra:
+                for work in works:
+                    if not isinstance(work, dict):
+                        continue
+                    candidate_rjcodes = self._work_to_rjcodes(work)
+                    matched_linkage_rjcode = next(
+                        (rj for rj in candidate_rjcodes if rj in normalized_extra),
+                        None,
+                    )
+                    if matched_linkage_rjcode:
+                        self._fill_result_from_work(
+                            result,
+                            work,
+                            matched_linkage_rjcode,
+                            match_type="linkage_match",
+                        )
+                        logger.info(
+                            "[Kikoeru] ✓ linkage 广义命中: query=%s matched=%s work_id=%s candidates=%s",
+                            normalized_target_rjcode,
+                            matched_linkage_rjcode,
+                            work.get('id'),
+                            candidate_rjcodes,
+                        )
+                        return result
+
         return result
     
     def _rjcode_to_id(self, rjcode: str) -> int:
@@ -1241,27 +1366,33 @@ class KikoeruDuplicateService:
         return 0
     
     async def check_duplicates_batch(
-        self, 
+        self,
         rjcodes: List[str],
-        use_cache: bool = True
+        use_cache: bool = True,
+        extra_match_rjcodes: Optional[Set[str]] = None,
     ) -> Dict[str, KikoeruCheckResult]:
-        """
-        批量检查多个 RJ 号
-        
+        """批量检查多个 RJ 号。
+
         Args:
             rjcodes: RJ 号列表
             use_cache: 是否使用缓存
-        
+            extra_match_rjcodes: 透传给 ``check_duplicate`` 的关联链集合，
+                让批量内每个查询都能识别返回里的关联翻译版（参考
+                ``check_duplicate`` 文档）。
+
         Returns:
             Dict[str, KikoeruCheckResult]: RJ号到结果的映射
         """
         if not self.config.enabled:
             return {rj: KikoeruCheckResult(is_found=False, rjcode=rj, source="kikoeru_disabled") 
                     for rj in rjcodes}
-        
-        tasks = [self.check_duplicate(rj, use_cache) for rj in rjcodes]
+
+        tasks = [
+            self.check_duplicate(rj, use_cache, extra_match_rjcodes=extra_match_rjcodes)
+            for rj in rjcodes
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         return {
             rj: result if not isinstance(result, Exception) else KikoeruCheckResult(
                 is_found=False, 
@@ -1370,13 +1501,20 @@ class KikoeruDuplicateService:
         cue_languages: List[str] = None,
         use_cache: bool = True
     ) -> Dict[str, KikoeruCheckResult]:
-        """
-        检查作品及其关联作品是否在 Kikoeru 服务器中
+        """检查作品及其关联作品是否在 Kikoeru 服务器中。
 
         关联作品查重逻辑：
         - 如果 Kikoeru 中有原版，当前是翻译版 → 算重复
         - 如果 Kikoeru 中有翻译版，当前是原版 → 算重复
         - 如果 Kikoeru 中有任何关联作品 → 算重复
+
+        ★ 链路上下文：先从 DLsite 取完整关联链，再把完整 RJ 集合作为
+        ``extra_match_rjcodes`` 透传给所有 Kikoeru 查询。这样即使 Kikoeru 的
+        全文搜索对原作 RJ 的响应只回了一条简中翻译版（``id`` 是翻译 RJ 的
+        数字部分、且没有 ``sourceWorkno`` 字段），``_parse_search_result``
+        也能把它识别为关联链命中（``match_type='linkage_match'``）。这是修复
+        RJ01407907 这类用户痛点（图二报"整条链路未命中"，但 view.txt 油猴
+        脚本 ``getKikoeruSearchResult`` 能命中）的关键路径。
 
         Args:
             rjcode: RJ号
@@ -1387,44 +1525,77 @@ class KikoeruDuplicateService:
             Dict[str, KikoeruCheckResult]: 所有关联作品及其查重结果
         """
         rjcode = self._normalize_rjcode(rjcode)
-        results = {}
-        
-        # 1. 首先查询原始作品
-        primary_result = await self.check_duplicate(rjcode, use_cache)
-        results[rjcode] = primary_result
-        
+        results: Dict[str, KikoeruCheckResult] = {}
+
         if not self.config.enabled:
+            # 服务未启用：直接退化为单次查询，不再触发 DLsite 链路与广义匹配。
+            primary_result = await self.check_duplicate(rjcode, use_cache)
+            results[rjcode] = primary_result
             return results
-        
+
+        # 1. 先尝试取 DLsite 完整关联链——必须在主查询之前，这样主查询也能
+        #    带着完整链路去识别 Kikoeru 返回里的关联翻译版。
+        linked_works: Dict[str, any] = {}
         try:
-            # 2. 获取关联作品（原版+所有翻译版本，不限制语言）
             logger.info(f"[Kikoeru关联查询] 开始获取 {rjcode} 的关联作品")
             dlsite_service = get_dlsite_service()
-            linked_works = await dlsite_service.get_linked_works(rjcode)
-            
+            linked_works = await dlsite_service.get_linked_works(rjcode) or {}
+        except Exception as e:
+            logger.error(f"[Kikoeru关联查询] 获取关联作品失败 {rjcode}: {e}")
+            logger.exception(e)
+            linked_works = {}
+
+        # 把链路展开成已规范化的 RJ 集合（含主 RJ 自身），供广义匹配使用。
+        linkage_rjcode_set: Set[str] = set()
+        for workno in linked_works.keys():
+            normalized = self._normalize_rjcode(workno or '')
+            if normalized:
+                linkage_rjcode_set.add(normalized)
+        if rjcode:
+            linkage_rjcode_set.add(rjcode)
+        extra_for_lookup: Optional[Set[str]] = linkage_rjcode_set or None
+
+        # 2. 主查询带上链路上下文。命中即可识别返回里的简中翻译版。
+        primary_result = await self.check_duplicate(
+            rjcode, use_cache, extra_match_rjcodes=extra_for_lookup
+        )
+        results[rjcode] = primary_result
+
+        try:
             if len(linked_works) > 1:
-                logger.info(f"[Kikoeru关联查询] 发现 {len(linked_works)} 个关联作品: {list(linked_works.keys())}")
-                
-                # 3. 查询所有关联作品（不限制语言）
+                logger.info(
+                    f"[Kikoeru关联查询] 发现 {len(linked_works)} 个关联作品: {list(linked_works.keys())}"
+                )
+
+                # 3. 查询所有关联作品，每条同样带链路上下文。
                 linked_rjcodes = [workno for workno in linked_works.keys() if workno != rjcode]
-                
+
                 if linked_rjcodes:
-                    logger.info(f"[Kikoeru关联查询] 将查询所有 {len(linked_rjcodes)} 个关联作品: {linked_rjcodes}")
-                    linked_results = await self.check_duplicates_batch(linked_rjcodes, use_cache)
+                    logger.info(
+                        f"[Kikoeru关联查询] 将查询所有 {len(linked_rjcodes)} 个关联作品: {linked_rjcodes}"
+                    )
+                    linked_results = await self.check_duplicates_batch(
+                        linked_rjcodes, use_cache, extra_match_rjcodes=extra_for_lookup
+                    )
                     results.update(linked_results)
-                    
+
                     # 4. 记录找到的作品
                     found_works = [rj for rj, res in results.items() if res.is_found and rj != rjcode]
                     if found_works:
-                        logger.info(f"[Kikoeru关联查询] 在关联作品中找到 {len(found_works)} 个: {found_works}")
+                        logger.info(
+                            f"[Kikoeru关联查询] 在关联作品中找到 {len(found_works)} 个: {found_works}"
+                        )
                 else:
-                    logger.info(f"[Kikoeru关联查询] 没有关联作品")
+                    logger.info("[Kikoeru关联查询] 没有关联作品")
             else:
                 logger.info(f"[Kikoeru关联查询] {rjcode} 没有关联作品")
 
+            # 5. 兜底：链路全部未命中时，沿用同语言相关翻译的标题相似度补查。
             found_works = [res for res in results.values() if getattr(res, 'is_found', False)]
             if not found_works:
-                related_translation_results = await self._find_related_translation_candidates(rjcode, linked_works or {})
+                related_translation_results = await self._find_related_translation_candidates(
+                    rjcode, linked_works
+                )
                 if related_translation_results:
                     logger.info(
                         "[Kikoeru关联查询] 关联链未命中，补查到 %s 个同语言相关翻译作品: %s",
@@ -1432,11 +1603,11 @@ class KikoeruDuplicateService:
                         list(related_translation_results.keys()),
                     )
                     results.update(related_translation_results)
-                
+
         except Exception as e:
-            logger.error(f"[Kikoeru关联查询] 获取关联作品失败 {rjcode}: {e}")
+            logger.error(f"[Kikoeru关联查询] 关联查询过程异常 {rjcode}: {e}")
             logger.exception(e)
-        
+
         return results
 
     async def search_circle_works(self, keyword: str, max_pages: int = 200) -> List[Dict]:

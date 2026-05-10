@@ -94,6 +94,72 @@ class LocalScanner:
                 library_id, normalized_root, scanned[0], elapsed,
             )
 
+    def scan_subtree(
+        self,
+        library_id: str,
+        library_root: str,
+        subtree_path: str,
+    ) -> Iterator[IndexEntry]:
+        """扫子树（含子树自身），relative_path / depth 始终基于 library_root 计算。
+
+        给业务自身写操作（解压入库 / rename / 字幕落盘 / 冲突重绑等）调用，
+        把刚刚创建好的子树立即 upsert 到索引，避免依赖全量重建。
+
+        异常：
+        - library_root / subtree_path 为空 / 不存在 / 不是目录：抛 FileNotFoundError
+        - subtree 不在 library_root 下：抛 ValueError
+        - 子目录读失败：和 scan() 一致，日志后跳过
+        """
+        if not library_root:
+            raise FileNotFoundError("library_root 为空")
+        if not subtree_path:
+            raise FileNotFoundError("subtree_path 为空")
+        normalized_root = os.path.abspath(library_root)
+        normalized_subtree = os.path.abspath(subtree_path)
+        if not os.path.exists(normalized_subtree):
+            raise FileNotFoundError(f"子树路径不存在: {subtree_path}")
+        if not os.path.isdir(normalized_subtree):
+            raise NotADirectoryError(f"子树路径不是目录: {subtree_path}")
+
+        # 越界保护：子树必须在 library_root 下，否则 relative_path 会变成 ../
+        # 触发 SnapshotStore 写入异常路径。这里直接拦掉，调用方 catch 后静默。
+        if normalized_subtree != normalized_root:
+            try:
+                rel_check = os.path.relpath(normalized_subtree, normalized_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"subtree 不在 library_root 下（跨盘符）: {subtree_path}"
+                ) from exc
+            if rel_check.startswith("..") or rel_check in {".", ""}:
+                raise ValueError(
+                    f"subtree 不在 library_root 下: subtree={subtree_path} "
+                    f"library_root={library_root}"
+                )
+
+        scanned = [0]
+        started = time.time()
+        # 子树的 depth：相对 library_root 计算
+        if normalized_subtree == normalized_root:
+            subtree_depth = 0
+        else:
+            rel = os.path.relpath(normalized_subtree, normalized_root)
+            subtree_depth = rel.count(os.sep) + 1
+
+        try:
+            yield from self._walk(
+                library_id=library_id,
+                current_path=normalized_subtree,
+                root_path=normalized_root,
+                depth=subtree_depth,
+                scanned=scanned,
+            )
+        finally:
+            elapsed = time.time() - started
+            logger.info(
+                "[LocalScanner] 子树扫描完成 library=%s subtree=%s files=%s elapsed=%.2fs",
+                library_id, normalized_subtree, scanned[0], elapsed,
+            )
+
     def _walk(
         self,
         *,
