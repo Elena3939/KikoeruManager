@@ -158,7 +158,7 @@ KikoeruManager 是一款专为 DLsite 音声作品设计的智能整理工具。
 
 ### Windows 打包版本
 
-1. 从 [Releases](https://github.com/Elena3939/KikoeruTool_Elena/releases) 下载最新版本
+1. 从 [Releases](https://github.com/Elena3939/KikoeruManager/releases) 下载最新版本
 2. 解压到任意目录
 3. 双击运行 `kikoerumanager.exe`
 4. 浏览器自动打开 http://localhost:8000
@@ -167,7 +167,7 @@ KikoeruManager 是一款专为 DLsite 音声作品设计的智能整理工具。
 
 ```bash
 # 拉取镜像
-docker pull ghcr.io/elena3939/kikoerutool_elena:latest
+docker pull ghcr.io/elena3939/kikoerumanager:latest
 
 # 运行容器
 docker run -d \
@@ -176,15 +176,15 @@ docker run -d \
   -v ./data:/app/data \
   -v ./library:/library \
   -v ./input:/input \
-  ghcr.io/elena3939/kikoerutool_elena:latest
+  ghcr.io/elena3939/kikoerumanager:latest
 ```
 
 ### 本地开发
 
 ```bash
 # 克隆仓库
-git clone https://github.com/Elena3939/KikoeruTool_Elena.git
-cd KikoeruTool_Elena
+git clone https://github.com/Elena3939/KikoeruManager.git
+cd KikoeruManager
 
 # 安装后端依赖
 cd backend
@@ -295,4 +295,4 @@ asmr_sync:
 
 ## 联系方式
 
-- GitHub Issues: https://github.com/Elena3939/KikoeruTool_Elena/issues
+- GitHub Issues: https://github.com/Elena3939/KikoeruManager/issues

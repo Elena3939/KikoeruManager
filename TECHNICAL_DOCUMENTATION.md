@@ -1,4 +1,4 @@
-# KikoeruTool 技术文档
+# KikoeruManager 技术文档
 
 > **版本**: v1.0.0  
 > **更新日期**: 2024年  

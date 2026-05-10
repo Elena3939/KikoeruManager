@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Container version="2">
   <Name>kikoerumanager</Name>
-  <Repository>ghcr.io/elena3939/kikoerutool_elena:latest</Repository>
-  <Registry>https://github.com/Elena3939/KikoeruTool_Elena/pkgs/container/kikoerutool_elena</Registry>
+  <Repository>ghcr.io/elena3939/kikoerumanager:latest</Repository>
+  <Registry>https://github.com/Elena3939/KikoeruManager/pkgs/container/kikoerumanager</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>true</Privileged>
-  <Support>https://github.com/Elena3939/KikoeruTool_Elena/issues</Support>
-  <Project>https://github.com/Elena3939/KikoeruTool_Elena</Project>
+  <Support>https://github.com/Elena3939/KikoeruManager/issues</Support>
+  <Project>https://github.com/Elena3939/KikoeruManager</Project>
   <Overview>KikoeruManager - DLsite 作品自动整理工具。支持自动解压、元数据获取、智能重命名、分类整理，以及智能查重功能。</Overview>
   <Category>MediaApp:Other</Category>
   <WebUI>http://[IP]:[PORT:8000]</WebUI>
   <TemplateURL/>
-  <Icon>https://raw.githubusercontent.com/Elena3939/KikoeruTool_Elena/main/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/Elena3939/KikoeruManager/main/icon.png</Icon>
   <ExtraParams>--ulimit nofile=65536:65536</ExtraParams>
   <PostArgs/>
   <CPUset/>

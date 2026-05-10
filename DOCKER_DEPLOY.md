@@ -58,7 +58,7 @@ version: '3.8'
 
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerutool_elena:latest
+    image: ghcr.io/elena3939/kikoerumanager:latest
     container_name: kikoerumanager
     ports:
       - "8000:8000"
@@ -114,7 +114,7 @@ docker run -d \
   -e TZ=Asia/Shanghai \
   --ulimit nofile=65536:65536 \
   --restart unless-stopped \
-  ghcr.io/elena3939/kikoerutool_elena:latest
+  ghcr.io/elena3939/kikoerumanager:latest
 ```
 
 ---
@@ -126,7 +126,7 @@ docker run -d \
 ### 1. 克隆代码
 
 ```bash
-git clone https://github.com/Elena3939/KikoeruTool_Elena.git
+git clone https://github.com/Elena3939/KikoeruManager.git
 cd kikoerumanager
 ```
 
@@ -309,7 +309,7 @@ ulimits:
 
 ## 技术支持
 
-- **GitHub Issues**: https://github.com/Elena3939/KikoeruTool_Elena/issues
+- **GitHub Issues**: https://github.com/Elena3939/KikoeruManager/issues
 - **文档**: 参见项目 README.md
 - **Unraid 论坛**: 在 Unraid 社区论坛搜索 "KikoeruManager"
 

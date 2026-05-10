@@ -2,7 +2,7 @@
 
 一个本地 / 远程通用的 DLsite 同人音声压缩包智能管理工具，覆盖「自动解压 → 元数据获取 → 智能分类 → 库存入库 → 字幕匹配 → 重复处理 → 任务追踪」整条链路，支持本地多盘、群晖远程库存与桌面托盘运行。
 
-[![GHCR](https://img.shields.io/badge/ghcr.io-kikoerumanager-2496ED?logo=docker)](https://github.com/Elena3939/KikoeruTool_Elena/pkgs/container/kikoerutool_elena)
+[![GHCR](https://img.shields.io/badge/ghcr.io-kikoerumanager-2496ED?logo=docker)](https://github.com/Elena3939/KikoeruManager/pkgs/container/kikoerumanager)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 > **重要提示**：使用本软件即表示已阅读并同意 [免责声明与使用条款](DISCLAIMER.md)。本软件仅限 18 周岁及以上成年人使用。
@@ -30,8 +30,8 @@
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/Elena3939/KikoeruTool_Elena.git
-cd KikoeruTool_Elena
+git clone https://github.com/Elena3939/KikoeruManager.git
+cd KikoeruManager
 
 # 2. 后端
 cd backend
@@ -57,7 +57,7 @@ npm run dev
 
 ### Windows 桌面版
 
-打包好的 exe 见 [Releases](https://github.com/Elena3939/KikoeruTool_Elena/releases)，下载解压后双击 `KikoeruManager.exe` 即可，自带托盘 + 自动打开 Web。
+打包好的 exe 见 [Releases](https://github.com/Elena3939/KikoeruManager/releases)，下载解压后双击 `KikoeruManager.exe` 即可，自带托盘 + 自动打开 Web。
 
 也可在本地从源码打包：
 
@@ -69,7 +69,7 @@ npm run dev
 
 ```bash
 # 拉取镜像（GHCR）
-docker pull ghcr.io/elena3939/kikoerutool_elena:latest
+docker pull ghcr.io/elena3939/kikoerumanager:latest
 ```
 
 或用 `docker-compose.yml`：
@@ -77,7 +77,7 @@ docker pull ghcr.io/elena3939/kikoerutool_elena:latest
 ```yaml
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerutool_elena:latest
+    image: ghcr.io/elena3939/kikoerumanager:latest
     container_name: kikoerumanager
     ports:
       - "5555:5555"
