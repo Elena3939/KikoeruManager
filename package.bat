@@ -3,10 +3,10 @@ setlocal
 chcp 65001 >nul
 
 cd /d "%~dp0"
-set "PROJECT_NAME=Prekikoeru"
+set "PROJECT_NAME=KikoeruManager"
 
 echo ========================================
-echo   Prekikoeru 打包脚本
+echo   KikoeruManager 打包脚本
 echo ========================================
 call "%~dp0build-release.bat"
 if errorlevel 1 (

@@ -6,7 +6,7 @@ export const DEFAULT_EMAIL_HTML = `<table width="100%" cellpadding="0" cellspaci
 
 <tr>
 <td style="padding:0;background:#ffffff;">
-  <img src="${EMAIL_HEADER_URL}" alt="Prekikoeru Mail" width="620" style="display:block;width:100%;max-width:620px;height:auto;border:0;outline:none;text-decoration:none;">
+  <img src="${EMAIL_HEADER_URL}" alt="KikoeruManager Mail" width="620" style="display:block;width:100%;max-width:620px;height:auto;border:0;outline:none;text-decoration:none;">
 </td>
 </tr>
 
@@ -26,7 +26,7 @@ export const DEFAULT_EMAIL_HTML = `<table width="100%" cellpadding="0" cellspaci
 <tr>
 <td style="padding:28px 34px 32px 34px;background:#ffffff;">
   <div style="height:1px;background:#eceef3;margin-bottom:16px;"></div>
-  <p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">Prekikoeru</strong> 自动生成。任务详情可在桌面端任务中心查看。</p>
+  <p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">KikoeruManager</strong> 自动生成。任务详情可在桌面端任务中心查看。</p>
 </td>
 </tr>
 
@@ -34,7 +34,7 @@ export const DEFAULT_EMAIL_HTML = `<table width="100%" cellpadding="0" cellspaci
 </td></tr>
 </table>`
 
-export const DEFAULT_SUBJECT = '[Prekikoeru] {任务类型}{事件名称} · {任务标题}'
+export const DEFAULT_SUBJECT = '[KikoeruManager] {任务类型}{事件名称} · {任务标题}'
 
 // ─── 积木版默认模板：把上面那段 HTML 拆成多个独立、可单独编辑的块 ───────
 //
@@ -57,7 +57,7 @@ export function buildDefaultEmailBlocks() {
       schemaVersion: 1,
       props: {
         contentJson: null,
-        htmlCache: `<p style="margin:0;"><img src="${EMAIL_HEADER_URL}" alt="Prekikoeru Mail" style="display:block;width:100%;max-width:100%;height:auto;border:0;border-radius:12px;outline:none;text-decoration:none;"></p>`,
+        htmlCache: `<p style="margin:0;"><img src="${EMAIL_HEADER_URL}" alt="KikoeruManager Mail" style="display:block;width:100%;max-width:100%;height:auto;border:0;border-radius:12px;outline:none;text-decoration:none;"></p>`,
       },
     },
     {
@@ -116,7 +116,7 @@ export function buildDefaultEmailBlocks() {
       schemaVersion: 1,
       props: {
         contentJson: null,
-        htmlCache: `<p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">Prekikoeru</strong> 自动生成。任务详情可在桌面端任务中心查看。</p>`,
+        htmlCache: `<p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">KikoeruManager</strong> 自动生成。任务详情可在桌面端任务中心查看。</p>`,
       },
     },
   ]

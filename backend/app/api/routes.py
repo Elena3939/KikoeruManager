@@ -44,7 +44,7 @@ from ..config.settings import get_config, save_config
 
 # 初始化FastAPI应用
 app = FastAPI(
-    title="Prekikoeru API",
+    title="KikoeruManager API",
     description="DLsite作品整理工具API",
     version="1.0.0"
 )
@@ -76,7 +76,7 @@ async def health_check():
     """健康检查端点"""
     return {
         "status": "healthy",
-        "service": "prekikoeru",
+        "service": "kikoerumanager",
         "version": "1.0.0",
         "timestamp": datetime.now().isoformat()
     }
@@ -2621,10 +2621,10 @@ async def get_logs_info():
             "main_bytes": main_size,
             "backup_bytes": backup_size,
             "max_mb_per_file": int(
-                os.environ.get("PREKIKOERU_LOG_MAX_MB", "20") or 20
+                os.environ.get("KIKOERUMANAGER_LOG_MAX_MB", "20") or 20
             ),
             "backup_count": int(
-                os.environ.get("PREKIKOERU_LOG_BACKUPS", "5") or 5
+                os.environ.get("KIKOERUMANAGER_LOG_BACKUPS", "5") or 5
             ),
         }
 

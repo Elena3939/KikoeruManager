@@ -1,7 +1,7 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title Prekikoeru 开发服务器
+title KikoeruManager 开发服务器
 set "ROOT_DIR=%~dp0"
 pushd "%ROOT_DIR%"
 set "PYTHONHOME="
@@ -13,7 +13,7 @@ set "NPM_CONFIG_PREFIX="
 set "npm_config_prefix="
 
 echo ========================================
-echo    Prekikoeru Local Dev Server
+echo    KikoeruManager Local Dev Server
 echo ========================================
 echo.
 
@@ -157,7 +157,7 @@ echo Press Ctrl+C to stop
 echo.
 
 REM Start backend in new window
-start "Prekikoeru Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && cd /d %ROOT_DIR%backend && venv\Scripts\python.exe -m app.main"
+start "KikoeruManager Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && cd /d %ROOT_DIR%backend && venv\Scripts\python.exe -m app.main"
 
 REM Wait for backend
 timeout /t 3 /nobreak >nul
@@ -168,7 +168,7 @@ call "%NPM_CMD%" run dev
 
 echo.
 echo Stopping services...
-taskkill /F /FI "WINDOWTITLE eq Prekikoeru Backend*" /T >nul 2>&1
+taskkill /F /FI "WINDOWTITLE eq KikoeruManager Backend*" /T >nul 2>&1
 
 echo.
 echo Services stopped

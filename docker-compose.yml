@@ -1,21 +1,21 @@
 version: '3.8'
 
 services:
-  prekikoeru:
+  kikoerumanager:
     build:
       context: .
       dockerfile: Dockerfile
-    image: prekikoeru:latest
-    container_name: prekikoeru
+    image: kikoerumanager:latest
+    container_name: kikoerumanager
     ports:
       # host_port:container_port — 容器内 uvicorn 默认监听 5555，可通过 PORT 环境变量修改
       - "5555:5555"
     volumes:
       # --- 应用数据（建议放在一个独立的 Docker 数据共享文件夹下）---
       # 配置文件目录，保存 config.yaml
-      - /volume1/docker/prekikoeru/config:/app/config
+      - /volume1/docker/kikoerumanager/config:/app/config
       # 数据库、日志等运行时数据
-      - /volume1/docker/prekikoeru/data:/app/data
+      - /volume1/docker/kikoerumanager/data:/app/data
 
       # --- 业务目录（路径改成你群晖上实际的共享文件夹）---
       # 待处理压缩包的输入目录（把下载好的 zip/7z 丢进这个文件夹）

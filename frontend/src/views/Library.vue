@@ -1615,7 +1615,7 @@ const uploadWorkbenchBackgroundActive = ref(false)
 
 const uploadWorkbenchRefreshing = ref(false)
 
-const LOCAL_UPLOAD_WORKBENCH_KEY = 'prekikoeru.library.uploadWorkbench'
+const LOCAL_UPLOAD_WORKBENCH_KEY = 'kikoerumanager.library.uploadWorkbench'
 
 let uploadWorkbenchTimer = null
 
@@ -2004,7 +2004,7 @@ const folderDialogPath = ref('')
 
 const folderDialogName = ref('')
 
-const FILTER_DELETE_BG_STORAGE_KEY = 'prekikoeru.library.filterDeleteBackground'
+const FILTER_DELETE_BG_STORAGE_KEY = 'kikoerumanager.library.filterDeleteBackground'
 
 const filterDeleteDialogVisible = ref(false)
 

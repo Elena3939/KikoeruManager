@@ -44,7 +44,7 @@ def _build_message(from_email: str, from_name: str, to_email: str, subject: str,
     msg['Subject'] = Header(clean_subject, 'utf-8')
     msg['From'] = f"{from_name} <{from_email}>" if from_name else from_email
     msg['To'] = to_email
-    msg['X-Prekikoeru-Notification'] = '1'
+    msg['X-KikoeruManager-Notification'] = '1'
     if text_body:
         msg.attach(MIMEText(text_body, 'plain', 'utf-8'))
     msg.attach(MIMEText(html_body, 'html', 'utf-8'))
@@ -190,7 +190,7 @@ def test_smtp_connection(config_dict: dict) -> dict:
             _raw_pwd = ''
     cfg.password = _raw_pwd
     cfg.from_email = config_dict.get('from_email', '') or config_dict.get('username', '')
-    cfg.from_name = config_dict.get('from_name', 'Prekikoeru')
+    cfg.from_name = config_dict.get('from_name', 'KikoeruManager')
     cfg.to_email = config_dict.get('to_email', '')
     cfg.connect_timeout_seconds = int(config_dict.get('connect_timeout_seconds', 10))
     cfg.send_timeout_seconds = int(config_dict.get('send_timeout_seconds', 30))
@@ -206,7 +206,7 @@ def test_smtp_connection(config_dict: dict) -> dict:
         return {'ok': False, 'message': '收件地址未配置'}
 
     try:
-        _send_smtp_sync(cfg, '测试邮件 - Prekikoeru 通知中心', '<p>SMTP 配置测试成功，Prekikoeru 通知中心已就绪。</p>', 'SMTP 配置测试成功。')
+        _send_smtp_sync(cfg, '测试邮件 - KikoeruManager 通知中心', '<p>SMTP 配置测试成功，KikoeruManager 通知中心已就绪。</p>', 'SMTP 配置测试成功。')
         return {'ok': True, 'message': '发送成功，请检查收件箱'}
     except Exception as e:
         return {'ok': False, 'message': _friendly_smtp_error(e)}

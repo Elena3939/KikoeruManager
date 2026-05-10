@@ -1,6 +1,6 @@
 # 构建 Windows EXE 文件指南
 
-本文档说明如何从源代码构建 prekikoeru 的 Windows 可执行文件。
+本文档说明如何从源代码构建 kikoerumanager 的 Windows 可执行文件。
 
 ## 前置条件
 
@@ -13,7 +13,7 @@
 ### 1. 进入后端目录
 
 ```bash
-cd prekikoeru/backend
+cd kikoerumanager/backend
 ```
 
 ### 2. 激活虚拟环境
@@ -41,7 +41,7 @@ pip install pyinstaller
 
 ### 4. 确保前端已构建
 
-前端构建产物需要存在于 `prekikoeru/frontend/dist` 目录。
+前端构建产物需要存在于 `kikoerumanager/frontend/dist` 目录。
 
 如果需要重新构建前端：
 
@@ -64,8 +64,8 @@ python build.py
 
 | 文件 | 说明 |
 |------|------|
-| `prekikoeru.exe` | 带控制台窗口版本，方便调试 |
-| `prekikoeru-noconsole.exe` | 无控制台窗口版本，适合日常使用 |
+| `kikoerumanager.exe` | 带控制台窗口版本，方便调试 |
+| `kikoerumanager-noconsole.exe` | 无控制台窗口版本，适合日常使用 |
 
 ## 构建配置说明
 
@@ -106,15 +106,15 @@ pip install -r requirements.txt
 
 ```bash
 # 构建带控制台版本
-pyinstaller build_prekikoeru.spec --clean
+pyinstaller build_kikoerumanager.spec --clean
 
 # 构建无控制台版本
-pyinstaller build_prekikoeru-noconsole.spec --clean
+pyinstaller build_kikoerumanager-noconsole.spec --clean
 ```
 
 ## 相关文件
 
 - `build.py` - 主构建脚本
-- `build_prekikoeru.spec` - 带控制台版本配置
-- `build_prekikoeru-noconsole.spec` - 无控制台版本配置
+- `build_kikoerumanager.spec` - 带控制台版本配置
+- `build_kikoerumanager-noconsole.spec` - 无控制台版本配置
 - `run.py` - 应用入口文件

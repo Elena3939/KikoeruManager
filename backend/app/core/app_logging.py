@@ -11,8 +11,8 @@
 关键设计：
 - 默认 maxBytes = 20MB，backupCount = 5。上限约 120MB，足够排错又不会继续涨。
 - 可通过环境变量覆盖：
-    - PREKIKOERU_LOG_MAX_MB：单文件大小上限（MB）
-    - PREKIKOERU_LOG_BACKUPS：保留备份份数（轮转编号最大值）
+    - KIKOERUMANAGER_LOG_MAX_MB：单文件大小上限（MB）
+    - KIKOERUMANAGER_LOG_BACKUPS：保留备份份数（轮转编号最大值）
 - force_rotate() / truncate_main_log() 都会关闭再打开 RotatingFileHandler，
   避免 Windows 下 rename/truncate 正在写入的日志文件时出现句柄冲突。
 - 对 StreamHandler（控制台）完全不动，只影响文件写。
@@ -109,10 +109,10 @@ def configure_app_logging(
     log_path = os.path.join(resolved_dir, _MAIN_LOG_NAME)
 
     effective_max_mb = max_mb if max_mb is not None else _env_int(
-        "PREKIKOERU_LOG_MAX_MB", _DEFAULT_MAX_MB, min_value=1, max_value=512
+        "KIKOERUMANAGER_LOG_MAX_MB", _DEFAULT_MAX_MB, min_value=1, max_value=512
     )
     effective_backups = backup_count if backup_count is not None else _env_int(
-        "PREKIKOERU_LOG_BACKUPS", _DEFAULT_BACKUP_COUNT, min_value=0, max_value=50
+        "KIKOERUMANAGER_LOG_BACKUPS", _DEFAULT_BACKUP_COUNT, min_value=0, max_value=50
     )
 
     formatter = logging.Formatter(fmt, datefmt=datefmt)

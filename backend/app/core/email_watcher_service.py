@@ -137,7 +137,7 @@ def _sender_matches_filter(msg: "email.message.Message", sender_filter: str, sub
 
 
 def _is_self_generated_notification(msg: "email.message.Message", subject: str, config) -> bool:
-    if str(msg.get("X-Prekikoeru-Notification") or "").strip() == "1":
+    if str(msg.get("X-KikoeruManager-Notification") or "").strip() == "1":
         return True
 
     notification_cfg = getattr(config, "notification_email", None)
@@ -431,11 +431,11 @@ def _build_new_release_email_card_html(circle_name: str, items: List[Dict[str, o
             <td style="padding:24px 28px;border-radius:18px;background:#ffffff;border:1px solid #e8ebf0;box-shadow:0 18px 48px rgba(20,24,31,.08);">
               <div style="margin-bottom:8px;color:#15803d;font-size:13px;font-weight:900;letter-spacing:.08em;">NEW RELEASE</div>
               <div style="margin-bottom:10px;color:#151922;font-size:24px;font-weight:760;line-height:1.28;word-break:break-word;">{esc(circle_name)} 有新作品发售</div>
-              <div style="margin-bottom:6px;color:#596272;font-size:14px;line-height:1.7;">已写入社团补全索引，可在 Prekikoeru 查看状态。</div>
+              <div style="margin-bottom:6px;color:#596272;font-size:14px;line-height:1.7;">已写入社团补全索引，可在 KikoeruManager 查看状态。</div>
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin-top:14px;">
                 {''.join(rows)}
               </table>
-              <div style="margin-top:18px;padding-top:14px;border-top:1px solid #eceef3;text-align:center;color:#8a9099;font-size:12px;line-height:1.7;">此邮件由 <strong style="color:#4f5661;font-weight:650;">Prekikoeru</strong> 自动生成。</div>
+              <div style="margin-top:18px;padding-top:14px;border-top:1px solid #eceef3;text-align:center;color:#8a9099;font-size:12px;line-height:1.7;">此邮件由 <strong style="color:#4f5661;font-weight:650;">KikoeruManager</strong> 自动生成。</div>
             </td>
           </tr>
         </table>
@@ -758,7 +758,7 @@ class EmailWatcherService:
                 code = str(item.get("mail_rjcode") or item.get("display_rjcode") or item.get("canonical_rjcode") or "").strip().upper()
                 work_title = str(item.get("title") or "").strip()
                 lines.append(f"- {code} {work_title}".strip())
-            lines.append("已写入社团补全索引，请在 Prekikoeru 查看。")
+            lines.append("已写入社团补全索引，请在 KikoeruManager 查看。")
             text_body = "\n".join(lines)
             html_body = _build_new_release_email_card_html(circle_name, items)
             await send_notification_email(title, html_body, text_body)
@@ -1246,7 +1246,7 @@ class EmailWatcherService:
                 diag["skipped_sender_filter"] += 1
                 continue
             if _is_self_generated_notification(header_msg, subject, config):
-                logger.debug("[邮件监听] uid=%s 是 Prekikoeru 自己发出的通知邮件，跳过", uid)
+                logger.debug("[邮件监听] uid=%s 是 KikoeruManager 自己发出的通知邮件，跳过", uid)
                 diag["skipped_self_notification"] += 1
                 continue
             if not _subject_matches_filter(subject, subject_filter):

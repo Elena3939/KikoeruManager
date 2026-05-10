@@ -1571,7 +1571,7 @@ class RJSubtitleService:
 
     def _build_remote_upload_temp_name(self, index: int, output_name: str) -> str:
         ext = os.path.splitext(output_name)[1].lower() or '.vtt'
-        return f"__prekikoeru_upload_{index:04d}_{uuid.uuid4().hex[:8]}{ext}"
+        return f"__kikoerumanager_upload_{index:04d}_{uuid.uuid4().hex[:8]}{ext}"
 
     def _build_raw_subtitle_output_name(self, subtitle: Dict, used_names: set[str], existing_names: set[str], overwrite: bool) -> Optional[str]:
         normalized = self._normalize_subtitle_file(subtitle)
@@ -1655,8 +1655,8 @@ class RJSubtitleService:
         return names
 
     async def _cleanup_stranded_upload_temps(self, client, subtitle_dir: str, existing_names: set[str]) -> None:
-        """清理上次写入中断遗留的临时上传文件（__prekikoeru_upload_* 前缀），保证幂等。"""
-        _TEMP_PREFIX = "__prekikoeru_upload_"
+        """清理上次写入中断遗留的临时上传文件（__kikoerumanager_upload_* 前缀），保证幂等。"""
+        _TEMP_PREFIX = "__kikoerumanager_upload_"
         stranded = [name for name in existing_names if name.startswith(_TEMP_PREFIX)]
         for name in stranded:
             try:

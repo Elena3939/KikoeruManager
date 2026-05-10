@@ -67,7 +67,7 @@
 
         <template v-if="selectedLibrary.type !== 'synology_filestation'">
           <SettingsFieldCard label="本地库存路径">
-            <input v-model="selectedLibrary.path" class="lib-input" type="text" placeholder="例如 D:\Prekikoeru\Library">
+            <input v-model="selectedLibrary.path" class="lib-input" type="text" placeholder="例如 D:\KikoeruManager\Library">
           </SettingsFieldCard>
         </template>
 

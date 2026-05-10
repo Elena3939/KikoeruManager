@@ -2,7 +2,7 @@ import os
 import subprocess
 import sys
 
-APP_NAME = "Prekikoeru"
+APP_NAME = "KikoeruManager"
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BACKEND_DIR, "app.ico")
@@ -91,7 +91,7 @@ def main():
         sys.exit(1)
     
     print("=" * 50)
-    print("Building prekikoeru - two versions")
+    print("Building kikoerumanager - two versions")
     print("=" * 50)
     
     success = True
@@ -107,8 +107,8 @@ def main():
     if success:
         print("\n" + "=" * 50)
         print("Build complete!")
-        print("  - dist/prekikoeru.exe (with console)")
-        print("  - dist/prekikoeru-noconsole.exe (without console)")
+        print("  - dist/kikoerumanager.exe (with console)")
+        print("  - dist/kikoerumanager-noconsole.exe (without console)")
         print("=" * 50)
     else:
         print("\nBuild failed!")

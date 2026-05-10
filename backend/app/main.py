@@ -49,7 +49,7 @@ def main():
 
     logger = logging.getLogger(__name__)
     logger.info("=" * 50)
-    logger.info("Prekikoeru 启动中...")
+    logger.info("KikoeruManager 启动中...")
     logger.info("=" * 50)
 
     init_database()

@@ -45,7 +45,7 @@
 
     <div class="field-grid three">
       <SettingsFieldCard label="设备名称">
-        <input v-model="profile.device_name" class="profile-input" type="text" placeholder="例如 Prekikoeru">
+        <input v-model="profile.device_name" class="profile-input" type="text" placeholder="例如 KikoeruManager">
       </SettingsFieldCard>
       <SettingsFieldCard label="设备令牌 ID">
         <input v-model="profile.device_id" class="profile-input" type="text" placeholder="测试成功后自动回填">

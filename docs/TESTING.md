@@ -180,7 +180,7 @@ zip large_test.zip large_file
 #!/bin/bash
 # test.sh - 快速测试脚本
 
-echo "=== Prekikoeru 测试脚本 ==="
+echo "=== KikoeruManager 测试脚本 ==="
 
 # 检查依赖
 echo "检查依赖..."
@@ -217,10 +217,10 @@ echo "测试完成！"
 tail -f data/logs/app.log
 
 # Docker日志
-docker-compose logs -f prekikoeru
+docker-compose logs -f kikoerumanager
 
 # 系统日志（Linux）
-journalctl -u prekikoeru -f
+journalctl -u kikoerumanager -f
 ```
 
 ### 8.2 数据库检查

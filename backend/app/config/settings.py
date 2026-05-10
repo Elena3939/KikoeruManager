@@ -336,7 +336,7 @@ class NotificationEmailConfig(BaseModel):
     username: str = ""
     password: str = ""
     from_email: str = ""
-    from_name: str = "Prekikoeru"
+    from_name: str = "KikoeruManager"
     to_email: str = ""
     connect_timeout_seconds: int = 10
     send_timeout_seconds: int = 30

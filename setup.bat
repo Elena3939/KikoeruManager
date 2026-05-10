@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title Prekikoeru Setup
+title KikoeruManager Setup
 set "ROOT_DIR=%~dp0"
 pushd "%ROOT_DIR%"
 set "PYTHONHOME="
@@ -11,7 +11,7 @@ set "CONDA_DEFAULT_ENV="
 set "NPM_CONFIG_PREFIX="
 set "npm_config_prefix="
 echo ========================================
-echo Prekikoeru Setup Wizard
+echo KikoeruManager Setup Wizard
 echo ========================================
 echo.
 

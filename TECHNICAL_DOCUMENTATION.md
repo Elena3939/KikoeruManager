@@ -68,7 +68,7 @@
 ### 1.3 项目目录结构
 
 ```
-prekikoeru/
+kikoerumanager/
 ├── backend/
 │   ├── app/
 │   │   ├── api/

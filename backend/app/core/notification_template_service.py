@@ -27,22 +27,22 @@ _EVENT_LABELS = {
 }
 
 _DEFAULT_SUBJECT = {
-    'completed': '[Prekikoeru] {任务类型}任务完成 — {任务标题}',
-    'failed': '[Prekikoeru] {任务类型}任务失败 — {任务标题}',
-    'waiting_manual': '[Prekikoeru] 等待人工处理 — {任务标题}',
+    'completed': '[KikoeruManager] {任务类型}任务完成 — {任务标题}',
+    'failed': '[KikoeruManager] {任务类型}任务失败 — {任务标题}',
+    'waiting_manual': '[KikoeruManager] 等待人工处理 — {任务标题}',
 }
 
 _EMAIL_HEADER_URL = 'https://im.gurl.eu.org/file/AgACAgEAAxkDAAEBgcVp8OfJBO4AAUxLd8WPdMwRLA8TX28AAnsMaxuveYhHvw-4JedMJTcBAAMCAAN3AAM7BA.png'
 
 _DEFAULT_USER_TEMPLATE_NAME = '通用通知 · 极简白'
-_DEFAULT_USER_SUBJECT = '[Prekikoeru] {任务类型}{事件名称} · {任务标题}'
+_DEFAULT_USER_SUBJECT = '[KikoeruManager] {任务类型}{事件名称} · {任务标题}'
 
 
 def _default_white_template_html() -> str:
     return """<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f7f8fa;padding:34px 0;">
 <tr><td align="center">
 <table width="660" cellpadding="0" cellspacing="0" border="0" style="width:660px;max-width:calc(100% - 28px);background:#ffffff;border:1px solid #e8ebf0;border-radius:18px;border-collapse:separate;overflow:hidden;box-shadow:0 18px 48px rgba(20,24,31,0.08);">
-<tr><td style="padding:0;background:#ffffff;"><img src="__HEADER_URL__" alt="Prekikoeru Mail" width="660" style="display:block;width:100%;max-width:660px;height:auto;border:0;outline:none;text-decoration:none;"></td></tr>
+<tr><td style="padding:0;background:#ffffff;"><img src="__HEADER_URL__" alt="KikoeruManager Mail" width="660" style="display:block;width:100%;max-width:660px;height:auto;border:0;outline:none;text-decoration:none;"></td></tr>
 <tr><td style="padding:26px 34px 0 34px;background:#ffffff;text-align:center;">
 <div style="margin:0 0 12px 0;font-size:13px;line-height:1.5;color:#7b4fb4;font-weight:800;">{事件图标} {事件名称} · {时间}</div>
 <h1 style="margin:0;font-size:24px;line-height:1.36;font-weight:760;color:#151922;letter-spacing:0;">{任务标题}</h1>
@@ -50,7 +50,7 @@ def _default_white_template_html() -> str:
 <p style="margin:12px auto 0 auto;max-width:520px;font-size:14px;line-height:1.75;color:#596272;">{摘要}</p>
 </td></tr>
 <tr><td style="padding:18px 34px 0 34px;background:#ffffff;">{业务数据块}</td></tr>
-<tr><td style="padding:28px 34px 32px 34px;background:#ffffff;"><div style="height:1px;background:#eceef3;margin-bottom:16px;"></div><p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">Prekikoeru</strong> 自动生成。任务详情可在桌面端任务中心查看。</p></td></tr>
+<tr><td style="padding:28px 34px 32px 34px;background:#ffffff;"><div style="height:1px;background:#eceef3;margin-bottom:16px;"></div><p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">KikoeruManager</strong> 自动生成。任务详情可在桌面端任务中心查看。</p></td></tr>
 </table>
 </td></tr>
 </table>""".replace('__HEADER_URL__', _EMAIL_HEADER_URL)
@@ -139,7 +139,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hir
     <div class="row"><span class="lbl">状态</span><span class="val"><span class="badge">{event_label}</span></span></div>
     <div class="row"><span class="lbl">时间</span><span class="val">{created_at}</span></div>
   </div>
-  <div class="ft">此邮件由 Prekikoeru 自动发出，请勿回复。</div>
+  <div class="ft">此邮件由 KikoeruManager 自动发出，请勿回复。</div>
 </div>
 </body>
 </html>"""
@@ -168,7 +168,7 @@ def render_builtin_email(payload: dict) -> tuple:
     event_icon = _EVENT_ICONS.get(event_type, '')
     event_label = _EVENT_LABELS.get(event_type, event_type)
     rjcode_row = f'<div class="row"><span class="lbl">RJ 号</span><span class="val">{rjcode}</span></div>' if rjcode else ''
-    subject_tpl = _DEFAULT_SUBJECT.get(event_type, '[Prekikoeru] 任务通知 — {title}')
+    subject_tpl = _DEFAULT_SUBJECT.get(event_type, '[KikoeruManager] 任务通知 — {title}')
     subject_vars = _SafeFormatDict({
         'title': payload.get('title', ''),
         'domain_label': payload.get('domain_label', ''),
@@ -206,20 +206,20 @@ def render_builtin_email(payload: dict) -> tuple:
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f7f8fa;padding:32px 0;">
 <tr><td align="center">
 <table width="660" cellpadding="0" cellspacing="0" border="0" style="width:660px;max-width:calc(100% - 28px);background:#fff;border:1px solid #e8ebf0;border-radius:18px;border-collapse:separate;overflow:hidden;box-shadow:0 18px 48px rgba(20,24,31,.08);">
-<tr><td><img src="{_EMAIL_HEADER_URL}" alt="Prekikoeru Mail" width="660" style="display:block;width:100%;max-width:660px;height:auto;border:0;"></td></tr>
+<tr><td><img src="{_EMAIL_HEADER_URL}" alt="KikoeruManager Mail" width="660" style="display:block;width:100%;max-width:660px;height:auto;border:0;"></td></tr>
 <tr><td style="padding:26px 34px 0 34px;text-align:center;background:#fff;">
 <div style="font-size:13px;line-height:1.5;color:#7b4fb4;font-weight:800;margin-bottom:12px;">{_esc(event_icon)} {_esc(event_label)} · {_esc(created_at)}</div>
 <h1 style="margin:0;color:#151922;font-size:24px;line-height:1.36;font-weight:760;">{title}</h1>
 <p style="margin:12px auto 0 auto;max-width:520px;color:#596272;font-size:14px;line-height:1.75;">{summary}</p>
 </td></tr>
 <tr><td style="padding:18px 34px 0 34px;background:#fff;">{sections}</td></tr>
-<tr><td style="padding:28px 34px 32px 34px;background:#fff;"><div style="height:1px;background:#eceef3;margin-bottom:16px;"></div><p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">Prekikoeru</strong> 自动生成。任务详情可在桌面端任务中心查看。</p></td></tr>
+<tr><td style="padding:28px 34px 32px 34px;background:#fff;"><div style="height:1px;background:#eceef3;margin-bottom:16px;"></div><p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">此邮件由 <strong style="color:#4f5661;font-weight:650;">KikoeruManager</strong> 自动生成。任务详情可在桌面端任务中心查看。</p></td></tr>
 </table>
 </td></tr>
 </table>
 </body>
 </html>"""
-    text_body = f"{event_icon} {event_label}\n\n任务名称：{payload.get('title','')}\n类型：{payload.get('domain_label','')}\n{('RJ 号：' + payload.get('rjcode','') + chr(10)) if payload.get('rjcode') else ''}时间：{created_at}\n\n此邮件由 Prekikoeru 自动发出。"
+    text_body = f"{event_icon} {event_label}\n\n任务名称：{payload.get('title','')}\n类型：{payload.get('domain_label','')}\n{('RJ 号：' + payload.get('rjcode','') + chr(10)) if payload.get('rjcode') else ''}时间：{created_at}\n\n此邮件由 KikoeruManager 自动发出。"
     return subject, html_body, text_body
 
 
@@ -692,7 +692,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hir
 <div class="body-pad">
 {content}
 </div>
-<div class="ft">此邮件由 Prekikoeru 自动发出，请勿回复。</div>
+<div class="ft">此邮件由 KikoeruManager 自动发出，请勿回复。</div>
 </div>
 </body>
 </html>"""
@@ -754,7 +754,7 @@ def render_blocks_email(blocks: list, payload: dict) -> tuple:
     # 主题里所有 {var} 都通过 substitute_variables 解析，未注册的占位会保留原文。
     from ..core.variable_registry import substitute_variables as _subst
     subject_template = (payload.get('_subject_template') or '').strip() or _DEFAULT_SUBJECT.get(
-        event_type, '[Prekikoeru] 任务通知 — {title}'
+        event_type, '[KikoeruManager] 任务通知 — {title}'
     )
     subject = _subst(subject_template, enriched, escape=False)
 
@@ -762,7 +762,7 @@ def render_blocks_email(blocks: list, payload: dict) -> tuple:
                 f"任务名称：{payload.get('title', '')}\n" \
                 f"类型：{payload.get('domain_label', '')}\n" \
                 f"{('RJ 号：' + payload.get('rjcode', '') + chr(10)) if payload.get('rjcode') else ''}" \
-                f"时间：{enriched['created_at_text']}\n\n此邮件由 Prekikoeru 自动发出。"
+                f"时间：{enriched['created_at_text']}\n\n此邮件由 KikoeruManager 自动发出。"
     return subject, html_body, text_body
 
 

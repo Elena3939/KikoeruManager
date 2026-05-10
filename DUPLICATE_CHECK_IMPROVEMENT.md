@@ -1,8 +1,8 @@
-# Prekikoeru 查重功能改进总结
+# KikoeruManager 查重功能改进总结
 
 ## 概述
 
-参考 VoiceLinks 的查重功能，对 Prekikoeru 的查重系统进行了全面改进，支持通过 RJ 号查询关联作品（不同语言版本），并提供更详细的冲突分析和解决选项。
+参考 VoiceLinks 的查重功能，对 KikoeruManager 的查重系统进行了全面改进，支持通过 RJ 号查询关联作品（不同语言版本），并提供更详细的冲突分析和解决选项。
 
 ## 核心改进
 
@@ -169,7 +169,7 @@ related_rjcodes = Column(JSON)      # 所有关联的 RJ 号
 
 ## 与 VoiceLinks 的功能对比
 
-| 功能 | VoiceLinks | Prekikoeru (改进后) |
+| 功能 | VoiceLinks | KikoeruManager (改进后) |
 |------|------------|---------------------|
 | 关联作品检测 | ✅ | ✅ |
 | 翻译版本识别 | ✅ | ✅ |
@@ -189,7 +189,7 @@ related_rjcodes = Column(JSON)      # 所有关联的 RJ 号
 **VoiceLinks 显示:**
 - 原作 ✔ | 翻译(简中)
 
-**Prekikoeru 处理:**
+**KikoeruManager 处理:**
 1. 检测冲突类型: `LINKED_WORK_ORIGINAL`
 2. 推荐选项: "保留两者"
 3. 自动将翻译版本移动到库中（不与原作冲突）
@@ -199,7 +199,7 @@ related_rjcodes = Column(JSON)      # 所有关联的 RJ 号
 **VoiceLinks 显示:**
 - ✘本作 | ✔ 翻译(简中)
 
-**Prekikoeru 处理:**
+**KikoeruManager 处理:**
 1. 检测冲突类型: `LINKED_WORK_TRANSLATION`
 2. 推荐选项: "保留两者"
 3. 用户可以选择保留原作品（作为补充）
@@ -209,7 +209,7 @@ related_rjcodes = Column(JSON)      # 所有关联的 RJ 号
 **VoiceLinks 显示:**
 - 本作 ✔
 
-**Prekikoeru 处理:**
+**KikoeruManager 处理:**
 1. 检测冲突类型: `DUPLICATE`
 2. 提供选项: 保留新版/保留旧版/合并/跳过
 

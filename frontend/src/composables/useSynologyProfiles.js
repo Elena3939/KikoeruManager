@@ -107,7 +107,7 @@ export function useSynologyProfiles(config) {
       ...mergeSynologyFields(profile ? pickProfileFields(profile) : {}, localSynology)
     }
     merged.root_path = localSynology.root_path || normalized.path || '/'
-    if (!merged.device_name) merged.device_name = localSynology.device_name || normalized.name || normalized.id || 'Prekikoeru'
+    if (!merged.device_name) merged.device_name = localSynology.device_name || normalized.name || normalized.id || 'KikoeruManager'
     return merged
   }
 

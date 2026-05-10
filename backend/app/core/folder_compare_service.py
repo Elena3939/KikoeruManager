@@ -135,7 +135,7 @@ class FolderCompareService:
         backup_path = ""
         try:
             if os.path.exists(target_path):
-                backup_path = f"{target_path}.__prekikoeru_backup__.{uuid.uuid4().hex[:8]}"
+                backup_path = f"{target_path}.__kikoerumanager_backup__.{uuid.uuid4().hex[:8]}"
                 os.replace(target_path, backup_path)
                 logger.info("冲突替换前备份旧目录: %s -> %s", target_path, backup_path)
 

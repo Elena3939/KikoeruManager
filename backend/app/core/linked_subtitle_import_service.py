@@ -28,7 +28,7 @@ class LinkedSubtitleImportService:
     EXISTING_SUBTITLE_CONFLICT_TYPE = "LINKED_WORK"
     PENDING_SOURCE_MODE = "linked_translation_archive_pending"
     EXISTING_SUBTITLE_SOURCE_MODE = "linked_translation_archive_existing_subtitle_conflict"
-    WORKBENCH_RELATIVE_DIR = "_prekikoeru_subtitle_workbench/linked"
+    WORKBENCH_RELATIVE_DIR = "_kikoerumanager_subtitle_workbench/linked"
     REMOTE_SEARCH_RETRY_DELAYS: tuple[float, ...] = ()
     REMOTE_PENDING_REASON = "远程库存暂未检出原作目录，请稍后重试"
     EXISTING_SUBTITLE_REASON = "原作目录已有字幕，按重复作品处理"
@@ -728,8 +728,8 @@ class LinkedSubtitleImportService:
         target_subtitle_dir = os.path.join(target_folder, "subtitles")
         target_parent_dir = os.path.dirname(target_subtitle_dir)
         target_name = os.path.basename(target_subtitle_dir.rstrip("\\/")) or "subtitles"
-        stage_dir = os.path.join(target_parent_dir, f"{target_name}.__prekikoeru_stage__.{uuid.uuid4().hex[:8]}")
-        backup_dir = os.path.join(target_parent_dir, f"{target_name}.__prekikoeru_backup__.{uuid.uuid4().hex[:8]}")
+        stage_dir = os.path.join(target_parent_dir, f"{target_name}.__kikoerumanager_stage__.{uuid.uuid4().hex[:8]}")
+        backup_dir = os.path.join(target_parent_dir, f"{target_name}.__kikoerumanager_backup__.{uuid.uuid4().hex[:8]}")
         os.makedirs(target_parent_dir, exist_ok=True)
 
         try:

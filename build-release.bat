@@ -4,7 +4,7 @@ chcp 65001 >nul
 
 cd /d "%~dp0"
 set "ROOT=%cd%"
-set "PROJECT_NAME=Prekikoeru"
+set "PROJECT_NAME=KikoeruManager"
 
 REM ========================================
 REM 应用程序图标路径配置

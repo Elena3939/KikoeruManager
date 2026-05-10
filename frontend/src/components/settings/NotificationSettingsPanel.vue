@@ -92,7 +92,7 @@
         </div>
         <div class="field-stack">
           <SettingsFieldCard label="发件显示名">
-            <input v-model="config.notification_email.from_name" class="field-input" type="text" placeholder="Prekikoeru">
+            <input v-model="config.notification_email.from_name" class="field-input" type="text" placeholder="KikoeruManager">
           </SettingsFieldCard>
           <SettingsFieldCard label="发件地址">
             <input v-model="config.notification_email.from_email" class="field-input" type="text" placeholder="留空使用账号地址">

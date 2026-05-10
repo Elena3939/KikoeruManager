@@ -1,4 +1,4 @@
-# Prekikoeru 快速启动指南
+# KikoeruManager 快速启动指南
 
 ## 安装（首次使用）
 
@@ -25,7 +25,7 @@
 ## 目录说明
 
 ```
-prekikoeru/
+kikoerumanager/
 ├── start-all.bat      # 一键启动（用这个！）
 ├── setup.bat          # 首次安装
 ├── backend/

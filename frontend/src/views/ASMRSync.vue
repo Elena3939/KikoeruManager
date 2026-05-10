@@ -668,7 +668,7 @@ import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWork
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import WorkCard from '../components/circle/WorkCard.vue'
 
-const ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY = 'prekikoeru.asmrSync.downloadWorkbench'
+const ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.downloadWorkbench'
 
 const subtitleFolder = ref('')
 const scanning = ref(false)

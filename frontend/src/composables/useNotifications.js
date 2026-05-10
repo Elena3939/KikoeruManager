@@ -35,7 +35,7 @@ function _connectSSE() {
       }
       if (data.type === 'new_notification') {
         _unreadCount.value = data.unread_count ?? (_unreadCount.value + 1)
-        window.dispatchEvent(new CustomEvent('prekikoeru:notification:new', { detail: data.item || data }))
+        window.dispatchEvent(new CustomEvent('kikoerumanager:notification:new', { detail: data.item || data }))
         if (_panelOpen.value) {
           // 面板打开中，实时追加到列表顶部
           if (data.item) {
@@ -52,7 +52,7 @@ function _connectSSE() {
       // - circle_owned_synced：某 RJ 已成功入库并写入 LibraryOwnedWork，前端 CircleCompletion 收到后可秒级刷新对应社团。
       //   payload: { type, rjcode, canonicals: string[], circle_ids: string[] }
       if (data.type === 'circle_owned_synced') {
-        window.dispatchEvent(new CustomEvent('prekikoeru:circle:owned-synced', { detail: data }))
+        window.dispatchEvent(new CustomEvent('kikoerumanager:circle:owned-synced', { detail: data }))
         return
       }
     } catch { /* ignore */ }

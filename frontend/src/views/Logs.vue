@@ -333,7 +333,7 @@
           单文件上限 <span class="font-bold">{{ logInfo?.max_mb_per_file ?? 20 }} MB</span>，最多保留
           <span class="font-bold">{{ logInfo?.backup_count ?? 5 }}</span> 份备份，理论上限
           <span class="font-bold">{{ ((logInfo?.max_mb_per_file ?? 20) * ((logInfo?.backup_count ?? 5) + 1)).toFixed(0) }} MB</span>。
-          可通过环境变量 <code>PREKIKOERU_LOG_MAX_MB</code> / <code>PREKIKOERU_LOG_BACKUPS</code> 调整。
+          可通过环境变量 <code>KIKOERUMANAGER_LOG_MAX_MB</code> / <code>KIKOERUMANAGER_LOG_BACKUPS</code> 调整。
         </div>
 
         <div class="flex flex-wrap gap-2">
@@ -486,7 +486,7 @@ const highlightCacheHits = ref(0)
 const highlightCacheMisses = ref(0)
 
 const moduleColors = {
-  Prekikoeru: '#6d8ef7',
+  KikoeruManager: '#6d8ef7',
   关联查询: '#8b5cf6',
   字幕抓取: '#7c3aed',
   CONFIG: '#0ea5e9',
@@ -610,7 +610,7 @@ function parseModule(message, rawLine) {
   const bracketMatch = rawLine.match(/\[([^\]]+)\]/)
   if (bracketMatch) {
     const tag = bracketMatch[1]
-    if (tag.includes('Prekikoeru') || tag.includes('CONFIG') || tag.includes('RENAME') || tag.includes('RJ字幕')) {
+    if (tag.includes('KikoeruManager') || tag.includes('CONFIG') || tag.includes('RENAME') || tag.includes('RJ字幕')) {
       return tag
     }
   }

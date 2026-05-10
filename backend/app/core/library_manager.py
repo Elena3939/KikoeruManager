@@ -4434,8 +4434,8 @@ class LibraryManager:
         target = self._normalize_remote_path(target_path)
         parent = str(PurePosixPath(target).parent)
         target_name = PurePosixPath(target).name
-        stage_name = f"{target_name}.__prekikoeru_stage__.{uuid.uuid4().hex[:8]}"
-        backup_name = f"{target_name}.__prekikoeru_backup__.{uuid.uuid4().hex[:8]}"
+        stage_name = f"{target_name}.__kikoerumanager_stage__.{uuid.uuid4().hex[:8]}"
+        backup_name = f"{target_name}.__kikoerumanager_backup__.{uuid.uuid4().hex[:8]}"
         stage_path = str(PurePosixPath(parent) / stage_name)
         backup_path = str(PurePosixPath(parent) / backup_name)
         target_exists = await self._remote_path_exists(client, target)
@@ -4476,8 +4476,8 @@ class LibraryManager:
         target = self._normalize_remote_path(target_path)
         parent = str(PurePosixPath(target).parent)
         target_name = PurePosixPath(target).name
-        stage_name = f"{target_name}.__prekikoeru_stage__.{uuid.uuid4().hex[:8]}"
-        backup_name = f"{target_name}.__prekikoeru_backup__.{uuid.uuid4().hex[:8]}"
+        stage_name = f"{target_name}.__kikoerumanager_stage__.{uuid.uuid4().hex[:8]}"
+        backup_name = f"{target_name}.__kikoerumanager_backup__.{uuid.uuid4().hex[:8]}"
         stage_path = str(PurePosixPath(parent) / stage_name)
         backup_path = str(PurePosixPath(parent) / backup_name)
 

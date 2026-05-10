@@ -461,7 +461,7 @@ import AppPageHeader from '../components/common/AppPageHeader.vue'
 import { conflictApi, taskCenterApi } from '../api'
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
-const ACTIVE_CONFLICT_STORAGE_KEY = 'prekikoeru-conflicts-active-id'
+const ACTIVE_CONFLICT_STORAGE_KEY = 'kikoerumanager-conflicts-active-id'
 
 const conflicts = ref([])
 const loading = ref(false)

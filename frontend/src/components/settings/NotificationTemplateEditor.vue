@@ -37,7 +37,7 @@
           <!-- 基础字段精简行 -->
           <div class="tpl-meta-bar">
             <input v-model="form.name" class="tpl-input tpl-meta-input" type="text" placeholder="模板名称（必填）">
-            <input v-model="form.subject_template" class="tpl-input tpl-meta-input tpl-meta-input--subject" type="text" placeholder="邮件主题，如 [Prekikoeru] {任务类型}{事件名称} — {任务标题}">
+            <input v-model="form.subject_template" class="tpl-input tpl-meta-input tpl-meta-input--subject" type="text" placeholder="邮件主题，如 [KikoeruManager] {任务类型}{事件名称} — {任务标题}">
             <div class="tpl-chips tpl-meta-chips">
               <button
                 v-for="e in EVENT_OPTIONS" :key="e.value"
@@ -79,7 +79,7 @@
           <!-- 顶部 meta-bar -->
           <div class="tpl-meta-bar">
             <input v-model="form.name" class="tpl-input tpl-meta-input" type="text" placeholder="模板名称（必填）">
-            <input v-model="form.subject_template" class="tpl-input tpl-meta-input tpl-meta-input--subject" type="text" placeholder="邮件主题，如 [Prekikoeru] {任务类型}{事件名称} — {任务标题}">
+            <input v-model="form.subject_template" class="tpl-input tpl-meta-input tpl-meta-input--subject" type="text" placeholder="邮件主题，如 [KikoeruManager] {任务类型}{事件名称} — {任务标题}">
             <div class="tpl-chips tpl-meta-chips">
               <button
                 v-for="e in EVENT_OPTIONS" :key="e.value"

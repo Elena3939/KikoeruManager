@@ -896,11 +896,11 @@ import WorkCard from '../components/circle/WorkCard.vue'
 import WorkListRow from '../components/circle/WorkListRow.vue'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
-const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'prekikoeru.circleCompletion.targetSubdirs'
-const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.downloadWorkbench'
-const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'prekikoeru.circleCompletion.refreshJob'
-const CIRCLE_COMPLETION_INDEX_JOB_KEY = 'prekikoeru.circleCompletion.indexJob'
-const CIRCLE_COMPLETION_UPLOAD_WORKBENCH_KEY = 'prekikoeru.circleCompletion.uploadWorkbench'
+const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'kikoerumanager.circleCompletion.targetSubdirs'
+const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.circleCompletion.downloadWorkbench'
+const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'kikoerumanager.circleCompletion.refreshJob'
+const CIRCLE_COMPLETION_INDEX_JOB_KEY = 'kikoerumanager.circleCompletion.indexJob'
+const CIRCLE_COMPLETION_UPLOAD_WORKBENCH_KEY = 'kikoerumanager.circleCompletion.uploadWorkbench'
 function getJobProgressPercent(job) {
   const value = Number(job?.progress || 0)
   if (!Number.isFinite(value)) return 0
@@ -1024,7 +1024,7 @@ async function handleNewReleaseNotification(event) {
 
 // === 入库 → 社团补全状态实时刷新 ===
 // 后端 sync_owned_for_rj 在写完 LibraryOwnedWork 后会通过 SSE 广播
-// circle_owned_synced 事件，useNotifications 转发为 prekikoeru:circle:owned-synced
+// circle_owned_synced 事件，useNotifications 转发为 kikoerumanager:circle:owned-synced
 // 自定义事件。这里订阅后做两件事：
 //   1. 永远刷新左侧目录的 missing 计数（loadRecentCircles）
 //   2. 仅当事件命中当前打开的社团时刷新右侧详情（refreshActiveCircle）
@@ -1728,8 +1728,8 @@ const isRefreshJobActive = computed(() =>
 const canCancelRefreshJob = computed(() => isRefreshJobActive.value)
 
 onMounted(async () => {
-  window.addEventListener('prekikoeru:notification:new', handleNewReleaseNotification)
-  window.addEventListener('prekikoeru:circle:owned-synced', handleCircleOwnedSynced)
+  window.addEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
+  window.addEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
   hydrateIndexJobState()
   hydrateRefreshJobState()
   hydrateDownloadWorkbenchState()
@@ -1778,8 +1778,8 @@ onActivated(() => {
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('prekikoeru:notification:new', handleNewReleaseNotification)
-  window.removeEventListener('prekikoeru:circle:owned-synced', handleCircleOwnedSynced)
+  window.removeEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
+  window.removeEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
   if (_circleOwnedSyncedTimer) {
     clearTimeout(_circleOwnedSyncedTimer)
     _circleOwnedSyncedTimer = null

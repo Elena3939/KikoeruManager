@@ -1,7 +1,7 @@
 @echo off
-title Prekikoeru Frontend
+title KikoeruManager Frontend
 echo ========================================
-echo Prekikoeru Frontend Server
+echo KikoeruManager Frontend Server
 echo ========================================
 echo.
 echo Starting frontend server...

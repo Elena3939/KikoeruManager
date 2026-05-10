@@ -1,9 +1,9 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title Prekikoeru Launcher
+title KikoeruManager Launcher
 echo ========================================
-echo Prekikoeru All-in-One Launcher
+echo KikoeruManager All-in-One Launcher
 echo ========================================
 echo.
 
@@ -94,7 +94,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5556" ^| findstr "LISTENING
     taskkill /PID %%P /F >nul 2>&1
 )
 
-start "Prekikoeru Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && set ""CONFIG_PATH=%CONFIG_PATH%"" && set ""DATA_PATH=%~dp0data"" && cd /d %~dp0backend && venv\Scripts\python.exe -m app.main"
+start "KikoeruManager Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && set ""CONFIG_PATH=%CONFIG_PATH%"" && set ""DATA_PATH=%~dp0data"" && cd /d %~dp0backend && venv\Scripts\python.exe -m app.main"
 
 timeout /t 3 /nobreak >nul
 
@@ -120,7 +120,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-start "Prekikoeru Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+start "KikoeruManager Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
 
 echo ========================================
 echo Services started!

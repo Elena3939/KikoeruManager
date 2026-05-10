@@ -1,6 +1,6 @@
 import { computed, reactive } from 'vue'
 
-const STORAGE_KEY = 'prekikoeru.ui.backgroundWorkbenches'
+const STORAGE_KEY = 'kikoerumanager.ui.backgroundWorkbenches'
 
 const definitions = reactive({})
 const runtimeMap = reactive({})

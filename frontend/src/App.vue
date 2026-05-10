@@ -7,7 +7,7 @@
             <Package2 :size="22" :stroke-width="2.2" />
           </div>
         <div class="logo-copy">
-          <span class="logo-text">Prekikoeru</span>
+          <span class="logo-text">KikoeruManager</span>
           <span class="logo-subtitle">v{{ appVersion }}</span>
         </div>
         <NotificationBell class="logo-bell" />
@@ -108,7 +108,7 @@
           </div>
 
           <div class="version-info">
-            <span class="version-text">Prekikoeru</span>
+            <span class="version-text">KikoeruManager</span>
           </div>
         </div>
       </div>

@@ -275,7 +275,7 @@ export const defaultConfig = {
     username: '',
     password: '',
     from_email: '',
-    from_name: 'Prekikoeru',
+    from_name: 'KikoeruManager',
     to_email: '',
     connect_timeout_seconds: 10,
     send_timeout_seconds: 30,

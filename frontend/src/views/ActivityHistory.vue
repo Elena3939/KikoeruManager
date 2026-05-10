@@ -658,7 +658,7 @@ const selectedStatusConfig = computed(() => statusConfig(effectiveStatus(selecte
 // ===== 详情抽屉宽度：用户可拖拽，记忆到 localStorage =====
 const DRAWER_WIDTH_MIN = 480
 const DRAWER_WIDTH_DEFAULT = 640
-const DRAWER_WIDTH_STORAGE_KEY = 'prekikoeru.activityDetailDrawerWidth'
+const DRAWER_WIDTH_STORAGE_KEY = 'kikoerumanager.activityDetailDrawerWidth'
 
 function getMaxDrawerWidth() {
   if (typeof window === 'undefined') return 1600

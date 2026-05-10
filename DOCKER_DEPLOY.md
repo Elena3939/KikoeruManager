@@ -1,4 +1,4 @@
-# Prekikoeru Docker 部署指南
+# KikoeruManager Docker 部署指南
 
 ## 目录
 
@@ -16,14 +16,14 @@
 ### 方法 1：使用 Community Applications
 
 1. 打开 Unraid Web 界面，进入 **Apps** 标签
-2. 搜索 "Prekikoeru"
+2. 搜索 "KikoeruManager"
 3. 点击安装，配置以下参数：
 
 **必须配置的映射路径：**
-- **配置目录**: `/mnt/user/appdata/prekikoeru/config`
-- **数据目录**: `/mnt/user/appdata/prekikoeru/data`
+- **配置目录**: `/mnt/user/appdata/kikoerumanager/config`
+- **数据目录**: `/mnt/user/appdata/kikoerumanager/data`
 - **输入目录**: 你的下载目录，如 `/mnt/user/downloads/dl/done`
-- **临时目录**: 建议映射到 SSD，`/mnt/cache/appdata/prekikoeru/temp`
+- **临时目录**: 建议映射到 SSD，`/mnt/cache/appdata/kikoerumanager/temp`
 - **作品库目录**: 你的媒体库目录，如 `/mnt/user/media/dlsite`
 
 **可选映射路径：**
@@ -47,8 +47,8 @@
 ### 1. 创建项目目录
 
 ```bash
-mkdir -p /mnt/user/appdata/prekikoeru
-cd /mnt/user/appdata/prekikoeru
+mkdir -p /mnt/user/appdata/kikoerumanager
+cd /mnt/user/appdata/kikoerumanager
 ```
 
 ### 2. 创建 docker-compose.yml
@@ -57,9 +57,9 @@ cd /mnt/user/appdata/prekikoeru
 version: '3.8'
 
 services:
-  prekikoeru:
-    image: prekikoeru/prekikoeru:latest
-    container_name: prekikoeru
+  kikoerumanager:
+    image: ghcr.io/elena3939/kikoerutool_elena:latest
+    container_name: kikoerumanager
     ports:
       - "8000:8000"
     volumes:
@@ -70,7 +70,7 @@ services:
       # 输入目录（修改为你的下载目录）
       - /mnt/user/downloads/dl/done:/input
       # 临时目录（建议 SSD）
-      - /mnt/cache/appdata/prekikoeru/temp:/temp
+      - /mnt/cache/appdata/kikoerumanager/temp:/temp
       # 作品库目录
       - /mnt/user/media/dlsite:/library
       # 已有文件夹目录（可选）
@@ -101,20 +101,20 @@ docker-compose logs -f
 
 ```bash
 docker run -d \
-  --name prekikoeru \
+  --name kikoerumanager \
   --privileged \
   -p 8000:8000 \
-  -v /mnt/user/appdata/prekikoeru/config:/app/config \
-  -v /mnt/user/appdata/prekikoeru/data:/app/data \
+  -v /mnt/user/appdata/kikoerumanager/config:/app/config \
+  -v /mnt/user/appdata/kikoerumanager/data:/app/data \
   -v /mnt/user/downloads/dl/done:/input \
-  -v /mnt/cache/appdata/prekikoeru/temp:/temp \
+  -v /mnt/cache/appdata/kikoerumanager/temp:/temp \
   -v /mnt/user/media/dlsite:/library \
   -v /mnt/user/media/dlsite:/existing \
-  -v /mnt/user/appdata/prekikoeru/processed:/processed \
+  -v /mnt/user/appdata/kikoerumanager/processed:/processed \
   -e TZ=Asia/Shanghai \
   --ulimit nofile=65536:65536 \
   --restart unless-stopped \
-  prekikoeru/prekikoeru:latest
+  ghcr.io/elena3939/kikoerutool_elena:latest
 ```
 
 ---
@@ -126,14 +126,14 @@ docker run -d \
 ### 1. 克隆代码
 
 ```bash
-git clone https://github.com/anomalyco/prekikoeru.git
-cd prekikoeru
+git clone https://github.com/Elena3939/KikoeruTool_Elena.git
+cd kikoerumanager
 ```
 
 ### 2. 构建镜像
 
 ```bash
-docker build -t prekikoeru:local .
+docker build -t kikoerumanager:local .
 ```
 
 ### 3. 运行
@@ -142,8 +142,8 @@ docker build -t prekikoeru:local .
 
 ```yaml
 services:
-  prekikoeru:
-    image: prekikoeru:local  # 使用本地构建的镜像
+  kikoerumanager:
+    image: kikoerumanager:local  # 使用本地构建的镜像
     # ... 其他配置
 ```
 
@@ -155,8 +155,8 @@ services:
 
 | 容器路径 | 说明 | 建议映射 |
 |---------|------|---------|
-| `/app/config` | 配置文件 | `./config` 或 `appdata/prekikoeru/config` |
-| `/app/data` | 数据库和日志 | `./data` 或 `appdata/prekikoeru/data` |
+| `/app/config` | 配置文件 | `./config` 或 `appdata/kikoerumanager/config` |
+| `/app/data` | 数据库和日志 | `./data` 或 `appdata/kikoerumanager/data` |
 | `/input` | 待处理的压缩包 | 下载目录 |
 | `/temp` | 解压临时文件 | SSD 缓存目录 |
 | `/library` | 整理好的作品库 | 媒体库目录 |
@@ -214,8 +214,8 @@ services:
 ### Q: 容器启动后无法访问 Web 界面
 
 **排查步骤：**
-1. 检查容器是否运行：`docker ps | grep prekikoeru`
-2. 查看日志：`docker logs prekikoeru`
+1. 检查容器是否运行：`docker ps | grep kikoerumanager`
+2. 查看日志：`docker logs kikoerumanager`
 3. 确认端口映射正确
 4. 检查防火墙设置
 
@@ -226,7 +226,7 @@ services:
 
 ```bash
 # 修改映射目录权限
-chmod -R 777 /mnt/user/appdata/prekikoeru
+chmod -R 777 /mnt/user/appdata/kikoerumanager
 chmod -R 777 /mnt/user/media/dlsite
 ```
 
@@ -234,8 +234,8 @@ chmod -R 777 /mnt/user/media/dlsite
 
 如果之前使用 Windows 版本：
 
-1. **数据库迁移**：将 Windows 的 `data/app.db` 复制到 `/mnt/user/appdata/prekikoeru/data/`
-2. **配置文件**：将 Windows 的 `config/config.yaml` 复制到 `/mnt/user/appdata/prekikoeru/config/`
+1. **数据库迁移**：将 Windows 的 `data/app.db` 复制到 `/mnt/user/appdata/kikoerumanager/data/`
+2. **配置文件**：将 Windows 的 `config/config.yaml` 复制到 `/mnt/user/appdata/kikoerumanager/config/`
 3. **作品库**：将 Windows 的作品库直接复制到映射的 `/library` 目录
 
 ### Q: 临时目录使用 SSD 的好处
@@ -248,7 +248,7 @@ chmod -R 777 /mnt/user/media/dlsite
 
 **Docker Compose：**
 ```bash
-cd /mnt/user/appdata/prekikoeru
+cd /mnt/user/appdata/kikoerumanager
 docker-compose pull
 docker-compose up -d
 ```
@@ -271,11 +271,11 @@ docker-compose up -d
 #!/bin/bash
 # 添加到 Unraid User Scripts 插件
 DATE=$(date +%Y%m%d)
-mkdir -p /mnt/user/backups/prekikoeru
-cp /mnt/user/appdata/prekikoeru/data/app.db /mnt/user/backups/prekikoeru/app.db.$DATE
-cp /mnt/user/appdata/prekikoeru/config/config.yaml /mnt/user/backups/prekikoeru/config.yaml.$DATE
+mkdir -p /mnt/user/backups/kikoerumanager
+cp /mnt/user/appdata/kikoerumanager/data/app.db /mnt/user/backups/kikoerumanager/app.db.$DATE
+cp /mnt/user/appdata/kikoerumanager/config/config.yaml /mnt/user/backups/kikoerumanager/config.yaml.$DATE
 # 保留最近 30 天备份
-find /mnt/user/backups/prekikoeru -name "*.db.*" -mtime +30 -delete
+find /mnt/user/backups/kikoerumanager -name "*.db.*" -mtime +30 -delete
 ```
 
 ---
@@ -286,7 +286,7 @@ find /mnt/user/backups/prekikoeru -name "*.db.*" -mtime +30 -delete
 
 ```yaml
 volumes:
-  - /mnt/cache/appdata/prekikoeru/temp:/temp
+  - /mnt/cache/appdata/kikoerumanager/temp:/temp
 ```
 
 ### 2. 调整文件描述符限制
@@ -309,9 +309,9 @@ ulimits:
 
 ## 技术支持
 
-- **GitHub Issues**: https://github.com/anomalyco/prekikoeru/issues
+- **GitHub Issues**: https://github.com/Elena3939/KikoeruTool_Elena/issues
 - **文档**: 参见项目 README.md
-- **Unraid 论坛**: 在 Unraid 社区论坛搜索 "Prekikoeru"
+- **Unraid 论坛**: 在 Unraid 社区论坛搜索 "KikoeruManager"
 
 ---
 

@@ -54,9 +54,9 @@ d:\Clash Verge\KikoeruTool-1.6.4\config\config.yaml
 <data_directory>\config\config.yaml
 ```
 其中 `<data_directory>` 通常是：
-- Windows: `C:\Users\<用户名>\AppData\Roaming\Prekikoeru\data`
-- Linux: `~/.local/share/Prekikoeru/data`
-- macOS: `~/Library/Application Support/Prekikoeru/data`
+- Windows: `C:\Users\<用户名>\AppData\Roaming\KikoeruManager\data`
+- Linux: `~/.local/share/KikoeruManager/data`
+- macOS: `~/Library/Application Support/KikoeruManager/data`
 
 ## 配置热重载流程
 

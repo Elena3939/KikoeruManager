@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prekikoeru 桌面应用入口 (带系统托盘)
+KikoeruManager 桌面应用入口 (带系统托盘)
 用于 Windows 打包
 """
 import sys
@@ -131,7 +131,7 @@ class DesktopApp:
 
     def show_status(self, icon, item):
         """显示当前运行状态"""
-        icon.notify("应用正在后台运行", "Prekikoeru")
+        icon.notify("应用正在后台运行", "KikoeruManager")
 
     def on_quit(self, icon, item):
         """优雅退出应用"""
@@ -170,12 +170,12 @@ class DesktopApp:
                 pystray.MenuItem("退出应用", self.on_quit)
             )
             
-            self.icon = pystray.Icon("kikoeruTool", image, "Prekikoeru (运行中)", menu)
+            self.icon = pystray.Icon("kikoeruManager", image, "KikoeruManager (运行中)", menu)
             
             # 启动通知
             def notify_start():
                 try:
-                    self.icon.notify("Prekikoeru 已在后台启动", "您可以通过托盘图标进行管理")
+                    self.icon.notify("KikoeruManager 已在后台启动", "您可以通过托盘图标进行管理")
                 except Exception as e:
                     logger.warning(f"发送启动通知失败: {e}")
 
@@ -238,7 +238,7 @@ class DesktopApp:
 
         # 4. 等待后端启动完成，默认不主动抢占浏览器焦点
         if self.wait_for_backend():
-            auto_open_browser = os.environ.get('PREKIKOERU_AUTO_OPEN_BROWSER', '').strip().lower()
+            auto_open_browser = os.environ.get('KIKOERUMANAGER_AUTO_OPEN_BROWSER', '').strip().lower()
             if auto_open_browser in {'1', 'true', 'yes', 'on'}:
                 self.open_browser()
             else:

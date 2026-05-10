@@ -1,7 +1,7 @@
-# Prekikoeru 开发环境启动脚本 (PowerShell)
+# KikoeruManager 开发环境启动脚本 (PowerShell)
 # 使用方式: 右键点击 -> 使用 PowerShell 运行
 
-$Host.UI.RawUI.WindowTitle = "Prekikoeru 开发服务器"
+$Host.UI.RawUI.WindowTitle = "KikoeruManager 开发服务器"
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptRoot
 $env:PYTHONHOME = ""
@@ -13,7 +13,7 @@ $env:NPM_CONFIG_PREFIX = ""
 $env:npm_config_prefix = ""
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "   Prekikoeru 本地开发环境启动器" -ForegroundColor Cyan
+Write-Host "   KikoeruManager 本地开发环境启动器" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -169,7 +169,7 @@ Write-Host "按 Ctrl+C 停止服务" -ForegroundColor Yellow
 Write-Host ""
 
 # 启动后端（在新窗口）
-Start-Process cmd.exe -ArgumentList "/k", "title Prekikoeru Backend && cd /d `"$ScriptRoot\backend`" && venv\Scripts\python.exe -m app.main" -WindowStyle Normal
+Start-Process cmd.exe -ArgumentList "/k", "title KikoeruManager Backend && cd /d `"$ScriptRoot\backend`" && venv\Scripts\python.exe -m app.main" -WindowStyle Normal
 
 # 等待后端启动
 Start-Sleep -Seconds 3
@@ -181,7 +181,7 @@ cd frontend
 # 清理（当前端停止时）
 Write-Host ""
 Write-Host "正在关闭服务..." -ForegroundColor Yellow
-cmd /c "taskkill /F /FI ""WINDOWTITLE eq Prekikoeru Backend*"" /T" *> $null
+cmd /c "taskkill /F /FI ""WINDOWTITLE eq KikoeruManager Backend*"" /T" *> $null
 
 Write-Host ""
 Write-Host "服务已停止" -ForegroundColor Green
