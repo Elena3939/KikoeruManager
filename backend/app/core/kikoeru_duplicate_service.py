@@ -788,6 +788,53 @@ class KikoeruDuplicateService:
         result.subtitle_check_source = source
         result.has_lyric_hint = subtitle_count > 0
         return result
+
+    async def _probe_work_by_id(
+        self,
+        rjcode: str,
+        session: aiohttp.ClientSession,
+        headers: Dict[str, str],
+    ) -> Optional[KikoeruCheckResult]:
+        """search 未命中时的硬兜底：按 RJ 号推 work_id，直接打 ``/api/tracks/{id}``。
+
+        ★ 用户反馈痛点（v1.2.2 修复）：RJ01304475 这类作品在 kikoeru 网页上能搜到，
+        但 ``/api/search?keyword=RJ01304475`` 返回的 ``works`` 数组里没有它。
+        原因是部分 kikoeru 部署的 search 全文索引对带前缀 0 的新作 RJ 号 / 翻译版的
+        sourceWorkno 索引会漂移漏掉，但 ``/api/tracks/{work_id}`` 这条按主键拿
+        work 文件树的路由是稳定的，``200`` 即代表 work 存在。
+
+        本方法把 RJ 号截掉前缀转成 work_id 直接 GET tracks，命中即视为作品存在
+        并构造一个 ``is_found=True`` 的结果（同时顺便填好字幕统计字段）。
+        """
+        work_id = self._rjcode_to_id(rjcode)
+        if work_id <= 0:
+            return None
+
+        subtitle_count, total_count, fetch_source = await self._fetch_track_subtitle_state(
+            session, headers, work_id
+        )
+        # 只有 fetch_source == "tracks" 表示 HTTP 200 拿到 tracks JSON。
+        # "tracks_http_404" / "tracks_error" / "work_id_empty" 都说明 work 实际不存在。
+        logger.info(
+            "[Kikoeru] tracks 兜底探测: rjcode=%s work_id=%s fetch_source=%s subtitle_count=%s total_count=%s",
+            rjcode, work_id, fetch_source, subtitle_count, total_count,
+        )
+        if fetch_source != "tracks":
+            return None
+
+        result = KikoeruCheckResult(
+            rjcode=rjcode,
+            is_found=True,
+            work_id=work_id,
+            matched_rjcode=self._normalize_rjcode(rjcode),
+            match_type="direct_work_id",
+            source="kikoeru_tracks_probe",
+            subtitle_file_count=int(subtitle_count or 0),
+            total_track_count=int(total_count if total_count is not None else -1),
+            subtitle_check_source=fetch_source,
+            has_lyric_hint=bool(subtitle_count and subtitle_count > 0),
+        )
+        return result
     
     async def check_duplicate(
         self, 
@@ -861,6 +908,17 @@ class KikoeruDuplicateService:
                                     data = await retry_response.json()
                                     result = self._parse_search_result(rjcode, data)
                                     result = await self._hydrate_track_subtitle_state(result, session, headers)
+                                    # 401 重登路径同样接 work_id 兜底
+                                    if not result.is_found:
+                                        direct_hit = await self._probe_work_by_id(rjcode, session, headers)
+                                        if direct_hit and direct_hit.is_found:
+                                            logger.info(
+                                                "[Kikoeru] ✓ 401 重登后 search 未命中但 tracks 直接命中: %s -> work_id=%s",
+                                                rjcode, direct_hit.work_id,
+                                            )
+                                            if use_cache:
+                                                self._set_cache(rjcode, direct_hit)
+                                            return direct_hit
                                     if use_cache:
                                         self._set_cache(rjcode, result)
                                     return result
@@ -890,6 +948,18 @@ class KikoeruDuplicateService:
                 result = await self._hydrate_track_subtitle_state(result, session, headers)
                 
                 if not result.is_found:
+                    # ★ 硬兜底：search 没命中时，按 work_id 直接打 /api/tracks/{id}。
+                    #   修复 v1.2.2 用户痛点：kikoeru 网页能搜到但 API search 漏返回。
+                    direct_hit = await self._probe_work_by_id(rjcode, session, headers)
+                    if direct_hit and direct_hit.is_found:
+                        logger.info(
+                            "[Kikoeru] ✓ search 未命中但 tracks 接口直接命中: %s -> work_id=%s subtitle=%s",
+                            rjcode, direct_hit.work_id, direct_hit.subtitle_file_count,
+                        )
+                        if use_cache:
+                            self._set_cache(rjcode, direct_hit)
+                        return direct_hit
+
                     if self.config.enable_fuzzy_rj_match:
                         logger.warning(f"[Kikoeru] 精确匹配未找到，已启用危险的宽容搜索（±1）: {rjcode}")
                         fuzzy_result = await self._check_fuzzy(rjcode, session, headers, use_cache)
@@ -1025,6 +1095,26 @@ class KikoeruDuplicateService:
         # sourceWorkno/source_workno/workno/rjcode。
         search_id = self._rjcode_to_id(rjcode)
         normalized_target_rjcode = self._normalize_rjcode(rjcode)
+
+        # 诊断日志：当 works 非空但最终 not found 时，能从日志立即看出每个候选 work
+        # 的 id / sourceWorkno / candidate_rjcodes，以及为什么没匹配上。
+        # 这是定位"kikoeru 网页搜得到但 backend 报未命中"问题的关键证据链。
+        if works:
+            preview = []
+            for work in works[:5]:
+                if not isinstance(work, dict):
+                    continue
+                preview.append({
+                    "id": work.get("id"),
+                    "sourceWorkno": work.get("sourceWorkno") or work.get("source_workno"),
+                    "workno": work.get("workno") or work.get("rjcode"),
+                    "title": (work.get("title") or "")[:60],
+                    "candidates": self._work_to_rjcodes(work),
+                })
+            logger.info(
+                "[Kikoeru] search 候选 works (rjcode=%s search_id=%s normalized=%s total=%s preview=%s)",
+                rjcode, search_id, normalized_target_rjcode, len(works), preview,
+            )
 
         for work in works:
             if not isinstance(work, dict):

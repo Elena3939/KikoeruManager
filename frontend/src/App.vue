@@ -6,11 +6,13 @@
           <div class="logo-mark">
             <Package2 :size="22" :stroke-width="2.2" />
           </div>
-        <div class="logo-copy">
-          <span class="logo-text">KikoeruManager</span>
-          <span class="logo-subtitle">v{{ appVersion }}</span>
-        </div>
-        <NotificationBell class="logo-bell" />
+          <div class="logo-copy">
+            <span class="logo-text">KikoeruManager</span>
+            <div class="logo-meta-row">
+              <span class="logo-subtitle">v{{ appVersion }}</span>
+              <NotificationBell class="logo-bell" />
+            </div>
+          </div>
         </div>
 
         <div class="sidebar-section-label">导航</div>
@@ -169,7 +171,7 @@ import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import router from './router'
 
-const appVersion = '1.2.1'
+const appVersion = '1.2.2'
 const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
@@ -274,8 +276,8 @@ body {
 .logo {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 4px 18px 8px;
+  gap: 10px;
+  padding: 6px 8px 18px;
 }
 
 .logo-copy {
@@ -283,30 +285,37 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 2px;
+}
+
+.logo-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .logo-bell {
   flex-shrink: 0;
-  margin-left: auto;
 }
 
-/* 缩小铃铛按钮尺寸：默认 48px 在 248px 侧边栏会挤压品牌名，这里强制 36px */
+/* 铃铛放在副标题行右侧，跟 v1.x.x 字号匹配的紧凑尺寸 */
 .logo-bell :deep(.notif-bell-btn) {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
 }
 .logo-bell :deep(.notif-bell-player) {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
 }
 
 .logo-mark {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
   background: #f3f7ff;
   color: #0071e3;
   box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.08);
@@ -318,23 +327,18 @@ body {
 }
 
 .logo-text {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
   line-height: 1.15;
   letter-spacing: -0.18px;
   color: #1d1d1f;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .logo-subtitle {
-  margin-top: 2px;
   font-size: 11px;
   color: rgba(29, 29, 31, 0.54);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .sidebar-section-label {
