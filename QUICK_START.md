@@ -318,6 +318,17 @@ kikoeru_search:
 
 ## 更新日志
 
+### v1.3.0 - 解压并发按存储类型自适应 + 7z 多线程 + verify scandir 优化
+
+- **后端**：`ExtractService._detect_storage_type` 跨平台探测 `temp_path` 所在物理盘（Windows 走 `Get-PhysicalDisk`，Linux 读 `/sys/dev/block/*/queue/rotational`），结果缓存到 class 级。`extract.max_concurrent_extractions` 默认 `0 = auto`：SSD → `min(processing.max_workers, 3)`，HDD / 未知 / 网络盘 → 1（机械盘并发寻道会让磁头在多个 GB 级文件之间疯狂寻道，实测单包从 12 分钟跌到 1.5 分钟）
+- **后端**：4 个真正的 7z 解压命令统一加 `-mmt=on` 多线程，单包 LZMA2 / deflate 吃满多核（`extract.seven_zip_threads` 可调 "on"/"off"/数字）
+- **后端**：`_verify_extraction` 改用一次 `os.scandir` 递归建表 + dict O(1) 查表，取代 per-file `os.path.exists` + `getsize`。几千文件的大包 verify 阶段从十几秒缩到 1 秒以内，少一轮 MFT 寻道
+- **后端**：新增 `GET /api/system/storage-info`，返回 `temp_path / library_path / input_path` 的存储类型探测结果、auto 模式下实际会选的并发值、当前配置值
+- **前端**：设置页「处理与解压」新增「解压并发数（7z 子进程）」下拉（自动 / 1 / 2 / 3 / 4），右侧绿色 SSD / 黄色 HDD chip 实时显示探测结果，下方 hint 动态解释当前生效值
+- **新增脚本**：`scripts/add-defender-exclusions.ps1` 一键给 Windows Defender 添加 ASMR 工作目录和 7z/Python/KikoeruManager 进程排除项，解决 AV 实时扫描把 NVMe SSD 打到个位数 MB/s 的问题
+- **前端**：侧栏 `NotificationBell` 铃铛外圈 48→60px、内层 Lottie 38→50px，铃铛在 logo 区视觉权重提高，避免被品牌名压扁
+- **CI**：`.github/workflows/ghcr.yml` 去掉 master / main 分支触发，只在 `v*.*.*` tag 推送时才跑 image 构建 + Docker Hub README 同步
+
 ### v1.2.3 - Kikoeru 8 位 RJ 号 work_id 前导 0 修复（彻底解决关联作品漏检）
 
 - **后端**：`_rjcode_to_id` 用 `int()` 把带前导 0 的 8 位 RJ 号（如 `RJ01337508`）抹成 `1337508`，导致 `/api/tracks/1337508` 永远 404，v1.2.2 加的 work_id 兜底名存实亡。新增 `_rjcode_to_work_id_str` 取 RJ 数字部分**字符串原样**（保留前导 0 = `01337508`），新增 `_build_tracks_url_str` 拼对应 URL（参考 VoiceLinks 油猴脚本 `getAsmrOneWorkId` 的实现）

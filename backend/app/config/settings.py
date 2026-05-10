@@ -107,6 +107,17 @@ class ExtractConfig(BaseModel):
     extract_nested_archives: bool = True  # 是否解压嵌套压缩包
     max_nested_depth: int = 5  # 最大嵌套深度
     zip_encoding: int = 932  # ZIP 文件名编码代码页，932=Shift-JIS（日语），936=GBK（简中），0=禁用
+    # 真正解压时同时跑几个 7z 子进程。
+    # 0 = auto：启动时探测 storage.temp_path 所在盘类型自动决定
+    #   · SSD/NVMe → min(processing.max_workers, 3)
+    #   · HDD / 探测失败 / 网络盘 → 1（机械盘并发寻道严重伤性能伤寿命）
+    # 1-N = 用户显式固定，跳过自动探测。
+    # 多个 7z 进程在 HDD 上同时跑会让磁头疯狂寻道，亲测单包从 12 分钟 → 1.5 分钟。
+    max_concurrent_extractions: int = 0
+    # 传给 7z 的 -mmt 参数，控制单个 7z 进程的多线程档位。
+    # "on" = 自动多线程（LZMA2 / deflate 都生效）；"off" = 单线程；"N" = 指定线程数。
+    # 留空字符串则不加 -mmt 参数（用 7z 默认行为）。
+    seven_zip_threads: str = "on"
 
 class FilterRule(BaseModel):
     """过滤规则"""

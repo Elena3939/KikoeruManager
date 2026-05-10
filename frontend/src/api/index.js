@@ -118,6 +118,25 @@ export const configApi = {
   }
 }
 
+export const systemApi = {
+  /**
+   * 探测 temp_path / library_path / input_path 所在盘的存储类型。
+   * 返回形如：
+   * {
+   *   primary_type: 'ssd' | 'hdd' | 'unknown',
+   *   probes: [{ label, attr, path, type }],
+   *   resolved_limit: 3,                // auto 模式下实际会生效的并发数
+   *   resolved_reason: 'auto: 检测到 SSD ...',
+   *   configured: 0,                     // 0 表示 auto
+   *   max_workers: 6,
+   * }
+   */
+  storageInfo: async () => {
+    const response = await apiClient.get('/system/storage-info')
+    return response.data
+  }
+}
+
 export const activityLogApi = {
   list: async (params = {}) => {
     const response = await apiClient.get('/activity-logs', { params })
@@ -1554,6 +1573,7 @@ export const notificationApi = {
 export default {
   task: taskApi,
   config: configApi,
+  system: systemApi,
   watcher: watcherApi,
   scan: scanApi,
   password: passwordApi,

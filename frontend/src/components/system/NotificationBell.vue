@@ -214,8 +214,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 48px;
+  width: 60px;
+  height: 60px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -249,8 +249,8 @@ onUnmounted(() => {
 }
 
 .notif-bell-player {
-  width: 38px;
-  height: 38px;
+  width: 50px;
+  height: 50px;
   pointer-events: none;
   filter: drop-shadow(0 6px 12px rgba(245, 158, 11, 0.22));
 }
