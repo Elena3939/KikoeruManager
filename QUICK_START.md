@@ -318,6 +318,13 @@ kikoeru_search:
 
 ## 更新日志
 
+### v1.2.3 - Kikoeru 8 位 RJ 号 work_id 前导 0 修复（彻底解决关联作品漏检）
+
+- **后端**：`_rjcode_to_id` 用 `int()` 把带前导 0 的 8 位 RJ 号（如 `RJ01337508`）抹成 `1337508`，导致 `/api/tracks/1337508` 永远 404，v1.2.2 加的 work_id 兜底名存实亡。新增 `_rjcode_to_work_id_str` 取 RJ 数字部分**字符串原样**（保留前导 0 = `01337508`），新增 `_build_tracks_url_str` 拼对应 URL（参考 VoiceLinks 油猴脚本 `getAsmrOneWorkId` 的实现）
+- **后端**：`_probe_work_by_id`（兜底路径）和 `_hydrate_track_subtitle_state`（search 命中后的字幕统计路径）都改为优先使用字符串 work_id，彻底兼容 8 位带前导 0 的 RJ 号
+- **后端**：`_parse_search_result` 增加候选 works 诊断日志（id / sourceWorkno / candidate_rjcodes 预览），定位"网页搜得到但 backend 报未命中"问题时能直接看 backend 拿到的 search 响应
+- **修复用户痛点**：`RJ01304475` 关联作品 `RJ01337508` 在 kikoeru 上明明有，但解压入库 / 测试查重判定整条链路未命中
+
 ### v1.2.2 - Kikoeru 关联作品「明明有却查不到」修复
 
 - **后端**：`KikoeruDuplicateService.check_duplicate` 在 `/api/search?keyword=RJxxxxxx` 未命中时，新增按 RJ→work_id 直接打 `/api/tracks/{id}` 的硬兜底（`_probe_work_by_id`）。某些 kikoeru 部署的 search 全文索引对带前缀 0 的新作 RJ 号 / 翻译版的 sourceWorkno 索引会漂移漏掉，但 work_id 路由是稳定的，HTTP 200 即代表 work 存在。修复用户痛点："RJ01304475 在 kikoeru 网页上能搜到，但解压入库预检判定整条链路未命中"

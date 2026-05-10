@@ -290,6 +290,22 @@ class KikoeruDuplicateService:
 
     def _build_tracks_url(self, work_id: int) -> str:
         return f"{self.config.server_url}/api/tracks/{int(work_id)}"
+
+    def _rjcode_to_work_id_str(self, rjcode: str) -> str:
+        """RJ 数字部分原样（保留前导 0），用于按 work_id 直接打 ``/api/tracks/{id}``。
+
+        ★ v1.2.3 修复：之前用 ``int(rjcode[2:])`` 会把 ``RJ01337508`` 抹成
+        ``1337508``，再拼成 ``/api/tracks/1337508`` 永远 404。kikoeru / asmr.one
+        实际接受的 workId 是字符串原样含前导 0（参考 VoiceLinks 油猴脚本
+        ``getAsmrOneWorkId``），必须保留 ``01337508`` 这个 8 位字符串。
+        """
+        normalized = (rjcode or "").upper().strip()
+        match = re.match(r"^(RJ|BJ|VJ)(\d{6,8})$", normalized)
+        return match.group(2) if match else ""
+
+    def _build_tracks_url_str(self, work_id_str: str) -> str:
+        """字符串版 tracks URL，保留前导 0。配合 ``_rjcode_to_work_id_str`` 使用。"""
+        return f"{self.config.server_url}/api/tracks/{work_id_str}"
     
     def _get_headers(self) -> Dict[str, str]:
         """获取请求头，包含 API Token"""
@@ -778,6 +794,44 @@ class KikoeruDuplicateService:
         if not result.is_found or not result.work_id:
             return result
 
+        # ★ v1.2.3：优先用 RJ 号转出来的字符串 work_id（保留前导 0）打 tracks 接口，
+        # 避免 int(work_id) 把 ``RJ01337508`` 抹成 ``1337508`` 导致 ``/api/tracks/1337508`` 404。
+        # matched_rjcode 是 _normalize_rjcode 后的结果（含 RJ 前缀 + 原始位数）。
+        rj_for_tracks = result.matched_rjcode or result.rjcode
+        work_id_str = self._rjcode_to_work_id_str(rj_for_tracks)
+
+        if work_id_str:
+            url = self._build_tracks_url_str(work_id_str)
+            try:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout)
+                ) as response:
+                    if response.status != 200:
+                        logger.warning(
+                            "[Kikoeru] hydrate tracks 失败: rjcode=%s url=%s status=%s",
+                            rj_for_tracks, url, response.status,
+                        )
+                        result.subtitle_check_source = f"tracks_http_{response.status}"
+                        return result
+                    data = await response.json()
+                    subtitle_count = self._count_subtitle_files_from_tracks(data)
+                    total_count = self._count_all_files_from_tracks(data)
+                    result.subtitle_file_count = int(subtitle_count or 0)
+                    result.total_track_count = int(total_count if total_count is not None else -1)
+                    result.subtitle_check_source = "tracks"
+                    result.has_lyric_hint = bool(subtitle_count and subtitle_count > 0)
+                    return result
+            except Exception as exc:
+                logger.warning(
+                    "[Kikoeru] hydrate tracks 异常: rjcode=%s url=%s error=%s",
+                    rj_for_tracks, url, exc,
+                )
+                result.subtitle_check_source = "tracks_error"
+                return result
+
+        # 兜底：RJ 号没法解析出 work_id_str（理论上不会走到），退回老 int 路径
         subtitle_count, total_count, source = await self._fetch_track_subtitle_state(session, headers, result.work_id)
         if subtitle_count is None:
             result.subtitle_check_source = source
@@ -797,41 +851,65 @@ class KikoeruDuplicateService:
     ) -> Optional[KikoeruCheckResult]:
         """search 未命中时的硬兜底：按 RJ 号推 work_id，直接打 ``/api/tracks/{id}``。
 
-        ★ 用户反馈痛点（v1.2.2 修复）：RJ01304475 这类作品在 kikoeru 网页上能搜到，
-        但 ``/api/search?keyword=RJ01304475`` 返回的 ``works`` 数组里没有它。
-        原因是部分 kikoeru 部署的 search 全文索引对带前缀 0 的新作 RJ 号 / 翻译版的
-        sourceWorkno 索引会漂移漏掉，但 ``/api/tracks/{work_id}`` 这条按主键拿
-        work 文件树的路由是稳定的，``200`` 即代表 work 存在。
+        ★ 用户反馈痛点（v1.2.2 修复 / v1.2.3 进一步修正）：RJ01304475 这类作品在
+        kikoeru 网页上能搜到，但 ``/api/search?keyword=RJ01304475`` 返回的
+        ``works`` 数组里没有它。原因是部分 kikoeru 部署的 search 全文索引对带
+        前缀 0 的新作 RJ 号 / 翻译版的 sourceWorkno 索引会漂移漏掉，但
+        ``/api/tracks/{work_id}`` 这条按主键拿 work 文件树的路由是稳定的，
+        ``200`` 即代表 work 存在。
 
-        本方法把 RJ 号截掉前缀转成 work_id 直接 GET tracks，命中即视为作品存在
-        并构造一个 ``is_found=True`` 的结果（同时顺便填好字幕统计字段）。
+        ★ v1.2.3 关键修复：work_id 用 ``_rjcode_to_work_id_str`` 取**字符串原样**
+        （保留前导 0），不能再走 ``_rjcode_to_id`` 的 int 转换，否则 ``RJ01337508``
+        会被抹成 ``1337508``，拼出来的 ``/api/tracks/1337508`` 永远 404，整个
+        兜底就废了（参考 VoiceLinks 油猴脚本 ``getAsmrOneWorkId`` 的实现）。
+
+        本方法把 RJ 号截掉前缀作为字符串 work_id 直接 GET tracks，命中即视为
+        作品存在并构造一个 ``is_found=True`` 的结果（同时填好字幕统计字段）。
         """
-        work_id = self._rjcode_to_id(rjcode)
-        if work_id <= 0:
+        work_id_str = self._rjcode_to_work_id_str(rjcode)
+        if not work_id_str:
             return None
 
-        subtitle_count, total_count, fetch_source = await self._fetch_track_subtitle_state(
-            session, headers, work_id
-        )
-        # 只有 fetch_source == "tracks" 表示 HTTP 200 拿到 tracks JSON。
-        # "tracks_http_404" / "tracks_error" / "work_id_empty" 都说明 work 实际不存在。
-        logger.info(
-            "[Kikoeru] tracks 兜底探测: rjcode=%s work_id=%s fetch_source=%s subtitle_count=%s total_count=%s",
-            rjcode, work_id, fetch_source, subtitle_count, total_count,
-        )
-        if fetch_source != "tracks":
+        url = self._build_tracks_url_str(work_id_str)
+        try:
+            async with session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self.config.timeout)
+            ) as response:
+                logger.info(
+                    "[Kikoeru] tracks 兜底探测: rjcode=%s work_id_str=%s url=%s status=%s",
+                    rjcode, work_id_str, url, response.status,
+                )
+                if response.status != 200:
+                    return None
+                data = await response.json()
+                subtitle_count = self._count_subtitle_files_from_tracks(data)
+                total_count = self._count_all_files_from_tracks(data)
+        except Exception as exc:
+            logger.warning(
+                "[Kikoeru] tracks 兜底请求异常: rjcode=%s work_id_str=%s error=%s",
+                rjcode, work_id_str, exc,
+            )
             return None
+
+        # work_id 字段保留 int 形式以兼容下游（KikoeruCheckResult.work_id 类型为 int）。
+        # 这里用 int 转换不影响后续判断，因为兜底命中后不会再用 work_id 拼 URL。
+        try:
+            work_id_int = int(work_id_str)
+        except ValueError:
+            work_id_int = 0
 
         result = KikoeruCheckResult(
             rjcode=rjcode,
             is_found=True,
-            work_id=work_id,
+            work_id=work_id_int,
             matched_rjcode=self._normalize_rjcode(rjcode),
             match_type="direct_work_id",
             source="kikoeru_tracks_probe",
             subtitle_file_count=int(subtitle_count or 0),
             total_track_count=int(total_count if total_count is not None else -1),
-            subtitle_check_source=fetch_source,
+            subtitle_check_source="tracks_probe",
             has_lyric_hint=bool(subtitle_count and subtitle_count > 0),
         )
         return result
