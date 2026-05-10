@@ -318,6 +318,12 @@ kikoeru_search:
 
 ## 更新日志
 
+### v1.2.2 - Kikoeru 关联作品「明明有却查不到」修复
+
+- **后端**：`KikoeruDuplicateService.check_duplicate` 在 `/api/search?keyword=RJxxxxxx` 未命中时，新增按 RJ→work_id 直接打 `/api/tracks/{id}` 的硬兜底（`_probe_work_by_id`）。某些 kikoeru 部署的 search 全文索引对带前缀 0 的新作 RJ 号 / 翻译版的 sourceWorkno 索引会漂移漏掉，但 work_id 路由是稳定的，HTTP 200 即代表 work 存在。修复用户痛点："RJ01304475 在 kikoeru 网页上能搜到，但解压入库预检判定整条链路未命中"
+- 401 重登路径同样接 work_id 兜底
+- 兜底命中时同步填好字幕统计字段（`subtitle_file_count` / `total_track_count` / `has_lyric_hint`），不影响后续字幕补配判断流程
+
 ### v1.2.1 - 字幕补配「卡 60s 但实际已导入」修复
 
 - **后端**：`execute_pending_import` 主流程的源压缩包归档（可能跨卷搬 GB 文件）改为 `asyncio.create_task` fire-and-forget 后台执行，HTTP 立刻返回 `task.id` 给前端跳转工作台。修复用户痛点："实际后端已经导入成功了，但前端 60s 超时没打开工作台"

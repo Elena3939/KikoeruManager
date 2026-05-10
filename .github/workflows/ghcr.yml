@@ -77,6 +77,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.DOCKERHUB_IMAGE }}
-          short-description: "DLsite 同人音声压缩包智能管理工具，覆盖解压 / 元数据 / 分类 / 远程库存 / 字幕 / 任务追踪 全链路"
+          short-description: "DLsite 同人音声压缩包智能管理工具"
           readme-filepath: ./README.md
           enable-url-completion: true
