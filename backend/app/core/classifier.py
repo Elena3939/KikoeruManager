@@ -385,7 +385,29 @@ class SmartClassifier:
                 str(resolution_existing_path),
             )
         elif target_library.type == 'local':
-            final_path = await asyncio.to_thread(self._move_with_rename, source_path, target_path)
+            # 跨卷复制时通过 progress 回调把"移动到库存"的真实进度映射到 90~94 区间。
+            # 默认 shutil.move 在 NAS 跨卷场景下没有任何进度回报，前端经常停留在
+            # 90%（"移动到库存"）十几分钟看不到任何变化；这里实时上报 MB 数。
+            def _classify_move_progress(copied: int, total: int) -> None:
+                try:
+                    if total <= 0:
+                        return
+                    ratio = min(1.0, max(0.0, copied / total))
+                    mb_done = copied / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
+                    task.update_progress(
+                        90 + int(ratio * 4),
+                        f"移动到库存 {mb_done:.0f}/{mb_total:.0f}MB",
+                    )
+                except Exception:
+                    logger.debug("classify 移动进度回调异常已忽略", exc_info=True)
+
+            final_path = await asyncio.to_thread(
+                self._move_with_rename,
+                source_path,
+                target_path,
+                _classify_move_progress,
+            )
         else:
             relative_target_dir = os.path.relpath(target_path, target_library.root_path).replace("\\", "/")
             if relative_target_dir == '.':
@@ -757,8 +779,14 @@ class SmartClassifier:
         
         return None
     
-    def _move_with_rename(self, source: str, target_dir: str) -> str:
-        """移动文件/文件夹，处理重名"""
+    def _move_with_rename(self, source: str, target_dir: str, progress_cb=None) -> str:
+        """移动文件/文件夹，处理重名
+
+        - 同卷直接 ``os.rename``，瞬间完成
+        - 跨卷场景下走 fs_utils.move_path_efficient（8 MB buffer 流式），并把
+          ``progress_cb(copied_bytes, total_bytes)`` 透传出去，方便上层把
+          "移动到库存"的真实进度上报到任务中心
+        """
         source_path = Path(source)
         target_path = Path(target_dir)
         
@@ -783,9 +811,23 @@ class SmartClassifier:
                 logger.error(f"无法找到可用的目标路径，使用原路径")
                 return source
             logger.info(f"移动: 目标已存在，尝试新名称: {final_target.name}")
-        
-        # 执行移动
-        shutil.move(str(source_path), str(final_target))
+
+        # 跨卷场景下走 efficient 流式 copy + 大 buffer。这里调用方 _move_with_rename
+        # 是 sync 的（被 asyncio.to_thread 包装），所以用 asyncio.run 跑一次协程。
+        from .fs_utils import move_path_efficient
+
+        try:
+            asyncio.run(
+                move_path_efficient(
+                    str(source_path),
+                    str(final_target),
+                    progress_cb=progress_cb,
+                )
+            )
+        except RuntimeError:
+            # asyncio.run 只能在没有运行 event loop 的线程里调用；
+            # 极少数同步路径如果已经在 event loop 内被调用，回退到 shutil.move 老路径。
+            shutil.move(str(source_path), str(final_target))
         logger.info(f"移动: {source_path} -> {final_target}")
         
         return str(final_target)

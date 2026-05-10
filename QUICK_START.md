@@ -318,6 +318,19 @@ kikoeru_search:
 
 ## 更新日志
 
+### v1.2.0 - 性能与稳定性大修
+
+- 字幕工作台「应用配对」从串行 60+ HTTP 缩到 2-4 次 batch HTTP，群晖 Docker 上 30 对配对从 5-30 秒降到 0.5-1 秒
+- 新增 `/api/library/browser/batch-rename` 批量接口，单事务完成多条 rename + 1 次索引同步 + 1 次缓存清理
+- 字幕预检 / 工作台 stage 复制改 `ThreadPoolExecutor` 并发，30 个字幕复制速度提升 5-8 倍
+- 嵌套小压缩包识别重写：默认走常规解压，仅"强证据 + 整词匹配 + 内容清一色字幕扩展名"才视为字幕包，修复命名不规范奖励包漏解压
+- 新增 `fs_utils.move_path_efficient`：跨卷归档 / 分类用 8MB buffer 流式复制 + 实时进度回调，归档大文件不再卡 95%
+- `_wait_file_stable` 重写：mtime 稳定判定 + PermissionError 累计软放行 + max_wait 缩到 1800s，修复群晖 NAS 上偶发"等 3600 秒"死锁
+- 任务中心 `_build_all_items` 加分步 try/except + 顶层兜底，单条任务异常不再让任务中心 500
+- 日志页 OOM 修复：highlightCache 长 cacheKey 不缓存、parse/highlight 上限缩小、`logLimit` 砍到 1000、切条数 / 离开页面主动清缓存
+- 日志搜索全历史模式不再二次过滤 keyword，修复"X 总计 0 匹配"
+- 字幕补配 API timeout 从 60s 加到 10 分钟，前端兜底 setTimeout 15 分钟避免按钮永远卡 loading
+
 ### v1.1.0 - 改进查重功能
 - ✅ 关联作品检测
 - ✅ 翻译版本识别

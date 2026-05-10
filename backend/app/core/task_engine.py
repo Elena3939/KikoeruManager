@@ -2870,12 +2870,30 @@ class TaskEngine:
                     except Exception as e:
                         logger.warning(f"清理解压失败残留失败: {potential_path}, {e}")
 
-    async def _move_file_with_retry(self, source_path: str, dest_path: str, attempts: int = 5, delay_seconds: float = 1.0):
-        """带重试地移动文件，缓解 Windows 下解压后句柄释放延迟导致的占用问题"""
+    async def _move_file_with_retry(
+        self,
+        source_path: str,
+        dest_path: str,
+        attempts: int = 5,
+        delay_seconds: float = 1.0,
+        progress_cb=None,
+    ):
+        """带重试地移动文件。
+
+        - 缓解 Windows 下解压后句柄释放延迟导致的占用问题
+        - 跨卷场景使用 fs_utils.move_path_efficient 走 8 MB buffer 流式复制 +
+          ``progress_cb(copied, total)`` 实时上报，避免归档大文件时进度卡 95% 不动
+        """
+        from .fs_utils import move_path_efficient
+
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
-                await asyncio.to_thread(shutil.move, source_path, dest_path)
+                await move_path_efficient(
+                    source_path,
+                    dest_path,
+                    progress_cb=progress_cb,
+                )
                 return
             except FileNotFoundError:
                 raise
@@ -3079,8 +3097,17 @@ class TaskEngine:
             # 确保已处理目录存在
             os.makedirs(processed_dir, exist_ok=True)
 
+            # 计算所有待归档文件总大小，用于跨卷复制时计算总进度（多分卷场景）
+            total_archive_bytes = 0
+            for fp in files_to_archive:
+                try:
+                    total_archive_bytes += os.path.getsize(fp)
+                except OSError:
+                    pass
+            archived_bytes_so_far = [0]  # mutable closure，用于跨文件累计
+
             # 移动所有分卷文件（或单个文件）
-            for file_path in files_to_archive:
+            for index, file_path in enumerate(files_to_archive):
                 filename = os.path.basename(file_path)
                 dest_path = os.path.join(processed_dir, filename)
                 
@@ -3092,8 +3119,42 @@ class TaskEngine:
                     dest_path = os.path.join(processed_dir, f"{name}({counter}){ext}")
                     counter += 1
 
+                file_size = 0
+                try:
+                    file_size = os.path.getsize(file_path)
+                except OSError:
+                    pass
+
+                # 跨卷归档时把"已复制字节数"实时映射到 95~99 进度区间，
+                # 让前端能看到归档大文件的实际进度，避免长时间停在 95%。
+                def _make_progress_cb(captured_filename, captured_size):
+                    base = archived_bytes_so_far[0]
+                    grand_total = total_archive_bytes if total_archive_bytes > 0 else captured_size or 1
+
+                    def _on_progress(copied: int, _total: int) -> None:
+                        try:
+                            global_copied = base + copied
+                            ratio = min(1.0, max(0.0, global_copied / max(1, grand_total)))
+                            # 95~99：archive 阶段固定占 95~99 进度，留 100% 给 complete
+                            progress_value = 95 + int(ratio * 4)
+                            mb_done = global_copied / (1024 * 1024)
+                            mb_total = grand_total / (1024 * 1024)
+                            task.update_progress(
+                                progress_value,
+                                f"归档压缩包 {mb_done:.0f}/{mb_total:.0f}MB ({captured_filename})",
+                            )
+                        except Exception:
+                            logger.debug("归档进度回调异常已忽略", exc_info=True)
+
+                    return _on_progress
+
                 # 移动文件，允许在 7z 刚退出时等待句柄释放
-                await self._move_file_with_retry(file_path, dest_path)
+                await self._move_file_with_retry(
+                    file_path,
+                    dest_path,
+                    progress_cb=_make_progress_cb(filename, file_size),
+                )
+                archived_bytes_so_far[0] += file_size
                 logger.info(f"压缩包已归档: {file_path} -> {dest_path}")
                 archived_files.append((filename, dest_path, file_path))
 

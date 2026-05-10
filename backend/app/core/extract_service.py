@@ -117,6 +117,52 @@ class ExtractService:
     NESTED_SCAN_DIR_BUDGET = 800
     # 小于此尺寸的嵌套压缩包视为潜在字幕源，跳过常规嵌套解压、直接走字幕补配预检
     NESTED_SUBTITLE_SIZE_THRESHOLD = 10 * 1024 * 1024  # 10 MB
+    # 嵌套小包"看起来像字幕包"的强语义关键词。
+    #
+    # 设计原则（用户痛点：之前 < 10MB 一律跳过，命名不规范的奖励包永远漏解压）：
+    # 1. 默认所有嵌套小包都走常规解压（safe default = 不漏解压）。
+    # 2. 仅当文件名 / 父目录含**强语义**关键词、或 peek 内容**清一色字幕扩展名**时，
+    #    才判定为字幕包跳过常规解压。
+    # 3. 关键词必须严格 —— "ass" / "srt" / "vtt" 这种短英文片段会误命中
+    #    "assets" / "compass" / 任意含 ass 子串的文件名 / 路径，所以**只用整词
+    #    （word boundary）匹配**，并去掉这些短英文，只保留语义明确的词。
+    NESTED_SUBTITLE_HINTS = (
+        "字幕",
+        "字幕版",
+        "字幕组",
+        "字幕組",
+        "subtitle",
+        "subtitles",
+    )
+    # 字幕文件扩展名。仅用于 peek 内容判定。
+    # 注意：原版含 .txt，但奖励包 / 说明 / readme 也常用 .txt，会让纯文本奖励包
+    # 被误判为字幕包跳过解压，所以这里**不再把 .txt 列为字幕扩展名**。
+    SUBTITLE_FILE_EXTENSIONS = (
+        ".srt",
+        ".vtt",
+        ".ass",
+        ".ssa",
+        ".lrc",
+        ".sbv",
+        ".sub",
+        ".idx",
+        ".smi",
+        ".sami",
+    )
+    # peek 内容时遇到任何这些扩展名 → 一定不是字幕包 → 走常规解压
+    NESTED_SMALL_ARCHIVE_MEDIA_EXTENSIONS = frozenset({
+        ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
+        ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v",
+        ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff", ".tif",
+        ".psd", ".ai", ".eps",
+        ".pdf", ".epub", ".mobi", ".azw3",
+        ".html", ".htm", ".xhtml",
+        ".doc", ".docx", ".rtf",
+        ".xls", ".xlsx", ".csv",
+        ".ppt", ".pptx",
+        ".zip", ".7z", ".rar",  # 嵌套压缩包再嵌套，肯定不是纯字幕包
+        ".exe", ".dll", ".bat",
+    })
     NESTED_SKIP_DIRS = {
         "__macosx",
         ".git",
@@ -628,6 +674,151 @@ class ExtractService:
                 pass
         raise RuntimeError("选择性解压失败：未能使用现有密码策略提取目标条目")
 
+    async def _classify_nested_small_archive(
+        self,
+        file_path: str,
+        filename: str,
+        current_root: str,
+        scan_root: str,
+        parent_password: Optional[str],
+    ) -> str:
+        """对 < NESTED_SUBTITLE_SIZE_THRESHOLD 的嵌套压缩包判断"是不是字幕包"。
+
+        ★ 设计原则（修复用户痛点：命名不规范的奖励包漏解压）：
+            **默认结果是 ``non_subtitle``，仅在"确凿是字幕包"时才返回 ``subtitle``。**
+            漏判一个字幕包 → 字幕被解压到主目录（容易处理）；
+            漏判一个奖励包 → 用户永远拿不到里面的内容（严重）；
+            所以策略应当 **bias 向解压**，让字幕预检走"明确证据"路径。
+
+        返回:
+            ``"subtitle"``     - 仅当"强证据"指向字幕包时（关键词 + peek 一致）
+            ``"non_subtitle"`` - 一切其他情况：命名不规范、peek 失败、含任何媒体 / 文档 / 嵌套包
+                                这两个返回值在调用方完全等价（"unknown" 也走解压），保留两个值仅为日志可读
+
+        强字幕证据（任一即跳过常规解压）：
+        1. 文件名（去后缀）/ 父目录名 **以独立 token 形式** 含 NESTED_SUBTITLE_HINTS。
+           整词匹配避免 "ass" 误命中 "assets" / "compass"。
+        2. peek 内容清单：**至少 1 个字幕扩展名 且 0 个非字幕扩展名**（媒体 / 文档 /
+           嵌套压缩包 / .txt 等都算非字幕，立即否决）。
+        3. peek 失败（密码错 / 损坏 / 没条目）→ 一律 ``non_subtitle``，
+           交由常规嵌套解压用密码列表逐个尝试，保证用户的奖励包不会漏。
+        """
+        try:
+            stem = Path(filename).stem
+        except Exception:
+            stem = filename
+
+        # 父级目录名也参与判定，覆盖 "folder/字幕组/RJxxx.zip" 这种结构。
+        # 但只取相对 scan_root 的层级，避免把 scan_root 自身的前缀也卷进来。
+        parent_segments: List[str] = []
+        try:
+            rel = os.path.relpath(current_root, scan_root)
+            if rel and rel != ".":
+                parent_segments = [seg for seg in re.split(r"[\\/]+", rel) if seg]
+        except Exception:
+            parent_segments = []
+
+        # 整词匹配：把 stem / 父目录名按非字母数字字符切成 token
+        # （考虑到中文不分词，中文关键词用 substring 匹配，英文关键词用 token 匹配）
+        def _split_tokens(text: str) -> List[str]:
+            return [tok for tok in re.split(r"[^0-9A-Za-z\u4e00-\u9fff]+", text or "") if tok]
+
+        all_tokens_lower: List[str] = []
+        for segment in [stem, *parent_segments]:
+            for tok in _split_tokens(segment):
+                all_tokens_lower.append(tok.lower())
+        joined_text = " ".join(all_tokens_lower)
+
+        def _contains_chinese(text: str) -> bool:
+            return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+        # 1. 字幕关键词命中
+        for hint in self.NESTED_SUBTITLE_HINTS:
+            hint_lower = hint.lower()
+            if _contains_chinese(hint):
+                # 中文关键词：substring 匹配（中文不分词）
+                if hint_lower in joined_text:
+                    logger.debug(
+                        "嵌套小包命中字幕关键词（中文 substring）'%s'，判定为 subtitle: %s",
+                        hint, filename,
+                    )
+                    return "subtitle"
+            else:
+                # 英文关键词：必须以独立 token 形式出现，避免子串误命中
+                if hint_lower in all_tokens_lower:
+                    logger.debug(
+                        "嵌套小包命中字幕关键词（英文 token）'%s'，判定为 subtitle: %s",
+                        hint, filename,
+                    )
+                    return "subtitle"
+
+        # 2. peek 内容兜底
+        file_list = None
+        try:
+            file_list = await self._list_archive_contents(file_path, parent_password or "")
+            if file_list is None and parent_password:
+                file_list = await self._list_archive_contents(file_path, "")
+        except Exception as exc:
+            logger.debug(
+                "peek 嵌套小包内容失败（保守按 non_subtitle 走常规解压）: %s, %s",
+                filename, exc,
+            )
+            file_list = None
+
+        if not file_list:
+            return "non_subtitle"
+
+        subtitle_exts = {ext.lower() for ext in self.SUBTITLE_FILE_EXTENSIONS}
+        non_subtitle_exts = self.NESTED_SMALL_ARCHIVE_MEDIA_EXTENSIONS
+
+        subtitle_file_count = 0
+        non_subtitle_file_count = 0
+        unknown_ext_count = 0  # 既不是字幕也不在 non_subtitle_exts 里（含 .txt / 无后缀 / 私有扩展名）
+
+        for entry in file_list:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            if entry.get("is_dir") or name.endswith("/") or name.endswith("\\"):
+                continue
+            ext = Path(name).suffix.lower()
+            if ext in subtitle_exts:
+                subtitle_file_count += 1
+            elif ext in non_subtitle_exts:
+                non_subtitle_file_count += 1
+            else:
+                # 例如 .txt / .nfo / .url / 无后缀 / 自定义后缀
+                unknown_ext_count += 1
+
+        # 强证据：至少 1 个字幕文件 + 0 个非字幕文件 + 0 个未知扩展名
+        # 任何一个非字幕 / 未知扩展名都直接否决（说明是混合包，可能是奖励 + 说明 + 字幕，
+        # 这种保守按"普通包"解压更安全）
+        if subtitle_file_count > 0 and non_subtitle_file_count == 0 and unknown_ext_count == 0:
+            logger.debug(
+                "嵌套小包内容清一色字幕文件（%d 个），判定为 subtitle: %s",
+                subtitle_file_count, filename,
+            )
+            return "subtitle"
+
+        if non_subtitle_file_count > 0:
+            logger.debug(
+                "嵌套小包内含 %d 个媒体 / 文档 / 嵌套压缩包，走常规解压: %s",
+                non_subtitle_file_count, filename,
+            )
+        elif unknown_ext_count > 0:
+            logger.debug(
+                "嵌套小包含 %d 个未知 / 文本类扩展名（保守走常规解压避免漏放）: %s",
+                unknown_ext_count, filename,
+            )
+        else:
+            logger.debug(
+                "嵌套小包 peek 后无任何文件 / 全是空目录，按 non_subtitle 走常规解压: %s",
+                filename,
+            )
+        return "non_subtitle"
+
     async def _extract_nested_archives(self, directory: str, task: Task, max_depth: int = 5, current_depth: int = 0, processed_paths: Optional[set] = None, parent_password: Optional[str] = None) -> int:
         """
         递归解压目录中的嵌套压缩包
@@ -725,35 +916,57 @@ class ExtractService:
                         f"(深度: {current_depth + 1}, 父密码: {parent_password or '无'})"
                     )
 
-                    # 小型压缩包（< NESTED_SUBTITLE_SIZE_THRESHOLD）视为潜在字幕源，
-                    # 不做常规嵌套解压，记录到 task_metadata 后续走字幕补配预检
+                    # 小型压缩包（< NESTED_SUBTITLE_SIZE_THRESHOLD）的处理：
+                    # 历史版本一律标记为字幕源、跳过常规解压，导致命名不规范的奖励包
+                    # （bonus.zip / extra.zip / RJxxx特典.zip）永远漏解压。
+                    # 现在改为"默认解压、仅在确凿是字幕包时跳过"：
+                    #   - 文件名 / 父目录含字幕关键词（整词匹配，避免 ass 子串误命中）
+                    #     → subtitle，跳过常规解压走字幕预检
+                    #   - peek 内容清一色字幕扩展名（无任何媒体 / 文档 / .txt / 嵌套包）
+                    #     → subtitle
+                    #   - 其他一切（命名不规范 / peek 失败 / 含媒体 / 含说明 .txt）
+                    #     → non_subtitle，走常规解压让密码列表逐个尝试，保证不漏奖励
                     try:
                         nested_archive_size = os.path.getsize(file_path)
                     except OSError:
                         nested_archive_size = 0
                     if 0 < nested_archive_size < self.NESTED_SUBTITLE_SIZE_THRESHOLD:
                         # subtitle_probe_mode：专门用于字幕补配预检的临时解包，直接展开小包
-                        # 正常流程：标记为潜在字幕源，留给后续字幕补配链路处理
                         _is_probe = bool((task.task_metadata or {}).get("subtitle_probe_mode"))
                         if not _is_probe:
+                            classification = await self._classify_nested_small_archive(
+                                file_path,
+                                filename,
+                                root,
+                                directory,
+                                parent_password,
+                            )
+                            if classification == "subtitle":
+                                logger.info(
+                                    "嵌套压缩包 %.1fMB < 阈值 %.0fMB，识别为字幕源，跳过常规解压: %s",
+                                    nested_archive_size / 1024 / 1024,
+                                    self.NESTED_SUBTITLE_SIZE_THRESHOLD / 1024 / 1024,
+                                    filename,
+                                )
+                                if task.task_metadata is None:
+                                    task.task_metadata = {}
+                                pending_subtitles = task.task_metadata.setdefault("nested_subtitle_archive_filenames", [])
+                                if filename not in pending_subtitles:
+                                    pending_subtitles.append(filename)
+                                processed_paths.add(file_real_path)
+                                continue  # 跳过常规嵌套解压
                             logger.info(
-                                "嵌套压缩包 %.1fMB < 阈值 %.0fMB，标记为潜在字幕源，跳过常规解压: %s",
+                                "嵌套压缩包 %.1fMB 但分类为非字幕（%s），走常规嵌套解压: %s",
                                 nested_archive_size / 1024 / 1024,
-                                self.NESTED_SUBTITLE_SIZE_THRESHOLD / 1024 / 1024,
+                                classification,
                                 filename,
                             )
-                            if task.task_metadata is None:
-                                task.task_metadata = {}
-                            pending_subtitles = task.task_metadata.setdefault("nested_subtitle_archive_filenames", [])
-                            if filename not in pending_subtitles:
-                                pending_subtitles.append(filename)
-                            processed_paths.add(file_real_path)
-                            continue  # 跳过常规嵌套解压
-                        logger.info(
-                            "[字幕预检] 嵌套小包 %.1fMB，字幕预检模式直接展开: %s",
-                            nested_archive_size / 1024 / 1024,
-                            filename,
-                        )
+                        else:
+                            logger.info(
+                                "[字幕预检] 嵌套小包 %.1fMB，字幕预检模式直接展开: %s",
+                                nested_archive_size / 1024 / 1024,
+                                filename,
+                            )
 
                     if task.is_cancelled():
                         stop_scan = True
@@ -1077,13 +1290,26 @@ class ExtractService:
         logger.warning("嵌套压缩包解压失败，已尝试所有 %d 个密码: %s", len(password_list), archive_path)
         return False, None
 
-    async def _wait_file_stable(self, file_path: str, task: Optional[Task] = None, max_wait: int = 3600):
-        """等待文件大小稳定（文件复制完成检测）"""
+    async def _wait_file_stable(self, file_path: str, task: Optional[Task] = None, max_wait: int = 1800):
+        """等待文件大小稳定（文件复制完成检测）
+
+        改进点（解决群晖 NAS 上偶发"等 3600 秒超时"的死锁）：
+        1. 同时观察 size 和 mtime；任一维度连续稳定 file_stable_checks 次即视为完成。
+        2. PermissionError 累计上限：超过 stable_checks * 6 次后，只要 size 已经稳定，
+           就认为是 NAS / SMB 临时锁，软放行避免无限循环。
+        3. 默认 max_wait 1800 秒（30 分钟），避免单文件检测把任务卡 1 小时。
+        4. size 偶发"回退到更小值"按抖动处理（NAS stat 缓存可能瞬时不一致），
+           不再 reset stable_count，但会重新对齐 size。
+        """
         config = self.config.processing
         previous_size = -1
+        previous_mtime = -1.0
         stable_count = 0
+        permission_failures = 0
+        max_permission_failures = max(20, config.file_stable_checks * 6)
         start_time = asyncio.get_event_loop().time()
         last_progress_time = start_time
+        last_max_size = 0
 
         logger.info(f"开始等待文件复制完成: {file_path}")
 
@@ -1109,8 +1335,10 @@ class ExtractService:
                     await asyncio.sleep(config.file_stable_interval)
                     continue
 
-                # 获取文件大小
-                current_size = os.path.getsize(file_path)
+                # 获取文件大小 + mtime
+                stat = os.stat(file_path)
+                current_size = stat.st_size
+                current_mtime = stat.st_mtime
 
                 # 检查文件是否为空或太小（可能是刚开始复制）
                 if current_size < 1024:  # 小于1KB认为可能是刚开始复制
@@ -1118,30 +1346,52 @@ class ExtractService:
                     await asyncio.sleep(config.file_stable_interval)
                     continue
 
-                # 检查文件大小是否稳定
-                if current_size == previous_size:
+                # NAS / SMB 偶发的"size 瞬时回退"按抖动处理：保留历史最大值，
+                # 但只要 size 不再增长就视作"未变化"，避免 stat 缓存抖动让计数永远归零。
+                size_grew = current_size > last_max_size
+                last_max_size = max(last_max_size, current_size)
+                size_stable = (current_size == previous_size) and not size_grew
+                mtime_stable = (
+                    previous_mtime > 0
+                    and abs(current_mtime - previous_mtime) < 1e-3
+                )
+
+                if size_stable or mtime_stable:
                     stable_count += 1
                     # 尝试打开文件检查是否被锁定
                     try:
                         with open(file_path, 'rb') as f:
-                            # 尝试读取文件开头（检查是否可以访问）
                             f.read(1)
-                        # 如果成功读取且稳定次数达标，认为文件已复制完成
+                        permission_failures = 0
                         if stable_count >= config.file_stable_checks:
-                            logger.info(f"文件复制完成检测通过: {file_path} ({current_size} bytes)")
+                            logger.info(
+                                f"文件复制完成检测通过: {file_path} ({current_size} bytes, "
+                                f"size_stable={size_stable}, mtime_stable={mtime_stable})"
+                            )
                             return
-                    except (PermissionError, OSError):
-                        # 文件仍被锁定，重置稳定计数
-                        logger.debug(f"文件仍被锁定，继续等待: {file_path}")
+                    except (PermissionError, OSError) as exc:
+                        permission_failures += 1
+                        # 软放行：size 已经稳定但反复读不到（典型 NAS / SMB 临时锁），
+                        # 累积超过阈值后认为可以放行，避免 1 小时死锁。
+                        if size_stable and permission_failures >= max_permission_failures:
+                            logger.warning(
+                                "文件 size 稳定但读取持续失败 %d 次，软放行: %s, %s",
+                                permission_failures, file_path, exc,
+                            )
+                            return
+                        logger.debug(
+                            f"文件仍被锁定 ({permission_failures}/{max_permission_failures}): {file_path}, {exc}"
+                        )
                         stable_count = 0
                 else:
-                    # 文件大小在变化，正在复制中
+                    # 文件还在变化
                     if stable_count > 0:
                         logger.info(f"文件仍在复制中，当前大小: {current_size} bytes")
                     stable_count = 0
                     last_progress_time = current_time
 
                 previous_size = current_size
+                previous_mtime = current_mtime
 
                 # 如果长时间没有进度，发出警告
                 if current_time - last_progress_time > 60:  # 1分钟没有变化
