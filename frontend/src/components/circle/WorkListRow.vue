@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar } from 'lucide-vue-next'
+import { useViewport } from '../../composables/useViewport'
 
 const props = defineProps({
   /** 作品数据对象 */
@@ -22,6 +23,8 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['select', 'preview', 'reimport'])
+
+const { isMobile } = useViewport()
 
 const displayCode = computed(() => {
   if (props.codeField) return props.item[props.codeField]
@@ -100,6 +103,7 @@ function onImgError(e) {
       'is-unreleased': isUnreleased,
       'status-flash': statusFlash,
       'is-disabled': disabled,
+      'is-mobile': isMobile,
     }"
     :style="{ '--row-index': rowIndex }"
     @click="emit('select', item)"
@@ -131,14 +135,14 @@ function onImgError(e) {
       </div>
     </div>
 
-    <!-- 来源/变体 -->
-    <div class="wlr-meta">
+    <!-- 来源/变体（移动端隐藏） -->
+    <div v-if="!isMobile" class="wlr-meta">
       <span class="wlr-variant"><Layers :size="11" />{{ variantLabel }}</span>
       <span v-if="downloadRjcode !== displayCode" class="wlr-linked-code">{{ downloadRjcode }}</span>
     </div>
 
-    <!-- 状态 pills -->
-    <div class="wlr-status">
+    <!-- 状态 pills（移动端隐藏） -->
+    <div v-if="!isMobile" class="wlr-status">
       <slot name="tags">
         <span class="wlr-pill" :class="item.server_owned ? 'pill-owned' : 'pill-missing'">
           <component :is="item.server_owned ? Server : X" :size="10" />{{ item.server_owned ? '已收录' : '未收录' }}
@@ -149,8 +153,8 @@ function onImgError(e) {
       </slot>
     </div>
 
-    <!-- 操作区 -->
-    <div class="wlr-actions" @click.stop>
+    <!-- 操作区（移动端始终可见） -->
+    <div class="wlr-actions" :class="{ 'is-mobile-visible': isMobile }" @click.stop>
       <slot name="actions">
         <button
           v-if="item.local_download_ready"
@@ -435,9 +439,134 @@ function onImgError(e) {
   transition: opacity .2s ease, transform .24s cubic-bezier(.34, 1.56, .64, 1);
 }
 
-.work-list-row:hover .wlr-actions {
+@media (hover: hover) {
+  .work-list-row:hover .wlr-actions {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* 触摸屏（移动端）：操作按钮始终可见 */
+@media (hover: none) {
+  .wlr-actions {
+    opacity: 1;
+    transform: translateX(0);
+    width: auto;
+  }
+  /* 移动端隐藏 meta（变体/关联码）节省空间 */
+  .wlr-meta {
+    display: none;
+  }
+  /* 状态 pills 只保留第一个（服务器收录状态），隐藏 has_asmr_one */
+  .wlr-status .wlr-pill:not(:first-child) {
+    display: none;
+  }
+}
+
+/* 移动端通过 isMobile class 控制（比媒体查询更可靠）*/
+.work-list-row.is-mobile {
+  gap: 8px;
+  padding: 7px 10px 7px 8px;
+}
+.work-list-row.is-mobile .wlr-thumb {
+  width: 36px;
+  height: 36px;
+}
+.work-list-row.is-mobile .wlr-title {
+  font-size: 12px;
+}
+.wlr-actions.is-mobile-visible {
   opacity: 1;
   transform: translateX(0);
+  width: auto;
+  flex-shrink: 0;
+}
+.wlr-btn.is-mobile-compact {
+  height: 24px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+.work-list-row.is-mobile .wlr-btn {
+  height: 24px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+
+/* 窄屏紧凑处理（含桌面浏览器模拟移动端场景）*/
+@media (max-width: 640px) {
+  .work-list-row {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    gap: 8px;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .wlr-thumb {
+    width: 36px;
+    height: 36px;
+  }
+  .wlr-title {
+    font-size: 12px;
+    max-width: 100%;
+    white-space: normal;
+    overflow: hidden;
+    text-overflow: clip;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  .wlr-main {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: calc(100% - 44px);
+    overflow: hidden;
+  }
+  .wlr-title-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .wlr-subtitle {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .wlr-code {
+    min-width: 0;
+    max-width: 92px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .wlr-cv {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* 640px 以下隐藏 meta 和 status，节省横向空间 */
+  .wlr-meta,
+  .wlr-status {
+    display: none;
+  }
+  /* 操作按钮始终可见（无论 hover 能力）*/
+  .wlr-actions {
+    opacity: 1 !important;
+    transform: translateX(0) !important;
+    width: auto;
+    max-width: 100%;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .wlr-btn {
+    height: 24px !important;
+    max-width: 100%;
+    padding: 0 7px !important;
+    font-size: 11px !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 .wlr-btn {

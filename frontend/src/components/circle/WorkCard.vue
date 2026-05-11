@@ -807,4 +807,61 @@ function onCoverError(event) {
   padding: 0 7px;
   font-size: 10px;
 }
+
+@media (max-width: 640px) {
+  .work-card {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .work-cover-wrapper,
+  .work-card-body,
+  .work-tags,
+  .work-actions {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .work-card-body {
+    padding: 7px 7px 8px;
+  }
+  .work-rj,
+  .work-title,
+  .work-linked,
+  .work-cv {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .work-title {
+    font-size: 10.5px;
+    word-break: break-word;
+  }
+  .work-linked,
+  .work-cv {
+    font-size: 8.5px;
+  }
+  .work-tags {
+    gap: 2px;
+    overflow: hidden;
+  }
+  .tag-chip {
+    min-width: 0;
+    max-width: 100%;
+    padding: 0 4px;
+    font-size: 8.5px;
+  }
+  .work-actions {
+    opacity: 1;
+    max-height: 40px;
+    margin-top: 4px;
+  }
+  .work-action-btn {
+    min-width: 0;
+    padding: 0 4px;
+    font-size: 8.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
 </style>
