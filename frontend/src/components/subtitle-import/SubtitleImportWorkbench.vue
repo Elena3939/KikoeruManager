@@ -3644,4 +3644,45 @@ const subtitleWorkbenchCtx = computed(() => ({
 .import-task-main > :deep(.el-card) {
   border-radius: 14px;
 }
+
+/* ============================================================
+ * 移动端 (≤640)：解锁 dialog body 与 shell 的高度限制（Phase 2.4 顺带修复）
+ * 全局规则会把 .subtitle-workbench-dialog 在 ≤640 改成 100vw/100dvh，
+ * 但本组件 :global(.subtitle-import-workbench-dialog .el-dialog__body) 的
+ * max-height: calc(100vh - 18px) 与 .subtitle-workbench-shell 的
+ * min-height: 78vh / max-height: 92vh 会留 8%~ 间隙、撑不满全屏 dialog。
+ * 这里只在 ≤640 解锁这些限制，桌面端零改动。
+ * 内部 SubtitleWorkbenchStage 三栏的"分步抽屉化"留给 Phase 4。
+ * ============================================================ */
+@media (max-width: 640px) {
+  .subtitle-workbench-shell {
+    min-height: 100% !important;
+    max-height: 100% !important;
+    height: 100% !important;
+    border-radius: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+  .subtitle-workbench-header {
+    padding: 12px 14px !important;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .subtitle-workbench-body {
+    padding: 12px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  :global(.subtitle-import-workbench-dialog) {
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+  }
+  :global(.subtitle-import-workbench-dialog .el-dialog__body) {
+    max-height: none !important;
+    height: 100dvh !important;
+    overflow: hidden !important;
+  }
+}
 </style>
