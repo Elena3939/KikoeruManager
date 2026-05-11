@@ -1728,4 +1728,118 @@ button:disabled { cursor: not-allowed; }
   .subtitle-main { flex-direction: column; }
   .subtitle-list-pane { width: 100%; }
 }
+
+/* ============================================================
+ * 移动端 (≤1024)：整页 stream 模式（Phase 2.4）
+ * 桌面端零改动：仅 @media 内覆盖
+ * 痛点：桌面是 .subtitle-shell flex 双栏（list 360px / detail 1fr）各自滚，
+ *      移动端 list 360px 撑死 + detail 没空间。
+ * 解法：双栏 → flex-col stack；内部滚动区松绑；整页 .subtitle-shell 自然撑开后由
+ *       外层 .content-shell 滚（与 Conflicts.vue / ActivityHistory.vue 一致）。
+ * ============================================================ */
+@media (max-width: 1024px) {
+  .subtitle-page {
+    min-height: auto !important;
+    overflow: visible !important;
+  }
+  .subtitle-shell {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+  }
+  .subtitle-main {
+    flex: 0 0 auto !important;
+    flex-direction: column !important;
+    overflow: visible !important;
+    min-height: 0 !important;
+    gap: 12px;
+  }
+  .subtitle-list-pane,
+  .subtitle-detail-pane {
+    width: 100% !important;
+    flex: 0 0 auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+  /* 内部滚动区松绑：让内容自然撑开，整页滚 */
+  .subtitle-list-scroll,
+  .subtitle-detail-body {
+    overflow: visible !important;
+    flex: 0 0 auto !important;
+    max-height: none !important;
+    min-height: 0 !important;
+  }
+  /* Tab segmented：窄屏占满一整行，按钮平均分 */
+  .subtitle-segmented {
+    align-self: stretch;
+    width: 100%;
+  }
+  .subtitle-segmented-item {
+    flex: 1 1 50%;
+    justify-content: center;
+  }
+  /* 列表头部 actions（清除当前 / 清空）窄屏 wrap，避免挤窄 */
+  .subtitle-list-actions {
+    flex-wrap: wrap;
+  }
+  /* 字幕文件夹补配 - 表单操作按钮 wrap + 50% 等宽 */
+  .subtitle-form-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .subtitle-form-actions .subtitle-action-btn {
+    flex: 1 1 calc(50% - 3px);
+    min-width: 0;
+  }
+}
+
+/* ============================================================
+ * 移动端 (≤640)：内边距收紧 + 卡片视觉紧凑
+ * ============================================================ */
+@media (max-width: 640px) {
+  .subtitle-page {
+    padding: 12px 10px 16px !important;
+  }
+  .subtitle-list-pane,
+  .subtitle-detail-pane {
+    border-radius: 14px;
+  }
+  /* detail-header / body padding 紧凑 */
+  .subtitle-detail-header {
+    padding: 16px !important;
+  }
+  .subtitle-detail-body {
+    padding: 14px !important;
+    gap: 14px;
+  }
+  /* 大标题字号下调 */
+  .subtitle-detail-title {
+    font-size: 18px !important;
+    letter-spacing: -0.3px;
+  }
+  /* form 内边距收紧 */
+  .subtitle-form-body {
+    padding: 14px !important;
+    gap: 12px;
+  }
+  /* 提交栏改全宽（导入按钮 100%） */
+  .subtitle-detail-footer {
+    justify-content: stretch;
+  }
+  .subtitle-detail-footer .subtitle-action-btn {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+  /* 字幕文件树 max-height 收紧，避免吃满首屏 */
+  .subtitle-tree {
+    max-height: 200px;
+  }
+  /* meta-grid 改 1 列（避免横向挤压数字 / RJ 码） */
+  .subtitle-meta-grid {
+    grid-template-columns: 1fr;
+  }
+  .subtitle-meta-item.is-wide {
+    grid-column: 1 / -1;
+  }
+}
 </style>
