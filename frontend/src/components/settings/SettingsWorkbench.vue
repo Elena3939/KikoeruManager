@@ -548,5 +548,124 @@ const filteredSections = computed(() => {
   .save-bar-actions { width: 100%; }
   .save-bar-actions button { flex: 1; }
 }
+
+@media (max-width: 1024px) {
+  .settings-workbench {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .settings-sidebar {
+    position: static !important;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .sidebar-shell {
+    padding: 8px !important;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  .settings-search,
+  .sidebar-footer {
+    display: none !important;
+  }
+  .settings-nav {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    gap: 8px !important;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    margin-top: 0 !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 2px 2px 6px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .settings-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .nav-item {
+    width: auto !important;
+    flex: 0 0 auto !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 5px !important;
+    min-width: 86px;
+    padding: 9px 10px !important;
+    text-align: center !important;
+    position: relative;
+  }
+  .nav-item-body {
+    flex: 0 0 auto !important;
+    width: 100%;
+    min-width: 0;
+    text-align: center !important;
+  }
+  .nav-item-title {
+    font-size: 11.5px !important;
+    line-height: 1.18;
+    white-space: nowrap;
+  }
+  .nav-item-desc {
+    display: none !important;
+  }
+  .nav-item-icon {
+    width: 30px !important;
+    height: 30px !important;
+    border-radius: 10px;
+  }
+  .nav-badge {
+    position: absolute;
+    top: 3px;
+    right: 4px;
+    height: 14px;
+    padding: 0 5px;
+    font-size: 9px;
+  }
+  .main-slot {
+    gap: 12px;
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-workbench {
+    gap: 10px;
+  }
+  .sidebar-shell {
+    margin: 0 -2px;
+    padding: 7px !important;
+    border-radius: 14px;
+  }
+  .nav-item {
+    min-width: 78px;
+    padding: 8px 9px !important;
+    border-radius: 12px;
+  }
+  .nav-item-title {
+    font-size: 11px !important;
+  }
+  .nav-item-icon {
+    width: 28px !important;
+    height: 28px !important;
+  }
+  .save-bar {
+    left: 10px;
+    right: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    padding: 12px;
+    border-radius: 16px;
+  }
+  .save-bar-desc {
+    display: none;
+  }
+}
 </style>
 

@@ -2668,6 +2668,22 @@ watch(() => filters.q, (val, old) => {
 
 /* ≤640 紧凑边距 + metric / 筛选 / list 进一步收紧 */
 @media (max-width: 640px) {
+  :deep(.activity-drawer) {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+  :deep(.activity-drawer .el-drawer) {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+  :deep(.activity-drawer .el-drawer__body) {
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .activity-drawer-resizer-fixed {
+    display: none !important;
+  }
   .activity-page {
     padding: 8px 10px 56px !important;
   }

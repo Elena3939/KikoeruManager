@@ -1798,11 +1798,72 @@ button:disabled { cursor: not-allowed; }
  * ============================================================ */
 @media (max-width: 640px) {
   .subtitle-page {
-    padding: 12px 10px 16px !important;
+    width: 100%;
+    max-width: 100vw;
+    min-width: 0;
+    padding: 8px 10px 16px !important;
+    overflow-x: hidden !important;
+  }
+  .subtitle-info-strip {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: 14px 16px !important;
+    gap: 12px !important;
+  }
+  .lib-info-item {
+    min-width: 0;
+    align-items: flex-start;
+  }
+  .lib-info-body,
+  .lib-info-sub,
+  .lib-info-label {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .subtitle-shell,
+  .subtitle-main,
+  .subtitle-list-pane,
+  .subtitle-detail-pane {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden !important;
+  }
+  .subtitle-segmented {
+    padding: 4px;
+    border-radius: 14px;
+  }
+  .subtitle-segmented-item {
+    min-width: 0;
+    padding: 9px 6px;
+    font-size: 12px;
+    line-height: 1.2;
   }
   .subtitle-list-pane,
   .subtitle-detail-pane {
     border-radius: 14px;
+  }
+  .subtitle-list-header {
+    padding: 14px !important;
+  }
+  .subtitle-list-header-row {
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .subtitle-list-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 8px;
+  }
+  .subtitle-mini-btn {
+    min-width: 0;
+    width: 100%;
+    justify-content: center;
+    padding-left: 8px;
+    padding-right: 8px;
   }
   /* detail-header / body padding 紧凑 */
   .subtitle-detail-header {
@@ -1840,6 +1901,23 @@ button:disabled { cursor: not-allowed; }
   }
   .subtitle-meta-item.is-wide {
     grid-column: 1 / -1;
+  }
+  :global(.subtitle-import-workbench-dialog.el-dialog) {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+  :global(.subtitle-import-workbench-dialog .el-dialog__body) {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+  }
+  :global(.subtitle-workbench-overlay) {
+    background: rgba(15, 23, 42, 0.35);
+    backdrop-filter: none;
   }
 }
 </style>

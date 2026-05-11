@@ -1877,4 +1877,58 @@ body[data-lib-move-resizing="1"] {
   cursor: col-resize !important;
   user-select: none !important;
 }
+
+@media (max-width: 640px) {
+  .lib-move-modal.el-dialog {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+  .lib-move-modal .window {
+    width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    border-radius: 0 !important;
+  }
+  .lib-move-modal .window-header {
+    padding: 12px 14px !important;
+    align-items: flex-start !important;
+    gap: 10px !important;
+  }
+  .lib-move-modal .explorer-toolbar {
+    display: grid !important;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    gap: 8px !important;
+    padding: 9px 12px !important;
+  }
+  .lib-move-modal .path-bar {
+    grid-column: 1 / -1;
+    order: 3;
+    min-width: 0;
+  }
+  .lib-move-modal .search-wrap {
+    grid-column: 1 / -1;
+    order: 4;
+    width: 100% !important;
+  }
+  .lib-move-modal .explorer-main {
+    flex-direction: column !important;
+    overflow: hidden;
+  }
+  .lib-move-modal .explorer-nav {
+    width: 100% !important;
+    max-height: 34dvh;
+    border-right: 0 !important;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  }
+  .lib-move-modal .nav-splitter {
+    display: none !important;
+  }
+  .lib-move-modal .explorer-list {
+    min-height: 0;
+  }
+}
 </style>

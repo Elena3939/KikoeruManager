@@ -1970,4 +1970,121 @@ function formatBytes(size) {
   word-break: break-word;
   padding-left: 56px;
 }
+
+@media (max-width: 640px) {
+  .panel {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .entry-section-head {
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .entry-section-head-copy,
+  .entry-section-title,
+  .entry-section-desc {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .highlight-grid,
+  .highlight-row,
+  .metric-strip,
+  .metric-tail,
+  .path-list,
+  .entry-tree-box {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .highlight-row,
+  .metric-tail-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 8px 2px;
+  }
+  .highlight-label,
+  .metric-tail-k {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .highlight-value,
+  .metric-tail-v,
+  .entry-section-desc {
+    min-width: 0;
+    max-width: 100%;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+  }
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .metric-cell {
+    min-width: 0;
+    padding: 10px;
+  }
+  .metric-num {
+    font-size: 18px;
+  }
+  .entry-tree-box {
+    max-height: 300px;
+    overflow-x: hidden;
+    padding-right: 0;
+  }
+  .tree-row {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 7px 8px;
+  }
+  .tree-main,
+  .entry-main-target,
+  .entry-main-copy,
+  .entry-title-row {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .entry-title-row {
+    flex-wrap: wrap;
+  }
+  .entry-name {
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  .entry-size {
+    flex: 1 1 100%;
+    min-width: 0;
+    margin-left: 28px;
+    text-align: left;
+  }
+  .entry-error {
+    padding-left: 28px;
+  }
+  .path-item {
+    min-width: 0;
+    align-items: flex-start;
+  }
+  .path-name {
+    min-width: 0;
+    white-space: normal;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+  }
+  .email-watch-card {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .email-watch-cover {
+    width: 100% !important;
+    height: auto !important;
+    aspect-ratio: 4 / 3;
+  }
+  .email-watch-subject {
+    max-width: 100%;
+    white-space: normal;
+    word-break: break-word;
+  }
+}
 </style>
