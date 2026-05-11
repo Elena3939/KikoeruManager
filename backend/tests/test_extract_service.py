@@ -3,11 +3,12 @@
 """
 import pytest
 import os
+import subprocess
 import tempfile
 import zipfile
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, AsyncMock, patch
 
-from app.core.extract_service import ExtractService
+from app.core.extract_service import ArchiveInfo, ExtractService
 from app.core.task_engine import Task
 
 class TestExtractService:
@@ -273,3 +274,134 @@ class TestExtractService:
         assert output_path is not None
         assert os.path.exists(output_path)
         assert task.update_progress.called
+
+    # ---------------------------------------------------------------
+    # RAR + unar fast-path（修复群晖乱码作品 - 7zz 24.08 RAR 解析器无法配置文件名编码）
+    # ---------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_rar_unar_fast_path_returns_unavailable_when_unar_missing(
+        self, extract_service, temp_dir,
+    ):
+        """unar 不在 PATH 时，fast-path 应返回 unar_unavailable，让上层回退 7zz。"""
+        extract_service._find_unar_executable = lambda: None
+
+        archive_info = ArchiveInfo(
+            path=os.path.join(temp_dir, 'rj_jp.rar'),
+            file_list=[],
+        )
+        task = Mock()
+
+        success, password, reason = await extract_service._try_extract_rar_with_unar(
+            archive_info,
+            temp_dir,
+            task,
+            passwords=['pwd1', ''],
+            vault_passwords=[],
+            password_entry_id_map={},
+            password_rjcode_map={},
+            manual_retry_password_only=False,
+        )
+
+        assert success is False
+        assert password is None
+        assert reason == 'unar_unavailable'
+
+    @pytest.mark.asyncio
+    async def test_rar_unar_fast_path_succeeds_on_correct_password(
+        self, extract_service, temp_dir,
+    ):
+        """unar 第二个密码命中时，fast-path 返回成功密码 + 更新 archive_info。"""
+        extract_service._find_unar_executable = lambda: '/usr/bin/unar'
+
+        call_count = {'n': 0}
+
+        async def fake_unar_extract(archive_path, output_path, password, task=None):
+            call_count['n'] += 1
+            if call_count['n'] == 1:
+                return subprocess.CompletedProcess(
+                    args=['unar'], returncode=1,
+                    stdout=b'', stderr=b'Failed! (Wrong password?)',
+                )
+            return subprocess.CompletedProcess(
+                args=['unar'], returncode=0, stdout=b'', stderr=b'',
+            )
+
+        extract_service._try_unar_extract = fake_unar_extract
+        # 避免触碰真实数据库
+        extract_service._record_password_usage = AsyncMock()
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            path=os.path.join(temp_dir, 'rj_jp.rar'),
+            file_list=[],
+        )
+
+        task = Mock()
+        task.task_metadata = {}
+        task.rjcode = ''
+        task.is_cancelled = Mock(return_value=False)
+        task.wait_if_paused = AsyncMock()
+        task.update_progress = Mock()
+
+        success, password, reason = await extract_service._try_extract_rar_with_unar(
+            archive_info,
+            temp_dir,
+            task,
+            passwords=['wrong', 'correct'],
+            vault_passwords=['correct'],
+            password_entry_id_map={'correct': 42},
+            password_rjcode_map={'correct': 'RJ01396127'},
+            manual_retry_password_only=False,
+        )
+
+        assert success is True
+        assert password == 'correct'
+        assert reason == ''
+        assert archive_info.password == 'correct'
+        assert archive_info.inferred_rjcode == 'RJ01396127'
+        assert task.task_metadata['rjcode'] == 'RJ01396127'
+        # vault 命中应回写一次密码使用记录
+        extract_service._record_password_usage.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_rar_unar_fast_path_signals_unsupported_for_fallback(
+        self, extract_service, temp_dir,
+    ):
+        """unar 不识别 RAR 变体时返回 unsupported，让上层走 7zz。"""
+        extract_service._find_unar_executable = lambda: '/usr/bin/unar'
+
+        async def fake_unar_extract(archive_path, output_path, password, task=None):
+            return subprocess.CompletedProcess(
+                args=['unar'], returncode=1, stdout=b'',
+                stderr=b"unar: This file isn't a supported archive format.",
+            )
+
+        extract_service._try_unar_extract = fake_unar_extract
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            path=os.path.join(temp_dir, 'weird.rar'),
+            file_list=[],
+        )
+
+        task = Mock()
+        task.task_metadata = {}
+        task.is_cancelled = Mock(return_value=False)
+        task.wait_if_paused = AsyncMock()
+        task.update_progress = Mock()
+
+        success, password, reason = await extract_service._try_extract_rar_with_unar(
+            archive_info,
+            temp_dir,
+            task,
+            passwords=[''],
+            vault_passwords=[],
+            password_entry_id_map={},
+            password_rjcode_map={},
+            manual_retry_password_only=False,
+        )
+
+        assert success is False
+        assert password is None
+        assert reason == 'unsupported'
