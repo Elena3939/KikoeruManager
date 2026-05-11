@@ -277,23 +277,40 @@ const sortDropdownOptions = [
   }
 }
 
-/* ≤640：搜索独占第一行；4 个 dropdown + 2 个按钮按 2 列网格排列 */
+/* ≤640：4 列 grid，3 个 dropdown + 2 个按钮按 nth-child 排成 3 行
+ * 行 1: 搜索 (1/-1，独占整行)
+ * 行 2: 类型 (1-3) | 状态 (3-5)
+ * 行 3: 排序 (1-3) | 全部 (3-4) | 重置 (4-5)
+ * 桌面零改动：所有规则只在 @media 内
+ */
 @media (max-width: 640px) {
   .tasks-toolbar {
-    padding: 8px;
+    padding: 6px;
     border-radius: 12px;
   }
   .tasks-toolbar-row {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
     align-items: stretch;
   }
   .tasks-toolbar-search {
     grid-column: 1 / -1;
-    height: 36px;
+    height: 34px;
     flex: 0 0 auto;
   }
+  /* nth-child(1) 是搜索框，已经 grid-column 处理 */
+  /* nth-child(2) = 类型 dropdown */
+  .tasks-toolbar-row > :nth-child(2) { grid-column: 1 / 3; }
+  /* nth-child(3) = 状态 dropdown */
+  .tasks-toolbar-row > :nth-child(3) { grid-column: 3 / 5; }
+  /* nth-child(4) = 排序 dropdown */
+  .tasks-toolbar-row > :nth-child(4) { grid-column: 1 / 3; }
+  /* nth-child(5) = 仅活跃 toggle */
+  .tasks-toolbar-row > :nth-child(5) { grid-column: 3 / 4; }
+  /* nth-child(6) = 重置 btn */
+  .tasks-toolbar-row > :nth-child(6) { grid-column: 4 / 5; }
+
   /* 让所有 AppDropdown / 工具栏按钮强制撑满 grid 单元 */
   .tasks-toolbar-row :deep(.app-dd-root),
   .tasks-toolbar-row :deep(.app-dd-trigger),
@@ -305,9 +322,11 @@ const sortDropdownOptions = [
     justify-content: space-between;
   }
   .tasks-toolbar-btn {
-    height: 36px;
-    padding: 0 10px;
+    height: 34px;
+    padding: 0 6px;
+    gap: 4px;
     justify-content: center;
+    font-size: 12px;
   }
 }
 </style>

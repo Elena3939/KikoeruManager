@@ -41,7 +41,9 @@
         @next-page="handleNextPage"
       />
 
+      <!-- 详情：移动端没选中时整块不渲染，避免吃掉一屏空间 -->
       <TaskDetailPane
+        v-if="!isMobile || selectedItem"
         :item="selectedItem"
         :detail-loading="detailLoading"
         :file-tree-sections="selectedItemFileTreeSections"
@@ -84,8 +86,10 @@ import TasksHeader from '../components/tasks/TasksHeader.vue'
 import TasksFilters from '../components/tasks/TasksFilters.vue'
 import TaskListPane from '../components/tasks/TaskListPane.vue'
 import TaskDetailPane from '../components/tasks/TaskDetailPane.vue'
+import { useViewport } from '../composables/useViewport'
 
 const router = useRouter()
+const { isMobile } = useViewport()
 
 const loading = ref(false)
 const refreshing = ref(false)
