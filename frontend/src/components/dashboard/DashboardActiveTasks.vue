@@ -22,7 +22,7 @@
     <!-- 状态 summary chips（合并自 DashboardStatusPanel） -->
     <div
       v-if="statusCards.length"
-      class="mt-2.5 grid flex-shrink-0 grid-cols-4 gap-1.5"
+      class="mt-2.5 grid flex-shrink-0 grid-cols-2 gap-1.5 sm:grid-cols-4"
     >
       <div
         v-for="item in statusCards"

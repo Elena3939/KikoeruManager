@@ -1,5 +1,5 @@
 <template>
-  <div class="flex h-full min-h-0 w-full flex-col overflow-hidden px-2 pb-2 pt-1 text-slate-900">
+  <div class="dashboard-page-shell flex h-full min-h-0 w-full flex-col overflow-hidden px-2 pb-2 pt-1 text-slate-900">
     <DashboardHero
       :watcher-running="watcherRunning"
       :loading="loading"
@@ -578,3 +578,43 @@ function getArchiveStatusMeta(status) {
   return { key: 'unknown', label: normalized }
 }
 </script>
+
+<style scoped>
+/* ============================================================
+ * 移动端 (≤1024)：整页切到 stream 模式
+ * 桌面端零改动：仅 @media 内覆盖
+ * 痛点：桌面是 h-full + overflow-hidden + 双栏 grid 各自滚，
+ *      移动端会把 main 压成两个被挤死的小框（任务流只显 1 条、归档无内容）。
+ * 解法：让主壳 / main / 子组件 root / 子组件内部滚动区 都松绑高度，
+ *      改成自然内容高度 + 外层 .content-shell 整页滚动。
+ * ============================================================ */
+@media (max-width: 1024px) {
+  .dashboard-page-shell {
+    height: auto !important;
+    min-height: 100%;
+    overflow: visible !important;
+  }
+  .dashboard-page-shell main {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+  /* 任务流 + 归档：root 解锁高度 */
+  .dashboard-page-shell :deep([data-section="dashboard-tasks"]),
+  .dashboard-page-shell :deep([data-section="dashboard-archive"]) {
+    height: auto !important;
+    min-height: 0 !important;
+    flex: 0 0 auto !important;
+  }
+  /* 子组件内部的 overflow-auto / overflow-hidden + flex-1 列表区松绑：
+     让内容自然撑开高度（整页滚动而不是内部小框滚动） */
+  .dashboard-page-shell :deep([data-section="dashboard-tasks"] .overflow-auto),
+  .dashboard-page-shell :deep([data-section="dashboard-archive"] .overflow-hidden),
+  .dashboard-page-shell :deep([data-section="dashboard-archive"] .overflow-auto) {
+    overflow: visible !important;
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+  }
+}
+</style>

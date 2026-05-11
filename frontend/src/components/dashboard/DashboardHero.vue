@@ -41,8 +41,8 @@
       </button>
     </AppPageHeader>
 
-    <!-- 下方两卡片并排：KPI 栅格 + 上传区 -->
-    <div class="flex items-stretch gap-3">
+    <!-- 下方两卡片并排：KPI 栅格 + 上传区（≤lg 自动 stack） -->
+    <div class="flex flex-col items-stretch gap-3 lg:flex-row">
       <div class="relative flex min-w-0 flex-1 flex-col rounded-[12px] border border-slate-200/80 bg-white px-4 py-3 shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] transition-shadow duration-500 hover:shadow-[0_6px_16px_-10px_rgba(15,23,42,0.14)]">
         <div class="relative grid h-full grid-cols-2 items-center gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
           <button
@@ -71,8 +71,8 @@
         </div>
       </div>
 
-      <!-- 右侧独立卡片：上传区域 -->
-      <div class="flex w-[260px] flex-shrink-0 flex-col justify-center rounded-[12px] border border-slate-200/80 bg-white px-3 py-3 shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] transition-shadow duration-500 hover:shadow-[0_6px_16px_-10px_rgba(15,23,42,0.14)]">
+      <!-- 右侧独立卡片：上传区域（≤lg 全宽换行） -->
+      <div class="flex w-full flex-col justify-center rounded-[12px] border border-slate-200/80 bg-white px-3 py-3 shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] transition-shadow duration-500 hover:shadow-[0_6px_16px_-10px_rgba(15,23,42,0.14)] lg:w-[260px] lg:flex-shrink-0">
         <FileUploader compact @upload-success="$emit('upload-success')" />
       </div>
     </div>

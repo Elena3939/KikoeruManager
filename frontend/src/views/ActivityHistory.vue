@@ -2665,4 +2665,35 @@ watch(() => filters.q, (val, old) => {
     min-width: 28px;
   }
 }
+
+/* ≤640 紧凑边距 + metric / 筛选 / list 进一步收紧 */
+@media (max-width: 640px) {
+  .activity-page {
+    padding: 8px 10px 56px !important;
+  }
+  /* 顶栏搜索框 wrap 全宽（配合全局 .app-page-head-right 规则） */
+  .page-head-search-wrap {
+    width: 100%;
+  }
+  /* 指标卡 cell 字号收紧 */
+  .metric-cell {
+    padding: 8px 10px;
+  }
+  .metric-cell-label {
+    font-size: 10.5px;
+  }
+  .metric-cell-num {
+    font-size: 18px;
+  }
+  /* event-row 进一步紧凑：左侧时间列 56px */
+  .event-row {
+    grid-template-columns: 56px minmax(0, 1fr) 16px !important;
+    padding: 10px 12px !important;
+  }
+  /* 筛选条紧凑 padding */
+  .filter-bar {
+    padding: 8px 10px !important;
+    gap: 6px !important;
+  }
+}
 </style>

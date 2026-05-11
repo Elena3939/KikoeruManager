@@ -235,6 +235,13 @@ onMounted(() => {
   font-family: "SF Pro Text", "SF Pro Display", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
 }
 
+/* 移动端紧凑边距 */
+@media (max-width: 640px) {
+  .settings-page {
+    padding: 12px 10px 16px;
+  }
+}
+
 /* ---- 顶栏 chip（AppPageHeader 右侧槽位） ----
    180deg 双段渐变 + inset 1px 顶高光 + 同色微 glow，跟库存页 lib-chip 同源 */
 .set-chip {

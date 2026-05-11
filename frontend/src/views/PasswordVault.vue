@@ -755,6 +755,19 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
     flex: 1 1 calc(50% - 10px);
   }
 
+  /* 搜索框移动端全宽，覆盖 Tailwind w-[280px] focus:w-[320px] inline class */
+  .vault-toolbar-panel-filters input[type="text"] {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+  .vault-toolbar-panel-filters input[type="text"]:focus {
+    width: 100% !important;
+  }
+  .vault-toolbar-panel-filters > .relative {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
   .vault-btn-refresh-inline {
     flex-basis: 100%;
   }

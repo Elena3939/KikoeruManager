@@ -994,4 +994,14 @@ function formatDateTime(value) {
     padding: 8px 12px 16px;
   }
 }
+
+/* ≤640：紧凑边距 + 让单列模式下 list/detail 各自有最小可用高度 */
+@media (max-width: 640px) {
+  .tasks-page {
+    padding: 6px 10px 14px;
+  }
+  .tasks-main {
+    gap: 10px;
+  }
+}
 </style>

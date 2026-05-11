@@ -1,6 +1,38 @@
 <template>
-  <el-container class="app-container">
-    <el-aside width="248px" class="sidebar">
+  <el-container class="app-container" :class="{ 'is-mobile-nav-open': mobileNavOpen }">
+    <!-- 移动端顶栏：仅 ≤1024 显示（桌面端 display:none，零改动） -->
+    <header class="app-mobile-topbar safe-area-top">
+      <button
+        type="button"
+        class="app-mobile-trigger safe-touch-target"
+        :aria-expanded="mobileNavOpen"
+        aria-label="打开导航菜单"
+        @click="mobileNavOpen = true"
+      >
+        <Menu :size="22" :stroke-width="2.2" />
+      </button>
+      <div class="app-mobile-brand">
+        <div class="app-mobile-brand-mark">
+          <Package2 :size="16" :stroke-width="2.2" />
+        </div>
+        <div class="app-mobile-brand-copy">
+          <span class="app-mobile-brand-text">KikoeruManager</span>
+          <span class="app-mobile-brand-version">v{{ appVersion }}</span>
+        </div>
+      </div>
+      <NotificationBell class="app-mobile-bell" />
+    </header>
+
+    <!-- 移动端抽屉遮罩：点击关闭 -->
+    <Transition name="app-drawer-mask">
+      <div
+        v-if="mobileNavOpen"
+        class="app-drawer-mask"
+        @click="mobileNavOpen = false"
+      />
+    </Transition>
+
+    <el-aside width="248px" class="sidebar" :class="{ 'is-mobile-open': mobileNavOpen }">
       <div class="sidebar-shell">
         <div class="logo">
           <div class="logo-mark">
@@ -134,7 +166,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   Archive,
@@ -146,6 +178,7 @@ import {
   House,
   KeyRound,
   ListTodo,
+  Menu,
   Package2,
   ScrollText,
   Settings2,
@@ -176,6 +209,22 @@ const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
 const watcherStatus = ref({ is_running: false, watch_path: '', pending_files: [] })
+const mobileNavOpen = ref(false)
+
+// 路由切换时自动关闭移动端抽屉（点击菜单项后即关闭）
+watch(() => route.fullPath, () => {
+  if (mobileNavOpen.value) mobileNavOpen.value = false
+})
+
+// 抽屉打开时锁定 body 滚动；关闭时恢复
+watch(mobileNavOpen, (open) => {
+  if (typeof document === 'undefined') return
+  if (open) {
+    document.body.classList.add('app-mobile-nav-locked')
+  } else {
+    document.body.classList.remove('app-mobile-nav-locked')
+  }
+})
 const routeComponentMap = {
   Dashboard,
   Tasks,
@@ -507,23 +556,193 @@ body {
   background: rgba(238, 248, 240, 0.9);
 }
 
-@media screen and (max-width: 768px) {
+/* ============================================================
+ * 移动端顶栏 + 抽屉式侧栏（Phase 1）
+ * 桌面端 (≥1025px) 零改动：
+ *  - .app-mobile-topbar 默认 display:none
+ *  - .app-drawer-mask 用 v-if 渲染，桌面态永远 false
+ *  - .is-mobile-nav-open / .is-mobile-open class 桌面态永远不挂
+ * ============================================================ */
+
+/* 顶栏默认隐藏（桌面态） */
+.app-mobile-topbar {
+  display: none;
+}
+
+/* 抽屉遮罩默认 z-index 但无视觉（仅在 v-if 渲染时出现） */
+.app-drawer-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+/* 遮罩过渡 */
+.app-drawer-mask-enter-active,
+.app-drawer-mask-leave-active {
+  transition: opacity 0.22s ease;
+}
+.app-drawer-mask-enter-from,
+.app-drawer-mask-leave-to {
+  opacity: 0;
+}
+
+/* ----------------- 平板及以下 (≤1024) ----------------- */
+@media (max-width: 1024px) {
+  /* 顶栏出现 */
+  .app-mobile-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+    min-height: 52px;
+  }
+
+  /* app-container 改为顶栏 + 主区垂直布局 */
   .app-container {
     flex-direction: column;
-    padding: 10px;
+    padding: 0;
+    gap: 0;
+    height: 100vh;
+    height: 100dvh;
   }
 
+  /* 汉堡按钮 */
+  .app-mobile-trigger {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: #0f172a;
+    cursor: pointer;
+    transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .app-mobile-trigger:hover {
+    background: rgba(15, 23, 42, 0.06);
+    border-color: rgba(15, 23, 42, 0.08);
+  }
+  .app-mobile-trigger:active {
+    transform: scale(0.94);
+  }
+
+  /* 顶栏中间品牌区 */
+  .app-mobile-brand {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .app-mobile-brand-mark {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 9px;
+    background: #f3f7ff;
+    color: #0071e3;
+  }
+  .app-mobile-brand-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    line-height: 1.1;
+  }
+  .app-mobile-brand-text {
+    font-size: 14px;
+    font-weight: 600;
+    color: #0f172a;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .app-mobile-brand-version {
+    font-size: 10px;
+    color: rgba(15, 23, 42, 0.48);
+  }
+  .app-mobile-bell {
+    flex-shrink: 0;
+  }
+  .app-mobile-bell :deep(.notif-bell-btn) {
+    width: 40px;
+    height: 40px;
+  }
+  .app-mobile-bell :deep(.notif-bell-player) {
+    width: 32px;
+    height: 32px;
+  }
+
+  /* 侧栏切到抽屉态：默认 translateX(-100%) 隐藏 */
   .sidebar {
-    width: 100% !important;
-    height: auto;
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 100;
+    width: min(82vw, 320px) !important;
+    height: 100vh;
+    height: 100dvh;
+    border-radius: 0 22px 22px 0;
+    transform: translateX(-100%);
+    transition: transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+    will-change: transform;
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
   }
 
+  /* 抽屉打开态 */
+  .sidebar.is-mobile-open {
+    transform: translateX(0);
+  }
+
+  /* sidebar-shell 在抽屉态调整 */
   .sidebar-shell {
-    height: auto;
+    height: 100%;
+    padding: 16px 14px 16px;
+    border-radius: 0 22px 22px 0;
   }
 
-  .main-content {
+  /* 主内容区铺满 */
+  .main-frame {
+    flex: 1;
     min-height: 0;
+  }
+  .main-content {
+    padding: 0;
+    height: 100%;
+  }
+  .content-shell {
+    height: 100%;
+    padding-right: 0;
+  }
+}
+
+/* ----------------- 手机 (≤640) 微调 ----------------- */
+@media (max-width: 640px) {
+  .app-mobile-topbar {
+    padding: 6px 10px;
+    min-height: 48px;
+  }
+  .sidebar {
+    border-radius: 0 18px 18px 0;
+  }
+  .sidebar-shell {
+    border-radius: 0 18px 18px 0;
+    padding: 14px 12px 12px;
   }
 }
 </style>
@@ -539,5 +758,12 @@ body {
 
 #app {
   height: 100vh;
+  height: 100dvh;
+}
+
+/* 抽屉打开时锁定 body 滚动（非 scoped 才能覆盖到 body） */
+body.app-mobile-nav-locked {
+  overflow: hidden !important;
+  touch-action: none;
 }
 </style>

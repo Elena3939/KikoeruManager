@@ -474,3 +474,63 @@
 - 原本只支持目录上传，传入单文件时把 `basename` 当目录塞，结果远程生成"空目录 / 文件跑到同名子目录里".
 - 现改为先判断 `os.path.isfile(source_dir)`：单文件时构造一条 `file_row` 走同套并发通道，`final_remote_path = target_root_path/<filename>`，不再多套一层目录；成功后按需 `os.unlink(source_dir)`.
 - 目录场景逻辑完全不变（`os.walk` + 并发）。
+
+## 21. 移动端适配（进行中 / 接手说明）
+
+整个移动端适配按 Phase 推进，**桌面端零改动**是最高优先级硬约束（所有规则必须包在 `@media (max-width: X)` 或新增类名内，不能改桌面端原始 CSS）。
+
+### 21.1 当前进度（2026-05）
+
+**已完成**：
+
+- **Phase 0 奠基**：`@/frontend/src/index.css` 加 `Mobile Adaptation Foundation` 大区块（断点别名、`mobile-full-dialog` / `subtitle-workbench-dialog` / `custom-preview-modal` / `filter-delete-dialog` 等 `.el-dialog` 类 `≤640` 自动全屏 100vw/100dvh）、`useViewport.js` composable（`isMobile/isTablet/isDesktop` 响应式状态）、hover 保护（`@media (hover: hover)` 包裹所有 hover 样式）。
+- **Phase 1 骨架**：`App.vue` 移动端汉堡抽屉侧栏（≤1024 收 sidebar 进抽屉、汉堡按钮、点遮罩关闭）、Dashboard 移动端 stream 模式（解锁 height 100%、padding 8/10/16）、Tasks 任务队列移动端布局（`TasksFilters` 工具栏 wrap、`DashboardActiveTasks` 卡片紧凑）。
+- **Phase 2.1 轻量页 + 全局基座**：
+  - `AppPageHeader.vue` 全局 ≤640 stack（左右两区垂直堆叠、icon 36×36、title 18px）
+  - `index.css` 在 `@media (max-width: 640px)` 加 slot 区通用规则（`.app-page-head-right > button` 50% 等宽、`.icon-only` button 自然方形、`.hero-search-wrap / .page-head-search-wrap / .page-head-search / input[type="text"]` 独占整行）— 这条规则必须放全局而非 AppPageHeader scoped，因为 slot 内子元素带的是父组件 data-v 不是 AppPageHeader 的
+  - `Settings.vue` ≤640 padding + `SettingsWorkbench.vue` ≤1024 双栏 → 横向滚动 chip nav（search/footer 隐藏）
+  - `PasswordVault.vue` ≤640 搜索框全宽覆盖
+  - `ExistingFolders.vue` ≤640 padding + sidebar actions 2 列
+- **Phase 2.2 Conflicts**：`Conflicts.vue` ≤1024 双栏（list 360px + detail）→ flex-col stack、内部 `.conflicts-list-scroll / .conflicts-detail-body` overflow 松绑、批量动作按钮 wrap + 50% 等宽、≤640 padding 收紧。
+- **Phase 2.3 ActivityHistory**：`ActivityHistory.vue` ≤640 padding/metric/event-row/filter-bar 紧凑、`ActivityLogDetailDialog.vue` ≤640 全屏覆盖（关键：自身 `.activity-detail-dialog :deep(.el-dialog)` 优先级 > 全局 `.custom-preview-modal.el-dialog`，所以必须在组件 scoped 内补 ≤640 全屏 + 解锁 `.activity-window` 的 `min-height: 800px / max-width: 1840px` 默认值 + 内部 grid `min-width: 0` + `word-break: break-all` 防长 trace-id 撑爆）。
+
+**待办**：
+
+- **Phase 2.4 SubtitleImport**：`SubtitleImportWorkbench.vue`（60KB）— 字幕补配页主工作区，桌面是双栏 list + preview，移动端需要 stack + 顶部 tab 切换。
+- **Phase 2.5 Library**：`Library.vue`（391KB，全项目最重）— 桌面用 `ag-grid` 表格，移动端需要做卡片视图替代（不能直接缩 ag-grid，体验太差）。建议保留 ag-grid 桌面态、≤640 切到自绘卡片列表组件，复用现有 `LibraryCard.vue`（如有）。
+- **Phase 3 高复杂度页**：`CircleCompletion.vue` 社团补全、`ASMRSync.vue` ASMR 同步、`SubtitleImportWorkbench.vue` 字幕补配进一步重排。
+- **Phase 4 工作台 Dialog**：`DownloadTaskWorkbenchDialog.vue` / `UploadTaskWorkbenchDialog.vue` / `SubtitleImportWorkbench.vue` 这些重型 dialog 在移动端要做"分步抽屉"模式（顶部 step indicator + 一次只显示一段表单），ag-grid 在 dialog 内的部分要卡片化。
+- **Phase 5 收尾**：触摸交互（hit area ≥ 44px）、三档分辨率（414×896 / 768×1024 / 1440×900）实际验证、其他遗漏页面（如 `Logs.vue` / `LibraryBackup.vue` 内部细节）补漏。
+
+### 21.2 必读硬约束（任何 Phase 都不能违反）
+
+1. **桌面端零改动**：所有新规则只能加在 `@media (max-width: X)` 媒体查询内，或者新增独立 class（不修改现有 class 的桌面态属性）。改完后桌面端 (>1024px) 必须像没改一样。
+2. **断点统一**：
+   - `≤640` 手机
+   - `≤1024` 平板 + 窄桌面
+   - `1280` Conflicts 等部分页面用作"大平板/窄桌面切回桌面态"的边界
+   - **不要新增其他随意断点**（如 720 / 980 已有的保留，新增请走 640 / 1024）
+3. **`AppPageHeader` slot 规则不要重复实现**：已经在 `index.css` 全局区块定义好。新页面顶栏多按钮场景**只需在 icon-only 按钮上加 `class="icon-only"` 或 `data-icon-only` 属性**，其他文字按钮会自动 50% 等宽，搜索框 wrap 自动独占整行。
+4. **Dialog 全屏规则**：
+   - 简单 dialog 直接在 `<el-dialog class="mobile-full-dialog">` 加这个 class，全局规则会自动 ≤640 全屏
+   - 已有自定义 dialog class（如 `.custom-preview-modal` / `.activity-detail-dialog`）走全局规则即可
+   - **如果 dialog 自己用 `:deep(.el-dialog)` 写了 width/height，必须在自己 scoped 内补一份 ≤640 覆盖**（否则会被自己的高优先级规则吃掉，参考 `ActivityLogDetailDialog.vue`）
+5. **Vue scoped style 不能穿透 slot**：slot 内的元素带父组件 data-v，AppPageHeader scoped 内的选择器选不到。这种规则要么用 `:deep()`，要么直接放全局 `index.css`。
+6. **`v-app-loading` 只绑主内容区**：头部按钮永远可见，遮罩别盖住关闭/刷新按钮。这是 20 节就有的旧规则，移动端别破坏。
+7. **`min-height` 是隐形地雷**：很多桌面端 dialog/section 写了 `min-height: 800px` 之类硬性值，移动端必须显式覆盖成 `min-height: 0`，否则会撑爆容器。Activity 详情 dialog 就栽过这个坑。
+8. **`min-width: 0` 是 grid/flex 子项防溢出的标配**：长 trace-id / RJ 路径 / 邮箱地址等会撑爆 grid 列。配合 `word-break: break-all` 或 `overflow-wrap: anywhere` 使用。
+
+### 21.3 关键文件锚点
+
+- 全局基座：`@/frontend/src/index.css`（`Mobile Adaptation Foundation` 区块、`AppPageHeader slot 区移动端通用布局` 区块、Safe Area 适配）
+- 视口 composable：`@/frontend/src/composables/useViewport.js`
+- 全局头部：`@/frontend/src/components/common/AppPageHeader.vue`
+- 主布局：`@/frontend/src/App.vue`（汉堡抽屉 + sidebar 抽屉态）
+- 已适配的复杂页：`Conflicts.vue` / `ActivityHistory.vue` / `Settings.vue` + `SettingsWorkbench.vue` 是参考样板
+
+### 21.4 继续推进时的建议节奏
+
+1. 先在浏览器开发者工具切 414×896 / 768×1024 / 1440×900 三档实拍一遍**已完成 Phase**，回归确认桌面端没被改坏
+2. 再按 2.4 → 2.5 → 3 → 4 → 5 顺序推进，每个 Phase 做完都让用户实拍一遍才进下一批
+3. Library / Phase 4 工作台 Dialog 是最难的，预留半天到一天时间；其余页面参考已完成的 Conflicts / Activity 套路改 stack + padding 即可，单页通常 30 分钟内
+4. **不要试图一次性改完所有页面**，AI 会丢上下文。一次只推一个 Phase，让用户验证再继续
