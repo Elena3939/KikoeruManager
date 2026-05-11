@@ -196,9 +196,10 @@
             tabindex="0"
             @keydown="handleListKeydown"
           >
-            <div v-if="loading" class="fm-state">
-              <Loader2 :size="14" :stroke-width="2.4" class="mr-1.5 text-slate-400 animate-spin" />
-              加载中...
+            <div v-if="loading" class="fm-state fm-state-col fm-loading-state">
+              <Loader2 :size="48" :stroke-width="2" class="fm-loading-icon" />
+              <span class="fm-loading-title">正在读取目录</span>
+              <span class="fm-loading-desc">同步库存子项中…</span>
             </div>
             <div v-else-if="error" class="fm-state fm-state-col">
               <AlertCircle :size="22" :stroke-width="2" class="text-rose-500" />
@@ -1385,6 +1386,47 @@ onBeforeUnmount(() => {
 .fm-state-col {
   flex-direction: column;
   gap: 6px;
+}
+
+/* 加载态：只保留旋转 icon + 错落入场文字（无玻璃球、无外圈） ----- */
+.fm-loading-state {
+  gap: 14px;
+  padding: 48px 0;
+  animation: fm-loading-fade-in 0.36s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes fm-loading-fade-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.fm-loading-icon {
+  color: #0284c7;
+  animation: fm-loading-spin 1.1s linear infinite;
+}
+
+@keyframes fm-loading-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.fm-loading-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #0f172a;
+  letter-spacing: 0.01em;
+  animation: fm-loading-text-in 0.4s 0.1s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.fm-loading-desc {
+  font-size: 11.5px;
+  color: #64748b;
+  animation: fm-loading-text-in 0.4s 0.18s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes fm-loading-text-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* 空目录容器：撑满 fm-body 剩余高度，把 AppEmptyState 居中 */
