@@ -281,7 +281,8 @@
       </section>
     </template>
 
-    <div v-else class="flex flex-1 items-center justify-center px-6 py-12">
+    <!-- 空态：移动端 wrapper padding 收紧（平板/桌面保留宽松 padding） -->
+    <div v-else class="flex flex-1 items-center justify-center px-3 py-4 md:px-6 md:py-12">
       <AppEmptyState description="选择左侧任务查看详情" size="lg" />
     </div>
   </div>

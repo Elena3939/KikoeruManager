@@ -89,7 +89,8 @@
       </button>
     </TransitionGroup>
 
-    <div v-else class="flex flex-1 min-h-0 items-center justify-center px-6 py-10">
+    <!-- 空态：移动端 wrapper padding 收紧到 px-3 py-4，桌面保留宽松 px-6 py-10 -->
+    <div v-else class="flex flex-1 min-h-0 items-center justify-center px-3 py-4 md:px-6 md:py-10">
       <AppEmptyState description="当前筛选条件下没有任务" size="lg" />
     </div>
 
