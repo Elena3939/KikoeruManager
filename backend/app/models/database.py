@@ -7,6 +7,7 @@ import os
 import shutil
 import sqlite3
 import stat
+from typing import Any, Callable, Dict, Optional
 
 import orjson
 
@@ -1451,89 +1452,9 @@ def _migrate_activity_logs_phase2(conn) -> None:
         _db_logger.warning("[数据库] activity_logs.session_key 回填失败（非致命）", exc_info=True)
 
     # === FTS5 虚表 + 触发器 ===
-    fts_available = True
-    try:
-        conn.execute(text(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS activity_logs_fts USING fts5(
-                id UNINDEXED,
-                summary,
-                source_path,
-                rjcode,
-                task_id,
-                batch_id,
-                tokenize='unicode61 remove_diacritics 2'
-            )
-            """
-        ))
-    except Exception:
-        fts_available = False
-        _db_logger.warning("[数据库] 当前 SQLite 不支持 FTS5，将回退为 LIKE 搜索", exc_info=True)
-
-    if fts_available:
-        # 仅当 FTS 表为空时回填，避免每次启动都做全量重建
-        try:
-            existing_fts_count = conn.execute(text("SELECT count(*) FROM activity_logs_fts")).scalar() or 0
-            activity_count = conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0
-            if existing_fts_count < activity_count:
-                conn.execute(text(
-                    """
-                    INSERT INTO activity_logs_fts(id, summary, source_path, rjcode, task_id, batch_id)
-                    SELECT id,
-                           COALESCE(summary, ''),
-                           COALESCE(source_path, ''),
-                           COALESCE(rjcode, ''),
-                           COALESCE(task_id, ''),
-                           COALESCE(batch_id, '')
-                      FROM activity_logs
-                     WHERE id NOT IN (SELECT id FROM activity_logs_fts)
-                    """
-                ))
-                _db_logger.info("[数据库] activity_logs_fts 初次回填完成")
-        except Exception:
-            _db_logger.warning("[数据库] activity_logs_fts 回填失败（非致命）", exc_info=True)
-
-        for trigger_sql in (
-            """
-            CREATE TRIGGER IF NOT EXISTS activity_logs_fts_ai
-            AFTER INSERT ON activity_logs BEGIN
-              INSERT INTO activity_logs_fts(id, summary, source_path, rjcode, task_id, batch_id)
-              VALUES (
-                NEW.id,
-                COALESCE(NEW.summary, ''),
-                COALESCE(NEW.source_path, ''),
-                COALESCE(NEW.rjcode, ''),
-                COALESCE(NEW.task_id, ''),
-                COALESCE(NEW.batch_id, '')
-              );
-            END
-            """,
-            """
-            CREATE TRIGGER IF NOT EXISTS activity_logs_fts_ad
-            AFTER DELETE ON activity_logs BEGIN
-              DELETE FROM activity_logs_fts WHERE id = OLD.id;
-            END
-            """,
-            """
-            CREATE TRIGGER IF NOT EXISTS activity_logs_fts_au
-            AFTER UPDATE ON activity_logs BEGIN
-              DELETE FROM activity_logs_fts WHERE id = OLD.id;
-              INSERT INTO activity_logs_fts(id, summary, source_path, rjcode, task_id, batch_id)
-              VALUES (
-                NEW.id,
-                COALESCE(NEW.summary, ''),
-                COALESCE(NEW.source_path, ''),
-                COALESCE(NEW.rjcode, ''),
-                COALESCE(NEW.task_id, ''),
-                COALESCE(NEW.batch_id, '')
-              );
-            END
-            """,
-        ):
-            try:
-                conn.execute(text(trigger_sql))
-            except Exception:
-                _db_logger.warning("[数据库] 创建 activity_logs_fts 触发器失败", exc_info=True)
+    # 启动只「确保表存在」，不强制重建：如果当前表用的是 unicode61 而 SQLite 支持
+    # trigram，留给用户在设置页手动点「升级搜索引擎」走后台异步重建，避免大表启动卡顿。
+    fts_available, _ = _ensure_activity_logs_fts(conn)
 
     # SQLAlchemy 2.0 下 engine.connect() 不会自动提交 DML/DQL 事务，
     # 这里的 UPDATE / INSERT SELECT 需要显式 commit 才会持久化。
@@ -1556,6 +1477,471 @@ def activity_logs_fts_enabled() -> bool:
             return row is not None
     except Exception:
         return False
+
+
+# ==================== FTS5 tokenizer 检测 / 重建（运行时） ====================
+#
+# 设计要点：
+#   1. 启动同步路径只调 `_ensure_activity_logs_fts`，存在则尽量不动它，避免对几十万行
+#      表的反复 INSERT；只有「连表都不存在」才会现场创建。
+#   2. trigram tokenizer（SQLite 3.34+）对中文子串搜索质量是革命性提升；老库用的
+#      unicode61 把连续 CJK 字符合成一个超长 token，对中文搜索 phrase match 几乎永远
+#      命中 0 行。我们把 trigram 升级做成「设置页一键迁移」+ 后台线程跑，不阻塞启动。
+#   3. 触发器写入路径无论 tokenizer 是哪个都一样工作（只需要表名一致），重建索引时
+#      表名保持 `activity_logs_fts`，触发器无需改写。
+
+_FTS_TABLE_NAME = "activity_logs_fts"
+_FTS_PREFERRED_TOKENIZE = "trigram"
+_FTS_FALLBACK_TOKENIZE = "unicode61 remove_diacritics 2"
+
+
+def _detect_trigram_supported(conn) -> bool:
+    """探测当前 SQLite 是否支持 fts5 + trigram tokenizer（3.34+）。
+
+    用临时表试创建一次，能成功就支持。失败时回滚不留垃圾。
+    """
+    try:
+        conn.execute(text(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS _fts_trigram_probe USING fts5(x, tokenize='trigram')"
+        ))
+        try:
+            conn.execute(text("DROP TABLE IF EXISTS _fts_trigram_probe"))
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _detect_fts5_supported(conn) -> bool:
+    """探测当前 SQLite 是否支持 fts5。"""
+    try:
+        conn.execute(text(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_probe USING fts5(x)"
+        ))
+        try:
+            conn.execute(text("DROP TABLE IF EXISTS _fts5_probe"))
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _read_fts_tokenizer(conn) -> str:
+    """从 sqlite_master 里读出 activity_logs_fts 的 tokenizer 字符串。
+
+    返回值示例：'unicode61 remove_diacritics 2' / 'trigram' / ''（不存在或解析失败）
+    """
+    try:
+        row = conn.execute(text(
+            f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{_FTS_TABLE_NAME}'"
+        )).fetchone()
+        if not row or not row[0]:
+            return ""
+        sql_text = str(row[0])
+        # CREATE VIRTUAL TABLE ... USING fts5(... tokenize='xxx')
+        lower = sql_text.lower()
+        idx = lower.find("tokenize")
+        if idx < 0:
+            # 没显式指定 tokenize，老的可能默认 simple
+            return "simple"
+        # 提取 tokenize=' ... ' 中间内容
+        rest = sql_text[idx:]
+        for quote in ("'", "\""):
+            q1 = rest.find(quote)
+            if q1 < 0:
+                continue
+            q2 = rest.find(quote, q1 + 1)
+            if q2 < 0:
+                continue
+            return rest[q1 + 1:q2].strip().lower()
+        return ""
+    except Exception:
+        return ""
+
+
+def _create_fts_triggers(conn, table_name: str = _FTS_TABLE_NAME) -> None:
+    """创建 / 替换 INSERT/UPDATE/DELETE 触发器。"""
+    for trigger_sql in (
+        f"""
+        CREATE TRIGGER IF NOT EXISTS activity_logs_fts_ai
+        AFTER INSERT ON activity_logs BEGIN
+          INSERT INTO {table_name}(id, summary, source_path, rjcode, task_id, batch_id)
+          VALUES (
+            NEW.id,
+            COALESCE(NEW.summary, ''),
+            COALESCE(NEW.source_path, ''),
+            COALESCE(NEW.rjcode, ''),
+            COALESCE(NEW.task_id, ''),
+            COALESCE(NEW.batch_id, '')
+          );
+        END
+        """,
+        f"""
+        CREATE TRIGGER IF NOT EXISTS activity_logs_fts_ad
+        AFTER DELETE ON activity_logs BEGIN
+          DELETE FROM {table_name} WHERE id = OLD.id;
+        END
+        """,
+        f"""
+        CREATE TRIGGER IF NOT EXISTS activity_logs_fts_au
+        AFTER UPDATE ON activity_logs BEGIN
+          DELETE FROM {table_name} WHERE id = OLD.id;
+          INSERT INTO {table_name}(id, summary, source_path, rjcode, task_id, batch_id)
+          VALUES (
+            NEW.id,
+            COALESCE(NEW.summary, ''),
+            COALESCE(NEW.source_path, ''),
+            COALESCE(NEW.rjcode, ''),
+            COALESCE(NEW.task_id, ''),
+            COALESCE(NEW.batch_id, '')
+          );
+        END
+        """,
+    ):
+        try:
+            conn.execute(text(trigger_sql))
+        except Exception:
+            _db_logger.warning("[数据库] 创建 activity_logs_fts 触发器失败", exc_info=True)
+
+
+def _drop_fts_triggers(conn) -> None:
+    for name in ("activity_logs_fts_ai", "activity_logs_fts_ad", "activity_logs_fts_au"):
+        try:
+            conn.execute(text(f"DROP TRIGGER IF EXISTS {name}"))
+        except Exception:
+            _db_logger.debug(f"[数据库] 删除触发器失败 {name}", exc_info=True)
+
+
+def _ensure_activity_logs_fts(conn) -> tuple[bool, str]:
+    """启动时确保 FTS 表存在；存在就别动它。
+
+    Returns
+    -------
+    (fts_available, tokenizer)
+        fts_available: 当前 SQLite 是否能用 FTS5
+        tokenizer: 当前表使用的 tokenizer 字符串（空 = 没有表）
+    """
+    if not _detect_fts5_supported(conn):
+        _db_logger.warning("[数据库] 当前 SQLite 不支持 FTS5，将回退为 LIKE 搜索")
+        return False, ""
+
+    existing = _read_fts_tokenizer(conn)
+    if existing:
+        # 表已存在：保持触发器最新（可能是早期版本没建全）
+        _create_fts_triggers(conn)
+        # 容错：如果 FTS 表为空但主表非空（迁移异常 / 手动 truncate），现场补一次
+        try:
+            fts_count = conn.execute(text(f"SELECT count(*) FROM {_FTS_TABLE_NAME}")).scalar() or 0
+            log_count = conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0
+            if fts_count == 0 and log_count > 0:
+                _db_logger.info("[数据库] FTS 表为空但主表有 %d 行，启动时补回填", log_count)
+                conn.execute(text(
+                    f"""
+                    INSERT INTO {_FTS_TABLE_NAME}(id, summary, source_path, rjcode, task_id, batch_id)
+                    SELECT id,
+                           COALESCE(summary, ''),
+                           COALESCE(source_path, ''),
+                           COALESCE(rjcode, ''),
+                           COALESCE(task_id, ''),
+                           COALESCE(batch_id, '')
+                      FROM activity_logs
+                    """
+                ))
+        except Exception:
+            _db_logger.warning("[数据库] FTS 启动回填检查失败（非致命）", exc_info=True)
+        return True, existing
+
+    # 表不存在 → 现场创建：优先 trigram，不支持就 unicode61
+    use_trigram = _detect_trigram_supported(conn)
+    tokenize = _FTS_PREFERRED_TOKENIZE if use_trigram else _FTS_FALLBACK_TOKENIZE
+    try:
+        conn.execute(text(
+            f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS {_FTS_TABLE_NAME} USING fts5(
+                id UNINDEXED,
+                summary,
+                source_path,
+                rjcode,
+                task_id,
+                batch_id,
+                tokenize='{tokenize}'
+            )
+            """
+        ))
+    except Exception:
+        _db_logger.warning("[数据库] 创建 activity_logs_fts 失败", exc_info=True)
+        return True, ""
+
+    # 首次回填
+    try:
+        conn.execute(text(
+            f"""
+            INSERT INTO {_FTS_TABLE_NAME}(id, summary, source_path, rjcode, task_id, batch_id)
+            SELECT id,
+                   COALESCE(summary, ''),
+                   COALESCE(source_path, ''),
+                   COALESCE(rjcode, ''),
+                   COALESCE(task_id, ''),
+                   COALESCE(batch_id, '')
+              FROM activity_logs
+            """
+        ))
+        _db_logger.info(f"[数据库] activity_logs_fts 初次创建完成，tokenizer={tokenize}")
+    except Exception:
+        _db_logger.warning("[数据库] activity_logs_fts 初次回填失败（非致命）", exc_info=True)
+
+    _create_fts_triggers(conn)
+    return True, tokenize
+
+
+def activity_logs_fts_tokenizer() -> str:
+    """运行时查询当前 FTS 表使用的 tokenizer，例如 'trigram' / 'unicode61 remove_diacritics 2'。
+
+    没建表 / 不支持 FTS5 时返回空字符串。
+    """
+    try:
+        with engine.connect() as conn:
+            return _read_fts_tokenizer(conn)
+    except Exception:
+        return ""
+
+
+def activity_logs_fts_status() -> Dict[str, Any]:
+    """汇总当前搜索引擎状态，给前端「搜索引擎升级」面板用。"""
+    info: Dict[str, Any] = {
+        "fts_enabled": False,
+        "tokenizer": "",
+        "trigram_supported": False,
+        "row_count": 0,
+        "fts_row_count": 0,
+        "needs_upgrade": False,
+    }
+    try:
+        with engine.connect() as conn:
+            info["fts_enabled"] = bool(
+                conn.execute(text(
+                    f"SELECT name FROM sqlite_master WHERE type='table' AND name='{_FTS_TABLE_NAME}'"
+                )).fetchone()
+            )
+            info["tokenizer"] = _read_fts_tokenizer(conn)
+            info["trigram_supported"] = _detect_trigram_supported(conn)
+            try:
+                info["row_count"] = int(conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0)
+            except Exception:
+                info["row_count"] = 0
+            if info["fts_enabled"]:
+                try:
+                    info["fts_row_count"] = int(
+                        conn.execute(text(f"SELECT count(*) FROM {_FTS_TABLE_NAME}")).scalar() or 0
+                    )
+                except Exception:
+                    info["fts_row_count"] = 0
+    except Exception:
+        _db_logger.debug("[数据库] activity_logs_fts_status 检查失败", exc_info=True)
+    info["needs_upgrade"] = bool(
+        info["fts_enabled"]
+        and info["trigram_supported"]
+        and info["tokenizer"] != _FTS_PREFERRED_TOKENIZE
+    )
+    return info
+
+
+def rebuild_activity_logs_fts(*, target_tokenizer: str = _FTS_PREFERRED_TOKENIZE,
+                               progress_cb: Optional[Callable[[int, int], None]] = None,
+                               batch_size: int = 5000) -> Dict[str, Any]:
+    """重建 FTS5 索引切换 tokenizer。同步执行，调用方负责放后台线程。
+
+    流程：
+      1. 校验目标 tokenizer 是否被当前 SQLite 支持
+      2. 创建临时表 activity_logs_fts_new（带新 tokenizer）
+      3. 分批 INSERT FROM activity_logs（避免单事务过大）
+      4. DROP 旧表 / RENAME 新表 / 重建触发器
+    """
+    target = (target_tokenizer or "").strip().lower() or _FTS_PREFERRED_TOKENIZE
+    new_table = f"{_FTS_TABLE_NAME}_new"
+
+    with engine.begin() as conn:
+        if not _detect_fts5_supported(conn):
+            return {"ok": False, "reason": "fts5_not_supported"}
+        if target == _FTS_PREFERRED_TOKENIZE and not _detect_trigram_supported(conn):
+            return {"ok": False, "reason": "trigram_not_supported"}
+        try:
+            conn.execute(text(f"DROP TABLE IF EXISTS {new_table}"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text(
+                f"""
+                CREATE VIRTUAL TABLE {new_table} USING fts5(
+                    id UNINDEXED,
+                    summary,
+                    source_path,
+                    rjcode,
+                    task_id,
+                    batch_id,
+                    tokenize='{target}'
+                )
+                """
+            ))
+        except Exception as exc:
+            _db_logger.warning("[数据库] 创建新 FTS 表失败", exc_info=True)
+            return {"ok": False, "reason": f"create_new_table_failed: {exc}"}
+
+        total = int(conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0)
+        copied = 0
+        last_id: Optional[str] = None
+        while True:
+            if last_id is None:
+                rows = conn.execute(text(
+                    """
+                    SELECT id, summary, source_path, rjcode, task_id, batch_id
+                      FROM activity_logs
+                     ORDER BY id
+                     LIMIT :n
+                    """
+                ), {"n": batch_size}).fetchall()
+            else:
+                rows = conn.execute(text(
+                    """
+                    SELECT id, summary, source_path, rjcode, task_id, batch_id
+                      FROM activity_logs
+                     WHERE id > :last
+                     ORDER BY id
+                     LIMIT :n
+                    """
+                ), {"last": last_id, "n": batch_size}).fetchall()
+            if not rows:
+                break
+            payload = [
+                {
+                    "id": r[0],
+                    "summary": (r[1] or ""),
+                    "source_path": (r[2] or ""),
+                    "rjcode": (r[3] or ""),
+                    "task_id": (r[4] or ""),
+                    "batch_id": (r[5] or ""),
+                }
+                for r in rows
+            ]
+            conn.execute(
+                text(
+                    f"""
+                    INSERT INTO {new_table}(id, summary, source_path, rjcode, task_id, batch_id)
+                    VALUES (:id, :summary, :source_path, :rjcode, :task_id, :batch_id)
+                    """
+                ),
+                payload,
+            )
+            copied += len(payload)
+            last_id = rows[-1][0]
+            if progress_cb is not None:
+                try:
+                    progress_cb(copied, total)
+                except Exception:
+                    pass
+            if len(rows) < batch_size:
+                break
+
+        # 切换：先 DROP 触发器和旧表，再 rename 新表，再重建触发器
+        _drop_fts_triggers(conn)
+        try:
+            conn.execute(text(f"DROP TABLE IF EXISTS {_FTS_TABLE_NAME}"))
+        except Exception:
+            _db_logger.warning("[数据库] 删除旧 FTS 表失败", exc_info=True)
+        try:
+            conn.execute(text(f"ALTER TABLE {new_table} RENAME TO {_FTS_TABLE_NAME}"))
+        except Exception as exc:
+            _db_logger.warning("[数据库] 重命名 FTS 新表失败", exc_info=True)
+            return {"ok": False, "reason": f"rename_failed: {exc}"}
+        _create_fts_triggers(conn)
+
+    return {"ok": True, "tokenizer": target, "copied": copied, "total": total}
+
+
+# ==================== FTS5 重建后台调度 ====================
+#
+# 设置页 / 自动升级提示触发的「重建搜索引擎索引」走这里。
+# 单例后台线程，互斥执行，对外暴露状态字典供前端轮询进度。
+
+import threading as _fts_threading
+
+_FTS_REBUILD_STATE: Dict[str, Any] = {
+    "running": False,
+    "started_at": 0.0,
+    "finished_at": 0.0,
+    "target_tokenizer": "",
+    "copied": 0,
+    "total": 0,
+    "ok": None,
+    "reason": "",
+}
+_FTS_REBUILD_LOCK = _fts_threading.Lock()
+_FTS_REBUILD_THREAD: Optional[_fts_threading.Thread] = None
+
+
+def get_activity_logs_fts_rebuild_state() -> Dict[str, Any]:
+    """快照当前重建状态（线程安全）。"""
+    with _FTS_REBUILD_LOCK:
+        return dict(_FTS_REBUILD_STATE)
+
+
+def _do_rebuild_activity_logs_fts(target: str) -> None:
+    def _progress(copied: int, total: int) -> None:
+        with _FTS_REBUILD_LOCK:
+            _FTS_REBUILD_STATE["copied"] = int(copied)
+            _FTS_REBUILD_STATE["total"] = int(total)
+
+    try:
+        result = rebuild_activity_logs_fts(target_tokenizer=target, progress_cb=_progress)
+        with _FTS_REBUILD_LOCK:
+            _FTS_REBUILD_STATE["ok"] = bool(result.get("ok"))
+            _FTS_REBUILD_STATE["reason"] = str(result.get("reason") or "")
+            if result.get("total") is not None:
+                _FTS_REBUILD_STATE["total"] = int(result.get("total") or 0)
+            if result.get("copied") is not None:
+                _FTS_REBUILD_STATE["copied"] = int(result.get("copied") or 0)
+    except Exception as exc:
+        _db_logger.warning("[数据库] FTS 重建失败", exc_info=True)
+        with _FTS_REBUILD_LOCK:
+            _FTS_REBUILD_STATE["ok"] = False
+            _FTS_REBUILD_STATE["reason"] = f"exception: {exc}"
+    finally:
+        import time as _time
+        with _FTS_REBUILD_LOCK:
+            _FTS_REBUILD_STATE["running"] = False
+            _FTS_REBUILD_STATE["finished_at"] = _time.time()
+
+
+def trigger_activity_logs_fts_rebuild(target_tokenizer: str = _FTS_PREFERRED_TOKENIZE) -> Dict[str, Any]:
+    """触发后台重建。已在跑就直接返回当前状态。"""
+    import time as _time
+    global _FTS_REBUILD_THREAD
+    target = (target_tokenizer or "").strip().lower() or _FTS_PREFERRED_TOKENIZE
+    with _FTS_REBUILD_LOCK:
+        if _FTS_REBUILD_STATE["running"]:
+            return {"started": False, "reason": "already_running", "state": dict(_FTS_REBUILD_STATE)}
+        _FTS_REBUILD_STATE.update({
+            "running": True,
+            "started_at": _time.time(),
+            "finished_at": 0.0,
+            "target_tokenizer": target,
+            "copied": 0,
+            "total": 0,
+            "ok": None,
+            "reason": "",
+        })
+    thread = _fts_threading.Thread(
+        target=_do_rebuild_activity_logs_fts,
+        args=(target,),
+        name="activity-logs-fts-rebuild",
+        daemon=True,
+    )
+    _FTS_REBUILD_THREAD = thread
+    thread.start()
+    return {"started": True, "state": get_activity_logs_fts_rebuild_state()}
+
 
 def get_db():
     """获取数据库会话"""

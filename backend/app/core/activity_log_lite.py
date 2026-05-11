@@ -304,23 +304,64 @@ def _safe_summary(value: Any, max_len: int = 280) -> str:
     return text[: max_len - 1] + "…"
 
 
-def _has_potential_children(detail: Dict[str, Any]) -> bool:
+def _has_potential_children(detail: Dict[str, Any], action: str = "") -> bool:
     """轻量判断：detail 是否暗示这条记录下面还能拉到子行。
 
-    完整判断要扫描 batch_id / parent_id / session_key 在表里有没有对应行，太重；
-    这里只看 detail 里常见的"批量/会话"标记，前端把 false 的隐藏展开按钮，
-    不准确的情况由 /children 接口兜底（点开后没东西就提示空）。
+    重要约束：``batch_id`` / ``session_id`` / ``session_key`` 是 **横向分组键**
+    （同一轮的所有兄弟动作共享同一 batch_id），**不是父子关系键**。
+    早期版本把它们也当成「有子任务」信号，导致邮件监听一轮里 N 条独立的
+    「监视新作直入」单条记录都被错标成「有子任务」，用户点开看到的是
+    一堆同级兄弟，体验混乱。本方法现在只信 detail 里 **显式** 表明
+    「我下面真的有子任务」的字段或 action 名。
+
+    被认可的「显式有子任务」信号（按可靠性排序）：
+
+    1. 显式子计数字段：``child_row_count`` / ``paired_child_count`` /
+       ``unpaired_child_count`` / ``created_count`` / ``triggered``
+       —— 写日志时由业务代码主动塞入，存在即代表本行是个聚合摘要。
+    2. 显式子任务列表：``child_rows`` / ``created_tasks`` / ``rjcodes`` /
+       ``items`` 是非空数组 —— 业务把「我下面的子任务清单」直接放在
+       detail 里，存在即代表本行是个批量摘要。
+    3. action 以 ``batch_`` 开头（``batch_start`` / ``batch_api_rename``
+       / ``batch_summary`` 等）—— 明确的批量动作 action 命名约定。
+    4. ``detail.mode`` 以 ``_batch`` / ``_summary`` 结尾（如
+       ``email_new_release_batch``）—— 邮件监听 / 字幕抓取等用 mode
+       字段区分单条 vs 批次的场景。
+
+    完整判断要扫描 batch_id / parent_id / session_key 在表里有没有对应行，
+    太重；这里靠 detail 的显式字段命中即返回 True，命中不到就 False。
+    /children 接口仍按 batch_id / parent_id / session_key 全策略拉子行，
+    极少数误判（detail 没显式字段但又确实是摘要）由 /children 兜底
+    （前端点开看到空就提示空）。
     """
     if not isinstance(detail, dict):
         return False
-    if detail.get("child_row_count"):
+
+    for key in (
+        "child_row_count",
+        "paired_child_count",
+        "unpaired_child_count",
+        "created_count",
+        "triggered",
+    ):
+        try:
+            if int(detail.get(key) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+
+    for key in ("child_rows", "created_tasks", "rjcodes", "items"):
+        val = detail.get(key)
+        if isinstance(val, list) and len(val) > 0:
+            return True
+
+    if isinstance(action, str) and action.startswith("batch_"):
         return True
-    if detail.get("batch_id") or detail.get("session_id") or detail.get("session_key"):
+
+    mode = str(detail.get("mode") or "")
+    if mode.endswith("_batch") or mode.endswith("_summary"):
         return True
-    if detail.get("paired_child_count") or detail.get("unpaired_child_count"):
-        return True
-    if detail.get("created_count") or detail.get("created_tasks"):
-        return True
+
     return False
 
 
@@ -354,7 +395,7 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
         "session_key": row.get("session_key") or detail.get("session_key") or detail.get("session_id"),
         "parent_id": row.get("parent_id") or detail.get("parent_id"),
         "chips": extract_metric_chips(category, action, status, detail),
-        "has_children": _has_potential_children(detail),
+        "has_children": _has_potential_children(detail, action),
         # 给"重新爬取/已修复"等业务标记一个直通字段，前端不需要再扫 detail
         "rerun": bool(detail.get("rerun_linked") or detail.get("rerun_count")),
         "compacted": bool(detail.get("__compacted")),

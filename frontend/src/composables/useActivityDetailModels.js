@@ -404,9 +404,14 @@ function finalStatusLabel(row) {
     if (row?.category === 'subtitle_import') return '配对✔'
     if (['extract', 'auto_import', 'process_existing'].includes(String(row?.category || ''))) {
       // 子任务里出现 partial_success（典型：原作目录已有字幕，作品转入问题作品列表），
-      // 整批不能再标成纯“入库✔”，回退为“部分入库”。finalStatusClass 中含“部分”关键字
-      // 会自动落到 is-final-partial 黄色徽章，与 status pill “部分成功”视觉一致。
-      return ss.includes('partial_success') ? '部分入库' : '入库✔'
+      // 整批不能再标成纯"入库✔"。
+      // - 真实部分失败（ss 含 'failed'）→ "部分入库"
+      // - 纯转入问题作品 / 软失败（无 failed）→ "转入问题作品"
+      // finalStatusClass 中含"部分" / "问题" 关键字会自动落到 is-final-partial 黄色徽章。
+      if (ss.includes('partial_success')) {
+        return ss.includes('failed') ? '部分入库' : '转入问题作品'
+      }
+      return '入库✔'
     }
     return ss.includes('partial_success') ? '部分完成' : '完成✔'
   }
@@ -416,7 +421,8 @@ function finalStatusLabel(row) {
 function finalStatusClass(row) {
   const l = finalStatusLabel(row)
   if (['配对✔', '删除✔', '入库✔', '完成✔', '已修复✔'].includes(l)) return 'is-final-success'
-  if (l.includes('部分')) return 'is-final-partial'
+  // "部分..." 或"转入问题作品"都属于 partial 黄色态（语义上未完全成功，但不是失败）
+  if (l.includes('部分') || l.includes('问题作品')) return 'is-final-partial'
   return 'is-final-failed'
 }
 
@@ -1324,9 +1330,57 @@ const _PARTIAL_SUCCESS_KEYWORDS_DETAIL = [
   '转入问题作品列表',
 ]
 
+// 判断一条 partial_success（或语义上等价 partial_success）的 row 是否
+// 「纯粹因为转入问题作品列表 / 重复作品」才被升级——没有任何真实 failed 子任务。
+// 用于把"部分入库"区分成两种文案：
+//   - 真实部分失败（child_failed > 0 或子状态里有 failed）→ "部分入库"
+//   - 纯转入问题作品 / 软失败（无 failed，只有 problem 关键词 / partial 子任务）→ "转入问题作品"
+function isPurelyProblemListPartial(row) {
+  if (!row) return false
+  // 任何一处显示「真的失败了」就不是纯问题作品 partial
+  const failedChildren = Number(row.child_failed_count || 0)
+  if (failedChildren > 0) return false
+
+  const summary = String(row.summary || '')
+  if (_PARTIAL_SUCCESS_KEYWORDS_DETAIL.some(kw => summary.includes(kw))) return true
+
+  const detail = row.detail || {}
+  if (detail && (detail.linked_subtitle_problem || detail.existing_subtitle_problem)) return true
+  const sourceMode = String((detail && detail.source_mode) || '')
+  if (sourceMode.endsWith('_existing_subtitle_conflict')) return true
+
+  // 批次父行：后端 _enrich_lite_items_with_batch_summary 把"加入问题作品列表"等
+  // 等价 partial_success 的子任务计入 child_partial_count。child_partial > 0 且
+  // 没有 failed → 整批都是"软失败"，文案用"转入问题作品"。
+  const partialChildren = Number(row.child_partial_count || 0)
+  if (partialChildren > 0) return true
+
+  return false
+}
+
 function effectiveRowStatus(row) {
   if (!row) return ''
   const raw = String(row.status || '')
+
+  // 批次父行的子任务状态感知（与 ActivityHistory.vue 的 effectiveStatus 同口径）：
+  // 后端 _enrich_lite_items_with_batch_summary 把同 batch_id 的子任务 failed/success/
+  // partial_success 计数挂到 row。如果父行写日志时 status="success"（创建任务那一刻
+  // 成功），但子任务实际有失败 / 部分成功，就把状态升级，避免抽屉头部显示"入库完成 ✓"
+  // 但关联事件里子任务"解压入库部分成功"的认知错位。
+  // 只升级 success/completed/partial_success 这三种"看起来 OK"的态。
+  if (raw === 'success' || raw === 'completed' || raw === 'partial_success') {
+    const failedChildren = Number(row.child_failed_count || 0)
+    const partialChildren = Number(row.child_partial_count || 0)
+    const successChildren = Number(row.child_success_count || 0)
+    if (failedChildren > 0) {
+      const okChildren = successChildren + partialChildren
+      return okChildren > 0 ? 'partial_success' : 'failed'
+    }
+    if (partialChildren > 0) {
+      return 'partial_success'
+    }
+  }
+
   if (raw !== 'success') return raw
   const summary = String(row.summary || '')
   if (_PARTIAL_SUCCESS_KEYWORDS_DETAIL.some(kw => summary.includes(kw))) return 'partial_success'
@@ -1424,7 +1478,9 @@ function humanAction(row) {
   if (cat === 'extract') return status === 'success' ? '压缩包解压完成' : '压缩包解压失败'
   if (cat === 'auto_import') {
     if (status === 'success') return '解压入库完成'
-    if (status === 'partial_success') return '解压入库部分成功'
+    if (status === 'partial_success') {
+      return isPurelyProblemListPartial(row) ? '转入问题作品' : '解压入库部分成功'
+    }
     if (status === 'failed') return '解压入库失败'
     if (status === 'incomplete') return '解压入库未正常结束'
   }
@@ -2049,5 +2105,5 @@ export function useActivityDetailModels(rowRef) {
 
 export {
   humanAction, actionTagClass, rowCategoryTags, finalStatusLabel, finalStatusClass,
-  isRecoveredFailure, isRerunRow, effectiveRowStatus,
+  isRecoveredFailure, isRerunRow, effectiveRowStatus, isPurelyProblemListPartial,
 }

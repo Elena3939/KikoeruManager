@@ -1,5 +1,7 @@
 <template>
   <div class="maintenance-stack">
+    <DatabaseShrinkCard />
+
     <div class="settings-grid two">
       <div class="settings-card">
         <div class="card-title">密码库智能清理</div>
@@ -77,6 +79,7 @@
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import AppDropdown from '../common/AppDropdown.vue'
+import DatabaseShrinkCard from './DatabaseShrinkCard.vue'
 
 defineProps({
   config: { type: Object, required: true }
