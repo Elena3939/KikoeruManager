@@ -88,4 +88,52 @@ defineProps({
   color: #64748b;
   line-height: 1.45;
 }
+
+/* ============================================================
+ * 移动端适配（≤640）
+ * 桌面端零改动：仅 @media 内覆盖
+ * 策略：标题区 / slot 区垂直 stack；icon、字号紧凑；slot 区右对齐换行
+ * ============================================================ */
+@media (max-width: 640px) {
+  .app-page-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .app-page-head-left {
+    min-width: 0;
+    gap: 10px;
+  }
+  .app-page-head-right {
+    width: 100%;
+    gap: 6px;
+    /* slot 内按钮/chip 可以左对齐展开，避免桌面端的右对齐 */
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  /* slot 内 button / 搜索框 等子元素的窄屏布局规则放在全局 index.css
+     的 "Mobile Adaptation Foundation" 区块内（避开 scoped + :deep 的 data-v 限制
+     与 slot 透传的特异性问题）。这里只负责头部本身的 stack。 */
+  .app-page-icon {
+    width: 36px;
+    height: 36px;
+  }
+  .app-page-title {
+    font-size: 18px;
+    letter-spacing: -0.3px;
+  }
+  .app-page-subtitle {
+    font-size: 12px;
+    line-height: 1.4;
+  }
+}
+
+/* 平板 641~1024：右侧 slot 可换行但不强制 stack */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .app-page-head-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
 </style>

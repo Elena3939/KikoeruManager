@@ -1130,4 +1130,19 @@ function getConflictTypeLabel(conflictType) {
   .sidebar-card { position: static; }
   .hero-search-wrap { width: 100%; }
 }
+
+/* 手机 ≤640 紧凑边距 + 内部按钮收紧 */
+@media (max-width: 640px) {
+  .existing-page { padding-left: 10px; padding-right: 10px; }
+  .existing-shell { gap: 12px; margin-top: 12px; }
+  .sidebar-card { padding: 12px; border-radius: 14px; }
+  .ef-head-btn { height: 32px; padding: 0 10px; }
+  .ef-head-btn-label { font-size: 12px; }
+  /* sidebar 内的 actions row 改为 2 列等分 */
+  .sidebar-actions {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+}
 </style>

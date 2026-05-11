@@ -576,4 +576,81 @@ const statusMetaIconClass = computed(() => {
     grid-column: span 1;
   }
 }
+
+/* ============================================================
+ * ≤640 全屏化覆盖
+ * 桌面端零改动：仅 @media 内覆盖
+ * 痛点：自己定义的 .activity-detail-dialog :deep(.el-dialog) 优先级
+ *      高于全局 .custom-preview-modal.el-dialog 的 ≤640 全屏规则，
+ *      导致移动端仍然是 92vw 弹窗而非全屏。
+ * 解法：在自身 scoped 内补一份 ≤640 全屏，保持优先级链一致。
+ * ============================================================ */
+@media (max-width: 640px) {
+  .activity-detail-dialog :deep(.el-dialog) {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+  .activity-detail-dialog :deep(.el-dialog__body) {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+  .activity-window {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    min-height: 0 !important;
+    border-radius: 0 !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+  /* 内部任意 wrapper 解锁固定 min-width，避免横向溢出 */
+  .activity-window > *,
+  .activity-window .summary-grid,
+  .activity-window .summary-meta-grid,
+  .activity-window .summary-meta-grid-top,
+  .activity-window .meta-pill-card,
+  .activity-window .path-board {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+  /* 横向溢出文本（trace id / 长 path / 长 RJ）强制 word-break */
+  .activity-window {
+    word-break: break-all;
+  }
+  /* window-header / top-meta-shell 默认 px-8 (32px) 太宽，移动端收紧 */
+  .activity-window .window-header {
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+    padding-top: 14px !important;
+    padding-bottom: 10px !important;
+  }
+  .activity-window .top-meta-shell {
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+  }
+  .activity-scroll-shell {
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+    padding-bottom: 16px !important;
+  }
+  /* 顶栏 close + maximize 两个圆形按钮在窄屏紧凑：size-10 → size-9 */
+  .activity-window .interactive-chip {
+    width: 36px !important;
+    height: 36px !important;
+  }
+  /* 大标题字号收紧 */
+  .activity-window .activity-title {
+    font-size: 16px !important;
+    line-height: 1.3 !important;
+  }
+}
 </style>

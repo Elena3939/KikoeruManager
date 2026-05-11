@@ -276,4 +276,38 @@ const sortDropdownOptions = [
     order: -1;
   }
 }
+
+/* ≤640：搜索独占第一行；4 个 dropdown + 2 个按钮按 2 列网格排列 */
+@media (max-width: 640px) {
+  .tasks-toolbar {
+    padding: 8px;
+    border-radius: 12px;
+  }
+  .tasks-toolbar-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    align-items: stretch;
+  }
+  .tasks-toolbar-search {
+    grid-column: 1 / -1;
+    height: 36px;
+    flex: 0 0 auto;
+  }
+  /* 让所有 AppDropdown / 工具栏按钮强制撑满 grid 单元 */
+  .tasks-toolbar-row :deep(.app-dd-root),
+  .tasks-toolbar-row :deep(.app-dd-trigger),
+  .tasks-toolbar-row .tasks-toolbar-btn {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+  .tasks-toolbar-row :deep(.app-dd-trigger) {
+    justify-content: space-between;
+  }
+  .tasks-toolbar-btn {
+    height: 36px;
+    padding: 0 10px;
+    justify-content: center;
+  }
+}
 </style>

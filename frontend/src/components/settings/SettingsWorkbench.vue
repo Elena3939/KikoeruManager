@@ -109,6 +109,95 @@ const filteredSections = computed(() => {
   align-self: start;
 }
 
+/* ============================================================
+ * 移动端 (≤1024)：双栏 → stack
+ * sidebar 切到顶部横向滚动 chip 导航，footer/search 隐藏
+ * ============================================================ */
+@media (max-width: 1024px) {
+  .settings-workbench {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .settings-sidebar {
+    position: relative;
+    top: auto;
+  }
+  .sidebar-shell {
+    padding: 8px;
+    border-radius: 14px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
+  }
+  /* 搜索 & footer 隐藏（移动端 6 个分组够直接横向 chip 切） */
+  .settings-search,
+  .sidebar-footer {
+    display: none !important;
+  }
+  /* nav 改成横向滚动 chip row */
+  .settings-nav {
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+    margin-top: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    padding-bottom: 2px;
+  }
+  .settings-nav::-webkit-scrollbar { height: 4px; }
+  .settings-nav::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.4);
+    border-radius: 999px;
+  }
+  /* 每个 nav-item 改成 chip：图标 + 短标题，描述隐藏 */
+  .nav-item {
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    min-width: 80px;
+    padding: 8px 12px;
+    text-align: center;
+    position: relative;
+  }
+  .nav-item-body {
+    flex: 0 0 auto;
+    text-align: center;
+  }
+  .nav-item-title {
+    font-size: 11.5px;
+    line-height: 1.15;
+    white-space: nowrap;
+  }
+  .nav-item-desc {
+    display: none;
+  }
+  .nav-badge {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    height: 14px;
+    padding: 0 5px;
+    font-size: 9px;
+  }
+  /* nav-item-icon 在 chip 中略放大 */
+  .nav-item-icon {
+    width: 28px;
+    height: 28px;
+  }
+}
+
+@media (max-width: 640px) {
+  .nav-item {
+    min-width: 72px;
+    padding: 6px 10px;
+  }
+  .nav-item-title {
+    font-size: 10.5px;
+  }
+}
+
 .sidebar-shell {
   padding: 14px 12px 12px;
   border-radius: 18px;

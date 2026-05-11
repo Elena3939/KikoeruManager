@@ -1653,6 +1653,69 @@ button:disabled {
   .lib-info-item { padding: 0; }
 }
 
+/* ============================================================
+ * 移动端 (≤1024)：整页 stream 模式
+ * 桌面端零改动：仅 @media 内覆盖
+ * 痛点：桌面是 flex h-full + main 双栏 list/detail 各自滚，
+ *      移动端 list 360px 撑死 + detail 没空间。
+ * 解法：双栏 → flex-col stack；内部滚动区松绑；整页 .content-shell 滚。
+ * ============================================================ */
+@media (max-width: 1024px) {
+  .conflicts-page {
+    min-height: auto !important;
+    overflow: visible !important;
+  }
+  .conflicts-main {
+    flex: 0 0 auto !important;
+    flex-direction: column !important;
+    overflow: visible !important;
+    min-height: 0 !important;
+    gap: 12px;
+  }
+  .conflicts-list-pane,
+  .conflicts-detail-pane {
+    width: 100% !important;
+    flex: 0 0 auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+  /* 内部滚动区松绑：让内容自然撑开 */
+  .conflicts-list-scroll,
+  .conflicts-detail-body {
+    overflow: visible !important;
+    flex: 0 0 auto !important;
+    max-height: none !important;
+  }
+  /* 批量动作按钮 wrap + 50% 等宽 */
+  .conflicts-batch-actions {
+    flex-wrap: wrap;
+  }
+  .conflicts-batch-actions > button {
+    flex: 1 1 calc(50% - 3px);
+    min-width: 0;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 640px) {
+  .conflicts-page {
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+  }
+  .conflicts-list-pane,
+  .conflicts-detail-pane {
+    border-radius: 14px;
+  }
+  /* detail-header padding 紧凑 */
+  .conflicts-detail-header {
+    padding: 16px !important;
+  }
+  .conflicts-detail-body {
+    padding: 14px !important;
+  }
+}
+
 /* 小 chip */
 .lib-chip {
   display: inline-flex;
