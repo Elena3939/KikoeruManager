@@ -621,6 +621,14 @@ class TaskEngine:
         if not source_path or not os.path.exists(source_path):
             return
 
+        # 来自问题作品页的重试任务：原 conflict 在 routes.retry_extract_failed_conflict
+        # 中已被改为 PROCESSING，_add_to_conflict_works 的去重查询只看 PENDING，
+        # 这里再写一条会造成同源重复（A 仍 PROCESSING/重试中，B 新增 PENDING）。
+        # 失败时由 _finalize_conflict_resolution_task 把原 conflict 恢复为 PENDING
+        # 并写 resolution_error，这里直接短路即可。
+        if self._is_retry_from_conflicts_task(task):
+            return
+
         normalized_rjcode = (rjcode or "").strip()
         if normalized_rjcode == "未知":
             normalized_rjcode = self._extract_rjcode(source_path) or ""
@@ -640,6 +648,20 @@ class TaskEngine:
             metadata,
             status="PENDING",
         )
+
+    def _is_retry_from_conflicts_task(self, task: Task) -> bool:
+        """判断该任务是否由问题作品页的重试入口生成；这类任务失败时不应再写新 conflict。"""
+        metadata = dict(task.task_metadata or {})
+        if metadata.get("retry_from_conflicts"):
+            return True
+        if str(metadata.get("retry_conflict_id") or "").strip():
+            return True
+        if str(metadata.get("conflict_resolution_conflict_id") or "").strip():
+            return True
+        action = str(metadata.get("conflict_resolution_action") or "").strip().upper()
+        if action == "RETRY":
+            return True
+        return False
 
     def _infer_failure_stage(self, task: Task, reason: str) -> str:
         metadata = dict(task.task_metadata or {})
@@ -668,6 +690,13 @@ class TaskEngine:
 
         source_path = str(task.source_path or "").strip()
         if not source_path or not os.path.exists(source_path):
+            return
+
+        # 来自问题作品页的重试任务：原 conflict 已被 routes 改为 PROCESSING；
+        # _add_to_conflict_works 的 PENDING 去重在此场景下查不到原条目，会重复插入。
+        # _finalize_conflict_resolution_task 在 finally 里会把原 conflict 状态恢复，
+        # 这里直接跳过，避免重复条目 + "原作品仍重试中、新作品冒出来"的视觉错乱。
+        if self._is_retry_from_conflicts_task(task):
             return
 
         normalized_rjcode = (rjcode or "").strip()

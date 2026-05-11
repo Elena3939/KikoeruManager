@@ -135,10 +135,16 @@
       <div class="w-full flex flex-wrap items-center gap-2 text-[11px] text-slate-600 pt-1 border-t border-slate-100 mt-1">
         <span class="px-2 py-0.5 rounded bg-sky-50 border border-sky-100 text-sky-700">模式 {{ lastFetchMode }}</span>
         <span class="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-100 text-emerald-700">本次 {{ lastFetchMs }}ms</span>
-        <span class="px-2 py-0.5 rounded bg-white border border-slate-200">均值 {{ avgFetchMs }}ms</span>
-        <span class="px-2 py-0.5 rounded bg-white border border-slate-200">峰值 {{ maxFetchMs }}ms</span>
-        <span class="px-2 py-0.5 rounded bg-white border border-slate-200">parse 命中 {{ parseCacheHitRate }}%</span>
-        <span class="px-2 py-0.5 rounded bg-white border border-slate-200">highlight 命中 {{ highlightCacheHitRate }}%</span>
+        <span
+          v-if="lastSearchScanMb > 0"
+          class="px-2 py-0.5 rounded bg-amber-50 border border-amber-100 text-amber-700"
+          title="后端实际扫描的字节数（MB），跨主日志 + 备份"
+        >扫描 {{ lastSearchScanMb }}MB</span>
+        <span
+          v-if="lastSearchStoppedEarly"
+          class="px-2 py-0.5 rounded bg-orange-50 border border-orange-100 text-orange-700"
+          title="本次搜索触顶（5 万匹配 / 96MB 扫描预算 / 单页 1000 条），未扫到全部历史"
+        >已截断</span>
         <span class="px-2 py-0.5 rounded bg-indigo-50 border border-indigo-100 text-indigo-700">快捷键 Ctrl+K 搜索 · Ctrl+R 刷新 · Ctrl+Shift+C 复制可见</span>
       </div>
     </div>
@@ -182,11 +188,13 @@
         >
           <span class="log-ts">{{ log.time || '--:--:--' }}</span>
           <span class="log-lvl" :class="`lvl-${log.level.toLowerCase()}`">{{ log.level }}</span>
+          <!-- module 列始终渲染，没解析到时隐藏内容但保留 layout，让 message 起点严格上下齐 -->
           <span
-            v-if="log.module"
             class="log-mod"
-            :style="{ background: getModuleColor(log.module) }"
-            v-html="highlightModuleName(log.module)"
+            :class="{ 'is-empty': !log.module }"
+            :style="log.module ? { background: getModuleColor(log.module) } : null"
+            :aria-hidden="!log.module"
+            v-html="log.module ? highlightModuleName(log.module) : '&nbsp;'"
           />
           <span
             class="log-msg"
@@ -424,7 +432,14 @@ import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const LOG_POLL_INTERVAL = 5000
 const ITEM_HEIGHT = 28
-const OVERSCAN = 25
+// OVERSCAN 25→60：鼠标滚轮一下平均 200-400px，原 25 行=700px 缓冲区在快速滚动
+// 时会被一下走穿，导致下一帧 visibleLogs 没跟上，用户看到的是未填充的
+// padding 空白。改成 60 行=1680px 缓冲，三轮鼠标以内都不会看到空白。
+const OVERSCAN = 60
+// scrollTop 距离阈值：鼠标走超过半行=14px 才重算 startIndex / endIndex，
+// 避免每个 pixel 都 trigger reactive 重算 visibleLogs。OVERSCAN=60 行
+// 缓冲足够掩护中间未同步的帧，肉眼看不出延迟。
+const SCROLL_THRESHOLD = Math.max(8, Math.floor(ITEM_HEIGHT / 2))
 const LOG_PREVIEW_LIMIT = 900
 
 const logs = shallowRef([])
@@ -467,7 +482,6 @@ let searchDebounceTimer = null
 let scrollRafId = null
 let smoothScrollRafId = null
 let latestScrollTop = 0
-const fetchHistory = ref([])
 
 const incrementalCount = ref(0)
 const lastFetchMs = ref(0)
@@ -480,15 +494,18 @@ const fullSearchPageStart = ref(0)
 const FULL_SEARCH_PAGE_SIZE = 500
 const MIN_FULL_SEARCH_KEYWORD_LENGTH = 2
 const isSearchLoading = ref(false)
-const smoothScrollInertia = ref(0.22)
 let fullSearchRequestSeq = 0
 
 const parseCache = new Map()
 const highlightCache = new Map()
-const parseCacheHits = ref(0)
-const parseCacheMisses = ref(0)
-const highlightCacheHits = ref(0)
-const highlightCacheMisses = ref(0)
+// 不再维护命中率统计：旧版把 hits/misses 放进 ref，highlightText() 是 render-time 调用的函数，
+// 每次渲染 +=1 会触发依赖计数的 computed 重算 → 视图重渲染 → 又调 highlightText → 死循环
+// （Vue 'Maximum recursive updates exceeded'，对应用户截图里的红色 stack）。
+// dev 体验信息删掉就彻底没问题，搜索/高亮逻辑只读 cache，永远不写 reactive。
+
+// 后端搜索状态（用于头部小标签展示，不进入 render path 修改）
+const lastSearchScanMb = ref(0)
+const lastSearchStoppedEarly = ref(false)
 
 const moduleColors = {
   KikoeruManager: '#6d8ef7',
@@ -560,27 +577,6 @@ const endIndex = computed(() => Math.min(filteredLogs.value.length, Math.ceil((s
 const visibleLogs = computed(() => filteredLogs.value.slice(startIndex.value, endIndex.value))
 const paddingTop = computed(() => startIndex.value * ITEM_HEIGHT)
 const paddingBottom = computed(() => Math.max(0, (filteredLogs.value.length - endIndex.value) * ITEM_HEIGHT))
-
-const avgFetchMs = computed(() => {
-  if (!fetchHistory.value.length) return 0
-  const sum = fetchHistory.value.reduce((acc, cur) => acc + cur, 0)
-  return Math.round(sum / fetchHistory.value.length)
-})
-
-const maxFetchMs = computed(() => {
-  if (!fetchHistory.value.length) return 0
-  return Math.max(...fetchHistory.value)
-})
-
-const parseCacheHitRate = computed(() => {
-  const total = parseCacheHits.value + parseCacheMisses.value
-  return total ? Math.round((parseCacheHits.value / total) * 100) : 0
-})
-
-const highlightCacheHitRate = computed(() => {
-  const total = highlightCacheHits.value + highlightCacheMisses.value
-  return total ? Math.round((highlightCacheHits.value / total) * 100) : 0
-})
 
 // 缓存上限大幅缩小（OOM 修复）：
 // 旧值 logLimit*8 / logLimit*4 在 logLimit=2000 时上限 16000 / 8000 条目，
@@ -690,10 +686,8 @@ function highlightText(input) {
   const willCache = safe.length <= HIGHLIGHT_CACHE_KEY_MAX
   const cacheKey = willCache ? `${termsKey}::${safe}` : ''
   if (willCache && highlightCache.has(cacheKey)) {
-    highlightCacheHits.value += 1
     return highlightCache.get(cacheKey)
   }
-  highlightCacheMisses.value += 1
   const meta = buildHighlightMeta(terms)
   if (!meta) return safe
   const highlighted = safe.replace(meta.regex, (matched) => {
@@ -730,10 +724,8 @@ function buildDisplayMessage(message) {
 
 function parseLogLine(line) {
   if (parseCache.has(line)) {
-    parseCacheHits.value += 1
     return parseCache.get(line)
   }
-  parseCacheMisses.value += 1
   // OOM 修复：trim 一次清掉一半（之前 1/4 太保守，map 长期贴着 ceil 触发频繁
   // micro-trim 但实际没腾出足够空间）。
   trimMapByOldest(parseCache, parseCacheMax.value, Math.max(300, Math.floor(parseCacheMax.value / 2)))
@@ -790,14 +782,23 @@ function parseLogLines(lines, keyPrefix = '') {
 function isNearBottom() {
   if (!logContainer.value) return true
   const { scrollTop: st, scrollHeight, clientHeight } = logContainer.value
-  return scrollHeight - st - clientHeight < 60
+  // 60 → 100：原阈值一行=28px 之内在顶下一个行高的位置就会反复在
+  // true/false 间跳变，导致 autoFollow 反复切换 → increment 路径重复触发
+  // smoothScrollToBottom。100px 约 3.5 行，容忍一下鼠标滚轮调整仍锁住 auto follow。
+  return scrollHeight - st - clientHeight < 100
 }
 
 function onScroll(e) {
   latestScrollTop = e.target.scrollTop
   if (scrollRafId) return
   scrollRafId = requestAnimationFrame(() => {
-    scrollTop.value = latestScrollTop
+    // 距离阈值节流：快速滚轮时鼠标每帧可能只走 1-2px，避免每 1px
+    // 都触发 scrollTop ref 更新 → startIndex/endIndex/visibleLogs/paddingTop
+    // /paddingBottom 全量重算 + DOM diff。只有走过半行才让 reactive 跳，
+    // OVERSCAN=60 行 足够掏住中间所有未同步的帧。
+    if (Math.abs(latestScrollTop - scrollTop.value) >= SCROLL_THRESHOLD) {
+      scrollTop.value = latestScrollTop
+    }
     autoFollowLogs.value = isNearBottom()
     scrollRafId = null
   })
@@ -829,16 +830,16 @@ function scrollToBottom(smooth = true) {
   }
 
   if (smoothScrollRafId) cancelAnimationFrame(smoothScrollRafId)
-  const duration = Math.min(280, Math.max(110, Math.abs(distance) * 0.08))
-  const inertia = smoothScrollInertia.value
+  // 原来 mix 了 easeOutCubic + easeOutQuint 两条曲线，动画尾部有个“二次减
+  // 速”拐点，在高频调用场景（点 跳到底部 / 手动滚动后释放）被看出是个
+  // 奇怪的“双货”。只保留 easeOutCubic 后动画更贴近 macOS / iOS 滚动手感。
+  const duration = Math.min(260, Math.max(120, Math.abs(distance) * 0.07))
   const t0 = performance.now()
   const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3)
-  const easeOutQuint = (t) => 1 - Math.pow(1 - t, 5)
 
   const tick = (ts) => {
     const p = Math.min(1, (ts - t0) / duration)
-    const eased = easeOutCubic(p) * (1 - inertia) + easeOutQuint(p) * inertia
-    el.scrollTop = start + distance * eased
+    el.scrollTop = start + distance * easeOutCubic(p)
     if (p < 1) {
       smoothScrollRafId = requestAnimationFrame(tick)
       return
@@ -917,11 +918,12 @@ async function refreshLogs(force = false) {
     trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
     trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(150, Math.floor(highlightCacheMax.value / 2)))
     lastFetchMs.value = Math.round(performance.now() - t0)
-    // 用 push + shift 维持长度，避免每次刷新 spread 创建新数组（小幅 GC 压力优化）
-    if (fetchHistory.value.length >= 40) fetchHistory.value.shift()
-    fetchHistory.value.push(lastFetchMs.value)
     await nextTick()
-    if (shouldFollow && !isPaused.value) scrollToBottom(true)
+    // 增量刷新后跳底不走 smooth 动画：之前每 5s 轮询新日志进来都跱 280ms
+    // easing，如果用户正在手动滚动 / 选中某行，动画会把他顶走；多帧连续
+    // 增量进来时连续启新动画互相打断 → 视觉抖。不走动画直接 scrollTop，
+    // 才是主流 tail -f 体验。手动点头部「跳到底部」按钮仍走 smooth。
+    if (shouldFollow && !isPaused.value) scrollToBottom(false)
   } catch (error) {
     console.error('获取日志失败:', error)
   }
@@ -940,10 +942,10 @@ async function clearLogs() {
     // 直到下次刷新触发 trim 才会被丢弃，是「点了清空但内存没下来」的常见误解。
     parseCache.clear()
     highlightCache.clear()
-    parseCacheHits.value = 0
-    parseCacheMisses.value = 0
-    highlightCacheHits.value = 0
-    highlightCacheMisses.value = 0
+    if (fullSearchAbortController) {
+      try { fullSearchAbortController.abort() } catch {}
+      fullSearchAbortController = null
+    }
     clearSelectedLog()
     lastLogSignature = ''
     nextOffset = -1
@@ -952,6 +954,9 @@ async function clearLogs() {
     fullSearchHasMore.value = false
     fullSearchTotal.value = 0
     fullSearchPageStart.value = 0
+    lastSearchScanMb.value = 0
+    lastSearchStoppedEarly.value = false
+    isSearchLoading.value = false
     scrollTop.value = 0
     ElMessage.success('日志视图已清空')
   } catch (_) {}
@@ -963,10 +968,6 @@ function onLimitChange() {
   // 触发 trim 才被释放（中间窗口内 GC 难以回收，是切换刷条数后内存继续涨的根因）。
   parseCache.clear()
   highlightCache.clear()
-  parseCacheHits.value = 0
-  parseCacheMisses.value = 0
-  highlightCacheHits.value = 0
-  highlightCacheMisses.value = 0
   refreshLogs(true)
 }
 
@@ -1103,11 +1104,23 @@ async function doFullSearch(reset = true) {
   await gotoFullSearchPage(cursor)
 }
 
+// 全历史搜索的取消控制：用户连续输入或翻页时，旧请求立即 abort，
+// 后端 streaming 扫描在 socket 关闭时 asyncio.to_thread 仍会跑完一轮，
+// 但前端不会再被旧响应覆盖（串号 + signal 双保险）。
+let fullSearchAbortController = null
+
 async function gotoFullSearchPage(cursor) {
   const keyword = searchKeyword.value.trim()
   const broadLevelFilter = selectedLevels.value.length > 2
   if (!keyword && broadLevelFilter) return
   if (keyword && keyword.length < MIN_FULL_SEARCH_KEYWORD_LENGTH) return
+
+  // 取消上一次未完请求
+  if (fullSearchAbortController) {
+    try { fullSearchAbortController.abort() } catch {}
+  }
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+  fullSearchAbortController = controller
   const requestSeq = ++fullSearchRequestSeq
   isSearchLoading.value = true
   try {
@@ -1118,7 +1131,7 @@ async function gotoFullSearchPage(cursor) {
       selectedLevels.value,
       FULL_SEARCH_PAGE_SIZE,
       cursor,
-      { maxScanMb: 32 },
+      { maxScanMb: 32, signal: controller ? controller.signal : undefined },
     )
     if (requestSeq !== fullSearchRequestSeq) return
     const lines = Array.isArray(data.logs) ? data.logs : []
@@ -1126,19 +1139,32 @@ async function gotoFullSearchPage(cursor) {
     fullSearchCursor.value = typeof data.next_cursor === 'number' ? data.next_cursor : (cursor + lines.length)
     fullSearchHasMore.value = !!data.has_more
     fullSearchPageStart.value = cursor
+    // 后端透传的扫描预算 / 触顶状态：用于头部小标签
+    const scanBytes = Number(data?.scan_bytes || 0)
+    lastSearchScanMb.value = scanBytes > 0 ? Number((scanBytes / 1024 / 1024).toFixed(1)) : 0
+    lastSearchStoppedEarly.value = !!data?.stopped_early
     logIdCounter = 0
     logs.value = parseLogLines(lines, `search-${cursor}-`)
     triggerRef(logs)
     restoreSelectedLog()
     lastFetchMs.value = Math.round(performance.now() - t0)
-    fetchHistory.value = [...fetchHistory.value.slice(-39), lastFetchMs.value]
     await nextTick()
     scrollTop.value = 0
     if (logContainer.value) logContainer.value.scrollTop = 0
-  } catch {
-    ElMessage.error('全历史检索失败')
+  } catch (err) {
+    // 用户取消的旧请求（AbortController.abort）：静默
+    if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return
+    if (requestSeq !== fullSearchRequestSeq) return
+    const detail = err?.response?.data?.detail || ''
+    if (detail) {
+      ElMessage.error(`检索失败：${detail}`)
+    } else {
+      ElMessage.error('全历史检索失败')
+    }
   } finally {
-    isSearchLoading.value = false
+    if (requestSeq === fullSearchRequestSeq) {
+      isSearchLoading.value = false
+    }
   }
 }
 
@@ -1154,12 +1180,20 @@ async function loadPrevFullSearchPage() {
 }
 
 async function toggleFullSearch() {
+  // 切换 mode 时取消上一未完搜索请求，避免老响应覆盖新状态
+  if (fullSearchAbortController) {
+    try { fullSearchAbortController.abort() } catch {}
+    fullSearchAbortController = null
+  }
   if (isFullSearch.value) {
     isFullSearch.value = false
     fullSearchTotal.value = 0
     fullSearchCursor.value = 0
     fullSearchHasMore.value = false
     fullSearchPageStart.value = 0
+    lastSearchScanMb.value = 0
+    lastSearchStoppedEarly.value = false
+    isSearchLoading.value = false
     highlightCache.clear()
     nextOffset = -1
     refreshLogs(true)
@@ -1279,8 +1313,6 @@ watch(
     if (highlightCacheClearTimer) clearTimeout(highlightCacheClearTimer)
     highlightCacheClearTimer = setTimeout(() => {
       highlightCache.clear()
-      highlightCacheHits.value = 0
-      highlightCacheMisses.value = 0
       highlightCacheClearTimer = null
     }, 350)
   }
@@ -1307,6 +1339,11 @@ onUnmounted(() => {
   if (highlightCacheClearTimer) clearTimeout(highlightCacheClearTimer)
   if (scrollRafId) cancelAnimationFrame(scrollRafId)
   if (smoothScrollRafId) cancelAnimationFrame(smoothScrollRafId)
+  // 取消未完搜索请求，避免页面销毁后老响应仍试图写 reactive
+  if (fullSearchAbortController) {
+    try { fullSearchAbortController.abort() } catch {}
+    fullSearchAbortController = null
+  }
   // 离开页面时主动释放缓存，回到列表 / 库存等其他页面后内存能立即降下来
   parseCache.clear()
   highlightCache.clear()
@@ -1387,6 +1424,12 @@ onUnmounted(() => {
   line-height: 28px;
   scrollbar-width: thin;
   scrollbar-color: #334155 transparent;
+  /* 锁住滚动不穿透到父容器：鼠标滚轮在顶部 / 底部边界不会拖动页面。 */
+  overscroll-behavior: contain;
+  /* 提示浏览器这是个常滚动容器，提前提升为独立 compositor layer， 
+     避免滚动时反复重建 repaint layer。配合下面 .log-line 的
+     content-visibility 一起吃下 5万行 list 也不卸肉。 */
+  contain: layout paint;
 }
 
 .log-viewer.is-paused {
@@ -1404,7 +1447,22 @@ onUnmounted(() => {
   height: 28px;
   padding: 0 14px;
   white-space: nowrap;
-  transition: background-color 0.12s ease;
+  /*
+   * 去掉 background-color 动画：虚拟滚动下每个进入视口的新 row 都会跳
+   * 0.12s transition，鼠标连续滚轮时 上调起来是一片闪烁的 hover/选中
+   * 状态跳动。hover 是拖动中一闪而过的东西，没必要上动画。
+   *
+   * content-visibility: auto + contain-intrinsic-size: 28px：
+   * 让浏览器原生跳过不可见 row 的 layout / paint，list 上万行时才能
+   * 保着滚动 60fps。OVERSCAN 以外的行被跳过，与虚拟滚动同一个思路但
+   * 是在 GPU/compositor 层。
+   *
+   * contain: layout style paint：告诉浏览器每行是独立子树，变化不要反作用到
+   * 老哥 / 兄弟。在增量插行 / 选中成色变时只重画该行，不需重取其它行 layout。
+   */
+  content-visibility: auto;
+  contain-intrinsic-size: 28px;
+  contain: layout style paint;
 }
 
 .log-line:hover { background: rgba(148, 163, 184, 0.07); }
@@ -1423,6 +1481,9 @@ onUnmounted(() => {
   color: #5a6a82;
   font-size: 12px;
   width: 138px;
+  /* 时间戳数字等宽：避免不同字体下“1”与“0”宽度不同导致上下行时间戳右侧错位。 */
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
 }
 
 .log-lvl {
@@ -1443,12 +1504,27 @@ onUnmounted(() => {
 
 .log-mod {
   flex-shrink: 0;
+  /* 固定列宽区间：之前没设 min/max，“RJ字幕”与“CONFIG SAVE” 长短不同
+     会抨 message 起点 → 上下行 message 错位。锁 86px、超出 ellipsis，
+     让代码里所有模块名都进同一个可预测的区域。 */
+  width: 86px;
+  min-width: 86px;
+  max-width: 86px;
   padding: 0 7px;
   border-radius: 4px;
   color: #ffffff;
   font-size: 10.5px;
   font-weight: 600;
   line-height: 18px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-mod.is-empty {
+  background: transparent !important;
+  visibility: hidden;
 }
 
 .log-msg {

@@ -105,6 +105,121 @@ _LITE_HIDDEN_ACTIONS = (
 # 这里和前端 ActivityHistory.vue 的 RECOVERY_CATEGORIES 保持一致。
 _LITE_RECOVERY_CATEGORIES = ("extract", "auto_import", "process_existing", "asmr_sync")
 
+# 单次搜索 FTS5 命中上限：之前是 5000，对内存压力大且 IN 子句容易撑爆。
+# 限制为 2000 → 命中数较多时仅前 2000 条排序结果（按 created_at desc），用户基本感知不到。
+_FTS_MATCH_CAP = 2000
+
+# 搜索关键词长度上限（字符）。短到 1 字符也允许（trigram 友好），但太长无意义。
+_SEARCH_TEXT_MAX_LEN = 200
+
+# FTS5 语法保留 / 易触发解析错误的字符。phrase match 引号会单独处理。
+# 这里列出的字符都直接替换成空格，避免触发 `MATCH` 语法异常。
+_FTS_DANGER_CHARS = (
+    '"',  # phrase match 起止符
+    "(", ")",  # 优先级括号
+    "*",  # prefix 通配（手动拼接）
+    ":",  # 列限定语法
+    "^",  # 列限定起始
+    "+", "-",  # 加减权
+    "&", "|",  # 逻辑符
+    "\x00",  # NUL
+)
+
+
+def _sanitize_search_text(raw: str) -> str:
+    """清洗 FTS5 搜索文本：去除控制字符 / 保留字符，截断长度。"""
+    if not raw:
+        return ""
+    text_value = "".join(ch for ch in str(raw) if ch.isprintable() or ch in (" ", "\t"))
+    for danger in _FTS_DANGER_CHARS:
+        text_value = text_value.replace(danger, " ")
+    text_value = " ".join(text_value.split())
+    return text_value[:_SEARCH_TEXT_MAX_LEN]
+
+
+def _build_fts_match_expression(search_text: str, tokenizer: str) -> str:
+    """根据 tokenizer 构造 FTS5 MATCH 表达式（仅返回字符串，不执行查询）。
+
+    返回空 = 「不应该走 MATCH，调用方应转 LIKE 或返回空结果」。
+
+    - **trigram + 输入 ≥ 3 字符**：phrase 匹配 ``"用户输入"``，0.x ms 命中
+    - **trigram + 输入 < 3 字符**：trigram 索引不存 < 3 字符 token，MATCH 永远 0 命中。
+      返回空，调用方走 LIKE（trigram tokenizer 自动加速 LIKE，30w 行 ~80ms）
+    - **unicode61 / 其他**：拆空格 + prefix ``token*``，对中文按字符分词的索引也能命中
+    """
+    cleaned = (search_text or "").strip()
+    if not cleaned:
+        return ""
+    tk = (tokenizer or "").strip().lower()
+    if tk.startswith("trigram"):
+        # 基于 char count，CJK 一个字符也算一字
+        if len(cleaned) < 3:
+            return ""
+        return f'"{cleaned}"'
+    # unicode61 / simple / 未知：拆词 + prefix
+    tokens = [t for t in cleaned.split() if t]
+    if not tokens:
+        return ""
+    parts = []
+    for tok in tokens:
+        # 安全起见，每个 token 也再清一次 FTS 危险符
+        safe = tok
+        for danger in _FTS_DANGER_CHARS:
+            safe = safe.replace(danger, "")
+        safe = safe.strip()
+        if not safe:
+            continue
+        parts.append(f'{safe}*')
+    if not parts:
+        return ""
+    return " AND ".join(parts)
+
+
+def _run_fts_id_search(db: Session, search_text: str, tokenizer: str, cap: int) -> tuple[List[Any], str]:
+    """根据 tokenizer 智能选 MATCH / LIKE，返回 (matched_ids, backend_tag)。
+
+    - matched_ids: 命中的 activity_logs.id 列表（已截到 cap）
+    - backend_tag: 'fts5_trigram' / 'fts5_trigram_like' / 'fts5_unicode61' / ...
+                  方便前端显示「当前用了哪条搜索路径」
+
+    异常：捕获 sqlite3 / SQLAlchemy 错误，调用方负责把异常转成 degraded 响应。
+    """
+    tk = (tokenizer or "").strip().lower()
+    backend_root = f"fts5_{(tk.split() or ['unknown'])[0]}"
+
+    # trigram + 短输入 → 走 LIKE（trigram 索引会自动加速）
+    if tk.startswith("trigram") and len(search_text) < 3:
+        like_pattern = f"%{search_text}%"
+        # 在 FTS 表上 LIKE 任意列：trigram 索引会优化连表
+        rows = db.execute(
+            text(
+                """
+                SELECT id FROM activity_logs_fts
+                 WHERE summary LIKE :p
+                    OR source_path LIKE :p
+                    OR rjcode LIKE :p
+                    OR task_id LIKE :p
+                    OR batch_id LIKE :p
+                 LIMIT :cap
+                """
+            ),
+            {"p": like_pattern, "cap": cap},
+        ).fetchall()
+        ids = [row[0] for row in rows if row and row[0]]
+        return ids, f"{backend_root}_like"
+
+    # 默认走 MATCH
+    match_expr = _build_fts_match_expression(search_text, tokenizer)
+    if not match_expr:
+        return [], backend_root
+
+    rows = db.execute(
+        text("SELECT id FROM activity_logs_fts WHERE activity_logs_fts MATCH :term LIMIT :cap"),
+        {"term": match_expr, "cap": cap},
+    ).fetchall()
+    ids = [row[0] for row in rows if row and row[0]]
+    return ids, backend_root
+
 
 def _enrich_lite_items_with_recovery(items: List[Dict[str, Any]], db: Session) -> None:
     """给 lite 列表里的失败行回填"已被后续成功覆盖"标记。
@@ -175,6 +290,144 @@ def _enrich_lite_items_with_recovery(items: List[Dict[str, Any]], db: Session) -
         it["recovered_badge"] = "已覆盖"
 
 
+# 与前端 ActivityHistory.vue / useActivityDetailModels.js 保持完全一致的关键词集合：
+# raw status 是 success 但 summary / detail 暗示"实际进了问题作品列表 / 按重复处理"
+# 等"任务跑完但没真正入库"的场景，三端口径必须一致。
+_BATCH_SUMMARY_PARTIAL_KEYWORDS: tuple[str, ...] = (
+    "加入问题作品列表",
+    "已转入问题作品",
+    "按重复作品处理",
+    "转入问题作品列表",
+)
+
+
+def _looks_like_partial_success(summary: str, detail: Optional[Dict[str, Any]]) -> bool:
+    """判断一条 raw=success 的子任务是否在语义上等价于 partial_success。
+
+    依据：
+    1. summary 里出现 ``加入问题作品列表 / 已转入问题作品 / 按重复作品处理 / 转入问题作品列表``
+       等关键词 —— 任务跑完了但作品被转到问题作品列表，没真正入库。
+    2. detail.linked_subtitle_problem / detail.existing_subtitle_problem 显式标记。
+    3. detail.source_mode 以 ``_existing_subtitle_conflict`` 结尾。
+    """
+    if isinstance(summary, str) and summary:
+        for kw in _BATCH_SUMMARY_PARTIAL_KEYWORDS:
+            if kw in summary:
+                return True
+    if isinstance(detail, dict):
+        if detail.get("linked_subtitle_problem") or detail.get("existing_subtitle_problem"):
+            return True
+        source_mode = str(detail.get("source_mode") or "")
+        if source_mode.endswith("_existing_subtitle_conflict"):
+            return True
+    return False
+
+
+def _enrich_lite_items_with_batch_summary(
+    items: List[Dict[str, Any]],
+    db: Session,
+    *,
+    force: bool = False,
+) -> None:
+    """给 lite 列表里的批次父行回填同 batch_id 子任务的状态聚合。
+
+    用户场景：批次启动行（如 ``batch_start`` action）写日志时 status="success"，
+    因为创建任务这一刻确实成功了。但子任务是后续异步跑出来的，可能 failed，
+    这种情况下前端原本会看到"处理完成"绿条，点开抽屉才发现子任务实际失败。
+
+    aggregator 路径会按 batch_id 聚合子任务 status 重写父行（``_main.py`` 里的
+    ``failed_child_count`` / ``partial_child_count`` 判断），lite 路径跳过 aggregator
+    则没人做这件事。这里在 list 接口返回前做一次轻量回查：
+
+    1) 收集本页 ``has_children=True && batch_id`` 的"父行候选"
+    2) 单次 SQL 拉同 batch_id 的所有兄弟行 (id, status)
+    3) 排除父行自身，按 (batch_id × status) 聚合计数
+    4) 把 ``child_failed_count`` / ``child_success_count`` / ``child_partial_count``
+       / ``child_total_count`` 挂到父行 item，前端 effectiveStatus 据此把
+       "success" 升级为 "partial_success"（子任务有成功也有失败）或 "failed"
+       （子任务全失败）。
+
+    ``force=True`` 时跳过 ``has_children`` 过滤（用于 detail 接口单行兜底，
+    aggregator 没识别成 batch 但实际有同 batch_id 子任务的场景）。
+
+    性能：单次 IN 查询，配 ``idx_batch_id`` 走索引；不再对每行做 N+1 子查询。
+    """
+    if not items:
+        return
+    candidates: List[Dict[str, Any]] = []
+    batch_ids: set[str] = set()
+    parent_ids_per_batch: Dict[str, set[str]] = {}
+    for it in items:
+        if not force and not it.get("has_children") and not it.get("has_child_rows"):
+            continue
+        bid_raw = it.get("batch_id")
+        bid = str(bid_raw or "").strip()
+        if not bid:
+            continue
+        candidates.append(it)
+        batch_ids.add(bid)
+        parent_ids_per_batch.setdefault(bid, set()).add(str(it.get("id") or ""))
+    if not batch_ids:
+        return
+
+    try:
+        rows = (
+            db.query(
+                ActivityLog.batch_id,
+                ActivityLog.id,
+                ActivityLog.status,
+                ActivityLog.summary,
+                ActivityLog.detail,
+            )
+            .filter(ActivityLog.batch_id.in_(list(batch_ids)))
+            .all()
+        )
+    except Exception:
+        logger.warning("[操作记录] lite 批次状态聚合 SQL 失败（不阻断主流程）", exc_info=True)
+        return
+
+    stats: Dict[str, Dict[str, int]] = {
+        bid: {"failed": 0, "success": 0, "partial_success": 0, "total": 0}
+        for bid in batch_ids
+    }
+    for row in rows:
+        bid = str(row[0] or "").strip()
+        rid = str(row[1] or "")
+        status_text = str(row[2] or "").strip()
+        summary_text = str(row[3] or "")
+        detail_obj = row[4] if isinstance(row[4], dict) else None
+        if bid not in stats:
+            continue
+        # 排除父行自身：父行的 status 已经在 item 上，不能把它算进子任务统计里
+        if rid in parent_ids_per_batch.get(bid, set()):
+            continue
+
+        # 关键修复：raw status 是 success，但 summary / detail 实际语义是 partial_success
+        # 的子任务（"加入问题作品列表"等）必须按 partial_success 计数，否则父行永远
+        # 看不到 child_partial_count > 0，永远不会升级。
+        # 这套关键词与前端 effectiveStatus / effectiveRowStatus 完全一致，三端口径统一。
+        if status_text in {"success", "completed"} and _looks_like_partial_success(summary_text, detail_obj):
+            status_text = "partial_success"
+
+        stats[bid]["total"] += 1
+        if status_text in {"failed", "error"}:
+            stats[bid]["failed"] += 1
+        elif status_text in {"success", "completed"}:
+            stats[bid]["success"] += 1
+        elif status_text == "partial_success":
+            stats[bid]["partial_success"] += 1
+
+    for it in candidates:
+        bid = str(it.get("batch_id") or "").strip()
+        s = stats.get(bid)
+        if not s or s["total"] == 0:
+            continue
+        it["child_failed_count"] = s["failed"]
+        it["child_success_count"] = s["success"]
+        it["child_partial_count"] = s["partial_success"]
+        it["child_total_count"] = s["total"]
+
+
 @app.get("/api/activity-logs")
 def list_activity_logs(
     page: int = 1,
@@ -209,7 +462,7 @@ def list_activity_logs(
         get_activity_log_row_dict_cache,
         get_activity_log_writer,
     )
-    from ..models.database import activity_logs_fts_enabled
+    from ..models.database import activity_logs_fts_tokenizer
 
     MAX_MERGE_WINDOW = 5000
     writer = get_activity_log_writer()
@@ -252,58 +505,55 @@ def list_activity_logs(
     if session_key_value:
         query = query.filter(ActivityLog.session_key == session_key_value[:120])
 
-    # Phase 2：q 参数的搜索路径
-    # - FTS5 可用：先在 activity_logs_fts 上做 MATCH，命中 id 集合后回查主表；
-    # - FTS5 不可用：退回到 Phase 1 的 LIKE 多列匹配
+    # Phase 2 / Phase 6：搜索路径
+    # - 强制走 FTS5；不可用 / 命中失败时返回空 + degraded 标记，**永远不再** fallback
+    #   到 LIKE %term% 5 列全表扫描——那是历史上 30 万行 activity_logs 上的内存炸弹。
+    # - tokenizer = trigram：phrase 匹配，任意中文子串都能命中。
+    # - tokenizer = unicode61 / 其他：拆空格 + prefix 匹配，对中文整词友好但中间字命中率低，
+    #   提示用户走「设置 → 升级搜索引擎」迁移到 trigram。
     search_backend = "none"
-    search_text = (q or "").strip()
+    search_text_raw = (q or "").strip()
+    search_text = _sanitize_search_text(search_text_raw)
+    fts_match_count: Optional[int] = None
+
+    def _empty_search_payload(reason: str) -> Dict[str, Any]:
+        payload_empty = {
+            "total": 0,
+            "page": page,
+            "limit": limit,
+            "items": [],
+            "window": {
+                "since_days": None,
+                "search_backend": reason,
+                "search_text": search_text,
+            },
+        }
+        query_cache.set(cache_key, writer.last_write_ts, payload_empty)
+        return payload_empty
+
+    if search_text_raw and not search_text:
+        # 用户输入了关键词但清洗后为空（全是 FTS 危险字符）
+        return _empty_search_payload("sanitized_empty")
+
     if search_text:
-        fts_ready = activity_logs_fts_enabled()
-        if fts_ready:
-            try:
-                # 转义 FTS 保留字符：把双引号替换掉，再把整个串用双引号包起来走 phrase match
-                safe = search_text.replace('"', ' ')
-                match_expr = f'"{safe}"'
-                fts_result = db.execute(
-                    text("SELECT id FROM activity_logs_fts WHERE activity_logs_fts MATCH :term LIMIT :cap"),
-                    {"term": match_expr, "cap": MAX_MERGE_WINDOW},
-                )
-                matched_ids = [row[0] for row in fts_result.fetchall() if row and row[0]]
-                if matched_ids:
-                    query = query.filter(ActivityLog.id.in_(matched_ids))
-                    search_backend = "fts5"
-                else:
-                    # FTS 没命中任何 id，直接返回空
-                    payload = {
-                        "total": 0,
-                        "page": page,
-                        "limit": limit,
-                        "items": [],
-                        "window": {
-                            "max_merge_window": MAX_MERGE_WINDOW,
-                            "raw_loaded": 0,
-                            "truncated": False,
-                            "since_days": None,
-                            "search_backend": "fts5",
-                        },
-                    }
-                    query_cache.set(cache_key, writer.last_write_ts, payload)
-                    return payload
-            except Exception:
-                logger.warning("[操作记录] FTS5 搜索失败，回退 LIKE", exc_info=True)
-                fts_ready = False
-        if not fts_ready:
-            term = f"%{search_text}%"
-            query = query.filter(
-                or_(
-                    ActivityLog.summary.like(term),
-                    ActivityLog.rjcode.like(term),
-                    ActivityLog.source_path.like(term),
-                    ActivityLog.task_id.like(term),
-                    ActivityLog.batch_id.like(term),
-                )
-            )
-            search_backend = "like"
+        tokenizer = activity_logs_fts_tokenizer()
+        if not tokenizer:
+            # 没有 FTS5 → 不再 fallback LIKE 全表扫描，直接 degraded 返回空
+            return _empty_search_payload("unavailable")
+
+        backend_root = f"fts5_{tokenizer.split()[0] if tokenizer else 'unknown'}"
+        try:
+            matched_ids, backend_tag = _run_fts_id_search(db, search_text, tokenizer, _FTS_MATCH_CAP)
+        except Exception:
+            logger.warning("[操作记录] FTS5 搜索失败 text=%r tokenizer=%s", search_text, tokenizer, exc_info=True)
+            return _empty_search_payload(f"{backend_root}_error")
+
+        if not matched_ids:
+            return _empty_search_payload(backend_tag or backend_root)
+
+        query = query.filter(ActivityLog.id.in_(matched_ids))
+        search_backend = backend_tag
+        fts_match_count = len(matched_ids)
 
     # since_days=None: 默认仅合并 MAX_MERGE_WINDOW 条（按 created_at 倒序）；
     # since_days>0:   仅加载最近 N 天，配合上限兜底；
@@ -334,7 +584,13 @@ def list_activity_logs(
                     ActivityLog.status.in_(("failed", "partial_success")),
                 )
             )
-        total = query.with_entities(func.count(ActivityLog.id)).scalar() or 0
+        # 搜索分支：fts_match_count 已是 FTS 命中上限内的总数（≤ _FTS_MATCH_CAP），
+        # 直接用作 total，跳过 COUNT(*) 全表扫描；hidden actions 过滤的少量误差在 UI 上不显眼。
+        # 非搜索分支：维持原 COUNT(*) 逻辑（有 created_at + category 索引保护，开销可接受）。
+        if fts_match_count is not None:
+            total = int(fts_match_count)
+        else:
+            total = query.with_entities(func.count(ActivityLog.id)).scalar() or 0
         offset = max(0, (page - 1) * limit)
         page_id_rows = (
             query.with_entities(ActivityLog.id)
@@ -377,6 +633,14 @@ def list_activity_logs(
             _enrich_lite_items_with_recovery(items, db)
         except Exception:
             logger.warning("[操作记录] lite 已修复回填失败（不阻断主流程）", exc_info=True)
+
+        # 批次父行子任务状态聚合：把同 batch_id 的子任务 failed/success 计数挂到父行，
+        # 前端 effectiveStatus 据此把"创建任务成功但子任务失败"的批次父行升级为
+        # partial_success / failed，避免出现"处理完成 ✓"但点开看到"失败 1 个"的认知错位。
+        try:
+            _enrich_lite_items_with_batch_summary(items, db)
+        except Exception:
+            logger.warning("[操作记录] lite 批次状态聚合回填失败（不阻断主流程）", exc_info=True)
 
         payload = {
             "total": int(total),
@@ -870,6 +1134,17 @@ def get_activity_log_detail(
     if main_row is None:
         main_row = parent.to_dict()
 
+    # 复用 list 接口的"批次父行子任务状态聚合"，保证抽屉头部状态徽章和列表行口径一致。
+    # aggregator 已经在 main_row 是 batch_start 时跑过一次 partial_success/failed 升级，
+    # 但实际生产里子任务 detail 里 batch_id 可能没写（task.metadata 没正确注入等），
+    # aggregator 就匹配不上、status 留在原始 success。这里再做一次基于 ActivityLog.batch_id
+    # 列的轻量回查兜底（拿同一条 SQL 也能补 lite 路径的口径）。
+    try:
+        if isinstance(main_row, dict):
+            _enrich_lite_items_with_batch_summary([main_row], db, force=True)
+    except Exception:
+        logger.debug("[操作记录] detail 批次状态聚合回填失败（不阻断主流程）", exc_info=True)
+
     return {
         "row": main_row,
     }
@@ -945,6 +1220,136 @@ def estimate_activity_logs_compact(
     except Exception as e:
         logger.error(f"估算操作记录压缩收益失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"估算操作记录压缩收益失败: {str(e)}")
+
+
+@app.get("/api/activity-logs/search-status")
+def activity_logs_search_status():
+    """查询当前操作记录搜索引擎状态 + 后台重建进度。
+
+    返回：
+    - fts_enabled: 是否启用 FTS5 虚表
+    - tokenizer: 当前 tokenizer（trigram / unicode61 ... / 空 = 不可用）
+    - trigram_supported: 当前 SQLite 是否支持 trigram tokenizer（≥ 3.34.0）
+    - row_count / fts_row_count: 主表 / FTS 表行数（用于显示「已索引 N / 共 N」）
+    - needs_upgrade: 当前用的不是 trigram 但 SQLite 支持，应该提示用户一键升级
+    - rebuild: 后台重建任务的最新状态（running / copied / total / ok / reason）
+
+    前端：
+    - ActivityHistory 搜索框旁的小指示灯 / Settings 维护卡片
+    """
+    from ..models.database import (
+        activity_logs_fts_status,
+        get_activity_logs_fts_rebuild_state,
+    )
+    info = activity_logs_fts_status()
+    info["rebuild"] = get_activity_logs_fts_rebuild_state()
+    return info
+
+
+@app.post("/api/activity-logs/rebuild-fts")
+def trigger_activity_logs_rebuild_fts(
+    target_tokenizer: Optional[str] = None,
+):
+    """手动触发后台重建操作记录 FTS5 索引。
+
+    场景：用户首次升级到带 trigram 的版本时，老库的 FTS 表还是 unicode61，
+    搜索中文「字幕」「失败」基本命中 0。点这个按钮 → 后台线程跑分批 INSERT
+    重建索引；任务期间搜索接口返回 degraded，但绝不再 fallback LIKE 全表炸弹。
+
+    返回：
+    - started: True 表示新启动了任务；False = 已经在跑（带 reason: already_running）
+    - state: 当前任务快照（running / copied / total / ok / reason）
+    """
+    from ..models.database import (
+        activity_logs_fts_status,
+        trigger_activity_logs_fts_rebuild,
+    )
+    desired = (target_tokenizer or "trigram").strip().lower()
+    info = activity_logs_fts_status()
+    if not info.get("fts_enabled"):
+        raise HTTPException(status_code=400, detail="当前 SQLite 不支持 FTS5，无法重建索引")
+    if desired == "trigram" and not info.get("trigram_supported"):
+        raise HTTPException(status_code=400, detail="当前 SQLite 不支持 trigram tokenizer（需要 ≥ 3.34.0）")
+    return trigger_activity_logs_fts_rebuild(target_tokenizer=desired)
+
+
+@app.get("/api/database/maintenance/estimate")
+def database_maintenance_estimate(
+    older_than_days: int = 30,
+    min_detail_bytes: int = 8192,
+    sample_limit: int = 200,
+):
+    """估算"一键数据库瘦身"能释放多少空间，并返回当前 db / -wal / -shm 文件大小。
+
+    上层 Settings 维护卡片就用这一个接口渲染：
+    - main / wal / shm / total 当前字节
+    - compact 估算（采样外推）
+    - 估算总释放量 = compact 节省 + 当前 -wal 字节
+    """
+    from ..core.database_maintenance_service import estimate as _estimate
+
+    try:
+        return _estimate(
+            older_than_days=older_than_days,
+            min_detail_bytes=min_detail_bytes,
+            sample_limit=sample_limit,
+        )
+    except Exception as e:
+        logger.error(f"数据库瘦身估算失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"数据库瘦身估算失败: {str(e)}")
+
+
+@app.post("/api/database/maintenance/shrink")
+async def database_maintenance_shrink(
+    older_than_days: int = 30,
+    min_detail_bytes: int = 8192,
+):
+    """启动一次数据库瘦身（异步线程，立即返回）。
+
+    串联：
+    1. ``compact_old_activity_logs`` 直到 done
+    2. ``PRAGMA wal_checkpoint(TRUNCATE)``
+    3. ``VACUUM``
+
+    幂等：同一时刻只允许一个瘦身在跑。已经在跑时返回 ``already_running=True``。
+    前端拿到响应后用 ``GET /api/database/maintenance/shrink/status`` 轮询进度。
+    """
+    from ..core.database_maintenance_service import start_shrink
+
+    try:
+        return start_shrink(
+            older_than_days=older_than_days,
+            min_detail_bytes=min_detail_bytes,
+        )
+    except Exception as e:
+        logger.error(f"启动数据库瘦身失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动数据库瘦身失败: {str(e)}")
+
+
+@app.get("/api/database/maintenance/shrink/status")
+def database_maintenance_shrink_status():
+    """读当前瘦身任务的状态机快照。"""
+    from ..core.database_maintenance_service import get_status
+
+    try:
+        return get_status()
+    except Exception as e:
+        logger.error(f"读取数据库瘦身状态失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取数据库瘦身状态失败: {str(e)}")
+
+
+@app.post("/api/database/maintenance/shrink/reset")
+def database_maintenance_shrink_reset():
+    """瘦身完成 / 失败后，前端可以通过这个接口把状态机清回 idle，
+    便于下次进入卡片时不再看到上一次的结果残留。运行中调用无效。"""
+    from ..core.database_maintenance_service import reset_status, get_status
+
+    try:
+        reset_status()
+        return get_status()
+    except Exception as e:
+        logger.error(f"重置数据库瘦身状态失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"重置数据库瘦身状态失败: {str(e)}")
 
 
 @app.post("/api/activity-logs/backfill-auto-import-extract")
@@ -2524,6 +2929,16 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
 
 
+# 全文检索硬上限：保护后端在「用户搜了一个高频词」场景下不耗光内存 / CPU。
+_LOG_SEARCH_TOTAL_SCAN_MB_CAP = 96    # 跨所有文件总和 max 96MB
+_LOG_SEARCH_PER_FILE_SCAN_MB_CAP = 64  # 单文件 max 64MB
+_LOG_SEARCH_LIMIT_MAX = 1000           # 单页返回上限
+_LOG_SEARCH_TOTAL_MATCH_CAP = 50000    # 单次请求最多统计 5w 个匹配（防止扫描全量）
+_LOG_SEARCH_KEYWORD_MIN_LEN = 1
+_LOG_SEARCH_KEYWORD_MAX_LEN = 200
+_LOG_LINE_LENGTH_CAP = 16 * 1024       # 单行字符上限：超长 traceback 截断，避免响应膨胀
+
+
 @app.get("/api/logs/search")
 async def search_logs(
     q: str = '',
@@ -2539,11 +2954,29 @@ async def search_logs(
     - ``levels``：逗号分隔的级别列表，如 ``INFO,ERROR``（空则不过滤）
     - ``limit``：单页返回条数（默认 500，上限 1000）
     - ``cursor``：已跳过的匹配数（默认 0，翻页时用上一次的 next_cursor）
-    - ``max_scan_mb``：单文件扫描窗口上限（默认 16MB，最高 64MB）
+    - ``max_scan_mb``：单文件扫描窗口上限（默认 16MB，硬上限 64MB）
     - ``include_backups``：是否搜索轮转备份（关闭时只扫主日志）
+
+    Phase 6 重构：
+    - **streaming 逐行扫描**：不再一次性 ``decode + splitlines`` 整段（16MB 文本
+      会膨胀成 30~60MB Python str + list of str，跨 6 个文件就上百 MB），
+      改成 ``for raw_bytes in f`` 逐行迭代，每行独立 decode，Python 内存占用
+      恒定在几 KB（单行 buffer + results list）。
+    - **总扫描预算**：跨所有文件 max 96MB，触顶立即停。
+    - **总匹配上限**：单次请求最多统计 5w 个匹配，防止用户搜了高频词时
+      `matched_seen` 无限累加占 CPU。
+    - **单行截断**：超过 16KB 的行（典型 traceback dump）截到 16KB + ``…``，
+      避免少数长行把单页响应撑到几十 MB。
+    - **关键词长度校验**：< 1 字符直接 400，避免空查询全表扫。
 
     响应：``{ logs, total_matched, next_cursor, has_more, scan_bytes, scanned_files }``
     """
+    kw_raw = (q or '').strip()
+    if kw_raw and len(kw_raw) > _LOG_SEARCH_KEYWORD_MAX_LEN:
+        raise HTTPException(status_code=400, detail=f"关键词最多 {_LOG_SEARCH_KEYWORD_MAX_LEN} 字符")
+    if not kw_raw and not levels:
+        raise HTTPException(status_code=400, detail="请提供关键词或日志级别筛选条件")
+
     candidates = _iter_log_files_for_search() if include_backups else []
     if not candidates:
         main = _resolve_main_log_path()
@@ -2559,11 +2992,15 @@ async def search_logs(
         }
 
     try:
-        max_limit = max(50, min(int(limit or 500), 1000))
+        max_limit = max(50, min(int(limit or 500), _LOG_SEARCH_LIMIT_MAX))
         safe_cursor = max(0, int(cursor or 0))
-        kw = q.strip().lower() if q else ''
+        kw = kw_raw.lower()
         lvl_set = {v.strip().upper() for v in levels.split(',') if v.strip()} if levels else set()
-        scan_bytes = max(1024 * 1024, min(int(max_scan_mb or 16), 64) * 1024 * 1024)
+        per_file_scan_bytes = max(
+            1 * 1024 * 1024,
+            min(int(max_scan_mb or 16), _LOG_SEARCH_PER_FILE_SCAN_MB_CAP) * 1024 * 1024,
+        )
+        total_scan_budget = _LOG_SEARCH_TOTAL_SCAN_MB_CAP * 1024 * 1024
 
         def _search():
             results: List[str] = []
@@ -2571,66 +3008,100 @@ async def search_logs(
             has_more = False
             total_scan_bytes = 0
             scanned_files: List[Dict[str, Any]] = []
+            stopped_early = False
 
             for path in candidates:
+                if total_scan_bytes >= total_scan_budget:
+                    stopped_early = True
+                    break
                 try:
                     file_size = os.path.getsize(path)
                 except OSError:
                     continue
-                start_offset = max(0, file_size - scan_bytes)
+
+                # 单文件扫描预算 = min(per_file 上限, 剩余总预算)
+                file_budget = min(per_file_scan_bytes, total_scan_budget - total_scan_bytes)
+                if file_budget <= 0:
+                    stopped_early = True
+                    break
+                start_offset = max(0, file_size - file_budget)
+                file_scan_bytes = 0
+
                 try:
                     with open(path, 'rb') as f:
-                        f.seek(start_offset)
                         if start_offset > 0:
-                            f.readline()
-                        raw_data = f.read(scan_bytes)
+                            f.seek(start_offset)
+                            # 跳过半行：避免命中 partial line
+                            partial = f.readline()
+                            file_scan_bytes += len(partial)
+
+                        # 逐行 streaming：每次只 decode 一行（最多几 KB）
+                        for raw_bytes in f:
+                            file_scan_bytes += len(raw_bytes)
+                            if file_scan_bytes > file_budget:
+                                break
+
+                            # decode + 去尾换行符；用 strip() 兼容 CRLF
+                            try:
+                                line = raw_bytes.decode('utf-8', errors='ignore').rstrip('\r\n').strip()
+                            except Exception:
+                                continue
+                            if not line:
+                                continue
+
+                            if lvl_set:
+                                m = _LOG_LINE_LEVEL_RE.match(line)
+                                lvl = (m.group(2) or m.group(4) or '').upper() if m else 'INFO'
+                                if lvl not in lvl_set:
+                                    continue
+                            if kw and kw not in line.lower():
+                                continue
+
+                            matched_seen += 1
+                            if matched_seen > _LOG_SEARCH_TOTAL_MATCH_CAP:
+                                # 超过统计上限，强制结束
+                                has_more = True
+                                stopped_early = True
+                                break
+                            if matched_seen <= safe_cursor:
+                                continue
+                            if len(results) < max_limit:
+                                # 单行截断保护
+                                if len(line) > _LOG_LINE_LENGTH_CAP:
+                                    line = line[:_LOG_LINE_LENGTH_CAP] + '…'
+                                results.append(line)
+                            else:
+                                has_more = True
+                                break
                 except OSError:
                     continue
-                effective = len(raw_data)
-                total_scan_bytes += effective
+
+                total_scan_bytes += file_scan_bytes
                 scanned_files.append({
                     "name": os.path.basename(path),
-                    "bytes": effective,
+                    "bytes": file_scan_bytes,
                     "total_bytes": file_size,
                 })
-
-                text = raw_data.decode('utf-8', errors='ignore')
-                for raw in text.splitlines():
-                    line = raw.strip()
-                    if not line:
-                        continue
-                    if lvl_set:
-                        m = _LOG_LINE_LEVEL_RE.match(line)
-                        lvl = (m.group(2) or m.group(4) or '').upper() if m else 'INFO'
-                        if lvl not in lvl_set:
-                            continue
-                    if kw and kw not in line.lower():
-                        continue
-                    matched_seen += 1
-                    if matched_seen <= safe_cursor:
-                        continue
-                    if len(results) < max_limit:
-                        results.append(line)
-                    else:
-                        has_more = True
-                        break
-                if has_more:
+                if has_more or stopped_early:
                     break
 
             next_cursor = safe_cursor + len(results)
-            total_estimate = next_cursor + (1 if has_more else 0)
             return {
                 "logs": results,
-                "total_matched": total_estimate,
+                "total_matched": next_cursor + (1 if has_more else 0),
                 "next_cursor": next_cursor,
                 "has_more": has_more,
                 "total_is_estimate": True,
                 "scan_bytes": total_scan_bytes,
                 "scanned_files": scanned_files,
+                "stopped_early": stopped_early,
             }
 
         return await asyncio.to_thread(_search)
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.warning("[日志检索] 失败 q=%r levels=%r: %s", kw_raw, levels, e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"日志检索失败: {str(e)}")
 
 

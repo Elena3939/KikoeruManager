@@ -1840,40 +1840,38 @@ button:disabled {
   transition: all 0.12s ease;
 }
 
-/* 批量重试：emerald 三段渐变 + inset 高光 + 双层 glow */
+/* 批量重试：扁平克制风 → emerald 单色面 + 1px 实色边 + 极浅阴影 */
+/* 取消三段渐变与双层 glow：30px 高的小按钮下多层渐变会被挤压成斜条、"塑料"感明显。 */
 .conflicts-batch-btn.is-emerald {
-  background: linear-gradient(180deg, #34d399 0%, #10b981 55%, #059669 100%);
-  border-color: rgba(4, 120, 87, 0.45);
+  background: #10b981;
+  border-color: #059669;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    0 1px 2px rgba(16, 185, 129, 0.35),
-    0 3px 8px -2px rgba(16, 185, 129, 0.28);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 1px 2px rgba(15, 23, 42, 0.05);
 }
-.conflicts-batch-btn.is-emerald:hover {
-  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 55%, #10b981 100%);
+.conflicts-batch-btn.is-emerald:hover:not(:disabled) {
+  background: #059669;
+  border-color: #047857;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    0 2px 4px rgba(16, 185, 129, 0.5),
-    0 8px 18px -4px rgba(16, 185, 129, 0.5);
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 4px 12px -4px rgba(16, 185, 129, 0.45);
 }
 .conflicts-batch-btn.is-emerald:hover:not(:disabled) :deep(svg) {
   transform: rotate(-180deg);
 }
 
-/* 批量跳过：白底 ghost，与主操作拉开视觉权重 */
+/* 批量跳过：白底 ghost → 保持原风格，与主操作拉开权重 */
 .conflicts-batch-btn.is-slate {
   background: #ffffff;
   color: #475569;
-  border-color: rgba(15, 23, 42, 0.14);
+  border-color: rgba(15, 23, 42, 0.12);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
-.conflicts-batch-btn.is-slate:hover {
+.conflicts-batch-btn.is-slate:hover:not(:disabled) {
   background: #f8fafc;
   color: #0f172a;
-  border-color: rgba(15, 23, 42, 0.24);
-  box-shadow:
-    0 2px 4px rgba(15, 23, 42, 0.06),
-    0 6px 14px -4px rgba(15, 23, 42, 0.08);
+  border-color: rgba(15, 23, 42, 0.22);
+  box-shadow: 0 4px 12px -4px rgba(15, 23, 42, 0.12);
 }
 .conflicts-batch-btn.is-slate:hover:not(:disabled) :deep(svg) {
   transform: translateX(2px);
@@ -2105,98 +2103,85 @@ button:disabled {
   transition: all 0.12s ease;
 }
 
-/* 保留新版：blue 主色（深蓝、专业不游戏感） */
-/* 配色：blue-500 → blue-600 → blue-700。统一加 inset 底部暗影 + text-shadow 增强玻璃质感 */
+/* 主操作按钮统一采用扁平克制风： */
+/* 单色面 + 1px 同色系边 + 极浅 inset 顶高光 + hover 加深一档颜色 + 轻微抬起。 */
+/* 去掉三段渐变 / 双层 glow / 底部 inset 暗影 / text-shadow，避免"塑料"感。 */
+
+/* 保留新版：blue 主色 */
 .conflicts-action-btn.is-primary {
-  background: linear-gradient(180deg, #3b82f6 0%, #2563eb 55%, #1d4ed8 100%);
-  border-color: rgba(29, 78, 216, 0.5);
-  text-shadow: 0 1px 0 rgba(29, 78, 216, 0.28);
+  background: #2563eb;
+  border-color: #1d4ed8;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    inset 0 -1px 0 rgba(29, 78, 216, 0.3),
-    0 1px 2px rgba(37, 99, 235, 0.45),
-    0 4px 12px -2px rgba(37, 99, 235, 0.32);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 2px rgba(15, 23, 42, 0.06);
 }
-.conflicts-action-btn.is-primary:hover {
-  background: linear-gradient(180deg, #60a5fa 0%, #3b82f6 55%, #2563eb 100%);
+.conflicts-action-btn.is-primary:hover:not(:disabled) {
+  background: #1d4ed8;
+  border-color: #1e40af;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.45),
-    inset 0 -1px 0 rgba(29, 78, 216, 0.25),
-    0 2px 4px rgba(37, 99, 235, 0.5),
-    0 10px 22px -4px rgba(37, 99, 235, 0.55);
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 4px 14px -4px rgba(37, 99, 235, 0.5);
 }
 .conflicts-action-btn.is-primary:hover:not(:disabled) :deep(svg) {
-  transform: scale(1.1) rotate(-3deg);
+  transform: scale(1.08) rotate(-3deg);
 }
 
-/* 重试：emerald 翠绿（截图里未出现，保留原色但补上和其他主操作一致的玻璃质感：底部 inset 暗影 + text-shadow） */
+/* 重试：emerald */
 .conflicts-action-btn.is-emerald {
-  background: linear-gradient(180deg, #34d399 0%, #10b981 55%, #059669 100%);
-  border-color: rgba(4, 120, 87, 0.5);
-  text-shadow: 0 1px 0 rgba(4, 120, 87, 0.28);
+  background: #10b981;
+  border-color: #059669;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.36),
-    inset 0 -1px 0 rgba(4, 120, 87, 0.3),
-    0 1px 2px rgba(16, 185, 129, 0.45),
-    0 4px 12px -2px rgba(16, 185, 129, 0.3);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 2px rgba(15, 23, 42, 0.06);
 }
-.conflicts-action-btn.is-emerald:hover {
-  background: linear-gradient(180deg, #6ee7b7 0%, #34d399 55%, #10b981 100%);
+.conflicts-action-btn.is-emerald:hover:not(:disabled) {
+  background: #059669;
+  border-color: #047857;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.45),
-    inset 0 -1px 0 rgba(4, 120, 87, 0.25),
-    0 2px 4px rgba(16, 185, 129, 0.5),
-    0 10px 22px -4px rgba(16, 185, 129, 0.5);
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 4px 14px -4px rgba(16, 185, 129, 0.5);
 }
 .conflicts-action-btn.is-emerald:hover:not(:disabled) :deep(svg) {
   transform: rotate(-180deg);
 }
 
-/* 跳过：次操作 → 浅灰微渐变 ghost（修复纯白 ghost 在白底卡片头部上几乎隐形的对比度问题） */
+/* 跳过：白底 ghost，与主操作拉开视觉权重 */
 .conflicts-action-btn.is-slate {
-  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+  background: #ffffff;
   color: #475569;
-  border-color: rgba(15, 23, 42, 0.18);
+  border-color: rgba(15, 23, 42, 0.12);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 1px 2px rgba(15, 23, 42, 0.05),
-    0 2px 6px -1px rgba(15, 23, 42, 0.06);
+    0 1px 2px rgba(15, 23, 42, 0.04);
 }
-.conflicts-action-btn.is-slate:hover {
-  background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+.conflicts-action-btn.is-slate:hover:not(:disabled) {
+  background: #f8fafc;
   color: #0f172a;
-  border-color: rgba(15, 23, 42, 0.3);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 2px 4px rgba(15, 23, 42, 0.07),
-    0 10px 22px -4px rgba(15, 23, 42, 0.12);
+  border-color: rgba(15, 23, 42, 0.22);
+  box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.14);
 }
 .conflicts-action-btn.is-slate:hover:not(:disabled) :deep(svg) {
   transform: translateX(3px);
 }
 
-/* 合并：sober amber（amber-500 → amber-600 → amber-700，比原来 400/500/600 更深沉，搭深蓝主操作不刺眼） */
+/* 合并：sober amber */
 .conflicts-action-btn.is-amber {
-  background: linear-gradient(180deg, #f59e0b 0%, #d97706 55%, #b45309 100%);
-  border-color: rgba(146, 64, 14, 0.5);
+  background: #d97706;
+  border-color: #b45309;
   color: #ffffff;
-  text-shadow: 0 1px 0 rgba(146, 64, 14, 0.32);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    inset 0 -1px 0 rgba(146, 64, 14, 0.3),
-    0 1px 2px rgba(217, 119, 6, 0.45),
-    0 4px 12px -2px rgba(217, 119, 6, 0.32);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 2px rgba(15, 23, 42, 0.06);
 }
-.conflicts-action-btn.is-amber:hover {
-  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 55%, #d97706 100%);
+.conflicts-action-btn.is-amber:hover:not(:disabled) {
+  background: #b45309;
+  border-color: #92400e;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.45),
-    inset 0 -1px 0 rgba(146, 64, 14, 0.25),
-    0 2px 4px rgba(217, 119, 6, 0.5),
-    0 10px 22px -4px rgba(217, 119, 6, 0.55);
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 4px 14px -4px rgba(217, 119, 6, 0.5);
 }
 .conflicts-action-btn.is-amber:hover:not(:disabled) :deep(svg) {
-  transform: scale(1.1) rotate(8deg);
+  transform: scale(1.08) rotate(8deg);
 }
 
 /* 详情正文：透明，让外层 pane 的半透明白透出来 */

@@ -7,17 +7,38 @@
       title="操作记录"
       subtitle="字幕、解压、入库、删除、ASMR 同步等任务的完整审计"
     >
-      <div class="page-head-search">
-        <Search :size="14" :stroke-width="2.4" class="page-head-search-icon" />
-        <input
-          v-model="filters.q"
-          class="page-head-search-input"
-          placeholder="搜索 RJ、摘要、路径、任务 ID…"
-          @keyup.enter="applyFilters"
-        />
-        <button v-if="filters.q" class="page-head-search-clear" type="button" @click="onClearSearch">
-          <X :size="13" :stroke-width="2.6" />
-        </button>
+      <div class="page-head-search-wrap">
+        <div class="page-head-search">
+          <Search :size="14" :stroke-width="2.4" class="page-head-search-icon" />
+          <input
+            v-model="filters.q"
+            class="page-head-search-input"
+            :placeholder="searchPlaceholder"
+            @input="onSearchInput"
+            @keyup.enter="applySearchImmediately"
+          />
+          <!-- 搜索期间右侧 spinner 提示「正在搜」，比之前页面级遮罩更明确 -->
+          <span v-if="loading && filters.q" class="page-head-search-spinner">
+            <Loader2 :size="13" :stroke-width="2.6" class="animate-spin" />
+          </span>
+          <button v-if="filters.q" class="page-head-search-clear" type="button" @click="onClearSearch">
+            <X :size="13" :stroke-width="2.6" />
+          </button>
+        </div>
+        <!-- 搜索引擎状态条：只在「降级 / 需升级 / 重建中」时显示，平时隐藏不打扰 -->
+        <div v-if="searchEngineHint" class="search-engine-hint" :class="`tone-${searchEngineHint.tone}`">
+          <component :is="searchEngineHint.icon" :size="11" :stroke-width="2.4" class="hint-icon" />
+          <span class="hint-text">{{ searchEngineHint.text }}</span>
+          <button
+            v-if="searchEngineHint.action"
+            class="hint-action"
+            type="button"
+            :disabled="searchStatus.rebuild?.running"
+            @click="searchEngineHint.action"
+          >
+            {{ searchEngineHint.actionLabel }}
+          </button>
+        </div>
       </div>
       <button
         class="page-head-btn ghost btn-archive"
@@ -390,6 +411,8 @@ import {
   RefreshCw,
   Scissors,
   Search,
+  ShieldAlert,
+  Sparkles,
   Tag,
   Upload,
   Users,
@@ -398,6 +421,7 @@ import {
 } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { useActivityHistoryLite } from '../composables/useActivityHistoryLite'
+import { isPurelyProblemListPartial } from '../composables/useActivityDetailModels'
 import api from '../api'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
@@ -417,16 +441,132 @@ const {
   stats,
   statsDays,
   filters,
+  searchBackend,
+  searchStatus,
   loadStats,
   loadList,
   loadAll,
   loadDetail,
   invalidateDetail,
+  loadSearchStatus,
+  rebuildFts,
   applyFilters,
   onPageSizeChange,
   shouldSoftRefresh,
   handleVisibilityRefresh
 } = useActivityHistoryLite()
+
+// ==================== 搜索框：debounce + loading 指示 + 状态徽章 ====================
+// 之前用户连续在搜索框输入时，每次回车都直接发请求，老请求未取消、后端 LIKE 全表扫又
+// 把内存炸了。现在策略：
+//   1) input 触发 350ms debounce 自动搜（v-model 已绑值，函数只负责发请求）
+//   2) Enter 立即清掉 debounce timer 直接搜，给老用户回车肌肉记忆兜底
+//   3) Composable 层 AbortController 取消上一未完请求；后端再也不会跌进 LIKE 炸弹
+//   4) 搜索框右侧 spinner + 状态徽章（unicode61 / 升级到 trigram / 重建中）
+const SEARCH_DEBOUNCE_MS = 350
+let _searchDebounceTimer = null
+
+function onSearchInput() {
+  if (_searchDebounceTimer) {
+    clearTimeout(_searchDebounceTimer)
+    _searchDebounceTimer = null
+  }
+  _searchDebounceTimer = setTimeout(() => {
+    _searchDebounceTimer = null
+    applyFilters()
+  }, SEARCH_DEBOUNCE_MS)
+}
+
+function applySearchImmediately() {
+  if (_searchDebounceTimer) {
+    clearTimeout(_searchDebounceTimer)
+    _searchDebounceTimer = null
+  }
+  applyFilters()
+}
+
+const searchPlaceholder = computed(() => {
+  if (searchStatus.value?.rebuild?.running) {
+    return '索引重建中…'
+  }
+  return '搜索 RJ、摘要、路径、任务 ID…'
+})
+
+// 搜索引擎状态徽章。返回 null 表示「不显示」（默认状态：trigram 已就绪 + 没在重建）。
+const searchEngineHint = computed(() => {
+  const st = searchStatus.value || {}
+  const rb = st.rebuild || {}
+  const backend = String(searchBackend.value || '')
+
+  // 优先级 1：正在重建索引
+  if (rb.running) {
+    const total = Number(rb.total || 0)
+    const copied = Number(rb.copied || 0)
+    const pct = total > 0 ? Math.min(100, Math.round((copied / total) * 100)) : 0
+    return {
+      tone: 'info',
+      icon: Loader2,
+      text: `搜索引擎升级中 ${copied.toLocaleString('zh-CN')} / ${total.toLocaleString('zh-CN')}（${pct}%）`,
+      action: null,
+      actionLabel: ''
+    }
+  }
+
+  // 优先级 2：搜索失败（FTS 异常 / 不可用）
+  if (backend && (backend === 'unavailable' || backend.endsWith('_error'))) {
+    return {
+      tone: 'danger',
+      icon: ShieldAlert,
+      text: backend === 'unavailable' ? '搜索引擎不可用' : '搜索引擎异常，请重建索引',
+      action: () => onClickRebuildFts(),
+      actionLabel: '重建'
+    }
+  }
+
+  // 优先级 3：可升级到 trigram（unicode61 → trigram）
+  if (st.needs_upgrade && st.fts_enabled && st.trigram_supported) {
+    return {
+      tone: 'warn',
+      icon: Sparkles,
+      text: '中文搜索可显著提升：升级到 Trigram 索引',
+      action: () => onClickRebuildFts(),
+      actionLabel: '一键升级'
+    }
+  }
+
+  // 默认隐藏
+  return null
+})
+
+let _searchStatusPollTimer = null
+function startSearchStatusPolling() {
+  // 重建中每 1.5s 拉一次进度，结束后再拉一次状态切换 hint
+  if (_searchStatusPollTimer) return
+  _searchStatusPollTimer = setInterval(async () => {
+    await loadSearchStatus()
+    if (!searchStatus.value?.rebuild?.running) {
+      stopSearchStatusPolling()
+    }
+  }, 1500)
+}
+function stopSearchStatusPolling() {
+  if (_searchStatusPollTimer) {
+    clearInterval(_searchStatusPollTimer)
+    _searchStatusPollTimer = null
+  }
+}
+
+async function onClickRebuildFts() {
+  try {
+    await rebuildFts('trigram')
+    ElMessage.success('已开始后台重建搜索引擎索引')
+    await loadSearchStatus()
+    startSearchStatusPolling()
+  } catch (err) {
+    const detail = err?.response?.data?.detail || err?.message || '重建失败'
+    ElMessage.error(`无法启动重建：${detail}`)
+  }
+}
 
 // ==================== 配置 / 常量 ====================
 const categoryOptions = [
@@ -463,7 +603,10 @@ const categoryConfigs = {
   asmr_sync: { icon: RefreshCw, label: 'ASMR 同步', tone: 'cyan' },
   upload: { icon: Upload, label: '库存上传', tone: 'sky' },
   circle_completion: { icon: Users, label: '社团补全', tone: 'blue' },
-  email_watcher: { icon: Mail, label: '邮件监听', tone: 'pink' },
+  // pink/rose 这两个暖色会让邮件监听的 chip 看起来像失败 / 删除警告。
+  // 换成 purple 中紫：与字幕系的 violet/fuchsia/indigo 在 chip 背景色上能区分，
+  // 也是邮箱类产品的传统同调色（不会让人联想错误状态）。
+  email_watcher: { icon: Mail, label: '邮件监听', tone: 'purple' },
   default: { icon: Tag, label: '其他', tone: 'slate' }
 }
 
@@ -560,6 +703,31 @@ const PARTIAL_SUCCESS_KEYWORDS = [
 function effectiveStatus(row) {
   if (!row) return ''
   const raw = String(row.status || '')
+
+  // 批次父行的子任务状态感知（lite 路径专用）：
+  // 后端 _enrich_lite_items_with_batch_summary 把同 batch_id 的子任务 failed/success
+  // /partial_success 计数挂到父行。当父行写日志时 status="success"（创建任务那一刻
+  // 成功），但子任务实际有失败 / 部分成功时，把状态升级为 partial_success / failed，
+  // 避免出现"批次完成 ✓"但点开看到子任务失败 / 加入问题作品列表的认知错位。
+  // 注意只升级 success/completed/partial_success 这三种"看起来 OK"的态；
+  // 父行本身已经是 failed/cancelled/error 等"看起来不 OK"的态不动它，
+  // 留给 isRowRecovered 的"已修复"逻辑去处理。
+  if (raw === 'success' || raw === 'completed' || raw === 'partial_success') {
+    const failedChildren = Number(row.child_failed_count || 0)
+    const partialChildren = Number(row.child_partial_count || 0)
+    const successChildren = Number(row.child_success_count || 0)
+    if (failedChildren > 0) {
+      // 有失败子任务：还有成功 / 部分成功 → 部分成功；全失败 → 失败
+      const okChildren = successChildren + partialChildren
+      return okChildren > 0 ? 'partial_success' : 'failed'
+    }
+    if (partialChildren > 0) {
+      // 没失败但子任务里有 partial_success（如"加入问题作品列表"），
+      // 父行也应该跟着升级为 partial_success，避免黄变绿。
+      return 'partial_success'
+    }
+  }
+
   if (raw !== 'success') return raw
   const summary = String(row.summary || '')
   if (PARTIAL_SUCCESS_KEYWORDS.some(kw => summary.includes(kw))) return 'partial_success'
@@ -593,11 +761,12 @@ function isRowRecovered(row) {
 }
 
 // 分类标签 tone → Tailwind 配色（柔和底色 + 内嵌细 ring，避免后台 pill 感）
-// 14 种 tone 让 14 个 category 各占一色（含 default = slate），新增 fuchsia / teal /
-// lime / orange / pink 5 个，避免之前 sky / indigo / amber / emerald / slate 撞色。
+// 15 种 tone 让所有 category 各占一色（含 default = slate），避免与状态色（success/warn/danger）撞色。
+// pink 留着作未来备选，但不再默认给邮件监听用（暖红容易被误读为失败）。
 const CATEGORY_TONE_CLASS = {
   indigo: 'bg-indigo-50 text-indigo-700 ring-indigo-200/60',
   violet: 'bg-violet-50 text-violet-700 ring-violet-200/60',
+  purple: 'bg-purple-50 text-purple-700 ring-purple-200/60',
   fuchsia: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200/60',
   amber: 'bg-amber-50 text-amber-700 ring-amber-200/60',
   orange: 'bg-orange-50 text-orange-700 ring-orange-200/60',
@@ -1100,12 +1269,18 @@ function humanAction(row) {
   }
   if (cat === 'auto_import') {
     if (status === 'success') return '入库完成'
-    if (status === 'partial_success') return '部分入库'
+    if (status === 'partial_success') {
+      // 真有失败子任务才叫"部分入库"；纯转入问题作品 / 软失败 → "转入问题作品"
+      return isPurelyProblemListPartial(row) ? '转入问题作品' : '部分入库'
+    }
     if (status === 'failed') return '入库失败'
     if (status === 'incomplete') return '未正常结束'
   }
   if (cat === 'process_existing') {
-    return status === 'success' ? '处理完成' : '处理失败'
+    if (status === 'success') return '处理完成'
+    if (status === 'partial_success') return '部分处理'
+    if (status === 'failed') return '处理失败'
+    return statusLabel(status)
   }
   if (cat === 'asmr_sync') {
     if (action === 'session_completed' || status === 'success') return 'ASMR 下载完成'
@@ -1257,9 +1432,14 @@ async function onCompactClick() {
 // ==================== 生命周期 / 软刷新 ====================
 let visibilityHandler = null
 
-onMounted(() => {
+onMounted(async () => {
   loadAll()
   refreshCompactEstimate()
+  // 加载搜索引擎状态：用于显示徽章 + 升级提示。如果发现已经在重建则启动进度轮询。
+  await loadSearchStatus()
+  if (searchStatus.value?.rebuild?.running) {
+    startSearchStatusPolling()
+  }
   if (typeof document !== 'undefined') {
     visibilityHandler = () => handleVisibilityRefresh()
     document.addEventListener('visibilitychange', visibilityHandler)
@@ -1275,6 +1455,13 @@ onBeforeUnmount(() => {
     document.removeEventListener('visibilitychange', visibilityHandler)
     visibilityHandler = null
   }
+  // 清掉 debounce 定时器，避免组件销毁后仍触发 applyFilters
+  if (_searchDebounceTimer) {
+    clearTimeout(_searchDebounceTimer)
+    _searchDebounceTimer = null
+  }
+  // 清掉搜索引擎状态轮询定时器
+  stopSearchStatusPolling()
   // 兜底：组件销毁时清掉可能残留的抽屉拖拽监听
   document.removeEventListener('mousemove', onDrawerResizeMove)
   if (typeof document !== 'undefined' && document.body) {
@@ -1284,7 +1471,14 @@ onBeforeUnmount(() => {
 })
 
 watch(() => filters.q, (val, old) => {
-  if (val === '' && old !== '') applyFilters()
+  // 清空搜索：立即触发 applyFilters，不再等 debounce
+  if (val === '' && old !== '') {
+    if (_searchDebounceTimer) {
+      clearTimeout(_searchDebounceTimer)
+      _searchDebounceTimer = null
+    }
+    applyFilters()
+  }
 })
 </script>
 
@@ -1318,13 +1512,22 @@ watch(() => filters.q, (val, old) => {
 /* 页头现在走共享组件 components/common/AppPageHeader.vue，这里只保留页头右侧 slot 里的搜索框 + 按钮内嵌样式 */
 
 /* 头部内嵌搜索框 */
+.page-head-search-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  /* 让 hint 和搜索框对齐相同最大宽度，且不挤压旁边按钮 */
+  min-width: 280px;
+}
+
 .page-head-search {
   position: relative;
   display: inline-flex;
   align-items: center;
   width: 280px;
   height: 36px;
-  padding: 0 36px 0 34px;
+  padding: 0 56px 0 34px;
   border-radius: 10px;
   background: #fff;
   border: 1px solid rgba(15, 23, 42, 0.12);
@@ -1357,6 +1560,17 @@ watch(() => filters.q, (val, old) => {
   color: rgba(15, 23, 42, 0.4);
 }
 
+/* 搜索期间右上角 spinner（在 clear 按钮左边） */
+.page-head-search-spinner {
+  position: absolute;
+  right: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(15, 23, 42, 0.42);
+  pointer-events: none;
+}
+
 .page-head-search-clear {
   position: absolute;
   right: 8px;
@@ -1376,6 +1590,90 @@ watch(() => filters.q, (val, old) => {
 .page-head-search-clear:hover {
   background: rgba(15, 23, 42, 0.06);
   color: #0f172a;
+}
+
+/* 搜索引擎状态徽章：低视觉权重，hairline 边 + 软底色 + 11px 紧凑 */
+.search-engine-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 14px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-engine-hint .hint-icon {
+  flex-shrink: 0;
+}
+
+.search-engine-hint .hint-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-engine-hint .hint-action {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 6px;
+  transition: background-color 0.18s ease, opacity 0.18s ease;
+}
+
+.search-engine-hint .hint-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.search-engine-hint.tone-info {
+  color: #0369a1;
+  background: rgba(186, 230, 253, 0.45);
+  border-color: rgba(125, 211, 252, 0.55);
+}
+
+.search-engine-hint.tone-info .hint-action {
+  color: #0369a1;
+}
+
+.search-engine-hint.tone-info .hint-action:hover:not(:disabled) {
+  background: rgba(125, 211, 252, 0.35);
+}
+
+.search-engine-hint.tone-warn {
+  color: #b45309;
+  background: rgba(254, 243, 199, 0.65);
+  border-color: rgba(252, 211, 77, 0.55);
+}
+
+.search-engine-hint.tone-warn .hint-action {
+  color: #b45309;
+}
+
+.search-engine-hint.tone-warn .hint-action:hover:not(:disabled) {
+  background: rgba(252, 211, 77, 0.32);
+}
+
+.search-engine-hint.tone-danger {
+  color: #b91c1c;
+  background: rgba(254, 226, 226, 0.65);
+  border-color: rgba(248, 113, 113, 0.5);
+}
+
+.search-engine-hint.tone-danger .hint-action {
+  color: #b91c1c;
+}
+
+.search-engine-hint.tone-danger .hint-action:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.25);
 }
 
 /* 操作按钮（对齐 ASMRSync.vue / LibraryBackup.vue page-head-btn 规范） */

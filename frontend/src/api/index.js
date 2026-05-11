@@ -138,8 +138,11 @@ export const systemApi = {
 }
 
 export const activityLogApi = {
-  list: async (params = {}) => {
-    const response = await apiClient.get('/activity-logs', { params })
+  // 第二参数支持 { signal } 透传给 axios，配合 AbortController 取消未完成的搜索请求
+  list: async (params = {}, options = {}) => {
+    const config = { params }
+    if (options.signal) config.signal = options.signal
+    const response = await apiClient.get('/activity-logs', config)
     return response.data
   },
 
@@ -170,6 +173,48 @@ export const activityLogApi = {
 
   logFilterDelete: async (payload = {}) => {
     const response = await apiClient.post('/activity-logs/filter-delete', payload)
+    return response.data
+  },
+
+  // 搜索引擎状态：FTS5 是否启用、tokenizer、是否需要升级、后台重建进度
+  searchStatus: async () => {
+    const response = await apiClient.get('/activity-logs/search-status')
+    return response.data
+  },
+
+  // 触发后台重建 FTS5 索引（默认目标 trigram）
+  rebuildFts: async (targetTokenizer = 'trigram') => {
+    const response = await apiClient.post('/activity-logs/rebuild-fts', null, {
+      params: { target_tokenizer: targetTokenizer }
+    })
+    return response.data
+  }
+}
+
+export const databaseMaintenanceApi = {
+  // 估算一键瘦身能释放多少空间 + 返回当前 db/-wal/-shm 文件大小快照
+  estimate: async (params = {}) => {
+    const response = await apiClient.get('/database/maintenance/estimate', { params })
+    return response.data
+  },
+
+  // 启动一次瘦身。幂等：已在跑时返回 already_running=true
+  startShrink: async (params = {}) => {
+    // VACUUM 可能跑几分钟，给一个长一点的请求超时（启动接口本身只是丢线程，会立刻返回，
+    // 但万一进程慢，留 120s 余量）
+    const response = await apiClient.post('/database/maintenance/shrink', null, { params, timeout: 120000 })
+    return response.data
+  },
+
+  // 轮询瘦身状态
+  shrinkStatus: async () => {
+    const response = await apiClient.get('/database/maintenance/shrink/status')
+    return response.data
+  },
+
+  // 把 done / error 状态清回 idle（运行中调用无效）
+  shrinkReset: async () => {
+    const response = await apiClient.post('/database/maintenance/shrink/reset')
     return response.data
   }
 }

@@ -113,12 +113,17 @@ class ConflictResolutionService:
                     }
                 break
 
+        # 兜底分支：路径不在任何已配置库存内，按本地处理。
+        # 旧实现把 raw_path.startswith("/") 当作远程信号，会把 docker 容器内的
+        # /input1/RJ01393915.zip 这类容器内本地路径误判为远程，导致 _resolve_stats
+        # 走 _describe_remote_path_stats(library_id=None) 直接返回 missing，
+        # 前端"压缩包大小 / 创建时间"永远显示 "-"。
         return {
             "library_id": None,
             "library_type": "local",
             "library_name": "",
             "path": raw_path,
-            "is_remote": raw_path.startswith("/"),
+            "is_remote": False,
         }
 
     # 单次本地目录 stat 的硬上限：
