@@ -589,6 +589,8 @@
 
       <el-table
 
+        v-if="!isMobileViewport"
+
         :key="libraryTableKey"
 
         ref="tableRef"
@@ -670,6 +672,31 @@
         </el-table-column>
 
       </el-table>
+
+      <!--
+        移动端 (≤640) 卡片视图：复用桌面端的 row 状态计算函数与 click / contextmenu handler，
+        多选 / sort 留给桌面端 el-table，这里只做单点 click + 长按 / ⋮ 触发右键菜单。
+      -->
+      <div v-else class="lib-mobile-list">
+        <LibraryMobileCard
+          v-for="row in files"
+          :key="libraryRowKey(row)"
+          :row="row"
+          :icon-component="getLibraryRowIconComponent(row)"
+          :icon-class="getLibraryRowIconClass(row)"
+          :name-html="renderLibrarySearchHighlight(row.name)"
+          :size-text="formatRowSize(row)"
+          :time-text="formatDate(row.unzip_time || row.modified_time)"
+          :search-source-label="isSearchResultRow(row) ? getSearchResultLibraryLabel(row) : ''"
+          :is-located="Boolean(locatedLibraryPath && row?.path === locatedLibraryPath)"
+          :is-context-active="Boolean(libraryRowContextMenu.visible && libraryRowContextMenu.row?.path && row?.path === libraryRowContextMenu.row.path)"
+          :is-operating="isLibraryRowOperating(row)"
+          @card-click="onMobileCardClick"
+          @card-contextmenu="onMobileCardContextMenu"
+          @menu-click="onMobileCardMenuClick"
+        />
+        <div v-if="!files.length" class="lib-mobile-empty">暂无文件</div>
+      </div>
 
       <LibraryRowContextMenu
 
@@ -1410,11 +1437,17 @@ import LibraryIndexBadge from '../components/library/LibraryIndexBadge.vue'
 
 import LibrarySearchBox from '../components/library/LibrarySearchBox.vue'
 
+import LibraryMobileCard from '../components/library/LibraryMobileCard.vue'
+
 import AppDropdown from '../components/common/AppDropdown.vue'
 
 import LibrarySearchOverlay from '../components/library/LibrarySearchOverlay.vue'
 
 import SubtitleWorkbenchStage from '../components/library/subtitle-workbench/SubtitleWorkbenchStage.vue'
+
+import { useViewport } from '../composables/useViewport'
+
+const { isMobile: isMobileViewport } = useViewport()
 
 
 
@@ -12831,6 +12864,65 @@ function handleLibraryRowClick (row, _column, event) {
 }
 
 
+/* ============================================================
+ * 移动端卡片视图（LibraryMobileCard）的事件桥接
+ * - card-click   → 复用 handleLibraryRowClick：目录进入 / 搜索定位 / 普通文件无 op
+ * - card-contextmenu → 复用 handleLibraryRowContextMenu：原生右键 / 触屏长按
+ * - menu-click   → 点击右上角 ⋮：在按钮位置打开 LibraryRowContextMenu
+ * 这些函数桌面端不会被触发（el-table 自己接 row-click / row-contextmenu）。
+ * ============================================================ */
+
+function onMobileCardClick ({ row, event }) {
+
+  // 移动端卡片 click 时优先把搜索结果定位到正确位置
+  if (row && isSearchResultRow(row) && !row.is_directory) {
+
+    locateLibrarySearchResult(row)
+
+    return
+
+  }
+
+  handleLibraryRowClick(row, undefined, event)
+
+}
+
+
+function onMobileCardContextMenu ({ row, event }) {
+
+  if (!row || !event) return
+
+  handleLibraryRowContextMenu(row, undefined, event)
+
+}
+
+
+function onMobileCardMenuClick ({ row, event }) {
+
+  if (!row) return
+
+  if (event) {
+
+    event.preventDefault?.()
+
+    event.stopPropagation?.()
+
+  }
+
+  // 用 ⋮ 按钮的位置作为菜单坐标；fallback 到屏幕中心
+  const fallbackX = typeof window !== 'undefined' ? window.innerWidth / 2 : 0
+
+  const fallbackY = typeof window !== 'undefined' ? window.innerHeight / 2 : 0
+
+  const x = Number.isFinite(event?.clientX) && event.clientX > 0 ? event.clientX : fallbackX
+
+  const y = Number.isFinite(event?.clientY) && event.clientY > 0 ? event.clientY : fallbackY
+
+  openLibraryRowContextMenuAtPosition(row, x, y)
+
+}
+
+
 function handleLibraryPageClickCloseContextMenu (event) {
 
   if (!libraryRowContextMenu.value.visible) return
@@ -17315,6 +17407,186 @@ function statsStatusTextDisplay (stats) {
 
   .filter-delete-floating-card { left: 12px; right: 12px; bottom: 12px; width: auto; }
 
+}
+
+/* ============================================================
+ * Phase 2.5 Library 移动端适配（≤1024 / ≤640）
+ * 桌面零改动：所有规则严格闭合在 @media 内
+ * ≤1024  →  lib-info-strip 已有 ≤980 stack，这里收紧 lib-card-header 工具栏
+ * ≤640   →  整页 padding 大幅压缩；卡片视图 v-else 渲染；表格在桌面端依然完整
+ * ============================================================ */
+
+/* 移动端卡片列表容器（v-else 分支） */
+.lib-mobile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.lib-mobile-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: rgb(148 163 184);
+  font-size: 12.5px;
+  border: 1px dashed rgb(226 232 240);
+  border-radius: 12px;
+  background: rgb(248 250 252);
+}
+
+@media (max-width: 1024px) {
+  .lib-card-header {
+    gap: 10px;
+  }
+  .lib-card-title {
+    flex: 1 1 100%;
+    font-size: 14px;
+  }
+  .lib-toolbar {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  /* 外容器 padding 收紧 */
+  .library {
+    max-width: none;
+    padding: 0 !important;
+  }
+  .main-card {
+    border-radius: 14px;
+  }
+  .main-card :deep(.el-card__header) {
+    padding: 12px 12px 0;
+  }
+  .main-card :deep(.el-card__body) {
+    padding: 10px 12px 14px;
+  }
+  /*
+   * 顶部信息条整块隐藏：库名 / 健康状态 / 索引徽章已经在 AppPageHeader 右侧 chip 区展示，
+   * 移动端再保留一个独立卡片重复信息只是浪费一屏空间。
+   * 桌面端 (>640) 信息条照常显示。
+   */
+  .lib-info-strip { display: none !important; }
+
+  /*
+   * 工具栏布局策略：
+   * 一行 1：库下拉（独占整行）
+   * 一行 2：搜索框（独占整行）
+   * 一行 3+：所有"图标按钮"按 2 列 grid 平分（刷新 / 统计 / 批量操作 等）
+   *
+   * 用 :nth-child 把 AppDropdown(库下拉) 和 LibrarySearchBox(搜索) 各自 grid-column 占整行；
+   * 其他兄弟元素按 grid 流自动 2 列分布。
+   */
+  .lib-card-header { flex-direction: column; align-items: stretch; gap: 8px; }
+  .lib-card-title { display: none; }
+
+  .lib-toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    align-items: stretch;
+  }
+  /* 库下拉（AppDropdown 渲染为 .app-dd-root，工具栏第一个） */
+  .lib-toolbar > :deep(.app-dd-root) {
+    grid-column: 1 / -1;
+  }
+  /* 搜索框：LibrarySearchBox 根元素 class 是 .lib-search-box（已确认） */
+  .lib-toolbar > :deep(.lib-search-box) {
+    grid-column: 1 / -1;
+    width: 100%;
+    max-width: none;
+  }
+  /* 工具栏内 button 默认占 1 个 grid 单元（自动 2 列流）*/
+  .lib-toolbar > button {
+    width: 100%;
+    min-width: 0;
+    height: 36px;
+    padding: 0 10px !important;
+    font-size: 12px;
+  }
+  /* AppDropdown trigger 撑满当前 grid 单元 */
+  .lib-toolbar :deep(.app-dd-trigger) {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  /* path-toolbar：路径条 + 范围切换 + 批量操作。同 grid 2 列布局。 */
+  .path-toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    padding: 8px 10px;
+    gap: 6px;
+    border-radius: 12px;
+  }
+  .path-toolbar-left {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .path-toolbar-right {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 6px;
+  }
+  /* path-toolbar-right 内每个按钮自动撑满 grid 单元 */
+  .path-toolbar-right > .toolbar-scope-toggle,
+  .path-toolbar-right > .lib-batch-action-btn,
+  .path-toolbar-right > button {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+  }
+  /* 范围切换（全部 / 当前目录）独占整行更易点 */
+  .path-toolbar-right > .toolbar-scope-toggle {
+    grid-column: 1 / -1;
+  }
+  /* 路径展示文字尽可能换行 */
+  .path-text { word-break: break-all; }
+
+  /* el-pagination 简化：隐藏 sizes / jumper，只留 prev / pager / next 与总数 */
+  .pagination-wrap {
+    margin-top: 12px;
+    justify-content: center;
+  }
+  .pagination-wrap :deep(.el-pagination__sizes),
+  .pagination-wrap :deep(.el-pagination__jump) {
+    display: none !important;
+  }
+  .pagination-wrap :deep(.el-pagination__total) {
+    margin-right: 6px;
+    font-size: 11px;
+  }
+  /* batch-bar 内按钮 2 列平分，与 path-toolbar 风格一致 */
+  .batch-bar {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 8px 10px;
+  }
+  .batch-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+  }
+  .batch-actions > .el-button,
+  .batch-actions > button {
+    width: 100%;
+    min-width: 0;
+    font-size: 12px;
+    padding: 0 8px !important;
+    justify-content: center;
+  }
+  /* 卡片列表上下间距 */
+  .lib-mobile-list { gap: 8px; margin-top: 6px; }
 }
 
 </style>
