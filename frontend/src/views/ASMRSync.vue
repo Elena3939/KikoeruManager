@@ -499,12 +499,13 @@
     </Transition>
 
     <!-- Preview Dialog -->
-    <el-dialog v-model="previewDialogVisible" title="下载预览" width="900px" class="rounded-2xl">
+    <!-- mobile-full-dialog 类让 ≤640 自动 100vw/100dvh，桌面 width=900px 不变 -->
+    <el-dialog v-model="previewDialogVisible" title="下载预览" width="900px" class="rounded-2xl mobile-full-dialog">
       <div v-if="previewLoading" class="flex items-center justify-center py-10">
         <AppLoadingAnimation label="正在获取作品信息..." :size="132" :min-height="180" />
       </div>
       <div v-else-if="previewData" class="space-y-5">
-        <div class="grid grid-cols-3 gap-4">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
             <div class="text-xs text-slate-500 mb-1">请求 RJ 号</div>
             <div class="font-mono font-semibold text-slate-900">{{ previewData.rjcode }}</div>
@@ -580,7 +581,8 @@
     </el-dialog>
 
     <!-- Enhanced Session Drawer -->
-    <el-drawer v-model="enhancedSessionDrawerVisible" size="55%" :title="enhancedSessionDetail?.rjcode ? `${enhancedSessionDetail.rjcode} 会话详情` : '会话详情'">
+    <!-- ≤640 抽屉占满整屏，桌面端保留 55% 侧滑 -->
+    <el-drawer v-model="enhancedSessionDrawerVisible" :size="isMobileViewport ? '100%' : '55%'" :title="enhancedSessionDetail?.rjcode ? `${enhancedSessionDetail.rjcode} 会话详情` : '会话详情'">
       <div v-app-loading="{ loading: enhancedSessionDetailLoading, text: '正在加载增强下载详情...', size: 124 }">
         <template v-if="enhancedSessionDetail">
           <div class="flex flex-wrap gap-2 mb-4">
@@ -589,7 +591,7 @@
             <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">{{ getUploadModeLabel(enhancedSessionDetail.upload_mode) }}</span>
           </div>
 
-          <div class="grid grid-cols-2 gap-3 mb-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
             <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
               <div class="text-xs text-slate-500">标题</div>
               <div class="text-sm text-slate-900 font-medium mt-0.5">{{ enhancedSessionDetail.source_label || '未命名会话' }}</div>
@@ -660,6 +662,7 @@ import {
 } from 'lucide-vue-next'
 import { asmrSyncApi, configApi, libraryApi, taskApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
+import { useViewport } from '../composables/useViewport'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
@@ -667,6 +670,8 @@ import AppPageHeader from '../components/common/AppPageHeader.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import WorkCard from '../components/circle/WorkCard.vue'
+
+const { isMobile: isMobileViewport } = useViewport()
 
 const ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.downloadWorkbench'
 
@@ -2426,5 +2431,184 @@ button:disabled { cursor: not-allowed; }
  * ============================================================ */
 :deep(.el-dialog) {
   border-radius: 16px !important;
+}
+
+/* ==============================================================
+ * Phase 3 ASMRSync 移动端适配（≤640）
+ * 桌面零改动：所有规则严格闭合在 @media 内
+ * 主要痛点：
+ *   - .asmr-page padding 18/24/24 太大
+ *   - .asmr-card-head/body padding 14/18 浪费空间
+ *   - .asmr-batch-toolbar 横向 space-between 内容会被挤压换行
+ *   - .asmr-task / .asmr-list-row 横向 flex 在窄屏挤压标题
+ *   - .asmr-task-mapping label/value 横排在窄屏挤
+ *   - WorkCard 的 enhanced-plan-card max-width:248 让 grid-cols-2 卡片偏小
+ *   - Preview Dialog 已加 .mobile-full-dialog 全屏；表格内允许横向滚动
+ *   - Enhanced Session Drawer ≤640 size 已经动态切到 100%
+ * ============================================================ */
+@media (max-width: 640px) {
+  /* 整页：紧凑 padding + gap */
+  .asmr-page {
+    padding: 8px 10px 14px;
+    gap: 10px;
+  }
+
+  /* AppPageHeader 内的 page-head-btn：≤640 三个按钮均分整行（与全局规则呼应） */
+  .page-head-btn {
+    height: 34px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+  .page-head-btn.primary .page-head-btn-label,
+  .page-head-btn.ghost .page-head-btn-label {
+    min-width: 0;
+  }
+
+  /* 信息条：≤720 已有 2 列规则；≤640 进一步紧凑 padding/gap */
+  .asmr-info-strip {
+    padding: 10px 12px !important;
+    gap: 8px 0 !important;
+    border-radius: 12px;
+  }
+  .lib-info-item { padding: 0 10px !important; gap: 6px; }
+  .lib-info-label { font-size: 10px; }
+  .lib-info-value { font-size: 14px; }
+  .lib-info-value :deep(b) { font-size: 14px; }
+
+  /* asmr-card：紧凑卡片 */
+  .asmr-card { border-radius: 12px; }
+  .asmr-card-head {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .asmr-card-head-title h2 { font-size: 13px; }
+  .asmr-card-head-subtitle { font-size: 11px; }
+  .asmr-card-body {
+    padding: 12px;
+  }
+
+  /* 批量操作工具条：stack + 按钮按 grid 平分 */
+  .asmr-batch-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 8px 10px;
+    gap: 8px;
+  }
+  .asmr-batch-toolbar-info {
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .asmr-batch-toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .asmr-batch-toolbar-actions > .asmr-mini-btn {
+    width: 100%;
+    justify-content: center;
+    padding: 0 6px;
+  }
+  /* 第三个（"下载选中"）独占整行更易点 */
+  .asmr-batch-toolbar-actions > .asmr-mini-btn:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+
+  /* asmr-card-head-actions 在 ≤640 改 grid 平分，避免挤成一团 */
+  .asmr-card-head-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+  }
+  .asmr-card-head-actions > .asmr-mini-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* 字幕文件夹扫描卡片：el-input 撑满 */
+  .asmr-card-body .flex.items-center {
+    gap: 8px !important;
+  }
+  .asmr-card-body :deep(.el-input) {
+    width: 100% !important;
+  }
+
+  /* el-table 包装：max-height 缩小 + 可横滑（el-table 内列宽是固定 px，必然溢出） */
+  .asmr-table-wrap {
+    max-height: 320px;
+    border-radius: 10px;
+    border: 1px solid rgba(15, 23, 42, 0.06);
+  }
+
+  /* 任务卡：紧凑 padding + 标题区可换行 */
+  .asmr-task {
+    padding: 10px 12px;
+    border-radius: 10px;
+  }
+  .asmr-task-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .asmr-task-head-info {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .asmr-task-head-info > .text-sm {
+    width: 100%;
+    white-space: normal;
+  }
+  .asmr-task-head-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .asmr-task-head-actions > .asmr-mini-btn {
+    flex: 1 1 calc(50% - 3px);
+    justify-content: center;
+    min-width: 0;
+  }
+  .asmr-task-mapping {
+    padding: 8px;
+    font-size: 11px;
+  }
+  .asmr-task-mapping-label { width: 48px; font-size: 10px; }
+  .asmr-task-failed-item,
+  .asmr-task-file-row {
+    padding: 6px 8px;
+    font-size: 11px;
+  }
+  .asmr-task-file-progress { width: 60px; }
+  .asmr-task-file-size { min-width: 96px; font-size: 10px; }
+
+  /* 等待重试列表行：stack */
+  .asmr-list-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .asmr-list-row > .min-w-0 { width: 100%; }
+  .asmr-list-row > .flex.items-center.gap-1\.5 {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .asmr-list-row > .flex.items-center.gap-1\.5 > .asmr-mini-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* enhanced-plan-card：解锁 max-width 让 grid-cols-2 撑满每列 */
+  .enhanced-plan-card { max-width: none; }
+
+  /* Drawer 内 el-table：横滑 */
+  :deep(.el-drawer__body) {
+    padding: 12px;
+  }
+  :deep(.el-drawer .el-table) {
+    overflow-x: auto;
+  }
 }
 </style>
