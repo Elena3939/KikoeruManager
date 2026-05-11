@@ -6127,10 +6127,10 @@ class LibraryBrowserListFoldersRequest(BaseModel):
 
 @app.post("/api/library/browser/list-folders")
 async def list_library_browser_folders(request: LibraryBrowserListFoldersRequest):
-    """供"移动到..."对话框使用：列出指定路径下的一级子项（默认仅子目录，可选包含文件）。
+    """供"移动到..."/"指定上传子目录"对话框使用：列出指定路径下的一级子项（默认仅子目录，可选包含文件）。
 
-    - 默认不算 size，靠后台 ensure_stats 填充缓存。
-    - 进入子目录后，前端可以传 ``compute_size=true`` 让接口对未命中缓存的项按需计算。
+    - 同时支持本地库与远程 synology 库；远程库忽略 compute_size，目录统一不算 size。
+    - 进入子目录后，前端可以传 ``compute_size=true`` 让接口对未命中缓存的项按需计算（仅本地库生效）。
     - 传 ``include_files=true`` 时，返回的 folders 数组里会同时包含文件，每项带 ``is_directory`` 字段。
     """
     if not str(request.library_id or "").strip():
@@ -6155,8 +6155,8 @@ async def list_library_browser_folders(request: LibraryBrowserListFoldersRequest
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        _log_synology_err(f"列出本地子目录失败: {e}", e)
-        raise HTTPException(status_code=500, detail=f"列出本地子目录失败: {str(e)}")
+        _log_synology_err(f"列出库存子目录失败: {e}", e)
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"列出库存子目录失败: {str(e)}")
 
 
 class LibraryBrowserMoveRequest(BaseModel):
