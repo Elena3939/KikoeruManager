@@ -1415,4 +1415,174 @@ body[data-remote-folder-picker-resizing="1"] {
   cursor: col-resize !important;
   user-select: none !important;
 }
+
+@media (max-width: 640px) {
+  .remote-folder-picker-modal.el-dialog {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+  .remote-folder-picker-modal .el-dialog__body {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+    padding: 0 !important;
+  }
+  .remote-folder-picker-modal .window {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    border-radius: 0 !important;
+  }
+  .remote-folder-picker-modal .window-header {
+    position: relative;
+    padding: 14px 52px 12px 16px !important;
+    align-items: flex-start !important;
+  }
+  .remote-folder-picker-modal .window-header > div:first-child {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .remote-folder-picker-modal .title {
+    font-size: 20px !important;
+    line-height: 1.2;
+  }
+  .remote-folder-picker-modal .window-header p {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 6px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .remote-folder-picker-modal .window-header p span {
+    margin-left: 0 !important;
+  }
+  .remote-folder-picker-modal .close-button {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 34px !important;
+    height: 34px !important;
+  }
+  .remote-folder-picker-modal .explorer-toolbar {
+    display: grid !important;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    gap: 8px !important;
+    padding: 10px 12px !important;
+  }
+  .remote-folder-picker-modal .path-bar {
+    grid-column: 1 / -1;
+    order: 3;
+    width: 100%;
+    min-width: 0;
+  }
+  .remote-folder-picker-modal .search-wrap {
+    grid-column: 1 / -1;
+    order: 4;
+    width: 100% !important;
+  }
+  .remote-folder-picker-modal .explorer-main {
+    flex: 1 1 auto;
+    min-height: 0;
+    flex-direction: column !important;
+    overflow: hidden;
+  }
+  .remote-folder-picker-modal .explorer-nav {
+    width: 100% !important;
+    max-height: 32dvh;
+    flex: 0 0 auto;
+    border-right: 0 !important;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  }
+  .remote-folder-picker-modal .nav-splitter {
+    display: none !important;
+  }
+  .remote-folder-picker-modal .nav-scroll {
+    max-height: calc(32dvh - 26px);
+    overflow-y: auto !important;
+  }
+  .remote-folder-picker-modal .explorer-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .remote-folder-picker-modal .fm-head {
+    display: none !important;
+  }
+  .remote-folder-picker-modal .fm-body {
+    min-width: 0;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    padding: 8px 10px;
+  }
+  .remote-folder-picker-modal .fm-row {
+    display: flex !important;
+    grid-template-columns: none !important;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    padding: 8px 10px !important;
+    border-radius: 12px;
+  }
+  .remote-folder-picker-modal .fm-cell-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-right: 0 !important;
+  }
+  .remote-folder-picker-modal .fm-cell-time {
+    display: none !important;
+  }
+  .remote-folder-picker-modal .fm-name {
+    min-width: 0;
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+  }
+  .remote-folder-picker-modal .footer-row {
+    flex: 0 0 auto;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+    padding: 10px 14px calc(12px + env(safe-area-inset-bottom)) !important;
+  }
+  .remote-folder-picker-modal .footer-left {
+    display: grid !important;
+    grid-template-columns: 1fr;
+    width: 100%;
+    gap: 8px !important;
+  }
+  .remote-folder-picker-modal .target-chip,
+  .remote-folder-picker-modal .rel-chip {
+    max-width: none !important;
+    width: 100%;
+  }
+  .remote-folder-picker-modal .target-chip-path,
+  .remote-folder-picker-modal .rel-chip-value {
+    min-width: 0;
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+  }
+  .remote-folder-picker-modal .footer-actions {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+    gap: 10px !important;
+  }
+  .remote-folder-picker-modal .primary-cta,
+  .remote-folder-picker-modal .secondary-cta {
+    width: 100%;
+    min-width: 0;
+    height: 48px !important;
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+}
 </style>

@@ -1017,7 +1017,7 @@
 
 
 
-    <el-dialog v-model="subtitleRenameDialogVisible" title="重命名字幕文件" width="500px">
+    <el-dialog v-model="subtitleRenameDialogVisible" title="重命名字幕文件" width="500px" class="mobile-full-dialog library-simple-dialog">
 
       <el-form :model="subtitleRenameForm" label-width="80px">
 
@@ -1043,7 +1043,7 @@
 
 
 
-    <el-dialog v-model="mappedPathDialogVisible" title="跨设备访问 - 路径映射" width="620px">
+    <el-dialog v-model="mappedPathDialogVisible" title="跨设备访问 - 路径映射" width="620px" class="mobile-full-dialog library-simple-dialog">
 
       <el-alert title="检测到跨设备部署环境" type="info" :closable="false" show-icon style="margin-bottom: 16px">
 
@@ -17587,6 +17587,58 @@ function statsStatusTextDisplay (stats) {
   }
   /* 卡片列表上下间距 */
   .lib-mobile-list { gap: 8px; margin-top: 6px; }
+  :global(.library-simple-dialog .el-dialog__header) {
+    padding: 14px 16px 10px !important;
+    margin: 0 !important;
+    border-bottom: 1px solid rgba(226, 232, 240, 0.72);
+  }
+  :global(.library-simple-dialog .el-dialog__title) {
+    font-size: 16px !important;
+    font-weight: 700;
+  }
+  :global(.library-simple-dialog .el-dialog__body) {
+    padding: 14px 16px !important;
+    overflow-x: hidden !important;
+  }
+  :global(.library-simple-dialog .el-dialog__footer) {
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom)) !important;
+    border-top: 1px solid rgba(226, 232, 240, 0.72);
+  }
+  :global(.library-simple-dialog .el-dialog__footer .el-button) {
+    flex: 1;
+    min-width: 0;
+  }
+  :global(.library-simple-dialog .el-form-item) {
+    display: block;
+    margin-bottom: 14px;
+  }
+  :global(.library-simple-dialog .el-form-item__label) {
+    width: auto !important;
+    justify-content: flex-start;
+    margin-bottom: 4px;
+  }
+  :global(.library-simple-dialog .el-form-item__content) {
+    margin-left: 0 !important;
+  }
+  .mapped-path-box,
+  .path-actions {
+    width: 100%;
+    min-width: 0;
+  }
+  .path-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .path-actions :deep(.el-button) {
+    width: 100%;
+    margin-left: 0 !important;
+  }
+  .name-preview,
+  .path-code {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 
 </style>

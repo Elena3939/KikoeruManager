@@ -238,7 +238,16 @@ onMounted(() => {
 /* 移动端紧凑边距 */
 @media (max-width: 640px) {
   .settings-page {
-    padding: 12px 10px 16px;
+    width: 100%;
+    max-width: 100vw;
+    min-width: 0;
+    padding: 8px 10px 16px;
+    overflow-x: hidden;
+  }
+  .set-chip {
+    height: 22px;
+    padding: 0 8px;
+    font-size: 11px;
   }
 }
 
@@ -303,5 +312,13 @@ onMounted(() => {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.85),
     0 4px 10px -2px rgba(99, 102, 241, 0.3);
+}
+
+@media (max-width: 640px) {
+  .set-chip {
+    height: 22px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
 }
 </style>

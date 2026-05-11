@@ -3,7 +3,7 @@
     :model-value="visible"
     :show-close="false"
     destroy-on-close
-    class="custom-preview-modal"
+    class="custom-preview-modal server-upload-preview-modal"
     align-center
     modal-class="custom-preview-overlay"
     @update:model-value="emit('update:visible', $event)"
@@ -923,4 +923,142 @@ function classifyRowKind (row) {
 .tree-row:hover .tree-checkbox-off { border-color: rgba(15,23,42,.3); background: rgba(255,255,255,.92); }
 .checkbox-minus { width: 10px; height: 2px; background: #fff; display: inline-block; border-radius: 999px; }
 .expander-spacer { width: 21px; flex: 0 0 21px; }
+
+@media (max-width: 640px) {
+  .window {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    aspect-ratio: auto !important;
+    border-radius: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+  }
+  .window-header {
+    position: relative;
+    flex: 0 0 auto;
+    min-width: 0;
+    padding: 14px 52px 10px 16px !important;
+    align-items: flex-start !important;
+  }
+  .close-button {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 34px !important;
+    height: 34px !important;
+  }
+  .window-header .title {
+    font-size: 18px !important;
+    line-height: 1.25;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .tabs-row {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    padding: 4px 12px 8px !important;
+    align-items: flex-start;
+    overflow-x: auto;
+  }
+  .preview-chip-scroll {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .restore-button {
+    margin-left: 0 !important;
+    flex: 0 0 auto;
+  }
+  .content-grid {
+    flex-direction: column !important;
+    gap: 10px !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    width: 100%;
+    min-width: 0;
+    padding: 0 12px 10px !important;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  .left-column {
+    width: 100% !important;
+    flex: 0 0 auto;
+    min-width: 0;
+    gap: 10px !important;
+  }
+  .settings-card {
+    flex: 0 0 auto !important;
+    max-height: none;
+    padding: 12px !important;
+    overflow: visible;
+  }
+  .section-head h2 {
+    font-size: 17px;
+    line-height: 1.25;
+  }
+  .section-head p {
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .select-grid {
+    grid-template-columns: 1fr !important;
+    gap: 10px !important;
+  }
+  .target-path,
+  .summary-stack {
+    overflow-wrap: anywhere;
+  }
+  .tree-panel {
+    flex: 1 0 260px;
+    min-height: 220px;
+    max-height: 42dvh;
+    border-radius: 14px !important;
+  }
+  .tree-scroll {
+    padding: 10px !important;
+  }
+  .tree-row {
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .tree-size {
+    display: none !important;
+  }
+  .node-rjcode,
+  .node-title-muted {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .footer-row {
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 10px;
+    padding: 10px 12px calc(12px + env(safe-area-inset-bottom)) !important;
+    border-top: 1px solid rgba(226, 232, 240, 0.82);
+    background: rgba(255, 255, 255, 0.94);
+  }
+  .summary {
+    font-size: 12px !important;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .footer-actions {
+    display: grid !important;
+    grid-template-columns: 1fr;
+    width: 100%;
+    gap: 8px !important;
+  }
+  .primary-cta,
+  .secondary-cta {
+    width: 100%;
+    height: 42px !important;
+  }
+}
 </style>

@@ -176,6 +176,52 @@
           </el-table-column>
         </el-table>
 
+        <div class="vault-mobile-list">
+          <article
+            v-for="row in tablePasswords"
+            :key="`mobile-password-${row.id}`"
+            class="vault-mobile-card"
+            :class="{ 'is-selected': isMobileRowSelected(row) }"
+          >
+            <header class="vault-mobile-card-head">
+              <label class="vault-mobile-check">
+                <input
+                  type="checkbox"
+                  :checked="isMobileRowSelected(row)"
+                  @change="toggleMobileSelection(row, $event.target.checked)"
+                >
+              </label>
+              <div class="vault-mobile-title-wrap">
+                <span v-if="row.rjcode" class="vault-mobile-rj">{{ row.rjcode }}</span>
+                <span v-else class="vault-mobile-empty">未绑定 RJ</span>
+                <span class="vault-mobile-source">{{ row.source === 'manual' ? '手动' : row.source === 'batch' ? '批量' : '自动' }}</span>
+              </div>
+              <div class="vault-mobile-actions">
+                <button type="button" class="vault-mobile-action is-edit" title="编辑" @click="handleEdit(row)">
+                  <AppLottieIcon :src="editIconAnimation" :size="38" tone="primary" />
+                </button>
+                <button type="button" class="vault-mobile-action is-delete" title="删除" @click="handleDelete(row)">
+                  <AppLottieIcon :src="deleteIconAnimation" :size="30" tone="danger" />
+                </button>
+              </div>
+            </header>
+
+            <div class="vault-mobile-field">
+              <span class="vault-mobile-label">文件名</span>
+              <span class="vault-mobile-value">{{ row.filename || '—' }}</span>
+            </div>
+            <div class="vault-mobile-field">
+              <span class="vault-mobile-label">密码</span>
+              <code class="vault-mobile-password">{{ row.password }}</code>
+            </div>
+            <footer class="vault-mobile-meta">
+              <span>使用 {{ row.use_count }}</span>
+              <span>{{ row._formatted_last_used ? `最后 ${row._formatted_last_used}` : '从未使用' }}</span>
+              <span>{{ row._formatted_created_at }}</span>
+            </footer>
+          </article>
+        </div>
+
         <div class="mt-4 flex justify-end">
           <el-pagination background layout="total, sizes, prev, pager, next, jumper"
             :current-page="currentPage" :page-size="pageSize" :page-sizes="PAGE_SIZES" :total="totalCount"
@@ -431,6 +477,14 @@ function togglePasswordSortOrder() { passwordSortOrder.value = passwordSortOrder
 let searchTimeout = null
 function handleSearch() { if (searchTimeout) clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { currentPage.value = 1; loadPasswords() }, 300) }
 function handleSelectionChange(selection) { selectedRows.value = selection }
+function isMobileRowSelected(row) { return selectedRows.value.some(item => item.id === row.id) }
+function toggleMobileSelection(row, checked) {
+  if (checked) {
+    if (!isMobileRowSelected(row)) selectedRows.value = [...selectedRows.value, row]
+    return
+  }
+  selectedRows.value = selectedRows.value.filter(item => item.id !== row.id)
+}
 function handleEdit(row) { isEditing.value = true; form.value = { id: row.id, rjcode: row.rjcode || '', filename: row.filename || '', password: row.password, description: row.description || '' }; showAddDialog.value = true }
 
 async function handleSubmit() {
@@ -857,6 +911,10 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   color: #334155;
 }
 
+.vault-mobile-list {
+  display: none;
+}
+
 /* ============ 弹框 ============ */
 :deep(.vault-dialog.el-dialog) {
   background: transparent;
@@ -990,5 +1048,241 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
 /* ============ 响应式 ============ */
 @media (max-width: 960px) {
   .password-vault { padding-left: 12px; padding-right: 12px; }
+}
+
+@media (max-width: 640px) {
+  .password-vault {
+    max-width: 100vw;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+    overflow-x: hidden;
+  }
+  .vault-toolbar-shell,
+  .vault-toolbar-panel,
+  .vault-toolbar-main-actions,
+  .vault-toolbar-panel-filters {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+  .vault-toolbar-panel {
+    padding: 8px !important;
+    border-radius: 14px !important;
+  }
+  .vault-btn {
+    min-width: 0;
+    height: 34px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+  .vault-toolbar-main-actions {
+    gap: 7px;
+  }
+  .vault-toolbar-panel-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .vault-toolbar-panel-filters :deep(.app-dropdown) {
+    min-width: 0;
+  }
+  :deep(.password-table.el-table) {
+    display: none;
+  }
+  .vault-mobile-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .vault-mobile-card {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    border-radius: 16px;
+    border: 1px solid rgba(226, 232, 240, 0.82);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.7));
+    padding: 10px;
+    box-shadow: 0 10px 24px -18px rgba(15, 23, 42, 0.28);
+    overflow: hidden;
+    transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .vault-mobile-card.is-selected {
+    border-color: rgba(59, 130, 246, 0.38);
+    box-shadow: 0 12px 28px -18px rgba(37, 99, 235, 0.45);
+  }
+  .vault-mobile-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .vault-mobile-check {
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+  .vault-mobile-check input {
+    width: 15px;
+    height: 15px;
+    accent-color: #2563eb;
+  }
+  .vault-mobile-title-wrap {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .vault-mobile-rj {
+    display: inline-flex;
+    max-width: 100%;
+    height: 23px;
+    align-items: center;
+    border-radius: 8px;
+    background: #eff6ff;
+    padding: 0 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    font-weight: 700;
+    color: #2563eb;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .vault-mobile-empty {
+    font-size: 12px;
+    font-weight: 700;
+    color: #94a3b8;
+  }
+  .vault-mobile-source {
+    display: inline-flex;
+    height: 21px;
+    align-items: center;
+    border-radius: 999px;
+    background: rgba(241, 245, 249, 0.9);
+    padding: 0 7px;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #64748b;
+  }
+  .vault-mobile-actions {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .vault-mobile-action {
+    display: inline-flex;
+    width: 34px;
+    height: 34px;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .vault-mobile-action:hover {
+    transform: translateY(-2px) scale(1.02);
+  }
+  .vault-mobile-action:active {
+    transform: scale(0.96);
+  }
+  .vault-mobile-field {
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr);
+    gap: 8px;
+    margin-top: 8px;
+    min-width: 0;
+  }
+  .vault-mobile-label {
+    padding-top: 2px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #94a3b8;
+  }
+  .vault-mobile-value,
+  .vault-mobile-password {
+    min-width: 0;
+    max-width: 100%;
+    font-size: 12px;
+    line-height: 1.5;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+  }
+  .vault-mobile-value {
+    color: #334155;
+  }
+  .vault-mobile-password {
+    display: block;
+    border-radius: 10px;
+    border: 1px solid rgba(203, 213, 225, 0.72);
+    background: rgba(255, 255, 255, 0.78);
+    padding: 6px 8px;
+    color: #0f172a;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  .vault-mobile-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 9px;
+    padding-top: 9px;
+    border-top: 1px dashed rgba(203, 213, 225, 0.78);
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .vault-mobile-meta span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .password-vault :deep(.el-pagination) {
+    width: 100%;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .password-vault :deep(.el-pagination__sizes),
+  .password-vault :deep(.el-pagination__jump) {
+    display: none;
+  }
+  :deep(.vault-dialog.el-dialog) {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    margin: 0 !important;
+  }
+  .vault-dialog-shell {
+    max-height: 100dvh;
+    min-height: 100dvh;
+    border-radius: 0;
+  }
+  .vault-dialog-header {
+    padding: 14px;
+  }
+  .vault-dialog-body {
+    padding: 14px;
+  }
+  .vault-dialog-footer {
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  }
+  .vault-dialog-footer .vault-btn {
+    flex: 1;
+  }
+  .vault-form :deep(.el-form-item) {
+    display: block;
+  }
+  .vault-form :deep(.el-form-item__label) {
+    width: auto !important;
+    justify-content: flex-start;
+    margin-bottom: 4px;
+  }
+  .vault-form :deep(.el-form-item__content) {
+    margin-left: 0 !important;
+  }
 }
 </style>

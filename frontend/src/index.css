@@ -1199,6 +1199,11 @@ body.el-popup-parent--hidden {
     -webkit-overflow-scrolling: touch;
   }
 
+  .server-upload-preview-modal .el-dialog__body {
+    overflow: hidden !important;
+    padding: 0 !important;
+  }
+
   /* 普通 ElDialog（无自定义 class）≤640 默认放大到 92vw */
   .el-overlay-dialog .el-dialog:not(.custom-preview-modal):not(.filter-delete-dialog):not(.subtitle-workbench-dialog):not(.mobile-full-dialog) {
     width: 92vw !important;

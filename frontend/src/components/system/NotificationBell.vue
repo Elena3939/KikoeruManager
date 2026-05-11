@@ -2,7 +2,7 @@
   <div class="notif-bell-wrap" ref="bellRef">
     <button
       class="notif-bell-btn"
-      :class="{ 'notif-bell-btn--active': panelOpen, 'notif-bell-btn--has-unread': unreadCount > 0 }"
+      :class="{ 'notif-bell-btn--active': isPanelVisible, 'notif-bell-btn--has-unread': unreadCount > 0 }"
       @click="onBellClick"
       @mouseenter="onBellHover"
       @mouseleave="onBellLeave"
@@ -22,11 +22,12 @@
 
     <teleport to="body">
       <NotificationPanel
-        :visible="panelOpen"
+        v-if="isPanelVisible"
+        :visible="isPanelVisible"
         :panel-style="panelStyle"
-        @close="closePanel"
+        @close="closeOwnPanel"
       />
-      <div v-if="panelOpen" class="notif-overlay" @click="closePanel" />
+      <div v-if="isPanelVisible" class="notif-overlay" @click="closeOwnPanel" />
     </teleport>
   </div>
 </template>
@@ -46,9 +47,12 @@ const bellRef = ref(null)
 const panelRect = ref(null)
 const playerRef = ref(null)
 const lottieReady = ref(false)
+const ownsPanel = ref(false)
+const instanceId = Symbol('notification-bell')
 const { unreadCount, panelOpen, openPanel, closePanel, startSSE, stopSSE } = useNotifications()
 
 const PANEL_WIDTH = 360
+const isPanelVisible = computed(() => panelOpen.value && ownsPanel.value)
 
 const panelStyle = computed(() => {
   if (!panelRect.value) return {}
@@ -163,15 +167,29 @@ async function onBellLeave() {
 
 function onBellClick() {
   updateRect()
-  if (panelOpen.value) {
-    closePanel()
+  if (isPanelVisible.value) {
+    closeOwnPanel()
   } else {
+    window.dispatchEvent(new CustomEvent('kikoerumanager:notification:panel-owner', { detail: instanceId }))
+    ownsPanel.value = true
     openPanel()
+  }
+}
+
+function closeOwnPanel() {
+  ownsPanel.value = false
+  closePanel()
+}
+
+function handlePanelOwnerChange(event) {
+  if (event.detail !== instanceId) {
+    ownsPanel.value = false
   }
 }
 
 onMounted(() => {
   startSSE()
+  window.addEventListener('kikoerumanager:notification:panel-owner', handlePanelOwnerChange)
   const bind = () => {
     const instance = getInstance()
     if (!instance) return false
@@ -190,7 +208,14 @@ watch(unreadCount, async (count, prev) => {
   await syncPlayback(count > 0 && prev <= 0)
 })
 
+watch(panelOpen, (open) => {
+  if (!open) {
+    ownsPanel.value = false
+  }
+})
+
 onBeforeUnmount(() => {
+  window.removeEventListener('kikoerumanager:notification:panel-owner', handlePanelOwnerChange)
   const instance = getInstance()
   if (instance) {
     instance.removeEventListener('ready', handleReady)

@@ -379,4 +379,75 @@ const gridClass = computed(() => {
   opacity: 0;
   transform: translateY(-4px) scale(0.99);
 }
+
+@media (max-width: 640px) {
+  section {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+  section > div {
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    gap: 10px !important;
+  }
+  aside {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    padding: 12px !important;
+    border-radius: 16px !important;
+    overflow: hidden;
+  }
+  aside > .min-h-0 {
+    max-height: 300px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  .rail-handle {
+    display: none !important;
+  }
+  section > div > div {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+  section > div > div > div:first-child {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  section > div > div > div:first-child::-webkit-scrollbar {
+    display: none;
+  }
+  section > div > div > div:first-child button {
+    min-width: 78px;
+    flex: 0 0 auto;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+    font-size: 11.5px !important;
+    white-space: nowrap;
+  }
+  section > div > div > div:first-child button span {
+    white-space: nowrap;
+  }
+  section > div > div > div:nth-child(2) {
+    padding: 12px !important;
+    border-radius: 16px !important;
+  }
+  section > div > div > div:nth-child(2) > div:first-child {
+    flex-direction: column;
+  }
+  :deep(.subtitle-context-drawer),
+  :deep(.subtitle-context-drawer *) {
+    max-width: 100%;
+    min-width: 0;
+  }
+}
 </style>
