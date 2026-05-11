@@ -31,6 +31,7 @@
 import { computed } from 'vue'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import noDataAnimation from '../../assets/anime/No-Data.lottie'
+import { useViewport } from '../../composables/useViewport'
 
 const props = defineProps({
   description: { type: String, default: '' },
@@ -41,15 +42,32 @@ const props = defineProps({
   },
 })
 
+const { isMobile } = useViewport()
+
+// 移动端 (≤640) 自动降级一档：lg / default → sm
+// 解决任务中心 / 库存 等页面在窄屏下 "No Data" lottie 撑掉半屏的问题
+const effectiveSize = computed(() => {
+  if (isMobile.value && props.size !== 'sm') return 'sm'
+  return props.size
+})
+
 const sizeClass = computed(() => {
-  if (props.size === 'sm') {
+  // 移动端再下一档：lottie 64px + py-4，避免空态在窄屏吃掉一屏 1/3
+  if (isMobile.value) {
+    return {
+      container: 'py-4',
+      lottie: 'w-16 h-16',
+      description: 'text-[12px]',
+    }
+  }
+  if (effectiveSize.value === 'sm') {
     return {
       container: 'py-6',
       lottie: 'w-20 h-20',
       description: 'text-[12px]',
     }
   }
-  if (props.size === 'lg') {
+  if (effectiveSize.value === 'lg') {
     return {
       container: 'py-10',
       lottie: 'w-44 h-44',
