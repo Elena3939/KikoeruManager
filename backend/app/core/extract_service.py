@@ -1422,6 +1422,63 @@ class ExtractService:
 
         logger.info("嵌套解压密码候选共 %d 个: %s", len(password_list), archive_path)
 
+        # 嵌套 RAR fast-path：和外层主流程一样，优先用 unar 避开 7zz 24.08 RAR
+        # 解析器无法配置文件名编码导致的日文 / 中文乱码（群晖看到 ��� 无法访问）。
+        if (
+            self.config.extract.prefer_unar_for_rar
+            and self._is_rar_archive(archive_path)
+            and self._find_unar_executable()
+        ):
+            unar_unsupported = False
+            unar_disk_full = False
+            for index, password in enumerate(password_list):
+                if index > 0:
+                    await asyncio.to_thread(clean_output)
+                try:
+                    result = await self._try_unar_extract(archive_path, output_path, password)
+                    if result.returncode == 0:
+                        logger.info(
+                            "嵌套 RAR 用 unar 解压成功，密码: %s",
+                            password or "无密码",
+                        )
+                        return True, password or None
+                    stderr_lower = (result.stderr or b"").decode('utf-8', errors='ignore').lower()
+                    if any(m in stderr_lower for m in (
+                        "no space left on device",
+                        "not enough space",
+                        "disk full",
+                    )):
+                        unar_disk_full = True
+                        break
+                    if any(m in stderr_lower for m in (
+                        "not a supported archive format",
+                        "isn't a supported archive format",
+                        "couldn't recognize the archive format",
+                        "couldn't recognize",
+                        "is not a recognized archive",
+                    )):
+                        unar_unsupported = True
+                        break
+                    logger.debug(
+                        "嵌套 RAR unar 失败 (密码=%s, rc=%s): %s",
+                        password or "无密码",
+                        result.returncode,
+                        stderr_lower[:200] if stderr_lower else "(无错误文本)",
+                    )
+                except Exception as e:
+                    logger.warning("嵌套 RAR unar 解压尝试异常: %s", e)
+
+            if unar_disk_full:
+                logger.error("嵌套 RAR unar 解压因磁盘空间不足终止: %s", archive_path)
+                return False, None
+
+            # unar 没成 → 清空 output 让 7zz 接手
+            await asyncio.to_thread(clean_output)
+            logger.info(
+                "嵌套 RAR unar fast-path 未成功 (unsupported=%s)，回退到 7zz: %s",
+                unar_unsupported, archive_path,
+            )
+
         for password in password_list:
             await asyncio.to_thread(clean_output)
             cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._get_seven_zip_mmt_args(), *self._get_mcp_args(archive_path), archive_path]
@@ -3218,6 +3275,43 @@ class ExtractService:
         encountered_wrong_password = False
         last_corrupt_stderr: Optional[str] = None
 
+        # ========== RAR fast-path: 优先用 unar 解压日文 / 中文 RAR ==========
+        # 7zz 24.08 的 RAR 解析器不接受 -mcp 参数，遇到 Shift-JIS / GBK 命名的 RAR
+        # 时只能按本机 locale 解释 ANSI 字节 → 必然出乱码 → 群晖看到 ��� 无法访问。
+        # 这里在主密码循环之前先用 unar 跑一遍密码列表，unar 的 ICU 编码自动探测
+        # 能给日文 / 中文 RAR 出干净的 UTF-8 文件名。
+        # unar 不可用 / 不识别该 RAR 变体时，自动回退到下面的 7zz 老流程。
+        if (
+            self.config.extract.prefer_unar_for_rar
+            and self._is_rar_archive(archive_info.path)
+            and self._find_unar_executable()
+        ):
+            unar_success, unar_password, unar_reason = await self._try_extract_rar_with_unar(
+                archive_info,
+                output_path,
+                task,
+                unique_passwords,
+                vault_passwords,
+                password_entry_id_map,
+                password_rjcode_map,
+                manual_retry_password_only,
+                rj_passwords=rj_passwords if not manual_retry_password_only else [],
+            )
+            if unar_success:
+                return True, unar_password, ""
+            if unar_reason == "cancelled":
+                return False, None, "cancelled"
+            if unar_reason == "disk_full":
+                return False, None, "disk_full"
+            # unsupported / unar_unavailable / wrong_password → 让 7zz 也跑一遍
+            # 兜底（万一 7zz 能开但 unar 不行；或 unar 错把头加密包的解密失败误
+            # 报成"密码错"，7zz 的 -mcp + 头加密路径可能更稳）
+            await self._cleanup_extract_attempt(output_path)
+            logger.info(
+                "RAR unar fast-path 未成功 (%s)，回退到 7zz 流程: %s",
+                unar_reason, archive_info.path,
+            )
+
         # #3 负缓存：同一压缩包同一密码近期失败过，直接跳过；指纹拿不到就不缓存。
         archive_fingerprint = self._archive_fingerprint(archive_info.path)
 
@@ -3470,6 +3564,7 @@ class ExtractService:
                             archive_info.path,
                             output_path,
                             password,
+                            task=task,
                         )
                         if unar_result.returncode == 0:
                             if password and password in vault_passwords:
@@ -4493,7 +4588,15 @@ class ExtractService:
             # 兜底：无法定性，让上层走原有 x 流程，避免漏掉真密码
             return 'unknown'
 
-    async def _run_subprocess_command(self, cmd: List[str]) -> subprocess.CompletedProcess:
+    async def _run_subprocess_command(
+        self,
+        cmd: List[str],
+        task: Optional[Task] = None,
+    ) -> subprocess.CompletedProcess:
+        """跑非 7z 子进程（unar 等）。
+        传入 task 时把子进程登记到 task 上，cancel / pause 能立刻 kill —— 修复
+        unar 解压大包时无法响应取消的问题。
+        """
         semaphore = self._get_7z_semaphore()
         try:
             async with semaphore:
@@ -4507,7 +4610,13 @@ class ExtractService:
                     kwargs['creationflags'] = CREATE_NO_WINDOW
 
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
-                stdout_data, stderr_data = await process.communicate()
+                if task is not None:
+                    task.register_process(process)
+                try:
+                    stdout_data, stderr_data = await process.communicate()
+                finally:
+                    if task is not None:
+                        task.unregister_process(process)
                 return subprocess.CompletedProcess(
                     args=cmd,
                     returncode=process.returncode,
@@ -4523,12 +4632,218 @@ class ExtractService:
                 stderr=str(e).encode('utf-8'),
             )
 
+    async def _cleanup_extract_attempt(self, output_path: str) -> None:
+        """清掉上一轮密码尝试在 output_path 里留下的残留文件 / 目录。
+
+        unar / 7zz 的 -f / -y 是文件级覆盖，但目录级残留（错密码下解出的部分文件、
+        乱码目录名）会在下一轮成功解压时残留下来污染结果。所以每个密码 attempt
+        前清空一次最稳妥。
+        """
+        if not os.path.exists(output_path):
+            return
+
+        def _do_cleanup() -> None:
+            try:
+                names = os.listdir(output_path)
+            except OSError:
+                return
+            for name in names:
+                target = os.path.join(output_path, name)
+                try:
+                    if os.path.isdir(target):
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        os.remove(target)
+                except Exception:
+                    logger.debug("清理上一轮解压残留失败: %s", target, exc_info=True)
+
+        await asyncio.to_thread(_do_cleanup)
+
+    async def _try_extract_rar_with_unar(
+        self,
+        archive_info: ArchiveInfo,
+        output_path: str,
+        task: Task,
+        passwords: List[str],
+        vault_passwords: List[str],
+        password_entry_id_map: Dict[str, Optional[int]],
+        password_rjcode_map: Dict[str, Optional[str]],
+        manual_retry_password_only: bool,
+        rj_passwords: Optional[List[str]] = None,
+    ) -> Tuple[bool, Optional[str], str]:
+        """对 RAR 文件优先用 unar 解压，遍历整个密码列表。
+
+        ★ 解决用户痛点：群晖上看到 ``2.�C���X�g`` 这种乱码作品。
+        根因：7zz 24.08 的 RAR 解析器不接受 ``-mcp`` 文件名代码页参数（传了会
+        E_INVALIDARG），所以遇到日文 Shift-JIS / 中文 GBK 命名的 RAR 时，只能
+        用本机 locale（Linux/Docker = UTF-8）解释 ANSI 字节 → 必然出乱码 →
+        群晖 / NAS 文件管理器读到非法 UTF-8 字节就显示成 ``�`` 替换符。
+        unar 自带 ICU 文件名编码自动探测，对日文 / 中文 RAR 友好。
+
+        返回 ``(success, password_used, failure_reason)``：
+
+        - ``(True, password, '')``：成功
+        - ``(False, None, 'cancelled')``：用户取消
+        - ``(False, None, 'disk_full')``：磁盘空间不足
+        - ``(False, None, 'unsupported')``：unar 不识别该 RAR 变体（罕见的
+          RAR5 加密 / 损坏头），调用方应回退到原 7zz 流程
+        - ``(False, None, 'unar_unavailable')``：unar 可执行文件不存在，调用
+          方应回退到原 7zz 流程
+        - ``(False, None, 'wrong_password')``：所有密码都被 unar 拒绝，调用方
+          仍可走 7zz 兜底（万一 7zz 能开但 unar 不行）
+        """
+        if not self._find_unar_executable():
+            return False, None, "unar_unavailable"
+
+        rj_password_set = set(rj_passwords or [])
+        vault_password_set = set(vault_passwords or [])
+
+        encountered_wrong_password = False
+        last_unsupported = False
+        last_disk_full = False
+
+        for index, password in enumerate(passwords):
+            if task.is_cancelled():
+                return False, None, "cancelled"
+            await task.wait_if_paused()
+            if task.is_cancelled():
+                return False, None, "cancelled"
+
+            # 判断密码来源（仅用于日志）
+            if manual_retry_password_only:
+                password_source = "指定密码"
+            elif password in rj_password_set:
+                password_source = "RJ号"
+            elif password in vault_password_set:
+                password_source = "密码库"
+            elif password == archive_info.password:
+                password_source = "已知"
+            elif password == "":
+                password_source = "无"
+            else:
+                password_source = "默认"
+
+            # 第二个密码起每轮先清空 output，避免上一轮残留干扰
+            if index > 0:
+                await self._cleanup_extract_attempt(output_path)
+
+            task.update_progress(
+                40,
+                f"unar 解压 (密码来源: {password_source})",
+            )
+            result = await self._try_unar_extract(
+                archive_info.path, output_path, password, task=task,
+            )
+
+            if task.is_cancelled():
+                return False, None, "cancelled"
+
+            stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
+            stderr_lower = stderr_text.lower()
+
+            if result.returncode == 0:
+                # 成功，更新 archive_info 元信息
+                archive_info.password = password
+                inferred_rjcode = password_rjcode_map.get(password) if password else None
+                if inferred_rjcode:
+                    archive_info.inferred_rjcode = inferred_rjcode
+                    if task.task_metadata is None:
+                        task.task_metadata = {}
+                    task.task_metadata['inferred_rjcode'] = inferred_rjcode
+                    task.task_metadata['rjcode'] = inferred_rjcode
+                    task.task_metadata['inferred_rjcode_source'] = 'password_entry'
+                    if not getattr(task, 'rjcode', None) or str(task.rjcode).strip() in {'', '未知'}:
+                        task.rjcode = inferred_rjcode
+                if password and password in vault_password_set:
+                    await self._record_password_usage(
+                        password,
+                        archive_info.path,
+                        entry_id=password_entry_id_map.get(password),
+                    )
+                logger.info(
+                    "unar 解压 RAR 成功，使用 %s 密码: %s",
+                    password_source, password or '无密码',
+                )
+                return True, password, ""
+
+            # 密码错（unar 措辞会随版本/locale 变，多关键字兜底）
+            wrong_password_markers = (
+                "wrong password",
+                "password was incorrect",
+                "password is incorrect",
+                "incorrect password",
+                "wrong password?",
+                "passphrase",
+                "unable to decrypt",
+            )
+            if any(m in stderr_lower for m in wrong_password_markers):
+                encountered_wrong_password = True
+                logger.info(
+                    "unar 密码 %s (%s) 失败: 密码错误",
+                    password_source, password or '无密码',
+                )
+                continue
+
+            # 磁盘满（继续试更多密码也没用）
+            disk_full_markers = (
+                "no space left on device",
+                "not enough space",
+                "disk full",
+            )
+            if any(m in stderr_lower for m in disk_full_markers):
+                last_disk_full = True
+                logger.error(
+                    "unar 解压失败：磁盘空间不足: %s",
+                    stderr_text[:300] if stderr_text else "(无错误文本)",
+                )
+                break
+
+            # unar 不认这个格式 → 让 7zz 接手
+            unsupported_markers = (
+                "not a supported archive format",
+                "isn't a supported archive format",
+                "couldn't recognize the archive format",
+                "unsupported file format",
+                "is not a recognized archive",
+                "couldn't recognize",
+            )
+            if any(m in stderr_lower for m in unsupported_markers):
+                last_unsupported = True
+                logger.warning(
+                    "unar 不识别该 RAR 变体，将回退到 7zz: %s",
+                    stderr_text[:300] if stderr_text else "(无错误文本)",
+                )
+                break  # 直接退出循环，让上层 fallback
+
+            # 其他错误：当作潜在密码错继续试下一个
+            logger.warning(
+                "unar 密码 %s (%s) 失败 (rc=%s): %s",
+                password_source,
+                password or '无密码',
+                result.returncode,
+                stderr_text[:300] if stderr_text else "(无错误文本)",
+            )
+
+        if last_disk_full:
+            return False, None, "disk_full"
+        if last_unsupported:
+            return False, None, "unsupported"
+        if encountered_wrong_password:
+            return False, None, "wrong_password"
+        return False, None, "wrong_password"
+
     async def _try_unar_extract(
         self,
         archive_path: str,
         output_path: str,
         password: Optional[str],
+        task: Optional[Task] = None,
     ) -> subprocess.CompletedProcess:
+        """调用 unar 解压。
+        unar 默认会自动探测文件名编码（ICU），对日文 Shift-JIS / 中文 GBK 命名的
+        RAR / ZIP 都比 7zz 友好（7zz 24.08 RAR 解析器不接受 -mcp）。
+        传入 task 时支持 cancel / pause 立即 kill 子进程。
+        """
         unar_path = self._find_unar_executable()
         if not unar_path:
             return subprocess.CompletedProcess(
@@ -4547,8 +4862,8 @@ class ExtractService:
         if password:
             cmd.extend(["-p", password])
         cmd.append(archive_path)
-        logger.info("执行 unar fallback 命令: %s", " ".join(cmd))
-        return await self._run_subprocess_command(cmd)
+        logger.info("执行 unar 命令: %s", " ".join(cmd))
+        return await self._run_subprocess_command(cmd, task=task)
 
 class VolumeSet:
     """分卷组"""

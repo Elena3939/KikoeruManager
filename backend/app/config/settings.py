@@ -118,6 +118,13 @@ class ExtractConfig(BaseModel):
     # "on" = 自动多线程（LZMA2 / deflate 都生效）；"off" = 单线程；"N" = 指定线程数。
     # 留空字符串则不加 -mmt 参数（用 7z 默认行为）。
     seven_zip_threads: str = "on"
+    # 对 RAR 文件优先使用 unar 解压（默认开）。
+    # 7zz 24.08 RAR 解析器不接受 -mcp 文件名编码参数，遇到日文 Shift-JIS / 中文 GBK
+    # 命名的 RAR 时只能按本机 locale（Linux/Docker = UTF-8）解释 → 必然出乱码 →
+    # 群晖 / NAS 文件管理器看到 ��� 替换字符无法访问。
+    # unar 自带 ICU 文件名编码自动探测，对日文 / 中文 RAR 友好；unar 不可用或不识别
+    # 该 RAR 变体时会自动回退到原 7zz 流程，所以打开是安全的。
+    prefer_unar_for_rar: bool = True
 
 class FilterRule(BaseModel):
     """过滤规则"""
