@@ -4160,18 +4160,28 @@ class LibraryManager:
           其余保持 ``size_status='pending'``，下次浏览再补。
         - 当 ``include_files=True`` 时，文件也作为返回项加入 ``folders`` 数组，
           每项带 ``is_directory`` 字段区分；文件大小从 stat 取，不走递归缓存。
+
+        远程（synology_filestation）库：忽略 ``compute_size`` / ``compute_size_cap``，
+        目录统一返回 ``size=None, size_status="disabled"``；走 FileStation 单层 list，
+        ``include_files`` 同样生效（文件项 size 取自 additional.size）。
         """
         library = self.get_library_definition(library_id)
-        if library.type != "local":
-            raise RuntimeError("仅支持本地库浏览目录树")
-        return await asyncio.to_thread(
-            self._list_local_folders_only,
-            library,
-            path,
-            compute_size,
-            compute_size_cap,
-            include_files,
-        )
+        if library.type == "local":
+            return await asyncio.to_thread(
+                self._list_local_folders_only,
+                library,
+                path,
+                compute_size,
+                compute_size_cap,
+                include_files,
+            )
+        if library.type == "synology_filestation":
+            return await self._list_remote_folders_only(
+                library,
+                path,
+                include_files=include_files,
+            )
+        raise RuntimeError(f"不支持此库存类型的目录浏览: {library.type}")
 
     def _list_local_folders_only(
         self,
@@ -4283,6 +4293,115 @@ class LibraryManager:
             "library_root_path": library.root_path,
             "current_path": target_path,
             "browse_root_path": browse_root,
+            "parent_path": parent_path,
+            "folders": folders,
+        }
+
+    async def _list_remote_folders_only(
+        self,
+        library: LibraryDefinition,
+        path: Optional[str],
+        *,
+        include_files: bool = False,
+    ) -> dict[str, Any]:
+        """远程（synology_filestation）版本的轻量浏览。
+
+        - 用 FileStation list 单层枚举，跳过隐藏 / 系统目录（``_should_skip_entry``）。
+        - 目录统一不算 size（远程递归计算 size 太贵），``size=None, size_status="disabled"``。
+        - 文件项 size 取 ``additional.size``。
+        - 路径越界统一抛 PermissionError，由路由层映射为 403。
+        """
+        if not library.synology:
+            raise RuntimeError("远程库缺少群晖连接配置")
+
+        browse_root, target_path = self._resolve_remote_operation_path(
+            library,
+            path,
+            action="浏览远程目录",
+        )
+
+        client = self.get_cached_synology_client(library.synology)
+        try:
+            raw_items = await self._list_remote_directory(client, target_path)
+        except Exception as exc:
+            logger.warning(
+                "浏览远程目录失败: library_id=%s target_path=%s err=%s",
+                library.id,
+                target_path,
+                exc,
+                exc_info=True,
+            )
+            raise
+
+        folders: list[dict[str, Any]] = []
+        for item in raw_items:
+            name = str(item.get("name") or "")
+            if not name or self._should_skip_entry(name):
+                continue
+            is_dir = bool(item.get("isdir", False))
+            if not is_dir and not include_files:
+                continue
+
+            child_path = self._normalize_remote_path(
+                item.get("path") or item.get("real_path") or name
+            )
+            additional = item.get("additional") or {}
+            time_section = additional.get("time") or {}
+            mtime_ts = time_section.get("mtime")
+            try:
+                mtime_iso = (
+                    datetime.fromtimestamp(int(mtime_ts)).isoformat()
+                    if mtime_ts is not None
+                    else ""
+                )
+            except (TypeError, ValueError, OSError, OverflowError):
+                mtime_iso = ""
+
+            if is_dir:
+                folders.append({
+                    "name": name,
+                    "path": child_path,
+                    "is_directory": True,
+                    "modified_time": mtime_iso,
+                    "size": None,
+                    "size_status": "disabled",
+                })
+            else:
+                file_size_raw = additional.get("size")
+                try:
+                    file_size = int(file_size_raw) if file_size_raw is not None else 0
+                except (TypeError, ValueError):
+                    file_size = 0
+                folders.append({
+                    "name": name,
+                    "path": child_path,
+                    "is_directory": False,
+                    "modified_time": mtime_iso,
+                    "size": file_size,
+                    "size_status": "ready",
+                })
+
+        # 与本地版一致：目录在前，文件在后；同类按名字小写字典序
+        folders.sort(key=lambda entry: (
+            0 if entry.get("is_directory") else 1,
+            (entry.get("name") or "").lower(),
+        ))
+
+        normalized_target = self._normalize_remote_path(target_path)
+        normalized_browse_root = self._normalize_remote_path(browse_root)
+        parent_path = (
+            None
+            if normalized_target == normalized_browse_root
+            else self._remote_parent_path(normalized_target)
+        )
+
+        return {
+            "library_id": library.id,
+            "library_name": library.name,
+            "library_type": library.type,
+            "library_root_path": library.root_path,
+            "current_path": normalized_target,
+            "browse_root_path": normalized_browse_root,
             "parent_path": parent_path,
             "folders": folders,
         }
