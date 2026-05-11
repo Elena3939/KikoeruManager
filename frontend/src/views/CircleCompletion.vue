@@ -363,9 +363,9 @@
                 <span class="circle-tab-label"><CheckCircle2 :size="13" class="circle-tab-icon owned" /> 已满足 <em class="circle-tab-badge owned">{{ detail.owned_count || 0 }}</em></span>
               </template>
               <!-- Header Stats & Actions -->
-              <div class="mb-4 space-y-4">
-                <div class="flex items-center justify-between bg-white rounded-xl border border-slate-200/60 p-1.5 shadow-sm">
-                  <div class="flex items-center divide-x divide-slate-200/60">
+              <div class="owned-panel mb-4 space-y-4">
+                <div class="owned-stats-strip flex items-center justify-between bg-white rounded-xl border border-slate-200/60 p-1.5 shadow-sm">
+                  <div class="owned-stats-list flex items-center divide-x divide-slate-200/60">
                     <div class="px-4 py-2 flex items-center gap-2.5">
                       <div class="w-7 h-7 rounded-full bg-slate-50 border border-slate-100/50 flex items-center justify-center text-slate-500">
                         <LibraryBig :size="14" stroke-width="2.5" />
@@ -414,8 +414,8 @@
                   </div>
                 </div>
 
-                <div class="flex items-center justify-between gap-4">
-                  <div class="flex bg-white rounded-lg border border-slate-200/60 p-1 shadow-sm">
+                <div class="owned-filter-row flex items-center justify-between gap-4">
+                  <div class="owned-filter-tabs flex bg-white rounded-lg border border-slate-200/60 p-1 shadow-sm">
                     <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'all' ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'all'">全部</button>
                     <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'original' ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'original'">仅原作</button>
                     <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'simplified' ? 'bg-sky-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'simplified'">简中</button>
@@ -426,7 +426,7 @@
                     </button>
                   </div>
                   
-                  <div class="relative w-64">
+                  <div class="owned-search-wrap relative w-64">
                     <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                       <Search :size="16" class="text-slate-400" />
                     </div>
@@ -500,8 +500,8 @@
                 <span class="circle-tab-label"><Layers :size="13" class="circle-tab-icon" /> 来源对比</span>
               </template>
               <!-- Stats Row -->
-              <div class="mb-4">
-                <div class="bg-white rounded-xl border border-slate-200/60 shadow-sm overflow-hidden flex flex-wrap divide-x divide-slate-100">
+              <div class="compare-panel mb-4">
+                <div class="compare-stats-list bg-white rounded-xl border border-slate-200/60 shadow-sm overflow-hidden flex flex-wrap divide-x divide-slate-100">
                   <div class="px-4 py-2 flex items-center gap-2.5">
                     <div class="w-7 h-7 rounded-full bg-slate-50 border border-slate-100/50 flex items-center justify-center text-slate-500">
                       <LibraryBig :size="14" stroke-width="2.5" />
@@ -551,14 +551,14 @@
               </div>
 
               <!-- Actions Toolbar -->
-              <div class="flex items-center justify-between mb-4">
-                <div class="flex bg-white rounded-lg border border-slate-200/60 p-1 shadow-sm">
+              <div class="compare-filter-row flex items-center justify-between mb-4">
+                <div class="compare-filter-tabs flex bg-white rounded-lg border border-slate-200/60 p-1 shadow-sm">
                   <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'all' ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'all'; comparePage = 1">全部</button>
                   <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'kikoeru' ? 'bg-emerald-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'kikoeru'; comparePage = 1">已拥有(Kikoeru)</button>
                   <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'asmr_one' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'asmr_one'; comparePage = 1">可下载(ASMR.ONE)</button>
                 </div>
                 
-                <div class="relative w-64">
+                <div class="compare-search-wrap relative w-64">
                   <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                     <Search :size="16" class="text-slate-400" />
                   </div>
@@ -580,7 +580,7 @@
               </div>
 
               <!-- Header -->
-              <div class="flex items-center gap-4 px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border border-slate-200/60 rounded-t-lg">
+              <div class="compare-head flex items-center gap-4 px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border border-slate-200/60 rounded-t-lg">
                 <div class="flex-1">资源信息</div>
                 <div class="flex items-center gap-4 shrink-0 text-center">
                   <div class="w-20">Kikoeru</div>
@@ -593,12 +593,12 @@
 
               <!-- List -->
               <div class="compare-works-list border-x border-b border-slate-200/60 rounded-b-lg mb-4 divide-y divide-slate-100/80 bg-white" v-auto-animate>
-                <div v-for="item in pagedCompareWorks" :key="`compare-${item.workRjcode}`" class="p-4 hover:bg-slate-50/50 transition-colors">
-                  <div class="flex items-start justify-between gap-4">
+                <div v-for="item in pagedCompareWorks" :key="`compare-${item.workRjcode}`" class="compare-work-item p-4 hover:bg-slate-50/50 transition-colors">
+                  <div class="compare-work-row flex items-start justify-between gap-4">
                     <!-- Title & Badges -->
-                    <div class="flex-1 min-w-0">
-                      <h4 class="text-[14px] font-semibold text-slate-800 truncate mb-1.5" :title="item.title || item.workRjcode || '未命名作品'">{{ item.title || item.workRjcode || '未命名作品' }}</h4>
-                      <div class="flex items-center gap-2">
+                    <div class="compare-work-main flex-1 min-w-0">
+                      <h4 class="compare-work-title text-[14px] font-semibold text-slate-800 truncate mb-1.5" :title="item.title || item.workRjcode || '未命名作品'">{{ item.title || item.workRjcode || '未命名作品' }}</h4>
+                      <div class="compare-work-tags flex items-center gap-2">
                         <!-- Status Badge -->
                         <span v-if="item.statusKey === 'owned'" class="inline-flex items-center gap-1 text-emerald-600 text-xs font-medium" title="服务器已拥有">
                           <CheckCircle2 :size="14" stroke-width="2.5" />
@@ -638,7 +638,7 @@
                     </div>
 
                     <!-- Source Info -->
-                    <div class="flex items-center gap-4 text-xs shrink-0 mt-0.5">
+                    <div class="compare-source-cols flex items-center gap-4 text-xs shrink-0 mt-0.5">
                       <!-- Kikoeru -->
                       <div class="flex flex-col items-center gap-1 w-20">
                         <span v-if="item.sourceCompare.kikoeru.primary_rjcode" class="font-mono text-slate-700">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
@@ -6283,5 +6283,436 @@ function getUploadBackgroundTargetLabel(task) {
     grid-template-columns: minmax(220px, 1.2fr) repeat(3, minmax(150px, 1fr));
   }
   /* .floating-card 已在全局 index.css 用 min(92vw, 420px) 自适应宽度，无需 mobile 覆盖 */
+}
+
+/* ============================================================
+ * Phase 3 CircleCompletion 移动端适配（≤640）
+ * 桌面零改动：所有规则严格闭合在 @media 内
+ *
+ * 核心修复（"内容看不到 + 划不动"）：
+ *   桌面 .circle-page 是 height:100% + overflow-y:auto 的固定高度滚动容器，
+ *   内部 .circle-shell / .circle-main / .works-card / .circle-tabs-wrapper /
+ *   .circle-tabs / .work-grid / .work-list 全都 flex:1 + min-height:0，
+ *   桌面端是让 work-grid 自己滚作品。
+ *   移动端这种嵌套 flex:1 + 内部 work-grid 自己滚的结构，会出现两个症状：
+ *     1. 每个区只分到屏幕的一小部分高度，work-grid 几乎看不见
+ *     2. 嵌套滚动让外层手势"划不动"，触发不到 work-grid 的内部 scroll
+ *   解法（与 Conflicts.vue / SubtitleImport.vue 一致）：
+ *     - 整页 stream 模式：解锁 .circle-page 高度，让外层 .content-shell 滚
+ *     - 内部 flex:1 全部改 flex:0 0 auto，overflow 全部 visible
+ *     - work-grid / work-list 自然撑开，跟着整页一起滚
+ *
+ * 其他视觉痛点（顺带）：
+ *   - circle-page-header / index-progress-card margin & padding 太大
+ *   - sidebar-card padding 20/16 浪费空间，circle-list 限高 320 防侧栏吃满
+ *   - toolbar-right-actions absolute 在移动会重叠 tabs 标签
+ *   - filter-toggles / view-toggle-group / release-sort-button 在窄屏挤压
+ *   - batch-bar 操作按钮太多需要 grid 平分
+ *   - circle-preview-dialog / circle-reimport-dialog ≤640 全屏覆盖
+ *   - compare-head / compare-row 4 列横向溢出，改 1 列 stack
+ * ============================================================ */
+@media (max-width: 640px) {
+  /* ============================================================
+   * 关键：整页 stream 模式 — 解锁外层 .circle-page 与内部所有 flex:1 容器
+   * 让 work-grid 自然撑开，由 App 外层滚动容器（.content-shell）统一滚
+   * ============================================================ */
+  .circle-page {
+    height: auto !important;
+    min-height: 100%;
+    overflow-y: visible !important;
+    overflow-x: hidden !important;
+  }
+  .circle-shell {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    overflow-y: visible !important;
+    overflow-x: hidden !important;
+  }
+  .circle-main {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    overflow-y: visible !important;
+    overflow-x: hidden !important;
+  }
+  .works-card {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    overflow-y: visible !important;
+    overflow-x: hidden !important;
+  }
+  .circle-tabs-wrapper {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+  }
+  .circle-tabs {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+  }
+  .work-grid,
+  .work-list {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow-y: visible !important;
+    overflow-x: hidden !important;
+    padding-bottom: 0;
+  }
+  /* el-tabs 内部 pane 容器也松绑 */
+  .circle-tabs :deep(.el-tabs__content),
+  .circle-tabs :deep(.el-tab-pane) {
+    overflow: visible !important;
+    min-height: 0;
+  }
+  /* 侧栏卡片本身也不再争夺整页高度 */
+  .sidebar-card {
+    height: auto !important;
+    min-height: 0 !important;
+  }
+
+  /* 顶部页头紧凑 margin */
+  .circle-page-header { margin: 4px 6px 0; }
+
+  /* index-progress-card：margin 紧凑，padding 缩小 */
+  .index-progress-card {
+    margin: 8px 6px;
+    padding: 10px 12px 10px;
+    border-radius: 12px;
+  }
+  .index-progress-head { gap: 8px; }
+  .index-progress-title { font-size: 13px; }
+  .index-progress-subtitle { font-size: 11px; }
+  .index-progress-bar-wrap { padding-top: 36px; }
+  .index-progress-meta { gap: 4px; }
+  .progress-meta-pill { height: 20px; padding: 0 6px; font-size: 10px; }
+  .refresh-progress-card { padding: 8px 10px 8px; max-height: 132px; }
+  .refresh-progress-card .index-progress-subtitle {
+    max-width: calc(100vw - 60px);
+    white-space: nowrap;
+  }
+
+  /* circle-shell：进一步紧凑 padding/gap（≤1100 已 stack） */
+  .circle-shell {
+    padding: 6px;
+    gap: 8px;
+  }
+
+  /* 侧栏卡片 padding + 控件紧凑 */
+  .sidebar-card {
+    padding: 12px 12px;
+    gap: 10px;
+  }
+  .sidebar-head { gap: 6px; }
+  .sidebar-overline { font-size: 10px; }
+  .sidebar-title { font-size: 13px; }
+  .sidebar-refresh-button { font-size: 11px; }
+  .sidebar-filter-chip {
+    height: 26px;
+    min-width: 46px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
+  .sidebar-sort-row { gap: 6px; }
+  .sidebar-sort-label { font-size: 11px; }
+  /* 社团列表限制高度，避免在移动端整张页面只有侧栏可视 */
+  .circle-list {
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .circle-list-item { padding: 8px 10px; }
+  .circle-list-name { font-size: 12px; }
+  .circle-list-id { font-size: 10px; padding: 1px 4px; }
+  .circle-list-counts { gap: 3px; }
+  .circle-stat-item { font-size: 10px; height: 18px; padding: 0 4px; }
+  .circle-list-status-pill { height: 18px; padding: 0 6px; font-size: 10px; }
+
+  /* 主区 toolbar-card 紧凑 padding + 工具按钮折行 */
+  .toolbar-card {
+    padding: 10px 12px 8px;
+    min-height: 0;
+    gap: 6px;
+  }
+  .toolbar-title { font-size: 13px; }
+  .toolbar-subtitle { font-size: 11px; }
+  .toolbar-main { gap: 6px; flex-wrap: wrap; }
+  .toolbar-stats-row {
+    gap: 6px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .toolbar-metrics { gap: 4px; }
+
+  /* circle-tabs-wrapper 内的 toolbar-right-actions：默认 absolute 会和 tabs 标签重叠，
+   * 移动端改 static、独占一行并允许 wrap */
+  .circle-tabs-wrapper .toolbar-right-actions {
+    position: static;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0 0 6px;
+  }
+  /* 移除 tabs nav 右侧为绝对定位按钮预留的空间（移动端已改 static）*/
+  .circle-tabs :deep(.el-tabs__nav-wrap) {
+    padding-right: 0 !important;
+  }
+  .release-sort-button {
+    height: 30px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
+  .filter-toggles { flex-wrap: wrap; gap: 4px; }
+  .filter-toggle-btn { font-size: 11px; padding: 4px 8px; }
+  .view-toggle-group { margin-left: auto; }
+  .view-toggle-btn { padding: 4px 6px; }
+
+  /* works-card padding 紧凑 */
+  .works-card { padding: 12px; gap: 10px; }
+
+  /* batch-bar：内部 flex 横向元素改 stack；按钮 grid 2 列平分 */
+  .batch-bar {
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+  /* 模板里的 Tailwind utility 包装：flex items-center justify-between 在 ≤640 改 column */
+  .works-card > div.flex.items-center.justify-between {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 8px;
+  }
+  .works-card > div.flex.items-center.justify-between > .flex.items-center.gap-2 {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+  }
+  .works-card > div.flex.items-center.justify-between > .flex.items-center.gap-2 > .el-button {
+    width: 100%;
+  }
+  /* 下载选中项按钮独占整行，强调主操作 */
+  .works-card > div.flex.items-center.justify-between > .flex.items-center.gap-2 > .batch-action-button.primary {
+    grid-column: 1 / -1;
+  }
+
+  /* work-grid 紧凑：414px - padding 24 - gap 8 ≈ 380，可容下 2 列 152px */
+  .work-grid {
+    width: 100%;
+    max-width: 100%;
+    gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: hidden !important;
+  }
+
+  /* 已满足 tab：统计条 / 本地筛选 / 搜索框避免撑出屏幕 */
+  .owned-panel,
+  .owned-stats-strip,
+  .owned-filter-row {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+  .owned-stats-strip {
+    padding: 6px !important;
+  }
+  .owned-stats-list {
+    width: 100%;
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .owned-stats-list > div {
+    min-width: 0;
+    padding: 8px 10px !important;
+    border-right: 0 !important;
+    border-radius: 12px;
+    background: rgba(248, 250, 252, 0.72);
+  }
+  .owned-filter-row {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 8px !important;
+  }
+  .owned-filter-tabs {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    display: grid !important;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    overflow-x: hidden;
+  }
+  .owned-filter-tabs > button {
+    min-width: 0;
+    padding: 6px 4px !important;
+    font-size: 12px !important;
+    justify-content: center;
+    white-space: normal;
+    line-height: 1.15;
+  }
+  .owned-search-wrap {
+    width: 100% !important;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* 来源对比 tab：统计 / 筛选 / 行内容移动端单列化，避免三来源列撑宽 */
+  .compare-panel,
+  .compare-stats-list,
+  .compare-filter-row,
+  .compare-works-list,
+  .compare-work-item,
+  .compare-work-row,
+  .compare-work-main {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+  .compare-stats-list {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    padding: 6px;
+  }
+  .compare-stats-list > div {
+    min-width: 0;
+    padding: 8px 10px !important;
+    border-right: 0 !important;
+    border-radius: 12px;
+    background: rgba(248, 250, 252, 0.72);
+  }
+  .compare-filter-row {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 8px;
+  }
+  .compare-filter-tabs {
+    width: 100%;
+    max-width: 100%;
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    overflow-x: hidden;
+  }
+  .compare-filter-tabs > button {
+    min-width: 0;
+    padding: 7px 4px !important;
+    font-size: 12px !important;
+    white-space: normal;
+    line-height: 1.15;
+  }
+  .compare-search-wrap {
+    width: 100% !important;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .compare-head {
+    display: none !important;
+  }
+  .compare-work-item {
+    padding: 12px 10px !important;
+  }
+  .compare-work-row {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 8px !important;
+  }
+  .compare-work-title {
+    white-space: normal !important;
+    overflow: hidden;
+    text-overflow: clip;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  .compare-work-tags {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+    gap: 5px !important;
+  }
+  .compare-source-cols {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px !important;
+    overflow: hidden;
+  }
+  .compare-source-cols > div {
+    min-width: 0;
+  }
+  .compare-source-cols > div[class*="w-px"] {
+    display: none !important;
+  }
+  .compare-source-cols > div[class*="w-20"] {
+    width: auto !important;
+    min-width: 0;
+    align-items: flex-start !important;
+    padding: 6px;
+    border-radius: 10px;
+    background: rgba(248, 250, 252, 0.86);
+    overflow: hidden;
+  }
+  .compare-source-cols span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* works-pager 居中 */
+  .works-pager { justify-content: center; }
+  .works-pager :deep(.el-pagination__sizes),
+  .works-pager :deep(.el-pagination__jump) { display: none !important; }
+
+  .compare-head { display: none !important; }
+
+  /* Preview Dialog ≤640 全屏（沿用已有 :deep selector） */
+  :deep(.circle-preview-dialog .el-dialog) {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+  :deep(.circle-preview-dialog .el-dialog__body) {
+    padding: 14px 14px 8px !important;
+    height: calc(100dvh - 56px) !important;
+    overflow-y: auto !important;
+  }
+  :deep(.circle-preview-dialog .el-dialog__footer) {
+    padding: 6px 14px 14px !important;
+  }
+
+  /* Reimport Dialog ≤640 全屏 */
+  :deep(.circle-reimport-dialog .el-dialog) {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+  :deep(.circle-reimport-dialog .el-dialog__header) {
+    padding: 12px 14px 8px !important;
+  }
+  :deep(.circle-reimport-dialog .el-dialog__title) {
+    font-size: 15px !important;
+  }
+  :deep(.circle-reimport-dialog .el-dialog__body) {
+    padding: 12px 14px 8px !important;
+    height: calc(100dvh - 110px) !important;
+    overflow-y: auto !important;
+  }
+  :deep(.circle-reimport-dialog .el-dialog__footer) {
+    padding: 0 14px 14px !important;
+  }
+
+  /* hero-search-wrap：移动端独占整行（已在 index.css 全局规则，但 padding 微调更紧） */
+  .hero-search-wrap {
+    width: 100%;
+  }
 }
 </style>
