@@ -79,6 +79,36 @@
                       </div>
                     </div>
                   </div>
+
+                  <div class="field-group space-y-2">
+                    <label>指定目录</label>
+                    <div class="picker-wrap relative">
+                      <button
+                        type="button"
+                        class="interactive-field field-input picker-button flex h-9 w-full items-center justify-between rounded-lg border border-slate-200/70 bg-white/55 py-2 pr-2 pl-2.5 text-sm text-slate-800"
+                        :disabled="!settings.targetLibraryId"
+                        :title="targetSubdirHint"
+                        @click="openTargetDirectoryPicker"
+                      >
+                        <span class="picker-label flex items-center gap-1.5 min-w-0">
+                          <FolderOpen :size="14" class="text-slate-400 shrink-0" />
+                          <span class="line-clamp-1 text-left">{{ targetSubdirLabel }}</span>
+                        </span>
+                        <span class="flex items-center gap-1 shrink-0">
+                          <button
+                            v-if="settings.targetSubdir"
+                            type="button"
+                            class="picker-clear inline-flex items-center justify-center size-5 rounded-md text-slate-400 hover:text-slate-700"
+                            title="恢复到库存根目录"
+                            @click.stop="clearTargetSubdir"
+                          >
+                            <X :size="13" />
+                          </button>
+                          <ChevronRight :size="16" class="text-slate-400" />
+                        </span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div class="space-y-1.5">
@@ -136,7 +166,14 @@
                         <Check v-if="isGroupAllSelected(group)" :size="14" />
                         <span v-else-if="isGroupPartiallySelected(group)" class="checkbox-minus" />
                       </button>
-                      <component :is="group.is_file ? FileIcon : Folder" :size="20" class="tree-icon" :class="group.is_file ? 'icon-file' : 'icon-folder'" />
+                      <component
+                        :is="iconMetaForGroup(group).icon"
+                        :size="20"
+                        :stroke-width="2.2"
+                        class="tree-icon"
+                        :class="[`tree-icon-kind-${classifyGroupKind(group)}`, { 'tree-icon-fill': iconMetaForGroup(group).fillIcon }]"
+                        :style="{ color: iconMetaForGroup(group).color }"
+                      />
                       <span class="tree-name node-rjcode text-sm text-slate-800 truncate font-medium">
                         {{ getDisplayText(group.name) }}
                         <span class="node-title-muted">{{ getDisplayText(group.path) }}</span>
@@ -173,7 +210,14 @@
                         <Check v-if="row.checked" :size="14" />
                         <span v-else-if="row.indeterminate" class="checkbox-minus" />
                       </button>
-                      <component :is="resolveTreeIcon(row, group)" :size="20" class="tree-icon" :class="row.type === 'dir' ? 'icon-folder' : getTreeRowIconClass(row)" />
+                      <component
+                        :is="iconMetaForRow(row).icon"
+                        :size="20"
+                        :stroke-width="2.2"
+                        class="tree-icon"
+                        :class="[`tree-icon-kind-${classifyRowKind(row)}`, { 'tree-icon-fill': iconMetaForRow(row).fillIcon }]"
+                        :style="{ color: iconMetaForRow(row).color }"
+                      />
                       <span
                         class="tree-name text-sm truncate font-medium"
                         :class="row.indeterminate ? 'tree-name-partial' : 'text-slate-800'"
@@ -201,14 +245,24 @@
       </div>
     </div>
   </el-dialog>
+
+  <RemoteFolderPickerDialog
+    v-model:visible="targetDirectoryDialogVisible"
+    :library="selectedTargetLibrary"
+    :initial-relative-path="settings.targetSubdir"
+    title="指定上传目录"
+    @submit="handleTargetDirectorySubmit"
+  />
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, toRaw, watch } from 'vue'
-import { Check, ChevronDown, ChevronRight, File as FileIcon, FileText, Folder, Music, X } from 'lucide-vue-next'
+import { Check, ChevronDown, ChevronRight, FolderOpen, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { libraryApi } from '../../api'
 import AppLoadingAnimation from './AppLoadingAnimation.vue'
+import RemoteFolderPickerDialog from './RemoteFolderPickerDialog.vue'
+import { classifyLibraryEntryKind, libraryEntryMetaFor } from '../library/_libraryFileKind.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -229,6 +283,7 @@ const previewGroups = ref([])
 const openSelect = ref(null)
 const selectRoot = ref(null)
 const storageInfo = ref(null)
+const targetDirectoryDialogVisible = ref(false)
 const settings = reactive({
   targetLibraryId: '',
   targetSubdir: '',
@@ -325,6 +380,17 @@ const estimatedRemainingSpaceText = computed(() => {
 })
 const selectedUploadGroups = computed(() => previewGroups.value.filter(group => isGroupAllSelected(group) || isGroupPartiallySelected(group)))
 const targetDirectoryPreview = computed(() => resolvedTargetRoot.value || '')
+const targetSubdirLabel = computed(() => {
+  if (!settings.targetLibraryId) return '请先选择目标库存'
+  const value = String(settings.targetSubdir || '').trim()
+  return value || '库存根目录'
+})
+const targetSubdirHint = computed(() => {
+  if (!settings.targetLibraryId) return '请先选择目标库存'
+  const subdir = String(settings.targetSubdir || '').trim()
+  if (!subdir) return '点击选择库存内子目录，默认上传到库存根目录'
+  return `当前指定子目录：${subdir}`
+})
 const selectedFolderPreview = computed(() => {
   const groups = selectedUploadGroups.value
   if (!groups.length) return ''
@@ -365,7 +431,11 @@ watch(() => props.libraries, () => {
   }
 }, { deep: true, immediate: true })
 
-watch(() => settings.targetLibraryId, async () => {
+watch(() => settings.targetLibraryId, async (next, prev) => {
+  // 切换目标库存时清空已选子目录，避免把旧库下的相对路径残留到新库
+  if (prev && next && next !== prev) {
+    settings.targetSubdir = ''
+  }
   await loadStorageInfo()
 })
 
@@ -385,6 +455,26 @@ function chooseOption(menu, value) {
   if (menu === 'inventory') settings.targetLibraryId = value
   else settings.targetSubdir = value
   openSelect.value = null
+}
+
+function openTargetDirectoryPicker() {
+  if (!settings.targetLibraryId) {
+    ElMessage.warning('请先选择目标库存')
+    return
+  }
+  openSelect.value = null
+  targetDirectoryDialogVisible.value = true
+}
+
+function clearTargetSubdir() {
+  settings.targetSubdir = ''
+}
+
+function handleTargetDirectorySubmit(payload) {
+  if (!payload) return
+  const rel = String(payload.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
+  settings.targetSubdir = rel
+  targetDirectoryDialogVisible.value = false
 }
 
 function handleDocumentClick(event) {
@@ -745,23 +835,31 @@ function joinFolderPath(basePath, relativePath) {
   return `${base}${separator}${relative.replace(/\//g, separator)}`
 }
 
-function resolveTreeIcon(row, group) {
-  if (row?.type === 'dir') {
-    return group.expandedIds.has(row.id) ? Folder : Folder
-  }
-  const name = String(row?.name || '').toLowerCase()
-  if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(name)) return Music
-  if (/\.(srt|ass|ssa|vtt|lrc|txt|md|json)$/i.test(name)) return FileText
-  return FileIcon
+// 全部走库存页共享 helper（8 类色盘 + dir 9 类），避免这里重复手写表决定。
+// 详见 frontend/src/components/library/_libraryFileKind.js，与 Library.vue / LibrarySearchOverlay
+// / ActivityRichBlock 使用同一套 kind 划分。
+function normalizeGroupItem (group) {
+  return { is_directory: !group?.is_file, name: group?.name || '' }
 }
 
-function getTreeRowIconClass(row) {
-  if (row?.type === 'dir') return 'icon-folder'
-  const resource = row?.resource || {}
-  const ext = getPreviewFileTypeKey(resource)
-  if (['.wav', '.flac'].includes(ext)) return 'icon-audio-blue'
-  if (['.mp3', '.m4a', '.ogg', '.aac', '.wma'].includes(ext)) return 'icon-audio-purple'
-  return 'icon-file'
+function normalizeRowItem (row) {
+  return { is_directory: row?.type === 'dir', name: row?.name || '' }
+}
+
+function iconMetaForGroup (group) {
+  return libraryEntryMetaFor(normalizeGroupItem(group))
+}
+
+function iconMetaForRow (row) {
+  return libraryEntryMetaFor(normalizeRowItem(row))
+}
+
+function classifyGroupKind (group) {
+  return classifyLibraryEntryKind(normalizeGroupItem(group))
+}
+
+function classifyRowKind (row) {
+  return classifyLibraryEntryKind(normalizeRowItem(row))
 }
 </script>
 
@@ -783,9 +881,21 @@ function getTreeRowIconClass(row) {
 .tree-row-selected { background: rgba(15,23,42,.04); }
 .field-input { transition: border-color .15s ease; }
 .field-input:focus { border-color: rgba(17,24,39,.45); }
+.picker-button { cursor: pointer; }
+.picker-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: rgba(248,250,252,0.6);
+}
+.picker-button:not(:disabled):hover { border-color: rgba(17,24,39,0.32); }
+.picker-clear { transition: background-color .15s ease, color .15s ease; }
+.picker-clear:hover { background: rgba(15,23,42,0.08); }
 .tree-checkbox { cursor: pointer; transition: border-color .15s ease, background-color .15s ease, transform .15s ease; }
 .tree-checkbox:hover { transform: scale(1.04); }
-.tree-icon { color: #64748b; }
+/* 顶层颜色交给 inline :style（由 helper meta.color 赋值），这里只保留过渡动画。 */
+.tree-icon { transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+/* lucide 默认 fill="none"，dir / archive 这些需要填充色的 kind 走 helper meta.fillIcon -> tree-icon-fill。 */
+.tree-icon-fill { fill: currentColor; }
 .tree-name,
 .node-title-muted {
   font-family:
@@ -805,7 +915,7 @@ function getTreeRowIconClass(row) {
   font-weight: 500;
   margin-left: 8px;
 }
-.icon-folder { color: #64748b; }
+/* .icon-folder 已废弃：颜色现在由 helper inline style 控制。 */
 .preview-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: #64748b; font-size: 14px; }
 .tree-checkbox-on { background: #111827; color: #fff; border-color: #111827; }
 .tree-checkbox-partial { background: #111827; color: #fff; border-color: #111827; }
