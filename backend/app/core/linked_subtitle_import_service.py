@@ -172,7 +172,7 @@ class LinkedSubtitleImportService:
         items.sort(key=lambda item: item.get("relative_path") or item.get("name") or "")
         return items
 
-    async def _collect_archive_subtitles_to_stage(self, archive_path: str) -> tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+    async def _collect_archive_subtitles_to_stage(self, archive_path: str, hint_password: Optional[str] = None) -> tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
         extracted_dir = None
         stage_dir = ""
         try:
@@ -183,6 +183,10 @@ class LinkedSubtitleImportService:
                 auto_classify=False,
                 metadata={"subtitle_probe_mode": True},
             )
+            if hint_password:
+                probe_task.task_metadata = dict(probe_task.task_metadata or {})
+                probe_task.task_metadata["manual_retry_password"] = hint_password
+                probe_task.task_metadata["manual_retry_password_only"] = True
             extracted_dir = await self.extract_service.extract(probe_task)
             if not extracted_dir or not os.path.isdir(extracted_dir):
                 probe_reason = str(getattr(probe_task, "error_message", "") or "").strip()
@@ -1060,6 +1064,7 @@ class LinkedSubtitleImportService:
         self,
         archive_path: str,
         preview: Dict[str, Any],
+        hint_password: Optional[str] = None,
     ) -> Dict[str, Any]:
         existing_stage_dir = str(
             preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or ""
@@ -1072,7 +1077,7 @@ class LinkedSubtitleImportService:
                 source_subtitles=source_subtitles,
             )
 
-        stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
+        stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path, hint_password=hint_password)
         if not source_subtitles:
             if stage_dir:
                 self._cleanup_stage_dir(stage_dir)
@@ -1871,6 +1876,7 @@ class LinkedSubtitleImportService:
         archive_path: str,
         preferred_library_id: Optional[str] = None,
         source_rjcode_hint: Optional[str] = None,
+        hint_password: Optional[str] = None,
     ) -> Dict[str, Any]:
         archive_path = await self._wait_for_archive_file(archive_path)
         archive_path = str(archive_path or "").strip()
@@ -1901,7 +1907,7 @@ class LinkedSubtitleImportService:
         if 0 < _archive_size < _subtitle_size_threshold:
             # 小包（< 10MB）：先解压探查字幕，再查 DLsite 确认翻译作关系，
             # Kikoeru 字幕状态由 _build_common_preview 内部并发查询。
-            stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
+            stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path, hint_password=hint_password)
             logger.info(
                 "[字幕补配预检] 小型压缩包先解压后判断路由: source=%s source_rj=%s"
                 " size=%.1fKB subtitle_count=%s",
@@ -1938,7 +1944,7 @@ class LinkedSubtitleImportService:
 
             # Step 3：决定是否解包——翻译作品且原作缺字幕才解包
             if is_translation_work and not prefetched_target_has_subtitle:
-                stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
+                stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path, hint_password=hint_password)
             elif not is_translation_work:
                 logger.info(
                     "[字幕补配预检] 大型非翻译作品压缩包，跳过临时解包: source=%s source_rj=%s size=%s",
@@ -2745,7 +2751,7 @@ class LinkedSubtitleImportService:
 
         return (datetime.now() - refreshed_time).total_seconds() >= max(1, int(refresh_min_interval_seconds or 0))
 
-    async def queue_pending_archive_import(self, task: Task, rjcode: str) -> Dict[str, Any]:
+    async def queue_pending_archive_import(self, task: Task, rjcode: str, hint_password: Optional[str] = None) -> Dict[str, Any]:
         hinted_rjcode = self._extract_rjcode(
             rjcode
             or getattr(task, "rjcode", "")
@@ -2757,11 +2763,12 @@ class LinkedSubtitleImportService:
         preview = await self.preview_archive_import(
             task.source_path,
             source_rjcode_hint=hinted_rjcode,
+            hint_password=hint_password,
         )
         task.update_progress(5, "预检中（确认字幕候选...）")
         should_create_pending = self._should_create_pending_import(preview)
         if should_create_pending:
-            preview = await self._stage_archive_subtitles_for_preview(task.source_path, preview)
+            preview = await self._stage_archive_subtitles_for_preview(task.source_path, preview, hint_password=hint_password)
             should_create_pending = self._should_create_pending_import(preview)
         logger.info(
             "[字幕补配预检] source=%s source_rj=%s target_rj=%s is_translation_work=%s is_manual_subtitle_source=%s subtitle_count=%s candidate_count=%s ready_candidate_count=%s kikoeru_has_work=%s stage_reason=%s execute_reason=%s handled=%s can_execute=%s",
