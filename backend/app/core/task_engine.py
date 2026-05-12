@@ -1134,6 +1134,14 @@ class TaskEngine:
                 metadata_service = MetadataService()
                 classifier = SmartClassifier()
                 skip_retry_precheck = self._should_skip_conflict_retry_precheck(task)
+                # 密码重试检测：EXTRACT_FAILED 冲突重试且仅提供了密码时，需重新运行字幕补配预检，
+                # 确保含字幕文件的压缩包不因"跳过预检"而直接绕过字幕补配路由入库。
+                _is_password_only_retry = (
+                    skip_retry_precheck
+                    and bool((task.task_metadata or {}).get("manual_retry_password_only"))
+                    and bool(str((task.task_metadata or {}).get("manual_retry_password") or "").strip())
+                    and str((task.task_metadata or {}).get("retry_conflict_type") or "") == "EXTRACT_FAILED"
+                )
 
                 # 方案 B 并行 list 预检：在 RJ 已知后 fire-and-forget 启动后台协程，
                 # 协程跑完 7zz l 后写入 ExtractService._archive_info_cache，
@@ -1142,9 +1150,62 @@ class TaskEngine:
                 precheck_task: Optional[asyncio.Task] = None
 
                 # 步骤0: 预检（先字幕补配，再普通查重）
-                if skip_retry_precheck:
+                if skip_retry_precheck and not _is_password_only_retry:
                     logger.info(f"[{rjcode}] 问题作品解压失败重试，跳过已完成的解压前预检")
                     task.update_progress(8, "跳过预检，准备重试解压")
+                elif _is_password_only_retry:
+                    # 仅提供密码的 EXTRACT_FAILED 重试：重新运行字幕补配预检（用正确密码），
+                    # 跳过查重防止回流问题队列，跳过其余普通预检流程。
+                    try:
+                        hint_password = str((task.task_metadata or {}).get("manual_retry_password") or "").strip() or None
+                        logger.info(f"[{rjcode}] 密码重试，重新运行字幕补配预检: hint_password={'***' if hint_password else '无'}")
+                        task.update_progress(5, "密码重试预检中")
+                        if (
+                            rjcode
+                            and rjcode != "未知"
+                            and hint_password
+                            and getattr(config.auto_process, 'import_linked_translation_subtitles', False)
+                        ):
+                            from .linked_subtitle_import_service import get_linked_subtitle_import_service
+                            linked_import_service = get_linked_subtitle_import_service()
+                            try:
+                                linked_result = await linked_import_service.queue_pending_archive_import(
+                                    task, rjcode, hint_password=hint_password
+                                )
+                            except Exception as exc:
+                                linked_result = {"handled": False, "reason": str(exc)}
+                                logger.warning(f"[{rjcode}] 密码重试字幕补配预检失败: {exc}")
+                            if linked_result.get("handled"):
+                                record = linked_result.get("record") or {}
+                                preview = linked_result.get("preview") or {}
+                                source_label = os.path.basename(task.source_path or "").strip() or rjcode or "字幕补配预检"
+                                task.task_metadata = {
+                                    **(task.task_metadata or {}),
+                                    "linked_subtitle_import": record,
+                                    "linked_subtitle_preview": preview,
+                                    "source_mode": "linked_translation_archive_pending",
+                                    "task_domain": "subtitle_import",
+                                    "task_kind": "linked_translation_archive_pending",
+                                    "source_page": "subtitle-import",
+                                    "source_action": "linked_translation_archive_pending",
+                                    "source_label": source_label,
+                                    "business_key": str(record.get("id") or task.id),
+                                }
+                                task.output_path = ""
+                                task.status = TaskStatus.COMPLETED
+                                task.update_progress(100, "已加入字幕补配预检列表，请在字幕补配页继续处理")
+                                task.completed_at = datetime.now()
+                                logger.info(
+                                    f"[{rjcode}] 密码重试命中关联字幕补配预检分支: "
+                                    f"target={preview.get('target_rjcode', '')} record={record.get('id', '')}"
+                                )
+                                await self._abort_precheck(precheck_task)
+                                return
+                        task.update_progress(8, "字幕补配预检未命中，准备重试解压")
+                        logger.info(f"[{rjcode}] 密码重试字幕补配预检未命中，继续解压入库流程")
+                    except Exception:
+                        await self._abort_precheck(precheck_task)
+                        raise
                 else:
                     try:  # 步骤 0 try/except：确保步骤 0 意外异常时 cancel precheck
                         logger.info(f"[{rjcode}] 步骤0: 预检")
