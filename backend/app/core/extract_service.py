@@ -522,6 +522,24 @@ class ExtractService:
                     )
                     task.source_path = archive_path
 
+            # WinRAR 自解压多卷（首卷 X.part1.exe + 兄弟 X.partN.rar）：
+            # 7zz 不会从 .exe 首卷按 .partN.rar 文件名规则续接兄弟卷，必然失败。
+            # 把 .partN.exe 改名为 .partN.rar（RAR 数据签名前允许任意头部数据，
+            # 改名不破坏文件），让 7zz 按标准 RAR 多卷协议读取。
+            if volume_set.type == 'part' and any(
+                re.search(r'\.part\d+\.exe$', os.path.basename(p), re.IGNORECASE)
+                for p in volume_set.volumes
+            ):
+                self._set_extract_meta(task, extract_stage="remap_part_exe")
+                task.update_progress(17, "重命名 .partN.exe 自解压分卷为标准 RAR 多卷格式")
+                volume_set = await self._remap_part_exe_volumes(volume_set, task)
+                archive_path = volume_set.entry_path or volume_set.volumes[0]
+                if archive_path != task.source_path:
+                    logger.info(
+                        f"[Extract] .partN.exe 自解压分卷已重命名: {task.source_path} -> {archive_path}"
+                    )
+                    task.source_path = archive_path
+
         manual_retry_password = normalize_password_value(
             (task.task_metadata or {}).get("manual_retry_password")
         )
@@ -585,6 +603,7 @@ class ExtractService:
             await self._cleanup_extract_path(output_path)
             await self._rollback_exe_e_remap(task)
             await self._rollback_zip_numeric_remap(task)
+            await self._rollback_part_exe_remap(task)
             raise
 
         if not success:
@@ -596,6 +615,7 @@ class ExtractService:
                 # 取消时也尝试把自解压分卷文件名还原（避免 .exe + .eNN 留下乱七八糟改名结果）
                 await self._rollback_exe_e_remap(task)
                 await self._rollback_zip_numeric_remap(task)
+                await self._rollback_part_exe_remap(task)
                 return None
             # 更新任务状态为失败，并设置更准确的错误信息
             if extract_failure_reason == "disk_full":
@@ -615,6 +635,8 @@ class ExtractService:
             await self._rollback_exe_e_remap(task)
             # .zip + .NNN 非标准分卷重命名失败时，把文件名还原回 .zip + .NNN
             await self._rollback_zip_numeric_remap(task)
+            # .partN.exe WinRAR 自解压分卷重命名失败时，把文件名还原回 .partN.exe
+            await self._rollback_part_exe_remap(task)
             return None
 
         try:
@@ -661,6 +683,7 @@ class ExtractService:
             await self._cleanup_extract_path(output_path)
             await self._rollback_exe_e_remap(task)
             await self._rollback_zip_numeric_remap(task)
+            await self._rollback_part_exe_remap(task)
             raise
 
     def _pick_filename_matched_rjcode(self, password_candidates: List[Dict[str, Optional[str]]]) -> Optional[str]:
@@ -2515,6 +2538,137 @@ class ExtractService:
 
         if task.task_metadata is not None:
             task.task_metadata.pop('zip_numeric_remap', None)
+
+    async def _remap_part_exe_volumes(
+        self,
+        volume_set: 'VolumeSet',
+        task: Optional[Task] = None,
+    ) -> 'VolumeSet':
+        """把 WinRAR 自解压分卷里的 .partN.exe 改名为 .partN.rar。
+
+        WinRAR 自解压多卷的命名约定：首卷 `X.part1.exe`（SFX 程序 + RAR 数据），
+        后续卷 `X.part2.rar`、`X.part3.rar` …。`7zz x X.part1.exe` 能解 SFX，
+        但**不会**按 `.partN.rar` 文件名规则去续接 part2 / part3，所以多卷必
+        然失败（typically returncode=2）。RAR 格式允许在 `Rar!` 签名之前存在
+        任意数据（这就是 SFX 工作的原理），所以把 `.exe` 改成 `.rar` 不破坏
+        数据，7zz 扫到签名就能正常解析。
+
+        策略：
+        1. volume_set.type 必须是 'part'，且至少有一卷扩展名是 `.exe`，否则
+           原样返回。
+        2. 把每一卷 `X.partN.exe` 改名为 `X.partN.rar`；非 `.exe` 卷保持不动。
+        3. 任一卷重命名失败整体回滚，返回原 volume_set。
+        4. 在 task_metadata 里记录原始/重命名映射，便于解压最终失败时还原。
+        5. 重命名后类型仍是 'part'，entry_path 更新为新首卷路径。
+        """
+        if volume_set.type != 'part' or not volume_set.volumes:
+            return volume_set
+
+        # 只在确实存在 .partN.exe 卷时才走重命名通道，避免影响纯 .rar 多卷
+        has_exe_volume = any(
+            re.search(r'\.part\d+\.exe$', os.path.basename(p), re.IGNORECASE)
+            for p in volume_set.volumes
+        )
+        if not has_exe_volume:
+            return volume_set
+
+        directory = os.path.dirname(volume_set.volumes[0])
+        rename_map: List[Tuple[str, str]] = []
+        new_volumes: List[str] = []
+        for volume_path in volume_set.volumes:
+            filename = os.path.basename(volume_path)
+            new_filename = re.sub(
+                r'(\.part\d+)\.exe$', r'\1.rar', filename, flags=re.IGNORECASE
+            )
+            new_path = os.path.join(directory, new_filename)
+            new_volumes.append(new_path)
+            if os.path.abspath(volume_path) != os.path.abspath(new_path):
+                rename_map.append((volume_path, new_path))
+
+        # 预检：目标文件名不能已经存在（除非就是源自己）
+        for _, new_path in rename_map:
+            if os.path.exists(new_path):
+                logger.warning(
+                    f"[PartExeRemap] 目标文件名已存在，跳过重命名以防覆盖: {new_path}"
+                )
+                return volume_set
+
+        completed: List[Tuple[str, str]] = []
+        for old_path, new_path in rename_map:
+            try:
+                await asyncio.to_thread(os.rename, old_path, new_path)
+                completed.append((old_path, new_path))
+                logger.info(f"[PartExeRemap] 重命名: {old_path} -> {new_path}")
+            except Exception as exc:
+                logger.error(
+                    f"[PartExeRemap] 重命名失败，开始回滚: "
+                    f"{old_path} -> {new_path}, error={exc}"
+                )
+                for done_old, done_new in completed:
+                    try:
+                        await asyncio.to_thread(os.rename, done_new, done_old)
+                        logger.info(f"[PartExeRemap] 回滚重命名: {done_new} -> {done_old}")
+                    except Exception as rollback_exc:
+                        logger.error(
+                            f"[PartExeRemap] 回滚重命名失败: "
+                            f"{done_new} -> {done_old}, error={rollback_exc}"
+                        )
+                return volume_set
+
+        if task is not None:
+            self._set_extract_meta(
+                task,
+                part_exe_remap={
+                    'rename_map': [
+                        {'original': old, 'renamed': new}
+                        for old, new in completed
+                    ],
+                },
+            )
+
+        return VolumeSet(
+            volume_set.base_name,
+            new_volumes,
+            'part',
+            entry_path=new_volumes[0],
+        )
+
+    async def _rollback_part_exe_remap(self, task: Task) -> None:
+        """解压最终失败时，把 .partN.rar 改回原始 .partN.exe。
+
+        只在文件还在原目录、且目标名未被占用时回滚；否则保留现状并记日志，
+        避免覆盖用户其他文件。
+        """
+        meta = (task.task_metadata or {}).get('part_exe_remap')
+        if not meta or not isinstance(meta, dict):
+            return
+        rename_map = meta.get('rename_map') or []
+        if not rename_map:
+            return
+
+        for entry in reversed(rename_map):
+            original = entry.get('original')
+            renamed = entry.get('renamed')
+            if not original or not renamed:
+                continue
+            if not os.path.exists(renamed):
+                logger.info(f"[PartExeRemap] 跳过回滚（文件已不在原位）: {renamed}")
+                continue
+            if os.path.exists(original):
+                logger.warning(
+                    f"[PartExeRemap] 跳过回滚（原文件名已被占用）: {original}"
+                )
+                continue
+            try:
+                await asyncio.to_thread(os.rename, renamed, original)
+                logger.info(f"[PartExeRemap] 失败回滚: {renamed} -> {original}")
+            except Exception as exc:
+                logger.error(
+                    f"[PartExeRemap] 失败回滚出错: {renamed} -> {original}, error={exc}"
+                )
+
+        if task.task_metadata is not None:
+            task.task_metadata.pop('part_exe_remap', None)
 
     def _build_rar_old_volume_set(self, directory: str, base_name: str) -> Optional['VolumeSet']:
         rar_path = os.path.join(directory, f"{base_name}.rar")
