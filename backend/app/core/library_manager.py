@@ -3657,21 +3657,9 @@ class LibraryManager:
         rj_only_search = self._is_rj_search_keyword(keyword)
         api_search_root = browse_root if keyword else search_root
 
-        # === 第一梯队接入 1：RJ 搜索走索引快速路径 ===
-        indexed_result = self._search_files_via_index(
-            library,
-            keyword=keyword,
-            search_root=api_search_root,
-            browse_root=browse_root,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            page=page,
-            page_size=page_size,
-            search_exact=search_exact,
-            search_result_kind=search_result_kind,
-        )
-        if indexed_result is not None:
-            return self._set_cached_remote_search_result(cache_key, indexed_result)
+        # 设计：远程库（synology_filestation）搜索无条件走群晖 SYNO.Search，不再走索引快速路径。
+        # 历史原因：远程库索引常年未就绪 / 条目不全，索引返回 0 条会短路掉 SYNO.Search，导致用户搜不到。
+        # 索引层只保留本地库 _search_local_files 中使用。
         normalized_sort_by = self._normalize_library_sort_by(sort_by)
         normalized_sort_order = self._normalize_library_sort_order(sort_order)
         remote_sort_by = "name" if normalized_sort_by == "name" else "mtime"

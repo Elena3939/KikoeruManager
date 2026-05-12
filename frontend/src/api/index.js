@@ -585,7 +585,8 @@ export const libraryApi = {
     sortOrder = 'desc',
     forceRefresh = false,
     searchExact = false,
-    searchResultKind = 'all'
+    searchResultKind = 'all',
+    scope = 'global'
   } = {}) => {
     const response = await apiClient.get('/library/browser/files', {
       params: {
@@ -598,7 +599,8 @@ export const libraryApi = {
         sort_order: sortOrder,
         force_refresh: forceRefresh || undefined,
         search_exact: searchExact || undefined,
-        search_result_kind: searchResultKind || undefined
+        search_result_kind: searchResultKind || undefined,
+        scope: scope && scope !== 'global' ? scope : undefined
       }
     })
     return response.data

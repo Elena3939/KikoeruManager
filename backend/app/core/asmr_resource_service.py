@@ -1720,12 +1720,20 @@ class ASMRResourceService:
 
     def _resolve_postprocess_options(self, task_metadata: Dict[str, Any]) -> Dict[str, Any]:
         options = dict(task_metadata.get("postprocess_options") or {})
+        flatten_files = bool(options.get("flatten_files"))
+        naming_mode = str(options.get("naming_mode") or "api").strip().lower() or "api"
+        classify_mode = str(options.get("classify_mode") or "circle").strip().lower() or "circle"
+        # flatten 直放：兜底强制 preserve / none，archive 路径只到 target_subdir，无作品 / 社团目录。
+        if flatten_files:
+            naming_mode = "preserve"
+            classify_mode = "none"
         return {
             "enabled": bool(options.get("enabled", False)),
             "target_library_id": str(options.get("target_library_id") or "").strip(),
             "target_subdir": str(options.get("target_subdir") or "").strip().strip("/\\"),
-            "naming_mode": str(options.get("naming_mode") or "api").strip().lower() or "api",
-            "classify_mode": str(options.get("classify_mode") or "circle").strip().lower() or "circle",
+            "naming_mode": naming_mode,
+            "classify_mode": classify_mode,
+            "flatten_files": flatten_files,
             "circle_name": str(options.get("circle_name") or task_metadata.get("circle_name") or "").strip(),
             "skip_metadata_fetch": bool(options.get("skip_metadata_fetch")),
         }
@@ -1758,17 +1766,35 @@ class ASMRResourceService:
             final_metadata["original_maker_name"] = circle_name
             final_metadata["maker_name"] = str(final_metadata.get("maker_name") or circle_name).strip() or circle_name
 
-        folder_name = await self._build_api_rename_name(rjcode, final_metadata) if postprocess_options.get("naming_mode") == "api" else self._sanitize_folder_name(final_metadata["work_name"], rjcode)
-        circle_dir = self._sanitize_folder_name(circle_name or final_metadata.get("maker_name") or "未分类社团", "未分类社团")
+        flatten_files = bool(postprocess_options.get("flatten_files"))
         target_root = PurePosixPath(target_library.root_path)
         target_subdir = str(postprocess_options.get("target_subdir") or "").strip().strip("/\\")
         if target_subdir:
             target_root = target_root / target_subdir
-        target_root = target_root / circle_dir
+        classify_mode = str(postprocess_options.get("classify_mode") or "").strip().lower()
+        if classify_mode == "circle" and not flatten_files:
+            circle_dir = self._sanitize_folder_name(circle_name or final_metadata.get("maker_name") or "未分类社团", "未分类社团")
+            target_root = target_root / circle_dir
 
         client = self._get_synology_client(target_library_id, target_library.synology)
         await manager._ensure_remote_directory(client, str(target_root))
 
+        # flatten 直放：所有文件直接上传到 target_root（即 root_path/target_subdir），不创建作品目录
+        if flatten_files:
+            return {
+                "final_metadata": final_metadata,
+                "upload_options": {
+                    **upload_options,
+                    "enabled": True,
+                    "mode": "synology",
+                    "library_id": target_library_id,
+                    "target_path": str(target_root),
+                },
+                "final_output_path": str(target_root),
+                "immediate_synology_upload": True,
+            }
+
+        folder_name = await self._build_api_rename_name(rjcode, final_metadata) if postprocess_options.get("naming_mode") == "api" else self._sanitize_folder_name(final_metadata["work_name"], rjcode)
         remote_root = str(target_root / folder_name)
         if not await manager._remote_path_exists(client, remote_root):
             await client.create_folder(str(target_root), folder_name)
@@ -1855,9 +1881,18 @@ class ASMRResourceService:
         if postprocess_options.get("naming_mode") == "api":
             renamed_root = await self._api_rename_download_root(download_root, rjcode, final_metadata)
 
-        task.update_progress(98, "按社团入库")
-        circle_dir = self._sanitize_folder_name(circle_name or final_metadata.get("maker_name") or "未分类社团", "未分类社团")
         target_subdir = str(postprocess_options.get("target_subdir") or "").strip().strip("/\\")
+        classify_mode = str(postprocess_options.get("classify_mode") or "").strip().lower()
+        flatten_files = bool(postprocess_options.get("flatten_files"))
+        if classify_mode == "circle" and not flatten_files:
+            circle_dir = self._sanitize_folder_name(circle_name or final_metadata.get("maker_name") or "未分类社团", "未分类社团")
+            task.update_progress(98, "按社团入库")
+        else:
+            circle_dir = ""
+            if flatten_files:
+                task.update_progress(98, "直放到指定目录" if target_subdir else "直放到库存根目录")
+            else:
+                task.update_progress(98, "入库到指定目录" if target_subdir else "入库")
         manager = get_library_manager()
         target_library_id = str(postprocess_options.get("target_library_id") or "").strip()
         classifier = SmartClassifier()
@@ -1871,14 +1906,19 @@ class ASMRResourceService:
                 target_root = PurePosixPath(target_library.root_path)
                 if relative_target_dir:
                     target_root = target_root / relative_target_dir
-                remote_root = str(target_root / os.path.basename(renamed_root))
+                # flatten 直放：所有文件直接到 target_root，不创建作品目录层
+                if flatten_files:
+                    remote_root = str(target_root)
+                else:
+                    remote_root = str(target_root / os.path.basename(renamed_root))
                 await manager._ensure_remote_directory(client, str(target_root))
-                # 容忍目录已存在（error 117），支持重试场景
-                try:
-                    await client.create_folder(str(target_root), os.path.basename(renamed_root))
-                except Exception as _ce:
-                    if "already exists" not in str(_ce).lower() and not client._is_error_code(_ce, 117):
-                        raise
+                if not flatten_files:
+                    # 容忍目录已存在（error 117），支持重试场景
+                    try:
+                        await client.create_folder(str(target_root), os.path.basename(renamed_root))
+                    except Exception as _ce:
+                        if "already exists" not in str(_ce).lower() and not client._is_error_code(_ce, 117):
+                            raise
 
                 # 预走目录树，收集文件列表
                 file_rows_lib = []
@@ -1970,7 +2010,28 @@ class ASMRResourceService:
 
         target_parts = [part for part in [target_root, target_subdir, circle_dir] if part]
         target_dir = os.path.join(*target_parts)
-        final_path = classifier._move_with_rename(renamed_root, target_dir)
+        if flatten_files:
+            # 直放模式：把 renamed_root 内的文件直接搬到 target_dir 根，跳过作品目录层；
+            # 同名文件用 (1)/(2) 后缀避免覆盖。
+            os.makedirs(target_dir, exist_ok=True)
+            for entry in os.listdir(renamed_root):
+                src = os.path.join(renamed_root, entry)
+                if not os.path.isfile(src):
+                    continue
+                stem, ext = os.path.splitext(entry)
+                dst = os.path.join(target_dir, entry)
+                counter = 1
+                while os.path.exists(dst):
+                    dst = os.path.join(target_dir, f"{stem}({counter}){ext}")
+                    counter += 1
+                shutil.move(src, dst)
+            try:
+                shutil.rmtree(renamed_root, ignore_errors=True)
+            except Exception:
+                logger.debug("[直放] 清理临时下载目录失败 path=%s", renamed_root, exc_info=True)
+            final_path = target_dir
+        else:
+            final_path = classifier._move_with_rename(renamed_root, target_dir)
         # 索引同步：本地落地后按路径反查 library 通知（target_library 可能是 None）
         try:
             if target_library is not None:

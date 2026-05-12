@@ -21,6 +21,7 @@ const props = defineProps({
   cornerLabel: { type: String, default: '' },
   /** 尺寸变体 */
   size: { type: String, default: 'default', validator: v => ['default', 'lg'].includes(v) },
+  showReleaseBadge: { type: Boolean, default: true },
 })
 
 const emit = defineEmits(['select', 'preview', 'reimport'])
@@ -60,9 +61,10 @@ const releaseLabel = computed(() => {
   return `${match[1]}/${month}${day}`
 })
 const isUnreleased = computed(() => {
+  if (!props.showReleaseBadge) return false
   if (props.item.is_unreleased) return true
   const value = String(props.item.release_date || props.item.date || props.item.release_at || '').trim()
-  if (!value) return true
+  if (!value) return false
   // 日期在今天之后也算预售（未发售）
   const match = value.match(/(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?/)
   if (!match) return false

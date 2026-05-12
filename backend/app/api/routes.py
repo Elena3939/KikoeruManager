@@ -5413,14 +5413,22 @@ async def browse_library_files(
     force_refresh: bool = False,
     search_exact: bool = False,
     search_result_kind: str = "all",
+    scope: str = "global",
 ):
+    """``scope`` 控制远程搜索范围：
+
+    - ``global``（默认）：跨所有 active 远程库搜索 + 合并（库存页用，保留旧行为）
+    - ``current``：只搜 ``library_id`` 指定的那一个远程库（picker 用，避免等最慢的库）
+    """
     try:
         manager = get_library_manager()
         current_library = manager.get_library_definition(library_id)
         keyword = str(search or "").strip()
+        scope_normalized = str(scope or "global").strip().lower()
         use_remote_global_search = (
             bool(keyword)
             and current_library.type == "synology_filestation"
+            and scope_normalized != "current"
         )
         if use_remote_global_search:
             data = await manager.global_search_files(
@@ -11081,6 +11089,12 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
     target_subdir = str(batch_options.get("target_subdir") or "").strip()
     naming_mode = str(batch_options.get("naming_mode") or "api").strip().lower() or "api"
     classify_mode = str(batch_options.get("classify_mode") or "circle").strip().lower() or "circle"
+    # flatten_files：直放指定目录开关。开启时所有文件直接落到 target_subdir 下，
+    # 不再创建社团目录 / 作品目录层；前端已强制 naming/classify 退化但这里再兜底一次。
+    flatten_files = bool(batch_options.get("flatten_files"))
+    if flatten_files:
+        naming_mode = "preserve"
+        classify_mode = "none"
 
     for item in request.items:
         rjcode = str(item.get("rjcode") or "").strip().upper()
@@ -11114,6 +11128,7 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
                     "target_subdir": target_subdir,
                     "naming_mode": naming_mode,
                     "classify_mode": classify_mode,
+                    "flatten_files": flatten_files,
                     "circle_name": str((item.get("postprocess_options") or {}).get("circle_name") or request.circle_name or ""),
                 },
                 "verify_md5_after_download": bool(item.get("verify_md5_after_download", True)),

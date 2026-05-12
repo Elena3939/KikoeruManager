@@ -1118,7 +1118,9 @@ const downloadSettings = reactive({
   targetLibraryId: '',
   targetSubdir: '',
   namingMode: 'api',
-  classifyMode: 'circle'
+  classifyMode: 'circle',
+  // 直放指定目录：开启后所有下载文件直接落到 target_subdir 下，不创建社团 / 作品目录层。
+  flattenFiles: false
 })
 const cachedTargetSubdirs = ref([])
 let flashedWorkTimer = null
