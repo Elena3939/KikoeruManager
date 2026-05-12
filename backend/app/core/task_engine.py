@@ -3139,6 +3139,8 @@ class TaskEngine:
         zip_split_match = re.search(r'^(.*)\.z(\d{2})$', filename, re.IGNORECASE)
         # 7z 分卷：任意 .7z.NNN 成员都接受（不再只匹配 .7z.001）
         seven_z_member_match = re.search(r'^(.*)\.7z\.(\d{3})$', filename, re.IGNORECASE)
+        # ZIP 数字分卷：_remap_zip_numeric_split 标准化后的 .zip.NNN 格式（如 .zip.001/.zip.002）
+        zip_numeric_member_match = re.search(r'^(.*)\.zip\.(\d{3})$', filename, re.IGNORECASE)
         # 旧式 RAR 多卷：主卷 .rar 或分卷成员 .rXX
         rar_old_member_match = re.search(r'^(.*)\.r(\d{2})$', filename, re.IGNORECASE)
 
@@ -3147,6 +3149,7 @@ class TaskEngine:
             f"no_ext_part={no_ext_part_match is not None}, "
             f"zip_main={zip_main_match is not None}, zip_split={zip_split_match is not None}, "
             f"7z_member={seven_z_member_match is not None}, "
+            f"zip_numeric_member={zip_numeric_member_match is not None}, "
             f"rar_old_member={rar_old_member_match is not None}"
         )
 
@@ -3176,6 +3179,17 @@ class TaskEngine:
                     if volume_path not in files_to_archive:
                         files_to_archive.append(volume_path)
             logger.info(f"检测到 7z 分卷压缩包，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
+        elif zip_numeric_member_match:
+            # ZIP 数字分卷（_remap_zip_numeric_split 标准化后的 .zip.NNN 格式）：
+            # X.zip + X.002 + ... 被重命名为 X.zip.001 + X.zip.002 + ...
+            # task.source_path 已更新为首卷 X.zip.001，这里把整组 .zip.NNN 全部聚合。
+            base_name = zip_numeric_member_match.group(1)
+            for f in os.listdir(source_dir):
+                if re.match(rf'^{re.escape(base_name)}\.zip\.\d{{3}}$', f, re.IGNORECASE):
+                    volume_path = os.path.join(source_dir, f)
+                    if volume_path not in files_to_archive:
+                        files_to_archive.append(volume_path)
+            logger.info(f"检测到 ZIP 数字分卷（.zip.NNN），共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
         elif zip_main_match or zip_split_match:
             # source_path 可能是 .zip 主卷或 .zXX 分卷成员，
             # 都按 base_name 聚合 .zip 主卷 + 全部 .zXX 兄弟卷。
