@@ -412,9 +412,11 @@ class FileProcessor:
                 return volume_set
 
         # 分卷模式识别（按优先级排序，更具体的模式在前）
+        # WinRAR 自解压分卷首卷常用 .part1.exe，后续卷继续用 .partN.rar/.exe，
+        # 这里把 .exe 一并纳入 partN 模式，避免首卷被当成普通 SFX 单体解压。
         patterns = [
             (r'\.7z\.(\d{3})$', '7z_volume_with_ext'),  # .7z.001, .7z.002 (7z分卷，带.7z扩展名)
-            (r'\.part(\d+)\.(rar|zip|7z)$', 'part'),
+            (r'\.part(\d+)\.(rar|zip|7z|exe)$', 'part'),
             (r'\.part(\d+)$', 'part_no_ext'),  # 无扩展名的RAR分卷格式
             (r'\.(\d{3})$', '7z_volume'),  # 纯数字分卷（如 .001, .002）
             (r'\.(\d{2})$', 'generic'),
@@ -549,7 +551,7 @@ class FileProcessor:
             文件路径，如果不是分卷文件或已处理返回 None
         """
         part_patterns = [
-            r'\.part(\d+)\.(rar|zip|7z)$',  # 带扩展名的分卷
+            r'\.part(\d+)\.(rar|zip|7z|exe)$',  # 带扩展名的分卷（含 WinRAR SFX 首卷 .part1.exe）
             r'\.part(\d+)$',                  # 无扩展名的分卷
             r'\.z\d{2}$',                     # ZIP分卷
             r'\.r\d{2}$',                     # 旧式 RAR 分卷
@@ -557,7 +559,7 @@ class FileProcessor:
         ]
         basename = os.path.basename(file_path)
         main_volume_patterns = [
-            r'^.+\.part1(?:\.(rar|zip|7z))?$',
+            r'^.+\.part1(?:\.(rar|zip|7z|exe))?$',
             r'^.+\.7z\.001$',
         ]
 
@@ -643,21 +645,46 @@ class FileProcessor:
         if not os.path.exists(zip_path):
             return None
 
-        volumes = []
+        # 1. 标准 WinRAR ZIP 分卷 (.zXX)：X.zip + X.z01 + X.z02 + ...
+        z_volumes: List[str] = []
         try:
             for file in os.listdir(directory):
                 if re.fullmatch(rf'{re.escape(base_name)}\.z\d{{2}}', file, re.IGNORECASE):
-                    volumes.append(os.path.join(directory, file))
+                    z_volumes.append(os.path.join(directory, file))
         except Exception as exc:
             logger.error(f"[FileProcessor] 查找 ZIP 分卷失败: {exc}")
             return None
 
-        if not volumes:
+        if z_volumes:
+            z_volumes.append(zip_path)
+            ordered = sorted(z_volumes, key=self._volume_sort_key)
+            return VolumeSet(base_name, ordered, 'zip_volume_main', entry_path=zip_path)
+
+        # 2. 非标准 .zip 主卷 + .NNN 纯数字分卷：X.zip + X.002 + X.003 + ...
+        #    7-Zip / 国内分卷工具创建多卷时首卷 .001 被改名为 .zip 留下的格式。
+        #    后续 remap 流程在 ExtractService 里完成，这里仅识别为分卷组。
+        numeric_volumes: List[str] = []
+        try:
+            for file in os.listdir(directory):
+                if re.fullmatch(rf'{re.escape(base_name)}\.\d{{3}}', file, re.IGNORECASE):
+                    numeric_volumes.append(os.path.join(directory, file))
+        except Exception as exc:
+            logger.error(f"[FileProcessor] 查找 ZIP 数字分卷失败: {exc}")
             return None
 
-        volumes.append(zip_path)
-        ordered = sorted(volumes, key=self._volume_sort_key)
-        return VolumeSet(base_name, ordered, 'zip_volume_main', entry_path=zip_path)
+        if numeric_volumes:
+            def _numeric_key(path: str) -> int:
+                match = re.search(r'\.(\d{3})$', os.path.basename(path))
+                return int(match.group(1)) if match else 0
+
+            ordered = [zip_path] + sorted(numeric_volumes, key=_numeric_key)
+            logger.info(
+                f"[FileProcessor] 检测到 .zip + .NNN 非标准分卷组: {base_name}, "
+                f"volumes={[os.path.basename(p) for p in ordered]}"
+            )
+            return VolumeSet(base_name, ordered, 'zip_numeric_split', entry_path=zip_path)
+
+        return None
 
     def _build_exe_e_volume_set(self, directory: str, base_name: str) -> Optional[VolumeSet]:
         """构建自解压 .exe + .eNN 分卷组。

@@ -509,6 +509,19 @@ class ExtractService:
                     )
                     task.source_path = archive_path
 
+            # .zip 主卷 + .NNN 纯数字分卷（首卷 .001 被改名为 .zip 的非标准分卷）
+            # 同样需要先重命名为标准 .zip.NNN 多卷格式，让 7zz 按 split file 协议读取。
+            if volume_set.type == 'zip_numeric_split':
+                self._set_extract_meta(task, extract_stage="remap_zip_numeric_split")
+                task.update_progress(17, "重命名 .zip + .NNN 分卷为标准多卷格式")
+                volume_set = await self._remap_zip_numeric_split(volume_set, task)
+                archive_path = volume_set.entry_path or volume_set.volumes[0]
+                if archive_path != task.source_path:
+                    logger.info(
+                        f"[Extract] .zip 数字分卷已重命名: {task.source_path} -> {archive_path}"
+                    )
+                    task.source_path = archive_path
+
         manual_retry_password = normalize_password_value(
             (task.task_metadata or {}).get("manual_retry_password")
         )
@@ -571,6 +584,7 @@ class ExtractService:
         except Exception:
             await self._cleanup_extract_path(output_path)
             await self._rollback_exe_e_remap(task)
+            await self._rollback_zip_numeric_remap(task)
             raise
 
         if not success:
@@ -581,6 +595,7 @@ class ExtractService:
                 await self._cleanup_extract_path(output_path)
                 # 取消时也尝试把自解压分卷文件名还原（避免 .exe + .eNN 留下乱七八糟改名结果）
                 await self._rollback_exe_e_remap(task)
+                await self._rollback_zip_numeric_remap(task)
                 return None
             # 更新任务状态为失败，并设置更准确的错误信息
             if extract_failure_reason == "disk_full":
@@ -598,6 +613,8 @@ class ExtractService:
             await self._cleanup_extract_path(output_path)
             # 自解压分卷重命名失败时，把文件名还原回 .exe + .eNN，方便用户手工排查
             await self._rollback_exe_e_remap(task)
+            # .zip + .NNN 非标准分卷重命名失败时，把文件名还原回 .zip + .NNN
+            await self._rollback_zip_numeric_remap(task)
             return None
 
         try:
@@ -643,6 +660,7 @@ class ExtractService:
         except Exception:
             await self._cleanup_extract_path(output_path)
             await self._rollback_exe_e_remap(task)
+            await self._rollback_zip_numeric_remap(task)
             raise
 
     def _pick_filename_matched_rjcode(self, password_candidates: List[Dict[str, Optional[str]]]) -> Optional[str]:
@@ -1631,9 +1649,9 @@ class ExtractService:
             logger.info(f"跳过自解压文件后缀名修复: {file_path}")
             return file_path
 
-        # 跳过分卷压缩文件
+        # 跳过分卷压缩文件（包括 WinRAR 自解压分卷首卷 .part1.exe）
         import re
-        if re.search(r'\.part\d+\.(rar|zip|7z)$', filename, re.IGNORECASE):
+        if re.search(r'\.part\d+\.(rar|zip|7z|exe)$', filename, re.IGNORECASE):
             logger.info(f"跳过分卷压缩文件后缀名修复: {file_path}")
             return file_path
 
@@ -1852,7 +1870,7 @@ class ExtractService:
         """获取分卷后缀模式匹配"""
         patterns = [
             r'\.7z\.\d{3}$',                # .7z.001, .7z.002 (7z分卷，带.7z扩展名)
-            r'\.part\d+\.(rar|zip|7z)$',  # 带扩展名的分卷
+            r'\.part\d+\.(rar|zip|7z|exe)$',  # 带扩展名的分卷，WinRAR SFX 首卷是 .part1.exe
             r'\.part\d+$',                  # 无扩展名的分卷 (如 .part1)
             r'\.z\d{2}$',
             r'\.r\d{2}$',
@@ -2096,9 +2114,11 @@ class ExtractService:
                 return volume_set
 
         # 分卷模式识别（按优先级排序，更具体的模式在前）
+        # WinRAR 自解压分卷首卷常用 .part1.exe，后续卷继续用 .partN.rar/.exe，
+        # 这里把 .exe 一并纳入 partN 模式，避免首卷被当成普通 SFX 单体解压。
         patterns = [
             (r'\.7z\.(\d{3})$', '7z_volume_with_ext'),  # .7z.001, .7z.002 (7z分卷，带.7z扩展名)
-            (r'\.part(\d+)\.(rar|zip|7z)$', 'part'),
+            (r'\.part(\d+)\.(rar|zip|7z|exe)$', 'part'),
             (r'\.part(\d+)$', 'part_no_ext'),  # 无扩展名的RAR分卷格式
             (r'\.(\d{3})$', '7z_volume'),  # 纯数字分卷（如 .001, .002）
             (r'\.(\d{2})$', 'generic'),
@@ -2129,21 +2149,48 @@ class ExtractService:
         if not os.path.exists(zip_path):
             return None
 
-        volumes: List[str] = []
+        # 1. 标准 WinRAR ZIP 分卷 (.zXX)：X.zip + X.z01 + X.z02 + ...
+        z_volumes: List[str] = []
         try:
             for file in os.listdir(directory):
                 if re.fullmatch(rf'{re.escape(base_name)}\.z\d{{2}}', file, re.IGNORECASE):
-                    volumes.append(os.path.join(directory, file))
+                    z_volumes.append(os.path.join(directory, file))
         except Exception as exc:
             logger.error(f"[VolumeSet] 查找 ZIP 分卷失败: {exc}")
             return None
 
-        if not volumes:
+        if z_volumes:
+            z_volumes.append(zip_path)
+            ordered = sorted(z_volumes, key=self._volume_sort_key)
+            return VolumeSet(base_name, ordered, 'zip_volume_main', entry_path=zip_path)
+
+        # 2. 非标准 .zip 主卷 + .NNN 纯数字分卷：X.zip + X.002 + X.003 + ...
+        #    这是 7-Zip / 国内分卷工具创建多卷时把首卷 .zip.001 改名为 .zip 留下的格式，
+        #    后续 .002/.003/... 单独存在。需要至少一个 .NNN 兄弟卷才视为分卷组，
+        #    避免误吞同目录里偶尔存在的无关 .001/.002 数据文件。
+        numeric_volumes: List[str] = []
+        try:
+            for file in os.listdir(directory):
+                if re.fullmatch(rf'{re.escape(base_name)}\.\d{{3}}', file, re.IGNORECASE):
+                    numeric_volumes.append(os.path.join(directory, file))
+        except Exception as exc:
+            logger.error(f"[VolumeSet] 查找 ZIP 数字分卷失败: {exc}")
             return None
 
-        volumes.append(zip_path)
-        ordered = sorted(volumes, key=self._volume_sort_key)
-        return VolumeSet(base_name, ordered, 'zip_volume_main', entry_path=zip_path)
+        if numeric_volumes:
+            # 显式按数字递增排序：.zip 作为首卷（part 1 等价）排在最前
+            def _numeric_key(path: str) -> int:
+                match = re.search(r'\.(\d{3})$', os.path.basename(path))
+                return int(match.group(1)) if match else 0
+
+            ordered = [zip_path] + sorted(numeric_volumes, key=_numeric_key)
+            logger.info(
+                f"[VolumeSet] 检测到 .zip + .NNN 非标准分卷组: {base_name}, "
+                f"volumes={[os.path.basename(p) for p in ordered]}"
+            )
+            return VolumeSet(base_name, ordered, 'zip_numeric_split', entry_path=zip_path)
+
+        return None
 
     def _build_exe_e_volume_set(self, directory: str, base_name: str) -> Optional['VolumeSet']:
         """构建自解压 .exe + .eNN 分卷组（国产 SFX 工具特有命名）。
@@ -2349,6 +2396,125 @@ class ExtractService:
         # 清掉 metadata 标记，避免重试时再次回滚
         if task.task_metadata is not None:
             task.task_metadata.pop('exe_e_remap', None)
+
+    async def _remap_zip_numeric_split(
+        self,
+        volume_set: 'VolumeSet',
+        task: Optional[Task] = None,
+    ) -> 'VolumeSet':
+        """把 .zip 主卷 + .NNN 纯数字分卷重命名为标准 .zip.NNN 多卷格式。
+
+        7zz / unar 都按 "split file" 协议读取分卷压缩包，规范命名是
+        X.zip.001 / X.zip.002 / ...。如果传入的是 X.zip + X.002 + X.003 + ...
+        这种非标准命名，7zz 看不到分卷链条，会把 X.zip 当成单个不完整 ZIP
+        强行解析，必然失败（Headers/Data Error）。
+
+        策略：
+        1. 把 X.zip 重命名为 X.zip.001，X.NNN 重命名为 X.zip.NNN。
+        2. 重命名失败任何一卷整体回滚，返回原 volume_set，上层走原失败链路。
+        3. 在 task_metadata 里记录原始/重命名映射，便于解压最终失败时还原文件名。
+        4. 重命名后类型改为 7z_volume_with_ext，复用现有 7z 多卷处理通道。
+        """
+        if volume_set.type != 'zip_numeric_split' or not volume_set.volumes:
+            return volume_set
+
+        directory = os.path.dirname(volume_set.volumes[0])
+
+        def make_name(idx: int) -> str:
+            return f"{volume_set.base_name}.zip.{idx:03d}"
+
+        rename_map: List[Tuple[str, str]] = []
+        new_volumes: List[str] = []
+        for idx, volume_path in enumerate(volume_set.volumes, start=1):
+            new_path = os.path.join(directory, make_name(idx))
+            new_volumes.append(new_path)
+            if os.path.abspath(volume_path) != os.path.abspath(new_path):
+                rename_map.append((volume_path, new_path))
+
+        # 预检：目标文件名不能已经存在（除非就是源自己）
+        for _, new_path in rename_map:
+            if os.path.exists(new_path):
+                logger.warning(
+                    f"[ZipNumericSplit] 目标文件名已存在，跳过重命名以防覆盖: {new_path}"
+                )
+                return volume_set
+
+        completed: List[Tuple[str, str]] = []
+        for old_path, new_path in rename_map:
+            try:
+                await asyncio.to_thread(os.rename, old_path, new_path)
+                completed.append((old_path, new_path))
+                logger.info(f"[ZipNumericSplit] 重命名: {old_path} -> {new_path}")
+            except Exception as exc:
+                logger.error(
+                    f"[ZipNumericSplit] 重命名失败，开始回滚: "
+                    f"{old_path} -> {new_path}, error={exc}"
+                )
+                for done_old, done_new in completed:
+                    try:
+                        await asyncio.to_thread(os.rename, done_new, done_old)
+                        logger.info(f"[ZipNumericSplit] 回滚重命名: {done_new} -> {done_old}")
+                    except Exception as rollback_exc:
+                        logger.error(
+                            f"[ZipNumericSplit] 回滚重命名失败: "
+                            f"{done_new} -> {done_old}, error={rollback_exc}"
+                        )
+                return volume_set
+
+        if task is not None:
+            self._set_extract_meta(
+                task,
+                zip_numeric_remap={
+                    'rename_map': [
+                        {'original': old, 'renamed': new}
+                        for old, new in completed
+                    ],
+                },
+            )
+
+        return VolumeSet(
+            volume_set.base_name,
+            new_volumes,
+            '7z_volume_with_ext',
+            entry_path=new_volumes[0],
+        )
+
+    async def _rollback_zip_numeric_remap(self, task: Task) -> None:
+        """解压最终失败时，把 .zip.NNN 改回原始 .zip + .NNN 命名。
+
+        只在文件还在原目录、且目标名未被占用时回滚；否则保留现状并记日志，
+        避免覆盖用户其他文件。
+        """
+        meta = (task.task_metadata or {}).get('zip_numeric_remap')
+        if not meta or not isinstance(meta, dict):
+            return
+        rename_map = meta.get('rename_map') or []
+        if not rename_map:
+            return
+
+        for entry in reversed(rename_map):
+            original = entry.get('original')
+            renamed = entry.get('renamed')
+            if not original or not renamed:
+                continue
+            if not os.path.exists(renamed):
+                logger.info(f"[ZipNumericSplit] 跳过回滚（文件已不在原位）: {renamed}")
+                continue
+            if os.path.exists(original):
+                logger.warning(
+                    f"[ZipNumericSplit] 跳过回滚（原文件名已被占用）: {original}"
+                )
+                continue
+            try:
+                await asyncio.to_thread(os.rename, renamed, original)
+                logger.info(f"[ZipNumericSplit] 失败回滚: {renamed} -> {original}")
+            except Exception as exc:
+                logger.error(
+                    f"[ZipNumericSplit] 失败回滚出错: {renamed} -> {original}, error={exc}"
+                )
+
+        if task.task_metadata is not None:
+            task.task_metadata.pop('zip_numeric_remap', None)
 
     def _build_rar_old_volume_set(self, directory: str, base_name: str) -> Optional['VolumeSet']:
         rar_path = os.path.join(directory, f"{base_name}.rar")
@@ -2613,7 +2779,7 @@ class ExtractService:
         if normalized.endswith(archive_suffixes):
             return True
 
-        if re.search(r"\.(part\d+\.(rar|zip|7z)|7z\.\d{3}|z\d{2})$", normalized, re.IGNORECASE):
+        if re.search(r"\.(part\d+\.(rar|zip|7z|exe)|7z\.\d{3}|z\d{2})$", normalized, re.IGNORECASE):
             return True
 
         return False
