@@ -172,6 +172,7 @@
                 image-field="cover_url"
                 code-field="rjcode"
                 size="default"
+                :show-release-badge="false"
                 class="enhanced-plan-card"
                 :style="{ '--asmr-grid-delay': `${Math.min(idx, 12) * 35}ms` }"
                 @select="(p) => togglePlanSelect(p.rjcode)"

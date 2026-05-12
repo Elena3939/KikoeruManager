@@ -107,74 +107,75 @@
                   </div>
 
                   <div class="field-group space-y-2">
-                    <label>库存内前缀目录</label>
-                    <div class="select-wrap relative">
-                      <button type="button" class="interactive-field field-input select-button flex h-9 w-full items-center justify-between rounded-lg border border-slate-200/70 bg-white/55 py-2 pr-2 pl-2.5 text-sm text-slate-800" @click.stop="toggleSelectMenu('prefix')">
-                        <span class="line-clamp-1 text-left" :class="settings.targetSubdir ? 'text-slate-800' : 'text-slate-400'">{{ prefixLabel || '按社团名自动归类' }}</span>
-                        <ChevronDown :size="18" class="select-arrow size-4 text-slate-400" />
+                    <label>指定目录</label>
+                    <div class="picker-wrap relative">
+                      <button
+                        type="button"
+                        class="interactive-field field-input picker-button flex h-9 w-full items-center justify-between rounded-lg border border-slate-200/70 bg-white/55 py-2 pr-2 pl-2.5 text-sm text-slate-800"
+                        :disabled="!settings.targetLibraryId"
+                        :title="targetSubdirHint"
+                        @click="openTargetDirectoryPicker"
+                      >
+                        <span class="picker-label flex items-center gap-1.5 min-w-0">
+                          <FolderOpen :size="14" class="text-slate-400 shrink-0" />
+                          <span class="line-clamp-1 text-left" :class="settings.targetSubdir ? 'text-slate-800' : 'text-slate-400'">{{ targetSubdirLabel }}</span>
+                        </span>
+                        <span class="flex items-center gap-1 shrink-0">
+                          <button
+                            v-if="settings.targetSubdir"
+                            type="button"
+                            class="picker-clear inline-flex items-center justify-center size-5 rounded-md text-slate-400 hover:text-slate-700"
+                            title="恢复到按社团名自动归类"
+                            @click.stop="clearTargetSubdir"
+                          >
+                            <X :size="13" />
+                          </button>
+                          <ChevronRight :size="16" class="text-slate-400" />
+                        </span>
                       </button>
-
-                      <div v-if="openSelect === 'prefix'" class="dropdown-panel dropdown-menu absolute z-50 mt-1 w-full min-w-36 origin-top rounded-lg bg-white/88 border border-white/80 text-slate-800 shadow-lg ring-1 ring-slate-200/80 p-1">
-                        <button
-                          type="button"
-                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors hover:bg-slate-100/80"
-                          @click.stop="chooseOption('prefix', '')"
-                        >
-                          <span class="truncate">按社团名自动归类</span>
-                          <span v-if="settings.targetSubdir === ''" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
-                            <Check :size="16" />
-                          </span>
-                        </button>
-                        <button
-                          v-for="option in targetSubdirOptions"
-                          :key="option"
-                          type="button"
-                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors hover:bg-slate-100/80"
-                          @click.stop="chooseOption('prefix', option)"
-                        >
-                          <span class="truncate">{{ option }}</span>
-                          <span v-if="settings.targetSubdir === option" class="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
-                            <Check :size="16" />
-                          </span>
-                        </button>
-                      </div>
                     </div>
                   </div>
                 </div>
               </section>
 
-              <section class="space-y-4">
-                <div class="section-head compact-head">
-                  <h2>最终行为</h2>
-                  <p>下载完成后如何重命名 / 归类文件夹。</p>
-                </div>
+              <div class="action-buttons grid grid-cols-3 gap-3">
+                <button
+                  type="button"
+                  class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                  :class="{ active: settings.classifyMode === 'circle', 'is-disabled': settings.flattenFiles }"
+                  :disabled="settings.flattenFiles"
+                  :title="settings.flattenFiles ? '直放指定目录模式下不再按社团归类' : ''"
+                  @click="toggleClassifyMode"
+                >
+                  按社团归类
+                </button>
+                <button
+                  type="button"
+                  class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                  :class="{ active: settings.namingMode === 'api', 'is-disabled': settings.flattenFiles }"
+                  :disabled="settings.flattenFiles"
+                  :title="settings.flattenFiles ? '直放指定目录模式下不创建作品目录' : ''"
+                  @click="toggleNamingMode"
+                >
+                  API 命名作品目录
+                </button>
+                <button
+                  type="button"
+                  class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                  :class="{ active: settings.flattenFiles }"
+                  title="开启后所有选中的文件直接落到「指定目录」下，不再创建社团目录 / 作品目录，也不保留作品内子目录"
+                  @click="toggleFlattenFiles"
+                >
+                  直放指定目录
+                </button>
+              </div>
 
-                <div class="action-buttons grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
-                    :class="{'active': settings.classifyMode === 'circle'}"
-                    @click="settings.classifyMode = settings.classifyMode === 'circle' ? '' : 'circle'"
-                  >
-                    按社团自动归类
-                  </button>
-                  <button
-                    type="button"
-                    class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
-                    :class="{'active': settings.namingMode === 'api'}"
-                    @click="settings.namingMode = settings.namingMode === 'api' ? '' : 'api'"
-                  >
-                    API 命名作品目录
-                  </button>
-                </div>
-
-                <div class="space-y-1">
-                  <p class="target-path text-xs text-slate-500 leading-relaxed">
-                    入库路径: <span class="text-slate-700 break-all">{{ resolvedTargetRoot || '-' }}</span>
-                    <span class="text-slate-400"> / {作品目录}</span>
-                  </p>
-                </div>
-              </section>
+              <div class="space-y-1.5">
+                <p class="target-path text-xs text-slate-500 leading-relaxed">
+                  最终路径: <span class="text-slate-700 break-all">{{ finalPathPreview || '-' }}</span>
+                </p>
+                <p class="text-[11px] leading-relaxed text-slate-400">{{ finalPathDescription }}</p>
+              </div>
             </div>
 
             <div v-else class="space-y-6">
@@ -365,6 +366,14 @@
       </div>
     </div>
   </el-dialog>
+
+  <RemoteFolderPickerDialog
+    v-model:visible="targetDirectoryDialogVisible"
+    :library="selectedTargetLibrary"
+    :initial-relative-path="settings.targetSubdir"
+    title="指定入库目录"
+    @submit="handleTargetDirectorySubmit"
+  />
 </template>
 
 <script setup>
@@ -376,10 +385,13 @@ import {
   File as FileIcon,
   FileText,
   Folder,
+  FolderOpen,
   Music,
   X,
 } from 'lucide-vue-next'
+import { ElMessage } from 'element-plus'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
+import RemoteFolderPickerDialog from '../common/RemoteFolderPickerDialog.vue'
 import { configApi, libraryApi } from '../../api'
 
 const props = defineProps({
@@ -405,18 +417,6 @@ const cachedFilterRules = ref(null)
 
 const targetLibraries = computed(() => (props.libraries || []).filter(item => item?.enabled !== false))
 const selectedTargetLibrary = computed(() => targetLibraries.value.find(item => item.id === props.settings.targetLibraryId) || null)
-const resolvedTargetRoot = computed(() => {
-  const root = String(selectedTargetLibrary.value?.root_path || '').trim()
-  const sep = root.includes('/') ? '/' : '\\'
-  const prefix = String(props.settings.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
-  const circle = String(props.circleName || '').trim()
-  
-  const parts = [root]
-  if (prefix) parts.push(prefix)
-  if (circle) parts.push(circle)
-  
-  return parts.filter(Boolean).join(sep)
-})
 const selectedFileCount = computed(() => planStates.value.reduce((sum, plan) => sum + Number(plan.selected_resource_count || 0), 0))
 const selectedTotalBytes = computed(() => planStates.value.reduce((sum, plan) => sum + Number(plan.selected_size_bytes || 0), 0))
 const previewSelectableResources = computed(() => planStates.value.flatMap(plan => Array.isArray(plan?.selectable_resources) ? plan.selectable_resources : []))
@@ -460,9 +460,76 @@ const inventoryLabel = computed(() => {
   return targetLibraries.value.find(item => item.id === props.settings.targetLibraryId)?.name || '选择库存'
 })
 
-const prefixLabel = computed(() => {
-  return props.settings.targetSubdir || ''
+const targetSubdirLabel = computed(() => {
+  if (!props.settings.targetLibraryId) return '请先选择目标库存'
+  const value = String(props.settings.targetSubdir || '').trim()
+  return value || '按社团名自动归类'
 })
+
+const targetSubdirHint = computed(() => {
+  if (!props.settings.targetLibraryId) return '请先选择目标库存'
+  const subdir = String(props.settings.targetSubdir || '').trim()
+  if (!subdir) return '点击选择库存内子目录，默认按社团名自动归类'
+  return `当前指定子目录：${subdir}`
+})
+
+const finalPathPreview = computed(() => {
+  const library = selectedTargetLibrary.value
+  const base = String(library?.root_path || '').trim()
+  if (!base) return ''
+  const sep = base.includes('/') ? '/' : '\\'
+  const subdir = String(props.settings.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
+
+  const parts = [base]
+  if (subdir) parts.push(subdir.replace(/[\\/]+/g, sep))
+  // 直放指定目录：不再拼社团 / 作品目录，所有文件直接落到 base/subdir 下。
+  if (props.settings.flattenFiles) {
+    return parts.join(sep)
+  }
+  if (props.settings.classifyMode === 'circle') {
+    const circle = String(props.circleName || '').trim() || '{社团名}'
+    parts.push(circle)
+  }
+  const workDir = props.settings.namingMode === 'api' ? '{API命名作品目录}' : '{作品目录}'
+  parts.push(workDir)
+
+  return parts.join(sep)
+})
+
+const finalPathDescription = computed(() => {
+  const subdir = String(props.settings.targetSubdir || '').trim()
+  if (props.settings.flattenFiles) {
+    const where = subdir ? '指定子目录' : '库存根目录'
+    return `所有选中文件直接落到${where}下，不创建社团 / 作品目录，也不保留作品内子目录。`
+  }
+  const hints = []
+  hints.push(subdir ? '落到指定子目录下' : '落到库存根目录')
+  if (props.settings.classifyMode === 'circle') {
+    hints.push('按社团名再归类一层')
+  } else {
+    hints.push('不再按社团归类')
+  }
+  if (props.settings.namingMode === 'api') {
+    hints.push('作品目录使用 API 命名')
+  } else {
+    hints.push('保留原作品目录名')
+  }
+  return hints.join('，') + '。'
+})
+
+function toggleClassifyMode() {
+  if (props.settings.flattenFiles) return
+  props.settings.classifyMode = props.settings.classifyMode === 'circle' ? 'none' : 'circle'
+}
+
+function toggleNamingMode() {
+  if (props.settings.flattenFiles) return
+  props.settings.namingMode = props.settings.namingMode === 'api' ? 'preserve' : 'api'
+}
+
+function toggleFlattenFiles() {
+  props.settings.flattenFiles = !props.settings.flattenFiles
+}
 const requiresTargetLibrary = computed(() => props.actionMode === 'reimport')
 const primaryActionLabel = computed(() => {
   if (props.actionMode === 'reimport') return '跳过下载直接入库'
@@ -481,6 +548,7 @@ const primaryActionDisabled = computed(() => {
 
 const openSelect = ref(null)
 const selectRoot = ref(null)
+const targetDirectoryDialogVisible = ref(false)
 
 function toggleSelectMenu(menu) {
   openSelect.value = openSelect.value === menu ? null : menu
@@ -498,6 +566,59 @@ function chooseOption(menu, value) {
 function setMode(mode) {
   props.settings.mode = mode
   openSelect.value = null
+}
+
+function openTargetDirectoryPicker() {
+  if (!props.settings.targetLibraryId) {
+    ElMessage.warning('请先选择目标库存')
+    return
+  }
+  openSelect.value = null
+  targetDirectoryDialogVisible.value = true
+}
+
+function clearTargetSubdir() {
+  props.settings.targetSubdir = ''
+}
+
+function handleTargetDirectorySubmit(payload) {
+  if (!payload) return
+  const rel = String(payload.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
+  props.settings.targetSubdir = rel
+  targetDirectoryDialogVisible.value = false
+}
+
+watch(() => props.settings?.targetLibraryId, (next, prev) => {
+  if (prev && next && next !== prev) {
+    props.settings.targetSubdir = ''
+  }
+})
+
+// targetSubdir 在「有 → 无」或「无 → 有」之间切换时，把两个 toggle 重置为该模式的合理默认：
+//  - 有子目录：默认不归类、保留原目录名（直接落到指定目录）
+//  - 无子目录：默认按社团归类 + API 命名（与原行为一致）
+// 用户随后可以手动覆盖任一 toggle。
+watch(() => Boolean(String(props.settings?.targetSubdir || '').trim()), (hasNow, hadBefore) => {
+  if (hadBefore === undefined) return
+  if (hasNow === hadBefore) return
+  if (hasNow) {
+    props.settings.classifyMode = 'none'
+    props.settings.namingMode = 'preserve'
+  } else {
+    props.settings.classifyMode = 'circle'
+    props.settings.namingMode = 'api'
+  }
+})
+
+function ensureToggleDefaults() {
+  // 根据当前 targetSubdir 同步一次 toggle 默认值（不覆盖已被用户改过的值）。
+  const hasSubdir = Boolean(String(props.settings?.targetSubdir || '').trim())
+  if (!props.settings.classifyMode) {
+    props.settings.classifyMode = hasSubdir ? 'none' : 'circle'
+  }
+  if (!props.settings.namingMode) {
+    props.settings.namingMode = hasSubdir ? 'preserve' : 'api'
+  }
 }
 
 const directSubdirOptions = ref([])
@@ -637,6 +758,7 @@ onMounted(() => {
     if (typeof props.settings.directSubPath !== 'string') props.settings.directSubPath = ''
     if (typeof props.settings.directLibraryType !== 'string') props.settings.directLibraryType = ''
   }
+  ensureToggleDefaults()
 })
 
 onBeforeUnmount(() => {
@@ -658,6 +780,11 @@ watch(() => props.plans, (plans) => {
 function emitSubmit() {
   const action = props.actionMode === 'reimport' ? 'reimport' : 'download'
   const isDirectMode = props.enableDirectMode && props.settings.mode === 'direct'
+  const subdir = String(props.settings.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
+  const flattenFiles = !isDirectMode && Boolean(props.settings.flattenFiles)
+  // flatten 直放模式下：强制 preserve / none，避免后端再创建作品目录 / 社团目录层。
+  const namingMode = flattenFiles ? 'preserve' : (props.settings.namingMode === 'api' ? 'api' : 'preserve')
+  const classifyMode = flattenFiles ? 'none' : (props.settings.classifyMode === 'circle' ? 'circle' : 'none')
 
   const items = planStates.value
     .map(plan => buildSubmitItem(plan, isDirectMode))
@@ -670,15 +797,27 @@ function emitSubmit() {
     batchOptions: {
       download_base_path: props.settings.downloadBasePath || '',
       target_library_id: props.settings.targetLibraryId || '',
-      target_subdir: props.settings.targetSubdir || '',
-      naming_mode: props.settings.namingMode,
-      classify_mode: props.settings.classifyMode,
+      target_subdir: subdir,
+      naming_mode: namingMode,
+      classify_mode: classifyMode,
+      flatten_files: flattenFiles,
       mode: isDirectMode ? 'direct' : 'classify'
     }
   })
 }
 
 function buildSubmitItem(plan, isDirectMode) {
+  const flattenFiles = !isDirectMode && Boolean(props.settings.flattenFiles)
+  // 直放指定目录：扁平化作品内子目录——把 selected_resources 的 relative_path 替换为 file_name，
+  // 这样下载时文件直接落在 download_root 根下，后端 archive 不需要再处理嵌套层级。
+  const rawSelected = plan.selectable_resources.filter(item => item.selected)
+  const selectedResources = flattenFiles
+    ? rawSelected.map(item => ({
+        ...item,
+        relative_path: String(item.file_name || item.relative_path || '').split('/').pop().split('\\').pop()
+      }))
+    : rawSelected
+
   const baseItem = {
     session_id: plan.session_id,
     rjcode: plan.rjcode,
@@ -688,7 +827,7 @@ function buildSubmitItem(plan, isDirectMode) {
     cover_url: plan.cover_url || plan.image_url || '',
     image_url: plan.image_url || plan.cover_url || '',
     folder_path: plan.folder_path || '',
-    selected_resources: plan.selectable_resources.filter(item => item.selected),
+    selected_resources: selectedResources,
     resource_filter_snapshot: {},
     verify_md5_after_download: true,
     download_base_path: props.settings.downloadBasePath || ''
@@ -696,6 +835,9 @@ function buildSubmitItem(plan, isDirectMode) {
 
   if (!isDirectMode) {
     const useImmediateSynologyUpload = selectedTargetLibrary.value?.type === 'synology_filestation' && String(props.settings.targetLibraryId || '').trim()
+    const subdir = String(props.settings.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
+    const namingMode = flattenFiles ? 'preserve' : (props.settings.namingMode === 'api' ? 'api' : 'preserve')
+    const classifyMode = flattenFiles ? 'none' : (props.settings.classifyMode === 'circle' ? 'circle' : 'none')
     return {
       ...baseItem,
       upload_options: {
@@ -707,9 +849,10 @@ function buildSubmitItem(plan, isDirectMode) {
       postprocess_options: {
         enabled: true,
         target_library_id: props.settings.targetLibraryId || '',
-        target_subdir: props.settings.targetSubdir || '',
-        naming_mode: props.settings.namingMode,
-        classify_mode: props.settings.classifyMode,
+        target_subdir: subdir,
+        naming_mode: namingMode,
+        classify_mode: classifyMode,
+        flatten_files: flattenFiles,
         circle_name: props.circleName || ''
       }
     }
@@ -848,15 +991,6 @@ function toggleExpand(plan, row) {
 
 function togglePlanExpand(plan) {
   plan.rootExpanded = plan.rootExpanded === false ? true : false
-}
-
-function getPlanFinalPath(plan) {
-  const base = resolvedTargetRoot.value
-  if (!base) return '-'
-  const sep = base.includes('/') ? '/' : '\\'
-  // 优先使用后端给出的 folder_path，如果没有则拼凑一个预览名
-  const workFolder = plan.folder_path || `${plan.rjcode} ${plan.title || plan.canonical_rjcode}`
-  return `${base}${sep}${workFolder}`
 }
 
 function updateResourceSelection(plan, row, nextSelected) {
@@ -1057,6 +1191,11 @@ function formatSize(bytes) {
   /* 内层卡片移除过度模糊，依赖外层 window 的高斯模糊，以保证透视感 */
 }
 
+/* 隐藏滚动条但保留滚轮滚动能力；
+   scoped 样式无法继承其他组件定义，必须在本组件里复刻一份。 */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
 .circle-preview-settings-card {
   padding: 24px;
   flex: 1 1 auto;
@@ -1168,6 +1307,33 @@ function formatSize(bytes) {
   text-align: left;
 }
 
+.picker-wrap {
+  position: relative;
+}
+
+.picker-button {
+  cursor: pointer;
+  text-align: left;
+}
+
+.picker-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: rgba(248, 250, 252, 0.6);
+}
+
+.picker-button:not(:disabled):hover {
+  border-color: rgba(17, 24, 39, 0.32);
+}
+
+.picker-clear {
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.picker-clear:hover {
+  background: rgba(15, 23, 42, 0.08);
+}
+
 .select-arrow {
   color: #7f8792;
   flex: 0 0 auto;
@@ -1213,8 +1379,8 @@ function formatSize(bytes) {
 
 .action-buttons {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .soft-button {
@@ -1227,19 +1393,50 @@ function formatSize(bytes) {
 }
 
 .soft-button {
-  height: 40px;
+  height: 34px;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: 11.5px;
+  padding: 0 4px;
+  white-space: nowrap;
   font-weight: 500;
   cursor: pointer;
-  transition: transform 0.16s ease, box-shadow 0.16s ease;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+  letter-spacing: -0.01em;
 }
 
+/* 选中态对齐顶部 mode-tab-active 的「浅白浮起」语言，
+   不再用突兀的彩色渐变，保持整体玻璃浅色风格统一。 */
 .soft-button.active {
-  color: rgb(30, 41, 59);
-  background: rgba(255, 255, 255, 0.78);
-  border-color: rgba(226, 232, 240, 0.9);
-  box-shadow: 0 8px 16px rgba(148, 163, 184, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.98);
+  background: rgba(255, 255, 255, 0.95);
+  color: rgb(15, 23, 42);
+  font-weight: 600;
+  border-color: rgba(148, 163, 184, 0.5);
+  box-shadow:
+    0 4px 12px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.04);
+}
+
+.soft-button.active:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 16px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.05);
+}
+
+.soft-button[disabled],
+.soft-button.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.soft-button[disabled]:hover,
+.soft-button.is-disabled:hover {
+  transform: none;
+  box-shadow:
+    0 2px 8px rgba(31, 45, 61, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98);
 }
 
 .soft-button:hover {

@@ -202,8 +202,38 @@
         <!-- 右侧：子目录列表 -->
         <section class="explorer-list flex-1 flex flex-col min-w-0">
           <div class="fm-head">
-            <div class="fm-cell fm-cell-name">名称</div>
-            <div class="fm-cell fm-cell-time">修改时间</div>
+            <button
+              type="button"
+              class="fm-cell fm-cell-name fm-head-cell"
+              :class="{ 'fm-head-cell-active': sortBy === 'name' }"
+              @click="onColumnSort('name')"
+              title="按名称排序"
+            >
+              <span>名称</span>
+              <ChevronDown
+                v-if="sortBy === 'name'"
+                :size="13"
+                :stroke-width="2.4"
+                class="fm-head-arrow"
+                :class="{ 'fm-head-arrow-asc': sortDir === 'asc' }"
+              />
+            </button>
+            <button
+              type="button"
+              class="fm-cell fm-cell-time fm-head-cell"
+              :class="{ 'fm-head-cell-active': sortBy === 'mtime' }"
+              @click="onColumnSort('mtime')"
+              title="按修改时间排序"
+            >
+              <span>修改时间</span>
+              <ChevronDown
+                v-if="sortBy === 'mtime'"
+                :size="13"
+                :stroke-width="2.4"
+                class="fm-head-arrow"
+                :class="{ 'fm-head-arrow-asc': sortDir === 'asc' }"
+              />
+            </button>
           </div>
           <div
             ref="listScrollRef"
@@ -211,53 +241,72 @@
             tabindex="0"
             @keydown="handleListKeydown"
           >
-            <div v-if="loading" class="fm-state fm-state-col fm-loading-state">
+            <div v-if="inIndexSearchMode && indexSoftHint" class="fm-soft-hint">
+              <AlertCircle :size="13" :stroke-width="2.2" />
+              <span>{{ indexSoftHint }}</span>
+            </div>
+            <div v-if="loading && !inIndexSearchMode" class="fm-state fm-state-col fm-loading-state">
               <Loader2 :size="48" :stroke-width="2" class="fm-loading-icon" />
               <span class="fm-loading-title">正在读取目录</span>
               <span class="fm-loading-desc">同步远程库存子项中…</span>
             </div>
-            <div v-else-if="error" class="fm-state fm-state-col">
+            <div v-else-if="inIndexSearchMode && indexLoading" class="fm-state fm-state-col fm-loading-state">
+              <Loader2 :size="48" :stroke-width="2" class="fm-loading-icon" />
+              <span class="fm-loading-title">正在搜索</span>
+              <span class="fm-loading-desc">「{{ searchKeyword }}」</span>
+            </div>
+            <div v-else-if="inIndexSearchMode && indexError" class="fm-state fm-state-col">
+              <AlertCircle :size="22" :stroke-width="2" class="text-rose-500" />
+              <span class="text-rose-600">{{ indexError }}</span>
+              <span class="text-[11px] text-slate-400">请稍后重试，或检查网络与凭据</span>
+            </div>
+            <div v-else-if="error && !inIndexSearchMode" class="fm-state fm-state-col">
               <AlertCircle :size="22" :stroke-width="2" class="text-rose-500" />
               <span class="text-rose-600">{{ error }}</span>
               <button type="button" class="fm-retry-btn" @click="reload">重试</button>
             </div>
             <div v-else-if="!filteredFolders.length" class="fm-empty-wrap">
               <AppEmptyState
-                :description="searchKeyword ? '没有匹配的子目录' : '此目录下没有子目录'"
+                :description="inIndexSearchMode ? `没有匹配「${searchKeyword}」的目录` : '此目录下没有子目录'"
                 size="default"
               >
                 <span class="text-[11px] text-slate-400">点击"选择此目录"将选中当前目录</span>
               </AppEmptyState>
             </div>
-            <div
-              v-for="(folder, idx) in filteredFolders"
-              v-else
-              :key="folder.path"
-              :data-folder-index="idx"
-              class="fm-row"
-              :class="{
-                'fm-row-selected': selectedFolderPath === folder.path,
-                'fm-row-file': !isFolderEntry(folder)
-              }"
-              :title="folder.path"
-              @click="selectFolder(folder)"
-              @dblclick="isFolderEntry(folder) && navigateToPath(folder.path)"
-            >
-              <div class="fm-cell fm-cell-name">
-                <span class="fm-icon-shell">
-                  <component
-                    :is="iconMetaForFolder(folder).icon"
-                    :size="16"
-                    :stroke-width="2.2"
-                    class="fm-kind-icon"
-                    :class="[`fm-kind-icon-${classifyFolderKind(folder)}`, { 'fm-kind-icon-fill': iconMetaForFolder(folder).fillIcon }]"
-                    :style="{ color: iconMetaForFolder(folder).color }"
-                  />
-                </span>
-                <span class="fm-name">{{ folder.name }}</span>
+            <template v-else>
+              <div
+                v-for="(folder, idx) in filteredFolders"
+                :key="folder.path"
+                :data-folder-index="idx"
+                class="fm-row"
+                :class="{
+                  'fm-row-selected': selectedFolderPath === folder.path,
+                  'fm-row-file': !isFolderEntry(folder),
+                  'fm-row-search': inIndexSearchMode
+                }"
+                :title="folder.path"
+                @click="selectFolder(folder)"
+                @dblclick="isFolderEntry(folder) && navigateToPath(folder.path)"
+              >
+                <div class="fm-cell fm-cell-name">
+                  <span class="fm-icon-shell">
+                    <component
+                      :is="iconMetaForFolder(folder).icon"
+                      :size="16"
+                      :stroke-width="2.2"
+                      class="fm-kind-icon"
+                      :class="[`fm-kind-icon-${classifyFolderKind(folder)}`, { 'fm-kind-icon-fill': iconMetaForFolder(folder).fillIcon }]"
+                      :style="{ color: iconMetaForFolder(folder).color }"
+                    />
+                  </span>
+                  <div class="fm-name-wrap min-w-0 flex flex-col">
+                    <span class="fm-name truncate" v-html="highlightKeyword(folder.name)"></span>
+                    <span v-if="inIndexSearchMode && folder.relative_path" class="fm-name-rel truncate" v-html="highlightKeyword(folder.relative_path)"></span>
+                  </div>
+                </div>
+                <div class="fm-cell fm-cell-time">{{ formatFolderTime(folder.modified_time) }}</div>
               </div>
-              <div class="fm-cell fm-cell-time">{{ formatFolderTime(folder.modified_time) }}</div>
-            </div>
+            </template>
           </div>
         </section>
       </div>
@@ -344,11 +393,27 @@ const emit = defineEmits(['update:visible', 'submit', 'close'])
 const currentPath = ref('')
 const rootPath = ref('')
 const folders = ref([])
-const loading = ref(false)
+// loading 初始值为 true：dialog 首次 paint 时避免 folders=[] + loading=false 同帧出现，造成 No Data 闪屏。
+// loadFolders 完成后会在 finally 块翻 false。
+const loading = ref(true)
 const error = ref('')
 const selectedFolderPath = ref('')
 const searchKeyword = ref('')
 const listScrollRef = ref(null)
+
+// 索引搜索状态：keyword 非空时改用全库搜索（索引 + 文件系统兜底）替代当前目录的 folders
+const indexResults = ref([])
+const indexLoading = ref(false)
+const indexError = ref('')
+// 索引层异常 / 部分库 fallback 失败时的软提示（不阻断结果展示）
+const indexSoftHint = ref('')
+let indexSearchTimer = null
+let indexSearchToken = 0
+let indexSearchAbort = null
+
+// 列头排序：sortBy ∈ { 'name', 'mtime' }，sortDir ∈ { 'asc', 'desc' }
+const sortBy = ref('name')
+const sortDir = ref('asc')
 
 // 左侧导航状态
 const navWidth = ref(NAV_DEFAULT_WIDTH)
@@ -392,11 +457,44 @@ const breadcrumbs = computed(() => {
   return result
 })
 
+// 是否处于「索引搜索」模式（搜索框非空）。
+// 此时 list 数据源切换为索引返回的全库结果（含深层目录），不再只看当前目录子项。
+const inIndexSearchMode = computed(() => String(searchKeyword.value || '').trim().length > 0)
+
 const filteredFolders = computed(() => {
-  const keyword = String(searchKeyword.value || '').trim().toLowerCase()
-  if (!keyword) return folders.value
-  return folders.value.filter(item => String(item?.name || '').toLowerCase().includes(keyword))
+  const source = inIndexSearchMode.value ? indexResults.value : folders.value
+  const list = Array.isArray(source) ? [...source] : []
+  return sortFolderList(list)
 })
+
+function sortFolderList(list) {
+  const dir = sortDir.value === 'desc' ? -1 : 1
+  const by = sortBy.value
+  // 目录优先于文件；同类内按 sortBy 排
+  list.sort((a, b) => {
+    const aDir = a?.is_directory !== false
+    const bDir = b?.is_directory !== false
+    if (aDir !== bDir) return aDir ? -1 : 1
+    if (by === 'mtime') {
+      const at = Number(a?.modified_time || 0)
+      const bt = Number(b?.modified_time || 0)
+      if (at !== bt) return (at - bt) * dir
+      // 时间相同时回落到名字次级稳定排序
+      return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true }) * dir
+    }
+    return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true }) * dir
+  })
+  return list
+}
+
+function onColumnSort(field) {
+  if (sortBy.value === field) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortBy.value = field
+    sortDir.value = 'asc'
+  }
+}
 
 const effectiveAbsolutePath = computed(() => {
   const selected = selectedFolderPath.value && isPathInsideRoot(selectedFolderPath.value)
@@ -434,11 +532,200 @@ watch(() => props.library?.id, async (next, prev) => {
   await initFromProps()
 })
 
+// 搜索框 debounce 300ms 触发索引搜索（library_id 全库内模糊 name 匹配）。
+// 清空搜索框 → 清空索引结果回到当前目录浏览模式。
+watch(searchKeyword, (keyword) => {
+  const trimmed = String(keyword || '').trim()
+  if (indexSearchTimer) {
+    clearTimeout(indexSearchTimer)
+    indexSearchTimer = null
+  }
+  if (!trimmed) {
+    indexResults.value = []
+    indexLoading.value = false
+    indexError.value = ''
+    indexSearchToken += 1 // 取消任何正在 inflight 的请求
+    return
+  }
+  // 进入搜索态时立即翻 loading=true，遮蔽 debounce + 请求期 No Data 闪屏。
+  // 注意：先清旧 results 再翻 loading，确保 template 命中 indexLoading 分支而非 No Data。
+  indexResults.value = []
+  indexError.value = ''
+  indexSoftHint.value = ''
+  indexLoading.value = true
+  indexSearchTimer = setTimeout(() => {
+    runIndexSearch(trimmed)
+  }, 300)
+})
+
+// 流式索引搜索（本地库用）返回的统一形态 → picker 列表 row
+function mapSearchEntry (entry) {
+  return {
+    name: entry?.name || '',
+    path: entry?.absolute_path || '',
+    relative_path: entry?.relative_path || '',
+    modified_time: entry?.mtime || null,
+    is_directory: entry?.entry_type === 'dir',
+    rjcode: entry?.rjcode || '',
+    source: entry?.source || 'index',
+  }
+}
+
+// XSS 安全的 HTML 转义：v-html 渲染前必须 escape 原文本，再把 keyword 包成 <mark>。
+function escapeHtml (text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function escapeRegExp (text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// 搜索模式下把命中的 keyword（不区分大小写）用 <mark> 包起来。非搜索模式直接返回 escape 后的文本。
+function highlightKeyword (text) {
+  const raw = String(text || '')
+  const safe = escapeHtml(raw)
+  if (!inIndexSearchMode.value) return safe
+  const kw = String(searchKeyword.value || '').trim()
+  if (!kw) return safe
+  const escapedKw = escapeRegExp(escapeHtml(kw))
+  try {
+    return safe.replace(new RegExp(escapedKw, 'gi'), m => `<mark class="fm-mark">${m}</mark>`)
+  } catch (_) {
+    return safe
+  }
+}
+
+// browseFiles（/api/library/browser/files）返回的远程库 entry → picker 列表 row
+// 字段名差异：path / modified_time(ISO) / is_directory，直接对齐 picker 内部约定
+// 注意保留 library_id，用于过滤掉「跨库搜索」混入的非当前库结果（global_search_files 会跨所有远程库）。
+function mapBrowseEntry (entry) {
+  return {
+    name: entry?.name || '',
+    path: entry?.path || '',
+    relative_path: entry?.relative_path || '',
+    modified_time: entry?.modified_time || null,
+    is_directory: Boolean(entry?.is_directory),
+    rjcode: entry?.rjcode || '',
+    library_id: entry?.library_id || '',
+    source: 'remote',
+  }
+}
+
+// 搜索分支：
+//   - 远程库（synology_filestation）：直接调 browseFiles（后端会转 SYNO.Search），单次返回；
+//     不走索引兜底流，因为远程库通常没有索引，stream 协议徒增延迟。
+//   - 本地库：走索引流式搜索（initial+library+done），命中后立即可见，未命中静默兜底扫描。
+// 任何文案都不暴露「索引 / 兜底 / SYNO.Search / os.walk」等技术词。
+async function runIndexSearch(keyword) {
+  if (!library.value?.id) return
+  if (indexSearchAbort) {
+    try { indexSearchAbort.abort() } catch (_) { /* ignore */ }
+  }
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+  indexSearchAbort = controller
+  const token = ++indexSearchToken
+  indexLoading.value = true
+  indexError.value = ''
+  indexSoftHint.value = ''
+
+  const isRemote = library.value?.type === 'synology_filestation'
+
+  // === 远程库分支：直接调 browseFiles ===
+  if (isRemote) {
+    try {
+      const data = await libraryApi.browseFiles({
+        libraryId: library.value.id,
+        page: 1,
+        pageSize: 200,
+        search: keyword,
+        sortBy: 'name',
+        sortOrder: 'asc',
+        searchResultKind: 'folder',
+        // scope=current：让后端只搜当前库，不再跨所有远程库并发等最慢的那个，显著提速。
+        // 顺带也避免了别库 path（如 /ANIME/...）混入结果导致点击越界。
+        scope: 'current',
+      })
+      if (token !== indexSearchToken) return
+      const files = Array.isArray(data?.files) ? data.files : []
+      indexResults.value = files.map(mapBrowseEntry).filter(item => item.path)
+      if (data?.search_truncated) {
+        indexSoftHint.value = `结果较多，已仅展示前 ${indexResults.value.length} 条，请输入更精确的关键字`
+      }
+    } catch (err) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') return
+      if (token !== indexSearchToken) return
+      indexError.value = err?.response?.data?.detail || err?.message || '搜索失败，请稍后重试'
+      indexResults.value = []
+    } finally {
+      if (token === indexSearchToken) {
+        indexLoading.value = false
+      }
+    }
+    return
+  }
+
+  // === 本地库分支：流式索引搜索（命中立显，未命中自动兜底） ===
+  let accumulated = []
+  let willRunFallback = false
+
+  try {
+    for await (const event of libraryApi.searchIndexGlobalStream({
+      keyword,
+      libraryIds: [library.value.id],
+      entryType: 'dir',
+      mode: 'full',
+      limit: 200,
+      signal: controller ? controller.signal : undefined,
+    })) {
+      if (token !== indexSearchToken) return
+
+      if (event?.type === 'initial') {
+        const items = Array.isArray(event.items) ? event.items : []
+        accumulated = items.map(mapSearchEntry).filter(item => item.path)
+        indexResults.value = accumulated
+        willRunFallback = Boolean(event.will_run_fallback)
+        if (!willRunFallback) {
+          indexLoading.value = false
+        }
+      } else if (event?.type === 'library') {
+        const items = Array.isArray(event.items) ? event.items : []
+        const newItems = items.map(mapSearchEntry).filter(item => item.path)
+        accumulated = [...accumulated, ...newItems]
+        indexResults.value = accumulated
+      } else if (event?.type === 'done') {
+        indexLoading.value = false
+        const failed = Array.isArray(event.fallback_failed) ? event.fallback_failed : []
+        if (failed.length && !accumulated.length) {
+          indexSoftHint.value = '搜索失败，请稍后重试'
+        }
+      }
+    }
+  } catch (err) {
+    if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') return
+    if (token !== indexSearchToken) return
+    indexError.value = err?.response?.data?.detail || err?.message || '搜索失败，请稍后重试'
+    indexResults.value = []
+  } finally {
+    if (token === indexSearchToken) {
+      indexLoading.value = false
+    }
+  }
+}
+
 // ---------------- 初始化 ----------------
 
 async function initFromProps () {
   resetState()
-  if (!library.value?.id) return
+  if (!library.value?.id) {
+    // 异常 case：picker 被打开但没传 library；不调 loadFolders，需要手动收掉 spinner。
+    loading.value = false
+    return
+  }
   const initialAbsolute = resolveInitialAbsolutePath()
   await loadFolders(initialAbsolute || '')
   // 加载左侧根节点子项
@@ -475,10 +762,26 @@ function resetState () {
   currentPath.value = ''
   rootPath.value = ''
   folders.value = []
-  loading.value = false
+  // 保持 true：resetState 后逻辑上总会调 loadFolders，Vue 未及渲染中间状态以避免 No Data 闪屏。
+  loading.value = true
   error.value = ''
   selectedFolderPath.value = ''
   searchKeyword.value = ''
+  indexResults.value = []
+  indexLoading.value = false
+  indexError.value = ''
+  indexSoftHint.value = ''
+  indexSearchToken += 1
+  if (indexSearchTimer) {
+    clearTimeout(indexSearchTimer)
+    indexSearchTimer = null
+  }
+  if (indexSearchAbort) {
+    try { indexSearchAbort.abort() } catch (_) { /* ignore */ }
+    indexSearchAbort = null
+  }
+  sortBy.value = 'name'
+  sortDir.value = 'asc'
   navTreeState.rootExpanded = false
   navTreeState.rootChildren = null
   navTreeState.rootLoading = false
@@ -601,6 +904,12 @@ async function toggleNodeExpand (path) {
 
 async function navigateToPath (path) {
   if (!path || loading.value || props.submitting) return
+  // 双击搜索结果跳转时，需要主动退出搜索模式：
+  // 否则 inIndexSearchMode=true 会让 filteredFolders 继续锁定旧 indexResults，
+  // 用户视觉上看不到新目录的子项 → 误以为"点不到下一级目录"。
+  if (inIndexSearchMode.value) {
+    searchKeyword.value = ''
+  }
   await loadFolders(path)
 }
 
@@ -1125,11 +1434,73 @@ onBeforeUnmount(() => {
   padding-left: 12px;
 }
 
+.fm-head-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  height: 100%;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+
+.fm-head .fm-head-cell.fm-cell-name {
+  padding-left: 0;
+  padding-right: 8px;
+}
+
+.fm-head .fm-head-cell.fm-cell-time {
+  padding-left: 12px;
+}
+
+.fm-head-cell:hover {
+  color: #1f2937;
+}
+
+.fm-head-cell-active {
+  color: #1e293b;
+}
+
+.fm-head-arrow {
+  color: #64748b;
+  transform: rotate(0deg);
+  transition: transform 0.18s ease;
+}
+
+.fm-head-arrow-asc {
+  transform: rotate(180deg);
+}
+
 .fm-body {
   display: flex;
   flex-direction: column;
   padding: 4px 0;
   outline: none;
+}
+
+.fm-soft-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 12px 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(254, 243, 199, 0.62), rgba(254, 240, 138, 0.42));
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  color: #a16207;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.fm-soft-hint > svg {
+  flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .fm-body:focus-visible {
@@ -1220,7 +1591,7 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(0, 1fr) 200px;
   align-items: center;
   padding: 0 18px;
-  height: 32px;
+  min-height: 32px;
   cursor: pointer;
   user-select: none;
   font-size: 12.5px;
@@ -1231,9 +1602,33 @@ onBeforeUnmount(() => {
     color 0.22s ease;
 }
 
+/* 搜索模式下 row 多一行 relative_path，需要撑高并把内容对齐到顶部，
+   否则 fm-name-rel 会溢出 32px 边界落到 row 之外，导致点击副行无法触发 row click。 */
+.fm-row-search {
+  align-items: flex-start;
+  padding: 8px 18px;
+  min-height: 48px;
+}
+
 .fm-row:hover {
   background: rgba(15, 23, 42, 0.04);
   box-shadow: inset 2px 0 0 rgba(15, 23, 42, 0.08);
+}
+
+/* 搜索关键字高亮：用 <mark> 渲染，命中部分轻量 chip 风格不抢眼。 */
+.fm-row .fm-mark {
+  background: linear-gradient(180deg, rgba(254, 240, 138, 0.95) 0%, rgba(253, 224, 71, 0.85) 100%);
+  color: #713f12;
+  padding: 0 3px;
+  border-radius: 4px;
+  font-weight: 600;
+  box-shadow: inset 0 -1px 0 rgba(202, 138, 4, 0.25);
+}
+
+.fm-row-selected .fm-mark {
+  background: linear-gradient(180deg, rgba(254, 215, 170, 0.95) 0%, rgba(253, 186, 116, 0.9) 100%);
+  color: #7c2d12;
+  box-shadow: inset 0 -1px 0 rgba(194, 65, 12, 0.35);
 }
 
 .fm-cell {
@@ -1269,13 +1664,24 @@ onBeforeUnmount(() => {
 /* lucide 默认 fill="none"，dir 这些需要填充色的 kind 走 helper meta.fillIcon -> fm-kind-icon-fill。 */
 .fm-kind-icon-fill { fill: currentColor; stroke: currentColor; }
 
-.fm-name {
+.fm-name-wrap {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+}
+
+.fm-name {
+  display: block;
   font-weight: 500;
+}
+
+.fm-name-rel {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .fm-row-selected {
