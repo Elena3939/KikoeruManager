@@ -90,7 +90,7 @@
             v-model="searchKeyword"
             type="text"
             class="search-input"
-            :placeholder="currentLibrary ? `在「${currentLibrary.name}」中搜索` : '搜索'"
+            :placeholder="currentLibrary ? (indexReady ? `在「${currentLibrary.name}」中全库搜索` : `在「${currentLibrary.name}」中搜索`) : '搜索'"
             :disabled="!currentLibraryId || submitting"
             spellcheck="false"
           />
@@ -559,17 +559,25 @@ const sortDir = ref('asc')
 const indexResults = ref([])
 const indexLoading = ref(false)
 const indexError = ref('')
+const indexReady = ref(false)  // 当前库索引是否 ready
 let indexSearchToken = 0
 let indexSearchTimer = null
 let indexSearchAbort = null
 
-// 是否处于索引搜索模式（搜索框非空）
-const inIndexSearchMode = computed(() => String(searchKeyword.value || '').trim().length > 0)
+// 是否处于索引搜索模式：搜索框非空 且 索引已 ready
+const inIndexSearchMode = computed(() => indexReady.value && String(searchKeyword.value || '').trim().length > 0)
 
 const filteredFolders = computed(() => {
-  const source = inIndexSearchMode.value ? indexResults.value : folders.value
-  const list = Array.isArray(source) ? [...source] : []
-  return sortFolderList(list)
+  if (inIndexSearchMode.value) {
+    // 索引搜索模式：显示全库跨目录结果（已由 sortFolderList 排序）
+    return sortFolderList(Array.isArray(indexResults.value) ? [...indexResults.value] : [])
+  }
+  // 常规模式：当前目录文本过滤 + 排序
+  const keyword = String(searchKeyword.value || '').trim().toLowerCase()
+  const base = keyword
+    ? folders.value.filter(f => String(f.name || '').toLowerCase().includes(keyword))
+    : folders.value
+  return sortFolderList([...base])
 })
 
 function sortFolderList (list) {
@@ -611,10 +619,11 @@ function mapIndexEntry (entry) {
   }
 }
 
-// watch searchKeyword：debounce 300ms 触发索引搜索
+// watch searchKeyword：索引 ready 时 debounce 300ms 触发全库搜索；否则依赖 filteredFolders 计算属性文本过滤
 watch(searchKeyword, (keyword) => {
   const trimmed = String(keyword || '').trim()
   if (indexSearchTimer) { clearTimeout(indexSearchTimer); indexSearchTimer = null }
+  if (!indexReady.value) return  // 索引未就绪，走 filteredFolders 本地过滤，无需触发请求
   if (!trimmed) {
     indexResults.value = []
     indexLoading.value = false
@@ -627,6 +636,23 @@ watch(searchKeyword, (keyword) => {
   indexLoading.value = true
   indexSearchTimer = setTimeout(() => { runIndexSearch(trimmed) }, 300)
 })
+
+// 切换库时自动检查索引状态
+watch(currentLibraryId, (id) => {
+  indexReady.value = false
+  if (id) checkIndexReady(id)
+})
+
+// 检查当前库索引状态（ready/syncing/error/idle → 只有 ready 才走索引搜索）
+async function checkIndexReady (libraryId) {
+  if (!libraryId) { indexReady.value = false; return }
+  try {
+    const data = await libraryApi.getIndexStatus(libraryId)
+    indexReady.value = String(data?.status || '') === 'ready'
+  } catch (_) {
+    indexReady.value = false
+  }
+}
 
 async function runIndexSearch (keyword) {
   if (!currentLibraryId.value) return
@@ -745,6 +771,7 @@ function resetState () {
   indexResults.value = []
   indexLoading.value = false
   indexError.value = ''
+  indexReady.value = false
   indexSearchToken += 1
   if (indexSearchTimer) { clearTimeout(indexSearchTimer); indexSearchTimer = null }
   // 清空导航树
