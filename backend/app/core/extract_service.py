@@ -1266,10 +1266,21 @@ class ExtractService:
                 )
                 # 嵌套 ZIP 预填编码缓存：让 _try_extract_nested_direct → _get_mcp_args
                 # 能取到父级检测到的编码（如 shift_jis→-mcp=932），避免日文嵌套 ZIP 乱码。
-                if parent_encoding:
-                    low_fp = file_path.lower()
-                    if low_fp.endswith('.zip') or re.search(r'\.zip\.\d+$', low_fp):
+                # 继承优先级：
+                #   1. 父级是非 UTF-8 有效编码 → 直接继承
+                #   2. 父级是 UTF-8/空（7z/RAR 外层或无信息）→ 对嵌套 ZIP 做轻量嗅探
+                _utf8_like = {'utf-8', 'utf_8', 'ascii', None}
+                low_fp = file_path.lower()
+                _is_zip_file = low_fp.endswith('.zip') or bool(re.search(r'\.zip\.\d+$', low_fp))
+                if _is_zip_file:
+                    if parent_encoding and parent_encoding.lower() not in _utf8_like:
                         self.__class__._archive_encoding_cache.setdefault(file_path, parent_encoding)
+                    elif file_path not in self.__class__._archive_encoding_cache:
+                        # 父级无有效编码信息 → 用 zipfile 快速嗅探嵌套文件名字节流
+                        sniffed = self._sniff_zip_encoding(file_path)
+                        if sniffed:
+                            logger.debug(f"[嵌套编码嗅探] {filename} → {sniffed}")
+                            self.__class__._archive_encoding_cache[file_path] = sniffed
                 success, nested_success_password = await self._try_extract_nested_direct(
                     file_path, nested_output_dir, parent_password
                 )
@@ -3589,6 +3600,39 @@ class ExtractService:
             except Exception as e:
                 logger.error(f"列出压缩包内容失败: {e}")
         return None
+
+    def _sniff_zip_encoding(self, file_path: str) -> Optional[str]:
+        """
+        轻量级 ZIP 文件名编码嗅探：直接用 zipfile 读取中央目录头（不解压），
+        对前 20 个含高位字节的文件名进行多编码评分。
+        - 纯 ASCII 或 UTF-8 flag 置位 (bit 11) 的文件名直接跳过
+        - 返回最佳编码名，无法判断时返回 None
+        """
+        import zipfile as _zipfile
+        try:
+            sample_bytes_list: list[bytes] = []
+            with _zipfile.ZipFile(file_path, 'r') as zf:
+                for info in zf.infolist():
+                    # bit 11 = UTF-8 flag，已是标准 UTF-8，跳过
+                    if info.flag_bits & 0x800:
+                        continue
+                    raw = info.orig_filename.encode('cp437') if isinstance(info.orig_filename, str) else info.filename.encode('utf-8')
+                    # 只采集含高位字节的条目
+                    if any(b > 0x7F for b in raw):
+                        sample_bytes_list.append(raw)
+                    if len(sample_bytes_list) >= 20:
+                        break
+            if not sample_bytes_list:
+                return None
+            combined = b'\n'.join(sample_bytes_list)
+            result = self._detect_best_encoding(combined)
+            # utf-8 得分最高说明本身就是 UTF-8 文件名，无需 -mcp
+            if result in ('utf-8', 'utf_8', 'ascii'):
+                return None
+            return result
+        except Exception as e:
+            logger.debug(f"[编码嗅探] {file_path} 失败: {e}")
+            return None
 
     def _detect_best_encoding(self, raw_bytes: bytes) -> str:
         """
