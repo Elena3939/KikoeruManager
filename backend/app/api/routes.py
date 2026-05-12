@@ -3608,6 +3608,67 @@ async def preview_conflict_resolution(conflict_id: str, payload: dict):
     finally:
         db.close()
 
+def _collect_split_archive_siblings(main_path: str):
+    """收集与主文件同目录的所有分卷兄弟文件（含主文件自身）。
+
+    支持以下格式：
+    - X.zip.001 / X.zip.002 / ...（标准 7-zip 多卷 / zip 多卷带扩展）
+    - X.zip + X.002 / X.003 / ...（zip_numeric_split 回滚后形态）
+    - X.7z.001 / X.7z.002 / ...
+    - X.part1.rar / X.part2.rar / ...（含 .exe/.rar 混用）
+    - X.rar + X.r00 / X.r01 / ...（旧式 RAR 多卷）
+    返回：存在于磁盘的相关文件列表（不保证顺序）。若无分卷，返回 [main_path]。
+    """
+    import re as _re
+    if not os.path.isfile(main_path):
+        return [main_path] if os.path.exists(main_path) else []
+
+    parent_dir = os.path.dirname(main_path)
+    filename = os.path.basename(main_path)
+
+    patterns = []
+
+    # X.zip.NNN / X.7z.NNN / X.tar.NNN / X.rar.NNN 等
+    m = _re.match(r'^(.+\.[a-zA-Z][a-zA-Z0-9]{0,3})\.\d{3}$', filename, _re.IGNORECASE)
+    if m:
+        base_stem = _re.escape(m.group(1))
+        patterns.append(_re.compile(rf'^{base_stem}\.\d+$', _re.IGNORECASE))
+
+    # X.partN.rar / X.partN.exe（WinRAR 自解压多卷）
+    m = _re.match(r'^(.+)\.part\d+\.(rar|exe)$', filename, _re.IGNORECASE)
+    if m:
+        base_stem = _re.escape(m.group(1))
+        patterns.append(_re.compile(rf'^{base_stem}\.part\d+\.(rar|exe)$', _re.IGNORECASE))
+
+    # X.zip + X.002, X.003, ... (zip_numeric_split 回滚后：主卷 .zip，其余 .NNN)
+    m = _re.match(r'^(.+)\.zip$', filename, _re.IGNORECASE)
+    if m:
+        base_stem = _re.escape(m.group(1))
+        patterns.append(_re.compile(rf'^{base_stem}\.\d+$', _re.IGNORECASE))
+
+    # X.rar + X.r00, X.r01, ... (旧式 RAR 多卷)
+    m = _re.match(r'^(.+)\.rar$', filename, _re.IGNORECASE)
+    if m:
+        base_stem = _re.escape(m.group(1))
+        patterns.append(_re.compile(rf'^{base_stem}\.r\d+$', _re.IGNORECASE))
+
+    if not patterns:
+        return [main_path]
+
+    siblings = set()
+    siblings.add(main_path)
+    try:
+        for entry in os.scandir(parent_dir):
+            if entry.is_file() and entry.path != main_path:
+                for pat in patterns:
+                    if pat.match(entry.name):
+                        siblings.add(entry.path)
+                        break
+    except Exception:
+        pass
+    return list(siblings)
+
+
 @app.post("/api/conflicts/{conflict_id}/resolve")
 async def resolve_conflict(conflict_id: str, action: dict):
     """处理问题作品"""
@@ -4044,7 +4105,25 @@ async def resolve_conflict(conflict_id: str, action: dict):
             # 跳过，删除新版本
             if os.path.exists(conflict.new_path):
                 if os.path.isfile(conflict.new_path):
-                    os.remove(conflict.new_path)
+                    # 收集所有分卷兄弟文件一并删除，避免只删主卷留下残余分卷
+                    siblings = _collect_split_archive_siblings(conflict.new_path)
+                    for sibling in siblings:
+                        try:
+                            if os.path.exists(sibling):
+                                os.remove(sibling)
+                                logger.info(f"[SKIP] 已删除文件: {sibling}")
+                        except Exception as exc:
+                            logger.warning(f"[SKIP] 删除分卷文件失败: {sibling}, error={exc}")
+                    # 所有分卷删完后，若父目录为空则一并清理
+                    parent_dir = os.path.dirname(conflict.new_path)
+                    if parent_dir and os.path.isdir(parent_dir):
+                        try:
+                            remaining = os.listdir(parent_dir)
+                            if not remaining:
+                                os.rmdir(parent_dir)
+                                logger.info(f"[SKIP] 已删除空父目录: {parent_dir}")
+                        except Exception as exc:
+                            logger.warning(f"[SKIP] 清理空父目录失败: {parent_dir}, error={exc}")
                 else:
                     shutil.rmtree(conflict.new_path)
             # 更新 ProcessedArchive 状态为 completed（用户选择跳过，任务结束）

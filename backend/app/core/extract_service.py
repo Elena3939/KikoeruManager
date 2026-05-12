@@ -2416,6 +2416,17 @@ class ExtractService:
                     f"[ExeESequence] 失败回滚出错: {renamed} -> {original}, error={exc}"
                 )
 
+        # 回滚后更新 task.source_path：若它指向已被改回原名的文件，更新为原始路径，
+        # 避免后续 _record_problem_work_for_extract_failure 的 os.path.exists 检查因
+        # 文件已改名而返回 False，导致问题作品无法落库。
+        for entry in rename_map:
+            original = entry.get('original')
+            renamed = entry.get('renamed')
+            if original and renamed and str(task.source_path or '') == renamed:
+                logger.info(f"[ExeESequence] 回滚后更新 source_path: {renamed} -> {original}")
+                task.source_path = original
+                break
+
         # 清掉 metadata 标记，避免重试时再次回滚
         if task.task_metadata is not None:
             task.task_metadata.pop('exe_e_remap', None)
@@ -2535,6 +2546,17 @@ class ExtractService:
                 logger.error(
                     f"[ZipNumericSplit] 失败回滚出错: {renamed} -> {original}, error={exc}"
                 )
+
+        # 回滚后更新 task.source_path：若它指向已被改回原名的文件，更新为原始路径，
+        # 避免后续 _record_problem_work_for_extract_failure 的 os.path.exists 检查因
+        # 文件已改名而返回 False，导致问题作品无法落库。
+        for entry in rename_map:
+            original = entry.get('original')
+            renamed = entry.get('renamed')
+            if original and renamed and str(task.source_path or '') == renamed:
+                logger.info(f"[ZipNumericSplit] 回滚后更新 source_path: {renamed} -> {original}")
+                task.source_path = original
+                break
 
         if task.task_metadata is not None:
             task.task_metadata.pop('zip_numeric_remap', None)
@@ -2666,6 +2688,17 @@ class ExtractService:
                 logger.error(
                     f"[PartExeRemap] 失败回滚出错: {renamed} -> {original}, error={exc}"
                 )
+
+        # 回滚后更新 task.source_path：若它指向已被改回原名的文件，更新为原始路径，
+        # 避免后续 _record_problem_work_for_extract_failure 的 os.path.exists 检查因
+        # 文件已改名而返回 False，导致问题作品无法落库。
+        for entry in rename_map:
+            original = entry.get('original')
+            renamed = entry.get('renamed')
+            if original and renamed and str(task.source_path or '') == renamed:
+                logger.info(f"[PartExeRemap] 回滚后更新 source_path: {renamed} -> {original}")
+                task.source_path = original
+                break
 
         if task.task_metadata is not None:
             task.task_metadata.pop('part_exe_remap', None)
