@@ -1,11 +1,27 @@
 import os
 import re
 import shutil
+
+# ZIP 文件名编码名称 → Windows 代码页编号（用于 7zz -mcp=<cp>）
+_ENCODING_TO_CP: dict = {
+    'shift_jis': 932,
+    'shift-jis': 932,
+    'cp932': 932,
+    'gbk': 936,
+    'cp936': 936,
+    'big5': 950,
+    'cp950': 950,
+    'euc_kr': 949,
+    'euc-kr': 949,
+    'cp949': 949,
+}
 import subprocess
 import asyncio
 import sys
+import threading
 import filetype
 import tempfile
+from collections import OrderedDict
 from typing import Optional, List, Dict, Callable, Tuple, Union
 from pathlib import Path
 import logging
@@ -44,6 +60,7 @@ class ArchiveInfo:
         self.inferred_rjcode = inferred_rjcode
         self.is_volume = False
         self.volume_set: Optional[List[str]] = None
+        self.detected_encoding: Optional[str] = None  # _list_archive_contents 自动检测到的编码
 
 class ExtractService:
     """解压服务"""
@@ -56,6 +73,9 @@ class ExtractService:
     # 存储类型探测结果缓存：{ "C:\\" -> "ssd", "/dev/sda" -> "hdd", ... }
     # 探测失败的目录会缓存为 "unknown"，下次也不再重复试。
     _storage_type_cache: Dict[str, str] = {}
+    # _list_archive_contents 最近检测到的编码（archive_path -> encoding_name），
+    # 供 _get_archive_info 写入 archive_info.detected_encoding，进而给 _get_mcp_args 使用。
+    _archive_encoding_cache: Dict[str, str] = {}
     # 上次构建 semaphore 时所用的"探测目标路径 + 探测结果"，用于热重载时识别变更
     _seven_zip_semaphore_storage_key: Optional[str] = None
     # ------- 密码探测 / 负缓存 -------
@@ -116,6 +136,16 @@ class ExtractService:
     # #3 负缓存：按 "压缩包指纹 × 密码哈希" 记忆失败组合，进程内重试任务时直接跳过。
     _password_negative_cache: Dict[Tuple[str, str], float] = {}
     PASSWORD_NEGATIVE_CACHE_MAX: int = 4096       # 简单兜底，避免长跑任务无限增长
+    # #4 预读 list 缓存：避免同一压缩包重复跑 `7zz l`。
+    # key = (abs_path, mtime_ns, size)，value = ArchiveInfo 快照。
+    # 用 OrderedDict 做简易 LRU，命中 move_to_end。
+    # 类变量跨 ExtractService 实例共享：task_engine 主任务和 linked_subtitle probe_task
+    # 拿到的是不同实例，但通过这里共享 list 结果。
+    # 分卷 / remap 后路径会变 → 新 key，老条目靠 LRU 自然淘汰，不主动 invalidate。
+    _archive_info_cache: "OrderedDict[Tuple[str, int, int], ArchiveInfo]" = OrderedDict()
+    _archive_info_cache_lock = threading.Lock()
+    ARCHIVE_INFO_CACHE_MAX: int = 64
+    ARCHIVE_INFO_CACHE_FILE_LIST_LIMIT: int = 50000  # 单条 file_list 超此值不入缓存，避免极端大包占内存
     VERIFY_FULL_FILE_LIMIT = 1200
     VERIFY_SAMPLE_FILE_LIMIT = 240
     NESTED_SCAN_FILE_BUDGET = 5000
@@ -191,20 +221,35 @@ class ExtractService:
         """动态获取7z路径"""
         return self._find_7z_executable()
 
-    def _get_mcp_args(self, archive_path: Optional[str] = None) -> list:
+    def _get_mcp_args(
+        self,
+        archive_path: Optional[str] = None,
+        archive_info=None,
+    ) -> list:
         """返回 ZIP 文件名代码页参数。
 
-        只对 .zip 生效：7zz 24.08 之后对 RAR 解析器传 -mcp 会直接
+        只对 .zip / .zip.NNN 生效：7zz 24.08 之后对 RAR 解析器传 -mcp 会直接
         E_INVALIDARG（One or more arguments are invalid），而 .7z 格式
         文件名是 UTF-8，传 -mcp 也无意义。所以非 zip 一律不传。
         archive_path 为 None 时（兼容旧调用）按"未知格式"处理，不传。
+
+        当 zip_encoding=0（未配置）时，自动使用 archive_info.detected_encoding
+        推断代码页（如日文 ZIP 自动得到 -mcp=932）。
         """
         cp = int(self.config.extract.zip_encoding or 0)
+        if cp <= 0 and archive_info is not None:
+            enc = (getattr(archive_info, 'detected_encoding', None) or '').lower()
+            cp = _ENCODING_TO_CP.get(enc, 0)
         if cp <= 0:
             return []
         if not archive_path:
-            return []
-        if str(archive_path).lower().endswith(".zip"):
+            if archive_info is not None:
+                archive_path = getattr(archive_info, 'path', None)
+            if not archive_path:
+                return []
+        low = str(archive_path).lower()
+        # 支持 .zip 主卷和 .zip.NNN 分卷格式（如 X.zip.001）
+        if low.endswith('.zip') or re.search(r'\.zip\.\d+$', low):
             return [f"-mcp={cp}"]
         return []
 
@@ -843,7 +888,7 @@ class ExtractService:
                 "-y",
                 f"-o{output_path}",
                 *self._get_seven_zip_mmt_args(),  # 指定 7z 多线程（默认 -mmt=on）
-                *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效，避免 7zz 24.08 对 RAR 报 E_INVALIDARG）
+                *self._get_mcp_args(archive_info.path, archive_info),  # ZIP 文件名编码（仅 .zip 生效，避免 7zz 24.08 对 RAR 报 E_INVALIDARG）
                 *password_args,
                 archive_info.path,
                 f"@{list_file_path}",
@@ -1391,7 +1436,7 @@ class ExtractService:
                 '-y',  # 自动确认
                 '-o' + output_path,  # 输出目录
                 *self._get_seven_zip_mmt_args(),  # 指定 7z 多线程
-                *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效）
+                *self._get_mcp_args(archive_info.path, archive_info),  # ZIP 文件名编码（仅 .zip 生效）
                 archive_info.path
             ]
 
@@ -3338,16 +3383,73 @@ class ExtractService:
             logger.debug(f"从路径提取RJ号生成密码: {passwords}")
         return passwords
 
+    @classmethod
+    def _archive_cache_key(cls, archive_path: str) -> Optional[Tuple[str, int, int]]:
+        """根据 archive_path 计算缓存 key = (abs_path, mtime_ns, size)。
+
+        文件不存在 / 路径异常返回 None，由调用方跳过缓存。
+        """
+        try:
+            abs_path = os.path.abspath(str(archive_path or ""))
+            if not abs_path or not os.path.isfile(abs_path):
+                return None
+            st = os.stat(abs_path)
+            mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))
+            return (abs_path, int(mtime_ns), int(st.st_size))
+        except OSError:
+            return None
+
+    @classmethod
+    def _load_cached_archive_info(cls, archive_path: str) -> Optional[ArchiveInfo]:
+        """命中即返回，LRU 命中端移到末尾；未命中返回 None。"""
+        key = cls._archive_cache_key(archive_path)
+        if key is None:
+            return None
+        with cls._archive_info_cache_lock:
+            entry = cls._archive_info_cache.get(key)
+            if entry is None:
+                return None
+            cls._archive_info_cache.move_to_end(key)
+            return entry
+
+    @classmethod
+    def _save_cached_archive_info(cls, archive_path: str, archive_info: ArchiveInfo) -> None:
+        """写入缓存。极端大包（清单条目超限）不入缓存，避免内存堆积。"""
+        if archive_info is None:
+            return
+        file_list = getattr(archive_info, "file_list", None) or []
+        if len(file_list) > cls.ARCHIVE_INFO_CACHE_FILE_LIST_LIMIT:
+            return
+        key = cls._archive_cache_key(archive_path)
+        if key is None:
+            return
+        with cls._archive_info_cache_lock:
+            cls._archive_info_cache[key] = archive_info
+            cls._archive_info_cache.move_to_end(key)
+            while len(cls._archive_info_cache) > cls.ARCHIVE_INFO_CACHE_MAX:
+                cls._archive_info_cache.popitem(last=False)
+
     async def _get_archive_info(
         self,
         archive_path: str,
         password_candidates: Optional[List[Dict[str, Optional[str]]]] = None,
+        use_cache: bool = True,
+        task: Optional[Task] = None,
     ) -> Optional[ArchiveInfo]:
         """获取压缩包信息（文件列表、大小等）
 
         注意：这里只获取文件列表，不解压。真正能解压的密码在 _try_extract 中确定。
         为了不限制解压时的密码选择，这里尝试找一个能读取内容的密码即可。
+
+        use_cache=True 时优先复用进程内 list 缓存：消除"infer_rjcode → extract"
+        这种典型路径上的重复 `7zz l`。分卷 remap 后路径已变，新路径不会误命中老 key。
         """
+        if use_cache:
+            cached = self._load_cached_archive_info(archive_path)
+            if cached is not None:
+                logger.info(f"[7z][cache] 命中预读取缓存，跳过 list: {archive_path}")
+                return cached
+
         if password_candidates is None:
             password_candidates = await self._get_password_candidates_for_archive(archive_path)
         vault_passwords = [item["password"] for item in password_candidates]
@@ -3384,7 +3486,7 @@ class ExtractService:
                 unique_passwords.append(pwd)
 
         for password in unique_passwords:
-            file_list = await self._list_archive_contents(archive_path, password)
+            file_list = await self._list_archive_contents(archive_path, password, task=task)
             if file_list is not None:
                 # 判断密码来源
                 if manual_only_passwords:
@@ -3400,18 +3502,48 @@ class ExtractService:
                 logger.info(f"成功读取压缩包内容，使用密码来源: {source} ({password or '无密码'})")
                 # 注意：这里返回的 password 只是能读取内容的密码，不一定能解压
                 # 真正能解压的密码会在 _try_extract 中更新
-                return ArchiveInfo(
+                archive_info = ArchiveInfo(
                     archive_path,
                     file_list,
                     password,
                     inferred_rjcode=password_rjcode_map.get(password),
                 )
+                # 读取本次 list 检测到的编码，存入 archive_info 供 _get_mcp_args 使用
+                archive_info.detected_encoding = self.__class__._archive_encoding_cache.get(archive_path)
+                if use_cache:
+                    self._save_cached_archive_info(archive_path, archive_info)
+                return archive_info
 
         logger.warning("无法预读取压缩包内容，后续将尝试直接解压: %s", archive_path)
         return None
 
-    async def _list_archive_contents(self, archive_path: str, password: str = "") -> Optional[List[Dict]]:
-        """列出压缩包内容，自动检测最佳编码"""
+    async def precheck_archive(
+        self,
+        task: Task,
+        archive_path: Optional[str] = None,
+    ) -> Optional[ArchiveInfo]:
+        """为 task 异步预读取压缩包清单（用于查重 + list 并行场景）。
+
+        - 内部走类级 list 缓存，命中即直接返回不跑 7zz。
+        - 子进程注册到 task，task.cancel() 或本协程被 asyncio.Task.cancel() 都会被 kill。
+        - 返回 ArchiveInfo 表示读取成功；返回 None 表示候选密码全部无法列出目录。
+        """
+        target_path = str(archive_path or getattr(task, "source_path", "") or "")
+        if not target_path:
+            return None
+        return await self._get_archive_info(target_path, task=task)
+
+    async def _list_archive_contents(
+        self,
+        archive_path: str,
+        password: str = "",
+        task: Optional[Task] = None,
+    ) -> Optional[List[Dict]]:
+        """列出压缩包内容，自动检测最佳编码
+
+        task 不为 None 时把 7zz 子进程注册到 task，cancel/pause 或协程级
+        asyncio.Task.cancel() 都会立刻 kill 子进程。
+        """
         password_args = [f'-p{password}'] if password else []
         commands = [
             [self.seven_zip, 'l', '-ba', *password_args, archive_path],
@@ -3421,7 +3553,7 @@ class ExtractService:
         for index, cmd in enumerate(commands):
             try:
                 logger.debug(f"[7z] 执行命令: {' '.join(cmd)}")
-                result = await self._run_7z_command(cmd)
+                result = await self._run_7z_command(cmd, task=task)
                 if result.returncode != 0:
                     logger.warning(
                         f"[7z] 列出压缩包内容失败，返回码: {result.returncode}, 错误: {result.stderr.decode('utf-8', errors='ignore')[:500]}"
@@ -3431,6 +3563,8 @@ class ExtractService:
                 raw_bytes = result.stdout
                 best_encoding = self._detect_best_encoding(raw_bytes)
                 logger.info(f"[7z] 自动检测编码: {best_encoding}")
+                # 记录本次编码检测结果，供 _get_archive_info → _get_mcp_args 使用
+                self.__class__._archive_encoding_cache[archive_path] = best_encoding
                 decoded = raw_bytes.decode(best_encoding, errors='ignore')
                 file_list = (
                     self._parse_7z_list_output(decoded)
@@ -3677,7 +3811,7 @@ class ExtractService:
                 '-bsp1', # 启用进度输出
                 '-bso1', # 将进度输出到 stdout
                 *self._get_seven_zip_mmt_args(),  # 指定 7z 多线程（默认 -mmt=on）
-                *self._get_mcp_args(archive_info.path),  # ZIP 文件名编码（仅 .zip 生效）
+                *self._get_mcp_args(archive_info.path, archive_info),  # ZIP 文件名编码（仅 .zip 生效）
                 *password_args,
                 archive_info.path
             ]
@@ -4191,6 +4325,20 @@ class ExtractService:
 
                     return_code = await process.wait()
                     await asyncio.sleep(0.1)
+                except asyncio.CancelledError:
+                    # 协程级取消（asyncio.Task.cancel()）不同于 task.cancel()：
+                    # task.cancel() 会通过 _active_processes 主动 kill 子进程；
+                    # 单纯的 asyncio.Task.cancel() 只让本协程退出，注册过的 7z 子进程
+                    # 不会被自动 kill。这里显式 kill，避免并发场景下 list 子进程在
+                    # 协程被取消后继续后台跑，浪费 CPU / IO（方案 B 并行查重+list 依赖）。
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                        except Exception:
+                            logger.debug("CancelledError 时 kill 7z 子进程失败（忽略）", exc_info=True)
+                    raise
                 finally:
                     if task is not None:
                         task.unregister_process(process)
