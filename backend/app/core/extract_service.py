@@ -237,8 +237,13 @@ class ExtractService:
         推断代码页（如日文 ZIP 自动得到 -mcp=932）。
         """
         cp = int(self.config.extract.zip_encoding or 0)
-        if cp <= 0 and archive_info is not None:
+        if cp <= 0:
+            # 优先从 archive_info 取检测到的编码
             enc = (getattr(archive_info, 'detected_encoding', None) or '').lower()
+            if not enc and archive_path:
+                # archive_info 不可用时（如 _try_extract_nested_direct 跳过 list 步骤），
+                # 回退到类级 list 编码缓存（若该路径曾被 _list_archive_contents 处理过）
+                enc = (self.__class__._archive_encoding_cache.get(str(archive_path)) or '').lower()
             cp = _ENCODING_TO_CP.get(enc, 0)
         if cp <= 0:
             return []
