@@ -1547,6 +1547,10 @@ class ExtractService:
                 try:
                     result = await self._try_unar_extract(archive_path, output_path, password)
                     if result.returncode == 0:
+                        # 乱码修复：Shift-JIS/GBK RAR 文件名自动编码探测失败时重试
+                        await self._fix_unar_garbled_encoding(
+                            archive_path, output_path, password,
+                        )
                         logger.info(
                             "嵌套 RAR 用 unar 解压成功，密码: %s",
                             password or "无密码",
@@ -4111,6 +4115,10 @@ class ExtractService:
                             task=task,
                         )
                         if unar_result.returncode == 0:
+                            # 乱码修复：Shift-JIS/GBK RAR 文件名自动编码探测失败时重试
+                            await self._fix_unar_garbled_encoding(
+                                archive_info.path, output_path, password, task=task,
+                            )
                             if password and password in vault_passwords:
                                 await self._record_password_usage(
                                     password,
@@ -5300,6 +5308,11 @@ class ExtractService:
             stderr_lower = stderr_text.lower()
 
             if result.returncode == 0:
+                # 乱码修复：若 unar ICU 自动探测失败导致 Shift-JIS/GBK 文件名变成 Latin-1 乱码，
+                # 依次用 SHIFT_JIS / GBK / BIG5 重试，修复后继续正常流程。
+                await self._fix_unar_garbled_encoding(
+                    archive_info.path, output_path, password, task=task,
+                )
                 # 成功，更新 archive_info 元信息
                 archive_info.password = password
                 inferred_rjcode = password_rjcode_map.get(password) if password else None
@@ -5390,17 +5403,101 @@ class ExtractService:
             return False, None, "wrong_password"
         return False, None, "wrong_password"
 
+    def _has_garbled_filenames(self, directory: str) -> bool:
+        """检测目录中是否存在 ANSI 多字节（Shift-JIS/GBK）被误当 Latin-1 解读的乱码文件名。
+
+        判断依据：
+        - 出现 Unicode 替换字符 U+FFFD → 直接判定乱码
+        - 没有任何 CJK/假名字符，且 ≥40% 非 ASCII 字符落在 U+0080~U+00FF（Latin Extended）区间
+          → 判定为 Shift-JIS/GBK 字节被误读为 Latin-1 后的典型乱码模式
+        """
+        try:
+            entries = list(os.scandir(directory))[:40]
+        except OSError:
+            return False
+
+        latin_ext_count = 0
+        cjk_count = 0
+        total_nonascii = 0
+
+        for entry in entries:
+            for ch in entry.name:
+                cp = ord(ch)
+                if cp > 127:
+                    total_nonascii += 1
+                    if ch == '\ufffd':
+                        return True  # Unicode 替换字符，直接判定乱码
+                    elif 0x0080 <= cp <= 0x00FF:
+                        latin_ext_count += 1
+                    elif (
+                        0x3040 <= cp <= 0x30FF    # 平假名 / 片假名
+                        or 0x4E00 <= cp <= 0x9FFF  # CJK 统一汉字
+                        or 0x3400 <= cp <= 0x4DBF  # CJK Ext-A
+                        or 0xAC00 <= cp <= 0xD7AF  # 韩文
+                    ):
+                        cjk_count += 1
+
+        if total_nonascii == 0:
+            return False
+        # 无 CJK/假名 且 Latin Extended 占比超 40% → 判定乱码
+        return cjk_count == 0 and (latin_ext_count / total_nonascii) >= 0.4
+
+    async def _fix_unar_garbled_encoding(
+        self,
+        archive_path: str,
+        output_path: str,
+        password: Optional[str],
+        task: Optional[Task] = None,
+    ) -> None:
+        """若 output_path 中存在乱码文件名，依次以 SHIFT_JIS / GBK / BIG5 重新解压修复。
+
+        不抛异常：若所有编码均无法修复，则回退重解一遍自动探测结果，确保目录有内容。
+        """
+        if not self._has_garbled_filenames(output_path):
+            return
+
+        logger.warning(
+            "[unar编码] 检测到疑似乱码文件名，尝试指定编码重新解压: %s",
+            output_path,
+        )
+        for enc in ('SHIFT_JIS', 'GBK', 'BIG5'):
+            await self._cleanup_extract_attempt(output_path)
+            r = await self._try_unar_extract(
+                archive_path, output_path, password, task=task, encoding=enc,
+            )
+            if r.returncode == 0:
+                if not self._has_garbled_filenames(output_path):
+                    logger.info("[unar编码] 乱码修复成功，使用编码: %s", enc)
+                    return
+                # 这个编码仍然乱码，继续尝试下一个
+                logger.debug("[unar编码] 编码 %s 仍有乱码，继续尝试", enc)
+            else:
+                # 意外失败（unar 不认识该编码名），终止重试
+                logger.debug(
+                    "[unar编码] 指定编码 %s 解压失败 (rc=%s)，终止重试",
+                    enc, r.returncode,
+                )
+                break
+
+        # 所有编码均无法修复，回退自动探测（至少保证目录有内容）
+        logger.warning("[unar编码] 乱码自动修复失败，回退自动探测结果")
+        await self._cleanup_extract_attempt(output_path)
+        await self._try_unar_extract(archive_path, output_path, password, task=task)
+
     async def _try_unar_extract(
         self,
         archive_path: str,
         output_path: str,
         password: Optional[str],
         task: Optional[Task] = None,
+        encoding: Optional[str] = None,
     ) -> subprocess.CompletedProcess:
         """调用 unar 解压。
         unar 默认会自动探测文件名编码（ICU），对日文 Shift-JIS / 中文 GBK 命名的
         RAR / ZIP 都比 7zz 友好（7zz 24.08 RAR 解析器不接受 -mcp）。
         传入 task 时支持 cancel / pause 立即 kill 子进程。
+        encoding 非空时附加 ``-e <encoding>``（如 SHIFT_JIS / GBK / BIG5），
+        用于乱码修复重试。
         """
         unar_path = self._find_unar_executable()
         if not unar_path:
@@ -5417,6 +5514,8 @@ class ExtractService:
             "-o",
             output_path,
         ]
+        if encoding:
+            cmd.extend(["-e", encoding])
         if password:
             cmd.extend(["-p", password])
         cmd.append(archive_path)
