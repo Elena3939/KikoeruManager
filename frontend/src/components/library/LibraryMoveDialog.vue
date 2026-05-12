@@ -186,9 +186,39 @@
         <!-- 右侧：当前目录文件列表 -->
         <section class="explorer-list flex-1 flex flex-col min-w-0">
           <div class="fm-head">
-            <div class="fm-cell fm-cell-name">名称</div>
+            <button
+              type="button"
+              class="fm-cell fm-cell-name fm-head-cell"
+              :class="{ 'fm-head-cell-active': sortBy === 'name' }"
+              @click="onColumnSort('name')"
+              title="按名称排序"
+            >
+              <span>名称</span>
+              <ChevronDown
+                v-if="sortBy === 'name'"
+                :size="13"
+                :stroke-width="2.4"
+                class="fm-head-arrow"
+                :class="{ 'fm-head-arrow-asc': sortDir === 'asc' }"
+              />
+            </button>
             <div class="fm-cell fm-cell-size">大小</div>
-            <div class="fm-cell fm-cell-time">修改时间</div>
+            <button
+              type="button"
+              class="fm-cell fm-cell-time fm-head-cell"
+              :class="{ 'fm-head-cell-active': sortBy === 'mtime' }"
+              @click="onColumnSort('mtime')"
+              title="按修改时间排序"
+            >
+              <span>修改时间</span>
+              <ChevronDown
+                v-if="sortBy === 'mtime'"
+                :size="13"
+                :stroke-width="2.4"
+                class="fm-head-arrow"
+                :class="{ 'fm-head-arrow-asc': sortDir === 'asc' }"
+              />
+            </button>
           </div>
           <div
             ref="listScrollRef"
@@ -196,19 +226,28 @@
             tabindex="0"
             @keydown="handleListKeydown"
           >
-            <div v-if="loading" class="fm-state fm-state-col fm-loading-state">
+            <div v-if="inIndexSearchMode && indexLoading" class="fm-state fm-state-col fm-loading-state">
+              <Loader2 :size="48" :stroke-width="2" class="fm-loading-icon" />
+              <span class="fm-loading-title">正在搜索</span>
+              <span class="fm-loading-desc">「{{ searchKeyword }}」</span>
+            </div>
+            <div v-else-if="inIndexSearchMode && indexError" class="fm-state fm-state-col">
+              <AlertCircle :size="22" :stroke-width="2" class="text-rose-500" />
+              <span class="text-rose-600">{{ indexError }}</span>
+            </div>
+            <div v-else-if="loading && !inIndexSearchMode" class="fm-state fm-state-col fm-loading-state">
               <Loader2 :size="48" :stroke-width="2" class="fm-loading-icon" />
               <span class="fm-loading-title">正在读取目录</span>
               <span class="fm-loading-desc">同步库存子项中…</span>
             </div>
-            <div v-else-if="error" class="fm-state fm-state-col">
+            <div v-else-if="error && !inIndexSearchMode" class="fm-state fm-state-col">
               <AlertCircle :size="22" :stroke-width="2" class="text-rose-500" />
               <span class="text-rose-600">{{ error }}</span>
               <button type="button" class="fm-retry-btn" @click="reload">重试</button>
             </div>
             <div v-else-if="!filteredFolders.length" class="fm-empty-wrap">
               <AppEmptyState
-                :description="searchKeyword ? '没有匹配的子目录' : '此目录下没有子目录'"
+                :description="inIndexSearchMode ? `没有匹配「${searchKeyword}」的目录` : (searchKeyword ? '没有匹配的子目录' : '此目录下没有子目录')"
                 size="default"
               >
                 <span class="text-[11px] text-slate-400">点击"移动到此处"将移到当前目录</span>
@@ -512,11 +551,123 @@ const canGoUp = computed(() => {
   return normalizePath(currentPath.value) !== normalizePath(rootPath.value)
 })
 
+// 列头排序
+const sortBy = ref('name')
+const sortDir = ref('asc')
+
+// 索引搜索状态
+const indexResults = ref([])
+const indexLoading = ref(false)
+const indexError = ref('')
+let indexSearchToken = 0
+let indexSearchTimer = null
+let indexSearchAbort = null
+
+// 是否处于索引搜索模式（搜索框非空）
+const inIndexSearchMode = computed(() => String(searchKeyword.value || '').trim().length > 0)
+
 const filteredFolders = computed(() => {
-  const keyword = searchKeyword.value.trim().toLowerCase()
-  if (!keyword) return folders.value
-  return folders.value.filter(f => String(f.name || '').toLowerCase().includes(keyword))
+  const source = inIndexSearchMode.value ? indexResults.value : folders.value
+  const list = Array.isArray(source) ? [...source] : []
+  return sortFolderList(list)
 })
+
+function sortFolderList (list) {
+  const dir = sortDir.value === 'desc' ? -1 : 1
+  const by = sortBy.value
+  list.sort((a, b) => {
+    const aDir = a?.is_directory !== false
+    const bDir = b?.is_directory !== false
+    if (aDir !== bDir) return aDir ? -1 : 1
+    if (by === 'mtime') {
+      const at = Number(a?.modified_time || 0)
+      const bt = Number(b?.modified_time || 0)
+      if (at !== bt) return (at - bt) * dir
+      return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true }) * dir
+    }
+    return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true }) * dir
+  })
+  return list
+}
+
+function onColumnSort (field) {
+  if (sortBy.value === field) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortBy.value = field
+    sortDir.value = 'asc'
+  }
+}
+
+function mapIndexEntry (entry) {
+  return {
+    name: entry?.name || '',
+    path: entry?.absolute_path || '',
+    relative_path: entry?.relative_path || '',
+    modified_time: entry?.mtime || null,
+    is_directory: entry?.entry_type === 'dir',
+    rjcode: entry?.rjcode || '',
+    source: 'index',
+  }
+}
+
+// watch searchKeyword：debounce 300ms 触发索引搜索
+watch(searchKeyword, (keyword) => {
+  const trimmed = String(keyword || '').trim()
+  if (indexSearchTimer) { clearTimeout(indexSearchTimer); indexSearchTimer = null }
+  if (!trimmed) {
+    indexResults.value = []
+    indexLoading.value = false
+    indexError.value = ''
+    indexSearchToken += 1
+    return
+  }
+  indexResults.value = []
+  indexError.value = ''
+  indexLoading.value = true
+  indexSearchTimer = setTimeout(() => { runIndexSearch(trimmed) }, 300)
+})
+
+async function runIndexSearch (keyword) {
+  if (!currentLibraryId.value) return
+  if (indexSearchAbort) { try { indexSearchAbort.abort() } catch (_) {} }
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+  indexSearchAbort = controller
+  const token = ++indexSearchToken
+  indexLoading.value = true
+  indexError.value = ''
+  let accumulated = []
+  try {
+    for await (const event of libraryApi.searchIndexGlobalStream({
+      keyword,
+      libraryIds: [currentLibraryId.value],
+      entryType: 'dir',
+      mode: 'full',
+      limit: 200,
+      signal: controller ? controller.signal : undefined,
+    })) {
+      if (token !== indexSearchToken) return
+      if (event?.type === 'initial') {
+        accumulated = Array.isArray(event.items) ? event.items.map(mapIndexEntry).filter(i => i.path) : []
+        indexResults.value = accumulated
+        if (!event.will_run_fallback) indexLoading.value = false
+      } else if (event?.type === 'library') {
+        const newItems = Array.isArray(event.items) ? event.items.map(mapIndexEntry).filter(i => i.path) : []
+        accumulated = [...accumulated, ...newItems]
+        indexResults.value = accumulated
+      } else if (event?.type === 'done') {
+        indexLoading.value = false
+      }
+    }
+  } catch (err) {
+    if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') return
+    if (token !== indexSearchToken) return
+    indexError.value = err?.response?.data?.detail || err?.message || '搜索失败，请稍后重试'
+    indexResults.value = []
+  } finally {
+    if (token === indexSearchToken) indexLoading.value = false
+  }
+}
 
 const effectiveTargetPath = computed(() => {
   if (selectedFolderPath.value) return selectedFolderPath.value
@@ -590,6 +741,12 @@ function resetState () {
   selectedFolderPath.value = ''
   searchKeyword.value = ''
   pathInput.value = ''
+  // 重置索引搜索状态
+  indexResults.value = []
+  indexLoading.value = false
+  indexError.value = ''
+  indexSearchToken += 1
+  if (indexSearchTimer) { clearTimeout(indexSearchTimer); indexSearchTimer = null }
   // 清空导航树
   for (const key of Object.keys(navTreeState)) delete navTreeState[key]
 }
@@ -1359,6 +1516,37 @@ onBeforeUnmount(() => {
 .fm-head .fm-cell-time {
   border-left: 1px solid rgba(15, 23, 42, 0.05);
   padding-left: 12px;
+}
+
+/* 可点击列头排序按鈕 */
+.fm-head-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  transition: color 0.15s;
+  text-align: left;
+}
+.fm-head-cell:hover {
+  color: #334155;
+}
+.fm-head-cell-active {
+  color: #3b82f6;
+}
+.fm-head-arrow {
+  flex-shrink: 0;
+  transform: rotate(180deg);
+  transition: transform 0.2s ease;
+}
+.fm-head-arrow-asc {
+  transform: rotate(0deg);
 }
 
 /* fm-body 改成 flex column，让"加载中 / 错误 / 空态"等单行子元素能 flex:1 撑满剩余高度并垂直居中 */
