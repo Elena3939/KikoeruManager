@@ -3479,7 +3479,19 @@ class ExtractService:
                 return cached
 
         if password_candidates is None:
-            password_candidates = await self._get_password_candidates_for_archive(archive_path)
+            # 指定密码重试：从 task 元数据读取，只用指定密码，不查密码库
+            _task_meta = (task.task_metadata or {}) if task else {}
+            _manual_pw = normalize_password_value(_task_meta.get("manual_retry_password"))
+            _manual_only = bool(_task_meta.get("manual_retry_password_only"))
+            if _manual_pw and _manual_only:
+                password_candidates = [{
+                    "password": _manual_pw,
+                    "source": "指定密码",
+                    "entry_id": None,
+                    "rjcode": None,
+                }]
+            else:
+                password_candidates = await self._get_password_candidates_for_archive(archive_path)
         vault_passwords = [item["password"] for item in password_candidates]
         manual_only_passwords = [
             item["password"]
@@ -3559,7 +3571,20 @@ class ExtractService:
         target_path = str(archive_path or getattr(task, "source_path", "") or "")
         if not target_path:
             return None
-        return await self._get_archive_info(target_path, task=task)
+        # 指定密码重试：预读也只用指定密码，不触碰密码库
+        meta = task.task_metadata or {}
+        manual_pw = normalize_password_value(meta.get("manual_retry_password"))
+        manual_only = bool(meta.get("manual_retry_password_only"))
+        if manual_pw and manual_only:
+            precheck_candidates: Optional[List[Dict[str, Optional[str]]]] = [{
+                "password": manual_pw,
+                "source": "指定密码",
+                "entry_id": None,
+                "rjcode": None,
+            }]
+        else:
+            precheck_candidates = None
+        return await self._get_archive_info(target_path, password_candidates=precheck_candidates, task=task)
 
     async def _list_archive_contents(
         self,
