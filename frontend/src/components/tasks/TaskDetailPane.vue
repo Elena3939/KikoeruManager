@@ -237,7 +237,7 @@
                   <component :is="getTreeRowIconComponent(entry)" :size="20" class="tree-icon" :class="getTreeRowIconClass(entry)" />
 
                   <span class="tree-name">
-                    {{ entry.label }}
+                    <span class="tree-label-text">{{ entry.label }}</span>
                   </span>
                 </span>
               </div>
@@ -668,6 +668,9 @@ function actionToneClass(action) {
 
 .tree-row-filtered .tree-name {
   color: #94a3b8;
+}
+
+.tree-row-filtered .tree-label-text {
   text-decoration: line-through;
   text-decoration-color: rgba(148, 163, 184, 0.86);
   text-decoration-thickness: 1.5px;
