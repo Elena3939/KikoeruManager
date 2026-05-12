@@ -719,7 +719,8 @@ class ExtractService:
                     output_path,
                     task,
                     max_depth=self.config.extract.max_nested_depth,
-                    parent_password=success_password  # 传递成功使用的密码给嵌套压缩包
+                    parent_password=success_password,  # 传递成功使用的密码给嵌套压缩包
+                    parent_encoding=getattr(archive_info, 'detected_encoding', None),  # 传递外层编码供嵌套 ZIP 使用
                 )
                 if nested_count > 0:
                     logger.info(f"解压了 {nested_count} 个嵌套压缩包")
@@ -1057,7 +1058,7 @@ class ExtractService:
             )
         return "non_subtitle"
 
-    async def _extract_nested_archives(self, directory: str, task: Task, max_depth: int = 5, current_depth: int = 0, processed_paths: Optional[set] = None, parent_password: Optional[str] = None) -> int:
+    async def _extract_nested_archives(self, directory: str, task: Task, max_depth: int = 5, current_depth: int = 0, processed_paths: Optional[set] = None, parent_password: Optional[str] = None, parent_encoding: Optional[str] = None) -> int:
         """
         递归解压目录中的嵌套压缩包
 
@@ -1263,6 +1264,12 @@ class ExtractService:
                     95,
                     f"解压嵌套压缩包 {filename} (层{current_depth + 1})",
                 )
+                # 嵌套 ZIP 预填编码缓存：让 _try_extract_nested_direct → _get_mcp_args
+                # 能取到父级检测到的编码（如 shift_jis→-mcp=932），避免日文嵌套 ZIP 乱码。
+                if parent_encoding:
+                    low_fp = file_path.lower()
+                    if low_fp.endswith('.zip') or re.search(r'\.zip\.\d+$', low_fp):
+                        self.__class__._archive_encoding_cache.setdefault(file_path, parent_encoding)
                 success, nested_success_password = await self._try_extract_nested_direct(
                     file_path, nested_output_dir, parent_password
                 )
@@ -1295,7 +1302,7 @@ class ExtractService:
                 except Exception as e:
                     logger.warning(f"删除嵌套压缩包文件失败: {file_path}, 错误: {e}")
 
-                # 递归检查解压出来的目录，传递成功使用的密码
+                # 递归检查解压出来的目录，传递成功使用的密码和编码
                 sub_count = await self._extract_nested_archives(
                     nested_output_dir,
                     task,
@@ -1303,6 +1310,7 @@ class ExtractService:
                     current_depth + 1,
                     processed_paths,
                     nested_success_password,
+                    parent_encoding,
                 )
                 # 若解压目录为纯容器（无直接文件），折叠到父目录以节省磁盘空间
                 await self._collapse_wrapper_dir(nested_output_dir, root_dir)
