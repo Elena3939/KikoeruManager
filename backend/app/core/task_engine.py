@@ -3141,7 +3141,8 @@ class TaskEngine:
         seven_z_member_match = re.search(r'^(.*)\.7z\.(\d{3})$', filename, re.IGNORECASE)
         # ZIP 数字分卷：_remap_zip_numeric_split 标准化后的 .zip.NNN 格式（如 .zip.001/.zip.002）
         zip_numeric_member_match = re.search(r'^(.*)\.zip\.(\d{3})$', filename, re.IGNORECASE)
-        # 旧式 RAR 多卷：主卷 .rar 或分卷成员 .rXX
+        # 旧式 RAR 分卷：主卷 .rar（含 .r00/.r01 兄弟卷的场景）或分卷成员 .rXX
+        rar_main_match = re.search(r'^(.*)\.rar$', filename, re.IGNORECASE)
         rar_old_member_match = re.search(r'^(.*)\.r(\d{2})$', filename, re.IGNORECASE)
 
         logger.info(
@@ -3150,6 +3151,7 @@ class TaskEngine:
             f"zip_main={zip_main_match is not None}, zip_split={zip_split_match is not None}, "
             f"7z_member={seven_z_member_match is not None}, "
             f"zip_numeric_member={zip_numeric_member_match is not None}, "
+            f"rar_main={rar_main_match is not None}, "
             f"rar_old_member={rar_old_member_match is not None}"
         )
 
@@ -3203,6 +3205,18 @@ class TaskEngine:
                     if volume_path not in files_to_archive:
                         files_to_archive.append(volume_path)
             logger.info(f"检测到 ZIP 分卷压缩包，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
+        elif rar_main_match:
+            # 旧式 RAR 主卷（task.source_path 为 .rar 文件）：同目录可能有 .r00/.r01 兄弟卷，
+            # 一起聚合归档，避免主卷移走后 .rXX 残留在待处理目录。
+            # 单文件 .rar（无兄弟卷）时 files_to_archive 仍只含自身，行为不变。
+            base_name = rar_main_match.group(1)
+            for f in os.listdir(source_dir):
+                if re.match(rf'^{re.escape(base_name)}\.r\d{{2}}$', f, re.IGNORECASE):
+                    volume_path = os.path.join(source_dir, f)
+                    if volume_path not in files_to_archive:
+                        files_to_archive.append(volume_path)
+            if len(files_to_archive) > 1:
+                logger.info(f"检测到旧式 RAR 主卷含分卷成员，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
         elif rar_old_member_match:
             # 旧式 RAR 多卷：source_path 是 .rXX 分卷时也把 .rar 主卷拉回来一起归档。
             base_name = rar_old_member_match.group(1)
