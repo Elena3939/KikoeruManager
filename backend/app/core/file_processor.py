@@ -586,8 +586,25 @@ class FileProcessor:
                     mark_processed=mark_processed
                 )
             else:
+                # 孤立非首卷分卷成员（首卷迟迟不出现）直接跳过，避免每个分卷各
+                # 产生一个独立任务、各写一条 ProcessedArchive 记录。包括：
+                # - .zXX / .rXX：明显非主卷
+                # - .7z.NNN 中 NNN != 001：非首卷 7z 分卷
+                # - .partN（N>=2）：非首卷 RAR 多卷成员
                 if re.search(r'\.(z\d{2}|r\d{2})$', basename, re.IGNORECASE):
                     logger.warning(f"[FileProcessor] 分卷主文件尚未出现，暂不创建任务: {basename}")
+                    return None
+                seven_z_member = re.search(r'\.7z\.(\d{3})$', basename, re.IGNORECASE)
+                if seven_z_member and int(seven_z_member.group(1)) != 1:
+                    logger.warning(
+                        f"[FileProcessor] 7z 分卷首卷 (.7z.001) 尚未出现，暂不创建任务: {basename}"
+                    )
+                    return None
+                part_member = re.search(r'\.part(\d+)(?:\.(?:rar|zip|7z|exe))?$', basename, re.IGNORECASE)
+                if part_member and int(part_member.group(1)) >= 2:
+                    logger.warning(
+                        f"[FileProcessor] 分卷首卷 (.part1) 尚未出现，暂不创建任务: {basename}"
+                    )
                     return None
                 logger.info(f"[FileProcessor] 等待后仍未检测到分卷组，作为普通文件处理: {basename}")
                 return file_path

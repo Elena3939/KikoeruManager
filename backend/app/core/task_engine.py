@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import threading
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from enum import Enum
 from pathlib import Path
 import logging
@@ -3066,18 +3066,28 @@ class TaskEngine:
         logger.info(f"[Archive] 开始归档检测 - source_path: {source_path}")
         logger.info(f"[Archive] source_dir: {source_dir}, filename: {filename}")
 
-        # 检查是否是分卷压缩的首卷
-        # 格式1: .partX.rar/zip/7z/exe (如 filename.part1.rar) - 带扩展名的分卷
+        # 关键修复点：不再要求 task.source_path 必须是首卷才能聚合分卷归档。
+        # 实际场景里非首卷（.7z.002 / .zXX / .rXX 等）也会以独立任务进入归档阶段，
+        # 之前只匹配首卷会导致每个非首卷分卷各写一条 ProcessedArchive 记录、
+        # 同组分卷散落多行；现在按"任意分卷成员"识别 base_name，扫整组聚合。
         part_match = re.search(r'^(.*)\.part(\d+)\.(rar|zip|7z|exe)$', filename, re.IGNORECASE)
-        # 格式4: .part1, .part2, ... (无扩展名的RAR分卷格式) - 新增支持
         no_ext_part_match = re.search(r'^(.*)\.part(\d+)$', filename, re.IGNORECASE)
-        # 格式2: .zip 首卷 + .z01, .z02... 分卷 (ZIP 分卷格式)
-        zip_volume_match = re.search(r'^(.*)\.zip$', filename, re.IGNORECASE)
-        # 格式3: .7z.001, .7z.002... 分卷 (7z 分卷格式)
-        seven_z_volume_match = re.search(r'^(.*)\.7z\.001$', filename, re.IGNORECASE)
+        # ZIP 分卷：主卷 .zip 或分卷成员 .zXX 都接受
+        zip_main_match = re.search(r'^(.*)\.zip$', filename, re.IGNORECASE)
+        zip_split_match = re.search(r'^(.*)\.z(\d{2})$', filename, re.IGNORECASE)
+        # 7z 分卷：任意 .7z.NNN 成员都接受（不再只匹配 .7z.001）
+        seven_z_member_match = re.search(r'^(.*)\.7z\.(\d{3})$', filename, re.IGNORECASE)
+        # 旧式 RAR 多卷：主卷 .rar 或分卷成员 .rXX
+        rar_old_member_match = re.search(r'^(.*)\.r(\d{2})$', filename, re.IGNORECASE)
 
-        logger.info(f"[Archive] 匹配结果 - part_match: {part_match is not None}, no_ext_part_match: {no_ext_part_match is not None}")
-        
+        logger.info(
+            f"[Archive] 匹配结果 - part={part_match is not None}, "
+            f"no_ext_part={no_ext_part_match is not None}, "
+            f"zip_main={zip_main_match is not None}, zip_split={zip_split_match is not None}, "
+            f"7z_member={seven_z_member_match is not None}, "
+            f"rar_old_member={rar_old_member_match is not None}"
+        )
+
         if part_match:
             base_name = part_match.group(1)
             for f in os.listdir(source_dir):
@@ -3086,7 +3096,7 @@ class TaskEngine:
                     if volume_path not in files_to_archive:
                         files_to_archive.append(volume_path)
             logger.info(f"检测到分卷压缩包，共 {len(files_to_archive)} 个分卷文件: {[os.path.basename(f) for f in files_to_archive]}")
-        elif no_ext_part_match:  # 新增无扩展名分卷格式的处理
+        elif no_ext_part_match:
             base_name = no_ext_part_match.group(1)
             for f in os.listdir(source_dir):
                 if re.match(rf'{re.escape(base_name)}\.part\d+$', f, re.IGNORECASE):
@@ -3094,30 +3104,45 @@ class TaskEngine:
                     if volume_path not in files_to_archive:
                         files_to_archive.append(volume_path)
             logger.info(f"检测到无扩展名分卷压缩包，共 {len(files_to_archive)} 个分卷文件: {[os.path.basename(f) for f in files_to_archive]}")
-        elif zip_volume_match:
-            # 检查是否存在对应的 .zXX 分卷文件
-            base_name = zip_volume_match.group(1)
-            volume_files = []
+        elif seven_z_member_match:
+            # source_path 可能是 .7z.001 / .002 / .003 ... 任意一卷，
+            # 统一按 base_name 把整组 .7z.NNN 兄弟卷捞回来。
+            base_name = seven_z_member_match.group(1)
             for f in os.listdir(source_dir):
-                if re.match(rf'^{re.escape(base_name)}\.z\d+$', f, re.IGNORECASE):
-                    volume_files.append(os.path.join(source_dir, f))
-            if volume_files:
-                # 找到分卷文件，将所有分卷加入归档列表
-                files_to_archive.extend(volume_files)
-                logger.info(f"检测到 ZIP 分卷压缩包，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
-        elif seven_z_volume_match:
-            # 检查是否存在对应的 .7z.XXX 分卷文件
-            base_name = seven_z_volume_match.group(1)
-            volume_files = []
+                if re.match(rf'^{re.escape(base_name)}\.7z\.\d{{3}}$', f, re.IGNORECASE):
+                    volume_path = os.path.join(source_dir, f)
+                    if volume_path not in files_to_archive:
+                        files_to_archive.append(volume_path)
+            logger.info(f"检测到 7z 分卷压缩包，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
+        elif zip_main_match or zip_split_match:
+            # source_path 可能是 .zip 主卷或 .zXX 分卷成员，
+            # 都按 base_name 聚合 .zip 主卷 + 全部 .zXX 兄弟卷。
+            base_name = (zip_main_match or zip_split_match).group(1)
+            zip_main_path = os.path.join(source_dir, f"{base_name}.zip")
+            if os.path.exists(zip_main_path) and zip_main_path not in files_to_archive:
+                files_to_archive.append(zip_main_path)
             for f in os.listdir(source_dir):
-                if re.match(rf'^{re.escape(base_name)}\.7z\.\d+$', f, re.IGNORECASE):
-                    volume_files.append(os.path.join(source_dir, f))
-            if volume_files:
-                # 找到分卷文件，将所有分卷加入归档列表（排除已在列表中的首卷）
-                for vf in volume_files:
-                    if vf not in files_to_archive:
-                        files_to_archive.append(vf)
-                logger.info(f"检测到 7z 分卷压缩包，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
+                if re.match(rf'^{re.escape(base_name)}\.z\d{{2}}$', f, re.IGNORECASE):
+                    volume_path = os.path.join(source_dir, f)
+                    if volume_path not in files_to_archive:
+                        files_to_archive.append(volume_path)
+            logger.info(f"检测到 ZIP 分卷压缩包，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
+        elif rar_old_member_match:
+            # 旧式 RAR 多卷：source_path 是 .rXX 分卷时也把 .rar 主卷拉回来一起归档。
+            base_name = rar_old_member_match.group(1)
+            rar_main_path = os.path.join(source_dir, f"{base_name}.rar")
+            if os.path.exists(rar_main_path) and rar_main_path not in files_to_archive:
+                files_to_archive.append(rar_main_path)
+            for f in os.listdir(source_dir):
+                if re.match(rf'^{re.escape(base_name)}\.r\d{{2}}$', f, re.IGNORECASE):
+                    volume_path = os.path.join(source_dir, f)
+                    if volume_path not in files_to_archive:
+                        files_to_archive.append(volume_path)
+            logger.info(f"检测到旧式 RAR 分卷压缩包，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
+
+        # 按"首卷优先"排序：让 archived_files[0] 是分卷组首卷，
+        # 后面写 ProcessedArchive 时用首卷文件名作为唯一 key，避免同组多卷产生多条记录。
+        files_to_archive = self._sort_volumes_for_archive(files_to_archive)
         
         # 移动所有文件
         archived_files = []
@@ -3248,6 +3273,55 @@ class TaskEngine:
 
         except Exception as e:
             logger.error(f"归档压缩包失败: {e}")
+
+    def _sort_volumes_for_archive(self, files: List[str]) -> List[str]:
+        """归档时把分卷文件按"首卷优先"排序。
+
+        排序约定（数字越小越靠前，即越靠近"首卷"）：
+        - 0/1: .partN.ext / .partN  -> 按 N 升序，.part1 必然最小
+        - 2:   .7z.NNN              -> 按 NNN 升序，.001 在最前
+        - 3:   .zip 主卷             -> 在 .zXX 之前
+        - 4:   .zXX                 -> 按 N 升序
+        - 5:   .rar 主卷             -> 在 .rXX 之前
+        - 6:   .rXX                 -> 按 N 升序
+        - 9:   其他单文件 / 未知格式
+
+        排序结果保证 list[0] 是分卷组首卷，后续写 ProcessedArchive 记录时
+        以 list[0] 的文件名为主键，可避免同组多卷各产生一条独立记录。
+        """
+
+        def key(path: str) -> Tuple[int, int, str]:
+            name = os.path.basename(path).lower()
+
+            m = re.search(r'\.part(\d+)\.(rar|zip|7z|exe)$', name, re.IGNORECASE)
+            if m:
+                return (0, int(m.group(1)), name)
+
+            m = re.search(r'\.part(\d+)$', name, re.IGNORECASE)
+            if m:
+                return (1, int(m.group(1)), name)
+
+            m = re.search(r'\.7z\.(\d{3})$', name, re.IGNORECASE)
+            if m:
+                return (2, int(m.group(1)), name)
+
+            if name.endswith('.zip'):
+                return (3, 0, name)
+
+            m = re.search(r'\.z(\d{2})$', name, re.IGNORECASE)
+            if m:
+                return (4, int(m.group(1)), name)
+
+            if name.endswith('.rar'):
+                return (5, 0, name)
+
+            m = re.search(r'\.r(\d{2})$', name, re.IGNORECASE)
+            if m:
+                return (6, int(m.group(1)), name)
+
+            return (9, 0, name)
+
+        return sorted(files, key=key)
 
     async def _process_asmr_sync_download(self, task: Task):
         """
