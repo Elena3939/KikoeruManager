@@ -5268,6 +5268,23 @@ class ExtractService:
         last_unsupported = False
         last_disk_full = False
 
+        # lsar 预检：在密码循环之前一次性探测文件名编码（秒级，只读 TOC）。
+        # 多数 RAR 文件名头部未加密，无需密码即可检测。
+        # 探测成功后所有密码尝试都用同一编码；探测失败则 encoding=None，事后由
+        # _fix_unar_garbled_encoding 兜底。
+        _hint_pw = next(
+            (p for p in (passwords or []) if p and p in (rj_passwords or [])),
+            passwords[0] if passwords else None,
+        )
+        detected_unar_encoding: Optional[str] = await self._detect_rar_encoding_with_lsar(
+            archive_info.path, hint_password=_hint_pw,
+        )
+        if detected_unar_encoding:
+            logger.info(
+                "[unar编码] 预检确定编码 %s，后续解压均使用该编码: %s",
+                detected_unar_encoding, archive_info.path,
+            )
+
         for index, password in enumerate(passwords):
             if task.is_cancelled():
                 return False, None, "cancelled"
@@ -5299,6 +5316,7 @@ class ExtractService:
             )
             result = await self._try_unar_extract(
                 archive_info.path, output_path, password, task=task,
+                encoding=detected_unar_encoding,
             )
 
             if task.is_cancelled():
@@ -5308,11 +5326,12 @@ class ExtractService:
             stderr_lower = stderr_text.lower()
 
             if result.returncode == 0:
-                # 乱码修复：若 unar ICU 自动探测失败导致 Shift-JIS/GBK 文件名变成 Latin-1 乱码，
-                # 依次用 SHIFT_JIS / GBK / BIG5 重试，修复后继续正常流程。
-                await self._fix_unar_garbled_encoding(
-                    archive_info.path, output_path, password, task=task,
-                )
+                # 乱码修复：若 lsar 预检未指定编码（或预检不可用），用事后扫描兜底。
+                # 若 lsar 已预检确定编码，则理论上此步骤无需重试，快速跳过。
+                if detected_unar_encoding is None:
+                    await self._fix_unar_garbled_encoding(
+                        archive_info.path, output_path, password, task=task,
+                    )
                 # 成功，更新 archive_info 元信息
                 archive_info.password = password
                 inferred_rjcode = password_rjcode_map.get(password) if password else None
@@ -5403,44 +5422,108 @@ class ExtractService:
             return False, None, "wrong_password"
         return False, None, "wrong_password"
 
-    def _has_garbled_filenames(self, directory: str) -> bool:
-        """检测目录中是否存在 ANSI 多字节（Shift-JIS/GBK）被误当 Latin-1 解读的乱码文件名。
+    @staticmethod
+    def _has_garbled_text(text: str) -> bool:
+        """检测文本中是否大量含有 ANSI 多字节（Shift-JIS/GBK）被误当 Latin-1 解读的乱码特征。
 
         判断依据：
         - 出现 Unicode 替换字符 U+FFFD → 直接判定乱码
-        - 没有任何 CJK/假名字符，且 ≥40% 非 ASCII 字符落在 U+0080~U+00FF（Latin Extended）区间
+        - 无 CJK / 假名 / 韩文字符，且 ≥40% 非 ASCII 字符落在 U+0080~U+00FF（Latin Extended）区间
           → 判定为 Shift-JIS/GBK 字节被误读为 Latin-1 后的典型乱码模式
         """
+        latin_ext = 0
+        cjk = 0
+        total_nonascii = 0
+        for ch in text:
+            cp = ord(ch)
+            if cp > 127:
+                total_nonascii += 1
+                if ch == '\ufffd':
+                    return True
+                elif 0x0080 <= cp <= 0x00FF:
+                    latin_ext += 1
+                elif (
+                    0x3040 <= cp <= 0x30FF    # 平假名 / 片假名
+                    or 0x4E00 <= cp <= 0x9FFF  # CJK 统一汉字
+                    or 0x3400 <= cp <= 0x4DBF  # CJK Ext-A
+                    or 0xAC00 <= cp <= 0xD7AF  # 韩文
+                ):
+                    cjk += 1
+        if total_nonascii == 0:
+            return False
+        return cjk == 0 and (latin_ext / total_nonascii) >= 0.4
+
+    def _has_garbled_filenames(self, directory: str) -> bool:
+        """检测目录中是否存在 ANSI 多字节（Shift-JIS/GBK）被误当 Latin-1 解读的乱码文件名。"""
         try:
             entries = list(os.scandir(directory))[:40]
         except OSError:
             return False
+        combined = "\n".join(e.name for e in entries)
+        return self._has_garbled_text(combined)
 
-        latin_ext_count = 0
-        cjk_count = 0
-        total_nonascii = 0
+    async def _detect_rar_encoding_with_lsar(
+        self,
+        archive_path: str,
+        hint_password: Optional[str] = None,
+    ) -> Optional[str]:
+        """用 lsar 快速读取 RAR 目录树，检测是否需要指定文件名编码。
 
-        for entry in entries:
-            for ch in entry.name:
-                cp = ord(ch)
-                if cp > 127:
-                    total_nonascii += 1
-                    if ch == '\ufffd':
-                        return True  # Unicode 替换字符，直接判定乱码
-                    elif 0x0080 <= cp <= 0x00FF:
-                        latin_ext_count += 1
-                    elif (
-                        0x3040 <= cp <= 0x30FF    # 平假名 / 片假名
-                        or 0x4E00 <= cp <= 0x9FFF  # CJK 统一汉字
-                        or 0x3400 <= cp <= 0x4DBF  # CJK Ext-A
-                        or 0xAC00 <= cp <= 0xD7AF  # 韩文
-                    ):
-                        cjk_count += 1
+        lsar 只读 TOC/中央目录，秒级完成，不解压数据。多数 RAR 的文件名头部
+        未加密，无需密码即可列出文件名，因此可以在密码循环**之前**一次性探测。
+        若 lsar 不可用、压缩包头部已加密（即使无密码也无法列出），则返回 None，
+        事后由 ``_fix_unar_garbled_encoding`` 兜底。
+        """
+        lsar_path = shutil.which("lsar")
+        if not lsar_path:
+            return None
 
-        if total_nonascii == 0:
-            return False
-        # 无 CJK/假名 且 Latin Extended 占比超 40% → 判定乱码
-        return cjk_count == 0 and (latin_ext_count / total_nonascii) >= 0.4
+        for attempt_password in ([None] + ([hint_password] if hint_password else [])):
+            cmd = [lsar_path]
+            if attempt_password:
+                cmd.extend(["-p", attempt_password])
+            cmd.append(archive_path)
+            try:
+                result = await asyncio.wait_for(
+                    self._run_subprocess_command(cmd),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                logger.debug("[unar编码] lsar 预检超时: %s", archive_path)
+                return None
+            except Exception as e:
+                logger.debug("[unar编码] lsar 预检异常: %s", e)
+                return None
+
+            if result.returncode != 0:
+                continue  # 尝试带密码版本
+
+            output = (result.stdout or b"").decode("utf-8", errors="replace")
+            if not self._has_garbled_text(output):
+                return None  # 自动探测正确，无需指定编码
+
+            logger.info("[unar编码] lsar 预检发现疑似乱码，尝试指定编码: %s", archive_path)
+            for enc in ("SHIFT_JIS", "GBK", "BIG5"):
+                enc_cmd = [lsar_path, "-e", enc]
+                if attempt_password:
+                    enc_cmd.extend(["-p", attempt_password])
+                enc_cmd.append(archive_path)
+                try:
+                    enc_result = await asyncio.wait_for(
+                        self._run_subprocess_command(enc_cmd),
+                        timeout=30.0,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                if enc_result.returncode == 0:
+                    enc_output = (enc_result.stdout or b"").decode("utf-8", errors="replace")
+                    if not self._has_garbled_text(enc_output):
+                        logger.info("[unar编码] lsar 预检确定文件名编码: %s", enc)
+                        return enc
+            # 尝试了所有编码仍乱码，说明预检本身有问题，返回 None 让事后检测兜底
+            return None
+
+        return None
 
     async def _fix_unar_garbled_encoding(
         self,
