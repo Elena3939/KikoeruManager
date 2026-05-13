@@ -193,6 +193,33 @@ class TestExtractService:
             f.write(b'MZ' + b'\x00' * 1000)
         assert extract_service._probe_sfx_inner_format(path_unknown) == 'unknown'
 
+    def test_filename_garbled_guard_detects_surrogate(self, extract_service):
+        """非法 UTF-8 文件名字节在 Linux 上会进入 surrogateescape，必须判定为乱码。"""
+        assert extract_service._has_garbled_text("RJ00000001_\udce4\udcb8\udcad.mp3") is True
+
+    def test_filename_garbled_guard_detects_shift_jis_as_gbk_mojibake(self, extract_service):
+        """Shift-JIS 日文被 GBK 错解后会变成合法 CJK，不能因“没有替换符”放过。"""
+        assert extract_service._has_garbled_text("僠儍僾僞乕1乽悇偟偺偊偪偊偪攝怣彈巕偺僆僫僯乕傪帇挳乿.mp3") is True
+        assert extract_service._has_garbled_text("鍋靛伃鍋澹掓儭宀烘湷浜鎮囧仧鍋哄亰鍋鍋婂仾.wav") is True
+        assert extract_service._has_garbled_text("チャプター1「推しのえちえち配信女子のオナニーを視聴」.mp3") is False
+
+    def test_final_filename_guard_scans_full_tree(self, extract_service, temp_dir):
+        """最终兜底不只采样前 240 项，深层坏文件名也要能短路命中。"""
+        root = os.path.join(temp_dir, "output")
+        os.makedirs(root, exist_ok=True)
+        for index in range(260):
+            with open(os.path.join(root, f"track_{index:03d}.txt"), "w", encoding="utf-8") as fp:
+                fp.write("ok")
+
+        nested = os.path.join(root, "nested")
+        os.makedirs(nested, exist_ok=True)
+        bad_name = "RJ00000002_\udce4\udcb8\udcad.mp3"
+        with open(os.path.join(nested, bad_name), "w", encoding="utf-8") as fp:
+            fp.write("bad")
+
+        assert extract_service._find_garbled_filename_sample(root, max_names=None) == bad_name
+        assert extract_service._find_garbled_filename_sample(root, max_names=240) is None
+
     @pytest.mark.asyncio
     async def test_rollback_exe_e_remap(self, extract_service, temp_dir):
         """失败回滚：把 .7z.NNN 改回原 .exe + .eNN"""
@@ -316,7 +343,7 @@ class TestExtractService:
 
         call_count = {'n': 0}
 
-        async def fake_unar_extract(archive_path, output_path, password, task=None):
+        async def fake_unar_extract(archive_path, output_path, password, task=None, encoding=None):
             call_count['n'] += 1
             if call_count['n'] == 1:
                 return subprocess.CompletedProcess(
@@ -371,7 +398,7 @@ class TestExtractService:
         """unar 不识别 RAR 变体时返回 unsupported，让上层走 7zz。"""
         extract_service._find_unar_executable = lambda: '/usr/bin/unar'
 
-        async def fake_unar_extract(archive_path, output_path, password, task=None):
+        async def fake_unar_extract(archive_path, output_path, password, task=None, encoding=None):
             return subprocess.CompletedProcess(
                 args=['unar'], returncode=1, stdout=b'',
                 stderr=b"unar: This file isn't a supported archive format.",

@@ -711,7 +711,7 @@ class ExtractService:
             elif extract_failure_reason == "wrong_password":
                 error_msg = "解压失败：无正确密码"
             elif extract_failure_reason == "garbled_filename":
-                error_msg = "解压失败：RAR 文件名编码乱码，已阻止乱码产物入库"
+                error_msg = "解压失败：文件乱码"
             else:
                 error_msg = "解压失败：无法解压压缩包（原因未知）"
             self._set_extract_meta(task, extract_failure_reason=extract_failure_reason)
@@ -765,6 +765,19 @@ class ExtractService:
                 self._set_extract_meta(task, nested_archive_count=nested_count)
             else:
                 logger.debug("嵌套压缩包解压已禁用")
+
+            # 最终兜底：所有解压/嵌套解压结束后，只检查路径名，不读文件内容。
+            # 前面的 unar 修复阶段用采样保证多密码尝试轻量；这里仅跑一次全树短路扫描。
+            self._set_extract_meta(task, extract_stage="filename_encoding_guard")
+            task.update_progress(97, "检查文件名编码")
+            garbled_sample = self._find_garbled_filename_sample(output_path, max_names=None)
+            if garbled_sample:
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="garbled_filename",
+                    garbled_filename_sample=garbled_sample,
+                )
+                raise RuntimeError("解压失败：文件乱码")
 
             self._set_extract_meta(task, extract_stage="done", extract_finished_at=datetime.now().isoformat())
             return output_path
@@ -1600,6 +1613,15 @@ class ExtractService:
                         await self._fix_unar_garbled_encoding(
                             archive_path, output_path, password,
                         )
+                        garbled_sample = self._find_garbled_filename_sample(output_path, max_names=None)
+                        if garbled_sample:
+                            await asyncio.to_thread(clean_output)
+                            logger.error(
+                                "嵌套 RAR unar 解压后仍检测到乱码文件名，已清理产物: archive=%s sample=%s",
+                                archive_path,
+                                garbled_sample,
+                            )
+                            return False, None
                         logger.info(
                             "嵌套 RAR 用 unar 解压成功，密码: %s",
                             password or "无密码",
@@ -5547,7 +5569,10 @@ class ExtractService:
                 await self._fix_unar_garbled_encoding(
                     archive_info.path, output_path, password, task=task,
                 )
-                if not self._has_garbled_filenames(output_path) and await self._verify_extraction(archive_info, output_path):
+                if self._find_garbled_filename_sample(output_path, max_names=None):
+                    await self._cleanup_extract_attempt(output_path)
+                    return False, None, "garbled_filename"
+                if await self._verify_extraction(archive_info, output_path):
                     archive_info.password = password
                     inferred_rjcode = password_rjcode_map.get(password) if password else None
                     if inferred_rjcode:
@@ -5581,6 +5606,15 @@ class ExtractService:
                     await self._fix_unar_garbled_encoding(
                         archive_info.path, output_path, password, task=task,
                     )
+                garbled_sample = self._find_garbled_filename_sample(output_path, max_names=None)
+                if garbled_sample:
+                    await self._cleanup_extract_attempt(output_path)
+                    logger.error(
+                        "unar 解压后仍检测到乱码文件名，已清理产物并阻止继续入库: archive=%s sample=%s",
+                        archive_info.path,
+                        garbled_sample,
+                    )
+                    return False, None, "garbled_filename"
                 # 成功，更新 archive_info 元信息
                 archive_info.password = password
                 inferred_rjcode = password_rjcode_map.get(password) if password else None
@@ -5672,53 +5706,89 @@ class ExtractService:
         return False, None, "wrong_password"
 
     @staticmethod
-    def _has_garbled_text(text: str) -> bool:
-        """检测文本中是否大量含有 ANSI 多字节（Shift-JIS/GBK）被误当 Latin-1 解读的乱码特征。
+    def _garbled_text_score(text: str) -> float:
+        """文件名乱码评分。分数越高越像编码被猜错。
 
         判断依据：
+        - 出现 surrogate 字符 → 底层文件名字节不是合法 UTF-8，直接判定乱码
         - 出现 Unicode 替换字符 U+FFFD → 直接判定乱码
-        - 无 CJK / 假名 / 韩文字符，且 ≥40% 非 ASCII 字符落在 U+0080~U+00FF（Latin Extended）区间
-          → 判定为 Shift-JIS/GBK 字节被误读为 Latin-1 后的典型乱码模式
+        - Latin-1 扩展字符大量出现 → 常见 ANSI 字节被当 Latin-1
+        - `僠儍僾僞乕` / `鍋靛伃...` 这类 Shift-JIS 被 GBK 解码后的 CJK 乱码：
+          字符合法、CRC 也能过，但语义明显坏，必须继续换编码重解。
         """
         latin_ext = 0
         cjk = 0
+        kana = 0
+        hangul = 0
+        mojibake_marker = 0
         total_nonascii = 0
+        # Shift-JIS 日文被 GBK/Big5 错解后高频出现的字符。
+        cjk_mojibake_chars = set(
+            "僠儍僾僞乕乽乿偺偟偱偨傜傪傞傝傑丄丒丅"
+            "攝怣彈巕鍋靛伃澹掓儭宀烘湷浜鎮囧仧哄亰婂仾"
+            "鍍儮儔儕儖儞儊儂儚儛"
+        )
         for ch in text:
             cp = ord(ch)
+            if 0xD800 <= cp <= 0xDFFF:
+                return 100.0
             if cp > 127:
                 total_nonascii += 1
                 if ch == '\ufffd':
-                    return True
+                    return 100.0
                 elif 0x0080 <= cp <= 0x00FF:
                     latin_ext += 1
-                elif (
-                    0x3040 <= cp <= 0x30FF    # 平假名 / 片假名
-                    or 0x4E00 <= cp <= 0x9FFF  # CJK 统一汉字
-                    or 0x3400 <= cp <= 0x4DBF  # CJK Ext-A
-                    or 0xAC00 <= cp <= 0xD7AF  # 韩文
-                ):
+                elif 0x3040 <= cp <= 0x30FF:
+                    kana += 1
+                elif 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
                     cjk += 1
+                    if ch in cjk_mojibake_chars:
+                        mojibake_marker += 1
+                elif 0xAC00 <= cp <= 0xD7AF:
+                    hangul += 1
         if total_nonascii == 0:
-            return False
-        return cjk == 0 and latin_ext >= 3 and (latin_ext / total_nonascii) >= 0.4
+            return 0.0
+
+        score = 0.0
+        if latin_ext >= 3:
+            score += 60.0 * (latin_ext / total_nonascii)
+        if mojibake_marker >= 2:
+            score += 35.0 * min(mojibake_marker / max(total_nonascii, 1), 1.0)
+        if cjk >= 8 and kana == 0 and hangul == 0 and mojibake_marker >= 2:
+            score += 35.0
+        if cjk >= 20 and kana == 0 and mojibake_marker >= 4:
+            score += 20.0
+        return score
+
+    @classmethod
+    def _has_garbled_text(cls, text: str) -> bool:
+        return cls._garbled_text_score(text) >= 30.0
 
     def _has_garbled_filenames(self, directory: str) -> bool:
         """检测目录中是否存在 ANSI 多字节（Shift-JIS/GBK）被误当 Latin-1 解读的乱码文件名。"""
-        return self._find_garbled_filename_sample(directory) is not None
+        return self._find_garbled_filename_sample(directory, max_names=240) is not None
 
-    def _find_garbled_filename_sample(self, directory: str) -> Optional[str]:
-        """返回一个疑似乱码文件名样本；没有则返回 None。"""
+    def _find_garbled_filename_sample(
+        self,
+        directory: str,
+        *,
+        max_names: Optional[int] = 240,
+    ) -> Optional[str]:
+        """返回一个疑似乱码文件名样本；max_names=None 表示全树短路扫描。"""
         names: List[str] = []
         stack = [directory]
-        while stack and len(names) < 240:
+        while stack and (max_names is None or len(names) < max_names):
             current = stack.pop()
             try:
                 with os.scandir(current) as entries:
                     for entry in entries:
-                        names.append(entry.name)
+                        name = entry.name
+                        if self._has_garbled_text(name):
+                            return name
+                        names.append(name)
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(entry.path)
-                        if len(names) >= 240:
+                        if max_names is not None and len(names) >= max_names:
                             break
             except OSError:
                 continue
@@ -5729,6 +5799,29 @@ class ExtractService:
                 return name
         combined = "\n".join(names)
         return names[0] if self._has_garbled_text(combined) else None
+
+    def _filename_garbled_score(self, directory: str, *, max_names: Optional[int] = 240) -> float:
+        """返回目录树文件名最高乱码评分。"""
+        best = 0.0
+        names: List[str] = []
+        stack = [directory]
+        while stack and (max_names is None or len(names) < max_names):
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        name = entry.name
+                        names.append(name)
+                        best = max(best, self._garbled_text_score(name))
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        if max_names is not None and len(names) >= max_names:
+                            break
+            except OSError:
+                continue
+        if names:
+            best = max(best, self._garbled_text_score("\n".join(names)))
+        return best
 
     async def _reject_if_garbled_after_extract(
         self,
@@ -5741,7 +5834,7 @@ class ExtractService:
         """解压成功后检查文件名乱码，命中则清理并返回 True。"""
         if not self._needs_filename_garbled_guard(archive_path):
             return False
-        sample = self._find_garbled_filename_sample(output_path)
+        sample = self._find_garbled_filename_sample(output_path, max_names=None)
         if sample is None:
             return False
         await cleanup()
@@ -5781,44 +5874,22 @@ class ExtractService:
         archive_path: str,
         hint_password: Optional[str] = None,
     ) -> Optional[str]:
-        """用 lsar 快速读取 RAR 目录树，检测是否需要指定文件名编码。
+        """用 lsar 轻量读取 RAR 目录树，选择文件名编码。
 
         lsar 只读 TOC/中央目录，秒级完成，不解压数据。多数 RAR 的文件名头部
-        未加密，无需密码即可列出文件名，因此可以在密码循环**之前**一次性探测。
-        若 lsar 不可用、压缩包头部已加密（即使无密码也无法列出），则返回 None，
-        事后由 ``_fix_unar_garbled_encoding`` 兜底。
+        未加密，无需密码即可列出文件名，因此可以在密码循环前一次性探测。
+        返回 None 表示自动探测已经足够好，或 lsar 不可用 / 无法判断。
         """
         lsar_path = shutil.which("lsar")
         if not lsar_path:
             return None
 
         for attempt_password in ([None] + ([hint_password] if hint_password else [])):
-            cmd = [lsar_path]
-            if attempt_password:
-                cmd.extend(["-p", attempt_password])
-            cmd.append(archive_path)
-            try:
-                result = await asyncio.wait_for(
-                    self._run_subprocess_command(cmd),
-                    timeout=30.0,
-                )
-            except asyncio.TimeoutError:
-                logger.debug("[unar编码] lsar 预检超时: %s", archive_path)
-                return None
-            except Exception as e:
-                logger.debug("[unar编码] lsar 预检异常: %s", e)
-                return None
-
-            if result.returncode != 0:
-                continue  # 尝试带密码版本
-
-            output = (result.stdout or b"").decode("utf-8", errors="replace")
-            if not self._has_garbled_text(output):
-                return None  # 自动探测正确，无需指定编码
-
-            logger.info("[unar编码] lsar 预检发现疑似乱码，尝试指定编码: %s", archive_path)
-            for enc in ("SHIFT_JIS", "GBK", "BIG5"):
-                enc_cmd = [lsar_path, "-e", enc]
+            candidates: List[Tuple[Optional[str], float]] = []
+            for enc in (None, "SHIFT_JIS", "GBK", "BIG5"):
+                enc_cmd = [lsar_path]
+                if enc:
+                    enc_cmd.extend(["-e", enc])
                 if attempt_password:
                     enc_cmd.extend(["-p", attempt_password])
                 enc_cmd.append(archive_path)
@@ -5828,15 +5899,93 @@ class ExtractService:
                         timeout=30.0,
                     )
                 except asyncio.TimeoutError:
-                    continue
+                    logger.debug("[unar编码] lsar 预检超时: %s", archive_path)
+                    return None
+                except Exception as e:
+                    logger.debug("[unar编码] lsar 预检异常: %s", e)
+                    return None
                 if enc_result.returncode == 0:
                     enc_output = (enc_result.stdout or b"").decode("utf-8", errors="replace")
-                    if not self._has_garbled_text(enc_output):
-                        logger.info("[unar编码] lsar 预检确定文件名编码: %s", enc)
-                        return enc
-            # 尝试了所有编码仍乱码，说明预检本身有问题，返回 None 让事后检测兜底
+                    candidates.append((enc, self._garbled_text_score(enc_output)))
+            if not candidates:
+                continue
+
+            auto_score = next((score for enc, score in candidates if enc is None), None)
+            best_encoding, best_score = min(candidates, key=lambda item: item[1])
+            logger.debug(
+                "[unar编码] lsar 文件名编码评分 archive=%s scores=%s",
+                archive_path,
+                {enc or "auto": round(score, 1) for enc, score in candidates},
+            )
+            if best_encoding is None:
+                return None
+            if auto_score is not None and auto_score < 30.0:
+                return None
+            if best_score < (auto_score if auto_score is not None else 100.0):
+                logger.info(
+                    "[unar编码] lsar 预检选择文件名编码: %s score=%.1f auto=%.1f",
+                    best_encoding,
+                    best_score,
+                    auto_score if auto_score is not None else -1.0,
+                )
+                return best_encoding
+            if auto_score is None and best_score < 30.0:
+                logger.info(
+                    "[unar编码] lsar 预检选择文件名编码: %s score=%.1f",
+                    best_encoding,
+                    best_score,
+                )
+                return best_encoding
             return None
 
+        return None
+
+    async def _detect_rar_encoding_after_garbled_extract(
+        self,
+        archive_path: str,
+        password: Optional[str],
+        baseline_score: float,
+    ) -> Optional[str]:
+        """解压后发现乱码时，用 lsar 再轻量选一次编码，避免三次完整重解。"""
+        lsar_path = shutil.which("lsar")
+        if not lsar_path:
+            return None
+
+        scores: List[Tuple[str, float]] = []
+        for enc in ("SHIFT_JIS", "GBK", "BIG5"):
+            cmd = [lsar_path, "-e", enc]
+            if password:
+                cmd.extend(["-p", password])
+            cmd.append(archive_path)
+            try:
+                result = await asyncio.wait_for(
+                    self._run_subprocess_command(cmd),
+                    timeout=30.0,
+                )
+            except Exception:
+                continue
+            if result.returncode != 0:
+                continue
+            output = (result.stdout or b"").decode("utf-8", errors="replace")
+            scores.append((enc, self._garbled_text_score(output)))
+        if not scores:
+            return None
+
+        best_encoding, best_score = min(scores, key=lambda item: item[1])
+        logger.debug(
+            "[unar编码] 解压后 lsar 编码评分 archive=%s scores=%s baseline=%.1f",
+            archive_path,
+            {enc: round(score, 1) for enc, score in scores},
+            baseline_score,
+        )
+        if best_score < baseline_score:
+            logger.info(
+                "[unar编码] 解压后 lsar 选择文件名编码: %s score=%.1f baseline=%.1f",
+                best_encoding,
+                best_score,
+                baseline_score,
+            )
+            return best_encoding
         return None
 
     async def _fix_unar_garbled_encoding(
@@ -5850,36 +5999,51 @@ class ExtractService:
 
         不抛异常：若所有编码均无法修复，则回退重解一遍自动探测结果，确保目录有内容。
         """
-        if not self._has_garbled_filenames(output_path):
+        baseline_score = self._filename_garbled_score(output_path)
+        if baseline_score < 30.0:
             return
 
         logger.warning(
-            "[unar编码] 检测到疑似乱码文件名，尝试指定编码重新解压: %s",
+            "[unar编码] 检测到疑似乱码文件名(score=%.1f)，准备轻量嗅探编码: %s",
+            baseline_score,
             output_path,
         )
-        for enc in ('SHIFT_JIS', 'GBK', 'BIG5'):
+        detected_encoding = await self._detect_rar_encoding_after_garbled_extract(
+            archive_path, password, baseline_score,
+        )
+        needs_auto_restore = False
+        if detected_encoding:
             await self._cleanup_extract_attempt(output_path)
+            needs_auto_restore = True
             r = await self._try_unar_extract(
-                archive_path, output_path, password, task=task, encoding=enc,
+                archive_path, output_path, password, task=task, encoding=detected_encoding,
             )
             if r.returncode == 0:
-                if not self._has_garbled_filenames(output_path):
-                    logger.info("[unar编码] 乱码修复成功，使用编码: %s", enc)
+                needs_auto_restore = False
+                score = self._filename_garbled_score(output_path)
+                logger.debug("[unar编码] 编码 %s 重解后乱码评分: %.1f", detected_encoding, score)
+                if score < 30.0:
+                    logger.info("[unar编码] 乱码修复成功，使用编码: %s score=%.1f", detected_encoding, score)
                     return
-                # 这个编码仍然乱码，继续尝试下一个
-                logger.debug("[unar编码] 编码 %s 仍有乱码，继续尝试", enc)
-            else:
-                # 意外失败（unar 不认识该编码名），终止重试
-                logger.debug(
-                    "[unar编码] 指定编码 %s 解压失败 (rc=%s)，终止重试",
-                    enc, r.returncode,
+                logger.warning(
+                    "[unar编码] 嗅探编码 %s 重解后仍疑似乱码 score=%.1f",
+                    detected_encoding,
+                    score,
                 )
-                break
+            else:
+                logger.debug("[unar编码] 嗅探编码 %s 重解失败 rc=%s", detected_encoding, r.returncode)
+        else:
+            logger.warning(
+                "[unar编码] lsar 嗅探不可用或无法改善评分，跳过多次完整重解: %s",
+                archive_path,
+            )
+            return
 
-        # 所有编码均无法修复，回退自动探测（至少保证目录有内容）
-        logger.warning("[unar编码] 乱码自动修复失败，回退自动探测结果")
-        await self._cleanup_extract_attempt(output_path)
-        await self._try_unar_extract(archive_path, output_path, password, task=task)
+        # 嗅探出的编码重解失败时恢复自动探测结果；上层会再次全树检查，仍乱码则失败清理。
+        if needs_auto_restore:
+            logger.warning("[unar编码] 乱码自动修复失败，回退自动探测结果")
+            await self._cleanup_extract_attempt(output_path)
+            await self._try_unar_extract(archive_path, output_path, password, task=task)
 
     async def _try_unar_extract(
         self,
