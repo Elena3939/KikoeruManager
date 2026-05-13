@@ -102,6 +102,9 @@ class Task:
         """暂停任务。会主动 kill 正在跑的 7z 子进程，让上层从 await 返回，
         之后会在下一个 wait_if_paused 检查点阻塞。恢复后调用方会重试
         被中断的那个阶段（例如同一个密码的完整解压）。"""
+        previous_status = self.status.value if isinstance(self.status, TaskStatus) else str(self.status or "")
+        if previous_status == TaskStatus.PENDING.value:
+            self.task_metadata["pause_origin_status"] = TaskStatus.PENDING.value
         self.status = TaskStatus.PAUSED
         self._pause_event.clear()
         self._kill_active_processes('pause')
@@ -2382,7 +2385,31 @@ class TaskEngine:
     def resume_task(self, task_id: str):
         """恢复任务"""
         if task_id in self.tasks:
-            self.tasks[task_id].resume()
+            task = self.tasks[task_id]
+            metadata = dict(task.task_metadata or {})
+            if task.status == TaskStatus.PAUSED and metadata.get("pause_origin_status") == TaskStatus.PENDING.value:
+                metadata.pop("pause_origin_status", None)
+                task.task_metadata = metadata
+                task.status = TaskStatus.PENDING
+                task._pause_event.set()
+                pending: list[Task] = []
+                already_queued = False
+                while True:
+                    try:
+                        queued_task = self.queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if queued_task.id == task.id:
+                        already_queued = True
+                    pending.append(queued_task)
+                if not already_queued:
+                    pending.append(task)
+                for queued_task in sorted(pending, key=self._task_queue_priority):
+                    self.queue.put_nowait(queued_task)
+            else:
+                metadata.pop("pause_origin_status", None)
+                task.task_metadata = metadata
+                task.resume()
     
     def cancel_task(self, task_id: str):
         """取消任务"""

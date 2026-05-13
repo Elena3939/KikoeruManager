@@ -57,9 +57,12 @@ class SecurityGateService:
         cfg = get_config().security_gate
         ip_address = self.get_client_ip(request) if request else ""
         blocked = self.get_active_blacklist(ip_address) if ip_address else None
+        token = request.cookies.get(COOKIE_NAME, "") if request else ""
+        authenticated = self.verify_cookie(token) if token else False
         return {
             "enabled": bool(cfg.enabled),
             "enforced": bool(cfg.enabled and cfg.secret),
+            "authenticated": bool(authenticated),
             "bound": bool(cfg.secret),
             "has_pending_setup": bool(cfg.pending_secret),
             "allow_remember_device": bool(cfg.allow_remember_device),

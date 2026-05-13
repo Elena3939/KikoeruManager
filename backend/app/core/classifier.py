@@ -49,20 +49,133 @@ class SmartClassifier:
             )
             return True
         
-        logger.info(f"[预检] 跳过本地库重复扫描，仅检查 Kikoeru: {rjcode}")
+        # 2. 先走本地库存索引 / 库存 fallback。
+        # Kikoeru 只是外部兜底：如果先写入 "[Kikoeru 服务器] ..." 这种显示路径，
+        # 问题作品详情页后续很难稳定还原真实目录，也就拿不到大小 / 创建时间。
+        local_result = await self._check_library_index_before_extract(rjcode, task)
+        if local_result:
+            return True
 
-        # 2. 检查 Kikoeru 在线索引服务器（不是用户配置的远程库存）
+        # 3. 检查 Kikoeru 在线索引服务器（不是用户配置的远程库存）
         logger.info(f"[预检] 检查 Kikoeru 服务器: {rjcode}")
         kikoeru_result = await self._check_kikoeru_server(rjcode, task)
         if kikoeru_result:
             return True
         
-        # 3. 标记RJ号正在处理（防止其他任务同时处理）
+        # 4. 标记RJ号正在处理（防止其他任务同时处理）
         if engine:
             engine.mark_rjcode_processing(rjcode)
             task.rjcode = rjcode  # 保存RJ号到任务，用于后续清理
         
-        logger.info(f"[预检] 完成: RJ号 {rjcode} 未在 Kikoeru 发现重复，继续解压")
+        logger.info(f"[预检] 完成: RJ号 {rjcode} 未在本地库存 / Kikoeru 发现重复，继续解压")
+        return False
+
+    async def _check_library_index_before_extract(self, rjcode: str, task: Task) -> bool:
+        """预解压优先用库存索引查当前 RJ 和关联 RJ。"""
+        normalized_rj = str(rjcode or "").strip().upper()
+        if not normalized_rj:
+            return False
+
+        manager = get_library_manager()
+
+        async def _find_first(target_rj: str) -> Optional[dict]:
+            try:
+                matches = await manager.find_rj_in_libraries(
+                    target_rj,
+                    per_library_timeout=8.0,
+                    include_remote=True,
+                )
+            except Exception:
+                logger.warning("[预检] 库存索引查重失败 rj=%s", target_rj, exc_info=True)
+                return None
+            return matches[0] if matches else None
+
+        direct_match = await _find_first(normalized_rj)
+        if direct_match:
+            existing_path = str(direct_match.get("path") or "").strip()
+            logger.info("[预检] 库存索引命中当前 RJ: %s -> %s", normalized_rj, existing_path)
+            self._add_to_conflict_works(
+                task.id,
+                normalized_rj,
+                "DUPLICATE",
+                existing_path,
+                task.source_path,
+                {
+                    "source": "library_index",
+                    "existing_library_id": direct_match.get("library_id"),
+                    "existing_library_name": direct_match.get("library_name"),
+                    "existing_library_type": direct_match.get("library_type"),
+                    "existing_size": direct_match.get("size"),
+                },
+                linked_works_info=[{
+                    "rjcode": normalized_rj,
+                    "path": existing_path,
+                    "size": direct_match.get("size"),
+                    "library_id": direct_match.get("library_id"),
+                    "library_name": direct_match.get("library_name"),
+                }],
+                related_rjcodes=[normalized_rj],
+            )
+            return True
+
+        linked_works = {}
+        try:
+            from .dlsite_service import get_dlsite_service
+            linked_works = await get_dlsite_service().get_linked_works(normalized_rj)
+        except Exception as exc:
+            logger.info("[预检] 获取 DLsite 关联链失败，仅查当前 RJ: %s error=%s", normalized_rj, exc)
+
+        related_rjcodes = [
+            str(candidate or "").strip().upper()
+            for candidate in (linked_works.keys() if linked_works else [])
+            if str(candidate or "").strip().upper() and str(candidate or "").strip().upper() != normalized_rj
+        ]
+
+        for linked_rj in related_rjcodes:
+            linked_match = await _find_first(linked_rj)
+            if not linked_match:
+                continue
+            existing_path = str(linked_match.get("path") or "").strip()
+            linked_work = linked_works.get(linked_rj) if linked_works else None
+            work_type = str(getattr(linked_work, "work_type", "") or "")
+            lang = str(getattr(linked_work, "lang", "") or "")
+            logger.info(
+                "[预检] 库存索引命中关联 RJ: current=%s linked=%s path=%s",
+                normalized_rj,
+                linked_rj,
+                existing_path,
+            )
+            self._add_to_conflict_works(
+                task.id,
+                normalized_rj,
+                "DUPLICATE",
+                existing_path,
+                task.source_path,
+                {
+                    "work_name": normalized_rj,
+                    "source": "library_index_linked",
+                    "matched_rjcode": linked_rj,
+                    "matched_work_type": work_type,
+                    "matched_lang": lang,
+                    "existing_library_id": linked_match.get("library_id"),
+                    "existing_library_name": linked_match.get("library_name"),
+                    "existing_library_type": linked_match.get("library_type"),
+                    "existing_size": linked_match.get("size"),
+                },
+                linked_works_info=[{
+                    "rjcode": linked_rj,
+                    "work_type": work_type,
+                    "lang": lang,
+                    "path": existing_path,
+                    "size": linked_match.get("size"),
+                    "library_id": linked_match.get("library_id"),
+                    "library_name": linked_match.get("library_name"),
+                }],
+                related_rjcodes=[normalized_rj, *related_rjcodes],
+            )
+            return True
+
+        logger.info("[预检] 库存索引未命中当前 RJ / 关联 RJ: %s", normalized_rj)
         return False
     
     async def _check_kikoeru_server(self, rjcode: str, task: Task) -> bool:

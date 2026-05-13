@@ -14,6 +14,7 @@ import ActivityHistory from '../views/ActivityHistory.vue'
 import CircleCompletion from '../views/CircleCompletion.vue'
 import VerifyGate from '../views/VerifyGate.vue'
 import BlockedGate from '../views/BlockedGate.vue'
+import { securityGateApi } from '../api'
 
 const routes = [
   {
@@ -172,6 +173,37 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes
+})
+
+function buildVerifyRedirect(to) {
+  const next = encodeURIComponent(to.fullPath || '/')
+  return `/verify?next=${next}`
+}
+
+router.beforeEach(async (to) => {
+  if (to.meta?.gatePage) {
+    return true
+  }
+
+  try {
+    const state = await securityGateApi.status()
+    if (state?.blocked) {
+      return '/blocked'
+    }
+    if (state?.enforced && !state?.authenticated) {
+      return buildVerifyRedirect(to)
+    }
+    return true
+  } catch (error) {
+    const data = error.response?.data || {}
+    if (data.blocked) {
+      return '/blocked'
+    }
+    if (data.gate_required) {
+      return buildVerifyRedirect(to)
+    }
+    return true
+  }
 })
 
 export default router

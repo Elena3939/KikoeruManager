@@ -124,6 +124,7 @@ class TaskCenterService:
     }
 
     DOMAIN_ROUTE_HINT = {
+        "library": "/library",
         "import": "/library",
         "existing_folder": "/existing-folders",
         "rj_subtitle": "/library",
@@ -496,12 +497,14 @@ class TaskCenterService:
             status_label = "重试中"
             progress = int(getattr(linked_engine_task, "progress", 0) or 0)
             subtitle = self._safe_text(getattr(linked_engine_task, "current_step", "")) or subtitle
+            actions = self._build_engine_actions(linked_engine_task, "import") if linked_engine_task else []
         else:
             current_step = error_message or (
                 "等待在问题作品页处理中" if display_status == TaskStatus.WAITING_MANUAL.value else "问题作品处理中"
             )
             status_label = self.STATUS_LABELS[display_status]
             progress = 0
+            actions = []
 
         return {
             "id": f"conflict:{self._safe_text(getattr(conflict, 'id', ''))}",
@@ -530,7 +533,7 @@ class TaskCenterService:
             "started_at": None,
             "completed_at": None,
             "metrics": metrics,
-            "actions": [],
+            "actions": actions,
             "details": {
                 "metadata": self._json_safe(metadata),
                 "retrying": is_retrying,
@@ -593,6 +596,13 @@ class TaskCenterService:
             if not parent:
                 continue
 
+            parent_status = self._safe_text(parent.get("status"))
+            conflict_details = dict(conflict_item.get("details") or {})
+            is_retrying = bool(conflict_details.get("retrying"))
+            if parent_status not in {TaskStatus.WAITING_MANUAL.value, TaskStatus.FAILED.value} and not is_retrying:
+                merged_conflict_ids.add(self._safe_text(conflict_item.get("id")))
+                continue
+
             parent["status"] = self._safe_text(conflict_item.get("status")) or parent.get("status")
             parent["status_label"] = self._safe_text(conflict_item.get("status_label")) or parent.get("status_label")
             parent["kind"] = self._safe_text(conflict_item.get("kind")) or parent.get("kind")
@@ -606,7 +616,6 @@ class TaskCenterService:
 
             parent_details = dict(parent.get("details") or {})
             parent_metadata = self._item_metadata(parent)
-            conflict_details = dict(conflict_item.get("details") or {})
             linked_conflict = dict(conflict_details.get("conflict") or {})
             parent_metadata["linked_conflict_id"] = self._safe_text(linked_conflict.get("id"))
             parent_metadata["linked_conflict_type"] = self._safe_text(linked_conflict.get("conflict_type"))
@@ -730,10 +739,10 @@ class TaskCenterService:
 
     def _build_engine_actions(self, task: Task, domain: str) -> List[str]:
         actions: List[str] = []
-        if task.status == TaskStatus.PROCESSING:
+        if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING}:
             actions.extend(["pause", "cancel"])
         elif task.status == TaskStatus.PAUSED:
-            actions.append("resume")
+            actions.extend(["resume", "cancel"])
         elif task.status == TaskStatus.FAILED and self._can_retry_engine_task(task, domain):
             actions.append("retry")
         elif task.status == TaskStatus.WAITING_RETRY and domain == "asmr_sync":

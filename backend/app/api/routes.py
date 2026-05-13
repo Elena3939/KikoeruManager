@@ -1436,7 +1436,10 @@ async def security_gate_middleware(request: Request, call_next):
 
     if path.startswith("/api/"):
         return JSONResponse({"detail": "需要通过系统门禁验证", "gate_required": True}, status_code=401)
-    next_path = quote(str(request.url.path or "/"), safe="/")
+    next_path_raw = str(request.url.path or "/")
+    if request.url.query:
+        next_path_raw = f"{next_path_raw}?{request.url.query}"
+    next_path = quote(next_path_raw, safe="/")
     return RedirectResponse(url=f"/verify?next={next_path}", status_code=303)
 
 # 通知定期清理协程（每24h清一次超7天的已读通知）

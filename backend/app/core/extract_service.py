@@ -309,6 +309,15 @@ class ExtractService:
         lower_path = str(archive_path).lower()
         return lower_path.endswith(".rar") or bool(re.search(r"\.part0*1\.rar$", lower_path))
 
+    def _needs_filename_garbled_guard(self, archive_path: str) -> bool:
+        """只有文件名编码历史上会踩坑的格式需要乱码阻断。"""
+        lower_path = str(archive_path or "").lower()
+        return (
+            self._is_rar_archive(lower_path)
+            or lower_path.endswith(".zip")
+            or bool(re.search(r"\.zip\.\d+$", lower_path))
+        )
+
     async def _ensure_7z_available(self) -> bool:
         """异步检查 7z 是否可用，并缓存结果避免高并发重复探测"""
         executable = self.seven_zip
@@ -495,7 +504,24 @@ class ExtractService:
         raw = str(getattr(self.config.extract, 'seven_zip_threads', '') or '').strip()
         if not raw:
             return []
+        if raw.lower() == 'auto':
+            raw = 'on'
         return [f'-mmt={raw}']
+
+    @staticmethod
+    def _is_semaphore_locked(semaphore: asyncio.Semaphore) -> bool:
+        """兼容不同 Python 版本的 semaphore locked 判断。"""
+        try:
+            return bool(semaphore.locked())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_extract_subprocess_command(cmd: List[str]) -> bool:
+        if len(cmd) < 2:
+            return False
+        action = str(cmd[1] or "").strip().lower()
+        return action in {"x", "e"}
 
     def _set_extract_meta(self, task: Task, **values):
         if task.task_metadata is None:
@@ -684,6 +710,8 @@ class ExtractService:
                 error_msg = "解压失败：压缩包损坏或不完整（Headers/Data Error）"
             elif extract_failure_reason == "wrong_password":
                 error_msg = "解压失败：无正确密码"
+            elif extract_failure_reason == "garbled_filename":
+                error_msg = "解压失败：RAR 文件名编码乱码，已阻止乱码产物入库"
             else:
                 error_msg = "解压失败：无法解压压缩包（原因未知）"
             self._set_extract_meta(task, extract_failure_reason=extract_failure_reason)
@@ -1302,7 +1330,7 @@ class ExtractService:
                             await asyncio.to_thread(shutil.rmtree, nested_output_dir, ignore_errors=True)
                         except Exception:
                             pass
-                    return 0
+                    raise RuntimeError(f"嵌套压缩包解压失败: {filename}")
 
                 logger.info(
                     f"成功解压嵌套压缩包: {filename} "
@@ -1343,17 +1371,28 @@ class ExtractService:
                         await asyncio.to_thread(shutil.rmtree, nested_output_dir, ignore_errors=True)
                     except Exception:
                         pass
-                return 0
+                raise
 
         results = await asyncio.gather(
             *[_process_one(item) for item in pending],
             return_exceptions=True,
         )
+        failed_nested_archives: List[str] = []
         for r in results:
             if isinstance(r, int):
                 extracted_count += r
             elif isinstance(r, Exception):
                 logger.error("嵌套解压并发任务异常: %s", r)
+                failed_nested_archives.append(str(r))
+
+        if failed_nested_archives:
+            if task.task_metadata is None:
+                task.task_metadata = {}
+            task.task_metadata["nested_archive_failures"] = failed_nested_archives
+            raise RuntimeError(
+                "存在未成功解压的嵌套压缩包，已停止入库: "
+                + "；".join(failed_nested_archives[:5])
+            )
 
         return extracted_count
 
@@ -1610,6 +1649,13 @@ class ExtractService:
             try:
                 result = await self._run_7z_command(cmd, capture_stdout=False)
                 if result.returncode == 0:
+                    if await self._reject_if_garbled_after_extract(
+                        archive_path,
+                        output_path,
+                        cleanup=lambda: asyncio.to_thread(clean_output),
+                        context="嵌套压缩包 7zz",
+                    ):
+                        return False, None
                     logger.info("嵌套压缩包解压成功，密码: %s", password or "无密码")
                     return True, password or None
                 logger.debug("嵌套解压失败 (密码=%s, rc=%d)", password or "无密码", result.returncode)
@@ -4182,6 +4228,13 @@ class ExtractService:
                     break
 
                 if result.returncode == 0:
+                    if await self._reject_if_garbled_after_extract(
+                        archive_info.path,
+                        output_path,
+                        cleanup=lambda: self._cleanup_extract_attempt(output_path),
+                        context="7zz",
+                    ):
+                        return False, None, "garbled_filename"
                     # 记录成功使用的密码
                     if password and password in vault_passwords:
                         await self._record_password_usage(
@@ -4479,9 +4532,17 @@ class ExtractService:
         logger.info(f"执行7z命令: {' '.join(cmd)}")
 
         semaphore = self._get_7z_semaphore()
+        is_extract_command = self._is_extract_subprocess_command(cmd)
 
         try:
+            if task is not None and is_extract_command and self._is_semaphore_locked(semaphore):
+                task.update_progress(
+                    max(31, int(task.progress or 0)),
+                    f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
+                )
             async with semaphore:
+                if task is not None and is_extract_command:
+                    task.update_progress(max(40, int(task.progress or 0)), "解压子进程已启动")
                 # Windows 上隐藏子进程窗口，避免闪烁
                 kwargs = {
                     'stdout': subprocess.PIPE,
@@ -5297,6 +5358,7 @@ class ExtractService:
         self,
         cmd: List[str],
         task: Optional[Task] = None,
+        running_step: str = "解压子进程已启动",
     ) -> subprocess.CompletedProcess:
         """跑非 7z 子进程（unar 等）。
         传入 task 时把子进程登记到 task 上，cancel / pause 能立刻 kill —— 修复
@@ -5304,7 +5366,14 @@ class ExtractService:
         """
         semaphore = self._get_7z_semaphore()
         try:
+            if task is not None and self._is_semaphore_locked(semaphore):
+                task.update_progress(
+                    max(31, int(task.progress or 0)),
+                    f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
+                )
             async with semaphore:
+                if task is not None and running_step:
+                    task.update_progress(max(40, int(task.progress or 0)), running_step)
                 kwargs = {
                     'stdout': subprocess.PIPE,
                     'stderr': subprocess.PIPE,
@@ -5468,6 +5537,43 @@ class ExtractService:
             stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
             stderr_lower = stderr_text.lower()
 
+            # 有些 unar/RAR 组合会在已经完整写出文件后仍返回 rc=1，且 stderr 为空。
+            # 如果这个密码本来就是 7zz list 预读确认过的密码，先校验产物；通过就接受，
+            # 避免无谓回退到 7zz 造成 RAR 文件名乱码。
+            likely_verified_password = manual_retry_password_only or (
+                password == getattr(archive_info, "password", None)
+            )
+            if likely_verified_password and self._has_extracted_payload(output_path):
+                await self._fix_unar_garbled_encoding(
+                    archive_info.path, output_path, password, task=task,
+                )
+                if not self._has_garbled_filenames(output_path) and await self._verify_extraction(archive_info, output_path):
+                    archive_info.password = password
+                    inferred_rjcode = password_rjcode_map.get(password) if password else None
+                    if inferred_rjcode:
+                        archive_info.inferred_rjcode = inferred_rjcode
+                        if task.task_metadata is None:
+                            task.task_metadata = {}
+                        task.task_metadata['inferred_rjcode'] = inferred_rjcode
+                        task.task_metadata['rjcode'] = inferred_rjcode
+                        task.task_metadata['inferred_rjcode_source'] = 'password_entry'
+                        if not getattr(task, 'rjcode', None) or str(task.rjcode).strip() in {'', '未知'}:
+                            task.rjcode = inferred_rjcode
+                    if password and password in vault_password_set:
+                        await self._record_password_usage(
+                            password,
+                            archive_info.path,
+                            entry_id=password_entry_id_map.get(password),
+                        )
+                    logger.info(
+                        "unar 返回 rc=%s 但产物校验通过，接受本次 RAR 解压结果，使用 %s 密码: %s",
+                        result.returncode,
+                        password_source,
+                        password or '无密码',
+                    )
+                    return True, password, ""
+                await self._cleanup_extract_attempt(output_path)
+
             if result.returncode == 0:
                 # 乱码修复：若 lsar 预检未指定编码（或预检不可用），用事后扫描兜底。
                 # 若 lsar 已预检确定编码，则理论上此步骤无需重试，快速跳过。
@@ -5594,16 +5700,81 @@ class ExtractService:
                     cjk += 1
         if total_nonascii == 0:
             return False
-        return cjk == 0 and (latin_ext / total_nonascii) >= 0.4
+        return cjk == 0 and latin_ext >= 3 and (latin_ext / total_nonascii) >= 0.4
 
     def _has_garbled_filenames(self, directory: str) -> bool:
         """检测目录中是否存在 ANSI 多字节（Shift-JIS/GBK）被误当 Latin-1 解读的乱码文件名。"""
-        try:
-            entries = list(os.scandir(directory))[:40]
-        except OSError:
+        return self._find_garbled_filename_sample(directory) is not None
+
+    def _find_garbled_filename_sample(self, directory: str) -> Optional[str]:
+        """返回一个疑似乱码文件名样本；没有则返回 None。"""
+        names: List[str] = []
+        stack = [directory]
+        while stack and len(names) < 240:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        names.append(entry.name)
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        if len(names) >= 240:
+                            break
+            except OSError:
+                continue
+        if not names:
+            return None
+        for name in names:
+            if self._has_garbled_text(name):
+                return name
+        combined = "\n".join(names)
+        return names[0] if self._has_garbled_text(combined) else None
+
+    async def _reject_if_garbled_after_extract(
+        self,
+        archive_path: str,
+        output_path: str,
+        *,
+        cleanup,
+        context: str,
+    ) -> bool:
+        """解压成功后检查文件名乱码，命中则清理并返回 True。"""
+        if not self._needs_filename_garbled_guard(archive_path):
             return False
-        combined = "\n".join(e.name for e in entries)
-        return self._has_garbled_text(combined)
+        sample = self._find_garbled_filename_sample(output_path)
+        if sample is None:
+            return False
+        await cleanup()
+        logger.error(
+            "%s 解压后检测到疑似乱码文件名，已清理产物并阻止继续入库: archive=%s sample=%s",
+            context,
+            archive_path,
+            sample,
+        )
+        return True
+
+    def _has_extracted_payload(self, directory: str) -> bool:
+        """粗略判断解压目录里是否已有实质产物。"""
+        if not directory or not os.path.isdir(directory):
+            return False
+        stack = [directory]
+        visited = 0
+        while stack and visited < 400:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        visited += 1
+                        try:
+                            if entry.is_file(follow_symlinks=False):
+                                return True
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(entry.path)
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+        return False
 
     async def _detect_rar_encoding_with_lsar(
         self,
@@ -5746,7 +5917,7 @@ class ExtractService:
             cmd.extend(["-p", password])
         cmd.append(archive_path)
         logger.info("执行 unar 命令: %s", " ".join(cmd))
-        return await self._run_subprocess_command(cmd, task=task)
+        return await self._run_subprocess_command(cmd, task=task, running_step="unar 解压中")
 
 class VolumeSet:
     """分卷组"""

@@ -229,7 +229,7 @@
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleKeepNewDispatch(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'KEEP_NEW')" variant="inline" :size="20" />
+                  <Loader2 v-if="isActionLoading(activeConflict.id, 'KEEP_NEW')" class="conflicts-action-spinner" />
                   <Save v-else class="w-4 h-4" />
                   {{ keepNewDispatchLabel(activeConflict) }}
                 </button>
@@ -240,7 +240,7 @@
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleRetryDispatch(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="isConflictRetrying(activeConflict)" variant="inline" :size="20" />
+                  <Loader2 v-if="isConflictRetrying(activeConflict)" class="conflicts-action-spinner" />
                   <RotateCcw v-else class="w-4 h-4" />
                   {{ retryDispatchLabel(activeConflict) }}
                 </button>
@@ -251,7 +251,7 @@
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleSkipDispatch(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="isActionLoading(activeConflict.id, 'SKIP')" variant="inline" :size="20" />
+                  <Loader2 v-if="isActionLoading(activeConflict.id, 'SKIP')" class="conflicts-action-spinner" />
                   <SkipForward v-else class="w-4 h-4" />
                   {{ skipDispatchLabel(activeConflict) }}
                 </button>
@@ -262,7 +262,7 @@
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="openMergeWorkbench(activeConflict)"
                 >
-                  <AppLoadingAnimation v-if="mergeLoading && mergeConflictId === activeConflict.id" variant="inline" :size="20" />
+                  <Loader2 v-if="mergeLoading && mergeConflictId === activeConflict.id" class="conflicts-action-spinner" />
                   <GitMerge v-else class="w-4 h-4" />
                   合并
                 </button>
@@ -2153,7 +2153,20 @@ button:disabled {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .conflicts-action-btn :deep(svg) {
+  flex-shrink: 0;
   transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.conflicts-action-spinner {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  animation: conflicts-action-spin 0.85s linear infinite;
+  filter: drop-shadow(0 0 7px rgba(255, 255, 255, 0.48));
+}
+
+@keyframes conflicts-action-spin {
+  to { transform: rotate(360deg); }
 }
 /* disabled：仅 opacity + cursor，不重置 transform/shadow，避免 hover 中点击瞬间塌回闪烁 */
 .conflicts-action-btn:disabled {
