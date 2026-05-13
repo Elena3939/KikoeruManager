@@ -44,6 +44,103 @@ body.el-popup-parent--hidden {
   overflow: hidden !important;
 }
 
+/* ============================================================
+ * 全局滚动条基线
+ * - 页面主滚动、弹窗内容、文本域、下拉菜单默认走同一套细滚动条。
+ * - `.no-scrollbar` / 组件内显式隐藏滚动条的场景仍保持隐藏。
+ * - Firefox 用 scrollbar-color，Chromium/WebView 用 ::-webkit-scrollbar。
+ * ============================================================ */
+:root {
+  --km-scrollbar-size: 7px;
+  --km-scrollbar-track: rgba(241, 245, 249, 0.72);
+  --km-scrollbar-track-hover: rgba(226, 232, 240, 0.86);
+  --km-scrollbar-thumb: rgba(148, 163, 184, 0.62);
+  --km-scrollbar-thumb-hover: rgba(100, 116, 139, 0.84);
+  --km-scrollbar-thumb-active: rgba(71, 85, 105, 0.92);
+  --km-scrollbar-border: rgba(248, 250, 252, 0.86);
+}
+
+html.kikoerumanager-dark {
+  --km-scrollbar-track: rgba(15, 23, 42, 0.38);
+  --km-scrollbar-track-hover: rgba(30, 41, 59, 0.72);
+  --km-scrollbar-thumb: rgba(100, 116, 139, 0.7);
+  --km-scrollbar-thumb-hover: rgba(148, 163, 184, 0.88);
+  --km-scrollbar-thumb-active: rgba(203, 213, 225, 0.92);
+  --km-scrollbar-border: rgba(15, 23, 42, 0.7);
+}
+
+html,
+.app-container,
+.el-overlay,
+.el-popper,
+textarea,
+pre {
+  scrollbar-width: thin;
+  scrollbar-color: var(--km-scrollbar-thumb) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: var(--km-scrollbar-size);
+  height: var(--km-scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 44px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, var(--km-scrollbar-thumb), rgba(100, 116, 139, 0.72))
+    padding-box;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(180deg, var(--km-scrollbar-thumb-hover), rgba(71, 85, 105, 0.9))
+    padding-box;
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: var(--km-scrollbar-thumb-active) padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.app-container *::-webkit-scrollbar-track,
+.el-overlay *::-webkit-scrollbar-track,
+.el-popper *::-webkit-scrollbar-track,
+textarea::-webkit-scrollbar-track,
+pre::-webkit-scrollbar-track {
+  background: var(--km-scrollbar-track);
+}
+
+.app-container *:hover::-webkit-scrollbar-track,
+.el-overlay *:hover::-webkit-scrollbar-track,
+.el-popper *:hover::-webkit-scrollbar-track,
+textarea:hover::-webkit-scrollbar-track,
+pre:hover::-webkit-scrollbar-track {
+  background: var(--km-scrollbar-track-hover);
+}
+
+.app-container .no-scrollbar,
+.el-overlay .no-scrollbar {
+  scrollbar-width: none;
+}
+
+.app-container .no-scrollbar::-webkit-scrollbar,
+.el-overlay .no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 @layer components {
   .custom-scrollbar::-webkit-scrollbar {
     width: 4px;

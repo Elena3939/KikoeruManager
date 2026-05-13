@@ -24,6 +24,12 @@ apiClient.interceptors.response.use(
     if (typeof detail === 'string' && detail.includes('OTP')) {
       synologyOtpRequired.value = true
     }
+    if (error.response?.data?.gate_required && window.location.pathname !== '/verify') {
+      const next = encodeURIComponent(window.location.pathname + window.location.search)
+      window.location.assign(`/verify?next=${next}`)
+    } else if (error.response?.data?.blocked && window.location.pathname !== '/blocked') {
+      window.location.assign('/blocked')
+    }
     return Promise.reject(error)
   }
 )
@@ -114,6 +120,53 @@ export const configApi = {
 
   state: async () => {
     const response = await apiClient.get('/config/state')
+    return response.data
+  }
+}
+
+export const securityGateApi = {
+  status: async () => {
+    const response = await apiClient.get('/security-gate/status')
+    return response.data
+  },
+
+  verify: async ({ code, remember = false }) => {
+    const response = await apiClient.post('/security-gate/verify', { code, remember })
+    return response.data
+  },
+
+  logout: async () => {
+    const response = await apiClient.post('/security-gate/logout')
+    return response.data
+  },
+
+  createSetup: async () => {
+    const response = await apiClient.post('/security-gate/setup')
+    return response.data
+  },
+
+  confirmSetup: async (code) => {
+    const response = await apiClient.post('/security-gate/setup/confirm', { code })
+    return response.data
+  },
+
+  resetSetup: async () => {
+    const response = await apiClient.post('/security-gate/setup/reset')
+    return response.data
+  },
+
+  logs: async (params = {}) => {
+    const response = await apiClient.get('/security-gate/logs', { params })
+    return response.data
+  },
+
+  blacklist: async (params = {}) => {
+    const response = await apiClient.get('/security-gate/blacklist', { params })
+    return response.data
+  },
+
+  unblock: async (id, reason = '') => {
+    const response = await apiClient.post(`/security-gate/blacklist/${id}/unblock`, { reason })
     return response.data
   }
 }
@@ -841,6 +894,13 @@ export const libraryApi = {
       force_local: forceLocal
     })
     return response.data
+  },
+
+  browserPreviewUrl: (libraryId, path) => {
+    const params = new URLSearchParams()
+    params.set('library_id', libraryId || '')
+    params.set('path', path || '')
+    return `${API_BASE}/library/browser/preview?${params.toString()}`
   },
 
   browserListFolders: async (libraryId, path = '', options = {}) => {
@@ -1620,6 +1680,7 @@ export const notificationApi = {
 export default {
   task: taskApi,
   config: configApi,
+  securityGate: securityGateApi,
   system: systemApi,
   watcher: watcherApi,
   scan: scanApi,

@@ -100,6 +100,15 @@
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
+        v-else-if="activeSection === 'security'"
+        kicker="Security Gate"
+        title="安全门禁"
+        description="用 Google Authenticator 给系统入口加一层轻量保护，覆盖访问验证、黑名单和安全提醒。"
+      >
+        <SecurityGateSettingsPanel :config="config" />
+      </SettingsSectionPanel>
+
+      <SettingsSectionPanel
         v-else
         kicker="Notifications"
         title="通知中心"
@@ -113,7 +122,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Bell, Boxes, HardDrive, LifeBuoy, ScanSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
+import { Bell, Boxes, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
@@ -122,6 +131,7 @@ import RulesSettingsPanel from '../components/settings/RulesSettingsPanel.vue'
 import ServicesSettingsPanel from '../components/settings/ServicesSettingsPanel.vue'
 import MaintenanceSettingsPanel from '../components/settings/MaintenanceSettingsPanel.vue'
 import NotificationSettingsPanel from '../components/settings/NotificationSettingsPanel.vue'
+import SecurityGateSettingsPanel from '../components/settings/SecurityGateSettingsPanel.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import { useSettingsDraft } from '../composables/useSettingsDraft'
 import { useSynologyProfiles } from '../composables/useSynologyProfiles'
@@ -133,6 +143,7 @@ const sectionKeyMap = {
   rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
   services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher'],
   maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip'],
+  security: ['security_gate'],
   notification: ['notification_email', 'notification_center']
 }
 
@@ -181,6 +192,7 @@ const sections = [
   { id: 'rules', title: '内容规则', short: '过滤、重命名、分类、路径映射', icon: Boxes, keywords: ['filter', 'rename', 'classification', 'path'] },
   { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', '外部服务'] },
   { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
+  { id: 'security', title: '安全门禁', short: '验证器、黑名单', icon: ShieldCheck, keywords: ['security', 'google authenticator', '门禁', '黑名单'] },
   { id: 'notification', title: '通知中心', short: 'SMTP 邮件、站内铃铛', icon: Bell, keywords: ['notification', 'smtp', 'email', '通知', '邮件', '铃铛'] }
 ]
 

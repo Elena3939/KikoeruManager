@@ -440,6 +440,79 @@ class PasswordEntry(Base):
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 
+
+class SecurityGateAuthLog(Base):
+    """系统门禁认证记录"""
+    __tablename__ = 'security_gate_auth_logs'
+
+    id = Column(String(36), primary_key=True)
+    event_type = Column(String(40), index=True)
+    ip_address = Column(String(64), index=True)
+    user_agent = Column(Text)
+    path = Column(Text)
+    success = Column(Boolean, default=False, index=True)
+    failure_reason = Column(String(120), default='')
+    code_length = Column(Integer, default=0)
+    code_hint = Column(String(20), default='')
+    triggered_blacklist = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=get_local_now, index=True)
+    detail = Column(JSON, default=dict)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'event_type': self.event_type,
+            'ip_address': self.ip_address,
+            'user_agent': self.user_agent,
+            'path': self.path,
+            'success': bool(self.success),
+            'failure_reason': self.failure_reason or '',
+            'code_length': int(self.code_length or 0),
+            'code_hint': self.code_hint or '',
+            'triggered_blacklist': bool(self.triggered_blacklist),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'detail': self.detail or {},
+        }
+
+
+class SecurityGateBlacklist(Base):
+    """系统门禁黑名单"""
+    __tablename__ = 'security_gate_blacklist'
+
+    id = Column(String(36), primary_key=True)
+    ip_address = Column(String(64), unique=True, index=True)
+    reason = Column(Text)
+    failure_count = Column(Integer, default=0)
+    permanent = Column(Boolean, default=True)
+    active = Column(Boolean, default=True, index=True)
+    blocked_at = Column(DateTime, default=get_local_now, index=True)
+    last_seen_at = Column(DateTime, default=get_local_now)
+    unblocked_at = Column(DateTime)
+    unblock_reason = Column(Text)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'ip_address': self.ip_address,
+            'reason': self.reason or '',
+            'failure_count': int(self.failure_count or 0),
+            'permanent': bool(self.permanent),
+            'active': bool(self.active),
+            'blocked_at': self.blocked_at.isoformat() if self.blocked_at else None,
+            'last_seen_at': self.last_seen_at.isoformat() if self.last_seen_at else None,
+            'unblocked_at': self.unblocked_at.isoformat() if self.unblocked_at else None,
+            'unblock_reason': self.unblock_reason or '',
+        }
+
+
+class SecurityGateEmailThrottle(Base):
+    """系统门禁邮件提醒限流"""
+    __tablename__ = 'security_gate_email_throttle'
+
+    throttle_key = Column(String(160), primary_key=True)
+    last_sent_at = Column(DateTime, default=get_local_now)
+
+
 class WatcherConfig(Base):
     """监视器配置表"""
     __tablename__ = 'watcher_config'

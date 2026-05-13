@@ -119,11 +119,15 @@ export const defaultConfig = {
     auto_repair_extension: true,
     verify_after_extract: true,
     password_list: [],
+    filename_password_sniff_enabled: true,
+    filename_password_sniff_templates: ['{name}({password})', '{name}（{password}）'],
     extract_nested_archives: true,
     max_nested_depth: 5,
+    zip_encoding: 932,
     // 0 = auto：后端启动时探测 temp_path 所在盘，SSD → 最多并发 3，HDD / 未知 → 1
     max_concurrent_extractions: 0,
-    seven_zip_threads: 'on'
+    seven_zip_threads: 'on',
+    prefer_unar_for_rar: true
   },
   filter: {
     enabled: true,
@@ -296,6 +300,26 @@ export const defaultConfig = {
     poll_interval_seconds: 20,
     unread_highlight_enabled: true
   },
+  security_gate: {
+    enabled: false,
+    secret: '',
+    pending_secret: '',
+    bound: false,
+    has_pending_setup: false,
+    allow_remember_device: true,
+    session_hours: 8,
+    remember_days: 30,
+    blacklist_enabled: true,
+    failure_window_minutes: 10,
+    max_failures: 5,
+    trust_proxy_headers: false,
+    email_alert_enabled: true,
+    email_alert_on_failure: false,
+    email_alert_on_blacklist: true,
+    email_alert_on_blocked_visit: false,
+    email_alert_on_reset: true,
+    email_alert_min_interval_seconds: 300
+  },
   classification: [
     {
       id: Date.now(),
@@ -398,6 +422,7 @@ function hydrateConfig(data = {}) {
     email_watcher: { ...defaultConfig.email_watcher, ...(data?.email_watcher || {}) },
     notification_email: { ...defaultConfig.notification_email, ...(data?.notification_email || {}) },
     notification_center: { ...defaultConfig.notification_center, ...(data?.notification_center || {}) },
+    security_gate: { ...defaultConfig.security_gate, ...(data?.security_gate || {}) },
     classification: data?.classification || defaultConfig.classification
   }
 
@@ -443,7 +468,8 @@ function serializeConfig(config) {
     rj_subtitle: payload.rj_subtitle,
     email_watcher: payload.email_watcher,
     notification_email: payload.notification_email,
-    notification_center: payload.notification_center
+    notification_center: payload.notification_center,
+    security_gate: payload.security_gate
   }
 }
 

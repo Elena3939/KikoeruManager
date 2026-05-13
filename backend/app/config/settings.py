@@ -104,9 +104,16 @@ class ExtractConfig(BaseModel):
     auto_repair_extension: bool = True
     verify_after_extract: bool = True
     password_list: list = []
+    filename_password_sniff_enabled: bool = True
+    filename_password_sniff_templates: list[str] = Field(default_factory=lambda: [
+        "{name}({password})",
+        "{name}（{password}）",
+    ])
     extract_nested_archives: bool = True  # 是否解压嵌套压缩包
     max_nested_depth: int = 5  # 最大嵌套深度
-    zip_encoding: int = 932  # ZIP 文件名编码代码页，932=Shift-JIS（日语），936=GBK（简中），0=禁用
+    # ZIP 文件名编码兜底代码页。解压前会先读中央目录自动嗅探；嗅探不到时才用这里。
+    # 932=Shift-JIS（日语），936=GBK（简中），950=Big5（繁中），0=不强制代码页。
+    zip_encoding: int = 932
     # 真正解压时同时跑几个 7z 子进程。
     # 0 = auto：启动时探测 storage.temp_path 所在盘类型自动决定
     #   · SSD/NVMe → min(processing.max_workers, 3)
@@ -378,6 +385,26 @@ class NotificationCenterConfig(BaseModel):
     unread_highlight_enabled: bool = True
 
 
+class SecurityGateConfig(BaseModel):
+    """Google Authenticator 系统门禁配置"""
+    enabled: bool = False
+    secret: str = ""
+    pending_secret: str = ""
+    allow_remember_device: bool = True
+    session_hours: int = 8
+    remember_days: int = 30
+    blacklist_enabled: bool = True
+    failure_window_minutes: int = 10
+    max_failures: int = 5
+    trust_proxy_headers: bool = False
+    email_alert_enabled: bool = True
+    email_alert_on_failure: bool = False
+    email_alert_on_blacklist: bool = True
+    email_alert_on_blocked_visit: bool = False
+    email_alert_on_reset: bool = True
+    email_alert_min_interval_seconds: int = 300
+
+
 class AppConfig(BaseModel):
     """应用配置"""
     storage: StorageConfig = StorageConfig()
@@ -410,6 +437,7 @@ class AppConfig(BaseModel):
     email_watcher: EmailWatcherConfig = EmailWatcherConfig()
     notification_email: NotificationEmailConfig = NotificationEmailConfig()
     notification_center: NotificationCenterConfig = NotificationCenterConfig()
+    security_gate: SecurityGateConfig = SecurityGateConfig()
 
 # 全局配置实例
 _config: Optional[AppConfig] = None

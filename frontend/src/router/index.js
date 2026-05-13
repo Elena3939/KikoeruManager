@@ -12,6 +12,8 @@ import LibraryBackup from '../views/LibraryBackup.vue'
 import SubtitleImport from '../views/SubtitleImport.vue'
 import ActivityHistory from '../views/ActivityHistory.vue'
 import CircleCompletion from '../views/CircleCompletion.vue'
+import VerifyGate from '../views/VerifyGate.vue'
+import BlockedGate from '../views/BlockedGate.vue'
 
 const routes = [
   {
@@ -143,6 +145,26 @@ const routes = [
       title: '操作记录',
       icon: 'DataLine',
       cache: false
+    }
+  },
+  {
+    path: '/verify',
+    name: 'VerifyGate',
+    component: VerifyGate,
+    meta: {
+      title: '安全验证',
+      cache: false,
+      gatePage: true
+    }
+  },
+  {
+    path: '/blocked',
+    name: 'BlockedGate',
+    component: BlockedGate,
+    meta: {
+      title: '访问已阻止',
+      cache: false,
+      gatePage: true
     }
   }
 ]

@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_, text
@@ -12,9 +12,11 @@ from collections import defaultdict, deque
 import contextlib
 import json
 import logging
+import mimetypes
 import os
 import sys
 import time
+from urllib.parse import quote
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -41,6 +43,7 @@ from ..core.password_utils import (
     normalize_rjcode_value,
 )
 from ..config.settings import get_config, save_config
+from ..core.security_gate_service import COOKIE_NAME, get_security_gate_service
 
 # 初始化FastAPI应用
 app = FastAPI(
@@ -1395,6 +1398,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+SECURITY_GATE_PUBLIC_API_PATHS = {
+    "/api/health",
+    "/api/security-gate/status",
+    "/api/security-gate/verify",
+}
+
+
+@app.middleware("http")
+async def security_gate_middleware(request: Request, call_next):
+    """系统入口门禁：启用且完成绑定后，默认保护所有业务页面和 API。"""
+    service = get_security_gate_service()
+    path = request.url.path
+
+    if (
+        not service.is_enforced()
+        or path in ("/verify", "/blocked", "/favicon.ico")
+        or path.startswith("/assets/")
+        or path.startswith("/docs")
+        or path.startswith("/openapi.json")
+        or path in SECURITY_GATE_PUBLIC_API_PATHS
+    ):
+        return await call_next(request)
+
+    ip_address = service.get_client_ip(request)
+    blocked = service.get_active_blacklist(ip_address)
+    if blocked:
+        service.record_blocked_visit(request, blocked)
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "当前来源已被系统阻止", "blocked": True}, status_code=403)
+        return RedirectResponse(url="/blocked", status_code=303)
+
+    token = request.cookies.get(COOKIE_NAME, "")
+    if service.verify_cookie(token):
+        return await call_next(request)
+
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "需要通过系统门禁验证", "gate_required": True}, status_code=401)
+    next_path = quote(str(request.url.path or "/"), safe="/")
+    return RedirectResponse(url=f"/verify?next={next_path}", status_code=303)
+
 # 通知定期清理协程（每24h清一次超7天的已读通知）
 async def _periodic_notification_cleanup():
     while True:
@@ -1643,6 +1687,7 @@ class ConfigResponse(BaseModel):
     email_watcher: Optional[dict] = None
     notification_email: Optional[dict] = None
     notification_center: Optional[dict] = None
+    security_gate: Optional[dict] = None
 
 # API路由
 # 兼容层：旧任务接口仅保留给少数历史入口使用，新功能统一走 /api/task-center/*
@@ -2055,6 +2100,7 @@ def get_configuration():
         email_watcher=config.email_watcher.model_dump() if hasattr(config, 'email_watcher') else None,
         notification_email=_mask_notification_email_config(config),
         notification_center=config.notification_center.model_dump() if hasattr(config, 'notification_center') else None,
+        security_gate=get_security_gate_service().sanitize_config() if hasattr(config, 'security_gate') else None,
     )
 
 @app.get("/api/config/state")
@@ -2063,6 +2109,106 @@ def get_configuration_state():
     from ..config.settings import get_config_runtime_state
 
     return get_config_runtime_state()
+
+
+class SecurityGateVerifyRequest(BaseModel):
+    code: str
+    remember: bool = False
+
+
+class SecurityGateSetupConfirmRequest(BaseModel):
+    code: str
+
+
+class SecurityGateUnblockRequest(BaseModel):
+    reason: str = ""
+
+
+@app.get("/api/security-gate/status")
+def get_security_gate_status(request: Request):
+    """返回门禁公开状态。不会泄露验证器密钥。"""
+    return get_security_gate_service().public_state(request)
+
+
+@app.post("/api/security-gate/verify")
+def verify_security_gate(payload: SecurityGateVerifyRequest, request: Request):
+    """校验 Google Authenticator 动态验证码并写入门禁会话 Cookie。"""
+    service = get_security_gate_service()
+    result = service.verify_access(payload.code, payload.remember, request)
+    if result.get("blocked"):
+        return JSONResponse(result, status_code=403)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=400)
+    response = JSONResponse({
+        "ok": True,
+        "message": "验证通过",
+        "expires_at": result.get("expires_at"),
+    })
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=result["token"],
+        max_age=result["max_age"],
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/security-gate/logout")
+def logout_security_gate():
+    """清除当前浏览器的门禁会话。"""
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(**get_security_gate_service().clear_cookie_kwargs())
+    return response
+
+
+@app.post("/api/security-gate/setup")
+def create_security_gate_setup():
+    """生成 Google Authenticator 绑定密钥和二维码。"""
+    return get_security_gate_service().create_setup()
+
+
+@app.post("/api/security-gate/setup/confirm")
+def confirm_security_gate_setup(payload: SecurityGateSetupConfirmRequest, request: Request):
+    """确认绑定 Google Authenticator。"""
+    try:
+        return get_security_gate_service().confirm_setup(payload.code, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/security-gate/setup/reset")
+def reset_security_gate_setup(request: Request):
+    """重置验证器绑定，并自动关闭门禁防止锁死。"""
+    return get_security_gate_service().reset_setup(request)
+
+
+@app.get("/api/security-gate/logs")
+def list_security_gate_logs(
+    result: str = "all",
+    ip: str = "",
+    limit: int = 80,
+    db: Session = Depends(get_db),
+):
+    """查看最近门禁认证记录。"""
+    return {"items": get_security_gate_service().list_logs(db, result=result, ip=ip, limit=limit)}
+
+
+@app.get("/api/security-gate/blacklist")
+def list_security_gate_blacklist(include_inactive: bool = False, db: Session = Depends(get_db)):
+    """查看门禁黑名单。"""
+    return {"items": get_security_gate_service().list_blacklist(db, include_inactive=include_inactive)}
+
+
+@app.post("/api/security-gate/blacklist/{item_id}/unblock")
+def unblock_security_gate_item(item_id: str, payload: SecurityGateUnblockRequest, request: Request, db: Session = Depends(get_db)):
+    """手动解除黑名单。"""
+    try:
+        return get_security_gate_service().unblock(db, item_id, payload.reason, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.get("/api/system/storage-info")
@@ -2234,6 +2380,25 @@ async def update_configuration(request: Request):
             except Exception as e:
                 logger.error(f"[NOTIFICATION] notification_center 配置验证失败: {e}")
 
+        if 'security_gate' in config_data and config_data['security_gate']:
+            try:
+                from ..config.settings import SecurityGateConfig
+                current_gate = get_config().security_gate
+                gate_data = dict(config_data['security_gate'])
+                if gate_data.get('secret') == '********' or 'secret' not in gate_data:
+                    gate_data['secret'] = current_gate.secret
+                if gate_data.get('pending_secret') == '********' or 'pending_secret' not in gate_data:
+                    gate_data['pending_secret'] = current_gate.pending_secret
+                if gate_data.get('enabled') and not gate_data.get('secret'):
+                    raise HTTPException(status_code=400, detail="启用安全门禁前必须先绑定 Google Authenticator")
+                gate_cfg = SecurityGateConfig(**gate_data)
+                config_data['security_gate'] = gate_cfg.model_dump()
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"[SECURITY_GATE] security_gate 配置验证失败: {e}")
+                raise HTTPException(status_code=400, detail=f"安全门禁配置无效: {e}")
+
         result = save_config(config_data)
         logger.info(f"配置已保存，分类规则数: {len(config_data.get('classification', []))}")
 
@@ -2251,7 +2416,6 @@ async def update_configuration(request: Request):
                 logger.warning("[KIKOERU] 刷新运行时配置失败", exc_info=True)
 
         # 重新读取配置文件确保数据已写入
-        from ..config.settings import get_config
         current_config = get_config()
         get_task_engine()
         logger.info(f"当前配置中的分类规则: {[r.dict() for r in current_config.classification]}")
@@ -6457,6 +6621,103 @@ async def open_library_browser_folder(request: Request):
     except Exception as e:
         _log_synology_err(f"库存打开目录失败: {e}", e)
         raise HTTPException(status_code=500, detail=f"库存打开目录失败: {str(e)}")
+
+
+LIBRARY_PREVIEW_MIME_PREFIXES = ("image/", "video/", "audio/", "text/")
+LIBRARY_PREVIEW_MIME_TYPES = {
+    "application/pdf",
+    "application/json",
+    "application/xml",
+    "application/x-subrip",
+    "application/ass",
+}
+LIBRARY_PREVIEW_EXTENSION_TYPES = {
+    ".ass": "text/plain; charset=utf-8",
+    ".avif": "image/avif",
+    ".lrc": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".ssa": "text/plain; charset=utf-8",
+    ".srt": "application/x-subrip; charset=utf-8",
+    ".vtt": "text/vtt; charset=utf-8",
+}
+
+
+def _guess_library_preview_media_type(path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix in LIBRARY_PREVIEW_EXTENSION_TYPES:
+        return LIBRARY_PREVIEW_EXTENSION_TYPES[suffix]
+    guessed, _encoding = mimetypes.guess_type(path)
+    if guessed:
+        if guessed.startswith("text/") and "charset=" not in guessed:
+            return f"{guessed}; charset=utf-8"
+        return guessed
+    return "application/octet-stream"
+
+
+def _is_library_preview_media_type(media_type: str) -> bool:
+    normalized = str(media_type or "").split(";", 1)[0].strip().lower()
+    return normalized in LIBRARY_PREVIEW_MIME_TYPES or any(normalized.startswith(prefix) for prefix in LIBRARY_PREVIEW_MIME_PREFIXES)
+
+
+@app.get("/api/library/browser/preview")
+async def preview_library_browser_file(library_id: str, path: str):
+    """在浏览器内预览库存里的安全媒体 / 文本文件。"""
+    try:
+        if not library_id:
+            raise HTTPException(status_code=400, detail="缺少库存 ID")
+        if not path:
+            raise HTTPException(status_code=400, detail="缺少文件路径")
+
+        manager = get_library_manager()
+        library = manager.get_library_definition(library_id)
+        if library.type == "synology_filestation":
+            if not library.synology:
+                raise HTTPException(status_code=400, detail="远程库存缺少群晖连接配置")
+            target_path = manager._normalize_remote_path(path)
+            browse_root = manager._normalize_remote_path(library.browse_root_path or library.root_path or "/")
+            if not manager._remote_path_is_within_root(target_path, browse_root):
+                raise HTTPException(status_code=403, detail="文件不在当前库存范围内")
+
+            media_type = _guess_library_preview_media_type(target_path)
+            if not _is_library_preview_media_type(media_type):
+                raise HTTPException(status_code=415, detail="该文件类型暂不支持浏览器观看")
+
+            client = manager.get_cached_synology_client(library.synology)
+            filename = PurePosixPath(target_path).name or "preview"
+            headers = {
+                "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+                "X-Content-Type-Options": "nosniff",
+            }
+            return StreamingResponse(
+                client.stream_download(target_path),
+                media_type=media_type,
+                headers=headers,
+            )
+
+        browse_root = os.path.abspath(library.browse_root_path or library.root_path)
+        target_path = os.path.abspath(path)
+        if not manager._local_path_is_within_root(target_path, browse_root):
+            raise HTTPException(status_code=403, detail="文件不在当前库存范围内")
+        if not os.path.exists(target_path):
+            raise HTTPException(status_code=404, detail="文件不存在")
+        if not os.path.isfile(target_path):
+            raise HTTPException(status_code=400, detail="只能观看文件")
+
+        media_type = _guess_library_preview_media_type(target_path)
+        if not _is_library_preview_media_type(media_type):
+            raise HTTPException(status_code=415, detail="该文件类型暂不支持浏览器观看")
+
+        filename = os.path.basename(target_path)
+        headers = {
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "X-Content-Type-Options": "nosniff",
+        }
+        return FileResponse(target_path, media_type=media_type, headers=headers)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log_synology_err(f"库存文件观看失败: {e}", e)
+        raise HTTPException(status_code=500, detail=f"库存文件观看失败: {str(e)}")
 
 
 @app.get("/api/library/files")
@@ -12017,7 +12278,6 @@ async def preview_notification_blocks(body: PreviewBlocksRequest):
 
 
 
-import mimetypes
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
