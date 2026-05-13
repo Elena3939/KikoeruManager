@@ -5931,7 +5931,7 @@ class ExtractService:
 
         for attempt_password in ([None] + ([hint_password] if hint_password else [])):
             candidates: List[Tuple[Optional[str], float]] = []
-            for enc in (None, "SHIFT_JIS", "GBK", "BIG5"):
+            for enc in self._unar_filename_encoding_candidates(include_auto=True):
                 enc_cmd = [lsar_path]
                 if enc:
                     enc_cmd.extend(["-e", enc])
@@ -5997,7 +5997,7 @@ class ExtractService:
             return None
 
         scores: List[Tuple[str, float]] = []
-        for enc in ("SHIFT_JIS", "GBK", "BIG5"):
+        for enc in self._unar_filename_encoding_candidates(include_auto=False):
             cmd = [lsar_path, "-e", enc]
             if password:
                 cmd.extend(["-p", password])
@@ -6032,6 +6032,17 @@ class ExtractService:
             )
             return best_encoding
         return None
+
+    @staticmethod
+    def _unar_filename_encoding_candidates(*, include_auto: bool = False) -> Tuple[Optional[str], ...]:
+        """RAR 文件名编码候选。
+
+        `UTF-8` 必须放在 `SHIFT_JIS` 前面：不少同人音声包本身就是 UTF-8 文件名，
+        但 7z/unar 自动探测偶尔会按 GBK/CP936 解读，产出 `鍋靛伃...` 这类合法
+        CJK mojibake；只尝试日文 ANSI 会把正确路径错过。
+        """
+        candidates: Tuple[Optional[str], ...] = ("UTF-8", "SHIFT_JIS", "GBK", "CP936", "BIG5")
+        return (None, *candidates) if include_auto else candidates
 
     async def _fix_unar_garbled_encoding(
         self,
