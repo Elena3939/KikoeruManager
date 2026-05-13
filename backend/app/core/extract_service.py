@@ -5852,6 +5852,63 @@ class ExtractService:
             best = max(best, self._garbled_text_score("\n".join(names)))
         return best
 
+    def _repair_mojibake_filename(self, name: str) -> Optional[str]:
+        """还原常见的 `Shift-JIS 字节被 GBK 解码` 文件名乱码。"""
+        if not name or not self._has_garbled_text(name):
+            return None
+
+        original_score = self._garbled_text_score(name)
+        best_name: Optional[str] = None
+        best_score = original_score
+        codec_pairs = (
+            ("gbk", "cp932"),
+            ("cp936", "cp932"),
+            ("gbk", "shift_jis"),
+            ("cp936", "shift_jis"),
+        )
+        for wrong_codec, correct_codec in codec_pairs:
+            try:
+                candidate = name.encode(wrong_codec).decode(correct_codec)
+            except UnicodeError:
+                continue
+            if not candidate or candidate == name or "/" in candidate or "\\" in candidate or "\x00" in candidate:
+                continue
+            candidate_score = self._garbled_text_score(candidate)
+            # 新名字必须明显更干净；避免把真实中文文件名误改掉。
+            if candidate_score < best_score and (candidate_score < 30.0 or best_score - candidate_score >= 25.0):
+                best_name = candidate
+                best_score = candidate_score
+
+        return best_name
+
+    def _repair_mojibake_filenames_in_place(self, directory: str) -> int:
+        """自底向上重命名目录树中的可逆 mojibake 文件名。"""
+        if not directory or not os.path.isdir(directory):
+            return 0
+
+        repaired = 0
+        for current, dirnames, filenames in os.walk(directory, topdown=False):
+            for name in list(filenames) + list(dirnames):
+                fixed_name = self._repair_mojibake_filename(name)
+                if not fixed_name:
+                    continue
+                old_path = os.path.join(current, name)
+                new_path = os.path.join(current, fixed_name)
+                if old_path == new_path or os.path.exists(new_path):
+                    continue
+                try:
+                    os.rename(old_path, new_path)
+                    repaired += 1
+                    logger.debug("[unar编码] 反乱码重命名: %s -> %s", old_path, new_path)
+                except OSError as exc:
+                    logger.warning(
+                        "[unar编码] 反乱码重命名失败: %s -> %s error=%s",
+                        old_path,
+                        new_path,
+                        exc,
+                    )
+        return repaired
+
     def _archive_file_list_garbled_sample(self, file_list: Optional[List[Dict]]) -> Optional[str]:
         """从压缩包目录清单里找疑似乱码条目；只看文件名，不触碰文件内容。"""
         if not file_list:
@@ -6084,6 +6141,20 @@ class ExtractService:
             baseline_score,
             output_path,
         )
+        repaired_count = await asyncio.to_thread(
+            self._repair_mojibake_filenames_in_place,
+            output_path,
+        )
+        if repaired_count:
+            repaired_score = self._filename_garbled_score(output_path)
+            logger.info(
+                "[unar编码] 文件名反乱码重命名完成: count=%s score=%.1f",
+                repaired_count,
+                repaired_score,
+            )
+            if repaired_score < 30.0:
+                return
+
         ranked_encodings = await self._rank_rar_encodings_after_garbled_extract(
             archive_path, password, baseline_score,
         )
@@ -6153,7 +6224,18 @@ class ExtractService:
         if needs_auto_restore:
             logger.warning("[unar编码] 乱码自动修复失败，回退自动探测结果")
             await self._cleanup_extract_attempt(output_path)
-            await self._try_unar_extract(archive_path, output_path, password, task=task)
+            r = await self._try_unar_extract(archive_path, output_path, password, task=task)
+            if r.returncode == 0:
+                repaired_count = await asyncio.to_thread(
+                    self._repair_mojibake_filenames_in_place,
+                    output_path,
+                )
+                if repaired_count:
+                    logger.info(
+                        "[unar编码] 回退自动探测后文件名反乱码重命名完成: count=%s score=%.1f",
+                        repaired_count,
+                        self._filename_garbled_score(output_path),
+                    )
 
     async def _try_unar_extract(
         self,

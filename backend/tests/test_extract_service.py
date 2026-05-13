@@ -209,6 +209,24 @@ class TestExtractService:
         assert candidates[:2] == ("UTF-8", "SHIFT_JIS")
         assert "CP936" in candidates
 
+    def test_repair_shift_jis_mojibake_filename_from_gbk(self, extract_service, temp_dir):
+        """RAR 解出 `偵偭偪...` 这类文件名时，应能反解回原始日文名。"""
+        bad_name = "偵偭偪壒惡岺朳亀悇偟偺偊偪偊偪攝怣彈巕偲僆僼僷僐.wav"
+        fixed_name = extract_service._repair_mojibake_filename(bad_name)
+        assert fixed_name == "にっち音声工房『推しのえちえち配信女子とオフパコ.wav"
+
+        root = os.path.join(temp_dir, "output")
+        os.makedirs(root, exist_ok=True)
+        bad_dir_name = "偵偭偪壒惡岺朳亀悇偟偺偊偪偊偪攝怣彈巕"
+        bad_dir = os.path.join(root, bad_dir_name)
+        os.makedirs(bad_dir, exist_ok=True)
+        bad_file = os.path.join(bad_dir, bad_name)
+        with open(bad_file, "w", encoding="utf-8") as fp:
+            fp.write("ok")
+
+        assert extract_service._repair_mojibake_filenames_in_place(root) == 2
+        assert os.path.exists(os.path.join(root, "にっち音声工房『推しのえちえち配信女子", fixed_name))
+
     def test_final_filename_guard_scans_full_tree(self, extract_service, temp_dir):
         """最终兜底不只采样前 240 项，深层坏文件名也要能短路命中。"""
         root = os.path.join(temp_dir, "output")
