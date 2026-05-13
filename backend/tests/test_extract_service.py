@@ -432,3 +432,39 @@ class TestExtractService:
         assert success is False
         assert password is None
         assert reason == 'unsupported'
+
+    @pytest.mark.asyncio
+    async def test_rar_password_probe_skips_magic_false_positive(self, extract_service, temp_dir):
+        """RAR 错密码可能吐出垃圾流，不能让 magic/流式探测误判通过。"""
+        archive_path = os.path.join(temp_dir, "rj_jp.rar")
+        extract_service._pick_magic_entries = lambda file_list: [{
+            "name": "RJ00000001/僠儍僾僞乕1.wav",
+            "size": 1024,
+            "magic_offset": 0,
+            "magics": (b"RIFF",),
+        }]
+        extract_service._probe_by_magic = AsyncMock(return_value="ok")
+        extract_service._pick_probe_entry = lambda file_list: {
+            "name": "RJ00000001/僠儍僾僞乕1.wav",
+            "size": 1024,
+        }
+        extract_service._probe_by_smallest_entry = AsyncMock(return_value="wrong_password")
+
+        result = await extract_service._probe_password(
+            archive_path,
+            "wrong",
+            file_list=[{"name": "RJ00000001/僠儍僾僞乕1.wav", "size": 1024}],
+        )
+
+        assert result == "wrong_password"
+        extract_service._probe_by_magic.assert_not_awaited()
+        extract_service._probe_by_smallest_entry.assert_awaited_once()
+
+    def test_archive_file_list_garbled_sample_detects_rar_toc_mojibake(self, extract_service):
+        """RAR TOC 已经乱码时，不应继续交给 7zz fallback 产出同样乱码的文件。"""
+        sample = extract_service._archive_file_list_garbled_sample([
+            {"name": "RJ01378421/偵偭偪壒惡岺朳/01_杮曇壒惡乮wav丒SE偁傝乯/僠儍僾僞乕1.wav"},
+        ])
+
+        assert sample is not None
+        assert "僠儍僾僞乕" in sample

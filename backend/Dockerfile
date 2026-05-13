@@ -27,7 +27,9 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
     && rm -f /tmp/7z.tar.xz /usr/bin/7z /usr/bin/7za /usr/bin/7zr \
     && rm -rf /var/lib/apt/lists/* \
     && /usr/local/bin/7zz --help | head -3 \
-    && /usr/local/bin/7zz --help | grep -q "24.08"
+    && /usr/local/bin/7zz --help | grep -q "24.08" \
+    && which unar && unar --version 2>&1 | head -1 \
+    && which lsar && echo "===== unar + lsar installed OK ====="
 
 # 复制依赖文件
 COPY requirements.txt .
