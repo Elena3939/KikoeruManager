@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Iterable, Iterator, Optional, Sequence, Union
 
 from sqlalchemy import func, or_
@@ -37,6 +38,43 @@ logger = logging.getLogger(__name__)
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _has_surrogate(value: str) -> bool:
+    return any('\ud800' <= char <= '\udfff' for char in value)
+
+
+def _sqlite_safe_text(value: Optional[str]) -> Optional[str]:
+    """SQLite 只能接收合法 UTF-8；本地坏文件名里的 surrogate 要转义后再入库。"""
+    if value is None or not _has_surrogate(value):
+        return value
+    return value.encode('utf-8', 'backslashreplace').decode('utf-8')
+
+
+def _sqlite_safe_entry(entry: IndexEntry) -> IndexEntry:
+    safe_relative = _sqlite_safe_text(entry.relative_path) or ''
+    safe_absolute = _sqlite_safe_text(entry.absolute_path) or ''
+    safe_name = _sqlite_safe_text(entry.name) or ''
+    safe_parent = _sqlite_safe_text(entry.parent_path)
+    if (
+        safe_relative == entry.relative_path
+        and safe_absolute == entry.absolute_path
+        and safe_name == entry.name
+        and safe_parent == entry.parent_path
+    ):
+        return entry
+    logger.warning(
+        "[索引] 路径包含非法 UTF-8 字节，已转义后写入索引 library=%s path=%r",
+        entry.library_id,
+        safe_relative or safe_absolute or safe_name,
+    )
+    return replace(
+        entry,
+        relative_path=safe_relative,
+        absolute_path=safe_absolute,
+        name=safe_name,
+        parent_path=safe_parent,
+    )
 
 
 class SnapshotStore:
@@ -94,6 +132,7 @@ class SnapshotStore:
         return written
 
     def _upsert_one(self, db: Session, entry: IndexEntry) -> None:
+        entry = _sqlite_safe_entry(entry)
         row = (
             db.query(LibraryIndexEntry)
             .filter(
