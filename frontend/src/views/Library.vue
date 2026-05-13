@@ -631,6 +631,8 @@
 
                 <button v-else-if="row.is_directory" type="button" class="file-link-btn" @click.stop="openFolder(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
 
+                <button v-else-if="canViewLibraryRow(row)" type="button" class="file-link-btn" @click.stop="viewLibraryRow(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
+
                 <span v-else class="file-name" v-html="renderLibrarySearchHighlight(row.name)"></span>
 
               </div>
@@ -711,6 +713,8 @@
         :row="libraryRowContextMenu.row"
 
         :show-locate="Boolean(libraryRowContextMenu.row && isSearchResultRow(libraryRowContextMenu.row) && !libraryRowContextMenu.row.is_directory)"
+
+        :show-view="Boolean(libraryRowContextMenu.row && canViewLibraryRow(libraryRowContextMenu.row))"
 
         :show-open="Boolean(libraryRowContextMenu.row && !isRemoteCurrentLibrary)"
 
@@ -1076,6 +1080,77 @@
       </el-descriptions>
 
     </el-dialog>
+
+
+    <Teleport to="body">
+      <section
+        v-if="mediaPreviewDialog.visible"
+        class="pointer-events-none fixed inset-0 z-[2450] flex items-center justify-center p-6 max-[900px]:p-3"
+      >
+        <div
+          class="pointer-events-auto flex max-h-[calc(100vh-48px)] w-fit max-w-[calc(100vw-48px)] flex-col overflow-hidden rounded-[22px] border border-white/70 bg-white/28 shadow-[0_22px_70px_rgba(15,23,42,0.18),inset_0_1px_0_rgba(255,255,255,0.82)] backdrop-blur-2xl backdrop-saturate-150 max-[900px]:max-h-[calc(100vh-24px)] max-[900px]:max-w-[calc(100vw-24px)]"
+        >
+          <header
+            class="flex h-12 flex-shrink-0 items-center justify-between gap-3 bg-white/24 px-4 backdrop-blur-xl"
+            :class="mediaPreviewDialog.kind === 'pdf' ? 'border-b-0 shadow-[inset_0_-1px_0_rgba(255,255,255,0.42)]' : 'border-b border-white/55'"
+          >
+            <div class="min-w-0 truncate text-[13px] font-semibold text-slate-900">
+              {{ mediaPreviewDialog.title || '文件观看' }}
+            </div>
+            <button
+              type="button"
+              class="group inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[10px] border border-white/50 bg-white/30 text-slate-500 shadow-sm transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
+              title="关闭"
+              @click="closeMediaPreviewDialog"
+            >
+              <IconX class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:rotate-90" :stroke-width="2.4" />
+            </button>
+          </header>
+
+          <div class="flex min-h-0 w-fit max-w-full flex-1 items-center justify-center overflow-hidden bg-white/10">
+            <div v-if="mediaPreviewDialog.remote" class="mx-4 grid w-full max-w-[720px] grid-cols-[52px_minmax(0,1fr)] items-start gap-4 rounded-2xl border border-white/70 bg-white/60 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+              <IconFolderOpen class="h-[52px] w-[52px] rounded-[14px] bg-gradient-to-b from-slate-50 to-slate-200 p-3 text-slate-600" :stroke-width="2.1" />
+              <div class="min-w-0">
+                <h3 class="mb-1.5 text-[15px] font-bold text-slate-900">远程库存需要在群晖侧观看</h3>
+                <p class="mb-3 text-[12.5px] leading-7 text-slate-500">当前页面不直接代理群晖文件流，避免绕过现有远程访问模型。可以在 FileStation 里打开下面路径。</p>
+                <code class="block rounded-[10px] bg-slate-50 px-3 py-2 text-[12px] leading-relaxed text-slate-700 [overflow-wrap:anywhere]">{{ mediaPreviewDialog.path }}</code>
+              </div>
+            </div>
+
+            <img
+              v-else-if="mediaPreviewDialog.kind === 'image'"
+              class="block h-auto max-h-[calc(100vh-96px)] w-auto max-w-[calc(100vw-48px)] object-contain max-[900px]:max-h-[calc(100vh-72px)] max-[900px]:max-w-[calc(100vw-24px)]"
+              :src="mediaPreviewDialog.url"
+              :alt="mediaPreviewDialog.title"
+            />
+
+            <video
+              v-else-if="mediaPreviewDialog.kind === 'video'"
+              class="block h-auto max-h-[calc(100vh-96px)] w-auto max-w-[calc(100vw-48px)] bg-slate-950 object-contain max-[900px]:max-h-[calc(100vh-72px)] max-[900px]:max-w-[calc(100vw-24px)]"
+              :src="mediaPreviewDialog.url"
+              controls
+              autoplay
+              playsinline
+            ></video>
+
+            <audio
+              v-else-if="mediaPreviewDialog.kind === 'audio' || mediaPreviewDialog.kind === 'audio-lossless'"
+              class="mx-6 w-full max-w-[760px] rounded-2xl border border-white/70 bg-white/70 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl"
+              :src="mediaPreviewDialog.url"
+              controls
+              autoplay
+            ></audio>
+
+            <iframe
+              v-else
+              class="h-[min(760px,calc(100vh-96px))] w-[min(1100px,calc(100vw-48px))] border-0 bg-white max-[900px]:h-[calc(100vh-72px)] max-[900px]:w-[calc(100vw-24px)]"
+              :src="mediaPreviewDialog.url"
+              :title="mediaPreviewDialog.title"
+            ></iframe>
+          </div>
+        </div>
+      </section>
+    </Teleport>
 
 
 
@@ -1906,6 +1981,15 @@ watch(uploadProgressLottieRef, () => {
 const mappedPathDialogVisible = ref(false)
 
 const mappedPathInfo = ref({ originalPath: '', mappedPath: '', isMapped: false })
+
+const mediaPreviewDialog = ref({
+  visible: false,
+  title: '',
+  path: '',
+  url: '',
+  kind: '',
+  remote: false,
+})
 
 const tampermonkeyLoaded = ref(false)
 
@@ -12399,6 +12483,18 @@ function handleSubtitleInspectorRowClick (row, event) {
 
 function handleSubtitleDialogKeydown (event) {
 
+  if (event?.key === 'Escape' && mediaPreviewDialog.value.visible) {
+
+    event.preventDefault()
+
+    event.stopPropagation()
+
+    closeMediaPreviewDialog()
+
+    return
+
+  }
+
   if (isTextInputElement(event.target)) return
 
 
@@ -12772,6 +12868,83 @@ function buildBatchDeletePreviewMessage (preview, count) {
 }
 
 
+const VIEWABLE_LIBRARY_KINDS = new Set(['audio-lossless', 'audio', 'image', 'video', 'pdf', 'text'])
+
+
+function canViewLibraryRow (row) {
+
+  if (!row || row.is_directory) return false
+
+  return VIEWABLE_LIBRARY_KINDS.has(classifyLibraryEntryKind(row))
+
+}
+
+
+async function viewLibraryRow (row) {
+
+  if (!canViewLibraryRow(row)) {
+
+    ElMessage.warning('该文件类型暂不支持浏览器观看')
+
+    return
+
+  }
+
+  if (isSearchResultRow(row)) {
+
+    await locateLibrarySearchResult(row)
+
+    return
+
+  }
+
+  if (isRemoteCurrentLibrary.value) {
+
+    const kind = classifyLibraryEntryKind(row)
+
+    mediaPreviewDialog.value = {
+      visible: true,
+      title: row.name || '远程文件',
+      path: row.path || '',
+      url: libraryApi.browserPreviewUrl(selectedLibraryId.value, row.path),
+      kind,
+      remote: false,
+    }
+
+    return
+
+  }
+
+  const kind = classifyLibraryEntryKind(row)
+
+  const url = libraryApi.browserPreviewUrl(selectedLibraryId.value, row.path)
+
+  mediaPreviewDialog.value = {
+    visible: true,
+    title: row.name || '文件观看',
+    path: row.path || '',
+    url,
+    kind,
+    remote: false,
+  }
+
+}
+
+
+function closeMediaPreviewDialog () {
+
+  mediaPreviewDialog.value = {
+    visible: false,
+    title: '',
+    path: '',
+    url: '',
+    kind: '',
+    remote: false,
+  }
+
+}
+
+
 function closeLibraryRowContextMenu () {
 
   tableRef.value?.setCurrentRow?.(null)
@@ -12858,6 +13031,14 @@ function handleLibraryRowClick (row, _column, event) {
   if (row?.is_directory) {
 
     openFolder(row)
+
+    return
+
+  }
+
+  if (canViewLibraryRow(row)) {
+
+    viewLibraryRow(row)
 
   }
 
@@ -12961,6 +13142,8 @@ async function handleLibraryRowContextMenuAction (action) {
   if (!row) return
 
   if (action === 'locate') return locateLibrarySearchResult(row)
+
+  if (action === 'view') return viewLibraryRow(row)
 
   if (action === 'open') return openFolder(row)
 
@@ -17632,6 +17815,15 @@ function statsStatusTextDisplay (stats) {
   .path-actions :deep(.el-button) {
     width: 100%;
     margin-left: 0 !important;
+  }
+  :global(.library-media-preview-dialog.el-dialog) {
+    width: calc(100vw - 20px) !important;
+    margin: 10px auto 0 !important;
+    border-radius: 18px;
+  }
+  .media-preview-shell {
+    height: calc(100vh - 96px);
+    min-height: 360px;
   }
   .name-preview,
   .path-code {
