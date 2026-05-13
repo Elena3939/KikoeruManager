@@ -118,7 +118,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson" >nul 2>&1
+venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode" >nul 2>&1
 if errorlevel 1 (
     echo [INFO] Backend dependencies incomplete, repairing...
     venv\Scripts\python.exe -m pip install -r requirements.txt

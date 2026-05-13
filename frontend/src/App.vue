@@ -1,7 +1,7 @@
 <template>
-  <el-container class="app-container" :class="{ 'is-mobile-nav-open': mobileNavOpen }">
+  <el-container class="app-container" :class="{ 'is-mobile-nav-open': mobileNavOpen, 'is-gate-route': isGateRoute }">
     <!-- 移动端顶栏：仅 ≤1024 显示（桌面端 display:none，零改动） -->
-    <header class="app-mobile-topbar safe-area-top">
+    <header v-if="!isGateRoute" class="app-mobile-topbar safe-area-top">
       <button
         type="button"
         class="app-mobile-trigger safe-touch-target"
@@ -26,13 +26,13 @@
     <!-- 移动端抽屉遮罩：点击关闭 -->
     <Transition name="app-drawer-mask">
       <div
-        v-if="mobileNavOpen"
+        v-if="mobileNavOpen && !isGateRoute"
         class="app-drawer-mask"
         @click="mobileNavOpen = false"
       />
     </Transition>
 
-    <el-aside width="248px" class="sidebar" :class="{ 'is-mobile-open': mobileNavOpen }">
+    <el-aside v-if="!isGateRoute" width="248px" class="sidebar" :class="{ 'is-mobile-open': mobileNavOpen }">
       <div class="sidebar-shell">
         <div class="logo">
           <div class="logo-mark">
@@ -160,9 +160,10 @@
         </div>
       </el-main>
     </el-container>
-    <BackgroundWorkbenchHost />
+    <BackgroundWorkbenchHost v-if="!isGateRoute" />
     <SystemPromptHost />
     <button
+      v-if="!isGateRoute"
       type="button"
       class="theme-toggle-button"
       :aria-label="isDarkTheme ? '切换到正常模式' : '切换到黑夜模式'"
@@ -212,12 +213,14 @@ import LibraryBackup from './views/LibraryBackup.vue'
 import SubtitleImport from './views/SubtitleImport.vue'
 import ActivityHistory from './views/ActivityHistory.vue'
 import CircleCompletion from './views/CircleCompletion.vue'
+import VerifyGate from './views/VerifyGate.vue'
+import BlockedGate from './views/BlockedGate.vue'
 import BackgroundWorkbenchHost from './components/workbench/BackgroundWorkbenchHost.vue'
 import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import router from './router'
 
-const appVersion = '1.4.10'
+const appVersion = '1.5.0'
 const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
@@ -253,8 +256,11 @@ const routeComponentMap = {
   CircleCompletion,
   LibraryBackup,
   SubtitleImport,
-  ActivityHistory
+  ActivityHistory,
+  VerifyGate,
+  BlockedGate
 }
+const isGateRoute = computed(() => Boolean(route.meta?.gatePage))
 const currentViewComponent = computed(() => routeComponentMap[route.name] || Dashboard)
 const cachedViews = computed(() =>
   router
@@ -397,6 +403,21 @@ html.kikoerumanager-dark .watcher-button:focus {
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item {
   color: rgba(226, 232, 240, 0.74);
+}
+
+.app-container.is-gate-route {
+  min-height: 100vh;
+  background: #020617;
+}
+
+.app-container.is-gate-route .main-frame,
+.app-container.is-gate-route .main-content,
+.app-container.is-gate-route .content-shell {
+  width: 100%;
+  min-height: 100vh;
+  padding: 0;
+  margin: 0;
+  max-width: none;
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item > svg {
