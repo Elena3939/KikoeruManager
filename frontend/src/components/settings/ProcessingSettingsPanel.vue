@@ -49,8 +49,32 @@
           <SettingsFieldCard label="7-Zip 路径">
             <input v-model="config.extract.seven_zip_path" class="field-input" type="text" placeholder="例如 C:\Program Files\7-Zip\7z.exe">
           </SettingsFieldCard>
+          <SettingsFieldCard label="ZIP 文件名编码">
+            <AppDropdown
+              v-model="config.extract.zip_encoding"
+              :options="zipEncodingOptions"
+              :width="260"
+            />
+            <template #hint>
+              后端会先嗅探 ZIP 中央目录；嗅探不到时再使用这里的兜底代码页。
+            </template>
+          </SettingsFieldCard>
           <SettingsToggleRow v-model="config.extract.auto_repair_extension" title="自动修复后缀名" subtitle="针对异常扩展名做兼容修复。" />
           <SettingsToggleRow v-model="config.extract.verify_after_extract" title="解压后验证" subtitle="解压后再做结果校验，降低脏目录风险。" />
+          <SettingsToggleRow v-model="config.extract.prefer_unar_for_rar" title="RAR 优先使用 unar" subtitle="对日文 / 中文 RAR 文件名更稳，unar 不可用时自动回退 7-Zip。" />
+          <SettingsToggleRow v-model="config.extract.filename_password_sniff_enabled" title="文件名密码嗅探" subtitle="从压缩包文件名模板里提取密码，命中后跳过逐个试密码。" />
+          <SettingsFieldCard v-if="config.extract.filename_password_sniff_enabled" label="密码嗅探模板">
+            <textarea
+              v-model="filenamePasswordSniffTemplatesText"
+              class="field-input template-textarea"
+              rows="3"
+              spellcheck="false"
+              placeholder="{name}({password})"
+            />
+            <template #hint>
+              每行一个模板，必须包含 {password}；例如 RJ01381271(SOUTH+).zip 会由 {name}({password}) 提取 SOUTH+。
+            </template>
+          </SettingsFieldCard>
           <SettingsToggleRow v-model="config.extract.extract_nested_archives" title="自动解压嵌套压缩包" subtitle="适合复杂包结构，但会增加处理时长。" />
           <SettingsFieldCard v-if="config.extract.extract_nested_archives" label="最大嵌套深度">
             <el-slider v-model="config.extract.max_nested_depth" :min="1" :max="10" show-input />
@@ -109,6 +133,26 @@ const processExistingItems = [
   { key: 'import_lrc', label: '导入 LRC' },
   { key: 'classify', label: '智能分类' }
 ]
+
+const zipEncodingOptions = [
+  { value: 932, label: 'Shift-JIS / CP932（日文）', description: 'DLsite 日文 ZIP 的常见兜底' },
+  { value: 936, label: 'GBK / CP936（中文）', description: '中文 Windows ZIP 的常见兜底' },
+  { value: 950, label: 'Big5 / CP950（繁中）', description: '繁体中文旧 ZIP 的兜底' },
+  { value: 0, label: '不强制代码页', description: '只依赖 7-Zip 默认行为' }
+]
+
+const filenamePasswordSniffTemplatesText = computed({
+  get() {
+    const templates = props.config?.extract?.filename_password_sniff_templates
+    return Array.isArray(templates) ? templates.join('\n') : ''
+  },
+  set(value) {
+    props.config.extract.filename_password_sniff_templates = String(value || '')
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean)
+  }
+})
 
 // ---- 解压并发下拉 + 存储类型探测 ----
 const concurrencyOptions = [
@@ -282,6 +326,14 @@ const storageHintText = computed(() => {
 }
 
 .field-input::placeholder { color: #94a3b8; }
+
+.template-textarea {
+  min-height: 86px;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.55;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
 
 /* 解压并发：下拉 + 存储类型 chip */
 .extract-concurrency-row {
