@@ -118,8 +118,6 @@ class LocalScanner:
         normalized_subtree = os.path.abspath(subtree_path)
         if not os.path.exists(normalized_subtree):
             raise FileNotFoundError(f"子树路径不存在: {subtree_path}")
-        if not os.path.isdir(normalized_subtree):
-            raise NotADirectoryError(f"子树路径不是目录: {subtree_path}")
 
         # 越界保护：子树必须在 library_root 下，否则 relative_path 会变成 ../
         # 触发 SnapshotStore 写入异常路径。这里直接拦掉，调用方 catch 后静默。
@@ -144,6 +142,37 @@ class LocalScanner:
         else:
             rel = os.path.relpath(normalized_subtree, normalized_root)
             subtree_depth = rel.count(os.sep) + 1
+
+        if os.path.isfile(normalized_subtree):
+            parent_rel = _to_relative_posix(os.path.dirname(normalized_subtree), normalized_root)
+            try:
+                stat_result = os.stat(normalized_subtree)
+                size = int(stat_result.st_size or 0)
+                mtime_ms: Optional[int] = int(stat_result.st_mtime * 1000)
+            except OSError:
+                size = 0
+                mtime_ms = None
+            yield IndexEntry(
+                library_id=library_id,
+                entry_type='file',
+                relative_path=_to_relative_posix(normalized_subtree, normalized_root),
+                absolute_path=normalized_subtree,
+                name=os.path.basename(normalized_subtree),
+                rjcode=_extract_rjcode(os.path.basename(normalized_subtree)),
+                parent_path=parent_rel,
+                size=size,
+                file_count=0,
+                mtime=mtime_ms,
+                depth=subtree_depth,
+            )
+            logger.info(
+                "[LocalScanner] 文件 upsert 扫描完成 library=%s file=%s",
+                library_id, normalized_subtree,
+            )
+            return
+
+        if not os.path.isdir(normalized_subtree):
+            raise NotADirectoryError(f"子树路径不是目录: {subtree_path}")
 
         try:
             yield from self._walk(

@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 from app.models.database import Base  # noqa: E402
 from app.core.library_index.service import LibraryIndexService  # noqa: E402
 from app.core.library_index.snapshot_store import SnapshotStore  # noqa: E402
+from app.core.library_index.types import IndexEntry  # noqa: E402
 
 
 @pytest.fixture
@@ -211,3 +212,55 @@ def test_cross_library_move_synchronizes_both_indexes(isolated_index, tmp_path):
     dest_hits = service.find_by_rjcode("RJ00000010", dest_id)
     assert len(dest_hits) == 1
     assert os.path.normcase(dest_hits[0].absolute_path) == os.path.normcase(str(new_dir))
+
+
+# ---------- Case 6：非法 UTF-8 文件名不能拖垮索引 ----------
+
+def test_snapshot_store_escapes_surrogate_paths_before_sqlite_write(isolated_index):
+    """Docker/Linux 上坏文件名字节会变成 surrogate，SQLite 绑定参数前必须转义。"""
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_bad_utf8"
+
+    store.bulk_upsert([
+        IndexEntry(
+            library_id=library_id,
+            entry_type="file",
+            relative_path="社团/RJ00000011_\udce4\udcb8\udcad.mp3",
+            absolute_path="/library/社团/RJ00000011_\udce4\udcb8\udcad.mp3",
+            name="RJ00000011_\udce4\udcb8\udcad.mp3",
+            rjcode="RJ00000011",
+            parent_path="社团",
+            size=1,
+            file_count=0,
+            mtime=1,
+            depth=2,
+        )
+    ])
+
+    hit = store.get_entry(library_id, "社团/RJ00000011_\\udce4\\udcb8\\udcad.mp3")
+    assert hit is not None
+    assert hit.name == "RJ00000011_\\udce4\\udcb8\\udcad.mp3"
+
+
+def test_upsert_subtree_local_accepts_single_file_path(isolated_index):
+    """flatten/单文件落盘会传文件路径，索引增量 upsert 不能按目录硬扫。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_root: Path = isolated_index["library_root"]
+    library_id = "lib_single_file"
+
+    _mark_index_ready(store, library_id)
+    audio_dir = library_root / "RJ00000012"
+    audio_dir.mkdir()
+    audio_file = audio_dir / "RJ00000012_track.wav"
+    audio_file.write_bytes(b"RIFF")
+
+    written = service.upsert_subtree_local(
+        library_id, str(library_root), str(audio_file),
+    )
+
+    assert written == 1
+    hit = store.get_entry(library_id, "RJ00000012/RJ00000012_track.wav")
+    assert hit is not None
+    assert hit.entry_type == "file"
+    assert hit.size == 4
