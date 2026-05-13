@@ -3842,18 +3842,22 @@ class ExtractService:
     def _detect_best_encoding(self, raw_bytes: bytes) -> str:
         """
         自动检测压缩包文件名的最佳编码
-        依次尝试: gbk -> shift_jis -> utf-8 -> big5 -> euc_kr
+        依次尝试: utf-8 -> shift_jis -> gbk -> cp936 -> big5 -> euc_kr
         """
-        # 编码优先级列表（中文用户优先 GBK，日文次之）
-        encodings = ['gbk', 'shift_jis', 'utf-8', 'big5', 'euc_kr']
+        # UTF-8 优先：7z/unar 的 stdout 如果被 GBK 误解，会产出 `鍋靛伃...`
+        # 这类合法 CJK mojibake。旧逻辑把 CJK 全部加分，导致 GBK 抢赢。
+        encodings = ['utf-8', 'shift_jis', 'gbk', 'cp936', 'big5', 'euc_kr']
 
-        best_encoding = 'gbk'  # 默认
+        best_encoding = 'utf-8'
         best_score = -1
 
         for encoding in encodings:
             try:
                 decoded = raw_bytes.decode(encoding, errors='replace')
                 score = self._score_decoded_text(decoded)
+                garbled_score = self._garbled_text_score(decoded)
+                if garbled_score >= 30.0:
+                    score -= int(garbled_score * 20)
                 logger.debug(f"[编码检测] {encoding}: 得分 {score}")
 
                 if score > best_score:
@@ -5985,16 +5989,16 @@ class ExtractService:
 
         return None
 
-    async def _detect_rar_encoding_after_garbled_extract(
+    async def _rank_rar_encodings_after_garbled_extract(
         self,
         archive_path: str,
         password: Optional[str],
         baseline_score: float,
-    ) -> Optional[str]:
-        """解压后发现乱码时，用 lsar 再轻量选一次编码，避免三次完整重解。"""
+    ) -> List[Tuple[str, float]]:
+        """解压后发现乱码时，用 lsar 给编码候选排序。"""
         lsar_path = shutil.which("lsar")
         if not lsar_path:
-            return None
+            return []
 
         scores: List[Tuple[str, float]] = []
         for enc in self._unar_filename_encoding_candidates(include_auto=False):
@@ -6014,15 +6018,31 @@ class ExtractService:
             output = (result.stdout or b"").decode("utf-8", errors="replace")
             scores.append((enc, self._garbled_text_score(output)))
         if not scores:
-            return None
+            return []
 
-        best_encoding, best_score = min(scores, key=lambda item: item[1])
+        scores.sort(key=lambda item: item[1])
         logger.debug(
             "[unar编码] 解压后 lsar 编码评分 archive=%s scores=%s baseline=%.1f",
             archive_path,
             {enc: round(score, 1) for enc, score in scores},
             baseline_score,
         )
+        return scores
+
+    async def _detect_rar_encoding_after_garbled_extract(
+        self,
+        archive_path: str,
+        password: Optional[str],
+        baseline_score: float,
+    ) -> Optional[str]:
+        """解压后发现乱码时，用 lsar 再轻量选一次编码，避免三次完整重解。"""
+        scores = await self._rank_rar_encodings_after_garbled_extract(
+            archive_path, password, baseline_score,
+        )
+        if not scores:
+            return None
+
+        best_encoding, best_score = scores[0]
         if best_score < baseline_score:
             logger.info(
                 "[unar编码] 解压后 lsar 选择文件名编码: %s score=%.1f baseline=%.1f",
@@ -6064,13 +6084,16 @@ class ExtractService:
             baseline_score,
             output_path,
         )
-        detected_encoding = await self._detect_rar_encoding_after_garbled_extract(
+        ranked_encodings = await self._rank_rar_encodings_after_garbled_extract(
             archive_path, password, baseline_score,
         )
+        tried_encodings: set[str] = set()
+        detected_encoding = ranked_encodings[0][0] if ranked_encodings else None
         needs_auto_restore = False
         if detected_encoding:
             await self._cleanup_extract_attempt(output_path)
             needs_auto_restore = True
+            tried_encodings.add(detected_encoding)
             r = await self._try_unar_extract(
                 archive_path, output_path, password, task=task, encoding=detected_encoding,
             )
@@ -6094,6 +6117,37 @@ class ExtractService:
                 archive_path,
             )
             return
+
+        for candidate_encoding, candidate_score in ranked_encodings[1:]:
+            if candidate_encoding in tried_encodings:
+                continue
+            if candidate_score >= baseline_score:
+                continue
+            await self._cleanup_extract_attempt(output_path)
+            needs_auto_restore = True
+            tried_encodings.add(candidate_encoding)
+            logger.info(
+                "[unar编码] 继续尝试候选编码: %s lsar_score=%.1f baseline=%.1f",
+                candidate_encoding,
+                candidate_score,
+                baseline_score,
+            )
+            r = await self._try_unar_extract(
+                archive_path, output_path, password, task=task, encoding=candidate_encoding,
+            )
+            if r.returncode != 0:
+                logger.debug("[unar编码] 候选编码 %s 重解失败 rc=%s", candidate_encoding, r.returncode)
+                continue
+            score = self._filename_garbled_score(output_path)
+            logger.debug("[unar编码] 编码 %s 重解后乱码评分: %.1f", candidate_encoding, score)
+            if score < 30.0:
+                logger.info("[unar编码] 乱码修复成功，使用编码: %s score=%.1f", candidate_encoding, score)
+                return
+            logger.warning(
+                "[unar编码] 候选编码 %s 重解后仍疑似乱码 score=%.1f",
+                candidate_encoding,
+                score,
+            )
 
         # 嗅探出的编码重解失败时恢复自动探测结果；上层会再次全树检查，仍乱码则失败清理。
         if needs_auto_restore:
