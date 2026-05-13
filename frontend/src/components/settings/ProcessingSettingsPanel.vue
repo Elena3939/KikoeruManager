@@ -46,6 +46,16 @@
               <span v-else>auto 模式下后端会自动根据存储类型选择并发数，HDD=1、SSD 最多 3。</span>
             </template>
           </SettingsFieldCard>
+          <SettingsFieldCard label="单个解压进程线程数">
+            <AppDropdown
+              v-model="config.extract.seven_zip_threads"
+              :options="sevenZipThreadOptions"
+              :width="260"
+            />
+            <template #hint>
+              控制 7-Zip 的 -mmt 参数。并发数管“同时几个包”，这里管“每个包吃多少线程”；HDD 建议 1-2，SSD / NVMe 可用自动或 4+。
+            </template>
+          </SettingsFieldCard>
           <SettingsFieldCard label="7-Zip 路径">
             <input v-model="config.extract.seven_zip_path" class="field-input" type="text" placeholder="例如 C:\Program Files\7-Zip\7z.exe">
           </SettingsFieldCard>
@@ -165,6 +175,18 @@ const concurrencyOptions = [
   { value: 2, label: '2', description: '中档 SSD 或 HDD 抢吞吐（不推荐）' },
   { value: 3, label: '3（SSD 推荐）', description: 'SSD / NVMe 推荐，吃满多核' },
   { value: 4, label: '4（高端 NVMe）', description: 'NVMe + 高核心 CPU 才适合' }
+]
+
+const sevenZipThreadOptions = [
+  { value: 'on', label: '自动（7-Zip 默认）', description: '等价 -mmt=on，由 7-Zip 按格式和 CPU 自己调度' },
+  { value: 'off', label: '1（单线程）', description: '最保守，HDD 或低功耗机器适合' },
+  { value: '2', label: '2 线程', description: '机械盘或轻负载保守加速' },
+  { value: '4', label: '4 线程', description: '普通 SSD 推荐起点' },
+  { value: '6', label: '6 线程', description: '多核 CPU + SSD' },
+  { value: '8', label: '8 线程', description: 'NVMe / 高性能 CPU' },
+  { value: '12', label: '12 线程', description: '高端桌面 CPU，注意温度和 IO' },
+  { value: '16', label: '16 线程', description: '只建议 NVMe 和高核心机器' },
+  { value: '', label: '不传 -mmt', description: '完全使用 7-Zip 内部默认值' }
 ]
 
 const storageInfo = ref(null)

@@ -101,6 +101,13 @@ class DLsiteApiService:
             return f"{base}/page/{page}"
         return base
 
+    def _build_circle_profile_touch_url(self, maker_id: str, page: int = 1) -> str:
+        normalized_maker_id = str(maker_id or "").strip().upper()
+        base = f"https://www.dlsite.com/maniax-touch/circle/profile/=/maker_id/{normalized_maker_id}.html"
+        if page > 1:
+            return f"{base}/page/{page}"
+        return base
+
     def _build_circle_announce_url(self, maker_id: str, language: str = "JPN", page: int = 1) -> str:
         normalized_maker_id = str(maker_id or "").strip().upper()
         normalized_language = str(language or "JPN").strip().upper() or "JPN"
@@ -126,6 +133,7 @@ class DLsiteApiService:
             'Sec-CH-UA': '"Chromium";v="120", "Google Chrome";v="120", "Not_A Brand";v="99"',
             'Sec-CH-UA-Mobile': '?0',
             'Sec-CH-UA-Platform': '"Windows"',
+            'Cookie': 'adultchecked=1; locale=ja-jp',
             'Connection': 'keep-alive',
         }
 
@@ -165,7 +173,25 @@ class DLsiteApiService:
             return []
         seen = set()
         result: List[str] = []
-        for matched in re.findall(r'/(?:work|announce)/=/product_id/([RVB]J(?:\d{8}|\d{6}))\.html', text, re.IGNORECASE):
+        patterns = [
+            r'/(?:work|announce)/=/product_id/([RVB]J(?:\d{8}|\d{6}))(?:\.html)?',
+            r'product_id["\']?\s*[:=]\s*["\']([RVB]J(?:\d{8}|\d{6}))["\']',
+            r'workno["\']?\s*[:=]\s*["\']([RVB]J(?:\d{8}|\d{6}))["\']',
+        ]
+        for pattern in patterns:
+            for matched in re.findall(pattern, text, re.IGNORECASE):
+                workno = self._normalize_workno(matched)
+                if workno and workno not in seen:
+                    seen.add(workno)
+                    result.append(workno)
+        return result
+
+    def _extract_any_worknos_from_listing_html(self, text: str) -> List[str]:
+        if not text:
+            return []
+        seen = set()
+        result: List[str] = []
+        for matched in re.findall(r'[RVB]J(?:\d{8}|\d{6})', text, re.IGNORECASE):
             workno = self._normalize_workno(matched)
             if workno and workno not in seen:
                 seen.add(workno)
@@ -1057,17 +1083,25 @@ class DLsiteApiService:
 
         for mode, url_builder in [
             ("profile", self._build_circle_profile_url),
+            ("profile-touch", self._build_circle_profile_touch_url),
             ("announce", self._build_circle_announce_url),
         ]:
+            if mode == "profile-touch" and found:
+                continue
             empty_streak = 0
             for page in range(1, max(1, int(max_pages)) + 1):
-                url = url_builder(normalized_maker_id, language=normalized_language, page=page)
+                if mode == "profile-touch":
+                    url = url_builder(normalized_maker_id, page=page)
+                else:
+                    url = url_builder(normalized_maker_id, language=normalized_language, page=page)
                 try:
                     response = await self._guarded_get(url, headers=self._get_browser_headers())
                     if response.status_code != 200:
                         logger.warning("[DLsite] 社团%s抓取失败 maker_id=%s page=%s status=%s", mode, normalized_maker_id, page, response.status_code)
                         break
                     page_worknos = self._extract_worknos_from_listing_html(response.text)
+                    if not page_worknos and mode == "profile-touch":
+                        page_worknos = self._extract_any_worknos_from_listing_html(response.text)
                 except Exception as exc:
                     logger.warning("[DLsite] 社团%s抓取异常 maker_id=%s page=%s error=%s", mode, normalized_maker_id, page, exc)
                     break
@@ -1086,13 +1120,22 @@ class DLsiteApiService:
                 else:
                     empty_streak = 0
 
+                if page == 1 and not page_worknos and mode in {"profile", "profile-touch"}:
+                    logger.info(
+                        "[DLsite] 社团%s首页未解析到作品，提前切换入口 maker_id=%s",
+                        mode,
+                        normalized_maker_id,
+                    )
+                    break
+
                 if empty_streak >= 2:
                     break
 
-        self.cache[cache_key] = {
-            'data': list(found),
-            'timestamp': datetime.now()
-        }
+        if found:
+            self.cache[cache_key] = {
+                'data': list(found),
+                'timestamp': datetime.now()
+            }
         return found
     
     async def get_work_info(self, rjcode: str) -> Optional[Dict]:

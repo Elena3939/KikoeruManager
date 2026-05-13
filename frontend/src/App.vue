@@ -143,6 +143,33 @@
 
           <div class="version-info">
             <span class="version-text">KikoeruManager</span>
+            <button
+              v-if="!isGateRoute"
+              type="button"
+              class="theme-toggle-button"
+              :class="{ 'is-dark': isDarkTheme }"
+              :aria-label="isDarkTheme ? '当前深色模式，点击切换到浅色模式' : '当前浅色模式，点击切换到深色模式'"
+              :title="isDarkTheme ? '当前深色模式，点击切换到浅色模式' : '当前浅色模式，点击切换到深色模式'"
+              @click="toggleTheme"
+            >
+              <Transition name="theme-icon" mode="out-in">
+                <Moon
+                  v-if="isDarkTheme"
+                  key="moon"
+                  class="theme-toggle-icon theme-toggle-icon-moon"
+                  :size="15"
+                  :stroke-width="2.5"
+                />
+                <Sun
+                  v-else
+                  key="sun"
+                  class="theme-toggle-icon theme-toggle-icon-sun"
+                  :size="15"
+                  :stroke-width="2.5"
+                />
+              </Transition>
+              <span class="theme-toggle-text">{{ isDarkTheme ? '深色' : '浅色' }}</span>
+            </button>
           </div>
         </div>
       </div>
@@ -162,18 +189,6 @@
     </el-container>
     <BackgroundWorkbenchHost v-if="!isGateRoute" />
     <SystemPromptHost />
-    <button
-      v-if="!isGateRoute"
-      type="button"
-      class="theme-toggle-button"
-      :aria-label="isDarkTheme ? '切换到正常模式' : '切换到黑夜模式'"
-      :title="isDarkTheme ? '切换到正常模式' : '切换到黑夜模式'"
-      @click="toggleTheme"
-    >
-      <Sun v-if="isDarkTheme" :size="19" :stroke-width="2.2" />
-      <Moon v-else :size="19" :stroke-width="2.2" />
-      <span>{{ isDarkTheme ? '正常' : '黑夜' }}</span>
-    </button>
   </el-container>
 </template>
 
@@ -280,8 +295,23 @@ let intervalId = null
 onMounted(async () => {
   isDarkTheme.value = readInitialTheme()
   applyTheme()
+  if (isGateRoute.value) return
   await refreshStatus()
   intervalId = setInterval(refreshStatus, 3000)
+})
+
+watch(isGateRoute, async (gateRoute) => {
+  if (gateRoute) {
+    if (intervalId) {
+      clearInterval(intervalId)
+      intervalId = null
+    }
+    return
+  }
+  await refreshStatus()
+  if (!intervalId) {
+    intervalId = setInterval(refreshStatus, 3000)
+  }
 })
 
 onUnmounted(() => {
@@ -443,15 +473,16 @@ html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active > svg {
 }
 
 html.kikoerumanager-dark .theme-toggle-button {
-  background: rgba(15, 23, 42, 0.9);
+  background: rgba(15, 23, 42, 0.36);
   border-color: rgba(147, 197, 253, 0.18);
-  color: #f8fafc;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  color: #dbeafe;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
 html.kikoerumanager-dark .theme-toggle-button:hover {
   border-color: rgba(147, 197, 253, 0.34);
-  box-shadow: 0 20px 48px rgba(37, 99, 235, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  color: #f8fafc;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
 }
 
 html.kikoerumanager-dark .el-card,
@@ -5224,6 +5255,7 @@ html.kikoerumanager-dark .detail-body .path {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   margin-top: 14px;
   padding: 0 6px;
 }
@@ -5320,46 +5352,90 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .theme-toggle-button {
-  position: fixed;
-  right: 22px;
-  bottom: 22px;
-  z-index: 120;
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  height: 42px;
-  padding: 0 15px;
+  gap: 5px;
+  height: 26px;
+  min-width: 0;
+  padding: 0 8px;
+  overflow: hidden;
   border: 1px solid rgba(29, 29, 31, 0.08);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  color: #1d1d1f;
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  background: rgba(255, 255, 255, 0.68);
+  color: rgba(29, 29, 31, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: -0.01em;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.24s ease, color 0.24s ease, box-shadow 0.24s ease;
 }
 
 .theme-toggle-button:hover {
-  transform: translateY(-2px) scale(1.02);
-  border-color: rgba(0, 113, 227, 0.22);
-  box-shadow: 0 18px 42px rgba(0, 113, 227, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  transform: translateY(-1px) scale(1.03);
+  border-color: rgba(29, 29, 31, 0.16);
+  color: #1d1d1f;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08), inset 0 0 0 1px rgba(255, 255, 255, 0.72);
 }
 
 .theme-toggle-button:active {
   transform: scale(0.96);
 }
 
-.theme-toggle-button:hover svg {
-  transform: rotate(-10deg);
+.theme-toggle-button.is-dark {
+  background: rgba(15, 23, 42, 0.36);
+  border-color: rgba(147, 197, 253, 0.18);
+  color: #dbeafe;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
-.theme-toggle-button svg {
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+.theme-toggle-button.is-dark:hover {
+  border-color: rgba(147, 197, 253, 0.34);
+  color: #f8fafc;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.theme-toggle-text {
+  position: relative;
+  z-index: 1;
+}
+
+.theme-toggle-icon {
+  flex: 0 0 auto;
+  transition: color 0.3s ease, filter 0.3s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.theme-toggle-button:hover .theme-toggle-icon {
+  transform: rotate(-12deg) scale(1.1);
+}
+
+.theme-toggle-icon-sun {
+  color: #f59e0b;
+  filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.26));
+}
+
+.theme-toggle-icon-moon {
+  color: #2563eb;
+  filter: drop-shadow(0 0 5px rgba(37, 99, 235, 0.24));
+}
+
+.theme-icon-enter-active,
+.theme-icon-leave-active {
+  transition: opacity 0.24s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.24s ease;
+}
+
+.theme-icon-enter-from {
+  opacity: 0;
+  transform: rotate(-80deg) scale(0.35);
+  filter: blur(5px);
+}
+
+.theme-icon-leave-to {
+  opacity: 0;
+  transform: rotate(80deg) scale(0.35);
+  filter: blur(5px);
 }
 
 :global(html.kikoerumanager-dark) {
@@ -5484,15 +5560,16 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 :global(html.kikoerumanager-dark) .theme-toggle-button {
-  background: rgba(15, 23, 42, 0.9);
+  background: rgba(15, 23, 42, 0.36);
   border-color: rgba(147, 197, 253, 0.18);
-  color: #f8fafc;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  color: #dbeafe;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
 :global(html.kikoerumanager-dark) .theme-toggle-button:hover {
   border-color: rgba(147, 197, 253, 0.34);
-  box-shadow: 0 20px 48px rgba(37, 99, 235, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  color: #f8fafc;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
 }
 
 /* ============================================================
@@ -5684,10 +5761,7 @@ html.kikoerumanager-dark .detail-body .path {
     padding-right: 0;
   }
   .theme-toggle-button {
-    right: 14px;
-    bottom: 14px;
-    height: 40px;
-    padding: 0 13px;
+    height: 26px;
   }
 }
 

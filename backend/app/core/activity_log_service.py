@@ -967,11 +967,12 @@ def log_subtitle_import_action(
     rjcode: Optional[str] = None,
     task_id: Optional[str] = None,
     source_path: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> None:
     write_activity_log(
         category=CATEGORY_SUBTITLE_IMPORT,
         action=action,
-        status="success" if success else "failed",
+        status=(str(status or "").strip() or ("success" if success else "failed")),
         summary=summary,
         detail=detail,
         rjcode=rjcode,
@@ -1200,7 +1201,22 @@ def log_from_subtitle_import_result(
     ).strip().upper()
     err = result.get("error") or result.get("detail")
     success = bool(result.get("success", True)) and not err
-    msg = str(result.get("message") or ("字幕补配完成" if success else "字幕补配失败"))
+    import_result = result.get("import_result") if isinstance(result.get("import_result"), dict) else {}
+    awaiting_manual_match = (
+        bool(result.get("awaiting_manual_match"))
+        or bool(import_result.get("awaiting_manual_match"))
+        or bool(result.get("task"))
+    )
+    final_file_count = int(result.get("final_file_count") or import_result.get("final_file_count") or 0)
+    written_files = import_result.get("written_files") if isinstance(import_result.get("written_files"), list) else []
+    staged_count = int(import_result.get("downloaded_count") or len(written_files or []) or 0)
+    if result.get("message"):
+        msg = str(result.get("message"))
+    elif success and awaiting_manual_match:
+        count_text = f"{staged_count} 个" if staged_count else "原始"
+        msg = f"已导入{count_text}字幕，待手动筛选与配对"
+    else:
+        msg = "字幕补配完成" if success else "字幕补配失败"
     if err:
         msg = f"{msg}: {err}"[:1900]
     path = (archive_path or folder_path or str(result.get("source_path") or "") or "").strip()
@@ -1212,6 +1228,17 @@ def log_from_subtitle_import_result(
         for k in ("task_id", "final_file_count", "record_id")
         if result.get(k) is not None
     }
+    if final_file_count and "final_file_count" not in detail:
+        detail["final_file_count"] = final_file_count
+    if awaiting_manual_match:
+        detail["awaiting_manual_match"] = True
+        detail["manual_match_completed"] = False
+        if staged_count:
+            detail["staged_subtitle_count"] = staged_count
+        task_info = result.get("task") if isinstance(result.get("task"), dict) else {}
+        task_id_from_task = str(task_info.get("id") or "").strip()
+        if task_id_from_task and not detail.get("task_id"):
+            detail["task_id"] = task_id_from_task
     if preview_source_path:
         detail["preview_source_path"] = preview_source_path
     if preview_source_rjcode:
@@ -1224,8 +1251,9 @@ def log_from_subtitle_import_result(
         summary=msg,
         detail=detail or None,
         rjcode=rj or None,
-        task_id=str(result.get("task_id") or "") or None,
+        task_id=str(result.get("task_id") or detail.get("task_id") or "") or None,
         source_path=path or None,
+        status="waiting" if success and awaiting_manual_match else None,
     )
 
 
