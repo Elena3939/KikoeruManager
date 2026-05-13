@@ -214,6 +214,7 @@ class TestExtractService:
         bad_name = "偵偭偪壒惡岺朳亀悇偟偺偊偪偊偪攝怣彈巕偲僆僼僷僐.wav"
         fixed_name = extract_service._repair_mojibake_filename(bad_name)
         assert fixed_name == "にっち音声工房『推しのえちえち配信女子とオフパコ.wav"
+        assert extract_service._repair_mojibake_relative_path(f"RJ01378421/{bad_name}") == f"RJ01378421/{fixed_name}"
 
         root = os.path.join(temp_dir, "output")
         os.makedirs(root, exist_ok=True)
@@ -226,6 +227,29 @@ class TestExtractService:
 
         assert extract_service._repair_mojibake_filenames_in_place(root) == 2
         assert os.path.exists(os.path.join(root, "にっち音声工房『推しのえちえち配信女子", fixed_name))
+
+    @pytest.mark.asyncio
+    async def test_verify_extraction_checks_repaired_mojibake_path_size(self, extract_service, temp_dir):
+        """清单是乱码名、落盘已修名时，完整性验证仍必须比较文件大小。"""
+        bad_name = "偵偭偪壒惡岺朳亀悇偟偺偊偪偊偪攝怣彈巕偲僆僼僷僐.wav"
+        fixed_name = "にっち音声工房『推しのえちえち配信女子とオフパコ.wav"
+        root = os.path.join(temp_dir, "output")
+        target_dir = os.path.join(root, "RJ01378421")
+        os.makedirs(target_dir, exist_ok=True)
+        with open(os.path.join(target_dir, fixed_name), "wb") as fp:
+            fp.write(b"")
+
+        archive_info = ArchiveInfo(
+            path=os.path.join(temp_dir, "dummy.rar"),
+            file_list=[{
+                "name": f"RJ01378421/{bad_name}",
+                "size": 1234,
+                "is_dir": False,
+            }],
+            password="RJ01378421",
+        )
+
+        assert await extract_service._verify_extraction(archive_info, root) is False
 
     def test_final_filename_guard_scans_full_tree(self, extract_service, temp_dir):
         """最终兜底不只采样前 240 项，深层坏文件名也要能短路命中。"""

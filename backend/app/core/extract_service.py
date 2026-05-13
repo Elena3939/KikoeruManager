@@ -4066,7 +4066,7 @@ class ExtractService:
                     return False, None, "disk_full"
                 if unar_reason == "wrong_password":
                     return False, None, "wrong_password"
-                if garbled_toc_sample:
+                if garbled_toc_sample and unar_reason != "partial_output":
                     logger.error(
                         "RAR 目录清单已疑似乱码且 unar 未能处理，拒绝回退 7zz 以免产出乱码文件: archive=%s sample=%s reason=%s",
                         archive_info.path,
@@ -4270,13 +4270,27 @@ class ExtractService:
                     break
 
                 if result.returncode == 0:
-                    if await self._reject_if_garbled_after_extract(
-                        archive_info.path,
-                        output_path,
-                        cleanup=lambda: self._cleanup_extract_attempt(output_path),
-                        context="7zz",
-                    ):
-                        return False, None, "garbled_filename"
+                    if self._needs_filename_garbled_guard(archive_info.path):
+                        repaired_count = await asyncio.to_thread(
+                            self._repair_mojibake_filenames_in_place,
+                            output_path,
+                        )
+                        if repaired_count:
+                            logger.info(
+                                "[7zz编码] 文件名反乱码重命名完成: count=%s score=%.1f",
+                                repaired_count,
+                                self._filename_garbled_score(output_path),
+                            )
+                        if await self._reject_if_garbled_after_extract(
+                            archive_info.path,
+                            output_path,
+                            cleanup=lambda: self._cleanup_extract_attempt(output_path),
+                            context="7zz",
+                        ):
+                            return False, None, "garbled_filename"
+                    if not await self._verify_extraction(archive_info, output_path):
+                        await self._cleanup_extract_attempt(output_path)
+                        return False, None, "extract_incomplete"
                     # 记录成功使用的密码
                     if password and password in vault_passwords:
                         await self._record_password_usage(
@@ -4499,6 +4513,9 @@ class ExtractService:
                 expected_name.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore').replace('\\', '/'),
                 expected_name.encode('cp932', errors='ignore').decode('cp932', errors='ignore').replace('\\', '/'),
             }
+            repaired_expected_name = self._repair_mojibake_relative_path(expected_name)
+            if repaired_expected_name:
+                candidates.add(repaired_expected_name)
             found_size: Optional[int] = None
             for variant in candidates:
                 if variant in actual_files:
@@ -4516,7 +4533,9 @@ class ExtractService:
                     'actual': found_size,
                 })
 
-        # 如果有文件缺失，记录警告但不失败（可能是编码问题）
+        # 如果有文件缺失，记录警告；但缺失过多不能继续放行。
+        # 之前会把“清单乱码导致找不到文件”全部当软警告，结果 0 字节落盘也能通过。
+        # 现在已把 expected path 的 mojibake 反解候选纳入匹配，仍找不到就更像真的缺失。
         if missing_files:
             logger.warning(f"以下文件可能因编码问题无法验证: {missing_files[:5]}")
             if len(missing_files) > 5:
@@ -4530,6 +4549,14 @@ class ExtractService:
         # （缺失文件可能是编码问题导致的误报）
         if size_mismatch_files:
             logger.error(f"有 {len(size_mismatch_files)} 个文件大小不匹配，解压可能不完整")
+            return False
+        if missing_files and len(missing_files) >= max(1, len(file_entries) // 2):
+            logger.error(
+                "有 %s/%s 个文件无法验证，拒绝接受解压结果: archive=%s",
+                len(missing_files),
+                len(file_entries),
+                archive_info.path,
+            )
             return False
 
         logger.info(
@@ -5627,6 +5654,12 @@ class ExtractService:
                     )
                     return True, password, ""
                 await self._cleanup_extract_attempt(output_path)
+                logger.warning(
+                    "unar 返回 rc=%s 且产物校验失败，准备回退 7zz 解压内容: archive=%s",
+                    result.returncode,
+                    archive_info.path,
+                )
+                return False, None, "partial_output"
 
             if result.returncode == 0:
                 # 乱码修复：若 lsar 预检未指定编码（或预检不可用），用事后扫描兜底。
@@ -5880,6 +5913,27 @@ class ExtractService:
                 best_score = candidate_score
 
         return best_name
+
+    def _repair_mojibake_relative_path(self, path: str) -> Optional[str]:
+        """按路径片段还原可逆 mojibake，供完整性验证匹配重命名后的落盘路径。"""
+        normalized = str(path or "").replace("\\", "/")
+        if not normalized:
+            return None
+        changed = False
+        repaired_parts: List[str] = []
+        for part in normalized.split("/"):
+            if not part:
+                repaired_parts.append(part)
+                continue
+            repaired = self._repair_mojibake_filename(part)
+            if repaired:
+                repaired_parts.append(repaired)
+                changed = True
+            else:
+                repaired_parts.append(part)
+        if not changed:
+            return None
+        return "/".join(repaired_parts)
 
     def _repair_mojibake_filenames_in_place(self, directory: str) -> int:
         """自底向上重命名目录树中的可逆 mojibake 文件名。"""
