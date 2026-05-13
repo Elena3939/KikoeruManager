@@ -11,6 +11,7 @@ def check_build_dependencies():
     try:
         import pystray  # noqa: F401
         import PIL  # noqa: F401
+        import qrcode  # noqa: F401
         return True
     except Exception as e:
         print(f"缺少打包依赖: {e}")
@@ -32,7 +33,7 @@ a = Analysis(
     pathex=['{ROOT_DIR}'],
     binaries=[],
     datas={datas},
-    hiddenimports=['uvicorn', 'fastapi', 'sqlalchemy', 'yaml', 'watchdog', 'filetype', 'requests', 'aiohttp', 'pystray', 'PIL', 'PIL.Image', 'orjson', 'imapclient', 'imapclient.imapclient'],
+    hiddenimports=['uvicorn', 'fastapi', 'sqlalchemy', 'yaml', 'watchdog', 'filetype', 'requests', 'aiohttp', 'pystray', 'PIL', 'PIL.Image', 'qrcode', 'qrcode.image.pil', 'orjson', 'imapclient', 'imapclient.imapclient'],
     hookspath=[],
     hooksconfig={{}},
     runtime_hooks=[],

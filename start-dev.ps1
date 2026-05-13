@@ -127,7 +127,7 @@ if ($LASTEXITCODE -ne 0) {
     Read-Host "按Enter键退出"
     exit 1
 }
-& .\venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson" *> $null
+& .\venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode" *> $null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[提示] 检测到后端依赖不完整，正在修复..." -ForegroundColor Yellow
     & .\venv\Scripts\python.exe -m pip install -r requirements.txt

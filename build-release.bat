@@ -61,10 +61,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call "%PYTHON_EXE%" -c "import pystray, PIL; print('pystray ok')"
+call "%PYTHON_EXE%" -c "import pystray, PIL, qrcode; print('pystray/qrcode ok')"
 if errorlevel 1 (
   popd
-  echo 依赖校验失败: pystray/Pillow 未正确安装
+  echo 依赖校验失败: pystray/Pillow/qrcode 未正确安装
   exit /b 1
 )
 
@@ -76,7 +76,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON_ICO%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import orjson --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON_PNG%;backend/appIcon.png" ..\desktop_app.py
+call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON_ICO%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import qrcode --hidden-import qrcode.image.pil --hidden-import orjson --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON_PNG%;backend/appIcon.png" ..\desktop_app.py
 if errorlevel 1 (
   popd
   echo 打包失败

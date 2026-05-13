@@ -24,3 +24,4 @@ pystray>=0.19.5
 Pillow>=10.1.0
 pyinstaller>=5.0.0
 imapclient>=3.0.1
+qrcode[pil]>=7.4.2
