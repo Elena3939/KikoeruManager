@@ -236,17 +236,6 @@ class ExtractService:
         当 zip_encoding=0（未配置）时，自动使用 archive_info.detected_encoding
         推断代码页（如日文 ZIP 自动得到 -mcp=932）。
         """
-        cp = int(self.config.extract.zip_encoding or 0)
-        if cp <= 0:
-            # 优先从 archive_info 取检测到的编码
-            enc = (getattr(archive_info, 'detected_encoding', None) or '').lower()
-            if not enc and archive_path:
-                # archive_info 不可用时（如 _try_extract_nested_direct 跳过 list 步骤），
-                # 回退到类级 list 编码缓存（若该路径曾被 _list_archive_contents 处理过）
-                enc = (self.__class__._archive_encoding_cache.get(str(archive_path)) or '').lower()
-            cp = _ENCODING_TO_CP.get(enc, 0)
-        if cp <= 0:
-            return []
         if not archive_path:
             if archive_info is not None:
                 archive_path = getattr(archive_info, 'path', None)
@@ -254,9 +243,30 @@ class ExtractService:
                 return []
         low = str(archive_path).lower()
         # 支持 .zip 主卷和 .zip.NNN 分卷格式（如 X.zip.001）
-        if low.endswith('.zip') or re.search(r'\.zip\.\d+$', low):
-            return [f"-mcp={cp}"]
-        return []
+        if not (low.endswith('.zip') or re.search(r'\.zip\.\d+$', low)):
+            return []
+
+        cp = 0
+        enc = ""
+        if archive_path:
+            # ZIP 的真实文件名编码在中央目录里。7z stdout 的编码检测只能解释
+            # 7z 输出本身，不能可靠区分 GBK / Shift-JIS ZIP；先用 zipfile 直接嗅探原始字节。
+            enc = (self.__class__._archive_encoding_cache.get(str(archive_path)) or '').lower()
+            if not enc:
+                sniffed = self._sniff_zip_encoding(str(archive_path))
+                if sniffed:
+                    enc = sniffed.lower()
+                    self.__class__._archive_encoding_cache[str(archive_path)] = enc
+
+        if not enc:
+            enc = (getattr(archive_info, 'detected_encoding', None) or '').lower()
+        cp = _ENCODING_TO_CP.get(enc, 0)
+
+        if cp <= 0:
+            cp = int(self.config.extract.zip_encoding or 0)
+        if cp <= 0:
+            return []
+        return [f"-mcp={cp}"]
 
     @property
     def _mcp_args(self) -> list:
@@ -2922,6 +2932,94 @@ class ExtractService:
 
         return candidates
 
+    def _compile_filename_password_template(self, template: str) -> Optional[re.Pattern]:
+        raw = str(template or "").strip()
+        if not raw or "{password}" not in raw:
+            return None
+
+        has_name_placeholder = "{name}" in raw
+        placeholder_pattern = re.compile(r"\{(name|password)\}")
+        pattern_parts: List[str] = [] if has_name_placeholder else [r".*"]
+        cursor = 0
+        for match in placeholder_pattern.finditer(raw):
+            pattern_parts.append(re.escape(raw[cursor:match.start()]))
+            key = match.group(1)
+            if key == "name":
+                pattern_parts.append(r"(?P<name>.+?)")
+            else:
+                pattern_parts.append(r"(?P<password>[^\\/]+?)")
+            cursor = match.end()
+        pattern_parts.append(re.escape(raw[cursor:]))
+        return re.compile(r"^" + "".join(pattern_parts) + r"$", re.IGNORECASE)
+
+    def _get_filename_password_sniff_targets(self, archive_path: str) -> List[str]:
+        targets: List[str] = []
+        seen = set()
+
+        def add(value: str):
+            normalized = str(value or "").strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                targets.append(normalized)
+
+        for candidate in self._build_filename_candidates(archive_path):
+            add(candidate)
+            lower = candidate.lower()
+            for suffix in (
+                ".tar.gz",
+                ".tar.bz2",
+                ".tar.xz",
+                ".zip",
+                ".rar",
+                ".7z",
+                ".tar",
+                ".tgz",
+                ".tbz2",
+                ".txz",
+                ".gz",
+                ".bz2",
+                ".xz",
+                ".exe",
+            ):
+                if lower.endswith(suffix):
+                    add(candidate[:-len(suffix)])
+                    break
+
+        return targets
+
+    def _get_filename_sniff_passwords(self, archive_path: str) -> List[str]:
+        extract_config = getattr(self.config, "extract", None)
+        if not bool(getattr(extract_config, "filename_password_sniff_enabled", False)):
+            return []
+
+        templates = getattr(extract_config, "filename_password_sniff_templates", None) or []
+        compiled_templates = [
+            compiled
+            for compiled in (self._compile_filename_password_template(item) for item in templates)
+            if compiled is not None
+        ]
+        if not compiled_templates:
+            return []
+
+        passwords: List[str] = []
+        seen = set()
+        for target in self._get_filename_password_sniff_targets(archive_path):
+            for template in compiled_templates:
+                match = template.match(target)
+                if not match:
+                    continue
+                password = normalize_password_value(match.groupdict().get("password"))
+                if not password or password in seen:
+                    continue
+                if len(password) > 128 or any(sep in password for sep in ("\\", "/")):
+                    continue
+                seen.add(password)
+                passwords.append(password)
+
+        if passwords:
+            logger.info("从文件名嗅探到 %s 个候选密码: %s", len(passwords), os.path.basename(archive_path))
+        return passwords
+
     async def _get_password_candidates_for_archive(self, archive_path: str) -> List[Dict[str, Optional[str]]]:
         """从密码库查找适合该压缩包的密码候选，并保留关联的 RJ 信息"""
         from ..models.database import PasswordEntry, get_db
@@ -2956,6 +3054,9 @@ class ExtractService:
             })
 
         try:
+            for sniffed_password in self._get_filename_sniff_passwords(archive_path):
+                add_entry(sniffed_password, "文件名嗅探", None, os.path.basename(archive_path), None)
+
             if rjcodes:
                 from sqlalchemy import func
                 entries = db.query(PasswordEntry).filter(func.upper(PasswordEntry.rjcode).in_(rjcodes)).all()
@@ -3493,6 +3594,11 @@ class ExtractService:
             else:
                 password_candidates = await self._get_password_candidates_for_archive(archive_path)
         vault_passwords = [item["password"] for item in password_candidates]
+        password_source_map = {
+            item["password"]: item.get("source")
+            for item in password_candidates
+            if item.get("password")
+        }
         manual_only_passwords = [
             item["password"]
             for item in password_candidates
@@ -3533,8 +3639,8 @@ class ExtractService:
                     source = "指定密码"
                 elif password in rj_passwords:
                     source = "RJ号"
-                elif password in vault_passwords:
-                    source = "密码库"
+                elif password in password_source_map:
+                    source = password_source_map.get(password) or "密码库"
                 elif password in self.config.extract.password_list:
                     source = "默认"
                 else:
@@ -3598,9 +3704,10 @@ class ExtractService:
         asyncio.Task.cancel() 都会立刻 kill 子进程。
         """
         password_args = [f'-p{password}'] if password else []
+        mcp_args = self._get_mcp_args(archive_path)
         commands = [
-            [self.seven_zip, 'l', '-ba', *password_args, archive_path],
-            [self.seven_zip, 'l', '-slt', *password_args, archive_path],
+            [self.seven_zip, 'l', '-ba', *mcp_args, *password_args, archive_path],
+            [self.seven_zip, 'l', '-slt', *mcp_args, *password_args, archive_path],
         ]
 
         for index, cmd in enumerate(commands):
@@ -3616,8 +3723,9 @@ class ExtractService:
                 raw_bytes = result.stdout
                 best_encoding = self._detect_best_encoding(raw_bytes)
                 logger.info(f"[7z] 自动检测编码: {best_encoding}")
-                # 记录本次编码检测结果，供 _get_archive_info → _get_mcp_args 使用
-                self.__class__._archive_encoding_cache[archive_path] = best_encoding
+                # 记录本次编码检测结果，供 _get_archive_info → _get_mcp_args 使用。
+                # 如果前面已通过 ZIP 中央目录嗅探出编码，不用 7z stdout 的编码猜测覆盖它。
+                self.__class__._archive_encoding_cache.setdefault(archive_path, best_encoding)
                 decoded = raw_bytes.decode(best_encoding, errors='ignore')
                 file_list = (
                     self._parse_7z_list_output(decoded)
@@ -3801,6 +3909,11 @@ class ExtractService:
         if password_candidates is None:
             password_candidates = await self._get_password_candidates_for_archive(archive_info.path)
         vault_passwords = [item["password"] for item in password_candidates]
+        password_source_map = {
+            item["password"]: item.get("source")
+            for item in password_candidates
+            if item.get("password")
+        }
         password_entry_id_map = {
             item["password"]: item.get("entry_id")
             for item in password_candidates
@@ -3868,6 +3981,7 @@ class ExtractService:
                 password_entry_id_map,
                 password_rjcode_map,
                 manual_retry_password_only,
+                password_source_map=password_source_map,
                 rj_passwords=rj_passwords if not manual_retry_password_only else [],
             )
             if unar_success:
@@ -3908,8 +4022,8 @@ class ExtractService:
                     password_source = "指定密码"
                 elif password in rj_passwords:
                     password_source = "RJ号"
-                elif password in vault_passwords:
-                    password_source = "密码库"
+                elif password in password_source_map:
+                    password_source = password_source_map.get(password) or "密码库"
                 elif password == archive_info.password:
                     password_source = "已知"
                 elif password == "":
@@ -5260,6 +5374,7 @@ class ExtractService:
         password_entry_id_map: Dict[str, Optional[int]],
         password_rjcode_map: Dict[str, Optional[str]],
         manual_retry_password_only: bool,
+        password_source_map: Optional[Dict[str, Optional[str]]] = None,
         rj_passwords: Optional[List[str]] = None,
     ) -> Tuple[bool, Optional[str], str]:
         """对 RAR 文件优先用 unar 解压，遍历整个密码列表。
@@ -5288,6 +5403,7 @@ class ExtractService:
 
         rj_password_set = set(rj_passwords or [])
         vault_password_set = set(vault_passwords or [])
+        password_source_map = password_source_map or {}
 
         encountered_wrong_password = False
         last_unsupported = False
@@ -5322,6 +5438,8 @@ class ExtractService:
                 password_source = "指定密码"
             elif password in rj_password_set:
                 password_source = "RJ号"
+            elif password in password_source_map:
+                password_source = password_source_map.get(password) or "密码库"
             elif password in vault_password_set:
                 password_source = "密码库"
             elif password == archive_info.password:

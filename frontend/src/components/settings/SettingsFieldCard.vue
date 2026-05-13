@@ -1,5 +1,5 @@
 <template>
-  <label class="sfc" :class="{ 'is-inline': inline }">
+  <div class="sfc" :class="{ 'is-inline': inline }">
     <span v-if="label || $slots.label" class="sfc-label">
       <slot name="label">{{ label }}</slot>
     </span>
@@ -9,7 +9,7 @@
     <small v-if="hint || $slots.hint" class="sfc-hint">
       <slot name="hint">{{ hint }}</slot>
     </small>
-  </label>
+  </div>
 </template>
 
 <script setup>
