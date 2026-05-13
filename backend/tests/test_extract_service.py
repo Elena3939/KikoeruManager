@@ -203,6 +203,12 @@ class TestExtractService:
         assert extract_service._has_garbled_text("鍋靛伃鍋澹掓儭宀烘湷浜鎮囧仧鍋哄亰鍋鍋婂仾.wav") is True
         assert extract_service._has_garbled_text("チャプター1「推しのえちえち配信女子のオナニーを視聴」.mp3") is False
 
+    def test_unar_encoding_candidates_try_utf8_before_shift_jis(self, extract_service):
+        """UTF-8 文件名被误按 GBK 解码时，必须先给 unar 明确 UTF-8 的机会。"""
+        candidates = extract_service._unar_filename_encoding_candidates(include_auto=False)
+        assert candidates[:2] == ("UTF-8", "SHIFT_JIS")
+        assert "CP936" in candidates
+
     def test_final_filename_guard_scans_full_tree(self, extract_service, temp_dir):
         """最终兜底不只采样前 240 项，深层坏文件名也要能短路命中。"""
         root = os.path.join(temp_dir, "output")
