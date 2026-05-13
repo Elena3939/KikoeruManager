@@ -527,6 +527,47 @@ class SynologyFileStationClient:
             return data.get("data") or {}
         return {}  # 不可达，仅供类型检查器
 
+    async def stream_download(self, path: str, *, chunk_size: int = 1024 * 256):
+        """从群晖 FileStation 流式读取单个文件。"""
+        normalized_path = str(PurePosixPath(path or "/"))
+        for attempt in range(2):
+            session = self._ensure_session()
+            if not self._sid:
+                await self._login(session)
+
+            api_path, api_version = await self._resolve_api_route(
+                session,
+                "SYNO.FileStation.Download",
+                default_path="entry.cgi",
+                default_version=2,
+            )
+            url = f"{self.config.base_url.rstrip('/')}/webapi/{api_path.lstrip('/')}"
+            params = {
+                "api": "SYNO.FileStation.Download",
+                "method": "download",
+                "version": str(api_version),
+                "path": normalized_path,
+                "mode": "open",
+                "_sid": self._sid,
+            }
+            async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+                content_type = str(response.headers.get("Content-Type") or "").lower()
+                if "application/json" in content_type or "text/json" in content_type:
+                    data = await self._read_response_payload(response, "SYNO.FileStation.Download")
+                    error_code = int((data.get("error") or {}).get("code") or 0)
+                    if attempt == 0 and error_code == 119:
+                        logger.info("群晖 SID 过期（code 119），自动重新登录: api=%s", "SYNO.FileStation.Download")
+                        self._sid = None
+                        continue
+                    raise SynologyError(_format_synology_error("SYNO.FileStation.Download", "下载文件", data))
+                if response.status >= 400:
+                    snippet = (await response.text()).strip()[:200]
+                    raise SynologyError(f"群晖文件下载失败: HTTP {response.status} {snippet}")
+                async for chunk in response.content.iter_chunked(chunk_size):
+                    if chunk:
+                        yield chunk
+                return
+
     def _is_error_code(self, exc: Exception, code: int) -> bool:
         message = str(exc)
         patterns = [
@@ -2568,22 +2609,17 @@ class LibraryManager:
     def _collect_local_stats_via_index(
         self, library: LibraryDefinition,
     ) -> Optional[dict[str, Any]]:
-        """索引 ready 时直接返回 stats（total_size_bytes 走 SQL SUM）。"""
+        """索引 ready 时直接返回 stats（size / folder_count 都走 SQLite）。"""
         try:
             from .library_index import get_library_index_service
             service = get_library_index_service()
             if not service.is_ready(library.id):
                 return None
-            target_root = os.path.abspath(library.browse_root_path or library.root_path)
-            folder_count = 0
-            if os.path.exists(target_root):
-                try:
-                    folder_count = sum(
-                        1 for e in os.scandir(target_root)
-                        if e.is_dir() and not self._should_skip_entry(e.name)
-                    )
-                except OSError:
-                    pass
+            parent_path = self._index_parent_path_for_browse_root(library)
+            folder_count = len([
+                entry for entry in service.list_children(library.id, parent_path, entry_type='dir')
+                if not self._should_skip_entry(entry.name)
+            ])
             total_size = int(service.get_library_size(library.id) or 0)
             return {
                 "library_id": library.id,
@@ -2603,35 +2639,17 @@ class LibraryManager:
     async def _collect_remote_stats_via_index(
         self, library: LibraryDefinition,
     ) -> Optional[dict[str, Any]]:
-        """远程 stats 索引快速路径：size 走 SQL，folder_count 走一次 list_directory。
-
-        原逻辑需要对每个顶层目录走 _remote_path_size（可能几十个，
-        每个几秒）；这里拿顽层 folder_count + 索引 SUM 一次出结果。
-        """
+        """远程 stats 索引快速路径：size / folder_count 都走 SQLite。"""
         try:
             from .library_index import get_library_index_service
             service = get_library_index_service()
             if not service.is_ready(library.id):
                 return None
-            if not library.synology:
-                return None
-            client = self.get_cached_synology_client(library.synology)
-            start_path = self._normalize_remote_path(
-                library.browse_root_path or library.root_path
-            )
-            try:
-                top_level_items = await self._list_remote_directory(client, start_path)
-            except Exception:
-                logger.warning(
-                    "远程 stats 拿顶层列表失败，fallback lib=%s",
-                    library.id, exc_info=True,
-                )
-                return None
-            folder_count = sum(
-                1 for item in top_level_items
-                if item.get("isdir")
-                and not self._should_skip_entry(item.get("name") or "")
-            )
+            parent_path = self._index_parent_path_for_browse_root(library)
+            folder_count = len([
+                entry for entry in service.list_children(library.id, parent_path, entry_type='dir')
+                if not self._should_skip_entry(entry.name)
+            ])
             total_size = int(service.get_library_size(library.id) or 0)
             self._append_stats_log(
                 library,
@@ -2657,6 +2675,35 @@ class LibraryManager:
             logger.warning("远程 stats 走索引异常，fallback lib=%s",
                            library.id, exc_info=True)
             return None
+
+    def _index_parent_path_for_browse_root(self, library: LibraryDefinition) -> str:
+        """把 browse_root 映射成索引 parent_path；库根对应空字符串。"""
+        root = library.root_path or "/"
+        browse_root = library.browse_root_path or root
+        if library.type == "synology_filestation":
+            normalized_root = self._normalize_remote_path(root)
+            normalized_browse = self._normalize_remote_path(browse_root)
+            if normalized_browse == normalized_root:
+                return ''
+            if self._remote_path_is_within_root(normalized_browse, normalized_root):
+                return str(PurePosixPath(normalized_browse).relative_to(PurePosixPath(normalized_root))).strip('/')
+            return ''
+        normalized_root = os.path.normcase(os.path.abspath(root))
+        normalized_browse = os.path.normcase(os.path.abspath(browse_root))
+        if normalized_browse == normalized_root:
+            return ''
+        if self._local_path_is_within_root(browse_root, root):
+            return os.path.relpath(os.path.abspath(browse_root), os.path.abspath(root)).replace("\\", "/").strip('/')
+        return ''
+
+    def _stats_index_ready(self, library: LibraryDefinition) -> bool:
+        """统计刷新只认 ready 索引，避免无索引时触发磁盘或远程 IO。"""
+        try:
+            from .library_index import get_library_index_service
+            return bool(get_library_index_service().is_ready(library.id))
+        except Exception:
+            logger.warning("统计索引状态检查失败 lib=%s", library.id, exc_info=True)
+            return False
 
     async def list_first_level_directories(
         self,
@@ -4594,6 +4641,24 @@ class LibraryManager:
             # 本地库和远程库统一策略：只在明确 force=True 时才触发扫描，避免启动/页面加载时自动遍历网络驱动器
             should_refresh = force_this_library
             if should_refresh:
+                if not self._stats_index_ready(library):
+                    self._stats_cache[library.id] = {
+                        "library_id": library.id,
+                        "library_name": library.name,
+                        "library_type": library.type,
+                        "status": "idle",
+                        "folder_count": int((cached or {}).get("folder_count", 0) or 0),
+                        "total_size_bytes": int((cached or {}).get("total_size_bytes", 0) or 0),
+                        "total_size_gb": _gb(int((cached or {}).get("total_size_bytes", 0) or 0)),
+                        "health": self._health_for_library(library, float(cfg["health_warning_free_gb"])),
+                        "last_completed_at": (cached or {}).get("last_completed_at"),
+                        "updated_at": time.time(),
+                        "scan_mode": "index_required",
+                        "warning": "索引未就绪，请先重建索引后再刷新统计",
+                    }
+                    self._persist_stats()
+                    self._append_stats_log(library, "WARN", "索引未就绪，跳过刷新统计以避免磁盘 IO")
+                    continue
                 if task is None or task.done():
                     self._stats_cache[library.id] = {
                         "library_id": library.id,
@@ -7406,47 +7471,47 @@ class LibraryManager:
         return await self._remote_batch_delete(library, normalized_paths, confirmed)
 
     def _collect_local_stats(self, library: LibraryDefinition) -> dict[str, Any]:
-        # 只统计顶层目录数量，不做递归 os.walk 大小计算，避免在 SMB 映射盘等慢速路径上阻塞。
-        # 第一梯队接入 2：索引 ready 时 total_size 走 SQL SUM 一次拿出。
+        # 统计只允许走索引。索引未就绪时不做 os.scandir / os.walk，避免慢盘或网络盘 IO。
         indexed = self._collect_local_stats_via_index(library)
         if indexed is not None:
             return indexed
-        target_root = os.path.abspath(library.browse_root_path or library.root_path)
-        if not os.path.exists(target_root):
-            return {
-                "library_id": library.id,
-                "library_name": library.name,
-                "library_type": library.type,
-                "status": "ready",
-                "folder_count": 0,
-                "total_size_bytes": 0,
-                "total_size_gb": 0,
-                "scan_mode": "manual_persisted",
-            }
-        folder_count = 0
-        try:
-            folder_count = sum(1 for e in os.scandir(target_root) if e.is_dir())
-        except OSError:
-            pass
+        self._append_stats_log(library, "WARN", "索引未就绪，跳过库存统计以避免磁盘 IO")
         return {
             "library_id": library.id,
             "library_name": library.name,
             "library_type": library.type,
-            "status": "ready",
-            "folder_count": folder_count,
+            "status": "idle",
+            "folder_count": 0,
             "total_size_bytes": 0,
             "total_size_gb": 0,
-            "scan_mode": "manual_persisted",
+            "scan_mode": "index_required",
+            "warning": "索引未就绪，请先重建索引后再刷新统计",
         }
 
     async def _collect_remote_stats(self, library: LibraryDefinition) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
-        # 第一梯队接入 2：索引 ready 时 size 走 SQL，folder_count 走一次 list_directory。
-        # 跳过逐个顶层目录调 _remote_path_size（原逻辑几十个顶层 × 几秒 = 分钟级）。
+        # 统计只允许走索引。索引未就绪时不调 FileStation list / DirSize，避免远程盘 IO。
         indexed = await self._collect_remote_stats_via_index(library)
         if indexed is not None:
             return indexed
+        self._append_stats_log(library, "WARN", "索引未就绪，跳过远程库存统计以避免群晖 IO")
+        return {
+            "library_id": library.id,
+            "library_name": library.name,
+            "library_type": library.type,
+            "status": "idle",
+            "folder_count": 0,
+            "total_size_bytes": 0,
+            "total_size_gb": 0,
+            "scan_mode": "index_required",
+            "progress_done": 0,
+            "progress_total": 0,
+            "progress_percent": 0.0,
+            "warning_count": 0,
+            "last_error": None,
+            "warning": "索引未就绪，请先重建索引后再刷新统计",
+        }
         client = self.get_cached_synology_client(library.synology)
         start_path = self._normalize_remote_path(library.browse_root_path or library.root_path)
         top_level_items = [

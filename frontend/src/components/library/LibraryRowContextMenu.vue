@@ -24,6 +24,16 @@
         </button>
 
         <button
+          v-if="showView"
+          type="button"
+          class="menu-item"
+          @click="emit('action', 'view')"
+        >
+          <Eye :size="14" :stroke-width="2.2" class="menu-item-icon text-orange-600" />
+          <span>观看</span>
+        </button>
+
+        <button
           v-if="showOpen"
           type="button"
           class="menu-item"
@@ -159,7 +169,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, Copy, ExternalLink, FolderCog, FolderInput, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
+import { Captions, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -167,6 +177,7 @@ const props = defineProps({
   y: { type: Number, default: 0 },
   row: { type: Object, default: null },
   showLocate: { type: Boolean, default: false },
+  showView: { type: Boolean, default: false },
   showOpen: { type: Boolean, default: false },
   showOpenDirect: { type: Boolean, default: false },
   disableRename: { type: Boolean, default: false },
