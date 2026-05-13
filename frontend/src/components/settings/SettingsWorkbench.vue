@@ -199,10 +199,13 @@ const filteredSections = computed(() => {
 }
 
 .sidebar-shell {
+  box-sizing: border-box;
+  width: 100%;
   padding: 14px 12px 12px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
 }
 
 .settings-search {
@@ -242,10 +245,12 @@ const filteredSections = computed(() => {
 
 /* nav-item 对齐库存页 lib-btn-icon-tinted 风：白底 + 图标按 section 染色 + hover 微上抬 */
 .nav-item {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
+  max-width: 100%;
   padding: 9px 10px;
   border-radius: 12px;
   border: 1px solid transparent;
@@ -254,6 +259,7 @@ const filteredSections = computed(() => {
   cursor: pointer;
   text-align: left;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  overflow: hidden;
 }
 
 .nav-item:hover {
@@ -290,6 +296,7 @@ const filteredSections = computed(() => {
 .nav-item-rules       .nav-item-icon { color: #d97706; }
 .nav-item-services    .nav-item-icon { color: #059669; }
 .nav-item-maintenance .nav-item-icon { color: #e11d48; }
+.nav-item-security    .nav-item-icon { color: #2563eb; }
 .nav-item-notification .nav-item-icon { color: #4f46e5; }
 
 .nav-item-body {
@@ -298,6 +305,9 @@ const filteredSections = computed(() => {
 }
 
 .nav-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: #1d1d1f;
   font-size: 13px;
   font-weight: 600;
@@ -319,8 +329,10 @@ const filteredSections = computed(() => {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   height: 18px;
-  padding: 0 7px;
+  max-width: 36px;
+  padding: 0 6px;
   border-radius: 999px;
   font-size: 10px;
   font-weight: 600;
