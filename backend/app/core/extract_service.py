@@ -4035,37 +4035,53 @@ class ExtractService:
         # 这里在主密码循环之前先用 unar 跑一遍密码列表，unar 的 ICU 编码自动探测
         # 能给日文 / 中文 RAR 出干净的 UTF-8 文件名。
         # unar 不可用 / 不识别该 RAR 变体时，自动回退到下面的 7zz 老流程。
-        if (
-            self.config.extract.prefer_unar_for_rar
-            and self._is_rar_archive(archive_info.path)
-            and self._find_unar_executable()
-        ):
-            unar_success, unar_password, unar_reason = await self._try_extract_rar_with_unar(
-                archive_info,
-                output_path,
-                task,
-                unique_passwords,
-                vault_passwords,
-                password_entry_id_map,
-                password_rjcode_map,
-                manual_retry_password_only,
-                password_source_map=password_source_map,
-                rj_passwords=rj_passwords if not manual_retry_password_only else [],
-            )
-            if unar_success:
-                return True, unar_password, ""
-            if unar_reason == "cancelled":
-                return False, None, "cancelled"
-            if unar_reason == "disk_full":
-                return False, None, "disk_full"
-            # unsupported / unar_unavailable / wrong_password → 让 7zz 也跑一遍
-            # 兜底（万一 7zz 能开但 unar 不行；或 unar 错把头加密包的解密失败误
-            # 报成"密码错"，7zz 的 -mcp + 头加密路径可能更稳）
-            await self._cleanup_extract_attempt(output_path)
-            logger.info(
-                "RAR unar fast-path 未成功 (%s)，回退到 7zz 流程: %s",
-                unar_reason, archive_info.path,
-            )
+        is_rar_archive = self._is_rar_archive(archive_info.path)
+        garbled_toc_sample = (
+            self._archive_file_list_garbled_sample(getattr(archive_info, "file_list", None))
+            if is_rar_archive else None
+        )
+        if self.config.extract.prefer_unar_for_rar and is_rar_archive:
+            if self._find_unar_executable():
+                unar_success, unar_password, unar_reason = await self._try_extract_rar_with_unar(
+                    archive_info,
+                    output_path,
+                    task,
+                    unique_passwords,
+                    vault_passwords,
+                    password_entry_id_map,
+                    password_rjcode_map,
+                    manual_retry_password_only,
+                    password_source_map=password_source_map,
+                    rj_passwords=rj_passwords if not manual_retry_password_only else [],
+                )
+                if unar_success:
+                    return True, unar_password, ""
+                if unar_reason == "cancelled":
+                    return False, None, "cancelled"
+                if unar_reason == "disk_full":
+                    return False, None, "disk_full"
+                if unar_reason == "wrong_password":
+                    return False, None, "wrong_password"
+                if garbled_toc_sample:
+                    logger.error(
+                        "RAR 目录清单已疑似乱码且 unar 未能处理，拒绝回退 7zz 以免产出乱码文件: archive=%s sample=%s reason=%s",
+                        archive_info.path,
+                        garbled_toc_sample,
+                        unar_reason,
+                    )
+                    return False, None, "garbled_filename"
+                await self._cleanup_extract_attempt(output_path)
+                logger.info(
+                    "RAR unar fast-path 未成功 (%s)，回退到 7zz 流程: %s",
+                    unar_reason, archive_info.path,
+                )
+            elif garbled_toc_sample:
+                logger.error(
+                    "RAR 目录清单已疑似乱码但运行环境缺少 unar，拒绝使用 7zz 解压: archive=%s sample=%s",
+                    archive_info.path,
+                    garbled_toc_sample,
+                )
+                return False, None, "garbled_filename"
 
         # #3 负缓存：同一压缩包同一密码近期失败过，直接跳过；指纹拿不到就不缓存。
         archive_fingerprint = self._archive_fingerprint(archive_info.path)
@@ -5166,27 +5182,34 @@ class ExtractService:
           2. 小条目 t 探测（有 <=5MB 的条目但无已知后缀时）：运行单文件 CRC。
           3. 流式探测（没 file_list 的头加密包兜底）：注意对 store+AES 可能漏判。
         """
-        magic_entries = self._pick_magic_entries(file_list)
-        for magic_entry in magic_entries:
+        is_rar = self._is_rar_archive(archive_path)
+        if not is_rar:
+            magic_entries = self._pick_magic_entries(file_list)
+            for magic_entry in magic_entries:
+                logger.debug(
+                    "密码探测（magic）选择条目: %s (%s bytes)",
+                    magic_entry.get('name'),
+                    magic_entry.get('size'),
+                )
+                result = await self._probe_by_magic(
+                    archive_path,
+                    password,
+                    magic_entry,
+                    timeout=self.PROBE_MAGIC_TIMEOUT,
+                    task=task,
+                )
+                if result != 'unknown':
+                    return result
+            if magic_entries:
+                logger.debug(
+                    "魔数探测对 %s 的 %s 个条目均无法定性，回退到小条目 t 探测",
+                    os.path.basename(archive_path),
+                    len(magic_entries),
+                )
+        else:
             logger.debug(
-                "密码探测（magic）选择条目: %s (%s bytes)",
-                magic_entry.get('name'),
-                magic_entry.get('size'),
-            )
-            result = await self._probe_by_magic(
-                archive_path,
-                password,
-                magic_entry,
-                timeout=self.PROBE_MAGIC_TIMEOUT,
-                task=task,
-            )
-            if result != 'unknown':
-                return result
-        if magic_entries:
-            logger.debug(
-                "魔数探测对 %s 的 %s 个条目均无法定性，回退到小条目 t 探测",
+                "RAR 密码探测跳过 magic/流式解压探测，避免错密码垃圾流误判: %s",
                 os.path.basename(archive_path),
-                len(magic_entries),
             )
 
         entry = self._pick_probe_entry(file_list)
@@ -5218,6 +5241,8 @@ class ExtractService:
             )
             if result != 'unknown':
                 return result
+        if is_rar:
+            return 'unknown'
         # ---- 以下是原有流式探测逻辑（无 file_list 时的兜底） ----
         cmd = [
             self.seven_zip, 'x', '-so', '-y',
@@ -5822,6 +5847,26 @@ class ExtractService:
         if names:
             best = max(best, self._garbled_text_score("\n".join(names)))
         return best
+
+    def _archive_file_list_garbled_sample(self, file_list: Optional[List[Dict]]) -> Optional[str]:
+        """从压缩包目录清单里找疑似乱码条目；只看文件名，不触碰文件内容。"""
+        if not file_list:
+            return None
+        names: List[str] = []
+        for item in file_list[:500]:
+            try:
+                name = str(item.get("name") or "")
+            except Exception:
+                continue
+            if not name:
+                continue
+            if self._has_garbled_text(name):
+                return name
+            names.append(name)
+        if not names:
+            return None
+        combined = "\n".join(names)
+        return names[0] if self._has_garbled_text(combined) else None
 
     async def _reject_if_garbled_after_extract(
         self,
