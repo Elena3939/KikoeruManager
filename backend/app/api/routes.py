@@ -2605,6 +2605,14 @@ class PasswordListResponse(BaseModel):
 
 class ConflictRetryRequest(BaseModel):
     password: Optional[str] = None
+    filename_encoding: Optional[str] = None
+    ignore_garbled: bool = False
+
+
+class ConflictFilenamePreviewRequest(BaseModel):
+    filename_encoding: Optional[str] = None
+    password: Optional[str] = None
+    limit: int = 80
 
 @app.get("/api/passwords", response_model=PasswordListResponse)
 async def get_passwords(
@@ -3601,6 +3609,39 @@ def get_conflicts_count(db: Session = Depends(get_db)):
         logger.error("获取问题作品数量失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取问题作品数量失败: {exc}")
 
+@app.post("/api/conflicts/{conflict_id}/filename-preview")
+async def preview_conflict_archive_filenames(conflict_id: str, payload: Optional[ConflictFilenamePreviewRequest] = None):
+    """按指定文件名编码预览压缩包目录，用于乱码失败重试前确认。"""
+    from ..models.database import ConflictWork, get_db
+    from ..core.extract_service import ExtractService
+
+    db = next(get_db())
+    try:
+        conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+        if not conflict:
+            raise HTTPException(status_code=404, detail="问题作品不存在")
+        if conflict.conflict_type not in {"EXTRACT_FAILED", "PROCESS_FAILED"}:
+            raise HTTPException(status_code=400, detail="只有失败问题项支持文件名预览")
+        source_path = str(conflict.new_path or "").strip()
+        if not source_path or not os.path.exists(source_path):
+            raise HTTPException(status_code=404, detail="待预览的源文件不存在")
+        request_payload = payload or ConflictFilenamePreviewRequest()
+        service = ExtractService()
+        preview = await service.preview_archive_filenames_with_encoding(
+            source_path,
+            filename_encoding=request_payload.filename_encoding,
+            password=request_payload.password or "",
+            limit=request_payload.limit,
+        )
+        return {"success": True, "preview": preview}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("预览压缩包文件名失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"预览文件名失败: {exc}")
+    finally:
+        db.close()
+
 @app.post("/api/conflicts/{conflict_id}/retry")
 async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[ConflictRetryRequest] = None):
     """重试问题作品中的失败项。"""
@@ -3624,6 +3665,8 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             raise HTTPException(status_code=404, detail="待重试的源文件不存在")
 
         specified_password = normalize_password_value(payload.password if payload else None)
+        specified_filename_encoding = str((payload.filename_encoding if payload else None) or "").strip()
+        ignore_garbled = bool(payload.ignore_garbled) if payload else False
 
         engine = get_task_engine()
         normalized_source_path = os.path.normcase(os.path.normpath(source_path))
@@ -3669,6 +3712,10 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
                 existing_task.task_metadata["manual_retry_password"] = specified_password
                 existing_task.task_metadata["manual_retry_password_only"] = True
                 existing_task.task_metadata["manual_retry_password_requested"] = True
+            if specified_filename_encoding:
+                existing_task.task_metadata["manual_retry_filename_encoding"] = specified_filename_encoding
+            if ignore_garbled:
+                existing_task.task_metadata["manual_retry_ignore_garbled"] = True
             if conflict.task_id:
                 existing_task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
             db.commit()
@@ -3702,6 +3749,10 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             task.task_metadata["manual_retry_password"] = specified_password
             task.task_metadata["manual_retry_password_only"] = True
             task.task_metadata["manual_retry_password_requested"] = True
+        if specified_filename_encoding:
+            task.task_metadata["manual_retry_filename_encoding"] = specified_filename_encoding
+        if ignore_garbled:
+            task.task_metadata["manual_retry_ignore_garbled"] = True
         if conflict.task_id:
             task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
         if conflict.rjcode:

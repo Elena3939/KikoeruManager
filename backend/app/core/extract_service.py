@@ -23,7 +23,7 @@ import threading
 import filetype
 import tempfile
 from collections import OrderedDict
-from typing import Optional, List, Dict, Callable, Tuple, Union
+from typing import Optional, List, Dict, Callable, Tuple, Union, Any
 from pathlib import Path
 import logging
 import hashlib
@@ -230,6 +230,7 @@ class ExtractService:
         self,
         archive_path: Optional[str] = None,
         archive_info=None,
+        filename_encoding: Optional[Union[str, int]] = None,
     ) -> list:
         """返回 ZIP 文件名代码页参数。
 
@@ -269,7 +270,9 @@ class ExtractService:
         if not is_zip_like:
             return []
 
-        cp = 0
+        cp = self._filename_encoding_to_codepage(filename_encoding)
+        if cp > 0:
+            return [f"-mcp={cp}"]
         enc = ""
         if archive_path:
             # ZIP 的真实文件名编码在中央目录里。7z stdout 的编码检测只能解释
@@ -290,6 +293,28 @@ class ExtractService:
         if cp <= 0:
             return []
         return [f"-mcp={cp}"]
+
+    @staticmethod
+    def _filename_encoding_to_codepage(value: Optional[Union[str, int]]) -> int:
+        """把前端/配置传来的 ZIP 文件名编码转换为 7zz -mcp 代码页。"""
+        if value is None:
+            return 0
+        raw = str(value).strip().lower()
+        if not raw or raw in {"auto", "default", "0", "none"}:
+            return 0
+        if raw.isdigit():
+            return int(raw)
+        return int(_ENCODING_TO_CP.get(raw.replace("_", "-"), 0) or _ENCODING_TO_CP.get(raw, 0) or 0)
+
+    def _manual_filename_encoding_from_task(self, task: Optional[Task]) -> Optional[str]:
+        metadata = dict(getattr(task, "task_metadata", None) or {})
+        value = (
+            metadata.get("manual_retry_filename_encoding")
+            or metadata.get("filename_encoding")
+            or metadata.get("zip_filename_encoding")
+        )
+        normalized = str(value or "").strip()
+        return normalized or None
 
     @property
     def _mcp_args(self) -> list:
@@ -697,6 +722,8 @@ class ExtractService:
             (task.task_metadata or {}).get("manual_retry_password")
         )
         manual_retry_password_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
+        manual_filename_encoding = self._manual_filename_encoding_from_task(task)
+        manual_ignore_garbled = bool((task.task_metadata or {}).get("manual_retry_ignore_garbled"))
 
         password_candidates: List[Dict[str, Optional[str]]] = []
         hinted_rjcode = None
@@ -722,7 +749,7 @@ class ExtractService:
         # 4. 获取压缩包内文件列表
         self._set_extract_meta(task, extract_stage="list_archive")
         task.update_progress(20, "读取压缩包内容")
-        archive_info = await self._get_archive_info(archive_path, password_candidates=password_candidates)
+        archive_info = await self._get_archive_info(archive_path, password_candidates=password_candidates, task=task)
         archive_info_from_listing = archive_info is not None
         if not archive_info:
             logger.warning("预读取压缩包内容失败，回退为直接尝试解压: %s", archive_path)
@@ -854,66 +881,16 @@ class ExtractService:
             # 前面的 unar 修复阶段用采样保证多密码尝试轻量；这里仅跑一次全树短路扫描。
             self._set_extract_meta(task, extract_stage="filename_encoding_guard")
             task.update_progress(97, "检查文件名编码")
-            garbled_sample = self._find_garbled_filename_sample(output_path, max_names=None)
-            if garbled_sample:
-                # 兜底反解：主路径 7zz 修复钩子已跑过一次，但嵌套解压 / -mcp silently 失效
-                # 等场景可能让乱码漏到这里。在 raise 之前再跑一次 _repair_mojibake_filenames_in_place
-                # 反解 mojibake 后重新检测；反解修好就放行，避免群晖原生能解的 SJIS ZIP 被误拒。
-                guard_score_before = self._filename_garbled_score(output_path, max_names=None)
-                logger.warning(
-                    "[filename_guard] 兜底阶段检测到疑似乱码: archive=%s output=%s sample=%s score=%.1f，尝试反解修复…",
-                    archive_path,
-                    output_path,
-                    garbled_sample,
-                    guard_score_before,
-                )
-                try:
-                    guard_repaired = await asyncio.to_thread(
-                        self._repair_mojibake_filenames_in_place,
-                        output_path,
-                    )
-                except Exception as exc:
-                    guard_repaired = 0
-                    logger.warning("[filename_guard] 反解过程异常（忽略，继续判定）: %s", exc)
-                if guard_repaired:
-                    # 反解修过名，重新扫一遍。仍乱码才 raise，否则放行。
-                    garbled_sample_after = self._find_garbled_filename_sample(output_path, max_names=None)
-                    if garbled_sample_after is None:
-                        logger.info(
-                            "[filename_guard] 反解后乱码消失，放行: archive=%s repaired=%s",
-                            archive_path,
-                            guard_repaired,
-                        )
-                        garbled_sample = None
-                    else:
-                        guard_score_after = self._filename_garbled_score(output_path, max_names=None)
-                        logger.error(
-                            "[filename_guard] 反解 %s 条后仍有乱码: archive=%s output=%s sample=%s score_before=%.1f score_after=%.1f",
-                            guard_repaired,
-                            archive_path,
-                            output_path,
-                            garbled_sample_after,
-                            guard_score_before,
-                            guard_score_after,
-                        )
-                        garbled_sample = garbled_sample_after
-                else:
-                    logger.error(
-                        "[filename_guard] 反解未命中任何文件名（mojibake codec 列表全不匹配），判定乱码: "
-                        "archive=%s output=%s sample=%s score=%.1f",
-                        archive_path,
-                        output_path,
-                        garbled_sample,
-                        guard_score_before,
-                    )
-            if garbled_sample:
-                final_garbled_score = self._filename_garbled_score(output_path, max_names=None)
-                self._set_extract_meta(
-                    task,
-                    extract_failure_reason="garbled_filename",
-                    garbled_filename_sample=garbled_sample,
-                    garbled_filename_score=final_garbled_score,
-                )
+            if await self._reject_if_garbled_after_extract(
+                archive_path,
+                output_path,
+                cleanup=lambda: self._cleanup_extract_path(output_path),
+                context="final_guard",
+                task=task,
+                ignore_garbled=bool((task.task_metadata or {}).get("manual_retry_ignore_garbled")),
+            ):
+                garbled_sample = str((task.task_metadata or {}).get("garbled_filename_sample") or "")
+                final_garbled_score = float((task.task_metadata or {}).get("garbled_filename_score_after") or 0.0)
                 task.update_progress(
                     97,
                     f"检测到疑似乱码文件名: {garbled_sample}",
@@ -1848,6 +1825,7 @@ class ExtractService:
                         output_path,
                         cleanup=lambda: asyncio.to_thread(clean_output),
                         context="嵌套压缩包 7zz",
+                        task=None,
                     ):
                         return False, None
                     logger.info("嵌套压缩包解压成功，密码: %s", password or "无密码")
@@ -3903,6 +3881,8 @@ class ExtractService:
         use_cache=True 时优先复用进程内 list 缓存：消除"infer_rjcode → extract"
         这种典型路径上的重复 `7zz l`。分卷 remap 后路径已变，新路径不会误命中老 key。
         """
+        if self._manual_filename_encoding_from_task(task):
+            use_cache = False
         if use_cache:
             cached = self._load_cached_archive_info(archive_path)
             if cached is not None:
@@ -3962,7 +3942,12 @@ class ExtractService:
                 unique_passwords.append(pwd)
 
         for password in unique_passwords:
-            file_list = await self._list_archive_contents(archive_path, password, task=task)
+            file_list = await self._list_archive_contents(
+                archive_path,
+                password,
+                task=task,
+                filename_encoding=self._manual_filename_encoding_from_task(task),
+            )
             if file_list is not None:
                 # 判断密码来源
                 if manual_only_passwords:
@@ -4027,6 +4012,7 @@ class ExtractService:
         archive_path: str,
         password: str = "",
         task: Optional[Task] = None,
+        filename_encoding: Optional[Union[str, int]] = None,
     ) -> Optional[List[Dict]]:
         """列出压缩包内容，自动检测最佳编码
 
@@ -4034,7 +4020,7 @@ class ExtractService:
         asyncio.Task.cancel() 都会立刻 kill 子进程。
         """
         password_args = [f'-p{password}'] if password else []
-        mcp_args = self._get_mcp_args(archive_path)
+        mcp_args = self._get_mcp_args(archive_path, filename_encoding=filename_encoding)
         commands = [
             [self.seven_zip, 'l', '-ba', *mcp_args, *password_args, archive_path],
             [self.seven_zip, 'l', '-slt', *mcp_args, *password_args, archive_path],
@@ -4361,7 +4347,7 @@ class ExtractService:
                 '-bsp1', # 启用进度输出
                 '-bso1', # 将进度输出到 stdout
                 *self._get_seven_zip_mmt_args(),  # 指定 7z 多线程（默认 -mmt=on）
-                *self._get_mcp_args(archive_info.path, archive_info),  # ZIP 文件名编码（仅 .zip 生效）
+                *self._get_mcp_args(archive_info.path, archive_info, filename_encoding=manual_filename_encoding),  # ZIP 文件名编码（仅 .zip 生效）
                 *password_args,
                 archive_info.path
             ]
@@ -4537,6 +4523,8 @@ class ExtractService:
                         output_path,
                         cleanup=lambda: self._cleanup_extract_attempt(output_path),
                         context="7zz",
+                        task=task,
+                        ignore_garbled=manual_ignore_garbled,
                     ):
                         return False, None, "garbled_filename"
                     if not await self._verify_extraction(archive_info, output_path):
@@ -6133,16 +6121,16 @@ class ExtractService:
     _CJK_MOJIBAKE_CHARS: frozenset = frozenset(
         # 经典旧集合
         "僠儍僾僞乕乽乿偺偟偱偨傜傪傞傝傑丄丒丅"
-        "攝怣彈巕鍋靛伃澹掓儭宀烘湷浜鎮囧仧哄亰婂仾"
+        "怣彈巕靛伃澹掓儭宀烘湷囧仧哄亰婂仾"
         "鍍儮儔儕儖儞儊儂儚儛"
         # 新增：SJIS hiragana 错读 cp936 的高频处
-        "偵偭偪壒惡岺朳亀悇偟偺偊偶傷偈傂傆傃傜偪傣"
+        "偭偪壒惡岺朳悇偟偺偊偶傷偈傂傆傃傜偪傣"
         "偐偑偒偓偔偗偙偛偞偠偢偣偤偦偧偩偫偬偯偰偶偹偼偽"
         # 新增：SJIS katakana 错读的高频处
         "僀僂僄僅僈僉僋僌僎僐僒僔僖僘僚僛僜僝僡僢僤僥僨僩僪僫僬僭僮僯僰僱僲僳僴僵僶僷僸僺僻僽僾僿"
         "儀儁儂儃億儅儆儇儈儉儊儋儌儍儎儏儐儑儒儓儔儕儖儗儘儚儛儜儝儞償"
         # 新增：用户日志中出现的片段
-        "烘湷浜鎮囧仧哄亰婂仾鏀濇綀宸曞嗗兗峰熷伜婂仾"
+        "烘湷囧仧哄亰婂仾鏀濇綀宸曞嗗兗峰熷伜婂仾"
     )
 
     # 文件名乱码评分缓存：同一 name 在一次解压中经常被评分 N 次（find_sample/repair/filename_score）。
@@ -6151,8 +6139,50 @@ class ExtractService:
     _SCORE_CACHE_MAX: int = 4096
 
     @classmethod
+    def _filename_text_stats(cls, text: str) -> Dict[str, float]:
+        total_nonascii = 0
+        kana = 0
+        cjk = 0
+        hangul = 0
+        marker = 0
+        for ch in text or "":
+            cp = ord(ch)
+            if cp <= 127:
+                continue
+            total_nonascii += 1
+            if 0x3040 <= cp <= 0x30FF:
+                kana += 1
+            elif 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
+                cjk += 1
+                if ch in cls._CJK_MOJIBAKE_CHARS:
+                    marker += 1
+            elif 0xAC00 <= cp <= 0xD7AF:
+                hangul += 1
+        return {
+            "total_nonascii": float(total_nonascii),
+            "kana": float(kana),
+            "cjk": float(cjk),
+            "hangul": float(hangul),
+            "marker": float(marker),
+            "marker_ratio": marker / max(total_nonascii, 1),
+            "kana_ratio": kana / max(total_nonascii, 1),
+        }
+
+    @classmethod
     def _mojibake_marker_count(cls, text: str) -> int:
         return sum(1 for ch in text if ch in cls._CJK_MOJIBAKE_CHARS)
+
+    @classmethod
+    def _mojibake_markers(cls, text: str, limit: int = 12) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for ch in text or "":
+            if ch in cls._CJK_MOJIBAKE_CHARS and ch not in seen:
+                seen.add(ch)
+                out.append(ch)
+                if len(out) >= limit:
+                    break
+        return out
 
     @staticmethod
     def _has_hard_garbled_signal(text: str) -> bool:
@@ -6175,31 +6205,38 @@ class ExtractService:
         if not text:
             return False
         original_score = cls._garbled_text_score(text)
+        original_stats = cls._filename_text_stats(text)
         if original_score < 15.0 and cls._mojibake_marker_count(text) < 3:
             return False
+
+        def accepts(candidate: str) -> bool:
+            if not candidate or candidate == text:
+                return False
+            if "/" in candidate or "\\" in candidate or "\x00" in candidate:
+                return False
+            candidate_score = cls._garbled_text_score(candidate)
+            if candidate_score >= 30.0 or not cls._looks_japanese_filename(candidate):
+                return False
+            candidate_stats = cls._filename_text_stats(candidate)
+            kana_ratio_delta = candidate_stats["kana_ratio"] - original_stats["kana_ratio"]
+            score_delta = original_score - candidate_score
+            return kana_ratio_delta >= 0.20 or score_delta >= 25.0
+
         for wrong_codec, correct_codec in cls._MOJIBAKE_CODEC_PAIRS:
             try:
                 candidate = text.encode(wrong_codec).decode(correct_codec)
             except (UnicodeError, LookupError):
                 continue
-            if not candidate or candidate == text:
-                continue
-            if "/" in candidate or "\\" in candidate or "\x00" in candidate:
-                continue
-            if cls._looks_japanese_filename(candidate) and cls._garbled_text_score(candidate) < 30.0:
+            if accepts(candidate):
                 return True
         for wrong_codec, correct_codec in cls._MOJIBAKE_CODEC_PAIRS:
             try:
                 candidate = text.encode(wrong_codec, errors='ignore').decode(correct_codec, errors='ignore')
             except LookupError:
                 continue
-            if not candidate or candidate == text:
-                continue
-            if "/" in candidate or "\\" in candidate or "\x00" in candidate:
-                continue
             if len(candidate) < len(text) * 0.4:
                 continue
-            if cls._looks_japanese_filename(candidate) and cls._garbled_text_score(candidate) < 30.0:
+            if accepts(candidate):
                 return True
         outer_pairs = (("gbk", "utf-8"), ("cp936", "utf-8"))
         inner_pairs = (("gbk", "cp932"), ("cp936", "cp932"), ("gbk", "shift_jis"), ("cp936", "shift_jis"))
@@ -6218,13 +6255,9 @@ class ExtractService:
                         candidate = intermediate.encode(inner_wrong, errors='ignore').decode(inner_correct, errors='ignore')
                     except (UnicodeError, LookupError):
                         continue
-                if not candidate or candidate == text or candidate == intermediate:
-                    continue
-                if "/" in candidate or "\\" in candidate or "\x00" in candidate:
-                    continue
                 if len(candidate) < len(text) * 0.4:
                     continue
-                if cls._looks_japanese_filename(candidate) and cls._garbled_text_score(candidate) < 30.0:
+                if candidate != intermediate and accepts(candidate):
                     return True
         return False
 
@@ -6319,6 +6352,9 @@ class ExtractService:
             return False
         if cls._has_hard_garbled_signal(text):
             return True
+        stats = cls._filename_text_stats(text)
+        if stats["kana"] >= 1 and stats["marker_ratio"] < 0.40:
+            return False
         # 纯 CJK 的“像乱码”只能算弱证据。正常日文汉字文件名也可能命中
         # `浜/鎮/鍋` 这类 marker；必须能按常见错编链路反解出假名才拦截。
         return cls._has_reversible_mojibake_signal(text)
@@ -6334,53 +6370,80 @@ class ExtractService:
         max_names: Optional[int] = 240,
     ) -> Optional[str]:
         """返回一个疑似乱码文件名样本；max_names=None 表示全树短路扫描。"""
-        names: List[str] = []
+        diagnostic = self._filename_garbled_diagnostics(
+            directory,
+            max_names=max_names,
+            top_limit=1,
+            short_circuit=True,
+        )
+        return str(diagnostic.get("sample") or "") or None
+
+    def _filename_garbled_diagnostics(
+        self,
+        directory: str,
+        *,
+        max_names: Optional[int] = 240,
+        top_limit: int = 8,
+        short_circuit: bool = False,
+    ) -> Dict[str, Any]:
+        """单次扫描目录树，返回乱码诊断。只按单文件名判断，不再拼接全量文件名放大误判。"""
+        total = 0
+        flagged = 0
+        sample = ""
+        best_score = 0.0
+        top_samples: List[Dict[str, Any]] = []
         stack = [directory]
-        while stack and (max_names is None or len(names) < max_names):
+        while stack and (max_names is None or total < max_names):
             current = stack.pop()
             try:
                 with os.scandir(current) as entries:
                     for entry in entries:
                         name = entry.name
-                        if self._has_garbled_text(name):
-                            return name
-                        names.append(name)
+                        total += 1
+                        score = self._garbled_text_score(name)
+                        is_garbled = self._has_garbled_text(name)
+                        best_score = max(best_score, score)
+                        if score > 0 or is_garbled:
+                            top_samples.append({
+                                "name": name,
+                                "score": round(score, 1),
+                                "markers": self._mojibake_markers(name),
+                                "garbled": bool(is_garbled),
+                            })
+                            top_samples.sort(key=lambda item: (bool(item.get("garbled")), float(item.get("score") or 0)), reverse=True)
+                            if len(top_samples) > top_limit:
+                                top_samples.pop()
+                        if is_garbled:
+                            flagged += 1
+                            if not sample:
+                                sample = name
+                            if short_circuit:
+                                return {
+                                    "sample": sample,
+                                    "score": round(best_score, 1),
+                                    "total_names": total,
+                                    "garbled_count": flagged,
+                                    "garbled_ratio": round(flagged / max(total, 1), 4),
+                                    "top_samples": top_samples,
+                                }
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(entry.path)
-                        if max_names is not None and len(names) >= max_names:
+                        if max_names is not None and total >= max_names:
                             break
             except OSError:
                 continue
-        if not names:
-            return None
-        for name in names:
-            if self._has_garbled_text(name):
-                return name
-        combined = "\n".join(names)
-        return names[0] if self._has_garbled_text(combined) else None
+        return {
+            "sample": sample or None,
+            "score": round(best_score, 1),
+            "total_names": total,
+            "garbled_count": flagged,
+            "garbled_ratio": round(flagged / max(total, 1), 4),
+            "top_samples": top_samples,
+        }
 
     def _filename_garbled_score(self, directory: str, *, max_names: Optional[int] = 240) -> float:
         """返回目录树文件名最高乱码评分。"""
-        best = 0.0
-        names: List[str] = []
-        stack = [directory]
-        while stack and (max_names is None or len(names) < max_names):
-            current = stack.pop()
-            try:
-                with os.scandir(current) as entries:
-                    for entry in entries:
-                        name = entry.name
-                        names.append(name)
-                        best = max(best, self._garbled_text_score(name))
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
-                        if max_names is not None and len(names) >= max_names:
-                            break
-            except OSError:
-                continue
-        if names:
-            best = max(best, self._garbled_text_score("\n".join(names)))
-        return best
+        return float(self._filename_garbled_diagnostics(directory, max_names=max_names, top_limit=1).get("score") or 0.0)
 
     # mojibake 反解 codec_pair：(错误编码 wrong, 真实编码 correct)。
     # 顺序按"日文 RAR / ZIP 最常踩的 mojibake 类型"排，命中早可短路。
@@ -6586,7 +6649,6 @@ class ExtractService:
         """从压缩包目录清单里找疑似乱码条目；只看文件名，不触碰文件内容。"""
         if not file_list:
             return None
-        names: List[str] = []
         for item in file_list[:500]:
             try:
                 name = str(item.get("name") or "")
@@ -6594,13 +6656,47 @@ class ExtractService:
                 continue
             if not name:
                 continue
-            if self._has_garbled_text(name):
-                return name
-            names.append(name)
-        if not names:
-            return None
-        combined = "\n".join(names)
-        return names[0] if self._has_garbled_text(combined) else None
+            for part in str(name).replace("\\", "/").split("/"):
+                if part and self._has_garbled_text(part):
+                    return name
+        return None
+
+    async def preview_archive_filenames_with_encoding(
+        self,
+        archive_path: str,
+        *,
+        filename_encoding: Optional[Union[str, int]] = None,
+        password: str = "",
+        limit: int = 80,
+    ) -> Dict[str, Any]:
+        """按指定 ZIP 文件名编码读取目录清单，用于问题作品页重试前预览。"""
+        normalized_path = str(archive_path or "").strip()
+        if not normalized_path or not os.path.exists(normalized_path):
+            raise FileNotFoundError("压缩包不存在")
+        file_list = await self._list_archive_contents(
+            normalized_path,
+            password=normalize_password_value(password) if password else "",
+            filename_encoding=filename_encoding,
+        )
+        entries = list(file_list or [])[: max(1, min(int(limit or 80), 300))]
+        names = [str(item.get("name") or "") for item in entries if str(item.get("name") or "")]
+        diagnostics = []
+        for name in names[:80]:
+            diagnostics.append({
+                "name": name,
+                "score": round(self._garbled_text_score(name), 1),
+                "markers": self._mojibake_markers(name),
+                "garbled": self._has_garbled_text(name),
+            })
+        return {
+            "encoding": str(filename_encoding or "auto"),
+            "codepage": self._filename_encoding_to_codepage(filename_encoding),
+            "file_count": len(file_list or []),
+            "items": entries,
+            "diagnostics": diagnostics,
+            "garbled_sample": next((item["name"] for item in diagnostics if item.get("garbled")), None),
+            "max_score": max([float(item.get("score") or 0) for item in diagnostics] or [0.0]),
+        }
 
     async def _reject_if_garbled_after_extract(
         self,
@@ -6609,21 +6705,26 @@ class ExtractService:
         *,
         cleanup,
         context: str,
+        task: Optional[Task] = None,
+        ignore_garbled: bool = False,
     ) -> bool:
         """解压成功后检查文件名乱码；先尝试反解修复，仍乱码才清理并返回 True。"""
         if not self._needs_filename_garbled_guard(archive_path):
             return False
-        sample = self._find_garbled_filename_sample(output_path, max_names=None)
-        if sample is None:
+        diagnostics_before = self._filename_garbled_diagnostics(output_path, max_names=None)
+        sample = str(diagnostics_before.get("sample") or "")
+        if not sample:
             return False
 
-        score_before = self._filename_garbled_score(output_path, max_names=None)
+        score_before = float(diagnostics_before.get("score") or 0.0)
         logger.warning(
-            "%s 解压后检测到疑似乱码文件名，尝试反解修复: archive=%s sample=%s score=%.1f",
+            "[garbled_guard] %s 解压后检测到疑似乱码文件名，尝试反解修复: archive=%s sample=%s score=%.1f flagged=%s/%s",
             context,
             archive_path,
             sample,
             score_before,
+            diagnostics_before.get("garbled_count"),
+            diagnostics_before.get("total_names"),
         )
         try:
             repaired_count = await asyncio.to_thread(
@@ -6633,27 +6734,45 @@ class ExtractService:
         except Exception as exc:
             repaired_count = 0
             logger.warning(
-                "%s 文件名反乱码修复异常，继续按原样复检: archive=%s error=%s",
+                "[garbled_guard] %s 文件名反乱码修复异常，继续按原样复检: archive=%s error=%s",
                 context,
                 archive_path,
                 exc,
             )
-        if repaired_count:
-            sample_after = self._find_garbled_filename_sample(output_path, max_names=None)
-            score_after = self._filename_garbled_score(output_path, max_names=None)
-            if sample_after is None:
+        diagnostics_after = self._filename_garbled_diagnostics(output_path, max_names=None)
+        sample_after = str(diagnostics_after.get("sample") or "")
+        score_after = float(diagnostics_after.get("score") or 0.0)
+        if task is not None:
+            self._set_extract_meta(
+                task,
+                extract_failure_reason="garbled_filename" if sample_after else (task.task_metadata or {}).get("extract_failure_reason"),
+                garbled_filename_sample=sample_after or sample,
+                garbled_filename_score_before=score_before,
+                garbled_filename_score_after=score_after,
+                garbled_filename_score=score_after,
+                garbled_filename_repaired_count=repaired_count,
+                garbled_filename_codec_pairs_tried=len(self._MOJIBAKE_CODEC_PAIRS),
+                garbled_filename_guard_origin=context,
+                garbled_filename_top_samples=diagnostics_after.get("top_samples") or diagnostics_before.get("top_samples") or [],
+                garbled_filename_total_names=diagnostics_after.get("total_names"),
+                garbled_filename_garbled_count=diagnostics_after.get("garbled_count"),
+                garbled_filename_garbled_ratio=diagnostics_after.get("garbled_ratio"),
+            )
+        if not sample_after:
+            if repaired_count:
                 logger.info(
-                    "%s 文件名反乱码修复完成，复检通过: archive=%s repaired=%s score_before=%.1f score_after=%.1f",
+                    "[garbled_guard] %s 文件名反乱码修复完成，复检通过: archive=%s repaired=%s score_before=%.1f score_after=%.1f",
                     context,
                     archive_path,
                     repaired_count,
                     score_before,
                     score_after,
                 )
-                return False
-            sample = sample_after
+            return False
+        sample = sample_after
+        if repaired_count:
             logger.warning(
-                "%s 文件名反乱码修复 %s 条后仍疑似乱码: archive=%s sample=%s score_before=%.1f score_after=%.1f",
+                "[garbled_guard] %s 文件名反乱码修复 %s 条后仍疑似乱码: archive=%s sample=%s score_before=%.1f score_after=%.1f",
                 context,
                 repaired_count,
                 archive_path,
@@ -6663,19 +6782,37 @@ class ExtractService:
             )
         else:
             logger.warning(
-                "%s 文件名反乱码修复未命中可逆 mojibake，继续按评分结果阻断: archive=%s sample=%s score=%.1f",
+                "[garbled_guard] %s 文件名反乱码修复未命中可逆 mojibake，继续按评分结果阻断: archive=%s sample=%s score=%.1f",
                 context,
                 archive_path,
                 sample,
                 score_before,
             )
 
+        if ignore_garbled or bool(getattr(self.config.extract, "bypass_filename_garbled_check", False)):
+            if task is not None:
+                self._set_extract_meta(
+                    task,
+                    garbled_filename_bypassed=True,
+                    garbled_filename_bypass_origin="task_retry" if ignore_garbled else "global_config",
+                    garbled_filename_bypassed_at=datetime.now().isoformat(),
+                )
+            logger.warning(
+                "[garbled_guard] %s 已按显式 bypass 放行疑似乱码文件名: archive=%s sample=%s score=%.1f",
+                context,
+                archive_path,
+                sample,
+                score_after,
+            )
+            return False
+
         await cleanup()
         logger.error(
-            "%s 解压后检测到疑似乱码文件名，已清理产物并阻止继续入库: archive=%s sample=%s",
+            "[garbled_guard] %s 解压后检测到疑似乱码文件名，已清理产物并阻止继续入库: archive=%s sample=%s score=%.1f",
             context,
             archive_path,
             sample,
+            score_after,
         )
         return True
 

@@ -132,6 +132,8 @@ class ExtractConfig(BaseModel):
     # unar 自带 ICU 文件名编码自动探测，对日文 / 中文 RAR 友好；unar 不可用或不识别
     # 该 RAR 变体时会自动回退到原 7zz 流程，所以打开是安全的。
     prefer_unar_for_rar: bool = True
+    # 文件名乱码 guard 的全局逃生开关。默认关闭；开启后只记录诊断，不阻断入库。
+    bypass_filename_garbled_check: bool = False
 
 class FilterRule(BaseModel):
     """过滤规则"""
