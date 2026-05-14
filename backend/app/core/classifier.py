@@ -12,6 +12,7 @@ from ..models.database import LibrarySnapshot, ConflictWork, get_db
 from ..core.task_engine import Task
 from ..core.library_manager import get_library_manager
 from ..core.folder_compare_service import get_folder_compare_service
+from ..core.json_safety import safe_json_value, sqlite_safe_text
 
 logger = logging.getLogger(__name__)
 
@@ -742,26 +743,33 @@ class SmartClassifier:
             # metadata['source_missing'] / 'source_missing_path' 字段。
             # 经全局 grep 确认这两个 key 在前后端 0 处读取（死字段），删除以省掉
             # EXTRACT_FAILED / PROCESS_FAILED 路径上的额外远程 stat 开销。
+            safe_metadata = safe_json_value(metadata or {})
+            safe_linked_works_info = safe_json_value(linked_works_info if linked_works_info is not None else [])
+            safe_analysis_info = safe_json_value(analysis_info if analysis_info is not None else {})
+            safe_related_rjcodes = safe_json_value(related_rjcodes if related_rjcodes is not None else [])
+            safe_rjcode = sqlite_safe_text(rjcode) if rjcode is not None else None
+            safe_existing_path = sqlite_safe_text(existing_path or "") or ""
+            safe_new_path = sqlite_safe_text(new_path or "") or ""
 
             conflict = ConflictWork(
                 id=str(uuid.uuid4()),
                 task_id=task_id,
-                rjcode=rjcode,
+                rjcode=safe_rjcode,
                 conflict_type=conflict_type,
-                existing_path=existing_path,
-                new_path=new_path,
-                new_metadata=metadata,
+                existing_path=safe_existing_path,
+                new_path=safe_new_path,
+                new_metadata=safe_metadata if isinstance(safe_metadata, dict) else {},
                 status=status,
-                linked_works_info=linked_works_info if linked_works_info is not None else [],
-                analysis_info=analysis_info if analysis_info is not None else {},
-                related_rjcodes=related_rjcodes if related_rjcodes is not None else [],
+                linked_works_info=safe_linked_works_info if isinstance(safe_linked_works_info, list) else [],
+                analysis_info=safe_analysis_info if isinstance(safe_analysis_info, dict) else {},
+                related_rjcodes=safe_related_rjcodes if isinstance(safe_related_rjcodes, list) else [],
                 created_at=datetime.now()
             )
             db.add(conflict)
             db.commit()
             logger.info(f"添加问题作品记录: {rjcode}")
         except Exception as e:
-            logger.error(f"添加问题作品失败: {e}")
+            logger.error(f"添加问题作品失败: {e}", exc_info=True)
             db.rollback()
         finally:
             db.close()

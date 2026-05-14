@@ -3379,23 +3379,24 @@ async def get_conflicts(include_stats: bool = False):
     from ..core.conflict_resolution_service import get_conflict_resolution_service
     from ..core.task_engine import TaskStatus
     from ..models.database import ConflictWork, Task as TaskRecord, get_db
+    from ..core.json_safety import safe_json_value
 
     def _normalize_conflict_metadata(raw_metadata):
         if isinstance(raw_metadata, dict):
-            return dict(raw_metadata)
+            return safe_json_value(dict(raw_metadata))
         if raw_metadata in (None, "", []):
             return {}
         if isinstance(raw_metadata, str):
             with contextlib.suppress(Exception):
                 parsed = json.loads(raw_metadata)
                 if isinstance(parsed, dict):
-                    return parsed
-            return {"raw_metadata": raw_metadata}
+                    return safe_json_value(parsed)
+            return safe_json_value({"raw_metadata": raw_metadata})
         if isinstance(raw_metadata, list):
-            return {"raw_metadata": raw_metadata}
+            return safe_json_value({"raw_metadata": raw_metadata})
         with contextlib.suppress(Exception):
-            return dict(raw_metadata)
-        return {"raw_metadata": str(raw_metadata)}
+            return safe_json_value(dict(raw_metadata))
+        return safe_json_value({"raw_metadata": str(raw_metadata)})
 
     active_task_statuses = {
         TaskStatus.PENDING.value,
@@ -3633,7 +3634,8 @@ async def preview_conflict_archive_filenames(conflict_id: str, payload: Optional
             password=request_payload.password or "",
             limit=request_payload.limit,
         )
-        return {"success": True, "preview": preview}
+        from ..core.json_safety import safe_json_value
+        return {"success": True, "preview": safe_json_value(preview)}
     except HTTPException:
         raise
     except Exception as exc:

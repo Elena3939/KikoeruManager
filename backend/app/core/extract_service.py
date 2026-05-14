@@ -37,6 +37,7 @@ from ..core.password_utils import (
     normalize_password_value,
     normalize_rjcode_value,
 )
+from ..core.json_safety import safe_json_value
 
 logger = logging.getLogger(__name__)
 
@@ -803,7 +804,7 @@ class ExtractService:
             elif extract_failure_reason == "wrong_password":
                 error_msg = "解压失败：无正确密码"
             elif extract_failure_reason == "garbled_filename":
-                error_msg = "解压失败：文件乱码"
+                error_msg = "解压失败：文件名乱码"
             elif extract_failure_reason == "extract_incomplete":
                 error_msg = "解压失败：解压产物为空或不完整"
             else:
@@ -6688,7 +6689,7 @@ class ExtractService:
                 "markers": self._mojibake_markers(name),
                 "garbled": self._has_garbled_text(name),
             })
-        return {
+        return safe_json_value({
             "encoding": str(filename_encoding or "auto"),
             "codepage": self._filename_encoding_to_codepage(filename_encoding),
             "file_count": len(file_list or []),
@@ -6696,7 +6697,7 @@ class ExtractService:
             "diagnostics": diagnostics,
             "garbled_sample": next((item["name"] for item in diagnostics if item.get("garbled")), None),
             "max_score": max([float(item.get("score") or 0) for item in diagnostics] or [0.0]),
-        }
+        })
 
     async def _reject_if_garbled_after_extract(
         self,
