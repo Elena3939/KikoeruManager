@@ -23,15 +23,23 @@ def build(console_mode=True):
 
     icon_option = [ICON_PATH] if os.path.exists(ICON_PATH) else []
     datas = [('../frontend/dist', 'frontend/dist'), ('config', 'backend/config')]
+    binaries = []
     if os.path.exists(ICON_PATH):
         datas.append(('app.ico', 'backend'))
+
+    unar_dir = os.path.join(ROOT_DIR, "tools", "unar")
+    if os.path.isdir(unar_dir):
+        for filename in ("unar.exe", "lsar.exe", "Foundation.1.0.dll"):
+            path = os.path.join(unar_dir, filename)
+            if os.path.exists(path):
+                binaries.append((path, "tools/unar"))
     
     spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
 
 a = Analysis(
     ['../desktop_app.py'],
     pathex=['{ROOT_DIR}'],
-    binaries=[],
+    binaries={binaries},
     datas={datas},
     hiddenimports=['uvicorn', 'fastapi', 'sqlalchemy', 'yaml', 'watchdog', 'filetype', 'requests', 'aiohttp', 'pystray', 'PIL', 'PIL.Image', 'qrcode', 'qrcode.image.pil', 'orjson', 'imapclient', 'imapclient.imapclient'],
     hookspath=[],

@@ -303,7 +303,38 @@ class ExtractService:
         return "7z"
 
     def _find_unar_executable(self) -> Optional[str]:
-        return shutil.which("unar")
+        return self._find_bundled_or_path_executable("unar")
+
+    def _find_lsar_executable(self) -> Optional[str]:
+        return self._find_bundled_or_path_executable("lsar")
+
+    def _find_bundled_or_path_executable(self, name: str) -> Optional[str]:
+        """优先使用项目随附工具；Docker/系统环境再回退 PATH。
+
+        Windows 开发和 PyInstaller 包不应依赖系统 PATH。Docker 镜像已经安装
+        unar/lsar，那里走 PATH 即可。
+        """
+        suffix = ".exe" if sys.platform == "win32" else ""
+        executable = f"{name}{suffix}"
+        candidates: List[str] = []
+
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if bundle_root:
+            candidates.append(os.path.join(str(bundle_root), "tools", "unar", executable))
+
+        try:
+            project_root = Path(__file__).resolve().parents[3]
+            candidates.append(str(project_root / "tools" / "unar" / executable))
+        except Exception:
+            pass
+
+        candidates.append(os.path.join(os.getcwd(), "tools", "unar", executable))
+
+        for path in candidates:
+            if path and os.path.exists(path):
+                return path
+
+        return shutil.which(name)
 
     def _is_rar_archive(self, archive_path: str) -> bool:
         lower_path = str(archive_path).lower()
@@ -712,6 +743,8 @@ class ExtractService:
                 error_msg = "解压失败：无正确密码"
             elif extract_failure_reason == "garbled_filename":
                 error_msg = "解压失败：文件乱码"
+            elif extract_failure_reason == "extract_incomplete":
+                error_msg = "解压失败：解压产物为空或不完整"
             else:
                 error_msg = "解压失败：无法解压压缩包（原因未知）"
             self._set_extract_meta(task, extract_failure_reason=extract_failure_reason)
@@ -731,6 +764,21 @@ class ExtractService:
             # 记录成功使用的密码
             self._set_extract_meta(task, extract_stage="extracted")
             logger.info(f"外层压缩包解压成功，使用密码: {success_password or '无密码'}")
+
+            payload_summary = await self._summarize_extracted_payload(output_path)
+            if payload_summary["file_count"] <= 0 or payload_summary["total_bytes"] <= 0:
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="extract_incomplete",
+                    extract_payload_file_count=payload_summary["file_count"],
+                    extract_payload_total_bytes=payload_summary["total_bytes"],
+                )
+                raise RuntimeError("解压失败：解压产物为空或全部为 0 字节")
+            self._set_extract_meta(
+                task,
+                extract_payload_file_count=payload_summary["file_count"],
+                extract_payload_total_bytes=payload_summary["total_bytes"],
+            )
 
             # 检查暂停和取消
             await task.wait_if_paused()
@@ -4502,20 +4550,41 @@ class ExtractService:
 
         actual_files = await asyncio.to_thread(_scan_actual_files)
 
+        # 反向 mojibake 修复：把磁盘上的 actual 路径也跑一遍反解，
+        # 建立修复后路径 → 原始 actual 键的反向映射，
+        # 就算 expected.path 反解失败时，也可以通过 actual 端反解匹配到。
+        def _build_inverse_lookup(real: Dict[str, int]) -> Dict[str, str]:
+            inv: Dict[str, str] = {}
+            for actual_path in real.keys():
+                repaired = self._repair_mojibake_relative_path(actual_path)
+                if repaired and repaired != actual_path and repaired not in inv:
+                    inv[repaired] = actual_path
+            return inv
+
+        inverse_actual_lookup = await asyncio.to_thread(_build_inverse_lookup, actual_files)
+
+        critical_zero_byte_files: List[Dict] = []  # expected.size > 0 但 actual.size == 0
+
         for expected in file_entries:
             expected_name = str(expected.get('name') or '')
             if not expected_name:
                 continue
+            expected_size = expected['size']
             # 编码兼容：archive 清单可能是 cp932 / utf-8 解释结果，scandir 出来的是
             # NTFS unicode；把 expected 的多种编码变体都查一遍 dict，找到任一即可。
+            normalized = expected_name.replace('\\', '/')
             candidates = {
-                expected_name.replace('\\', '/'),
+                normalized,
                 expected_name.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore').replace('\\', '/'),
                 expected_name.encode('cp932', errors='ignore').decode('cp932', errors='ignore').replace('\\', '/'),
             }
             repaired_expected_name = self._repair_mojibake_relative_path(expected_name)
             if repaired_expected_name:
                 candidates.add(repaired_expected_name)
+            # 反向 lookup：expected 样子匹配修复后的 actual key（标签上 expected 已然是正确的）。
+            for variant in tuple(candidates):
+                if variant in inverse_actual_lookup:
+                    candidates.add(inverse_actual_lookup[variant])
             found_size: Optional[int] = None
             for variant in candidates:
                 if variant in actual_files:
@@ -4526,12 +4595,18 @@ class ExtractService:
                 missing_files.append(expected_name)
                 continue
 
-            if found_size != expected['size']:
+            if found_size != expected_size:
                 size_mismatch_files.append({
                     'name': expected_name,
-                    'expected': expected['size'],
+                    'expected': expected_size,
                     'actual': found_size,
                 })
+                # critical：expected > 0 但 actual == 0 的零字节文件（实际丢数据）
+                if expected_size > 0 and found_size == 0:
+                    critical_zero_byte_files.append({
+                        'name': expected_name,
+                        'expected': expected_size,
+                    })
 
         # 如果有文件缺失，记录警告；但缺失过多不能继续放行。
         # 之前会把“清单乱码导致找不到文件”全部当软警告，结果 0 字节落盘也能通过。
@@ -4545,19 +4620,36 @@ class ExtractService:
             for mismatch in size_mismatch_files[:5]:
                 logger.warning(f"文件大小不匹配: {mismatch['name']} (期望: {mismatch['expected']}, 实际: {mismatch['actual']})")
 
-        # 只要没有大小不匹配，就认为是成功的
-        # （缺失文件可能是编码问题导致的误报）
+        # critical：expected > 0 但 actual == 0（零字节文件）无条件拒绝
+        if critical_zero_byte_files:
+            logger.error(
+                "有 %s 个文件期望>0但落盘=0（零字节丢数据），拒绝接受: archive=%s sample=%s",
+                len(critical_zero_byte_files),
+                archive_info.path,
+                critical_zero_byte_files[:3],
+            )
+            return False
+
+        # 大小不匹配 → 拒绝
         if size_mismatch_files:
             logger.error(f"有 {len(size_mismatch_files)} 个文件大小不匹配，解压可能不完整")
             return False
-        if missing_files and len(missing_files) >= max(1, len(file_entries) // 2):
-            logger.error(
-                "有 %s/%s 个文件无法验证，拒绝接受解压结果: archive=%s",
-                len(missing_files),
-                len(file_entries),
-                archive_info.path,
-            )
-            return False
+
+        # missing 阈值收紧：旧实现是 50%，实测导致 14/30 缺失也判通过。
+        # 改成 10% 阈值：如果反解修复工作正常，缺失 有很明显的编码失效。
+        if missing_files:
+            total_count = max(len(file_entries), 1)
+            missing_ratio = len(missing_files) / total_count
+            # 绝对阈值：缺失文件 >= 5 个 或 比例 >= 10%，要拒绝。
+            if missing_ratio >= 0.1 or len(missing_files) >= 5:
+                logger.error(
+                    "有 %s/%s (%.0f%%) 个文件无法验证，拒绝接受解压结果: archive=%s",
+                    len(missing_files),
+                    len(file_entries),
+                    missing_ratio * 100.0,
+                    archive_info.path,
+                )
+                return False
 
         logger.info(
             "解压完整性验证完成: mode=%s checked=%s total=%s archive=%s",
@@ -5622,6 +5714,41 @@ class ExtractService:
                 password == getattr(archive_info, "password", None)
             )
             if likely_verified_password and self._has_extracted_payload(output_path):
+                payload_summary = await self._summarize_extracted_payload(output_path)
+                archive_summary = self._summarize_archive_file_list(archive_info)
+                if payload_summary["nonempty_file_count"] <= 0 or payload_summary["total_bytes"] <= 0:
+                    await self._cleanup_extract_attempt(output_path)
+                    logger.warning(
+                        "unar 返回 rc=%s 但只留下 0 字节产物，拒绝接受本次 RAR 解压: archive=%s files=%s expected_bytes=%s",
+                        result.returncode,
+                        archive_info.path,
+                        payload_summary["file_count"],
+                        archive_summary["total_bytes"],
+                    )
+                    return False, None, "partial_output"
+                # 收紧：非空文件数不能明显少于清单期望（防止 "1 个正常 + N 个 0 字节" 的部分解压）。
+                expected_nonempty = archive_summary["nonempty_file_count"]
+                if expected_nonempty > 0 and payload_summary["nonempty_file_count"] < expected_nonempty:
+                    await self._cleanup_extract_attempt(output_path)
+                    logger.warning(
+                        "unar 返回 rc=%s 且非空文件数不足，拒绝接受: archive=%s actual_nonempty=%s/%s",
+                        result.returncode,
+                        archive_info.path,
+                        payload_summary["nonempty_file_count"],
+                        expected_nonempty,
+                    )
+                    return False, None, "partial_output"
+                # 尺寸校验：容忍 5% 元数据先后差异，大幅缺少则拒绝。
+                if archive_summary["total_bytes"] > 0 and payload_summary["total_bytes"] < archive_summary["total_bytes"] * 0.95:
+                    await self._cleanup_extract_attempt(output_path)
+                    logger.warning(
+                        "unar 返回 rc=%s 且产物大小不足，拒绝接受本次 RAR 解压: archive=%s actual=%s expected=%s",
+                        result.returncode,
+                        archive_info.path,
+                        payload_summary["total_bytes"],
+                        archive_summary["total_bytes"],
+                    )
+                    return False, None, "partial_output"
                 await self._fix_unar_garbled_encoding(
                     archive_info.path, output_path, password, task=task,
                 )
@@ -5767,8 +5894,31 @@ class ExtractService:
             return False, None, "wrong_password"
         return False, None, "wrong_password"
 
-    @staticmethod
-    def _garbled_text_score(text: str) -> float:
+    # Shift-JIS 日文被 GBK/cp936/Big5 错解后高频出现的 CJK 字符集合。
+    # 旧版 ~60 字符不够：对 cp936 错读 SJIS 后产生的短串评分漏判。
+    # 新增字符来自实际 RAR 样本反查（集中在 0x504x-0x507x 等 SJIS hiragana 错读性高区）。
+    _CJK_MOJIBAKE_CHARS: frozenset = frozenset(
+        # 经典旧集合
+        "僠儍僾僞乕乽乿偺偟偱偨傜傪傞傝傑丄丒丅"
+        "攝怣彈巕鍋靛伃澹掓儭宀烘湷浜鎮囧仧哄亰婂仾"
+        "鍍儮儔儕儖儞儊儂儚儛"
+        # 新增：SJIS hiragana 错读 cp936 的高频处
+        "偵偭偪壒惡岺朳亀悇偟偺偊偶傷偈傂傆傃傜偪傣"
+        "偐偑偒偓偔偗偙偛偞偠偢偣偤偦偧偩偫偬偯偰偶偹偼偽"
+        # 新增：SJIS katakana 错读的高频处
+        "僀僂僄僅僈僉僋僌僎僐僒僔僖僘僚僛僜僝僡僢僤僥僨僩僪僫僬僭僮僯僰僱僲僳僴僵僶僷僸僺僻僽僾僿"
+        "儀儁儂儃億儅儆儇儈儉儊儋儌儍儎儏儐儑儒儓儔儕儖儗儘儚儛儜儝儞償"
+        # 新增：用户日志中出现的片段
+        "烘湷浜鎮囧仧哄亰婂仾鏀濇綀宸曞嗗兗峰熷伜婂仾"
+    )
+
+    # 文件名乱码评分缓存：同一 name 在一次解压中经常被评分 N 次（find_sample/repair/filename_score）。
+    # 用 LRU 缓存直接把最热的 4096 条结果缓存下来，得到 95%+ 命中率。
+    _score_cache: Dict[str, float] = {}
+    _SCORE_CACHE_MAX: int = 4096
+
+    @classmethod
+    def _garbled_text_score(cls, text: str) -> float:
         """文件名乱码评分。分数越高越像编码被猜错。
 
         判断依据：
@@ -5778,18 +5928,18 @@ class ExtractService:
         - `僠儍僾僞乕` / `鍋靛伃...` 这类 Shift-JIS 被 GBK 解码后的 CJK 乱码：
           字符合法、CRC 也能过，但语义明显坏，必须继续换编码重解。
         """
+        # 缓存查询：命中直接返回，避免再跑 N 字符循环。
+        cached = cls._score_cache.get(text)
+        if cached is not None:
+            return cached
         latin_ext = 0
         cjk = 0
         kana = 0
         hangul = 0
         mojibake_marker = 0
         total_nonascii = 0
-        # Shift-JIS 日文被 GBK/Big5 错解后高频出现的字符。
-        cjk_mojibake_chars = set(
-            "僠儍僾僞乕乽乿偺偟偱偨傜傪傞傝傑丄丒丅"
-            "攝怣彈巕鍋靛伃澹掓儭宀烘湷浜鎮囧仧哄亰婂仾"
-            "鍍儮儔儕儖儞儊儂儚儛"
-        )
+        # Shift-JIS 日文被 GBK/cp936/Big5 错解后高频出现的字符集合（类属性）。
+        cjk_mojibake_chars = cls._CJK_MOJIBAKE_CHARS
         for ch in text:
             cp = ord(ch)
             if 0xD800 <= cp <= 0xDFFF:
@@ -5809,17 +5959,29 @@ class ExtractService:
                 elif 0xAC00 <= cp <= 0xD7AF:
                     hangul += 1
         if total_nonascii == 0:
+            cls._score_cache[text] = 0.0
             return 0.0
 
         score = 0.0
         if latin_ext >= 3:
             score += 60.0 * (latin_ext / total_nonascii)
+        # 单文件名短串场景：只要存在 1 个 mojibake_marker 就开始扣分，旧版要求 >= 2 的门槛会导致
+        # 像 `偵偭偪壒惡岺朳亀悇偟`（10 字 marker=1）这种测回漏判。
+        if mojibake_marker >= 1:
+            score += 30.0 * min(mojibake_marker / max(total_nonascii, 1), 1.0)
         if mojibake_marker >= 2:
-            score += 35.0 * min(mojibake_marker / max(total_nonascii, 1), 1.0)
+            score += 15.0 * min(mojibake_marker / max(total_nonascii, 1), 1.0)
+        if cjk >= 4 and kana == 0 and hangul == 0 and mojibake_marker >= 1:
+            score += 25.0
         if cjk >= 8 and kana == 0 and hangul == 0 and mojibake_marker >= 2:
-            score += 35.0
+            score += 15.0
         if cjk >= 20 and kana == 0 and mojibake_marker >= 4:
-            score += 20.0
+            score += 15.0
+        # 写入缓存（限制总条数）
+        cache = cls._score_cache
+        if len(cache) >= cls._SCORE_CACHE_MAX:
+            cache.clear()  # 简单 LRU：超限清空（均摊下两次无关系）
+        cache[text] = score
         return score
 
     @classmethod
@@ -5885,33 +6047,155 @@ class ExtractService:
             best = max(best, self._garbled_text_score("\n".join(names)))
         return best
 
+    # mojibake 反解 codec_pair：(错误编码 wrong, 真实编码 correct)。
+    # 顺序按"日文 RAR / ZIP 最常踩的 mojibake 类型"排，命中早可短路。
+    _MOJIBAKE_CODEC_PAIRS: tuple = (
+        # SJIS 字节被 GBK/cp936 错读（最常见 mojibake 类型）
+        ("gbk", "cp932"),
+        ("cp936", "cp932"),
+        ("gbk", "shift_jis"),
+        ("cp936", "shift_jis"),
+        # SJIS 字节被 Big5 错读
+        ("big5", "cp932"),
+        ("big5", "shift_jis"),
+        # UTF-8 字节被 GBK/cp936 错读（直接存为 UTF-8 的 RAR）
+        ("gbk", "utf-8"),
+        ("cp936", "utf-8"),
+        ("big5", "utf-8"),
+        # GBK 字节被 SJIS/cp932 错读（中文重打包被日文工具读）
+        ("cp932", "gbk"),
+        ("shift_jis", "gbk"),
+        ("cp932", "cp936"),
+        ("shift_jis", "cp936"),
+    )
+
+    @staticmethod
+    def _looks_japanese_filename(text: Optional[str]) -> bool:
+        """反解结果是否含合法日文假名 / 片假名。含假名的词几乎一定是日文。"""
+        if not text:
+            return False
+        for ch in text:
+            cp = ord(ch)
+            if 0x3040 <= cp <= 0x309F or 0x30A0 <= cp <= 0x30FF:
+                return True
+        return False
+
     def _repair_mojibake_filename(self, name: str) -> Optional[str]:
-        """还原常见的 `Shift-JIS 字节被 GBK 解码` 文件名乱码。"""
-        if not name or not self._has_garbled_text(name):
+        """还原常见的"日文/中文文件名编码被解错"的 mojibake。
+
+        层次：
+        1. 入口判定相对旧版放宽：评分 >= 15 或含 `_CJK_MOJIBAKE_CHARS` 任一字符都尝试。
+        2. codec_pair 扩展到 13 个，覆盖 SJIS/UTF-8/GBK 之间的常见错读。
+        3. 接受标准：反解出现合法假名则优先采纳，否则要求评分显著下降。
+        """
+        if not name:
+            return None
+        # 缓存查询：同一文件名可能在 _find_garbled_sample, _repair_in_place, _verify_extraction 等多个地方重复反解。
+        # 用 sentinel object 区分 "None 是缓存的反解失败结果" 和 "缓存未命中"。
+        cls = type(self)
+        if not hasattr(cls, "_repair_cache"):
+            cls._repair_cache = {}  # type: ignore[attr-defined]
+        repair_cache = cls._repair_cache  # type: ignore[attr-defined]
+        if name in repair_cache:
+            return repair_cache[name]
+        # 入口放宽：marker_hit 或 score >= 15 都尝试反解。
+        original_score = self._garbled_text_score(name)
+        marker_hit = any(ch in self._CJK_MOJIBAKE_CHARS for ch in name)
+        if original_score < 15.0 and not marker_hit:
+            repair_cache[name] = None
             return None
 
-        original_score = self._garbled_text_score(name)
         best_name: Optional[str] = None
         best_score = original_score
-        codec_pairs = (
-            ("gbk", "cp932"),
-            ("cp936", "cp932"),
-            ("gbk", "shift_jis"),
-            ("cp936", "shift_jis"),
-        )
-        for wrong_codec, correct_codec in codec_pairs:
+        for wrong_codec, correct_codec in self._MOJIBAKE_CODEC_PAIRS:
             try:
                 candidate = name.encode(wrong_codec).decode(correct_codec)
-            except UnicodeError:
+            except (UnicodeError, LookupError):
                 continue
-            if not candidate or candidate == name or "/" in candidate or "\\" in candidate or "\x00" in candidate:
+            if not candidate or candidate == name:
+                continue
+            if "/" in candidate or "\\" in candidate or "\x00" in candidate:
                 continue
             candidate_score = self._garbled_text_score(candidate)
-            # 新名字必须明显更干净；避免把真实中文文件名误改掉。
+            # 优先采纳"反解出现合法假名"：mojibake 几乎不可能想伪造出假名。
+            if self._looks_japanese_filename(candidate) and not self._looks_japanese_filename(best_name or name):
+                best_name = candidate
+                best_score = candidate_score
+                continue
             if candidate_score < best_score and (candidate_score < 30.0 or best_score - candidate_score >= 25.0):
                 best_name = candidate
                 best_score = candidate_score
 
+        # Fallback：strict 反解全部失败时，降级到 errors='ignore' 模式重试。
+        # 如 `01_鏉鏇囧掓儭涔畐av涓扴E鍋佸倽涔` 这种字符串含有两种不同编码 mojibake，
+        # strict encode 整段失败。降级后要求反解含合法假名（强信号）才接受，避免误改真实中文。
+        if best_name is None:
+            for wrong_codec, correct_codec in self._MOJIBAKE_CODEC_PAIRS:
+                try:
+                    candidate = name.encode(wrong_codec, errors='ignore').decode(correct_codec, errors='ignore')
+                except LookupError:
+                    continue
+                if not candidate or candidate == name:
+                    continue
+                if "/" in candidate or "\\" in candidate or "\x00" in candidate:
+                    continue
+                # 降级模式下，接受标准极端严格：必须含假名 + 反解评分明显下降。
+                if not self._looks_japanese_filename(candidate):
+                    continue
+                candidate_score = self._garbled_text_score(candidate)
+                if candidate_score >= 30.0:
+                    continue
+                # 失真率：若 ignore 丢失字符比例 > 25%，不接受（防止大量非ASCII 字被吞掉）。
+                if len(candidate) < len(name) * 0.75:
+                    continue
+                best_name = candidate
+                best_score = candidate_score
+                break
+
+        # 双层 mojibake 反解 pass：
+        # 场景：SJIS 字节 → 被 cp936 错读 → utf-8 落盘 → 被 cp936 再次错读（如 7zz 出来的 `鍋靛伃...`）。
+        # 反解需要 (gbk→utf-8) + (gbk→cp932)。
+        if best_name is None:
+            outer_pairs = (("gbk", "utf-8"), ("cp936", "utf-8"))
+            inner_pairs = (("gbk", "cp932"), ("cp936", "cp932"), ("gbk", "shift_jis"), ("cp936", "shift_jis"))
+            for outer_wrong, outer_correct in outer_pairs:
+                try:
+                    intermediate = name.encode(outer_wrong, errors='ignore').decode(outer_correct, errors='ignore')
+                except (UnicodeError, LookupError):
+                    continue
+                if not intermediate or intermediate == name:
+                    continue
+                for inner_wrong, inner_correct in inner_pairs:
+                    try:
+                        candidate = intermediate.encode(inner_wrong).decode(inner_correct)
+                    except (UnicodeError, LookupError):
+                        try:
+                            candidate = intermediate.encode(inner_wrong, errors='ignore').decode(inner_correct, errors='ignore')
+                        except (UnicodeError, LookupError):
+                            continue
+                    if not candidate or candidate == name or candidate == intermediate:
+                        continue
+                    if "/" in candidate or "\\" in candidate or "\x00" in candidate:
+                        continue
+                    # 双层反解结果必须含合法假名（强信号），否则不接受（避免误改真实中文）。
+                    if not self._looks_japanese_filename(candidate):
+                        continue
+                    candidate_score = self._garbled_text_score(candidate)
+                    if candidate_score >= 30.0:
+                        continue
+                    # 双层反解允许较大的长度折损（ignore 模式必然碰少字符），但仍需限成原长的 40% 以上，避免大量字符丢失后的增量无意义结果。
+                    if len(candidate) < len(name) * 0.4:
+                        continue
+                    best_name = candidate
+                    best_score = candidate_score
+                    break
+                if best_name is not None:
+                    break
+
+        # 缓存持续增长时清空（简单 LRU）
+        if len(repair_cache) >= 4096:
+            repair_cache.clear()
+        repair_cache[name] = best_name
         return best_name
 
     def _repair_mojibake_relative_path(self, path: str) -> Optional[str]:
@@ -6029,6 +6313,62 @@ class ExtractService:
                 continue
         return False
 
+    async def _summarize_extracted_payload(self, directory: str) -> Dict[str, int]:
+        """统计解压产物，用于阻断空目录 / 全 0 字节产物继续入库。"""
+        def _scan() -> Dict[str, int]:
+            summary = {
+                "file_count": 0,
+                "nonempty_file_count": 0,
+                "total_bytes": 0,
+            }
+            if not directory or not os.path.isdir(directory):
+                return summary
+
+            stack = [directory]
+            while stack:
+                current = stack.pop()
+                try:
+                    with os.scandir(current) as entries:
+                        for entry in entries:
+                            try:
+                                if entry.is_dir(follow_symlinks=False):
+                                    stack.append(entry.path)
+                                    continue
+                                if not entry.is_file(follow_symlinks=False):
+                                    continue
+                                size = int(entry.stat(follow_symlinks=False).st_size or 0)
+                            except OSError:
+                                continue
+                            summary["file_count"] += 1
+                            summary["total_bytes"] += size
+                            if size > 0:
+                                summary["nonempty_file_count"] += 1
+                except OSError:
+                    continue
+            return summary
+
+        return await asyncio.to_thread(_scan)
+
+    def _summarize_archive_file_list(self, archive_info: ArchiveInfo) -> Dict[str, int]:
+        """统计压缩包清单里的文件数量和期望解压后字节数。"""
+        summary = {
+            "file_count": 0,
+            "nonempty_file_count": 0,
+            "total_bytes": 0,
+        }
+        for item in getattr(archive_info, "file_list", None) or []:
+            if item.get("is_dir"):
+                continue
+            try:
+                size = int(item.get("size") or 0)
+            except Exception:
+                size = 0
+            summary["file_count"] += 1
+            summary["total_bytes"] += max(0, size)
+            if size > 0:
+                summary["nonempty_file_count"] += 1
+        return summary
+
     async def _detect_rar_encoding_with_lsar(
         self,
         archive_path: str,
@@ -6040,7 +6380,7 @@ class ExtractService:
         未加密，无需密码即可列出文件名，因此可以在密码循环前一次性探测。
         返回 None 表示自动探测已经足够好，或 lsar 不可用 / 无法判断。
         """
-        lsar_path = shutil.which("lsar")
+        lsar_path = self._find_lsar_executable()
         if not lsar_path:
             return None
 

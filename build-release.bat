@@ -68,6 +68,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
+set "UNAR_BIN_ARGS="
+if exist "%ROOT%\tools\unar\unar.exe" if exist "%ROOT%\tools\unar\lsar.exe" if exist "%ROOT%\tools\unar\Foundation.1.0.dll" (
+  set "UNAR_BIN_ARGS=--add-binary ""%ROOT%\tools\unar\unar.exe;tools/unar"" --add-binary ""%ROOT%\tools\unar\lsar.exe;tools/unar"" --add-binary ""%ROOT%\tools\unar\Foundation.1.0.dll;tools/unar"""
+  echo 已检测到项目内 unar/lsar，打包时会随 exe 一起带上
+) else (
+  echo 警告: 未检测到完整 tools\unar，RAR 文件名编码修复会依赖系统/Docker 环境
+)
+
 if not exist "build" mkdir build
 call "%PYTHON_EXE%" -c "from PIL import Image; img=Image.open(r'%ICON_PNG%').convert('RGBA'); sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]; img.save(r'%ICON_ICO%', format='ICO', sizes=sizes)"
 if errorlevel 1 (
@@ -76,7 +84,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON_ICO%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import qrcode --hidden-import qrcode.image.pil --hidden-import orjson --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON_PNG%;backend/appIcon.png" ..\desktop_app.py
+call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON_ICO%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import qrcode --hidden-import qrcode.image.pil --hidden-import orjson %UNAR_BIN_ARGS% --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON_PNG%;backend/appIcon.png" ..\desktop_app.py
 if errorlevel 1 (
   popd
   echo 打包失败
