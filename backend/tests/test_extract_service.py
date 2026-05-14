@@ -9,7 +9,7 @@ import zipfile
 from unittest.mock import Mock, AsyncMock, patch
 
 from app.core.extract_service import ArchiveInfo, ExtractService
-from app.core.task_engine import Task
+from app.core.task_engine import Task, TaskType
 
 class TestExtractService:
     """测试解压服务"""
@@ -208,6 +208,9 @@ class TestExtractService:
         assert extract_service._has_garbled_text("温泉浜辺.wav") is False
         assert extract_service._has_garbled_text("温泉浜辺/read me.txt") is False
         assert extract_service._has_garbled_text("本編_温泉浜辺_特典.wav") is False
+        assert extract_service._has_garbled_text("探偵の依頼.txt") is False
+        assert extract_service._has_garbled_text("鎮魂歌.flac") is False
+        assert extract_service._has_garbled_text("横浜デート.wav") is False
         assert extract_service._repair_mojibake_filename("温泉浜辺.wav") is None
         assert extract_service._repair_mojibake_filename("本編_温泉浜辺_特典.wav") is None
 
@@ -221,6 +224,19 @@ class TestExtractService:
                 fp.write("ok")
 
         assert extract_service._find_garbled_filename_sample(root, max_names=None) is None
+
+    def test_filename_garbled_diagnostics_do_not_use_combined_score(self, extract_service, temp_dir):
+        """大量合法日文 marker 不能因为拼接成一个字符串而被整体误杀。"""
+        root = os.path.join(temp_dir, "output")
+        os.makedirs(root, exist_ok=True)
+        for index in range(120):
+            with open(os.path.join(root, f"横浜_探偵の依頼_鎮魂歌_{index:03d}.txt"), "w", encoding="utf-8") as fp:
+                fp.write("ok")
+
+        diagnostics = extract_service._filename_garbled_diagnostics(root, max_names=None)
+
+        assert diagnostics["sample"] is None
+        assert diagnostics["garbled_count"] == 0
 
     def test_unar_encoding_candidates_try_utf8_before_shift_jis(self, extract_service):
         """UTF-8 文件名被误按 GBK 解码时，必须先给 unar 明确 UTF-8 的机会。"""
@@ -273,6 +289,37 @@ class TestExtractService:
         assert rejected is False
         assert cleaned is False
         assert os.path.exists(os.path.join(root, fixed_name))
+
+    @pytest.mark.asyncio
+    async def test_reject_if_garbled_writes_diagnostics_metadata(self, extract_service, temp_dir):
+        """最终无法修复时，任务元数据要带可视化诊断字段。"""
+        root = os.path.join(temp_dir, "output")
+        os.makedirs(root, exist_ok=True)
+        bad_name = "bad_\ufffd_name.mp3"
+        with open(os.path.join(root, bad_name), "w", encoding="utf-8") as fp:
+            fp.write("ok")
+
+        cleaned = False
+
+        async def cleanup():
+            nonlocal cleaned
+            cleaned = True
+
+        task = Task(task_type=TaskType.AUTO_PROCESS, source_path=os.path.join(temp_dir, "dummy.zip"))
+        rejected = await extract_service._reject_if_garbled_after_extract(
+            os.path.join(temp_dir, "dummy.zip"),
+            root,
+            cleanup=cleanup,
+            context="test",
+            task=task,
+        )
+
+        assert rejected is True
+        assert cleaned is True
+        assert task.task_metadata["garbled_filename_sample"] == bad_name
+        assert task.task_metadata["garbled_filename_score_before"] >= 30
+        assert task.task_metadata["garbled_filename_codec_pairs_tried"] >= 1
+        assert task.task_metadata["garbled_filename_top_samples"][0]["name"] == bad_name
 
     @pytest.mark.asyncio
     async def test_verify_extraction_checks_repaired_mojibake_path_size(self, extract_service, temp_dir):
