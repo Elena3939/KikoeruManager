@@ -203,6 +203,12 @@ class TestExtractService:
         assert extract_service._has_garbled_text("鍋靛伃鍋澹掓儭宀烘湷浜鎮囧仧鍋哄亰鍋鍋婂仾.wav") is True
         assert extract_service._has_garbled_text("チャプター1「推しのえちえち配信女子のオナニーを視聴」.mp3") is False
 
+    def test_filename_garbled_guard_allows_normal_japanese_kanji_names(self, extract_service):
+        """正常日文汉字名可能包含单个 marker 字，不能被误判为 mojibake。"""
+        assert extract_service._has_garbled_text("温泉浜辺.wav") is False
+        assert extract_service._has_garbled_text("温泉浜辺/read me.txt") is False
+        assert extract_service._has_garbled_text("本編_温泉浜辺_特典.wav") is False
+
     def test_unar_encoding_candidates_try_utf8_before_shift_jis(self, extract_service):
         """UTF-8 文件名被误按 GBK 解码时，必须先给 unar 明确 UTF-8 的机会。"""
         candidates = extract_service._unar_filename_encoding_candidates(include_auto=False)
@@ -227,6 +233,33 @@ class TestExtractService:
 
         assert extract_service._repair_mojibake_filenames_in_place(root) == 2
         assert os.path.exists(os.path.join(root, "にっち音声工房『推しのえちえち配信女子", fixed_name))
+
+    @pytest.mark.asyncio
+    async def test_reject_if_garbled_repairs_before_rejecting(self, extract_service, temp_dir):
+        """乱码阻断前必须先尝试反解修复，修复成功则不能清理产物。"""
+        root = os.path.join(temp_dir, "output")
+        os.makedirs(root, exist_ok=True)
+        bad_name = "偵偭偪壒惡岺朳亀悇偟偺偊偪偊偪攝怣彈巕偲僆僼僷僐.wav"
+        fixed_name = "にっち音声工房『推しのえちえち配信女子とオフパコ.wav"
+        with open(os.path.join(root, bad_name), "w", encoding="utf-8") as fp:
+            fp.write("ok")
+
+        cleaned = False
+
+        async def cleanup():
+            nonlocal cleaned
+            cleaned = True
+
+        rejected = await extract_service._reject_if_garbled_after_extract(
+            os.path.join(temp_dir, "dummy.zip"),
+            root,
+            cleanup=cleanup,
+            context="test",
+        )
+
+        assert rejected is False
+        assert cleaned is False
+        assert os.path.exists(os.path.join(root, fixed_name))
 
     @pytest.mark.asyncio
     async def test_verify_extraction_checks_repaired_mojibake_path_size(self, extract_service, temp_dir):
