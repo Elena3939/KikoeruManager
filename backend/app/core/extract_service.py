@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import contextlib
 
 # ZIP 文件名编码名称 → Windows 代码页编号（用于 7zz -mcp=<cp>）
 _ENCODING_TO_CP: dict = {
@@ -232,9 +233,11 @@ class ExtractService:
     ) -> list:
         """返回 ZIP 文件名代码页参数。
 
-        只对 .zip / .zip.NNN 生效：7zz 24.08 之后对 RAR 解析器传 -mcp 会直接
+        只对 ZIP 生效：7zz 24.08 之后对 RAR 解析器传 -mcp 会直接
         E_INVALIDARG（One or more arguments are invalid），而 .7z 格式
         文件名是 UTF-8，传 -mcp 也无意义。所以非 zip 一律不传。
+        除了 .zip / .zip.NNN 后缀，也识别 ZIP 魔数，覆盖嵌套包被命名成
+        .zi / .p 这类截断后缀的场景。
         archive_path 为 None 时（兼容旧调用）按"未知格式"处理，不传。
 
         当 zip_encoding=0（未配置）时，自动使用 archive_info.detected_encoding
@@ -253,8 +256,17 @@ class ExtractService:
             if not archive_path:
                 return []
         low = str(archive_path).lower()
-        # 支持 .zip 主卷和 .zip.NNN 分卷格式（如 X.zip.001）
-        if not (low.endswith('.zip') or re.search(r'\.zip\.\d+$', low)):
+        is_zip_like = low.endswith('.zip') or bool(re.search(r'\.zip\.\d+$', low))
+        if not is_zip_like:
+            with contextlib.suppress(Exception):
+                with open(str(archive_path), 'rb') as fp:
+                    header = fp.read(8)
+                is_zip_like = (
+                    header.startswith(b'PK\x03\x04')
+                    or header.startswith(b'PK\x05\x06')
+                    or header.startswith(b'PK\x07\x08')
+                )
+        if not is_zip_like:
             return []
 
         cp = 0
@@ -349,16 +361,29 @@ class ExtractService:
 
     def _is_rar_archive(self, archive_path: str) -> bool:
         lower_path = str(archive_path).lower()
-        return lower_path.endswith(".rar") or bool(re.search(r"\.part0*1\.rar$", lower_path))
+        if lower_path.endswith(".rar") or bool(re.search(r"\.part0*1\.rar$", lower_path)):
+            return True
+        with contextlib.suppress(Exception):
+            with open(str(archive_path), "rb") as fp:
+                return fp.read(8).startswith(b"Rar!")
+        return False
 
     def _needs_filename_garbled_guard(self, archive_path: str) -> bool:
         """只有文件名编码历史上会踩坑的格式需要乱码阻断。"""
         lower_path = str(archive_path or "").lower()
-        return (
-            self._is_rar_archive(lower_path)
-            or lower_path.endswith(".zip")
-            or bool(re.search(r"\.zip\.\d+$", lower_path))
-        )
+        if self._is_rar_archive(archive_path):
+            return True
+        if lower_path.endswith(".zip") or bool(re.search(r"\.zip\.\d+$", lower_path)):
+            return True
+        with contextlib.suppress(Exception):
+            with open(str(archive_path), "rb") as fp:
+                header = fp.read(8)
+            return (
+                header.startswith(b"PK\x03\x04")
+                or header.startswith(b"PK\x05\x06")
+                or header.startswith(b"PK\x07\x08")
+            )
+        return False
 
     async def _ensure_7z_available(self) -> bool:
         """异步检查 7z 是否可用，并缓存结果避免高并发重复探测"""
@@ -882,12 +907,18 @@ class ExtractService:
                         guard_score_before,
                     )
             if garbled_sample:
+                final_garbled_score = self._filename_garbled_score(output_path, max_names=None)
                 self._set_extract_meta(
                     task,
                     extract_failure_reason="garbled_filename",
                     garbled_filename_sample=garbled_sample,
+                    garbled_filename_score=final_garbled_score,
                 )
-                raise RuntimeError("解压失败：文件乱码")
+                task.update_progress(
+                    97,
+                    f"检测到疑似乱码文件名: {garbled_sample}",
+                )
+                raise RuntimeError(f"解压失败：文件名疑似乱码（样本：{garbled_sample}，评分：{final_garbled_score:.1f}）")
 
             self._set_extract_meta(task, extract_stage="done", extract_finished_at=datetime.now().isoformat())
             return output_path
@@ -1316,11 +1347,14 @@ class ExtractService:
                     # 检查后缀名或通过魔数检测
                     is_archive = False
                     ext = Path(filename).suffix.lower()
+                    detected_archive_type = ""
                     if ext in archive_extensions:
                         is_archive = True
+                        detected_archive_type = ext.lstrip(".")
                     else:
                         # 通过后缀名无法识别，尝试魔数检测
-                        is_archive = await self._detect_by_magic_bytes(file_path) is not None
+                        detected_archive_type = await self._detect_by_magic_bytes(file_path) or ""
+                        is_archive = bool(detected_archive_type)
 
                     if not is_archive:
                         continue
@@ -1412,6 +1446,7 @@ class ExtractService:
                         "filename": filename,
                         "root": root,
                         "nested_output_dir": nested_output_dir,
+                        "archive_type": detected_archive_type,
                     })
 
                 if stop_scan:
@@ -1436,6 +1471,7 @@ class ExtractService:
             filename = str(item["filename"])
             root_dir = str(item["root"])
             nested_output_dir = str(item["nested_output_dir"])
+            archive_type = str(item.get("archive_type") or "").strip().lower()
 
             if task.is_cancelled():
                 return 0
@@ -1453,7 +1489,11 @@ class ExtractService:
                 #   2. 父级是 UTF-8/空（7z/RAR 外层或无信息）→ 对嵌套 ZIP 做轻量嗅探
                 _utf8_like = {'utf-8', 'utf_8', 'ascii', None}
                 low_fp = file_path.lower()
-                _is_zip_file = low_fp.endswith('.zip') or bool(re.search(r'\.zip\.\d+$', low_fp))
+                _is_zip_file = (
+                    archive_type == "zip"
+                    or low_fp.endswith('.zip')
+                    or bool(re.search(r'\.zip\.\d+$', low_fp))
+                )
                 if _is_zip_file:
                     if parent_encoding and parent_encoding.lower() not in _utf8_like:
                         self.__class__._archive_encoding_cache.setdefault(file_path, parent_encoding)
@@ -1463,6 +1503,7 @@ class ExtractService:
                         if sniffed:
                             logger.debug(f"[嵌套编码嗅探] {filename} → {sniffed}")
                             self.__class__._archive_encoding_cache[file_path] = sniffed
+                nested_encoding = self.__class__._archive_encoding_cache.get(file_path) or parent_encoding
                 success, nested_success_password = await self._try_extract_nested_direct(
                     file_path, nested_output_dir, parent_password
                 )
@@ -1503,7 +1544,7 @@ class ExtractService:
                     current_depth + 1,
                     processed_paths,
                     nested_success_password,
-                    parent_encoding,
+                    nested_encoding,
                 )
                 # 若解压目录为纯容器（无直接文件），折叠到父目录以节省磁盘空间
                 await self._collapse_wrapper_dir(nested_output_dir, root_dir)
