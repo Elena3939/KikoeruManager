@@ -1207,6 +1207,27 @@ class ExtractService:
         scanned_dirs = 0
         archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}
 
+        # 阶段 0：残缺后缀修复 pass
+        # 上传 / 打包过程中常见 `.partN.exe → .partN.ex`、`.partN.rar → .partN.ra` 这类后缀
+        # 被截断 1 字符的情况，会让分卷组完全被嵌套扫描忽略（PE 头不在魔数表 / partN 非首卷跳过）。
+        # 在正式扫描前先识别并改名，让原有的 VolumeSet / 分卷模式自动接管。
+        try:
+            rename_map = await self._repair_truncated_archive_extensions(directory)
+            if rename_map:
+                logger.info(
+                    "[残缺后缀修复] 共修复 %s 个文件: %s",
+                    len(rename_map),
+                    directory,
+                )
+                # 修复后老路径也加入 processed_paths，避免后续扫描误处理已删除的旧名
+                for old_path in rename_map.keys():
+                    try:
+                        processed_paths.add(os.path.realpath(old_path))
+                    except OSError:
+                        pass
+        except Exception as exc:
+            logger.warning("[残缺后缀修复] 入口修复失败（忽略，继续扫描）: %s", exc)
+
         # 阶段 1：扫描整个目录树，收集本层所有需要解压的嵌套压缩包。
         # 此阶段只做 IO 元数据扫描和魔数探测，不动 7z 子进程，逐项加入 ``pending``。
         # 字幕小包、分卷非首卷、已处理文件等仍按原规则就地跳过。
@@ -2234,6 +2255,96 @@ class ExtractService:
         # 方法3: 魔数检测
         magic_result = await self._detect_by_magic_bytes(file_path)
         return magic_result
+
+    async def _repair_truncated_archive_extensions(self, directory: str) -> Dict[str, str]:
+        r"""修复嵌套目录里被截断的压缩包后缀。
+
+        典型场景：上传 / 打包过程中文件名后缀被截断 1 字符，导致：
+          - `RJxxx.part1.ex` 应是 `.part1.exe`（SFX 自解压首卷，PE/MZ 头不在魔数表）
+          - `RJxxx.part2.ra` 应是 `.part2.rar`（虽 Rar! 头能识别，但 .partN. 被判非首卷跳过）
+        结果整个分卷组被嵌套扫描忽略。本函数在嵌套扫描入口先扫一遍，识别此类截断
+        并用魔数 / SFX 内嵌签名探测真实类型后改名为标准 `.partN.exe / .partN.rar / .partN.7z`。
+
+        策略：
+          1. 匹配 `\.part(\d+)\.<1-3 字符>$` 的截断候选（后缀不能在 valid 列表里）
+          2. 用 `_detect_truncated_archive_real_ext` 探测真实类型（含 PE 头 SFX 内嵌签名扫描）
+          3. 改名为正确后缀；改名失败 / 目标已存在则跳过。
+
+        Returns: `{old_path: new_path}` 修复映射；空 dict 表示无修复。
+        """
+        rename_map: Dict[str, str] = {}
+        # `.partN.X` 中合法的 X：现有 `_detect_volume_set` 已支持的 SFX 分卷后缀
+        valid_part_exts = {'exe', 'rar', 'zip', '7z'}
+        truncated_pattern = re.compile(r'^(?P<base>.+\.part\d+)\.(?P<ext>[a-z0-9]{1,3})$', re.IGNORECASE)
+        try:
+            walk_iter = os.walk(directory)
+        except Exception as exc:
+            logger.warning(f"[残缺后缀修复] 扫描目录失败: {directory}, {exc}")
+            return rename_map
+        for root, dirs, files in walk_iter:
+            dirs[:] = [
+                d for d in dirs
+                if d.lower() not in self.NESTED_SKIP_DIRS
+                and not d.lower().startswith((".git", "__pycache__"))
+            ]
+            for filename in files:
+                m = truncated_pattern.match(filename)
+                if not m:
+                    continue
+                ext = m.group('ext').lower()
+                if ext in valid_part_exts:
+                    continue  # 已是合法 .partN.X 后缀
+                file_path = os.path.join(root, filename)
+                try:
+                    real_ext = await self._detect_truncated_archive_real_ext(file_path)
+                except Exception as exc:
+                    logger.debug(f"[残缺后缀修复] 探测真实类型失败: {filename}, {exc}")
+                    continue
+                if not real_ext:
+                    continue
+                new_filename = f"{m.group('base')}.{real_ext}"
+                new_path = os.path.join(root, new_filename)
+                if os.path.exists(new_path):
+                    logger.warning(
+                        f"[残缺后缀修复] 目标已存在，跳过: {filename} → {new_filename}"
+                    )
+                    continue
+                try:
+                    os.rename(file_path, new_path)
+                    rename_map[file_path] = new_path
+                    logger.info(
+                        f"[残缺后缀修复] {filename} → {new_filename} (探测真实格式={real_ext})"
+                    )
+                except OSError as exc:
+                    logger.warning(f"[残缺后缀修复] 改名失败: {filename}, {exc}")
+        return rename_map
+
+    async def _detect_truncated_archive_real_ext(self, file_path: str) -> Optional[str]:
+        """对后缀不完整的文件，用魔数 + SFX 内嵌签名探测真实压缩格式后缀。
+
+        Returns:
+          - 'zip' / 'rar' / '7z'：标准压缩格式
+          - 'exe'：PE/MZ 头且前 8MB 内含 7z/RAR 签名的 SFX 自解压
+          - None：非压缩文件 / 无法识别
+        """
+        try:
+            with open(file_path, 'rb') as f:
+                header = f.read(8)
+        except Exception:
+            return None
+        # 标准压缩格式魔数
+        if header.startswith(b'PK\x03\x04') or header.startswith(b'PK\x05\x06') or header.startswith(b'PK\x07\x08'):
+            return 'zip'
+        if header.startswith(b'Rar!'):
+            return 'rar'
+        if header.startswith(b'7z\xbc\xaf\x27\x1c'):
+            return '7z'
+        # PE/MZ 头：可能是 SFX 自解压。复用 _probe_sfx_inner_format 扫前 8MB 找内嵌签名
+        if header.startswith(b'MZ'):
+            inner_fmt = await asyncio.to_thread(self._probe_sfx_inner_format, file_path)
+            if inner_fmt in ('rar', '7z'):
+                return 'exe'
+        return None
 
     async def _detect_by_magic_bytes(self, file_path: str) -> Optional[str]:
         """通过魔数检测文件类型"""
