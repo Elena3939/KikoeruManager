@@ -722,8 +722,6 @@ class ExtractService:
             (task.task_metadata or {}).get("manual_retry_password")
         )
         manual_retry_password_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
-        manual_filename_encoding = self._manual_filename_encoding_from_task(task)
-        manual_ignore_garbled = bool((task.task_metadata or {}).get("manual_retry_ignore_garbled"))
 
         password_candidates: List[Dict[str, Optional[str]]] = []
         hinted_rjcode = None
@@ -4249,6 +4247,8 @@ class ExtractService:
             (task.task_metadata or {}).get("manual_retry_password")
         )
         manual_retry_password_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
+        manual_filename_encoding = self._manual_filename_encoding_from_task(task)
+        manual_ignore_garbled = bool((task.task_metadata or {}).get("manual_retry_ignore_garbled"))
 
         if manual_retry_password and manual_retry_password_only:
             unique_passwords = [manual_retry_password]
