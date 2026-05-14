@@ -4036,12 +4036,8 @@ class ExtractService:
                     continue
 
                 raw_bytes = result.stdout
-                best_encoding = self._detect_best_encoding(raw_bytes)
-                logger.info(f"[7z] 自动检测编码: {best_encoding}")
-                # 记录本次编码检测结果，供 _get_archive_info → _get_mcp_args 使用。
-                # 如果前面已通过 ZIP 中央目录嗅探出编码，不用 7z stdout 的编码猜测覆盖它。
-                self.__class__._archive_encoding_cache.setdefault(archive_path, best_encoding)
-                decoded = raw_bytes.decode(best_encoding, errors='ignore')
+                decoded, stdout_encoding = self._decode_7z_stdout(raw_bytes)
+                logger.info(f"[7z] 输出解码: {stdout_encoding}")
                 file_list = (
                     self._parse_7z_list_output(decoded)
                     if index == 0
@@ -4052,6 +4048,16 @@ class ExtractService:
             except Exception as e:
                 logger.error(f"列出压缩包内容失败: {e}")
         return None
+
+    def _decode_7z_stdout(self, raw_bytes: bytes) -> tuple[str, str]:
+        """7zz 在 Linux/Docker stdout 输出是 UTF-8；文件名编码由 -mcp 处理。"""
+        if not raw_bytes:
+            return "", "utf-8"
+        try:
+            return raw_bytes.decode("utf-8"), "utf-8"
+        except UnicodeDecodeError:
+            fallback = self._detect_best_encoding(raw_bytes)
+            return raw_bytes.decode(fallback, errors="replace"), fallback
 
     def _sniff_zip_encoding(self, file_path: str) -> Optional[str]:
         """

@@ -244,6 +244,14 @@ class TestExtractService:
         assert candidates[:2] == ("UTF-8", "SHIFT_JIS")
         assert "CP936" in candidates
 
+    def test_decode_7z_stdout_prefers_utf8_after_mcp(self, extract_service):
+        """-mcp 只影响 7z 读取 ZIP 文件名，7z stdout 本身仍应按 UTF-8 解码。"""
+        text = "01-1　Wメスガキメイドの寝かしゅオナサポ音声　効果音あり.wav"
+        decoded, encoding = extract_service._decode_7z_stdout(text.encode("utf-8"))
+
+        assert encoding == "utf-8"
+        assert decoded == text
+
     def test_repair_shift_jis_mojibake_filename_from_gbk(self, extract_service, temp_dir):
         """RAR 解出 `偵偭偪...` 这类文件名时，应能反解回原始日文名。"""
         bad_name = "偵偭偪壒惡岺朳亀悇偟偺偊偪偊偪攝怣彈巕偲僆僼僷僐.wav"
