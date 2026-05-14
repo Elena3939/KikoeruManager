@@ -133,6 +133,19 @@
         <span v-if="fullSearchTotal > 0" class="text-[10px] text-indigo-400">{{ fullSearchTotal }}</span>
       </button>
 
+      <button
+        type="button"
+        class="flex items-center gap-1.5 h-[28px] px-3 border rounded-full text-[11.5px] font-semibold cursor-pointer transition"
+        :class="compactProcessLogs
+          ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+          : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'"
+        @click="toggleCompactProcessLogs"
+      >
+        <SlidersHorizontal :size="12" />
+        {{ compactProcessLogs ? '精简过程已开' : '精简过程' }}
+        <span v-if="compactProcessLogs && hiddenProcessNoiseCount > 0" class="text-[10px] text-emerald-500">{{ hiddenProcessNoiseCount }}</span>
+      </button>
+
       <div class="w-full flex flex-wrap items-center gap-2 text-[11px] text-slate-600 pt-1 border-t border-slate-100 mt-1">
         <span class="px-2 py-0.5 rounded bg-sky-50 border border-sky-100 text-sky-700">模式 {{ lastFetchMode }}</span>
         <span class="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-100 text-emerald-700">本次 {{ lastFetchMs }}ms</span>
@@ -431,6 +444,7 @@ import {
   RefreshCw,
   Search,
   Settings2,
+  SlidersHorizontal,
   Trash2,
   X,
 } from 'lucide-vue-next'
@@ -480,6 +494,7 @@ const searchKeyword = ref('')
 const selectedLog = ref(null)
 const selectedLogKey = ref('')
 const searchInputRef = ref(null)
+const compactProcessLogs = ref(localStorage.getItem('kikoerumanager.logs.compact_process_noise') === '1')
 
 const scrollTop = ref(0)
 const viewerHeight = ref(600)
@@ -562,6 +577,7 @@ const filteredLogs = computed(() => {
   return logs.value.filter((log) => {
     if (!lvlSet.has(log.level)) return false
     if (moduleSet && !moduleSet.has(log.module)) return false
+    if (compactProcessLogs.value && isProcessNoiseLog(log)) return false
     if (!termCount || skipKeywordFilter) return true
     // 消费解析阶段预先缓存的 lower-case（messageLower / moduleLower / rawLineLower），
     // 这里不再 toLowerCase，单次过滤开销从 O(n·m) 降到 O(n·k)。
@@ -574,6 +590,21 @@ const filteredLogs = computed(() => {
     }
     return true
   })
+})
+
+const hiddenProcessNoiseCount = computed(() => {
+  if (!compactProcessLogs.value) return 0
+  const lvlSet = new Set(selectedLevels.value)
+  const moduleSet = selectedModules.value.length
+    ? new Set(selectedModules.value)
+    : null
+  let count = 0
+  for (const log of logs.value) {
+    if (!lvlSet.has(log.level)) continue
+    if (moduleSet && !moduleSet.has(log.module)) continue
+    if (isProcessNoiseLog(log)) count += 1
+  }
+  return count
 })
 
 const searchTerms = computed(() =>
@@ -617,6 +648,35 @@ function toggleLevel(level) {
     selectedLevels.value = [...selectedLevels.value, level]
   }
   if (isFullSearch.value) onSearchInput()
+}
+
+function toggleCompactProcessLogs() {
+  compactProcessLogs.value = !compactProcessLogs.value
+  localStorage.setItem('kikoerumanager.logs.compact_process_noise', compactProcessLogs.value ? '1' : '0')
+}
+
+function isProcessNoiseLog(log) {
+  const level = String(log?.level || '').toUpperCase()
+  if (level === 'WARNING' || level === 'ERROR') return false
+
+  const moduleName = String(log?.module || '')
+  const message = String(log?.message || '')
+  const raw = String(log?.rawLine || '')
+  const text = `${moduleName}\n${message}\n${raw}`
+
+  if (/任务失败|失败原因|Traceback|Exception|RuntimeError|解压失败|归档失败|无正确密码|密码错误|磁盘空间不足|文件乱码/.test(text)) {
+    return false
+  }
+
+  return [
+    /执行7z命令/,
+    /解压中\s*\d+%/,
+    /准备解压|开始解压|解压子进程已启动|验证解压完整性|解压完整性验证完成/,
+    /检查嵌套压缩包|发现嵌套压缩包|解压嵌套压缩包|嵌套解压密码候选|成功解压嵌套压缩包|嵌套压缩包解压成功|已删除嵌套压缩包/,
+    /外层压缩包解压成功|解压成功，使用|解压了\s*\d+\s*个嵌套压缩包/,
+    /密码.*探测通过|密码候选|尝试.*密码|使用.*密码|密码来源|指定密码/,
+    /归档压缩包|压缩包已归档|检测到.*分卷.*归档|已记录压缩包归档信息|更新压缩包归档记录/,
+  ].some((pattern) => pattern.test(text))
 }
 
 function onSearchInput() {
