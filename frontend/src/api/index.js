@@ -3,6 +3,7 @@ import { ref } from 'vue'
 
 const API_BASE = '/api'
 const FILTER_DELETE_PREVIEW_TIMEOUT = 30 * 60 * 1000
+const CONFLICT_MERGE_TIMEOUT = 30 * 60 * 1000
 const RJ_SUBTITLE_SCAN_TIMEOUT = 0
 
 /** 群晖 OTP 二步验证过期标志。任意库存接口返回含 OTP 的错误时置 true，提示用户刷新 Device Token。 */
@@ -432,13 +433,19 @@ export const conflictApi = {
   },
 
   preview: async (conflictId, action) => {
-    const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action })
+    const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action }, {
+      // 合并预览会先解压新包、过滤临时目录、扫描新旧文件树。大包和慢盘不能沿用 60s 默认超时。
+      timeout: action === 'MERGE' ? CONFLICT_MERGE_TIMEOUT : 60000,
+    })
     return response.data
   },
 
   resolve: async (conflictId, payload) => {
     const requestPayload = typeof payload === 'string' ? { action: payload } : payload
-    const response = await apiClient.post(`/conflicts/${conflictId}/resolve`, requestPayload)
+    const response = await apiClient.post(`/conflicts/${conflictId}/resolve`, requestPayload, {
+      // 本地合并会重建目录；远程合并还会上传差异文件。这里给用户一次完整等待窗口。
+      timeout: requestPayload?.action === 'MERGE' ? CONFLICT_MERGE_TIMEOUT : 60000,
+    })
     return response.data
   },
 

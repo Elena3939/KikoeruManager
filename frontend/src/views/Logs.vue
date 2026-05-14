@@ -82,13 +82,14 @@
         </el-select>
       </div>
 
-      <div class="relative flex-1 min-w-[220px] max-w-[420px] flex items-center gap-2">
+      <div class="relative flex-1 min-w-[300px] max-w-[540px] flex items-center">
         <Search :size="13" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
         <input
           ref="searchInputRef"
           v-model="searchKeyword"
           type="text"
-          class="w-full h-[32px] pl-7 pr-20 border border-slate-200 rounded-lg bg-white text-[13px] text-slate-800 outline-none placeholder-slate-400 transition focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+          class="w-full h-[32px] pl-7 border border-slate-200 rounded-lg bg-white text-[13px] text-slate-800 outline-none placeholder-slate-400 transition focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+          :class="isFullSearch ? 'pr-[134px]' : 'pr-20'"
           :placeholder="isFullSearch ? '全历史检索关键词（回车立即检索）' : '搜索当前日志内容…'"
           @input="onSearchInput"
           @keydown.enter.prevent="doFullSearch(true)"
@@ -102,7 +103,7 @@
         <button
           v-if="isFullSearch"
           type="button"
-          class="h-[32px] px-3 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-600 text-[12px] font-semibold hover:bg-indigo-100 transition"
+          class="absolute right-1 top-1/2 inline-flex h-[26px] min-w-[58px] -translate-y-1/2 items-center justify-center gap-1 whitespace-nowrap rounded-md border border-indigo-300 bg-indigo-50 px-3 text-[12px] font-semibold leading-none text-indigo-600 transition hover:-translate-y-[calc(50%+1px)] hover:bg-indigo-100 hover:shadow-sm active:-translate-y-1/2 active:scale-95"
           @click="doFullSearch(true)"
         >检索</button>
       </div>
@@ -278,127 +279,138 @@
 
     <el-dialog
       v-model="logManagerVisible"
-      title="日志管理"
-      width="640px"
+      class="log-manager-dialog"
+      modal-class="log-manager-overlay"
+      width="680px"
       :close-on-click-modal="false"
       :z-index="2200"
+      :show-close="false"
       append-to-body
     >
-      <div class="text-[13px] text-slate-700">
-        <div class="grid grid-cols-3 gap-3 mb-4">
-          <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
-            <div class="text-[11px] text-slate-500">主日志大小</div>
-            <div class="text-[16px] font-bold text-slate-800">{{ formatLogBytes(logInfo?.main_bytes) }}</div>
+      <div class="log-manager-shell">
+        <div class="log-manager-header">
+          <div class="flex min-w-0 items-center gap-3">
+            <div class="log-manager-icon">
+              <Settings2 :size="18" />
+            </div>
+            <div class="min-w-0">
+              <h3 class="truncate text-[15px] font-bold text-slate-950">日志管理</h3>
+              <p class="mt-0.5 truncate text-[12px] text-slate-500">查看日志占用，执行轮转、清理和应急瘦身。</p>
+            </div>
           </div>
-          <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
-            <div class="text-[11px] text-slate-500">备份合计</div>
-            <div class="text-[16px] font-bold text-slate-800">{{ formatLogBytes(logInfo?.backup_bytes) }}</div>
-          </div>
-          <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
-            <div class="text-[11px] text-slate-500">总占用</div>
-            <div class="text-[16px] font-bold text-slate-800">{{ formatLogBytes(logInfo?.total_bytes) }}</div>
-          </div>
+          <button type="button" class="log-manager-close" @click="logManagerVisible = false" title="关闭">
+            <X :size="16" />
+          </button>
         </div>
 
-        <div class="rounded-xl border border-slate-200 mb-4 max-h-[260px] overflow-auto">
-          <table class="w-full text-[12.5px]">
-            <thead class="bg-slate-50 text-slate-500">
-              <tr>
-                <th class="text-left px-3 py-2 font-semibold">文件</th>
-                <th class="text-right px-3 py-2 font-semibold">大小</th>
-                <th class="text-right px-3 py-2 font-semibold">最后修改</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="logInfoLoading">
-                <td colspan="3" class="text-center text-slate-400 px-3 py-4">加载中…</td>
-              </tr>
-              <tr
+        <div class="log-manager-body">
+          <div class="grid grid-cols-3 gap-3">
+            <div class="log-stat-card">
+              <div class="text-[11px] font-semibold text-slate-500">主日志大小</div>
+              <div class="mt-1 text-[18px] font-extrabold text-slate-900">{{ formatLogBytes(logInfo?.main_bytes) }}</div>
+            </div>
+            <div class="log-stat-card">
+              <div class="text-[11px] font-semibold text-slate-500">备份合计</div>
+              <div class="mt-1 text-[18px] font-extrabold text-slate-900">{{ formatLogBytes(logInfo?.backup_bytes) }}</div>
+            </div>
+            <div class="log-stat-card">
+              <div class="text-[11px] font-semibold text-slate-500">总占用</div>
+              <div class="mt-1 text-[18px] font-extrabold text-slate-900">{{ formatLogBytes(logInfo?.total_bytes) }}</div>
+            </div>
+          </div>
+
+          <div class="log-file-panel">
+            <div class="log-file-head">
+              <span>文件</span>
+              <span>大小</span>
+              <span>最后修改</span>
+            </div>
+            <div class="max-h-[260px] overflow-auto">
+              <div v-if="logInfoLoading" class="px-4 py-8 text-center text-[13px] text-slate-400">加载中…</div>
+              <div
                 v-for="file in (logInfo?.files || [])"
                 :key="file.path"
-                class="border-t border-slate-100"
+                class="log-file-row"
               >
-                <td class="px-3 py-2 text-slate-700 font-mono text-[12px]">
-                  <span class="inline-flex items-center gap-1">
-                    <HardDrive :size="12" class="text-slate-400" />
-                    {{ file.name }}
-                    <span v-if="file.is_main" class="ml-1 text-[10px] text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-full px-1.5">主</span>
-                    <span v-else-if="file.is_backup" class="ml-1 text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-full px-1.5">备份</span>
+                <div class="min-w-0 font-mono text-[12px] font-semibold text-slate-700">
+                  <span class="inline-flex min-w-0 items-center gap-1.5">
+                    <HardDrive :size="13" class="shrink-0 text-slate-400" />
+                    <span class="truncate">{{ file.name }}</span>
+                    <span v-if="file.is_main" class="log-file-badge is-main">主</span>
+                    <span v-else-if="file.is_backup" class="log-file-badge is-backup">备份</span>
                   </span>
-                </td>
-                <td class="px-3 py-2 text-right text-slate-700">{{ formatLogBytes(file.size_bytes) }}</td>
-                <td class="px-3 py-2 text-right text-slate-500">{{ formatLogTime(file.modified_ts) }}</td>
-              </tr>
-              <tr v-if="!logInfoLoading && !(logInfo?.files || []).length">
-                <td colspan="3" class="text-center text-slate-400 px-3 py-4">暂无日志文件</td>
-              </tr>
-            </tbody>
-          </table>
+                </div>
+                <div class="text-right font-semibold text-slate-700">{{ formatLogBytes(file.size_bytes) }}</div>
+                <div class="text-right text-slate-500">{{ formatLogTime(file.modified_ts) }}</div>
+              </div>
+              <div v-if="!logInfoLoading && !(logInfo?.files || []).length" class="px-4 py-8 text-center text-[13px] text-slate-400">暂无日志文件</div>
+            </div>
+          </div>
+
+          <div class="log-policy-card text-[12px] leading-5 text-slate-600">
+            <div class="mb-1 font-bold text-slate-800">轮转策略</div>
+            单文件上限 <span class="font-bold">{{ logInfo?.max_mb_per_file ?? 20 }} MB</span>，最多保留
+            <span class="font-bold">{{ logInfo?.backup_count ?? 5 }}</span> 份备份，理论上限
+            <span class="font-bold">{{ ((logInfo?.max_mb_per_file ?? 20) * ((logInfo?.backup_count ?? 5) + 1)).toFixed(0) }} MB</span>。
+            可通过环境变量 <code>KIKOERUMANAGER_LOG_MAX_MB</code> / <code>KIKOERUMANAGER_LOG_BACKUPS</code> 调整。
+          </div>
+
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="log-action-btn log-action-btn--default"
+              :disabled="cleanupLoading"
+              @click="loadLogInfo"
+            >
+              <RefreshCw :size="13" />刷新
+            </button>
+            <button
+              type="button"
+              class="log-action-btn log-action-btn--success"
+              :disabled="cleanupLoading"
+              @click="runLogCleanup('rotate')"
+              title="把当前 app.log 滚到 .1，新日志写入空文件；不删除任何内容"
+            >
+              <RefreshCw :size="13" />立即轮转
+            </button>
+            <button
+              type="button"
+              class="log-action-btn log-action-btn--warning"
+              :disabled="cleanupLoading"
+              @click="runLogCleanup('purge_backups')"
+              title="删除所有 app.log.N 备份文件"
+            >
+              <Trash2 :size="13" />清理所有备份
+            </button>
+            <button
+              type="button"
+              class="log-action-btn log-action-btn--warning"
+              :disabled="cleanupLoading"
+              @click="runLogCleanup('truncate')"
+              title="把主日志保留最近 2MB，丢弃前面所有内容（应急救急）"
+            >
+              <Trash2 :size="13" />截断主日志到 2MB
+            </button>
+            <button
+              type="button"
+              class="log-action-btn log-action-btn--danger"
+              :disabled="cleanupLoading"
+              @click="runLogCleanup('rotate_and_purge')"
+              title="先轮转再清理全部备份；当前 app.log 会被清空，旧日志将无法恢复"
+            >
+              <Trash2 :size="13" />一键瘦身
+            </button>
+          </div>
         </div>
 
-        <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 mb-4 text-[12px] text-slate-600 leading-5">
-          <div class="font-semibold text-slate-700 mb-1">轮转策略</div>
-          单文件上限 <span class="font-bold">{{ logInfo?.max_mb_per_file ?? 20 }} MB</span>，最多保留
-          <span class="font-bold">{{ logInfo?.backup_count ?? 5 }}</span> 份备份，理论上限
-          <span class="font-bold">{{ ((logInfo?.max_mb_per_file ?? 20) * ((logInfo?.backup_count ?? 5) + 1)).toFixed(0) }} MB</span>。
-          可通过环境变量 <code>KIKOERUMANAGER_LOG_MAX_MB</code> / <code>KIKOERUMANAGER_LOG_BACKUPS</code> 调整。
-        </div>
-
-        <div class="flex flex-wrap gap-2">
+        <div class="log-manager-footer">
           <button
             type="button"
             class="log-action-btn log-action-btn--default"
-            :disabled="cleanupLoading"
-            @click="loadLogInfo"
-          >
-            <RefreshCw :size="13" />刷新
-          </button>
-          <button
-            type="button"
-            class="log-action-btn log-action-btn--success"
-            :disabled="cleanupLoading"
-            @click="runLogCleanup('rotate')"
-            title="把当前 app.log 滚到 .1，新日志写入空文件；不删除任何内容"
-          >
-            <RefreshCw :size="13" />立即轮转
-          </button>
-          <button
-            type="button"
-            class="log-action-btn log-action-btn--warning"
-            :disabled="cleanupLoading"
-            @click="runLogCleanup('purge_backups')"
-            title="删除所有 app.log.N 备份文件"
-          >
-            <Trash2 :size="13" />清理所有备份
-          </button>
-          <button
-            type="button"
-            class="log-action-btn log-action-btn--warning"
-            :disabled="cleanupLoading"
-            @click="runLogCleanup('truncate')"
-            title="把主日志保留最近 2MB，丢弃前面所有内容（应急救急）"
-          >
-            <Trash2 :size="13" />截断主日志到 2MB
-          </button>
-          <button
-            type="button"
-            class="log-action-btn log-action-btn--danger"
-            :disabled="cleanupLoading"
-            @click="runLogCleanup('rotate_and_purge')"
-            title="先轮转再清理全部备份；当前 app.log 会被清空，旧日志将无法恢复"
-          >
-            <Trash2 :size="13" />一键瘦身
-          </button>
+            @click="logManagerVisible = false"
+          >关闭</button>
         </div>
       </div>
-
-      <template #footer>
-        <button
-          type="button"
-          class="log-action-btn log-action-btn--default"
-          @click="logManagerVisible = false"
-        >关闭</button>
-      </template>
     </el-dialog>
   </div>
 </template>
@@ -420,6 +432,7 @@ import {
   Search,
   Settings2,
   Trash2,
+  X,
 } from 'lucide-vue-next'
 import { ElDialog, ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
@@ -1373,11 +1386,303 @@ onUnmounted(() => {
   box-shadow: 0 6px 14px rgba(15, 23, 42, 0.1);
 }
 
+.log-action-btn:hover svg {
+  transform: rotate(-8deg) scale(1.08);
+}
+
+.log-action-btn svg {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .log-action-btn:active { transform: scale(0.96); }
 .log-action-btn--success { border-color: #bbf7d0; background: #f0fdf4; color: #16a34a; }
 .log-action-btn--warning { border-color: #fde68a; background: #fffbeb; color: #b45309; }
 .log-action-btn--danger  { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
 .log-action-btn--default:hover { border-color: #94a3b8; background: #f8fafc; }
+
+.log-manager-shell {
+  overflow: hidden;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.86)),
+    radial-gradient(circle at top left, rgba(99, 102, 241, 0.12), transparent 34%);
+  box-shadow:
+    0 24px 70px rgba(15, 23, 42, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.log-manager-header,
+.log-manager-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-color: rgba(226, 232, 240, 0.78);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.log-manager-header {
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.78);
+}
+
+.log-manager-footer {
+  justify-content: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid rgba(226, 232, 240, 0.78);
+}
+
+.log-manager-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+.log-manager-icon,
+.log-manager-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 1px solid rgba(203, 213, 225, 0.76);
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.log-manager-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+}
+
+.log-manager-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.log-manager-close:hover {
+  transform: translateY(-1px) scale(1.04);
+  border-color: rgba(248, 113, 113, 0.34);
+  background: rgba(254, 242, 242, 0.78);
+  color: #dc2626;
+}
+
+.log-manager-close:active {
+  transform: scale(0.94);
+}
+
+.log-stat-card,
+.log-policy-card,
+.log-file-panel {
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.log-stat-card {
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+.log-policy-card {
+  padding: 12px 14px;
+}
+
+.log-file-panel {
+  overflow: hidden;
+}
+
+.log-file-head,
+.log-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px 172px;
+  align-items: center;
+  gap: 12px;
+}
+
+.log-file-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+  background: rgba(248, 250, 252, 0.88);
+  color: #64748b;
+  font-size: 11.5px;
+  font-weight: 800;
+}
+
+.log-file-head span:nth-child(2),
+.log-file-head span:nth-child(3) {
+  text-align: right;
+}
+
+.log-file-row {
+  min-height: 40px;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.72);
+  font-size: 12.5px;
+}
+
+.log-file-row:last-child {
+  border-bottom: none;
+}
+
+.log-file-row:hover {
+  background: rgba(248, 250, 252, 0.7);
+}
+
+.log-file-badge {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 16px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.log-file-badge.is-main {
+  border: 1px solid rgba(52, 211, 153, 0.32);
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.98), rgba(209, 250, 229, 0.84));
+  color: #047857;
+}
+
+.log-file-badge.is-backup {
+  border: 1px solid rgba(129, 140, 248, 0.36);
+  background: linear-gradient(180deg, rgba(238, 242, 255, 0.98), rgba(224, 231, 255, 0.86));
+  color: #4f46e5;
+}
+
+.log-policy-card code {
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  border-radius: 6px;
+  background: rgba(241, 245, 249, 0.9);
+  padding: 1px 5px;
+  color: #334155;
+  font-size: 11px;
+}
+
+:global(.log-manager-overlay) {
+  background: rgba(15, 23, 42, 0.34) !important;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+:global(.log-manager-overlay .el-overlay-dialog) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 16px !important;
+}
+
+:global(.log-manager-dialog.el-dialog) {
+  margin: auto !important;
+  max-width: min(680px, calc(100vw - 32px)) !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+  --el-dialog-bg-color: transparent;
+}
+
+:global(.log-manager-dialog .el-dialog__header),
+:global(.log-manager-dialog .el-dialog__footer) {
+  display: none !important;
+}
+
+:global(.log-manager-dialog .el-dialog__body) {
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+:global(html.kikoerumanager-dark .log-manager-shell) {
+  border-color: rgba(148, 163, 184, 0.24);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.91)),
+    radial-gradient(circle at top left, rgba(99, 102, 241, 0.2), transparent 34%) !important;
+  color: #dbeafe;
+}
+
+:global(html.kikoerumanager-dark .log-manager-header),
+:global(html.kikoerumanager-dark .log-manager-footer) {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(30, 41, 59, 0.72);
+}
+
+:global(html.kikoerumanager-dark .log-manager-icon),
+:global(html.kikoerumanager-dark .log-manager-close),
+:global(html.kikoerumanager-dark .log-stat-card),
+:global(html.kikoerumanager-dark .log-policy-card),
+:global(html.kikoerumanager-dark .log-file-panel) {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: rgba(30, 41, 59, 0.72);
+  color: #cbd5e1;
+}
+
+:global(html.kikoerumanager-dark .log-manager-shell .text-slate-950),
+:global(html.kikoerumanager-dark .log-manager-shell .text-slate-900),
+:global(html.kikoerumanager-dark .log-manager-shell .text-slate-800),
+:global(html.kikoerumanager-dark .log-manager-shell .text-slate-700) {
+  color: #f8fafc !important;
+}
+
+:global(html.kikoerumanager-dark .log-manager-shell .text-slate-600),
+:global(html.kikoerumanager-dark .log-manager-shell .text-slate-500),
+:global(html.kikoerumanager-dark .log-manager-shell .text-slate-400) {
+  color: #94a3b8 !important;
+}
+
+:global(html.kikoerumanager-dark .log-file-head) {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.76);
+  color: #94a3b8;
+}
+
+:global(html.kikoerumanager-dark .log-file-row) {
+  border-color: rgba(148, 163, 184, 0.14);
+}
+
+:global(html.kikoerumanager-dark .log-file-row:hover) {
+  background: rgba(51, 65, 85, 0.34);
+}
+
+:global(html.kikoerumanager-dark .log-policy-card code) {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.78);
+  color: #bfdbfe;
+}
+
+@media (max-width: 720px) {
+  .log-manager-body {
+    padding: 12px;
+  }
+
+  .log-manager-body > .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .log-file-head,
+  .log-file-row {
+    grid-template-columns: minmax(0, 1fr) 86px;
+  }
+
+  .log-file-head span:nth-child(3),
+  .log-file-row > div:nth-child(3) {
+    display: none;
+  }
+}
 
 .log-level-pill {
   display: inline-flex;

@@ -15,64 +15,63 @@
       >
         <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" @click="close" />
         <div
-          class="relative bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden"
-          style="width: 94vw; height: 88vh;"
+          class="merge-workbench-shell"
           @mousedown.stop
         >
           <!-- Header -->
-          <div class="flex-none px-6 py-4 border-b border-slate-200 bg-gradient-to-br from-slate-50 to-white">
+          <div class="merge-workbench-header">
             <div class="flex items-start justify-between gap-4">
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2.5 mb-1">
-                  <GitMerge class="w-5 h-5 text-amber-500 flex-shrink-0" />
-                  <h3 class="text-lg font-bold text-slate-900">目录差异工作台</h3>
-                  <span v-if="isRemoteTarget" class="flex items-center gap-1 px-2.5 py-0.5 bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200 rounded-full">
+                  <span class="merge-workbench-icon">
+                    <GitMerge class="w-5 h-5" />
+                  </span>
+                  <h3 class="merge-workbench-title">目录差异工作台</h3>
+                  <span v-if="isRemoteTarget" class="merge-workbench-chip is-amber">
                     <Upload class="w-3 h-3" />
                     远程合并
                   </span>
                 </div>
-                <p class="text-sm text-slate-500 truncate">{{ conflictTitle }}</p>
+                <p class="merge-workbench-subtitle">{{ conflictTitle }}</p>
               </div>
               <div v-if="preview" class="flex flex-wrap gap-2 justify-end flex-shrink-0">
-                <button type="button" class="flex items-center gap-2 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all duration-200 hover:-translate-y-0.5" :class="statusFilter === 'changed' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white border-amber-200 text-amber-700 hover:border-amber-400'" @click="setStatusFilter('changed')">
+                <button type="button" class="merge-count-chip" :class="{ 'is-active is-amber': statusFilter === 'changed' }" @click="setStatusFilter('changed')">
                   <span>差异</span><strong>{{ displaySummary.changed }}</strong>
                 </button>
-                <button type="button" class="flex items-center gap-2 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all duration-200 hover:-translate-y-0.5" :class="statusFilter === 'new_only' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white border-emerald-200 text-emerald-700 hover:border-emerald-400'" @click="setStatusFilter('new_only')">
+                <button type="button" class="merge-count-chip" :class="{ 'is-active is-emerald': statusFilter === 'new_only' }" @click="setStatusFilter('new_only')">
                   <span>新包独有</span><strong>{{ displaySummary.newOnly }}</strong>
                 </button>
-                <button type="button" class="flex items-center gap-2 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all duration-200 hover:-translate-y-0.5" :class="statusFilter === 'old_only' ? 'bg-slate-600 text-white border-slate-600' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-400'" @click="setStatusFilter('old_only')">
+                <button type="button" class="merge-count-chip" :class="{ 'is-active is-slate': statusFilter === 'old_only' }" @click="setStatusFilter('old_only')">
                   <span>库存独有</span><strong>{{ displaySummary.oldOnly }}</strong>
                 </button>
-                <button type="button" class="flex items-center gap-2 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all duration-200 hover:-translate-y-0.5" :class="statusFilter === 'unchanged' ? 'bg-slate-200 text-slate-700 border-slate-300' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'" @click="setStatusFilter('unchanged')">
+                <button type="button" class="merge-count-chip" :class="{ 'is-active is-slate': statusFilter === 'unchanged' }" @click="setStatusFilter('unchanged')">
                   <span>一致</span><strong>{{ displaySummary.unchanged }}</strong>
                 </button>
               </div>
-              <button type="button" class="flex-shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all duration-200" @click="close">
+              <button type="button" class="merge-icon-btn" :disabled="loading || submitting" @click="close">
                 <X class="w-5 h-5" />
               </button>
             </div>
           </div>
 
           <!-- Toolbar -->
-          <div class="flex-none px-6 py-3 border-b border-slate-100 flex items-center gap-3 flex-wrap bg-white/80">
+          <div class="merge-workbench-toolbar">
             <div class="relative flex-1 min-w-[180px]">
               <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-              <input v-model="searchText" type="text" placeholder="搜索文件名或路径" class="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-200 rounded-xl text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
+              <input v-model="searchText" type="text" placeholder="搜索文件名或路径" class="merge-search-input" />
             </div>
-            <select v-model="statusFilter" class="px-3 py-2 text-sm bg-white border border-slate-200 rounded-xl text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 cursor-pointer">
-              <option value="all">全部项目</option>
-              <option value="changed">仅差异项</option>
-              <option value="new_only">仅新包独有</option>
-              <option value="old_only">仅库存独有</option>
-              <option value="size_changed">仅大小不同</option>
-              <option value="other_changed">仅其他差异</option>
-              <option value="unchanged">仅一致</option>
-            </select>
+            <AppDropdown
+              v-model="statusFilter"
+              :options="statusDropdownOptions"
+              label="范围"
+              :width="176"
+              :menu-min-width="190"
+            />
             <div class="flex gap-2">
-              <button type="button" class="px-3 py-2 text-sm font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400 rounded-xl transition-all duration-200 flex items-center gap-1.5" @click="resetDecisions">
+              <button type="button" class="merge-toolbar-btn" @click="resetDecisions">
                 <RotateCcw class="w-3.5 h-3.5" />恢复默认
               </button>
-              <button type="button" class="px-3 py-2 text-sm font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400 rounded-xl transition-all duration-200 flex items-center gap-1.5 disabled:opacity-50" :disabled="submitting || loading" @click="$emit('refresh')">
+              <button type="button" class="merge-toolbar-btn" :disabled="submitting || loading" @click="$emit('refresh')">
                 <RefreshCw class="w-3.5 h-3.5" :class="loading ? 'animate-spin' : ''" />重新生成
               </button>
             </div>
@@ -86,11 +85,33 @@
           </div>
 
           <!-- Loading -->
-          <div v-if="loading" class="flex-1 flex items-center justify-center bg-slate-50/50">
-            <div class="text-center">
-              <div class="w-10 h-10 border-[3px] border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-              <p class="text-sm font-medium text-slate-700">正在生成合并预览...</p>
-              <p class="text-xs text-slate-400 mt-1">比对新旧文件并同步决策面板</p>
+          <div v-if="loading" class="merge-loading-panel">
+            <div class="merge-loading-card">
+              <div class="merge-loading-orbit">
+                <GitMerge class="w-7 h-7" />
+              </div>
+              <p class="merge-loading-title">{{ activeLoadingStep.title }}</p>
+              <p class="merge-loading-desc">{{ activeLoadingStep.description }}</p>
+              <div class="merge-loading-track">
+                <div class="merge-loading-bar" :style="{ width: `${loadingProgress}%` }" />
+              </div>
+              <div class="merge-loading-steps">
+                <div
+                  v-for="(step, index) in loadingSteps"
+                  :key="step.key"
+                  class="merge-loading-step"
+                  :class="{ 'is-active': index === activeLoadingIndex, 'is-done': index < activeLoadingIndex }"
+                >
+                  <span class="merge-loading-dot">
+                    <CheckCircle2 v-if="index < activeLoadingIndex" class="w-3 h-3" />
+                    <Loader2 v-else-if="index === activeLoadingIndex" class="w-3 h-3 animate-spin" />
+                  </span>
+                  <span>{{ step.title }}</span>
+                </div>
+              </div>
+              <p class="merge-loading-footnote">
+                已等待 {{ loadingElapsedSeconds }} 秒。大压缩包、分卷包或远程库存会更久，窗口会保持在这里直到后端返回。
+              </p>
             </div>
           </div>
 
@@ -218,9 +239,9 @@
             </div>
             <div v-else class="flex-1" />
             <div class="flex items-center gap-3">
-              <button type="button" class="px-5 py-2.5 text-sm font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-400 rounded-2xl transition-all duration-200 disabled:opacity-50" :disabled="submitting" @click="close">关闭</button>
-              <button type="button" class="px-6 py-2.5 text-sm font-bold text-white rounded-2xl transition-all duration-200 disabled:opacity-50 flex items-center gap-2" :class="submitting ? 'bg-amber-400 cursor-not-allowed' : 'bg-gradient-to-br from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 hover:-translate-y-0.5 shadow-lg shadow-amber-500/30 active:scale-95'" :disabled="!preview || submitting" @click="$emit('submit')">
-                <span v-if="submitting" class="w-4 h-4 border-2 border-white/60 border-t-white rounded-full animate-spin" />
+              <button type="button" class="merge-footer-btn is-ghost" :disabled="loading || submitting" @click="close">关闭</button>
+              <button type="button" class="merge-footer-btn is-primary" :disabled="!preview || submitting || loading" @click="$emit('submit')">
+                <Loader2 v-if="submitting" class="w-4 h-4 animate-spin" />
                 <GitMerge v-else class="w-4 h-4" />
                 <span>{{ submitLabel }}</span>
               </button>
@@ -233,12 +254,14 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   GitMerge, Search, RotateCcw, RefreshCw, X, Upload,
   ChevronRight, ChevronDown,
-  File as FileIcon, Folder as FolderIcon
+  File as FileIcon, Folder as FolderIcon,
+  CheckCircle2, Loader2
 } from 'lucide-vue-next'
+import AppDropdown from '../common/AppDropdown.vue'
 
 const props = defineProps({
   modelValue: {
@@ -271,6 +294,50 @@ const emit = defineEmits(['update:modelValue', 'update:decisions', 'refresh', 's
 
 const searchText = ref('')
 const statusFilter = ref('all')
+const loadingElapsedSeconds = ref(0)
+let loadingTimer = null
+
+const statusDropdownOptions = [
+  { value: 'all', label: '全部项目' },
+  { value: 'changed', label: '仅差异项' },
+  { value: 'new_only', label: '仅新包独有' },
+  { value: 'old_only', label: '仅库存独有' },
+  { value: 'size_changed', label: '仅大小不同' },
+  { value: 'other_changed', label: '仅其他差异' },
+  { value: 'unchanged', label: '仅一致' },
+]
+
+const loadingSteps = computed(() => {
+  const isArchive = props.conflict?.context?.new_path_kind === 'archive'
+  return [
+    { key: 'prepare', title: '准备工作区', description: '创建临时目录并确认新旧路径' },
+    { key: 'stage', title: isArchive ? '复制压缩包' : '复制目录', description: isArchive ? '把待处理压缩包放入合并工作区' : '把待处理目录放入合并工作区' },
+    { key: 'extract', title: isArchive ? '解压新包' : '整理新目录', description: isArchive ? '调用解压器展开内容，分卷和大包会在这里停留更久' : '对新目录做过滤前准备' },
+    { key: 'filter', title: '过滤临时目录', description: '按项目规则清理无效文件并保留可入库内容' },
+    { key: 'scan', title: isRemoteTarget.value ? '读取远程库存' : '扫描库存目录', description: isRemoteTarget.value ? '从远程库存读取目录清单' : '扫描现有目录的文件树' },
+    { key: 'diff', title: '生成差异树', description: '按相对路径生成逐文件合并决策' },
+  ]
+})
+
+const activeLoadingIndex = computed(() => {
+  if (!props.loading) return loadingSteps.value.length - 1
+  const elapsed = loadingElapsedSeconds.value
+  if (elapsed < 2) return 0
+  if (elapsed < 6) return 1
+  if (elapsed < 18) return 2
+  if (elapsed < 28) return 3
+  if (elapsed < 42) return 4
+  return 5
+})
+
+const activeLoadingStep = computed(() => loadingSteps.value[activeLoadingIndex.value] || loadingSteps.value[0])
+
+const loadingProgress = computed(() => {
+  if (!props.loading) return 100
+  const base = Math.min(92, 12 + loadingElapsedSeconds.value * 1.7)
+  const stepFloor = activeLoadingIndex.value * 14
+  return Math.max(stepFloor, Math.round(base))
+})
 
 const visible = computed({
   get: () => props.modelValue,
@@ -685,8 +752,34 @@ function flattenTree(nodes, depth = 0) {
 
 const displayRows = computed(() => flattenTree(filteredTreeData.value))
 
+watch(
+  () => props.loading,
+  (value) => {
+    if (loadingTimer) {
+      clearInterval(loadingTimer)
+      loadingTimer = null
+    }
+    if (!value) {
+      loadingElapsedSeconds.value = 0
+      return
+    }
+    loadingElapsedSeconds.value = 0
+    loadingTimer = setInterval(() => {
+      loadingElapsedSeconds.value += 1
+    }, 1000)
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  if (loadingTimer) {
+    clearInterval(loadingTimer)
+    loadingTimer = null
+  }
+})
+
 function close() {
-  if (!props.submitting) {
+  if (!props.submitting && !props.loading) {
     visible.value = false
   }
 }
@@ -758,7 +851,372 @@ function formatDate(value) {
 </script>
 
 <style scoped>
+.merge-workbench-shell {
+  position: relative;
+  display: flex;
+  width: min(94vw, 1480px);
+  height: 88vh;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.2), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.merge-workbench-header {
+  flex: none;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(245, 158, 11, 0.12), transparent 34%),
+    linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  padding: 18px 24px;
+}
+
+.merge-workbench-icon {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: #d97706;
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+  box-shadow: 0 10px 24px rgba(245, 158, 11, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.merge-workbench-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.merge-workbench-subtitle {
+  max-width: 720px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.merge-workbench-chip,
+.merge-count-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 999px;
+  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.merge-workbench-chip {
+  padding: 3px 9px;
+}
+
+.merge-workbench-chip.is-amber {
+  border-color: rgba(245, 158, 11, 0.24);
+  color: #b45309;
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+}
+
+.merge-count-chip {
+  padding: 7px 11px;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.merge-count-chip:hover {
+  transform: translateY(-1px) scale(1.03);
+  border-color: rgba(148, 163, 184, 0.65);
+}
+
+.merge-count-chip.is-active {
+  color: #fff;
+}
+
+.merge-count-chip.is-active.is-amber {
+  border-color: #f59e0b;
+  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 52%, #d97706 100%);
+  box-shadow: 0 10px 22px rgba(245, 158, 11, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.merge-count-chip.is-active.is-emerald {
+  border-color: #10b981;
+  background: linear-gradient(180deg, #34d399 0%, #10b981 54%, #059669 100%);
+  box-shadow: 0 10px 22px rgba(16, 185, 129, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.merge-count-chip.is-active.is-slate {
+  border-color: #475569;
+  background: linear-gradient(180deg, #64748b 0%, #475569 52%, #334155 100%);
+  box-shadow: 0 10px 22px rgba(71, 85, 105, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.merge-icon-btn {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: #64748b;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.merge-icon-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(226, 232, 240, 0.95);
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.merge-workbench-toolbar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid rgba(241, 245, 249, 0.95);
+  background: rgba(255, 255, 255, 0.86);
+  padding: 12px 24px;
+}
+
+.merge-search-input {
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 9px 12px 9px 36px;
+  font-size: 13px;
+  color: #334155;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.merge-search-input:focus {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
+}
+
+.merge-toolbar-btn,
+.merge-footer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.merge-toolbar-btn {
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: #fff;
+  color: #475569;
+  padding: 9px 12px;
+}
+
+.merge-toolbar-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: rgba(245, 158, 11, 0.34);
+  color: #b45309;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+}
+
+.merge-toolbar-btn:hover:not(:disabled) svg,
+.merge-footer-btn:hover:not(:disabled) svg,
+.merge-icon-btn:hover:not(:disabled) svg {
+  transform: rotate(-8deg) scale(1.08);
+}
+
+.merge-toolbar-btn svg,
+.merge-footer-btn svg,
+.merge-icon-btn svg {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.merge-loading-panel {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.94) 0%, rgba(255, 255, 255, 0.98) 100%),
+    radial-gradient(circle at 50% 18%, rgba(245, 158, 11, 0.12), transparent 32%);
+  padding: 24px;
+}
+
+.merge-loading-card {
+  width: min(640px, 100%);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  padding: 28px;
+  text-align: center;
+  box-shadow: 0 22px 56px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.merge-loading-orbit {
+  position: relative;
+  display: inline-flex;
+  width: 64px;
+  height: 64px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 18px;
+  color: #d97706;
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+  box-shadow: 0 18px 38px rgba(245, 158, 11, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.merge-loading-orbit::after {
+  position: absolute;
+  inset: -7px;
+  border: 2px solid rgba(245, 158, 11, 0.24);
+  border-top-color: #f59e0b;
+  border-radius: 22px;
+  animation: merge-spin 1s linear infinite;
+  content: '';
+}
+
+.merge-loading-title {
+  margin-top: 18px;
+  font-size: 17px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.merge-loading-desc {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.merge-loading-track {
+  height: 8px;
+  margin-top: 20px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.merge-loading-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f59e0b 0%, #10b981 56%, #2563eb 100%);
+  box-shadow: 0 8px 18px rgba(245, 158, 11, 0.24);
+  transition: width 0.45s ease;
+}
+
+.merge-loading-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 20px;
+  text-align: left;
+}
+
+.merge-loading-step {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 9px 10px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.merge-loading-step.is-active {
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #b45309;
+  background: #fffbeb;
+}
+
+.merge-loading-step.is-done {
+  border-color: rgba(16, 185, 129, 0.25);
+  color: #047857;
+  background: #ecfdf5;
+}
+
+.merge-loading-dot {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.merge-loading-footnote {
+  margin-top: 16px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #64748b;
+}
+
+.merge-footer-btn {
+  padding: 10px 20px;
+}
+
+.merge-footer-btn.is-ghost {
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: #fff;
+  color: #475569;
+}
+
+.merge-footer-btn.is-ghost:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: rgba(148, 163, 184, 0.5);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+}
+
+.merge-footer-btn.is-primary {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #fff;
+  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 52%, #d97706 100%);
+  box-shadow: 0 14px 28px rgba(245, 158, 11, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.merge-footer-btn.is-primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 34px rgba(245, 158, 11, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.merge-footer-btn:active:not(:disabled),
+.merge-toolbar-btn:active:not(:disabled),
+.merge-icon-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.96);
+}
+
 button:not(:disabled) { cursor: pointer; }
-button:disabled { cursor: not-allowed; }
+button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+@keyframes merge-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 768px) {
+  .merge-workbench-shell {
+    width: 96vw;
+    height: 92vh;
+  }
+
+  .merge-loading-steps {
+    grid-template-columns: 1fr;
+  }
+}
 </style>
 

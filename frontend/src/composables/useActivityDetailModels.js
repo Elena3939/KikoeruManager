@@ -8,7 +8,7 @@ import { computed, ref, watch } from 'vue'
 import dayjs from 'dayjs'
 import {
   AlertCircle, CheckCircle2, File as FileIcon, FileArchive, FileText,
-  Film, Folder, Image as ImageIcon, MinusCircle, Music,
+  Film, Folder, Image as ImageIcon, MinusCircle, Music, RefreshCw,
 } from 'lucide-vue-next'
 
 // ===================== 通用工具 =====================
@@ -853,6 +853,43 @@ function importFilteredEntrySections(row) {
   }]
 }
 
+function conflictResolutionEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (String(row?.category || '').trim() !== 'conflict_resolution') return []
+  const rawItems = Array.isArray(d.file_diff_items) ? d.file_diff_items : []
+  if (!rawItems.length) return []
+  const items = mapFilterDeleteItems(rawItems).map((item, index) => {
+    const raw = rawItems[index] || {}
+    const variant = String(raw.variant || '').trim()
+    const badgeMap = { added: '新增', deleted: '删除', changed: '变更' }
+    const oldSize = Number(raw.old_size || 0)
+    const newSize = Number(raw.new_size || raw.size || 0)
+    const metaText = variant === 'changed' && (oldSize || newSize)
+      ? `${formatBytes(oldSize)} -> ${formatBytes(newSize)}`
+      : ''
+    return {
+      ...item,
+      variant,
+      metaText,
+      badges: badgeMap[variant] ? [badgeMap[variant]] : [],
+    }
+  })
+  const addedCount = Number(d.added_count || items.filter((it) => it.variant === 'added').length || 0)
+  const deletedCount = Number(d.deleted_count || items.filter((it) => it.variant === 'deleted').length || 0)
+  const changedCount = Number(d.changed_count || items.filter((it) => it.variant === 'changed').length || 0)
+  const titleBits = []
+  if (addedCount) titleBits.push(`新增 ${addedCount}`)
+  if (deletedCount) titleBits.push(`删除 ${deletedCount}`)
+  if (changedCount) titleBits.push(`变更 ${changedCount}`)
+  return [{
+    key: 'conflict-resolution-diff',
+    title: `文件树变化（${titleBits.join(' / ') || items.length}）`,
+    description: [d.source_path, d.target_path || d.final_path].filter(Boolean).join(' -> '),
+    rows: buildFilterDeleteTreeRows(items),
+  }]
+}
+
 function mapAsmrSyncFileItems(items, mode) {
   return (Array.isArray(items) ? items : []).slice(0, 200).map((item, index) => {
     const path = String(item?.relative_path || item?.path || item?.upload_path || item?.resource_path || item?.name || '')
@@ -1162,6 +1199,7 @@ function subtitleBatchEntrySections(row) {
 
 function activityEntrySections(row) {
   return [
+    ...conflictResolutionEntrySections(row),
     ...asmrSyncEntrySections(row),
     ...deleteEntrySections(row),
     ...importFilteredEntrySections(row),
@@ -1173,6 +1211,7 @@ function activityEntrySections(row) {
 function activityEntrySectionTitle(row) {
   const d = row?.detail
   if (d && typeof d === 'object' && d.mode === 'subtitle_batch_start') return '批量详情'
+  if (String(row?.category || '').trim() === 'conflict_resolution') return '问题作品处理'
   if (['asmr_sync', 'upload'].includes(String(row?.category || '').trim())) return '文件树'
   if (String(row?.category || '').trim() === 'pipeline_delete') return '文件树'
   if (['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return '处理清单'
@@ -1185,6 +1224,8 @@ function resolveEntryIcon(item) {
   const v = String(item?.variant || '').trim()
   if (v === 'warning') return AlertCircle
   if (v === 'success') return CheckCircle2
+  if (v === 'added') return CheckCircle2
+  if (v === 'changed') return RefreshCw
   if (String(item?.type || '').trim() === 'dir') return Folder
   const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
   if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(name)) return Music
@@ -1199,6 +1240,8 @@ function entryIconClass(item) {
   const v = String(item?.variant || '').trim()
   if (v === 'warning') return 'is-warning'
   if (v === 'success') return 'is-success'
+  if (v === 'added') return 'is-added'
+  if (v === 'changed') return 'is-changed'
   if (String(item?.type || '').trim() === 'dir') return 'is-dir'
   const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
   if (/\.(wav|flac)$/i.test(name)) return 'is-audio-blue'

@@ -76,6 +76,10 @@ class ExtractService:
     # _list_archive_contents 最近检测到的编码（archive_path -> encoding_name），
     # 供 _get_archive_info 写入 archive_info.detected_encoding，进而给 _get_mcp_args 使用。
     _archive_encoding_cache: Dict[str, str] = {}
+    # 7zz 的 -mcp 参数兼容性检测：24.08+ 某些版本/某些 ZIP 文件对 `-mcp=N` 直接抛
+    # `opening : E_INVALIDARG`。第一次检测到后置为 True，后续 _get_mcp_args 直接
+    # short-circuit 返回 []，禁止再传 -mcp。事后 _repair_mojibake_filenames_in_place 兜底。
+    _seven_zip_mcp_unsupported: bool = False
     # 上次构建 semaphore 时所用的"探测目标路径 + 探测结果"，用于热重载时识别变更
     _seven_zip_semaphore_storage_key: Optional[str] = None
     # ------- 密码探测 / 负缓存 -------
@@ -235,7 +239,14 @@ class ExtractService:
 
         当 zip_encoding=0（未配置）时，自动使用 archive_info.detected_encoding
         推断代码页（如日文 ZIP 自动得到 -mcp=932）。
+
+        7zz 24.08+ 某些版本/某些 ZIP 对 -mcp= 直接抛 `opening : E_INVALIDARG`。
+        _run_7z_command 检测到该错误会把 _seven_zip_mcp_unsupported 置 True，
+        这里 short-circuit 一律返回 []，让 7zz 走默认 UTF-8 解读；文件名 mojibake
+        由事后 _repair_mojibake_filenames_in_place 兜底反解。
         """
+        if self.__class__._seven_zip_mcp_unsupported:
+            return []
         if not archive_path:
             if archive_info is not None:
                 archive_path = getattr(archive_info, 'path', None)
@@ -4771,6 +4782,7 @@ class ExtractService:
 
                 if return_code != 0:
                     logger.error(f"7z命令执行失败，返回码: {return_code}")
+                    err_text_for_retry = ''
                     try:
                         # Linux 容器 stderr 是 UTF-8，Windows 7-Zip 多为 GBK。
                         # 优先 UTF-8，失败再按平台回退，避免把 UTF-8 中文路径
@@ -4780,9 +4792,38 @@ class ExtractService:
                             err_text = bytes(stderr_data).decode('utf-8')
                         except UnicodeDecodeError:
                             err_text = bytes(stderr_data).decode(fallback_encoding, errors='replace')
+                        err_text_for_retry = err_text
                         logger.error(f"错误输出: {err_text[:500]}")
                     except Exception as e:
                         logger.error(f"执行7z命令失败: {e}")
+                    # E_INVALIDARG + -mcp= 兼容性自动重试：
+                    # 7zz 24.08+ 某些版本/某些 ZIP 文件组合对 `-mcp=N` 直接抛
+                    # `opening : E_INVALIDARG`，导致 list / 解压都失败。这里检测到后
+                    # 标记类属性 _seven_zip_mcp_unsupported = True（后续 _get_mcp_args
+                    # 一律 short-circuit 返回 []），并剥掉 -mcp 重试一次。
+                    # 标志位 True 之后递归调用走 _get_mcp_args short-circuit，无无限递归风险。
+                    if (
+                        'E_INVALIDARG' in err_text_for_retry
+                        and any(isinstance(arg, str) and arg.startswith('-mcp=') for arg in cmd)
+                        and not self.__class__._seven_zip_mcp_unsupported
+                    ):
+                        self.__class__._seven_zip_mcp_unsupported = True
+                        cleaned_cmd = [
+                            arg for arg in cmd
+                            if not (isinstance(arg, str) and arg.startswith('-mcp='))
+                        ]
+                        logger.warning(
+                            "[7z] 检测到 -mcp 参数不被该 7zz 版本接受 (E_INVALIDARG)，"
+                            "标记 _seven_zip_mcp_unsupported 并剥掉 -mcp 重试: %s",
+                            ' '.join(cleaned_cmd),
+                        )
+                        return await self._run_7z_command(
+                            cleaned_cmd,
+                            progress_callback=progress_callback,
+                            capture_stdout=capture_stdout,
+                            max_captured_bytes=max_captured_bytes,
+                            task=task,
+                        )
                     return subprocess.CompletedProcess(
                         args=cmd,
                         returncode=return_code,

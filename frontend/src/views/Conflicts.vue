@@ -160,10 +160,14 @@
                 isConflictSelected(conflict.id) ? 'is-selected' : '',
                 conflict.id === activeConflictId ? 'is-active' : '',
                 isConflictProcessing(conflict) ? 'processing-conflict-card' : '',
+                isKeepNewProcessing(conflict) ? 'keep-new-conflict-card' : '',
                 isConflictRetrying(conflict) ? 'retry-conflict-card' : ''
               ]"
               @click="handleConflictCardClick(conflict, $event)"
             >
+              <span v-if="isKeepNewProcessing(conflict)" class="keep-new-card-orbit" aria-hidden="true">
+                <Save class="w-3.5 h-3.5" />
+              </span>
               <span v-if="isConflictRetrying(conflict)" class="retry-card-orbit" aria-hidden="true">
                 <RotateCcw class="w-3.5 h-3.5" />
               </span>
@@ -685,6 +689,15 @@ function isRetryProcessing(conflict) {
   return isConflictProcessing(conflict) && isRetryConflict(conflict)
 }
 
+function getConflictResolutionAction(conflict) {
+  const metadata = conflict?.new_metadata || {}
+  return String(metadata.resolution_action || metadata.conflict_resolution_action || '').trim().toUpperCase()
+}
+
+function isKeepNewProcessing(conflict) {
+  return isConflictProcessing(conflict) && getConflictResolutionAction(conflict) === 'KEEP_NEW'
+}
+
 function isConflictRetrying(conflict) {
   if (!conflict?.id) return false
   return Boolean(
@@ -697,8 +710,8 @@ function isConflictRetrying(conflict) {
 
 function isRetryConflict(conflict) {
   const metadata = conflict?.new_metadata || {}
-  return String(metadata.resolution_action || metadata.conflict_resolution_action || '').trim().toUpperCase() === 'RETRY' ||
-    Boolean(metadata.retry_from_conflicts || metadata.retry_conflict_id || metadata.retry_task_id || metadata.resolution_task_id)
+  return getConflictResolutionAction(conflict) === 'RETRY' ||
+    Boolean(metadata.retry_from_conflicts || metadata.retry_conflict_id || metadata.retry_task_id)
 }
 
 function isActiveRetryLinkedTask(conflict) {
@@ -724,6 +737,7 @@ function getConflictRetryProgress(conflict) {
 
 function getConflictStatusLabel(conflict) {
   if (isConflictRetrying(conflict)) return '重试中'
+  if (isKeepNewProcessing(conflict)) return '保留新版中'
   if (isConflictProcessing(conflict)) return '处理中'
   return '待处理'
 }
@@ -2488,6 +2502,57 @@ button:disabled {
   animation: processing-conflict-aura 1.9s ease-in-out infinite;
 }
 
+.keep-new-conflict-card {
+  border-color: rgba(59, 130, 246, 0.78) !important;
+  background:
+    linear-gradient(100deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.98) 42%, rgba(219, 234, 254, 0.78)) !important;
+  box-shadow:
+    0 0 0 1px rgba(59, 130, 246, 0.26),
+    0 0 20px rgba(59, 130, 246, 0.2),
+    0 0 38px rgba(37, 99, 235, 0.14) !important;
+  animation: keep-new-conflict-glow 1.7s ease-in-out infinite;
+}
+
+.keep-new-conflict-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 0%, rgba(255, 255, 255, 0.9) 44%, transparent 60%);
+  transform: translateX(-120%);
+  animation: keep-new-card-sheen 1.35s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+
+.keep-new-conflict-card::after {
+  box-shadow:
+    0 0 0 1px rgba(147, 197, 253, 0.34),
+    0 0 24px rgba(59, 130, 246, 0.25),
+    0 0 46px rgba(37, 99, 235, 0.18) !important;
+  animation: keep-new-conflict-aura 1.7s ease-in-out infinite;
+}
+
+.keep-new-card-orbit {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 999px;
+  background: rgba(239, 246, 255, 0.96);
+  color: #2563eb;
+  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.2);
+  animation: keep-new-card-float 1.15s ease-in-out infinite;
+}
+
+.keep-new-card-orbit svg {
+  animation: keep-new-card-pulse 1.2s ease-in-out infinite;
+}
+
 .retry-conflict-card {
   border-color: rgba(16, 185, 129, 0.82) !important;
   background:
@@ -2555,6 +2620,47 @@ button:disabled {
     opacity: 0.92;
     transform: scale(1.01);
   }
+}
+
+@keyframes keep-new-conflict-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(59, 130, 246, 0.22),
+      0 0 16px rgba(59, 130, 246, 0.14),
+      0 0 30px rgba(37, 99, 235, 0.1);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(59, 130, 246, 0.36),
+      0 0 28px rgba(59, 130, 246, 0.25),
+      0 0 50px rgba(37, 99, 235, 0.18);
+  }
+}
+
+@keyframes keep-new-conflict-aura {
+  0%, 100% {
+    opacity: 0.54;
+    transform: scale(0.995);
+  }
+  50% {
+    opacity: 0.96;
+    transform: scale(1.012);
+  }
+}
+
+@keyframes keep-new-card-sheen {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(120%); }
+}
+
+@keyframes keep-new-card-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.14); }
+}
+
+@keyframes keep-new-card-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
 }
 
 @keyframes retry-card-sheen {
