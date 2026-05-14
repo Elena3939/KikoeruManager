@@ -208,6 +208,19 @@ class TestExtractService:
         assert extract_service._has_garbled_text("温泉浜辺.wav") is False
         assert extract_service._has_garbled_text("温泉浜辺/read me.txt") is False
         assert extract_service._has_garbled_text("本編_温泉浜辺_特典.wav") is False
+        assert extract_service._repair_mojibake_filename("温泉浜辺.wav") is None
+        assert extract_service._repair_mojibake_filename("本編_温泉浜辺_特典.wav") is None
+
+    def test_filename_garbled_guard_allows_many_normal_japanese_kanji_names(self, extract_service, temp_dir):
+        """多个正常日文汉字文件名反复出现 marker，也不能靠合并评分误判。"""
+        root = os.path.join(temp_dir, "output")
+        os.makedirs(root, exist_ok=True)
+        for index in range(30):
+            name = f"温泉浜辺_特典_{index:02d}.wav"
+            with open(os.path.join(root, name), "w", encoding="utf-8") as fp:
+                fp.write("ok")
+
+        assert extract_service._find_garbled_filename_sample(root, max_names=None) is None
 
     def test_unar_encoding_candidates_try_utf8_before_shift_jis(self, extract_service):
         """UTF-8 文件名被误按 GBK 解码时，必须先给 unar 明确 UTF-8 的机会。"""
