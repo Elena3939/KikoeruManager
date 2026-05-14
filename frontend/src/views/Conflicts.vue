@@ -1061,19 +1061,27 @@ async function askRetryPassword(conflict, batchCount = 1) {
       filenameEncoding: '',
       ignoreGarbled: false,
     }
-    if (!garbledMeta || isBatch) return result
+    // 批量重试不支持单独指定编码，直接返回
+    if (isBatch) return result
+    // 只对 EXTRACT_FAILED / PROCESS_FAILED 单条重试显示编码选项
+    const conflictType = String(conflict?.conflict_type || '').toUpperCase()
+    const supportsEncodingStep = conflictType === 'EXTRACT_FAILED' || conflictType === 'PROCESS_FAILED'
+    if (!supportsEncodingStep) return result
 
+    const encodingHint = garbledMeta?.sample
+      ? `当前乱码样本：${garbledMeta.sample}`
+      : '压缩包文件名可能存在编码问题（GBK / Shift_JIS 等）。'
     const encodingValue = await showSystemPrompt({
-      title: '指定文件名编码',
+      title: '指定文件名编码（可选）',
       message: [
-        `当前乱码样本：${garbledMeta.sample || '—'}`,
+        encodingHint,
         '可填 932 / cp932 / shift_jis / 936 / gbk / 950 / big5 / 949 / euc_kr。',
         '留空表示继续使用自动嗅探。填写后会先预览压缩包目录名。'
       ].join('\n'),
       confirmText: '预览文件名',
-      cancelText: '跳过编码设置',
+      cancelText: '跳过编码设置（直接重试）',
       inputType: 'text',
-      placeholder: '例如 932 或 cp932',
+      placeholder: '例如 932 或 cp932，留空自动嗅探',
       closeOnClickModal: false
     }).catch(error => {
       if (error === 'cancel' || error === 'close') return ''
@@ -1089,13 +1097,23 @@ async function askRetryPassword(conflict, batchCount = 1) {
       limit: 60,
     })
     const preview = previewResponse.preview || {}
-    const names = (preview.items || []).slice(0, 12).map(item => item.name).filter(Boolean)
+    // 优先使用带乱码标记的 diagnostics，降级到 items
+    const diagList = Array.isArray(preview.diagnostics) ? preview.diagnostics : []
+    const fileLines = diagList.slice(0, 15).map(d => {
+      const icon = d.garbled ? '⚠' : '✓'
+      const scoreStr = d.score != null ? ` [${d.score}]` : ''
+      return `${icon} ${d.name || '—'}${scoreStr}`
+    })
+    if (!fileLines.length) {
+      const names = (preview.items || []).slice(0, 15).map(item => item.name).filter(Boolean)
+      fileLines.push(...names)
+    }
+    const garbledCount = diagList.filter(d => d.garbled).length
     const previewLines = [
       `编码：${preview.encoding} / codepage=${preview.codepage || 'auto'}`,
-      `文件数：${preview.file_count || 0}`,
-      preview.garbled_sample ? `仍疑似乱码：${preview.garbled_sample}` : '预览未命中高风险乱码文件名',
+      `文件总数：${preview.file_count || 0}${garbledCount ? `，仍疑似乱码：${garbledCount} 个` : '，未检测到乱码文件名'}`,
       '',
-      ...names,
+      ...fileLines,
     ]
     await showSystemConfirm({
       title: '文件名预览',
