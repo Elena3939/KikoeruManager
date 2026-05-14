@@ -578,6 +578,7 @@ async function fetchConflicts() {
       // 阶段 1：不带 stats 立即拿列表（远程 stat 跳过，秒回），保证界面先渲染出来。
       const data = await conflictApi.list({ includeStats: false })
       conflicts.value = data.conflicts || []
+      reconcileLocalRetryingConflicts()
       syncSelectedConflicts()
       syncActiveConflict()
     } catch (error) {
@@ -729,6 +730,24 @@ function markConflictRetrying(conflictId, value) {
   delete localRetryingConflictIds[conflictId]
 }
 
+function reconcileLocalRetryingConflicts() {
+  for (const conflictId of Object.keys(localRetryingConflictIds)) {
+    const conflict = conflicts.value.find(item => item.id === conflictId)
+    if (!shouldKeepLocalRetrying(conflict)) {
+      delete localRetryingConflictIds[conflictId]
+    }
+  }
+}
+
+function shouldKeepLocalRetrying(conflict) {
+  if (!conflict) return false
+  const status = String(conflict.status || '').trim().toUpperCase()
+  const linkedStatus = String(conflict.linked_task?.status || '').trim().toLowerCase()
+  if (['completed', 'failed', 'cancelled', 'canceled'].includes(linkedStatus)) return false
+  if (['pending', 'processing', 'paused', 'waiting_retry'].includes(linkedStatus)) return true
+  return status === 'PROCESSING' && isRetryConflict(conflict)
+}
+
 function getConflictRetryProgress(conflict) {
   const value = Number(conflict?.linked_task?.progress ?? conflict?.new_metadata?.resolution_progress ?? 0)
   if (!Number.isFinite(value)) return 0
@@ -862,13 +881,19 @@ function startRetryPoller(taskId, conflictId) {
   if (retryPollers.has(taskId)) return
   let attempts = 0
   const maxAttempts = 120
+  const scheduleNext = () => {
+    const delay = attempts < 10 ? 1500 : 5000
+    const timerId = setTimeout(poll, delay)
+    retryPollers.set(taskId, timerId)
+  }
 
   const poll = async () => {
     attempts++
     try {
       const task = await taskCenterApi.getItem({ engine_task_id: taskId })
       if (task) {
-        if (task.status === 'completed') {
+        const taskStatus = String(task.status || '').trim().toLowerCase()
+        if (taskStatus === 'completed') {
           retryPollers.delete(taskId)
           markConflictRetrying(conflictId, false)
           await fetchConflicts()
@@ -879,11 +904,19 @@ function startRetryPoller(taskId, conflictId) {
           }
           return
         }
-        if (task.status === 'failed') {
+        if (taskStatus === 'failed') {
           retryPollers.delete(taskId)
           markConflictRetrying(conflictId, false)
           await fetchConflicts()
           ElMessage.warning(task.error_message ? `重试失败：${task.error_message}` : '重试失败，请查看任务详情')
+          return
+        }
+      } else {
+        await fetchConflicts()
+        const conflict = conflicts.value.find(item => item.id === conflictId)
+        if (!shouldKeepLocalRetrying(conflict)) {
+          retryPollers.delete(taskId)
+          markConflictRetrying(conflictId, false)
           return
         }
       }
@@ -893,8 +926,7 @@ function startRetryPoller(taskId, conflictId) {
     } catch (_) {
     }
     if (attempts < maxAttempts && retryPollers.has(taskId)) {
-      const timerId = setTimeout(poll, 5000)
-      retryPollers.set(taskId, timerId)
+      scheduleNext()
     } else {
       retryPollers.delete(taskId)
       markConflictRetrying(conflictId, false)
@@ -902,7 +934,7 @@ function startRetryPoller(taskId, conflictId) {
     }
   }
 
-  const timerId = setTimeout(poll, 3000)
+  const timerId = setTimeout(poll, 1000)
   retryPollers.set(taskId, timerId)
 }
 
