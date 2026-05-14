@@ -831,6 +831,57 @@ class ExtractService:
             task.update_progress(97, "检查文件名编码")
             garbled_sample = self._find_garbled_filename_sample(output_path, max_names=None)
             if garbled_sample:
+                # 兜底反解：主路径 7zz 修复钩子已跑过一次，但嵌套解压 / -mcp silently 失效
+                # 等场景可能让乱码漏到这里。在 raise 之前再跑一次 _repair_mojibake_filenames_in_place
+                # 反解 mojibake 后重新检测；反解修好就放行，避免群晖原生能解的 SJIS ZIP 被误拒。
+                guard_score_before = self._filename_garbled_score(output_path, max_names=None)
+                logger.warning(
+                    "[filename_guard] 兜底阶段检测到疑似乱码: archive=%s output=%s sample=%s score=%.1f，尝试反解修复…",
+                    archive_path,
+                    output_path,
+                    garbled_sample,
+                    guard_score_before,
+                )
+                try:
+                    guard_repaired = await asyncio.to_thread(
+                        self._repair_mojibake_filenames_in_place,
+                        output_path,
+                    )
+                except Exception as exc:
+                    guard_repaired = 0
+                    logger.warning("[filename_guard] 反解过程异常（忽略，继续判定）: %s", exc)
+                if guard_repaired:
+                    # 反解修过名，重新扫一遍。仍乱码才 raise，否则放行。
+                    garbled_sample_after = self._find_garbled_filename_sample(output_path, max_names=None)
+                    if garbled_sample_after is None:
+                        logger.info(
+                            "[filename_guard] 反解后乱码消失，放行: archive=%s repaired=%s",
+                            archive_path,
+                            guard_repaired,
+                        )
+                        garbled_sample = None
+                    else:
+                        guard_score_after = self._filename_garbled_score(output_path, max_names=None)
+                        logger.error(
+                            "[filename_guard] 反解 %s 条后仍有乱码: archive=%s output=%s sample=%s score_before=%.1f score_after=%.1f",
+                            guard_repaired,
+                            archive_path,
+                            output_path,
+                            garbled_sample_after,
+                            guard_score_before,
+                            guard_score_after,
+                        )
+                        garbled_sample = garbled_sample_after
+                else:
+                    logger.error(
+                        "[filename_guard] 反解未命中任何文件名（mojibake codec 列表全不匹配），判定乱码: "
+                        "archive=%s output=%s sample=%s score=%.1f",
+                        archive_path,
+                        output_path,
+                        garbled_sample,
+                        guard_score_before,
+                    )
+            if garbled_sample:
                 self._set_extract_meta(
                     task,
                     extract_failure_reason="garbled_filename",
