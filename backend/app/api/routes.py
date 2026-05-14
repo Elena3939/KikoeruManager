@@ -3628,12 +3628,45 @@ async def preview_conflict_archive_filenames(conflict_id: str, payload: Optional
             raise HTTPException(status_code=404, detail="待预览的源文件不存在")
         request_payload = payload or ConflictFilenamePreviewRequest()
         service = ExtractService()
-        preview = await service.preview_archive_filenames_with_encoding(
-            source_path,
-            filename_encoding=request_payload.filename_encoding,
-            password=request_payload.password or "",
-            limit=request_payload.limit,
-        )
+        specified_password = normalize_password_value(request_payload.password)
+
+        password_attempts: list[tuple[str, str]] = []
+
+        def add_password_attempt(password: Optional[str], source: str):
+            normalized_password = normalize_password_value(password)
+            if any(item[0] == normalized_password for item in password_attempts):
+                return
+            password_attempts.append((normalized_password, source))
+
+        if specified_password:
+            add_password_attempt(specified_password, "指定密码")
+        else:
+            with contextlib.suppress(Exception):
+                for item in await service._get_password_candidates_for_archive(source_path):
+                    add_password_attempt(item.get("password"), item.get("source") or "密码库")
+            with contextlib.suppress(Exception):
+                for password in service._get_rj_passwords(source_path):
+                    add_password_attempt(password, "RJ号")
+            add_password_attempt(conflict.rjcode, "RJ号")
+            add_password_attempt("", "无密码")
+
+        last_error: Optional[Exception] = None
+        preview = None
+        for password, password_source in password_attempts:
+            try:
+                preview = await service.preview_archive_filenames_with_encoding(
+                    source_path,
+                    filename_encoding=request_payload.filename_encoding,
+                    password=password,
+                    limit=request_payload.limit,
+                )
+                preview["password_source"] = password_source
+                break
+            except Exception as exc:
+                last_error = exc
+                continue
+        if preview is None:
+            raise last_error or RuntimeError("无法读取压缩包目录")
         from ..core.json_safety import safe_json_value
         return {"success": True, "preview": safe_json_value(preview)}
     except HTTPException:

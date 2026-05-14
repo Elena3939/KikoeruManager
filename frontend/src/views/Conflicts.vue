@@ -238,6 +238,17 @@
                   {{ keepNewDispatchLabel(activeConflict) }}
                 </button>
                 <button
+                  v-if="canPreviewFilenames(activeConflict)"
+                  type="button"
+                  class="conflicts-action-btn is-slate is-preview"
+                  :disabled="batchRunning || isConflictBusy(activeConflict.id) || isActionLoading(activeConflict.id, 'PREVIEW_FILENAME')"
+                  @click="handleFilenamePreview(activeConflict)"
+                >
+                  <Loader2 v-if="isActionLoading(activeConflict.id, 'PREVIEW_FILENAME')" class="conflicts-action-spinner" />
+                  <FileSearch v-else class="w-4 h-4" />
+                  预览文件名
+                </button>
+                <button
                   v-if="canUseAction(activeConflict, 'RETRY')"
                   type="button"
                   class="conflicts-action-btn is-emerald"
@@ -495,7 +506,7 @@ import {
   RefreshCw, AlertCircle, CheckCircle2, Cloud, HardDrive,
   FileWarning, Copy, Save, RotateCcw, SkipForward,
   GitMerge, AlertTriangle, FolderOpen, Archive, Info,
-  CheckSquare, XSquare, ChevronRight,
+  CheckSquare, XSquare, ChevronRight, FileSearch,
   ShieldAlert, Hourglass, Loader2
 } from 'lucide-vue-next'
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
@@ -720,6 +731,10 @@ function isExtractFailed(conflict) {
 
 function isFailureConflict(conflict) {
   return ['EXTRACT_FAILED', 'PROCESS_FAILED'].includes(conflict?.conflict_type)
+}
+
+function canPreviewFilenames(conflict) {
+  return isFailureConflict(conflict) && Boolean(conflict?.id)
 }
 
 function getGarbledMeta(conflict) {
@@ -1044,12 +1059,12 @@ async function askRetryPassword(conflict, batchCount = 1) {
     : `重试 ${conflict.rjcode || '当前问题项'}`
   const messageText = isBatch
     ? `可选：指定一个密码用于全部 ${batchCount} 项重试。如各项需要不同密码，请关闭后单独逐项重试。留空则各项按原逻辑走密码库、RJ 推导和默认密码。`
-    : '可选：指定一个密码只用这一条来重试；直接明文输入，留空则按原逻辑继续走密码库、RJ 推导和默认密码。'
+    : '可选：指定一个密码只用这一条来重试；下一步可指定文件名编码并预览目录名。留空则按原逻辑继续走密码库、RJ 推导和默认密码。'
   try {
     const passwordValue = await showSystemPrompt({
       title: titleLabel,
       message: messageText,
-      confirmText: isBatch ? `开始批量重试 (${batchCount} 项)` : '开始重试',
+      confirmText: isBatch ? `开始批量重试 (${batchCount} 项)` : '下一步：编码预览',
       cancelText: '取消',
       inputType: 'text',
       placeholder: '直接输入明文密码；留空表示正常重试',
@@ -1063,11 +1078,6 @@ async function askRetryPassword(conflict, batchCount = 1) {
     }
     // 批量重试不支持单独指定编码，直接返回
     if (isBatch) return result
-    // 只对 EXTRACT_FAILED / PROCESS_FAILED 单条重试显示编码选项
-    const conflictType = String(conflict?.conflict_type || '').toUpperCase()
-    const supportsEncodingStep = conflictType === 'EXTRACT_FAILED' || conflictType === 'PROCESS_FAILED'
-    if (!supportsEncodingStep) return result
-
     const encodingHint = garbledMeta?.sample
       ? `当前乱码样本：${garbledMeta.sample}`
       : '压缩包文件名可能存在编码问题（GBK / Shift_JIS 等）。'
@@ -1091,34 +1101,11 @@ async function askRetryPassword(conflict, batchCount = 1) {
     result.filenameEncoding = String(encodingValue || '').trim()
     if (!result.filenameEncoding) return result
 
-    const previewResponse = await conflictApi.filenamePreview(conflict.id, {
-      filename_encoding: result.filenameEncoding,
+    const preview = await previewArchiveFilenames(conflict, {
+      filenameEncoding: result.filenameEncoding,
       password: result.password,
-      limit: 60,
     })
-    const preview = previewResponse.preview || {}
-    // 优先使用带乱码标记的 diagnostics，降级到 items
-    const diagList = Array.isArray(preview.diagnostics) ? preview.diagnostics : []
-    const fileLines = diagList.slice(0, 15).map(d => {
-      const icon = d.garbled ? '⚠' : '✓'
-      const scoreStr = d.score != null ? ` [${d.score}]` : ''
-      return `${icon} ${d.name || '—'}${scoreStr}`
-    })
-    if (!fileLines.length) {
-      const names = (preview.items || []).slice(0, 15).map(item => item.name).filter(Boolean)
-      fileLines.push(...names)
-    }
-    const garbledCount = diagList.filter(d => d.garbled).length
-    const previewLines = [
-      `编码：${preview.encoding} / codepage=${preview.codepage || 'auto'}`,
-      `文件总数：${preview.file_count || 0}${garbledCount ? `，仍疑似乱码：${garbledCount} 个` : '，未检测到乱码文件名'}`,
-      '',
-      ...fileLines,
-    ]
-    await showSystemConfirm({
-      title: '文件名预览',
-      message: previewLines.join('\n'),
-      tone: preview.garbled_sample ? 'warning' : 'info',
+    await showFilenamePreviewConfirm(preview, {
       confirmText: preview.garbled_sample ? '仍然重试并忽略乱码' : '按该编码重试',
       cancelText: '取消',
     })
@@ -1129,6 +1116,89 @@ async function askRetryPassword(conflict, batchCount = 1) {
       return { cancelled: true, password: '', filenameEncoding: '', ignoreGarbled: false }
     }
     throw error
+  }
+}
+
+async function previewArchiveFilenames(conflict, { filenameEncoding = '', password = '' } = {}) {
+  const previewResponse = await conflictApi.filenamePreview(conflict.id, {
+    filename_encoding: String(filenameEncoding || '').trim(),
+    password: String(password || '').trim(),
+    limit: 80,
+  })
+  return previewResponse.preview || {}
+}
+
+function buildFilenamePreviewLines(preview) {
+  const diagList = Array.isArray(preview.diagnostics) ? preview.diagnostics : []
+  const fileLines = diagList.slice(0, 20).map(d => {
+    const icon = d.garbled ? '[疑似乱码]' : '[正常]'
+    const scoreStr = d.score != null ? ` [${d.score}]` : ''
+    return `${icon} ${d.name || '—'}${scoreStr}`
+  })
+  if (!fileLines.length) {
+    const names = (preview.items || []).slice(0, 20).map(item => item.name).filter(Boolean)
+    fileLines.push(...names)
+  }
+  const garbledCount = diagList.filter(d => d.garbled).length
+  return [
+    `编码：${preview.encoding || 'auto'} / codepage=${preview.codepage || 'auto'}`,
+    `密码来源：${preview.password_source || '未指定'}`,
+    `文件总数：${preview.file_count || 0}${garbledCount ? `，仍疑似乱码：${garbledCount} 个` : '，未检测到乱码文件名'}`,
+    '',
+    ...fileLines,
+  ]
+}
+
+async function showFilenamePreviewConfirm(preview, options = {}) {
+  const message = buildFilenamePreviewLines(preview).join('\n')
+  if (!options.confirmText) {
+    await showSystemAlert({
+      title: '文件名预览',
+      message,
+      tone: preview.garbled_sample ? 'warning' : 'info',
+      confirmText: '关闭',
+    })
+    return
+  }
+  await showSystemConfirm({
+    title: '文件名预览',
+    message,
+    tone: preview.garbled_sample ? 'warning' : 'info',
+    confirmText: options.confirmText,
+    cancelText: options.cancelText || '取消',
+  })
+}
+
+async function handleFilenamePreview(conflict) {
+  markAction(conflict.id, 'PREVIEW_FILENAME', true)
+  try {
+    const garbledMeta = getGarbledMeta(conflict)
+    const encodingHint = garbledMeta?.sample
+      ? `当前乱码样本：${garbledMeta.sample}`
+      : '留空会使用自动嗅探；也可以填 932 / cp932 / shift_jis / 936 / gbk / 950 / big5 / 949 / euc_kr。'
+    const encodingValue = await showSystemPrompt({
+      title: `预览文件名 ${conflict.rjcode || ''}`.trim(),
+      message: [
+        encodingHint,
+        '这个操作只读取压缩包目录，不会开始重试，也不会写入文件。'
+      ].join('\n'),
+      confirmText: '预览文件名',
+      cancelText: '取消',
+      inputType: 'text',
+      placeholder: '例如 932 / cp932 / gbk；留空自动',
+      closeOnClickModal: false
+    })
+    const preview = await previewArchiveFilenames(conflict, {
+      filenameEncoding: String(encodingValue || '').trim(),
+    })
+    await showFilenamePreviewConfirm(preview)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('预览压缩包文件名失败:', error)
+      ElMessage.error(resolveErrorMessage(error, '预览文件名失败'))
+    }
+  } finally {
+    markAction(conflict.id, 'PREVIEW_FILENAME', false)
   }
 }
 
