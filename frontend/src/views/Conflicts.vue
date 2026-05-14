@@ -292,6 +292,46 @@
               </div>
             </div>
 
+            <div v-if="getGarbledMeta(activeConflict)" class="conflicts-garbled-card">
+              <div class="conflicts-garbled-head">
+                <AlertTriangle class="w-4 h-4 text-amber-600" />
+                <div>
+                  <h4>文件名乱码诊断</h4>
+                  <p>
+                    样本：{{ getGarbledMeta(activeConflict).sample || '—' }}
+                  </p>
+                </div>
+              </div>
+              <div class="conflicts-garbled-grid">
+                <div>
+                  <span>评分</span>
+                  <b>{{ getGarbledMeta(activeConflict).scoreBefore }} → {{ getGarbledMeta(activeConflict).scoreAfter }}</b>
+                </div>
+                <div>
+                  <span>修复 / 编码尝试</span>
+                  <b>{{ getGarbledMeta(activeConflict).repairedCount }} / {{ getGarbledMeta(activeConflict).codecPairsTried }}</b>
+                </div>
+                <div>
+                  <span>触发位置</span>
+                  <b>{{ getGarbledMeta(activeConflict).origin || '—' }}</b>
+                </div>
+                <div>
+                  <span>命中数量</span>
+                  <b>{{ getGarbledMeta(activeConflict).garbledCount }} / {{ getGarbledMeta(activeConflict).totalNames || '—' }}</b>
+                </div>
+              </div>
+              <div v-if="getGarbledMeta(activeConflict).topSamples.length" class="conflicts-garbled-samples">
+                <div
+                  v-for="entry in getGarbledMeta(activeConflict).topSamples"
+                  :key="`${entry.name}-${entry.score}`"
+                  class="conflicts-garbled-row"
+                >
+                  <span>{{ entry.name }}</span>
+                  <b>{{ entry.score }}</b>
+                </div>
+              </div>
+            </div>
+
             <div class="conflicts-detail-grid">
               <!-- 当前新内容 -->
               <div class="conflicts-info-card">
@@ -682,6 +722,27 @@ function isFailureConflict(conflict) {
   return ['EXTRACT_FAILED', 'PROCESS_FAILED'].includes(conflict?.conflict_type)
 }
 
+function getGarbledMeta(conflict) {
+  const metadata = conflict?.new_metadata || {}
+  const sample = metadata.garbled_filename_sample || ''
+  const topSamples = Array.isArray(metadata.garbled_filename_top_samples)
+    ? metadata.garbled_filename_top_samples
+    : []
+  const reason = String(metadata.extract_failure_reason || '').trim()
+  if (!sample && !topSamples.length && reason !== 'garbled_filename') return null
+  return {
+    sample,
+    scoreBefore: Number(metadata.garbled_filename_score_before ?? metadata.garbled_filename_score ?? 0).toFixed(1),
+    scoreAfter: Number(metadata.garbled_filename_score_after ?? metadata.garbled_filename_score ?? 0).toFixed(1),
+    repairedCount: Number(metadata.garbled_filename_repaired_count || 0),
+    codecPairsTried: Number(metadata.garbled_filename_codec_pairs_tried || 0),
+    origin: metadata.garbled_filename_guard_origin || '',
+    totalNames: Number(metadata.garbled_filename_total_names || 0),
+    garbledCount: Number(metadata.garbled_filename_garbled_count || 0),
+    topSamples,
+  }
+}
+
 function isConflictProcessing(conflict) {
   return String(conflict?.status || '').trim().toUpperCase() === 'PROCESSING'
 }
@@ -977,6 +1038,7 @@ async function startRetry(conflict, payload = {}) {
 
 async function askRetryPassword(conflict, batchCount = 1) {
   const isBatch = batchCount > 1
+  const garbledMeta = getGarbledMeta(conflict)
   const titleLabel = isBatch
     ? `批量重试 ${batchCount} 个问题项`
     : `重试 ${conflict.rjcode || '当前问题项'}`
@@ -984,7 +1046,7 @@ async function askRetryPassword(conflict, batchCount = 1) {
     ? `可选：指定一个密码用于全部 ${batchCount} 项重试。如各项需要不同密码，请关闭后单独逐项重试。留空则各项按原逻辑走密码库、RJ 推导和默认密码。`
     : '可选：指定一个密码只用这一条来重试；直接明文输入，留空则按原逻辑继续走密码库、RJ 推导和默认密码。'
   try {
-    const value = await showSystemPrompt({
+    const passwordValue = await showSystemPrompt({
       title: titleLabel,
       message: messageText,
       confirmText: isBatch ? `开始批量重试 (${batchCount} 项)` : '开始重试',
@@ -993,13 +1055,60 @@ async function askRetryPassword(conflict, batchCount = 1) {
       placeholder: '直接输入明文密码；留空表示正常重试',
       closeOnClickModal: false
     })
-    return {
+    const result = {
       cancelled: false,
-      password: String(value || '').trim(),
+      password: String(passwordValue || '').trim(),
+      filenameEncoding: '',
+      ignoreGarbled: false,
     }
+    if (!garbledMeta || isBatch) return result
+
+    const encodingValue = await showSystemPrompt({
+      title: '指定文件名编码',
+      message: [
+        `当前乱码样本：${garbledMeta.sample || '—'}`,
+        '可填 932 / cp932 / shift_jis / 936 / gbk / 950 / big5 / 949 / euc_kr。',
+        '留空表示继续使用自动嗅探。填写后会先预览压缩包目录名。'
+      ].join('\n'),
+      confirmText: '预览文件名',
+      cancelText: '跳过编码设置',
+      inputType: 'text',
+      placeholder: '例如 932 或 cp932',
+      closeOnClickModal: false
+    }).catch(error => {
+      if (error === 'cancel' || error === 'close') return ''
+      throw error
+    })
+
+    result.filenameEncoding = String(encodingValue || '').trim()
+    if (!result.filenameEncoding) return result
+
+    const previewResponse = await conflictApi.filenamePreview(conflict.id, {
+      filename_encoding: result.filenameEncoding,
+      password: result.password,
+      limit: 60,
+    })
+    const preview = previewResponse.preview || {}
+    const names = (preview.items || []).slice(0, 12).map(item => item.name).filter(Boolean)
+    const previewLines = [
+      `编码：${preview.encoding} / codepage=${preview.codepage || 'auto'}`,
+      `文件数：${preview.file_count || 0}`,
+      preview.garbled_sample ? `仍疑似乱码：${preview.garbled_sample}` : '预览未命中高风险乱码文件名',
+      '',
+      ...names,
+    ]
+    await showSystemConfirm({
+      title: '文件名预览',
+      message: previewLines.join('\n'),
+      tone: preview.garbled_sample ? 'warning' : 'info',
+      confirmText: preview.garbled_sample ? '仍然重试并忽略乱码' : '按该编码重试',
+      cancelText: '取消',
+    })
+    result.ignoreGarbled = Boolean(preview.garbled_sample)
+    return result
   } catch (error) {
     if (error === 'cancel' || error === 'close') {
-      return { cancelled: true, password: '' }
+      return { cancelled: true, password: '', filenameEncoding: '', ignoreGarbled: false }
     }
     throw error
   }
@@ -1062,7 +1171,11 @@ async function handleRetry(conflict) {
   try {
     const retryInput = await askRetryPassword(conflict)
     if (retryInput.cancelled) return
-    const result = await startRetry(conflict, retryInput.password ? { password: retryInput.password } : {})
+    const retryPayload = {}
+    if (retryInput.password) retryPayload.password = retryInput.password
+    if (retryInput.filenameEncoding) retryPayload.filename_encoding = retryInput.filenameEncoding
+    if (retryInput.ignoreGarbled) retryPayload.ignore_garbled = true
+    const result = await startRetry(conflict, retryPayload)
     markConflictRetrying(conflict.id, true)
     ElMessage.success(
       result.already_running
@@ -2347,6 +2460,89 @@ button:disabled {
   background: rgba(254, 226, 226, 0.55);
   border-color: rgba(239, 68, 68, 0.18);
   color: #991b1b;
+}
+
+.conflicts-garbled-card {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 28px -22px rgba(217, 119, 6, 0.35);
+}
+.conflicts-garbled-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.conflicts-garbled-head h4 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+}
+.conflicts-garbled-head p {
+  margin: 3px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.conflicts-garbled-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.conflicts-garbled-grid div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #f1f5f9;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+.conflicts-garbled-grid span {
+  display: block;
+  color: #94a3b8;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.conflicts-garbled-grid b {
+  display: block;
+  margin-top: 3px;
+  color: #334155;
+  font-size: 12px;
+  word-break: break-all;
+}
+.conflicts-garbled-samples {
+  max-height: 150px;
+  overflow-y: auto;
+  margin-top: 10px;
+  border: 1px solid #f1f5f9;
+  border-radius: 10px;
+}
+.conflicts-garbled-row {
+  display: grid;
+  grid-template-columns: 1fr 52px;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 11.5px;
+}
+.conflicts-garbled-row:last-child { border-bottom: 0; }
+.conflicts-garbled-row span {
+  min-width: 0;
+  color: #475569;
+  font-weight: 600;
+  word-break: break-all;
+}
+.conflicts-garbled-row b {
+  color: #b45309;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 1100px) {
+  .conflicts-garbled-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* 双卡网格 */
