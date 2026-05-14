@@ -432,6 +432,13 @@ export const conflictApi = {
     return response.data
   },
 
+  filenamePreview: async (conflictId, payload = {}) => {
+    const response = await apiClient.post(`/conflicts/${conflictId}/filename-preview`, payload, {
+      timeout: 60000,
+    })
+    return response.data
+  },
+
   preview: async (conflictId, action) => {
     const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action }, {
       // 合并预览会先解压新包、过滤临时目录、扫描新旧文件树。大包和慢盘不能沿用 60s 默认超时。

@@ -127,6 +127,62 @@
             DLsite 抓取失败原因：{{ getDLsiteFailureReason(item) }}
           </span>
         </div>
+
+        <div
+          v-if="getGarbledDiagnostic(item)"
+          class="mt-3 rounded-[12px] border border-amber-200 bg-white p-3 shadow-[0_8px_18px_-12px_rgba(217,119,6,0.28)]"
+        >
+          <div class="flex items-start gap-2">
+            <AlertTriangle :size="15" :stroke-width="2.4" class="mt-0.5 flex-shrink-0 text-amber-600" />
+            <div class="min-w-0 flex-1">
+              <div class="text-[12px] font-bold text-slate-900">文件名乱码诊断</div>
+              <p class="mt-1 text-[11.5px] leading-relaxed text-slate-600">
+                {{ buildGarbledSummary(getGarbledDiagnostic(item)) }}
+              </p>
+              <div class="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                <div class="rounded-[8px] border border-slate-100 bg-slate-50 px-2.5 py-2">
+                  <span class="block text-slate-400">样本</span>
+                  <b class="mt-0.5 block break-all text-slate-800">{{ getGarbledDiagnostic(item).sample || '—' }}</b>
+                </div>
+                <div class="rounded-[8px] border border-slate-100 bg-slate-50 px-2.5 py-2">
+                  <span class="block text-slate-400">评分</span>
+                  <b class="mt-0.5 block text-slate-800">
+                    {{ getGarbledDiagnostic(item).scoreBefore }} → {{ getGarbledDiagnostic(item).scoreAfter }}
+                  </b>
+                </div>
+                <div class="rounded-[8px] border border-slate-100 bg-slate-50 px-2.5 py-2">
+                  <span class="block text-slate-400">修复 / 编码尝试</span>
+                  <b class="mt-0.5 block text-slate-800">
+                    {{ getGarbledDiagnostic(item).repairedCount }} / {{ getGarbledDiagnostic(item).codecPairsTried }}
+                  </b>
+                </div>
+                <div class="rounded-[8px] border border-slate-100 bg-slate-50 px-2.5 py-2">
+                  <span class="block text-slate-400">触发位置</span>
+                  <b class="mt-0.5 block text-slate-800">{{ getGarbledDiagnostic(item).origin || '—' }}</b>
+                </div>
+              </div>
+              <div v-if="getGarbledDiagnostic(item).topSamples.length" class="mt-2 max-h-[142px] overflow-y-auto rounded-[10px] border border-slate-100 detail-scroll">
+                <div
+                  v-for="entry in getGarbledDiagnostic(item).topSamples"
+                  :key="`${entry.name}-${entry.score}`"
+                  class="grid grid-cols-[1fr_48px] gap-2 border-b border-slate-100 px-2.5 py-2 text-[11px] last:border-b-0"
+                >
+                  <div class="min-w-0">
+                    <div class="break-all font-semibold text-slate-700">{{ entry.name }}</div>
+                    <div v-if="entry.markers?.length" class="mt-1 flex flex-wrap gap-1">
+                      <span
+                        v-for="marker in entry.markers"
+                        :key="`${entry.name}-${marker}`"
+                        class="rounded bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-amber-700"
+                      >{{ marker }}</span>
+                    </div>
+                  </div>
+                  <b class="text-right tabular-nums text-amber-700">{{ entry.score }}</b>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- 进度元信息：定义列表 2 列，无独立边框 -->
@@ -347,6 +403,32 @@ function getTreeRowIconClass(entry) {
   if (/\.(mp3|m4a|ogg|aac|wma)$/.test(label)) return 'icon-audio'
   if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc)$/.test(label)) return 'icon-text'
   return 'icon-file'
+}
+
+function getGarbledDiagnostic(item) {
+  const metadata = item?.details?.metadata || item?.metadata || {}
+  const sample = metadata.garbled_filename_sample || ''
+  const topSamples = Array.isArray(metadata.garbled_filename_top_samples)
+    ? metadata.garbled_filename_top_samples
+    : []
+  if (!sample && !topSamples.length) return null
+  return {
+    sample,
+    scoreBefore: Number(metadata.garbled_filename_score_before ?? metadata.garbled_filename_score ?? 0).toFixed(1),
+    scoreAfter: Number(metadata.garbled_filename_score_after ?? metadata.garbled_filename_score ?? 0).toFixed(1),
+    repairedCount: Number(metadata.garbled_filename_repaired_count || 0),
+    codecPairsTried: Number(metadata.garbled_filename_codec_pairs_tried || 0),
+    origin: metadata.garbled_filename_guard_origin || '',
+    totalNames: Number(metadata.garbled_filename_total_names || 0),
+    garbledCount: Number(metadata.garbled_filename_garbled_count || 0),
+    topSamples,
+  }
+}
+
+function buildGarbledSummary(info) {
+  const total = info.totalNames ? `，扫描 ${info.totalNames} 个文件名` : ''
+  const count = info.garbledCount ? `，命中 ${info.garbledCount} 个高风险名称` : ''
+  return `7zz 已完成解压，但文件名评分达到 ${info.scoreAfter}（阈值 >= 30）${total}${count}。系统已尝试常见编码反解，仍认为存在乱码风险。`
 }
 
 const treeFilterOptions = [
