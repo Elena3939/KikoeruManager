@@ -331,6 +331,33 @@ class TestExtractService:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_summarize_extracted_payload_rejects_zero_byte_only_output(self, extract_service, temp_dir):
+        """解压产物只有 0 字节文件时，主流程不能继续入库。"""
+        output_path = os.path.join(temp_dir, 'zero-output')
+        os.makedirs(output_path)
+        open(os.path.join(output_path, 'empty.wav'), 'wb').close()
+
+        summary = await extract_service._summarize_extracted_payload(output_path)
+
+        assert summary['file_count'] == 1
+        assert summary['nonempty_file_count'] == 0
+        assert summary['total_bytes'] == 0
+
+    @pytest.mark.asyncio
+    async def test_summarize_extracted_payload_accepts_nonempty_output(self, extract_service, temp_dir):
+        """只要存在真实字节，产物统计就应放行后续清单校验。"""
+        output_path = os.path.join(temp_dir, 'nonempty-output')
+        os.makedirs(output_path)
+        with open(os.path.join(output_path, 'voice.wav'), 'wb') as f:
+            f.write(b'RIFFdata')
+
+        summary = await extract_service._summarize_extracted_payload(output_path)
+
+        assert summary['file_count'] == 1
+        assert summary['nonempty_file_count'] == 1
+        assert summary['total_bytes'] == 8
+
+    @pytest.mark.asyncio
     async def test_extract_task(self, extract_service, temp_dir):
         """测试完整的解压任务"""
         # 创建测试压缩包
@@ -480,6 +507,58 @@ class TestExtractService:
         assert success is False
         assert password is None
         assert reason == 'unsupported'
+
+    @pytest.mark.asyncio
+    async def test_rar_unar_rc1_rejects_zero_byte_partial_output(
+        self, extract_service, temp_dir,
+    ):
+        """unar rc=1 只留下 0 字节文件时，不能因清单误验通过而接受。"""
+        extract_service._find_unar_executable = lambda: '/usr/bin/unar'
+        extract_service._detect_rar_encoding_with_lsar = AsyncMock(return_value=None)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+
+        async def fake_unar_extract(archive_path, output_path, password, task=None, encoding=None):
+            os.makedirs(os.path.join(output_path, 'RJ01378421'), exist_ok=True)
+            open(os.path.join(output_path, 'RJ01378421', '鍋靛伃.wav'), 'wb').close()
+            return subprocess.CompletedProcess(
+                args=['unar'], returncode=1, stdout=b'', stderr=b'',
+            )
+
+        extract_service._try_unar_extract = fake_unar_extract
+
+        archive_info = ArchiveInfo(
+            path=os.path.join(temp_dir, 'RJ01378421.rar'),
+            file_list=[{
+                'name': 'RJ01378421/鍋靛伃.wav',
+                'size': 1234,
+                'is_dir': False,
+            }],
+            password='RJ01378421',
+        )
+
+        task = Mock()
+        task.task_metadata = {}
+        task.rjcode = 'RJ01378421'
+        task.is_cancelled = Mock(return_value=False)
+        task.wait_if_paused = AsyncMock()
+        task.update_progress = Mock()
+
+        success, password, reason = await extract_service._try_extract_rar_with_unar(
+            archive_info,
+            temp_dir,
+            task,
+            passwords=['RJ01378421'],
+            vault_passwords=[],
+            password_entry_id_map={},
+            password_rjcode_map={},
+            manual_retry_password_only=False,
+            rj_passwords=['RJ01378421'],
+        )
+
+        assert success is False
+        assert password is None
+        assert reason == 'partial_output'
+        extract_service._verify_extraction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rar_password_probe_skips_magic_false_positive(self, extract_service, temp_dir):
