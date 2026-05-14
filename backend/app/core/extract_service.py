@@ -4532,24 +4532,13 @@ class ExtractService:
                     break
 
                 if result.returncode == 0:
-                    if self._needs_filename_garbled_guard(archive_info.path):
-                        repaired_count = await asyncio.to_thread(
-                            self._repair_mojibake_filenames_in_place,
-                            output_path,
-                        )
-                        if repaired_count:
-                            logger.info(
-                                "[7zz编码] 文件名反乱码重命名完成: count=%s score=%.1f",
-                                repaired_count,
-                                self._filename_garbled_score(output_path),
-                            )
-                        if await self._reject_if_garbled_after_extract(
-                            archive_info.path,
-                            output_path,
-                            cleanup=lambda: self._cleanup_extract_attempt(output_path),
-                            context="7zz",
-                        ):
-                            return False, None, "garbled_filename"
+                    if await self._reject_if_garbled_after_extract(
+                        archive_info.path,
+                        output_path,
+                        cleanup=lambda: self._cleanup_extract_attempt(output_path),
+                        context="7zz",
+                    ):
+                        return False, None, "garbled_filename"
                     if not await self._verify_extraction(archive_info, output_path):
                         await self._cleanup_extract_attempt(output_path)
                         return False, None, "extract_incomplete"
@@ -6181,6 +6170,8 @@ class ExtractService:
         kana = 0
         hangul = 0
         mojibake_marker = 0
+        mojibake_marker_run = 0
+        max_mojibake_marker_run = 0
         total_nonascii = 0
         # Shift-JIS 日文被 GBK/cp936/Big5 错解后高频出现的字符集合（类属性）。
         cjk_mojibake_chars = cls._CJK_MOJIBAKE_CHARS
@@ -6200,8 +6191,17 @@ class ExtractService:
                     cjk += 1
                     if ch in cjk_mojibake_chars:
                         mojibake_marker += 1
+                        mojibake_marker_run += 1
+                        max_mojibake_marker_run = max(max_mojibake_marker_run, mojibake_marker_run)
+                    else:
+                        mojibake_marker_run = 0
                 elif 0xAC00 <= cp <= 0xD7AF:
                     hangul += 1
+                    mojibake_marker_run = 0
+                else:
+                    mojibake_marker_run = 0
+            else:
+                mojibake_marker_run = 0
         if total_nonascii == 0:
             cls._score_cache[text] = 0.0
             return 0.0
@@ -6209,16 +6209,22 @@ class ExtractService:
         score = 0.0
         if latin_ext >= 3:
             score += 60.0 * (latin_ext / total_nonascii)
-        # 单文件名短串场景：只要存在 1 个 mojibake_marker 就开始扣分，旧版要求 >= 2 的门槛会导致
-        # 像 `偵偭偪壒惡岺朳亀悇偟`（10 字 marker=1）这种测回漏判。
-        if mojibake_marker >= 1:
-            score += 30.0 * min(mojibake_marker / max(total_nonascii, 1), 1.0)
+
+        # CJK marker 只能作为“结构性证据”使用，不能单字定罪。
+        # 旧规则里一个 marker + CJK>=4 就能过阈值，导致正常日文汉字名
+        # `温泉浜辺.wav` 被 `浜` 这个单字误伤。真正的 mojibake 往往是
+        # 多个 marker 高密度出现，且常有连续 run（例如 `僠儍僾僞乕...`）。
+        marker_ratio = mojibake_marker / max(total_nonascii, 1)
+        if mojibake_marker == 1:
+            score += 8.0 * marker_ratio
         if mojibake_marker >= 2:
-            score += 15.0 * min(mojibake_marker / max(total_nonascii, 1), 1.0)
-        if cjk >= 4 and kana == 0 and hangul == 0 and mojibake_marker >= 1:
-            score += 25.0
-        if cjk >= 8 and kana == 0 and hangul == 0 and mojibake_marker >= 2:
-            score += 15.0
+            score += 22.0 * min(marker_ratio, 1.0)
+        if max_mojibake_marker_run >= 2:
+            score += 22.0 * min(max_mojibake_marker_run / max(mojibake_marker, 1), 1.0)
+        if cjk >= 4 and kana == 0 and hangul == 0 and (mojibake_marker >= 3 or max_mojibake_marker_run >= 2):
+            score += 18.0
+        if cjk >= 8 and kana == 0 and hangul == 0 and mojibake_marker >= 3:
+            score += 12.0
         if cjk >= 20 and kana == 0 and mojibake_marker >= 4:
             score += 15.0
         # 写入缓存（限制总条数）
@@ -6519,12 +6525,66 @@ class ExtractService:
         cleanup,
         context: str,
     ) -> bool:
-        """解压成功后检查文件名乱码，命中则清理并返回 True。"""
+        """解压成功后检查文件名乱码；先尝试反解修复，仍乱码才清理并返回 True。"""
         if not self._needs_filename_garbled_guard(archive_path):
             return False
         sample = self._find_garbled_filename_sample(output_path, max_names=None)
         if sample is None:
             return False
+
+        score_before = self._filename_garbled_score(output_path, max_names=None)
+        logger.warning(
+            "%s 解压后检测到疑似乱码文件名，尝试反解修复: archive=%s sample=%s score=%.1f",
+            context,
+            archive_path,
+            sample,
+            score_before,
+        )
+        try:
+            repaired_count = await asyncio.to_thread(
+                self._repair_mojibake_filenames_in_place,
+                output_path,
+            )
+        except Exception as exc:
+            repaired_count = 0
+            logger.warning(
+                "%s 文件名反乱码修复异常，继续按原样复检: archive=%s error=%s",
+                context,
+                archive_path,
+                exc,
+            )
+        if repaired_count:
+            sample_after = self._find_garbled_filename_sample(output_path, max_names=None)
+            score_after = self._filename_garbled_score(output_path, max_names=None)
+            if sample_after is None:
+                logger.info(
+                    "%s 文件名反乱码修复完成，复检通过: archive=%s repaired=%s score_before=%.1f score_after=%.1f",
+                    context,
+                    archive_path,
+                    repaired_count,
+                    score_before,
+                    score_after,
+                )
+                return False
+            sample = sample_after
+            logger.warning(
+                "%s 文件名反乱码修复 %s 条后仍疑似乱码: archive=%s sample=%s score_before=%.1f score_after=%.1f",
+                context,
+                repaired_count,
+                archive_path,
+                sample,
+                score_before,
+                score_after,
+            )
+        else:
+            logger.warning(
+                "%s 文件名反乱码修复未命中可逆 mojibake，继续按评分结果阻断: archive=%s sample=%s score=%.1f",
+                context,
+                archive_path,
+                sample,
+                score_before,
+            )
+
         await cleanup()
         logger.error(
             "%s 解压后检测到疑似乱码文件名，已清理产物并阻止继续入库: archive=%s sample=%s",
