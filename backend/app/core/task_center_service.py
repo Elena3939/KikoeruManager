@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
+from .json_safety import safe_json_value, safe_text
 from ..models.database import ConflictWork, SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -167,7 +168,7 @@ class TaskCenterService:
         return value.isoformat() if value else None
 
     def _safe_text(self, value: Any) -> str:
-        return str(value or "").strip()
+        return safe_text(value, strip=True)
 
     def _normalize_rjcode(self, value: Any) -> str:
         text = self._safe_text(value).upper()
@@ -337,12 +338,12 @@ class TaskCenterService:
 
     def _json_safe(self, value: Any) -> Any:
         if value is None or isinstance(value, (str, int, float, bool)):
-            return value
+            return safe_json_value(value)
         if isinstance(value, datetime):
             return value.isoformat()
         if isinstance(value, dict):
             return {
-                str(key): self._json_safe(current)
+                safe_text(key): self._json_safe(current)
                 for key, current in value.items()
             }
         if isinstance(value, (list, tuple, set)):
