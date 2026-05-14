@@ -252,6 +252,14 @@ class TestExtractService:
         assert encoding == "utf-8"
         assert decoded == text
 
+    def test_repair_surrogateescaped_cp932_filename(self, extract_service):
+        """7z 若把 CP932 原始字节落到 Linux 文件名，必须重命名为合法 UTF-8。"""
+        fixed_name = "Wメスガキメイド　早期購入特典"
+        bad_name = fixed_name.encode("cp932").decode("utf-8", errors="surrogateescape")
+
+        assert extract_service._has_garbled_text(bad_name) is True
+        assert extract_service._repair_mojibake_filename(bad_name) == fixed_name
+
     def test_repair_shift_jis_mojibake_filename_from_gbk(self, extract_service, temp_dir):
         """RAR 解出 `偵偭偪...` 这类文件名时，应能反解回原始日文名。"""
         bad_name = "偵偭偪壒惡岺朳亀悇偟偺偊偪偊偪攝怣彈巕偲僆僼僷僐.wav"
