@@ -6495,6 +6495,9 @@ class ExtractService:
         """
         if not name:
             return None
+        surrogate_fixed = self._repair_surrogateescaped_filename(name)
+        if surrogate_fixed:
+            return surrogate_fixed
         # 缓存查询：同一文件名可能在 _find_garbled_sample, _repair_in_place, _verify_extraction 等多个地方重复反解。
         # 用 sentinel object 区分 "None 是缓存的反解失败结果" 和 "缓存未命中"。
         cls = type(self)
@@ -6601,6 +6604,61 @@ class ExtractService:
         if len(repair_cache) >= 4096:
             repair_cache.clear()
         repair_cache[name] = best_name
+        return best_name
+
+    _SURROGATE_FILENAME_ENCODINGS: tuple = (
+        "cp932",
+        "shift_jis",
+        "gbk",
+        "cp936",
+        "big5",
+        "cp950",
+        "euc_kr",
+        "utf-8",
+    )
+
+    @staticmethod
+    def _has_surrogateescape_bytes(text: str) -> bool:
+        return any(0xDC80 <= ord(ch) <= 0xDCFF for ch in str(text or ""))
+
+    def _repair_surrogateescaped_filename(self, name: str) -> Optional[str]:
+        """把 Linux surrogateescape 文件名按常见 ZIP 代码页转成合法 UTF-8。"""
+        if not name or not self._has_surrogateescape_bytes(name):
+            return None
+        try:
+            raw_bytes = name.encode(sys.getfilesystemencoding() or "utf-8", "surrogateescape")
+        except UnicodeError:
+            return None
+
+        best_name: Optional[str] = None
+        best_rank: Optional[tuple] = None
+        for encoding in self._SURROGATE_FILENAME_ENCODINGS:
+            try:
+                candidate = raw_bytes.decode(encoding)
+            except (UnicodeError, LookupError):
+                continue
+            if not candidate or candidate == name:
+                continue
+            if "/" in candidate or "\\" in candidate or "\x00" in candidate:
+                continue
+            if any(ord(ch) < 32 for ch in candidate):
+                continue
+            score = self._garbled_text_score(candidate)
+            stats = self._filename_text_stats(candidate)
+            looks_japanese = self._looks_japanese_filename(candidate)
+            has_semantic_text = looks_japanese or stats["cjk"] > 0 or stats["hangul"] > 0
+            if score >= 30.0 and not has_semantic_text:
+                continue
+            rank = (
+                0 if score < 30.0 else 1,
+                0 if looks_japanese else 1,
+                -stats["kana"],
+                -stats["cjk"],
+                score,
+            )
+            if best_rank is None or rank < best_rank:
+                best_rank = rank
+                best_name = candidate
         return best_name
 
     def _repair_mojibake_relative_path(self, path: str) -> Optional[str]:
