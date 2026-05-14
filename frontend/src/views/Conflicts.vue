@@ -309,9 +309,32 @@
                 <div>
                   <h4>文件名乱码诊断</h4>
                   <p>
-                    样本：{{ getGarbledMeta(activeConflict).sample || '—' }}
+                    样本：{{ formatPreviewName(getGarbledMeta(activeConflict).sample, getFilenamePreviewEncoding(activeConflict)) || '—' }}
                   </p>
                 </div>
+              </div>
+              <div class="conflicts-garbled-toolbar">
+                <div class="conflicts-garbled-select">
+                  <span>压缩包文件名编码</span>
+                  <AppDropdown
+                    :model-value="getFilenamePreviewEncoding(activeConflict)"
+                    :options="filenameEncodingOptions"
+                    placeholder="选择编码"
+                    :width="220"
+                    :menu-min-width="260"
+                    @update:model-value="value => setFilenamePreviewEncoding(activeConflict, value)"
+                  />
+                </div>
+                <button
+                  type="button"
+                  class="conflicts-garbled-preview-btn"
+                  :disabled="isActionLoading(activeConflict.id, 'PREVIEW_FILENAME')"
+                  @click="handleFilenamePreview(activeConflict)"
+                >
+                  <Loader2 v-if="isActionLoading(activeConflict.id, 'PREVIEW_FILENAME')" class="conflicts-action-spinner" />
+                  <FileSearch v-else class="w-4 h-4" />
+                  刷新预览
+                </button>
               </div>
               <div class="conflicts-garbled-grid">
                 <div>
@@ -337,8 +360,29 @@
                   :key="`${entry.name}-${entry.score}`"
                   class="conflicts-garbled-row"
                 >
-                  <span>{{ entry.name }}</span>
+                  <span>{{ formatPreviewName(entry.name, getFilenamePreviewEncoding(activeConflict)) }}</span>
                   <b>{{ entry.score }}</b>
+                </div>
+              </div>
+              <div v-if="getFilenamePreviewState(activeConflict).preview" class="conflicts-filename-preview">
+                <div class="conflicts-filename-preview-head">
+                  <span>
+                    预览：{{ getFilenamePreviewState(activeConflict).preview.encoding || 'auto' }}
+                    / codepage={{ getFilenamePreviewState(activeConflict).preview.codepage || 'auto' }}
+                    / 密码来源={{ getFilenamePreviewState(activeConflict).preview.password_source || '未指定' }}
+                  </span>
+                  <b>{{ getFilenamePreviewState(activeConflict).preview.file_count || 0 }} 项</b>
+                </div>
+                <div class="conflicts-filename-preview-list">
+                  <div
+                    v-for="entry in getFilenamePreviewRows(getFilenamePreviewState(activeConflict).preview, getFilenamePreviewEncoding(activeConflict))"
+                    :key="`${entry.name}-${entry.score}`"
+                    class="conflicts-filename-preview-row"
+                    :class="{ 'is-garbled': entry.garbled }"
+                  >
+                    <span>{{ entry.displayName }}</span>
+                    <b>{{ entry.garbled ? '疑似乱码' : '正常' }} · {{ entry.score }}</b>
+                  </div>
                 </div>
               </div>
             </div>
@@ -512,6 +556,7 @@ import {
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
 import BatchRetryPasswordDialog from '../components/conflicts/BatchRetryPasswordDialog.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
+import AppDropdown from '../components/common/AppDropdown.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import { conflictApi, taskCenterApi } from '../api'
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
@@ -551,9 +596,19 @@ const mergeDecisionCache = reactive({})
 const conflictFilter = ref('all')
 const retryPollers = new Map()
 const localRetryingConflictIds = reactive({})
+const filenamePreviewState = reactive({})
 
 const batchRetryDialogVisible = ref(false)
 const batchRetryTargets = ref([])
+
+const filenameEncodingOptions = [
+  { value: 'shift_jis', label: 'Shift_JIS / CP932', description: '日文 ZIP 最常见，7z codepage 932' },
+  { value: 'gbk', label: 'GBK / CP936', description: '中文 Windows 压缩包，7z codepage 936' },
+  { value: 'big5', label: 'Big5 / CP950', description: '繁体中文压缩包，7z codepage 950' },
+  { value: 'euc_kr', label: 'EUC-KR / CP949', description: '韩文压缩包，7z codepage 949' },
+  { value: 'utf-8', label: 'UTF-8', description: '标准 UTF-8 文件名' },
+  { value: 'auto', label: '自动嗅探', description: '不强制 -mcp，由后端自动判断' },
+]
 
 const activeConflict = computed(() => conflicts.value.find(conflict => conflict.id === activeConflictId.value) || null)
 const mergeConflict = computed(() => conflicts.value.find(conflict => conflict.id === mergeConflictId.value) || null)
@@ -735,6 +790,109 @@ function isFailureConflict(conflict) {
 
 function canPreviewFilenames(conflict) {
   return isFailureConflict(conflict) && Boolean(conflict?.id)
+}
+
+function ensureFilenamePreviewState(conflict) {
+  const id = conflict?.id || '_'
+  if (!filenamePreviewState[id]) {
+    filenamePreviewState[id] = {
+      encoding: 'shift_jis',
+      preview: null,
+    }
+  }
+  return filenamePreviewState[id]
+}
+
+function getFilenamePreviewState(conflict) {
+  return ensureFilenamePreviewState(conflict)
+}
+
+function getFilenamePreviewEncoding(conflict) {
+  return ensureFilenamePreviewState(conflict).encoding || 'shift_jis'
+}
+
+function setFilenamePreviewEncoding(conflict, value) {
+  const state = ensureFilenamePreviewState(conflict)
+  state.encoding = String(value || 'auto')
+  state.preview = null
+}
+
+function getEncodingLabel(value) {
+  return filenameEncodingOptions.find(item => item.value === value)?.label || '自动嗅探'
+}
+
+function textDecoderEncoding(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (['932', 'cp932', 'shift_jis', 'shift-jis', 'sjis'].includes(normalized)) return 'shift_jis'
+  if (['936', 'cp936', 'gbk', 'gb2312'].includes(normalized)) return 'gbk'
+  if (['950', 'cp950', 'big5'].includes(normalized)) return 'big5'
+  if (['949', 'cp949', 'euc_kr', 'euc-kr'].includes(normalized)) return 'euc-kr'
+  if (['utf8', 'utf-8'].includes(normalized)) return 'utf-8'
+  return 'shift_jis'
+}
+
+function escapedSurrogateBytes(value) {
+  const text = String(value || '')
+  const bytes = []
+  let matched = false
+  for (let i = 0; i < text.length;) {
+    const literal = text.slice(i, i + 6)
+    const literalMatch = /^\\udc([0-9a-fA-F]{2})$/.exec(literal)
+    if (literalMatch) {
+      bytes.push(parseInt(literalMatch[1], 16))
+      matched = true
+      i += 6
+      continue
+    }
+    const code = text.charCodeAt(i)
+    if (code >= 0xdc80 && code <= 0xdcff) {
+      bytes.push(code - 0xdc00)
+      matched = true
+      i += 1
+      continue
+    }
+    if (code <= 0xff) {
+      bytes.push(code)
+      i += 1
+      continue
+    }
+    const encoded = new TextEncoder().encode(text[i])
+    bytes.push(...encoded)
+    i += 1
+  }
+  return matched ? new Uint8Array(bytes) : null
+}
+
+function decodeEscapedSurrogateName(value, encoding) {
+  const bytes = escapedSurrogateBytes(value)
+  if (!bytes) return String(value || '')
+  try {
+    return new TextDecoder(textDecoderEncoding(encoding), { fatal: false }).decode(bytes)
+  } catch (error) {
+    return String(value || '')
+  }
+}
+
+function formatPreviewName(value, encoding) {
+  const raw = String(value || '')
+  const decoded = decodeEscapedSurrogateName(raw, encoding)
+  return decoded || raw
+}
+
+function getFilenamePreviewRows(preview, encoding) {
+  const diagList = Array.isArray(preview?.diagnostics) ? preview.diagnostics : []
+  if (diagList.length) {
+    return diagList.slice(0, 40).map(item => ({
+      ...item,
+      displayName: formatPreviewName(item.name, encoding),
+    }))
+  }
+  return (preview?.items || []).slice(0, 40).map(item => ({
+    name: item.name || '',
+    displayName: formatPreviewName(item.name || '', encoding),
+    score: 0,
+    garbled: false,
+  }))
 }
 
 function getGarbledMeta(conflict) {
@@ -1053,13 +1211,12 @@ async function startRetry(conflict, payload = {}) {
 
 async function askRetryPassword(conflict, batchCount = 1) {
   const isBatch = batchCount > 1
-  const garbledMeta = getGarbledMeta(conflict)
   const titleLabel = isBatch
     ? `批量重试 ${batchCount} 个问题项`
     : `重试 ${conflict.rjcode || '当前问题项'}`
   const messageText = isBatch
     ? `可选：指定一个密码用于全部 ${batchCount} 项重试。如各项需要不同密码，请关闭后单独逐项重试。留空则各项按原逻辑走密码库、RJ 推导和默认密码。`
-    : '可选：指定一个密码只用这一条来重试；下一步可指定文件名编码并预览目录名。留空则按原逻辑继续走密码库、RJ 推导和默认密码。'
+    : `可选：指定一个密码只用这一条来重试；会使用详情页下拉选择的文件名编码（当前：${getEncodingLabel(getFilenamePreviewEncoding(conflict))}）先预览目录名。留空则按原逻辑继续走密码库、RJ 推导和默认密码。`
   try {
     const passwordValue = await showSystemPrompt({
       title: titleLabel,
@@ -1078,33 +1235,13 @@ async function askRetryPassword(conflict, batchCount = 1) {
     }
     // 批量重试不支持单独指定编码，直接返回
     if (isBatch) return result
-    const encodingHint = garbledMeta?.sample
-      ? `当前乱码样本：${garbledMeta.sample}`
-      : '压缩包文件名可能存在编码问题（GBK / Shift_JIS 等）。'
-    const encodingValue = await showSystemPrompt({
-      title: '指定文件名编码（可选）',
-      message: [
-        encodingHint,
-        '可填 932 / cp932 / shift_jis / 936 / gbk / 950 / big5 / 949 / euc_kr。',
-        '留空表示继续使用自动嗅探。填写后会先预览压缩包目录名。'
-      ].join('\n'),
-      confirmText: '预览文件名',
-      cancelText: '跳过编码设置（直接重试）',
-      inputType: 'text',
-      placeholder: '例如 932 或 cp932，留空自动嗅探',
-      closeOnClickModal: false
-    }).catch(error => {
-      if (error === 'cancel' || error === 'close') return ''
-      throw error
-    })
-
-    result.filenameEncoding = String(encodingValue || '').trim()
-    if (!result.filenameEncoding) return result
-
+    result.filenameEncoding = getFilenamePreviewEncoding(conflict)
     const preview = await previewArchiveFilenames(conflict, {
       filenameEncoding: result.filenameEncoding,
       password: result.password,
     })
+    preview.requested_encoding = result.filenameEncoding
+    ensureFilenamePreviewState(conflict).preview = preview
     await showFilenamePreviewConfirm(preview, {
       confirmText: preview.garbled_sample ? '仍然重试并忽略乱码' : '按该编码重试',
       cancelText: '取消',
@@ -1120,8 +1257,9 @@ async function askRetryPassword(conflict, batchCount = 1) {
 }
 
 async function previewArchiveFilenames(conflict, { filenameEncoding = '', password = '' } = {}) {
+  const normalizedEncoding = String(filenameEncoding || '').trim()
   const previewResponse = await conflictApi.filenamePreview(conflict.id, {
-    filename_encoding: String(filenameEncoding || '').trim(),
+    filename_encoding: normalizedEncoding === 'auto' ? '' : normalizedEncoding,
     password: String(password || '').trim(),
     limit: 80,
   })
@@ -1130,13 +1268,14 @@ async function previewArchiveFilenames(conflict, { filenameEncoding = '', passwo
 
 function buildFilenamePreviewLines(preview) {
   const diagList = Array.isArray(preview.diagnostics) ? preview.diagnostics : []
+  const encoding = preview.requested_encoding || preview.encoding || 'shift_jis'
   const fileLines = diagList.slice(0, 20).map(d => {
     const icon = d.garbled ? '[疑似乱码]' : '[正常]'
     const scoreStr = d.score != null ? ` [${d.score}]` : ''
-    return `${icon} ${d.name || '—'}${scoreStr}`
+    return `${icon} ${formatPreviewName(d.name, encoding) || '—'}${scoreStr}`
   })
   if (!fileLines.length) {
-    const names = (preview.items || []).slice(0, 20).map(item => item.name).filter(Boolean)
+    const names = (preview.items || []).slice(0, 20).map(item => formatPreviewName(item.name, encoding)).filter(Boolean)
     fileLines.push(...names)
   }
   const garbledCount = diagList.filter(d => d.garbled).length
@@ -1172,26 +1311,13 @@ async function showFilenamePreviewConfirm(preview, options = {}) {
 async function handleFilenamePreview(conflict) {
   markAction(conflict.id, 'PREVIEW_FILENAME', true)
   try {
-    const garbledMeta = getGarbledMeta(conflict)
-    const encodingHint = garbledMeta?.sample
-      ? `当前乱码样本：${garbledMeta.sample}`
-      : '留空会使用自动嗅探；也可以填 932 / cp932 / shift_jis / 936 / gbk / 950 / big5 / 949 / euc_kr。'
-    const encodingValue = await showSystemPrompt({
-      title: `预览文件名 ${conflict.rjcode || ''}`.trim(),
-      message: [
-        encodingHint,
-        '这个操作只读取压缩包目录，不会开始重试，也不会写入文件。'
-      ].join('\n'),
-      confirmText: '预览文件名',
-      cancelText: '取消',
-      inputType: 'text',
-      placeholder: '例如 932 / cp932 / gbk；留空自动',
-      closeOnClickModal: false
-    })
+    const state = ensureFilenamePreviewState(conflict)
     const preview = await previewArchiveFilenames(conflict, {
-      filenameEncoding: String(encodingValue || '').trim(),
+      filenameEncoding: state.encoding,
     })
-    await showFilenamePreviewConfirm(preview)
+    preview.requested_encoding = state.encoding
+    state.preview = preview
+    ElMessage.success('文件名预览已刷新')
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
       console.error('预览压缩包文件名失败:', error)
@@ -2576,6 +2702,52 @@ button:disabled {
   line-height: 1.5;
   word-break: break-all;
 }
+.conflicts-garbled-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #f1f5f9;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.conflicts-garbled-select {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.conflicts-garbled-select > span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+.conflicts-garbled-preview-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 10px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.conflicts-garbled-preview-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: rgba(15, 23, 42, 0.22);
+  box-shadow: 0 8px 18px -12px rgba(15, 23, 42, 0.28);
+}
+.conflicts-garbled-preview-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 .conflicts-garbled-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2629,8 +2801,61 @@ button:disabled {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+.conflicts-filename-preview {
+  margin-top: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+.conflicts-filename-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.conflicts-filename-preview-head b {
+  color: #0f172a;
+  white-space: nowrap;
+}
+.conflicts-filename-preview-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+.conflicts-filename-preview-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 11.5px;
+}
+.conflicts-filename-preview-row:last-child { border-bottom: 0; }
+.conflicts-filename-preview-row span {
+  min-width: 0;
+  color: #334155;
+  font-weight: 650;
+  word-break: break-all;
+}
+.conflicts-filename-preview-row b {
+  color: #64748b;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.conflicts-filename-preview-row.is-garbled b {
+  color: #b45309;
+}
 @media (max-width: 1100px) {
   .conflicts-garbled-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .conflicts-filename-preview-row { grid-template-columns: minmax(0, 1fr); }
+  .conflicts-filename-preview-row b { text-align: left; }
 }
 
 /* 双卡网格 */
