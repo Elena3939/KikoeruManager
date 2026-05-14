@@ -711,20 +711,20 @@ class SmartClassifier:
         
         db = next(get_db())
         try:
-            pending_query = db.query(ConflictWork).filter(
-                ConflictWork.status == 'PENDING'
+            active_query = db.query(ConflictWork).filter(
+                ConflictWork.status.in_(['PENDING', 'PROCESSING'])
             )
 
             # 失败问题项允许同一 RJ 下保留多条不同来源记录；
             # 否则会把后来的失败直接吞掉，任务中心里看得到失败，但问题作品页里没有。
             existing_conflict = None
             if new_path:
-                existing_conflict = pending_query.filter(
+                existing_conflict = active_query.filter(
                     ConflictWork.new_path == new_path
                 ).first()
 
             if not existing_conflict and rjcode and conflict_type not in {'EXTRACT_FAILED', 'PROCESS_FAILED'}:
-                existing_conflict = pending_query.filter(
+                existing_conflict = active_query.filter(
                     ConflictWork.rjcode == rjcode,
                     ConflictWork.conflict_type == conflict_type,
                 ).first()

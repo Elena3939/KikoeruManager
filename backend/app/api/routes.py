@@ -3839,7 +3839,12 @@ def _collect_split_archive_siblings(main_path: str):
 @app.post("/api/conflicts/{conflict_id}/resolve")
 async def resolve_conflict(conflict_id: str, action: dict):
     """处理问题作品"""
-    from ..core.activity_log_service import mark_task_conflict_resolved_activity_log
+    from ..core.activity_log_service import (
+        build_file_tree_diff_items,
+        log_conflict_resolution_activity,
+        mark_task_conflict_resolved_activity_log,
+        snapshot_file_tree_for_activity,
+    )
     from ..core.conflict_resolution_service import get_conflict_resolution_service
     from ..core.task_engine import Task, TaskStatus, TaskType, get_task_engine
     from ..models.database import ConflictWork, ProcessedArchive, get_db
@@ -3859,6 +3864,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
         # KEEP_NEW 分支会用新任务 ID 覆盖 conflict.task_id，必须在覆盖前
         # 记下原任务 ID 才能定位到那条 task_finished/waiting 的活动日志。
         original_task_id = str(conflict.task_id).strip() if conflict.task_id else None
+        resolution_diff_items = []
 
         try:
             if action_type == "KEEP_NEW":
@@ -3898,7 +3904,44 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 next_metadata["resolution_task_state"] = "queued"
                 next_metadata["resolution_action"] = action_type
                 next_metadata["resolution_requested_at"] = datetime.now().isoformat()
+                next_metadata["resolution_before_tree_items"] = (
+                    snapshot_file_tree_for_activity(existing_path, limit=300)
+                    if existing_path and os.path.isdir(existing_path)
+                    else []
+                )
                 conflict.new_metadata = next_metadata
+
+                duplicate_conflicts = []
+                if source_path:
+                    duplicate_conflicts.extend(
+                        db.query(ConflictWork).filter(
+                            ConflictWork.id != conflict.id,
+                            ConflictWork.status == "PENDING",
+                            ConflictWork.new_path == source_path,
+                        ).all()
+                    )
+                if conflict.rjcode and conflict.conflict_type and existing_path:
+                    duplicate_conflicts.extend(
+                        db.query(ConflictWork).filter(
+                            ConflictWork.id != conflict.id,
+                            ConflictWork.status == "PENDING",
+                            ConflictWork.rjcode == conflict.rjcode,
+                            ConflictWork.conflict_type == conflict.conflict_type,
+                            ConflictWork.existing_path == existing_path,
+                        ).all()
+                    )
+                seen_duplicate_ids = set()
+                for duplicate in duplicate_conflicts:
+                    if duplicate.id in seen_duplicate_ids:
+                        continue
+                    seen_duplicate_ids.add(duplicate.id)
+                    logger.info(
+                        "保留新版任务合并重复问题项: current=%s duplicate=%s rj=%s",
+                        conflict.id,
+                        duplicate.id,
+                        conflict.rjcode,
+                    )
+                    db.delete(duplicate)
 
                 task_type = TaskType.AUTO_PROCESS if os.path.isfile(source_path) else TaskType.PROCESS_EXISTING_FOLDER
                 task = Task(
@@ -3931,6 +3974,17 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     action_type,
                     conflict_id=conflict.id,
                 )
+                log_conflict_resolution_activity(
+                    conflict_id=conflict.id,
+                    action=action_type,
+                    status="waiting",
+                    rjcode=conflict.rjcode,
+                    task_id=task.id,
+                    source_path=source_path,
+                    target_path=existing_path,
+                    before_tree_items=next_metadata.get("resolution_before_tree_items") or [],
+                    after_tree_items=[],
+                )
                 return {
                     "success": True,
                     "conflict_id": conflict.id,
@@ -3955,6 +4009,35 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     conflict_task.started_at = conflict_task.started_at or datetime.now()
                     conflict_task.update_progress(max(int(conflict_task.progress or 0), 10), "合并中")
                 db.commit()
+                merge_session_id = str(action.get("merge_session_id") or "").strip()
+                merge_session = getattr(service, "_merge_sessions", {}).get(merge_session_id)
+                merge_decisions = action.get("merge_decisions") or {}
+                if merge_session and getattr(merge_session, "compare_items", None):
+                    predicted = []
+                    for item in list(merge_session.compare_items or []):
+                        relative_path = str(item.get("relative_path") or "").strip()
+                        if not relative_path:
+                            continue
+                        status = str(item.get("status") or "").strip()
+                        item_type = str(item.get("type") or "file").strip() or "file"
+                        decision = str(merge_decisions.get(relative_path) or "").strip().lower()
+                        variant = ""
+                        if status == "new_only":
+                            variant = "added"
+                        elif status == "old_only" and decision == "delete":
+                            variant = "deleted"
+                        elif status == "modified" and decision in {"", "use_new"}:
+                            variant = "changed"
+                        if not variant:
+                            continue
+                        predicted.append({
+                            "relative_path": relative_path,
+                            "name": os.path.basename(relative_path) or relative_path,
+                            "type": item_type,
+                            "size": item.get("new_size") or item.get("old_size") or 0,
+                            "variant": variant,
+                        })
+                    resolution_diff_items = predicted
                 result = await service.resolve_merge(
                     conflict,
                     action.get("merge_session_id"),
@@ -3965,6 +4048,16 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     conflict_task.update_progress(100, "合并完成")
                     conflict_task.complete()
             else:
+                source_for_skip = str(conflict.new_path or "").strip()
+                skip_tree_items = (
+                    snapshot_file_tree_for_activity(source_for_skip, limit=300)
+                    if source_for_skip and os.path.isdir(source_for_skip)
+                    else []
+                )
+                resolution_diff_items = [
+                    {**item, "variant": "deleted"}
+                    for item in skip_tree_items
+                ]
                 result = await service.resolve_skip(conflict)
                 conflict.status = action_type
                 if conflict.task_id:
@@ -3995,6 +4088,18 @@ async def resolve_conflict(conflict_id: str, action: dict):
             action_type,
             conflict_id=conflict.id,
         )
+        if action_type in {"MERGE", "SKIP"}:
+            log_conflict_resolution_activity(
+                conflict_id=conflict.id,
+                action=action_type,
+                status="success",
+                rjcode=conflict.rjcode,
+                task_id=conflict.task_id,
+                source_path=str(conflict.new_path or ""),
+                target_path=str(conflict.existing_path or ""),
+                final_path=str((result or {}).get("final_path") or conflict.existing_path or ""),
+                diff_items=resolution_diff_items,
+            )
         return {
             "success": True,
             "conflict_id": conflict.id,

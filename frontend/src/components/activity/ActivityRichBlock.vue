@@ -412,7 +412,14 @@
               <ChevronRight :size="12" :stroke-width="2.6" />
             </button>
             <span v-else class="tree-expander-spacer" />
-            <span class="entry-main-target" :class="{ 'is-deleted': entry.variant === 'deleted' }">
+            <span
+              class="entry-main-target"
+              :class="{
+                'is-deleted': entry.variant === 'deleted',
+                'is-added': entry.variant === 'added',
+                'is-changed': entry.variant === 'changed'
+              }"
+            >
               <component
                 :is="m.resolveEntryIcon(entry)"
                 :size="20"
@@ -420,7 +427,7 @@
               />
               <div class="entry-main-copy">
                 <div class="entry-title-row">
-                  <span :class="['entry-name', { 'is-deleted': entry.variant === 'deleted', 'is-failed': entry.variant === 'failed' || entry.variant === 'warning' }]">
+                  <span :class="['entry-name', { 'is-deleted': entry.variant === 'deleted', 'is-added': entry.variant === 'added', 'is-changed': entry.variant === 'changed', 'is-failed': entry.variant === 'failed' || entry.variant === 'warning' }]">
                     {{ entry.label || entry.name || entry.relative_path || '—' }}
                   </span>
                   <span
@@ -1836,6 +1843,16 @@ function formatBytes(size) {
   pointer-events: none;
 }
 
+.entry-main-target.is-added {
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(236, 253, 245, 0.9), rgba(255, 255, 255, 0));
+}
+
+.entry-main-target.is-changed {
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(239, 246, 255, 0.9), rgba(255, 255, 255, 0));
+}
+
 .entry-icon {
   flex: 0 0 auto;
 }
@@ -1847,6 +1864,16 @@ function formatBytes(size) {
 
 .entry-icon.is-success {
   color: #059669;
+}
+
+.entry-icon.is-added {
+  color: #059669;
+  filter: drop-shadow(0 6px 12px rgba(16, 185, 129, 0.16));
+}
+
+.entry-icon.is-changed {
+  color: #2563eb;
+  filter: drop-shadow(0 6px 12px rgba(37, 99, 235, 0.16));
 }
 
 .entry-icon.is-warning {
@@ -1920,6 +1947,16 @@ function formatBytes(size) {
 
 .entry-name.is-deleted {
   color: rgba(29, 29, 31, 0.5);
+}
+
+.entry-name.is-added {
+  color: #047857;
+  font-weight: 700;
+}
+
+.entry-name.is-changed {
+  color: #1d4ed8;
+  font-weight: 700;
 }
 
 .entry-name.is-failed {

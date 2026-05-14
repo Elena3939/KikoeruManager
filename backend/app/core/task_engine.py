@@ -863,6 +863,28 @@ class TaskEngine:
                     if archive_record:
                         archive_record.status = "completed"
                         archive_record.processed_at = datetime.now()
+                if action == "KEEP_NEW":
+                    try:
+                        from .activity_log_service import (
+                            log_conflict_resolution_activity,
+                            snapshot_file_tree_for_activity,
+                        )
+                        before_items = list(next_metadata.get("resolution_before_tree_items") or [])
+                        after_items = snapshot_file_tree_for_activity(task.output_path, limit=300) if task.output_path else []
+                        log_conflict_resolution_activity(
+                            conflict_id=conflict.id,
+                            action=action,
+                            status="success",
+                            rjcode=conflict.rjcode or getattr(task, "rjcode", None),
+                            task_id=task.id,
+                            source_path=str(getattr(task, "source_path", "") or ""),
+                            target_path=str(next_metadata.get("existing_path") or conflict.existing_path or ""),
+                            final_path=str(task.output_path or ""),
+                            before_tree_items=before_items,
+                            after_tree_items=after_items,
+                        )
+                    except Exception:
+                        logger.warning("写入保留新版操作记录失败: task_id=%s conflict_id=%s", task.id, conflict_id, exc_info=True)
             elif task.status == TaskStatus.FAILED:
                 conflict.status = "PENDING"
                 next_metadata["resolution_error"] = str(task.error_message or "冲突处理失败")

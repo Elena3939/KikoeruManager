@@ -32,6 +32,7 @@ CATEGORY_ASMR_SYNC = "asmr_sync"
 CATEGORY_UPLOAD = "upload"
 CATEGORY_CIRCLE_COMPLETION = "circle_completion"
 CATEGORY_EMAIL_WATCHER = "email_watcher"
+CATEGORY_CONFLICT_RESOLUTION = "conflict_resolution"
 
 CATEGORY_LABELS = {
     CATEGORY_SUBTITLE_CRAWL: "字幕爬取",
@@ -48,6 +49,7 @@ CATEGORY_LABELS = {
     CATEGORY_UPLOAD: "库存上传",
     CATEGORY_CIRCLE_COMPLETION: "社团补全",
     CATEGORY_EMAIL_WATCHER: "邮件监听",
+    CATEGORY_CONFLICT_RESOLUTION: "问题作品处理",
 }
 
 ASMR_SYNC_ACTIONS = {
@@ -320,6 +322,58 @@ def _merge_file_tree_items(*item_groups: Any) -> list[dict[str, Any]]:
             0 if str(item.get("type") or "") == "dir" else 1,
         ),
     )
+
+
+def build_file_tree_diff_items(before_items: Any, after_items: Any, limit: int = 300) -> list[dict[str, Any]]:
+    """构造文件树差异：新增 added、删除 deleted、内容变化 changed。"""
+    def _map_items(raw_items: Any) -> dict[str, dict[str, Any]]:
+        mapped: dict[str, dict[str, Any]] = {}
+        if not isinstance(raw_items, list):
+            return mapped
+        for raw in raw_items:
+            item = _sanitize_file_tree_item(raw)
+            if item is None:
+                continue
+            mapped[str(item["relative_path"]).lower()] = item
+        return mapped
+
+    before = _map_items(before_items)
+    after = _map_items(after_items)
+    keys = sorted(set(before.keys()) | set(after.keys()))
+    out: list[dict[str, Any]] = []
+    for key in keys:
+        old = before.get(key)
+        new = after.get(key)
+        variant = ""
+        item = new or old
+        if old and not new:
+            variant = "deleted"
+            item = old
+        elif new and not old:
+            variant = "added"
+            item = new
+        elif old and new and (
+            str(old.get("type")) != str(new.get("type"))
+            or int(old.get("size") or 0) != int(new.get("size") or 0)
+        ):
+            variant = "changed"
+            item = new
+        if not variant or not item:
+            continue
+        next_item = dict(item)
+        next_item["variant"] = variant
+        if old and new and variant == "changed":
+            next_item["old_size"] = int(old.get("size") or 0)
+            next_item["new_size"] = int(new.get("size") or 0)
+        out.append(next_item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def snapshot_file_tree_for_activity(path: Any, limit: Optional[int] = _FILE_TREE_SNAPSHOT_MAX_ITEMS) -> list[dict[str, Any]]:
+    """给其它业务模块复用的文件树快照入口。"""
+    return _snapshot_file_tree_items(path, limit=limit)
 
 
 def _resolve_archive_snapshot(task: Any) -> tuple[int, Optional[str]]:
@@ -1469,6 +1523,72 @@ def mark_task_conflict_resolved_activity_log(
         return False
     finally:
         db.close()
+
+
+def log_conflict_resolution_activity(
+    *,
+    conflict_id: Optional[str],
+    action: str,
+    status: str = "success",
+    rjcode: Optional[str] = None,
+    task_id: Optional[str] = None,
+    source_path: Optional[str] = None,
+    target_path: Optional[str] = None,
+    final_path: Optional[str] = None,
+    before_tree_items: Optional[list[dict[str, Any]]] = None,
+    after_tree_items: Optional[list[dict[str, Any]]] = None,
+    diff_items: Optional[list[dict[str, Any]]] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    """记录用户在问题作品页做出的后续处理动作。"""
+    raw_action = str(action or "").strip().upper()
+    label_map = {
+        "SKIP": "跳过",
+        "KEEP_NEW": "删旧保新",
+        "MERGE": "合并",
+        "RETRY": "重试",
+    }
+    label = label_map.get(raw_action, raw_action or "处理")
+    resolved_diff = diff_items if isinstance(diff_items, list) else build_file_tree_diff_items(
+        before_tree_items or [],
+        after_tree_items or [],
+    )
+    added_count = sum(1 for item in resolved_diff if str(item.get("variant") or "") == "added")
+    deleted_count = sum(1 for item in resolved_diff if str(item.get("variant") or "") == "deleted")
+    changed_count = sum(1 for item in resolved_diff if str(item.get("variant") or "") == "changed")
+    summary_parts = [label]
+    if added_count:
+        summary_parts.append(f"新增 {added_count} 项")
+    if deleted_count:
+        summary_parts.append(f"删除 {deleted_count} 项")
+    if changed_count:
+        summary_parts.append(f"变更 {changed_count} 项")
+    if error_message:
+        summary_parts.append(str(error_message)[:120])
+    summary = "，".join(summary_parts)
+    detail = {
+        "conflict_id": str(conflict_id or ""),
+        "conflict_resolution_action": raw_action,
+        "conflict_resolution_label": label,
+        "source_path": source_path,
+        "target_path": target_path,
+        "final_path": final_path,
+        "file_diff_items": resolved_diff,
+        "added_count": added_count,
+        "deleted_count": deleted_count,
+        "changed_count": changed_count,
+        "error_message": error_message or "",
+    }
+    write_activity_log(
+        category=CATEGORY_CONFLICT_RESOLUTION,
+        action="conflict_resolved",
+        status=status,
+        summary=summary,
+        detail=detail,
+        rjcode=rjcode,
+        task_id=task_id,
+        source_path=source_path or final_path or target_path,
+    )
 
 
 def log_subtitle_batch_start_result(payload: Dict[str, Any]) -> None:

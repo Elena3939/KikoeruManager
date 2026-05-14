@@ -583,7 +583,8 @@ const categoryOptions = [
   { value: 'asmr_sync', label: 'ASMR 同步' },
   { value: 'upload', label: '库存上传' },
   { value: 'circle_completion', label: '社团补全' },
-  { value: 'email_watcher', label: '邮件监听' }
+  { value: 'email_watcher', label: '邮件监听' },
+  { value: 'conflict_resolution', label: '问题作品处理' }
 ]
 
 // category → tone 映射：每个 category 独占一个 tone，避免视觉撞色看不出区别。
@@ -607,6 +608,7 @@ const categoryConfigs = {
   // 换成 purple 中紫：与字幕系的 violet/fuchsia/indigo 在 chip 背景色上能区分，
   // 也是邮箱类产品的传统同调色（不会让人联想错误状态）。
   email_watcher: { icon: Mail, label: '邮件监听', tone: 'purple' },
+  conflict_resolution: { icon: ShieldAlert, label: '问题作品处理', tone: 'blue' },
   default: { icon: Tag, label: '其他', tone: 'slate' }
 }
 

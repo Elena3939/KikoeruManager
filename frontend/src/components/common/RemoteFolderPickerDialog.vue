@@ -476,15 +476,33 @@ function sortFolderList(list) {
     const bDir = b?.is_directory !== false
     if (aDir !== bDir) return aDir ? -1 : 1
     if (by === 'mtime') {
-      const at = Number(a?.modified_time || 0)
-      const bt = Number(b?.modified_time || 0)
+      const at = folderTimeValue(a?.modified_time)
+      const bt = folderTimeValue(b?.modified_time)
       if (at !== bt) return (at - bt) * dir
       // 时间相同时回落到名字次级稳定排序
-      return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true }) * dir
+      return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true })
     }
     return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true }) * dir
   })
   return list
+}
+
+function folderTimeValue(value) {
+  if (value === null || value === undefined || value === '') return 0
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? normalizeTimestamp(value) : 0
+  }
+  const raw = String(value).trim()
+  if (!raw) return 0
+  const numeric = Number(raw)
+  if (Number.isFinite(numeric)) return normalizeTimestamp(numeric)
+  const parsed = Date.parse(raw)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function normalizeTimestamp(value) {
+  // 后端搜索索引给毫秒，群晖原始值常是秒；统一成毫秒再比较。
+  return value > 0 && value < 100000000000 ? value * 1000 : value
 }
 
 function onColumnSort(field) {
