@@ -6151,6 +6151,84 @@ class ExtractService:
     _SCORE_CACHE_MAX: int = 4096
 
     @classmethod
+    def _mojibake_marker_count(cls, text: str) -> int:
+        return sum(1 for ch in text if ch in cls._CJK_MOJIBAKE_CHARS)
+
+    @staticmethod
+    def _has_hard_garbled_signal(text: str) -> bool:
+        """不可逆的硬乱码信号：surrogate / 替换符 / 大量 Latin-1 扩展字节。"""
+        latin_ext = 0
+        nonascii = 0
+        for ch in text:
+            cp = ord(ch)
+            if 0xD800 <= cp <= 0xDFFF or ch == '\ufffd':
+                return True
+            if cp > 127:
+                nonascii += 1
+                if 0x0080 <= cp <= 0x00FF:
+                    latin_ext += 1
+        return latin_ext >= 3 and latin_ext / max(nonascii, 1) >= 0.35
+
+    @classmethod
+    def _has_reversible_mojibake_signal(cls, text: str) -> bool:
+        """CJK mojibake 必须能反解出更像正常日文的文件名，避免误伤普通汉字名。"""
+        if not text:
+            return False
+        original_score = cls._garbled_text_score(text)
+        if original_score < 15.0 and cls._mojibake_marker_count(text) < 3:
+            return False
+        for wrong_codec, correct_codec in cls._MOJIBAKE_CODEC_PAIRS:
+            try:
+                candidate = text.encode(wrong_codec).decode(correct_codec)
+            except (UnicodeError, LookupError):
+                continue
+            if not candidate or candidate == text:
+                continue
+            if "/" in candidate or "\\" in candidate or "\x00" in candidate:
+                continue
+            if cls._looks_japanese_filename(candidate) and cls._garbled_text_score(candidate) < 30.0:
+                return True
+        for wrong_codec, correct_codec in cls._MOJIBAKE_CODEC_PAIRS:
+            try:
+                candidate = text.encode(wrong_codec, errors='ignore').decode(correct_codec, errors='ignore')
+            except LookupError:
+                continue
+            if not candidate or candidate == text:
+                continue
+            if "/" in candidate or "\\" in candidate or "\x00" in candidate:
+                continue
+            if len(candidate) < len(text) * 0.4:
+                continue
+            if cls._looks_japanese_filename(candidate) and cls._garbled_text_score(candidate) < 30.0:
+                return True
+        outer_pairs = (("gbk", "utf-8"), ("cp936", "utf-8"))
+        inner_pairs = (("gbk", "cp932"), ("cp936", "cp932"), ("gbk", "shift_jis"), ("cp936", "shift_jis"))
+        for outer_wrong, outer_correct in outer_pairs:
+            try:
+                intermediate = text.encode(outer_wrong, errors='ignore').decode(outer_correct, errors='ignore')
+            except (UnicodeError, LookupError):
+                continue
+            if not intermediate or intermediate == text:
+                continue
+            for inner_wrong, inner_correct in inner_pairs:
+                try:
+                    candidate = intermediate.encode(inner_wrong).decode(inner_correct)
+                except (UnicodeError, LookupError):
+                    try:
+                        candidate = intermediate.encode(inner_wrong, errors='ignore').decode(inner_correct, errors='ignore')
+                    except (UnicodeError, LookupError):
+                        continue
+                if not candidate or candidate == text or candidate == intermediate:
+                    continue
+                if "/" in candidate or "\\" in candidate or "\x00" in candidate:
+                    continue
+                if len(candidate) < len(text) * 0.4:
+                    continue
+                if cls._looks_japanese_filename(candidate) and cls._garbled_text_score(candidate) < 30.0:
+                    return True
+        return False
+
+    @classmethod
     def _garbled_text_score(cls, text: str) -> float:
         """文件名乱码评分。分数越高越像编码被猜错。
 
@@ -6236,7 +6314,14 @@ class ExtractService:
 
     @classmethod
     def _has_garbled_text(cls, text: str) -> bool:
-        return cls._garbled_text_score(text) >= 30.0
+        score = cls._garbled_text_score(text)
+        if score < 30.0:
+            return False
+        if cls._has_hard_garbled_signal(text):
+            return True
+        # 纯 CJK 的“像乱码”只能算弱证据。正常日文汉字文件名也可能命中
+        # `浜/鎮/鍋` 这类 marker；必须能按常见错编链路反解出假名才拦截。
+        return cls._has_reversible_mojibake_signal(text)
 
     def _has_garbled_filenames(self, directory: str) -> bool:
         """检测目录中是否存在 ANSI 多字节（Shift-JIS/GBK）被误当 Latin-1 解读的乱码文件名。"""
@@ -6348,10 +6433,10 @@ class ExtractService:
         repair_cache = cls._repair_cache  # type: ignore[attr-defined]
         if name in repair_cache:
             return repair_cache[name]
-        # 入口放宽：marker_hit 或 score >= 15 都尝试反解。
+        # 入口限制：低分 marker 不能触发反解。正常日文汉字如 `温泉浜辺`
+        # 可被 GBK→CP932 错误“反解”成半角片假名/杂字，不能因为单字 marker 被改名。
         original_score = self._garbled_text_score(name)
-        marker_hit = any(ch in self._CJK_MOJIBAKE_CHARS for ch in name)
-        if original_score < 15.0 and not marker_hit:
+        if original_score < 15.0:
             repair_cache[name] = None
             return None
 
