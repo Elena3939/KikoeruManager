@@ -1539,6 +1539,7 @@ def log_conflict_resolution_activity(
     after_tree_items: Optional[list[dict[str, Any]]] = None,
     diff_items: Optional[list[dict[str, Any]]] = None,
     error_message: Optional[str] = None,
+    extra_detail: Optional[dict[str, Any]] = None,
 ) -> None:
     """记录用户在问题作品页做出的后续处理动作。"""
     raw_action = str(action or "").strip().upper()
@@ -1565,6 +1566,9 @@ def log_conflict_resolution_activity(
         summary_parts.append(f"变更 {changed_count} 项")
     if error_message:
         summary_parts.append(str(error_message)[:120])
+    extra = extra_detail if isinstance(extra_detail, dict) else {}
+    if raw_action == "RETRY" and extra.get("garbled_filename_bypassed"):
+        summary_parts.append("乱码强制入库")
     summary = "，".join(summary_parts)
     detail = {
         "conflict_id": str(conflict_id or ""),
@@ -1579,6 +1583,8 @@ def log_conflict_resolution_activity(
         "changed_count": changed_count,
         "error_message": error_message or "",
     }
+    if extra:
+        detail.update(extra)
     write_activity_log(
         category=CATEGORY_CONFLICT_RESOLUTION,
         action="conflict_resolved",
