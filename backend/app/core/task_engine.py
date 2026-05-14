@@ -797,6 +797,21 @@ class TaskEngine:
                     self._mark_task_superseded(failed_task, task.id, task.output_path)
 
             if conflict:
+                try:
+                    from .activity_log_service import log_conflict_resolution_activity
+                    log_conflict_resolution_activity(
+                        conflict_id=str(conflict.id),
+                        action="RETRY",
+                        status="success",
+                        rjcode=conflict.rjcode or getattr(task, "rjcode", None),
+                        task_id=task.id,
+                        source_path=str(source_path or conflict.new_path or getattr(task, "source_path", "") or ""),
+                        final_path=str(task.output_path or ""),
+                        error_message="乱码强制入库" if bool(metadata.get("garbled_filename_bypassed")) else None,
+                        extra_detail=self._build_retry_conflict_activity_extra(task),
+                    )
+                except Exception:
+                    logger.warning("写入问题作品重试成功操作记录失败: task_id=%s conflict_id=%s", task.id, conflict.id, exc_info=True)
                 db.delete(conflict)
             db.commit()
             if conflict:
@@ -806,6 +821,22 @@ class TaskEngine:
             logger.error("更新解压失败问题项状态失败: %s", exc, exc_info=True)
         finally:
             db.close()
+
+    def _build_retry_conflict_activity_extra(self, task: Task) -> dict[str, Any]:
+        metadata = dict(task.task_metadata or {})
+        keys = (
+            "manual_retry_password_requested",
+            "manual_retry_filename_encoding",
+            "manual_retry_ignore_garbled",
+            "garbled_filename_bypassed",
+            "garbled_filename_bypass_origin",
+            "garbled_filename_sample",
+            "garbled_filename_score_before",
+            "garbled_filename_score_after",
+            "garbled_filename_repaired_count",
+            "garbled_filename_guard_origin",
+        )
+        return {key: metadata.get(key) for key in keys if key in metadata}
 
     def _finalize_conflict_resolution_task(self, task: Task):
         """处理由问题作品页提交的后台冲突解决任务收尾。"""
@@ -849,6 +880,20 @@ class TaskEngine:
                     next_metadata["resolution_error"] = str(task.error_message or "重试失败")
                     conflict.new_metadata = next_metadata
                     db.commit()
+                    try:
+                        from .activity_log_service import log_conflict_resolution_activity
+                        log_conflict_resolution_activity(
+                            conflict_id=str(conflict.id),
+                            action="RETRY",
+                            status="failed",
+                            rjcode=conflict.rjcode or getattr(task, "rjcode", None),
+                            task_id=task.id,
+                            source_path=str(conflict.new_path or getattr(task, "source_path", "") or ""),
+                            error_message=str(task.error_message or "重试失败"),
+                            extra_detail=self._build_retry_conflict_activity_extra(task),
+                        )
+                    except Exception:
+                        logger.warning("写入问题作品重试失败操作记录失败: task_id=%s conflict_id=%s", task.id, conflict_id, exc_info=True)
                 return
 
             if task.status == TaskStatus.COMPLETED:
