@@ -574,104 +574,139 @@
       @confirm="handleBatchRetryConfirm"
     />
 
-    <!-- 文件名预览毛玻璃弹窗：贴齐 NotificationPanel 视觉 + TaskDetailPane.task-file-tree 文件树 -->
-    <el-dialog
-      v-model="fpDlgVisible"
-      width="640"
-      :close-on-click-modal="false"
-      :show-close="false"
-      :append-to-body="true"
-      class="filename-preview-dialog"
-      @closed="fpDlgOnClose"
-    >
-      <template #header>
-        <div class="fp-dlg-header">
-          <div class="fp-dlg-title">
-            <span class="fp-dlg-title-icon">
-              <FileSearch class="w-[15px] h-[15px]" />
-            </span>
-            <h3>文件名预览</h3>
-            <span v-if="fpDlgGarbledCount" class="fp-dlg-title-tag is-warn">
-              <AlertTriangle class="w-3 h-3" />
-              {{ fpDlgGarbledCount }} 个疑似乱码
-            </span>
-            <span
-              v-if="Number(fpDlgData?.repaired_count || 0) > 0"
-              class="fp-dlg-title-tag is-emerald"
-              title="后端按 surrogate / mojibake 反解，已直接展示真实文件名"
-            >
-              <CheckCircle2 class="w-3 h-3" />
-              已自动反解 {{ Number(fpDlgData?.repaired_count || 0) }} 项
-            </span>
-          </div>
-          <button type="button" class="fp-dlg-close" @click="fpDlgClose">
-            <X class="w-[14px] h-[14px]" />
-          </button>
-        </div>
-      </template>
-
-      <template v-if="fpDlgData">
-        <div class="fp-dlg-meta">
-          <span class="fp-dlg-chip">
-            <span class="fp-dlg-chip-label">编码</span>
-            <b>{{ fpDlgData.encoding || 'auto' }}</b>
-          </span>
-          <span class="fp-dlg-chip">
-            <span class="fp-dlg-chip-label">codepage</span>
-            <b>{{ fpDlgData.codepage || 'auto' }}</b>
-          </span>
-          <span class="fp-dlg-chip">
-            <span class="fp-dlg-chip-label">密码</span>
-            <b>{{ fpDlgData.password_source || '未指定' }}</b>
-          </span>
-          <span class="fp-dlg-chip">
-            <span class="fp-dlg-chip-label">文件数</span>
-            <b>{{ fpDlgData.file_count || 0 }}</b>
-          </span>
-        </div>
-        <div class="fp-dlg-tree-card">
-          <div class="fp-dlg-tree fp-detail-scroll">
-            <div
-              v-for="row in fpDlgTreeRows"
-              :key="row.key"
-              class="fp-tree-row"
-              :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
-              :style="{ paddingLeft: `${row.depth * 16 + 12}px` }"
-            >
-              <div class="fp-tree-main">
-                <span class="fp-tree-expander-spacer" />
-                <span class="fp-tree-icon-wrap">
-                  <Folder v-if="row.type === 'dir'" :size="18" :stroke-width="2" class="fp-tree-icon is-folder" />
-                  <FileWarning v-else-if="row.isGarbled" :size="18" :stroke-width="2.2" class="fp-tree-icon is-warn" />
-                  <Archive v-else-if="row.isArchive" :size="17" :stroke-width="2" class="fp-tree-icon is-archive" />
-                  <Music v-else-if="fpIsAudio(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-audio" />
-                  <FileText v-else-if="fpIsText(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-text" />
-                  <File v-else :size="17" :stroke-width="2" class="fp-tree-icon is-file" />
-                </span>
-                <span class="fp-tree-name">{{ row.displayName }}</span>
-                <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
-              </div>
-              <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
-            </div>
-            <div v-if="!fpDlgTreeRows.length" class="fp-dlg-tree-empty">压缩包内未读取到文件清单</div>
-          </div>
-        </div>
-      </template>
-      <template #footer>
-        <div class="fp-dlg-footer">
-          <button type="button" class="conflicts-action-btn is-slate" @click="fpDlgCancel">
-            {{ fpDlgCancelText || '取消' }}
-          </button>
-          <button
-            type="button"
-            :class="['conflicts-action-btn', fpDlgGarbledCount ? 'is-amber' : 'is-emerald']"
-            @click="fpDlgConfirm"
+    <!--
+      文件名预览弹窗：完全对齐库存页 mediaPreviewDialog 的"系统自定义弹窗"风格
+      Teleport + 全屏遮罩 + 圆角 22 玻璃面板 + backdrop-blur-2xl + 内嵌高光投影
+      头部 hero (gradient + 玻璃 icon)；主体 chip + 系统文件树；footer 玻璃带 + 主次按钮
+    -->
+    <Teleport to="body">
+      <Transition name="fp-dlg-fade">
+        <section
+          v-if="fpDlgVisible"
+          class="pointer-events-none fixed inset-0 z-[4000] flex items-center justify-center p-6 max-[900px]:p-3"
+        >
+          <!-- 半透明遮罩（点击=取消） -->
+          <div
+            class="pointer-events-auto absolute inset-0 bg-slate-900/30 backdrop-blur-[3px]"
+            @click="fpDlgClose"
+          />
+          <!-- 玻璃面板（pointer-events-auto 让面板可交互） -->
+          <div
+            class="fp-dlg-panel pointer-events-auto relative flex max-h-[calc(100vh-48px)] w-[min(720px,calc(100vw-48px))] flex-col overflow-hidden rounded-[22px] border border-white/70 bg-white/72 shadow-[0_22px_70px_rgba(15,23,42,0.18),inset_0_1px_0_rgba(255,255,255,0.82)] backdrop-blur-2xl backdrop-saturate-150 max-[900px]:max-h-[calc(100vh-24px)] max-[900px]:max-w-[calc(100vw-24px)]"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="fp-dlg-title"
           >
-            {{ fpDlgConfirmText || '确认' }}
-          </button>
-        </div>
-      </template>
-    </el-dialog>
+            <!-- Header：hero band (gradient + 玻璃 icon + 标签 + 关闭键) -->
+            <header class="flex flex-shrink-0 items-start justify-between gap-3 border-b border-white/55 bg-gradient-to-br from-amber-50/76 via-white/40 to-sky-50/56 px-5 py-4 backdrop-blur-xl">
+              <div class="flex min-w-0 flex-1 items-center gap-3">
+                <span class="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[14px] border border-white/70 bg-white/56 shadow-sm backdrop-blur-xl">
+                  <FileSearch class="h-5 w-5 text-slate-700" :stroke-width="2" />
+                </span>
+                <div class="min-w-0 flex-1">
+                  <h3 id="fp-dlg-title" class="m-0 truncate text-[15px] font-bold text-slate-900">文件名预览</h3>
+                  <p class="mt-0.5 truncate text-[12px] leading-tight text-slate-500">
+                    {{ fpDlgGarbledCount
+                      ? `检测到 ${fpDlgGarbledCount} 项疑似乱码，确认是否继续按当前编码重试`
+                      : '检查指定编码下压缩包文件名是否仍然乱码' }}
+                  </p>
+                </div>
+                <div v-if="fpDlgGarbledCount || Number(fpDlgData?.repaired_count || 0) > 0" class="flex flex-shrink-0 items-center gap-2 max-[640px]:hidden">
+                  <span v-if="fpDlgGarbledCount" class="fp-dlg-tag is-amber">
+                    <AlertTriangle class="h-3 w-3" />
+                    {{ fpDlgGarbledCount }} 项乱码
+                  </span>
+                  <span
+                    v-if="Number(fpDlgData?.repaired_count || 0) > 0"
+                    class="fp-dlg-tag is-emerald"
+                    title="后端已按 surrogate / mojibake 反解，直接展示真实文件名"
+                  >
+                    <CheckCircle2 class="h-3 w-3" />
+                    自动反解 {{ Number(fpDlgData?.repaired_count || 0) }} 项
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                class="group inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[10px] border border-white/50 bg-white/30 text-slate-500 shadow-sm transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
+                title="关闭"
+                @click="fpDlgClose"
+              >
+                <X class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:rotate-90" :stroke-width="2.4" />
+              </button>
+            </header>
+
+            <!-- Body：meta chips + 文件树卡片 -->
+            <div v-if="fpDlgData" class="flex min-h-0 flex-1 flex-col gap-3 px-5 pb-4 pt-4">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="fp-dlg-meta-chip">
+                  <span class="fp-dlg-meta-chip-label">编码</span>
+                  <b>{{ fpDlgData.encoding || 'auto' }}</b>
+                </span>
+                <span class="fp-dlg-meta-chip">
+                  <span class="fp-dlg-meta-chip-label">codepage</span>
+                  <b>{{ fpDlgData.codepage || 'auto' }}</b>
+                </span>
+                <span class="fp-dlg-meta-chip">
+                  <span class="fp-dlg-meta-chip-label">密码</span>
+                  <b>{{ fpDlgData.password_source || '未指定' }}</b>
+                </span>
+                <span class="fp-dlg-meta-chip">
+                  <span class="fp-dlg-meta-chip-label">文件数</span>
+                  <b>{{ fpDlgData.file_count || 0 }}</b>
+                </span>
+              </div>
+              <div class="fp-dlg-tree-shell">
+                <div class="fp-dlg-tree-scroll fp-detail-scroll">
+                  <div
+                    v-for="row in fpDlgTreeRows"
+                    :key="row.key"
+                    class="fp-tree-row"
+                    :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
+                    :style="{ paddingLeft: `${row.depth * 16 + 12}px` }"
+                  >
+                    <div class="fp-tree-main">
+                      <span class="fp-tree-expander-spacer" />
+                      <span class="fp-tree-icon-wrap">
+                        <Folder v-if="row.type === 'dir'" :size="18" :stroke-width="2" class="fp-tree-icon is-folder" />
+                        <FileWarning v-else-if="row.isGarbled" :size="18" :stroke-width="2.2" class="fp-tree-icon is-warn" />
+                        <Archive v-else-if="row.isArchive" :size="17" :stroke-width="2" class="fp-tree-icon is-archive" />
+                        <Music v-else-if="fpIsAudio(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-audio" />
+                        <FileText v-else-if="fpIsText(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-text" />
+                        <File v-else :size="17" :stroke-width="2" class="fp-tree-icon is-file" />
+                      </span>
+                      <span class="fp-tree-name">{{ row.displayName }}</span>
+                      <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
+                    </div>
+                    <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
+                  </div>
+                  <div v-if="!fpDlgTreeRows.length" class="fp-dlg-tree-empty">压缩包内未读取到文件清单</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Footer：玻璃带 + 主次按钮 -->
+            <footer class="flex flex-shrink-0 items-center justify-end gap-2 border-t border-white/55 bg-white/24 px-5 py-3 backdrop-blur-xl">
+              <button
+                v-if="fpDlgCancelText"
+                type="button"
+                class="conflicts-action-btn is-slate"
+                @click="fpDlgCancel"
+              >
+                {{ fpDlgCancelText }}
+              </button>
+              <button
+                type="button"
+                :class="['conflicts-action-btn', fpDlgGarbledCount ? 'is-amber' : 'is-emerald']"
+                @click="fpDlgConfirm"
+              >
+                {{ fpDlgConfirmText || '确认' }}
+              </button>
+            </footer>
+          </div>
+        </section>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -846,21 +881,32 @@ function fpFormatBytes(bytes) {
 
 const fpDlgTreeRows = computed(() => fpDlgData.value ? fpBuildTreeRows(fpDlgData.value, fpDlgEncoding.value) : [])
 
-function fpDlgOnClose() {
-  if (fpDlgRejectFn) { fpDlgRejectFn('close'); fpDlgRejectFn = null; fpDlgResolveFn = null }
+// Teleport 自绘弹窗：关闭流程统一走 cancel/confirm 两个出口，主动 hide + 清掉 data，
+// 不再依赖 el-dialog 的 @closed 回调。Promise 必须在 hide 之前 resolve，确保连续
+// 重试场景下连环调用不会卡在 stale resolver 上。
+function _fpDlgFinish(kind) {
+  const resolveFn = fpDlgResolveFn
+  const rejectFn = fpDlgRejectFn
+  fpDlgResolveFn = null
+  fpDlgRejectFn = null
+  fpDlgVisible.value = false
   fpDlgData.value = null
+  if (kind === 'confirm') resolveFn?.()
+  else rejectFn?.(kind)
 }
-function fpDlgConfirm() {
-  fpDlgVisible.value = false
-  if (fpDlgResolveFn) { fpDlgResolveFn(); fpDlgResolveFn = null; fpDlgRejectFn = null }
-}
-function fpDlgCancel() {
-  fpDlgVisible.value = false
-  if (fpDlgRejectFn) { fpDlgRejectFn('cancel'); fpDlgRejectFn = null; fpDlgResolveFn = null }
-}
-// 自定义关闭按钮：等同取消（保留 promise reject 链路一致性）
-function fpDlgClose() {
-  fpDlgCancel()
+function fpDlgConfirm() { _fpDlgFinish('confirm') }
+function fpDlgCancel() { _fpDlgFinish('cancel') }
+// overlay 点击 / 右上角关闭键 / ESC：行为统一等同 cancel，让 promise reject('close')。
+function fpDlgClose() { _fpDlgFinish('close') }
+
+// ESC 键：仅在弹窗显示时拦截并关闭，避免和别的弹窗 / 全局快捷键串台。
+function _onFpDlgKeydown(event) {
+  if (!fpDlgVisible.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    fpDlgClose()
+  }
 }
 
 // 文件树 icon 分类：与 TaskDetailPane.task-file-tree 的图标语义保持一致，
@@ -931,6 +977,8 @@ watch(conflictFilter, () => {
 
 onMounted(() => {
   fetchConflicts()
+  // ESC 关闭文件名预览弹窗（Teleport 自绘，没有 el-dialog 自动接管）
+  window.addEventListener('keydown', _onFpDlgKeydown)
 })
 
 // 路由启用了 keep-alive（router/index.js 中 cache: true），切走再切回来组件不会重新 mount，
@@ -943,6 +991,7 @@ onActivated(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', _onFpDlgKeydown)
   for (const timerId of retryPollers.values()) {
     clearTimeout(timerId)
   }
@@ -969,7 +1018,25 @@ async function fetchConflicts() {
     try {
       // 阶段 1：不带 stats 立即拿列表（远程 stat 跳过，秒回），保证界面先渲染出来。
       const data = await conflictApi.list({ includeStats: false })
-      conflicts.value = data.conflicts || []
+      const incoming = data.conflicts || []
+      // 关键合并：阶段 1 不带 stats，但前一次 backfill 已经填好的 stats 必须保留下来，
+      // 否则模板里的 `displayStatSize` 在 statsBackfilling=true 时会瞬间回退到"统计中…"，
+      // 再被阶段 2 覆盖回真实大小 → 详情区"大小 / 创建时间"反复闪烁。
+      const previousMap = new Map(conflicts.value.map(item => [item.id, item]))
+      conflicts.value = incoming.map(next => {
+        const prev = previousMap.get(next.id)
+        if (!prev) return next
+        const nextSrcStats = next.context?.source?.stats ?? prev.context?.source?.stats ?? null
+        const nextExistingStats = next.context?.existing?.stats ?? prev.context?.existing?.stats ?? null
+        return {
+          ...next,
+          context: {
+            ...(next.context || {}),
+            source: { ...(next.context?.source || {}), stats: nextSrcStats },
+            existing: { ...(next.context?.existing || {}), stats: nextExistingStats },
+          },
+        }
+      })
       reconcileLocalRetryingConflicts()
       syncSelectedConflicts()
       syncActiveConflict()
@@ -981,7 +1048,8 @@ async function fetchConflicts() {
       loading.value = false
     }
     // 阶段 2：后台异步补齐 stats（目录大小 / 创建时间），不阻塞 UI、失败不打扰。
-    // 注意 backfill 不 await，它内部有 abort + requestId 双重去重机制，自我管理。
+    // 注意 backfill 不 await，它内部有 abort + requestId 双重去重机制，自我管理；
+    // 并且只在确实缺 stats 的项存在时才请求，避免重复跑空。
     void backfillConflictStats()
   })()
   try {
@@ -993,6 +1061,18 @@ async function fetchConflicts() {
 
 async function backfillConflictStats() {
   if (!conflicts.value.length) return
+  // 短路 1：所有项的 stats 都已齐全（前一次 backfill 已写入 + fetchConflicts 阶段 1
+  // 已正确合并保留）就直接跳过，避免重试轮询 / SSE 推送 / 切回页面时反复 list 出空 stats
+  // 又重新触发"统计中…"占位符闪烁。EXTRACT_FAILED 项可能只有 source 没 existing，
+  // existing 不存在不视为缺 stats。
+  const needsStats = conflicts.value.some(item => {
+    const srcStats = item.context?.source?.stats
+    if (!srcStats || srcStats.size == null) return true
+    const existing = item.context?.existing
+    if (existing && (!existing.stats || existing.stats.size == null)) return true
+    return false
+  })
+  if (!needsStats) return
   // 主动 abort 上一次未完成的 backfill，避免后端跑多遍 + 浪费 NAS IO + 占线程池。
   if (backfillAbortController) {
     backfillAbortController.abort()
@@ -1075,7 +1155,10 @@ function isFailureConflict(conflict) {
 }
 
 function canPreviewFilenames(conflict) {
-  return isFailureConflict(conflict) && Boolean(conflict?.id)
+  // 只有"文件名乱码"类失败才需要展示预览按钮：getGarbledMeta 已经按
+  // extract_failure_reason === 'garbled_filename' 或 garbled_filename_sample/top_samples
+  // 有值判定。密码错 / 一般解压失败 / 群晖错误等不暴露该入口，避免和重试流程不一致。
+  return isFailureConflict(conflict) && Boolean(conflict?.id) && Boolean(getGarbledMeta(conflict))
 }
 
 function ensureFilenamePreviewState(conflict) {
@@ -1501,17 +1584,29 @@ async function startRetry(conflict, payload = {}) {
 
 async function askRetryPassword(conflict, batchCount = 1) {
   const isBatch = batchCount > 1
+  // 仅当 conflict.new_metadata.extract_failure_reason === 'garbled_filename' 或带有
+  // garbled_filename_sample / top_samples 时，才认定为乱码错误。其它失败原因（密码错、
+  // 通用解压失败、SynologyError 等）不应该被强制走"指定编码 + 文件树预览"流程，
+  // 否则会让大多数 EXTRACT_FAILED 用户多看一个无关弹窗。
+  const isGarbledConflict = !isBatch && Boolean(getGarbledMeta(conflict))
   const titleLabel = isBatch
     ? `批量重试 ${batchCount} 个问题项`
     : `重试 ${conflict.rjcode || '当前问题项'}`
   const messageText = isBatch
     ? `可选：指定一个密码用于全部 ${batchCount} 项重试。如各项需要不同密码，请关闭后单独逐项重试。留空则各项按原逻辑走密码库、RJ 推导和默认密码。`
-    : `可选：指定一个密码只用这一条来重试；会使用详情页下拉选择的文件名编码（当前：${getEncodingLabel(getFilenamePreviewEncoding(conflict))}）先预览目录名。留空则按原逻辑继续走密码库、RJ 推导和默认密码。`
+    : isGarbledConflict
+      ? `可选：指定密码 + 文件名编码（当前：${getEncodingLabel(getFilenamePreviewEncoding(conflict))}），下一步会预览压缩包目录确认是否仍然乱码。留空密码按密码库 / RJ 推导继续。`
+      : `可选：为这一条指定明文密码再重试；留空表示按密码库、RJ 推导、默认密码继续。当前问题项不是文件名乱码错误，无需指定 ZIP 文件名编码。`
+  const confirmText = isBatch
+    ? `开始批量重试 (${batchCount} 项)`
+    : isGarbledConflict
+      ? '下一步：编码预览'
+      : '开始重试'
   try {
     const passwordValue = await showSystemPrompt({
       title: titleLabel,
       message: messageText,
-      confirmText: isBatch ? `开始批量重试 (${batchCount} 项)` : '下一步：编码预览',
+      confirmText,
       cancelText: '取消',
       inputType: 'text',
       placeholder: '直接输入明文密码；留空表示正常重试',
@@ -1523,8 +1618,8 @@ async function askRetryPassword(conflict, batchCount = 1) {
       filenameEncoding: '',
       ignoreGarbled: false,
     }
-    // 批量重试不支持单独指定编码，直接返回
-    if (isBatch) return result
+    // 批量重试 / 非乱码错误：跳过编码预览弹窗，直接返回，让上层走纯密码重试。
+    if (isBatch || !isGarbledConflict) return result
     result.filenameEncoding = getFilenamePreviewEncoding(conflict)
     const preview = await previewArchiveFilenames(conflict, {
       filenameEncoding: result.filenameEncoding,
@@ -3257,192 +3352,116 @@ button:disabled {
 }
 
 /* ============================================================
-   文件名预览毛玻璃弹窗
-   - 视觉对齐 NotificationPanel：rgba(255,255,255,0.96) + backdrop-filter blur(20)
-   - 文件树对齐 TaskDetailPane.task-file-tree（fp-tree-row 已统一）
+   文件名预览弹窗（Teleport 自绘）
+   - 视觉对齐库存页 Library.mediaPreviewDialog：圆角 22 / bg-white/72 / backdrop-blur-2xl
+   - 头部 hero gradient + 玻璃 icon；底部 footer 玻璃带
+   - 文件树沿用 fp-tree-row（已对齐 TaskDetailPane.task-file-tree）
    ============================================================ */
-.filename-preview-dialog {
-  /* 1. 弹窗外壳本身：el-dialog 默认是不透明白色，这里替换成毛玻璃 */
-  --fp-glass-bg: rgba(255, 255, 255, 0.96);
-  --fp-glass-border: rgba(29, 29, 31, 0.08);
-  --fp-glass-shadow: 0 22px 64px rgba(0, 0, 0, 0.16), 0 6px 18px rgba(0, 0, 0, 0.06);
-}
-.filename-preview-dialog :deep(.el-overlay) {
-  background-color: rgba(15, 23, 42, 0.32);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-}
-.filename-preview-dialog :deep(.el-dialog) {
-  margin-top: 8vh !important;
-  background: var(--fp-glass-bg);
-  border: 1px solid var(--fp-glass-border);
-  border-radius: 20px;
-  box-shadow: var(--fp-glass-shadow);
-  backdrop-filter: blur(22px) saturate(140%);
-  -webkit-backdrop-filter: blur(22px) saturate(140%);
-  overflow: hidden;
-}
-.filename-preview-dialog :deep(.el-dialog__header) {
-  padding: 0;
-  margin: 0;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.06);
-}
-.filename-preview-dialog :deep(.el-dialog__body) {
-  padding: 0;
-  background: transparent;
-}
-.filename-preview-dialog :deep(.el-dialog__footer) {
-  padding: 0;
-  background: transparent;
-  border-top: 1px solid rgba(29, 29, 31, 0.06);
-}
 
-/* 2. Header：标题 + 标签 + 自绘关闭按钮 */
-.fp-dlg-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px;
-}
-.fp-dlg-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-.fp-dlg-title-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
-  background: linear-gradient(180deg, rgba(241, 245, 249, 0.92) 0%, rgba(226, 232, 240, 0.9) 100%);
-  border: 1px solid rgba(203, 213, 225, 0.85);
-  color: #475569;
-  flex-shrink: 0;
-}
-.fp-dlg-title h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 700;
-  color: #0f172a;
-  letter-spacing: 0.01em;
-}
-.fp-dlg-title-tag {
+/* 1. 入场 / 出场过渡：fade + scale，遮罩同步淡入淡出 */
+.fp-dlg-fade-enter-active,
+.fp-dlg-fade-leave-active { transition: opacity 0.22s ease; }
+.fp-dlg-fade-enter-from,
+.fp-dlg-fade-leave-to { opacity: 0; }
+.fp-dlg-fade-enter-active .fp-dlg-panel,
+.fp-dlg-fade-leave-active .fp-dlg-panel { transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease, filter 0.22s ease; }
+.fp-dlg-fade-enter-from .fp-dlg-panel,
+.fp-dlg-fade-leave-to .fp-dlg-panel { transform: translateY(8px) scale(0.97); opacity: 0; filter: blur(1px); }
+
+/* 2. 标签 chip（hero 区右侧的 "N 项乱码 / 自动反解 N 项"） */
+.fp-dlg-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
+  padding: 3px 9px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
+  letter-spacing: 0.01em;
 }
-.fp-dlg-title-tag.is-warn {
-  background: linear-gradient(180deg, #fef3c7 0%, #fde68a 100%);
+.fp-dlg-tag.is-amber {
+  background: linear-gradient(180deg, rgba(254, 243, 199, 0.92) 0%, rgba(253, 230, 138, 0.86) 100%);
   border: 1px solid rgba(252, 211, 77, 0.7);
   color: #92400e;
+  box-shadow: 0 1px 3px rgba(217, 119, 6, 0.16);
 }
-.fp-dlg-title-tag.is-emerald {
-  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
+.fp-dlg-tag.is-emerald {
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.92) 0%, rgba(209, 250, 229, 0.88) 100%);
   border: 1px solid rgba(167, 243, 208, 0.9);
   color: #047857;
+  box-shadow: 0 1px 3px rgba(5, 150, 105, 0.12);
 }
-.fp-dlg-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 9px;
-  background: rgba(29, 29, 31, 0.05);
-  color: rgba(29, 29, 31, 0.54);
-  cursor: pointer;
-  transition: all 0.16s ease;
-}
-.fp-dlg-close:hover {
-  background: rgba(220, 38, 38, 0.12);
-  color: #dc2626;
-  transform: scale(1.06);
-}
-.fp-dlg-close:active { transform: scale(0.94); }
 
-/* 3. Meta chip 区：替换原来的 "key: value" 文本，全部改成胶囊 chip */
-.fp-dlg-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 18px 8px;
-}
-.fp-dlg-chip {
+/* 3. Meta chip（body 顶部一排 "编码 / codepage / 密码 / 文件数"） */
+.fp-dlg-meta-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
+  padding: 4px 11px;
   border-radius: 999px;
-  background: rgba(29, 29, 31, 0.05);
-  border: 1px solid rgba(29, 29, 31, 0.06);
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(226, 232, 240, 0.85);
   font-size: 12px;
   color: #334155;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
-.fp-dlg-chip-label {
+.fp-dlg-meta-chip-label {
   color: rgba(29, 29, 31, 0.54);
   font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.fp-dlg-chip b {
+.fp-dlg-meta-chip b {
   color: #0f172a;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
-/* 4. 文件树卡片（按 task-file-tree-card 视觉，带顶底 fade mask） */
-.fp-dlg-tree-card {
+/* 4. 文件树外壳（半透明白卡 + 顶底 fade mask + 内嵌高光） */
+.fp-dlg-tree-shell {
   position: relative;
-  margin: 4px 18px 16px;
-  height: 380px;
+  flex: 1;
+  min-height: 200px;
+  max-height: 420px;
   overflow: hidden;
+  border-radius: 16px;
   border: 1px solid rgba(226, 232, 240, 0.85);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.62);
   box-shadow:
     0 10px 28px rgba(15, 23, 42, 0.04),
     inset 0 1px 0 rgba(255, 255, 255, 0.96);
 }
-.fp-dlg-tree-card::before,
-.fp-dlg-tree-card::after {
+.fp-dlg-tree-shell::before,
+.fp-dlg-tree-shell::after {
   position: absolute;
   right: 0;
   left: 0;
   z-index: 2;
-  height: 16px;
+  height: 18px;
   pointer-events: none;
   content: '';
 }
-.fp-dlg-tree-card::before {
+.fp-dlg-tree-shell::before {
   top: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.86) 0%, rgba(255, 255, 255, 0));
 }
-.fp-dlg-tree-card::after {
+.fp-dlg-tree-shell::after {
   bottom: 0;
-  background: linear-gradient(0deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0));
+  background: linear-gradient(0deg, rgba(255, 255, 255, 0.86) 0%, rgba(255, 255, 255, 0));
 }
-.fp-dlg-tree {
+.fp-dlg-tree-scroll {
   height: 100%;
+  max-height: 420px;
   overflow: auto;
   padding: 12px;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
 }
 .fp-dlg-tree-empty {
-  padding: 32px 12px;
+  padding: 36px 12px;
   text-align: center;
   color: #94a3b8;
   font-size: 12.5px;
@@ -3458,14 +3477,6 @@ button:disabled {
 }
 .fp-detail-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(100, 116, 139, 0.68);
-}
-
-/* 6. Footer */
-.fp-dlg-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 12px 18px;
 }
 
 @media (max-width: 1100px) {
