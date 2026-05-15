@@ -835,6 +835,10 @@ class TaskEngine:
             "garbled_filename_score_after",
             "garbled_filename_repaired_count",
             "garbled_filename_guard_origin",
+            # surrogate 修复统计：让操作记录里能看到本次有几个非 UTF-8 文件名被自动反解
+            # （repaired = 强信号，已变为合法 UTF-8）/ 几个仅字面转义（escaped = 仍需人工编码确认）。
+            "garbled_filename_surrogate_repaired_count",
+            "garbled_filename_surrogate_escaped_count",
         )
         return {key: metadata.get(key) for key in keys if key in metadata}
 

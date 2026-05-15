@@ -37,7 +37,7 @@ from ..core.password_utils import (
     normalize_password_value,
     normalize_rjcode_value,
 )
-from ..core.json_safety import safe_json_value
+from ..core.json_safety import safe_json_value, sqlite_safe_text
 
 logger = logging.getLogger(__name__)
 
@@ -6413,6 +6413,24 @@ class ExtractService:
         )
         return str(diagnostic.get("sample") or "") or None
 
+    def _safe_diagnostic_name(self, name: str) -> Tuple[str, str]:
+        """诊断面板 / task_metadata 暴露文件名前先洗一遍，避免泄漏 lone surrogate。
+
+        返回 ``(display_name, mode)``，``mode`` 可能取值：
+
+        - ``"plain"``：原本就是合法 UTF-8，未做任何转换；
+        - ``"repaired"``：surrogateescape 反解为合法 UTF-8 文件名（强信号）；
+        - ``"escaped"``：反解失败，仅把 ``\\udcXX`` 转成字面量给前端按编码再尝试。
+        """
+        if not name:
+            return name, "plain"
+        if not self._has_surrogateescape_bytes(name):
+            return name, "plain"
+        repaired = self._repair_surrogateescaped_filename(name)
+        if repaired:
+            return repaired, "repaired"
+        return (sqlite_safe_text(name) or name), "escaped"
+
     def _filename_garbled_diagnostics(
         self,
         directory: str,
@@ -6426,6 +6444,10 @@ class ExtractService:
         flagged = 0
         sample = ""
         best_score = 0.0
+        # surrogate 处理统计：操作记录、问题作品 detail 和诊断面板都会读这两个字段，
+        # 让用户/支持人员一眼看出"这次诊断里有几个文件名被自动反解 / 几个只是字面转义"。
+        surrogate_repair_count = 0
+        surrogate_escape_count = 0
         top_samples: List[Dict[str, Any]] = []
         stack = [directory]
         while stack and (max_names is None or total < max_names):
@@ -6435,15 +6457,23 @@ class ExtractService:
                     for entry in entries:
                         name = entry.name
                         total += 1
+                        # 评分 / 乱码判定仍用磁盘上的原始 name，确保信号忠实反映原始字节；
+                        # 但展示 / 落库一律走 _safe_diagnostic_name，避免 surrogate 注入下游。
                         score = self._garbled_text_score(name)
                         is_garbled = self._has_garbled_text(name)
+                        display_name, repair_mode = self._safe_diagnostic_name(name)
+                        if repair_mode == "repaired":
+                            surrogate_repair_count += 1
+                        elif repair_mode == "escaped":
+                            surrogate_escape_count += 1
                         best_score = max(best_score, score)
                         if score > 0 or is_garbled:
                             top_samples.append({
-                                "name": name,
+                                "name": display_name,
                                 "score": round(score, 1),
                                 "markers": self._mojibake_markers(name),
                                 "garbled": bool(is_garbled),
+                                "surrogate_repair_mode": repair_mode,
                             })
                             top_samples.sort(key=lambda item: (bool(item.get("garbled")), float(item.get("score") or 0)), reverse=True)
                             if len(top_samples) > top_limit:
@@ -6451,7 +6481,7 @@ class ExtractService:
                         if is_garbled:
                             flagged += 1
                             if not sample:
-                                sample = name
+                                sample = display_name
                             if short_circuit:
                                 return {
                                     "sample": sample,
@@ -6460,6 +6490,8 @@ class ExtractService:
                                     "garbled_count": flagged,
                                     "garbled_ratio": round(flagged / max(total, 1), 4),
                                     "top_samples": top_samples,
+                                    "surrogate_repair_count": surrogate_repair_count,
+                                    "surrogate_escape_count": surrogate_escape_count,
                                 }
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(entry.path)
@@ -6474,6 +6506,8 @@ class ExtractService:
             "garbled_count": flagged,
             "garbled_ratio": round(flagged / max(total, 1), 4),
             "top_samples": top_samples,
+            "surrogate_repair_count": surrogate_repair_count,
+            "surrogate_escape_count": surrogate_escape_count,
         }
 
     def _filename_garbled_score(self, directory: str, *, max_names: Optional[int] = 240) -> float:
@@ -6771,25 +6805,79 @@ class ExtractService:
             password=normalize_password_value(password) if password else "",
             filename_encoding=filename_encoding,
         )
-        entries = list(file_list or [])[: max(1, min(int(limit or 80), 300))]
+        entries_raw = list(file_list or [])[: max(1, min(int(limit or 80), 300))]
+
+        # Step 1：把 7zz 输出里的 surrogateescape / mojibake 都反解成合法 UTF-8，
+        # 让前端弹窗 / 内联预览不再依赖客户端 TextDecoder + 编码下拉拍对，也对
+        # mojibake（如 SJIS 名错配 cp936 解出来的杂字串）一并兜底。
+        # 反解出现新名字时，给 item / diagnostics 都附 ``repaired_name``、
+        # ``repaired_path`` 字段，前端优先采纳真实日文/中文文件名。
+        repaired_total = 0
+        entries: List[Dict[str, Any]] = []
+        for item in entries_raw:
+            new_item = dict(item) if isinstance(item, dict) else {"name": str(item or "")}
+            raw_name = str(new_item.get("name") or "")
+            if raw_name:
+                repaired_path = self._repair_preview_path(raw_name)
+                if repaired_path and repaired_path != raw_name:
+                    new_item["repaired_name"] = repaired_path.split("/")[-1] if "/" in repaired_path else repaired_path
+                    new_item["repaired_path"] = repaired_path
+                    repaired_total += 1
+            entries.append(new_item)
+
         names = [str(item.get("name") or "") for item in entries if str(item.get("name") or "")]
         diagnostics = []
-        for name in names[:80]:
+        for idx, name in enumerate(names[:80]):
+            entry = entries[idx] if idx < len(entries) else {}
+            repaired_path = str(entry.get("repaired_path") or "")
+            repaired_name = str(entry.get("repaired_name") or "")
             diagnostics.append({
                 "name": name,
+                "repaired_name": repaired_name,
+                "repaired_path": repaired_path,
                 "score": round(self._garbled_text_score(name), 1),
                 "markers": self._mojibake_markers(name),
                 "garbled": self._has_garbled_text(name),
             })
+        # 第一个反解后真正可读的名字（优先 repaired，其次原 garbled name）作为 sample，
+        # 让 dialog 顶部能直接展示用户能识别的文件名。
+        repaired_sample = next(
+            (item["repaired_name"] for item in diagnostics if item.get("repaired_name")),
+            None,
+        )
+        garbled_sample = next(
+            (item["name"] for item in diagnostics if item.get("garbled")),
+            None,
+        )
         return safe_json_value({
             "encoding": str(filename_encoding or "auto"),
             "codepage": self._filename_encoding_to_codepage(filename_encoding),
             "file_count": len(file_list or []),
             "items": entries,
             "diagnostics": diagnostics,
-            "garbled_sample": next((item["name"] for item in diagnostics if item.get("garbled")), None),
+            "garbled_sample": garbled_sample,
+            "repaired_sample": repaired_sample,
+            "repaired_count": repaired_total,
             "max_score": max([float(item.get("score") or 0) for item in diagnostics] or [0.0]),
         })
+
+    def _repair_preview_path(self, path: str) -> Optional[str]:
+        """对 7zz 输出的目录清单条目做 surrogate / mojibake 反解。
+
+        优先级：
+        1. 含 surrogateescape 字节 -> ``_repair_surrogateescaped_filename`` 反解整段；
+        2. 不含 surrogate 但路径片段带 mojibake 标记 -> ``_repair_mojibake_relative_path``
+           按路径片段反解（与解压后落盘修复同一套规则，结果一致）。
+        失败时返回 None，调用方保持原 ``name`` 不动。
+        """
+        if not path:
+            return None
+        if self._has_surrogateescape_bytes(path):
+            repaired = self._repair_surrogateescaped_filename(path)
+            if repaired and repaired != path:
+                return repaired
+        # mojibake：按路径分段走可逆 codec_pair 反解，避免误改普通中文路径。
+        return self._repair_mojibake_relative_path(path)
 
     async def _reject_if_garbled_after_extract(
         self,
@@ -6836,6 +6924,10 @@ class ExtractService:
         sample_after = str(diagnostics_after.get("sample") or "")
         score_after = float(diagnostics_after.get("score") or 0.0)
         if task is not None:
+            after_repair = int(diagnostics_after.get("surrogate_repair_count") or 0)
+            after_escape = int(diagnostics_after.get("surrogate_escape_count") or 0)
+            before_repair = int(diagnostics_before.get("surrogate_repair_count") or 0)
+            before_escape = int(diagnostics_before.get("surrogate_escape_count") or 0)
             self._set_extract_meta(
                 task,
                 extract_failure_reason="garbled_filename" if sample_after else (task.task_metadata or {}).get("extract_failure_reason"),
@@ -6850,6 +6942,10 @@ class ExtractService:
                 garbled_filename_total_names=diagnostics_after.get("total_names"),
                 garbled_filename_garbled_count=diagnostics_after.get("garbled_count"),
                 garbled_filename_garbled_ratio=diagnostics_after.get("garbled_ratio"),
+                # surrogate 处理统计：操作记录 / 问题作品 detail 都会读，让支持人员一眼看出
+                # 本次有几个非 UTF-8 文件名被反解、几个只是字面转义。
+                garbled_filename_surrogate_repaired_count=max(before_repair, after_repair),
+                garbled_filename_surrogate_escaped_count=max(before_escape, after_escape),
             )
         if not sample_after:
             if repaired_count:

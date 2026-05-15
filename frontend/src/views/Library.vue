@@ -1097,17 +1097,43 @@
             <div class="min-w-0 truncate text-[13px] font-semibold text-slate-900">
               {{ mediaPreviewDialog.title || '文件观看' }}
             </div>
-            <button
-              type="button"
-              class="group inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[10px] border border-white/50 bg-white/30 text-slate-500 shadow-sm transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
-              title="关闭"
-              @click="closeMediaPreviewDialog"
-            >
-              <IconX class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:rotate-90" :stroke-width="2.4" />
-            </button>
+            <div class="flex flex-shrink-0 items-center gap-2">
+              <div v-if="mediaPreviewDialog.kind === 'image'" class="flex items-center gap-1 rounded-[12px] border border-white/50 bg-white/26 p-0.5 shadow-sm backdrop-blur-xl">
+                <button
+                  type="button"
+                  class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35"
+                  :disabled="!mediaPreviewCanGoPrev"
+                  title="上一张"
+                  @click="switchMediaPreviewImage(-1)"
+                >
+                  <IconChevronLeft class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:-translate-x-0.5" :stroke-width="2.4" />
+                </button>
+                <span class="min-w-[54px] px-1 text-center text-[12px] font-semibold text-slate-500">{{ mediaPreviewImagePositionText }}</span>
+                <button
+                  type="button"
+                  class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35"
+                  :disabled="!mediaPreviewCanGoNext"
+                  title="下一张"
+                  @click="switchMediaPreviewImage(1)"
+                >
+                  <IconChevronRight class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:translate-x-0.5" :stroke-width="2.4" />
+                </button>
+              </div>
+              <button
+                type="button"
+                class="group inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[10px] border border-white/50 bg-white/30 text-slate-500 shadow-sm transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
+                title="关闭"
+                @click="closeMediaPreviewDialog"
+              >
+                <IconX class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:rotate-90" :stroke-width="2.4" />
+              </button>
+            </div>
           </header>
 
-          <div class="flex min-h-0 w-fit max-w-full flex-1 items-center justify-center overflow-hidden bg-white/10">
+          <div
+            class="relative flex min-h-0 w-fit max-w-full flex-1 items-center justify-center overflow-hidden bg-white/10"
+            :style="mediaPreviewFrameStyle"
+          >
             <div v-if="mediaPreviewDialog.remote" class="mx-4 grid w-full max-w-[720px] grid-cols-[52px_minmax(0,1fr)] items-start gap-4 rounded-2xl border border-white/70 bg-white/60 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl">
               <IconFolderOpen class="h-[52px] w-[52px] rounded-[14px] bg-gradient-to-b from-slate-50 to-slate-200 p-3 text-slate-600" :stroke-width="2.1" />
               <div class="min-w-0">
@@ -1117,12 +1143,34 @@
               </div>
             </div>
 
-            <img
-              v-else-if="mediaPreviewDialog.kind === 'image'"
-              class="block h-auto max-h-[calc(100vh-96px)] w-auto max-w-[calc(100vw-48px)] object-contain max-[900px]:max-h-[calc(100vh-72px)] max-[900px]:max-w-[calc(100vw-24px)]"
-              :src="mediaPreviewDialog.url"
-              :alt="mediaPreviewDialog.title"
-            />
+            <template v-else-if="mediaPreviewDialog.kind === 'image'">
+              <img
+                :key="mediaPreviewDialog.previewKey || mediaPreviewDialog.url"
+                class="media-preview-image block h-auto max-h-[calc(100vh-96px)] w-auto max-w-[calc(100vw-48px)] object-contain max-[900px]:max-h-[calc(100vh-72px)] max-[900px]:max-w-[calc(100vw-24px)]"
+                :class="mediaPreviewImageMotionClass"
+                :src="mediaPreviewDialog.url"
+                :alt="mediaPreviewDialog.title"
+                @load="handleMediaPreviewImageLoad"
+              />
+              <button
+                v-if="mediaPreviewCanGoPrev"
+                type="button"
+                class="group absolute left-4 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/60 bg-white/34 text-slate-600 shadow-[0_10px_26px_rgba(15,23,42,0.14)] backdrop-blur-xl transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.05] hover:bg-white/78 hover:text-slate-950 active:scale-[0.94] max-[900px]:left-2"
+                title="上一张"
+                @click="switchMediaPreviewImage(-1)"
+              >
+                <IconChevronLeft class="h-5 w-5 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:-translate-x-0.5" :stroke-width="2.5" />
+              </button>
+              <button
+                v-if="mediaPreviewCanGoNext"
+                type="button"
+                class="group absolute right-4 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/60 bg-white/34 text-slate-600 shadow-[0_10px_26px_rgba(15,23,42,0.14)] backdrop-blur-xl transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.05] hover:bg-white/78 hover:text-slate-950 active:scale-[0.94] max-[900px]:right-2"
+                title="下一张"
+                @click="switchMediaPreviewImage(1)"
+              >
+                <IconChevronRight class="h-5 w-5 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:translate-x-0.5" :stroke-width="2.5" />
+              </button>
+            </template>
 
             <video
               v-else-if="mediaPreviewDialog.kind === 'video'"
@@ -1132,14 +1180,6 @@
               autoplay
               playsinline
             ></video>
-
-            <audio
-              v-else-if="mediaPreviewDialog.kind === 'audio' || mediaPreviewDialog.kind === 'audio-lossless'"
-              class="mx-6 w-full max-w-[760px] rounded-2xl border border-white/70 bg-white/70 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl"
-              :src="mediaPreviewDialog.url"
-              controls
-              autoplay
-            ></audio>
 
             <iframe
               v-else
@@ -1466,6 +1506,10 @@ import {
   FolderInput as IconFolderInput,
 
   FolderOpen as IconFolderOpen,
+
+  ChevronLeft as IconChevronLeft,
+
+  ChevronRight as IconChevronRight,
 
 } from 'lucide-vue-next'
 
@@ -1989,7 +2033,92 @@ const mediaPreviewDialog = ref({
   url: '',
   kind: '',
   remote: false,
+  previewKey: '',
 })
+
+const mediaPreviewImageMotionClass = ref('media-preview-image-next')
+
+const mediaPreviewImageFrame = ref({ width: 0, height: 0 })
+
+const mediaPreviewImageRows = computed(() => files.value.filter(row =>
+  row &&
+  !row.is_directory &&
+  !isSearchResultRow(row) &&
+  classifyLibraryEntryKind(row) === 'image'
+))
+
+const mediaPreviewImageIndex = computed(() => {
+  if (mediaPreviewDialog.value.kind !== 'image' || !mediaPreviewDialog.value.path) return -1
+  return mediaPreviewImageRows.value.findIndex(row => row?.path === mediaPreviewDialog.value.path)
+})
+
+const mediaPreviewCanGoPrev = computed(() => mediaPreviewImageIndex.value > 0)
+
+const mediaPreviewCanGoNext = computed(() => {
+  const index = mediaPreviewImageIndex.value
+  return index >= 0 && index < mediaPreviewImageRows.value.length - 1
+})
+
+const mediaPreviewImagePositionText = computed(() => {
+  const total = mediaPreviewImageRows.value.length
+  const index = mediaPreviewImageIndex.value
+  if (!total || index < 0) return '- / -'
+  return `${index + 1} / ${total}`
+})
+
+const mediaPreviewFrameStyle = computed(() => {
+  if (mediaPreviewDialog.value.kind !== 'image') return {}
+  const width = Number(mediaPreviewImageFrame.value.width || 0)
+  const height = Number(mediaPreviewImageFrame.value.height || 0)
+  return {
+    minWidth: width > 0 ? `${width}px` : 'min(72vw, 760px)',
+    minHeight: height > 0 ? `${height}px` : 'min(68vh, 560px)',
+  }
+})
+
+function buildMediaPreviewUrl (libraryId, path) {
+
+  const url = libraryApi.browserPreviewUrl(libraryId, path)
+
+  if (!isRemoteCurrentLibrary.value) return url
+
+  const separator = url.includes('?') ? '&' : '?'
+
+  return `${url}${separator}_preview=${Date.now()}`
+
+}
+
+function buildMediaPreviewKey (libraryId, path) {
+
+  return `${libraryId || ''}::${path || ''}::${Date.now()}`
+
+}
+
+function setMediaPreviewImageMotion (direction = 1) {
+
+  mediaPreviewImageMotionClass.value = ''
+
+  requestAnimationFrame(() => {
+    mediaPreviewImageMotionClass.value = direction < 0 ? 'media-preview-image-prev' : 'media-preview-image-next'
+  })
+
+}
+
+function handleMediaPreviewImageLoad (event) {
+
+  const image = event?.target
+
+  if (!image) return
+
+  const width = Math.ceil(image.clientWidth || image.naturalWidth || 0)
+
+  const height = Math.ceil(image.clientHeight || image.naturalHeight || 0)
+
+  if (width > 0 && height > 0) {
+    mediaPreviewImageFrame.value = { width, height }
+  }
+
+}
 
 const tampermonkeyLoaded = ref(false)
 
@@ -12495,6 +12624,34 @@ function handleSubtitleDialogKeydown (event) {
 
   }
 
+  if (mediaPreviewDialog.value.visible && mediaPreviewDialog.value.kind === 'image') {
+
+    if (event?.key === 'ArrowLeft' && mediaPreviewCanGoPrev.value) {
+
+      event.preventDefault()
+
+      event.stopPropagation()
+
+      switchMediaPreviewImage(-1)
+
+      return
+
+    }
+
+    if (event?.key === 'ArrowRight' && mediaPreviewCanGoNext.value) {
+
+      event.preventDefault()
+
+      event.stopPropagation()
+
+      switchMediaPreviewImage(1)
+
+      return
+
+    }
+
+  }
+
   if (isTextInputElement(event.target)) return
 
 
@@ -12868,7 +13025,7 @@ function buildBatchDeletePreviewMessage (preview, count) {
 }
 
 
-const VIEWABLE_LIBRARY_KINDS = new Set(['audio-lossless', 'audio', 'image', 'video', 'pdf', 'text'])
+const VIEWABLE_LIBRARY_KINDS = new Set(['image', 'video', 'pdf', 'text'])
 
 
 function canViewLibraryRow (row) {
@@ -12902,13 +13059,16 @@ async function viewLibraryRow (row) {
 
     const kind = classifyLibraryEntryKind(row)
 
+    if (kind === 'image') setMediaPreviewImageMotion(1)
+
     mediaPreviewDialog.value = {
       visible: true,
       title: row.name || '远程文件',
       path: row.path || '',
-      url: libraryApi.browserPreviewUrl(selectedLibraryId.value, row.path),
+      url: buildMediaPreviewUrl(selectedLibraryId.value, row.path),
       kind,
       remote: false,
+      previewKey: buildMediaPreviewKey(selectedLibraryId.value, row.path),
     }
 
     return
@@ -12917,7 +13077,9 @@ async function viewLibraryRow (row) {
 
   const kind = classifyLibraryEntryKind(row)
 
-  const url = libraryApi.browserPreviewUrl(selectedLibraryId.value, row.path)
+  const url = buildMediaPreviewUrl(selectedLibraryId.value, row.path)
+
+  if (kind === 'image') setMediaPreviewImageMotion(1)
 
   mediaPreviewDialog.value = {
     visible: true,
@@ -12926,6 +13088,35 @@ async function viewLibraryRow (row) {
     url,
     kind,
     remote: false,
+    previewKey: buildMediaPreviewKey(selectedLibraryId.value, row.path),
+  }
+
+}
+
+
+function switchMediaPreviewImage (direction) {
+
+  const index = mediaPreviewImageIndex.value
+
+  if (index < 0) return
+
+  const nextRow = mediaPreviewImageRows.value[index + direction]
+
+  if (!nextRow) return
+
+  setMediaPreviewImageMotion(direction)
+
+  const nextUrl = buildMediaPreviewUrl(selectedLibraryId.value, nextRow.path)
+
+  mediaPreviewDialog.value = {
+    ...mediaPreviewDialog.value,
+    visible: true,
+    title: nextRow.name || '图片观看',
+    path: nextRow.path || '',
+    url: nextUrl,
+    kind: 'image',
+    remote: false,
+    previewKey: buildMediaPreviewKey(selectedLibraryId.value, nextRow.path),
   }
 
 }
@@ -12940,7 +13131,10 @@ function closeMediaPreviewDialog () {
     url: '',
     kind: '',
     remote: false,
+    previewKey: '',
   }
+
+  mediaPreviewImageFrame.value = { width: 0, height: 0 }
 
 }
 
@@ -14753,6 +14947,37 @@ function statsStatusTextDisplay (stats) {
 
 
 /* 页面头部现在走共享组件 components/common/AppPageHeader.vue，这里不再重复定义 */
+
+.media-preview-image {
+  animation: media-preview-image-enter 180ms ease both;
+  transform-origin: center;
+  will-change: opacity, transform;
+}
+
+.media-preview-image-next {
+  --media-preview-shift-x: 10px;
+}
+
+.media-preview-image-prev {
+  --media-preview-shift-x: -10px;
+}
+
+@keyframes media-preview-image-enter {
+  from {
+    opacity: 0.72;
+    transform: translateX(var(--media-preview-shift-x, 0)) scale(0.996);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media-preview-image {
+    animation: none;
+  }
+}
 
 
 

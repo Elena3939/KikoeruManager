@@ -421,6 +421,10 @@ function getGarbledDiagnostic(item) {
     origin: metadata.garbled_filename_guard_origin || '',
     totalNames: Number(metadata.garbled_filename_total_names || 0),
     garbledCount: Number(metadata.garbled_filename_garbled_count || 0),
+    // surrogate 修复指标：repaired = 已经反解为合法 UTF-8（强信号）；
+    // escaped = 反解失败、用 \udcXX 字面量保命，需要在编码下拉里手动确认。
+    surrogateRepairedCount: Number(metadata.garbled_filename_surrogate_repaired_count || 0),
+    surrogateEscapedCount: Number(metadata.garbled_filename_surrogate_escaped_count || 0),
     topSamples,
   }
 }
@@ -428,7 +432,11 @@ function getGarbledDiagnostic(item) {
 function buildGarbledSummary(info) {
   const total = info.totalNames ? `，扫描 ${info.totalNames} 个文件名` : ''
   const count = info.garbledCount ? `，命中 ${info.garbledCount} 个高风险名称` : ''
-  return `7zz 已完成解压，但文件名评分达到 ${info.scoreAfter}（阈值 >= 30）${total}${count}。系统已尝试常见编码反解，仍认为存在乱码风险。`
+  const surrogateBits = []
+  if (info.surrogateRepairedCount) surrogateBits.push(`自动反解 ${info.surrogateRepairedCount} 个非 UTF-8 文件名`)
+  if (info.surrogateEscapedCount) surrogateBits.push(`字面转义 ${info.surrogateEscapedCount} 个`)
+  const surrogateText = surrogateBits.length ? `；本次${surrogateBits.join('、')}。` : ''
+  return `7zz 已完成解压，但文件名评分达到 ${info.scoreAfter}（阈值 >= 30）${total}${count}。系统已尝试常见编码反解，仍认为存在乱码风险${surrogateText}`
 }
 
 const treeFilterOptions = [
