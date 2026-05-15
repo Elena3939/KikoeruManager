@@ -16,9 +16,42 @@ import orjson
 # 对 activity_logs 这种 detail 较大的表 (~148μs/row) 在 5000 行窗口下能吃掉 ~700ms。
 # orjson 实测比 stdlib json 快 3~5×，换上去后 list / children 接口的 JSON 反序列化
 # 开销直接降到可忽略水平。
+def _scrub_surrogates_for_json(value: Any) -> Any:
+    """递归把 lone surrogate 代码点（U+D800–U+DFFF）转义成 \\udcXX 字面量。
+
+    Linux 上 surrogateescape 文件名（7zz / unar 解压非 UTF-8 ZIP 时常见）会把
+    无法解码的字节用 U+DC80–U+DCFF 代替留在 Python str 里。orjson 严格拒绝写入
+    lone surrogate（``TypeError: surrogates not allowed``），导致 activity_logs /
+    conflict_works 等 JSON 列整批 INSERT 失败。
+    这里只在踩到时做一次性兜底转义，让数据可以落库；前端 ``decodeEscapedSurrogateName``
+    会把 ``\\udc83`` 这种字面量按用户选择的编码再解回去。
+    """
+    if isinstance(value, str):
+        if any('\ud800' <= ch <= '\udfff' for ch in value):
+            return value.encode('utf-8', 'backslashreplace').decode('utf-8')
+        return value
+    if isinstance(value, dict):
+        return {
+            (_scrub_surrogates_for_json(k) if isinstance(k, str) else k): _scrub_surrogates_for_json(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_scrub_surrogates_for_json(v) for v in value]
+    if isinstance(value, set):
+        return [_scrub_surrogates_for_json(v) for v in value]
+    return value
+
+
 def _orjson_dumps(obj) -> str:
     # SA json_serializer 约定返回 str；orjson 返回 bytes，这里再 decode 一次
-    return orjson.dumps(obj, default=str).decode('utf-8')
+    try:
+        return orjson.dumps(obj, default=str).decode('utf-8')
+    except TypeError as exc:
+        # 仅在 lone surrogate 这条具体路径上降级；其他 TypeError（不可序列化对象等）
+        # 仍按原样抛出，避免吞掉真正的 bug。降级后保留对正常 UTF-8 路径的 3~5× 性能收益。
+        if 'surrogates not allowed' not in str(exc):
+            raise
+        return orjson.dumps(_scrub_surrogates_for_json(obj), default=str).decode('utf-8')
 
 
 def _orjson_loads(value):

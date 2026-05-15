@@ -353,6 +353,16 @@
                   <span>命中数量</span>
                   <b>{{ getGarbledMeta(activeConflict).garbledCount }} / {{ getGarbledMeta(activeConflict).totalNames || '—' }}</b>
                 </div>
+                <div
+                  v-if="getGarbledMeta(activeConflict).surrogateRepairedCount || getGarbledMeta(activeConflict).surrogateEscapedCount"
+                  class="conflicts-garbled-grid-wide"
+                >
+                  <span>非 UTF-8 文件名</span>
+                  <b>
+                    反解 {{ getGarbledMeta(activeConflict).surrogateRepairedCount }}
+                    / 字面转义 {{ getGarbledMeta(activeConflict).surrogateEscapedCount }}
+                  </b>
+                </div>
               </div>
               <div v-if="getGarbledMeta(activeConflict).topSamples.length" class="conflicts-garbled-samples">
                 <div
@@ -371,24 +381,40 @@
                     / codepage={{ getFilenamePreviewState(activeConflict).preview.codepage || 'auto' }}
                     / 密码来源={{ getFilenamePreviewState(activeConflict).preview.password_source || '未指定' }}
                   </span>
-                  <b>{{ getFilenamePreviewState(activeConflict).preview.file_count || 0 }} 项</b>
+                  <span class="conflicts-filename-preview-badges">
+                    <span
+                      v-if="Number(getFilenamePreviewState(activeConflict).preview.repaired_count || 0) > 0"
+                      class="fp-repaired-badge"
+                      title="后端按 surrogate / mojibake 反解，已直接展示真实文件名"
+                    >
+                      <CheckCircle2 class="w-3 h-3" />
+                      已自动反解 {{ Number(getFilenamePreviewState(activeConflict).preview.repaired_count || 0) }} 项
+                    </span>
+                    <b>{{ getFilenamePreviewState(activeConflict).preview.file_count || 0 }} 项</b>
+                  </span>
                 </div>
-                <div class="conflicts-filename-preview-tree no-scrollbar">
+                <div class="conflicts-filename-preview-tree fp-detail-scroll">
                   <div
                     v-for="row in fpBuildTreeRows(getFilenamePreviewState(activeConflict).preview, getFilenamePreviewEncoding(activeConflict))"
                     :key="row.key"
                     class="fp-tree-row"
                     :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
-                    :style="{ '--fp-depth': row.depth }"
+                    :style="{ paddingLeft: `${row.depth * 16 + 12}px` }"
                   >
-                    <span class="fp-tree-indent" />
-                    <FolderOpen v-if="row.type === 'dir'" class="fp-tree-icon is-dir" />
-                    <FileWarning v-else-if="row.isGarbled" class="fp-tree-icon is-warn" />
-                    <Archive v-else-if="row.isArchive" class="fp-tree-icon is-archive" />
-                    <span v-else class="fp-tree-icon is-file" />
-                    <span class="fp-tree-name">{{ row.displayName }}</span>
+                    <div class="fp-tree-main">
+                      <span class="fp-tree-expander-spacer" />
+                      <span class="fp-tree-icon-wrap">
+                        <Folder v-if="row.type === 'dir'" :size="18" :stroke-width="2" class="fp-tree-icon is-folder" />
+                        <FileWarning v-else-if="row.isGarbled" :size="18" :stroke-width="2.2" class="fp-tree-icon is-warn" />
+                        <Archive v-else-if="row.isArchive" :size="17" :stroke-width="2" class="fp-tree-icon is-archive" />
+                        <Music v-else-if="fpIsAudio(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-audio" />
+                        <FileText v-else-if="fpIsText(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-text" />
+                        <File v-else :size="17" :stroke-width="2" class="fp-tree-icon is-file" />
+                      </span>
+                      <span class="fp-tree-name">{{ row.displayName }}</span>
+                      <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
+                    </div>
                     <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
-                    <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
                   </div>
                 </div>
               </div>
@@ -548,42 +574,86 @@
       @confirm="handleBatchRetryConfirm"
     />
 
-    <!-- 文件名预览树形弹窗 -->
+    <!-- 文件名预览毛玻璃弹窗：贴齐 NotificationPanel 视觉 + TaskDetailPane.task-file-tree 文件树 -->
     <el-dialog
       v-model="fpDlgVisible"
-      title="文件名预览"
-      width="680"
+      width="640"
       :close-on-click-modal="false"
+      :show-close="false"
+      :append-to-body="true"
       class="filename-preview-dialog"
       @closed="fpDlgOnClose"
     >
+      <template #header>
+        <div class="fp-dlg-header">
+          <div class="fp-dlg-title">
+            <span class="fp-dlg-title-icon">
+              <FileSearch class="w-[15px] h-[15px]" />
+            </span>
+            <h3>文件名预览</h3>
+            <span v-if="fpDlgGarbledCount" class="fp-dlg-title-tag is-warn">
+              <AlertTriangle class="w-3 h-3" />
+              {{ fpDlgGarbledCount }} 个疑似乱码
+            </span>
+            <span
+              v-if="Number(fpDlgData?.repaired_count || 0) > 0"
+              class="fp-dlg-title-tag is-emerald"
+              title="后端按 surrogate / mojibake 反解，已直接展示真实文件名"
+            >
+              <CheckCircle2 class="w-3 h-3" />
+              已自动反解 {{ Number(fpDlgData?.repaired_count || 0) }} 项
+            </span>
+          </div>
+          <button type="button" class="fp-dlg-close" @click="fpDlgClose">
+            <X class="w-[14px] h-[14px]" />
+          </button>
+        </div>
+      </template>
+
       <template v-if="fpDlgData">
         <div class="fp-dlg-meta">
-          <span>编码：<b>{{ fpDlgData.encoding || 'auto' }}</b></span>
-          <span>codepage：<b>{{ fpDlgData.codepage || 'auto' }}</b></span>
-          <span>密码：<b>{{ fpDlgData.password_source || '未指定' }}</b></span>
-          <span>文件数：<b>{{ fpDlgData.file_count || 0 }}</b></span>
-          <span v-if="fpDlgGarbledCount" class="fp-garbled-badge">
-            <AlertTriangle class="w-3 h-3" />
-            {{ fpDlgGarbledCount }} 个疑似乱码
+          <span class="fp-dlg-chip">
+            <span class="fp-dlg-chip-label">编码</span>
+            <b>{{ fpDlgData.encoding || 'auto' }}</b>
+          </span>
+          <span class="fp-dlg-chip">
+            <span class="fp-dlg-chip-label">codepage</span>
+            <b>{{ fpDlgData.codepage || 'auto' }}</b>
+          </span>
+          <span class="fp-dlg-chip">
+            <span class="fp-dlg-chip-label">密码</span>
+            <b>{{ fpDlgData.password_source || '未指定' }}</b>
+          </span>
+          <span class="fp-dlg-chip">
+            <span class="fp-dlg-chip-label">文件数</span>
+            <b>{{ fpDlgData.file_count || 0 }}</b>
           </span>
         </div>
-        <div class="fp-dlg-tree no-scrollbar">
-          <div
-            v-for="row in fpDlgTreeRows"
-            :key="row.key"
-            class="fp-tree-row"
-            :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
-            :style="{ '--fp-depth': row.depth }"
-          >
-            <span class="fp-tree-indent" />
-            <FolderOpen v-if="row.type === 'dir'" class="fp-tree-icon is-dir" />
-            <FileWarning v-else-if="row.isGarbled" class="fp-tree-icon is-warn" />
-            <Archive v-else-if="row.isArchive" class="fp-tree-icon is-archive" />
-            <span v-else class="fp-tree-icon is-file" />
-            <span class="fp-tree-name">{{ row.displayName }}</span>
-            <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
-            <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
+        <div class="fp-dlg-tree-card">
+          <div class="fp-dlg-tree fp-detail-scroll">
+            <div
+              v-for="row in fpDlgTreeRows"
+              :key="row.key"
+              class="fp-tree-row"
+              :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
+              :style="{ paddingLeft: `${row.depth * 16 + 12}px` }"
+            >
+              <div class="fp-tree-main">
+                <span class="fp-tree-expander-spacer" />
+                <span class="fp-tree-icon-wrap">
+                  <Folder v-if="row.type === 'dir'" :size="18" :stroke-width="2" class="fp-tree-icon is-folder" />
+                  <FileWarning v-else-if="row.isGarbled" :size="18" :stroke-width="2.2" class="fp-tree-icon is-warn" />
+                  <Archive v-else-if="row.isArchive" :size="17" :stroke-width="2" class="fp-tree-icon is-archive" />
+                  <Music v-else-if="fpIsAudio(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-audio" />
+                  <FileText v-else-if="fpIsText(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-text" />
+                  <File v-else :size="17" :stroke-width="2" class="fp-tree-icon is-file" />
+                </span>
+                <span class="fp-tree-name">{{ row.displayName }}</span>
+                <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
+              </div>
+              <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
+            </div>
+            <div v-if="!fpDlgTreeRows.length" class="fp-dlg-tree-empty">压缩包内未读取到文件清单</div>
           </div>
         </div>
       </template>
@@ -613,7 +683,8 @@ import {
   FileWarning, Copy, Save, RotateCcw, SkipForward,
   GitMerge, AlertTriangle, FolderOpen, Archive, Info,
   CheckSquare, XSquare, ChevronRight, FileSearch,
-  ShieldAlert, Hourglass, Loader2, FileText
+  ShieldAlert, Hourglass, Loader2, FileText,
+  Folder, Music, File, X,
 } from 'lucide-vue-next'
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
 import BatchRetryPasswordDialog from '../components/conflicts/BatchRetryPasswordDialog.vue'
@@ -688,14 +759,22 @@ function fpBuildTreeRows(preview, encoding) {
     const rawName = String(item?.name || item?.path || '')
     if (!rawName) continue
     const diag = diagMap.get(rawName)
-    const displayName = formatPreviewName(rawName, encoding)
+    // 优先采纳后端反解出的合法 UTF-8 路径（surrogate / mojibake 都能覆盖），
+    // 后端没给（即 7zz 出来本身就是干净 UTF-8）才退回客户端 TextDecoder。
+    const repairedPath = String(item?.repaired_path || diag?.repaired_path || '')
+    const displayPath = repairedPath || rawName
+    const repairedLeaf = String(item?.repaired_name || diag?.repaired_name || '')
+    const displayName = repairedLeaf || formatPreviewName(rawName, encoding)
+    const wasRepaired = Boolean(repairedPath || repairedLeaf)
     const isDir = item?.is_dir === true || item?.type === 'dir'
     const size = Number(item?.size || 0)
     const sizeText = !isDir && size ? fpFormatBytes(size) : ''
     const archiveExts = /\.(zip|rar|7z|tar|gz|bz2|xz|iso|lzh)$/i
     items.push({
       rawPath: rawName,
+      displayPath,
       displayName,
+      wasRepaired,
       type: isDir ? 'dir' : 'file',
       isGarbled: Boolean(diag?.garbled),
       isArchive: !isDir && archiveExts.test(rawName),
@@ -708,27 +787,36 @@ function fpBuildTreeRows(preview, encoding) {
   const nodeMap = new Map()
   const ensureNode = (key, label, type, parentKey = '') => {
     if (nodeMap.has(key)) return nodeMap.get(key)
-    const node = { key, label, type, isGarbled: false, isArchive: false, sizeText: '', score: null, children: [] }
+    const node = { key, label, type, isGarbled: false, isArchive: false, isRepaired: false, sizeText: '', score: null, children: [] }
     nodeMap.set(key, node)
     if (parentKey && nodeMap.has(parentKey)) nodeMap.get(parentKey).children.push(node)
     else roots.push(node)
     return node
   }
   for (const item of items) {
-    const parts = item.rawPath.replace(/^[/\\]+|[/\\]+$/g, '').split(/[/\\]/).filter(Boolean)
+    // 后端反解出的 displayPath 已经是合法 UTF-8 + 标准分隔符，再分段时优先用它，
+    // 既保证树形结构按真实文件层级展开，也让每一段中间目录名都展示为日文/中文真实名。
+    const sourcePath = item.displayPath || item.rawPath
+    const parts = sourcePath.replace(/^[/\\]+|[/\\]+$/g, '').split(/[/\\]/).filter(Boolean)
     let parentKey = ''
     let joined = ''
     parts.forEach((part, index) => {
       joined = joined ? `${joined}/${part}` : part
       const isLeaf = index === parts.length - 1
       const leafType = isLeaf ? item.type : 'dir'
-      const node = ensureNode(joined, formatPreviewName(part, encoding), leafType, parentKey)
+      // 中间目录段：repaired displayPath 已经是干净 UTF-8，无需 TextDecoder；
+      // 仅当走到 rawPath fallback（无反解）时才用 formatPreviewName 试一次客户端编码。
+      const labelText = sourcePath === item.rawPath
+        ? formatPreviewName(part, encoding)
+        : part
+      const node = ensureNode(joined, labelText, leafType, parentKey)
       if (isLeaf) {
         node.isGarbled = item.isGarbled
         node.isArchive = item.isArchive
         node.sizeText = item.sizeText
         node.score = item.score
         node.displayName = item.displayName
+        node.isRepaired = item.wasRepaired
       }
       parentKey = joined
     })
@@ -769,6 +857,23 @@ function fpDlgConfirm() {
 function fpDlgCancel() {
   fpDlgVisible.value = false
   if (fpDlgRejectFn) { fpDlgRejectFn('cancel'); fpDlgRejectFn = null; fpDlgResolveFn = null }
+}
+// 自定义关闭按钮：等同取消（保留 promise reject 链路一致性）
+function fpDlgClose() {
+  fpDlgCancel()
+}
+
+// 文件树 icon 分类：与 TaskDetailPane.task-file-tree 的图标语义保持一致，
+// 不同类型给不同色系（音频 violet/blue、文本 slate、folder amber、archive indigo）。
+const FP_AUDIO_LOSSLESS_RE = /\.(flac|wav|ape|tta|wv|alac|aif|aiff)$/i
+const FP_AUDIO_RE = /\.(mp3|aac|m4a|m4b|ogg|opus|wma|caf)$/i
+const FP_TEXT_RE = /\.(txt|md|lrc|ass|ssa|srt|vtt|json|xml|csv|cue|log|html?|nfo|ini)$/i
+function fpIsAudio(name) {
+  const v = String(name || '')
+  return FP_AUDIO_RE.test(v) || FP_AUDIO_LOSSLESS_RE.test(v)
+}
+function fpIsText(name) {
+  return FP_TEXT_RE.test(String(name || ''))
 }
 
 function openFilenamePreviewDialog(preview, { confirmText = '确认', cancelText = '取消' } = {}) {
@@ -1093,6 +1198,10 @@ function getGarbledMeta(conflict) {
     origin: metadata.garbled_filename_guard_origin || '',
     totalNames: Number(metadata.garbled_filename_total_names || 0),
     garbledCount: Number(metadata.garbled_filename_garbled_count || 0),
+    // surrogate 修复指标：repaired = 已经反解为合法 UTF-8（强信号）；
+    // escaped = 反解失败、用 \udcXX 字面量保命，需要在编码下拉里手动确认。
+    surrogateRepairedCount: Number(metadata.garbled_filename_surrogate_repaired_count || 0),
+    surrogateEscapedCount: Number(metadata.garbled_filename_surrogate_escaped_count || 0),
     topSamples,
   }
 }
@@ -2948,6 +3057,10 @@ button:disabled {
   font-size: 12px;
   word-break: break-all;
 }
+/* 当出现非 UTF-8 文件名修复条目时占满整行，避免标签被强行挤窄 */
+.conflicts-garbled-grid .conflicts-garbled-grid-wide {
+  grid-column: 1 / -1;
+}
 .conflicts-garbled-samples {
   max-height: 150px;
   overflow-y: auto;
@@ -2977,71 +3090,159 @@ button:disabled {
 }
 .conflicts-filename-preview {
   margin-top: 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  border-radius: 14px;
   overflow: hidden;
-  background: #fff;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
 }
 .conflicts-filename-preview-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 9px 10px;
-  border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(29, 29, 31, 0.06);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.92) 0%, rgba(241, 245, 249, 0.86) 100%);
   color: #475569;
-  font-size: 11.5px;
-  font-weight: 700;
+  font-size: 12px;
 }
 .conflicts-filename-preview-head b {
   color: #0f172a;
   white-space: nowrap;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
-/* 内联文件树 */
-.conflicts-filename-preview-tree {
-  max-height: 280px;
-  overflow-y: auto;
+/* 内联预览 head 右侧徽章群（已自动反解 N 项 + 文件总数） */
+.conflicts-filename-preview-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
-
-/* --- 文件名预览文件树通用行 --- */
-.fp-tree-row {
-  display: flex;
+/* 后端反解徽章：与 garbled 警告色互补，绿色表示"已自动修复" */
+.fp-repaired-badge {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px 4px calc(8px + var(--fp-depth, 0) * 16px);
-  border-bottom: 1px solid #f1f5f9;
-  font-size: 11.5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
+  border: 1px solid rgba(167, 243, 208, 0.9);
+  color: #047857;
+  font-weight: 700;
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* 内联文件树（问题作品详情页 - 文件名乱码诊断卡里的 inline 预览）：
+   贴齐 task-file-tree-card 卡片视觉，带顶底 fade mask + 滚动条统一风格 */
+.conflicts-filename-preview-tree {
+  position: relative;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 8px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
+}
+.conflicts-filename-preview-tree::-webkit-scrollbar { width: 8px; height: 8px; }
+.conflicts-filename-preview-tree::-webkit-scrollbar-track { background: transparent; margin: 6px 0; }
+.conflicts-filename-preview-tree::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  background: rgba(148, 163, 184, 0.52);
+  border-radius: 999px;
+}
+.conflicts-filename-preview-tree::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.68);
+}
+
+/* --- 文件名预览文件树通用行（与 TaskDetailPane.tree-row 视觉对齐） --- */
+.fp-tree-row {
+  position: relative;
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+  padding: 5px 12px 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: rgb(30, 41, 59);
+  cursor: default;
+  transition: background-color 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+.fp-tree-row:last-child { margin-bottom: 0; }
+.fp-tree-row:hover {
+  background: rgba(248, 250, 252, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.84);
+}
+.fp-tree-main {
+  position: relative;
+  z-index: 1;
+  display: flex;
   min-width: 0;
-}
-.fp-tree-row:last-child { border-bottom: 0; }
-.fp-tree-indent { flex-shrink: 0; }
-.fp-tree-icon { width: 13px; height: 13px; flex-shrink: 0; color: #94a3b8; }
-.fp-tree-icon.is-dir { color: #f59e0b; }
-.fp-tree-icon.is-warn { color: #ef4444; }
-.fp-tree-icon.is-archive { color: #6366f1; }
-.fp-tree-icon.is-file {
-  display: inline-block;
-  width: 9px; height: 9px;
-  background: #cbd5e1;
-  border-radius: 1px;
-  flex-shrink: 0;
-}
-.fp-tree-row.is-dir .fp-tree-name { font-weight: 700; color: #334155; }
-.fp-tree-name {
   flex: 1;
+  align-items: center;
+  gap: 8px;
+}
+.fp-tree-expander-spacer {
+  display: inline-block;
+  width: 14px;
+  flex: 0 0 14px;
+}
+.fp-tree-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: rgba(241, 245, 249, 0.72);
+  border: 1px solid rgba(226, 232, 240, 0.7);
+}
+.fp-tree-row:hover .fp-tree-icon-wrap {
+  background: rgba(255, 255, 255, 0.86);
+  border-color: rgba(203, 213, 225, 0.9);
+}
+.fp-tree-row.is-dir .fp-tree-icon-wrap {
+  background: linear-gradient(180deg, rgba(254, 243, 199, 0.68) 0%, rgba(253, 230, 138, 0.45) 100%);
+  border-color: rgba(252, 211, 77, 0.65);
+}
+.fp-tree-row.is-garbled .fp-tree-icon-wrap {
+  background: linear-gradient(180deg, rgba(254, 226, 226, 0.7) 0%, rgba(252, 165, 165, 0.5) 100%);
+  border-color: rgba(248, 113, 113, 0.6);
+}
+.fp-tree-icon { flex: 0 0 auto; }
+.fp-tree-icon.is-folder { color: #f6b73c; fill: rgba(251, 191, 36, 0.22); }
+.fp-tree-icon.is-warn { color: #dc2626; }
+.fp-tree-icon.is-archive { color: #6366f1; }
+.fp-tree-icon.is-audio { color: #7c3aed; }
+.fp-tree-icon.is-text { color: #64748b; }
+.fp-tree-icon.is-file { color: #94a3b8; }
+.fp-tree-row.is-dir .fp-tree-name { font-weight: 700; color: #1e293b; }
+.fp-tree-name {
   min-width: 0;
-  color: #475569;
-  font-size: 11.5px;
+  flex: 1;
+  overflow: hidden;
+  color: rgb(30, 41, 59);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-overflow: ellipsis;
   word-break: break-all;
-  line-height: 1.4;
 }
 .fp-tree-row.is-garbled .fp-tree-name { color: #b45309; }
 .fp-tree-size {
+  position: relative;
+  z-index: 1;
   flex-shrink: 0;
-  font-size: 10.5px;
-  color: #94a3b8;
+  min-width: 64px;
+  margin-left: 12px;
+  color: rgb(148, 163, 184);
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 .fp-garbled-tag {
   flex-shrink: 0;
@@ -3049,45 +3250,222 @@ button:disabled {
   font-weight: 700;
   color: #fff;
   background: linear-gradient(135deg, #f59e0b, #d97706);
-  border-radius: 4px;
-  padding: 1px 5px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 1px 4px rgba(217, 119, 6, 0.32);
 }
 
-/* --- 文件名预览弹窗 --- */
+/* ============================================================
+   文件名预览毛玻璃弹窗
+   - 视觉对齐 NotificationPanel：rgba(255,255,255,0.96) + backdrop-filter blur(20)
+   - 文件树对齐 TaskDetailPane.task-file-tree（fp-tree-row 已统一）
+   ============================================================ */
+.filename-preview-dialog {
+  /* 1. 弹窗外壳本身：el-dialog 默认是不透明白色，这里替换成毛玻璃 */
+  --fp-glass-bg: rgba(255, 255, 255, 0.96);
+  --fp-glass-border: rgba(29, 29, 31, 0.08);
+  --fp-glass-shadow: 0 22px 64px rgba(0, 0, 0, 0.16), 0 6px 18px rgba(0, 0, 0, 0.06);
+}
+.filename-preview-dialog :deep(.el-overlay) {
+  background-color: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.filename-preview-dialog :deep(.el-dialog) {
+  margin-top: 8vh !important;
+  background: var(--fp-glass-bg);
+  border: 1px solid var(--fp-glass-border);
+  border-radius: 20px;
+  box-shadow: var(--fp-glass-shadow);
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  overflow: hidden;
+}
+.filename-preview-dialog :deep(.el-dialog__header) {
+  padding: 0;
+  margin: 0;
+  border-bottom: 1px solid rgba(29, 29, 31, 0.06);
+}
 .filename-preview-dialog :deep(.el-dialog__body) {
   padding: 0;
+  background: transparent;
 }
+.filename-preview-dialog :deep(.el-dialog__footer) {
+  padding: 0;
+  background: transparent;
+  border-top: 1px solid rgba(29, 29, 31, 0.06);
+}
+
+/* 2. Header：标题 + 标签 + 自绘关闭按钮 */
+.fp-dlg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+}
+.fp-dlg-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.fp-dlg-title-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: linear-gradient(180deg, rgba(241, 245, 249, 0.92) 0%, rgba(226, 232, 240, 0.9) 100%);
+  border: 1px solid rgba(203, 213, 225, 0.85);
+  color: #475569;
+  flex-shrink: 0;
+}
+.fp-dlg-title h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.01em;
+}
+.fp-dlg-title-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.fp-dlg-title-tag.is-warn {
+  background: linear-gradient(180deg, #fef3c7 0%, #fde68a 100%);
+  border: 1px solid rgba(252, 211, 77, 0.7);
+  color: #92400e;
+}
+.fp-dlg-title-tag.is-emerald {
+  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
+  border: 1px solid rgba(167, 243, 208, 0.9);
+  color: #047857;
+}
+.fp-dlg-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(29, 29, 31, 0.05);
+  color: rgba(29, 29, 31, 0.54);
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+.fp-dlg-close:hover {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+  transform: scale(1.06);
+}
+.fp-dlg-close:active { transform: scale(0.94); }
+
+/* 3. Meta chip 区：替换原来的 "key: value" 文本，全部改成胶囊 chip */
 .fp-dlg-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 16px;
-  padding: 10px 16px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
-  font-size: 12px;
-  color: #475569;
+  gap: 8px;
+  padding: 12px 18px 8px;
 }
-.fp-dlg-meta b { color: #0f172a; }
-.fp-garbled-badge {
+.fp-dlg-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  color: #b45309;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(29, 29, 31, 0.05);
+  border: 1px solid rgba(29, 29, 31, 0.06);
+  font-size: 12px;
+  color: #334155;
+}
+.fp-dlg-chip-label {
+  color: rgba(29, 29, 31, 0.54);
+  font-size: 10.5px;
   font-weight: 700;
-  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.fp-dlg-chip b {
+  color: #0f172a;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 4. 文件树卡片（按 task-file-tree-card 视觉，带顶底 fade mask） */
+.fp-dlg-tree-card {
+  position: relative;
+  margin: 4px 18px 16px;
+  height: 380px;
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow:
+    0 10px 28px rgba(15, 23, 42, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
+}
+.fp-dlg-tree-card::before,
+.fp-dlg-tree-card::after {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 16px;
+  pointer-events: none;
+  content: '';
+}
+.fp-dlg-tree-card::before {
+  top: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0));
+}
+.fp-dlg-tree-card::after {
+  bottom: 0;
+  background: linear-gradient(0deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0));
 }
 .fp-dlg-tree {
-  max-height: 380px;
-  overflow-y: auto;
-  padding: 6px 0;
+  height: 100%;
+  overflow: auto;
+  padding: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
 }
+.fp-dlg-tree-empty {
+  padding: 32px 12px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 12.5px;
+}
+
+/* 5. 滚动条贴 detail-scroll 风格（与 TaskDetailPane 一致） */
+.fp-detail-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.fp-detail-scroll::-webkit-scrollbar-track { background: transparent; }
+.fp-detail-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  background: rgba(148, 163, 184, 0.52);
+  border-radius: 999px;
+}
+.fp-detail-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.68);
+}
+
+/* 6. Footer */
 .fp-dlg-footer {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  padding: 12px 16px;
-  border-top: 1px solid #e2e8f0;
+  padding: 12px 18px;
 }
 
 @media (max-width: 1100px) {

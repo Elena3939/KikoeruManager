@@ -446,6 +446,19 @@ def _looks_like_archive_path(path: Any) -> bool:
     return name.endswith(archive_exts) or ".part" in name
 
 
+def _scrub_surrogates(text: str) -> str:
+    """activity_logs.detail 落库前先把 lone surrogate 转成 \\udcXX 字面量。
+
+    Linux 上非 UTF-8 文件名经 surrogateescape 进入 Python 后会带上 U+DC80–U+DCFF；
+    orjson 在 SQLAlchemy JSON 序列化阶段会以 ``surrogates not allowed`` 整批 INSERT 失败。
+    这里在写队列前提前转义，配合前端 ``decodeEscapedSurrogateName`` 仍可按用户选择的
+    编码解回真实文件名，detail 看上去也比 ``\\u????`` 噪声友好。
+    """
+    if not text or not any('\ud800' <= ch <= '\udfff' for ch in text):
+        return text
+    return text.encode('utf-8', 'backslashreplace').decode('utf-8')
+
+
 def _sanitize_for_db_json(value: Any, depth: int = 0) -> Any:
     """将 detail 转为可安全写入 SQLite JSON 列的结构（避免 datetime 等导致 commit 失败）。"""
     if depth > 8:
@@ -453,18 +466,19 @@ def _sanitize_for_db_json(value: Any, depth: int = 0) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        return value if len(value) <= 8000 else value[:8000] + "…"
+        cleaned = _scrub_surrogates(value)
+        return cleaned if len(cleaned) <= 8000 else cleaned[:8000] + "…"
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, Path):
-        return str(value)
+        return _scrub_surrogates(str(value))
     if isinstance(value, dict):
         out: Dict[str, Any] = {}
         for i, (k, v) in enumerate(value.items()):
             if i >= 80:
                 break
             try:
-                sk = str(k)[:120]
+                sk = _scrub_surrogates(str(k))[:120]
                 sv = _sanitize_for_db_json(v, depth + 1)
                 if sv is not None:
                     out[sk] = sv
@@ -478,7 +492,7 @@ def _sanitize_for_db_json(value: Any, depth: int = 0) -> Any:
             if x is not None
         ]
     try:
-        return str(value)[:2000]
+        return _scrub_surrogates(str(value))[:2000]
     except Exception:
         return None
 

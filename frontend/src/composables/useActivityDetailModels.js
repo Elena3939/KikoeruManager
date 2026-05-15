@@ -882,10 +882,21 @@ function conflictResolutionEntrySections(row) {
   if (addedCount) titleBits.push(`新增 ${addedCount}`)
   if (deletedCount) titleBits.push(`删除 ${deletedCount}`)
   if (changedCount) titleBits.push(`变更 ${changedCount}`)
+  // 把后端透传过来的 surrogate 反解 / 字面转义计数附加到 description，
+  // 让用户直接在操作记录详情里看到本次有没有自动修复非 UTF-8 文件名。
+  const surrogateRepaired = Number(d.garbled_filename_surrogate_repaired_count || 0)
+  const surrogateEscaped = Number(d.garbled_filename_surrogate_escaped_count || 0)
+  const surrogateBits = []
+  if (surrogateRepaired) surrogateBits.push(`自动反解 ${surrogateRepaired} 个非 UTF-8 文件名`)
+  if (surrogateEscaped) surrogateBits.push(`字面转义 ${surrogateEscaped} 个`)
+  const pathDesc = [d.source_path, d.target_path || d.final_path].filter(Boolean).join(' -> ')
+  const description = surrogateBits.length
+    ? [pathDesc, `乱码修复：${surrogateBits.join('、')}`].filter(Boolean).join(' · ')
+    : pathDesc
   return [{
     key: 'conflict-resolution-diff',
     title: `文件树变化（${titleBits.join(' / ') || items.length}）`,
-    description: [d.source_path, d.target_path || d.final_path].filter(Boolean).join(' -> '),
+    description,
     rows: buildFilterDeleteTreeRows(items),
   }]
 }
