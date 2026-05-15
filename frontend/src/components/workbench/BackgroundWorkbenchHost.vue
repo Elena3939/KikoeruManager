@@ -13,11 +13,18 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 import WorkbenchBackgroundCard from './WorkbenchBackgroundCard.vue'
 import { useBackgroundWorkbenchManager } from '../../composables/useBackgroundWorkbenchManager'
 
 const manager = useBackgroundWorkbenchManager()
-const backgroundCards = computed(() => manager.backgroundCards.value)
+const route = useRoute()
+const backgroundCards = computed(() => manager.backgroundCards.value.filter((workbench) => {
+  if (workbench.id === 'subtitle-import-workbench') {
+    return route.path === '/subtitle-import'
+  }
+  return true
+}))
 
 function handleAction(id, action) {
   manager.invokeWorkbenchAction(id, action)

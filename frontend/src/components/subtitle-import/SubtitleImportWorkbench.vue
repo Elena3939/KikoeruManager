@@ -884,7 +884,8 @@ function canRetargetTask(task) {
 }
 
 function canClearTask(task) {
-  return Boolean(task && (isFailedTask(task) || isCompletedTask(task)))
+  const status = String(task?.status || '').toLowerCase()
+  return Boolean(task && (isFailedTask(task) || isCompletedTask(task) || isAwaitingManualTask(task) || status === 'waiting_manual'))
 }
 
 async function selectWorkbenchTask(taskId, options = {}) {
@@ -1003,14 +1004,14 @@ async function refreshTaskStatus(showMessage = false, options = {}) {
 async function clearFinishedTasks() {
   const targets = linkedTasks.value.filter(task => canClearTask(task))
   if (!targets.length) {
-    ElMessage.warning('当前没有可清理的已完成或已失败任务')
+    ElMessage.warning('当前没有可清理的已完成、待配对或失败任务')
     return
   }
 
   try {
     await showSystemConfirm({
       title: '清空队列确认',
-      message: `确定清空 ${targets.length} 条已完成或已失败任务吗？进行中的任务会保留。`,
+      message: `确定清空 ${targets.length} 条已完成、待配对或失败任务吗？正在下载/写入的任务会保留。`,
       confirmText: '清空队列',
       cancelText: '取消',
       tone: 'warning'
@@ -1038,14 +1039,13 @@ async function closeWorkbenchAndCleanupCompleted() {
   if (workbenchClosing.value) return
   workbenchClosing.value = true
   try {
-    const completedTasks = linkedTasks.value.filter(task => isCompletedTask(task))
-    // 并发清理已完成任务，避免关闭工作台时还要逐个等任务清理完
-    await runWithConcurrency(completedTasks, 6, async (task) => {
+    const clearableTasks = linkedTasks.value.filter(task => canClearTask(task))
+    await runWithConcurrency(clearableTasks, 6, async (task) => {
       try {
         await rjSubtitleApi.clearTask(task.id)
         clearSubtitleTaskDraft(task.id)
       } catch (error) {
-        console.warn('[字幕补配] 关闭工作台时清理已完成任务失败', task.id, error)
+        console.warn('[字幕补配] 关闭工作台时清理任务失败', task.id, error)
       }
     })
     emit('close')

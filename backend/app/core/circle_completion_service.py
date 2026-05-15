@@ -75,6 +75,74 @@ class CircleCompletionService:
         text = re.sub(r"\s+", " ", text).strip()
         return text
 
+    def _build_search_keyword_variants(self, keyword: Any) -> List[str]:
+        """从原始 circle_query 派生若干变种关键字，按长度优先。
+
+        Kikoeru 的 ``find_circle_id_by_keyword`` 和 ``search_circle_works``
+        都是先按 ``works keyword`` 接口搜作品、再从命中作品里抽 ``circle.id``，
+        不是直接按 circle 名搜社团实体。如果用户输入的是 Kikoeru 上的全名
+        （比如 "悪女名鑑(常世常闇所々)"，前缀是系列名，圆括号内才是真实社团名），
+        而作品标题通常不会重复整串 query，整条链路会一路 0 命中，于是
+        ``index_circle_catalog`` 最后只能退回 DLsite 关键字搜索，作品就丢了。
+
+        这里把括号内 / 外、以及常见全角分隔符两侧的 token 拆出来当备用关键字，
+        让上游能用更精确的子串去 hit 真正属于该社团的作品。变种按"原 query 优先、
+        然后越长越优先"排序，避免短 token 过早击中无关 circle。
+        """
+        raw = unicodedata.normalize("NFKC", str(keyword or "")).strip()
+        if not raw:
+            return []
+
+        variants: List[str] = [raw]
+        bracket_pairs = [("(", ")"), ("[", "]"), ("【", "】"), ("「", "」"), ("『", "』")]
+        for left, right in bracket_pairs:
+            if left not in raw or right not in raw:
+                continue
+            head, _, tail = raw.partition(left)
+            inner, _, after = tail.partition(right)
+            outer = (head + " " + after).strip()
+            for part in (inner.strip(), outer):
+                if part and part != raw and part not in variants:
+                    variants.append(part)
+        # 兜底再按全角/半角空格 / 分隔符拆一次，覆盖 "悪女名鑑 常世常闇所々" 这种
+        # 不带括号的写法。token 长度 ≥ 2 才接受，避免抓到单字噪音。
+        for token in re.split(r"[\s\u3000,，/／・·]+", raw):
+            token = token.strip()
+            if len(token) >= 2 and token not in variants:
+                variants.append(token)
+        # 按长度倒序，保留原 query 在最前
+        head_keyword = variants[0]
+        rest = sorted(variants[1:], key=lambda s: len(s), reverse=True)
+        return [head_keyword, *rest]
+
+    def _circle_name_loose_match(self, query: Any, candidate: Any) -> bool:
+        """双向宽松匹配 query / candidate 是否同属一个社团。
+
+        Kikoeru 上的社团名常带系列前缀（"悪女名鑑(常世常闇々)"），而 DLsite
+        的 maker_name 通常只是核心社团名（"常世常闇々"）。如果只做单向
+        ``query in candidate`` 检查，长 query 永远命中不了短 maker_name，
+        会让 ``_resolve_seed_maker_id`` / ``fetch_candidate`` 把整社团作品
+        误过滤成空。这里对齐 Kikoeru 的 ``find_circle_id_by_keyword``，
+        允许双向 substring，并对较短一侧加最低长度阈值，防止
+        2~3 字 maker_name 被任意 query 误命中。
+        """
+        normalized_query = self.normalize_circle_name(query)
+        normalized_candidate = self.normalize_circle_name(candidate)
+        if not normalized_query or not normalized_candidate:
+            # 任意一侧拿不到名字时，让上层根据 maker_id 等更强信号自己决定，
+            # 这里返回 True 表示"不要因为名字缺失就否决"。
+            return True
+        if normalized_query == normalized_candidate:
+            return True
+        if normalized_query in normalized_candidate:
+            return True
+        # 反向匹配仅在较短一侧达到最低长度时才接受，避免 "AB" 这种过短串
+        # 在 "ABCDE" 系列名里产生大量误命中。CJK 信息密度高，3 字符即有
+        # 充分区分度；如果未来遇到误匹配，可调高阈值或改成 token 级匹配。
+        if len(normalized_candidate) >= 3 and normalized_candidate in normalized_query:
+            return True
+        return False
+
     def normalize_rjcode(self, value: Any) -> str:
         text = str(value or "").strip().upper()
         match = re.search(r"[RVB]J(\d{6}|\d{8})(?!\d)", text, re.IGNORECASE)
@@ -136,8 +204,8 @@ class CircleCompletionService:
         if not target_name:
             return True
 
-        maker_names = [
-            self.normalize_circle_name(candidate)
+        maker_name_candidates = [
+            str(candidate or "").strip()
             for candidate in (
                 canonical_metadata.get("maker_name"),
                 metadata.get("maker_name"),
@@ -145,7 +213,11 @@ class CircleCompletionService:
             )
             if str(candidate or "").strip()
         ]
-        return any(target_name == maker_name or target_name in maker_name for maker_name in maker_names)
+        target_query = identity.get("circle_name") or circle_query
+        return any(
+            self._circle_name_loose_match(target_query, candidate)
+            for candidate in maker_name_candidates
+        )
 
     def _work_type_priority(self, work_type: Any) -> int:
         normalized = str(work_type or "").strip().lower()
@@ -715,7 +787,7 @@ class CircleCompletionService:
         }
         return True if self._metadata_looks_like_asmr_work(metadata_like) else None
 
-    async def _is_asmr_work_candidate(self, rjcode: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    async def _classify_asmr_work_candidate(self, rjcode: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[bool]:
         normalized = self.normalize_rjcode(rjcode)
         if not normalized:
             return False
@@ -726,7 +798,12 @@ class CircleCompletionService:
         product_result = self._product_looks_like_asmr_work((product_info or {}).get("product") if isinstance(product_info, dict) else None)
         if product_result is not None:
             return product_result
-        return self._metadata_looks_like_asmr_work(metadata)
+        if self._metadata_looks_like_asmr_work(metadata):
+            return True
+        return None
+
+    async def _is_asmr_work_candidate(self, rjcode: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        return (await self._classify_asmr_work_candidate(rjcode, metadata)) is True
 
     def _load_cached_metadata_map(self, db, rjcodes: List[str]) -> Dict[str, Dict[str, Any]]:
         normalized_codes = []
@@ -1763,7 +1840,7 @@ class CircleCompletionService:
             if maker_id and (
                 not normalized_query
                 or not maker_name
-                or normalized_query in self.normalize_circle_name(maker_name)
+                or self._circle_name_loose_match(circle_query, maker_name)
             ):
                 return {
                     "maker_id": maker_id,
@@ -1782,7 +1859,22 @@ class CircleCompletionService:
         if not candidates:
             return {"maker_id": "", "maker_name": ""}
 
-        preferred = next((item for item in candidates if item.get("maker_id")), None)
+        # ★ 修复 RG42470 持久化误识别：以前这里直接选第一个有 maker_id 的候选
+        # （通常来自 DLsite 关键字搜索的不相关作品），不做 maker_name 校验就
+        # 一路写进 CircleCatalog.circle_id，下次再补全同一关键字时会把这个
+        # 错误 maker_id 当 hint 又抓一次 profile，profile 返回 0 作品 + 关键字
+        # 候选又被 fetch_candidate 用同一个 maker_id 全部过滤掉，整条链路死循环。
+        # 现在要求 preferred 的 maker_name 跟 circle_query 双向宽松匹配，匹配
+        # 不上的就别走捷径，老老实实进下面的 metadata 二次探测路径。
+        preferred = next(
+            (
+                item
+                for item in candidates
+                if item.get("maker_id")
+                and self._circle_name_loose_match(circle_query, item.get("maker_name"))
+            ),
+            None,
+        )
         if preferred:
             return {
                 "maker_id": str(preferred.get("maker_id") or "").strip(),
@@ -1810,7 +1902,7 @@ class CircleCompletionService:
             if maker_id and (
                 not normalized_query
                 or not maker_name
-                or normalized_query in self.normalize_circle_name(maker_name)
+                or self._circle_name_loose_match(circle_query, maker_name)
             ):
                 return {
                     "maker_id": maker_id,
@@ -1906,6 +1998,24 @@ class CircleCompletionService:
                     )
 
         if not dlsite_rjcodes:
+            # ★ profile + maker_announce 都返回 0 时，传入的 maker_id 大概率是
+            # 上一轮关键字搜索误识别后被持久化到 CircleCatalog 的脏数据
+            # （典型现场：RG42470 的 profile/options[0]/JPN 返回 200 但 0 作品，
+            # maker_announce 直接 404）。如果继续保留 normalized_maker_id，下面
+            # fetch_candidate 会用 maker_id 不等过滤掉所有关键字候选，整个任务收 0。
+            # 这里主动重置：让 fetch_candidate 退化为只校验 maker_name，把真实候选放进来。
+            if normalized_maker_id:
+                logger.warning(
+                    "[社团补全] DLsite maker_id=%s profile/announce 均返回 0，疑似误识别，"
+                    "已重置为关键字模式，避免连锁误删关键字候选",
+                    normalized_maker_id,
+                )
+                failure_messages.append(
+                    f"DLsite maker_id={normalized_maker_id} profile/announce 均 0 作品，已重置为关键字模式"
+                )
+                normalized_maker_id = ""
+                if source_mode.startswith("maker_profile"):
+                    source_mode = "keyword_after_stale_maker"
             dlsite_rjcodes, keyword_failure_reason = await self._search_dlsite_circle_works(circle_query)
             if keyword_failure_reason:
                 failure_messages.append(keyword_failure_reason)
@@ -1960,15 +2070,20 @@ class CircleCompletionService:
                     *self._extract_text_values(meta.get("file_format")),
                 ])):
                     return None
-                if not await self._is_asmr_work_candidate(rjcode, meta):
+                asmr_classification = await self._classify_asmr_work_candidate(rjcode, meta)
+                if asmr_classification is False:
+                    return None
+                if asmr_classification is None and not is_from_profile:
                     return None
             candidate_maker_id = self._normalize_maker_id(meta.get("maker_id"))
             if normalized_maker_id and candidate_maker_id and candidate_maker_id != normalized_maker_id:
                 return None
             maker_name = str(meta.get("maker_name") or "").strip()
             if not is_from_profile:
-                # 关键字/预告搜索来源：必须校验社团名，防止不相关社团作品混入
-                if maker_name and self.normalize_circle_name(circle_query) not in self.normalize_circle_name(maker_name):
+                # 关键字/预告搜索来源：必须校验社团名，防止不相关社团作品混入。
+                # 用双向宽松匹配，避免 query 比 maker_name 长（如 Kikoeru 把系列名
+                # 拼进社团名，而 DLsite 上是裸社团名）时所有作品都被误删。
+                if maker_name and not self._circle_name_loose_match(circle_query, maker_name):
                     return None
             return {
                 "rjcode": rjcode,
@@ -2015,7 +2130,7 @@ class CircleCompletionService:
             for row in rows:
                 maker_name = str(row.maker_name or "").strip()
                 maker_id = str(row.maker_id or "").strip()
-                if normalized and normalized not in self.normalize_circle_name(maker_name):
+                if normalized and not self._circle_name_loose_match(circle_query, maker_name):
                     continue
                 metadata = row.to_dict()
                 if not self._metadata_looks_like_asmr_work(metadata):
@@ -2268,10 +2383,22 @@ class CircleCompletionService:
             if kikoeru_circle_id:
                 self._set_cached_kikoeru_circle_id(kikoeru_circle_id, f"name:{normalized_circle_query}", maker_cache_key)
             if not kikoeru_circle_id:
-                try:
-                    detected_circle_id = await self.kikoeru_service.find_circle_id_by_keyword(circle_query)
-                except Exception:
-                    detected_circle_id = 0
+                # ★ 长 query 兜底：Kikoeru 是先按 works keyword 搜作品再抽 circle.id，
+                # 整串 "悪女名鑑(常世常闇所々)" 在作品标题里几乎不会重复，会直接 0 命中。
+                # 拆出括号内/外子 keyword 重试一遍，匹配到 1 个 work 就能反查 circle.id。
+                detected_circle_id = 0
+                for variant in self._build_search_keyword_variants(circle_query):
+                    try:
+                        detected_circle_id = await self.kikoeru_service.find_circle_id_by_keyword(variant)
+                    except Exception:
+                        detected_circle_id = 0
+                    if detected_circle_id:
+                        if variant != circle_query:
+                            logger.info(
+                                "[社团补全] Kikoeru circle_id 通过拆分子 keyword 命中 raw=%s variant=%s id=%s",
+                                circle_query, variant, detected_circle_id,
+                            )
+                        break
                 kikoeru_circle_id = self._set_cached_kikoeru_circle_id(
                     detected_circle_id,
                     f"name:{normalized_circle_query}",
@@ -2280,15 +2407,30 @@ class CircleCompletionService:
                 if kikoeru_circle_id:
                     self._save_persisted_kikoeru_circle_id(normalized_circle_query, kikoeru_circle_id, maker_id_hint)
             resolved_kikoeru_circle_id = kikoeru_circle_id
+            kikoeru_works: List[Dict[str, Any]] = []
             if kikoeru_circle_id:
                 report(26, "已识别 Kikoeru 社团，切换直连作品接口", kikoeru_circle_id=kikoeru_circle_id)
                 try:
                     kikoeru_works = await self.kikoeru_service.list_circle_works(int(kikoeru_circle_id))
                 except Exception:
                     logger.warning("[社团补全] Kikoeru 社团直连拉取失败，回退关键词搜索 circle_query=%s circle_id=%s", circle_query, kikoeru_circle_id, exc_info=True)
-                    kikoeru_works = await self.kikoeru_service.search_circle_works(circle_query)
-            else:
-                kikoeru_works = await self.kikoeru_service.search_circle_works(circle_query)
+                    kikoeru_works = []
+            if not kikoeru_works:
+                # 直连失败 / 没找到 circle_id 时，依次用 keyword 变种再搜一遍 works，
+                # 至少能把"作品标题里出现拆分子串"的作品拉回来给后续 identity 探测用。
+                for variant in self._build_search_keyword_variants(circle_query):
+                    try:
+                        variant_works = await self.kikoeru_service.search_circle_works(variant)
+                    except Exception:
+                        variant_works = []
+                    if variant_works:
+                        if variant != circle_query:
+                            logger.info(
+                                "[社团补全] Kikoeru works 通过拆分子 keyword 命中 raw=%s variant=%s count=%s",
+                                circle_query, variant, len(variant_works),
+                            )
+                        kikoeru_works = variant_works
+                        break
             for work in kikoeru_works:
                 ensure_not_cancelled()
                 circle = work.get("circle", {}) if isinstance(work, dict) else {}
@@ -2338,7 +2480,19 @@ class CircleCompletionService:
 
         identity_seed = self.resolve_circle_identity("", circle_query, circle_query)
         if combined_seed_candidates:
-            preferred_seed = next((item for item in combined_seed_candidates if item.get("maker_id")), combined_seed_candidates[0])
+            # 与 `_resolve_identity_from_candidates` 同款修复：preferred 必须先做
+            # maker_name 校验，避免误把无关候选的 maker_id 当成 identity 种子。
+            preferred_seed = next(
+                (
+                    item
+                    for item in combined_seed_candidates
+                    if item.get("maker_id")
+                    and self._circle_name_loose_match(circle_query, item.get("maker_name"))
+                ),
+                None,
+            )
+            if preferred_seed is None:
+                preferred_seed = combined_seed_candidates[0]
             identity_seed = self.resolve_circle_identity(preferred_seed.get("maker_id"), preferred_seed.get("maker_name"), circle_query)
         if not identity_seed["maker_id"] and combined_seed_candidates:
             seed_identity = await self._resolve_seed_maker_id(

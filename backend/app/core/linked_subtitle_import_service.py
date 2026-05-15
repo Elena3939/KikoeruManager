@@ -2872,6 +2872,11 @@ class LinkedSubtitleImportService:
                 "record": self._serialize_pending_record(pending),
             }
         except Exception:
+            stage_dir = str(
+                preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or ""
+            ).strip()
+            if stage_dir:
+                self._cleanup_stage_dir(stage_dir)
             db.rollback()
             raise
         finally:

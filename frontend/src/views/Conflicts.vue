@@ -1277,6 +1277,18 @@ function getFilenamePreviewRows(preview, encoding) {
   }))
 }
 
+function isPasswordFailureConflict(conflict) {
+  const metadata = conflict?.new_metadata || {}
+  const reason = String(metadata.extract_failure_reason || '').trim()
+  const message = [
+    metadata.error_message,
+    metadata.resolution_error,
+    conflict?.error_message,
+  ].map(value => String(value || '')).join(' ')
+  if (reason === 'wrong_password' || reason === 'missing_password') return true
+  return /无正确密码|密码错误|密码不正确|wrong password|incorrect password|password required|missing password/i.test(message)
+}
+
 function getGarbledMeta(conflict) {
   const metadata = conflict?.new_metadata || {}
   const sample = metadata.garbled_filename_sample || ''
@@ -1284,7 +1296,9 @@ function getGarbledMeta(conflict) {
     ? metadata.garbled_filename_top_samples
     : []
   const reason = String(metadata.extract_failure_reason || '').trim()
-  if (!sample && !topSamples.length && reason !== 'garbled_filename') return null
+  if (isPasswordFailureConflict(conflict)) return null
+  if (reason !== 'garbled_filename') return null
+  if (!sample && !topSamples.length) return null
   return {
     sample,
     scoreBefore: Number(metadata.garbled_filename_score_before ?? metadata.garbled_filename_score ?? 0).toFixed(1),

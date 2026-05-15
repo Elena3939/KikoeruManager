@@ -712,6 +712,10 @@
 
         :row="libraryRowContextMenu.row"
 
+        :batch-mode="libraryRowContextMenu.batchMode"
+
+        :selected-count="selectedRows.length"
+
         :show-locate="Boolean(libraryRowContextMenu.row && isSearchResultRow(libraryRowContextMenu.row) && !libraryRowContextMenu.row.is_directory)"
 
         :show-view="Boolean(libraryRowContextMenu.row && canViewLibraryRow(libraryRowContextMenu.row))"
@@ -722,25 +726,25 @@
 
         :disable-rename="!isWritableCurrentLibrary || apiRenameBusy"
 
-        :disable-api-rename="!canApiRenameRow(libraryRowContextMenu.row) || apiRenameBusy"
+        :disable-api-rename="libraryRowContextMenu.batchMode ? (!selectedApiRenameRows.length || apiRenameBusy) : (!canApiRenameRow(libraryRowContextMenu.row) || apiRenameBusy)"
 
-        :api-rename-running="Boolean(libraryRowContextMenu.row && (apiRenamingId === libraryRowContextMenu.row.id || isBatchApiRenameRunning(libraryRowContextMenu.row)))"
+        :api-rename-running="libraryRowContextMenu.batchMode ? apiRenameBusy : Boolean(libraryRowContextMenu.row && (apiRenamingId === libraryRowContextMenu.row.id || isBatchApiRenameRunning(libraryRowContextMenu.row)))"
 
-        :api-batch-target="Boolean(libraryRowContextMenu.row && isBatchApiRenameTarget(libraryRowContextMenu.row))"
+        :api-batch-target="libraryRowContextMenu.batchMode || Boolean(libraryRowContextMenu.row && isBatchApiRenameTarget(libraryRowContextMenu.row))"
 
-        :disable-subtitle="!canFetchRJSubtitle(libraryRowContextMenu.row)"
+        :disable-subtitle="libraryRowContextMenu.batchMode ? (!selectedSubtitleCandidates.length || subtitleSubmitting) : !canFetchRJSubtitle(libraryRowContextMenu.row)"
 
         :disable-manage="!libraryRowContextMenu.row?.is_directory"
 
-        :disable-delete="!isWritableCurrentLibrary"
+        :disable-delete="!isWritableCurrentLibrary || (libraryRowContextMenu.batchMode && batchDeleting)"
 
         :show-move="Boolean(libraryRowContextMenu.row && !isRemoteCurrentLibrary)"
 
-        :disable-move="!isWritableCurrentLibrary || moveDialogState.submitting"
+        :disable-move="!isWritableCurrentLibrary || moveDialogState.submitting || (libraryRowContextMenu.batchMode && !selectedRows.length)"
 
         :show-upload="Boolean(libraryRowContextMenu.row?.path && !isRemoteCurrentLibrary)"
 
-        :disable-upload="!hasRemoteUploadLibraries || localUploadSubmitting"
+        :disable-upload="!hasRemoteUploadLibraries || localUploadSubmitting || (libraryRowContextMenu.batchMode && selectedUploadCount === 0)"
 
         :show-auto-circle-group="canAutoCircleGroupRow(libraryRowContextMenu.row)"
 
@@ -748,7 +752,11 @@
 
         :auto-circle-group-running="Boolean(libraryRowContextMenu.row && autoCircleGroupRunningId === libraryRowContextMenu.row.id)"
 
-        :show-compute-size="Boolean(libraryRowContextMenu.row?.is_directory && !isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value))"
+        :show-compute-size="libraryRowContextMenu.batchMode ? Boolean(!isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value)) : Boolean(libraryRowContextMenu.row?.is_directory && !isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value))"
+
+        :disable-compute-size="libraryRowContextMenu.batchMode ? (batchComputingSize || !selectedDirectoryRows.length) : false"
+
+        :disable-filter-delete="!selectedFilterDeleteRows.length || !isWritableCurrentLibrary"
 
         :computing-size-id="computingSizeId"
 
@@ -1088,7 +1096,7 @@
         class="pointer-events-none fixed inset-0 z-[2450] flex items-center justify-center p-6 max-[900px]:p-3"
       >
         <div
-          class="pointer-events-auto flex max-h-[calc(100vh-48px)] w-fit max-w-[calc(100vw-48px)] flex-col overflow-hidden rounded-[22px] border border-white/70 bg-white/28 shadow-[0_22px_70px_rgba(15,23,42,0.18),inset_0_1px_0_rgba(255,255,255,0.82)] backdrop-blur-2xl backdrop-saturate-150 max-[900px]:max-h-[calc(100vh-24px)] max-[900px]:max-w-[calc(100vw-24px)]"
+          class="media-preview-dialog pointer-events-auto flex max-h-[calc(100vh-48px)] w-fit max-w-[calc(100vw-48px)] flex-col overflow-hidden rounded-[22px] border border-white/70 bg-white/28 shadow-[0_22px_70px_rgba(15,23,42,0.18),inset_0_1px_0_rgba(255,255,255,0.82)] backdrop-blur-2xl backdrop-saturate-150 max-[900px]:max-h-[calc(100vh-24px)] max-[900px]:max-w-[calc(100vw-24px)]"
         >
           <header
             class="flex h-12 flex-shrink-0 items-center justify-between gap-3 bg-white/24 px-4 backdrop-blur-xl"
@@ -1098,27 +1106,57 @@
               {{ mediaPreviewDialog.title || '文件观看' }}
             </div>
             <div class="flex flex-shrink-0 items-center gap-2">
-              <div v-if="mediaPreviewDialog.kind === 'image'" class="flex items-center gap-1 rounded-[12px] border border-white/50 bg-white/26 p-0.5 shadow-sm backdrop-blur-xl">
-                <button
-                  type="button"
-                  class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35"
-                  :disabled="!mediaPreviewCanGoPrev"
-                  title="上一张"
-                  @click="switchMediaPreviewImage(-1)"
-                >
-                  <IconChevronLeft class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:-translate-x-0.5" :stroke-width="2.4" />
-                </button>
-                <span class="min-w-[54px] px-1 text-center text-[12px] font-semibold text-slate-500">{{ mediaPreviewImagePositionText }}</span>
-                <button
-                  type="button"
-                  class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35"
-                  :disabled="!mediaPreviewCanGoNext"
-                  title="下一张"
-                  @click="switchMediaPreviewImage(1)"
-                >
-                  <IconChevronRight class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:translate-x-0.5" :stroke-width="2.4" />
-                </button>
-              </div>
+              <template v-if="mediaPreviewDialog.kind === 'image'">
+                <div class="flex items-center gap-1 rounded-[12px] border border-white/50 bg-white/26 p-0.5 shadow-sm backdrop-blur-xl">
+                  <button
+                    type="button"
+                    class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35"
+                    :disabled="!mediaPreviewCanGoPrev"
+                    title="上一张"
+                    @click="switchMediaPreviewImage(-1)"
+                  >
+                    <IconChevronLeft class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:-translate-x-0.5" :stroke-width="2.4" />
+                  </button>
+                  <span class="min-w-[54px] px-1 text-center text-[12px] font-semibold text-slate-500">{{ mediaPreviewImagePositionText }}</span>
+                  <button
+                    type="button"
+                    class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35"
+                    :disabled="!mediaPreviewCanGoNext"
+                    title="下一张"
+                    @click="switchMediaPreviewImage(1)"
+                  >
+                    <IconChevronRight class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:translate-x-0.5" :stroke-width="2.4" />
+                  </button>
+                </div>
+
+                <div class="flex items-center gap-1 rounded-[12px] border border-white/50 bg-white/26 p-0.5 shadow-sm backdrop-blur-xl">
+                  <button
+                    type="button"
+                    class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
+                    title="缩小"
+                    @click="adjustImageZoom(-0.25)"
+                  >
+                    <IconZoomOut class="h-[15px] w-[15px]" :stroke-width="2.4" />
+                  </button>
+                  <span class="min-w-[52px] px-1 text-center text-[12px] font-semibold text-slate-500 select-none">{{ imageZoomPercentText }}</span>
+                  <button
+                    type="button"
+                    class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
+                    title="放大"
+                    @click="adjustImageZoom(0.25)"
+                  >
+                    <IconZoomIn class="h-[15px] w-[15px]" :stroke-width="2.4" />
+                  </button>
+                  <button
+                    type="button"
+                    class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
+                    title="重置"
+                    @click="resetImageZoom"
+                  >
+                    <IconRotateCcw class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:-rotate-45" :stroke-width="2.4" />
+                  </button>
+                </div>
+              </template>
               <button
                 type="button"
                 class="group inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[10px] border border-white/50 bg-white/30 text-slate-500 shadow-sm transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
@@ -1131,8 +1169,13 @@
           </header>
 
           <div
-            class="relative flex min-h-0 w-fit max-w-full flex-1 items-center justify-center overflow-hidden bg-white/10"
+            ref="imageZoomContainerRef"
+            class="relative flex min-h-0 w-fit max-w-full flex-1 items-center justify-center overflow-hidden bg-white/10 select-none"
             :style="mediaPreviewFrameStyle"
+            @wheel="handleImageZoomWheel"
+            @mousemove="handleImageZoomMouseMove"
+            @mouseup="handleImageZoomMouseUp"
+            @mouseleave="handleImageZoomMouseUp"
           >
             <div v-if="mediaPreviewDialog.remote" class="mx-4 grid w-full max-w-[720px] grid-cols-[52px_minmax(0,1fr)] items-start gap-4 rounded-2xl border border-white/70 bg-white/60 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl">
               <IconFolderOpen class="h-[52px] w-[52px] rounded-[14px] bg-gradient-to-b from-slate-50 to-slate-200 p-3 text-slate-600" :stroke-width="2.1" />
@@ -1144,14 +1187,22 @@
             </div>
 
             <template v-else-if="mediaPreviewDialog.kind === 'image'">
-              <img
-                :key="mediaPreviewDialog.previewKey || mediaPreviewDialog.url"
-                class="media-preview-image block h-auto max-h-[calc(100vh-96px)] w-auto max-w-[calc(100vw-48px)] object-contain max-[900px]:max-h-[calc(100vh-72px)] max-[900px]:max-w-[calc(100vw-24px)]"
-                :class="mediaPreviewImageMotionClass"
-                :src="mediaPreviewDialog.url"
-                :alt="mediaPreviewDialog.title"
-                @load="handleMediaPreviewImageLoad"
-              />
+              <div
+                class="media-preview-image-wrapper"
+                :style="imageZoomTransformStyle"
+              >
+                <img
+                  :key="mediaPreviewDialog.previewKey || mediaPreviewDialog.url"
+                  class="media-preview-image block h-auto max-h-[calc(100vh-96px)] w-auto max-w-[calc(100vw-48px)] object-contain max-[900px]:max-h-[calc(100vh-72px)] max-[900px]:max-w-[calc(100vw-24px)]"
+                  :class="mediaPreviewImageMotionClass"
+                  :src="mediaPreviewDialog.url"
+                  :alt="mediaPreviewDialog.title"
+                  draggable="false"
+                  @load="handleMediaPreviewImageLoad"
+                  @mousedown="handleImageZoomMouseDown"
+                  @dblclick="resetImageZoom"
+                />
+              </div>
               <button
                 v-if="mediaPreviewCanGoPrev"
                 type="button"
@@ -1511,6 +1562,12 @@ import {
 
   ChevronRight as IconChevronRight,
 
+  ZoomIn as IconZoomIn,
+
+  ZoomOut as IconZoomOut,
+
+  RotateCcw as IconRotateCcw,
+
 } from 'lucide-vue-next'
 
 import { classifyLibraryEntryKind, libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
@@ -1636,7 +1693,7 @@ const batchRenaming = ref(false)
 
 const tableRef = ref(null)
 
-const libraryRowContextMenu = ref({ visible: false, x: 0, y: 0, row: null, renderKey: 0 })
+const libraryRowContextMenu = ref({ visible: false, x: 0, y: 0, row: null, batchMode: false, renderKey: 0 })
 
 const moveDialogState = ref({ visible: false, sourceLibraryId: '', items: [], submitting: false })
 
@@ -2039,6 +2096,91 @@ const mediaPreviewDialog = ref({
 const mediaPreviewImageMotionClass = ref('media-preview-image-next')
 
 const mediaPreviewImageFrame = ref({ width: 0, height: 0 })
+
+const imageZoomContainerRef = ref(null)
+
+const imageZoomState = ref({ scale: 1, translateX: 0, translateY: 0 })
+
+const isImageZoomDragging = ref(false)
+
+const imageZoomDragStart = ref({ x: 0, y: 0, translateX: 0, translateY: 0 })
+
+const imageZoomPercentText = computed(() => {
+  return `${Math.round(imageZoomState.value.scale * 100)}%`
+})
+
+const imageZoomTransformStyle = computed(() => {
+  const { scale, translateX, translateY } = imageZoomState.value
+  return {
+    transform: `translate(${translateX}px, ${translateY}px) scale(${scale})`,
+    cursor: isImageZoomDragging.value ? 'grabbing' : 'grab',
+    transition: isImageZoomDragging.value ? 'none' : 'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)',
+  }
+})
+
+function resetImageZoom () {
+  imageZoomState.value = { scale: 1, translateX: 0, translateY: 0 }
+}
+
+function adjustImageZoom (delta) {
+  const s = Math.min(Math.max(imageZoomState.value.scale + delta, 0.1), 5)
+  imageZoomState.value = { ...imageZoomState.value, scale: s }
+}
+
+function handleImageZoomWheel (event) {
+  if (mediaPreviewDialog.value.kind !== 'image') return
+  event.preventDefault()
+
+  const container = imageZoomContainerRef.value
+  if (!container) return
+
+  const rect = container.getBoundingClientRect()
+  const cx = rect.width / 2
+  const cy = rect.height / 2
+  const mx = event.clientX - rect.left
+  const my = event.clientY - rect.top
+
+  const oldScale = imageZoomState.value.scale
+  const factor = event.deltaY < 0 ? 1.12 : 0.88
+  const newScale = Math.min(Math.max(oldScale * factor, 0.1), 5)
+  const scaleRatio = newScale / oldScale
+
+  const dx = mx - cx - imageZoomState.value.translateX
+  const dy = my - cy - imageZoomState.value.translateY
+
+  imageZoomState.value = {
+    scale: newScale,
+    translateX: imageZoomState.value.translateX + dx * (1 - scaleRatio),
+    translateY: imageZoomState.value.translateY + dy * (1 - scaleRatio),
+  }
+}
+
+function handleImageZoomMouseDown (event) {
+  if (mediaPreviewDialog.value.kind !== 'image') return
+  event.preventDefault()
+  isImageZoomDragging.value = true
+  imageZoomDragStart.value = {
+    x: event.clientX,
+    y: event.clientY,
+    translateX: imageZoomState.value.translateX,
+    translateY: imageZoomState.value.translateY,
+  }
+}
+
+function handleImageZoomMouseMove (event) {
+  if (!isImageZoomDragging.value) return
+  const dx = event.clientX - imageZoomDragStart.value.x
+  const dy = event.clientY - imageZoomDragStart.value.y
+  imageZoomState.value = {
+    ...imageZoomState.value,
+    translateX: imageZoomDragStart.value.translateX + dx,
+    translateY: imageZoomDragStart.value.translateY + dy,
+  }
+}
+
+function handleImageZoomMouseUp () {
+  isImageZoomDragging.value = false
+}
 
 const mediaPreviewImageRows = computed(() => files.value.filter(row =>
   row &&
@@ -13104,6 +13246,8 @@ function switchMediaPreviewImage (direction) {
 
   if (!nextRow) return
 
+  resetImageZoom()
+
   setMediaPreviewImageMotion(direction)
 
   const nextUrl = buildMediaPreviewUrl(selectedLibraryId.value, nextRow.path)
@@ -13123,6 +13267,8 @@ function switchMediaPreviewImage (direction) {
 
 
 function closeMediaPreviewDialog () {
+
+  resetImageZoom()
 
   mediaPreviewDialog.value = {
     visible: false,
@@ -13148,6 +13294,7 @@ function closeLibraryRowContextMenu () {
     x: 0,
     y: 0,
     row: null,
+    batchMode: false,
     renderKey: Number(libraryRowContextMenu.value.renderKey || 0)
   }
 
@@ -13159,6 +13306,8 @@ function openLibraryRowContextMenuAtPosition (row, x, y) {
   if (!row) return
 
   tableRef.value?.setCurrentRow?.(row)
+
+  const batchMode = Boolean(row?.path && selectedRowPaths.value.has(row.path) && selectedRows.value.length > 1)
 
   const menuWidth = 200
 
@@ -13180,6 +13329,7 @@ function openLibraryRowContextMenuAtPosition (row, x, y) {
     x: safeX,
     y: safeY,
     row,
+    batchMode,
     renderKey: Number(libraryRowContextMenu.value.renderKey || 0) + 1
   }
 
@@ -13330,10 +13480,29 @@ function unbindLibraryContextMenuDismiss () {
 async function handleLibraryRowContextMenuAction (action) {
 
   const row = libraryRowContextMenu.value.row
+  const batchMode = Boolean(libraryRowContextMenu.value.batchMode)
 
   closeLibraryRowContextMenu()
 
   if (!row) return
+
+  if (batchMode) {
+    if (action === 'move') return openMoveDialog(selectedRows.value)
+
+    if (action === 'upload') return openLocalUploadDialog()
+
+    if (action === 'api_rename') return handleBatchApiRename()
+
+    if (action === 'subtitle') return openRJSubtitleDialog(selectedSubtitleCandidates.value)
+
+    if (action === 'compute_size') return handleBatchComputeSize()
+
+    if (action === 'filter_delete') return openSelectedFilterDeleteDialog()
+
+    if (action === 'delete') return handleBatchDelete()
+
+    return
+  }
 
   if (action === 'locate') return locateLibrarySearchResult(row)
 
@@ -14952,6 +15121,10 @@ function statsStatusTextDisplay (stats) {
   animation: media-preview-image-enter 180ms ease both;
   transform-origin: center;
   will-change: opacity, transform;
+}
+
+.media-preview-dialog button:not(:disabled) {
+  cursor: pointer;
 }
 
 .media-preview-image-next {

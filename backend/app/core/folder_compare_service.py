@@ -121,7 +121,12 @@ class FolderCompareService:
     ) -> str:
         compare_items = self.build_compare_items(new_root, existing_root)
         merged_dir = self._build_merged_directory(new_root, existing_root, compare_items, decisions)
-        return self.safe_replace_directory(merged_dir, target_path)
+        try:
+            return self.safe_replace_directory(merged_dir, target_path)
+        except Exception:
+            if os.path.isdir(merged_dir):
+                shutil.rmtree(merged_dir, ignore_errors=True)
+            raise
 
     def safe_replace_directory(self, source_dir: str, target_path: str) -> str:
         source_dir = os.path.abspath(source_dir)
