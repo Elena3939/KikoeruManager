@@ -21,7 +21,7 @@
               <div class="min-w-0">
                 <div class="mb-0.5 flex items-center gap-2">
                   <h3 class="cmw-title">目录差异工作台</h3>
-                  <span v-if="isRemoteTarget" class="cmw-tag is-amber">
+                  <span v-if="isRemoteTarget" class="cmw-tag">
                     <Upload class="h-3 w-3" :stroke-width="2.4" />
                     远程合并
                   </span>
@@ -30,40 +30,6 @@
               </div>
             </div>
             <div class="flex flex-shrink-0 items-center gap-2">
-              <div v-if="preview" class="hidden flex-wrap items-center justify-end gap-2 md:flex">
-                <button
-                  type="button"
-                  class="cmw-count-chip"
-                  :class="{ 'is-active is-amber': statusFilter === 'changed' }"
-                  @click="setStatusFilter('changed')"
-                >
-                  <span>差异</span><strong>{{ displaySummary.changed }}</strong>
-                </button>
-                <button
-                  type="button"
-                  class="cmw-count-chip"
-                  :class="{ 'is-active is-emerald': statusFilter === 'new_only' }"
-                  @click="setStatusFilter('new_only')"
-                >
-                  <span>新包独有</span><strong>{{ displaySummary.newOnly }}</strong>
-                </button>
-                <button
-                  type="button"
-                  class="cmw-count-chip"
-                  :class="{ 'is-active is-slate': statusFilter === 'old_only' }"
-                  @click="setStatusFilter('old_only')"
-                >
-                  <span>库存独有</span><strong>{{ displaySummary.oldOnly }}</strong>
-                </button>
-                <button
-                  type="button"
-                  class="cmw-count-chip"
-                  :class="{ 'is-active is-slate': statusFilter === 'unchanged' }"
-                  @click="setStatusFilter('unchanged')"
-                >
-                  <span>一致</span><strong>{{ displaySummary.unchanged }}</strong>
-                </button>
-              </div>
               <button
                 type="button"
                 class="cmw-close-btn"
@@ -94,9 +60,18 @@
               :width="176"
               :menu-min-width="190"
             />
-            <div class="flex gap-2">
-              <button type="button" class="cmw-toolbar-btn" @click="resetDecisions">
-                <RotateCcw class="h-3.5 w-3.5" :stroke-width="2.2" />恢复默认
+            <div class="flex flex-wrap items-center gap-2">
+              <!-- 批量决策快捷：借鉴 GitKraken / Sourcetree 顶部 stage-all 控件 -->
+              <div v-if="preview" class="cmw-bulk-group">
+                <button type="button" class="cmw-bulk-btn" :disabled="submitting" title="所有文件改为使用新包版本" @click="batchSetDecision('use_new')">
+                  <ArrowDownToLine class="h-3 w-3" :stroke-width="2.4" />全取新包
+                </button>
+                <button type="button" class="cmw-bulk-btn" :disabled="submitting" title="所有文件改为保留库存版本" @click="batchSetDecision('use_old')">
+                  <Archive class="h-3 w-3" :stroke-width="2.4" />全取库存
+                </button>
+              </div>
+              <button type="button" class="cmw-toolbar-btn" @click="resetDecisions" title="按默认规则重新判断每个文件">
+                <RotateCcw class="h-3.5 w-3.5" :stroke-width="2.2" />智能默认
               </button>
               <button
                 type="button"
@@ -179,104 +154,112 @@
 
           <!-- Main content -->
           <div v-else class="flex-1 min-h-0 flex overflow-hidden">
-            <!-- Left summary panel -->
-            <div class="w-64 flex-shrink-0 border-r border-slate-100 overflow-y-auto bg-slate-50/40 p-4 space-y-4">
-              <div>
-                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">来源路径</p>
-                <p class="text-[11px] text-slate-600 font-mono break-all leading-relaxed bg-white border border-slate-100 rounded-xl p-2.5">{{ resolvedSourcePath }}</p>
+            <!-- Left summary panel：克制灰阶，去三色 dot 强字 -->
+            <aside class="cmw-summary-pane">
+              <div class="cmw-summary-block">
+                <p class="cmw-summary-label">来源路径</p>
+                <p class="cmw-summary-path">{{ resolvedSourcePath }}</p>
               </div>
-              <div>
-                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">{{ existingPaneLabel }}路径</p>
-                <p class="text-[11px] text-slate-600 font-mono break-all leading-relaxed bg-white border border-slate-100 rounded-xl p-2.5">{{ resolvedExistingPath }}</p>
+              <div class="cmw-summary-block">
+                <p class="cmw-summary-label">{{ existingPaneLabel }}路径</p>
+                <p class="cmw-summary-path">{{ resolvedExistingPath }}</p>
               </div>
-              <div class="pt-2 border-t border-slate-200">
-                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">当前决策</p>
-                <div class="space-y-2">
-                  <div class="flex items-center justify-between text-xs">
-                    <span class="text-emerald-700 font-medium flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-500 inline-block" />取新包</span>
-                    <strong class="text-emerald-800">{{ decisionSummary.useNew }}</strong>
-                  </div>
-                  <div class="flex items-center justify-between text-xs">
-                    <span class="text-indigo-700 font-medium flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-indigo-500 inline-block" />取库存</span>
-                    <strong class="text-indigo-800">{{ decisionSummary.useOld }}</strong>
-                  </div>
-                  <div class="flex items-center justify-between text-xs">
-                    <span class="text-rose-700 font-medium flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-rose-500 inline-block" />删除</span>
-                    <strong class="text-rose-800">{{ decisionSummary.delete }}</strong>
-                  </div>
+              <div class="cmw-summary-block cmw-summary-decisions">
+                <p class="cmw-summary-label">当前决策</p>
+                <div class="cmw-summary-decision-row">
+                  <span class="cmw-decision-key"><i class="cmw-dot is-new" />取新包</span>
+                  <span class="cmw-decision-val">{{ decisionSummary.useNew }}</span>
+                </div>
+                <div class="cmw-summary-decision-row">
+                  <span class="cmw-decision-key"><i class="cmw-dot is-old" />取库存</span>
+                  <span class="cmw-decision-val">{{ decisionSummary.useOld }}</span>
+                </div>
+                <div class="cmw-summary-decision-row">
+                  <span class="cmw-decision-key"><i class="cmw-dot is-del" />删除</span>
+                  <span class="cmw-decision-val">{{ decisionSummary.delete }}</span>
                 </div>
               </div>
-              <div v-if="isRemoteTarget" class="pt-2 border-t border-slate-200">
-                <div class="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
-                  <Upload class="w-3.5 h-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
-                  <div class="min-w-0">
-                    <p class="text-[11px] font-semibold text-amber-800">远程上传合并</p>
-                    <p class="text-[10px] text-amber-600 mt-0.5 leading-relaxed">差异文件将上传至远程库存，耗时取决于网速与文件量。</p>
-                    <p class="text-[10px] font-bold text-amber-800 mt-1">{{ props.conflict?.context?.existing?.library_name || '远程库存' }}</p>
-                  </div>
+              <div v-if="isRemoteTarget" class="cmw-summary-remote">
+                <Upload class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="2.2" />
+                <div class="min-w-0">
+                  <p class="cmw-summary-remote-title">远程上传合并</p>
+                  <p class="cmw-summary-remote-desc">差异文件将上传至远程库存，耗时取决于网速与文件量。</p>
+                  <p class="cmw-summary-remote-name">{{ props.conflict?.context?.existing?.library_name || '远程库存' }}</p>
                 </div>
               </div>
-            </div>
+            </aside>
 
-            <!-- Right diff table -->
+            <!-- Right diff table：借鉴 GitHub PR review + VSCode Source Control 的 status glyph + segmented decision -->
             <div class="flex-1 min-w-0 overflow-auto">
-              <table class="w-full text-sm border-collapse" style="min-width: 860px;">
-                <thead class="sticky top-0 z-10 bg-slate-100/95 backdrop-blur-sm">
+              <table class="cmw-diff-table">
+                <thead>
                   <tr>
-                    <th class="px-4 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider border-b border-slate-200 min-w-[260px]">差异树</th>
-                    <th class="px-3 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider border-b border-slate-200 w-52">{{ existingPaneLabel }}</th>
-                    <th class="px-3 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider border-b border-slate-200 w-52">新包内容</th>
-                    <th class="px-3 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider border-b border-slate-200 w-40">合并决策</th>
+                    <th class="cmw-diff-th cmw-diff-th-marker" aria-hidden="true"></th>
+                    <th class="cmw-diff-th cmw-diff-th-tree">文件 / 路径</th>
+                    <th class="cmw-diff-th cmw-diff-th-side">{{ existingPaneLabel }}</th>
+                    <th class="cmw-diff-th cmw-diff-th-side">新包</th>
+                    <th class="cmw-diff-th cmw-diff-th-decision">决策</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in displayRows" :key="row.node_key" class="group border-b border-slate-100 transition-colors duration-100" :class="rowBgClass(row)">
-                    <td class="px-4 py-2.5">
-                      <div class="flex items-center gap-2" :style="{ paddingLeft: `${row._depth * 18}px` }">
-                        <button v-if="row.type === 'dir' && row._hasChildren" type="button" class="w-4 h-4 flex items-center justify-center flex-shrink-0 text-slate-400 hover:text-slate-700 transition-colors" @click="toggleCollapse(row)">
-                          <ChevronRight v-if="row._collapsed" class="w-3.5 h-3.5" />
-                          <ChevronDown v-else class="w-3.5 h-3.5" />
+                  <tr v-for="row in displayRows" :key="row.node_key" class="cmw-diff-row" :class="rowToneClass(row)">
+                    <td class="cmw-diff-marker" />
+                    <td class="cmw-diff-td">
+                      <div class="cmw-diff-name-line" :style="{ paddingLeft: `${row._depth * 16}px` }">
+                        <button v-if="row.type === 'dir' && row._hasChildren" type="button" class="cmw-diff-toggle" @click="toggleCollapse(row)">
+                          <ChevronRight v-if="row._collapsed" class="h-3.5 w-3.5" />
+                          <ChevronDown v-else class="h-3.5 w-3.5" />
                         </button>
                         <span v-else class="w-4 flex-shrink-0" />
-                        <span class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-lg" :class="statusIconBg(row)">
-                          <FolderIcon v-if="row.type === 'dir'" class="w-3.5 h-3.5" />
-                          <FileIcon v-else class="w-3.5 h-3.5" />
+                        <!-- Status glyph：VSCode SCM 风格的单字符状态 -->
+                        <span class="cmw-diff-glyph" :class="statusBadgeClass(row)" :title="displayStatusInfo(row).label">
+                          {{ statusGlyph(row) }}
                         </span>
-                        <div class="min-w-0 flex-1">
-                          <div class="flex items-center gap-2 flex-wrap">
-                            <span class="text-slate-800 font-medium text-xs truncate max-w-[200px]" :title="row.name">{{ row.name }}</span>
-                            <span class="flex-shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-md" :class="statusBadgeClass(row)">{{ displayStatusInfo(row).label }}</span>
-                          </div>
-                          <p v-if="displayStatusInfo(row).note" class="text-[10px] text-slate-500 italic mt-0.5 truncate" :title="displayStatusInfo(row).note">{{ displayStatusInfo(row).note }}</p>
-                        </div>
+                        <component :is="row.type === 'dir' ? FolderIcon : FileIcon" class="cmw-diff-fileicon" :stroke-width="1.9" />
+                        <span class="cmw-diff-name" :title="row.relative_path || row.name">{{ row.name }}</span>
+                        <span v-if="row.relative_path && row.relative_path.includes('/')" class="cmw-diff-pathtail" :title="row.relative_path">{{ pathTail(row.relative_path) }}</span>
+                        <span class="cmw-diff-badge" :class="statusBadgeClass(row)">{{ displayStatusInfo(row).label }}</span>
                       </div>
+                      <p v-if="displayStatusInfo(row).note" class="cmw-diff-note" :title="displayStatusInfo(row).note">{{ displayStatusInfo(row).note }}</p>
                     </td>
-                    <td class="px-3 py-2.5 w-52">
+                    <td class="cmw-diff-td cmw-diff-td-side">
                       <template v-if="hasSide(row, 'old')">
-                        <p class="text-xs font-medium" :class="row.type === 'dir' ? 'text-slate-500' : 'text-slate-700'">{{ formatSidePrimary(row, 'old') }}</p>
-                        <p class="text-[10px] text-slate-400 truncate">{{ formatSideTime(row, 'old') }}</p>
+                        <span class="cmw-diff-side-primary">{{ formatSidePrimary(row, 'old') }}</span>
+                        <span class="cmw-diff-side-secondary">{{ formatSideTime(row, 'old') }}</span>
                       </template>
-                      <span v-else class="text-[11px] text-slate-300 italic">无此项目</span>
+                      <span v-else class="cmw-diff-side-empty">—</span>
                     </td>
-                    <td class="px-3 py-2.5 w-52">
+                    <td class="cmw-diff-td cmw-diff-td-side">
                       <template v-if="hasSide(row, 'new')">
-                        <p class="text-xs font-medium" :class="row.type === 'dir' ? 'text-slate-500' : 'text-indigo-700'">{{ formatSidePrimary(row, 'new') }}</p>
-                        <p class="text-[10px] text-slate-400 truncate">{{ formatSideTime(row, 'new') }}</p>
+                        <span class="cmw-diff-side-primary">{{ formatSidePrimary(row, 'new') }}</span>
+                        <span class="cmw-diff-side-secondary">{{ formatSideTime(row, 'new') }}</span>
                       </template>
-                      <span v-else class="text-[11px] text-slate-300 italic">无此项目</span>
+                      <span v-else class="cmw-diff-side-empty">—</span>
                     </td>
-                    <td class="px-3 py-2.5 w-40">
+                    <td class="cmw-diff-td cmw-diff-td-decision">
                       <template v-if="row.type === 'file'">
-                        <select :value="decisionFor(row)" :disabled="submitting" class="w-full text-xs font-semibold bg-white border rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:opacity-50 cursor-pointer" :class="decisionSelectClass(row)" @change="e => updateDecision(row, e.target.value)">
-                          <option v-for="opt in decisionOptions(row)" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-                        </select>
+                        <!-- Segmented decision：借鉴 GitKraken stage-line 控件，单击即切 -->
+                        <div class="cmw-decision-seg" role="radiogroup" :aria-label="`决策：${row.name}`">
+                          <button
+                            v-for="opt in decisionOptions(row)"
+                            :key="opt.value"
+                            type="button"
+                            class="cmw-decision-seg-btn"
+                            :class="[`is-${opt.value.replace('_', '-')}`, { 'is-active': decisionFor(row) === opt.value }]"
+                            :disabled="submitting"
+                            role="radio"
+                            :aria-checked="decisionFor(row) === opt.value"
+                            :title="opt.label"
+                            @click="updateDecision(row, opt.value)"
+                          >{{ opt.short }}</button>
+                        </div>
                       </template>
-                      <span v-else class="text-[10px] text-slate-400">自动对齐</span>
+                      <span v-else class="cmw-diff-side-empty">自动</span>
                     </td>
                   </tr>
                   <tr v-if="!displayRows.length">
-                    <td colspan="4" class="px-6 py-10 text-center text-sm text-slate-400">
-                      <Search class="w-10 h-10 mx-auto mb-2 opacity-20" />
+                    <td colspan="5" class="cmw-diff-empty">
+                      <Search class="h-10 w-10 mx-auto mb-2 opacity-20" />
                       无匹配项目
                     </td>
                   </tr>
@@ -287,9 +270,9 @@
 
           <!-- Footer：主操作走系统 emerald 渐变；ghost 关闭键 -->
           <footer class="cmw-footer">
-            <div v-if="isRemoteTarget && preview" class="flex min-w-0 items-center gap-2 text-[12.5px] text-amber-700">
-              <Upload class="h-4 w-4 flex-shrink-0 text-amber-500" :stroke-width="2.2" />
-              <span class="truncate">合并结果将上传至 <strong class="font-semibold">{{ props.conflict?.context?.existing?.library_name || '远程库存' }}</strong></span>
+            <div v-if="isRemoteTarget && preview" class="cmw-footer-remote-hint">
+              <Upload class="h-4 w-4 flex-shrink-0" :stroke-width="2.2" />
+              <span class="truncate">合并结果将上传至 <strong>{{ props.conflict?.context?.existing?.library_name || '远程库存' }}</strong></span>
             </div>
             <div v-else class="flex-1" />
             <div class="flex flex-shrink-0 items-center gap-3">
@@ -323,7 +306,8 @@ import {
   GitMerge, Search, RotateCcw, RefreshCw, X, Upload,
   ChevronRight, ChevronDown,
   File as FileIcon, Folder as FolderIcon,
-  CheckCircle2, Loader2, AlertTriangle
+  CheckCircle2, Loader2, AlertTriangle,
+  ArrowDownToLine, Archive
 } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
 
@@ -708,11 +692,6 @@ function formatSidePrimary(row, side) {
   return formatFileSize(value)
 }
 
-function formatSideRelativePath(row, side) {
-  const value = side === 'new' ? row.new_relative_path : row.old_relative_path
-  return value || '/'
-}
-
 function formatSideTime(row, side) {
   const value = side === 'new' ? row.new_mtime : row.old_mtime
   return formatDate(value)
@@ -740,70 +719,56 @@ function resetDecisions() {
 }
 
 function decisionOptions(row) {
+  // short 用于 segmented 按钮的单字签，label 用于 tooltip / a11y
   const options = []
   if (row.new_path) {
-    options.push({ label: '取新包', value: 'use_new' })
+    options.push({ label: '取新包', short: '新', value: 'use_new' })
   }
   if (row.old_path) {
-    options.push({ label: '取库存', value: 'use_old' })
+    options.push({ label: '取库存', short: '库', value: 'use_old' })
   }
-  options.push({ label: '删除', value: 'delete' })
+  options.push({ label: '删除', short: '删', value: 'delete' })
   return options
 }
 
-function resolveRowClassName({ row }) {
+// VSCode SCM 风格的单字符状态指示。
+//   + new_only（新增） / − old_only（库存独有） / ≠ size/content_changed / ∆ time_changed / = unchanged
+function statusGlyph(row) {
   const key = displayStatusInfo(row).key
-  if (key === 'new_only') {
-    return 'row-new-only'
-  }
-  if (key === 'old_only') {
-    return 'row-old-only'
-  }
-  if (key === 'size_changed') {
-    return 'row-size-changed'
-  }
-  if (key === 'size_changed' || key === 'time_changed' || key === 'content_changed') {
-    return 'row-modified'
-  }
-  return 'row-unchanged'
+  if (key === 'new_only') return '+'
+  if (key === 'old_only') return '−'
+  if (key === 'size_changed' || key === 'content_changed') return '≠'
+  if (key === 'time_changed') return '∆'
+  return '='
 }
 
-function statusToneClass(row) {
-  const key = displayStatusInfo(row).key
-  return `tone-${key.replace(/_/g, '-')}`
+// 为 path tail 提供上一级父目录片段，避免在長路径中丢失上下文。
+function pathTail(relativePath) {
+  const parts = String(relativePath || '').split('/').filter(Boolean)
+  if (parts.length <= 1) return ''
+  const parent = parts.slice(0, -1).join('/')
+  return parent.length > 64 ? '…' + parent.slice(-60) : parent
 }
 
-function nodeDepth(row) {
-  const relativePath = String(row?.relative_path || '').trim()
-  if (!relativePath) {
-    return 0
-  }
-  return Math.max(0, relativePath.split('/').length - 1)
+// 行色条 tone：GitHub PR 风格的左侧 4px 颜色条，快速扫表定位状态
+function rowToneClass(row) {
+  return `tone-${displayStatusInfo(row).key.replace(/_/g, '-')}`
 }
 
-function nodeIndentStyle(row) {
-  const depth = nodeDepth(row)
-  return {
-    '--node-depth': String(depth),
-    '--node-indent': `${depth * 18}px`
+// 批量决策：对全部文件设同一决策（dir 跳过）。仅在该决策可用时应用：
+//   - use_new：仅当行有 new_path
+//   - use_old：仅当行有 old_path
+// 其他行维持原决策，避免一键全取 “未出现在新包” 的行被默认设为 delete。
+function batchSetDecision(decision) {
+  if (props.submitting) return
+  const next = { ...(props.decisions || {}) }
+  for (const item of compareItems.value) {
+    if (item.type !== 'file') continue
+    if (decision === 'use_new' && !item.new_path) continue
+    if (decision === 'use_old' && !item.old_path) continue
+    next[item.relative_path] = decision
   }
-}
-
-function sidePaneToneClass(row, side) {
-  const key = displayStatusInfo(row).key
-  if (key === 'unchanged') {
-    return 'tone-pane-neutral'
-  }
-  if (key === 'new_only' && side === 'new') {
-    return 'tone-pane-incoming'
-  }
-  if (key === 'old_only' && side === 'old') {
-    return 'tone-pane-existing'
-  }
-  if ((key === 'size_changed' || key === 'time_changed' || key === 'content_changed') && hasSide(row, side)) {
-    return side === 'new' ? 'tone-pane-incoming-soft' : 'tone-pane-existing-soft'
-  }
-  return side === 'new' ? 'tone-pane-incoming' : 'tone-pane-existing'
+  emit('update:decisions', next)
 }
 
 function setStatusFilter(value) {
@@ -863,41 +828,23 @@ function close() {
   emit('close')
 }
 
-function rowBgClass(row) {
-  const key = displayStatusInfo(row).key
-  if (key === 'new_only') return 'bg-emerald-50/60 hover:bg-emerald-50'
-  if (key === 'old_only') return 'bg-slate-100/60 hover:bg-slate-100'
-  if (key === 'size_changed' || key === 'content_changed') return 'bg-amber-50/60 hover:bg-amber-50'
-  if (key === 'time_changed') return 'bg-sky-50/40 hover:bg-sky-50/60'
-  return 'hover:bg-slate-50/60'
-}
-
-function statusIconBg(row) {
-  const key = displayStatusInfo(row).key
-  if (row.type === 'dir') return 'bg-slate-100 text-slate-500'
-  if (key === 'new_only') return 'bg-emerald-100 text-emerald-600'
-  if (key === 'old_only') return 'bg-slate-200 text-slate-500'
-  if (key === 'size_changed' || key === 'content_changed') return 'bg-amber-100 text-amber-600'
-  if (key === 'time_changed') return 'bg-sky-100 text-sky-600'
-  return 'bg-slate-100 text-slate-400'
-}
-
 function statusBadgeClass(row) {
+  // 返回语义 tone class，具体颜色在 <style> 里统一控制（低饱和度、去填底块）
   const key = displayStatusInfo(row).key
-  if (key === 'new_only') return 'bg-emerald-100 text-emerald-700'
-  if (key === 'old_only') return 'bg-slate-200 text-slate-600'
-  if (key === 'size_changed') return 'bg-amber-100 text-amber-700'
-  if (key === 'content_changed') return 'bg-rose-100 text-rose-700'
-  if (key === 'time_changed') return 'bg-sky-100 text-sky-700'
-  return 'bg-slate-100 text-slate-500'
+  if (key === 'new_only') return 'is-new'
+  if (key === 'old_only') return 'is-old'
+  if (key === 'size_changed') return 'is-size'
+  if (key === 'content_changed') return 'is-content'
+  if (key === 'time_changed') return 'is-time'
+  return 'is-neutral'
 }
 
 function decisionSelectClass(row) {
   const decision = decisionFor(row)
-  if (decision === 'use_new') return 'border-emerald-200 text-emerald-800 bg-emerald-50'
-  if (decision === 'use_old') return 'border-indigo-200 text-indigo-800 bg-indigo-50'
-  if (decision === 'delete') return 'border-rose-200 text-rose-800 bg-rose-50'
-  return 'border-slate-200 text-slate-700'
+  if (decision === 'use_new') return 'is-new'
+  if (decision === 'use_old') return 'is-old'
+  if (decision === 'delete') return 'is-del'
+  return 'is-neutral'
 }
 
 function formatFileSize(size) {
@@ -1008,66 +955,18 @@ function formatDate(value) {
   color: #64748b;
 }
 
+/* 远程合并 tag：克制 slate 轮廓，去 amber 渐变 */
 .cmw-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  border: 1px solid #e2e8f0;
   border-radius: 999px;
   padding: 2px 8px;
-  background: #fff;
+  background: #f8fafc;
   color: #475569;
-  font-size: 11.5px;
-  font-weight: 700;
-}
-
-.cmw-tag.is-amber {
-  border-color: rgba(245, 158, 11, 0.32);
-  color: #b45309;
-  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
-}
-
-.cmw-count-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 999px;
-  padding: 6px 11px;
-  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
-  color: #475569;
-  font-size: 12px;
-  font-weight: 700;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.cmw-count-chip:hover {
-  transform: translateY(-1px) scale(1.03);
-  border-color: rgba(148, 163, 184, 0.65);
-}
-
-.cmw-count-chip.is-active {
-  color: #fff;
-}
-
-.cmw-count-chip.is-active.is-amber {
-  border-color: #f59e0b;
-  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 52%, #d97706 100%);
-  box-shadow: 0 10px 22px rgba(245, 158, 11, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.35);
-}
-
-.cmw-count-chip.is-active.is-emerald {
-  border-color: #10b981;
-  background: linear-gradient(180deg, #34d399 0%, #10b981 54%, #059669 100%);
-  box-shadow: 0 10px 22px rgba(16, 185, 129, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35);
-}
-
-.cmw-count-chip.is-active.is-slate {
-  border-color: #475569;
-  background: linear-gradient(180deg, #64748b 0%, #475569 52%, #334155 100%);
-  box-shadow: 0 10px 22px rgba(71, 85, 105, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 /* Close 按钮：玻璃 + hover rotate */
@@ -1151,6 +1050,42 @@ function formatDate(value) {
   box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
 }
 
+/* Bulk decision 控件组：全取新包 / 全取库存 -- segmented 风格 */
+.cmw-bulk-group {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.cmw-bulk-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  background: transparent;
+  border: 0;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.cmw-bulk-btn + .cmw-bulk-btn {
+  border-left: 1px solid #e2e8f0;
+}
+
+.cmw-bulk-btn:hover:not(:disabled) {
+  background: #f8fafc;
+  color: #4338ca;
+}
+
+.cmw-bulk-btn:disabled {
+  opacity: 0.5;
+}
+
 .cmw-toolbar-btn:hover:not(:disabled) svg {
   transform: rotate(-8deg) scale(1.08);
 }
@@ -1170,38 +1105,50 @@ function formatDate(value) {
   padding: 10px 22px;
 }
 
+/* Pill：segmented 灰阶，active 单色 indigo（去渐变、去阴影） */
 .cmw-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
+  border: 1px solid #e2e8f0;
   border-radius: 999px;
   background: #fff;
-  color: #475569;
-  padding: 6px 12px;
+  color: #64748b;
+  padding: 5px 12px;
   font-size: 12px;
-  font-weight: 700;
-  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  font-weight: 600;
+  transition: all 0.18s ease;
 }
 
 .cmw-pill:hover {
-  transform: translateY(-1px);
-  border-color: rgba(99, 102, 241, 0.42);
-  color: #4338ca;
+  border-color: #cbd5e1;
+  color: #334155;
+  background: #f8fafc;
 }
 
 .cmw-pill.is-active {
   border-color: #6366f1;
-  background: linear-gradient(180deg, #818cf8 0%, #6366f1 52%, #4f46e5 100%);
-  color: #fff;
-  box-shadow: 0 10px 22px rgba(99, 102, 241, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.32);
+  background: #eef2ff;
+  color: #4338ca;
 }
 
 .cmw-pill-count {
   display: inline-flex;
-  min-width: 22px;
+  min-width: 18px;
+  height: 18px;
+  align-items: center;
   justify-content: center;
-  font-weight: 800;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+  color: inherit;
+  padding: 0 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.cmw-pill.is-active .cmw-pill-count {
+  background: rgba(99, 102, 241, 0.16);
+  color: #4338ca;
 }
 
 /* Loading panel */
@@ -1401,6 +1348,414 @@ function formatDate(value) {
   color: #94a3b8;
 }
 
+/* ============================================================
+   Left summary panel：克制灰阶，去三色 dot 强字
+   ============================================================ */
+.cmw-summary-pane {
+  width: 256px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid #f1f5f9;
+  background: #fafbfc;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cmw-summary-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cmw-summary-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cmw-summary-path {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #475569;
+  word-break: break-all;
+}
+
+.cmw-summary-decisions {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 14px;
+  gap: 10px;
+}
+
+.cmw-summary-decision-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.cmw-decision-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #475569;
+  font-weight: 500;
+}
+
+.cmw-decision-val {
+  font-weight: 700;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmw-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.cmw-dot.is-new { background: #10b981; }
+.cmw-dot.is-old { background: #6366f1; }
+.cmw-dot.is-del { background: #94a3b8; }
+
+.cmw-summary-remote {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px;
+  color: #64748b;
+}
+
+.cmw-summary-remote-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.cmw-summary-remote-desc {
+  margin-top: 3px;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: #94a3b8;
+}
+
+.cmw-summary-remote-name {
+  margin-top: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #475569;
+}
+
+/* ============================================================
+   Diff table：去填色行、统一 muted
+   ============================================================ */
+.cmw-diff-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+}
+
+.cmw-diff-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #fafbfc;
+  backdrop-filter: blur(6px);
+}
+
+.cmw-diff-th {
+  padding: 11px 14px;
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cmw-diff-th-marker { width: 4px; padding: 0; }
+.cmw-diff-th-tree { min-width: 280px; }
+.cmw-diff-th-side { width: 132px; padding-left: 12px; padding-right: 12px; }
+.cmw-diff-th-decision { width: 132px; padding-left: 12px; padding-right: 12px; }
+
+/* 行 tone：GitHub PR 风格的左侧 4px 色条。颜色仅作状态错锅使用，不填整行 bg。 */
+.cmw-diff-row {
+  border-bottom: 1px solid #f1f5f9;
+  transition: background-color 0.12s ease;
+  position: relative;
+}
+
+.cmw-diff-row:hover {
+  background: #f8fafc;
+}
+
+.cmw-diff-marker {
+  width: 4px;
+  padding: 0;
+  background: transparent;
+}
+
+.tone-new-only .cmw-diff-marker { background: #10b981; }
+.tone-old-only .cmw-diff-marker { background: #94a3b8; }
+.tone-size-changed .cmw-diff-marker,
+.tone-time-changed .cmw-diff-marker { background: #f59e0b; }
+.tone-content-changed .cmw-diff-marker { background: #ef4444; }
+.tone-unchanged .cmw-diff-marker { background: transparent; }
+
+.cmw-diff-td {
+  padding: 9px 14px;
+  vertical-align: top;
+}
+
+.cmw-diff-td-side {
+  padding: 9px 12px;
+}
+
+.cmw-diff-td-decision {
+  padding: 9px 12px;
+}
+
+/* Name line：紧凑 toggle + glyph + fileicon + name + tail + badge 一行平铺 */
+.cmw-diff-name-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.cmw-diff-toggle {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #94a3b8;
+  transition: color 0.15s ease;
+}
+
+.cmw-diff-toggle:hover {
+  color: #334155;
+}
+
+/* Status glyph：VSCode SCM 风格的单字符状态。颜色复用 cmw-diff-badge 的 tone class */
+.cmw-diff-glyph {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  background: #f1f5f9;
+  color: #94a3b8;
+  border: none !important;
+  padding: 0 !important;
+}
+
+.cmw-diff-glyph.is-new { background: #ecfdf5; color: #059669; }
+.cmw-diff-glyph.is-old { background: #f1f5f9; color: #475569; }
+.cmw-diff-glyph.is-size,
+.cmw-diff-glyph.is-time { background: #fff7ed; color: #b45309; }
+.cmw-diff-glyph.is-content { background: #fef2f2; color: #b91c1c; }
+.cmw-diff-glyph.is-neutral { background: #f1f5f9; color: #94a3b8; }
+
+.cmw-diff-fileicon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+
+.cmw-diff-name {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1e293b;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmw-diff-pathtail {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.cmw-diff-note {
+  margin-top: 3px;
+  margin-left: 32px;
+  font-size: 10.5px;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Side cell：尺寸 + 时间合为一行主，二行辅，去除原本上下两行 <p> 的垄余 */
+.cmw-diff-side-primary {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #334155;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmw-diff-side-secondary {
+  display: block;
+  font-size: 10.5px;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmw-diff-side-empty {
+  font-size: 11px;
+  color: #cbd5e1;
+  font-style: italic;
+}
+
+.cmw-diff-empty {
+  padding: 40px 24px;
+  text-align: center;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+/* Status badge：统一 dot + 弱底 muted */
+.cmw-diff-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 1px 8px 1px 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.cmw-diff-badge-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.cmw-diff-badge.is-new {
+  background: #ecfdf5;
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.18);
+}
+
+.cmw-diff-badge.is-old {
+  background: #eef2ff;
+  color: #4f46e5;
+  border-color: rgba(99, 102, 241, 0.18);
+}
+
+.cmw-diff-badge.is-size,
+.cmw-diff-badge.is-time {
+  background: #fff7ed;
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+.cmw-diff-badge.is-content {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.18);
+}
+
+.cmw-diff-badge.is-neutral {
+  background: #f1f5f9;
+  color: #64748b;
+  border-color: #e2e8f0;
+}
+
+/* Segmented decision：借鉴 GitKraken stage-line，3 个单字按钮贴在一起，active 亮色 */
+.cmw-decision-seg {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.cmw-decision-seg-btn {
+  flex: 1;
+  min-width: 28px;
+  border: 0;
+  background: transparent;
+  padding: 5px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.cmw-decision-seg-btn + .cmw-decision-seg-btn {
+  border-left: 1px solid #e2e8f0;
+}
+
+.cmw-decision-seg-btn:hover:not(:disabled):not(.is-active) {
+  background: #f8fafc;
+  color: #475569;
+}
+
+.cmw-decision-seg-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.cmw-decision-seg-btn.is-active.is-use-new {
+  background: #ecfdf5;
+  color: #047857;
+  font-weight: 700;
+}
+
+.cmw-decision-seg-btn.is-active.is-use-old {
+  background: #eef2ff;
+  color: #4338ca;
+  font-weight: 700;
+}
+
+.cmw-decision-seg-btn.is-active.is-delete {
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 700;
+  text-decoration: line-through;
+}
+
 /* Footer */
 .cmw-footer {
   display: flex;
@@ -1465,9 +1820,23 @@ function formatDate(value) {
 .cmw-action-btn:active:not(:disabled),
 .cmw-toolbar-btn:active:not(:disabled),
 .cmw-close-btn:active:not(:disabled),
-.cmw-pill:active:not(:disabled),
-.cmw-count-chip:active:not(:disabled) {
-  transform: translateY(0) scale(0.96);
+.cmw-pill:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+
+/* Footer remote hint：去 amber 强字 */
+.cmw-footer-remote-hint {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.cmw-footer-remote-hint strong {
+  color: #334155;
+  font-weight: 600;
 }
 
 button:not(:disabled) { cursor: pointer; }
