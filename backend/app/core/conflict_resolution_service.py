@@ -30,12 +30,13 @@ class ConflictMergeSession:
     id: str
     conflict_id: str
     workspace: str
-    staged_root: str
+    staged_root: str       # 已暂存时：临时目录；懒暂存时：原始源目录路径
     existing_path: str
     existing_library_id: Optional[str]
     existing_library_type: str
     compare_items: list[dict[str, Any]]
     created_at: float
+    source_is_staged: bool = False  # True=已复制到 workspace；False=使用原始源路径
 
 
 class ConflictResolutionService:
@@ -677,7 +678,28 @@ class ConflictResolutionService:
 
         await self.cleanup_conflict_sessions(conflict.id)
         workspace = self._create_workspace(conflict.id)
-        staged_root = await self._stage_new_source(conflict, workspace)
+
+        # 判断来源是文件（需要解压才能对比）还是目录
+        # 目录来源跳过耗时的 shutil.copytree，直接用原始路径构建对比列表；
+        # 真正执行 merge 时才在 resolve_merge 里懒惰暂存。
+        source_path = self._resolve_conflict_new_path(conflict)
+        original = str(getattr(conflict, "new_path", "") or "")
+        if source_path and source_path != original:
+            self._maybe_persist_resolved_new_path(
+                getattr(conflict, "id", ""), original, source_path,
+            )
+        if not source_path or not os.path.exists(source_path):
+            raise FileNotFoundError("New source does not exist")
+
+        if os.path.isfile(source_path):
+            # 压缩包：解压不可避免，走完整 staging 流程
+            staged_root = await self._stage_new_source(conflict, workspace)
+            source_is_staged = True
+        else:
+            # 目录：直接引用原始路径，跳过耗时 copytree
+            staged_root = source_path
+            source_is_staged = False
+
         compare_service = get_folder_compare_service()
 
         remote_items = await self._load_existing_remote_items(existing)
@@ -703,6 +725,7 @@ class ConflictResolutionService:
             existing_library_type=existing["library_type"],
             compare_items=compare_items,
             created_at=time.time(),
+            source_is_staged=source_is_staged,
         )
         self._merge_sessions[session_id] = session
         decisions = compare_service.build_default_decisions(compare_items)
@@ -772,6 +795,22 @@ class ConflictResolutionService:
             session = self._merge_sessions.get(preview["session_id"])
         if not session:
             raise RuntimeError("Merge preview session not found")
+
+        # 懒惰暂存：预览时目录来源跳过了 copytree，真正合并前在此补做
+        if not session.source_is_staged:
+            source_path = session.staged_root  # 此时 staged_root 存放的是原始源目录
+            staged_dir = os.path.join(session.workspace, os.path.basename(source_path))
+            logger.info("合并执行：开始暂存源目录 %s -> %s", source_path, staged_dir)
+            await asyncio.to_thread(shutil.copytree, source_path, staged_dir)
+            filter_task = Task(
+                task_type=TaskType.FILTER,
+                source_path=staged_dir,
+                auto_classify=False,
+                skip_archive=True,
+            )
+            await FilterService().filter(staged_dir, filter_task)
+            session.staged_root = staged_dir
+            session.source_is_staged = True
 
         compare_service = get_folder_compare_service()
         normalized_decisions = compare_service.normalize_decisions(session.compare_items, decisions or {})
