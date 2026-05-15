@@ -3970,8 +3970,21 @@ class ExtractService:
                 )
                 # 读取本次 list 检测到的编码，存入 archive_info 供 _get_mcp_args 使用
                 archive_info.detected_encoding = self.__class__._archive_encoding_cache.get(archive_path)
+                # 若清单中含大量 \ufffd 替换字符，说明采集时文件未就绪或编码未知，
+                # 不缓存此劣质结果；提取时会重新 list 并使用正确的 -mcp 编码。
+                _ufffd_ratio = (
+                    sum(1 for item in file_list if '\ufffd' in str(item.get('name') or ''))
+                    / max(len(file_list), 1)
+                )
                 if use_cache:
-                    self._save_cached_archive_info(archive_path, archive_info)
+                    if _ufffd_ratio >= 0.3:
+                        logger.warning(
+                            "[7z][cache] 清单含 %.0f%% 替换字符，不缓存（采集时编码未就绪）: archive=%s",
+                            _ufffd_ratio * 100,
+                            archive_path,
+                        )
+                    else:
+                        self._save_cached_archive_info(archive_path, archive_info)
                 return archive_info
 
         logger.warning("无法预读取压缩包内容，后续将尝试直接解压: %s", archive_path)
@@ -4713,6 +4726,21 @@ class ExtractService:
                 total_files,
                 archive_info.path,
             )
+
+        # 安全检查：清单中大量 \ufffd 替换字符意味着采集时文件未完整或编码未知，
+        # 此时清单不可信，无法与磁盘上经过编码修复后的文件名匹配，直接跳过清单校验。
+        # 场景：precheck_archive 在文件写入未稳定时运行 → _sniff_zip_encoding 失败 →
+        # 7zz l 无 -mcp → CP932 字节被 UTF-8 解码为替换字符并缓存 → 提取时命中缓存 →
+        # 提取 + garbled_guard 修复后文件名正确，但清单里是 \ufffd，匹配失败。
+        _ufffd_count = sum(1 for e in file_entries if '\ufffd' in str(e.get('name') or ''))
+        if file_entries and _ufffd_count / len(file_entries) >= 0.3:
+            logger.warning(
+                "清单中 %.0f%% 的文件名含编码替换字符（\\ufffd），清单采集时编码未知，"
+                "跳过基于清单的完整性校验: archive=%s",
+                _ufffd_count / len(file_entries) * 100,
+                archive_info.path,
+            )
+            return True
 
         missing_files = []
         size_mismatch_files = []
