@@ -440,9 +440,19 @@ export const conflictApi = {
   },
 
   preview: async (conflictId, action) => {
+    // 合并预览改成异步 job 模式后，后端立即返回 {async: true, job_id, status: 'running', ...}，
+    // HTTP 不再阻塞。KEEP_NEW 仍是同步返回 preview。前端轮询 mergePreviewJob 拿真实进度。
     const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action }, {
-      // 合并预览会先解压新包、过滤临时目录、扫描新旧文件树。大包和慢盘不能沿用 60s 默认超时。
-      timeout: action === 'MERGE' ? CONFLICT_MERGE_TIMEOUT : 60000,
+      timeout: 60000,
+    })
+    return response.data
+  },
+
+  mergePreviewJob: async (conflictId, jobId) => {
+    // 合并预览异步 job 轮询接口：状态 running 时由前端按节奏继续 poll，
+    // completed 时取 result（含 session_id / items / 默认 decisions），failed 时抛错。
+    const response = await apiClient.get(`/conflicts/${conflictId}/preview-job/${jobId}`, {
+      timeout: 30000,
     })
     return response.data
   },

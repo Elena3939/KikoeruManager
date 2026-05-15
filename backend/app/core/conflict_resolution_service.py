@@ -39,9 +39,41 @@ class ConflictMergeSession:
     source_is_staged: bool = False  # True=已复制到 workspace；False=使用原始源路径
 
 
+@dataclass
+class MergePreviewJob:
+    """合并预览异步任务句柄：解决"大压缩包必 504"问题。
+
+    用户点合并 → 后端立即创建 job + asyncio.create_task 启动 worker → HTTP 立即返回 job_id；
+    前端轮询 GET /api/conflicts/{id}/preview-job/{job_id} 拿真实阶段 / 百分比 / message；
+    worker 完成时 status='completed' + result=preview，失败时 status='failed' + error。
+
+    `stage` 与 `stage_label`：
+      - `init` 初始化 → `resolve_path` 定位来源 → `copy_archive` 复制压缩包
+      - `extract` 解压新包（monitor 持续从 extract_task.progress 拿真实 7z 百分比 + step）
+      - `nested_extract` 嵌套解压（extract_task.current_step 含"嵌套"时切换）
+      - `filter` 过滤临时目录 → `scan_existing` 扫描库存 → `compare` 生成差异树
+      - `done` 完成 / `failed` 失败
+    """
+    id: str
+    conflict_id: str
+    status: str = "running"        # running | completed | failed
+    stage: str = "init"
+    stage_label: str = "初始化"
+    message: str = ""
+    percent: int = 0
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
 class ConflictResolutionService:
     def __init__(self) -> None:
         self._merge_sessions: dict[str, ConflictMergeSession] = {}
+        # 合并预览异步 job 池 + 对应的 asyncio worker 句柄。
+        # cleanup_old_merge_preview_jobs 定期回收超时 job，避免内存泄漏。
+        self._merge_preview_jobs: dict[str, MergePreviewJob] = {}
+        self._merge_preview_workers: dict[str, asyncio.Task] = {}
 
     def normalize_action(self, action: str) -> str:
         normalized = str(action or "").strip().upper()
@@ -794,6 +826,359 @@ class ConflictResolutionService:
             "items": compare_items,
             "default_decisions": decisions,
             "summary": compare_service.build_summary(compare_items),
+        }
+
+    # ============================================================
+    # 合并预览 异步 job 模式
+    # ============================================================
+    # 同步版 create_merge_preview 在大压缩包 / 嵌套包 / 远程库存等场景下
+    # 远超 nginx / 反向代理默认 60s 超时，用户固定看到 504。
+    # 这里把整个流程包成异步 job：start_merge_preview 立即返回 job_id，worker 后台跑，
+    # 前端轮询 GET /api/conflicts/{id}/preview-job/{job_id} 拿真实阶段 + 进度 + message。
+    # 与日志记录一致：stage/stage_label/message 的语义对齐 ExtractService.update_progress。
+
+    async def start_merge_preview(self, conflict) -> dict[str, Any]:
+        """启动合并预览异步任务，立即返回 job_id 不阻塞 HTTP。"""
+        # 入参基本校验：existing 路径与 conflict.new_path 必须存在
+        description = await self.describe_conflict_async(conflict)
+        existing = description["existing"]
+        if not existing["path"]:
+            raise RuntimeError("Missing existing target path")
+        if not getattr(conflict, "new_path", None):
+            raise RuntimeError("Missing new source path")
+
+        # 如果该 conflict 已经有 running 的 job，直接复用，避免点两次合并就跑两遍 7z。
+        # 同步阶段无法等 worker 完成，但前端拿 job_id 后会在 polling 里自然合并。
+        for existing_job in self._merge_preview_jobs.values():
+            if (
+                existing_job.conflict_id == str(conflict.id)
+                and existing_job.status == "running"
+            ):
+                return self._serialize_merge_preview_job(existing_job)
+
+        # 兜底回收：清理掉 30 分钟以前的旧 job + 已完成 worker 句柄
+        self.cleanup_old_merge_preview_jobs()
+
+        job_id = uuid.uuid4().hex
+        now = time.time()
+        job = MergePreviewJob(
+            id=job_id,
+            conflict_id=str(conflict.id),
+            status="running",
+            stage="init",
+            stage_label="初始化",
+            message="启动合并预览任务",
+            percent=2,
+            created_at=now,
+            updated_at=now,
+        )
+        self._merge_preview_jobs[job_id] = job
+        worker = asyncio.create_task(
+            self._run_merge_preview_worker(job_id, str(conflict.id))
+        )
+        self._merge_preview_workers[job_id] = worker
+        return self._serialize_merge_preview_job(job)
+
+    def get_merge_preview_job(self, job_id: str) -> Optional[dict[str, Any]]:
+        """同步快查 job 状态（前端轮询 endpoint 用）。"""
+        job = self._merge_preview_jobs.get(str(job_id or "").strip())
+        if not job:
+            return None
+        return self._serialize_merge_preview_job(job)
+
+    def cleanup_old_merge_preview_jobs(self, max_age_seconds: int = 1800) -> None:
+        """回收 30 分钟以上没活动的 job + 已完成 worker，避免内存泄漏。
+
+        前端关弹窗就停止轮询，残留的 completed/failed job 在这里过期清掉；
+        running 状态的也会按 updated_at 兜底清理（worker 卡死也一并 cancel）。
+        """
+        now = time.time()
+        stale_ids = [
+            jid for jid, job in self._merge_preview_jobs.items()
+            if now - max(job.updated_at, job.created_at) > max_age_seconds
+        ]
+        for jid in stale_ids:
+            self._merge_preview_jobs.pop(jid, None)
+            worker = self._merge_preview_workers.pop(jid, None)
+            if worker and not worker.done():
+                worker.cancel()
+
+    async def _run_merge_preview_worker(self, job_id: str, conflict_id: str) -> None:
+        """后台 worker：复刻 create_merge_preview 流程，每个阶段切换都更新 job。"""
+        job = self._merge_preview_jobs.get(job_id)
+        if not job:
+            return
+        # 跨 asyncio.task 不持有外层传进来的 SQLAlchemy 实例，重新 fetch 一份。
+        from ..models.database import ConflictWork, get_db
+        db = next(get_db())
+        try:
+            conflict = (
+                db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+            )
+            if not conflict:
+                self._fail_merge_preview_job(job, f"找不到 conflict 记录：{conflict_id}")
+                return
+
+            self._update_merge_preview_job(
+                job, stage="init", stage_label="初始化",
+                percent=5, message="读取冲突描述",
+            )
+            description = await self.describe_conflict_async(conflict)
+            existing = description["existing"]
+            if not existing["path"]:
+                raise RuntimeError("Missing existing target path")
+
+            await self.cleanup_conflict_sessions(conflict.id)
+            workspace = self._create_workspace(conflict.id)
+
+            self._update_merge_preview_job(
+                job, stage="resolve_path", stage_label="定位新版本来源",
+                percent=10, message="尝试 _conflicts 多级 fallback",
+            )
+            source_path = self._resolve_conflict_new_path(conflict)
+            original = str(getattr(conflict, "new_path", "") or "")
+            if source_path and source_path != original:
+                self._maybe_persist_resolved_new_path(
+                    getattr(conflict, "id", ""), original, source_path,
+                )
+            if not source_path or not os.path.exists(source_path):
+                raise self._new_source_missing_error(conflict)
+
+            if os.path.isfile(source_path):
+                # 压缩包：copy_archive → extract（含嵌套 + monitor）→ filter
+                staged_root = await self._stage_new_source_with_progress(
+                    conflict, workspace, job, source_path,
+                )
+                source_is_staged = True
+            else:
+                # 目录：跳过 copytree，直接对比；进度直接跳到扫描阶段
+                self._update_merge_preview_job(
+                    job, stage="scan_source", stage_label="读取新版目录",
+                    percent=58, message="目录来源跳过复制，直接进入对比",
+                )
+                staged_root = source_path
+                source_is_staged = False
+
+            scan_label = "读取远程库存清单" if existing.get("is_remote") else "扫描库存目录"
+            self._update_merge_preview_job(
+                job, stage="scan_existing", stage_label=scan_label,
+                percent=72, message=existing.get("path") or "",
+            )
+            compare_service = get_folder_compare_service()
+            remote_items = await self._load_existing_remote_items(existing)
+            if remote_items is not None:
+                compare_items = compare_service.build_compare_items_from_listing(
+                    staged_root, remote_items, existing["path"],
+                )
+            else:
+                if not os.path.exists(existing["path"]):
+                    raise FileNotFoundError("Existing target directory does not exist")
+                compare_items = compare_service.build_compare_items(staged_root, existing["path"])
+
+            self._update_merge_preview_job(
+                job, stage="compare", stage_label="生成差异树",
+                percent=92,
+                message=f"按相对路径配对 {len(compare_items)} 项",
+            )
+            session_id = uuid.uuid4().hex
+            session = ConflictMergeSession(
+                id=session_id,
+                conflict_id=str(conflict.id),
+                workspace=workspace,
+                staged_root=staged_root,
+                existing_path=existing["path"],
+                existing_library_id=existing["library_id"],
+                existing_library_type=existing["library_type"],
+                compare_items=compare_items,
+                created_at=time.time(),
+                source_is_staged=source_is_staged,
+            )
+            self._merge_sessions[session_id] = session
+            decisions = compare_service.build_default_decisions(compare_items)
+
+            preview = {
+                "session_id": session_id,
+                "conflict_id": str(conflict.id),
+                "staged_root": staged_root,
+                "existing_path": existing["path"],
+                "existing_library_id": existing["library_id"],
+                "existing_library_type": existing["library_type"],
+                "items": compare_items,
+                "default_decisions": decisions,
+                "summary": compare_service.build_summary(compare_items),
+            }
+            self._update_merge_preview_job(
+                job, stage="done", stage_label="完成", percent=100,
+                message=f"已生成 {len(compare_items)} 项差异",
+                status="completed", result=preview,
+            )
+        except FileNotFoundError as exc:
+            self._fail_merge_preview_job(job, str(exc))
+        except asyncio.CancelledError:
+            # worker 被外部 cancel（cleanup_old_merge_preview_jobs 命中），静默退出
+            self._fail_merge_preview_job(job, "任务已取消")
+            raise
+        except Exception as exc:
+            logger.error("合并预览 worker 失败 job=%s conflict=%s: %s", job_id, conflict_id, exc, exc_info=True)
+            self._fail_merge_preview_job(job, str(exc) or "合并预览失败")
+        finally:
+            try:
+                db.close()
+            except Exception:
+                logger.debug("合并预览 worker 关闭 db session 失败", exc_info=True)
+            self._merge_preview_workers.pop(job_id, None)
+
+    async def _stage_new_source_with_progress(
+        self, conflict, workspace: str, job: "MergePreviewJob", source_path: str,
+    ) -> str:
+        """带进度上报的 staging：复制压缩包 → 解压（含 monitor）→ filter。"""
+        self._update_merge_preview_job(
+            job, stage="copy_archive", stage_label="复制压缩包",
+            percent=15,
+            message=f"把 {os.path.basename(source_path)} 放入合并工作区",
+        )
+        staged_archive_path = os.path.join(workspace, os.path.basename(source_path))
+        await asyncio.to_thread(shutil.copy2, source_path, staged_archive_path)
+
+        self._update_merge_preview_job(
+            job, stage="extract", stage_label="解压新包",
+            percent=22, message="启动 7z 解压子进程",
+        )
+        extract_task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=staged_archive_path,
+            auto_classify=False,
+            skip_archive=True,
+        )
+
+        # 并行 monitor：每 0.4s 把 extract_task.progress / current_step 同步到 job，
+        # 让前端能看到 "解压中 50%"、"检查嵌套压缩包"、"嵌套解压 RJxxx (层1)" 等真实阶段。
+        monitor = asyncio.create_task(
+            self._monitor_extract_into_job(extract_task, job)
+        )
+        try:
+            extracted_path = await ExtractService().extract(extract_task)
+        finally:
+            monitor.cancel()
+            try:
+                await monitor
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if not extracted_path:
+            raise RuntimeError(extract_task.error_message or "Extract failed")
+        staged_root = extracted_path
+
+        self._update_merge_preview_job(
+            job, stage="filter", stage_label="过滤临时目录",
+            percent=64, message="按项目规则清理无效文件",
+        )
+        filter_task = Task(
+            task_type=TaskType.FILTER,
+            source_path=staged_root,
+            auto_classify=False,
+            skip_archive=True,
+        )
+        await FilterService().filter(staged_root, filter_task)
+        return staged_root
+
+    async def _monitor_extract_into_job(
+        self, extract_task: "Task", job: "MergePreviewJob",
+    ) -> None:
+        """周期把 extract_task 的 progress / current_step 同步到 job。
+
+        ExtractService 内部 `task.update_progress` 会刷 task.progress + task.current_step：
+          - 5% 等待文件写入完成 / 10% 检测文件类型 / 15% 等待分卷组完整
+          - 20% 读取压缩包内容 / 30% 开始解压 / 30~88% 解压中 X%
+          - 90% 验证解压完整性 / 95% 检查嵌套压缩包 / 97% 检查文件名编码
+        把 0~100 映射到 job 的 22~62 区间，避免和外层阶段切换冲突 + 进度回退。
+        """
+        last_step = ""
+        try:
+            while True:
+                await asyncio.sleep(0.4)
+                inner = int(getattr(extract_task, "progress", 0) or 0)
+                step = str(getattr(extract_task, "current_step", "") or "解压中").strip()
+                mapped = 22 + int(min(100, max(0, inner)) * 0.4)
+
+                stage = "extract"
+                stage_label = "解压新包"
+                # current_step 关键字识别真实子阶段，让前端 chip 跟着切
+                lower_step = step.lower()
+                if "嵌套" in step or "nested" in lower_step:
+                    stage = "nested_extract"
+                    stage_label = "嵌套解压"
+                elif "验证" in step or "verify" in lower_step:
+                    stage_label = "验证解压完整性"
+                elif "文件名编码" in step:
+                    stage_label = "检查文件名编码"
+                elif "等待" in step:
+                    stage_label = "等待写入完成"
+                elif "检测" in step:
+                    stage_label = "检测文件类型"
+                elif "分卷" in step:
+                    stage_label = "等待分卷组完整"
+                elif "读取" in step:
+                    stage_label = "读取压缩包内容"
+
+                # 仅在 step 文案变化或进度推进时更新，减少无意义写
+                if step != last_step or mapped > job.percent:
+                    self._update_merge_preview_job(
+                        job, stage=stage, stage_label=stage_label,
+                        percent=mapped, message=step,
+                    )
+                    last_step = step
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.debug("merge preview extract monitor 异常", exc_info=True)
+
+    def _update_merge_preview_job(
+        self, job: Optional["MergePreviewJob"], **kwargs: Any,
+    ) -> None:
+        """统一更新 job 字段；percent 永远不回退；自动刷新 updated_at。"""
+        if not job:
+            return
+        for key in ("stage", "stage_label", "message", "status", "error"):
+            value = kwargs.get(key)
+            if value is not None:
+                setattr(job, key, value)
+        if "result" in kwargs and kwargs["result"] is not None:
+            job.result = kwargs["result"]
+        new_percent = kwargs.get("percent")
+        if new_percent is not None:
+            try:
+                pct = int(new_percent)
+                if pct > job.percent:
+                    job.percent = min(100, pct)
+            except (TypeError, ValueError):
+                pass
+        job.updated_at = time.time()
+
+    def _fail_merge_preview_job(self, job: Optional["MergePreviewJob"], error: str) -> None:
+        if not job:
+            return
+        msg = str(error or "未知错误")
+        job.status = "failed"
+        job.stage = "failed"
+        job.stage_label = "失败"
+        job.message = msg
+        job.error = msg
+        job.updated_at = time.time()
+
+    def _serialize_merge_preview_job(self, job: "MergePreviewJob") -> dict[str, Any]:
+        return {
+            "job_id": job.id,
+            "conflict_id": job.conflict_id,
+            "status": job.status,
+            "stage": job.stage,
+            "stage_label": job.stage_label,
+            "message": job.message,
+            "percent": job.percent,
+            "result": job.result,
+            "error": job.error,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
         }
 
     async def resolve_keep_new(self, conflict) -> dict[str, Any]:
