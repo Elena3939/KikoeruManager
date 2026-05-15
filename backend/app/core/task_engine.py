@@ -409,7 +409,7 @@ class TaskEngine:
         self._ensure_task_context(task)
         self.tasks[task.id] = task
         await self.queue.put(task)
-        rjcode = self._extract_rjcode(task.source_path) or "未知"
+        rjcode = self._extract_rjcode_from_path_tail(task.source_path) or "未知"
         logger.info(f"[{rjcode}] 任务提交 - ID: {task.id[:8]}..., 源文件: {os.path.basename(task.source_path)}")
         return task.id
 
@@ -606,13 +606,24 @@ class TaskEngine:
             getattr(task, "rjcode", None),
             (task.task_metadata or {}).get("rjcode"),
             (task.task_metadata or {}).get("inferred_rjcode"),
-            self._extract_rjcode(fallback_path or task.source_path),
+            self._extract_rjcode_from_path_tail(fallback_path or task.source_path),
         ]
         for candidate in candidates:
             value = self._extract_rjcode(str(candidate or "")) or str(candidate or "").strip().upper()
             if value and value != "未知":
                 return value
         return ""
+
+    def _extract_rjcode_from_path_tail(self, path: str) -> Optional[str]:
+        path = str(path or "").strip()
+        if not path:
+            return None
+        tail = os.path.basename(path.rstrip("\\/"))
+        if tail:
+            tail_rjcode = self._extract_rjcode(tail, search_subfolders=False)
+            if tail_rjcode:
+                return tail_rjcode
+        return self._extract_rjcode(path, search_subfolders=False)
 
     def _sync_task_rjcode(self, task: Task, rjcode: Optional[str], source: Optional[str] = None) -> str:
         """把有效 RJ 号同步回任务对象和元数据，供后续重命名、归档和分类统一使用。"""
@@ -655,12 +666,13 @@ class TaskEngine:
 
         normalized_rjcode = (rjcode or "").strip()
         if normalized_rjcode == "未知":
-            normalized_rjcode = self._extract_rjcode(source_path) or ""
+            normalized_rjcode = self._extract_rjcode_from_path_tail(source_path) or ""
 
         metadata = dict(task.task_metadata or {})
         metadata["failure_stage"] = "extract"
         metadata["error_message"] = reason
         metadata["available_actions"] = ["RETRY", "SKIP"]
+        metadata = self._sanitize_failure_metadata(metadata, reason)
 
         classifier = SmartClassifier()
         classifier._add_to_conflict_works(
@@ -708,6 +720,37 @@ class TaskEngine:
                 return stage
         return "process"
 
+    def _is_password_failure_metadata(self, metadata: dict, reason: str = "") -> bool:
+        extract_reason = str(metadata.get("extract_failure_reason") or "").strip()
+        if extract_reason in {"wrong_password", "missing_password"}:
+            return True
+        combined_text = f"{reason} {metadata.get('error_message') or ''} {metadata.get('resolution_error') or ''}".lower()
+        return any(
+            marker in combined_text
+            for marker in (
+                "无正确密码",
+                "密码错误",
+                "密码不正确",
+                "wrong password",
+                "incorrect password",
+                "password required",
+                "missing password",
+            )
+        )
+
+    def _sanitize_failure_metadata(self, metadata: dict, reason: str = "") -> dict:
+        next_metadata = dict(metadata or {})
+        if self._is_password_failure_metadata(next_metadata, reason):
+            next_metadata["extract_failure_reason"] = "wrong_password"
+        if str(next_metadata.get("extract_failure_reason") or "").strip() == "garbled_filename":
+            return next_metadata
+        for key in list(next_metadata.keys()):
+            if key.startswith("garbled_filename_"):
+                next_metadata.pop(key, None)
+        next_metadata.pop("manual_retry_filename_encoding", None)
+        next_metadata.pop("manual_retry_ignore_garbled", None)
+        return next_metadata
+
     def _record_problem_work_for_task_failure(self, task: Task, rjcode: Optional[str], reason: str):
         """把导入流程中的失败统一写入问题作品，避免任务中心失败但问题作品页为空。"""
         from .classifier import SmartClassifier
@@ -727,7 +770,7 @@ class TaskEngine:
         if normalized_rjcode == "未知":
             normalized_rjcode = ""
         if not normalized_rjcode:
-            normalized_rjcode = self._extract_rjcode(source_path) or ""
+            normalized_rjcode = self._extract_rjcode_from_path_tail(source_path) or ""
 
         failure_stage = self._infer_failure_stage(task, reason)
         conflict_type = "EXTRACT_FAILED" if failure_stage == "extract" else "PROCESS_FAILED"
@@ -741,6 +784,7 @@ class TaskEngine:
             "failed_step": str(task.current_step or "").strip(),
             "failed_progress": int(task.progress or 0),
         })
+        metadata = self._sanitize_failure_metadata(metadata, reason)
 
         classifier = SmartClassifier()
         classifier._add_to_conflict_works(
@@ -882,6 +926,10 @@ class TaskEngine:
                 if task.status == TaskStatus.FAILED:
                     conflict.status = "PENDING"
                     next_metadata["resolution_error"] = str(task.error_message or "重试失败")
+                    task_extract_reason = str((task.task_metadata or {}).get("extract_failure_reason") or "").strip()
+                    if task_extract_reason:
+                        next_metadata["extract_failure_reason"] = task_extract_reason
+                    next_metadata = self._sanitize_failure_metadata(next_metadata, str(task.error_message or ""))
                     conflict.new_metadata = next_metadata
                     db.commit()
                     try:
@@ -937,6 +985,10 @@ class TaskEngine:
             elif task.status == TaskStatus.FAILED:
                 conflict.status = "PENDING"
                 next_metadata["resolution_error"] = str(task.error_message or "冲突处理失败")
+                task_extract_reason = str((task.task_metadata or {}).get("extract_failure_reason") or "").strip()
+                if task_extract_reason:
+                    next_metadata["extract_failure_reason"] = task_extract_reason
+                next_metadata = self._sanitize_failure_metadata(next_metadata, str(task.error_message or ""))
             else:
                 return
 
@@ -1189,7 +1241,7 @@ class TaskEngine:
         from .classifier import SmartClassifier
         
         inferred_rjcode = self._extract_rjcode(str((task.task_metadata or {}).get('inferred_rjcode') or '')) or str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
-        rjcode = self._extract_rjcode(task.source_path) or inferred_rjcode or "未知"
+        rjcode = self._extract_rjcode_from_path_tail(task.source_path) or inferred_rjcode or "未知"
         self._sync_task_rjcode(task, rjcode if rjcode != "未知" else None, source="source_path")
         logger.info(f"[{rjcode}] ========== 开始处理任务 ==========")
         logger.info(f"[{rjcode}] 任务ID: {task.id}, 类型: {self._resolve_task_log_type_label(task)}")
@@ -1284,7 +1336,7 @@ class TaskEngine:
                     try:  # 步骤 0 try/except：确保步骤 0 意外异常时 cancel precheck
                         logger.info(f"[{rjcode}] 步骤0: 预检")
                         task.update_progress(5, "预检中")
-                        rjcode = self._extract_rjcode(task.source_path)
+                        rjcode = self._extract_rjcode_from_path_tail(task.source_path)
 
                         # 密码库权威绑定：若条目同时填写 filename + rjcode 命中了当前压缩包，
                         # 整条链路（查重/命名/包裹目录）都使用条目里的 rjcode。
@@ -1504,16 +1556,20 @@ class TaskEngine:
                                         await self._abort_precheck(precheck_task)
                                         return
                                     elif not _kikoeru_has_work and _kikoeru_confident:
-                                        # Kikoeru 确认目标 RJ 作品不存在 → 无原始作品，转问题作品
-                                        _reason = "小型压缩包对应 RJ 作品在服务器不存在，无法进行字幕补配"
-                                        task.fail(_reason)
-                                        self._record_problem_work_for_extract_failure(task, rjcode, _reason)
-                                        logger.warning(
-                                            f"[{rjcode}] 小型压缩包无原始作品（Kikoeru 查询可信且未找到），转入问题作品: "
+                                        if _preview_subtitle_count > 0:
+                                            _reason = "小型压缩包对应 RJ 作品在服务器不存在，但包内含字幕，需人工核查"
+                                            task.fail(_reason)
+                                            self._record_problem_work_for_extract_failure(task, rjcode, _reason)
+                                            logger.warning(
+                                                f"[{rjcode}] 小型压缩包无原始作品但包内含字幕，转入问题作品: "
+                                                f"source={os.path.basename(task.source_path)} subtitle_count={_preview_subtitle_count}"
+                                            )
+                                            await self._abort_precheck(precheck_task)
+                                            return
+                                        logger.info(
+                                            f"[{rjcode}] 小型压缩包对应 Kikoeru 作品不存在且包内无字幕，按新作继续解压入库: "
                                             f"source={os.path.basename(task.source_path)}"
                                         )
-                                        await self._abort_precheck(precheck_task)
-                                        return
                                     elif _preview_subtitle_count == 0:
                                         _reason = "小型压缩包内未发现字幕文件，需人工核查"
                                         task.fail(_reason)
@@ -3464,7 +3520,7 @@ class TaskEngine:
             # 记录主文件（第一个分卷或唯一文件）到数据库
             if archived_files:
                 main_filename, main_dest_path, main_source_path = archived_files[0]
-                rjcode = self._extract_rjcode(main_source_path) or str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
+                rjcode = self._extract_rjcode_from_path_tail(main_source_path) or str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
                 file_size = os.path.getsize(main_dest_path)
 
                 db = next(get_db())

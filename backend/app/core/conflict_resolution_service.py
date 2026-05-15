@@ -764,69 +764,71 @@ class ConflictResolutionService:
 
         await self.cleanup_conflict_sessions(conflict.id)
         workspace = self._create_workspace(conflict.id)
+        session_registered = False
 
-        # 判断来源是文件（需要解压才能对比）还是目录
-        # 目录来源跳过耗时的 shutil.copytree，直接用原始路径构建对比列表；
-        # 真正执行 merge 时才在 resolve_merge 里懒惰暂存。
-        source_path = self._resolve_conflict_new_path(conflict)
-        original = str(getattr(conflict, "new_path", "") or "")
-        if source_path and source_path != original:
-            self._maybe_persist_resolved_new_path(
-                getattr(conflict, "id", ""), original, source_path,
+        try:
+            source_path = self._resolve_conflict_new_path(conflict)
+            original = str(getattr(conflict, "new_path", "") or "")
+            if source_path and source_path != original:
+                self._maybe_persist_resolved_new_path(
+                    getattr(conflict, "id", ""), original, source_path,
+                )
+            if not source_path or not os.path.exists(source_path):
+                raise self._new_source_missing_error(conflict)
+
+            if os.path.isfile(source_path):
+                staged_root = await self._stage_new_source(conflict, workspace)
+                source_is_staged = True
+            else:
+                staged_root = source_path
+                source_is_staged = False
+
+            compare_service = get_folder_compare_service()
+
+            remote_items = await self._load_existing_remote_items(existing)
+            if remote_items is not None:
+                compare_items = compare_service.build_compare_items_from_listing(
+                    staged_root,
+                    remote_items,
+                    existing["path"],
+                )
+            else:
+                if not os.path.exists(existing["path"]):
+                    raise FileNotFoundError("Existing target directory does not exist")
+                compare_items = compare_service.build_compare_items(staged_root, existing["path"])
+
+            session_id = uuid.uuid4().hex
+            session = ConflictMergeSession(
+                id=session_id,
+                conflict_id=str(conflict.id),
+                workspace=workspace,
+                staged_root=staged_root,
+                existing_path=existing["path"],
+                existing_library_id=existing["library_id"],
+                existing_library_type=existing["library_type"],
+                compare_items=compare_items,
+                created_at=time.time(),
+                source_is_staged=source_is_staged,
             )
-        if not source_path or not os.path.exists(source_path):
-            raise self._new_source_missing_error(conflict)
+            self._merge_sessions[session_id] = session
+            session_registered = True
+            decisions = compare_service.build_default_decisions(compare_items)
 
-        if os.path.isfile(source_path):
-            # 压缩包：解压不可避免，走完整 staging 流程
-            staged_root = await self._stage_new_source(conflict, workspace)
-            source_is_staged = True
-        else:
-            # 目录：直接引用原始路径，跳过耗时 copytree
-            staged_root = source_path
-            source_is_staged = False
-
-        compare_service = get_folder_compare_service()
-
-        remote_items = await self._load_existing_remote_items(existing)
-        if remote_items is not None:
-            compare_items = compare_service.build_compare_items_from_listing(
-                staged_root,
-                remote_items,
-                existing["path"],
-            )
-        else:
-            if not os.path.exists(existing["path"]):
-                raise FileNotFoundError("Existing target directory does not exist")
-            compare_items = compare_service.build_compare_items(staged_root, existing["path"])
-
-        session_id = uuid.uuid4().hex
-        session = ConflictMergeSession(
-            id=session_id,
-            conflict_id=str(conflict.id),
-            workspace=workspace,
-            staged_root=staged_root,
-            existing_path=existing["path"],
-            existing_library_id=existing["library_id"],
-            existing_library_type=existing["library_type"],
-            compare_items=compare_items,
-            created_at=time.time(),
-            source_is_staged=source_is_staged,
-        )
-        self._merge_sessions[session_id] = session
-        decisions = compare_service.build_default_decisions(compare_items)
-
-        return {
-            "session_id": session_id,
-            "conflict_id": str(conflict.id),
-            "staged_root": staged_root,
-            "existing_path": existing["path"],
-            "existing_library_id": existing["library_id"],
-            "existing_library_type": existing["library_type"],
-            "items": compare_items,
-            "default_decisions": decisions,
-            "summary": compare_service.build_summary(compare_items),
-        }
+            return {
+                "session_id": session_id,
+                "conflict_id": str(conflict.id),
+                "staged_root": staged_root,
+                "existing_path": existing["path"],
+                "existing_library_id": existing["library_id"],
+                "existing_library_type": existing["library_type"],
+                "items": compare_items,
+                "default_decisions": decisions,
+                "summary": compare_service.build_summary(compare_items),
+            }
+        except Exception:
+            if not session_registered and os.path.isdir(workspace):
+                await asyncio.to_thread(shutil.rmtree, workspace, True)
+            raise
 
     # ============================================================
     # 合并预览 异步 job 模式
@@ -911,6 +913,8 @@ class ConflictResolutionService:
         # 跨 asyncio.task 不持有外层传进来的 SQLAlchemy 实例，重新 fetch 一份。
         from ..models.database import ConflictWork, get_db
         db = next(get_db())
+        workspace = ""
+        session_registered = False
         try:
             conflict = (
                 db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
@@ -994,6 +998,7 @@ class ConflictResolutionService:
                 source_is_staged=source_is_staged,
             )
             self._merge_sessions[session_id] = session
+            session_registered = True
             decisions = compare_service.build_default_decisions(compare_items)
 
             preview = {
@@ -1022,6 +1027,8 @@ class ConflictResolutionService:
             logger.error("合并预览 worker 失败 job=%s conflict=%s: %s", job_id, conflict_id, exc, exc_info=True)
             self._fail_merge_preview_job(job, str(exc) or "合并预览失败")
         finally:
+            if workspace and not session_registered and os.path.isdir(workspace):
+                await asyncio.to_thread(shutil.rmtree, workspace, True)
             try:
                 db.close()
             except Exception:
@@ -1184,31 +1191,36 @@ class ConflictResolutionService:
     async def resolve_keep_new(self, conflict) -> dict[str, Any]:
         description = await self.describe_conflict_async(conflict)
         existing = description["existing"]
-        staged_root = await self._stage_new_source(conflict, self._create_workspace(conflict.id))
+        workspace = self._create_workspace(conflict.id)
+        try:
+            staged_root = await self._stage_new_source(conflict, workspace)
 
-        if existing["library_id"] and existing["is_remote"]:
-            manager = get_library_manager()
-            final_path = await manager.replace_remote_directory_with_local(
-                existing["library_id"],
-                staged_root,
-                existing["path"],
+            if existing["library_id"] and existing["is_remote"]:
+                manager = get_library_manager()
+                final_path = await manager.replace_remote_directory_with_local(
+                    existing["library_id"],
+                    staged_root,
+                    existing["path"],
+                )
+            else:
+                final_path = get_folder_compare_service().safe_replace_directory(staged_root, existing["path"])
+
+            # 索引同步：替换完成后先 delete 旧子树（防孤儿），再 upsert 新子树
+            self._notify_index_after_conflict_resolution(
+                existing.get("library_id"),
+                existing.get("path"),
+                final_path,
             )
-        else:
-            final_path = get_folder_compare_service().safe_replace_directory(staged_root, existing["path"])
 
-        # 索引同步：替换完成后先 delete 旧子树（防孤儿），再 upsert 新子树
-        self._notify_index_after_conflict_resolution(
-            existing.get("library_id"),
-            existing.get("path"),
-            final_path,
-        )
-
-        await self._finalize_new_source(conflict)
-        await self.cleanup_conflict_sessions(conflict.id)
-        return {
-            "message": "已采用新版本内容替换现有目录",
-            "final_path": final_path,
-        }
+            await self._finalize_new_source(conflict)
+            await self.cleanup_conflict_sessions(conflict.id)
+            return {
+                "message": "已采用新版本内容替换现有目录",
+                "final_path": final_path,
+            }
+        finally:
+            if os.path.isdir(workspace):
+                await asyncio.to_thread(shutil.rmtree, workspace, True)
 
     async def resolve_skip(self, conflict) -> dict[str, Any]:
         description = self.describe_conflict(conflict)

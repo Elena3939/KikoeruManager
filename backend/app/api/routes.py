@@ -10196,6 +10196,32 @@ async def rj_subtitle_clear_task(task_id: str):
         if task.status.value in {"pending", "processing", "paused"}:
             raise HTTPException(status_code=400, detail="任务仍在执行中，不能清理")
 
+        metadata = dict(task.task_metadata or {})
+        source_mode = str(metadata.get("source_mode") or "").strip().lower()
+        if (
+            source_mode in {"linked_translation_archive_import", "subtitle_folder_import"}
+            and metadata.get("awaiting_manual_match")
+            and not metadata.get("manual_match_completed")
+        ):
+            workbench_root = str(metadata.get("linked_workbench_root_dir") or "").strip()
+            if workbench_root:
+                try:
+                    from pathlib import Path
+                    import os
+                    import shutil
+
+                    target = Path(workbench_root).resolve()
+                    parts = [part.lower() for part in target.parts]
+                    marker = ["_kikoerumanager_subtitle_workbench", "linked"]
+                    is_workbench_path = any(
+                        parts[index:index + len(marker)] == marker
+                        for index in range(0, max(0, len(parts) - len(marker) + 1))
+                    )
+                    if is_workbench_path and os.path.isdir(target):
+                        await asyncio.to_thread(shutil.rmtree, target, True)
+                except Exception:
+                    logger.warning("[字幕补配] 清理未完成工作台目录失败: task_id=%s path=%s", task_id, workbench_root, exc_info=True)
+
         engine.remove_task(task_id)
         return {"success": True, "task_id": task_id, "message": "任务已清理"}
     except HTTPException:

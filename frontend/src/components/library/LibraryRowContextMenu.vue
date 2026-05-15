@@ -10,13 +10,14 @@
       @contextmenu.stop
     >
         <div class="menu-header flex items-center px-2 py-1.5">
-          <span class="min-w-0 truncate text-[11px] font-semibold tracking-tight text-slate-700" :title="row?.name || ''">{{ row?.name || '操作菜单' }}</span>
+          <span class="min-w-0 truncate text-[11px] font-semibold tracking-tight text-slate-700" :title="batchMode ? `已选 ${selectedCount} 项` : (row?.name || '')">{{ batchMode ? `批量操作 · ${selectedCount} 项` : (row?.name || '操作菜单') }}</span>
         </div>
 
         <button
           v-if="showLocate"
           type="button"
           class="menu-item"
+          :disabled="batchMode"
           @click="emit('action', 'locate')"
         >
           <MapPin :size="14" :stroke-width="2.2" class="menu-item-icon text-blue-600" />
@@ -27,6 +28,7 @@
           v-if="showView"
           type="button"
           class="menu-item"
+          :disabled="batchMode"
           @click="emit('action', 'view')"
         >
           <Eye :size="14" :stroke-width="2.2" class="menu-item-icon text-orange-600" />
@@ -37,6 +39,7 @@
           v-if="showOpen"
           type="button"
           class="menu-item"
+          :disabled="batchMode"
           @click="emit('action', 'open')"
         >
           <FolderOpen :size="14" :stroke-width="2.2" class="menu-item-icon text-emerald-600" />
@@ -47,6 +50,7 @@
           v-if="showOpenDirect"
           type="button"
           class="menu-item"
+          :disabled="batchMode"
           @click="emit('action', 'open_direct')"
         >
           <ExternalLink :size="14" :stroke-width="2.2" class="menu-item-icon text-indigo-600" />
@@ -56,6 +60,7 @@
         <button
           type="button"
           class="menu-item"
+          :disabled="batchMode"
           @click="emit('action', 'copy_name')"
         >
           <Copy :size="14" :stroke-width="2.2" class="menu-item-icon text-slate-500" />
@@ -67,7 +72,7 @@
         <button
           type="button"
           class="menu-item"
-          :disabled="disableRename"
+          :disabled="batchMode || disableRename"
           @click="emit('action', 'rename')"
         >
           <Pencil :size="14" :stroke-width="2.2" class="menu-item-icon text-violet-600" />
@@ -82,7 +87,7 @@
           @click="emit('action', 'move')"
         >
           <FolderInput :size="14" :stroke-width="2.2" class="menu-item-icon text-sky-600" />
-          <span>移动到...</span>
+          <span>{{ batchMode ? '批量移动到...' : '移动到...' }}</span>
         </button>
 
         <button
@@ -93,14 +98,14 @@
           @click="emit('action', 'upload')"
         >
           <UploadCloud :size="14" :stroke-width="2.2" class="menu-item-icon text-blue-600" />
-          <span>上传到服务器</span>
+          <span>{{ batchMode ? '批量上传到服务器' : '上传到服务器' }}</span>
         </button>
 
         <button
           v-if="showAutoCircleGroup"
           type="button"
           class="menu-item"
-          :disabled="disableAutoCircleGroup"
+          :disabled="batchMode || disableAutoCircleGroup"
           @click="emit('action', 'auto_circle_group')"
         >
           <Tags :size="14" :stroke-width="2.2" class="menu-item-icon text-violet-600" />
@@ -116,7 +121,7 @@
           @click="emit('action', 'api_rename')"
         >
           <Sparkles :size="14" :stroke-width="2.2" class="menu-item-icon text-amber-600" />
-          <span>API 重命名</span>
+          <span>{{ batchMode ? '批量 API 重命名' : 'API 重命名' }}</span>
           <span v-if="apiRenameRunning" class="ml-auto text-[10px] text-amber-700">运行中</span>
         </button>
 
@@ -127,13 +132,13 @@
           @click="emit('action', 'subtitle')"
         >
           <Captions :size="14" :stroke-width="2.2" class="menu-item-icon text-emerald-700" />
-          <span>识别抓字幕</span>
+          <span>{{ batchMode ? '批量抓字幕' : '识别抓字幕' }}</span>
         </button>
 
         <button
           type="button"
           class="menu-item"
-          :disabled="disableManage"
+          :disabled="batchMode || disableManage"
           @click="emit('action', 'manage')"
         >
           <FolderCog :size="14" :stroke-width="2.2" class="menu-item-icon text-cyan-700" />
@@ -144,12 +149,23 @@
           v-if="showComputeSize"
           type="button"
           class="menu-item"
-          :disabled="computingSizeId === row?.id"
+          :disabled="disableComputeSize || computingSizeId === row?.id"
           @click="emit('action', 'compute_size')"
         >
           <HardDrive :size="14" :stroke-width="2.2" class="menu-item-icon text-teal-600" />
-          <span>计算文件夹大小</span>
+          <span>{{ batchMode ? '批量计算大小' : '计算文件夹大小' }}</span>
           <span v-if="computingSizeId === row?.id" class="ml-auto text-[10px] text-teal-700">计算中</span>
+        </button>
+
+        <button
+          v-if="batchMode"
+          type="button"
+          class="menu-item"
+          :disabled="disableFilterDelete"
+          @click="emit('action', 'filter_delete')"
+        >
+          <Trash2 :size="14" :stroke-width="2.2" class="menu-item-icon text-fuchsia-600" />
+          <span>批量删除过滤文件</span>
         </button>
 
         <div class="my-1 border-t border-slate-200"></div>
@@ -161,7 +177,7 @@
           @click="emit('action', 'delete')"
         >
           <Trash2 :size="14" :stroke-width="2.2" class="menu-item-icon text-rose-600" />
-          <span>删除</span>
+          <span>{{ batchMode ? '批量删除' : '删除' }}</span>
         </button>
     </div>
   </Teleport>
@@ -176,6 +192,8 @@ const props = defineProps({
   x: { type: Number, default: 0 },
   y: { type: Number, default: 0 },
   row: { type: Object, default: null },
+  batchMode: { type: Boolean, default: false },
+  selectedCount: { type: Number, default: 0 },
   showLocate: { type: Boolean, default: false },
   showView: { type: Boolean, default: false },
   showOpen: { type: Boolean, default: false },
@@ -188,6 +206,7 @@ const props = defineProps({
   disableManage: { type: Boolean, default: false },
   disableDelete: { type: Boolean, default: false },
   showComputeSize: { type: Boolean, default: false },
+  disableComputeSize: { type: Boolean, default: false },
   computingSizeId: { type: String, default: null },
   showMove: { type: Boolean, default: false },
   disableMove: { type: Boolean, default: false },
@@ -196,6 +215,7 @@ const props = defineProps({
   showAutoCircleGroup: { type: Boolean, default: false },
   disableAutoCircleGroup: { type: Boolean, default: false },
   autoCircleGroupRunning: { type: Boolean, default: false },
+  disableFilterDelete: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['close', 'action'])
