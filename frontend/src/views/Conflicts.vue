@@ -562,10 +562,12 @@
       :preview="mergePreview"
       :decisions="mergeDecisions"
       :loading="mergeLoading"
+      :loading-progress="mergePreviewProgress"
       :submitting="mergeSubmitting"
       @update:decisions="handleDecisionUpdate"
       @refresh="refreshMergePreview"
       @submit="submitMerge"
+      @close="cancelMergePreviewPolling"
     />
 
     <BatchRetryPasswordDialog
@@ -761,6 +763,17 @@ const mergePreview = ref(null)
 const mergeDecisions = ref({})
 const mergePreviewCache = reactive({})
 const mergeDecisionCache = reactive({})
+// 合并预览异步 job 实时进度：来自 GET /api/conflicts/{id}/preview-job/{job_id}，
+// loading 卡片直接渲染 stage_label / message / percent，不再靠前端计时器估算。
+const mergePreviewProgress = ref({
+  status: 'idle',          // idle | running | completed | failed
+  stage: '',
+  stage_label: '',
+  message: '',
+  percent: 0,
+})
+// 取消正在 polling 的 job：关弹窗 / 切换 conflict 时调用，避免后端 worker 完成后 stale 写状态。
+let mergePreviewPollingAbort = null
 const conflictFilter = ref('all')
 const retryPollers = new Map()
 const localRetryingConflictIds = reactive({})
@@ -1706,13 +1719,105 @@ async function handleFilenamePreview(conflict) {
   }
 }
 
-async function getMergePreview(conflict, forceRefresh = false) {
+async function getMergePreview(conflict, forceRefresh = false, onProgress = null) {
   let preview = mergePreviewCache[conflict.id]
-  if (!preview || forceRefresh) {
-    preview = await conflictApi.preview(conflict.id, 'MERGE')
+  if (preview && !forceRefresh) return preview
+  // 后端 POST /preview 在 action=MERGE 时立即返回 {async: true, job_id, status: 'running', ...}，
+  // KEEP_NEW 仍然同步返回 preview。这里兼容两种返回：
+  // - 老 sync 路径：直接拿 preview 缓存
+  // - 新 async 路径：轮询 /preview-job/{job_id} 直到 status=completed/failed
+  const initial = await conflictApi.preview(conflict.id, 'MERGE')
+  if (!initial?.async || !initial?.job_id) {
+    // 兼容老接口（或后端未启用 async）：当成完整 preview 处理
+    preview = initial
     mergePreviewCache[conflict.id] = preview
+    return preview
   }
-  return preview
+  // 先把首帧 progress 推给 caller，让弹窗的 loading 卡立刻有内容
+  if (typeof onProgress === 'function') {
+    onProgress({
+      status: initial.status || 'running',
+      stage: initial.stage || 'init',
+      stage_label: initial.stage_label || '初始化',
+      message: initial.message || '启动合并预览任务',
+      percent: Math.max(0, Math.min(100, Number(initial.percent) || 0)),
+    })
+  }
+  // 取消上一个 polling 句柄，避免快速点击合并产生竞态
+  if (mergePreviewPollingAbort) {
+    mergePreviewPollingAbort()
+    mergePreviewPollingAbort = null
+  }
+  let cancelled = false
+  mergePreviewPollingAbort = () => { cancelled = true }
+  const jobId = initial.job_id
+  const startedAt = Date.now()
+  // 自适应轮询节奏：前 6s 每 600ms；之后 1.2s。总等待上限 15min（大压缩包 + 嵌套）。
+  const MAX_WAIT_MS = 15 * 60 * 1000
+  while (true) {
+    if (cancelled) {
+      const err = new Error('合并预览已取消')
+      err.code = 'MERGE_PREVIEW_CANCELLED'
+      throw err
+    }
+    if (Date.now() - startedAt > MAX_WAIT_MS) {
+      throw new Error('合并预览超时（已等待 15 分钟）。后端 worker 可能仍在跑，可重新打开窗口查看。')
+    }
+    const interval = (Date.now() - startedAt < 6000) ? 600 : 1200
+    await new Promise(resolve => setTimeout(resolve, interval))
+    if (cancelled) continue
+    let snapshot
+    try {
+      snapshot = await conflictApi.mergePreviewJob(conflict.id, jobId)
+    } catch (error) {
+      // 单次轮询失败不致命（可能网络抖动），但 404 表示 job 过期，直接抛错让 UI 处理
+      if (error?.response?.status === 404) {
+        throw new Error('合并预览任务已过期，请重新发起合并')
+      }
+      // 其它错误（网络抖动）静默重试
+      continue
+    }
+    if (typeof onProgress === 'function') {
+      onProgress({
+        status: snapshot.status || 'running',
+        stage: snapshot.stage || '',
+        stage_label: snapshot.stage_label || '',
+        message: snapshot.message || '',
+        percent: Math.max(0, Math.min(100, Number(snapshot.percent) || 0)),
+      })
+    }
+    if (snapshot.status === 'completed' && snapshot.result) {
+      preview = snapshot.result
+      mergePreviewCache[conflict.id] = preview
+      mergePreviewPollingAbort = null
+      return preview
+    }
+    if (snapshot.status === 'failed') {
+      mergePreviewPollingAbort = null
+      const err = new Error(snapshot.error || snapshot.message || '合并预览失败')
+      err.code = 'MERGE_PREVIEW_FAILED'
+      err.stage = snapshot.stage
+      throw err
+    }
+    // status === 'running' 继续 loop
+  }
+}
+
+function resetMergePreviewProgress() {
+  mergePreviewProgress.value = {
+    status: 'idle',
+    stage: '',
+    stage_label: '',
+    message: '',
+    percent: 0,
+  }
+}
+
+function cancelMergePreviewPolling() {
+  if (mergePreviewPollingAbort) {
+    mergePreviewPollingAbort()
+    mergePreviewPollingAbort = null
+  }
 }
 
 async function resolveMerge(conflict, preview = null, decisions = null) {
@@ -2091,13 +2196,36 @@ async function openMergeWorkbench(conflict, forceRefresh = false) {
   mergeConflictId.value = conflict.id
   mergeDialogVisible.value = true
   mergeLoading.value = true
+  // 重置 progress，让弹窗 loading 卡从"初始化"开始而不是上一次的残值
+  resetMergePreviewProgress()
+  mergePreviewProgress.value = {
+    status: 'running',
+    stage: 'init',
+    stage_label: '初始化',
+    message: '准备生成合并预览',
+    percent: 1,
+  }
   try {
-    const preview = await getMergePreview(conflict, forceRefresh)
+    // 把后端 job 实时进度写到 mergePreviewProgress.value，工作台 loading panel 监听这个 state
+    const preview = await getMergePreview(conflict, forceRefresh, (snapshot) => {
+      mergePreviewProgress.value = snapshot
+    })
     mergePreview.value = preview
     mergeDecisions.value = {
       ...(mergeDecisionCache[conflict.id] || preview.default_decisions || {})
     }
+    mergePreviewProgress.value = {
+      status: 'completed',
+      stage: 'done',
+      stage_label: '完成',
+      message: `已生成 ${preview.items?.length || 0} 项差异`,
+      percent: 100,
+    }
   } catch (error) {
+    // 用户主动取消（关闭弹窗 / 重新打开触发上一个 abort）不弹错
+    if (error?.code === 'MERGE_PREVIEW_CANCELLED') {
+      return
+    }
     console.error('生成合并预览失败:', error)
     ElMessage.error(resolveErrorMessage(error, '生成合并预览失败'))
     mergeDialogVisible.value = false

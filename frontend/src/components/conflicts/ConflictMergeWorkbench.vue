@@ -1,64 +1,91 @@
 <template>
   <Teleport to="body">
-    <Transition
-      enter-active-class="transition-all duration-200 ease-out"
-      enter-from-class="opacity-0"
-      enter-to-class="opacity-100"
-      leave-active-class="transition-all duration-150 ease-in"
-      leave-from-class="opacity-100"
-      leave-to-class="opacity-0"
-    >
+    <Transition name="cmw-fade">
       <div
         v-if="visible"
-        class="fixed inset-0 z-50 flex items-center justify-center p-4"
-        @mousedown.self="close"
+        class="pointer-events-none fixed inset-0 z-[2450] flex items-center justify-center p-6 max-[900px]:p-3"
       >
-        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" @click="close" />
+        <!-- 玻璃遮罩；非 loading / submitting 时点击关闭 -->
         <div
-          class="merge-workbench-shell"
-          @mousedown.stop
-        >
-          <!-- Header -->
-          <div class="merge-workbench-header">
-            <div class="flex items-start justify-between gap-4">
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2.5 mb-1">
-                  <span class="merge-workbench-icon">
-                    <GitMerge class="w-5 h-5" />
-                  </span>
-                  <h3 class="merge-workbench-title">目录差异工作台</h3>
-                  <span v-if="isRemoteTarget" class="merge-workbench-chip is-amber">
-                    <Upload class="w-3 h-3" />
+          class="pointer-events-auto absolute inset-0 bg-slate-900/35 backdrop-blur-[3px]"
+          @click="close"
+        />
+        <!-- 玻璃面板 shell：对齐 Library.mediaPreviewDialog 的视觉范式 -->
+        <div class="cmw-shell pointer-events-auto" @mousedown.stop>
+          <!-- Header：纯玻璃，无 amber radial gradient -->
+          <header class="cmw-header">
+            <div class="flex min-w-0 items-center gap-3">
+              <span class="cmw-icon">
+                <GitMerge class="h-[18px] w-[18px]" :stroke-width="2.2" />
+              </span>
+              <div class="min-w-0">
+                <div class="mb-0.5 flex items-center gap-2">
+                  <h3 class="cmw-title">目录差异工作台</h3>
+                  <span v-if="isRemoteTarget" class="cmw-tag is-amber">
+                    <Upload class="h-3 w-3" :stroke-width="2.4" />
                     远程合并
                   </span>
                 </div>
-                <p class="merge-workbench-subtitle">{{ conflictTitle }}</p>
+                <p class="cmw-subtitle" :title="conflictTitle">{{ conflictTitle }}</p>
               </div>
-              <div v-if="preview" class="flex flex-wrap gap-2 justify-end flex-shrink-0">
-                <button type="button" class="merge-count-chip" :class="{ 'is-active is-amber': statusFilter === 'changed' }" @click="setStatusFilter('changed')">
+            </div>
+            <div class="flex flex-shrink-0 items-center gap-2">
+              <div v-if="preview" class="hidden flex-wrap items-center justify-end gap-2 md:flex">
+                <button
+                  type="button"
+                  class="cmw-count-chip"
+                  :class="{ 'is-active is-amber': statusFilter === 'changed' }"
+                  @click="setStatusFilter('changed')"
+                >
                   <span>差异</span><strong>{{ displaySummary.changed }}</strong>
                 </button>
-                <button type="button" class="merge-count-chip" :class="{ 'is-active is-emerald': statusFilter === 'new_only' }" @click="setStatusFilter('new_only')">
+                <button
+                  type="button"
+                  class="cmw-count-chip"
+                  :class="{ 'is-active is-emerald': statusFilter === 'new_only' }"
+                  @click="setStatusFilter('new_only')"
+                >
                   <span>新包独有</span><strong>{{ displaySummary.newOnly }}</strong>
                 </button>
-                <button type="button" class="merge-count-chip" :class="{ 'is-active is-slate': statusFilter === 'old_only' }" @click="setStatusFilter('old_only')">
+                <button
+                  type="button"
+                  class="cmw-count-chip"
+                  :class="{ 'is-active is-slate': statusFilter === 'old_only' }"
+                  @click="setStatusFilter('old_only')"
+                >
                   <span>库存独有</span><strong>{{ displaySummary.oldOnly }}</strong>
                 </button>
-                <button type="button" class="merge-count-chip" :class="{ 'is-active is-slate': statusFilter === 'unchanged' }" @click="setStatusFilter('unchanged')">
+                <button
+                  type="button"
+                  class="cmw-count-chip"
+                  :class="{ 'is-active is-slate': statusFilter === 'unchanged' }"
+                  @click="setStatusFilter('unchanged')"
+                >
                   <span>一致</span><strong>{{ displaySummary.unchanged }}</strong>
                 </button>
               </div>
-              <button type="button" class="merge-icon-btn" :disabled="loading || submitting" @click="close">
-                <X class="w-5 h-5" />
+              <button
+                type="button"
+                class="cmw-close-btn"
+                :disabled="loading || submitting"
+                title="关闭"
+                @click="close"
+              >
+                <X class="h-[15px] w-[15px]" :stroke-width="2.4" />
               </button>
             </div>
-          </div>
+          </header>
 
           <!-- Toolbar -->
-          <div class="merge-workbench-toolbar">
-            <div class="relative flex-1 min-w-[180px]">
-              <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-              <input v-model="searchText" type="text" placeholder="搜索文件名或路径" class="merge-search-input" />
+          <div class="cmw-toolbar">
+            <div class="relative min-w-[180px] flex-1">
+              <Search class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" :stroke-width="2.2" />
+              <input
+                v-model="searchText"
+                type="text"
+                placeholder="搜索文件名或路径"
+                class="cmw-search-input"
+              />
             </div>
             <AppDropdown
               v-model="statusFilter"
@@ -68,59 +95,86 @@
               :menu-min-width="190"
             />
             <div class="flex gap-2">
-              <button type="button" class="merge-toolbar-btn" @click="resetDecisions">
-                <RotateCcw class="w-3.5 h-3.5" />恢复默认
+              <button type="button" class="cmw-toolbar-btn" @click="resetDecisions">
+                <RotateCcw class="h-3.5 w-3.5" :stroke-width="2.2" />恢复默认
               </button>
-              <button type="button" class="merge-toolbar-btn" :disabled="submitting || loading" @click="$emit('refresh')">
-                <RefreshCw class="w-3.5 h-3.5" :class="loading ? 'animate-spin' : ''" />重新生成
+              <button
+                type="button"
+                class="cmw-toolbar-btn"
+                :disabled="submitting || loading"
+                @click="$emit('refresh')"
+              >
+                <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'animate-spin' : ''" :stroke-width="2.2" />重新生成
               </button>
             </div>
           </div>
 
           <!-- Filter Pills -->
-          <div v-if="preview" class="flex-none px-6 py-2.5 border-b border-slate-100 flex items-center gap-2 flex-wrap">
-            <button v-for="pill in filterPills" :key="pill.value" type="button" class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-200" :class="isFilterActive(pill.value) ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-400 hover:text-indigo-600'" @click="setStatusFilter(pill.value)">
-              {{ pill.label }}<span class="font-bold">{{ pill.count }}</span>
+          <div v-if="preview" class="cmw-pill-bar">
+            <button
+              v-for="pill in filterPills"
+              :key="pill.value"
+              type="button"
+              class="cmw-pill"
+              :class="{ 'is-active': isFilterActive(pill.value) }"
+              @click="setStatusFilter(pill.value)"
+            >
+              {{ pill.label }}<span class="cmw-pill-count">{{ pill.count }}</span>
             </button>
           </div>
 
-          <!-- Loading -->
-          <div v-if="loading" class="merge-loading-panel">
-            <div class="merge-loading-card">
-              <div class="merge-loading-orbit">
-                <GitMerge class="w-7 h-7" />
+          <!-- Loading panel：阶段 / 进度由父组件 loadingProgress 实时驱动，
+               不再靠前端计时器估算。stage 映射到 6 个用户可读的步骤卡。 -->
+          <div v-if="loading || progressStatus === 'failed'" class="cmw-loading-panel">
+            <div class="cmw-loading-card">
+              <div class="cmw-loading-orb" :class="{ 'is-error': progressStatus === 'failed' }">
+                <Loader2 v-if="progressStatus !== 'failed'" class="h-6 w-6 animate-spin" :stroke-width="2.4" />
+                <AlertTriangle v-else class="h-6 w-6" :stroke-width="2.4" />
               </div>
-              <p class="merge-loading-title">{{ activeLoadingStep.title }}</p>
-              <p class="merge-loading-desc">{{ activeLoadingStep.description }}</p>
-              <div class="merge-loading-track">
-                <div class="merge-loading-bar" :style="{ width: `${loadingProgress}%` }" />
-              </div>
-              <div class="merge-loading-steps">
+              <p class="cmw-loading-stage">{{ progressStageLabel }}</p>
+              <p class="cmw-loading-message" :title="progressMessage">{{ progressMessage || '准备中…' }}</p>
+              <!-- 真实 percent 进度条（来自 extract_task.progress 的 22~62 区间映射） -->
+              <div class="cmw-loading-bar-track">
                 <div
-                  v-for="(step, index) in loadingSteps"
+                  class="cmw-loading-bar"
+                  :class="{ 'is-error': progressStatus === 'failed' }"
+                  :style="{ width: `${progressPercent}%` }"
+                />
+                <span class="cmw-loading-bar-text">{{ progressPercent }}%</span>
+              </div>
+              <!-- 6 步骤卡：state = pending / active / done -->
+              <div class="cmw-loading-steps">
+                <div
+                  v-for="step in displayLoadingSteps"
                   :key="step.key"
-                  class="merge-loading-step"
-                  :class="{ 'is-active': index === activeLoadingIndex, 'is-done': index < activeLoadingIndex }"
+                  class="cmw-loading-step"
+                  :class="{
+                    'is-active': step.state === 'active',
+                    'is-done': step.state === 'done',
+                    'is-pending': step.state === 'pending',
+                  }"
                 >
-                  <span class="merge-loading-dot">
-                    <CheckCircle2 v-if="index < activeLoadingIndex" class="w-3 h-3" />
-                    <Loader2 v-else-if="index === activeLoadingIndex" class="w-3 h-3 animate-spin" />
+                  <span class="cmw-loading-step-dot">
+                    <CheckCircle2 v-if="step.state === 'done'" class="h-3 w-3" :stroke-width="2.6" />
+                    <Loader2 v-else-if="step.state === 'active'" class="h-3 w-3 animate-spin" :stroke-width="2.4" />
                   </span>
-                  <span>{{ step.title }}</span>
+                  <span class="cmw-loading-step-title">{{ step.title }}</span>
                 </div>
               </div>
-              <p class="merge-loading-footnote">
-                已等待 {{ loadingElapsedSeconds }} 秒。大压缩包、分卷包或远程库存会更久，窗口会保持在这里直到后端返回。
+              <p v-if="progressStatus === 'failed'" class="cmw-loading-error">
+                <AlertTriangle class="mr-1 inline-block h-3.5 w-3.5 text-rose-500" />
+                {{ progressMessage }}
+              </p>
+              <p v-else class="cmw-loading-footnote">
+                后端实际处理阶段会反映在上方步骤上；大压缩包 / 嵌套包 / 远程库存会更久，窗口会保持到完成。
               </p>
             </div>
           </div>
 
-          <!-- No preview -->
-          <div v-else-if="!preview" class="flex-1 flex items-center justify-center bg-slate-50/50">
-            <div class="text-center text-slate-400">
-              <GitMerge class="w-16 h-16 mx-auto mb-3 opacity-20" />
-              <p class="text-sm">暂无合并预览数据</p>
-            </div>
+          <!-- 默认空态：进度 idle 且没有 preview（罕见路径，比如刚 mount 就没数据） -->
+          <div v-else-if="!preview" class="cmw-empty-state">
+            <GitMerge class="h-14 w-14 opacity-25" :stroke-width="1.6" />
+            <p class="mt-3 text-[13px] text-slate-400">暂无合并预览数据</p>
           </div>
 
           <!-- Main content -->
@@ -213,7 +267,7 @@
                     </td>
                     <td class="px-3 py-2.5 w-40">
                       <template v-if="row.type === 'file'">
-                        <select :value="decisionFor(row)" :disabled="submitting" class="w-full text-xs font-semibold bg-white border rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-50 cursor-pointer" :class="decisionSelectClass(row)" @change="e => updateDecision(row, e.target.value)">
+                        <select :value="decisionFor(row)" :disabled="submitting" class="w-full text-xs font-semibold bg-white border rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:opacity-50 cursor-pointer" :class="decisionSelectClass(row)" @change="e => updateDecision(row, e.target.value)">
                           <option v-for="opt in decisionOptions(row)" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                         </select>
                       </template>
@@ -231,22 +285,32 @@
             </div>
           </div>
 
-          <!-- Footer -->
-          <div class="flex-none px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-4 bg-white/90">
-            <div v-if="isRemoteTarget && preview" class="flex items-center gap-2 text-sm text-amber-700">
-              <Upload class="w-4 h-4 text-amber-500 flex-shrink-0" />
-              <span>合并结果将上传至 <strong>{{ props.conflict?.context?.existing?.library_name || '远程库存' }}</strong></span>
+          <!-- Footer：主操作走系统 emerald 渐变；ghost 关闭键 -->
+          <footer class="cmw-footer">
+            <div v-if="isRemoteTarget && preview" class="flex min-w-0 items-center gap-2 text-[12.5px] text-amber-700">
+              <Upload class="h-4 w-4 flex-shrink-0 text-amber-500" :stroke-width="2.2" />
+              <span class="truncate">合并结果将上传至 <strong class="font-semibold">{{ props.conflict?.context?.existing?.library_name || '远程库存' }}</strong></span>
             </div>
             <div v-else class="flex-1" />
-            <div class="flex items-center gap-3">
-              <button type="button" class="merge-footer-btn is-ghost" :disabled="loading || submitting" @click="close">关闭</button>
-              <button type="button" class="merge-footer-btn is-primary" :disabled="!preview || submitting || loading" @click="$emit('submit')">
-                <Loader2 v-if="submitting" class="w-4 h-4 animate-spin" />
-                <GitMerge v-else class="w-4 h-4" />
+            <div class="flex flex-shrink-0 items-center gap-3">
+              <button
+                type="button"
+                class="cmw-action-btn is-slate"
+                :disabled="loading || submitting"
+                @click="close"
+              >关闭</button>
+              <button
+                type="button"
+                class="cmw-action-btn is-emerald"
+                :disabled="!preview || submitting || loading"
+                @click="$emit('submit')"
+              >
+                <Loader2 v-if="submitting" class="h-4 w-4 animate-spin" :stroke-width="2.4" />
+                <GitMerge v-else class="h-4 w-4" :stroke-width="2.4" />
                 <span>{{ submitLabel }}</span>
               </button>
             </div>
-          </div>
+          </footer>
         </div>
       </div>
     </Transition>
@@ -254,12 +318,12 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import {
   GitMerge, Search, RotateCcw, RefreshCw, X, Upload,
   ChevronRight, ChevronDown,
   File as FileIcon, Folder as FolderIcon,
-  CheckCircle2, Loader2
+  CheckCircle2, Loader2, AlertTriangle
 } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
 
@@ -284,18 +348,23 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  // 父组件通过 conflictApi.mergePreviewJob 轮询拿到的后端真实进度。
+  // 字段：{ status: 'idle'|'running'|'completed'|'failed', stage, stage_label, message, percent }
+  // 不传或全默认值时按 idle 处理，loading 面板会显示"准备中…"。
+  loadingProgress: {
+    type: Object,
+    default: () => ({ status: 'idle', stage: '', stage_label: '', message: '', percent: 0 })
+  },
   submitting: {
     type: Boolean,
     default: false
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'update:decisions', 'refresh', 'submit'])
+const emit = defineEmits(['update:modelValue', 'update:decisions', 'refresh', 'submit', 'close'])
 
 const searchText = ref('')
 const statusFilter = ref('all')
-const loadingElapsedSeconds = ref(0)
-let loadingTimer = null
 
 const statusDropdownOptions = [
   { value: 'all', label: '全部项目' },
@@ -307,36 +376,70 @@ const statusDropdownOptions = [
   { value: 'unchanged', label: '仅一致' },
 ]
 
-const loadingSteps = computed(() => {
+// ============================================================
+// 合并预览 loading panel：真实进度驱动
+// ============================================================
+// 后端 stage 序列（来自 ConflictResolutionService._run_merge_preview_worker）：
+//   init / resolve_path / copy_archive / scan_source / extract / nested_extract /
+//   filter / scan_existing / compare / done / failed
+// 前端归并成 6 个用户可读步骤：
+//   prep / stage / extract / filter / scan / diff
+// 让 chip 跟随真实 stage 切，不再靠前端计时器估算时间阈值。
+const STAGE_TO_STEP_INDEX = {
+  init: 0,
+  resolve_path: 0,
+  copy_archive: 1,
+  scan_source: 1,
+  extract: 2,
+  nested_extract: 2,
+  filter: 3,
+  scan_existing: 4,
+  compare: 5,
+  done: 6,           // 全部完成
+  failed: -1,        // 失败：无 active 步骤
+}
+
+const progressStatus = computed(() => props.loadingProgress?.status || 'idle')
+const progressStage = computed(() => props.loadingProgress?.stage || '')
+const progressStageLabel = computed(() => {
+  const label = props.loadingProgress?.stage_label
+  if (label && String(label).trim()) return label
+  if (progressStatus.value === 'failed') return '合并预览失败'
+  if (progressStatus.value === 'completed') return '已完成'
+  return '初始化'
+})
+const progressMessage = computed(() => props.loadingProgress?.message || '')
+const progressPercent = computed(() => {
+  const raw = Number(props.loadingProgress?.percent)
+  if (!Number.isFinite(raw)) return 0
+  return Math.max(0, Math.min(100, Math.round(raw)))
+})
+
+const displayLoadingSteps = computed(() => {
   const isArchive = props.conflict?.context?.new_path_kind === 'archive'
-  return [
-    { key: 'prepare', title: '准备工作区', description: '创建临时目录并确认新旧路径' },
-    { key: 'stage', title: isArchive ? '复制压缩包' : '复制目录', description: isArchive ? '把待处理压缩包放入合并工作区' : '把待处理目录放入合并工作区' },
-    { key: 'extract', title: isArchive ? '解压新包' : '整理新目录', description: isArchive ? '调用解压器展开内容，分卷和大包会在这里停留更久' : '对新目录做过滤前准备' },
-    { key: 'filter', title: '过滤临时目录', description: '按项目规则清理无效文件并保留可入库内容' },
-    { key: 'scan', title: isRemoteTarget.value ? '读取远程库存' : '扫描库存目录', description: isRemoteTarget.value ? '从远程库存读取目录清单' : '扫描现有目录的文件树' },
-    { key: 'diff', title: '生成差异树', description: '按相对路径生成逐文件合并决策' },
+  const remoteScan = isRemoteTarget.value
+  const steps = [
+    { key: 'prep', title: '准备工作区' },
+    { key: 'stage', title: isArchive ? '复制压缩包' : '读取目录' },
+    { key: 'extract', title: isArchive ? '解压新包' : '整理新目录' },
+    { key: 'filter', title: '过滤临时文件' },
+    { key: 'scan', title: remoteScan ? '读取远程库存' : '扫描库存目录' },
+    { key: 'diff', title: '生成差异树' },
   ]
-})
-
-const activeLoadingIndex = computed(() => {
-  if (!props.loading) return loadingSteps.value.length - 1
-  const elapsed = loadingElapsedSeconds.value
-  if (elapsed < 2) return 0
-  if (elapsed < 6) return 1
-  if (elapsed < 18) return 2
-  if (elapsed < 28) return 3
-  if (elapsed < 42) return 4
-  return 5
-})
-
-const activeLoadingStep = computed(() => loadingSteps.value[activeLoadingIndex.value] || loadingSteps.value[0])
-
-const loadingProgress = computed(() => {
-  if (!props.loading) return 100
-  const base = Math.min(92, 12 + loadingElapsedSeconds.value * 1.7)
-  const stepFloor = activeLoadingIndex.value * 14
-  return Math.max(stepFloor, Math.round(base))
+  const currentIdx = STAGE_TO_STEP_INDEX[progressStage.value]
+  // failed：当前 step 不高亮，已 done 的步骤保留 done 视觉
+  if (progressStatus.value === 'failed') {
+    return steps.map(step => ({ ...step, state: 'pending' }))
+  }
+  // completed / done：全部 done
+  if (progressStatus.value === 'completed' || currentIdx === 6) {
+    return steps.map(step => ({ ...step, state: 'done' }))
+  }
+  const idx = (typeof currentIdx === 'number' && currentIdx >= 0) ? currentIdx : 0
+  return steps.map((step, i) => ({
+    ...step,
+    state: i < idx ? 'done' : (i === idx ? 'active' : 'pending'),
+  }))
 })
 
 const visible = computed({
@@ -752,36 +855,12 @@ function flattenTree(nodes, depth = 0) {
 
 const displayRows = computed(() => flattenTree(filteredTreeData.value))
 
-watch(
-  () => props.loading,
-  (value) => {
-    if (loadingTimer) {
-      clearInterval(loadingTimer)
-      loadingTimer = null
-    }
-    if (!value) {
-      loadingElapsedSeconds.value = 0
-      return
-    }
-    loadingElapsedSeconds.value = 0
-    loadingTimer = setInterval(() => {
-      loadingElapsedSeconds.value += 1
-    }, 1000)
-  },
-  { immediate: true },
-)
-
-onBeforeUnmount(() => {
-  if (loadingTimer) {
-    clearInterval(loadingTimer)
-    loadingTimer = null
-  }
-})
-
 function close() {
-  if (!props.submitting && !props.loading) {
-    visible.value = false
-  }
+  // submitting 期间不允许关闭；loading 期间允许（用户想取消正在跑的 7z），
+  // 父组件监听 @close 取消 polling，后端 worker 自身的 cleanup 会兜底回收。
+  if (props.submitting) return
+  visible.value = false
+  emit('close')
 }
 
 function rowBgClass(row) {
@@ -851,132 +930,178 @@ function formatDate(value) {
 </script>
 
 <style scoped>
-.merge-workbench-shell {
+/* ============================================================
+   ConflictMergeWorkbench 视觉风格
+   ============================================================
+   全部对齐 Library.mediaPreviewDialog 的玻璃面板范式：
+   - 白玻璃 shell（rounded-22 + backdrop-blur-2xl 由父级 div 提供）
+   - 主操作 emerald 渐变；状态色用 indigo / amber / emerald
+   - 不再使用 amber radial gradient / amber 主色
+*/
+
+/* Transition：fade + 轻位移 */
+.cmw-fade-enter-active,
+.cmw-fade-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.cmw-fade-enter-from,
+.cmw-fade-leave-to {
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+}
+
+/* Shell：白底玻璃面板 */
+.cmw-shell {
   position: relative;
   display: flex;
   width: min(94vw, 1480px);
   height: 88vh;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 22px;
   background: #fff;
-  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.2), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
+  box-shadow:
+    0 24px 80px rgba(15, 23, 42, 0.2),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
 }
 
-.merge-workbench-header {
+/* Header：纯玻璃 */
+.cmw-header {
+  display: flex;
   flex: none;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-  background:
-    radial-gradient(circle at 18% 0%, rgba(245, 158, 11, 0.12), transparent 34%),
-    linear-gradient(180deg, #fff 0%, #f8fafc 100%);
-  padding: 18px 24px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.85);
+  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  padding: 16px 22px;
 }
 
-.merge-workbench-icon {
+.cmw-icon {
   display: inline-flex;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
-  color: #d97706;
-  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-  box-shadow: 0 10px 24px rgba(245, 158, 11, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  border-radius: 12px;
+  color: #4f46e5;
+  background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
+  box-shadow:
+    0 10px 24px rgba(79, 70, 229, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
-.merge-workbench-title {
-  font-size: 18px;
+.cmw-title {
+  font-size: 16px;
   font-weight: 800;
   color: #0f172a;
 }
 
-.merge-workbench-subtitle {
-  max-width: 720px;
+.cmw-subtitle {
+  max-width: 640px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 12.5px;
   color: #64748b;
 }
 
-.merge-workbench-chip,
-.merge-count-chip {
+.cmw-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #fff;
+  color: #475569;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.cmw-tag.is-amber {
+  border-color: rgba(245, 158, 11, 0.32);
+  color: #b45309;
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.cmw-count-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   border-radius: 999px;
+  padding: 6px 11px;
   background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
   color: #475569;
   font-size: 12px;
   font-weight: 700;
-}
-
-.merge-workbench-chip {
-  padding: 3px 9px;
-}
-
-.merge-workbench-chip.is-amber {
-  border-color: rgba(245, 158, 11, 0.24);
-  color: #b45309;
-  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-}
-
-.merge-count-chip {
-  padding: 7px 11px;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.merge-count-chip:hover {
+.cmw-count-chip:hover {
   transform: translateY(-1px) scale(1.03);
   border-color: rgba(148, 163, 184, 0.65);
 }
 
-.merge-count-chip.is-active {
+.cmw-count-chip.is-active {
   color: #fff;
 }
 
-.merge-count-chip.is-active.is-amber {
+.cmw-count-chip.is-active.is-amber {
   border-color: #f59e0b;
   background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 52%, #d97706 100%);
   box-shadow: 0 10px 22px rgba(245, 158, 11, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
-.merge-count-chip.is-active.is-emerald {
+.cmw-count-chip.is-active.is-emerald {
   border-color: #10b981;
   background: linear-gradient(180deg, #34d399 0%, #10b981 54%, #059669 100%);
   box-shadow: 0 10px 22px rgba(16, 185, 129, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
-.merge-count-chip.is-active.is-slate {
+.cmw-count-chip.is-active.is-slate {
   border-color: #475569;
   background: linear-gradient(180deg, #64748b 0%, #475569 52%, #334155 100%);
   box-shadow: 0 10px 22px rgba(71, 85, 105, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
-.merge-icon-btn {
+/* Close 按钮：玻璃 + hover rotate */
+.cmw-close-btn {
   display: inline-flex;
   width: 34px;
   height: 34px;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent;
+  border: 1px solid rgba(226, 232, 240, 0.9);
   border-radius: 10px;
+  background: rgba(255, 255, 255, 0.7);
   color: #64748b;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.merge-icon-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  border-color: rgba(226, 232, 240, 0.95);
-  background: #f8fafc;
+.cmw-close-btn:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.04);
+  border-color: rgba(148, 163, 184, 0.55);
+  background: #fff;
   color: #0f172a;
 }
 
-.merge-workbench-toolbar {
+.cmw-close-btn:hover:not(:disabled) svg {
+  transform: rotate(90deg);
+}
+
+.cmw-close-btn svg {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Toolbar */
+.cmw-toolbar {
   display: flex;
   flex: none;
   flex-wrap: wrap;
@@ -984,10 +1109,10 @@ function formatDate(value) {
   gap: 12px;
   border-bottom: 1px solid rgba(241, 245, 249, 0.95);
   background: rgba(255, 255, 255, 0.86);
-  padding: 12px 24px;
+  padding: 12px 22px;
 }
 
-.merge-search-input {
+.cmw-search-input {
   width: 100%;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
@@ -999,71 +1124,109 @@ function formatDate(value) {
   transition: all 0.2s ease;
 }
 
-.merge-search-input:focus {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
+.cmw-search-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.16);
 }
 
-.merge-toolbar-btn,
-.merge-footer-btn {
+.cmw-toolbar-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
   border-radius: 10px;
+  background: #fff;
+  color: #475569;
+  padding: 9px 12px;
   font-size: 13px;
   font-weight: 700;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.merge-toolbar-btn {
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  background: #fff;
-  color: #475569;
-  padding: 9px 12px;
-}
-
-.merge-toolbar-btn:hover:not(:disabled) {
+.cmw-toolbar-btn:hover:not(:disabled) {
   transform: translateY(-2px);
-  border-color: rgba(245, 158, 11, 0.34);
-  color: #b45309;
+  border-color: rgba(99, 102, 241, 0.34);
+  color: #4338ca;
   box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
 }
 
-.merge-toolbar-btn:hover:not(:disabled) svg,
-.merge-footer-btn:hover:not(:disabled) svg,
-.merge-icon-btn:hover:not(:disabled) svg {
+.cmw-toolbar-btn:hover:not(:disabled) svg {
   transform: rotate(-8deg) scale(1.08);
 }
 
-.merge-toolbar-btn svg,
-.merge-footer-btn svg,
-.merge-icon-btn svg {
+.cmw-toolbar-btn svg {
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.merge-loading-panel {
+/* Pill bar */
+.cmw-pill-bar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid rgba(241, 245, 249, 0.95);
+  padding: 10px 22px;
+}
+
+.cmw-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 999px;
+  background: #fff;
+  color: #475569;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.cmw-pill:hover {
+  transform: translateY(-1px);
+  border-color: rgba(99, 102, 241, 0.42);
+  color: #4338ca;
+}
+
+.cmw-pill.is-active {
+  border-color: #6366f1;
+  background: linear-gradient(180deg, #818cf8 0%, #6366f1 52%, #4f46e5 100%);
+  color: #fff;
+  box-shadow: 0 10px 22px rgba(99, 102, 241, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.cmw-pill-count {
+  display: inline-flex;
+  min-width: 22px;
+  justify-content: center;
+  font-weight: 800;
+}
+
+/* Loading panel */
+.cmw-loading-panel {
   display: flex;
   flex: 1;
   align-items: center;
   justify-content: center;
-  background:
-    linear-gradient(180deg, rgba(248, 250, 252, 0.94) 0%, rgba(255, 255, 255, 0.98) 100%),
-    radial-gradient(circle at 50% 18%, rgba(245, 158, 11, 0.12), transparent 32%);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.94) 0%, rgba(255, 255, 255, 0.98) 100%);
   padding: 24px;
 }
 
-.merge-loading-card {
+.cmw-loading-card {
   width: min(640px, 100%);
   border: 1px solid rgba(226, 232, 240, 0.95);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.94);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
   padding: 28px;
   text-align: center;
-  box-shadow: 0 22px 56px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 22px 56px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
-.merge-loading-orbit {
+.cmw-loading-orb {
   position: relative;
   display: inline-flex;
   width: 64px;
@@ -1071,51 +1234,85 @@ function formatDate(value) {
   align-items: center;
   justify-content: center;
   border-radius: 18px;
-  color: #d97706;
-  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-  box-shadow: 0 18px 38px rgba(245, 158, 11, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  color: #4f46e5;
+  background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
+  box-shadow:
+    0 18px 38px rgba(79, 70, 229, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
 }
 
-.merge-loading-orbit::after {
+.cmw-loading-orb::after {
   position: absolute;
   inset: -7px;
-  border: 2px solid rgba(245, 158, 11, 0.24);
-  border-top-color: #f59e0b;
+  border: 2px solid rgba(99, 102, 241, 0.22);
+  border-top-color: #6366f1;
   border-radius: 22px;
-  animation: merge-spin 1s linear infinite;
+  animation: cmw-spin 1.1s linear infinite;
   content: '';
 }
 
-.merge-loading-title {
+.cmw-loading-orb.is-error {
+  color: #dc2626;
+  background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
+  box-shadow:
+    0 18px 38px rgba(220, 38, 38, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.cmw-loading-orb.is-error::after {
+  border-color: rgba(220, 38, 38, 0.22);
+  border-top-color: #dc2626;
+  animation: none;
+}
+
+.cmw-loading-stage {
   margin-top: 18px;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 800;
   color: #0f172a;
 }
 
-.merge-loading-desc {
+.cmw-loading-message {
   margin-top: 6px;
-  font-size: 13px;
+  font-size: 12.5px;
   color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.merge-loading-track {
-  height: 8px;
-  margin-top: 20px;
+.cmw-loading-bar-track {
+  position: relative;
+  height: 10px;
+  margin-top: 18px;
   overflow: hidden;
   border-radius: 999px;
   background: #e2e8f0;
 }
 
-.merge-loading-bar {
+.cmw-loading-bar {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #f59e0b 0%, #10b981 56%, #2563eb 100%);
-  box-shadow: 0 8px 18px rgba(245, 158, 11, 0.24);
+  background: linear-gradient(90deg, #6366f1 0%, #10b981 56%, #2563eb 100%);
+  box-shadow: 0 8px 18px rgba(99, 102, 241, 0.22);
   transition: width 0.45s ease;
 }
 
-.merge-loading-steps {
+.cmw-loading-bar.is-error {
+  background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
+  box-shadow: 0 8px 18px rgba(220, 38, 38, 0.22);
+}
+
+.cmw-loading-bar-text {
+  position: absolute;
+  top: -22px;
+  right: 0;
+  font-size: 11px;
+  font-weight: 800;
+  color: #475569;
+}
+
+.cmw-loading-steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
@@ -1123,33 +1320,35 @@ function formatDate(value) {
   text-align: left;
 }
 
-.merge-loading-step {
+.cmw-loading-step {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 8px;
   border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #fff;
-  padding: 9px 10px;
+  padding: 9px 11px;
   color: #94a3b8;
   font-size: 12px;
   font-weight: 700;
+  transition: all 0.3s ease;
 }
 
-.merge-loading-step.is-active {
-  border-color: rgba(245, 158, 11, 0.4);
-  color: #b45309;
-  background: #fffbeb;
+.cmw-loading-step.is-active {
+  border-color: rgba(99, 102, 241, 0.42);
+  color: #4338ca;
+  background: #eef2ff;
+  box-shadow: 0 6px 14px rgba(99, 102, 241, 0.14);
 }
 
-.merge-loading-step.is-done {
-  border-color: rgba(16, 185, 129, 0.25);
+.cmw-loading-step.is-done {
+  border-color: rgba(16, 185, 129, 0.3);
   color: #047857;
   background: #ecfdf5;
 }
 
-.merge-loading-dot {
+.cmw-loading-step-dot {
   display: inline-flex;
   width: 18px;
   height: 18px;
@@ -1157,64 +1356,134 @@ function formatDate(value) {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.12);
+  background: rgba(148, 163, 184, 0.14);
 }
 
-.merge-loading-footnote {
+.cmw-loading-step.is-active .cmw-loading-step-dot {
+  background: rgba(99, 102, 241, 0.18);
+  color: #4338ca;
+}
+
+.cmw-loading-step.is-done .cmw-loading-step-dot {
+  background: rgba(16, 185, 129, 0.18);
+  color: #047857;
+}
+
+.cmw-loading-step-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmw-loading-footnote,
+.cmw-loading-error {
   margin-top: 16px;
   font-size: 12px;
   line-height: 1.7;
   color: #64748b;
 }
 
-.merge-footer-btn {
-  padding: 10px 20px;
+.cmw-loading-error {
+  color: #b91c1c;
+  font-weight: 700;
 }
 
-.merge-footer-btn.is-ghost {
+/* 空态：仅在 idle 且无 preview 时显示（罕见路径） */
+.cmw-empty-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  color: #94a3b8;
+}
+
+/* Footer */
+.cmw-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid rgba(226, 232, 240, 0.85);
+  background: rgba(255, 255, 255, 0.92);
+  padding: 14px 22px;
+}
+
+/* Action 按钮：emerald 主 / slate ghost */
+.cmw-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 10px;
+  padding: 10px 20px;
+  font-size: 13px;
+  font-weight: 700;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.cmw-action-btn.is-slate {
   border: 1px solid rgba(226, 232, 240, 0.95);
   background: #fff;
   color: #475569;
 }
 
-.merge-footer-btn.is-ghost:hover:not(:disabled) {
+.cmw-action-btn.is-slate:hover:not(:disabled) {
   transform: translateY(-2px);
   border-color: rgba(148, 163, 184, 0.5);
   box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
 }
 
-.merge-footer-btn.is-primary {
-  border: 1px solid rgba(245, 158, 11, 0.35);
+.cmw-action-btn.is-emerald {
+  border: 1px solid rgba(16, 185, 129, 0.4);
   color: #fff;
-  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 52%, #d97706 100%);
-  box-shadow: 0 14px 28px rgba(245, 158, 11, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  background: linear-gradient(180deg, #34d399 0%, #10b981 52%, #059669 100%);
+  box-shadow:
+    0 14px 28px rgba(16, 185, 129, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
-.merge-footer-btn.is-primary:hover:not(:disabled) {
+.cmw-action-btn.is-emerald:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 18px 34px rgba(245, 158, 11, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  box-shadow:
+    0 18px 34px rgba(16, 185, 129, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
-.merge-footer-btn:active:not(:disabled),
-.merge-toolbar-btn:active:not(:disabled),
-.merge-icon-btn:active:not(:disabled) {
+.cmw-action-btn:hover:not(:disabled) svg {
+  transform: rotate(-8deg) scale(1.08);
+}
+
+.cmw-action-btn svg {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.cmw-action-btn:active:not(:disabled),
+.cmw-toolbar-btn:active:not(:disabled),
+.cmw-close-btn:active:not(:disabled),
+.cmw-pill:active:not(:disabled),
+.cmw-count-chip:active:not(:disabled) {
   transform: translateY(0) scale(0.96);
 }
 
 button:not(:disabled) { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
 
-@keyframes merge-spin {
+@keyframes cmw-spin {
   to { transform: rotate(360deg); }
 }
 
 @media (max-width: 768px) {
-  .merge-workbench-shell {
+  .cmw-shell {
     width: 96vw;
     height: 92vh;
   }
 
-  .merge-loading-steps {
+  .cmw-loading-steps {
     grid-template-columns: 1fr;
   }
 }

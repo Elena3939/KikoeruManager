@@ -3841,11 +3841,15 @@ async def preview_conflict_resolution(conflict_id: str, payload: dict):
             }
 
         if action == "MERGE":
-            merge_preview = await service.create_merge_preview(conflict)
+            # 合并预览改成异步 job 模式：HTTP 立即返回 job_id，前端轮询
+            # /api/conflicts/{id}/preview-job/{job_id} 拿真实阶段。
+            # 避免大压缩包 + 嵌套包必 504 网关超时。
+            job_status = await service.start_merge_preview(conflict)
             return {
                 "action": action,
                 "conflict_id": conflict.id,
-                **merge_preview,
+                "async": True,
+                **job_status,
             }
 
         raise HTTPException(status_code=400, detail="当前动作不需要预览")
@@ -3860,6 +3864,28 @@ async def preview_conflict_resolution(conflict_id: str, payload: dict):
         raise HTTPException(status_code=500, detail=f"生成处理预览失败: {exc}")
     finally:
         db.close()
+
+
+@app.get("/api/conflicts/{conflict_id}/preview-job/{job_id}")
+async def get_conflict_preview_job(conflict_id: str, job_id: str):
+    """合并预览异步 job 状态查询：前端轮询拉真实阶段 / 百分比 / message / result。
+
+    返回字段（来自 ConflictResolutionService._serialize_merge_preview_job）：
+      - status: running | completed | failed
+      - stage / stage_label / message / percent：实时进度
+      - result: status=completed 时携带完整 preview 数据（含 session_id / items / 默认 decisions）
+      - error: status=failed 时的错误描述（FileNotFoundError 已中文化）
+    """
+    from ..core.conflict_resolution_service import get_conflict_resolution_service
+
+    service = get_conflict_resolution_service()
+    job = service.get_merge_preview_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="合并预览任务不存在或已过期")
+    if str(job.get("conflict_id") or "") != str(conflict_id or ""):
+        # 防御：job_id 和 conflict_id 不匹配（前端串了 / 旧 job 漂移）
+        raise HTTPException(status_code=400, detail="任务 ID 与问题作品不匹配")
+    return job
 
 def _collect_split_archive_siblings(main_path: str):
     """收集与主文件同目录的所有分卷兄弟文件（含主文件自身）。
