@@ -367,21 +367,28 @@
               <div v-if="getFilenamePreviewState(activeConflict).preview" class="conflicts-filename-preview">
                 <div class="conflicts-filename-preview-head">
                   <span>
-                    预览：{{ getFilenamePreviewState(activeConflict).preview.encoding || 'auto' }}
+                    编码：{{ getFilenamePreviewState(activeConflict).preview.encoding || 'auto' }}
                     / codepage={{ getFilenamePreviewState(activeConflict).preview.codepage || 'auto' }}
                     / 密码来源={{ getFilenamePreviewState(activeConflict).preview.password_source || '未指定' }}
                   </span>
                   <b>{{ getFilenamePreviewState(activeConflict).preview.file_count || 0 }} 项</b>
                 </div>
-                <div class="conflicts-filename-preview-list">
+                <div class="conflicts-filename-preview-tree no-scrollbar">
                   <div
-                    v-for="entry in getFilenamePreviewRows(getFilenamePreviewState(activeConflict).preview, getFilenamePreviewEncoding(activeConflict))"
-                    :key="`${entry.name}-${entry.score}`"
-                    class="conflicts-filename-preview-row"
-                    :class="{ 'is-garbled': entry.garbled }"
+                    v-for="row in fpBuildTreeRows(getFilenamePreviewState(activeConflict).preview, getFilenamePreviewEncoding(activeConflict))"
+                    :key="row.key"
+                    class="fp-tree-row"
+                    :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
+                    :style="{ '--fp-depth': row.depth }"
                   >
-                    <span>{{ entry.displayName }}</span>
-                    <b>{{ entry.garbled ? '疑似乱码' : '正常' }} · {{ entry.score }}</b>
+                    <span class="fp-tree-indent" />
+                    <FolderOpen v-if="row.type === 'dir'" class="fp-tree-icon is-dir" />
+                    <FileWarning v-else-if="row.isGarbled" class="fp-tree-icon is-warn" />
+                    <Archive v-else-if="row.isArchive" class="fp-tree-icon is-archive" />
+                    <span v-else class="fp-tree-icon is-file" />
+                    <span class="fp-tree-name">{{ row.displayName }}</span>
+                    <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
+                    <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
                   </div>
                 </div>
               </div>
@@ -540,6 +547,61 @@
       :conflicts="batchRetryTargets"
       @confirm="handleBatchRetryConfirm"
     />
+
+    <!-- 文件名预览树形弹窗 -->
+    <el-dialog
+      v-model="fpDlgVisible"
+      title="文件名预览"
+      width="680"
+      :close-on-click-modal="false"
+      class="filename-preview-dialog"
+      @closed="fpDlgOnClose"
+    >
+      <template v-if="fpDlgData">
+        <div class="fp-dlg-meta">
+          <span>编码：<b>{{ fpDlgData.encoding || 'auto' }}</b></span>
+          <span>codepage：<b>{{ fpDlgData.codepage || 'auto' }}</b></span>
+          <span>密码：<b>{{ fpDlgData.password_source || '未指定' }}</b></span>
+          <span>文件数：<b>{{ fpDlgData.file_count || 0 }}</b></span>
+          <span v-if="fpDlgGarbledCount" class="fp-garbled-badge">
+            <AlertTriangle class="w-3 h-3" />
+            {{ fpDlgGarbledCount }} 个疑似乱码
+          </span>
+        </div>
+        <div class="fp-dlg-tree no-scrollbar">
+          <div
+            v-for="row in fpDlgTreeRows"
+            :key="row.key"
+            class="fp-tree-row"
+            :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
+            :style="{ '--fp-depth': row.depth }"
+          >
+            <span class="fp-tree-indent" />
+            <FolderOpen v-if="row.type === 'dir'" class="fp-tree-icon is-dir" />
+            <FileWarning v-else-if="row.isGarbled" class="fp-tree-icon is-warn" />
+            <Archive v-else-if="row.isArchive" class="fp-tree-icon is-archive" />
+            <span v-else class="fp-tree-icon is-file" />
+            <span class="fp-tree-name">{{ row.displayName }}</span>
+            <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
+            <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <div class="fp-dlg-footer">
+          <button type="button" class="conflicts-action-btn is-slate" @click="fpDlgCancel">
+            {{ fpDlgCancelText || '取消' }}
+          </button>
+          <button
+            type="button"
+            :class="['conflicts-action-btn', fpDlgGarbledCount ? 'is-amber' : 'is-emerald']"
+            @click="fpDlgConfirm"
+          >
+            {{ fpDlgConfirmText || '确认' }}
+          </button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -551,7 +613,7 @@ import {
   FileWarning, Copy, Save, RotateCcw, SkipForward,
   GitMerge, AlertTriangle, FolderOpen, Archive, Info,
   CheckSquare, XSquare, ChevronRight, FileSearch,
-  ShieldAlert, Hourglass, Loader2
+  ShieldAlert, Hourglass, Loader2, FileText
 } from 'lucide-vue-next'
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
 import BatchRetryPasswordDialog from '../components/conflicts/BatchRetryPasswordDialog.vue'
@@ -600,6 +662,125 @@ const filenamePreviewState = reactive({})
 
 const batchRetryDialogVisible = ref(false)
 const batchRetryTargets = ref([])
+
+// 文件名预览弹窗状态
+const fpDlgVisible = ref(false)
+const fpDlgData = ref(null)
+const fpDlgConfirmText = ref('')
+const fpDlgCancelText = ref('')
+let fpDlgResolveFn = null
+let fpDlgRejectFn = null
+
+const fpDlgEncoding = computed(() => fpDlgData.value?.requested_encoding || fpDlgData.value?.encoding || 'shift_jis')
+const fpDlgGarbledCount = computed(() => {
+  const diags = Array.isArray(fpDlgData.value?.diagnostics) ? fpDlgData.value.diagnostics : []
+  return diags.filter(d => d.garbled).length
+})
+
+function fpBuildTreeRows(preview, encoding) {
+  const items = []
+  const diagMap = new Map()
+  if (Array.isArray(preview?.diagnostics)) {
+    for (const d of preview.diagnostics) diagMap.set(String(d.name || ''), d)
+  }
+  const rawList = Array.isArray(preview?.items) ? preview.items : []
+  for (const item of rawList) {
+    const rawName = String(item?.name || item?.path || '')
+    if (!rawName) continue
+    const diag = diagMap.get(rawName)
+    const displayName = formatPreviewName(rawName, encoding)
+    const isDir = item?.is_dir === true || item?.type === 'dir'
+    const size = Number(item?.size || 0)
+    const sizeText = !isDir && size ? fpFormatBytes(size) : ''
+    const archiveExts = /\.(zip|rar|7z|tar|gz|bz2|xz|iso|lzh)$/i
+    items.push({
+      rawPath: rawName,
+      displayName,
+      type: isDir ? 'dir' : 'file',
+      isGarbled: Boolean(diag?.garbled),
+      isArchive: !isDir && archiveExts.test(rawName),
+      sizeText,
+      score: diag?.score ?? null,
+    })
+  }
+  // 建树
+  const roots = []
+  const nodeMap = new Map()
+  const ensureNode = (key, label, type, parentKey = '') => {
+    if (nodeMap.has(key)) return nodeMap.get(key)
+    const node = { key, label, type, isGarbled: false, isArchive: false, sizeText: '', score: null, children: [] }
+    nodeMap.set(key, node)
+    if (parentKey && nodeMap.has(parentKey)) nodeMap.get(parentKey).children.push(node)
+    else roots.push(node)
+    return node
+  }
+  for (const item of items) {
+    const parts = item.rawPath.replace(/^[/\\]+|[/\\]+$/g, '').split(/[/\\]/).filter(Boolean)
+    let parentKey = ''
+    let joined = ''
+    parts.forEach((part, index) => {
+      joined = joined ? `${joined}/${part}` : part
+      const isLeaf = index === parts.length - 1
+      const leafType = isLeaf ? item.type : 'dir'
+      const node = ensureNode(joined, formatPreviewName(part, encoding), leafType, parentKey)
+      if (isLeaf) {
+        node.isGarbled = item.isGarbled
+        node.isArchive = item.isArchive
+        node.sizeText = item.sizeText
+        node.score = item.score
+        node.displayName = item.displayName
+      }
+      parentKey = joined
+    })
+  }
+  // 展开成平铺行
+  const rows = []
+  const walk = (nodes, depth) => {
+    const sorted = [...nodes].sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+      return (a.label || '').localeCompare(b.label || '', 'zh-Hans-CN-u-kn-true')
+    })
+    for (const n of sorted) {
+      rows.push({ key: n.key, displayName: n.displayName || n.label, type: n.type, depth, isGarbled: n.isGarbled, isArchive: n.isArchive, sizeText: n.sizeText, score: n.score })
+      if (n.children.length) walk(n.children, depth + 1)
+    }
+  }
+  walk(roots, 0)
+  return rows
+}
+
+function fpFormatBytes(bytes) {
+  if (!bytes || bytes <= 0) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+const fpDlgTreeRows = computed(() => fpDlgData.value ? fpBuildTreeRows(fpDlgData.value, fpDlgEncoding.value) : [])
+
+function fpDlgOnClose() {
+  if (fpDlgRejectFn) { fpDlgRejectFn('close'); fpDlgRejectFn = null; fpDlgResolveFn = null }
+  fpDlgData.value = null
+}
+function fpDlgConfirm() {
+  fpDlgVisible.value = false
+  if (fpDlgResolveFn) { fpDlgResolveFn(); fpDlgResolveFn = null; fpDlgRejectFn = null }
+}
+function fpDlgCancel() {
+  fpDlgVisible.value = false
+  if (fpDlgRejectFn) { fpDlgRejectFn('cancel'); fpDlgRejectFn = null; fpDlgResolveFn = null }
+}
+
+function openFilenamePreviewDialog(preview, { confirmText = '确认', cancelText = '取消' } = {}) {
+  fpDlgData.value = preview
+  fpDlgConfirmText.value = confirmText
+  fpDlgCancelText.value = cancelText
+  fpDlgVisible.value = true
+  return new Promise((resolve, reject) => {
+    fpDlgResolveFn = resolve
+    fpDlgRejectFn = reject
+  })
+}
 
 const filenameEncodingOptions = [
   { value: 'shift_jis', label: 'Shift_JIS / CP932', description: '日文 ZIP 最常见，7z codepage 932' },
@@ -1289,20 +1470,13 @@ function buildFilenamePreviewLines(preview) {
 }
 
 async function showFilenamePreviewConfirm(preview, options = {}) {
-  const message = buildFilenamePreviewLines(preview).join('\n')
   if (!options.confirmText) {
-    await showSystemAlert({
-      title: '文件名预览',
-      message,
-      tone: preview.garbled_sample ? 'warning' : 'info',
-      confirmText: '关闭',
-    })
+    // 纯信息展示，无需确认
+    fpDlgCancelText.value = ''
+    await openFilenamePreviewDialog(preview, { confirmText: '关闭', cancelText: '' })
     return
   }
-  await showSystemConfirm({
-    title: '文件名预览',
-    message,
-    tone: preview.garbled_sample ? 'warning' : 'info',
+  await openFilenamePreviewDialog(preview, {
     confirmText: options.confirmText,
     cancelText: options.cancelText || '取消',
   })
@@ -2824,38 +2998,100 @@ button:disabled {
   color: #0f172a;
   white-space: nowrap;
 }
-.conflicts-filename-preview-list {
-  max-height: 240px;
+/* 内联文件树 */
+.conflicts-filename-preview-tree {
+  max-height: 280px;
   overflow-y: auto;
 }
-.conflicts-filename-preview-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 110px;
-  gap: 10px;
-  padding: 8px 10px;
+
+/* --- 文件名预览文件树通用行 --- */
+.fp-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px calc(8px + var(--fp-depth, 0) * 16px);
   border-bottom: 1px solid #f1f5f9;
   font-size: 11.5px;
-}
-.conflicts-filename-preview-row:last-child { border-bottom: 0; }
-.conflicts-filename-preview-row span {
   min-width: 0;
-  color: #334155;
-  font-weight: 650;
-  word-break: break-all;
 }
-.conflicts-filename-preview-row b {
-  color: #64748b;
-  text-align: right;
-  font-size: 11px;
+.fp-tree-row:last-child { border-bottom: 0; }
+.fp-tree-indent { flex-shrink: 0; }
+.fp-tree-icon { width: 13px; height: 13px; flex-shrink: 0; color: #94a3b8; }
+.fp-tree-icon.is-dir { color: #f59e0b; }
+.fp-tree-icon.is-warn { color: #ef4444; }
+.fp-tree-icon.is-archive { color: #6366f1; }
+.fp-tree-icon.is-file {
+  display: inline-block;
+  width: 9px; height: 9px;
+  background: #cbd5e1;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.fp-tree-row.is-dir .fp-tree-name { font-weight: 700; color: #334155; }
+.fp-tree-name {
+  flex: 1;
+  min-width: 0;
+  color: #475569;
+  font-size: 11.5px;
+  word-break: break-all;
+  line-height: 1.4;
+}
+.fp-tree-row.is-garbled .fp-tree-name { color: #b45309; }
+.fp-tree-size {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: #94a3b8;
   font-variant-numeric: tabular-nums;
 }
-.conflicts-filename-preview-row.is-garbled b {
-  color: #b45309;
+.fp-garbled-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border-radius: 4px;
+  padding: 1px 5px;
 }
+
+/* --- 文件名预览弹窗 --- */
+.filename-preview-dialog :deep(.el-dialog__body) {
+  padding: 0;
+}
+.fp-dlg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 12px;
+  color: #475569;
+}
+.fp-dlg-meta b { color: #0f172a; }
+.fp-garbled-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #b45309;
+  font-weight: 700;
+  font-size: 11px;
+}
+.fp-dlg-tree {
+  max-height: 380px;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+.fp-dlg-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
 @media (max-width: 1100px) {
   .conflicts-garbled-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .conflicts-filename-preview-row { grid-template-columns: minmax(0, 1fr); }
-  .conflicts-filename-preview-row b { text-align: left; }
 }
 
 /* 双卡网格 */
