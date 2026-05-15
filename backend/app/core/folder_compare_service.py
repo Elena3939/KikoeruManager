@@ -1,3 +1,4 @@
+import errno
 import filecmp
 import logging
 import os
@@ -139,7 +140,7 @@ class FolderCompareService:
                 os.replace(target_path, backup_path)
                 logger.info("冲突替换前备份旧目录: %s -> %s", target_path, backup_path)
 
-            os.replace(source_dir, target_path)
+            self._move_directory_atomic(source_dir, target_path)
             logger.info("冲突替换写入完成: %s", target_path)
 
             if backup_path and os.path.exists(backup_path):
@@ -154,6 +155,25 @@ class FolderCompareService:
                 os.replace(backup_path, target_path)
                 logger.info("冲突替换已回滚: %s", target_path)
             raise
+
+    @staticmethod
+    def _move_directory_atomic(source_dir: str, target_path: str) -> None:
+        """跨设备安全的目录搬运：优先 rename，跨挂载点时回退到 copytree + rmtree。"""
+        try:
+            os.replace(source_dir, target_path)
+            return
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            logger.info(
+                "跨设备 rename 不可用 (EXDEV)，回退到 copytree: %s -> %s",
+                source_dir,
+                target_path,
+            )
+        # 跨挂载点：copytree 把内容复制到 target，再清掉 source。
+        # copytree 要求 target 不存在；若 copytree 中途失败，外层 except 会 rmtree(target) 并回滚 backup。
+        shutil.copytree(source_dir, target_path, symlinks=False, dirs_exist_ok=False)
+        shutil.rmtree(source_dir, ignore_errors=True)
 
     def _build_merged_directory(
         self,
