@@ -362,13 +362,16 @@ class ConflictResolutionService:
     # 同时为了避免列表页每次刷新都对每条 conflict 重跑 os.walk 算大小，把 stats
     # 持久化到 conflict.new_metadata.{side}_stats_cache，按 (path, mtime) 失效。
     def _resolve_conflict_new_path(self, conflict) -> str:
+        """优先返回 conflict.new_path；不存在则按多级 fallback 兜底找回数据。
+
+        fallback 顺序（越靠前越优先 / 越精确）：
+          1. `{library}/_conflicts/{basename}` —— 写入端旧 bug 留下的搬迁路径
+          2. `{library}/_conflicts/{rjcode}` —— 按 RJ 号直接命名的子目录
+          3. `{library}/_conflicts/*{rjcode}*` —— RJ 号模糊匹配（覆盖带后缀 / 时间戳的命名）
+          4. 都不命中则原样返回 candidate，后续 raise 友好错误。
+        """
         candidate = str(getattr(conflict, "new_path", "") or "").strip()
-        if not candidate:
-            return candidate
-        if os.path.exists(candidate):
-            return candidate
-        basename = os.path.basename(candidate)
-        if not basename:
+        if candidate and os.path.exists(candidate):
             return candidate
         try:
             library_path = str(getattr(get_config().storage, "library_path", "") or "").strip()
@@ -376,10 +379,61 @@ class ConflictResolutionService:
             return candidate
         if not library_path:
             return candidate
-        fallback = os.path.join(library_path, "_conflicts", basename)
-        if os.path.exists(fallback):
-            return fallback
+        conflicts_dir = os.path.join(library_path, "_conflicts")
+        # 1. _conflicts/{basename}
+        basename = os.path.basename(candidate) if candidate else ""
+        if basename:
+            p1 = os.path.join(conflicts_dir, basename)
+            if os.path.exists(p1):
+                return p1
+        # 2. _conflicts/{rjcode}
+        rjcode = str(getattr(conflict, "rjcode", "") or "").strip()
+        if rjcode:
+            p2 = os.path.join(conflicts_dir, rjcode)
+            if os.path.exists(p2):
+                return p2
+            # 3. _conflicts 下含 rjcode 的子项模糊匹配（命名可能带后缀 / 时间戳）
+            try:
+                if os.path.isdir(conflicts_dir):
+                    for entry in os.listdir(conflicts_dir):
+                        if rjcode in entry:
+                            p3 = os.path.join(conflicts_dir, entry)
+                            if os.path.exists(p3):
+                                return p3
+            except OSError:
+                pass
         return candidate
+
+    def _new_source_missing_error(self, conflict) -> FileNotFoundError:
+        """拼装"新版本来源不存在"的友好错误：暴露 RJ / 原路径 / 尝试过的候选路径。
+
+        前端拿到 detail 后会直接 toast，纯英文 "New source does not exist" 等于
+        让用户摸瞎，这里中文化 + 列出所有兜底尝试过的路径方便定位。
+        """
+        original = str(getattr(conflict, "new_path", "") or "").strip()
+        rjcode = str(getattr(conflict, "rjcode", "") or "").strip()
+        tried: list[str] = []
+        if original:
+            tried.append(original)
+        try:
+            library_path = str(getattr(get_config().storage, "library_path", "") or "").strip()
+        except Exception:
+            library_path = ""
+        if library_path:
+            conflicts_dir = os.path.join(library_path, "_conflicts")
+            basename = os.path.basename(original) if original else ""
+            if basename:
+                tried.append(os.path.join(conflicts_dir, basename))
+            if rjcode:
+                tried.append(os.path.join(conflicts_dir, rjcode))
+                tried.append(f"{conflicts_dir}{os.sep}*{rjcode}*")
+        rj_label = f"RJ{rjcode}" if rjcode and not rjcode.upper().startswith("RJ") else (rjcode or "未知 RJ")
+        msg = (
+            f"新版本来源路径不存在（{rj_label}）。原路径：{original or '(空)'}。"
+            f"已尝试 fallback：{', '.join(tried) if tried else '(无)'}。"
+            "该问题作品的新版本数据可能已被清理 / 搬迁，建议跳过该项以清理记录。"
+        )
+        return FileNotFoundError(msg)
 
     def _maybe_persist_resolved_new_path(
         self, conflict_id: str, original_path: str, resolved_path: str,
@@ -689,7 +743,7 @@ class ConflictResolutionService:
                 getattr(conflict, "id", ""), original, source_path,
             )
         if not source_path or not os.path.exists(source_path):
-            raise FileNotFoundError("New source does not exist")
+            raise self._new_source_missing_error(conflict)
 
         if os.path.isfile(source_path):
             # 压缩包：解压不可避免，走完整 staging 流程
@@ -904,7 +958,7 @@ class ConflictResolutionService:
                 getattr(conflict, "id", ""), original, source_path,
             )
         if not source_path or not os.path.exists(source_path):
-            raise FileNotFoundError("New source does not exist")
+            raise self._new_source_missing_error(conflict)
 
         if os.path.isfile(source_path):
             staged_archive_path = os.path.join(workspace, os.path.basename(source_path))
