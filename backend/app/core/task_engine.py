@@ -4394,6 +4394,11 @@ class TaskEngine:
                     'success': False,
                     'error_message': str(exc),
                 })
+                logger.warning(
+                    "[社团补全] 社团索引失败 circle_query=%s batch=%d/%d: %s",
+                    circle_query, batch_index, total_queries, exc,
+                    exc_info=True,
+                )
                 append_progress_log(f"[{batch_index}/{total_queries}] 社团索引失败：{circle_query} - {exc}", None, 'warning')
 
         if not success_count and failed_count:

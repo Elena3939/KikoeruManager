@@ -682,7 +682,7 @@ class CircleCompletionService:
             "囁き", "ささやき", "耳かき", "耳舐め", "舐耳", "バイノーラル",
             "フォーリーサウンド", "フォーリー", "foley", "wav", "ku100",
             "音声・asmr", "双声道立体声", "人头麦", "舔耳", "低语", "治愈",
-            "拟声音效", "拟真音效", "耳语", "耳边",
+            "拟声音效", "拟真音效", "耳语", "耳边", "催眠",
         ]
         return any(marker in haystack for marker in markers)
 
@@ -2215,10 +2215,7 @@ class CircleCompletionService:
             if normalized:
                 pattern = f"%{normalized}%"
                 query = query.filter(
-                    sa_or(
-                        sa_func.lower(WorkMetadata.maker_name).like(pattern),
-                        sa_func.lower(WorkMetadata.circle_name).like(pattern),
-                    )
+                    sa_func.lower(WorkMetadata.maker_name).like(pattern)
                 )
             rows = query.all()
             results = []
