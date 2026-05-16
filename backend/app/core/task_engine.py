@@ -3221,7 +3221,11 @@ class TaskEngine:
             raise last_error
 
     async def _cleanup_empty_source_dir(self, source_dir: str, protected_paths: Optional[list[str]] = None):
-        """归档完成后清理空源目录，避免分卷目录残留且需要用户手动删除"""
+        """归档完成后清理空源目录，并向上递归清理所有空父目录。
+
+        例如：待处理\\社团\\RJ号\\A.zip 处理后，依次尝试删除 RJ号\\ → 社团\\ →
+        直到遇到受保护路径（input_path 等）或非空目录为止。
+        """
         normalized_source = os.path.abspath(str(source_dir or ""))
         if not normalized_source or not os.path.isdir(normalized_source):
             return
@@ -3234,6 +3238,8 @@ class TaskEngine:
         if normalized_source in protected:
             return
 
+        # 删除当前目录（带重试，防止 AV 工具短暂占用）
+        deleted = False
         for attempt in range(1, 6):
             try:
                 if os.listdir(normalized_source):
@@ -3241,9 +3247,11 @@ class TaskEngine:
                     return
                 os.rmdir(normalized_source)
                 logger.info(f"已自动清理空源目录: {normalized_source}")
-                return
+                deleted = True
+                break
             except FileNotFoundError:
-                return
+                deleted = True  # 已被其他任务删除，视为成功
+                break
             except PermissionError as exc:
                 logger.warning(f"删除空源目录时仍被占用，稍后重试 ({attempt}/5): {normalized_source}, {exc}")
             except OSError as exc:
@@ -3251,6 +3259,29 @@ class TaskEngine:
 
             if attempt < 5:
                 await asyncio.sleep(1)
+
+        if not deleted:
+            return
+
+        # 向上递归清理空父目录（单次尝试，不重试）
+        current = os.path.dirname(normalized_source)
+        while current:
+            parent = os.path.dirname(current)
+            if parent == current:
+                break  # 已到文件系统根，防止死循环
+            if not os.path.isdir(current):
+                break
+            if current in protected:
+                break
+            try:
+                if os.listdir(current):
+                    break  # 非空，停止向上清理
+                os.rmdir(current)
+                logger.info(f"已自动清理空父目录: {current}")
+                current = parent
+            except (FileNotFoundError, PermissionError, OSError) as exc:
+                logger.debug(f"清理空父目录停止: {current}, {exc}")
+                break
 
     async def _archive_source_file(self, task: Task):
         """将源压缩包移动到已处理目录并记录"""
