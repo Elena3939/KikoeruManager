@@ -100,9 +100,14 @@
           <SettingsFieldCard label="重试 Cron">
             <input v-model="config.asmr_sync.retry_cron" class="field-input" type="text" placeholder="0 */1 * * *">
           </SettingsFieldCard>
-          <SettingsFieldCard label="HTTP 代理">
-            <input v-model="config.asmr_sync.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
-          </SettingsFieldCard>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="HTTP 代理" hint="用于 asmr.one 音频下载。">
+              <input v-model="config.asmr_sync.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
+            </SettingsFieldCard>
+            <SettingsFieldCard label="元数据代理" hint="用于 DLsite 社团作品列表、封面等信息抓取；服务器在中国大陆时务必填写，否则社团补全可能少作品。">
+              <input v-model="config.metadata.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
+            </SettingsFieldCard>
+          </div>
           <SettingsToggleRow v-model="config.asmr_sync.auto_upload_enabled" title="自动上传" subtitle="增强下载完成后按默认模式直传库存。" />
           <div class="mini-grid two" v-if="config.asmr_sync.auto_upload_enabled">
             <SettingsFieldCard label="上传模式">
