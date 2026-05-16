@@ -121,7 +121,8 @@ class DLsiteApiService:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': accept,
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
+            # 避免服务端返回 br 压缩而运行环境缺少 Brotli 解码器导致 HTML 乱码。
+            'Accept-Encoding': 'gzip, deflate',
             'Referer': 'https://www.dlsite.com/maniax/',
             'Origin': 'https://www.dlsite.com',
             'DNT': '1',
