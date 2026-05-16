@@ -2096,7 +2096,9 @@ class CircleCompletionService:
             if normalized_maker_id:
                 logger.warning(
                     "[社团补全] DLsite maker_id=%s profile/announce 均返回 0，疑似误识别，"
-                    "已重置为关键字模式，避免连锁误删关键字候选",
+                    "已重置为关键字模式，避免连锁误删关键字候选；"
+                    "若服务器在中国大陆部署，请在设置页→元数据→HTTP 代理 填写日本可用的代理地址（如 http://192.168.x.x:7890），"
+                    "DLsite 对非日本 IP 可能返回不同的 HTML 导致作品列表解析为 0",
                     normalized_maker_id,
                 )
                 failure_messages.append(

@@ -198,6 +198,30 @@ class DLsiteApiService:
                 result.append(workno)
         return result
 
+    def _extract_not_product_ids_from_html(self, text: str) -> List[str]:
+        """从 maniax-touch 分页 href 的 not_product_ids 参数中提取 RJcode。
+        
+        当 maniax-touch 页面正文没有标准作品链接时（服务器直连 DLsite），
+        页面内的"下一页"href 仍可能包含 not_product_ids[0]=RJxxxxxxxx 参数，
+        从中可还原出当前页已展示的作品列表。
+        """
+        if not text:
+            return []
+        # 提取 URL 编码或原始格式的 not_product_ids 值
+        # 示例: not_product_ids%5B0%5D/RJ01234567 或 not_product_ids[0]/RJ01234567
+        pattern = re.compile(
+            r'not_product_ids(?:%5B|\[)\d+(?:%5D|\])[/=]([RVB]J(?:\d{8}|\d{6}))',
+            re.IGNORECASE,
+        )
+        seen: set = set()
+        result: List[str] = []
+        for matched in pattern.findall(text):
+            workno = self._normalize_workno(matched)
+            if workno and workno not in seen:
+                seen.add(workno)
+                result.append(workno)
+        return result
+
     def _extract_translation_linkage_from_html(self, html: str, requested_workno: str) -> Dict[str, str]:
         normalized_requested = self._normalize_workno(requested_workno)
         if not html or not normalized_requested:
@@ -1102,6 +1126,12 @@ class DLsiteApiService:
                     page_worknos = self._extract_worknos_from_listing_html(response.text)
                     if not page_worknos and mode == "profile-touch":
                         page_worknos = self._extract_any_worknos_from_listing_html(response.text)
+                    # profile-touch 专项补充：从页面 href 中的 not_product_ids 参数提取额外 RJcode
+                    if not page_worknos and mode == "profile-touch":
+                        npi_codes = self._extract_not_product_ids_from_html(response.text)
+                        if npi_codes:
+                            page_worknos = npi_codes
+                            logger.info("[DLsite] 社团profile-touch从not_product_ids提取备选 maker_id=%s count=%s", normalized_maker_id, len(npi_codes))
                 except Exception as exc:
                     logger.warning("[DLsite] 社团%s抓取异常 maker_id=%s page=%s error=%s", mode, normalized_maker_id, page, exc)
                     break
@@ -1121,15 +1151,48 @@ class DLsiteApiService:
                     empty_streak = 0
 
                 if page == 1 and not page_worknos and mode in {"profile", "profile-touch"}:
+                    html_preview = (response.text or "")[:400].replace("\n", " ").replace("\r", "")
+                    html_len = len(response.text or "")
                     logger.info(
-                        "[DLsite] 社团%s首页未解析到作品，提前切换入口 maker_id=%s",
+                        "[DLsite] 社团%s首页未解析到作品，提前切换入口 maker_id=%s html_len=%s html_preview=%.400s",
                         mode,
                         normalized_maker_id,
+                        html_len,
+                        html_preview,
                     )
                     break
 
                 if empty_streak >= 2:
                     break
+
+        # 当 profile/touch 均未找到作品时，尝试 maniax-touch 带 maker_ids 参数的 filter 格式 URL
+        # 该格式对部分 IP 环境可能更稳定（per_page=50 单页返回更多）
+        if not found:
+            try:
+                filter_url = (
+                    f"https://www.dlsite.com/maniax-touch/circle/profile/="
+                    f"/options[0]/{normalized_language}/maker_ids[0]/{normalized_maker_id}"
+                    f"/per_page/50/work_category/doujin/hd/1"
+                )
+                response_f = await self._guarded_get(filter_url, headers=self._get_browser_headers())
+                if response_f.status_code == 200:
+                    filter_worknos = self._extract_worknos_from_listing_html(response_f.text)
+                    if not filter_worknos:
+                        filter_worknos = self._extract_any_worknos_from_listing_html(response_f.text)
+                    if not filter_worknos:
+                        filter_worknos = self._extract_not_product_ids_from_html(response_f.text)
+                    for workno in filter_worknos:
+                        if workno not in seen:
+                            seen.add(workno)
+                            found.append(workno)
+                    logger.info(
+                        "[DLsite] 社团profile-touch-filter抓取 maker_id=%s 获得=%s total=%s",
+                        normalized_maker_id, len(filter_worknos), len(found),
+                    )
+                else:
+                    logger.info("[DLsite] 社团profile-touch-filter失败 maker_id=%s status=%s", normalized_maker_id, response_f.status_code)
+            except Exception as exc:
+                logger.debug("[DLsite] 社团profile-touch-filter异常 maker_id=%s error=%s", normalized_maker_id, exc)
 
         if found:
             self.cache[cache_key] = {
