@@ -1380,7 +1380,9 @@ class LibraryManager:
         return max(30, min(ttl, 120))
 
     def _remote_empty_search_cache_ttl_seconds(self) -> int:
-        return min(12, max(5, self._remote_search_cache_ttl_seconds() // 6))
+        # 空结果 TTL 至少 15s，确保 >= PENDING_REFRESH_MIN_INTERVAL_SECONDS(12)，
+        # 避免每次 pending 刷新都因缓存已过期而再次触发真实远程搜索
+        return max(15, min(60, self._remote_search_cache_ttl_seconds() // 4))
 
     def _remote_search_timeout_seconds(self) -> float:
         raw = self.load_config().get("remote_search_timeout_seconds", 30)

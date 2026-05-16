@@ -3985,3 +3985,409 @@ button:disabled {
   50% { transform: translateY(-2px) scale(1.06); }
 }
 </style>
+
+<style>
+/* ============================================================
+ * 深色模式覆盖（Conflicts.vue 全局 unscoped）
+ * ============================================================ */
+html.kikoerumanager-dark .conflicts-page .lib-info-strip {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: rgba(148, 163, 184, 0.16);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+html.kikoerumanager-dark .conflicts-page .lib-info-label,
+html.kikoerumanager-dark .conflicts-page .lib-info-meta,
+html.kikoerumanager-dark .conflicts-page .lib-info-sub {
+  color: #94a3b8;
+}
+html.kikoerumanager-dark .conflicts-page .lib-info-value {
+  color: #cbd5e1;
+}
+html.kikoerumanager-dark .conflicts-page .lib-info-value b {
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .conflicts-page .lib-info-divider {
+  background: linear-gradient(180deg, transparent, rgba(148, 163, 184, 0.14), transparent);
+}
+
+html.kikoerumanager-dark .conflicts-refresh-btn {
+  background: rgba(30, 41, 59, 0.82);
+  border-color: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+html.kikoerumanager-dark .conflicts-refresh-btn:hover {
+  background: rgba(51, 65, 85, 0.92);
+  border-color: rgba(148, 163, 184, 0.28);
+  color: #f8fafc;
+  box-shadow: 0 6px 16px -6px rgba(0, 0, 0, 0.3);
+}
+
+html.kikoerumanager-dark .conflicts-error-alert {
+  background: rgba(127, 29, 29, 0.25);
+  border-color: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+}
+
+html.kikoerumanager-dark .conflicts-empty {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: rgba(148, 163, 184, 0.16);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+html.kikoerumanager-dark .conflicts-list-pane {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: rgba(148, 163, 184, 0.16);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+html.kikoerumanager-dark .conflicts-list-header {
+  background: rgba(30, 41, 59, 0.55);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+html.kikoerumanager-dark .conflicts-list-title {
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .conflicts-segmented {
+  background: rgba(30, 41, 59, 0.6);
+  border-color: rgba(148, 163, 184, 0.14);
+}
+html.kikoerumanager-dark .conflicts-segmented-item {
+  color: #94a3b8;
+}
+html.kikoerumanager-dark .conflicts-segmented-item:hover {
+  color: #e2e8f0;
+}
+html.kikoerumanager-dark .conflicts-segmented-item.is-active {
+  background: rgba(51, 65, 85, 0.85);
+  color: #f8fafc;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+html.kikoerumanager-dark .conflicts-mini-btn {
+  background: rgba(30, 41, 59, 0.72);
+  border-color: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+html.kikoerumanager-dark .conflicts-mini-btn:hover {
+  background: rgba(51, 65, 85, 0.82);
+  border-color: rgba(148, 163, 184, 0.26);
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .conflicts-mini-btn.is-active {
+  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #93c5fd;
+}
+html.kikoerumanager-dark .conflicts-batch-btn.is-slate {
+  background: rgba(30, 41, 59, 0.72);
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.18);
+}
+html.kikoerumanager-dark .conflicts-batch-btn.is-slate:hover {
+  background: rgba(51, 65, 85, 0.82);
+  color: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.28);
+}
+html.kikoerumanager-dark .conflicts-list-hint {
+  color: #64748b;
+}
+
+html.kikoerumanager-dark .conflicts-list-card:hover {
+  background: rgba(51, 65, 85, 0.35);
+  border-color: rgba(148, 163, 184, 0.14);
+}
+html.kikoerumanager-dark .conflicts-list-card.is-selected {
+  background: rgba(51, 65, 85, 0.55);
+  border-color: rgba(148, 163, 184, 0.22);
+}
+html.kikoerumanager-dark .conflicts-list-card.is-active {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.28);
+}
+html.kikoerumanager-dark .conflicts-list-card.is-active .conflicts-list-card-title {
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .conflicts-list-card-title {
+  color: #e2e8f0;
+}
+html.kikoerumanager-dark .conflicts-list-card-type {
+  color: #94a3b8;
+}
+html.kikoerumanager-dark .conflicts-list-card-date {
+  color: #64748b;
+}
+html.kikoerumanager-dark .conflicts-list-progress-track {
+  background: rgba(30, 41, 59, 0.6);
+}
+html.kikoerumanager-dark .conflicts-list-progress-num {
+  color: #34d399;
+}
+
+html.kikoerumanager-dark .conflicts-detail-pane {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: rgba(148, 163, 184, 0.16);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+html.kikoerumanager-dark .conflicts-detail-header {
+  background: rgba(30, 41, 59, 0.72);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+html.kikoerumanager-dark .conflicts-detail-bg-glyph {
+  color: #475569;
+  opacity: 0.06;
+}
+html.kikoerumanager-dark .conflicts-detail-title {
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .conflicts-detail-subtitle {
+  color: #94a3b8;
+}
+
+html.kikoerumanager-dark .conflicts-action-btn.is-slate {
+  background: rgba(30, 41, 59, 0.72);
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+html.kikoerumanager-dark .conflicts-action-btn.is-slate:hover {
+  background: rgba(51, 65, 85, 0.85);
+  color: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.28);
+  box-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.25);
+}
+
+html.kikoerumanager-dark .conflicts-detail-alert.is-warning {
+  background: rgba(146, 64, 14, 0.18);
+  border-color: rgba(245, 158, 11, 0.25);
+  color: #fcd34d;
+}
+html.kikoerumanager-dark .conflicts-detail-alert.is-danger {
+  background: rgba(127, 29, 29, 0.18);
+  border-color: rgba(239, 68, 68, 0.22);
+  color: #fca5a5;
+}
+
+html.kikoerumanager-dark .conflicts-garbled-card {
+  background: rgba(15, 23, 42, 0.72);
+  border-color: rgba(245, 158, 11, 0.25);
+  box-shadow: 0 12px 28px -22px rgba(217, 119, 6, 0.25);
+}
+html.kikoerumanager-dark .conflicts-garbled-head h4 {
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .conflicts-garbled-head p {
+  color: #94a3b8;
+}
+html.kikoerumanager-dark .conflicts-garbled-toolbar {
+  background: rgba(30, 41, 59, 0.6);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+html.kikoerumanager-dark .conflicts-garbled-select > span {
+  color: #94a3b8;
+}
+html.kikoerumanager-dark .conflicts-garbled-preview-btn {
+  background: rgba(30, 41, 59, 0.72);
+  border-color: rgba(148, 163, 184, 0.16);
+  color: #e2e8f0;
+}
+html.kikoerumanager-dark .conflicts-garbled-preview-btn:hover {
+  border-color: rgba(148, 163, 184, 0.28);
+  box-shadow: 0 8px 18px -12px rgba(0, 0, 0, 0.35);
+}
+html.kikoerumanager-dark .conflicts-garbled-grid div {
+  background: rgba(30, 41, 59, 0.55);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+html.kikoerumanager-dark .conflicts-garbled-grid span {
+  color: #64748b;
+}
+html.kikoerumanager-dark .conflicts-garbled-grid b {
+  color: #e2e8f0;
+}
+html.kikoerumanager-dark .conflicts-garbled-samples {
+  background: rgba(30, 41, 59, 0.4);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+html.kikoerumanager-dark .conflicts-garbled-row {
+  border-color: rgba(148, 163, 184, 0.1);
+}
+html.kikoerumanager-dark .conflicts-garbled-row span {
+  color: #cbd5e1;
+}
+html.kikoerumanager-dark .conflicts-garbled-row b {
+  color: #fbbf24;
+}
+
+html.kikoerumanager-dark .conflicts-filename-preview {
+  background: rgba(15, 23, 42, 0.72);
+  border-color: rgba(148, 163, 184, 0.14);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.15);
+}
+html.kikoerumanager-dark .conflicts-filename-preview-head {
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.92) 0%, rgba(30, 41, 59, 0.72) 100%);
+  border-color: rgba(148, 163, 184, 0.1);
+  color: #94a3b8;
+}
+html.kikoerumanager-dark .conflicts-filename-preview-head b {
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .fp-repaired-badge {
+  background: linear-gradient(180deg, rgba(6, 78, 59, 0.45) 0%, rgba(5, 150, 105, 0.35) 100%);
+  border-color: rgba(52, 211, 153, 0.3);
+  color: #6ee7b7;
+}
+
+html.kikoerumanager-dark .conflicts-info-card {
+  background: rgba(15, 23, 42, 0.72);
+  border-color: rgba(148, 163, 184, 0.14);
+}
+html.kikoerumanager-dark .conflicts-info-card-header {
+  background: rgba(30, 41, 59, 0.55);
+  border-color: rgba(148, 163, 184, 0.1);
+}
+html.kikoerumanager-dark .conflicts-info-card-header h3 {
+  color: #e2e8f0;
+}
+html.kikoerumanager-dark .conflicts-info-label {
+  color: #64748b;
+}
+html.kikoerumanager-dark .conflicts-info-value {
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .conflicts-info-value-muted {
+  color: #94a3b8;
+}
+html.kikoerumanager-dark .conflicts-info-suggest {
+  background: rgba(30, 41, 59, 0.55);
+  border-color: rgba(148, 163, 184, 0.1);
+  color: #cbd5e1;
+}
+html.kikoerumanager-dark .conflicts-info-path {
+  background: rgba(30, 41, 59, 0.55);
+  border-color: rgba(148, 163, 184, 0.1);
+  color: #cbd5e1;
+}
+html.kikoerumanager-dark .conflicts-info-path.is-target {
+  background: rgba(12, 74, 110, 0.25);
+  border-color: rgba(56, 189, 248, 0.2);
+  color: #7dd3fc;
+}
+html.kikoerumanager-dark .conflicts-info-meta-key {
+  color: #64748b;
+}
+html.kikoerumanager-dark .conflicts-info-meta-val {
+  color: #e2e8f0;
+}
+
+html.kikoerumanager-dark .conflicts-help-card {
+  background: rgba(15, 23, 42, 0.72);
+  border-color: rgba(148, 163, 184, 0.14);
+}
+html.kikoerumanager-dark .conflicts-help-title {
+  color: #e2e8f0;
+}
+html.kikoerumanager-dark .conflicts-help-list {
+  color: #94a3b8;
+}
+html.kikoerumanager-dark .conflicts-help-list strong {
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .conflicts-help-list li::marker {
+  color: #475569;
+}
+
+/* 文件名预览弹窗 */
+html.kikoerumanager-dark .fp-dlg-panel {
+  background: rgba(15, 23, 42, 0.92) !important;
+  border-color: rgba(148, 163, 184, 0.2) !important;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+html.kikoerumanager-dark .fp-dlg-panel header {
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.85) 0%, rgba(30, 41, 59, 0.6) 100%) !important;
+  border-color: rgba(148, 163, 184, 0.14) !important;
+}
+html.kikoerumanager-dark .fp-dlg-panel footer {
+  background: rgba(30, 41, 59, 0.55) !important;
+  border-color: rgba(148, 163, 184, 0.14) !important;
+}
+html.kikoerumanager-dark .fp-dlg-panel #fp-dlg-title {
+  color: #f8fafc !important;
+}
+html.kikoerumanager-dark .fp-dlg-panel header p {
+  color: #94a3b8 !important;
+}
+html.kikoerumanager-dark .fp-dlg-tree-shell {
+  background: rgba(15, 23, 42, 0.55);
+  border-color: rgba(148, 163, 184, 0.14);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+html.kikoerumanager-dark .fp-dlg-tree-shell::before {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.75) 0%, rgba(15, 23, 42, 0));
+}
+html.kikoerumanager-dark .fp-dlg-tree-shell::after {
+  background: linear-gradient(0deg, rgba(15, 23, 42, 0.75) 0%, rgba(15, 23, 42, 0));
+}
+html.kikoerumanager-dark .fp-dlg-tree-empty {
+  color: #64748b;
+}
+html.kikoerumanager-dark .fp-dlg-meta-chip {
+  background: rgba(30, 41, 59, 0.6);
+  border-color: rgba(148, 163, 184, 0.14);
+  color: #cbd5e1;
+}
+html.kikoerumanager-dark .fp-dlg-meta-chip-label {
+  color: rgba(148, 163, 184, 0.7);
+}
+html.kikoerumanager-dark .fp-dlg-meta-chip b {
+  color: #f8fafc;
+}
+
+/* 文件树 */
+html.kikoerumanager-dark .fp-tree-row {
+  color: #cbd5e1;
+}
+html.kikoerumanager-dark .fp-tree-row:hover {
+  background: rgba(51, 65, 85, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.14);
+}
+html.kikoerumanager-dark .fp-tree-icon-wrap {
+  background: rgba(30, 41, 59, 0.6);
+  border-color: rgba(148, 163, 184, 0.14);
+}
+html.kikoerumanager-dark .fp-tree-row:hover .fp-tree-icon-wrap {
+  background: rgba(51, 65, 85, 0.7);
+  border-color: rgba(148, 163, 184, 0.22);
+}
+html.kikoerumanager-dark .fp-tree-name {
+  color: #e2e8f0;
+}
+html.kikoerumanager-dark .fp-tree-row.is-dir .fp-tree-name {
+  color: #f8fafc;
+}
+html.kikoerumanager-dark .fp-tree-size {
+  color: #64748b;
+}
+
+html.kikoerumanager-dark .conflicts-detail-placeholder-inner p {
+  color: #94a3b8;
+}
+
+/* 处理中 / 重试中 卡片深色适配 */
+html.kikoerumanager-dark .keep-new-conflict-card {
+  background: linear-gradient(100deg, rgba(30, 58, 138, 0.35), rgba(15, 23, 42, 0.55) 42%, rgba(37, 99, 235, 0.25)) !important;
+}
+html.kikoerumanager-dark .retry-conflict-card {
+  background: linear-gradient(100deg, rgba(6, 78, 59, 0.3), rgba(15, 23, 42, 0.5) 38%, rgba(5, 150, 105, 0.22)) !important;
+}
+html.kikoerumanager-dark .keep-new-card-orbit {
+  background: rgba(30, 58, 138, 0.55);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #93c5fd;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.2);
+}
+html.kikoerumanager-dark .retry-card-orbit {
+  background: rgba(6, 78, 59, 0.5);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #34d399;
+  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.18);
+}
+</style>

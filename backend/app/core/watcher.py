@@ -256,10 +256,87 @@ class FolderWatcher:
                 if self.config.watcher.delete_after_process and not task.skip_archive:
                     if task.status.value == "completed":
                         try:
-                            # 检查文件是否还存在（可能已被归档移动）
-                            if os.path.exists(task.source_path):
-                                await asyncio.to_thread(os.remove, task.source_path)
-                                logger.info(f"已删除原文件: {task.source_path}")
+                            source_path = task.source_path
+                            source_dir = os.path.dirname(source_path)
+                            source_basename = os.path.basename(source_path).lower()
+
+                            # 收集所有分卷文件（与 _archive_source_file 保持一致）
+                            files_to_delete = []
+                            if os.path.exists(source_path):
+                                files_to_delete.append(source_path)
+
+                            # 检测分卷模式并收集同组文件
+                            base_name = None
+                            zip_main = re.search(r'^(.*)\.zip$', source_basename, re.IGNORECASE)
+                            rar_main = re.search(r'^(.*)\.rar$', source_basename, re.IGNORECASE)
+                            seven_z_main = re.search(r'^(.*)\.7z$', source_basename, re.IGNORECASE)
+                            seven_z_001 = re.search(r'^(.*)\.7z\.001$', source_basename, re.IGNORECASE)
+                            part1_match = re.search(r'^(.*)\.part1\.(rar|zip|7z|exe)$', source_basename, re.IGNORECASE)
+                            if zip_main:
+                                base_name = zip_main.group(1)
+                            elif rar_main:
+                                base_name = rar_main.group(1)
+                            elif seven_z_main:
+                                base_name = seven_z_main.group(1)
+                            elif seven_z_001:
+                                base_name = seven_z_001.group(1)
+                            elif part1_match:
+                                base_name = part1_match.group(1)
+
+                            if base_name and os.path.isdir(source_dir):
+                                for entry in os.scandir(source_dir):
+                                    ename = entry.name.lower()
+                                    if entry.path == source_path:
+                                        continue
+                                    is_sibling = (
+                                        re.search(rf'^{re.escape(base_name)}\.z\d{{2}}$', ename, re.IGNORECASE) or
+                                        re.search(rf'^{re.escape(base_name)}\.r\d{{2}}$', ename, re.IGNORECASE) or
+                                        re.search(rf'^{re.escape(base_name)}\.7z\.\d{{3}}$', ename, re.IGNORECASE) or
+                                        re.search(rf'^{re.escape(base_name)}\.part\d+\.(rar|zip|7z|exe)$', ename, re.IGNORECASE) or
+                                        re.search(rf'^{re.escape(base_name)}\.part\d+$', ename, re.IGNORECASE) or
+                                        re.search(rf'^{re.escape(base_name)}\.e\d{{2}}$', ename, re.IGNORECASE)
+                                    )
+                                    if is_sibling and entry.path not in files_to_delete:
+                                        files_to_delete.append(entry.path)
+
+                            # 删除所有相关文件
+                            for fp in files_to_delete:
+                                try:
+                                    await asyncio.to_thread(os.remove, fp)
+                                    logger.info(f"已删除原文件: {fp}")
+                                except Exception as e:
+                                    logger.warning(f"删除原文件失败: {fp}, {e}")
+
+                            # 清理空源目录（逐级向上）
+                            if os.path.isdir(source_dir):
+                                config = get_config()
+                                protected = {
+                                    os.path.abspath(p) for p in [
+                                        getattr(config.storage, 'input_path', ''),
+                                        getattr(config.storage, 'processed_archives_path', ''),
+                                        getattr(config.storage, 'temp_path', ''),
+                                        getattr(config.storage, 'library_path', ''),
+                                        getattr(config.storage, 'existing_folders_path', ''),
+                                    ] if p
+                                }
+                                current = os.path.abspath(source_dir)
+                                while current:
+                                    parent = os.path.dirname(current)
+                                    if parent == current:
+                                        break
+                                    if not os.path.isdir(current):
+                                        break
+                                    if current in protected:
+                                        break
+                                    try:
+                                        if os.listdir(current):
+                                            break
+                                        await asyncio.to_thread(os.rmdir, current)
+                                        logger.info(f"已自动清理空源目录: {current}")
+                                        current = parent
+                                    except (FileNotFoundError, PermissionError, OSError) as exc:
+                                        logger.debug(f"清理空源目录停止: {current}, {exc}")
+                                        break
                         except Exception as e:
                             logger.warning(f"删除原文件失败: {task.source_path}, {e}")
                 elif task.skip_archive:

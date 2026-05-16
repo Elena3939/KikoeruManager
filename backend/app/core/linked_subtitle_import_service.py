@@ -2749,7 +2749,10 @@ class LinkedSubtitleImportService:
         except ValueError:
             return True
 
-        return (datetime.now() - refreshed_time).total_seconds() >= max(1, int(refresh_min_interval_seconds or 0))
+        # not_found 时使用更长间隔（5分钟），避免每 12s 轮询一次远端仍搜不到的作品
+        candidate_search_status = str(preview.get("candidate_search_status") or "").strip().lower()
+        effective_interval = 300 if candidate_search_status == "not_found" else max(1, int(refresh_min_interval_seconds or 0))
+        return (datetime.now() - refreshed_time).total_seconds() >= effective_interval
 
     async def queue_pending_archive_import(self, task: Task, rjcode: str, hint_password: Optional[str] = None) -> Dict[str, Any]:
         hinted_rjcode = self._extract_rjcode(

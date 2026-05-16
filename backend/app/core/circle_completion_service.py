@@ -353,22 +353,33 @@ class CircleCompletionService:
         canonical_info: Dict[str, Any],
         fallback_rjcode: str,
         metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
-    ) -> tuple[Dict[str, Any], str]:
+    ) -> tuple[Dict[str, Any], str, List[Dict[str, Any]]]:
         metadata_map = metadata_map or {}
         allowed = await self._list_public_display_variants(
             canonical_info,
             fallback_rjcode,
             metadata_map,
         )
-        for variant in allowed:
-            title = await self._resolve_public_display_title(
-                str(variant.get("rjcode") or ""),
-                link_type=variant.get("link_type"),
-                lang=variant.get("lang"),
-                metadata_map=metadata_map,
-            )
+        # 并发获取 title，优先读 metadata_map 避免重复 DLsite 请求
+        sem = asyncio.Semaphore(6)
+
+        async def _resolve_title(variant: Dict[str, Any]) -> tuple[Dict[str, Any], str]:
+            cached = str((metadata_map.get(self.normalize_rjcode(variant.get("rjcode"))) or {}).get("work_name") or "").strip()
+            if cached:
+                return variant, cached
+            async with sem:
+                title = await self._resolve_public_display_title(
+                    str(variant.get("rjcode") or ""),
+                    link_type=variant.get("link_type"),
+                    lang=variant.get("lang"),
+                    metadata_map=metadata_map,
+                )
+            return variant, title
+
+        resolved = await asyncio.gather(*[_resolve_title(v) for v in allowed])
+        for variant, title in resolved:
             if title:
-                return variant, title
+                return variant, title, allowed
         canonical_rjcode = self.normalize_rjcode(canonical_info.get("canonical_rjcode") or fallback_rjcode)
         fallback_variant = next((
             variant for variant in allowed
@@ -382,7 +393,7 @@ class CircleCompletionService:
                 "lang": "JPN",
             }
         fallback_title = str((metadata_map.get(self.normalize_rjcode(fallback_variant.get("rjcode"))) or {}).get("work_name") or "").strip()
-        return fallback_variant, fallback_title
+        return fallback_variant, fallback_title, allowed
 
     async def _list_public_display_variants(
         self,
@@ -397,6 +408,7 @@ class CircleCompletionService:
         original_variant: Optional[Dict[str, Any]] = None
         canonical_rjcode = self.normalize_rjcode(canonical_info.get("canonical_rjcode") or fallback_rjcode)
 
+        title_probe_items: List[Dict[str, Any]] = []
         for variant in variants:
             normalized = self.normalize_rjcode(variant.get("rjcode"))
             if not normalized or normalized in seen:
@@ -415,16 +427,32 @@ class CircleCompletionService:
                 if original_variant is None:
                     original_variant = normalized_variant
                 continue
-            title = await self._resolve_public_display_title(
-                normalized,
-                link_type=link_type,
-                lang=lang,
-                metadata_map=metadata_map,
-            )
-            if not title:
-                continue
-            public_variants.append(normalized_variant)
+            title_probe_items.append({
+                "variant": normalized_variant,
+                "link_type": link_type,
+                "lang": lang,
+            })
             seen.add(normalized)
+
+        # 并发解析非 original variant 的 title，减少串行 DLsite 请求
+        sem = asyncio.Semaphore(6)
+
+        async def _resolve_one(item: Dict[str, Any]) -> tuple[Dict[str, Any], str]:
+            async with sem:
+                title = await self._resolve_public_display_title(
+                    item["variant"]["rjcode"],
+                    link_type=item["link_type"],
+                    lang=item["lang"],
+                    metadata_map=metadata_map,
+                )
+            return item["variant"], title
+
+        resolved = await asyncio.gather(*[_resolve_one(it) for it in title_probe_items])
+        for variant, title in resolved:
+            if title:
+                public_variants.append(variant)
+
+        seen = {self.normalize_rjcode(v.get("rjcode")) for v in public_variants}
 
         if original_variant is not None:
             original_code = self.normalize_rjcode(original_variant.get("rjcode"))
@@ -457,35 +485,47 @@ class CircleCompletionService:
                 candidates.append(normalized)
 
         public_variants = await self._list_public_display_variants(canonical_info, fallback_rjcode, metadata_map)
-        for variant in public_variants:
+        sem = asyncio.Semaphore(6)
+
+        async def _check_variant(variant: Dict[str, Any]) -> Optional[str]:
             normalized = self.normalize_rjcode(variant.get("rjcode"))
             if not normalized:
-                continue
-            if not await self._is_public_catalog_variant(
-                normalized,
-                link_type=variant.get("link_type"),
-                lang=variant.get("lang"),
-            ):
-                continue
-            append_candidate(normalized)
+                return None
+            async with sem:
+                ok = await self._is_public_catalog_variant(
+                    normalized,
+                    link_type=variant.get("link_type"),
+                    lang=variant.get("lang"),
+                )
+            return normalized if ok else None
 
-        for candidate in list(extra_candidates or []):
+        checked = await asyncio.gather(*[_check_variant(v) for v in public_variants])
+        for normalized in checked:
+            if normalized:
+                append_candidate(normalized)
+
+        async def _check_extra(candidate: Any) -> Optional[str]:
             normalized = self.normalize_rjcode(candidate)
             if not normalized:
-                continue
+                return None
             variant = next((
                 item for item in public_variants
                 if self.normalize_rjcode(item.get("rjcode")) == normalized
             ), None)
             if variant is None:
-                continue
-            if not await self._is_public_catalog_variant(
-                normalized,
-                link_type=variant.get("link_type"),
-                lang=variant.get("lang"),
-            ):
-                continue
-            append_candidate(normalized)
+                return None
+            async with sem:
+                ok = await self._is_public_catalog_variant(
+                    normalized,
+                    link_type=variant.get("link_type"),
+                    lang=variant.get("lang"),
+                )
+            return normalized if ok else None
+
+        checked_extra = await asyncio.gather(*[_check_extra(c) for c in list(extra_candidates or [])])
+        for normalized in checked_extra:
+            if normalized:
+                append_candidate(normalized)
         return candidates
 
     async def _find_public_downloadable_work(
@@ -495,22 +535,17 @@ class CircleCompletionService:
         metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
         extra_candidates: Optional[List[Any]] = None,
     ) -> tuple[str, Optional[Dict[str, Any]]]:
-        cache_key = "|".join(await self._build_public_download_probe_candidates(
-            canonical_info,
-            fallback_rjcode,
-            metadata_map=metadata_map,
-            extra_candidates=extra_candidates,
-        ))
-        if cache_key:
-            cached = self._asmr_probe_cache.get(cache_key)
-            if cached is not None:
-                return cached
         probe_candidates = await self._build_public_download_probe_candidates(
             canonical_info,
             fallback_rjcode,
             metadata_map=metadata_map,
             extra_candidates=extra_candidates,
         )
+        cache_key = "|".join(probe_candidates)
+        if cache_key:
+            cached = self._asmr_probe_cache.get(cache_key)
+            if cached is not None:
+                return cached
         for probe_rjcode in probe_candidates:
             try:
                 work_info = await self.asmr_service.fetch_work_info(probe_rjcode)
@@ -645,14 +680,25 @@ class CircleCompletionService:
         markers = [
             "sou", "audio", "voice", "asmr", "音声", "ボイス", "ボイス・asmr",
             "囁き", "ささやき", "耳かき", "耳舐め", "舐耳", "バイノーラル",
-            "フォーリーサウンド", "wav",
+            "フォーリーサウンド", "フォーリー", "foley", "wav", "ku100",
             "音声・asmr", "双声道立体声", "人头麦", "舔耳", "低语", "治愈",
+            "拟声音效", "拟真音效", "耳语", "耳边",
         ]
         return any(marker in haystack for marker in markers)
 
     def _metadata_looks_like_asmr_work(self, metadata: Optional[Dict[str, Any]]) -> bool:
         metadata = metadata or {}
         title = str(metadata.get("work_name") or metadata.get("title") or "").strip().lower()
+
+        # 标题中的 KU100/フォーリー/バイノーラル 等是音声作品的强信号
+        # 即使 tags 中没有 "ASMR" 也能正确识别
+        audio_title_markers = [
+            "ku100", "フォーリー", "foley", "バイノーラル", "binaural",
+            "拟声音效", "拟真音效", "両耳", "耳语", "耳边", "人头麦",
+        ]
+        if any(marker in title for marker in audio_title_markers):
+            return True
+
         tags = self._extract_text_values(metadata.get("tags"))
         categories: List[str] = []
         for key in ("work_type", "work_category", "category", "category_name", "genre", "genre_name", "file_type", "file_format"):
@@ -662,6 +708,12 @@ class CircleCompletionService:
             return True
         if self._is_non_audio_package_text(haystack):
             return False
+
+        # 有明确声优信息且未被非音声标记拦截 → 视为音声作品
+        cvs = self._extract_text_values(metadata.get("cvs"))
+        if cvs:
+            return True
+
         return False
 
     def _build_dlsite_cover_url(self, rjcode: Any, is_unreleased: bool = False, resized: bool = False) -> str:
@@ -727,6 +779,20 @@ class CircleCompletionService:
         if not isinstance(product, dict) or not product:
             return None
 
+        # DLsite work_type 代码白名单: SOU = Sound/音声
+        work_type = str(product.get("work_type") or "").strip().upper()
+        if work_type == "SOU":
+            return True
+
+        # 标题强信号
+        title = str(product.get("work_name") or "").strip().lower()
+        audio_title_markers = [
+            "ku100", "フォーリー", "foley", "バイノーラル", "binaural",
+            "拟声音效", "拟真音效", "両耳", "耳语", "耳边", "人头麦",
+        ]
+        if any(marker in title for marker in audio_title_markers):
+            return True
+
         category_values: List[str] = []
         category_keys = [
             "work_type",
@@ -765,16 +831,9 @@ class CircleCompletionService:
         creators = product.get("creaters") if isinstance(product.get("creaters"), dict) else {}
         voice_by = creators.get("voice_by") if isinstance(creators, dict) else []
         if voice_by:
-            metadata_like = {
-                "work_name": product.get("work_name") or "",
-                "tags": [
-                    str((genre or {}).get("name") or "")
-                    for genre in list(product.get("genres") or [])
-                    if isinstance(genre, dict)
-                ],
-                "cvs": [],
-            }
-            return True if self._metadata_looks_like_asmr_work(metadata_like) else None
+            # 有明确声优配音信息 → 大概率是音声作品
+            # (游戏/漫画等非音声作品已被 category 检查拦截)
+            return True
 
         metadata_like = {
             "work_name": product.get("work_name") or "",
@@ -791,6 +850,21 @@ class CircleCompletionService:
         normalized = self.normalize_rjcode(rjcode)
         if not normalized:
             return False
+        # 优先用已传入的 metadata 判断，避免重复 DLsite API 请求
+        if metadata:
+            meta_result = self._metadata_looks_like_asmr_work(metadata)
+            if meta_result is True:
+                return True
+            # metadata 明确不是 ASMR 时也直接返回，省去 get_product_info
+            haystack = " ".join([
+                str(metadata.get("work_name") or metadata.get("title") or "").strip().lower(),
+                *self._extract_text_values(metadata.get("tags")),
+                *self._extract_text_values(metadata.get("work_category")),
+                *self._extract_text_values(metadata.get("category")),
+                *self._extract_text_values(metadata.get("file_format")),
+            ])
+            if self._is_non_audio_package_text(haystack):
+                return False
         try:
             product_info = await self.dlsite_service.get_product_info(normalized)
         except Exception:
@@ -798,7 +872,7 @@ class CircleCompletionService:
         product_result = self._product_looks_like_asmr_work((product_info or {}).get("product") if isinstance(product_info, dict) else None)
         if product_result is not None:
             return product_result
-        if self._metadata_looks_like_asmr_work(metadata):
+        if metadata and self._metadata_looks_like_asmr_work(metadata):
             return True
         return None
 
@@ -1820,10 +1894,12 @@ class CircleCompletionService:
             return {"maker_id": "", "maker_name": ""}
 
         total = min(len(seed_candidates), 8)
-        for index, item in enumerate(seed_candidates[:total], start=1):
+        sliced = seed_candidates[:total]
+
+        async def _probe_one(index: int, item: Dict[str, Any]) -> Optional[Dict[str, str]]:
             rjcode = self.normalize_rjcode(item.get("rjcode"))
             if not rjcode:
-                continue
+                return None
             try:
                 metadata = await self._fetch_metadata_dict(rjcode)
             except Exception:
@@ -1842,10 +1918,19 @@ class CircleCompletionService:
                 or not maker_name
                 or self._circle_name_loose_match(circle_query, maker_name)
             ):
-                return {
-                    "maker_id": maker_id,
-                    "maker_name": maker_name,
-                }
+                return {"maker_id": maker_id, "maker_name": maker_name}
+            return None
+
+        sem = asyncio.Semaphore(6)
+
+        async def _wrapped(index: int, item: Dict[str, Any]) -> Optional[Dict[str, str]]:
+            async with sem:
+                return await _probe_one(index, item)
+
+        results = await asyncio.gather(*[_wrapped(i, item) for i, item in enumerate(sliced, start=1)])
+        for res in results:
+            if res:
+                return res
         return {"maker_id": "", "maker_name": ""}
 
     async def _resolve_identity_from_candidates(
@@ -1859,13 +1944,6 @@ class CircleCompletionService:
         if not candidates:
             return {"maker_id": "", "maker_name": ""}
 
-        # ★ 修复 RG42470 持久化误识别：以前这里直接选第一个有 maker_id 的候选
-        # （通常来自 DLsite 关键字搜索的不相关作品），不做 maker_name 校验就
-        # 一路写进 CircleCatalog.circle_id，下次再补全同一关键字时会把这个
-        # 错误 maker_id 当 hint 又抓一次 profile，profile 返回 0 作品 + 关键字
-        # 候选又被 fetch_candidate 用同一个 maker_id 全部过滤掉，整条链路死循环。
-        # 现在要求 preferred 的 maker_name 跟 circle_query 双向宽松匹配，匹配
-        # 不上的就别走捷径，老老实实进下面的 metadata 二次探测路径。
         preferred = next(
             (
                 item
@@ -1882,10 +1960,12 @@ class CircleCompletionService:
             }
 
         total = min(len(candidates), 16)
-        for index, item in enumerate(candidates[:total], start=1):
+        sliced = candidates[:total]
+
+        async def _probe_one(index: int, item: Dict[str, Any]) -> Optional[Dict[str, str]]:
             rjcode = self.normalize_rjcode(item.get("rjcode"))
             if not rjcode:
-                continue
+                return None
             try:
                 metadata = await self._fetch_metadata_dict(rjcode)
             except Exception:
@@ -1904,10 +1984,19 @@ class CircleCompletionService:
                 or not maker_name
                 or self._circle_name_loose_match(circle_query, maker_name)
             ):
-                return {
-                    "maker_id": maker_id,
-                    "maker_name": maker_name,
-                }
+                return {"maker_id": maker_id, "maker_name": maker_name}
+            return None
+
+        sem = asyncio.Semaphore(6)
+
+        async def _wrapped(index: int, item: Dict[str, Any]) -> Optional[Dict[str, str]]:
+            async with sem:
+                return await _probe_one(index, item)
+
+        results = await asyncio.gather(*[_wrapped(i, item) for i, item in enumerate(sliced, start=1)])
+        for res in results:
+            if res:
+                return res
         return {"maker_id": "", "maker_name": ""}
 
     def _build_invalid_circle_query_hint(
@@ -2121,11 +2210,17 @@ class CircleCompletionService:
         normalized = self.normalize_circle_name(circle_query)
         db = SessionLocal()
         try:
-            rows = (
-                db.query(WorkMetadata)
-                .filter(WorkMetadata.maker_name.isnot(None))
-                .all()
-            )
+            from sqlalchemy import or_ as sa_or, func as sa_func
+            query = db.query(WorkMetadata).filter(WorkMetadata.maker_name.isnot(None))
+            if normalized:
+                pattern = f"%{normalized}%"
+                query = query.filter(
+                    sa_or(
+                        sa_func.lower(WorkMetadata.maker_name).like(pattern),
+                        sa_func.lower(WorkMetadata.circle_name).like(pattern),
+                    )
+                )
+            rows = query.all()
             results = []
             for row in rows:
                 maker_name = str(row.maker_name or "").strip()
@@ -2159,19 +2254,26 @@ class CircleCompletionService:
             db.close()
 
         merged: Dict[str, Dict[str, Any]] = {}
-        for snapshot in snapshots:
+        lock = asyncio.Lock()
+        sem = asyncio.Semaphore(16)
+
+        async def _resolve_and_merge(snapshot: Any) -> None:
             rjcode = self.normalize_rjcode(snapshot.rjcode)
             if not rjcode:
-                continue
-            canonical_info = await self.resolve_canonical_rj(rjcode)
+                return
+            async with sem:
+                canonical_info = await self.resolve_canonical_rj(rjcode)
             canonical = canonical_info["canonical_rjcode"] or rjcode
-            bucket = merged.setdefault(canonical, {
-                "owned_rjcodes": set(),
-                "primary_folder_path": snapshot.folder_path,
-                "folder_count": 0,
-            })
-            bucket["owned_rjcodes"].add(rjcode)
-            bucket["folder_count"] += 1
+            async with lock:
+                bucket = merged.setdefault(canonical, {
+                    "owned_rjcodes": set(),
+                    "primary_folder_path": snapshot.folder_path,
+                    "folder_count": 0,
+                })
+                bucket["owned_rjcodes"].add(rjcode)
+                bucket["folder_count"] += 1
+
+        await asyncio.gather(*[_resolve_and_merge(s) for s in snapshots])
 
         db = SessionLocal()
         try:
@@ -2625,10 +2727,18 @@ class CircleCompletionService:
                     await self._fetch_metadata_dict(rjcode_norm)
                 except Exception:
                     pass
+                canonical_info = {}
                 try:
-                    await self.resolve_canonical_rj(rjcode_norm, refresh=force_refresh)
+                    canonical_info = await self.resolve_canonical_rj(rjcode_norm, refresh=force_refresh)
                 except Exception:
                     pass
+                # 同时预取 canonical 的 metadata，避免 prepare_candidate 中的冷启动请求
+                canonical = canonical_info.get("canonical_rjcode") or rjcode_norm
+                if canonical and canonical != rjcode_norm:
+                    try:
+                        await self._fetch_metadata_dict(canonical)
+                    except Exception:
+                        pass
 
         _prefetch_rjcodes = [self.normalize_rjcode(c.get("rjcode")) for c in combined_candidates]
         _prefetch_rjcodes = [r for r in _prefetch_rjcodes if r]
@@ -2661,12 +2771,7 @@ class CircleCompletionService:
                     self.normalize_rjcode(rjcode): metadata or {},
                     self.normalize_rjcode(canonical): canonical_metadata or {},
                 }
-                public_variants = await self._list_public_display_variants(
-                    canonical_info,
-                    canonical or rjcode,
-                    display_metadata_map,
-                )
-                preferred_variant, preferred_title = await self._pick_public_display_variant_and_title(
+                preferred_variant, preferred_title, allowed_variants = await self._pick_public_display_variant_and_title(
                     canonical_info,
                     canonical or rjcode,
                     display_metadata_map,
@@ -2696,7 +2801,7 @@ class CircleCompletionService:
                 "canonical_metadata": canonical_metadata or {},
                 "preferred_variant": preferred_variant,
                 "preferred_title": preferred_title,
-                "public_linked_rjcodes": [variant["rjcode"] for variant in public_variants if variant.get("rjcode")],
+                "public_linked_rjcodes": [variant["rjcode"] for variant in allowed_variants if variant.get("rjcode")],
             }
 
         for future in asyncio.as_completed([prepare_candidate(item) for item in combined_candidates]):
@@ -2871,10 +2976,18 @@ class CircleCompletionService:
                         "link_type": str(link_row.link_type or ""),
                         "lang": str(link_row.lang or ""),
                     }
+                # 一次性收集所有需要查询的 rjcodes，批量查询 metadata，避免 N 次 DB 往返
+                all_linked_rjcodes: Set[str] = set()
+                for item in aggregated.values():
+                    for code in list(item.get("linked_rjcodes") or [item.get("display_rjcode") or ""]):
+                        norm = self.normalize_rjcode(code)
+                        if norm:
+                            all_linked_rjcodes.add(norm)
+                bulk_metadata_map = self._load_cached_metadata_map(db, list(all_linked_rjcodes))
                 payloads = []
                 for canonical, item in aggregated.items():
                     linked_rjcodes = list(item.get("linked_rjcodes") or [item.get("display_rjcode") or canonical])
-                    metadata_map = self._load_cached_metadata_map(db, linked_rjcodes)
+                    metadata_map = {rj: bulk_metadata_map.get(rj, {}) for rj in linked_rjcodes}
                     canonical_info = {
                         "canonical_rjcode": canonical,
                         "linked_rjcodes": linked_rjcodes,
@@ -3823,17 +3936,12 @@ class CircleCompletionService:
                     metadata_map[normalized] = fetched_metadata or {}
                     if fetched_metadata and not metadata:
                         metadata = fetched_metadata
-                public_variants = await self._list_public_display_variants(
+                preferred_variant, preferred_title, allowed_variants = await self._pick_public_display_variant_and_title(
                     canonical_info,
                     canonical or preferred_seed,
                     metadata_map,
                 )
-                linked_rjcodes = [variant["rjcode"] for variant in public_variants if variant.get("rjcode")]
-                preferred_variant, preferred_title = await self._pick_public_display_variant_and_title(
-                    canonical_info,
-                    canonical or preferred_seed,
-                    metadata_map,
-                )
+                linked_rjcodes = [variant["rjcode"] for variant in allowed_variants if variant.get("rjcode")]
 
                 probe_candidates = await self._build_public_download_probe_candidates(
                     canonical_info,

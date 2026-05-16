@@ -3457,7 +3457,17 @@ async def get_conflicts(include_stats: bool = False):
                     _nm = _normalize_conflict_metadata(conflict.new_metadata)
                     _recovery_task_id = str((_nm.get("resolution_task_id") or conflict.task_id or "")).strip()
                     linked_task_status = _get_linked_task_status(_recovery_task_id)
-                    if linked_task_status not in active_task_statuses:
+                    # 特殊情况：resolution_task_id 未设置（KEEP_NEW 历史 bug，已补存）且
+                    # fallback 的原始任务是 WAITING_MANUAL（等待用户处理）。
+                    # 此时 resolution_task_state=="queued" 说明 KEEP_NEW 曾被触发但任务从未真正创建，
+                    # WAITING_MANUAL 不代表 resolution 任务仍在运行，应强制恢复为 PENDING。
+                    _is_stale_keep_new = (
+                        not _nm.get("resolution_task_id")
+                        and str(_nm.get("resolution_task_state") or "").lower() == "queued"
+                        and str(_nm.get("resolution_action") or "").upper() == "KEEP_NEW"
+                        and linked_task_status == "waiting_manual"
+                    )
+                    if linked_task_status not in active_task_statuses or _is_stale_keep_new:
                         conflict.status = "PENDING"
                         next_metadata = _normalize_conflict_metadata(conflict.new_metadata)
                         next_metadata["resolution_task_state"] = "stale_processing_recovered"
@@ -4078,6 +4088,10 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     task.task_metadata["parent_conflict_task_id"] = str(conflict.task_id)
                 await engine.submit(task)
                 conflict.task_id = task.id
+                conflict.new_metadata = {
+                    **dict(conflict.new_metadata or {}),
+                    "resolution_task_id": task.id,
+                }
                 db.commit()
                 # 提交完新任务后，再把原 waiting 那条活动日志改写为"已保留新版"，
                 # 避免操作记录里关联事件长期停留在"等待处理"。
