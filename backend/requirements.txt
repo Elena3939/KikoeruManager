@@ -7,7 +7,11 @@ pyyaml>=6.0.1
 watchdog>=3.0.0
 filetype>=1.2.0
 requests>=2.31.0
-brotli>=1.1.0
+# httpx 在响应 Content-Encoding=br 时需要 brotli/brotlicffi 解压；
+# 用 brotlicffi 是因为它纯 cffi 实现，对新 Python 版本（3.13/3.14+）兼容性
+# 比 brotli（C 扩展）好得多。缺这个包 DLsite 返回的 br 压缩页面会被
+# httpx 当作原始字节，response.text 就是乱码，社团补全 / 关键字搜索全线挂掉。
+brotlicffi>=1.1.0
 httpx>=0.25.0
 python-multipart>=0.0.6
 aiofiles>=23.2.1

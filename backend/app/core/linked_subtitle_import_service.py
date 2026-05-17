@@ -2891,93 +2891,145 @@ class LinkedSubtitleImportService:
         refresh_candidates: bool = True,
         refresh_min_interval_seconds: int = PENDING_REFRESH_MIN_INTERVAL_SECONDS,
     ) -> List[Dict[str, Any]]:
+        # ★ 性能重构：原来一个 db session 跨整个循环 + 多次 await（_repair_cached_preview_rj_fields
+        # 和 _refresh_pending_preview_candidates 都是 HTTP IO），同时被字幕补配工作台
+        # 高频调用（前端轮询），导致占用 connection pool。改为：
+        # Phase A 短读 expunge → Phase B 无 session 跑 IO 算决策 → Phase C 短写落库。
+        # Phase A: 短读
         db = next(get_db())
         try:
             rows = db.query(ConflictWork).filter(
                 ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
                 ConflictWork.status == "PENDING",
             ).order_by(ConflictWork.created_at.desc()).all()
-            items: List[Dict[str, Any]] = []
-            updated = False
             for row in rows:
-                try:
-                    original_preview = dict((row.analysis_info or {}).get("preview") or {})
-                    preview = await self._repair_cached_preview_rj_fields(
-                        original_preview,
-                        source_path=str(row.new_path or ""),
-                    )
-                    if self._should_refresh_pending_record(
-                        row,
-                        preview,
-                        refresh_candidates=refresh_candidates,
-                        refresh_min_interval_seconds=refresh_min_interval_seconds,
-                    ):
-                        refreshed_preview = await self._refresh_pending_preview_candidates(preview)
-                    else:
-                        refreshed_preview = self._refresh_preview_execution_state(dict(preview or {}))
-                    if not self._should_create_pending_import(refreshed_preview):
-                        converted_conflict = None
-                        if self._is_existing_subtitle_duplicate_preview(refreshed_preview):
-                            converted_conflict = self._upsert_existing_subtitle_conflict(
-                                db,
-                                source_path=str(row.new_path or ""),
-                                preview=refreshed_preview,
-                                task_id=str(row.task_id or "").strip() or None,
-                                queue_origin=str((row.new_metadata or {}).get("queue_origin") or "auto_process"),
-                            )
-                        stage_dir = str(
-                            refreshed_preview.get("source_subtitle_dir") or refreshed_preview.get("staged_subtitle_dir") or ""
-                        ).strip()
-                        if stage_dir:
-                            self._cleanup_stage_dir(stage_dir)
-                        if converted_conflict is row:
-                            updated = True
-                            continue
-                        db.delete(row)
-                        updated = True
-                        continue
-                    if refreshed_preview != original_preview:
-                        row.analysis_info = {
-                            **(row.analysis_info or {}),
-                            "preview": refreshed_preview,
-                            "candidate_refreshed_at": datetime.now().isoformat(),
-                        }
-                        updated = True
-                    items.append(self._serialize_pending_record(row))
-                except Exception as exc:
-                    logger.exception(
-                        "[字幕补配] 构建待处理预检单失败，已跳过: record_id=%s task_id=%s source=%s",
-                        getattr(row, "id", ""),
-                        getattr(row, "task_id", ""),
-                        getattr(row, "new_path", ""),
-                    )
-                    fallback_preview = self._refresh_preview_execution_state(
-                        dict((row.analysis_info or {}).get("preview") or {})
-                    )
-                    fallback_preview["execute_reason"] = str(
-                        fallback_preview.get("execute_reason")
-                        or f"预检单刷新失败：{str(exc)}"
-                    )
-                    fallback_preview["reason"] = str(
-                        fallback_preview.get("reason")
-                        or fallback_preview.get("execute_reason")
-                        or ""
-                    )
-                    items.append({
-                        "id": row.id,
-                        "task_id": row.task_id,
-                        "status": row.status,
-                        "created_at": row.created_at.isoformat() if row.created_at else None,
-                        "source_path": row.new_path,
-                        "source_mode": (row.analysis_info or {}).get("source_mode") or self.PENDING_SOURCE_MODE,
-                        "preview": fallback_preview,
-                        "can_execute": False,
-                    })
-            if updated:
-                db.commit()
-            return items
+                db.expunge(row)
         finally:
             db.close()
+
+        # Phase B: 无 session 跑 IO，算每行的决策
+        items: List[Dict[str, Any]] = []
+        decisions: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                original_preview = dict((row.analysis_info or {}).get("preview") or {})
+                preview = await self._repair_cached_preview_rj_fields(
+                    original_preview,
+                    source_path=str(row.new_path or ""),
+                )
+                if self._should_refresh_pending_record(
+                    row,
+                    preview,
+                    refresh_candidates=refresh_candidates,
+                    refresh_min_interval_seconds=refresh_min_interval_seconds,
+                ):
+                    refreshed_preview = await self._refresh_pending_preview_candidates(preview)
+                else:
+                    refreshed_preview = self._refresh_preview_execution_state(dict(preview or {}))
+
+                if not self._should_create_pending_import(refreshed_preview):
+                    stage_dir = str(
+                        refreshed_preview.get("source_subtitle_dir") or refreshed_preview.get("staged_subtitle_dir") or ""
+                    ).strip()
+                    if stage_dir:
+                        self._cleanup_stage_dir(stage_dir)
+                    if self._is_existing_subtitle_duplicate_preview(refreshed_preview):
+                        decisions.append({
+                            "record_id": str(row.id),
+                            "action": "convert_existing_subtitle",
+                            "source_path": str(row.new_path or ""),
+                            "preview": refreshed_preview,
+                            "task_id": str(row.task_id or "").strip() or None,
+                            "queue_origin": str((row.new_metadata or {}).get("queue_origin") or "auto_process"),
+                        })
+                    else:
+                        decisions.append({
+                            "record_id": str(row.id),
+                            "action": "delete",
+                        })
+                    continue
+
+                # 保留为 pending：可能要更新 analysis_info（新 preview）
+                next_analysis_info = None
+                if refreshed_preview != original_preview:
+                    next_analysis_info = {
+                        **(row.analysis_info or {}),
+                        "preview": refreshed_preview,
+                        "candidate_refreshed_at": datetime.now().isoformat(),
+                    }
+                    decisions.append({
+                        "record_id": str(row.id),
+                        "action": "refresh_preview",
+                        "next_analysis_info": next_analysis_info,
+                    })
+                # 序列化用最新 preview（即使没落库也不影响这次返回值）
+                serialize_row = row
+                if next_analysis_info is not None:
+                    # detached 实例直接改 analysis_info 字段不会影响 db，安全
+                    serialize_row.analysis_info = next_analysis_info
+                items.append(self._serialize_pending_record(serialize_row))
+            except Exception as exc:
+                logger.exception(
+                    "[字幕补配] 构建待处理预检单失败，已跳过: record_id=%s task_id=%s source=%s",
+                    getattr(row, "id", ""),
+                    getattr(row, "task_id", ""),
+                    getattr(row, "new_path", ""),
+                )
+                fallback_preview = self._refresh_preview_execution_state(
+                    dict((row.analysis_info or {}).get("preview") or {})
+                )
+                fallback_preview["execute_reason"] = str(
+                    fallback_preview.get("execute_reason")
+                    or f"预检单刷新失败：{str(exc)}"
+                )
+                fallback_preview["reason"] = str(
+                    fallback_preview.get("reason")
+                    or fallback_preview.get("execute_reason")
+                    or ""
+                )
+                items.append({
+                    "id": row.id,
+                    "task_id": row.task_id,
+                    "status": row.status,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "source_path": row.new_path,
+                    "source_mode": (row.analysis_info or {}).get("source_mode") or self.PENDING_SOURCE_MODE,
+                    "preview": fallback_preview,
+                    "can_execute": False,
+                })
+
+        # Phase C: 短写 —— 应用决策
+        if decisions:
+            write_db = next(get_db())
+            try:
+                for decision in decisions:
+                    record_id = decision["record_id"]
+                    fresh = write_db.query(ConflictWork).filter(
+                        ConflictWork.id == record_id,
+                    ).first()
+                    if not fresh:
+                        continue  # 期间已被并发清理
+                    action = decision["action"]
+                    if action == "refresh_preview":
+                        fresh.analysis_info = decision["next_analysis_info"]
+                    elif action == "convert_existing_subtitle":
+                        upserted = self._upsert_existing_subtitle_conflict(
+                            write_db,
+                            source_path=decision["source_path"],
+                            preview=decision["preview"],
+                            task_id=decision["task_id"],
+                            queue_origin=decision["queue_origin"],
+                        )
+                        # upsert 内部按 path+PENDING 查询，正常情况下命中 fresh 本体
+                        if upserted is not fresh and getattr(upserted, "id", None) != getattr(fresh, "id", None):
+                            write_db.delete(fresh)
+                    elif action == "delete":
+                        write_db.delete(fresh)
+                write_db.commit()
+            finally:
+                write_db.close()
+
+        return items
 
     async def clear_pending_imports(
         self,
@@ -3095,6 +3147,10 @@ class LinkedSubtitleImportService:
         use_filter_rules: bool = False,
         subtitle_filter_rules: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
+        # ★ 性能重构：原来一个 db session 跨整个 execute_archive_import（解压 + 复制
+        # 数 GB 文件，可能跑分钟级），把 connection pool 槽位长期占住，导致其他
+        # 请求拿不到连接。改为：短读拿快照 → 无 session 跑长 IO → 短写落库。
+        # Phase A: 短读
         db = next(get_db())
         try:
             record = db.query(ConflictWork).filter(
@@ -3104,31 +3160,49 @@ class LinkedSubtitleImportService:
             ).first()
             if not record:
                 raise ValueError("字幕补配预检单不存在")
+            cached_analysis_info = dict(record.analysis_info or {})
+            record_new_path = str(record.new_path or "")
+        finally:
+            db.close()
 
-            record_preview = await self._refresh_pending_preview_candidates(
-                await self._repair_cached_preview_rj_fields(
-                    dict((record.analysis_info or {}).get("preview") or {}),
-                    source_path=str(record.new_path or ""),
-                )
+        # Phase B: 无 session 跑长 IO（候选刷新 + 解压导入）
+        record_preview = await self._refresh_pending_preview_candidates(
+            await self._repair_cached_preview_rj_fields(
+                dict(cached_analysis_info.get("preview") or {}),
+                source_path=record_new_path,
             )
-            record.analysis_info = {
-                **(record.analysis_info or {}),
-                "preview": record_preview,
-                "candidate_refreshed_at": datetime.now().isoformat(),
-            }
-            result = await self.execute_archive_import(
-                str(record.new_path or ""),
-                target_library_id=target_library_id,
-                target_folder_path=target_folder_path,
-                prepared_preview=record_preview,
-                use_filter_rules=use_filter_rules,
-                subtitle_filter_rules=subtitle_filter_rules,
-                import_reason="正常解压检测后的关联字幕补配导入",
-                source_mode="linked_translation_archive_import",
-            )
+        )
+        next_analysis_info_after_refresh = {
+            **cached_analysis_info,
+            "preview": record_preview,
+            "candidate_refreshed_at": datetime.now().isoformat(),
+        }
+        result = await self.execute_archive_import(
+            record_new_path,
+            target_library_id=target_library_id,
+            target_folder_path=target_folder_path,
+            prepared_preview=record_preview,
+            use_filter_rules=use_filter_rules,
+            subtitle_filter_rules=subtitle_filter_rules,
+            import_reason="正常解压检测后的关联字幕补配导入",
+            source_mode="linked_translation_archive_import",
+        )
+
+        # Phase C: 短写 —— 重新打开 session，重新 fetch record 落库
+        write_db = next(get_db())
+        archive_source_path = ""
+        archive_task_id = ""
+        try:
+            fresh_record = write_db.query(ConflictWork).filter(
+                ConflictWork.id == record_id,
+            ).first()
+            if not fresh_record:
+                # 极端情况：执行期间 record 被并发删除。导入结果还是返回，但不再落库
+                return result
 
             if not result.get("success"):
-                db.commit()
+                fresh_record.analysis_info = next_analysis_info_after_refresh
+                write_db.commit()
                 return result
 
             self._cleanup_stage_dir(
@@ -3137,9 +3211,9 @@ class LinkedSubtitleImportService:
             final_preview = dict(result.get("preview") or {})
             final_preview.pop("source_subtitle_dir", None)
             final_preview.pop("staged_subtitle_dir", None)
-            record.status = "IMPORTED"
-            record.analysis_info = {
-                **(record.analysis_info or {}),
+            fresh_record.status = "IMPORTED"
+            fresh_record.analysis_info = {
+                **next_analysis_info_after_refresh,
                 "preview": final_preview,
                 "executed_at": datetime.now().isoformat(),
                 "import_result_summary": {
@@ -3149,45 +3223,45 @@ class LinkedSubtitleImportService:
                     "task_id": (result.get("task") or {}).get("id"),
                 },
             }
-            db.commit()
+            write_db.commit()
 
-            # ★ 性能修复：源压缩包归档（可能跨卷搬 GB 文件）改为后台异步执行，
-            # 让 HTTP 响应立刻返回 task.id 给前端跳转工作台。归档本身耗时数十秒
-            # 到数分钟时会把响应卡过 60s HTTP timeout，前端虽然显示"超时"但
-            # backend 实际已经成功导入，工作台没打开造成"卡死"假象。
-            archive_source_path = str(record.new_path or "").strip()
-            archive_task_id = str(record.task_id or "")
-
-            engine = get_task_engine()
-            if record.task_id:
-                original_task = engine.get_task(str(record.task_id))
-                if original_task:
-                    original_task.output_path = (result.get("target_candidate") or {}).get("folder_path", "")
-                    original_task.status = TaskStatus.COMPLETED
-                    original_task.progress = 100
-                    original_task.completed_at = datetime.now()
-                    if bool((result.get("import_result") or {}).get("awaiting_manual_match")):
-                        original_task.current_step = "已转入字幕补配并完成原始字幕导入"
-                    else:
-                        original_task.current_step = "目标目录为空，已按新作品直接导入字幕"
-
-            # fire-and-forget：在主流程返回后继续执行归档，不阻塞 HTTP 响应
-            try:
-                asyncio.create_task(
-                    self._archive_source_after_execute_async(
-                        source_path=archive_source_path,
-                        task_id=archive_task_id,
-                    )
-                )
-            except Exception:
-                logger.warning(
-                    "[字幕补配] 调度后台源文件归档失败（不影响主流程） source=%s",
-                    archive_source_path, exc_info=True,
-                )
-
-            return result
+            archive_source_path = str(fresh_record.new_path or "").strip()
+            archive_task_id = str(fresh_record.task_id or "")
         finally:
-            db.close()
+            write_db.close()
+
+        # ★ 性能修复：源压缩包归档（可能跨卷搬 GB 文件）改为后台异步执行，
+        # 让 HTTP 响应立刻返回 task.id 给前端跳转工作台。归档本身耗时数十秒
+        # 到数分钟时会把响应卡过 60s HTTP timeout，前端虽然显示"超时"但
+        # backend 实际已经成功导入，工作台没打开造成"卡死"假象。
+        engine = get_task_engine()
+        if archive_task_id:
+            original_task = engine.get_task(archive_task_id)
+            if original_task:
+                original_task.output_path = (result.get("target_candidate") or {}).get("folder_path", "")
+                original_task.status = TaskStatus.COMPLETED
+                original_task.progress = 100
+                original_task.completed_at = datetime.now()
+                if bool((result.get("import_result") or {}).get("awaiting_manual_match")):
+                    original_task.current_step = "已转入字幕补配并完成原始字幕导入"
+                else:
+                    original_task.current_step = "目标目录为空，已按新作品直接导入字幕"
+
+        # fire-and-forget：在主流程返回后继续执行归档，不阻塞 HTTP 响应
+        try:
+            asyncio.create_task(
+                self._archive_source_after_execute_async(
+                    source_path=archive_source_path,
+                    task_id=archive_task_id,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "[字幕补配] 调度后台源文件归档失败（不影响主流程） source=%s",
+                archive_source_path, exc_info=True,
+            )
+
+        return result
 
 
 _linked_subtitle_import_service: Optional[LinkedSubtitleImportService] = None

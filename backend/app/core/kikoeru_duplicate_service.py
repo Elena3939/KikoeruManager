@@ -78,6 +78,16 @@ class KikoeruDuplicateService:
         self._cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=cache_ttl, name="kikoeru.result")
         # circle_id 缓存条目很小，但同样需要有上限。TTL 取 max(cache_ttl, 300)。
         self._circle_id_cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=max(cache_ttl, 300), name="kikoeru.circle_id")
+        # ★ 性能优化：search 端点的 raw response 任务级缓存。
+        # 之前 ``check_duplicate`` 在 ``_cache`` 命中"未命中"且本次 has_linkage_context
+        # 时会跳过 cache 重新打 search，给广义 linkage 匹配一次机会——但
+        # ``_build_search_url`` 是按 RJ keyword 拼的，response 不会因为 linkage 上下文不同
+        # 而变化，重新 search 一定还是同样的"未命中"raw data。这条路径在大批量任务里
+        # 反复打无效 search（33 候选作品 × 多个关联 RJ × 每个 candidate 流程都进一次
+        # = 数千次浪费）。改后：把 raw data 也缓存按 RJ key，cache 命中"未命中"+linkage
+        # 时复用 raw data 重新 _parse_search_result（CPU 操作，不打 HTTP），就能给
+        # 广义匹配一次机会而不需要触网。TTL 跟 _cache 一致。
+        self._search_response_cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=cache_ttl, name="kikoeru.search_raw")
         self._session: Optional[aiohttp.ClientSession] = None
 
     def _get_circle_id_cache(self, keyword: str) -> int:
@@ -986,8 +996,32 @@ class KikoeruDuplicateService:
                 if cached.is_found or not has_linkage_context:
                     logger.debug(f"Kikoeru 查重缓存命中: {rjcode}")
                     return cached
+                # ★ 性能优化：cache 是"未命中"且本次提供了关联链——之前会跳过 cache
+                # 重新打 search，但 search keyword 是 RJ 号，response 不会因 linkage
+                # 上下文而变。先尝试复用 raw response 重新 _parse_search_result（CPU 操作），
+                # 给广义匹配一次机会而不必触网。raw 也没缓存才 fall through 到 HTTP。
+                cached_raw = self._search_response_cache.get(rjcode)
+                if cached_raw is not None:
+                    raw_data, _raw_ts = cached_raw
+                    logger.debug(
+                        "[Kikoeru] 缓存为未命中但 raw response 仍在缓存，复用 raw 重 parse 给广义匹配: %s",
+                        rjcode,
+                    )
+                    session = await self._get_session()
+                    headers = self._get_headers()
+                    result = self._parse_search_result(
+                        rjcode, raw_data, extra_match_rjcodes=extra_match_rjcodes
+                    )
+                    if result.is_found:
+                        # raw 复用的广义命中需要补全 tracks subtitle 状态（依赖 HTTP 但只 1 次 GET）。
+                        result = await self._hydrate_track_subtitle_state(result, session, headers)
+                        self._maybe_cache_result(rjcode, result, use_cache)
+                        return result
+                    # 复用 raw 重 parse 后仍未命中：返回 cached（含 work_id 兜底已尝试过的状态），
+                    # 不再触网。
+                    return cached
                 logger.debug(
-                    "[Kikoeru] 缓存为未命中，但本次提供了关联链，重新查询尝试广义匹配: %s",
+                    "[Kikoeru] 缓存为未命中，本次提供了关联链且 raw 也已过期，重新 search 尝试广义匹配: %s",
                     rjcode,
                 )
 
@@ -1038,6 +1072,9 @@ class KikoeruDuplicateService:
                             ) as retry_response:
                                 if retry_response.status == 200:
                                     data = await retry_response.json()
+                                    # ★ 写 raw response cache（401 重登路径），
+                                    # 后续同 RJ 带新 linkage 进来时可复用 raw 重 parse 不重新 search。
+                                    self._search_response_cache[rjcode] = (data, datetime.now())
                                     result = self._parse_search_result(
                                         rjcode, data, extra_match_rjcodes=extra_match_rjcodes
                                     )
@@ -1076,6 +1113,9 @@ class KikoeruDuplicateService:
 
                 data = await response.json()
                 logger.info(f"[Kikoeru] 响应数据: {data}")
+                # ★ 写 raw response cache（正常路径），下次同 RJ 带新 linkage 进来
+                # 时可复用 raw 重 parse 不重新 search。
+                self._search_response_cache[rjcode] = (data, datetime.now())
 
                 result = self._parse_search_result(
                     rjcode, data, extra_match_rjcodes=extra_match_rjcodes
@@ -1712,6 +1752,7 @@ class KikoeruDuplicateService:
     def clear_cache(self):
         """清除缓存"""
         self._cache.clear()
+        self._search_response_cache.clear()
         logger.info("Kikoeru 查重缓存已清除")
 
 

@@ -22,6 +22,35 @@ from .ttl_cache import TTLCache
 logger = logging.getLogger(__name__)
 
 
+def _detect_brotli_support() -> bool:
+    """检测当前 Python 环境是否能解压 Content-Encoding=br 响应。
+
+    httpx 的 BrotliDecoder 会在使用时才尝试 import brotli/brotlicffi；
+    如果两个都没装，response.text 就会拿到原始压缩字节，没人解码。
+    在启动期主动探测一次，便于把 Accept-Encoding 调整成只用 gzip/deflate，
+    避免远端给 br 压缩之后整页变乱码。
+    """
+    try:
+        import brotlicffi  # noqa: F401
+        return True
+    except Exception:
+        pass
+    try:
+        import brotli  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+_BROTLI_AVAILABLE = _detect_brotli_support()
+if not _BROTLI_AVAILABLE:
+    logger.warning(
+        "[DLsite] 未检测到 brotli/brotlicffi 库，Accept-Encoding 将自动降级为 'gzip, deflate'，"
+        "DLsite 不会再返回 br 压缩响应，避免 HTML 解析为乱码导致社团补全 / 关键字搜索全线挂掉。"
+        "强烈建议执行 `pip install brotlicffi` 恢复完整压缩支持。"
+    )
+
+
 @dataclass
 class TranslationInfo:
     """翻译信息"""
@@ -66,6 +95,13 @@ class DLsiteApiService:
         self._inflight: Dict[str, asyncio.Task] = {}
         # translation_info 专项缓存，key=workno，避免重复走 get_product_info
         self._translation_info_cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=86400, name="dlsite.translation_info")
+        # ★ 性能优化：``get_linked_works`` 函数级 inflight 去重 + cache。
+        # 之前没 cache 时，一次 33 个候选的社团补全任务跑出了 2819 次 ``get_linked_works`` 调用
+        # （每个 candidate 在 prepare_candidate / resolve_canonical_rj / Kikoeru
+        # check_duplicate_with_linkages 三处都会触发一次，每次都做完整递归
+        # 包括对所有翻译版子探测）。加 cache 后，同一任务内同一个 RJ 只算一次完整递归，
+        # 其他调用走 self.cache 短路；inflight 防止并发协程同时算同一 RJ。
+        self._linked_works_inflight: Dict[str, asyncio.Task] = {}
 
     def _normalize_workno(self, rjcode: str) -> str:
         value = str(rjcode or '').strip().upper()
@@ -117,11 +153,16 @@ class DLsiteApiService:
         return base
 
     def _get_browser_headers(self, accept: str = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8') -> Dict[str, str]:
+        # ★ 关键安全开关：只有当 brotli/brotlicffi 真的能 import 时才声明支持 br，
+        #   否则 DLsite 会按 Accept-Encoding 给我们 br 压缩响应，httpx 不解压，
+        #   response.text 直接是乱码二进制 → 社团 profile 解析为 0，整条任务退化
+        #   到关键字搜索 + 全站推荐位 RJ 污染。
+        accept_encoding = 'gzip, deflate, br' if _BROTLI_AVAILABLE else 'gzip, deflate'
         return {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': accept,
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Encoding': accept_encoding,
             'Referer': 'https://www.dlsite.com/maniax/',
             'Origin': 'https://www.dlsite.com',
             'DNT': '1',
@@ -498,6 +539,48 @@ class DLsiteApiService:
             'translation_info': {'is_original': True, 'lang': 'JPN'},
         }
 
+    async def _fetch_page_html_with_url(self, page_url: str) -> tuple[str, str]:
+        """统一按 URL 缓存抓取 HTML，返回 (response_text, final_url)。
+
+        ★ 关键去重层：``_resolve_translation_page_fallback`` 和 ``_fetch_product_page_metadata``
+        以前各自抓 ``/maniax/work/=/product_id/RJxxx.html``、各自缓存
+        （cache_key 一个叫 page_fallback、另一个叫 page_metadata），同一个 RJ
+        被同步流程串起来时**同一个 URL 会被抓两次**。日志现场：33 个候选作品就有
+        698 次 HTML 抓取、其中 580 次 fallback miss——大部分是这条双抓 BUG 撞出来的。
+        这里把 HTML 字节按 URL 集中缓存，下游解析器各取所需，互不重复打网络。
+        """
+        if not page_url:
+            return '', ''
+
+        cache_key = f"page_html_raw:{page_url}"
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                return (
+                    str(cached_data.get('data') or ''),
+                    str(cached_data.get('final_url') or page_url),
+                )
+
+        try:
+            response = await self._guarded_get(page_url, headers=self._get_browser_headers())
+            text = str(response.text or '')
+            final_url = str(response.url or page_url)
+            self.cache[cache_key] = {
+                'data': text,
+                'final_url': final_url,
+                'timestamp': datetime.now(),
+            }
+            return text, final_url
+        except Exception as exc:
+            logger.warning("[DLsite] 页面 HTML 抓取失败: url=%s error=%s", page_url, exc)
+            # 失败也缓存空串，避免短时间内重复打同一个失败 URL
+            self.cache[cache_key] = {
+                'data': '',
+                'final_url': page_url,
+                'timestamp': datetime.now(),
+            }
+            return '', page_url
+
     async def _fetch_product_page_metadata(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
         workno = self._normalize_workno(rjcode)
         if not workno:
@@ -507,6 +590,15 @@ class DLsiteApiService:
             self._build_product_page_url(workno, locale=locale),
             self._build_announce_product_page_url(workno, locale=locale),
         ]
+
+        # ★ 性能优化：``work`` 与 ``announce`` 两个 URL 并发抓取（不再串行）。
+        # 现场观察：社团补全任务里 242 个候选 RJ 大部分是翻译版/预告作品，对应
+        # ``/maniax/work/=/product_id/...`` 几乎都是 404、``/maniax/announce/=/product_id/...``
+        # 才命中。原串行实现先打 work 等到 404、再打 announce、总耗时 = sum(404 + 200)，
+        # 一条 fallback 0.5–1s。改并发后总耗时 = max(work, announce)，正常 200 OK
+        # 时大约腰斩；正式作品 API 已 200 不会进 fallback，不受影响。
+        cached_hit: Optional[Dict] = None
+        pending_urls: List[str] = []
         for page_url in page_urls:
             cache_key = f"page_metadata:{page_url}"
             if cache_key in self.cache:
@@ -514,53 +606,60 @@ class DLsiteApiService:
                 if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
                     cached_product = cached_data['data']
                     if cached_product:
-                        return cached_product
+                        # cache 命中且非空：可以直接 short-circuit，不用再发任何请求
+                        cached_hit = cached_product
+                        break
+                    # cache 是空 None（之前抓过但没解析到字段）：跳过这个 url
                     continue
+            pending_urls.append(page_url)
 
-            logger.info("[DLsite] 尝试页面元数据抓取: %s", page_url)
-            try:
-                response = await self._guarded_get(page_url, headers=self._get_browser_headers())
-                product = self._parse_product_from_html(workno, page_url, str(response.url), response.text)
-                self.cache[cache_key] = {
-                    'data': product,
-                    'timestamp': datetime.now()
-                }
-                if product:
-                    logger.info(
-                        "[DLsite] 页面元数据抓取成功: requested=%s resolved=%s title=%s",
-                        workno,
-                        self._normalize_workno(product.get('workno') or workno),
-                        product.get('work_name') or '',
-                    )
-                    return product
-                logger.info("[DLsite] 页面元数据未提取到有效字段: requested=%s url=%s", workno, page_url)
-            except Exception as exc:
-                logger.warning("[DLsite] 页面元数据抓取失败: requested=%s url=%s error=%s", workno, page_url, exc)
+        if cached_hit is not None:
+            return cached_hit
+
+        if not pending_urls:
+            return None
+
+        # ★ 共享 HTML 层 ``_fetch_page_html_with_url`` 自身有 inflight 去重，
+        # 这里 ``asyncio.gather`` 让两个不同 URL 同时跑；另一处任务在并发抓同 URL
+        # 时也会在 inflight 层共享字节，零浪费。
+        async def fetch_one(url: str) -> tuple[str, Optional[Dict]]:
+            logger.info("[DLsite] 尝试页面元数据抓取: %s", url)
+            page_text, final_url = await self._fetch_page_html_with_url(url)
+            product = self._parse_product_from_html(workno, url, final_url, page_text) if page_text else None
+            return url, product
+
+        results = await asyncio.gather(*[fetch_one(url) for url in pending_urls])
+
+        # 全部并发结果都写 cache，无论成功失败——避免下次再发请求
+        for url, product in results:
+            cache_key = f"page_metadata:{url}"
+            self.cache[cache_key] = {
+                'data': product,
+                'timestamp': datetime.now()
+            }
+
+        # 取第一个有效 product 返回（保持原顺序优先级：work 优先于 announce）
+        for url, product in results:
+            if product:
+                logger.info(
+                    "[DLsite] 页面元数据抓取成功: requested=%s resolved=%s title=%s",
+                    workno,
+                    self._normalize_workno(product.get('workno') or workno),
+                    product.get('work_name') or '',
+                )
+                return product
+
+        for url, _ in results:
+            logger.info("[DLsite] 页面元数据未提取到有效字段: requested=%s url=%s", workno, url)
         return None
 
     async def _fetch_product_page_html(self, rjcode: str, locale: Optional[str] = None) -> str:
+        """兼容旧外部签名：只返回 HTML 文本。新代码请直接调 ``_fetch_page_html_with_url``。"""
         workno = self._normalize_workno(rjcode)
         if not workno:
             return ''
-
-        page_url = self._build_product_page_url(workno, locale=locale)
-        cache_key = f"page_html:{page_url}"
-        if cache_key in self.cache:
-            cached_data = self.cache[cache_key]
-            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
-                return str(cached_data.get('data') or '')
-
-        try:
-            response = await self._guarded_get(page_url, headers=self._get_browser_headers())
-            text = str(response.text or '')
-            self.cache[cache_key] = {
-                'data': text,
-                'timestamp': datetime.now(),
-            }
-            return text
-        except Exception as exc:
-            logger.warning("[DLsite] 页面 HTML 抓取失败: requested=%s error=%s", workno, exc)
-            return ''
+        text, _ = await self._fetch_page_html_with_url(self._build_product_page_url(workno, locale=locale))
+        return text
 
     async def _fetch_product_payload(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
         data = await self._fetch_api(self._build_product_api_url(rjcode, locale=locale))
@@ -581,38 +680,37 @@ class DLsiteApiService:
                 return dict(cached_data['data'] or {})
 
         logger.info("[DLsite] 尝试页面 fallback: %s", page_url)
-        try:
-            response = await self._guarded_get(
-                page_url,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                },
-            )
-            final_codes = self._extract_product_codes_from_url(str(response.url))
-            if final_codes.get('translation_workno') == workno and final_codes.get('product_workno'):
-                result = final_codes
-            else:
-                result = self._extract_translation_linkage_from_html(response.text, workno)
-
+        # ★ 走共享 HTML 层：同一个 page_url 已经被 _fetch_product_page_metadata 或别处
+        # 拉过时直接复用字节，不再重复打网络。
+        page_text, final_url = await self._fetch_page_html_with_url(page_url)
+        if not page_text:
+            # 抓取失败，照样落 cache 防止短时间重试；返回空 dict
             self.cache[cache_key] = {
-                'data': result,
-                'timestamp': datetime.now()
+                'data': {},
+                'timestamp': datetime.now(),
             }
-            if result:
-                logger.info(
-                    "[DLsite] 页面 fallback 命中: requested=%s product=%s translation=%s",
-                    workno,
-                    result.get('product_workno') or '',
-                    result.get('translation_workno') or '',
-                )
-            else:
-                logger.info("[DLsite] 页面 fallback 未命中: requested=%s", workno)
-            return result
-        except Exception as exc:
-            logger.warning("[DLsite] 页面 fallback 失败: requested=%s error=%s", workno, exc)
             return {}
+
+        final_codes = self._extract_product_codes_from_url(final_url)
+        if final_codes.get('translation_workno') == workno and final_codes.get('product_workno'):
+            result = final_codes
+        else:
+            result = self._extract_translation_linkage_from_html(page_text, workno)
+
+        self.cache[cache_key] = {
+            'data': result,
+            'timestamp': datetime.now()
+        }
+        if result:
+            logger.info(
+                "[DLsite] 页面 fallback 命中: requested=%s product=%s translation=%s",
+                workno,
+                result.get('product_workno') or '',
+                result.get('translation_workno') or '',
+            )
+        else:
+            logger.info("[DLsite] 页面 fallback 未命中: requested=%s", workno)
+        return result
 
     async def _is_public_work_available(self, rjcode: str, locale: Optional[str] = None) -> bool:
         workno = self._normalize_workno(rjcode)
@@ -625,6 +723,21 @@ class DLsiteApiService:
             if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
                 return bool(cached_data.get('data'))
 
+        # ★ 优化（B）：先打 product.json API（带 24h cache + inflight 去重）。
+        # API 200 即视为公开可见，跳过后续 HTML fallback——这条路径覆盖了绝大多数
+        # 非 R18 翻译版 / 原作的情况，把 HTML 抓取开销从 O(N) 降到 O(N - api_hits)。
+        # 注意 ``_fetch_product_payload`` 内部已有自己的 cache，重复调用近乎零成本。
+        api_payload = await self._fetch_product_payload(workno, locale=locale)
+        if api_payload and self._normalize_workno(api_payload.get('workno') or workno):
+            self.cache[cache_key] = {
+                'data': True,
+                'timestamp': datetime.now(),
+            }
+            return True
+
+        # API 没命中（典型场景：R18 翻译版匿名 API 返 404，需要登录 / 年龄校验）
+        # 再走 HTML fallback 链。两条 HTML 路径现在都走 ``_fetch_page_html_with_url``
+        # 共享缓存，同一个 URL 只会真正打一次网络。
         fallback = await self._resolve_translation_page_fallback(workno, locale=locale)
         available = bool(
             self._normalize_workno((fallback or {}).get('translation_workno') or '') == workno
@@ -645,9 +758,26 @@ class DLsiteApiService:
         if not requested_workno:
             return None
 
+        # ★ 性能优化：``get_product_info`` 函数级 cache（含失败结果 cache）。
+        # API ``_fetch_product_payload`` 内部已经 cache 成功结果（``self.cache``），
+        # 但**失败（返 None）的 RJ 会重复触发下面两层 HTML fallback**：
+        # ``_resolve_translation_page_fallback`` + ``_fetch_product_page_metadata``。
+        # 一次 33 候选作品的任务里光 HTML 页面 fallback 就被打了 993 次。
+        # ``get_linked_works`` 对 R18 翻译版的 probe loop 是元凶——每个翻译版调
+        # ``get_product_info``、每次都跑完整 fallback 链。
+        # 加函数级 cache 后，同一 RJ 同一任务内的 fallback 链只跑一次；失败也 cache
+        # 一份（沿用 self.cache 的 24h TTL，远超单任务时长）。
+        cache_key = f"product_info:{requested_workno}:{locale or ''}"
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                cached_payload = cached_data.get('data')
+                # cached_payload 可能是 None（失败 cache）或正常 dict——都直接返回
+                return cached_payload if cached_payload is not None else None
+
         product = await self._fetch_product_payload(requested_workno, locale=locale)
         if product:
-            return {
+            payload = {
                 'product': product,
                 'requested_workno': requested_workno,
                 'resolved_workno': self._normalize_workno(product.get('workno') or requested_workno),
@@ -656,6 +786,8 @@ class DLsiteApiService:
                 'parent_workno': '',
                 'edition_info': None,
             }
+            self.cache[cache_key] = {'data': payload, 'timestamp': datetime.now()}
+            return payload
 
         fallback = await self._resolve_translation_page_fallback(requested_workno, locale=locale)
         parent_workno = self._normalize_workno(fallback.get('product_workno') or '')
@@ -693,7 +825,7 @@ class DLsiteApiService:
                     locale or '',
                     bool(edition_info),
                 )
-                return {
+                payload = {
                     'product': effective_product,
                     'requested_workno': requested_workno,
                     'resolved_workno': parent_workno,
@@ -702,6 +834,8 @@ class DLsiteApiService:
                     'parent_workno': parent_workno,
                     'edition_info': edition_info,
                 }
+                self.cache[cache_key] = {'data': payload, 'timestamp': datetime.now()}
+                return payload
 
             logger.warning(
                 "[DLsite] 页面 fallback 找到父作品，但父作品 API 返回空数据: requested=%s parent=%s",
@@ -711,7 +845,7 @@ class DLsiteApiService:
 
         page_product = await self._fetch_product_page_metadata(requested_workno, locale=locale)
         if page_product:
-            return {
+            payload = {
                 'product': page_product,
                 'requested_workno': requested_workno,
                 'resolved_workno': self._normalize_workno(page_product.get('workno') or requested_workno),
@@ -720,7 +854,11 @@ class DLsiteApiService:
                 'parent_workno': parent_workno,
                 'edition_info': None,
             }
+            self.cache[cache_key] = {'data': payload, 'timestamp': datetime.now()}
+            return payload
 
+        # ★ 同样 cache 失败结果（None），防止同一任务内重复跑两层 HTML fallback 链。
+        self.cache[cache_key] = {'data': None, 'timestamp': datetime.now()}
         return None
     
     async def _get_client(self) -> httpx.AsyncClient:
@@ -913,23 +1051,83 @@ class DLsiteApiService:
                 ],
                 lang=translation_info.get('lang', 'JPN')
             )
-        else:
-            result = TranslationInfo(is_original=True)
+            # 只缓存"成功拿到 product 的"明确结果。
+            self._translation_info_cache[workno] = (result, datetime.now())
+            return result
 
-        self._translation_info_cache[workno] = (result, datetime.now())
-        return result
+        # ★ 修复 BUG #1（韩英版被误认为原作）：
+        # 当 DLsite 公开 API 对一个 RJ 拿不到 product（典型场景：已下架 / R18 翻译版需要登录 /
+        # 网络错误），**绝对不能默认 is_original=True**。
+        # 原先这里默认 is_original=True 导致 ``get_linked_works`` 走 original 分支，
+        # 把这个未知 RJ 错认成"日语原作"，link_map 只塞自己一条。社团补全里上游
+        # 候选若是一个韩语/英语翻译版，就会被独立成卡（canonical 为它自己），还会因为
+        # Kikoeru DB 里 work_name 被脏写成简中标题，最终展示"简中标题 + 韩语 RJ"。
+        # 改后：API 失败时返回保守的"全空"信号——is_original=False、lang 显式置空，
+        # ``LinkedWork`` 那边的 else 兜底分支会把 work_type 标成 ``unknown``，
+        # ``_variant_group`` 会归类为 ``other``，从而被 prepare_candidate 闸门拦掉。
+        # 失败结果不写缓存，下次访问可重试（避免 API 临时挂了导致永久误判）。
+        # 注意：``TranslationInfo`` dataclass 的 ``lang`` 字段默认值是 "JPN"（向后兼容
+        # 历史调用方），这里必须显式传 ``lang=""`` 覆盖，否则下游会误认为是日语原作。
+        return TranslationInfo(lang="")
     
     async def get_linked_works(self, rjcode: str) -> Dict[str, LinkedWork]:
-        """
-        获取作品的关联作品（包括原版和所有翻译版本）
-        
+        """获取作品的关联作品（含 cache + inflight 去重，是性能热点入口）。
+
+        ★ 性能优化（key BUG fix）：
+        - 之前 ``get_linked_works`` 完全没 cache，每次调用都重新走 trans + product_info
+          + 对所有翻译版子探测，O(N) 个递归 API 调用。
+        - 一次 33 候选作品的任务里这条接口被打了 2819 次（每个 candidate 在
+          ``prepare_candidate`` / ``resolve_canonical_rj`` / Kikoeru
+          ``check_duplicate_with_linkages`` 三处各调一次），是 product.json 累计
+          2816 次的主要源头。
+        - 改后：同一任务内同一个 RJ 只算一次完整递归，后续调用走 ``self.cache`` 短路。
+          ``self._linked_works_inflight`` 防止两个并发协程在 cache miss 瞬间同时
+          触发完整计算。
+        - 递归调用 ``self.get_linked_works(original_rjcode)`` 也会自动复用 cache。
+
         关联作品包括：
         - 原版作品（日文）
         - 所有翻译版本（简中、繁中、英文等不同译者，RJ 号各不相同）
         - 子翻译版本（嵌套翻译）
-        
+
         返回:
             Dict[str, LinkedWork]: RJ 号到作品信息的映射
+        """
+        normalized_rjcode = self._normalize_workno(rjcode)
+        if not normalized_rjcode:
+            return {}
+
+        # 1. cache 短路（同一任务内重复调用近乎免费）
+        cache_key = f"linked_works:{normalized_rjcode}"
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                # 浅拷贝避免上游误改 cache 内 LinkedWork 引用
+                return dict(cached_data['data'] or {})
+
+        # 2. inflight 去重：多个协程同时 cache miss 时只算一次
+        existing = self._linked_works_inflight.get(normalized_rjcode)
+        if existing is not None and not existing.done():
+            return dict(await existing)
+
+        # 3. cache miss + 无 inflight：自己起 task 计算并写 cache
+        task = asyncio.create_task(self._compute_linked_works(normalized_rjcode))
+        self._linked_works_inflight[normalized_rjcode] = task
+        try:
+            result = await task
+        finally:
+            self._linked_works_inflight.pop(normalized_rjcode, None)
+
+        self.cache[cache_key] = {
+            'data': dict(result),
+            'timestamp': datetime.now(),
+        }
+        return dict(result)
+
+    async def _compute_linked_works(self, normalized_rjcode: str) -> Dict[str, LinkedWork]:
+        """``get_linked_works`` 的内部计算路径——剥出 cache/inflight 包装层后的纯计算。
+
+        递归到 ``self.get_linked_works(original_rjcode)`` 时会自动复用外层 cache。
         """
         async def _get_direct_linked_works(target_rjcode: str) -> Dict[str, LinkedWork]:
             target_rjcode = self._normalize_workno(target_rjcode)
@@ -981,16 +1179,22 @@ class DLsiteApiService:
                     result[parent_workno] = LinkedWork(workno=parent_workno, work_type='translation', lang=trans.lang or 'JPN')
                 result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='child_translation', lang=trans.lang or 'JPN')
             else:
-                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='original', lang='JPN')
+                # ★ 修复 BUG #1：trans 完全没信号（API 失败或返回空）时，**不要**无中生有
+                # 声称这是 'original/JPN'。原先这里硬塞 original/JPN，让下游的 link_map
+                # 把已下架的韩英翻译版误认成日语原作。改成 ``unknown / UNKNOWN``，让
+                # ``_variant_group`` 归类为 ``other``，下游闸门可识别并过滤。
+                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='unknown', lang='UNKNOWN')
 
             return result
 
         try:
-            normalized_rjcode = self._normalize_workno(rjcode)
+            # 入口已 normalize 并通过 cache/inflight 短路过；这里直接用参数即可。
             trans = await self.get_translation_info(normalized_rjcode)
             if not trans.is_original and trans.original_workno:
                 original_rjcode = self._normalize_workno(trans.original_workno)
                 logger.info(f"[DLsite] {normalized_rjcode} 是翻译版本，从原版 {original_rjcode} 获取完整关联链")
+                # 递归调用走 ``get_linked_works`` 的外层 cache/inflight，
+                # 原作 RJ 已被算过时近乎免费。
                 result = await self.get_linked_works(original_rjcode)
                 direct_links = await _get_direct_linked_works(normalized_rjcode)
                 result.update(direct_links)
@@ -1010,10 +1214,12 @@ class DLsiteApiService:
             logger.info(f"[DLsite] {normalized_rjcode} 关联作品 ({len(result)}个): {list(result.keys())}")
             return result
         except Exception as e:
-            logger.error(f"获取关联作品失败 {rjcode}: {e}")
+            logger.error(f"获取关联作品失败 {normalized_rjcode}: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-            return {rjcode: LinkedWork(workno=rjcode, work_type='original', lang='JPN')}
+            # ★ 修复 BUG #1：异常 fallback 也不再无中生有声称 original/JPN，
+            # 改成 'unknown / UNKNOWN'，避免把可能是韩英版的 RJ 错认成日语原作。
+            return {normalized_rjcode: LinkedWork(workno=normalized_rjcode, work_type='unknown', lang='UNKNOWN')}
     
     async def get_full_linkage(self, rjcode: str, cue_languages: List[str] = None) -> Dict[str, LinkedWork]:
         """
@@ -1083,27 +1289,64 @@ class DLsiteApiService:
         
         return result
 
+    @staticmethod
+    def _looks_like_dlsite_html(text: str) -> bool:
+        """判断响应文本是否像一份正常的 DLsite HTML 页面。
+
+        用于区分两种"page_worknos 为空"：
+        - 真 0 作品：HTML 文本健全（含 <title>/<html>/dlsite/maniax 等标志），只是确实没有作品；
+        - 解析失败：HTML body 里没有任何 ASCII 文本特征（典型现场是 brotli/gzip 没解压
+          → response.text 是压缩字节强行 latin-1 解码的乱码）。
+        """
+        if not text:
+            return False
+        head = str(text)[:8192]
+        if not head:
+            return False
+        markers = ('<html', '<body', '<title', 'dlsite', 'maniax', '</body>', '<meta')
+        lowered = head.lower()
+        return any(marker in lowered for marker in markers)
+
     async def list_circle_worknos_by_maker(
         self,
         maker_id: str,
         *,
         language: str = "JPN",
         max_pages: int = 200,
-    ) -> List[str]:
+    ) -> tuple[List[str], str]:
+        """抓取 maker_id 名下所有可见作品。
+
+        ★ 返回值升级为 ``(rjcodes, parse_status)``。``parse_status`` 取值：
+
+        - ``"ok"``：至少有一页解析到了 RJ；
+        - ``"empty"``：HTTP 都成功、HTML 也是正常 DLsite 页面，但确实一个 RJ 都没解析出来
+          （DLsite 上 maker_id 真没作品，多半是误识别的脏 maker_id）；
+        - ``"html_decode_failed"``：HTTP 成功但 HTML 文本完全没有 DLsite 页面特征，
+          疑似 brotli/gzip 解压失败导致拿到的是压缩字节乱码（应该让上层保留 maker_id 白名单
+          继续走关键字 fallback，而不是误判为"真 0"重置 maker_id 退化）；
+        - ``"http_error"``：所有 HTTP 请求都没拿到 200。
+
+        历史调用方只读 ``rjcodes`` 即可，加一行解包就兼容；新调用方靠 status 决定是否
+        盲目重置 maker_id。
+        """
         normalized_maker_id = str(maker_id or "").strip().upper()
         normalized_language = str(language or "JPN").strip().upper() or "JPN"
         if not normalized_maker_id:
-            return []
+            return [], "empty"
 
         cache_key = f"circle_profile_with_announce:{normalized_maker_id}:{normalized_language}"
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
             if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
-                return list(cached_data.get('data') or [])
+                cached_list = list(cached_data.get('data') or [])
+                cached_status = str(cached_data.get('parse_status') or ("ok" if cached_list else "empty"))
+                return cached_list, cached_status
 
         found: List[str] = []
         seen: Set[str] = set()
         empty_streak = 0
+        any_http_success = False
+        any_html_looked_normal = False
 
         for mode, url_builder in [
             ("profile", self._build_circle_profile_url),
@@ -1123,6 +1366,9 @@ class DLsiteApiService:
                     if response.status_code != 200:
                         logger.warning("[DLsite] 社团%s抓取失败 maker_id=%s page=%s status=%s", mode, normalized_maker_id, page, response.status_code)
                         break
+                    any_http_success = True
+                    if self._looks_like_dlsite_html(response.text):
+                        any_html_looked_normal = True
                     page_worknos = self._extract_worknos_from_listing_html(response.text)
                     if not page_worknos and mode == "profile-touch":
                         page_worknos = self._extract_any_worknos_from_listing_html(response.text)
@@ -1176,6 +1422,9 @@ class DLsiteApiService:
                 )
                 response_f = await self._guarded_get(filter_url, headers=self._get_browser_headers())
                 if response_f.status_code == 200:
+                    any_http_success = True
+                    if self._looks_like_dlsite_html(response_f.text):
+                        any_html_looked_normal = True
                     filter_worknos = self._extract_worknos_from_listing_html(response_f.text)
                     if not filter_worknos:
                         filter_worknos = self._extract_any_worknos_from_listing_html(response_f.text)
@@ -1194,12 +1443,32 @@ class DLsiteApiService:
             except Exception as exc:
                 logger.debug("[DLsite] 社团profile-touch-filter异常 maker_id=%s error=%s", normalized_maker_id, exc)
 
+        # 推断 parse_status：
+        # - 有 RJ → ok
+        # - 否则没有任何一次 HTTP 200 → http_error
+        # - 否则 HTML 完全不像 DLsite 页面 → html_decode_failed（典型 brotli/gzip 没解压）
+        # - 否则 → empty（DLsite 上该 maker_id 名下确实没作品）
+        if found:
+            parse_status = "ok"
+        elif not any_http_success:
+            parse_status = "http_error"
+        elif not any_html_looked_normal:
+            parse_status = "html_decode_failed"
+            logger.warning(
+                "[DLsite] 社团 profile/announce 全部 HTTP 200 但 HTML 缺乏页面特征，"
+                "疑似 br/gzip 未解压（请检查 brotlicffi 是否已安装）maker_id=%s",
+                normalized_maker_id,
+            )
+        else:
+            parse_status = "empty"
+
         if found:
             self.cache[cache_key] = {
                 'data': list(found),
+                'parse_status': parse_status,
                 'timestamp': datetime.now()
             }
-        return found
+        return found, parse_status
     
     async def get_work_info(self, rjcode: str) -> Optional[Dict]:
         """获取作品详细信息"""
