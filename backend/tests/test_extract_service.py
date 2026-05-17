@@ -42,18 +42,20 @@ class TestExtractService:
     
     @pytest.mark.asyncio
     async def test_repair_extension(self, extract_service, temp_dir):
-        """测试修复文件后缀名"""
-        # 创建错误后缀名的文件
+        """测试修复文件后缀名。
+
+        生产代码行为：当当前后缀不在 common_archive_extensions（zip/rar/7z/...）时，
+        视为"用户原始命名"，保留原 filename 再加上正确后缀（避免破坏用户意图）。
+        所以 'test.zi' 会被识别为 zip 并改名为 'test.zi.zip'，而不是替换成 'test.zip'。
+        """
         wrong_path = os.path.join(temp_dir, 'test.zi')
-        correct_path = os.path.join(temp_dir, 'test.zip')
+        expected_path = os.path.join(temp_dir, 'test.zi.zip')
         self.create_test_zip(wrong_path)
-        
-        # 修复后缀名
+
         result = await extract_service._repair_extension(wrong_path)
-        
-        # 验证
-        assert result == correct_path
-        assert os.path.exists(correct_path)
+
+        assert result == expected_path
+        assert os.path.exists(expected_path)
         assert not os.path.exists(wrong_path)
     
     @pytest.mark.asyncio
@@ -361,7 +363,13 @@ class TestExtractService:
         assert await extract_service._verify_extraction(archive_info, root) is False
 
     def test_final_filename_guard_scans_full_tree(self, extract_service, temp_dir):
-        """最终兜底不只采样前 240 项，深层坏文件名也要能短路命中。"""
+        """最终兜底不只采样前 240 项，深层坏文件名也要能短路命中。
+
+        生产实现会把磁盘上的原始 surrogateescape 名字交给 ``_safe_diagnostic_name`` 反解，
+        因此返回值是修复后（"repaired"）或仅做字面转义（"escaped"）的字符串，
+        不再是原始 ``\\udcXX`` 形式。这里只断言"扫到了" + "确实命中了那条深层坏文件"，
+        防止 surrogate 泄漏给前端 / 落库。
+        """
         root = os.path.join(temp_dir, "output")
         os.makedirs(root, exist_ok=True)
         for index in range(260):
@@ -374,7 +382,15 @@ class TestExtractService:
         with open(os.path.join(nested, bad_name), "w", encoding="utf-8") as fp:
             fp.write("bad")
 
-        assert extract_service._find_garbled_filename_sample(root, max_names=None) == bad_name
+        sample = extract_service._find_garbled_filename_sample(root, max_names=None)
+        assert sample is not None, "深层坏文件名应被全树扫描发现"
+        # 命中的就是这一条 RJ00000002 坏文件（其他 track_NNN.txt 都是干净的）
+        assert sample.startswith("RJ00000002_"), f"unexpected sample: {sample!r}"
+        assert sample.endswith(".mp3"), f"unexpected sample: {sample!r}"
+        # 返回值已经被 _safe_diagnostic_name 处理，不会含 lone surrogate（\udcXX）
+        assert "\udce4" not in sample and "\udcb8" not in sample and "\udcad" not in sample
+
+        # 浅采样（max_names=240）不应命中：260 个干净文件已经吃完采样配额，nested 进不去
         assert extract_service._find_garbled_filename_sample(root, max_names=240) is None
 
     @pytest.mark.asyncio
@@ -421,20 +437,25 @@ class TestExtractService:
     
     @pytest.mark.asyncio
     async def test_verify_extraction(self, extract_service, temp_dir):
-        """测试解压验证"""
+        """测试解压验证。
+
+        原实现依赖系统 ``unzip`` 命令，Windows 默认没有这个命令导致测试一直失败；
+        本身这里只是要把压缩包内容解到目录里给 ``_verify_extraction`` 校验，
+        用 Python 标准库 ``zipfile.extractall`` 等价替换，跨平台稳定。
+        """
         # 创建压缩包
         zip_path = os.path.join(temp_dir, 'test.zip')
         self.create_test_zip(zip_path)
-        
+
         # 获取文件信息
         archive_info = await extract_service._get_archive_info(zip_path)
-        
-        # 解压
-        import subprocess
+
+        # 用 Python 内置解压器解到 output（不依赖系统 unzip）
         output_path = os.path.join(temp_dir, 'output')
         os.makedirs(output_path, exist_ok=True)
-        subprocess.run(['unzip', zip_path, '-d', output_path], check=True)
-        
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(output_path)
+
         # 验证
         result = await extract_service._verify_extraction(archive_info, output_path)
         assert result is True
@@ -468,23 +489,35 @@ class TestExtractService:
 
     @pytest.mark.asyncio
     async def test_extract_task(self, extract_service, temp_dir):
-        """测试完整的解压任务"""
-        # 创建测试压缩包
+        """测试完整的解压任务。
+
+        原实现两处会卡死：
+        1. 用 ``Mock(spec=Task)``，但 ``Task.__init__`` 里赋值的实例属性（id /
+           task_metadata / _cancelled / _pause_event 等）不在类上，Mock spec 不会
+           自动给出来；``extract()`` 访问 ``task.id`` / ``task.is_cancelled()`` 时
+           直接抛 ``AttributeError: Mock object has no attribute 'id'``。
+        2. ``extract()`` 第一步会调用 ``_wait_file_stable``，对 < 1024 字节的小
+           zip 一直 ``continue`` 直到 max_wait=1800 秒（30 分钟）才返回；测试小
+           zip 永远小于 1024 字节，所以这个 case 实际是死等半小时。
+
+        修复：用真实 ``Task`` 替代 Mock；patch 掉 ``_wait_file_stable``（测试目标
+        不在那段，跳过即可）；监听 ``update_progress`` 看主流程跑完了。
+        """
         zip_path = os.path.join(temp_dir, 'RJ123456.zip')
         self.create_test_zip(zip_path)
-        
-        # 创建任务
-        task = Mock(spec=Task)
-        task.source_path = zip_path
-        task.update_progress = Mock()
-        
-        # 执行解压
-        output_path = await extract_service.extract(task)
-        
-        # 验证
-        assert output_path is not None
-        assert os.path.exists(output_path)
-        assert task.update_progress.called
+
+        task = Task(task_type=TaskType.EXTRACT, source_path=zip_path)
+
+        async def _instant_stable(*_args, **_kwargs):
+            return None
+
+        with patch.object(extract_service, '_wait_file_stable', side_effect=_instant_stable), \
+             patch.object(task, 'update_progress', wraps=task.update_progress) as update_progress_spy:
+            output_path = await extract_service.extract(task)
+
+            assert output_path is not None
+            assert os.path.exists(output_path)
+            assert update_progress_spy.called
 
     # ---------------------------------------------------------------
     # RAR + unar fast-path（修复群晖乱码作品 - 7zz 24.08 RAR 解析器无法配置文件名编码）

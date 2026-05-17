@@ -3503,6 +3503,21 @@ async def get_conflicts(include_stats: bool = False):
             _t_phase1_ms, len(conflicts),
         )
 
+        # ★ 性能修复：phase1 已经把需要持久化的状态恢复（PROCESSING -> PENDING）commit
+        # 完毕；phase2 的 describe_conflict_async 会调用远程 stat / IO，期间不需要 db。
+        # 把 conflict expunge 后立即 close，避免 connection pool 槽位被 phase2 长 IO 占用。
+        for _c in conflicts:
+            try:
+                db.expunge(_c)
+            except Exception:
+                # 极端情况下 expunge 失败也不致命，detached / transient 都能继续走
+                logger.debug("expunge conflict %s 失败，忽略", getattr(_c, "id", None), exc_info=True)
+        try:
+            db.close()
+        except Exception:
+            logger.debug("phase1 后关闭 db session 失败", exc_info=True)
+        db = None  # 顶层 except 不再使用
+
         # ---- 第二阶段：并行计算 conflict 上下文（远程 stat 是 IO 密集，并发能显著降低串行延迟） ----
         # 用信号量限制群晖并发，避免对 NAS 造成压力或触发限流。
         _t_phase2_start = time.monotonic()
@@ -3599,7 +3614,12 @@ async def get_conflicts(include_stats: bool = False):
         logger.error("获取问题作品列表失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取问题作品失败: {str(exc)}")
     finally:
-        db.close()
+        # phase1 后已经 close + db=None，但 phase1 抛异常时 db 仍是活的；这里兜底
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                logger.debug("/api/conflicts finally 关闭 db 失败", exc_info=True)
 
 @app.get("/api/conflicts/count")
 def get_conflicts_count(db: Session = Depends(get_db)):
@@ -6965,14 +6985,17 @@ async def get_library_files():
             return {"files": []}
 
         # 查询 ProcessedArchive 数据库获取解压时间（DB 操作走主 event loop，本身够快）
+        # ★ 性能修复：原实现拿到 db 后没有 close，整段 await asyncio.to_thread 期间
+        # 一直占着 connection pool 一个槽位（且没 finally 释放）。改为读完立刻 close。
         from ..models.database import ProcessedArchive, get_db
+        archive_times: dict[str, Any] = {}
         db = next(get_db())
-
-        # 构建文件名到解压时间的映射
-        archive_times = {}
-        for archive in db.query(ProcessedArchive).all():
-            archive_name = os.path.basename(archive.current_path)
-            archive_times[archive_name] = archive.processed_at
+        try:
+            for archive in db.query(ProcessedArchive).all():
+                archive_name = os.path.basename(archive.current_path)
+                archive_times[archive_name] = archive.processed_at
+        finally:
+            db.close()
 
         # 整库扫描包含三层嵌套同步 IO（os.listdir × 2 + os.walk + 每个文件 os.stat / getsize），
         # 远程挂载或大库存上能阻塞 event loop 几分钟。整段下放到线程池跑，

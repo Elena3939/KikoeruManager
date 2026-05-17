@@ -326,6 +326,35 @@
 
 ## 11. 最近改动同步（2026-05）
 
+### 性能：DB 连接池 + 社团补全 / DLsite 调用栈（v1.5.35）
+
+整批围绕"任务执行期一直占着 db connection + 重复 HTTP"的卡顿问题，按"短事务 + 跨 IO 切段 + 函数级 cache"模板重构。
+
+- **`backend/scripts/find_long_db_sessions.py`**：辅助脚本，扫描所有 `db = SessionLocal()` / `next(get_db())` 块里跨 `await IO` 的长事务点，作为这一批重构的 grep 入口。后续要加新 service / route 时，先用它扫一遍，避免又写出"DB 拿着不放跑外网"的形态。
+- **`circle_completion_service.py`**：新增 `CircleCompletionSnapshot` dataclass，把任务执行期所有外部数据（asmr work_info / tracks、canonical 链路、Kikoeru 状态）一次性集中获取（Phase 1）；Phase 2 纯本地查询，不再触网。新增 `chain_rjs_by_canonical` 链路去重，把 Kikoeru 查询次数从全 RJ 数（典型 39）降到独立链路数（典型 13）；中文翻译版可见性探测改信任 DLsite 的 `language_editions`，不再走 `_is_public_work_available` HTML probe（一次任务能省 698 次抓取里的 580 次 miss）。
+- **`dlsite_service.py`**：
+  - `_linked_works_inflight` 函数级 inflight + cache：之前一次社团补全任务里同一 RJ 会被 `prepare_candidate` / `resolve_canonical_rj` / Kikoeru `check_duplicate_with_linkages` 三处分别触发完整递归（一次任务跑了 2819 次 `get_linked_works`），现在同一 RJ 在同一任务内只完整递归一次。
+  - `_fetch_page_html_with_url`：把 HTML 字节按 URL 集中缓存，`_resolve_translation_page_fallback` 和 `_fetch_product_page_metadata` 不再各抓一次同一 URL（双抓 BUG）。
+  - `_detect_brotli_support()` 启动期主动探测 `brotli`/`brotlicffi`，未装时把 `Accept-Encoding` 自动降到 `gzip, deflate`。**否则** DLsite 返回 `Content-Encoding=br` 时 httpx 不解压、`response.text` 直接是乱码二进制，社团 profile 解析为 0、关键字搜索 / 全站推荐位 RJ 汇染整批挂掉。`requirements.txt` 把 `brotli>=1.1.0` 换成 `brotlicffi>=1.1.0`（cffi 实现，对 Python 3.13/3.14 兼容性好得多）。
+- **`linked_subtitle_import_service.py`**：把跨整循环 + 多 await 的长事务重构成 Phase A 短读 + `expunge_all` / Phase B 无 session 跑 IO 算决策 / Phase C 短写落库的三段式。前端轮询字幕补配工作台高频调用时不会再压垮 connection pool。
+- **`conflict_resolution_service.py`、`duplicate_service.py`、`kikoeru_duplicate_service.py`、`email_watcher_service.py`、`processed_archive_cleanup.py`**：同样的"短事务 + 跨 IO 切段"模板，分别覆盖问题作品扫描、查重、Kikoeru 查重、IMAP 邮件监听、归档清理几条主链路。
+- **`routes.py /api/conflicts`**：phase1 拿到 conflicts 列表后立即 `expunge_all` + `db.close()`，phase2 跑远程 stat / IO 全程不带 db。phase1 抛异常时 phase2 仍兜底 close 一次。
+
+### Bug 修复：7zz 解析 Windows CRLF 残留
+
+- `extract_service.py::_parse_7z_list_output` 之前 `output.strip().split('\n')`，Windows 上 7zz 走 CRLF 输出，每行末尾的 `\r` 被 regex 的 `(.+)$` 吃进 `name` 字段（`'test.txt\r'`），下游所有按 `'.txt'` / `'.zip'` 比对全部失效，影响 `_get_archive_info` 等所有下游清单校验。改成 `splitlines()` + `name.rstrip('\r')`。
+
+### 测试基础设施 + 历史失败一次性清账
+
+- `backend/tests/conftest.py` 新增 `pytest_configure`：把 pytest `tmp_path` basetemp 重定向到工程内 `backend/.pytest-tmp/`，绕开 Windows `%TEMP%/pytest-of-<user>/` 经常被杀软 / OneDrive 锁定导致的 `PermissionError [WinError 5]`，每次启动还会清理上一轮残留。`.gitignore` 同步加 `backend/.pytest-tmp/` + `.pytest_cache/`。
+- 一次性修了 14 个历史失败 / 错误：
+  - `test_extract_service.py` 5 个：CRLF 期望对齐、`_find_garbled_filename_sample` 改返回 `_safe_diagnostic_name` 后的字符串、`unzip` 命令换成 `zipfile.extractall`、`Mock(spec=Task)` 漏指实例属性改用真实 Task、`_wait_file_stable` 对 < 1024 字节小 zip 死等 30 分钟（patch 跳过）。
+  - `test_library_index_self_mutation.py` 7 个：全是 `tmp_path` 创建失败，被上面的 conftest 修一次性救活。
+  - `test_library_browser_api.py`：原 `_LegacyStorage` ad-hoc 类没有 `model_dump`、`monkeypatch _config_file_path` 路径根本不被生产代码调用、嵌套目录层级错让浅层列表查不到目标作品。改用真实 `StorageConfig` + 扁平目录。
+  - `test_api.py::test_get_task_by_id`：`task_engine` 是进程级单例，跨测试共享，`FileProcessor.process_file` 会拒绝 source_path 已在 pending/processing 的重复任务（返回 None → route 抛 400）。每个 test 用唯一 source_path。
+- 新增 3 个测试文件：`test_circle_completion_announce_search.py`、`test_circle_completion_release_date.py`、`test_circle_completion_snapshot.py`，覆盖社团补全的 announce 搜索、发售日解析、snapshot 新数据流。
+- 全量验证：`venv\Scripts\python.exe -m pytest tests/` → **204 passed, 0 failed**。
+
 ### 社团补全 / 缺失作品
 
 - 缺失作品"发售时间"排序在 `frontend/src/views/CircleCompletion.vue` 增强了日期解析：

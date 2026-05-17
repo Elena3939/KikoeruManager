@@ -220,57 +220,64 @@ class EnhancedDuplicateService:
         返回:
             List[LinkedWorkInLibrary]: 在库中找到的关联作品列表（不包括当前检查的 RJ）
         """
+        # Phase A: 短读事务 —— 一次性把所有 workno 的 snapshot 读出来，立即 close。
+        # 重构原因：原实现把 db 拿在循环外，每轮 await dlsite_service.get_work_info()
+        # 都把连接占着，长查询会卡光 connection pool。
+        target_worknos = [w for w in linked_works.keys() if w != exclude_rjcode]
+        snapshots: Dict[str, Tuple[str, int, int]] = {}
+        if target_worknos:
+            db = next(get_db())
+            try:
+                rows = (
+                    db.query(LibrarySnapshot)
+                    .filter(LibrarySnapshot.rjcode.in_(target_worknos))
+                    .all()
+                )
+                for snap in rows:
+                    snapshots[str(snap.rjcode)] = (
+                        str(snap.folder_path),
+                        int(getattr(snap, "folder_size", 0) or 0),
+                        int(getattr(snap, "file_count", 0) or 0),
+                    )
+            finally:
+                db.close()
+
+        # Phase B: 无 session 的 IO（目录扫描 + HTTP）。
         found = []
-        db = next(get_db())
-        
-        try:
-            for workno, linked_work in linked_works.items():
-                # 跳过当前检查的 RJ 号
-                if workno == exclude_rjcode:
-                    continue
-                
-                # 检查数据库
-                snapshot = db.query(LibrarySnapshot).filter(
-                    LibrarySnapshot.rjcode == workno
-                ).first()
-                
-                if snapshot:
-                    folder_path = str(snapshot.folder_path)
-                    if os.path.exists(folder_path):
-                        # 获取作品信息
+        library_path = Path(self.config.storage.library_path)
+        for workno in target_worknos:
+            linked_work = linked_works[workno]
+            snap = snapshots.get(workno)
+            if snap and os.path.exists(snap[0]):
+                folder_path, folder_size, file_count = snap
+                work_info = await self.dlsite_service.get_work_info(workno)
+                found.append(LinkedWorkInLibrary(
+                    rjcode=workno,
+                    work_type=linked_work.work_type,
+                    lang=linked_work.lang,
+                    folder_path=folder_path,
+                    folder_size=folder_size,
+                    file_count=file_count,
+                    work_name=work_info.get('title', '') if work_info else ""
+                ))
+                logger.debug(f"发现库中关联作品: {workno} ({linked_work.work_type})")
+            elif not snap:
+                # 没有 snapshot 时扫库存目录兜底
+                for folder in library_path.rglob('*'):
+                    if folder.is_dir() and workno in folder.name:
                         work_info = await self.dlsite_service.get_work_info(workno)
-                        
                         found.append(LinkedWorkInLibrary(
                             rjcode=workno,
                             work_type=linked_work.work_type,
                             lang=linked_work.lang,
-                            folder_path=folder_path,
-                            folder_size=snapshot.folder_size,
-                            file_count=snapshot.file_count,
+                            folder_path=str(folder),
+                            folder_size=self._get_folder_size(str(folder)),
+                            file_count=self._get_file_count(str(folder)),
                             work_name=work_info.get('title', '') if work_info else ""
                         ))
-                        logger.debug(f"发现库中关联作品: {workno} ({linked_work.work_type})")
-                else:
-                    # 扫描目录
-                    library_path = Path(self.config.storage.library_path)
-                    for folder in library_path.rglob('*'):
-                        if folder.is_dir() and workno in folder.name:
-                            work_info = await self.dlsite_service.get_work_info(workno)
-                            
-                            found.append(LinkedWorkInLibrary(
-                                rjcode=workno,
-                                work_type=linked_work.work_type,
-                                lang=linked_work.lang,
-                                folder_path=str(folder),
-                                folder_size=self._get_folder_size(str(folder)),
-                                file_count=self._get_file_count(str(folder)),
-                                work_name=work_info.get('title', '') if work_info else ""
-                            ))
-                            break
-            
-            return found
-        finally:
-            db.close()
+                        break
+
+        return found
     
     def _analyze_linked_works(
         self,

@@ -9,6 +9,7 @@ import time
 import unicodedata
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
@@ -38,6 +39,67 @@ from .metadata_service import MetadataService
 from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CircleCompletionSnapshot:
+    """社团补全任务的外部数据快照（Phase 1 一次性收集，Phase 2 纯本地查询不再触网）。
+
+    设计要点：
+    - **只显式持有"现有 TTL cache 没有"的数据**：ASMR.one 的 ``fetch_work_info`` /
+      ``fetch_track_list`` 没有内部 cache，每次都打 HTTP，必须自建 snapshot。
+    - **DLsite metadata / canonical / Kikoeru state** 走现有
+      ``_metadata_cache`` / ``_canonical_cache`` / ``_kikoeru_state_cache``——
+      Phase 1 prefetch 阶段已经把它们写入 cache，Phase 2 调用时直接命中。
+      不在 snapshot 里重复持有,避免内存浪费 + 维护一致性的负担。
+    - ``candidate_rjcodes`` 是 Phase 1 的初始候选 RJ 列表（去重，含本地 / Kikoeru /
+      DLsite 三个来源）；``all_rjcodes`` 是 candidate ∪ 全部 linked_rjcodes，是
+      Phase 2 真正需要查 ASMR / Kikoeru 的 RJ 全集。
+    - ``canonical_rj_by_rj`` / ``chain_rjs_by_canonical`` 描述"作品链路"：
+      同一部作品的原版 + 各语言翻译/重制版共享同一个 canonical RJ。Wave 1 算
+      出每个 candidate 的 canonical 后，Wave 2b 对 Kikoeru 只按 **独立链路** 探测
+      一次（``check_duplicate_with_linkages(canonical)`` 内部会展开整条链路、
+      查全所有翻译版的 Kikoeru 状态），结果回灌给链上每个 RJ 的 cache。这样
+      原本 N=39 次 Kikoeru 查询会降到链路数（典型 13 条），但 Phase 2 对任意
+      candidate RJ 仍然能 cache 命中、不会漏作品。
+
+    用 ``contains_asmr(rj)`` / ``get_asmr_work_info(rj)`` / ``get_asmr_tracks(rj)``
+    三个查询接口屏蔽内部 dict 结构，避免下游代码写 ``snapshot.asmr_work_info_by_rj.get()``
+    再忘了 normalize。
+    """
+    candidate_rjcodes: List[str] = field(default_factory=list)
+    all_rjcodes: List[str] = field(default_factory=list)
+    asmr_work_info_by_rj: Dict[str, Optional[Dict[str, Any]]] = field(default_factory=dict)
+    asmr_tracks_by_rj: Dict[str, Optional[List[Any]]] = field(default_factory=dict)
+    # ★ 作品链路去重：rj -> 该 rj 所属的 canonical RJ（原版作品 RJ）。
+    canonical_rj_by_rj: Dict[str, str] = field(default_factory=dict)
+    # ★ 作品链路全集：canonical RJ -> 链上所有 RJ 的有序列表（含 canonical 自身、
+    #   各语言翻译版、各重制版）。Wave 2b 按 ``chain_rjs_by_canonical.keys()``
+    #   去重 probe，可把 Kikoeru 查询次数从"全 RJ 数"降到"独立链路数"。
+    chain_rjs_by_canonical: Dict[str, List[str]] = field(default_factory=dict)
+
+    def contains_asmr(self, rjcode: str) -> bool:
+        """RJ 在 asmr.one 是否同时有 work_info + tracks（即可下载）。"""
+        rj = (rjcode or "").upper()
+        return bool(self.asmr_work_info_by_rj.get(rj)) and bool(self.asmr_tracks_by_rj.get(rj))
+
+    def get_asmr_work_info(self, rjcode: str) -> Optional[Dict[str, Any]]:
+        rj = (rjcode or "").upper()
+        return self.asmr_work_info_by_rj.get(rj)
+
+    def get_asmr_tracks(self, rjcode: str) -> Optional[List[Any]]:
+        rj = (rjcode or "").upper()
+        return self.asmr_tracks_by_rj.get(rj)
+
+    def get_canonical_rj(self, rjcode: str) -> Optional[str]:
+        """获取某个 RJ 所属作品链路的 canonical RJ；未知则返回 ``None``。"""
+        rj = (rjcode or "").upper()
+        return self.canonical_rj_by_rj.get(rj)
+
+    def get_chain_rjs(self, canonical_rjcode: str) -> List[str]:
+        """获取某个 canonical 链路上的全部 RJ（含 canonical 自身）。"""
+        canonical = (canonical_rjcode or "").upper()
+        return list(self.chain_rjs_by_canonical.get(canonical, ()))
 
 
 class CircleCompletionService:
@@ -282,13 +344,23 @@ class CircleCompletionService:
         if cached is not None:
             return cached
         group_key = str(self._variant_group(link_type, lang).get("key") or "").strip()
-        try:
-            if group_key in {"simplified", "traditional"}:
-                result = bool(await self.dlsite_service._is_public_work_available(normalized))
-            else:
+        # ★ 优化（C）：简繁中翻译版不再走 ``_is_public_work_available`` HTML probe。
+        # 历史现场：一次 33 个候选作品的社团补全任务里，仅这条简繁体 HTML probe
+        # 就触发了 698 次页面抓取、其中 580 次 fallback miss——因为 DLsite 公开匿名 API
+        # 对 R18 翻译版会返 404，HTML 也不可见，但作品本身 Kikoeru 上能搜到。
+        # ``test_dlsite_linkage_no_public_filter`` 已经在 ``get_linked_works`` 路径
+        # 验证过：直接信父作品 API 给的 ``language_editions`` 列表才是正确做法。
+        # 这里 variant 全部来自上游的 canonical link_map（DLsite 父作品给的关联链），
+        # 信它即可，不再用同一个 R18 限制下不可访问的 API 反向验证。
+        # 副作用：被默默过滤掉的 R18 翻译版会重新进入候选展示——这本来就是符合
+        # Kikoeru 上"能查到 work 就该展示"的设计意图。
+        if group_key in {"simplified", "traditional"}:
+            result = True
+        else:
+            try:
                 result = bool(await self.dlsite_service.get_product_info(normalized))
-        except Exception:
-            result = False
+            except Exception:
+                result = False
         self._public_variant_cache[cache_key] = result
         return result
 
@@ -333,12 +405,15 @@ class CircleCompletionService:
         cached_title = str((metadata_map.get(normalized) or {}).get("work_name") or "").strip()
         group_key = str(self._variant_group(link_type, lang).get("key") or "").strip()
         if group_key in {"simplified", "traditional"}:
-            try:
-                fallback = await self.dlsite_service._resolve_translation_page_fallback(normalized)
-            except Exception:
-                fallback = None
-            if self.normalize_rjcode((fallback or {}).get("translation_workno")) != normalized:
-                return ""
+            # ★ 优化（C）：简繁中翻译版不再用 ``_resolve_translation_page_fallback`` HTML probe
+            # 作为"可见性"门禁。变体来自父作品 ``language_editions``，DLsite 在父作品 API
+            # 里给的就该信。
+            # - cached_title 命中（来自上游 ``metadata_map``）→ 直接返回；
+            # - 否则只走 ``get_product_info``（API，带 24h cache + inflight 去重，几乎零成本）
+            #   抽 ``work_name``；
+            # - API 也没抽到（典型 R18 翻译版匿名 API 404）→ 返回 cached_title（即使是空串），
+            #   让上游用别的兜底字段渲染，**不再因为"DLsite 上 HTML probe 未命中"就强行返空串
+            #   把翻译版整个挡掉**。
             if cached_title:
                 return cached_title
             try:
@@ -534,6 +609,7 @@ class CircleCompletionService:
         fallback_rjcode: str,
         metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
         extra_candidates: Optional[List[Any]] = None,
+        snapshot: Optional[CircleCompletionSnapshot] = None,
     ) -> tuple[str, Optional[Dict[str, Any]]]:
         probe_candidates = await self._build_public_download_probe_candidates(
             canonical_info,
@@ -547,16 +623,24 @@ class CircleCompletionService:
             if cached is not None:
                 return cached
         for probe_rjcode in probe_candidates:
-            try:
-                work_info = await self.asmr_service.fetch_work_info(probe_rjcode)
-            except Exception:
-                work_info = None
+            # ★ Phase 2 路径：snapshot 已包含全 RJ 的 work_info/tracks，直接查不打 HTTP。
+            #   未传 snapshot（如老调用点 / 单 RJ 视图重建）时退回原 HTTP 行为。
+            if snapshot is not None:
+                work_info = snapshot.get_asmr_work_info(probe_rjcode)
+                tracks = snapshot.get_asmr_tracks(probe_rjcode)
+            else:
+                try:
+                    work_info = await self.asmr_service.fetch_work_info(probe_rjcode)
+                except Exception:
+                    work_info = None
+                tracks = None
+                if work_info:
+                    try:
+                        tracks = await self.asmr_service.fetch_track_list(probe_rjcode)
+                    except Exception:
+                        tracks = None
             if not work_info:
                 continue
-            try:
-                tracks = await self.asmr_service.fetch_track_list(probe_rjcode)
-            except Exception:
-                tracks = None
             if tracks:
                 result = (probe_rjcode, work_info)
                 if cache_key:
@@ -749,10 +833,37 @@ class CircleCompletionService:
             return value
         return self._build_dlsite_cover_url(rjcode, is_unreleased=is_unreleased, resized=True)
 
+    # 预售作品在 DLsite 上常把发售日写成"未定" / "未確定" / "TBD" 等，
+    # 没有具体年月可以解析。这种作品同样属于"尚未发售"，应当：
+    # 1) 后端给前端置 ``is_unreleased=True``，触发 WorkCard / WorkListRow 上的
+    #    📅 未发售 徽章和蓝色光圈，不再"消失成普通卡片"；
+    # 2) 前端按发售日排序时把它沉到末尾（发售日最迟），等 DLsite 后续公布
+    #    实际日期再随刷新流程归位。
+    _UNRELEASED_DATE_KEYWORDS = (
+        "未定",
+        "未確定",
+        "未确定",
+        "未発表",
+        "未发表",
+        "発売日未定",
+        "发售日未定",
+        "発売予定",
+        "予定",
+        "tbd",
+        "tba",
+        "coming soon",
+    )
+
     def _is_future_release_date(self, value: Any) -> bool:
         text = str(value or "").strip()
         if not text:
             return False
+        lowered = text.lower()
+        # 关键字优先：含有"未定" / "TBD" / "予定" 等就直接判未发售，
+        # 不再去匹配年月日（DLsite 偶尔会写"2026年 予定"这种混合形态，
+        # 但只要带上"予定"语义就视同预售）。
+        if any(keyword.lower() in lowered for keyword in self._UNRELEASED_DATE_KEYWORDS):
+            return True
         match = re.search(r"(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?", text)
         if not match:
             return False
@@ -1652,18 +1763,15 @@ class CircleCompletionService:
         return self._metadata_cache[normalized_rj]
 
     async def _probe_kikoeru_owned_state(self, probe_rjcode: str, *, use_cache: bool = True) -> bool:
-        normalized_rj = self.normalize_rjcode(probe_rjcode)
-        if not normalized_rj:
-            return False
-        try:
-            results = await self.kikoeru_service.check_duplicate_with_linkages(normalized_rj, use_cache=use_cache)
-        except Exception:
-            logger.warning("[社团补全] Kikoeru 拥有态补查失败 %s", normalized_rj, exc_info=True)
-            return False
-        for result in (results or {}).values():
-            if getattr(result, "is_found", False):
-                return True
-        return False
+        # ★ 性能优化：复用 ``_probe_kikoeru_state`` 的 ``_kikoeru_state_cache``。
+        # 之前这里独立调 ``check_duplicate_with_linkages``、没 cache，同一个 RJ 在
+        # 多个候选流程里被多次 probe owned_state 时，每次都重新跑一整套 DLsite
+        # 关联链 + Kikoeru search 链路。``_probe_kikoeru_state`` 已经把同样的
+        # check_duplicate_with_linkages 结果按 RJ cache 在 ``_kikoeru_state_cache``
+        # （10 分钟 TTL）里，state 字典本身就含 ``has_kikoeru`` 这个 owned 信号，
+        # 直接读即可，避免重复触网。
+        state = await self._probe_kikoeru_state(probe_rjcode, use_cache=use_cache)
+        return bool(state.get("has_kikoeru"))
 
     async def _probe_kikoeru_state(self, probe_rjcode: str, *, use_cache: bool = True) -> Dict[str, Any]:
         normalized_rj = self.normalize_rjcode(probe_rjcode)
@@ -1736,6 +1844,282 @@ class CircleCompletionService:
             "subtitle_rjcodes": subtitle_rjcodes,
         }
 
+    async def _collect_external_snapshot(
+        self,
+        candidate_rjcodes: List[str],
+        *,
+        force_refresh: bool = False,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        cancel_callback: Optional[Callable[[], bool]] = None,
+    ) -> CircleCompletionSnapshot:
+        """Phase 1：一次性批量预取所有外部数据，Phase 2 纯本地聚合不再触网。
+
+        分两波并发：
+
+        - **Wave 1** —— DLsite 作品资料 + 作品链路（canonical）：
+          ``self._fetch_metadata_dict(rj)`` + ``self.resolve_canonical_rj(rj)``
+          覆盖所有候选 RJ。同时把每个候选的"原版 + 全部翻译/重制版 RJ"展开
+          出来，得到 ``all_rjcodes``（候选 ∪ 链上其它语言版本）。
+
+        - **Wave 2** —— **两组并发同时跑**：
+
+          - **Wave 2a / ASMR.one 核对**：对 ``all_rjcodes`` 里每个 RJ 拉
+            ``fetch_work_info`` + ``fetch_track_list``。ASMR.one 没有内部 cache，
+            必须自建 snapshot；写入 ``snapshot.asmr_*_by_rj``。
+          - **Wave 2b / Kikoeru 核对**：按 **作品链路** 去重 probe，每条链路只
+            对 canonical RJ 调一次 ``_probe_kikoeru_state``——
+            ``check_duplicate_with_linkages`` 内部本来就会展开整条链路、查所有
+            翻译版的 Kikoeru 状态，对链上任一 RJ probe 出来的 state 完全一致。
+            探测完成后把同一份 state 回灌给链上每个 RJ 的 ``_kikoeru_state_cache``，
+            Phase 2 任意候选 RJ probe 时仍然 cache 命中、不会漏作品。
+
+            这步是把 Kikoeru 查询次数从 "候选 + 翻译版全集"（典型 30-50）压到
+            "独立作品数"（典型 10-15）的关键，对耗时影响最大。
+
+        关键参数：
+
+        - ``force_refresh`` 透传给 ``resolve_canonical_rj`` 和 ``_probe_kikoeru_state``,
+          强刷场景下绕过现有 cache，但仍然把新结果写回 cache 供 Phase 2 复用。
+        - ``progress_callback(percent, step)`` 用业务文案细粒度回报给主流程；
+          不传则静默跑。
+        - ``cancel_callback`` 在每轮 gather 之前轮询，用户主动取消时立刻 raise
+          ``CancelledError``，避免 prefetch 跑完才退出。
+        """
+        snapshot = CircleCompletionSnapshot()
+
+        def ensure_not_cancelled() -> None:
+            if cancel_callback and cancel_callback():
+                raise asyncio.CancelledError()
+
+        def safe_progress(pct: int, step: str) -> None:
+            if not progress_callback:
+                return
+            try:
+                progress_callback(max(0, min(100, int(pct))), step)
+            except Exception:
+                logger.debug("[社团补全·snapshot] progress_callback 异常", exc_info=True)
+
+        # 去重 candidate_rjcodes（保留输入顺序）
+        seen: Set[str] = set()
+        for rj in candidate_rjcodes or []:
+            normalized = self.normalize_rjcode(rj)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                snapshot.candidate_rjcodes.append(normalized)
+
+        if not snapshot.candidate_rjcodes:
+            snapshot.all_rjcodes = []
+            return snapshot
+
+        ensure_not_cancelled()
+
+        # ============ Wave 1：拉 DLsite 作品资料 + 解析作品链路 ============
+        wave1_sem = asyncio.Semaphore(20)
+
+        async def prefetch_dlsite(rj: str) -> Tuple[str, str, Set[str]]:
+            """返回 ``(原始 rj, canonical rj, 链上所有 rj 的集合)``。
+
+            内部把所有异常吞掉、回 fallback 值（canonical=rj 自身），保证
+            上游聚合阶段不需要再处理 BaseException 分支。
+            """
+            related: Set[str] = {rj}
+            canonical: str = rj
+            async with wave1_sem:
+                try:
+                    await self._fetch_metadata_dict(rj)
+                except Exception:
+                    logger.debug("[社团补全·snapshot] _fetch_metadata_dict 失败 rj=%s", rj, exc_info=True)
+                canonical_info: Dict[str, Any] = {}
+                try:
+                    canonical_info = await self.resolve_canonical_rj(rj, refresh=force_refresh) or {}
+                except Exception:
+                    logger.debug("[社团补全·snapshot] resolve_canonical_rj 失败 rj=%s", rj, exc_info=True)
+                canonical = self.normalize_rjcode(canonical_info.get("canonical_rjcode")) or rj
+                related.add(canonical)
+                for code in canonical_info.get("linked_rjcodes") or []:
+                    norm = self.normalize_rjcode(code)
+                    if norm:
+                        related.add(norm)
+                # 同时预取 canonical 的 metadata（避免 prepare_candidate 冷启动）
+                if canonical and canonical != rj:
+                    try:
+                        await self._fetch_metadata_dict(canonical)
+                    except Exception:
+                        logger.debug(
+                            "[社团补全·snapshot] _fetch_metadata_dict canonical 失败 rj=%s canonical=%s",
+                            rj, canonical, exc_info=True,
+                        )
+            return rj, canonical, related
+
+        safe_progress(
+            0,
+            f"拉取 DLsite 作品资料 0/{len(snapshot.candidate_rjcodes)} 件",
+        )
+
+        wave1_raw = await asyncio.gather(
+            *[prefetch_dlsite(rj) for rj in snapshot.candidate_rjcodes],
+            return_exceptions=True,
+        )
+
+        ensure_not_cancelled()
+
+        # 组装：作品链路 canonical -> 链上全部 RJ
+        canonical_to_chain: Dict[str, Set[str]] = {}
+        rj_to_canonical: Dict[str, str] = {}
+        for result in wave1_raw:
+            if isinstance(result, BaseException):
+                logger.debug("[社团补全·snapshot] Wave 1 任务抛异常: %s", result)
+                continue
+            rj, canonical, related = result
+            canonical_to_chain.setdefault(canonical, set()).update(related)
+            canonical_to_chain[canonical].add(canonical)
+            rj_to_canonical[rj] = canonical
+            for member in related:
+                # 链上其它 RJ 也回填到映射里，方便 Phase 2 / 调试
+                rj_to_canonical.setdefault(member, canonical)
+
+        # 把 candidate 自身也兜底填进映射，避免 Wave 1 全军覆没时下游 KeyError
+        for rj in snapshot.candidate_rjcodes:
+            if rj not in rj_to_canonical:
+                rj_to_canonical[rj] = rj
+                canonical_to_chain.setdefault(rj, set()).add(rj)
+
+        snapshot.canonical_rj_by_rj = dict(rj_to_canonical)
+        snapshot.chain_rjs_by_canonical = {
+            canonical: sorted(chain) for canonical, chain in canonical_to_chain.items()
+        }
+
+        # 全 RJ 集合 = 所有链路的并集
+        all_rjcodes_set: Set[str] = set()
+        for chain in canonical_to_chain.values():
+            all_rjcodes_set.update(chain)
+        all_rjcodes_set.update(snapshot.candidate_rjcodes)
+        snapshot.all_rjcodes = sorted(all_rjcodes_set)
+
+        unique_canonicals = sorted(canonical_to_chain.keys())
+
+        safe_progress(
+            50,
+            f"展开翻译 / 重制版后共 {len(snapshot.all_rjcodes)} 个 RJ、"
+            f"{len(unique_canonicals)} 条作品链路，开始核对 ASMR.one 与 Kikoeru",
+        )
+
+        # ============ Wave 2a：ASMR.one 作品核对 ============
+        # ASMR.one 的 ``fetch_work_info`` / ``fetch_track_list`` 没有内部 cache，
+        # 这里把每个 RJ 的 work_info + tracks 一次性灌到 snapshot 里。
+        wave2_asmr_sem = asyncio.Semaphore(30)
+        asmr_completed = 0
+        asmr_total = max(1, len(snapshot.all_rjcodes))
+
+        async def prefetch_asmr(rj: str) -> Tuple[str, Optional[Dict[str, Any]], Optional[List[Any]]]:
+            async with wave2_asmr_sem:
+                work_info: Optional[Dict[str, Any]] = None
+                tracks: Optional[List[Any]] = None
+                try:
+                    work_info = await self.asmr_service.fetch_work_info(rj)
+                except Exception:
+                    logger.debug("[社团补全·snapshot] ASMR fetch_work_info 失败 rj=%s", rj, exc_info=True)
+                # 只对 work_info 命中（非 None）的 RJ 拉 tracks，省带宽
+                if work_info:
+                    try:
+                        tracks = await self.asmr_service.fetch_track_list(rj)
+                    except Exception:
+                        logger.debug("[社团补全·snapshot] ASMR fetch_track_list 失败 rj=%s", rj, exc_info=True)
+            return rj, work_info, tracks
+
+        # ============ Wave 2b：Kikoeru 作品链路核对（按 canonical 去重）============
+        # ``check_duplicate_with_linkages(canonical_rj)`` 内部会自动展开整条作品
+        # 链路、把每个翻译版都查一遍，返回的 state 对链上任意 RJ 都是等价的。
+        # 这里把"按 RJ probe（典型 30-50 次）"压到"按链路 probe（典型 10-15 次）"，
+        # 是耗时改善最大的地方。
+        wave2_kk_sem = asyncio.Semaphore(20)
+        kikoeru_completed = 0
+        kikoeru_total = max(1, len(unique_canonicals))
+
+        async def prefetch_kikoeru(canonical_rj: str) -> Tuple[str, Dict[str, Any]]:
+            async with wave2_kk_sem:
+                try:
+                    state = await self._probe_kikoeru_state(
+                        canonical_rj, use_cache=not force_refresh
+                    )
+                except Exception:
+                    logger.debug(
+                        "[社团补全·snapshot] _probe_kikoeru_state 失败 canonical=%s",
+                        canonical_rj, exc_info=True,
+                    )
+                    state = {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
+            return canonical_rj, state
+
+        # 进度回调用 as_completed 双流合并：每完成一个就更新一次
+        asmr_futures = [prefetch_asmr(rj) for rj in snapshot.all_rjcodes]
+        kikoeru_futures = [prefetch_kikoeru(c) for c in unique_canonicals]
+
+        async def collect_asmr() -> None:
+            nonlocal asmr_completed
+            for future in asyncio.as_completed(asmr_futures):
+                ensure_not_cancelled()
+                try:
+                    rj, work_info, tracks = await future
+                except Exception as exc:
+                    logger.debug("[社团补全·snapshot] ASMR prefetch 任务异常: %s", exc)
+                    continue
+                snapshot.asmr_work_info_by_rj[rj] = work_info
+                snapshot.asmr_tracks_by_rj[rj] = tracks
+                asmr_completed += 1
+                if asmr_completed % 5 == 0 or asmr_completed == asmr_total:
+                    # snapshot 相对刻度：ASMR 占 50→75 段
+                    safe_progress(
+                        50 + int((asmr_completed / asmr_total) * 25),
+                        f"在 ASMR.one 上核对作品 {asmr_completed}/{asmr_total} 个",
+                    )
+
+        async def collect_kikoeru() -> None:
+            nonlocal kikoeru_completed
+            for future in asyncio.as_completed(kikoeru_futures):
+                ensure_not_cancelled()
+                try:
+                    canonical_rj, state = await future
+                except Exception as exc:
+                    logger.debug("[社团补全·snapshot] Kikoeru prefetch 任务异常: %s", exc)
+                    kikoeru_completed += 1
+                    continue
+                # 把同一份 state 回灌给链上每个 RJ 的 cache，让 Phase 2 对任意
+                # candidate / linked RJ probe 都能直接 cache 命中。
+                chain = canonical_to_chain.get(canonical_rj) or {canonical_rj}
+                for member in chain:
+                    self._kikoeru_state_cache[member] = state
+                kikoeru_completed += 1
+                if kikoeru_completed % 3 == 0 or kikoeru_completed == kikoeru_total:
+                    # snapshot 相对刻度：Kikoeru 占 75→95 段
+                    safe_progress(
+                        75 + int((kikoeru_completed / kikoeru_total) * 20),
+                        f"在 Kikoeru 上核对作品链路 {kikoeru_completed}/{kikoeru_total} 条",
+                    )
+
+        # 两组并发同时跑，互不阻塞；耗时 = max(ASMR_total, Kikoeru_chain_total)
+        await asyncio.gather(collect_asmr(), collect_kikoeru())
+
+        ensure_not_cancelled()
+
+        asmr_hits = sum(1 for v in snapshot.asmr_work_info_by_rj.values() if v)
+        safe_progress(
+            100,
+            f"外部数据收集完成（候选 {len(snapshot.candidate_rjcodes)} 件 / "
+            f"含翻译共 {len(snapshot.all_rjcodes)} 个 RJ / "
+            f"ASMR 命中 {asmr_hits} 个 / Kikoeru 链路 {len(unique_canonicals)} 条）",
+        )
+
+        logger.info(
+            "[社团补全·snapshot] 收集完成: candidates=%s all_rjs=%s "
+            "kikoeru_chains=%s asmr_hits=%s",
+            len(snapshot.candidate_rjcodes),
+            len(snapshot.all_rjcodes),
+            len(unique_canonicals),
+            asmr_hits,
+        )
+
+        return snapshot
+
     async def _search_dlsite_circle_works(self, keyword: str, max_pages: int = 2) -> tuple[List[str], str]:
         found: List[str] = []
         seen = set()
@@ -1747,7 +2131,29 @@ class CircleCompletionService:
                 suffix = "" if page == 1 else f"/page/{page}"
                 url = f"{self.DL_SEARCH_URL.format(keyword=quote(keyword))}{suffix}"
                 try:
-                    response = await client.get(url, headers=headers, timeout=12.0)
+                    # ★ 关键修复：禁止跟随重定向。DLsite 对越界关键字翻页（page=N 不存在）
+                    #   会 301 到 /maniax/fsr/=/work_category/doujin（默认全站新作页面），
+                    #   这个页面有几百个无关 RJ。跟随后 re.findall 会把整页 RJ 当成社团候选，
+                    #   污染下游所有过滤逻辑。这里看到 3xx 就停，把 location 写进 failure_reason
+                    #   方便排错。
+                    response = await client.get(
+                        url, headers=headers, timeout=12.0, follow_redirects=False
+                    )
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = str(response.headers.get('location') or '').strip()
+                        logger.info(
+                            "[社团补全] DLsite 关键字搜索第 %s 页 %s 重定向到 %s，停止抓取防止污染 keyword=%s",
+                            page,
+                            response.status_code,
+                            location or '?',
+                            keyword,
+                        )
+                        if page == 1:
+                            failure_reason = (
+                                f"DLsite 关键字搜索首页 {response.status_code} 重定向到 "
+                                f"{location or '未知地址'}，疑似关键字不被搜索引擎收录"
+                            )
+                        break
                     if response.status_code != 200:
                         if response.status_code == 404 and page > 1:
                             logger.info(
@@ -1797,14 +2203,51 @@ class CircleCompletionService:
             "https://www.dlsite.com/maniax/announce/list/day/=/keyword/{keyword}{page_suffix}",
             "https://www.dlsite.com/home-touch/announce/list/day?keyword={keyword}{page_query}",
         ]
+        # ★ 关键修复 v2（用户复测：いっしんふらん 16 个真作品但抓到 115 个候选）：
+        #   v1 修复只让单 template 在看到 redirect 时丢弃自己的 attempt_found，但**继续 try
+        #   下一个 template**。实测下来 home-touch 域名（`home-touch/announce/list/day`）
+        #   在 keyword 没命中时不返 301，直接 200 OK 返回 home-touch 端的全站新预告列表，
+        #   ``re.findall(r"[RVB]J\d{6,8}", text)`` 把推荐位 / 广告位 / 最新预告里的 RJ
+        #   全扫成"keyword 命中"，commit 到 found，污染 100+ 个伪候选。
+        #
+        #   新策略：**任一 template 出现 redirect_aborted，立即整个函数 abort 返空**。
+        #   redirect 是 DLsite 给的强信号"keyword 在 announce 上 0 命中"，下一个 template
+        #   跑出来的 200 OK 内容必然也是回退页污染，没有继续尝试的价值。announce keyword
+        #   是辅助来源，社团原作 + 翻译版主要靠 maker_id profile + Kikoeru 直连覆盖，
+        #   这里宁可漏抓也不能引入大量伪候选拖累 fetch_candidate 链路。
+        any_redirect_aborted = False
         for template in url_templates:
+            attempt_found: List[str] = []
+            attempt_seen: Set[str] = set()
+            redirect_aborted = False
             empty_streak = 0
             for page in range(1, max(1, int(max_pages)) + 1):
                 page_suffix = "" if page == 1 else f"/page/{page}"
                 page_query = "" if page == 1 else f"&page={page}"
                 url = template.format(keyword=encoded_keyword, page_suffix=page_suffix, page_query=page_query)
                 try:
-                    response = await client.get(url, headers=headers, timeout=12.0)
+                    response = await client.get(
+                        url, headers=headers, timeout=12.0, follow_redirects=False
+                    )
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = str(response.headers.get('location') or '').strip()
+                        logger.info(
+                            "[社团补全] DLsite 预告搜索第 %s 页 %s 重定向到 %s，"
+                            "判定本次 keyword 命中无效，撤回 attempt_found %s 个 RJ keyword=%s url=%s",
+                            page,
+                            response.status_code,
+                            location or '?',
+                            len(attempt_found),
+                            keyword,
+                            url,
+                        )
+                        if not failure_reason:
+                            failure_reason = (
+                                f"DLsite 预告搜索第 {page} 页 {response.status_code} 重定向到 "
+                                f"{location or '未知地址'}，判定 keyword 在 announce 上无真实匹配"
+                            )
+                        redirect_aborted = True
+                        break
                     if response.status_code != 200:
                         failure_reason = f"DLsite 预告搜索返回 HTTP {response.status_code}（第 {page} 页）"
                         logger.warning("[社团补全] DLsite 预告搜索失败 keyword=%s page=%s status=%s url=%s", keyword, page, response.status_code, url)
@@ -1818,9 +2261,9 @@ class CircleCompletionService:
                 new_count = 0
                 for match in matches:
                     normalized = self.normalize_rjcode(match)
-                    if normalized and normalized not in seen:
-                        seen.add(normalized)
-                        found.append(normalized)
+                    if normalized and normalized not in seen and normalized not in attempt_seen:
+                        attempt_seen.add(normalized)
+                        attempt_found.append(normalized)
                         new_count += 1
                 if new_count == 0:
                     empty_streak += 1
@@ -1828,6 +2271,17 @@ class CircleCompletionService:
                     empty_streak = 0
                 if empty_streak >= 2:
                     break
+            if redirect_aborted:
+                # 整个 attempt_found 当作污染丢弃，并**立即 abort 整个函数**：
+                # redirect 是 DLsite 给的强信号"keyword 在 announce 上 0 命中"，
+                # 下一个 template 跑出来的 200 OK 内容必然是回退页污染（home-touch
+                # 域名实测不返 redirect、直接 200 + 全站新作列表），无价值。
+                any_redirect_aborted = True
+                break
+            for rj in attempt_found:
+                if rj not in seen:
+                    seen.add(rj)
+                    found.append(rj)
             if found:
                 break
         return found, failure_reason
@@ -1851,7 +2305,28 @@ class CircleCompletionService:
                 page_suffix = "" if page == 1 else f"/page/{page}"
                 url = template.format(maker_id=normalized_maker_id, page_suffix=page_suffix)
                 try:
-                    response = await client.get(url, headers=headers, timeout=12.0)
+                    # ★ 关键修复：禁止跟随重定向。maker 预告 URL 越界翻页或 maker_id 没有预告
+                    #   作品时 DLsite 会 301，httpx 默认会被静默跟随到全站列表页，污染候选。
+                    #   看到 3xx 立刻 break。
+                    response = await client.get(
+                        url, headers=headers, timeout=12.0, follow_redirects=False
+                    )
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = str(response.headers.get('location') or '').strip()
+                        logger.info(
+                            "[社团补全] DLsite maker 预告页第 %s 页 %s 重定向到 %s，停止抓取防止污染 maker_id=%s url=%s",
+                            page,
+                            response.status_code,
+                            location or '?',
+                            normalized_maker_id,
+                            url,
+                        )
+                        if page == 1 and not failure_reason:
+                            failure_reason = (
+                                f"DLsite maker 预告页 {response.status_code} 重定向到 "
+                                f"{location or '未知地址'}，疑似 maker_id 无预告作品"
+                            )
+                        break
                     if response.status_code != 200:
                         if page == 1:
                             failure_reason = f"DLsite maker 预告页返回 HTTP {response.status_code}"
@@ -2041,9 +2516,17 @@ class CircleCompletionService:
         source_mode = "keyword"
         failure_messages: List[str] = []
 
+        # ★ profile_parse_status 用来区分两种"profile + announce 都返回 0"：
+        #   - "empty"：DLsite 上 maker_id 真的没作品（多半是脏 maker_id），可以重置走关键字
+        #   - "html_decode_failed" / "http_error"：抓取失败（典型现场是 brotlicffi 没装、
+        #     代理被墙、临时 5xx），此时 **绝对不能** 重置 maker_id —— 否则下面
+        #     fetch_candidate 的 maker_id 白名单失效，关键字搜索抓到的全站推荐位 RJ
+        #     就会跨过过滤进入候选，导致"25 个作品的社团变 42 个候选"那种污染。
+        profile_parse_status = "ok" if not normalized_maker_id else "skipped"
+
         if normalized_maker_id:
             try:
-                dlsite_rjcodes = await self.dlsite_service.list_circle_worknos_by_maker(normalized_maker_id, language="JPN")
+                dlsite_rjcodes, profile_parse_status = await self.dlsite_service.list_circle_worknos_by_maker(normalized_maker_id, language="JPN")
                 source_mode = "maker_profile"
                 profile_rjcodes = set(dlsite_rjcodes)
                 if progress_callback:
@@ -2054,10 +2537,12 @@ class CircleCompletionService:
                         dlsite_maker_id=normalized_maker_id,
                         dlsite_source_mode=source_mode,
                         dlsite_failure_reason="",
+                        dlsite_profile_parse_status=profile_parse_status,
                     )
             except Exception as exc:
                 logger.warning("[社团补全] 按 maker_id 抓取 DLsite 社团主页失败 maker_id=%s", normalized_maker_id, exc_info=True)
                 failure_messages.append(f"DLsite 社团主页抓取失败: {str(exc)}")
+                profile_parse_status = "http_error"
                 if progress_callback:
                     progress_callback(44, "DLsite 社团主页抓取失败，准备回退关键字搜索", dlsite_source_mode=source_mode, dlsite_failure_reason=" / ".join(failure_messages))
 
@@ -2087,26 +2572,50 @@ class CircleCompletionService:
                     )
 
         if not dlsite_rjcodes:
-            # ★ profile + maker_announce 都返回 0 时，传入的 maker_id 大概率是
-            # 上一轮关键字搜索误识别后被持久化到 CircleCatalog 的脏数据
-            # （典型现场：RG42470 的 profile/options[0]/JPN 返回 200 但 0 作品，
-            # maker_announce 直接 404）。如果继续保留 normalized_maker_id，下面
-            # fetch_candidate 会用 maker_id 不等过滤掉所有关键字候选，整个任务收 0。
-            # 这里主动重置：让 fetch_candidate 退化为只校验 maker_name，把真实候选放进来。
-            if normalized_maker_id:
+            # ★ profile + maker_announce 都返回 0 时，需要区分两种本质不同的情况：
+            #
+            # (1) parse_status == "empty"：HTTP 都 200 + HTML 也是正常 DLsite 页面，但确实
+            #     一个作品都没有。这种通常是 maker_id 脏了（典型现场：RG42470 的
+            #     profile/options[0]/JPN 返回 200 但 0 作品，maker_announce 直接 404），
+            #     继续保留 maker_id 会让 fetch_candidate 的 maker_id 白名单卡掉所有关键字
+            #     候选，整个任务收 0。这种才主动重置 maker_id 退化到关键字模式。
+            #
+            # (2) parse_status == "html_decode_failed" / "http_error"：抓取失败，例如：
+            #     - venv 缺 brotlicffi，DLsite 给 br 压缩响应 → response.text 是乱码
+            #     - 代理被墙或临时 5xx
+            #     这时 maker_id 大概率仍然有效，**保留它**！让下面 fetch_candidate 用
+            #     maker_id 严格白名单卡过关键字搜索结果，避免全站推荐位 RJ 污染候选。
+            should_reset_maker_id = bool(
+                normalized_maker_id and profile_parse_status == "empty"
+            )
+            if should_reset_maker_id:
                 logger.warning(
-                    "[社团补全] DLsite maker_id=%s profile/announce 均返回 0，疑似误识别，"
-                    "已重置为关键字模式，避免连锁误删关键字候选；"
-                    "若服务器在中国大陆部署，请在设置页→元数据→HTTP 代理 填写日本可用的代理地址（如 http://192.168.x.x:7890），"
-                    "DLsite 对非日本 IP 可能返回不同的 HTML 导致作品列表解析为 0",
+                    "[社团补全] DLsite maker_id=%s profile 解析正常但作品列表为空（parse_status=%s），"
+                    "疑似误识别，已重置为关键字模式，避免连锁误删关键字候选",
                     normalized_maker_id,
+                    profile_parse_status,
                 )
                 failure_messages.append(
-                    f"DLsite maker_id={normalized_maker_id} profile/announce 均 0 作品，已重置为关键字模式"
+                    f"DLsite maker_id={normalized_maker_id} profile/announce 均 0 作品（HTML 健全），"
+                    "已重置为关键字模式"
                 )
                 normalized_maker_id = ""
                 if source_mode.startswith("maker_profile"):
                     source_mode = "keyword_after_stale_maker"
+            elif normalized_maker_id:
+                logger.warning(
+                    "[社团补全] DLsite maker_id=%s profile/announce 抓取失败（parse_status=%s），"
+                    "保留 maker_id 严格白名单走关键字 fallback，防止全站推荐位 RJ 污染候选；"
+                    "若长期复现，请检查 backend venv 是否安装了 brotlicffi、HTTP 代理是否可达日本 IP",
+                    normalized_maker_id,
+                    profile_parse_status,
+                )
+                failure_messages.append(
+                    f"DLsite maker_id={normalized_maker_id} profile 抓取失败（{profile_parse_status}），"
+                    "保留 maker_id 白名单走关键字 fallback"
+                )
+                if source_mode.startswith("maker_profile"):
+                    source_mode = "keyword_with_strict_maker"
             dlsite_rjcodes, keyword_failure_reason = await self._search_dlsite_circle_works(circle_query)
             if keyword_failure_reason:
                 failure_messages.append(keyword_failure_reason)
@@ -2167,14 +2676,25 @@ class CircleCompletionService:
                 if asmr_classification is None and not is_from_profile:
                     return None
             candidate_maker_id = self._normalize_maker_id(meta.get("maker_id"))
-            if normalized_maker_id and candidate_maker_id and candidate_maker_id != normalized_maker_id:
-                return None
+            if normalized_maker_id:
+                if is_from_profile:
+                    if candidate_maker_id and candidate_maker_id != normalized_maker_id:
+                        return None
+                else:
+                    # 关键字/预告来源启用 maker_id 白名单：已识别到 maker_id 时，
+                    # 候选必须携带且必须等于该 maker_id，缺失也直接丢弃。
+                    if not candidate_maker_id or candidate_maker_id != normalized_maker_id:
+                        return None
             maker_name = str(meta.get("maker_name") or "").strip()
             if not is_from_profile:
                 # 关键字/预告搜索来源：必须校验社团名，防止不相关社团作品混入。
                 # 用双向宽松匹配，避免 query 比 maker_name 长（如 Kikoeru 把系列名
                 # 拼进社团名，而 DLsite 上是裸社团名）时所有作品都被误删。
-                if maker_name and not self._circle_name_loose_match(circle_query, maker_name):
+                # 注意：maker_name 为空时，如果继续放行会把无效 RJ（页面404/元数据残缺）
+                # 伪装成当前社团，导致列表混入大量无关作品。
+                if not maker_name:
+                    return None
+                if not self._circle_name_loose_match(circle_query, maker_name):
                     return None
             return {
                 "rjcode": rjcode,
@@ -2718,32 +3238,43 @@ class CircleCompletionService:
         skipped_existing = 0
         candidate_semaphore = asyncio.Semaphore(16)
 
-        # 批量并发预取所有候选作品的 metadata + canonical，填充缓存，减少 semaphore 内的串行等待
-        _prefetch_sem = asyncio.Semaphore(20)
-        async def _prefetch_one(rjcode_norm: str) -> None:
-            async with _prefetch_sem:
-                try:
-                    await self._fetch_metadata_dict(rjcode_norm)
-                except Exception:
-                    pass
-                canonical_info = {}
-                try:
-                    canonical_info = await self.resolve_canonical_rj(rjcode_norm, refresh=force_refresh)
-                except Exception:
-                    pass
-                # 同时预取 canonical 的 metadata，避免 prepare_candidate 中的冷启动请求
-                canonical = canonical_info.get("canonical_rjcode") or rjcode_norm
-                if canonical and canonical != rjcode_norm:
-                    try:
-                        await self._fetch_metadata_dict(canonical)
-                    except Exception:
-                        pass
+        # ============ Phase 1：一次性批量预取所有外部数据 ============
+        # 旧流程是 "DLsite metadata 预取 → prepare_candidate → ASMR 检查 → Kikoeru 补查"
+        # 4 段串行（每段内有并发，但 bucket 间是 semaphore=10/12 的"中等并发"）。
+        #
+        # 新流程把所有外部 HTTP 集中到 ``_collect_external_snapshot()`` 一次跑完：
+        #   Wave 1：拉 DLsite 作品资料 + 解析作品链路（candidate × 20 并发）。
+        #   Wave 2a：在 ASMR.one 上核对每个 RJ 是否存在（30 并发，含翻译版全集）。
+        #   Wave 2b：在 Kikoeru 上 **按作品链路 canonical 去重** 核对（20 并发）。
+        #            一次 probe 会展开整条链路、查所有翻译版的查重状态，结果回灌
+        #            给链上每个 RJ 的 cache。把 Kikoeru 查询次数从"全 RJ"压到
+        #            "独立作品数"是这次优化的关键改动。
+        #
+        # Phase 2 阶段所有外部调用均 cache 命中（asmr 走 snapshot、Kikoeru 走
+        # ``_kikoeru_state_cache``、DLsite 走 ``_metadata_cache`` / ``_canonical_cache``），
+        # 不再产生网络往返。
+        snapshot_candidates = [self.normalize_rjcode(c.get("rjcode")) for c in combined_candidates]
+        snapshot_candidates = [r for r in snapshot_candidates if r]
+        if snapshot_candidates:
+            # snapshot 内部用 0-100 相对刻度回报，主流程映射到 54-72 区间
+            def _snapshot_progress(rel_pct: int, step: str, **meta: Any) -> None:
+                rel_pct = max(0, min(100, int(rel_pct)))
+                mapped = 54 + int(rel_pct * 0.18)  # 54 + 0..18 → 54..72
+                report(mapped, step, **meta)
 
-        _prefetch_rjcodes = [self.normalize_rjcode(c.get("rjcode")) for c in combined_candidates]
-        _prefetch_rjcodes = [r for r in _prefetch_rjcodes if r]
-        if _prefetch_rjcodes:
-            report(51, "并发预取候选元数据", prefetch_count=len(_prefetch_rjcodes))
-            await asyncio.gather(*[_prefetch_one(r) for r in _prefetch_rjcodes], return_exceptions=True)
+            report(
+                54,
+                f"准备核对 {len(snapshot_candidates)} 件候选作品的 DLsite / ASMR.one / Kikoeru 状态",
+                prefetch_count=len(snapshot_candidates),
+            )
+            external_snapshot = await self._collect_external_snapshot(
+                snapshot_candidates,
+                force_refresh=force_refresh,
+                progress_callback=_snapshot_progress,
+                cancel_callback=cancel_callback,
+            )
+        else:
+            external_snapshot = CircleCompletionSnapshot()
 
         async def prepare_candidate(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             ensure_not_cancelled()
@@ -2760,6 +3291,27 @@ class CircleCompletionService:
                     return None
                 canonical_info = await self.resolve_canonical_rj(rjcode, refresh=force_refresh)
                 canonical = canonical_info["canonical_rjcode"] or rjcode
+
+                # ★ 修复 BUG #3（韩英 / 其他外语版被独立成卡）：
+                # 在 input rjcode 自己的 link_map 信号下，直接判定它是否属于"非简繁日"分组。
+                # 配合 ``dlsite_service`` 中的 BUG #1 修复：
+                # - 当 DLsite 父作品 API 给出明确 ``language_editions`` 时，input 在 link_map
+                #   里的 lang 是真实的（如 ``KO_KR`` / ``ENG``）→ ``_variant_group`` 归为 "other"。
+                # - 当 input 自己 API 拿不到（已下架 / R18 限制 / 网络错误）时，``get_translation_info``
+                #   不再默认 ``is_original=True``，``_get_direct_linked_works`` 的 else 分支会标
+                #   ``work_type='unknown', lang='UNKNOWN'`` → ``_variant_group`` 同样归为 "other"。
+                # 命中 "other" 即过滤掉这条 candidate，避免创建独立 bucket 导致同一父作品
+                # 多卡片并存（如截图里 RJ01294458 韩语版被错配简中标题独立成卡）。
+                # 注意：input 是外语版时，该作品的简繁中/原作版仍会作为其他 candidate 独立
+                # 进 ``prepare_candidate``，最终聚合到正确的 canonical bucket，不会丢作品。
+                input_link_meta = (canonical_info.get("link_map") or {}).get(rjcode) or {}
+                input_group = self._variant_group(
+                    input_link_meta.get("link_type"),
+                    input_link_meta.get("lang"),
+                ).get("key")
+                if input_group == "other":
+                    return None
+
                 canonical_metadata = metadata
                 if canonical and canonical != rjcode:
                     try:
@@ -2808,7 +3360,7 @@ class CircleCompletionService:
             metadata_checked += 1
             if not prepared:
                 report(
-                    52 + int((metadata_checked / total_candidates) * 18),
+                    72 + int((metadata_checked / total_candidates) * 2),
                     f"整理候选作品 {metadata_checked}/{total_candidates}",
                     aggregated_count=len(aggregated),
                     metadata_checked_count=metadata_checked,
@@ -2825,7 +3377,7 @@ class CircleCompletionService:
             if only_new_works and canonical in existing_canonical_rjcodes:
                 skipped_existing += 1
                 report(
-                    52 + int((metadata_checked / total_candidates) * 18),
+                    72 + int((metadata_checked / total_candidates) * 2),
                     f"整理候选作品 {metadata_checked}/{total_candidates}",
                     aggregated_count=len(aggregated),
                     metadata_checked_count=metadata_checked,
@@ -3001,11 +3553,14 @@ class CircleCompletionService:
         async def run_payload(payload: tuple[str, Dict[str, Any], Dict[str, Dict[str, Any]], Dict[str, Any]]) -> tuple[str, str]:
             canonical, item, metadata_map, canonical_info = payload
             async with asmr_semaphore:
+                # ★ Phase 2：传 snapshot 让 _find_public_downloadable_work 全本地查询，
+                #   不再调 fetch_work_info / fetch_track_list 打 HTTP。
                 actual_rjcode, _ = await self._find_public_downloadable_work(
                     canonical_info,
                     item.get("display_rjcode") or canonical,
                     metadata_map=metadata_map,
                     extra_candidates=[item.get("asmr_available_rjcode"), item.get("display_rjcode"), canonical],
+                    snapshot=external_snapshot,
                 )
             return canonical, self.normalize_rjcode(actual_rjcode)
 
@@ -3766,6 +4321,14 @@ class CircleCompletionService:
         if not normalized_codes:
             raise ValueError("没有选中要刷新的作品")
 
+        # === 阶段 A：短读事务 ===
+        # 之前这里是"一个 db session 跨越整个循环"，循环里有十几个 await HTTP IO
+        # （resolve_canonical / fetch_metadata / probe kikoeru / download_many 等），
+        # SQLAlchemy session 自始至终都占着一个连接，又随 row.x = y 让 sqlite3 driver
+        # BEGIN IMMEDIATE 持有写锁——其他任何写库的接口（任务中心写状态、操作日志、
+        # 邮件监听、库存索引等）就只能排到 30s busy_timeout 兜底队列里慢慢等。
+        # 现在拆成"读 → 无 session 跑 IO → 写"三段：循环期间 connection / 写锁
+        # 全部释放，其他页面 API 不会再被这条长任务卡住。
         db = SessionLocal()
         try:
             catalog = db.query(CircleCatalog).filter(CircleCatalog.circle_id == circle_id).first()
@@ -3778,7 +4341,13 @@ class CircleCompletionService:
             )
             if not rows:
                 raise ValueError("没有找到选中的作品")
+            # expunge_all 让 catalog / rows 脱管：循环中可以继续读写它们的 attributes，
+            # 但 session 不再跟踪 dirty 状态、也不再持有连接。
+            db.expunge_all()
+        finally:
+            db.close()
 
+        try:
             refreshed_items = []
             refreshed_count = 0
             asmr_available_count = 0
@@ -4080,9 +4649,23 @@ class CircleCompletionService:
                 except Exception:
                     logger.warning("[社团补全] refresh 阶段缓存封面失败", exc_info=True)
 
-            catalog.last_indexed_at = datetime.now()
-            catalog.updated_at = datetime.now()
-            db.commit()
+            # === 阶段 C：短写事务 ===
+            # 把脱管的 rows / catalog 一次性 merge 回库并 commit；写锁仅在 commit 期间
+            # 短暂持有，全程不阻塞其他写库的接口（任务中心、操作日志、邮件监听等）。
+            now_ts = datetime.now()
+            catalog.last_indexed_at = now_ts
+            catalog.updated_at = now_ts
+            write_db = SessionLocal()
+            try:
+                for refreshed_row in rows:
+                    write_db.merge(refreshed_row)
+                write_db.merge(catalog)
+                write_db.commit()
+            except Exception:
+                write_db.rollback()
+                raise
+            finally:
+                write_db.close()
             changed_count = len([item for item in refreshed_items if item.get("changed")])
             report(
                 100,
@@ -4123,10 +4706,9 @@ class CircleCompletionService:
                 "items": refreshed_items,
             }
         except Exception:
-            db.rollback()
+            # 阶段 A 的 session 已经在读完 rows / catalog 后立即 close，循环 + 写阶段
+            # 都用独立的 short session，所以这里没有 db 需要 rollback——直接向上抛。
             raise
-        finally:
-            db.close()
 
     async def list_recent_indexes(self, limit: int = 20) -> List[Dict[str, Any]]:
         return await self.search_circles("", limit=limit)

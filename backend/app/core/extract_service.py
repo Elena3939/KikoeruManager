@@ -4188,11 +4188,14 @@ class ExtractService:
         # 7z l -ba 输出格式: 日期 时间 属性 大小 压缩大小 文件名
         pattern = r'^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+([D.][R.][H.][S.][A.])\s+(\d+)\s+(\d+)?\s+(.+)$'
 
-        for line in output.strip().split('\n'):
+        # Windows 上 7zz 走 CRLF 输出，split('\n') 后每行末尾会残留 '\r'，
+        # 让 group(6) 的 ".+$" 把 '\r' 也吃进 name，造成下游全部对比 '.txt' / '.zip' 失败。
+        # 用 splitlines() 同时切 \n / \r\n。
+        for line in output.strip().splitlines():
             match = re.match(pattern, line)
             if match:
                 size = int(match.group(4))
-                name = match.group(6)
+                name = match.group(6).rstrip('\r')
                 files.append({
                     'name': name,
                     'size': size,

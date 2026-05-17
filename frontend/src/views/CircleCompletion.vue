@@ -1139,6 +1139,9 @@ const missingWorks = computed(() => {
   if (missingReleaseSort.value === 'asc' || missingReleaseSort.value === 'desc') {
     const direction = missingReleaseSort.value === 'asc' ? 1 : -1
     return [...list].sort((a, b) => {
+      // 「发售日未定」（后端 is_unreleased=true 但 release_date 没有具体年月日）
+      // 由 getWorkReleaseTimestamp 折算成虚构的 2099-01-01 时间戳，正常参与排序：
+      // 升序时落到列表末尾、降序时落到列表最前，都符合"发售日最迟"的业务语义。
       const diff = getWorkReleaseTimestamp(a) - getWorkReleaseTimestamp(b)
       if (diff !== 0) return diff * direction
       return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
@@ -1184,10 +1187,20 @@ function getCircleMissingCount(circle) {
   return Math.max(0, Number(circle?.missing || 0))
 }
 
+// 「发售日未定」作品参与排序时使用的虚构最大时间戳：2099-01-01 00:00。
+// 业务语义是"发售日最迟"——升序排到末尾、降序排到最前，都对得上
+// DLsite 上预售作品"还没排日期"的真实状态。等真实日期被刷新进来后，
+// parseReleaseDateForSort 能正常返回 0 < t < 2099 的时间戳，自然归位。
+const UNRELEASED_PLACEHOLDER_TIMESTAMP = new Date(2099, 0, 1).getTime()
+
 function getWorkReleaseTimestamp(item) {
   const raw = String(item?.release_date || item?.date || item?.release_at || '').trim()
   const timestamp = raw ? parseReleaseDateForSort(raw) : 0
-  return Number.isFinite(timestamp) ? timestamp : 0
+  if (Number.isFinite(timestamp) && timestamp > 0) return timestamp
+  // 后端 is_unreleased=true 但 release_date 是"未定" / "TBD" / 空 等
+  // 不可解析成具体年月日的字符串：用虚构的 2099-01-01 当成"最迟发售日"。
+  if (item?.is_unreleased) return UNRELEASED_PLACEHOLDER_TIMESTAMP
+  return 0
 }
 
 function parseReleaseDateForSort(raw) {

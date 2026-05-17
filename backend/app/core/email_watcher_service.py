@@ -964,28 +964,10 @@ class EmailWatcherService:
             row.updated_at = datetime.now()
             db.commit()
 
-            # 顺手把这条新作封面缓存到 data/img/，避免用户从社团补全页打开时
-            # 还要走 dlsite 远程拉一次。
-            # 注意：CircleWork.image_url 字段保持远程 URL 不动，邮件 / 通知模板
-            # 仍直接读 row.image_url 走 dlsite 公网 URL，不能让本地 API path
-            # 污染 db（否则邮件被发到其他机器就会出现 broken image）。
-            remote_cover_for_cache = str(row.image_url or "").strip()
-            display_rj_for_cache = (
-                circle_service.normalize_rjcode(row.display_rjcode) or canonical
-            )
-            if remote_cover_for_cache.startswith(("http://", "https://")) and display_rj_for_cache:
-                try:
-                    await get_circle_image_cache_service().download_one(
-                        display_rj_for_cache, remote_cover_for_cache,
-                    )
-                except Exception:
-                    logger.debug(
-                        "[邮件监听] 缓存新作封面失败 rj=%s",
-                        display_rj_for_cache,
-                        exc_info=True,
-                    )
-
-            return {
+            # commit 完立刻把 return 需要的字段全部拍快照到本地变量，下面 await
+            # download_one 不再持有 connection / 写锁，其他写库的接口（任务中心、
+            # 操作日志、库存索引）能立即得到响应。
+            result_payload = {
                 "success": True,
                 "mode": "rj_direct_upsert",
                 "mail_rjcode": rjcode,
@@ -1005,11 +987,32 @@ class EmailWatcherService:
                 "fallback_source": str(product_info_result.get("fallback_source") or ""),
                 "is_new_circle": is_new_catalog,
             }
+            remote_cover_for_cache = str(row.image_url or "").strip()
+            display_rj_for_cache = (
+                circle_service.normalize_rjcode(row.display_rjcode) or canonical
+            )
         except Exception:
             db.rollback()
             raise
         finally:
             db.close()
+
+        # 封面缓存放在 session 外面：避免 download_one 的 HTTP IO 继续占 db 连接。
+        # 这条 RJ 还能从 row.image_url 走 dlsite 公网 URL 显示，缓存只是优化，
+        # 失败也不影响邮件流。
+        if remote_cover_for_cache.startswith(("http://", "https://")) and display_rj_for_cache:
+            try:
+                await get_circle_image_cache_service().download_one(
+                    display_rj_for_cache, remote_cover_for_cache,
+                )
+            except Exception:
+                logger.debug(
+                    "[邮件监听] 缓存新作封面失败 rj=%s",
+                    display_rj_for_cache,
+                    exc_info=True,
+                )
+
+        return result_payload
 
     async def test_connection(self, host: str, port: int, ssl: bool, username: str, password: str, mailbox: str) -> Dict:
         """测试 IMAP 连接。"""

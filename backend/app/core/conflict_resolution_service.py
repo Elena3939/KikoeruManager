@@ -911,17 +911,30 @@ class ConflictResolutionService:
         if not job:
             return
         # 跨 asyncio.task 不持有外层传进来的 SQLAlchemy 实例，重新 fetch 一份。
+        # 读完立即 expunge + close：后续 _stage_new_source_with_progress / extract /
+        # _load_existing_remote_items 等长 IO 不再占用连接池槽位。WAL 模式下读虽然
+        # 不阻塞写，但 connection pool 总共只有 15 槽（pool_size=5+max_overflow=10），
+        # 多个并发预览同时跑会迅速耗尽，让其他 endpoint 拿不到连接。
         from ..models.database import ConflictWork, get_db
         db = next(get_db())
         workspace = ""
         session_registered = False
         try:
-            conflict = (
-                db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
-            )
-            if not conflict:
-                self._fail_merge_preview_job(job, f"找不到 conflict 记录：{conflict_id}")
-                return
+            try:
+                conflict = (
+                    db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+                )
+                if not conflict:
+                    self._fail_merge_preview_job(job, f"找不到 conflict 记录：{conflict_id}")
+                    return
+                # detach：后续访问 conflict.x 都不再走 session
+                db.expunge(conflict)
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    logger.debug("合并预览 worker 关闭只读 db session 失败", exc_info=True)
+                db = None  # 顶层 finally 不再 double close
 
             self._update_merge_preview_job(
                 job, stage="init", stage_label="初始化",
@@ -1029,10 +1042,13 @@ class ConflictResolutionService:
         finally:
             if workspace and not session_registered and os.path.isdir(workspace):
                 await asyncio.to_thread(shutil.rmtree, workspace, True)
-            try:
-                db.close()
-            except Exception:
-                logger.debug("合并预览 worker 关闭 db session 失败", exc_info=True)
+            # db 在前面 try/finally 内已经 close（成功路径）；这里只处理"还没到那一步
+            # 就抛异常"的极端场景，避免连接泄漏。
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    logger.debug("合并预览 worker 关闭 db session 失败", exc_info=True)
             self._merge_preview_workers.pop(job_id, None)
 
     async def _stage_new_source_with_progress(
