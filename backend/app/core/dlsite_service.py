@@ -366,6 +366,30 @@ class DLsiteApiService:
         year, month, day = match.groups()
         return f"{year}-{int(month):02d}-{int(day):02d}"
 
+    def _extract_price_text(self, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (int, float)):
+            return f"{int(value):,}円" if int(value) > 0 else "0円"
+        text = self._decode_html_value(str(value))
+        if not text:
+            return ""
+        match = re.search(r'([0-9][0-9,]*)\s*円', text)
+        if match:
+            return f"{match.group(1)}円"
+        if text.isdigit():
+            return f"{int(text):,}円" if int(text) > 0 else "0円"
+        return text.strip()
+
+    def _extract_product_price_text(self, product: Dict) -> str:
+        if not isinstance(product, dict):
+            return ""
+        for key in ("price_text", "price_str", "price", "official_price", "work_price", "sales_price"):
+            price_text = self._extract_price_text(product.get(key))
+            if price_text:
+                return price_text
+        return ""
+
     def _extract_name_list(self, text: str, section_pattern: str) -> List[Dict[str, str]]:
         if not text:
             return []

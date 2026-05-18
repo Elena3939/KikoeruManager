@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar } from 'lucide-vue-next'
+import { LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar, Gift } from 'lucide-vue-next'
 import { useViewport } from '../../composables/useViewport'
 
 const props = defineProps({
@@ -41,6 +41,7 @@ const downloadRjcode = computed(() =>
 // 后端口径 = email_watcher 来源 + 48h 窗口 + email_watcher_first_seen_at（fallback created_at）。
 // 不再前端自己算时间窗口，避免左右两侧出现"左边没有新作但右边还在闪新作"的不一致。
 const isNewWork = computed(() => Boolean(props.item?.is_new_work))
+const isBonusWork = computed(() => Boolean(props.item?.is_bonus_work))
 
 const isUnreleased = computed(() => {
   if (props.item.is_unreleased) return true
@@ -158,7 +159,7 @@ function onImgError(e) {
   >
     <!-- 左侧缩略图 -->
     <div class="wlr-thumb">
-      <img v-if="coverUrl" :src="coverUrl" class="wlr-thumb-img" referrerpolicy="no-referrer" @error="onImgError" />
+      <img v-if="coverUrl" :src="coverUrl" class="wlr-thumb-img" loading="lazy" decoding="async" referrerpolicy="no-referrer" @error="onImgError" />
       <div v-else class="wlr-thumb-placeholder">
         <LibraryBig :size="16" class="opacity-30" />
       </div>
@@ -170,6 +171,7 @@ function onImgError(e) {
         <span class="wlr-title-text">{{ item.title || '未命名作品' }}</span>
         <span v-if="isNewWork" class="wlr-new-badge">✦ 新作</span>
         <span v-if="isUnreleased" class="wlr-unreleased-badge"><Calendar :size="10" />未发售</span>
+        <span v-if="isBonusWork" class="wlr-bonus-badge" :title="bonusParentLabel"><Gift :size="10" />特典</span>
       </div>
       <div class="wlr-subtitle">
         <span class="wlr-code">{{ displayCode }}</span>
@@ -379,6 +381,22 @@ function onImgError(e) {
   letter-spacing: .03em;
   box-shadow: 0 1px 4px rgba(52, 120, 246, 0.10);
 }
+.wlr-bonus-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 7px;
+  margin-left: 6px;
+  border: 1px solid rgba(168, 85, 247, 0.20);
+  border-radius: 999px;
+  background: rgba(250, 245, 255, 0.86);
+  color: #7e22ce;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .03em;
+  box-shadow: 0 1px 4px rgba(126, 34, 206, 0.12);
+}
 
 .wlr-subtitle {
   display: flex;
@@ -408,7 +426,6 @@ function onImgError(e) {
 .wlr-release :first-child {
   color: #94a3b8;
 }
-
 .wlr-sep {
   font-size: 11px;
   color: #d1d5db;

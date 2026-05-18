@@ -937,6 +937,7 @@ class EmailWatcherService:
             row.maker_id = maker_id or row.maker_id or ""
             row.maker_name = circle_name or row.maker_name or ""
             row.image_url = image_url or row.image_url or ""
+            row.price_text = str(item.get("price_text") or "").strip() or row.price_text
             row.linked_rjcodes = sorted(set(linked_rjcodes or [row.display_rjcode or canonical]))
             row.has_dlsite = True
             row.has_asmr_one = bool(actual_norm)

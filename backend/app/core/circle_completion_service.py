@@ -846,6 +846,46 @@ class CircleCompletionService:
             return value
         return self._build_dlsite_cover_url(rjcode, is_unreleased=is_unreleased, resized=True)
 
+    def _normalize_dlsite_thumb_url(self, url: Any, rjcode: Any, *, is_unreleased: bool = False) -> str:
+        """返回列表模式用的小方图 URL。"""
+
+        value = self._normalize_dlsite_cover_url(url, rjcode, is_unreleased=is_unreleased)
+        if value.startswith("https://img.dlsite.jp/resize/images2/") and "_img_main_240x240.jpg" in value:
+            return value.replace("https://img.dlsite.jp/resize/images2/", "https://img.dlsite.jp/modpub/images2/").replace("_img_main_240x240.jpg", "_img_sam.jpg")
+        if value.startswith("https://img.dlsite.jp/modpub/images2/") and "_img_main.jpg" in value:
+            return value.replace("_img_main.jpg", "_img_sam.jpg")
+        if value.startswith("https://img.dlsite.jp/modpub/images2/") and "_img_sam.jpg" in value:
+            return value
+        return self._build_dlsite_cover_url(rjcode, is_unreleased=False, resized=False) or value
+
+    _BONUS_TITLE_KEYWORDS = (
+        "特典",
+        "購入特典",
+        "予約特典",
+        "限定特典",
+        "店舗特典",
+        "音声特典",
+        "特典音声",
+        "おまけ",
+        "オマケ",
+        "bonus",
+        "extra",
+    )
+
+    def _is_bonus_work_title(self, value: Any) -> bool:
+        title = str(value or "").strip()
+        if not title:
+            return False
+        lowered = title.lower()
+        return any(keyword.lower() in lowered for keyword in self._BONUS_TITLE_KEYWORDS)
+
+    def _price_text_indicates_bonus(self, value: Any) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return True
+        digits = re.sub(r"[^0-9]", "", text)
+        return bool(digits) and int(digits) == 0
+
     # 预售作品在 DLsite 上常把发售日写成"未定" / "未確定" / "TBD" 等，
     # 没有具体年月可以解析。这种作品同样属于"尚未发售"，应当：
     # 1) 后端给前端置 ``is_unreleased=True``，触发 WorkCard / WorkListRow 上的
@@ -2714,6 +2754,7 @@ class CircleCompletionService:
                 "title": meta.get("work_name") or "",
                 "maker_id": meta.get("maker_id") or normalized_maker_id or "",
                 "maker_name": maker_name or circle_query,
+                "price_text": meta.get("price_text") or "",
                 "image_url": self._normalize_dlsite_cover_url(
                     meta.get("cover_url"),
                     rjcode,
@@ -2767,6 +2808,7 @@ class CircleCompletionService:
                     "title": row.work_name,
                     "maker_id": maker_id,
                     "maker_name": maker_name,
+                    "price_text": metadata.get("price_text") or "",
                     "image_url": self._normalize_dlsite_cover_url(
                         row.cover_url,
                         row.rjcode,
@@ -3416,6 +3458,12 @@ class CircleCompletionService:
                 "asmr_available_rjcode": "",
                 "kikoeru_work_id": None,
                 "source_flags": set(),
+                "price_text": str(
+                    metadata.get("price_text")
+                    or canonical_metadata.get("price_text")
+                    or item.get("price_text")
+                    or ""
+                ).strip(),
                 "preferred_variant_label": self._variant_label(preferred_variant["link_type"], preferred_variant["lang"]),
                 "preferred_lang": preferred_variant["lang"],
                 "preferred_link_type": preferred_variant["link_type"],
@@ -3424,6 +3472,8 @@ class CircleCompletionService:
             bucket["title"] = preferred_title or bucket["title"] or str(canonical_metadata.get("work_name") or item.get("title") or metadata.get("work_name") or "")
             bucket["maker_id"] = bucket["maker_id"] or str(canonical_metadata.get("maker_id") or metadata.get("maker_id") or item.get("maker_id") or "")
             bucket["maker_name"] = bucket["maker_name"] or str(canonical_metadata.get("maker_name") or metadata.get("maker_name") or item.get("maker_name") or circle_query)
+            if not str(bucket.get("price_text") or "").strip():
+                bucket["price_text"] = str(metadata.get("price_text") or canonical_metadata.get("price_text") or item.get("price_text") or "").strip()
             release_date = str(canonical_metadata.get("release_date") or metadata.get("release_date") or item.get("release_date") or "").strip()
             is_unreleased = self._is_future_release_date(release_date)
             def _valid_cover(*urls: Any) -> str:
@@ -3644,30 +3694,42 @@ class CircleCompletionService:
 
         # 把封面图同步缓存到本地 data/img/，避免前端每次都从 dlsite 加载，
         # dlsite 图片 CDN 在国内偶发抖动 / 代理掉链时整个社团页都会"白板"。
-        # 这里只下载小图（_img_main_240x240），单张 < 50KB；并发 8，失败不阻断。
+        # 卡片图和列表小图分开缓存：卡片图保留 RJxxxx.jpg，列表图写 RJxxxx_sam.jpg。
         cover_download_pairs: List[Tuple[str, str]] = []
+        thumb_download_pairs: List[Tuple[str, str]] = []
         for canonical_rj, item in aggregated.items():
             cover_url = str(item.get("image_url") or "").strip()
             display_rj = self.normalize_rjcode(item.get("display_rjcode")) or canonical_rj
             if not display_rj or not cover_url.startswith(("http://", "https://")):
                 continue
             cover_download_pairs.append((display_rj, cover_url))
-        if cover_download_pairs:
+            thumb_url = self._normalize_dlsite_thumb_url(
+                cover_url,
+                display_rj,
+                is_unreleased=self._is_future_release_date(item.get("release_date")),
+            )
+            if thumb_url.startswith(("http://", "https://")):
+                thumb_download_pairs.append((display_rj, thumb_url))
+        if cover_download_pairs or thumb_download_pairs:
             report(
                 92,
-                f"缓存社团封面 {len(cover_download_pairs)}",
+                f"缓存社团封面 {len(cover_download_pairs)} / 列表小图 {len(thumb_download_pairs)}",
                 cover_total=len(cover_download_pairs),
+                cover_thumb_total=len(thumb_download_pairs),
             )
             try:
-                cover_results = await get_circle_image_cache_service().download_many(
-                    cover_download_pairs,
-                )
+                image_cache_service = get_circle_image_cache_service()
+                cover_results = await image_cache_service.download_many(cover_download_pairs)
+                thumb_results = await image_cache_service.download_many(thumb_download_pairs, variant="list")
                 cover_cached_count = sum(1 for ok in cover_results.values() if ok)
+                thumb_cached_count = sum(1 for ok in thumb_results.values() if ok)
                 report(
                     93,
-                    f"封面缓存完成 {cover_cached_count}/{len(cover_download_pairs)}",
+                    f"封面缓存完成 {cover_cached_count}/{len(cover_download_pairs)}，列表小图 {thumb_cached_count}/{len(thumb_download_pairs)}",
                     cover_total=len(cover_download_pairs),
                     cover_cached=cover_cached_count,
+                    cover_thumb_total=len(thumb_download_pairs),
+                    cover_thumb_cached=thumb_cached_count,
                 )
             except Exception:
                 # 封面缓存失败属于"非关键"路径，远程 URL 仍能展示；只 warning 不抛。
@@ -3701,6 +3763,7 @@ class CircleCompletionService:
                 row.maker_id = item["maker_id"]
                 row.maker_name = item["maker_name"]
                 row.image_url = item.get("image_url") or ""
+                row.price_text = str(item.get("price_text") or "").strip() or None
                 row.source_mask = ",".join(sorted(item["source_flags"]))
                 row.linked_rjcodes = item["linked_rjcodes"]
                 row.has_kikoeru = bool(item["has_kikoeru"])
@@ -3925,18 +3988,28 @@ class CircleCompletionService:
                         if 0 <= age_seconds <= window_seconds:
                             new_work_48h_map[tr.circle_id] = new_work_48h_map.get(tr.circle_id, 0) + 1
 
-                # 批量统计未发售（join WorkMetadata.release_date）
-                today_str = date.today().isoformat()
+                # 批量统计未发售：左侧目录只提示仍未满足的预售作品，口径和右侧
+                # 缺失作品区保持一致。已收录 / 本地已有的历史状态不再污染目录徽章。
                 unreleased_rows = (
-                    db.query(CircleWork.circle_id, WorkMetadata.release_date)
+                    db.query(
+                        CircleWork.circle_id,
+                        WorkMetadata.release_date,
+                        CircleWork.has_kikoeru,
+                        LibraryOwnedWork.canonical_rjcode.label("local_canonical"),
+                    )
                     .join(WorkMetadata, WorkMetadata.rjcode == CircleWork.canonical_rjcode)
+                    .outerjoin(
+                        LibraryOwnedWork,
+                        LibraryOwnedWork.canonical_rjcode == CircleWork.canonical_rjcode,
+                    )
                     .filter(CircleWork.circle_id.in_(collected_ids))
                     .all()
                 )
                 unreleased_map: Dict[str, int] = {}
                 for ur in unreleased_rows:
-                    rd = str(ur.release_date or "").strip()
-                    if rd and rd[:10] > today_str:
+                    if bool(ur.has_kikoeru) or ur.local_canonical is not None:
+                        continue
+                    if self._is_future_release_date(ur.release_date):
                         unreleased_map[ur.circle_id] = unreleased_map.get(ur.circle_id, 0) + 1
 
                 for item in out:
@@ -4057,27 +4130,9 @@ class CircleCompletionService:
             # 还闪新作特效"这种口径漂移。
             now_local_for_view = get_local_now()
             new_work_window_seconds = 48 * 60 * 60
-            # 提到循环外拿一次实例，循环里只调 has_local（一次 stat 调用），
-            # 200 个作品的额外开销 ~1ms，可以忽略。
+            # 详情接口必须保持纯读、快返回。封面在索引 / 刷新阶段缓存；
+            # 浏览阶段只做本地命中判断，不能再为了补图把整个详情请求拖进网络下载。
             image_cache_service = get_circle_image_cache_service()
-            cover_download_pairs: List[Tuple[str, str]] = []
-            for row in works:
-                display_rj = (
-                    self.normalize_rjcode(row.display_rjcode)
-                    or self.normalize_rjcode(row.canonical_rjcode)
-                )
-                remote_cover = str(row.image_url or "").strip()
-                if (
-                    display_rj
-                    and remote_cover.startswith(("http://", "https://"))
-                    and not image_cache_service.has_local(display_rj)
-                ):
-                    cover_download_pairs.append((display_rj, remote_cover))
-            if cover_download_pairs:
-                try:
-                    await image_cache_service.download_many(cover_download_pairs)
-                except Exception:
-                    logger.warning("[社团补全] 详情视图缓存封面失败", exc_info=True)
             items = []
             for row in works:
                 owned_row = owned_rows.get(row.canonical_rjcode)
@@ -4125,6 +4180,7 @@ class CircleCompletionService:
                             break
                 item["release_date"] = release_date
                 item["is_unreleased"] = self._is_future_release_date(release_date)
+                item["price_text"] = str(getattr(row, "price_text", "") or "").strip()
                 normalized_remote_cover = self._normalize_dlsite_cover_url(
                     item.get("image_url"),
                     row.display_rjcode or row.canonical_rjcode,
@@ -4136,7 +4192,16 @@ class CircleCompletionService:
                 local_cover_url = image_cache_service.get_local_url(
                     stored_display_rjcode or row.canonical_rjcode
                 )
+                local_thumb_url = image_cache_service.get_local_url(
+                    stored_display_rjcode or row.canonical_rjcode,
+                    variant="list",
+                )
                 item["image_url"] = local_cover_url or normalized_remote_cover
+                item["thumb_image_url"] = local_thumb_url or self._normalize_dlsite_thumb_url(
+                    normalized_remote_cover,
+                    stored_display_rjcode or row.canonical_rjcode,
+                    is_unreleased=item["is_unreleased"],
+                )
                 # 远程 URL 单独再露一份给邮件 / 复制链接等场景使用，前端目前没用，
                 # 但保留这个字段成本极低，以后扩展邮件预览 / 复制图片链接时不用回头改 API。
                 item["remote_image_url"] = normalized_remote_cover
@@ -4150,6 +4215,12 @@ class CircleCompletionService:
                             if cvs:
                                 break
                     item["cvs"] = cvs
+                item["is_bonus_work"] = (
+                    self._is_bonus_work_title(item.get("title"))
+                    and self._price_text_indicates_bonus(item.get("price_text"))
+                )
+                if item["is_bonus_work"]:
+                    item["cvs"] = []
                 view_canonical_info = {
                     **canonical_info,
                     "linked_rjcodes": item["linked_rjcodes"],
@@ -4586,6 +4657,7 @@ class CircleCompletionService:
                 row.maker_name = str(metadata.get("maker_name") or row.maker_name or "").strip() or row.maker_name
                 display_metadata = metadata_map.get(row.display_rjcode) or metadata or {}
                 release_date = str(display_metadata.get("release_date") or metadata.get("release_date") or "").strip()
+                row.price_text = str(display_metadata.get("price_text") or metadata.get("price_text") or row.price_text or "").strip() or None
                 row.image_url = self._normalize_dlsite_cover_url(
                     display_metadata.get("cover_url") or metadata.get("cover_url") or row.image_url,
                     row.display_rjcode or canonical,
@@ -4669,6 +4741,7 @@ class CircleCompletionService:
             # 把刷新后的封面图同步到本地缓存。force_refresh=True 时强制重新拉一次，
             # 普通刷新有本地缓存会 short-circuit，几乎免费跳过。
             cover_pairs: List[Tuple[str, str]] = []
+            thumb_pairs: List[Tuple[str, str]] = []
             for refreshed_row in rows:
                 cover_url = str(refreshed_row.image_url or "").strip()
                 display_rj = (
@@ -4678,10 +4751,21 @@ class CircleCompletionService:
                 if not display_rj or not cover_url.startswith(("http://", "https://")):
                     continue
                 cover_pairs.append((display_rj, cover_url))
-            if cover_pairs:
+                thumb_url = self._normalize_dlsite_thumb_url(
+                    cover_url,
+                    display_rj,
+                    is_unreleased=self._is_future_release_date(getattr(refreshed_row, "release_date", "")),
+                )
+                if thumb_url.startswith(("http://", "https://")):
+                    thumb_pairs.append((display_rj, thumb_url))
+            if cover_pairs or thumb_pairs:
                 try:
-                    await get_circle_image_cache_service().download_many(
+                    image_cache_service = get_circle_image_cache_service()
+                    await image_cache_service.download_many(
                         cover_pairs, force=bool(force_refresh),
+                    )
+                    await image_cache_service.download_many(
+                        thumb_pairs, variant="list", force=bool(force_refresh),
                     )
                 except Exception:
                     logger.warning("[社团补全] refresh 阶段缓存封面失败", exc_info=True)

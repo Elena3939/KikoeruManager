@@ -267,6 +267,7 @@ class CircleWork(Base):
     asmr_available_rjcode = Column(String(20), index=True)
     kikoeru_work_id = Column(Integer)
     image_url = Column(String(500))
+    price_text = Column(String(80))
     asmr_one_cached_at = Column(DateTime)
     dlsite_cached_at = Column(DateTime)
     source_tags = Column(JSON, default=list)  # 来源标签，如 ["email_watcher"]，用于"新作"标识
@@ -299,6 +300,7 @@ class CircleWork(Base):
             'asmr_available_rjcode': self.asmr_available_rjcode,
             'kikoeru_work_id': self.kikoeru_work_id,
             'image_url': self.image_url,
+            'price_text': self.price_text or '',
             'asmr_one_cached_at': self.asmr_one_cached_at.isoformat() if self.asmr_one_cached_at else None,
             'dlsite_cached_at': self.dlsite_cached_at.isoformat() if self.dlsite_cached_at else None,
             'source_tags': self.source_tags or [],
@@ -1397,6 +1399,8 @@ def init_db():
                 circle_work_missing_columns.append(("kikoeru_subtitle_rjcodes", "JSON", "'[]'"))
             if 'image_url' not in circle_work_columns:
                 circle_work_missing_columns.append(("image_url", "VARCHAR(500)", "NULL"))
+            if 'price_text' not in circle_work_columns:
+                circle_work_missing_columns.append(("price_text", "VARCHAR(80)", "NULL"))
             if 'source_tags' not in circle_work_columns:
                 circle_work_missing_columns.append(("source_tags", "JSON", "'[]'"))
             if 'email_watcher_first_seen_at' not in circle_work_columns:
