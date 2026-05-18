@@ -387,6 +387,7 @@ class MetadataService:
         rjcodes: Iterable[str],
         *,
         max_concurrency: int = 6,
+        force: bool = False,
     ) -> Dict[str, Dict[str, Any]]:
         """针对存量旧条目（``work_metadata.bonus_info_checked_at IS NULL``）的一次性懒迁移。
 
@@ -398,6 +399,13 @@ class MetadataService:
           若 DLsite 当下取不到（404 / 网络抖动），保留 NULL，下次浏览再试。
         - 返回 ``{rjcode: {"is_bonus_work", "has_bonus", "bonus_info_checked_at"}}``，
           调用方据此把更新合并到自己的 metadata_map / circle_works 行。
+
+        ``force=True`` 时不看 ``bonus_info_checked_at`` 是否 NULL，对所有命中的 RJ
+        强制重刷一次特典字段——给 ``refresh_circle_works`` 的"刷新选中作品"路径用，
+        修复历史上因为 ``get_product_bonus_info`` 异常吞错（HTTP 失败也错误打了
+        时间戳）导致 ``is_bonus_work=False`` 卡死的存量条目。这条路径直接走
+        DLsite ``product_info_ajax``，靠它内部的 24h cache + inflight 去重防止
+        雪崩，单社团一次性强刷的成本可控。
         """
         normalized: List[str] = []
         seen: set = set()
@@ -415,18 +423,18 @@ class MetadataService:
         if not normalized:
             return {}
 
-        # 只挑真正需要补刷的：bonus_info_checked_at IS NULL。
-        # 已有时间戳的就算 is_bonus_work=False 也代表"实际确认过不是特典"，跳过。
+        # 默认只挑真正需要补刷的：bonus_info_checked_at IS NULL。
+        # 已有时间戳的就算 is_bonus_work=False 也"理论上"代表实际确认过不是特典，跳过。
+        # ``force=True`` 时绕过这条过滤，对所有传进来的 RJ 都重新拉一次 product_info_ajax，
+        # 用于修复"接口失败被错误打时间戳"的存量数据。
         db = next(get_db())
         try:
-            rows = (
-                db.query(WorkMetadataModel)
-                .filter(
-                    WorkMetadataModel.rjcode.in_(normalized),
-                    WorkMetadataModel.bonus_info_checked_at.is_(None),
-                )
-                .all()
+            query = db.query(WorkMetadataModel).filter(
+                WorkMetadataModel.rjcode.in_(normalized)
             )
+            if not force:
+                query = query.filter(WorkMetadataModel.bonus_info_checked_at.is_(None))
+            rows = query.all()
             pending = [str(row.rjcode or "").strip().upper() for row in rows if str(row.rjcode or "").strip()]
         finally:
             db.close()

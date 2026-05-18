@@ -735,8 +735,22 @@ class DLsiteApiService:
         return isinstance(bonuses, list) and len(bonuses) > 0
 
     async def get_product_bonus_info(self, rjcode: str, locale: Optional[str] = None) -> Dict[str, bool]:
-        """复刻 VoiceLinks 的特典判定：只信 DLsite product/info/ajax 的结构化字段。"""
+        """复刻 VoiceLinks 的特典判定：只信 DLsite product/info/ajax 的结构化字段。
+
+        ★ 关键：``_fetch_product_info_ajax_payload`` 内部 ``_fetch_api`` 在 404 / 超时 /
+        ConnectError / JSON 解析失败等所有 HTTP 错误下都返回 ``None`` 不抛异常。如果这里
+        把 ``product is None`` 也视为"已确认非特典"返回 ``{is_bonus_work: False}``,
+        上游 ``_apply_dlsite_bonus_info`` 会顺利打上 ``bonus_info_checked_at=NOW()``,
+        从此 ``lazy_refresh_bonus_for_cached_rjcodes`` 永远跳过这条（它只补刷
+        ``bonus_info_checked_at IS NULL`` 的存量），漏判的特典作品再也救不回来。
+        所以 product 为 None 必须 raise，让 ``_apply_dlsite_bonus_info`` 走 except
+        分支保留 ``bonus_info_checked_at=None``，下次浏览仍有机会重试。
+        """
         product = await self._fetch_product_info_ajax_payload(rjcode, locale=locale)
+        if not isinstance(product, dict):
+            raise RuntimeError(
+                f"DLsite product/info/ajax 未返回 {rjcode} 的有效 payload (HTTP 失败 / 接口空响应)"
+            )
         return {
             "is_bonus_work": self._product_info_indicates_bonus_work(product),
             "has_bonus": self._product_info_indicates_has_bonus(product),

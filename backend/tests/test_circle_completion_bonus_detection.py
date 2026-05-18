@@ -1,6 +1,8 @@
 """社团补全 - DLsite 特典作品识别回归测试。"""
 from __future__ import annotations
 
+from typing import Any, Dict, Optional
+
 import pytest
 
 from app.core.dlsite_service import DLsiteApiService
@@ -57,3 +59,48 @@ def test_has_bonus_uses_dlsite_bonuses_array(dlsite_service: DLsiteApiService) -
         is True
     )
     assert dlsite_service._product_info_indicates_has_bonus({"bonuses": []}) is False
+
+
+@pytest.mark.asyncio
+async def test_get_product_bonus_info_raises_when_payload_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """root cause 修复：``_fetch_product_info_ajax_payload`` 返 None 时必须 raise。
+
+    历史 bug：拉空时返回 ``{is_bonus_work: False, has_bonus: False}`` 不抛异常，
+    上游 ``_apply_dlsite_bonus_info`` 顺利打了 ``bonus_info_checked_at=NOW()``，
+    从此 ``lazy_refresh_bonus_for_cached_rjcodes`` 永远跳过，特典漏判救不回。
+    必须 raise 让 except 分支保留 ``bonus_info_checked_at=None``。
+    """
+    service = DLsiteApiService()
+
+    async def _stub_payload(rjcode: str, locale: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        return None
+
+    monkeypatch.setattr(service, "_fetch_product_info_ajax_payload", _stub_payload)
+
+    with pytest.raises(RuntimeError, match=r"未返回.*的有效 payload"):
+        await service.get_product_bonus_info("RJ01527756")
+
+
+@pytest.mark.asyncio
+async def test_get_product_bonus_info_returns_dict_when_payload_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """正常路径：payload 是有效 dict 时返回 is_bonus_work / has_bonus，不抛异常。"""
+    service = DLsiteApiService()
+
+    async def _stub_payload(rjcode: str, locale: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        return {
+            "is_sale": False,
+            "is_free": True,
+            "is_oly": True,
+            "wishlist_count": 0,
+            "bonuses": [{"workno": "RJ_BONUS"}],
+        }
+
+    monkeypatch.setattr(service, "_fetch_product_info_ajax_payload", _stub_payload)
+
+    result = await service.get_product_bonus_info("RJ01527756")
+
+    assert result == {"is_bonus_work": True, "has_bonus": True}

@@ -215,3 +215,90 @@ async def test_apply_dlsite_bonus_info_sets_checked_at(
     assert metadata.is_bonus_work is True
     assert metadata.has_bonus is True
     assert metadata.bonus_info_checked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_lazy_refresh_force_overrides_existing_checked_at(
+    service: MetadataService,
+    db_session,
+    stub_dlsite: _StubDlsiteService,
+) -> None:
+    """``force=True`` 必须忽略 bonus_info_checked_at 全量重刷。
+
+    用户主动点"刷新选中作品"时走这条路径，专门修复历史 ``get_product_bonus_info``
+    异常吞错（HTTP 失败被错误打了时间戳）导致 ``is_bonus_work=False`` 卡死的存量条目。
+    """
+    fixed_time = datetime(2025, 10, 1, 12, 0, 0)
+    _add_metadata_row(
+        db_session,
+        "RJ01527756",
+        is_bonus_work=False,  # 历史误写：明明是特典却被卡成 False
+        bonus_info_checked_at=fixed_time,
+    )
+    stub_dlsite.responses["RJ01527756"] = {"is_bonus_work": True, "has_bonus": False}
+
+    updated = await service.lazy_refresh_bonus_for_cached_rjcodes(
+        ["RJ01527756"], force=True
+    )
+
+    # ★ force=True 必须重新打 stub（不能因为时间戳已有就跳过）
+    assert stub_dlsite.calls == ["RJ01527756"]
+    assert updated["RJ01527756"]["is_bonus_work"] is True
+
+    row = db_session.query(WorkMetadata).filter(WorkMetadata.rjcode == "RJ01527756").one()
+    assert bool(row.is_bonus_work) is True
+    # 时间戳应该被刷成新的
+    assert row.bonus_info_checked_at is not None
+    assert row.bonus_info_checked_at != fixed_time
+
+
+@pytest.mark.asyncio
+async def test_lazy_refresh_force_default_false_keeps_legacy_behavior(
+    service: MetadataService,
+    db_session,
+    stub_dlsite: _StubDlsiteService,
+) -> None:
+    """``force`` 默认为 False，必须保持原有"只刷 NULL 时间戳"语义。
+
+    避免某次粗心改动让浏览路径 / index_circle_catalog 也意外跑全量重刷。
+    """
+    fixed_time = datetime(2025, 10, 1, 12, 0, 0)
+    _add_metadata_row(
+        db_session,
+        "RJ01577561",
+        bonus_info_checked_at=fixed_time,
+    )
+    stub_dlsite.responses["RJ01577561"] = {"is_bonus_work": True, "has_bonus": True}
+
+    # 不传 force / 默认 False
+    updated = await service.lazy_refresh_bonus_for_cached_rjcodes(["RJ01577561"])
+
+    assert stub_dlsite.calls == []
+    assert updated == {}
+
+    row = db_session.query(WorkMetadata).filter(WorkMetadata.rjcode == "RJ01577561").one()
+    assert bool(row.is_bonus_work) is False
+    assert row.bonus_info_checked_at == fixed_time
+
+
+@pytest.mark.asyncio
+async def test_apply_dlsite_bonus_info_skips_checked_at_when_dlsite_raises(
+    service: MetadataService,
+    stub_dlsite: _StubDlsiteService,
+) -> None:
+    """root cause 防御：DLsite 抛异常时 ``bonus_info_checked_at`` 必须保持 None。
+
+    旧 ``get_product_bonus_info`` 拉空返 ``{False, False}`` 不抛异常，导致
+    ``_apply_dlsite_bonus_info`` 错误打了时间戳。修复后 ``get_product_bonus_info``
+    在拉空时 raise，这里测的是 except 分支不打时间戳的语义。
+    """
+    stub_dlsite.raise_for.add("RJ09999999")
+    metadata = metadata_service_module.WorkMetadata()
+    metadata.rjcode = "RJ09999999"
+
+    await service._apply_dlsite_bonus_info(metadata, "RJ09999999")
+
+    # 抛异常时不能打时间戳
+    assert metadata.bonus_info_checked_at is None
+    assert metadata.is_bonus_work is False
+    assert metadata.has_bonus is False
