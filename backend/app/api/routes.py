@@ -1401,7 +1401,14 @@ async def backfill_auto_import_extract_activity_logs(
 # CORS配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # 开发态前端走 5556，API 直连 5555，避免大量 /api 代理请求占满 Vite
+    # 同源连接后把页面 HTML / JS 也一起堵住。由于安全门依赖 cookie，
+    # 这里不能再用 allow_origins=["*"] + allow_credentials=True。
+    allow_origins=[
+        "http://localhost:5556",
+        "http://127.0.0.1:5556",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

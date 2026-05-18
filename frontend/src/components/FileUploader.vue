@@ -125,7 +125,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ChevronDown, FileText, Loader2, Play, Upload } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
-import { libraryApi } from '../api'
+import { apiFetchOptions, apiUrl, libraryApi } from '../api'
 
 defineProps({
   compact: {
@@ -309,7 +309,7 @@ async function startUpload() {
     if (targetLibraryId.value) {
       formData.append('target_library_id', targetLibraryId.value)
     }
-    const response = await fetch('/api/upload', { method: 'POST', body: formData })
+    const response = await fetch(apiUrl('/upload'), apiFetchOptions({ method: 'POST', body: formData }))
     if (!response.ok) {
       throw new Error(`上传失败: ${response.statusText}`)
     }

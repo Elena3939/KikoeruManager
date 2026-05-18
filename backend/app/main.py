@@ -63,6 +63,9 @@ def main():
         port=port,
         log_level="info",
         reload=reload_mode,
+        limit_concurrency=128,
+        timeout_keep_alive=15,
+        backlog=512,
     )
 
 

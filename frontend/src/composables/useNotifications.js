@@ -1,5 +1,5 @@
 import { ref, computed } from 'vue'
-import { notificationApi } from '../api'
+import { apiUrl, notificationApi } from '../api'
 
 const _unreadCount = ref(0)
 const _items = ref([])
@@ -15,7 +15,7 @@ let _sse = null
 let _sseRetryTimer = null
 let _sseRetryDelay = 2000
 const SSE_MAX_DELAY = 30000
-const SSE_URL = '/api/notifications/stream'
+const SSE_URL = apiUrl('/notifications/stream')
 const SYNC_CHANNEL_NAME = 'kikoerumanager.notification.sync'
 const SYNC_STORAGE_KEY = 'kikoerumanager:notification:sync'
 const _windowId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -139,7 +139,7 @@ _initCrossWindowSync()
 function _connectSSE() {
   if (_sse && _sse.readyState !== EventSource.CLOSED) return
 
-  _sse = new EventSource(SSE_URL)
+  _sse = new EventSource(SSE_URL, { withCredentials: true })
 
   _sse.onmessage = (e) => {
     try {

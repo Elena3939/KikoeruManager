@@ -1,7 +1,36 @@
 import axios from 'axios'
 import { ref } from 'vue'
 
-const API_BASE = '/api'
+const DEFAULT_DEV_BACKEND_PORT = '5555'
+
+function resolveApiBase() {
+  const configured = String(import.meta.env.VITE_API_BASE || '').trim()
+  if (configured) return configured.replace(/\/$/, '')
+
+  if (import.meta.env.DEV && typeof window !== 'undefined' && window.location.port === '5556') {
+    const backendPort = String(import.meta.env.VITE_BACKEND_PORT || DEFAULT_DEV_BACKEND_PORT).trim()
+    return `${window.location.protocol}//${window.location.hostname}:${backendPort}/api`
+  }
+
+  return '/api'
+}
+
+export const API_BASE = resolveApiBase()
+
+export function apiUrl(path = '') {
+  const suffix = String(path || '')
+  if (!suffix) return API_BASE
+  return `${API_BASE}${suffix.startsWith('/') ? suffix : `/${suffix}`}`
+}
+
+export function apiFetchOptions(options = {}) {
+  const next = { ...options }
+  if (!next.credentials) {
+    next.credentials = 'include'
+  }
+  return next
+}
+
 const FILTER_DELETE_PREVIEW_TIMEOUT = 30 * 60 * 1000
 const CONFLICT_MERGE_TIMEOUT = 30 * 60 * 1000
 const RJ_SUBTITLE_SCAN_TIMEOUT = 0
@@ -12,6 +41,7 @@ export const synologyOtpRequired = ref(false)
 const apiClient = axios.create({
   baseURL: API_BASE,
   timeout: 60000,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json; charset=utf-8'
   }
@@ -606,12 +636,11 @@ export const libraryApi = {
     const baseURL = (apiClient?.defaults?.baseURL || '').replace(/\/$/, '')
     const url = `${baseURL}/library/index/global-search/stream?${params.toString()}`
 
-    const response = await fetch(url, {
+    const response = await fetch(url, apiFetchOptions({
       method: 'GET',
       headers: { Accept: 'application/x-ndjson' },
       signal,
-      credentials: 'same-origin',
-    })
+    }))
     if (!response.ok) {
       const text = await response.text().catch(() => '')
       const err = new Error(`HTTP ${response.status}: ${text || response.statusText}`)
@@ -924,7 +953,7 @@ export const libraryApi = {
     const params = new URLSearchParams()
     params.set('library_id', libraryId || '')
     params.set('path', path || '')
-    return `${API_BASE}/library/browser/preview?${params.toString()}`
+    return apiUrl(`/library/browser/preview?${params.toString()}`)
   },
 
   browserListFolders: async (libraryId, path = '', options = {}) => {
@@ -1329,7 +1358,7 @@ export const rjSubtitleApi = {
   },
 
   scanStream: async (folderPath, options = {}) => {
-    const response = await fetch(`${API_BASE}/rj-subtitle/scan-stream`, {
+    const response = await fetch(apiUrl('/rj-subtitle/scan-stream'), apiFetchOptions({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
@@ -1340,8 +1369,8 @@ export const rjSubtitleApi = {
         library_id: options.libraryId || undefined,
         scan_depth: options.scanDepth ?? 3
       }),
-      signal: options.signal
-    })
+      signal: options.signal,
+    }))
 
     if (!response.ok) {
       let detail = response.statusText || '扫描失败'

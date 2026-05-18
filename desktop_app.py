@@ -104,7 +104,10 @@ class DesktopApp:
                 port=self.port,
                 log_level="warning",
                 access_log=False,
-                log_config=None
+                log_config=None,
+                limit_concurrency=128,
+                timeout_keep_alive=15,
+                backlog=512,
             )
             self.server = uvicorn.Server(config)
             self.server.run()
