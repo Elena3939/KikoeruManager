@@ -184,6 +184,7 @@
               <span class="metric-pill ok"><Download :size="12" /> 可下载 {{ detail.downloadable_count || 0 }}</span>
               <span class="metric-pill muted"><MinusCircle :size="12" /> 暂不可下载 {{ detail.dl_only_count || 0 }}</span>
               <span v-if="unreleasedWorksCount > 0" class="metric-pill unreleased"><Calendar :size="12" /> 未发售 {{ unreleasedWorksCount }}</span>
+              <span v-if="bonusWorksCount > 0" class="metric-pill bonus"><Gift :size="12" /> 特典 {{ bonusWorksCount }}</span>
               <span v-if="newWorksCount > 0" class="metric-pill new-work"><Mail :size="12" /> 新作 {{ newWorksCount }}</span>
             </div>
           </div>
@@ -273,12 +274,13 @@
                 <span class="circle-tab-label"><XCircle :size="13" class="circle-tab-icon missing" /> 缺失作品 <em class="circle-tab-badge missing">{{ missingWorksTotal }}</em></span>
               </template>
 
-              <div v-if="missingWorks.length > 0 && selectedCanonicalRJCodes.length > 0" class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 mb-4 mt-2 shadow-sm backdrop-blur-sm">
-                <span class="text-sm font-medium text-slate-700">已选 {{ selectedCanonicalRJCodes.length }} / {{ missingWorks.length }}</span>
+              <div v-if="missingWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 mb-4 mt-2 shadow-sm backdrop-blur-sm">
+                <span class="text-sm font-medium text-slate-700">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
                 <div class="flex items-center gap-2">
                   <el-button class="batch-action-button" size="small" @click="selectAllVisibleWorks">全选</el-button>
                   <el-button class="batch-action-button ghost" size="small" @click="clearSelection">清空</el-button>
-                  <el-button class="batch-action-button primary ml-2" type="primary" size="small" :disabled="selectedDownloadableRJCodes.length === 0" :loading="previewing" @click="openBatchPreview()">下载选中项</el-button>
+                  <el-button class="batch-action-button refresh" size="small" :disabled="isRefreshJobActive" :loading="refreshingCurrentCircle" @click="refreshSelectedCircleIndex(selectedActiveCanonicalRJCodes)">刷新状态</el-button>
+                  <el-button class="batch-action-button primary ml-2" type="primary" size="small" :disabled="selectedActiveDownloadableRJCodes.length === 0" :loading="previewing" @click="openBatchPreview()">下载选中项</el-button>
                 </div>
               </div>
 
@@ -414,6 +416,15 @@
                         <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.subtitle }}</span>
                       </div>
                     </div>
+                    <div class="px-4 py-2 flex items-center gap-2.5">
+                      <div class="w-7 h-7 rounded-full bg-purple-50 border border-purple-100/50 flex items-center justify-center text-purple-600">
+                        <Gift :size="14" stroke-width="2.5" />
+                      </div>
+                      <div class="flex flex-col">
+                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">特典</span>
+                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.bonus }}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -479,14 +490,24 @@
                 </div>
               </template>
               <template v-else>
+                <div v-if="ownedWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 mb-4 mt-2 shadow-sm backdrop-blur-sm">
+                  <span class="text-sm font-medium text-slate-700">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
+                  <div class="flex items-center gap-2">
+                    <el-button class="batch-action-button" size="small" @click="selectAllVisibleWorks">全选</el-button>
+                    <el-button class="batch-action-button ghost" size="small" @click="clearSelection">清空</el-button>
+                    <el-button class="batch-action-button refresh" size="small" :disabled="isRefreshJobActive" :loading="refreshingCurrentCircle" @click="refreshSelectedCircleIndex(selectedActiveCanonicalRJCodes)">刷新状态</el-button>
+                  </div>
+                </div>
                 <div v-if="viewMode === 'card'" class="work-grid">
                   <WorkCard
                     v-for="(item, cardIdx) in pagedOwnedWorks"
                     :key="item.canonical_rjcode"
                     :item="item"
                     :card-index="cardIdx"
+                    :selected="selectedCanonicals.has(item.canonical_rjcode)"
                     corner-label="已收录"
                     :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
+                    @select="toggleSelection"
                     @preview="openBatchPreview"
                     @reimport="openReimportDialogForWork"
                   />
@@ -498,8 +519,10 @@
                     :item="item"
                     image-field="thumb_image_url"
                     :row-index="rowIdx"
+                    :selected="selectedCanonicals.has(item.canonical_rjcode)"
                     corner-label="已收录"
                     :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
+                    @select="toggleSelection"
                     @preview="openBatchPreview"
                     @reimport="openReimportDialogForWork"
                   />
@@ -920,7 +943,7 @@ import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { CheckCircle2, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, RefreshCw, BarChart3, Timer, Upload } from 'lucide-vue-next'
+import { CheckCircle2, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, BarChart3, Timer, Upload } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api, { asmrSyncApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
@@ -1214,6 +1237,9 @@ const unreleasedWorksCount = computed(() =>
 const newWorksCount = computed(() =>
   (detail.works || []).filter(item => Boolean(item?.is_new_work)).length
 )
+const bonusWorksCount = computed(() =>
+  (detail.works || []).filter(item => Boolean(item?.is_bonus_work)).length
+)
 
 function getCircleWorksCount(circle) {
   return Number(circle?.dl_works || circle?.total_works || 0)
@@ -1460,6 +1486,7 @@ const ownedWorksStats = computed(() => {
     simplified: all.filter(item => (item.preferred_variant?.group_short_label || '原作') === '简中').length,
     traditional: all.filter(item => (item.preferred_variant?.group_short_label || '原作') === '繁中').length,
     subtitle: all.filter(item => (!item.preferred_variant?.group_short_label || item.preferred_variant?.group_short_label === '原作') && item.subtitle_present).length,
+    bonus: all.filter(item => Boolean(item?.is_bonus_work)).length,
   }
 })
 
@@ -1709,6 +1736,18 @@ const compareWorksStats = computed(() => {
 const selectedCanonicalRJCodes = computed(() => [...selectedCanonicals.value])
 const selectedDownloadableRJCodes = computed(() => selectedCanonicalRJCodes.value.filter(code => {
   const item = (detail.works || []).find(work => work.canonical_rjcode === code)
+  return Boolean(item?.has_asmr_one)
+}))
+const activeSelectableWorks = computed(() => {
+  if (activeTab.value === 'owned') return ownedWorks.value
+  if (activeTab.value === 'missing') return missingWorks.value
+  return []
+})
+const selectedActiveCanonicalRJCodes = computed(() => activeSelectableWorks.value
+  .map(item => item?.canonical_rjcode)
+  .filter(code => code && selectedCanonicals.value.has(code)))
+const selectedActiveDownloadableRJCodes = computed(() => selectedActiveCanonicalRJCodes.value.filter(code => {
+  const item = activeSelectableWorks.value.find(work => work.canonical_rjcode === code)
   return Boolean(item?.has_asmr_one)
 }))
 function getPreviewRequestedRjcodes(canonicalCodes = []) {
@@ -3097,13 +3136,15 @@ async function startIndexCircleJob({ circleQuery: targetQuery, circleQueries: ra
   }
 }
 
-async function refreshSelectedCircleIndex() {
+async function refreshSelectedCircleIndex(targetCodes = null) {
   const circleId = String(activeCircleId.value || detail.circle_id || '').trim()
   if (!circleId) {
     ElMessage.warning('当前还没有选中社团')
     return
   }
-  const codes = selectedCanonicalRJCodes.value
+  const codes = (Array.isArray(targetCodes) ? targetCodes : selectedCanonicalRJCodes.value)
+    .map(code => String(code || '').trim())
+    .filter(Boolean)
   if (!codes.length) {
     ElMessage.warning('先选中要刷新的作品')
     return
@@ -3184,7 +3225,7 @@ function toggleSelection(item) {
 
 function selectAllVisibleWorks() {
   selectedCanonicals.value = new Set(
-    missingWorks.value.map(item => item.canonical_rjcode).filter(Boolean)
+    activeSelectableWorks.value.map(item => item.canonical_rjcode).filter(Boolean)
   )
 }
 
@@ -3207,7 +3248,7 @@ function openLocalUploadDialogForTask(task) {
 }
 
 async function openBatchPreview(singleCanonical = '') {
-  const codes = singleCanonical ? [singleCanonical] : selectedDownloadableRJCodes.value
+  const codes = singleCanonical ? [singleCanonical] : selectedActiveDownloadableRJCodes.value
   if (!codes.length) {
     ElMessage.warning(singleCanonical ? '当前作品没有可下载资源' : '选中的作品里没有可下载项')
     return
@@ -4711,6 +4752,17 @@ function getUploadBackgroundTargetLabel(task) {
 .metric-pill.unreleased:hover {
   background: #dbeafe;
   border-color: rgba(52, 120, 246, 0.30);
+}
+.metric-pill.bonus {
+  background: #faf5ff;
+  color: #7e22ce;
+  border-color: #e9d5ff;
+  box-shadow: 0 1px 4px rgba(126, 34, 206, 0.12);
+}
+.metric-pill.bonus:hover {
+  background: rgba(250, 245, 255, 0.90);
+  border-color: rgba(168, 85, 247, 0.24);
+  color: #7e22ce;
 }
 .metric-pill.new-work {
   background: rgba(255, 248, 240, 0.9);
