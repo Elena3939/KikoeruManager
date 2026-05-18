@@ -137,10 +137,12 @@
                 </div>
                 <span class="circle-list-percent">{{ getCircleOwnedPercent(circle) }}%</span>
               </div>
-              <div v-if="(circle.unreleased_count > 0) || (circle.new_works_48h_count > 0) || (circle.new_works_count > 0)" class="circle-list-tag-row">
+              <div v-if="(circle.unreleased_count > 0) || (circle.new_works_48h_count > 0)" class="circle-list-tag-row">
                 <span v-if="circle.unreleased_count > 0" class="circle-list-tag unreleased"><Calendar :size="9" /> {{ circle.unreleased_count }} 未发售</span>
                 <span v-if="(circle.new_works_48h_count || 0) > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_48h_count }} 新作</span>
-                <span v-else-if="circle.new_works_count > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_count }} 过期新作</span>
+              </div>
+              <div v-if="circle.last_indexed_at" class="circle-list-refresh-row">
+                <Clock :size="9" /> {{ formatDateTime(circle.last_indexed_at) }}
               </div>
             </button>
           </div>
@@ -244,16 +246,16 @@
               <button
                 type="button"
                 class="release-sort-button group"
-                :title="missingReleaseSort === 'asc' ? '按发售时间正序' : '按发售时间倒序'"
-                @click="toggleMissingReleaseSort"
+                :title="worksReleaseSort === 'asc' ? '按发售时间正序' : '按发售时间倒序'"
+                @click="toggleWorksReleaseSort"
               >
                 <span class="release-sort-icon-stack">
                   <ArrowUpDown :size="13" class="release-sort-icon base" />
-                  <ArrowUp v-if="missingReleaseSort === 'asc'" :size="13" class="release-sort-icon hover asc" />
+                  <ArrowUp v-if="worksReleaseSort === 'asc'" :size="13" class="release-sort-icon hover asc" />
                   <ArrowDown v-else :size="13" class="release-sort-icon hover desc" />
                 </span>
                 <span>发售时间</span>
-                <ArrowUp v-if="missingReleaseSort === 'asc'" :size="12" class="release-sort-direction asc" />
+                <ArrowUp v-if="worksReleaseSort === 'asc'" :size="12" class="release-sort-direction asc" />
                 <ArrowDown v-else :size="12" class="release-sort-direction desc" />
               </button>
               <div class="filter-toggles">
@@ -425,8 +427,25 @@
                       字幕
                     </button>
                   </div>
-                  
-                  <div class="owned-search-wrap relative w-64">
+
+                  <div class="flex items-center gap-3">
+                    <button
+                      type="button"
+                      class="release-sort-button group"
+                      :title="worksReleaseSort === 'asc' ? '按发售时间正序' : '按发售时间倒序'"
+                      @click="toggleWorksReleaseSort"
+                    >
+                      <span class="release-sort-icon-stack">
+                        <ArrowUpDown :size="13" class="release-sort-icon base" />
+                        <ArrowUp v-if="worksReleaseSort === 'asc'" :size="13" class="release-sort-icon hover asc" />
+                        <ArrowDown v-else :size="13" class="release-sort-icon hover desc" />
+                      </span>
+                      <span>发售时间</span>
+                      <ArrowUp v-if="worksReleaseSort === 'asc'" :size="12" class="release-sort-direction asc" />
+                      <ArrowDown v-else :size="12" class="release-sort-direction desc" />
+                    </button>
+
+                    <div class="owned-search-wrap relative w-64">
                     <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                       <Search :size="16" class="text-slate-400" />
                     </div>
@@ -445,6 +464,7 @@
                     </button>
                   </div>
                 </div>
+              </div>
               </div>
 
               <!-- List -->
@@ -557,8 +577,25 @@
                   <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'kikoeru' ? 'bg-emerald-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'kikoeru'; comparePage = 1">已拥有(Kikoeru)</button>
                   <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'asmr_one' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'asmr_one'; comparePage = 1">可下载(ASMR.ONE)</button>
                 </div>
-                
-                <div class="compare-search-wrap relative w-64">
+
+                <div class="flex items-center gap-3">
+                  <button
+                    type="button"
+                    class="release-sort-button group"
+                    :title="worksReleaseSort === 'asc' ? '按发售时间正序' : '按发售时间倒序'"
+                    @click="toggleWorksReleaseSort"
+                  >
+                    <span class="release-sort-icon-stack">
+                      <ArrowUpDown :size="13" class="release-sort-icon base" />
+                      <ArrowUp v-if="worksReleaseSort === 'asc'" :size="13" class="release-sort-icon hover asc" />
+                      <ArrowDown v-else :size="13" class="release-sort-icon hover desc" />
+                    </span>
+                    <span>发售时间</span>
+                    <ArrowUp v-if="worksReleaseSort === 'asc'" :size="12" class="release-sort-direction asc" />
+                    <ArrowDown v-else :size="12" class="release-sort-direction desc" />
+                  </button>
+
+                  <div class="compare-search-wrap relative w-64">
                   <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                     <Search :size="16" class="text-slate-400" />
                   </div>
@@ -576,6 +613,7 @@
                   >
                     <X :size="14" />
                   </button>
+                </div>
                 </div>
               </div>
 
@@ -1062,10 +1100,10 @@ const worksPageSize = ref(24)
 const comparePageSize = ref(10)
 const missingPage = ref(1)
 const missingSort = ref('default') // 'default' | 'downloadable' | 'title'
-const missingReleaseSort = ref('desc')
+const worksReleaseSort = ref('desc')
 const viewMode = ref('card') // 'card' | 'list'
 watch(missingSort, () => { missingPage.value = 1 })
-watch(missingReleaseSort, () => { missingPage.value = 1 })
+watch(worksReleaseSort, () => { missingPage.value = 1; ownedPage.value = 1; comparePage.value = 1 })
 watch([circleCompletionFilter, circleSortKey], () => {
   syncActiveCircleWithList({ preserveActiveWhenEmpty: true })
 })
@@ -1136,8 +1174,8 @@ function isPreferredMissingWorkVisible(item) {
 
 const missingWorks = computed(() => {
   const list = (detail.works || []).filter(item => isPreferredMissingWorkVisible(item))
-  if (missingReleaseSort.value === 'asc' || missingReleaseSort.value === 'desc') {
-    const direction = missingReleaseSort.value === 'asc' ? 1 : -1
+  if (worksReleaseSort.value === 'asc' || worksReleaseSort.value === 'desc') {
+    const direction = worksReleaseSort.value === 'asc' ? 1 : -1
     return [...list].sort((a, b) => {
       // 「发售日未定」（后端 is_unreleased=true 但 release_date 没有具体年月日）
       // 由 getWorkReleaseTimestamp 折算成虚构的 2099-01-01 时间戳，正常参与排序：
@@ -1270,8 +1308,8 @@ function parseReleaseDateForSort(raw) {
   return 0
 }
 
-function toggleMissingReleaseSort() {
-  missingReleaseSort.value = missingReleaseSort.value === 'asc' ? 'desc' : 'asc'
+function toggleWorksReleaseSort() {
+  worksReleaseSort.value = worksReleaseSort.value === 'asc' ? 'desc' : 'asc'
 }
 
 function getCircleCompletionState(circle) {
@@ -1295,19 +1333,10 @@ const displayCircleList = computed(() => {
   } else if (circleCompletionFilter.value === 'incomplete') {
     list = list.filter(circle => getCircleCompletionState(circle) === 'incomplete')
   } else if (circleCompletionFilter.value === 'new_works') {
-    list = list.filter(circle => (circle.new_works_count || 0) > 0)
+    list = list.filter(circle => (circle.new_works_48h_count || 0) > 0)
   }
 
   list.sort((left, right) => {
-    // 优先按 48h 新作数 (邮件首次发现扣除 48h 之后就不再算"新")排序，
-    // 再按“过期新作”总量。保留两个字段避免“有邮件标记但超过 48h”的
-    // 社团被完全隐藏，可以随后补充 UI 区分。
-    const newWork48hDiff = Number(right?.new_works_48h_count || 0) - Number(left?.new_works_48h_count || 0)
-    if (newWork48hDiff !== 0) return newWork48hDiff
-
-    const newWorkDiff = Number(right?.new_works_count || 0) - Number(left?.new_works_count || 0)
-    if (newWorkDiff !== 0) return newWorkDiff
-
     switch (circleSortKey.value) {
       case 'completion': {
         const diff = getCircleOwnedPercent(right) - getCircleOwnedPercent(left)
@@ -1404,6 +1433,16 @@ const ownedWorks = computed(() => {
     })
   }
 
+  // 发售日排序（与缺失作品共用同一排序状态）
+  if (worksReleaseSort.value === 'asc' || worksReleaseSort.value === 'desc') {
+    const direction = worksReleaseSort.value === 'asc' ? 1 : -1
+    return [...list].sort((a, b) => {
+      const diff = getWorkReleaseTimestamp(a) - getWorkReleaseTimestamp(b)
+      if (diff !== 0) return diff * direction
+      return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
+    })
+  }
+
   return list
 })
 
@@ -1442,6 +1481,8 @@ const compareWorks = computed(() => (detail.works || []).map(item => ({
   statusKey: item?.server_owned
     ? 'owned'
     : (item?.has_asmr_one ? 'downloadable' : 'dl_only'),
+  __releaseTimestamp: getWorkReleaseTimestamp(item),
+  __releaseDate: String(item?.release_date || item?.date || item?.release_at || '').trim(),
   sourceCompare: {
     kikoeru: {
       primary_rjcode: String(item?.source_compare?.kikoeru?.primary_rjcode || '').trim(),
@@ -1610,6 +1651,16 @@ const pagedCompareWorks = computed(() => {
       const rjcode = item.workRjcode.toLowerCase()
       const title = item.title.toLowerCase()
       return rjcode.includes(query) || title.includes(query)
+    })
+  }
+
+  // 发售日排序
+  if (worksReleaseSort.value === 'asc' || worksReleaseSort.value === 'desc') {
+    const direction = worksReleaseSort.value === 'asc' ? 1 : -1
+    list = [...list].sort((a, b) => {
+      const diff = (a.__releaseTimestamp || 0) - (b.__releaseTimestamp || 0)
+      if (diff !== 0) return diff * direction
+      return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
     })
   }
 
@@ -4855,17 +4906,16 @@ function getUploadBackgroundTargetLabel(task) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 16px;
-  padding: 0 6px;
-  border-radius: 999px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 4px;
   font-size: 9px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
-  letter-spacing: .04em;
-  color: #166534;
-  background: linear-gradient(135deg, rgba(220, 252, 231, 0.98), rgba(187, 247, 208, 0.96));
-  border: 1px solid rgba(34, 197, 94, 0.35);
-  box-shadow: 0 1px 2px rgba(22, 163, 74, 0.18);
+  letter-spacing: .08em;
+  color: #047857;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.18);
   flex-shrink: 0;
 }
 .circle-list-id {
@@ -4894,11 +4944,11 @@ function getUploadBackgroundTargetLabel(task) {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  height: 16px;
-  padding: 0 6px;
-  border-radius: 999px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 5px;
   font-size: 9px;
-  font-weight: 700;
+  font-weight: 650;
   letter-spacing: .02em;
   line-height: 1;
   border: 1px solid transparent;
@@ -4909,9 +4959,18 @@ function getUploadBackgroundTargetLabel(task) {
   border-color: rgba(52, 120, 246, 0.18);
 }
 .circle-list-tag.new-work {
-  background: rgba(236, 253, 245, 0.9);
-  color: #15803d;
-  border-color: rgba(34, 197, 94, 0.28);
+  background: rgba(16, 185, 129, 0.07);
+  color: #047857;
+  border-color: rgba(16, 185, 129, 0.16);
+}
+.circle-list-refresh-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 5px;
+  font-size: 10px;
+  color: rgba(100, 116, 139, 0.78);
+  font-weight: 500;
 }
 .circle-list-counts {
   display: flex;

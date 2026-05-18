@@ -196,7 +196,12 @@ function onCoverError(event) {
       <div class="work-rj">{{ displayCode }}</div>
       <div class="work-title" :title="item.title">{{ item.title || '未命名作品' }}</div>
       <slot name="meta">
-        <div class="work-linked">{{ item.preferred_variant?.group_short_label || '原作' }} · {{ item.download_plan?.rjcode || item.display_rjcode || item.canonical_rjcode }}</div>
+        <div class="work-linked">
+          <span>{{ item.preferred_variant?.group_short_label || '原作' }} · {{ item.download_plan?.rjcode || item.display_rjcode || item.canonical_rjcode }}</span>
+          <span v-if="!isUnreleased && releaseLabel && releaseLabel !== '待定'" class="work-release-inline">
+            <Calendar :size="11" />{{ releaseLabel }}
+          </span>
+        </div>
       </slot>
       <div v-if="cvLabel" class="work-cv">{{ cvLabel }}</div>
 
@@ -619,11 +624,31 @@ function onCoverError(event) {
 
 /* ── 关联信息 ── */
 .work-linked {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   font-size: 9px;
   color: rgba(29, 29, 31, 0.40);
   line-height: 1.4;
   word-break: break-word;
   min-height: 13px;
+}
+
+/* ── 已发售日期内联小段 ── */
+.work-release-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  font-weight: 500;
+  color: rgba(71, 85, 105, 0.85);
+}
+.work-release-inline :first-child {
+  color: rgba(148, 163, 184, 0.95);
+}
+.work-card--lg .work-release-inline {
+  font-size: 10px;
 }
 
 /* ── CV 名 ── */

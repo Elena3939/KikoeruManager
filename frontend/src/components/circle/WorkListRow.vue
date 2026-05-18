@@ -53,6 +53,26 @@ const isUnreleased = computed(() => {
   return releaseDate > today
 })
 
+// 发售日期文本：年/月（/日）+ 上中下旬。与 WorkCard.releaseLabel 口径一致。
+const releaseLabel = computed(() => {
+  const value = String(props.item.release_date || props.item.date || props.item.release_at || '').trim()
+  if (!value) return ''
+  const match = value.match(/(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?/)
+  if (!match) return value
+  const month = String(match[2]).padStart(2, '0')
+  let day = ''
+  if (match[3]) {
+    day = `/${String(match[3]).padStart(2, '0')}`
+  } else if (value.includes('下旬')) {
+    day = ' 下旬'
+  } else if (value.includes('中旬')) {
+    day = ' 中旬'
+  } else if (value.includes('上旬')) {
+    day = ' 上旬'
+  }
+  return `${match[1]}/${month}${day}`
+})
+
 /** CV 名列表，用 / 拼接 */
 const cvLabel = computed(() => {
   const cvs = props.item.cvs
@@ -66,29 +86,57 @@ const cvLabel = computed(() => {
  * 错误回退顺序：_img_sam → _img_main → 隐藏
  */
 function dlsiteUrl(rjcode, suffix = '_img_sam.jpg') {
-  const m = String(rjcode || '').match(/RJ(\d+)/i)
+  const normalized = String(rjcode || '').trim().toUpperCase()
+  const m = normalized.match(/^RJ(\d{6}|\d{8})$/)
   if (!m) return null
-  const num = parseInt(m[1], 10)
-  const folder = Math.ceil(num / 1000) * 1000
-  return `https://img.dlsite.jp/modpub/images2/work/doujin/RJ${folder}/RJ${num}${suffix}`
+  const digits = m[1]
+  const num = Number(digits)
+  // DLsite 规则：folder = 下一个千位边界（floor(n/1000)+1）*1000，
+  // 保留原始位数（6 或 8）零填充，整千数也要进位。
+  const folderNum = (Math.floor(num / 1000) + 1) * 1000
+  const folder = `RJ${String(folderNum).padStart(digits.length, '0')}`
+  return `https://img.dlsite.jp/modpub/images2/work/doujin/${folder}/${normalized}${suffix}`
 }
 
 const coverUrl = computed(() => {
-  const stored = props.item[props.imageField]
-  // 把存储的 _img_main URL 换成 _img_sam（若有）
-  if (stored && stored.includes('_img_main')) return stored.replace('_img_main', '_img_sam')
-  // 没有存储 URL 时由 canonical_rjcode 推算
-  const code = props.item.canonical_rjcode || props.item.rjcode || ''
-  return dlsiteUrl(code, '_img_sam.jpg') || stored || null
+  const stored = String(props.item[props.imageField] || '').trim()
+  if (stored && (stored.startsWith('/api/') || stored.includes('/api/circle-completion/cover/'))) return stored
+  if (stored && stored.includes('img.dlsite.jp') && stored.includes('_img_main')) return stored.replace('_img_main', '_img_sam')
+  if (stored) return stored
+  const code = props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
+  return dlsiteUrl(code, '_img_sam.jpg') || null
 })
 
 function onImgError(e) {
   const src = e.target.src || ''
-  if (src.includes('_img_sam')) {
-    // 回退到 _img_main
-    const fallback = src.replace('_img_sam', '_img_main')
-    if (fallback !== src) { e.target.src = fallback; return }
+  const tried = Number(e.target.dataset.fallbackIndex || 0)
+
+  // 回退链: _img_sam → _img_main_240x240 → _img_main → 隐藏
+  if (src.includes('_img_sam.jpg')) {
+    if (tried === 0) {
+      const fallback = src.replace('_img_sam.jpg', '_img_main_240x240.jpg')
+        .replace('img.dlsite.jp/modpub/images2/', 'img.dlsite.jp/resize/images2/')
+      e.target.dataset.fallbackIndex = '1'
+      e.target.src = fallback
+      return
+    }
+    if (tried === 1) {
+      const fallback = src.replace('_img_main_240x240.jpg', '_img_main.jpg')
+        .replace('img.dlsite.jp/resize/images2/', 'img.dlsite.jp/modpub/images2/')
+      e.target.dataset.fallbackIndex = '2'
+      e.target.src = fallback
+      return
+    }
+  } else if (src.includes('_img_main_240x240.jpg')) {
+    if (tried === 0) {
+      const fallback = src.replace('_img_main_240x240.jpg', '_img_main.jpg')
+        .replace('img.dlsite.jp/resize/images2/', 'img.dlsite.jp/modpub/images2/')
+      e.target.dataset.fallbackIndex = '1'
+      e.target.src = fallback
+      return
+    }
   }
+
   e.target.style.display = 'none'
 }
 </script>
@@ -114,9 +162,6 @@ function onImgError(e) {
       <div v-else class="wlr-thumb-placeholder">
         <LibraryBig :size="16" class="opacity-30" />
       </div>
-      <div v-if="item.local_download_ready || cornerLabel" class="wlr-thumb-badge">
-        {{ cornerLabel || '已下载' }}
-      </div>
     </div>
 
     <!-- 主信息区 -->
@@ -131,6 +176,10 @@ function onImgError(e) {
         <template v-if="cvLabel">
           <span class="wlr-sep"> / </span>
           <span class="wlr-cv">{{ cvLabel }}</span>
+        </template>
+        <template v-if="releaseLabel">
+          <span class="wlr-sep"> / </span>
+          <span class="wlr-release"><Calendar :size="10" />{{ releaseLabel }}</span>
         </template>
       </div>
     </div>
@@ -267,20 +316,6 @@ function onImgError(e) {
   color: #9ca3af;
 }
 
-.wlr-thumb-badge {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: rgba(16,185,129,.85);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 600;
-  text-align: center;
-  padding: 1px 0 2px;
-  line-height: 1.3;
-  backdrop-filter: blur(2px);
-}
 
 /* ── 主信息 ── */
 .wlr-main {
@@ -359,6 +394,19 @@ function onImgError(e) {
   color: #6b7280;
   letter-spacing: .03em;
   flex-shrink: 0;
+}
+
+.wlr-release {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+.wlr-release :first-child {
+  color: #94a3b8;
 }
 
 .wlr-sep {

@@ -883,6 +883,18 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "duration_ms": duration_ms,
             "file_tree_items": file_tree_items,
         }
+    elif tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
+        duration_ms = _duration_ms_for_task(task)
+        detail = {
+            "circle_id": str(meta.get("circle_id") or "").strip() or None,
+            "circle_name": str(meta.get("circle_name") or "").strip() or None,
+            "parent_session_id": str(meta.get("parent_session_id") or "").strip() or None,
+            "batch_total": int(meta.get("batch_total") or 0) or None,
+            "batch_circle_summaries": list(meta.get("batch_circle_summaries") or [])[:100],
+            "duration_ms": duration_ms,
+            "session_id": str(meta.get("session_id") or "").strip() or None,
+            "batch_id": str(meta.get("batch_id") or "").strip() or None,
+        }
     else:
         archive_input = _looks_like_archive_path(task.source_path)
         linked_preview = meta.get("linked_subtitle_preview") if isinstance(meta.get("linked_subtitle_preview"), dict) else {}
@@ -929,12 +941,6 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "filtered_size": int(meta.get("filtered_size") or 0),
             "filtered_items": _build_filter_delete_items(meta.get("filtered_items"), limit=240),
         }
-        if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
-            detail["circle_id"] = str(meta.get("circle_id") or "").strip() or None
-            detail["circle_name"] = str(meta.get("circle_name") or "").strip() or None
-            detail["parent_session_id"] = str(meta.get("parent_session_id") or "").strip() or None
-            detail["batch_total"] = int(meta.get("batch_total") or 0) or None
-            detail["batch_circle_summaries"] = list(meta.get("batch_circle_summaries") or [])[:100]
 
     if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
         detail["source_page"] = str(meta.get("source_page") or "").strip() or None
