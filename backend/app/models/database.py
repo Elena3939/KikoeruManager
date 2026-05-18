@@ -96,6 +96,14 @@ class WorkMetadata(Base):
     tags = Column(JSON)  # 列表
     cvs = Column(JSON)   # 列表
     cover_url = Column(Text)
+    price_text = Column(String(80))
+    is_bonus_work = Column(Boolean, default=False, index=True)
+    has_bonus = Column(Boolean, default=False, index=True)
+    # 标记 bonus 字段是否已经向 DLsite 实际确认过。
+    # NULL = 老 schema 留下来的存量，从未实际计算过 bonus；
+    # 写入时间 = 已经走过 _apply_dlsite_bonus_info / lazy refresh，is_bonus_work / has_bonus 是真值。
+    # build_circle_completion_view 用这个字段做存量懒迁移，避免老条目永远卡在 False。
+    bonus_info_checked_at = Column(DateTime, nullable=True)
     cached_at = Column(DateTime, default=get_local_now)
     expires_at = Column(DateTime)
     
@@ -113,6 +121,10 @@ class WorkMetadata(Base):
             'tags': self.tags,
             'cvs': self.cvs,
             'cover_url': self.cover_url,
+            'price_text': self.price_text or '',
+            'is_bonus_work': bool(self.is_bonus_work),
+            'has_bonus': bool(self.has_bonus),
+            'bonus_info_checked_at': self.bonus_info_checked_at.isoformat() if self.bonus_info_checked_at else None,
             'cached_at': self.cached_at.isoformat() if self.cached_at else None,
             'expires_at': self.expires_at.isoformat() if self.expires_at else None
         }
@@ -268,6 +280,8 @@ class CircleWork(Base):
     kikoeru_work_id = Column(Integer)
     image_url = Column(String(500))
     price_text = Column(String(80))
+    is_bonus_work = Column(Boolean, default=False, index=True)
+    has_bonus = Column(Boolean, default=False, index=True)
     asmr_one_cached_at = Column(DateTime)
     dlsite_cached_at = Column(DateTime)
     source_tags = Column(JSON, default=list)  # 来源标签，如 ["email_watcher"]，用于"新作"标识
@@ -301,6 +315,8 @@ class CircleWork(Base):
             'kikoeru_work_id': self.kikoeru_work_id,
             'image_url': self.image_url,
             'price_text': self.price_text or '',
+            'is_bonus_work': bool(self.is_bonus_work),
+            'has_bonus': bool(self.has_bonus),
             'asmr_one_cached_at': self.asmr_one_cached_at.isoformat() if self.asmr_one_cached_at else None,
             'dlsite_cached_at': self.dlsite_cached_at.isoformat() if self.dlsite_cached_at else None,
             'source_tags': self.source_tags or [],
@@ -1346,6 +1362,34 @@ def init_db():
     _db_logger.info(f"[数据库] 初始化数据库，路径: {_db_path}")
     Base.metadata.create_all(bind=engine)
     with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(work_metadata)"))
+        work_metadata_columns = {row[1] for row in result.fetchall()}
+        work_metadata_missing_columns = []
+        if result.returns_rows:
+            if 'price_text' not in work_metadata_columns:
+                work_metadata_missing_columns.append(("price_text", "VARCHAR(80)", "NULL"))
+            if 'is_bonus_work' not in work_metadata_columns:
+                work_metadata_missing_columns.append(("is_bonus_work", "BOOLEAN", "0"))
+            if 'has_bonus' not in work_metadata_columns:
+                work_metadata_missing_columns.append(("has_bonus", "BOOLEAN", "0"))
+            # bonus_info_checked_at：nullable，不能给默认值。NULL 表示存量条目从未走过 bonus 判定，
+            # build_circle_completion_view 会按它做一次性懒迁移。给非 NULL 默认值会让"老条目"
+            # 直接被当成已检查过，bonus_work=False 永远卡死。
+            if 'bonus_info_checked_at' not in work_metadata_columns:
+                work_metadata_missing_columns.append(("bonus_info_checked_at", "DATETIME", None))
+        for column_name, column_type, default_value in work_metadata_missing_columns:
+            if default_value is None:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE work_metadata ADD COLUMN {column_name} {column_type}"
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE work_metadata ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
+                    )
+                )
         result = conn.execute(text("PRAGMA table_info(conflict_works)"))
         existing_columns = {row[1] for row in result.fetchall()}
         missing_columns = []
@@ -1401,6 +1445,10 @@ def init_db():
                 circle_work_missing_columns.append(("image_url", "VARCHAR(500)", "NULL"))
             if 'price_text' not in circle_work_columns:
                 circle_work_missing_columns.append(("price_text", "VARCHAR(80)", "NULL"))
+            if 'is_bonus_work' not in circle_work_columns:
+                circle_work_missing_columns.append(("is_bonus_work", "BOOLEAN", "0"))
+            if 'has_bonus' not in circle_work_columns:
+                circle_work_missing_columns.append(("has_bonus", "BOOLEAN", "0"))
             if 'source_tags' not in circle_work_columns:
                 circle_work_missing_columns.append(("source_tags", "JSON", "'[]'"))
             if 'email_watcher_first_seen_at' not in circle_work_columns:

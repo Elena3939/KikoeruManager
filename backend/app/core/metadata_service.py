@@ -2,7 +2,7 @@ import os
 import re
 import asyncio
 from datetime import datetime, timedelta
-from typing import Any, Optional, Dict, List
+from typing import Any, Iterable, Optional, Dict, List
 import requests
 import logging
 import json
@@ -29,6 +29,12 @@ class WorkMetadata:
         self.cvs: list = []
         self.cover_url: str = ""
         self.price_text: str = ""
+        self.is_bonus_work: bool = False
+        self.has_bonus: bool = False
+        # _apply_dlsite_bonus_info 成功时写入当前时间。
+        # None 表示这次 metadata 没向 DLsite 实际确认过 bonus（落库后仍是 NULL，
+        # build_circle_completion_view 会按 NULL 做一次性懒迁移）。
+        self.bonus_info_checked_at: Optional[datetime] = None
     
     def to_dict(self) -> dict:
         return {
@@ -43,7 +49,10 @@ class WorkMetadata:
             'tags': self.tags,
             'cvs': self.cvs,
             'cover_url': self.cover_url,
-            'price_text': self.price_text
+            'price_text': self.price_text,
+            'is_bonus_work': self.is_bonus_work,
+            'has_bonus': self.has_bonus,
+            'bonus_info_checked_at': self.bonus_info_checked_at.isoformat() if self.bonus_info_checked_at else None,
         }
 
 class MetadataService:
@@ -319,6 +328,12 @@ class MetadataService:
                 tags=metadata.tags,
                 cvs=metadata.cvs,
                 cover_url=metadata.cover_url,
+                price_text=metadata.price_text,
+                is_bonus_work=bool(metadata.is_bonus_work),
+                has_bonus=bool(metadata.has_bonus),
+                # 仅在 _apply_dlsite_bonus_info 真的拉到 bonus 时才有值；
+                # 否则保持 NULL，让浏览路径走一次懒迁移。
+                bonus_info_checked_at=metadata.bonus_info_checked_at,
                 expires_at=datetime.now() + timedelta(days=30)
             )
             db.add(cached)
@@ -352,6 +367,132 @@ class MetadataService:
             return url
         return ''
 
+    async def _apply_dlsite_bonus_info(self, metadata: WorkMetadata, rjcode: str) -> None:
+        try:
+            dlsite_service = get_dlsite_service()
+            bonus_info = await dlsite_service.get_product_bonus_info(
+                rjcode,
+                locale=self.config.metadata.locale,
+            )
+            metadata.is_bonus_work = bool(bonus_info.get("is_bonus_work"))
+            metadata.has_bonus = bool(bonus_info.get("has_bonus"))
+            # 拉到结果后打上时间戳，标记此 metadata 已实际向 DLsite 确认过 bonus；
+            # 失败抛异常时不会到这里，保留 None，让浏览路径有机会重试。
+            metadata.bonus_info_checked_at = datetime.now()
+        except Exception as exc:
+            logger.debug("[%s] 获取 DLsite 特典字段失败: %s", rjcode, exc)
+
+    async def lazy_refresh_bonus_for_cached_rjcodes(
+        self,
+        rjcodes: Iterable[str],
+        *,
+        max_concurrency: int = 6,
+    ) -> Dict[str, Dict[str, Any]]:
+        """针对存量旧条目（``work_metadata.bonus_info_checked_at IS NULL``）的一次性懒迁移。
+
+        - 只补 ``is_bonus_work`` / ``has_bonus`` / ``bonus_info_checked_at`` 三个字段，
+          不动其他元数据，避免拉慢浏览路径。
+        - DLsite ``product_info_ajax`` 端点上有 24h cache + inflight 去重，单次社团
+          浏览下命中率几乎 100%，不会真的发起 N 次跨网络请求。
+        - 同一个 RJ 终身只触发一次（成功一次后写入 ``bonus_info_checked_at`` 即跳过）。
+          若 DLsite 当下取不到（404 / 网络抖动），保留 NULL，下次浏览再试。
+        - 返回 ``{rjcode: {"is_bonus_work", "has_bonus", "bonus_info_checked_at"}}``，
+          调用方据此把更新合并到自己的 metadata_map / circle_works 行。
+        """
+        normalized: List[str] = []
+        seen: set = set()
+        for code in rjcodes or ():
+            value = str(code or "").strip().upper()
+            if not value:
+                continue
+            # 统一抽出 RJxxxx 形式，兼容上游传过来夹杂前缀 / 文件名片段的情况。
+            match = re.search(r"[RVB]J(\d{6}|\d{8})(?!\d)", value)
+            value = match.group(0) if match else value
+            if value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        if not normalized:
+            return {}
+
+        # 只挑真正需要补刷的：bonus_info_checked_at IS NULL。
+        # 已有时间戳的就算 is_bonus_work=False 也代表"实际确认过不是特典"，跳过。
+        db = next(get_db())
+        try:
+            rows = (
+                db.query(WorkMetadataModel)
+                .filter(
+                    WorkMetadataModel.rjcode.in_(normalized),
+                    WorkMetadataModel.bonus_info_checked_at.is_(None),
+                )
+                .all()
+            )
+            pending = [str(row.rjcode or "").strip().upper() for row in rows if str(row.rjcode or "").strip()]
+        finally:
+            db.close()
+        if not pending:
+            return {}
+
+        dlsite_service = get_dlsite_service()
+        locale = self.config.metadata.locale
+        sem = asyncio.Semaphore(max(1, int(max_concurrency or 1)))
+
+        async def _resolve_one(rj: str) -> tuple[str, Optional[Dict[str, bool]]]:
+            async with sem:
+                try:
+                    info = await dlsite_service.get_product_bonus_info(rj, locale=locale)
+                    return rj, info or {}
+                except Exception as exc:
+                    logger.debug("[%s] 懒迁移 bonus 字段失败: %s", rj, exc)
+                    return rj, None
+
+        results = await asyncio.gather(*(_resolve_one(rj) for rj in pending))
+
+        updated: Dict[str, Dict[str, Any]] = {}
+        now = datetime.now()
+        success_payload: Dict[str, tuple[bool, bool]] = {}
+        for rj, info in results:
+            if info is None:
+                # 失败的不写 DB，保持 NULL，下次浏览再试。
+                continue
+            is_bonus = bool(info.get("is_bonus_work"))
+            has_bonus_value = bool(info.get("has_bonus"))
+            success_payload[rj] = (is_bonus, has_bonus_value)
+
+        if success_payload:
+            db = next(get_db())
+            try:
+                rows = (
+                    db.query(WorkMetadataModel)
+                    .filter(WorkMetadataModel.rjcode.in_(list(success_payload.keys())))
+                    .all()
+                )
+                for row in rows:
+                    rj = str(row.rjcode or "").strip().upper()
+                    payload = success_payload.get(rj)
+                    if not payload:
+                        continue
+                    is_bonus, has_bonus_value = payload
+                    row.is_bonus_work = is_bonus
+                    row.has_bonus = has_bonus_value
+                    row.bonus_info_checked_at = now
+                    updated[rj] = {
+                        "is_bonus_work": is_bonus,
+                        "has_bonus": has_bonus_value,
+                        "bonus_info_checked_at": now.isoformat(),
+                    }
+                db.commit()
+            except Exception as exc:
+                logger.warning("更新 work_metadata bonus 字段失败: %s", exc)
+                db.rollback()
+                updated.clear()
+            finally:
+                db.close()
+
+        if updated:
+            logger.info("[bonus_lazy_refresh] 补刷 %s 个作品的 bonus 字段", len(updated))
+        return updated
+
     async def _build_metadata_from_dlsite_product(self, rjcode: str, product: Dict) -> WorkMetadata:
         metadata = WorkMetadata()
         metadata.rjcode = product.get('workno', rjcode)
@@ -366,6 +507,7 @@ class MetadataService:
         dlsite_service = get_dlsite_service()
         if hasattr(dlsite_service, "_extract_product_price_text"):
             metadata.price_text = dlsite_service._extract_product_price_text(product)
+        await self._apply_dlsite_bonus_info(metadata, rjcode)
 
         age_category = product.get('age_category', 3)
         if age_category == 1:
@@ -527,6 +669,7 @@ class MetadataService:
             dlsite_service = get_dlsite_service()
             if hasattr(dlsite_service, "_extract_product_price_text"):
                 metadata.price_text = dlsite_service._extract_product_price_text(product)
+            await self._apply_dlsite_bonus_info(metadata, rjcode)
             
             # 年龄分级
             age_category = product.get('age_category', 3)
