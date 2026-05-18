@@ -77,6 +77,11 @@ class CircleCompletionSnapshot:
     #   各语言翻译版、各重制版）。Wave 2b 按 ``chain_rjs_by_canonical.keys()``
     #   去重 probe，可把 Kikoeru 查询次数从"全 RJ 数"降到"独立链路数"。
     chain_rjs_by_canonical: Dict[str, List[str]] = field(default_factory=dict)
+    # ★ canonical RJ -> canonical_info dict（含 ``linked_rjcodes`` / ``link_map``）。
+    # Wave 2a 用 ``link_map`` 按"简中 > 繁中 > 原作 > 其他"语言优先级选 preferred，
+    # 只对每条链路的 preferred 一条 RJ 探测 ASMR.one（命中即停 + miss 时按链上次序
+    # fallback），把 ASMR.one HTTP 调用从"链上 N 条全量"压到 1-N 条按需。
+    canonical_info_by_canonical: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def contains_asmr(self, rjcode: str) -> bool:
         """RJ 在 asmr.one 是否同时有 work_info + tracks（即可下载）。"""
@@ -733,6 +738,12 @@ class CircleCompletionService:
         if any(marker in title for marker in traditional_markers):
             return "繁中"
         return ""
+
+    # 历史上这里曾留过 ``_title_looks_like_bonus_work``：标题级特典兜底正则。
+    # 已删——明确禁止用标题判定特典：很多正常作品标题里就含"特典"二字（"早期特典つき"
+    # 这种"附带特典的作品本体"反而最容易误命中）。特典识别只走
+    # ``DLsiteApiService._product_info_indicates_bonus_work`` 的 4 字段 AND 规则
+    # （!is_sale && is_free && is_oly && wishlist_count==0），结构化字段是唯一可信源。
 
     def _extract_text_values(self, value: Any) -> List[str]:
         if value is None:
@@ -2065,23 +2076,36 @@ class CircleCompletionService:
 
         ensure_not_cancelled()
 
-        # ============ Wave 1：拉 DLsite 作品资料 + 解析作品链路 ============
+        # ============ Wave 1：解析作品链路 ============
+        # ★ P2 优化：本阶段**只**解析关联链（``resolve_canonical_rj``，内部仅拉
+        #   ``product.json`` API 拿 ``translation_info``），不再 prefetch
+        #   完整 metadata（含 ``product/info/ajax`` 特典字段）。
+        #
+        # 历史现场：旧实现给每个 candidate 同时拉 ``_fetch_metadata_dict(candidate)``
+        # 和 ``_fetch_metadata_dict(canonical)``，每次 metadata fetch 涉及
+        # ``product.json`` + ``product/info/ajax`` 两次外部 API。一个简中翻译版被作为
+        # candidate、原作 + 繁中也都进 candidate 池时，会对原作 metadata 拉 3 次（每个
+        # candidate 都把它当 canonical 拉一遍），尽管 cache 命中也徒增 inflight 抖动。
+        #
+        # 新实现：candidate 自己 / canonical 的 metadata 都不在 wave 1 拉。
+        # ``prepare_candidate`` 阶段按需对 **canonical + preferred** 两条 RJ 拉完整
+        # metadata（candidate 本身的 metadata 完全不拉，``_classify_asmr_work_candidate``
+        # 用 ``product.json`` cache 兜底，wave 1 已经热好；``_candidate_belongs_to_identity``
+        # 用 canonical_metadata 的 maker_name 校验，依然有效）。这样翻译版只要不是 preferred，
+        # 它的 ``product/info/ajax`` 一次都不会被打——和"只对最终保留的最优作品做完整爬取"
+        # 的设计意图严格对齐。
         wave1_sem = asyncio.Semaphore(20)
 
-        async def prefetch_dlsite(rj: str) -> Tuple[str, str, Set[str]]:
-            """返回 ``(原始 rj, canonical rj, 链上所有 rj 的集合)``。
+        async def prefetch_dlsite(rj: str) -> Tuple[str, str, Set[str], Dict[str, Any]]:
+            """返回 ``(原始 rj, canonical rj, 链上所有 rj 的集合, canonical_info)``。
 
             内部把所有异常吞掉、回 fallback 值（canonical=rj 自身），保证
             上游聚合阶段不需要再处理 BaseException 分支。
             """
             related: Set[str] = {rj}
             canonical: str = rj
+            canonical_info: Dict[str, Any] = {}
             async with wave1_sem:
-                try:
-                    await self._fetch_metadata_dict(rj)
-                except Exception:
-                    logger.debug("[社团补全·snapshot] _fetch_metadata_dict 失败 rj=%s", rj, exc_info=True)
-                canonical_info: Dict[str, Any] = {}
                 try:
                     canonical_info = await self.resolve_canonical_rj(rj, refresh=force_refresh) or {}
                 except Exception:
@@ -2092,20 +2116,11 @@ class CircleCompletionService:
                     norm = self.normalize_rjcode(code)
                     if norm:
                         related.add(norm)
-                # 同时预取 canonical 的 metadata（避免 prepare_candidate 冷启动）
-                if canonical and canonical != rj:
-                    try:
-                        await self._fetch_metadata_dict(canonical)
-                    except Exception:
-                        logger.debug(
-                            "[社团补全·snapshot] _fetch_metadata_dict canonical 失败 rj=%s canonical=%s",
-                            rj, canonical, exc_info=True,
-                        )
-            return rj, canonical, related
+            return rj, canonical, related, canonical_info
 
         safe_progress(
             0,
-            f"拉取 DLsite 作品资料 0/{len(snapshot.candidate_rjcodes)} 件",
+            f"解析 DLsite 作品关联链 0/{len(snapshot.candidate_rjcodes)} 件",
         )
 
         wave1_raw = await asyncio.gather(
@@ -2118,17 +2133,25 @@ class CircleCompletionService:
         # 组装：作品链路 canonical -> 链上全部 RJ
         canonical_to_chain: Dict[str, Set[str]] = {}
         rj_to_canonical: Dict[str, str] = {}
+        canonical_info_by_canonical: Dict[str, Dict[str, Any]] = {}
         for result in wave1_raw:
             if isinstance(result, BaseException):
                 logger.debug("[社团补全·snapshot] Wave 1 任务抛异常: %s", result)
                 continue
-            rj, canonical, related = result
+            rj, canonical, related, canonical_info = result
             canonical_to_chain.setdefault(canonical, set()).update(related)
             canonical_to_chain[canonical].add(canonical)
             rj_to_canonical[rj] = canonical
             for member in related:
                 # 链上其它 RJ 也回填到映射里，方便 Phase 2 / 调试
                 rj_to_canonical.setdefault(member, canonical)
+            # 记录每条 canonical 的 link_map：用现有最完整的（含更多 link_map 条目的）
+            # 覆盖之前的，避免某个 candidate 拉到的关联链不全时被覆盖。
+            existing_info = canonical_info_by_canonical.get(canonical) or {}
+            existing_links = existing_info.get("link_map") if isinstance(existing_info.get("link_map"), dict) else {}
+            new_links = canonical_info.get("link_map") if isinstance(canonical_info.get("link_map"), dict) else {}
+            if not existing_info or len(new_links or {}) > len(existing_links or {}):
+                canonical_info_by_canonical[canonical] = canonical_info or {}
 
         # 把 candidate 自身也兜底填进映射，避免 Wave 1 全军覆没时下游 KeyError
         for rj in snapshot.candidate_rjcodes:
@@ -2140,6 +2163,7 @@ class CircleCompletionService:
         snapshot.chain_rjs_by_canonical = {
             canonical: sorted(chain) for canonical, chain in canonical_to_chain.items()
         }
+        snapshot.canonical_info_by_canonical = canonical_info_by_canonical
 
         # 全 RJ 集合 = 所有链路的并集
         all_rjcodes_set: Set[str] = set()
@@ -2156,28 +2180,81 @@ class CircleCompletionService:
             f"{len(unique_canonicals)} 条作品链路，开始核对 ASMR.one 与 Kikoeru",
         )
 
-        # ============ Wave 2a：ASMR.one 作品核对 ============
+        # ============ Wave 2a：ASMR.one 作品核对（按 canonical 链路去重 + preferred 优先 + 命中即停） ============
         # ASMR.one 的 ``fetch_work_info`` / ``fetch_track_list`` 没有内部 cache，
-        # 这里把每个 RJ 的 work_info + tracks 一次性灌到 snapshot 里。
+        # 这里把每条 canonical 链路按"简中 > 繁中 > 原作 > 其他"语言优先级排序，依次试到
+        # 第一条同时拿到 work_info + tracks 的 RJ 即停。剩余的链上 RJ 不再打 ASMR.one。
+        #
+        # 历史现场：旧实现对 ``snapshot.all_rjcodes``（candidate ∪ 链上翻译版全集，典型
+        # 30-50 个 RJ）每个都拉 work_info + tracks，单次社团补全 ASMR.one HTTP 调用量
+        # 超过 60 次。绝大多数翻译版根本不会在 ASMR.one 上有资源，都是浪费请求；少数
+        # 链路的 ASMR 命中也只关心"链路上是否任意一条能下载"——下游 ``_find_public_downloadable_work``
+        # 也确实只取第一个命中的 RJ 作为 ``asmr_available_rjcode``。
+        #
+        # 新实现：每条链路按 ``link_map`` 排序选 preferred，命中即停。最差情况（preferred /
+        # 翻译版全部 miss、最后只命中原作）的探测次数等于链路长度；正常情况只打 1-2 次。
+        # 整体能压到链路数 ~= 10-15，比旧实现省 70-80% 的 ASMR.one HTTP。
         wave2_asmr_sem = asyncio.Semaphore(30)
         asmr_completed = 0
-        asmr_total = max(1, len(snapshot.all_rjcodes))
+        # 进度按链路推进而不是按 RJ，避免跳跃
+        asmr_total = max(1, len(canonical_to_chain))
 
-        async def prefetch_asmr(rj: str) -> Tuple[str, Optional[Dict[str, Any]], Optional[List[Any]]]:
+        def _build_chain_probe_order(canonical: str, chain_rjs: Set[str]) -> List[str]:
+            """按 ``link_map`` 排序得到这条链路上 ASMR.one 探测顺序。
+
+            ``_sort_linked_variants`` 已经按"翻译版 > 原作"× "简中 > 繁中 > 其他 > 日文"
+            的双键排序，第一项就是首选 preferred。链上未在 link_map 出现的 RJ
+            （例如本地候选直接补进来、DLsite 关联链没列）按链路 sorted 顺序追加在末尾。
+            """
+            canonical_info = snapshot.canonical_info_by_canonical.get(canonical) or {}
+            sorted_variants = self._sort_linked_variants(canonical_info, canonical)
+            seen: Set[str] = set()
+            order: List[str] = []
+            for variant in sorted_variants:
+                rj = self.normalize_rjcode(variant.get("rjcode"))
+                if rj and rj in chain_rjs and rj not in seen:
+                    order.append(rj)
+                    seen.add(rj)
+            for rj in sorted(chain_rjs):
+                if rj and rj not in seen:
+                    order.append(rj)
+                    seen.add(rj)
+            return order
+
+        async def prefetch_asmr_chain(canonical: str) -> List[Tuple[str, Optional[Dict[str, Any]], Optional[List[Any]]]]:
+            """对一条 canonical 链路按 preferred 优先级串行探 ASMR.one，命中即停。
+
+            返回链上每个 RJ 的 ``(rj, work_info, tracks)``：
+            - 首个 ``work_info`` & ``tracks`` 双双命中的 RJ 之后停止真探，剩余 RJ 用
+              ``(rj, None, None)`` 占位（``snapshot.contains_asmr`` 仍正确返 False）。
+            - 全 miss 时链上每个 RJ 都是 ``(rj, None, None)``。
+            """
+            chain_rjs: Set[str] = set(canonical_to_chain.get(canonical) or {canonical})
+            probe_order = _build_chain_probe_order(canonical, chain_rjs)
+            results: List[Tuple[str, Optional[Dict[str, Any]], Optional[List[Any]]]] = []
+            explored: Set[str] = set()
             async with wave2_asmr_sem:
-                work_info: Optional[Dict[str, Any]] = None
-                tracks: Optional[List[Any]] = None
-                try:
-                    work_info = await self.asmr_service.fetch_work_info(rj)
-                except Exception:
-                    logger.debug("[社团补全·snapshot] ASMR fetch_work_info 失败 rj=%s", rj, exc_info=True)
-                # 只对 work_info 命中（非 None）的 RJ 拉 tracks，省带宽
-                if work_info:
+                for rj in probe_order:
+                    work_info: Optional[Dict[str, Any]] = None
+                    tracks: Optional[List[Any]] = None
                     try:
-                        tracks = await self.asmr_service.fetch_track_list(rj)
+                        work_info = await self.asmr_service.fetch_work_info(rj)
                     except Exception:
-                        logger.debug("[社团补全·snapshot] ASMR fetch_track_list 失败 rj=%s", rj, exc_info=True)
-            return rj, work_info, tracks
+                        logger.debug("[社团补全·snapshot] ASMR fetch_work_info 失败 rj=%s", rj, exc_info=True)
+                    if work_info:
+                        try:
+                            tracks = await self.asmr_service.fetch_track_list(rj)
+                        except Exception:
+                            logger.debug("[社团补全·snapshot] ASMR fetch_track_list 失败 rj=%s", rj, exc_info=True)
+                    results.append((rj, work_info, tracks))
+                    explored.add(rj)
+                    if work_info and tracks:
+                        break
+            # 链上没探过的 RJ 用 (None, None) 占位，让 snapshot.contains_asmr 兼容旧行为。
+            for rj in chain_rjs:
+                if rj not in explored:
+                    results.append((rj, None, None))
+            return results
 
         # ============ Wave 2b：Kikoeru 作品链路核对（按 canonical 去重）============
         # ``check_duplicate_with_linkages(canonical_rj)`` 内部会自动展开整条作品
@@ -2202,8 +2279,8 @@ class CircleCompletionService:
                     state = {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
             return canonical_rj, state
 
-        # 进度回调用 as_completed 双流合并：每完成一个就更新一次
-        asmr_futures = [prefetch_asmr(rj) for rj in snapshot.all_rjcodes]
+        # 进度回调用 as_completed 双流合并：每完成一条链路 / Kikoeru 探测就更新一次
+        asmr_futures = [prefetch_asmr_chain(c) for c in unique_canonicals]
         kikoeru_futures = [prefetch_kikoeru(c) for c in unique_canonicals]
 
         async def collect_asmr() -> None:
@@ -2211,18 +2288,20 @@ class CircleCompletionService:
             for future in asyncio.as_completed(asmr_futures):
                 ensure_not_cancelled()
                 try:
-                    rj, work_info, tracks = await future
+                    chain_results = await future
                 except Exception as exc:
                     logger.debug("[社团补全·snapshot] ASMR prefetch 任务异常: %s", exc)
+                    asmr_completed += 1
                     continue
-                snapshot.asmr_work_info_by_rj[rj] = work_info
-                snapshot.asmr_tracks_by_rj[rj] = tracks
+                for rj, work_info, tracks in chain_results:
+                    snapshot.asmr_work_info_by_rj[rj] = work_info
+                    snapshot.asmr_tracks_by_rj[rj] = tracks
                 asmr_completed += 1
-                if asmr_completed % 5 == 0 or asmr_completed == asmr_total:
+                if asmr_completed % 3 == 0 or asmr_completed == asmr_total:
                     # snapshot 相对刻度：ASMR 占 50→75 段
                     safe_progress(
                         50 + int((asmr_completed / asmr_total) * 25),
-                        f"在 ASMR.one 上核对作品 {asmr_completed}/{asmr_total} 个",
+                        f"在 ASMR.one 上核对作品链路 {asmr_completed}/{asmr_total} 条",
                     )
 
         async def collect_kikoeru() -> None:
@@ -3093,6 +3172,7 @@ class CircleCompletionService:
         bonus_lookup_rjcodes: List[str],
         *,
         canonical_filter: Optional[List[str]] = None,
+        force: bool = False,
     ) -> Dict[str, Dict[str, Any]]:
         """``index_circle_catalog`` / ``refresh_circle_works`` 写入完成后调用：
 
@@ -3109,6 +3189,9 @@ class CircleCompletionService:
         - ``bonus_lookup_rjcodes``：当前社团涉及的所有关联 RJ（canonical / display / linked）；
         - ``canonical_filter``：可选，把回写范围进一步限定到这些 canonical RJ（``refresh_circle_works``
           只刷新选中作品时用），``None`` 表示当前社团全量。
+        - ``force``：``True`` 时透传给 ``lazy_refresh_bonus_for_cached_rjcodes(force=True)``，
+          忽略 ``bonus_info_checked_at`` 时间戳全量重刷——给"刷新选中作品"路径用，
+          修复历史 ``get_product_bonus_info`` 异常吞错导致的 ``is_bonus_work=False`` 卡死条目。
 
         返回 ``lazy_refresh_bonus_for_cached_rjcodes`` 的更新字典，方便上游记录 / 调试。
         """
@@ -3122,10 +3205,11 @@ class CircleCompletionService:
 
         try:
             bonus_updates = await self.metadata_service.lazy_refresh_bonus_for_cached_rjcodes(
-                normalized_rjcodes
+                normalized_rjcodes,
+                force=force,
             )
         except Exception:
-            logger.warning("[社团补全] bonus 补刷失败 circle_id=%s", circle_id, exc_info=True)
+            logger.warning("[社团补全] bonus 补刷失败 circle_id=%s force=%s", circle_id, force, exc_info=True)
             return {}
         if not bonus_updates:
             return {}
@@ -3526,17 +3610,25 @@ class CircleCompletionService:
             external_snapshot = CircleCompletionSnapshot()
 
         async def prepare_candidate(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            """整理 candidate -> bucket 数据。
+
+            ★ P2 优化：candidate 自己的 metadata 完全不拉，只对 **canonical + preferred**
+            两条 RJ 拉完整 metadata（含 product/info/ajax 特典字段）。如果 candidate
+            本身就是 canonical 或 preferred，会自然命中 cache 不重复拉。
+            ``_classify_asmr_work_candidate`` 用 ``product.json`` API（wave 1 已经
+            热好的 cache）兜底，零外部 IO；``_candidate_belongs_to_identity`` 用
+            canonical_metadata 的 maker_name 校验，依然有效。
+            翻译版只要不是 preferred，``product/info/ajax`` 一次都不会被打。
+            """
             ensure_not_cancelled()
             rjcode = self.normalize_rjcode(item.get("rjcode"))
             if not rjcode:
                 return None
             async with candidate_semaphore:
-                try:
-                    metadata = await self._fetch_metadata_dict(rjcode)
-                except Exception:
-                    metadata = {}
+                # candidate 自己的 metadata 不再拉。``_classify_asmr_work_candidate``
+                # 用 product.json API cache 兜底（wave 1 的 resolve_canonical_rj 已经热好）。
                 # dlsite 候选在 fetch_candidate 阶段已完成 ASMR 检查，此处跳过避免重复调用 DLsite API
-                if not item.get("_asmr_checked") and not await self._is_asmr_work_candidate(rjcode, metadata):
+                if not item.get("_asmr_checked") and not await self._is_asmr_work_candidate(rjcode, None):
                     return None
                 canonical_info = await self.resolve_canonical_rj(rjcode, refresh=force_refresh)
                 canonical = canonical_info["canonical_rjcode"] or rjcode
@@ -3561,16 +3653,15 @@ class CircleCompletionService:
                 if input_group == "other":
                     return None
 
-                canonical_metadata = metadata
-                if canonical and canonical != rjcode:
-                    try:
-                        canonical_metadata = await self._fetch_metadata_dict(canonical)
-                    except Exception:
-                        canonical_metadata = metadata
-                display_metadata_map = {
-                    self.normalize_rjcode(rjcode): metadata or {},
-                    self.normalize_rjcode(canonical): canonical_metadata or {},
-                }
+                # ★ 只对 canonical 拉一次完整 metadata：用于 OR is_bonus_work、maker_name 校验、
+                # foreign_lang 判定、bucket 字段兜底。
+                try:
+                    canonical_metadata = await self._fetch_metadata_dict(canonical)
+                except Exception:
+                    canonical_metadata = {}
+                display_metadata_map: Dict[str, Dict[str, Any]] = {}
+                if canonical:
+                    display_metadata_map[self.normalize_rjcode(canonical)] = canonical_metadata or {}
                 preferred_variant, preferred_title, allowed_variants = await self._pick_public_display_variant_and_title(
                     canonical_info,
                     canonical or rjcode,
@@ -3578,32 +3669,41 @@ class CircleCompletionService:
                 )
                 preferred_rjcode = self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical or rjcode
                 preferred_metadata = display_metadata_map.get(preferred_rjcode) or {}
+                # ★ 只对 preferred 拉一次完整 metadata（用于 title / cover / price / bonus OR）。
+                # 如果 preferred 就是 canonical，直接复用 canonical_metadata，零成本。
                 if preferred_rjcode and not preferred_metadata:
-                    try:
-                        preferred_metadata = await self._fetch_metadata_dict(preferred_rjcode)
-                        display_metadata_map[preferred_rjcode] = preferred_metadata or {}
-                    except Exception:
-                        preferred_metadata = metadata if preferred_rjcode == rjcode else canonical_metadata
+                    if preferred_rjcode == self.normalize_rjcode(canonical):
+                        preferred_metadata = canonical_metadata
+                    else:
+                        try:
+                            preferred_metadata = await self._fetch_metadata_dict(preferred_rjcode)
+                        except Exception:
+                            preferred_metadata = canonical_metadata
+                    display_metadata_map[preferred_rjcode] = preferred_metadata or {}
                 foreign_lang = self._looks_like_non_chinese_translation_title(
                     preferred_title,
                     canonical_metadata.get("work_name"),
-                    metadata.get("work_name"),
                     item.get("title"),
                 )
                 if foreign_lang:
                     return None
+                # candidate 自己的 metadata 已不再拉，``_candidate_belongs_to_identity``
+                # 用 canonical_metadata 的 maker_name 即可（同一条作品链路 maker_id 必相同）。
                 if not self._candidate_belongs_to_identity(
                     circle_query=circle_query,
                     identity=identity,
                     item=item,
-                    metadata=metadata or {},
+                    metadata={},
                     canonical_metadata=canonical_metadata or {},
                 ):
                     return None
             return {
                 "item": item,
                 "rjcode": rjcode,
-                "metadata": metadata or {},
+                # P2: candidate 自己的 metadata 已废弃，下游聚合阶段全部用
+                # canonical_metadata / preferred_metadata。这里返 {} 保持字段存在，
+                # 让现有 ``prepared["metadata"]`` 调用点不需要 KeyError 防御。
+                "metadata": {},
                 "canonical_info": canonical_info,
                 "canonical": canonical,
                 "canonical_metadata": canonical_metadata or {},
@@ -3666,8 +3766,8 @@ class CircleCompletionService:
                     or item.get("price_text")
                     or ""
                 ).strip(),
-                "is_bonus_work": bool(preferred_metadata.get("is_bonus_work")),
-                "has_bonus": bool(preferred_metadata.get("has_bonus")),
+                "is_bonus_work": bool(canonical_metadata.get("is_bonus_work")) or bool(preferred_metadata.get("is_bonus_work")),
+                "has_bonus": bool(canonical_metadata.get("has_bonus")) or bool(preferred_metadata.get("has_bonus")),
                 "preferred_variant_label": self._variant_label(preferred_variant["link_type"], preferred_variant["lang"]),
                 "preferred_lang": preferred_variant["lang"],
                 "preferred_link_type": preferred_variant["link_type"],
@@ -3678,8 +3778,8 @@ class CircleCompletionService:
             bucket["maker_name"] = bucket["maker_name"] or str(canonical_metadata.get("maker_name") or metadata.get("maker_name") or item.get("maker_name") or circle_query)
             if not str(bucket.get("price_text") or "").strip():
                 bucket["price_text"] = str(preferred_metadata.get("price_text") or metadata.get("price_text") or canonical_metadata.get("price_text") or item.get("price_text") or "").strip()
-            bucket["is_bonus_work"] = bool(preferred_metadata.get("is_bonus_work"))
-            bucket["has_bonus"] = bool(preferred_metadata.get("has_bonus"))
+            bucket["is_bonus_work"] = bool(canonical_metadata.get("is_bonus_work")) or bool(preferred_metadata.get("is_bonus_work"))
+            bucket["has_bonus"] = bool(canonical_metadata.get("has_bonus")) or bool(preferred_metadata.get("has_bonus"))
             release_date = str(canonical_metadata.get("release_date") or metadata.get("release_date") or item.get("release_date") or "").strip()
             is_unreleased = self._is_future_release_date(release_date)
             def _valid_cover(*urls: Any) -> str:
@@ -4839,12 +4939,21 @@ class CircleCompletionService:
                 canonical_info = await self.resolve_canonical_rj(canonical, refresh=force_refresh)
                 preferred_variant = self._preferred_variant(canonical_info, preferred_seed)
 
-                metadata = {}
+                # ★ P2 优化：只拉 canonical + preferred 两条 metadata。旧实现把
+                # [canonical, preferred, asmr_available, *linked_rjcodes] 整链全拉，
+                # 翻译版的 product/info/ajax 全部被打一遍。新逻辑下游
+                # ``_pick_public_display_variant_and_title`` 对未在 metadata_map 里的
+                # variant 用 ``get_product_info`` 拉 title（product.json API，cache 命中，
+                # 零成本），不影响 preferred 选择正确性。
                 metadata_map: Dict[str, Dict[str, Any]] = {}
-                for candidate in [canonical, preferred_variant.get("rjcode"), row.asmr_available_rjcode, *(row.linked_rjcodes or [])]:
+                first_pass_preferred = self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical
+                load_targets: List[str] = []
+                for candidate in [canonical, first_pass_preferred]:
                     normalized = self.normalize_rjcode(candidate)
-                    if not normalized:
-                        continue
+                    if normalized and normalized not in load_targets:
+                        load_targets.append(normalized)
+                metadata: Dict[str, Any] = {}
+                for normalized in load_targets:
                     try:
                         fetched_metadata = await self._fetch_metadata_dict(normalized, refresh=force_refresh)
                     except Exception:
@@ -4857,6 +4966,18 @@ class CircleCompletionService:
                     canonical or preferred_seed,
                     metadata_map,
                 )
+                # 二次选出的 preferred 可能不同于 first-pass（title 探测会 fallback 到原作等），
+                # 如果二次 preferred 不在 metadata_map 里，按需补拉一次（避免后续 row.title /
+                # is_bonus_work / cover 链路缺数据）。
+                second_pass_preferred = self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical
+                if second_pass_preferred and second_pass_preferred not in metadata_map:
+                    try:
+                        fetched_metadata = await self._fetch_metadata_dict(second_pass_preferred, refresh=force_refresh)
+                    except Exception:
+                        fetched_metadata = {}
+                    metadata_map[second_pass_preferred] = fetched_metadata or {}
+                    if fetched_metadata and not metadata:
+                        metadata = fetched_metadata
                 linked_rjcodes = [variant["rjcode"] for variant in allowed_variants if variant.get("rjcode")]
 
                 probe_candidates = await self._build_public_download_probe_candidates(
@@ -4896,10 +5017,23 @@ class CircleCompletionService:
                 row.maker_id = str(metadata.get("maker_id") or row.maker_id or "").strip() or row.maker_id
                 row.maker_name = str(metadata.get("maker_name") or row.maker_name or "").strip() or row.maker_name
                 display_metadata = metadata_map.get(row.display_rjcode) or metadata or {}
+                # canonical 是特典字段权威来源（特典本身只在原作的 product/info/ajax 上成立），
+                # display(=preferred) 可能是简中/繁中翻译版，自身的 is_oly 几乎一定是 false。
+                # 必须 OR(canonical, display) 才能让原作有特典 / 翻译版被选成 preferred 时
+                # 也正确显示特典 chip。
+                canonical_metadata_for_row = metadata_map.get(canonical) or {}
                 release_date = str(display_metadata.get("release_date") or metadata.get("release_date") or "").strip()
                 row.price_text = str(display_metadata.get("price_text") or metadata.get("price_text") or row.price_text or "").strip() or None
-                row.is_bonus_work = bool(display_metadata.get("is_bonus_work") or metadata.get("is_bonus_work"))
-                row.has_bonus = bool(display_metadata.get("has_bonus") or metadata.get("has_bonus"))
+                row.is_bonus_work = (
+                    bool(canonical_metadata_for_row.get("is_bonus_work"))
+                    or bool(display_metadata.get("is_bonus_work"))
+                    or bool(metadata.get("is_bonus_work"))
+                )
+                row.has_bonus = (
+                    bool(canonical_metadata_for_row.get("has_bonus"))
+                    or bool(display_metadata.get("has_bonus"))
+                    or bool(metadata.get("has_bonus"))
+                )
                 row.image_url = self._normalize_dlsite_cover_url(
                     display_metadata.get("cover_url") or metadata.get("cover_url") or row.image_url,
                     row.display_rjcode or canonical,
@@ -5034,8 +5168,15 @@ class CircleCompletionService:
             # 浏览路径已经退化成纯 DB 读、不再做 lazy_refresh，所以"刷新选中作品"
             # 这条写路径必须把存量 ``bonus_info_checked_at IS NULL`` 的行补齐。
             # ``_refresh_circle_bonus_fields`` 内部走 ``lazy_refresh_bonus_for_cached_rjcodes``
-            # （只挑 NULL 的存量条目）+ 同步到 circle_works，对已经检查过的 RJ
-            # 是免费跳过。这里只刷新选中的 canonical，scope 给 helper 收窄。
+            # 同步到 circle_works。这里只刷新选中的 canonical，scope 给 helper 收窄。
+            #
+            # ★ 关键：``force=True``——
+            # 用户主动点"刷新选中作品"是修复存量错误数据的入口。如果只看
+            # ``bonus_info_checked_at IS NULL``，对历史上 ``get_product_bonus_info``
+            # 异常吞错（HTTP 失败被错误打了时间戳）导致 ``is_bonus_work=False``
+            # 卡死的条目永远救不回来。这里透传 force 让 lazy_refresh 重新拉一次
+            # product/info/ajax，DLsite 端 24h cache + inflight 去重防止雪崩。
+            # ``index_circle_catalog`` 默认链路保持 force=False，是增量补救语义。
             bonus_lookup_rjcodes: List[str] = []
             for refreshed_row in rows:
                 for code in [
@@ -5050,6 +5191,7 @@ class CircleCompletionService:
                 circle_id,
                 bonus_lookup_rjcodes,
                 canonical_filter=normalized_codes,
+                force=True,
             )
 
             changed_count = len([item for item in refreshed_items if item.get("changed")])

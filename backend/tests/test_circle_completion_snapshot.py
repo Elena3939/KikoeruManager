@@ -40,6 +40,8 @@ def test_snapshot_default_values_are_empty() -> None:
     # 新增字段：作品链路去重信息
     assert snapshot.canonical_rj_by_rj == {}
     assert snapshot.chain_rjs_by_canonical == {}
+    # P2 新增：canonical -> canonical_info（含 link_map），用于 wave 2a 按 link_map 选 preferred
+    assert snapshot.canonical_info_by_canonical == {}
     assert snapshot.get_canonical_rj("RJ111") is None
     assert snapshot.get_chain_rjs("RJ111") == []
 
@@ -412,7 +414,7 @@ async def test_collect_external_snapshot_progress_uses_business_wording(
 
     joined = "\n".join(progress_steps)
     # 关键业务词
-    assert "DLsite 作品资料" in joined
+    assert "DLsite 作品关联链" in joined
     assert "ASMR.one" in joined
     assert "Kikoeru" in joined
     assert "作品链路" in joined
@@ -420,3 +422,140 @@ async def test_collect_external_snapshot_progress_uses_business_wording(
     assert "收集 ASMR.one 数据" not in joined
     assert "收集 Kikoeru 数据" not in joined
     assert "展开 RJ 全集" not in joined
+
+
+# ============ P2: Wave 2a 按 canonical 链路 + preferred 优先 + 命中即停 ============
+
+
+@pytest.mark.asyncio
+async def test_collect_external_snapshot_asmr_chain_probe_stops_on_first_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """链路上 preferred（简中翻译版）首次命中 ASMR.one 后必须立即停止，
+    不再对原作 / 其他翻译版打 ``fetch_work_info``。
+
+    这是 P2 优化的核心收益：把 wave 2a 的 ASMR.one HTTP 调用从"链上 N 条全量"
+    压到"1 条命中即停"，单社团 70-80% 的 ASMR.one HTTP 调用直接消失。
+    """
+    service = CircleCompletionService()
+    service._kikoeru_state_cache.clear()
+    service._asmr_probe_cache.clear()  # type: ignore[attr-defined]
+
+    # canonical=RJ100 (日文原作), 链上还有 RJ101 (简中)、RJ102 (繁中)
+    # link_map 让 _sort_linked_variants 把 RJ101 (简中翻译) 排在最前面
+    canonical_info = {
+        "canonical_rjcode": "RJ100",
+        "linked_rjcodes": ["RJ100", "RJ101", "RJ102"],
+        "link_map": {
+            "RJ100": {"link_type": "original", "lang": "JPN"},
+            "RJ101": {"link_type": "translation", "lang": "CHI_HANS"},
+            "RJ102": {"link_type": "translation", "lang": "CHI_HANT"},
+        },
+    }
+
+    async def fake_canonical(rj: str, refresh: bool = False) -> Dict[str, Any]:
+        return canonical_info
+
+    monkeypatch.setattr(service, "resolve_canonical_rj", fake_canonical)
+
+    # 模拟 ASMR.one：RJ101（简中 preferred）命中、其他 RJ 也都有数据
+    asmr_calls: List[str] = []
+
+    class _PreferredHitASMR:
+        async def fetch_work_info(self, rj: str) -> Optional[Dict[str, Any]]:
+            asmr_calls.append(f"work_info:{rj}")
+            return {"id": int(rj[2:]), "title": f"T-{rj}"}
+
+        async def fetch_track_list(self, rj: str) -> Optional[List[Any]]:
+            asmr_calls.append(f"tracks:{rj}")
+            return [{"file": f"{rj}.mp3"}]
+
+    service.asmr_service = _PreferredHitASMR()  # type: ignore[assignment]
+
+    # Kikoeru stub：保证 wave 2b 不爆
+    async def fake_probe_state(rj: str, *, use_cache: bool = True) -> Dict[str, Any]:
+        return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
+
+    monkeypatch.setattr(service, "_probe_kikoeru_state", fake_probe_state)
+
+    snapshot = await service._collect_external_snapshot(["RJ100"])
+
+    # ★ 关键正确性：preferred=RJ101 优先探，命中即停，原作 / 繁中不再打 ASMR.one
+    assert "work_info:RJ101" in asmr_calls
+    assert "tracks:RJ101" in asmr_calls
+    # 链上其他 RJ 应该没有 fetch_work_info 调用
+    assert "work_info:RJ100" not in asmr_calls
+    assert "work_info:RJ102" not in asmr_calls
+
+    # snapshot 里 RJ101 有数据；其他链上 RJ 是 None 占位
+    assert snapshot.asmr_work_info_by_rj["RJ101"] == {"id": 101, "title": "T-RJ101"}
+    assert snapshot.asmr_tracks_by_rj["RJ101"] == [{"file": "RJ101.mp3"}]
+    assert snapshot.asmr_work_info_by_rj.get("RJ100") is None
+    assert snapshot.asmr_work_info_by_rj.get("RJ102") is None
+
+    # snapshot.canonical_info_by_canonical 必须被填充
+    assert snapshot.canonical_info_by_canonical["RJ100"]["link_map"]["RJ101"]["lang"] == "CHI_HANS"
+
+
+@pytest.mark.asyncio
+async def test_collect_external_snapshot_asmr_chain_probe_falls_back_to_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """preferred 在 ASMR.one miss 时按链上次序 fallback 探到原作 / 其他翻译版，
+    全 miss 时链上每个 RJ 都标 None。"""
+    service = CircleCompletionService()
+    service._kikoeru_state_cache.clear()
+    service._asmr_probe_cache.clear()  # type: ignore[attr-defined]
+
+    canonical_info = {
+        "canonical_rjcode": "RJ200",
+        "linked_rjcodes": ["RJ200", "RJ201"],
+        "link_map": {
+            "RJ200": {"link_type": "original", "lang": "JPN"},
+            "RJ201": {"link_type": "translation", "lang": "CHI_HANS"},
+        },
+    }
+
+    async def fake_canonical(rj: str, refresh: bool = False) -> Dict[str, Any]:
+        return canonical_info
+
+    monkeypatch.setattr(service, "resolve_canonical_rj", fake_canonical)
+
+    asmr_calls: List[str] = []
+
+    class _OriginalHitASMR:
+        """简中（preferred）miss、原作命中——典型场景：DLsite 上有简中翻译但
+        ASMR.one 只收录原作。"""
+
+        async def fetch_work_info(self, rj: str) -> Optional[Dict[str, Any]]:
+            asmr_calls.append(f"work_info:{rj}")
+            if rj == "RJ200":
+                return {"id": 200, "title": "Original"}
+            return None  # RJ201 简中 miss
+
+        async def fetch_track_list(self, rj: str) -> Optional[List[Any]]:
+            asmr_calls.append(f"tracks:{rj}")
+            return [{"file": f"{rj}.mp3"}] if rj == "RJ200" else None
+
+    service.asmr_service = _OriginalHitASMR()  # type: ignore[assignment]
+
+    async def fake_probe_state(rj: str, *, use_cache: bool = True) -> Dict[str, Any]:
+        return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
+
+    monkeypatch.setattr(service, "_probe_kikoeru_state", fake_probe_state)
+
+    snapshot = await service._collect_external_snapshot(["RJ200"])
+
+    # 简中 RJ201 排第一被探，miss 后 fallback 到原作 RJ200，命中即停
+    assert "work_info:RJ201" in asmr_calls
+    assert "work_info:RJ200" in asmr_calls
+    # tracks 只对 work_info 命中的 RJ 拉
+    assert "tracks:RJ201" not in asmr_calls
+    assert "tracks:RJ200" in asmr_calls
+
+    # snapshot 写入：RJ200 有 work_info+tracks；RJ201 work_info 是 None
+    assert snapshot.asmr_work_info_by_rj["RJ200"] == {"id": 200, "title": "Original"}
+    assert snapshot.asmr_tracks_by_rj["RJ200"] == [{"file": "RJ200.mp3"}]
+    assert snapshot.asmr_work_info_by_rj.get("RJ201") is None
+    assert snapshot.contains_asmr("RJ200") is True
+    assert snapshot.contains_asmr("RJ201") is False
