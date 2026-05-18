@@ -1256,6 +1256,23 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 return f"作品：{work_label}"
             return f"社团：{circle_label}" if circle_label else ""
         return f"社团：{circle_label}" if circle_label else ""
+
+    def _merge_circle_task_finish_duration(parent_row: dict[str, Any], finish_row: dict[str, Any]) -> None:
+        parent_detail = parent_row.get("detail") if isinstance(parent_row.get("detail"), dict) else {}
+        finish_detail = finish_row.get("detail") if isinstance(finish_row.get("detail"), dict) else {}
+        duration_ms = int(finish_detail.get("duration_ms") or 0)
+        if duration_ms <= 0:
+            start_at = _coerce_dt(finish_row.get("task_created_at") or finish_row.get("created_at"))
+            end_at = _coerce_dt(finish_row.get("created_at"))
+            if start_at and end_at and end_at >= start_at:
+                duration_ms = int((end_at - start_at).total_seconds() * 1000)
+        if duration_ms > 0:
+            parent_row["detail"] = {
+                **parent_detail,
+                "duration_ms": duration_ms,
+                "task_duration_ms": duration_ms,
+            }
+        parent_row["latest_activity_at"] = finish_row.get("created_at") or parent_row.get("latest_activity_at") or parent_row.get("created_at")
     
     # 第一步：收集索引和刷新记录
     for row in rows:
@@ -1351,6 +1368,22 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         ]
 
         if batch_circle_summaries:
+            if len(batch_circle_summaries) == 1:
+                item_circle_id = str((batch_circle_summaries[0] or {}).get("circle_id") or circle_id).strip()
+                parent_candidates = circle_index_rows_by_circle.get(item_circle_id) or circle_index_rows_by_circle.get(circle_id) or []
+                if parent_candidates:
+                    row_dt = _coerce_dt(row.get("created_at")) or datetime.min
+                    parent_row = None
+                    for candidate in parent_candidates:
+                        candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
+                        if candidate_dt <= row_dt:
+                            parent_row = candidate
+                    if parent_row is None:
+                        parent_row = parent_candidates[-1]
+                    _merge_circle_task_finish_duration(parent_row, row)
+                merged_circle_completion_ids.add(str(row.get("id") or ""))
+                continue
+
             row["is_parent_task"] = True
             row["child_rows"] = []
             for index, item in enumerate(batch_circle_summaries, start=1):
@@ -1382,6 +1415,20 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         
         # 跳过全量刷新
         if source_action == "refresh_all_circles":
+            continue
+        if source_action in {"", "index_start", "circle_index", "index_completed"} and not batch_id:
+            parent_candidates = circle_index_rows_by_circle.get(circle_id) or []
+            if parent_candidates:
+                row_dt = _coerce_dt(row.get("created_at")) or datetime.min
+                parent_row = None
+                for candidate in parent_candidates:
+                    candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
+                    if candidate_dt <= row_dt:
+                        parent_row = candidate
+                if parent_row is None:
+                    parent_row = parent_candidates[-1]
+                _merge_circle_task_finish_duration(parent_row, row)
+            merged_circle_completion_ids.add(str(row.get("id") or ""))
             continue
         if not circle_id:
             continue
@@ -1692,6 +1739,58 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         parent_row["has_child_rows"] = bool(child_rows)
         parent_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else parent_row.get("created_at")
 
+    def _circle_finish_match_key(row: dict[str, Any]) -> str:
+        detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+        return str(
+            detail.get("circle_id")
+            or detail.get("circle_name")
+            or row.get("source_path")
+            or ""
+        ).strip()
+
+    def _should_hide_single_circle_index_finish(row: dict[str, Any]) -> bool:
+        if str(row.get("category") or "").strip() != "circle_completion":
+            return False
+        if str(row.get("action") or "").strip() not in {"task_finished", "task_finished_incomplete"}:
+            return False
+        detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+        source_action = str(row.get("source_action") or detail.get("source_action") or "").strip()
+        if source_action in {"refresh_selected", "refresh_all_circles", "download_batch"}:
+            return False
+        if str(detail.get("batch_id") or detail.get("parent_session_id") or "").strip():
+            return False
+        summaries = [item for item in list(detail.get("batch_circle_summaries") or []) if isinstance(item, dict)]
+        return len(summaries) <= 1
+
+    circle_index_candidates = [
+        row for row in rows
+        if str(row.get("category") or "").strip() == "circle_completion"
+        and str(row.get("action") or "").strip() == "index_completed"
+    ]
+    for finish_row in rows:
+        if not _should_hide_single_circle_index_finish(finish_row):
+            continue
+        finish_key = _circle_finish_match_key(finish_row)
+        finish_dt = _coerce_dt(finish_row.get("created_at")) or datetime.min
+        best_parent = None
+        best_delta = None
+        for candidate in circle_index_candidates:
+            candidate_key = _circle_finish_match_key(candidate)
+            if finish_key and candidate_key and finish_key != candidate_key:
+                continue
+            candidate_dt = _coerce_dt(candidate.get("created_at")) or datetime.min
+            if candidate_dt == datetime.min or finish_dt == datetime.min:
+                continue
+            delta = abs((finish_dt - candidate_dt).total_seconds())
+            if delta > 300:
+                continue
+            if best_delta is None or delta < best_delta:
+                best_parent = candidate
+                best_delta = delta
+        if best_parent is not None:
+            _merge_circle_task_finish_duration(best_parent, finish_row)
+        merged_circle_completion_ids.add(str(finish_row.get("id") or ""))
+
     items: list[dict[str, Any]] = []
     for row in rows:
         if str(row.get("id") or "") in merged_batch_child_ids:
@@ -1719,6 +1818,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         if str(row.get("id") or "") in merged_delete_batch_child_ids:
             continue
         if str(row.get("id") or "") in merged_circle_completion_ids:
+            continue
+        if _should_hide_single_circle_index_finish(row):
             continue
         if str(row.get("id") or "") in merged_asmr_sync_ids:
             continue

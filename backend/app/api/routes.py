@@ -587,6 +587,15 @@ def list_activity_logs(
                     ActivityLog.status.in_(("failed", "partial_success")),
                 )
             )
+        # 社团补全的 task_finished / task_finished_incomplete 生命周期行只是 "完成" 的占位摘要，
+        # 真正的信息（社团 / 索引计数 / 耗时）都在同时刻写入的 index_completed domain event 里。
+        # lite 路径不跑 aggregator 合并，否则会出现 "完成" + "索引完成" 并排两条，这里直接 SQL 过滤掉。
+        query = query.filter(
+            ~(
+                (ActivityLog.category == "circle_completion")
+                & ActivityLog.action.in_(("task_finished", "task_finished_incomplete"))
+            )
+        )
         # 搜索分支：fts_match_count 已是 FTS 命中上限内的总数（≤ _FTS_MATCH_CAP），
         # 直接用作 total，跳过 COUNT(*) 全表扫描；hidden actions 过滤的少量误差在 UI 上不显眼。
         # 非搜索分支：维持原 COUNT(*) 逻辑（有 created_at + category 索引保护，开销可接受）。

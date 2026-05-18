@@ -754,6 +754,13 @@ class CircleCompletionService:
             "漫画", "マンガ", "コミック", "comic",
             "ゲーム", "game", "rpg", "adv", "アドベンチャー", "ノベル", "novel",
             "3dcg", "3d作品",
+            # ★ 技术书 / 小说 / 解説書 这些纯文字作品（哪怕主题是"如何制作 ASMR"）
+            # 也常会带 "ASMR" / "人头麦" 等 Kikoeru tag，导致 audio 检查误判为音声作品。
+            # 这里补上中日双语的"书/小说"关键词，让非音声判定优先级把它们截掉。
+            # 案例：RJ01268187《音声作品のつくりかた》(防鯖潤滑剤) 是 JPEG+PDF 技术书，
+            # 但分类含 ASMR/双声道立体声/人头麦，社团补全曾把它当作品索引进来。
+            "小说", "小説", "技术书", "技術書", "解説書", "解説本",
+            "教本", "ハウツー", "ガイドブック",
         ]
         return any(marker in haystack for marker in markers)
 
@@ -788,10 +795,16 @@ class CircleCompletionService:
         for key in ("work_type", "work_category", "category", "category_name", "genre", "genre_name", "file_type", "file_format"):
             categories.extend(self._extract_text_values(metadata.get(key)))
         haystack = " ".join([title, *tags, *categories])
-        if self._is_audio_package_text(haystack):
-            return True
+        # ★ 关键顺序：先判非音声标记，再判音声标记。
+        # 一本"如何制作 ASMR"的技术书 / 小说同时会带 "ASMR" / "人头麦" 这种音声 tag
+        # 和 "JPEG / PDF / 技术书" 这种非音声 tag。如果先看到音声 tag 就 return True，
+        # 这类纯文字作品会被错误索引进社团补全。非音声信号（jpeg/pdf/小说/技术书等）
+        # 是文件形态级别的强信号，优先级必须高于主题级别的音声 tag。
+        # 案例：RJ01268187《音声作品のつくりかた》(防鯖潤滑剤)
         if self._is_non_audio_package_text(haystack):
             return False
+        if self._is_audio_package_text(haystack):
+            return True
 
         # 有明确声优信息且未被非音声标记拦截 → 视为音声作品
         cvs = self._extract_text_values(metadata.get("cvs"))
@@ -2945,6 +2958,9 @@ class CircleCompletionService:
         circle_query = str(circle_query or "").strip()
         if not circle_query:
             raise ValueError("社团名不能为空")
+        # 单社团索引耗时记账：从"用户点击 → index_completed 写日志"全程，时间线显示这条。
+        # 我们在 lite 路径里把 task_finished 行过滤掉了，所以耗时必须直接写进 index_completed.detail。
+        _index_start_monotonic = time.monotonic()
 
         def ensure_not_cancelled():
             if cancel_callback and cancel_callback():
@@ -3723,6 +3739,7 @@ class CircleCompletionService:
             "downloadable_count": int(summary.get("downloadable_count") or 0),
             "dl_count": int(summary.get("dl_count") or 0),
         }
+        _index_duration_ms = max(0, int((time.monotonic() - _index_start_monotonic) * 1000))
         log_circle_completion_event(
             "index_completed",
             summary=(
@@ -3743,6 +3760,8 @@ class CircleCompletionService:
                 "downloadable_count": indexed_counts["downloadable_count"],
                 "dl_count": indexed_counts["dl_count"],
                 "works_count": indexed_counts["works"],
+                "duration_ms": _index_duration_ms,
+                "task_duration_ms": _index_duration_ms,
                 **self._build_circle_index_log_detail(
                     summary,
                     force_refresh=force_refresh,
@@ -4041,6 +4060,24 @@ class CircleCompletionService:
             # 提到循环外拿一次实例，循环里只调 has_local（一次 stat 调用），
             # 200 个作品的额外开销 ~1ms，可以忽略。
             image_cache_service = get_circle_image_cache_service()
+            cover_download_pairs: List[Tuple[str, str]] = []
+            for row in works:
+                display_rj = (
+                    self.normalize_rjcode(row.display_rjcode)
+                    or self.normalize_rjcode(row.canonical_rjcode)
+                )
+                remote_cover = str(row.image_url or "").strip()
+                if (
+                    display_rj
+                    and remote_cover.startswith(("http://", "https://"))
+                    and not image_cache_service.has_local(display_rj)
+                ):
+                    cover_download_pairs.append((display_rj, remote_cover))
+            if cover_download_pairs:
+                try:
+                    await image_cache_service.download_many(cover_download_pairs)
+                except Exception:
+                    logger.warning("[社团补全] 详情视图缓存封面失败", exc_info=True)
             items = []
             for row in works:
                 owned_row = owned_rows.get(row.canonical_rjcode)
