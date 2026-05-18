@@ -336,7 +336,7 @@ import {
   Trash2,
   XCircle
 } from 'lucide-vue-next'
-import { existingFolderApi } from '../api'
+import { apiFetchOptions, apiUrl, existingFolderApi } from '../api'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
@@ -422,8 +422,8 @@ async function refreshFoldersWithOptions(forceRefresh = false) {
   selectedFolders.value = []
   conflictCount.value = 0
   try {
-    const url = `/api/existing-folders/scan?check_duplicates=${checkDuplicates.value}&force_refresh=${forceRefresh}`
-    const response = await fetch(url, { method: 'POST', headers: { Accept: 'application/x-ndjson' } })
+    const url = apiUrl(`/existing-folders/scan?check_duplicates=${checkDuplicates.value}&force_refresh=${forceRefresh}`)
+    const response = await fetch(url, apiFetchOptions({ method: 'POST', headers: { Accept: 'application/x-ndjson' } }))
     await consumeNdjsonResponse(response, { forceRefresh })
   } catch (error) {
     console.error('获取文件夹列表失败:', error)
