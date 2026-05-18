@@ -11,7 +11,7 @@ import json
 import logging
 import random
 import re
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -111,6 +111,13 @@ class DLsiteApiService:
     def _build_product_api_url(self, rjcode: str, locale: Optional[str] = None) -> str:
         workno = self._normalize_workno(rjcode)
         url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={workno}"
+        if locale:
+            url = f"{url}&locale={locale}"
+        return url
+
+    def _build_product_info_ajax_url(self, rjcode: str, locale: Optional[str] = None) -> str:
+        workno = self._normalize_workno(rjcode)
+        url = f"https://www.dlsite.com/maniax/product/info/ajax?product_id={workno}&cdn_cache_min=1"
         if locale:
             url = f"{url}&locale={locale}"
         return url
@@ -691,6 +698,50 @@ class DLsiteApiService:
             return data[0]
         return None
 
+    async def _fetch_product_info_ajax_payload(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
+        workno = self._normalize_workno(rjcode)
+        data = await self._fetch_api(self._build_product_info_ajax_url(workno, locale=locale))
+        if not isinstance(data, dict):
+            return None
+        product = data.get(workno)
+        if isinstance(product, dict):
+            return product
+        for key, value in data.items():
+            if self._normalize_workno(key) == workno and isinstance(value, dict):
+                return value
+        return None
+
+    def _wishlist_count_is_zero(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return value == 0
+        if isinstance(value, float):
+            return value == 0
+        return False
+
+    def _product_info_indicates_bonus_work(self, product: Optional[Dict]) -> bool:
+        if not isinstance(product, dict):
+            return False
+        return (
+            not bool(product.get("is_sale"))
+            and bool(product.get("is_free"))
+            and bool(product.get("is_oly"))
+            and self._wishlist_count_is_zero(product.get("wishlist_count"))
+        )
+
+    def _product_info_indicates_has_bonus(self, product: Optional[Dict]) -> bool:
+        bonuses = product.get("bonuses") if isinstance(product, dict) else None
+        return isinstance(bonuses, list) and len(bonuses) > 0
+
+    async def get_product_bonus_info(self, rjcode: str, locale: Optional[str] = None) -> Dict[str, bool]:
+        """复刻 VoiceLinks 的特典判定：只信 DLsite product/info/ajax 的结构化字段。"""
+        product = await self._fetch_product_info_ajax_payload(rjcode, locale=locale)
+        return {
+            "is_bonus_work": self._product_info_indicates_bonus_work(product),
+            "has_bonus": self._product_info_indicates_has_bonus(product),
+        }
+
     async def _resolve_translation_page_fallback(self, rjcode: str, locale: Optional[str] = None) -> Dict[str, str]:
         workno = self._normalize_workno(rjcode)
         if not workno:
@@ -1094,7 +1145,7 @@ class DLsiteApiService:
         # 历史调用方），这里必须显式传 ``lang=""`` 覆盖，否则下游会误认为是日语原作。
         return TranslationInfo(lang="")
     
-    async def get_linked_works(self, rjcode: str) -> Dict[str, LinkedWork]:
+    async def get_linked_works(self, rjcode: str, *, refresh: bool = False) -> Dict[str, LinkedWork]:
         """获取作品的关联作品（含 cache + inflight 去重，是性能热点入口）。
 
         ★ 性能优化（key BUG fix）：
@@ -1109,6 +1160,13 @@ class DLsiteApiService:
           触发完整计算。
         - 递归调用 ``self.get_linked_works(original_rjcode)`` 也会自动复用 cache。
 
+        ``refresh=True`` 强制清掉 ``linked_works:`` cache 项再重算，专门服务于
+        ``resolve_canonical_rj(refresh=True)`` 这条 "用户主动强刷" 路径：v1.5.x
+        早期版本里 ``_get_direct_linked_works`` 的 is_parent/is_child 分支存在
+        "parent_workno 覆盖 original_workno" 的 BUG，导致 24h cache 里写入的
+        关联链没有任何 ``original`` 标记。光修代码不清 cache 的话，旧 cache 在
+        TTL 内（24h）会持续把错误结果喂给下游，用户感受不到修复。
+
         关联作品包括：
         - 原版作品（日文）
         - 所有翻译版本（简中、繁中、英文等不同译者，RJ 号各不相同）
@@ -1121,9 +1179,17 @@ class DLsiteApiService:
         if not normalized_rjcode:
             return {}
 
-        # 1. cache 短路（同一任务内重复调用近乎免费）
         cache_key = f"linked_works:{normalized_rjcode}"
-        if cache_key in self.cache:
+        if refresh:
+            # 主动强刷：把 self.cache 里的关联链以及 translation_info 旁路 cache
+            # 一并清掉，避免下面 _compute_linked_works 跑出来还是旧 BUG 时段的
+            # 错误标记。translation_info 只在内存，清掉后续 get_translation_info
+            # 自动重新打 product.json。
+            self.cache.pop(cache_key, None)
+            self._translation_info_cache.pop(normalized_rjcode, None)
+
+        # 1. cache 短路（同一任务内重复调用近乎免费）
+        if not refresh and cache_key in self.cache:
             cached_data = self.cache[cache_key]
             if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
                 # 浅拷贝避免上游误改 cache 内 LinkedWork 引用
@@ -1153,6 +1219,33 @@ class DLsiteApiService:
 
         递归到 ``self.get_linked_works(original_rjcode)`` 时会自动复用外层 cache。
         """
+        def _merge_linked_works(base: Dict[str, LinkedWork], incoming: Dict[str, LinkedWork]) -> Dict[str, LinkedWork]:
+            """合并关联链，避免 translation/child_translation 覆盖 original。
+
+            DLsite 某些翻译页会把同一个 RJ 在不同入口下标成不同 link_type。
+            只要已有 ``original``，后续同 RJ 的 translation 标记就不能覆盖它；
+            否则 canonical 解析会丢掉原作入口，导致多语言版本拆成多张卡。
+            """
+            priority = {
+                "original": 0,
+                "translation": 1,
+                "child_translation": 2,
+                "linked": 3,
+                "self": 4,
+                "unknown": 5,
+            }
+            result = dict(base or {})
+            for workno, work in (incoming or {}).items():
+                existing = result.get(workno)
+                if existing is None:
+                    result[workno] = work
+                    continue
+                old_rank = priority.get(str(existing.work_type or "").strip(), 99)
+                new_rank = priority.get(str(work.work_type or "").strip(), 99)
+                if new_rank < old_rank:
+                    result[workno] = work
+            return result
+
         async def _get_direct_linked_works(target_rjcode: str) -> Dict[str, LinkedWork]:
             target_rjcode = self._normalize_workno(target_rjcode)
             trans = await self.get_translation_info(target_rjcode)
@@ -1186,9 +1279,20 @@ class DLsiteApiService:
                     )
             elif trans.is_parent:
                 original_workno = self._normalize_workno(trans.original_workno or '')
-                if original_workno:
+                # ★ 修复"同一作品所有翻译版独立成卡"BUG（用户反馈：Lilith 社团补全里
+                # RJ01525048/RJ01525054、RJ01605924/RJ01605932 等翻译对各占一张卡）：
+                # 当 target_rjcode 本身就是 original_workno（DLsite 偶尔把"原作 + 有翻译子节点"
+                # 同时标 is_parent=True），下面 `result[target_rjcode] = translation/...`
+                # 会立刻覆盖刚写入的 `original/JPN`，导致整条链路里没有任何 `original` 标记。
+                # `resolve_canonical_rj` 找不到 work_type=='original'，canonical 兜底为输入 rj
+                # 自己，每个翻译版都会被独立成卡。这里显式保留"target 就是原作"的语义，
+                # 别再让自己的 translation 标记把 original 盖掉。
+                if original_workno and original_workno != target_rjcode:
                     result[original_workno] = LinkedWork(workno=original_workno, work_type='original', lang='JPN')
-                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='translation', lang=trans.lang or 'JPN')
+                    result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='translation', lang=trans.lang or 'JPN')
+                else:
+                    # target 自身就是日语原作：保留 original/JPN 标记，避免被翻译/翻译子节点覆盖。
+                    result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='original', lang='JPN')
                 for child_workno in list(trans.child_worknos or []):
                     normalized_child = self._normalize_workno(child_workno)
                     if not normalized_child:
@@ -1199,7 +1303,15 @@ class DLsiteApiService:
                 parent_workno = self._normalize_workno(trans.parent_workno or '')
                 if original_workno:
                     result[original_workno] = LinkedWork(workno=original_workno, work_type='original', lang='JPN')
-                if parent_workno:
+                # ★ 修复"同一作品所有翻译版独立成卡"BUG（详见上方 is_parent 分支注释）：
+                # 直系翻译版的常见场景是 parent_workno == original_workno（parent 就是日语原作）。
+                # 之前这里无条件 `result[parent_workno] = translation/<child.lang>` 会把刚写入的
+                # `original/JPN` 直接覆盖成 `translation/CHI_HANS`（或 CHI_HANT）——整条链路里
+                # 没有 work_type=='original' 的入口，``resolve_canonical_rj`` 只能兜底用输入 rj
+                # 当 canonical，于是同一作品的简繁中版被分别写成两个独立 CircleWork 行、各占
+                # 一张卡。父翻译只有在它确实是另一个 RJ（嵌套翻译链：原作 → 父翻译 → 子翻译）
+                # 时才需要单独写入。
+                if parent_workno and parent_workno != original_workno:
                     result[parent_workno] = LinkedWork(workno=parent_workno, work_type='translation', lang=trans.lang or 'JPN')
                 result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='child_translation', lang=trans.lang or 'JPN')
             else:
@@ -1221,7 +1333,7 @@ class DLsiteApiService:
                 # 原作 RJ 已被算过时近乎免费。
                 result = await self.get_linked_works(original_rjcode)
                 direct_links = await _get_direct_linked_works(normalized_rjcode)
-                result.update(direct_links)
+                result = _merge_linked_works(result, direct_links)
                 logger.info(f"[DLsite] {normalized_rjcode} 关联作品 ({len(result)}个): {list(result.keys())}")
                 return result
 
@@ -1233,7 +1345,7 @@ class DLsiteApiService:
             ]
             for probe_workno in probe_worknos:
                 direct_links = await _get_direct_linked_works(probe_workno)
-                result.update(direct_links)
+                result = _merge_linked_works(result, direct_links)
 
             logger.info(f"[DLsite] {normalized_rjcode} 关联作品 ({len(result)}个): {list(result.keys())}")
             return result

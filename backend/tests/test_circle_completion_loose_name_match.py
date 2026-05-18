@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import pytest
 
+import app.core.circle_completion_service as circle_completion_module
 from app.core.circle_completion_service import CircleCompletionService
+from app.models.database import WorkMetadata
 
 
 @pytest.fixture(scope="module")
@@ -63,6 +65,47 @@ def test_loose_match_empty_inputs_dont_block_pipeline(service: CircleCompletionS
     assert service._circle_name_loose_match("", "") is True
 
 
+def test_non_audio_marker_does_not_treat_rpgx_brand_as_game(service: CircleCompletionService) -> None:
+    assert service._is_non_audio_package_text("【対魔忍RPGX】神大路瑠亜ASMR") is False
+    assert service._metadata_looks_like_asmr_work({
+        "work_name": "【対魔忍RPGX】神大路瑠亜ASMR",
+        "tags": ["音声・ASMR", "ASMR"],
+        "cvs": ["麦芽ぷりん"],
+    }) is True
+
+
+def test_non_audio_marker_still_rejects_standalone_rpg(service: CircleCompletionService) -> None:
+    assert service._is_non_audio_package_text("ファンタジー RPG") is True
+
+
+@pytest.mark.asyncio
+async def test_dlsite_profile_unknown_classification_is_rejected(
+    service: CircleCompletionService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """maker 主页来源也必须有明确音声判定，不能把同社团游戏放进候选。"""
+    monkeypatch.setattr(
+        service,
+        "_fetch_metadata_dict",
+        lambda rjcode: {
+            "rjcode": rjcode,
+            "work_name": "催眠彼女",
+            "maker_id": "RG02397",
+            "maker_name": "Lilith [リリス]",
+            "tags": ["妹妹", "人妻", "制服", "灌肠", "触手", "凌辱"],
+            "cvs": [],
+        },
+    )
+
+    class FakeDLsiteService:
+        async def get_product_info(self, _rjcode: str) -> dict:
+            return {"product": {"work_name": "催眠彼女", "work_type": "ADV"}}
+
+    service.dlsite_service = FakeDLsiteService()
+
+    assert await service._classify_asmr_work_candidate("RJ023781") is False
+
+
 # ----- _build_search_keyword_variants -----
 # Kikoeru 是按 works keyword 搜作品再抽 circle.id 的，整串长 query 经常
 # 0 命中，必须把括号内 / 外的子 keyword 拆出来重试。
@@ -97,3 +140,29 @@ def test_keyword_variants_no_duplicates(service: CircleCompletionService) -> Non
 def test_keyword_variants_empty_input(service: CircleCompletionService) -> None:
     assert service._build_search_keyword_variants("") == []
     assert service._build_search_keyword_variants(None) == []  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_collect_local_candidates_matches_punctuated_maker_name(
+    service: CircleCompletionService,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_session.add(
+        WorkMetadata(
+            rjcode="RJ01605920",
+            work_name="【対魔忍RPGX】神大路瑠亜ASMR",
+            maker_id="RG02397",
+            maker_name="Lilith [リリス]",
+            release_date="2026-05-01",
+            tags=["音声・ASMR", "ASMR"],
+            cvs=["麦芽ぷりん"],
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(circle_completion_module, "SessionLocal", lambda: db_session)
+
+    candidates = await service._collect_local_circle_candidates("Lilith [リリス]")
+
+    assert [item["rjcode"] for item in candidates] == ["RJ01605920"]
+    assert candidates[0]["maker_id"] == "RG02397"

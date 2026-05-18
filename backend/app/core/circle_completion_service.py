@@ -205,6 +205,21 @@ class CircleCompletionService:
             return True
         return False
 
+    def _build_circle_name_sql_terms(self, value: Any) -> List[str]:
+        """构造数据库粗筛用的社团名片段。
+
+        真正判定仍然走 ``_circle_name_loose_match``。这里的目标只是别在 SQL
+        预筛阶段漏掉 ``Lilith [リリス]`` 这类带括号/装饰符的 maker_name。
+        """
+        raw = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
+        normalized = self.normalize_circle_name(value)
+        terms: List[str] = []
+        for term in [raw, normalized, *self._build_search_keyword_variants(value)]:
+            term = unicodedata.normalize("NFKC", str(term or "")).strip().lower()
+            if len(term) >= 2 and term not in terms:
+                terms.append(term)
+        return terms
+
     def normalize_rjcode(self, value: Any) -> str:
         text = str(value or "").strip().upper()
         match = re.search(r"[RVB]J(\d{6}|\d{8})(?!\d)", text, re.IGNORECASE)
@@ -752,7 +767,7 @@ class CircleCompletionService:
             "cg・插画", "cg・イラスト", "cg イラスト", "cg集",
             "jpeg", "jpg", "png", "pdf",
             "漫画", "マンガ", "コミック", "comic",
-            "ゲーム", "game", "rpg", "adv", "アドベンチャー", "ノベル", "novel",
+            "ゲーム", "game", "アドベンチャー", "ノベル", "novel",
             "3dcg", "3d作品",
             # ★ 技术书 / 小说 / 解説書 这些纯文字作品（哪怕主题是"如何制作 ASMR"）
             # 也常会带 "ASMR" / "人头麦" 等 Kikoeru tag，导致 audio 检查误判为音声作品。
@@ -762,7 +777,11 @@ class CircleCompletionService:
             "小说", "小説", "技术书", "技術書", "解説書", "解説本",
             "教本", "ハウツー", "ガイドブック",
         ]
-        return any(marker in haystack for marker in markers)
+        if any(marker in haystack for marker in markers):
+            return True
+        # RPG/ADV 只认独立词。对魔忍 RPGX 这类品牌词经常出现在 ASMR 标题里，
+        # 如果按 substring 命中会把真实音声整批误杀。
+        return bool(re.search(r"(?<![0-9a-z])(?:rpg|adv)(?![0-9a-z])", haystack, re.IGNORECASE))
 
     def _is_audio_package_text(self, text: str) -> bool:
         haystack = str(text or "").strip().lower()
@@ -772,8 +791,8 @@ class CircleCompletionService:
             "sou", "audio", "voice", "asmr", "音声", "ボイス", "ボイス・asmr",
             "囁き", "ささやき", "耳かき", "耳舐め", "舐耳", "バイノーラル",
             "フォーリーサウンド", "フォーリー", "foley", "wav", "ku100",
-            "音声・asmr", "双声道立体声", "人头麦", "舔耳", "低语", "治愈",
-            "拟声音效", "拟真音效", "耳语", "耳边", "催眠",
+            "音声・asmr", "双声道立体声", "人头麦", "舔耳", "低语",
+            "拟声音效", "拟真音效", "耳语", "耳边",
         ]
         return any(marker in haystack for marker in markers)
 
@@ -806,11 +825,14 @@ class CircleCompletionService:
         if self._is_audio_package_text(haystack):
             return True
 
-        # 有明确声优信息且未被非音声标记拦截 → 视为音声作品
-        cvs = self._extract_text_values(metadata.get("cvs"))
-        if cvs:
-            return True
-
+        # 注意：这里**故意不**用"cvs 非空 → 视为音声"做兜底。
+        # 反例：RJ154958《対魔忍ユキカゼ2》是 ADV 游戏（work_type=ADV，文件格式 EXE），
+        # 但 DLsite 上有完整声优配音（氷室百合 / 佐藤遼佳 / 花南）。同时其 tags
+        # 都是普通 genre（コスプレ / 制服 / 凌辱…），既不含音声 marker 也不含
+        # 非音声 marker。如果仅凭 cvs 非空就 return True，这种游戏会直接被
+        # 社团补全索引当成音声作品收进 ``circle_works``。
+        # 兜底交给上层 ``_classify_asmr_work_candidate`` 用 DLsite ``product.work_type``
+        # 做权威判定（白名单只接受 "SOU"）。
         return False
 
     def _build_dlsite_cover_url(self, rjcode: Any, is_unreleased: bool = False, resized: bool = False) -> str:
@@ -857,34 +879,6 @@ class CircleCompletionService:
         if value.startswith("https://img.dlsite.jp/modpub/images2/") and "_img_sam.jpg" in value:
             return value
         return self._build_dlsite_cover_url(rjcode, is_unreleased=False, resized=False) or value
-
-    _BONUS_TITLE_KEYWORDS = (
-        "特典",
-        "購入特典",
-        "予約特典",
-        "限定特典",
-        "店舗特典",
-        "音声特典",
-        "特典音声",
-        "おまけ",
-        "オマケ",
-        "bonus",
-        "extra",
-    )
-
-    def _is_bonus_work_title(self, value: Any) -> bool:
-        title = str(value or "").strip()
-        if not title:
-            return False
-        lowered = title.lower()
-        return any(keyword.lower() in lowered for keyword in self._BONUS_TITLE_KEYWORDS)
-
-    def _price_text_indicates_bonus(self, value: Any) -> bool:
-        text = str(value or "").strip()
-        if not text:
-            return True
-        digits = re.sub(r"[^0-9]", "", text)
-        return bool(digits) and int(digits) == 0
 
     # 预售作品在 DLsite 上常把发售日写成"未定" / "未確定" / "TBD" 等，
     # 没有具体年月可以解析。这种作品同样属于"尚未发售"，应当：
@@ -944,9 +938,19 @@ class CircleCompletionService:
             return None
 
         # DLsite work_type 代码白名单: SOU = Sound/音声
+        # 其他 code 都是非音声形态：RPG/ADV/ACN/SLN/TBL/QIZ/DGT/MUS/ICG/MOV/COM/NRE/IMG/GAM...
+        # 即便这些游戏 / CG 集 / 漫画 / 视频里有声优配音（ADV / RPG 经常配 voice_by），
+        # 也不能被社团补全索引当作音声作品收进 ``circle_works``。这里把 work_type
+        # 当成 DLsite 给出的权威分类信号：非空且非 SOU，直接判非音声，不再走下游
+        # 的 voice_by 兜底（那条兜底只在 product 数据极度残缺、所有 category 字段
+        # 全空时才有意义）。
+        # 案例：RJ154958《対魔忍ユキカゼ2》(Lilith) work_type=ADV、文件 EXE、CV 完整，
+        # 旧实现走到下面 voice_by 兜底被错认为 ASMR，整作品被错索引进 Lilith 社团页。
         work_type = str(product.get("work_type") or "").strip().upper()
         if work_type == "SOU":
             return True
+        if work_type:
+            return False
 
         # 标题强信号
         title = str(product.get("work_name") or "").strip().lower()
@@ -1014,10 +1018,21 @@ class CircleCompletionService:
         normalized = self.normalize_rjcode(rjcode)
         if not normalized:
             return False
-        # 优先用已传入的 metadata 判断，避免重复 DLsite API 请求
+        # metadata 只能做快速强信号；DLsite product.work_type 一旦能拿到，必须
+        # 覆盖 metadata 里的题材弱信号。否则 ADV/RPG 游戏常见的「催眠 / 治愈 /
+        # 调教」标签会被误当成音声分类，把游戏塞进社团补全。
         if metadata:
             meta_result = self._metadata_looks_like_asmr_work(metadata)
-            if meta_result is True:
+            explicit_audio_type = self._is_audio_package_text(" ".join([
+                str(metadata.get("work_name") or metadata.get("title") or ""),
+                *self._extract_text_values(metadata.get("tags")),
+                *[
+                    value
+                    for key in ("work_type", "work_category", "category", "category_name", "genre", "genre_name", "file_type", "file_format")
+                    for value in self._extract_text_values(metadata.get(key))
+                ],
+            ]))
+            if meta_result is True and explicit_audio_type:
                 return True
             # metadata 明确不是 ASMR 时也直接返回，省去 get_product_info
             haystack = " ".join([
@@ -1634,19 +1649,60 @@ class CircleCompletionService:
             if cached_payload is not None:
                 return cached_payload
 
+        def _rj_sort_key(value: Any) -> tuple[int, str]:
+            normalized = self.normalize_rjcode(value)
+            match = re.search(r"RJ(\d+)", normalized)
+            return (int(match.group(1)) if match else 10**12, normalized)
+
+        def _select_canonical_from_link_rows(rows: List[Any], fallback_rj: str) -> str:
+            """从一组关联链里选稳定 canonical。
+
+            DLsite 关联链偶尔会把日文原作标成 ``translation/JPN``，只认
+            ``link_type == original`` 会让同一作品的原作 / 简中 / 繁中拆成多条。
+            选择顺序固定为：original > JPN > 最小 RJ，保证缺 original 标记时仍能
+            全链路折到同一个 canonical。
+            """
+            normalized_fallback = self.normalize_rjcode(fallback_rj)
+            candidates = []
+            for row in rows:
+                if isinstance(row, dict):
+                    linked_rjcode = row.get("linked_rjcode")
+                    link_type = row.get("link_type")
+                    lang = row.get("lang")
+                else:
+                    linked_rjcode = getattr(row, "linked_rjcode", "")
+                    link_type = getattr(row, "link_type", "")
+                    lang = getattr(row, "lang", "")
+                candidates.append({
+                    "rjcode": self.normalize_rjcode(linked_rjcode),
+                    "link_type": str(link_type or "").strip().lower(),
+                    "lang": self._normalize_lang_code(lang),
+                })
+            candidates = [item for item in candidates if item["rjcode"]]
+            original = [item["rjcode"] for item in candidates if item["link_type"] == "original"]
+            if original:
+                return sorted(original, key=_rj_sort_key)[0]
+            jpn = [item["rjcode"] for item in candidates if item["lang"] in {"JPN", "JA", "JP"}]
+            if jpn:
+                return sorted(jpn, key=_rj_sort_key)[0]
+            all_codes = [item["rjcode"] for item in candidates]
+            if all_codes:
+                return sorted(all_codes, key=_rj_sort_key)[0]
+            return normalized_fallback
+
         def build_canonical_payload(rows: List[Any], fallback_rj: str) -> Dict[str, Any]:
-            canonical = next((row.canonical_rjcode for row in rows if row.canonical_rjcode), fallback_rj)
-            linked = sorted({row.linked_rjcode for row in rows if row.linked_rjcode})
+            canonical = _select_canonical_from_link_rows(rows, fallback_rj)
+            linked = sorted({self.normalize_rjcode(row.linked_rjcode) for row in rows if self.normalize_rjcode(row.linked_rjcode)}, key=_rj_sort_key)
             return {
                 "canonical_rjcode": canonical,
                 "linked_rjcodes": linked,
                 "link_map": {
-                    row.linked_rjcode: {
+                    self.normalize_rjcode(row.linked_rjcode): {
                         "link_type": row.link_type,
                         "lang": row.lang,
                     }
                     for row in rows
-                    if row.linked_rjcode
+                    if self.normalize_rjcode(row.linked_rjcode)
                 },
             }
 
@@ -1674,7 +1730,12 @@ class CircleCompletionService:
 
         linked_map: Dict[str, Any] = {}
         try:
-            linked_map = await self.dlsite_service.get_linked_works(normalized_rj)
+            # ★ 把 refresh 透传给 dlsite_service：``force_refresh=True`` 路径必须能
+            # 绕开 dlsite_service 自己的 24h ``self.cache[linked_works:...]``，否则
+            # 旧版本里因为 ``_get_direct_linked_works`` is_parent/is_child 分支的覆盖
+            # BUG 写进去的关联链会持续误导 canonical 解析（24h 内同一 RJ 永远拿到
+            # 错误的 link_map），用户感受不到代码修复。
+            linked_map = await self.dlsite_service.get_linked_works(normalized_rj, refresh=refresh)
         except Exception as exc:
             logger.warning("[社团补全] 获取关联链失败 %s: %s", normalized_rj, exc)
 
@@ -1694,13 +1755,16 @@ class CircleCompletionService:
                     "link_type": work_type,
                     "lang": lang,
                 })
+            canonical_rjcode = _select_canonical_from_link_rows(link_rows, canonical_rjcode)
         degraded_refresh = bool(refresh and len(link_rows) <= 1 and canonical_rjcode == normalized_rj)
         if degraded_refresh and cached_rows:
             cached_payload = build_canonical_payload(cached_rows, normalized_rj)
             cached_canonical = self.normalize_rjcode(cached_payload.get("canonical_rjcode"))
             if cached_canonical and cached_canonical != normalized_rj:
                 try:
-                    recovered_linked_map = await self.dlsite_service.get_linked_works(cached_canonical)
+                    # 走的是 force_refresh=True 兜底路径，DLsite 端 cache 也要一起强刷，
+                    # 避免拿到旧 BUG 时段写入的 ``linked_works:`` 缓存。
+                    recovered_linked_map = await self.dlsite_service.get_linked_works(cached_canonical, refresh=refresh)
                 except Exception as exc:
                     logger.warning("[社团补全] 使用缓存 canonical 纠正关联链失败 %s -> %s: %s", normalized_rj, cached_canonical, exc)
                     recovered_linked_map = {}
@@ -1725,6 +1789,41 @@ class CircleCompletionService:
                         canonical_rjcode = recovered_canonical
         if not link_rows:
             link_rows = [{"linked_rjcode": normalized_rj, "link_type": "self", "lang": ""}]
+            canonical_rjcode = normalized_rj
+
+        db = SessionLocal()
+        try:
+            overlap_codes = [row["linked_rjcode"] for row in link_rows if row.get("linked_rjcode")]
+            if overlap_codes:
+                existing_overlap_rows = (
+                    db.query(WorkCanonicalLink)
+                    .filter(
+                        (WorkCanonicalLink.linked_rjcode.in_(overlap_codes))
+                        | (WorkCanonicalLink.canonical_rjcode.in_(overlap_codes))
+                    )
+                    .all()
+                )
+                if existing_overlap_rows:
+                    merged_by_rj: Dict[str, Dict[str, str]] = {
+                        row["linked_rjcode"]: dict(row)
+                        for row in link_rows
+                        if row.get("linked_rjcode")
+                    }
+                    for existing in existing_overlap_rows:
+                        linked = self.normalize_rjcode(existing.linked_rjcode)
+                        if not linked:
+                            continue
+                        current = merged_by_rj.get(linked)
+                        if current is None or current.get("link_type") in {"self", "unknown"}:
+                            merged_by_rj[linked] = {
+                                "linked_rjcode": linked,
+                                "link_type": str(existing.link_type or ""),
+                                "lang": str(existing.lang or ""),
+                            }
+                    link_rows = list(merged_by_rj.values())
+                    canonical_rjcode = _select_canonical_from_link_rows(link_rows, canonical_rjcode)
+        finally:
+            db.close()
 
         db = SessionLocal()
         try:
@@ -2724,9 +2823,10 @@ class CircleCompletionService:
                 ])):
                     return None
                 asmr_classification = await self._classify_asmr_work_candidate(rjcode, meta)
-                if asmr_classification is False:
-                    return None
-                if asmr_classification is None and not is_from_profile:
+                # maker 主页会列出同社团全部作品，游戏/漫画也在里面。不能因为
+                # 来源可信就放行；必须被 DLsite product 判成 SOU，或 metadata
+                # 自身有明确音声/ASMR 信号。
+                if asmr_classification is not True:
                     return None
             candidate_maker_id = self._normalize_maker_id(meta.get("maker_id"))
             if normalized_maker_id:
@@ -2789,10 +2889,11 @@ class CircleCompletionService:
             from sqlalchemy import or_ as sa_or, func as sa_func
             query = db.query(WorkMetadata).filter(WorkMetadata.maker_name.isnot(None))
             if normalized:
-                pattern = f"%{normalized}%"
-                query = query.filter(
-                    sa_func.lower(WorkMetadata.maker_name).like(pattern)
-                )
+                sql_terms = self._build_circle_name_sql_terms(circle_query)
+                query = query.filter(sa_or(*[
+                    sa_func.lower(WorkMetadata.maker_name).like(f"%{term}%")
+                    for term in sql_terms
+                ]))
             rows = query.all()
             results = []
             for row in rows:
@@ -2985,6 +3086,96 @@ class CircleCompletionService:
             })
         except Exception:
             logger.debug("[社团补全] SSE 广播失败 rj=%s", normalized_rj, exc_info=True)
+
+    async def _refresh_circle_bonus_fields(
+        self,
+        circle_id: str,
+        bonus_lookup_rjcodes: List[str],
+        *,
+        canonical_filter: Optional[List[str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """``index_circle_catalog`` / ``refresh_circle_works`` 写入完成后调用：
+
+        - 先走 ``metadata_service.lazy_refresh_bonus_for_cached_rjcodes`` 把
+          ``work_metadata.bonus_info_checked_at IS NULL`` 的存量条目补刷一遍；
+        - 再把补到的 ``is_bonus_work`` / ``has_bonus`` 同步到当前社团的
+          ``circle_works`` 行（按关联 RJ 做"任何一个命中即聚合"，和老 bonus
+          回写规则保持一致）；
+        - 浏览路径已经退化成纯 DB 读，所以这条同步必须发生在写路径里，
+          不然用户在选中刷新后浏览社团页时仍看不到特典 chip。
+
+        参数：
+        - ``circle_id``：要回写 ``circle_works`` 的社团；
+        - ``bonus_lookup_rjcodes``：当前社团涉及的所有关联 RJ（canonical / display / linked）；
+        - ``canonical_filter``：可选，把回写范围进一步限定到这些 canonical RJ（``refresh_circle_works``
+          只刷新选中作品时用），``None`` 表示当前社团全量。
+
+        返回 ``lazy_refresh_bonus_for_cached_rjcodes`` 的更新字典，方便上游记录 / 调试。
+        """
+        normalized_rjcodes: List[str] = []
+        for code in bonus_lookup_rjcodes or []:
+            normalized = self.normalize_rjcode(code)
+            if normalized and normalized not in normalized_rjcodes:
+                normalized_rjcodes.append(normalized)
+        if not normalized_rjcodes:
+            return {}
+
+        try:
+            bonus_updates = await self.metadata_service.lazy_refresh_bonus_for_cached_rjcodes(
+                normalized_rjcodes
+            )
+        except Exception:
+            logger.warning("[社团补全] bonus 补刷失败 circle_id=%s", circle_id, exc_info=True)
+            return {}
+        if not bonus_updates:
+            return {}
+
+        normalized_filter: Optional[List[str]] = None
+        if canonical_filter is not None:
+            normalized_filter = []
+            for code in canonical_filter:
+                normalized = self.normalize_rjcode(code)
+                if normalized and normalized not in normalized_filter:
+                    normalized_filter.append(normalized)
+
+        db = SessionLocal()
+        try:
+            query = db.query(CircleWork).filter(CircleWork.circle_id == circle_id)
+            if normalized_filter is not None:
+                query = query.filter(CircleWork.canonical_rjcode.in_(normalized_filter))
+            rows = query.all()
+            for row in rows:
+                related: List[str] = []
+                for code in [
+                    row.canonical_rjcode,
+                    row.display_rjcode,
+                    *(row.linked_rjcodes or []),
+                ]:
+                    normalized = self.normalize_rjcode(code)
+                    if normalized and normalized not in related:
+                        related.append(normalized)
+                new_is_bonus = bool(row.is_bonus_work)
+                new_has_bonus = bool(row.has_bonus)
+                hit = False
+                for rj in related:
+                    payload = bonus_updates.get(rj)
+                    if not payload:
+                        continue
+                    hit = True
+                    # 多语言版本共享同一行，"或"语义最稳：任何关联 RJ 命中
+                    # 'is_bonus / has_bonus' 都同步到 row。
+                    new_is_bonus = new_is_bonus or bool(payload.get("is_bonus_work"))
+                    new_has_bonus = new_has_bonus or bool(payload.get("has_bonus"))
+                if hit and (new_is_bonus != bool(row.is_bonus_work) or new_has_bonus != bool(row.has_bonus)):
+                    row.is_bonus_work = new_is_bonus
+                    row.has_bonus = new_has_bonus
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning("[社团补全] 同步 bonus 字段到 circle_works 失败 circle_id=%s", circle_id, exc_info=True)
+        finally:
+            db.close()
+        return bonus_updates
 
     async def index_circle_catalog(
         self,
@@ -3385,6 +3576,14 @@ class CircleCompletionService:
                     canonical or rjcode,
                     display_metadata_map,
                 )
+                preferred_rjcode = self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical or rjcode
+                preferred_metadata = display_metadata_map.get(preferred_rjcode) or {}
+                if preferred_rjcode and not preferred_metadata:
+                    try:
+                        preferred_metadata = await self._fetch_metadata_dict(preferred_rjcode)
+                        display_metadata_map[preferred_rjcode] = preferred_metadata or {}
+                    except Exception:
+                        preferred_metadata = metadata if preferred_rjcode == rjcode else canonical_metadata
                 foreign_lang = self._looks_like_non_chinese_translation_title(
                     preferred_title,
                     canonical_metadata.get("work_name"),
@@ -3409,6 +3608,7 @@ class CircleCompletionService:
                 "canonical": canonical,
                 "canonical_metadata": canonical_metadata or {},
                 "preferred_variant": preferred_variant,
+                "preferred_metadata": preferred_metadata or {},
                 "preferred_title": preferred_title,
                 "public_linked_rjcodes": [variant["rjcode"] for variant in allowed_variants if variant.get("rjcode")],
             }
@@ -3430,6 +3630,7 @@ class CircleCompletionService:
             canonical = prepared["canonical"]
             canonical_metadata = prepared["canonical_metadata"]
             preferred_variant = prepared["preferred_variant"]
+            preferred_metadata = prepared["preferred_metadata"]
             preferred_title = prepared["preferred_title"]
             public_linked_rjcodes = prepared["public_linked_rjcodes"]
             if only_new_works and canonical in existing_canonical_rjcodes:
@@ -3459,11 +3660,14 @@ class CircleCompletionService:
                 "kikoeru_work_id": None,
                 "source_flags": set(),
                 "price_text": str(
-                    metadata.get("price_text")
+                    preferred_metadata.get("price_text")
+                    or metadata.get("price_text")
                     or canonical_metadata.get("price_text")
                     or item.get("price_text")
                     or ""
                 ).strip(),
+                "is_bonus_work": bool(preferred_metadata.get("is_bonus_work")),
+                "has_bonus": bool(preferred_metadata.get("has_bonus")),
                 "preferred_variant_label": self._variant_label(preferred_variant["link_type"], preferred_variant["lang"]),
                 "preferred_lang": preferred_variant["lang"],
                 "preferred_link_type": preferred_variant["link_type"],
@@ -3473,7 +3677,9 @@ class CircleCompletionService:
             bucket["maker_id"] = bucket["maker_id"] or str(canonical_metadata.get("maker_id") or metadata.get("maker_id") or item.get("maker_id") or "")
             bucket["maker_name"] = bucket["maker_name"] or str(canonical_metadata.get("maker_name") or metadata.get("maker_name") or item.get("maker_name") or circle_query)
             if not str(bucket.get("price_text") or "").strip():
-                bucket["price_text"] = str(metadata.get("price_text") or canonical_metadata.get("price_text") or item.get("price_text") or "").strip()
+                bucket["price_text"] = str(preferred_metadata.get("price_text") or metadata.get("price_text") or canonical_metadata.get("price_text") or item.get("price_text") or "").strip()
+            bucket["is_bonus_work"] = bool(preferred_metadata.get("is_bonus_work"))
+            bucket["has_bonus"] = bool(preferred_metadata.get("has_bonus"))
             release_date = str(canonical_metadata.get("release_date") or metadata.get("release_date") or item.get("release_date") or "").strip()
             is_unreleased = self._is_future_release_date(release_date)
             def _valid_cover(*urls: Any) -> str:
@@ -3764,6 +3970,8 @@ class CircleCompletionService:
                 row.maker_name = item["maker_name"]
                 row.image_url = item.get("image_url") or ""
                 row.price_text = str(item.get("price_text") or "").strip() or None
+                row.is_bonus_work = bool(item.get("is_bonus_work"))
+                row.has_bonus = bool(item.get("has_bonus"))
                 row.source_mask = ",".join(sorted(item["source_flags"]))
                 row.linked_rjcodes = item["linked_rjcodes"]
                 row.has_kikoeru = bool(item["has_kikoeru"])
@@ -3791,6 +3999,27 @@ class CircleCompletionService:
             raise
         finally:
             db.close()
+
+        # ★ bonus 字段补刷统一收口在写路径里跑一次：
+        # ``_apply_dlsite_bonus_info`` 只覆盖了"本次真正向 DLsite 拉了一次 product 的"
+        # 路径，``_fetch_metadata_dict`` 命中本地 cache 时完全不会触发 bonus 拉取，
+        # 这就让"老 schema 留下来的存量条目"永远卡在 bonus_info_checked_at=NULL。
+        # 浏览路径已经退化成纯 DB 读、不再补刷，所以必须在这里把当前社团里所有
+        # 关联 RJ 走 ``_refresh_circle_bonus_fields``：内部会先调
+        # ``lazy_refresh_bonus_for_cached_rjcodes`` 补刷 work_metadata，再把
+        # 结果同步到 circle_works。
+        report(96, "补刷特典字段", circle_id=circle_id)
+        bonus_lookup_rjcodes: List[str] = []
+        for canonical, item in aggregated.items():
+            for code in [
+                canonical,
+                item.get("display_rjcode") or "",
+                *(item.get("linked_rjcodes") or []),
+            ]:
+                normalized = self.normalize_rjcode(code)
+                if normalized and normalized not in bonus_lookup_rjcodes:
+                    bonus_lookup_rjcodes.append(normalized)
+        await self._refresh_circle_bonus_fields(circle_id, bonus_lookup_rjcodes)
 
         report(97, "生成社团视图摘要", circle_id=circle_id)
         summary = await self.build_circle_completion_view(circle_id)
@@ -4114,6 +4343,19 @@ class CircleCompletionService:
                         metadata_lookup_rjcodes.append(normalized_candidate)
             metadata_map_all = self._load_cached_metadata_map(db, metadata_lookup_rjcodes)
 
+            # ★ bonus 字段补刷已移到 ``index_circle_catalog`` / ``refresh_circle_works``
+            #   写路径里：浏览路径不再做任何外部 HTTP 探测，row.is_bonus_work /
+            #   row.has_bonus 直接读 DB 现值即可。
+            #   - 旧实现是在这里对每个 ``bonus_info_checked_at IS NULL`` 的条目调
+            #     ``lazy_refresh_bonus_for_cached_rjcodes`` "顺手补刷"，DLsite 端
+            #     虽有 24h cache，但社团首次浏览仍要等 N 次 product_info_ajax
+            #     回来才能渲染，体验和"索引"行为混淆，被用户反馈"点社团特别慢"。
+            #   - 现在 bonus 写入只走三条写路径，和 has_kikoeru / has_asmr_one
+            #     等其他状态字段对齐：
+            #       - index_circle_catalog（建立 / 刷新整个社团索引）
+            #       - refresh_circle_works（刷新选中作品）
+            #       - email_watcher 直入（_upsert_email_release_work）
+
             # 注意：详情视图是"纯数据库读"路径，不再做任何 kikoeru / 外部 API 探测。
             # 旧实现里曾经在这里对每个 has_kikoeru=False 的作品同步去 kikoeru 服务器
             # 探一遍（以"顺便回填 has_kikoeru"），结果就是用户点一次社团卡片要等
@@ -4215,10 +4457,8 @@ class CircleCompletionService:
                             if cvs:
                                 break
                     item["cvs"] = cvs
-                item["is_bonus_work"] = (
-                    self._is_bonus_work_title(item.get("title"))
-                    and self._price_text_indicates_bonus(item.get("price_text"))
-                )
+                item["is_bonus_work"] = bool(getattr(row, "is_bonus_work", False))
+                item["has_bonus"] = bool(getattr(row, "has_bonus", False))
                 if item["is_bonus_work"]:
                     item["cvs"] = []
                 view_canonical_info = {
@@ -4658,6 +4898,8 @@ class CircleCompletionService:
                 display_metadata = metadata_map.get(row.display_rjcode) or metadata or {}
                 release_date = str(display_metadata.get("release_date") or metadata.get("release_date") or "").strip()
                 row.price_text = str(display_metadata.get("price_text") or metadata.get("price_text") or row.price_text or "").strip() or None
+                row.is_bonus_work = bool(display_metadata.get("is_bonus_work") or metadata.get("is_bonus_work"))
+                row.has_bonus = bool(display_metadata.get("has_bonus") or metadata.get("has_bonus"))
                 row.image_url = self._normalize_dlsite_cover_url(
                     display_metadata.get("cover_url") or metadata.get("cover_url") or row.image_url,
                     row.display_rjcode or canonical,
@@ -4787,6 +5029,29 @@ class CircleCompletionService:
                 raise
             finally:
                 write_db.close()
+
+            # ★ bonus 字段补刷（和 index_circle_catalog 保持一致）：
+            # 浏览路径已经退化成纯 DB 读、不再做 lazy_refresh，所以"刷新选中作品"
+            # 这条写路径必须把存量 ``bonus_info_checked_at IS NULL`` 的行补齐。
+            # ``_refresh_circle_bonus_fields`` 内部走 ``lazy_refresh_bonus_for_cached_rjcodes``
+            # （只挑 NULL 的存量条目）+ 同步到 circle_works，对已经检查过的 RJ
+            # 是免费跳过。这里只刷新选中的 canonical，scope 给 helper 收窄。
+            bonus_lookup_rjcodes: List[str] = []
+            for refreshed_row in rows:
+                for code in [
+                    refreshed_row.canonical_rjcode,
+                    refreshed_row.display_rjcode,
+                    *(refreshed_row.linked_rjcodes or []),
+                ]:
+                    normalized = self.normalize_rjcode(code)
+                    if normalized and normalized not in bonus_lookup_rjcodes:
+                        bonus_lookup_rjcodes.append(normalized)
+            await self._refresh_circle_bonus_fields(
+                circle_id,
+                bonus_lookup_rjcodes,
+                canonical_filter=normalized_codes,
+            )
+
             changed_count = len([item for item in refreshed_items if item.get("changed")])
             report(
                 100,
