@@ -97,6 +97,12 @@ const isUnreleased = computed(() => {
 const isNewWork = computed(() => Boolean(props.item?.is_new_work))
 const isBonusWork = computed(() => Boolean(props.item?.is_bonus_work))
 
+const bonusFlagClass = computed(() => {
+  if (isUnreleased.value && isNewWork.value) return 'work-bonus-flag--double-below'
+  if (isUnreleased.value || isNewWork.value) return 'work-bonus-flag--below'
+  return ''
+})
+
 const coverUrl = computed(() => {
   const value = rawCoverUrl.value
   const rjcode = props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
@@ -189,7 +195,7 @@ function onCoverError(event) {
       <div v-if="isNewWork" :class="['work-new-flag', isUnreleased ? 'work-new-flag--below' : '']">
         <span>✦ 新作</span>
       </div>
-      <div v-if="isBonusWork" class="work-bonus-flag" title="特典作品">
+      <div v-if="isBonusWork" :class="['work-bonus-flag', bonusFlagClass]" title="特典作品">
         <Gift :size="12" />
         <span>特典</span>
       </div>
@@ -217,10 +223,6 @@ function onCoverError(event) {
             发售 {{ releaseLabel }}
           </span>
           <template v-else>
-            <span v-if="isBonusWork" class="tag-chip is-bonus" title="特典作品">
-              <Gift :size="12" />
-              特典
-            </span>
             <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
             <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">{{ item.has_asmr_one ? '可下载' : '无源' }}</span>
           </template>
@@ -550,8 +552,8 @@ function onCoverError(event) {
 }
 .work-bonus-flag {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
+  top: 8px;
+  left: 8px;
   z-index: 10;
   display: inline-flex;
   align-items: center;
@@ -567,7 +569,13 @@ function onCoverError(event) {
   font-weight: 800;
   line-height: 1;
   box-shadow: 0 3px 10px rgba(126, 34, 206, 0.14);
-  transition: transform .2s cubic-bezier(.34,1.56,.64,1), background .2s ease;
+  transition: transform .2s cubic-bezier(.34,1.56,.64,1), background .2s ease, top .2s ease;
+}
+.work-bonus-flag--below {
+  top: 38px;
+}
+.work-bonus-flag--double-below {
+  top: 68px;
 }
 .work-card:hover .work-bonus-flag {
   transform: translateY(-1px) scale(1.03);

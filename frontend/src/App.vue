@@ -235,7 +235,7 @@ import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import router from './router'
 
-const appVersion = '1.5.36'
+const appVersion = '1.5.37'
 const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
@@ -3514,6 +3514,12 @@ html.kikoerumanager-dark .circle-page .circle-list-tag.unreleased {
   background: rgba(245, 158, 11, 0.16) !important;
   border-color: rgba(251, 191, 36, 0.28) !important;
   color: #fde68a !important;
+}
+
+html.kikoerumanager-dark .circle-page .metric-pill.bonus {
+  background: rgba(126, 34, 206, 0.18) !important;
+  border-color: rgba(216, 180, 254, 0.30) !important;
+  color: #e9d5ff !important;
 }
 
 html.kikoerumanager-dark .circle-page .el-tabs__nav-wrap::after,
