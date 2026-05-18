@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { LibraryBig, Calendar } from 'lucide-vue-next'
+import { LibraryBig, Calendar, Gift } from 'lucide-vue-next'
 
 const props = defineProps({
   /** 作品数据对象 */
@@ -95,6 +95,7 @@ const isUnreleased = computed(() => {
 // search_circles 的 new_works_48h_count 出现口径漂移（左侧已不显示"新作"
 // 但右侧卡片还在闪"新作"特效）。这里改成统一读后端字段，左右两侧永远一致。
 const isNewWork = computed(() => Boolean(props.item?.is_new_work))
+const isBonusWork = computed(() => Boolean(props.item?.is_bonus_work))
 
 const coverUrl = computed(() => {
   const value = rawCoverUrl.value
@@ -174,7 +175,7 @@ function onCoverError(event) {
     <div class="work-card-select-ring" />
 
     <div class="work-cover-wrapper">
-      <img v-if="coverUrl" :src="coverUrl" class="work-cover" @error="onCoverError" />
+      <img v-if="coverUrl" :src="coverUrl" class="work-cover" loading="lazy" decoding="async" @error="onCoverError" />
       <div v-else class="work-cover-placeholder">
         <slot name="cover-placeholder">
           <LibraryBig :size="props.size === 'lg' ? 28 : 22" class="opacity-40" />
@@ -187,6 +188,10 @@ function onCoverError(event) {
       </div>
       <div v-if="isNewWork" :class="['work-new-flag', isUnreleased ? 'work-new-flag--below' : '']">
         <span>✦ 新作</span>
+      </div>
+      <div v-if="isBonusWork" class="work-bonus-flag" title="特典作品">
+        <Gift :size="12" />
+        <span>特典</span>
       </div>
 
       <div class="work-cover-shine" />
@@ -212,6 +217,10 @@ function onCoverError(event) {
             发售 {{ releaseLabel }}
           </span>
           <template v-else>
+            <span v-if="isBonusWork" class="tag-chip is-bonus" title="特典作品">
+              <Gift :size="12" />
+              特典
+            </span>
             <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
             <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">{{ item.has_asmr_one ? '可下载' : '无源' }}</span>
           </template>
@@ -539,6 +548,31 @@ function onCoverError(event) {
   border-color: rgba(249, 115, 22, 0.28);
   background: rgba(255, 248, 240, 0.62);
 }
+.work-bonus-flag {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(168, 85, 247, 0.20);
+  border-radius: 999px;
+  background: rgba(250, 245, 255, 0.74);
+  backdrop-filter: blur(12px) saturate(1.4);
+  color: #7e22ce;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 3px 10px rgba(126, 34, 206, 0.14);
+  transition: transform .2s cubic-bezier(.34,1.56,.64,1), background .2s ease;
+}
+.work-card:hover .work-bonus-flag {
+  transform: translateY(-1px) scale(1.03);
+  background: rgba(250, 245, 255, 0.9);
+}
 /* ── 新作边框光圈 ── */
 .work-card.is-new-work {
   border-color: rgba(249, 115, 22, 0.55);
@@ -734,6 +768,14 @@ function onCoverError(event) {
   background: #f4f6f9;
   color: #5d6d81;
   border: 1px solid #e2e8f0;
+}
+.tag-chip.is-bonus {
+  max-width: 100%;
+  justify-content: flex-start;
+  gap: 3px;
+  background: #faf5ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
 }
 .tag-chip.is-disabled {
   background: #fafafa;

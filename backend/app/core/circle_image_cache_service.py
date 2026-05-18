@@ -7,7 +7,7 @@
 设计要点：
 
 - 单例：通过 ``get_circle_image_cache_service()`` 获取。
-- 文件命名：``{RJxxxxxx}.jpg``，统一 .jpg 扩展（DLsite 公网图就是 jpg）。
+- 文件命名：卡片图 ``{RJxxxxxx}.jpg``，列表小图 ``{RJxxxxxx}_sam.jpg``。
 - 写入用 ``.tmp`` 中间文件 + ``replace`` 原子化，避免半成品文件被前端读到。
 - 并发：``download_many`` 用 ``Semaphore(8)``，对 dlsite CDN 友好且足够快。
 - 空文件保护：``has_local`` 必须 size > 0 才算命中，否则会被当作丢失重新下载。
@@ -73,20 +73,27 @@ class CircleImageCacheService:
         match = _RJCODE_PATTERN.search(text)
         return match.group(0) if match else ""
 
-    def _filename_for(self, rjcode: str) -> str:
+    @staticmethod
+    def _normalize_variant(variant: str = "card") -> str:
+        value = str(variant or "card").strip().lower()
+        return "list" if value in {"list", "sam", "thumb", "thumbnail"} else "card"
+
+    def _filename_for(self, rjcode: str, variant: str = "card") -> str:
         normalized = self.normalize_rjcode(rjcode)
         if not normalized:
             return ""
+        if self._normalize_variant(variant) == "list":
+            return f"{normalized}_sam.jpg"
         return f"{normalized}.jpg"
 
-    def get_local_path(self, rjcode: str) -> Optional[Path]:
-        filename = self._filename_for(rjcode)
+    def get_local_path(self, rjcode: str, variant: str = "card") -> Optional[Path]:
+        filename = self._filename_for(rjcode, variant)
         if not filename:
             return None
         return self.cache_dir / filename
 
-    def has_local(self, rjcode: str) -> bool:
-        path = self.get_local_path(rjcode)
+    def has_local(self, rjcode: str, variant: str = "card") -> bool:
+        path = self.get_local_path(rjcode, variant)
         if path is None:
             return False
         try:
@@ -94,15 +101,15 @@ class CircleImageCacheService:
         except OSError:
             return False
 
-    def get_local_url(self, rjcode: str) -> str:
+    def get_local_url(self, rjcode: str, variant: str = "card") -> str:
         """如果本地有缓存，返回前端可访问的 API 路径，否则返回空。"""
-        if self.has_local(rjcode):
-            return f"{self.URL_PATH_PREFIX}{self._filename_for(rjcode)}"
+        if self.has_local(rjcode, variant):
+            return f"{self.URL_PATH_PREFIX}{self._filename_for(rjcode, variant)}"
         return ""
 
-    def resolve_display_url(self, rjcode: Any, fallback_url: Any = "") -> str:
+    def resolve_display_url(self, rjcode: Any, fallback_url: Any = "", variant: str = "card") -> str:
         """优先返回本地 API URL，本地无则返回 fallback（通常是 dlsite 远程 URL）。"""
-        local = self.get_local_url(str(rjcode or ""))
+        local = self.get_local_url(str(rjcode or ""), variant)
         if local:
             return local
         return str(fallback_url or "")
@@ -116,11 +123,12 @@ class CircleImageCacheService:
         candidate = str(filename or "").strip()
         if not candidate or "/" in candidate or "\\" in candidate:
             return None
-        match = re.fullmatch(r"([RVB]J\d{6,8})\.(?:jpg|jpeg)", candidate, re.IGNORECASE)
+        match = re.fullmatch(r"([RVB]J\d{6,8})(?:_(sam))?\.(?:jpg|jpeg)", candidate, re.IGNORECASE)
         if not match:
             return None
         rjcode = match.group(1).upper()
-        return self.get_local_path(rjcode)
+        variant = "list" if match.group(2) else "card"
+        return self.get_local_path(rjcode, variant)
 
     # ------------------------------------------------------------------
     # 下载
@@ -201,6 +209,7 @@ class CircleImageCacheService:
         rjcode: str,
         source_url: str,
         *,
+        variant: str = "card",
         force: bool = False,
     ) -> bool:
         """下载单张封面到本地，返回是否成功（已存在算成功）。"""
@@ -212,7 +221,7 @@ class CircleImageCacheService:
         if not url.startswith(("http://", "https://")):
             return False
 
-        target_path = self.get_local_path(normalized)
+        target_path = self.get_local_path(normalized, variant)
         if target_path is None:
             return False
         if not force and target_path.is_file():
@@ -290,6 +299,7 @@ class CircleImageCacheService:
         self,
         items: Iterable[Tuple[Any, Any]],
         *,
+        variant: str = "card",
         concurrency: int = DEFAULT_CONCURRENCY,
         force: bool = False,
     ) -> Dict[str, bool]:
@@ -300,6 +310,7 @@ class CircleImageCacheService:
         - 失败不抛异常，结果以 ``{rjcode: bool}`` 返回，可用于 metric。
         """
 
+        variant = self._normalize_variant(variant)
         seen: Set[str] = set()
         deduped: List[Tuple[str, str]] = []
         for raw_rjcode, raw_url in items or []:
@@ -319,10 +330,10 @@ class CircleImageCacheService:
         semaphore = asyncio.Semaphore(max(1, int(concurrency or self.DEFAULT_CONCURRENCY)))
 
         async def _run(rjcode: str, url: str) -> Tuple[str, bool]:
-            if not force and self.has_local(rjcode):
+            if not force and self.has_local(rjcode, variant):
                 return rjcode, True
             async with semaphore:
-                ok = await self.download_one(rjcode, url, force=force)
+                ok = await self.download_one(rjcode, url, variant=variant, force=force)
                 return rjcode, ok
 
         for future in asyncio.as_completed([_run(r, u) for r, u in deduped]):

@@ -28,6 +28,7 @@ class WorkMetadata:
         self.tags: list = []
         self.cvs: list = []
         self.cover_url: str = ""
+        self.price_text: str = ""
     
     def to_dict(self) -> dict:
         return {
@@ -41,7 +42,8 @@ class WorkMetadata:
             'age_category': self.age_category,
             'tags': self.tags,
             'cvs': self.cvs,
-            'cover_url': self.cover_url
+            'cover_url': self.cover_url,
+            'price_text': self.price_text
         }
 
 class MetadataService:
@@ -361,6 +363,9 @@ class MetadataService:
         metadata.series_name = product.get('series_name')
         metadata.series_id = product.get('series_id')
         metadata.cover_url = self._normalize_cover_url((product.get('image_main') or {}).get('url'))
+        dlsite_service = get_dlsite_service()
+        if hasattr(dlsite_service, "_extract_product_price_text"):
+            metadata.price_text = dlsite_service._extract_product_price_text(product)
 
         age_category = product.get('age_category', 3)
         if age_category == 1:
@@ -519,6 +524,9 @@ class MetadataService:
             metadata.series_name = product.get('series_name')
             metadata.series_id = product.get('series_id')
             metadata.cover_url = self._normalize_cover_url((product.get('image_main') or {}).get('url'))
+            dlsite_service = get_dlsite_service()
+            if hasattr(dlsite_service, "_extract_product_price_text"):
+                metadata.price_text = dlsite_service._extract_product_price_text(product)
             
             # 年龄分级
             age_category = product.get('age_category', 3)
