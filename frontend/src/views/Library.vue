@@ -1157,6 +1157,16 @@
                   </button>
                 </div>
               </template>
+              <AppDropdown
+                v-if="mediaPreviewDialog.kind === 'text'"
+                v-model="mediaPreviewTextEncoding"
+                :options="mediaPreviewTextEncodingOptions"
+                :width="150"
+                :menu-min-width="220"
+                label="编码"
+                :show-trigger-badge="false"
+                @change="handleMediaPreviewTextEncodingChange"
+              />
               <button
                 type="button"
                 class="group inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[10px] border border-white/50 bg-white/30 text-slate-500 shadow-sm transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
@@ -2093,6 +2103,19 @@ const mediaPreviewDialog = ref({
   previewKey: '',
 })
 
+const mediaPreviewTextEncoding = ref('auto')
+
+const mediaPreviewTextEncodingOptions = [
+  { value: 'auto', label: '自动识别', description: '按常见文本编码自动尝试' },
+  { value: 'utf-8', label: 'UTF-8', description: '现代文本 / Markdown / JSON' },
+  { value: 'utf-8-sig', label: 'UTF-8 BOM', description: '带 BOM 的 UTF-8 文本' },
+  { value: 'shift_jis', label: 'Shift-JIS', description: '日文旧文本常见编码' },
+  { value: 'cp932', label: 'CP932', description: 'Windows 日文文本常见编码' },
+  { value: 'gb18030', label: 'GB18030', description: '简繁中文兼容编码' },
+  { value: 'big5', label: 'Big5', description: '繁体中文旧文本常见编码' },
+  { value: 'utf-16', label: 'UTF-16', description: 'Windows 记事本文本' },
+]
+
 const mediaPreviewImageMotionClass = ref('media-preview-image-next')
 
 const mediaPreviewImageFrame = ref({ width: 0, height: 0 })
@@ -2218,15 +2241,46 @@ const mediaPreviewFrameStyle = computed(() => {
   }
 })
 
-function buildMediaPreviewUrl (libraryId, path) {
+function buildMediaPreviewUrl (libraryId, path, options = {}) {
 
   const url = libraryApi.browserPreviewUrl(libraryId, path)
 
-  if (!isRemoteCurrentLibrary.value) return url
+  const params = []
+
+  if (options.encoding && options.encoding !== 'auto') {
+    params.push(`encoding=${encodeURIComponent(options.encoding)}`)
+  }
+
+  if (isRemoteCurrentLibrary.value || options.cacheBust) {
+    params.push(`_preview=${Date.now()}`)
+  }
+
+  if (!params.length) return url
 
   const separator = url.includes('?') ? '&' : '?'
 
-  return `${url}${separator}_preview=${Date.now()}`
+  return `${url}${separator}${params.join('&')}`
+
+}
+
+function buildTextMediaPreviewUrl (libraryId, path) {
+
+  return buildMediaPreviewUrl(libraryId, path, {
+    encoding: mediaPreviewTextEncoding.value,
+    cacheBust: true,
+  })
+
+}
+
+function handleMediaPreviewTextEncodingChange () {
+
+  if (mediaPreviewDialog.value.kind !== 'text') return
+
+  mediaPreviewDialog.value = {
+    ...mediaPreviewDialog.value,
+    url: buildTextMediaPreviewUrl(selectedLibraryId.value, mediaPreviewDialog.value.path),
+    previewKey: buildMediaPreviewKey(selectedLibraryId.value, mediaPreviewDialog.value.path),
+  }
 
 }
 
@@ -13203,11 +13257,15 @@ async function viewLibraryRow (row) {
 
     if (kind === 'image') setMediaPreviewImageMotion(1)
 
+    if (kind === 'text') mediaPreviewTextEncoding.value = 'auto'
+
     mediaPreviewDialog.value = {
       visible: true,
       title: row.name || '远程文件',
       path: row.path || '',
-      url: buildMediaPreviewUrl(selectedLibraryId.value, row.path),
+      url: kind === 'text'
+        ? buildTextMediaPreviewUrl(selectedLibraryId.value, row.path)
+        : buildMediaPreviewUrl(selectedLibraryId.value, row.path),
       kind,
       remote: false,
       previewKey: buildMediaPreviewKey(selectedLibraryId.value, row.path),
@@ -13219,7 +13277,11 @@ async function viewLibraryRow (row) {
 
   const kind = classifyLibraryEntryKind(row)
 
-  const url = buildMediaPreviewUrl(selectedLibraryId.value, row.path)
+  if (kind === 'text') mediaPreviewTextEncoding.value = 'auto'
+
+  const url = kind === 'text'
+    ? buildTextMediaPreviewUrl(selectedLibraryId.value, row.path)
+    : buildMediaPreviewUrl(selectedLibraryId.value, row.path)
 
   if (kind === 'image') setMediaPreviewImageMotion(1)
 

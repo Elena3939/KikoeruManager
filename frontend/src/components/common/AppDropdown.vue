@@ -6,7 +6,7 @@
         ref="triggerRef"
         type="button"
         class="app-dd-trigger"
-        :class="{ 'is-open': open, 'is-placeholder': !selectedOption }"
+        :class="{ 'is-open': open, 'is-placeholder': !hasSelection }"
         :style="triggerWidthStyle"
         @click="toggle"
       >
@@ -49,10 +49,10 @@
             :key="option.value"
             type="button"
             class="app-dd-item"
-            :class="{ 'is-active': option.value === modelValue }"
+            :class="{ 'is-active': isOptionActive(option) }"
             @click="handleSelect(option)"
           >
-            <slot name="option" :option="option" :is-active="option.value === modelValue">
+            <slot name="option" :option="option" :is-active="isOptionActive(option)">
               <component
                 v-if="option.icon"
                 :is="option.icon"
@@ -71,7 +71,7 @@
               >{{ option.badge.label }}</span>
               <span v-else-if="option.suffix" class="app-dd-item-suffix">{{ option.suffix }}</span>
               <Check
-                v-if="option.value === modelValue"
+                v-if="isOptionActive(option)"
                 :size="13"
                 :stroke-width="2.6"
                 class="app-dd-item-check"
@@ -93,7 +93,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, ChevronDown } from 'lucide-vue-next'
 
 const props = defineProps({
-  modelValue: { type: [String, Number], default: '' },
+  modelValue: { type: [String, Number, Array], default: '' },
   // [{ value, label, description?, suffix?, badge?: { label, tone }, icon? }]
   options: { type: Array, default: () => [] },
   placeholder: { type: String, default: '请选择' },
@@ -102,6 +102,7 @@ const props = defineProps({
   menuMinWidth: { type: [Number, String], default: 0 },
   emptyText: { type: String, default: '暂无选项' },
   showTriggerBadge: { type: Boolean, default: true },
+  multiple: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -113,11 +114,29 @@ const open = ref(false)
 const menuStyle = ref({})
 
 const selectedOption = computed(() =>
-  props.options.find((opt) => opt.value === props.modelValue) || null,
+  props.multiple
+    ? null
+    : props.options.find((opt) => opt.value === props.modelValue) || null,
 )
 
-const triggerText = computed(() =>
-  selectedOption.value ? selectedOption.value.label : props.placeholder,
+const selectedValues = computed(() =>
+  props.multiple && Array.isArray(props.modelValue) ? props.modelValue : [],
+)
+
+const triggerText = computed(() => {
+  if (!props.multiple) {
+    return selectedOption.value ? selectedOption.value.label : props.placeholder
+  }
+  if (!selectedValues.value.length) return props.placeholder
+  const labels = props.options
+    .filter((opt) => selectedValues.value.includes(opt.value))
+    .map((opt) => opt.label)
+  if (labels.length <= 2) return labels.join('、')
+  return `已选 ${labels.length} 项`
+})
+
+const hasSelection = computed(() =>
+  props.multiple ? selectedValues.value.length > 0 : Boolean(selectedOption.value),
 )
 
 const triggerWidthStyle = computed(() => {
@@ -210,11 +229,26 @@ async function toggle() {
 }
 
 function handleSelect(option) {
+  if (props.multiple) {
+    const next = new Set(selectedValues.value)
+    if (next.has(option.value)) next.delete(option.value)
+    else next.add(option.value)
+    const value = Array.from(next)
+    emit('update:modelValue', value)
+    emit('change', value)
+    return
+  }
   if (option.value !== props.modelValue) {
     emit('update:modelValue', option.value)
     emit('change', option)
   }
   open.value = false
+}
+
+function isOptionActive(option) {
+  return props.multiple
+    ? selectedValues.value.includes(option.value)
+    : option.value === props.modelValue
 }
 
 function handleDocumentClick(event) {

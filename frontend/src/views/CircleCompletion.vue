@@ -259,10 +259,16 @@
                 <ArrowUp v-if="worksReleaseSort === 'asc'" :size="12" class="release-sort-direction asc" />
                 <ArrowDown v-else :size="12" class="release-sort-direction desc" />
               </button>
-              <div class="filter-toggles">
-                <button type="button" class="filter-toggle-btn" :class="{ active: filters.onlyMissing }" @click="filters.onlyMissing = !filters.onlyMissing; if(filters.onlyMissing) filters.onlyDownloadable = false; refreshActiveCircle()">仅看缺失</button>
-                <button type="button" class="filter-toggle-btn" :class="{ active: filters.onlyDownloadable }" @click="filters.onlyDownloadable = !filters.onlyDownloadable; if(filters.onlyDownloadable) filters.onlyMissing = false; refreshActiveCircle()">仅看可下载</button>
-              </div>
+              <AppDropdown
+                v-model="statusFilters"
+                multiple
+                :options="statusFilterOptions"
+                placeholder="状态筛选"
+                class="work-status-filter-dropdown"
+                :width="132"
+                :menu-min-width="180"
+                :show-trigger-badge="false"
+              />
               <div class="view-toggle-group">
                 <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'card' }" title="卡片视图" @click="viewMode = 'card'"><LayoutGrid :size="14" /></button>
                 <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'list' }" title="列表视图" @click="viewMode = 'list'"><List :size="14" /></button>
@@ -1009,6 +1015,13 @@ const filters = reactive({
   onlyDownloadable: false,
   includeDlOnly: true
 })
+const statusFilters = ref([])
+const statusFilterOptions = [
+  { value: 'repairable', label: '可补配' },
+  { value: 'downloadable', label: '可下载' },
+  { value: 'missing', label: '未收录' },
+  { value: 'no_source', label: '无源' },
+]
 
 function resetCircleDetail() {
   Object.assign(detail, {
@@ -1197,8 +1210,40 @@ function isPreferredMissingWorkVisible(item) {
   return ['original', 'simplified', 'traditional'].includes(groupKey || 'original')
 }
 
+function itemHasAsmrTranslation(item) {
+  const groupKey = String(item?.preferred_variant?.group_key || '').trim()
+  const primaryBadge = String(item?.source_compare?.asmr_one?.primary_badge || '').trim()
+  return Boolean(item?.has_asmr_one)
+    && (['simplified', 'traditional'].includes(groupKey) || ['简中', '繁中'].includes(primaryBadge))
+}
+
+function itemMatchesStatusFilter(item, key) {
+  const ownedGroupKey = String(item?.owned_variant?.group_key || 'original').trim() || 'original'
+  switch (key) {
+    case 'repairable':
+      return Boolean(item?.owned)
+        && ownedGroupKey === 'original'
+        && !item?.subtitle_present
+        && itemHasAsmrTranslation(item)
+    case 'downloadable':
+      return Boolean(item?.has_asmr_one)
+    case 'missing':
+      return !Boolean(item?.owned)
+    case 'no_source':
+      return !Boolean(item?.owned) && !Boolean(item?.has_asmr_one)
+    default:
+      return true
+  }
+}
+
+function applyStatusFilters(list) {
+  const selected = Array.isArray(statusFilters.value) ? statusFilters.value : []
+  if (!selected.length) return list
+  return list.filter(item => selected.some(key => itemMatchesStatusFilter(item, key)))
+}
+
 const missingWorks = computed(() => {
-  const list = (detail.works || []).filter(item => isPreferredMissingWorkVisible(item))
+  const list = applyStatusFilters(detail.works || []).filter(item => isPreferredMissingWorkVisible(item))
   if (worksReleaseSort.value === 'asc' || worksReleaseSort.value === 'desc') {
     const direction = worksReleaseSort.value === 'asc' ? 1 : -1
     return [...list].sort((a, b) => {
@@ -1432,19 +1477,27 @@ const ownedWorksFilterType = ref('all') // 'all', 'original', 'simplified', 'tra
 const compareSearchQuery = ref('')
 const compareSourceFilter = ref('all') // 'all', 'kikoeru', 'dlsite', 'asmr_one', 'missing'
 
+function getOwnedVariantGroupLabel(item) {
+  return item?.owned_variant?.group_short_label || '原作'
+}
+
+function getOwnedVariantGroupKey(item) {
+  return item?.owned_variant?.group_key || 'original'
+}
+
 const ownedWorks = computed(() => {
-  let list = (detail.works || []).filter(item => item.owned)
+  let list = applyStatusFilters(detail.works || []).filter(item => item.owned)
 
   // Filter
   if (ownedWorksFilterType.value !== 'all') {
     list = list.filter(item => {
-      const groupLabel = item.preferred_variant?.group_short_label || '原作'
-      const hasSubtitle = (!item.preferred_variant?.group_short_label || item.preferred_variant?.group_short_label === '原作') && item.subtitle_present
+      const groupKey = getOwnedVariantGroupKey(item)
+      const hasSubtitle = groupKey === 'original' && item.subtitle_present
 
       switch (ownedWorksFilterType.value) {
-        case 'original': return groupLabel === '原作' && !hasSubtitle
-        case 'simplified': return groupLabel === '简中'
-        case 'traditional': return groupLabel === '繁中'
+        case 'original': return groupKey === 'original' && !hasSubtitle
+        case 'simplified': return groupKey === 'simplified'
+        case 'traditional': return groupKey === 'traditional'
         case 'subtitle': return hasSubtitle
         default: return true
       }
@@ -1479,13 +1532,13 @@ const ownedWorksStats = computed(() => {
   return {
     total: all.length,
     original: all.filter(item => {
-      const groupLabel = item.preferred_variant?.group_short_label || '原作'
-      const hasSubtitle = (!item.preferred_variant?.group_short_label || item.preferred_variant?.group_short_label === '原作') && item.subtitle_present
-      return groupLabel === '原作' && !hasSubtitle
+      const groupKey = getOwnedVariantGroupKey(item)
+      const hasSubtitle = groupKey === 'original' && item.subtitle_present
+      return groupKey === 'original' && !hasSubtitle
     }).length,
-    simplified: all.filter(item => (item.preferred_variant?.group_short_label || '原作') === '简中').length,
-    traditional: all.filter(item => (item.preferred_variant?.group_short_label || '原作') === '繁中').length,
-    subtitle: all.filter(item => (!item.preferred_variant?.group_short_label || item.preferred_variant?.group_short_label === '原作') && item.subtitle_present).length,
+    simplified: all.filter(item => getOwnedVariantGroupKey(item) === 'simplified').length,
+    traditional: all.filter(item => getOwnedVariantGroupKey(item) === 'traditional').length,
+    subtitle: all.filter(item => getOwnedVariantGroupKey(item) === 'original' && item.subtitle_present).length,
     bonus: all.filter(item => Boolean(item?.is_bonus_work)).length,
   }
 })
@@ -3189,8 +3242,6 @@ async function refreshActiveCircle() {
   circleDetailLoading.value = true
   try {
     const result = await circleCompletionApi.getCircleDetail(activeCircleId.value, {
-      onlyMissing: filters.onlyMissing,
-      onlyDownloadable: filters.onlyDownloadable,
       includeDlOnly: filters.includeDlOnly
     })
     Object.assign(detail, {

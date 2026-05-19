@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar, Gift } from 'lucide-vue-next'
+import { FileText, LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar, Gift } from 'lucide-vue-next'
 import { useViewport } from '../../composables/useViewport'
 
 const props = defineProps({
@@ -31,11 +31,39 @@ const displayCode = computed(() => {
   return props.item.source_compare?.work_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
 })
 const variantLabel = computed(() =>
-  props.item.preferred_variant?.group_short_label || '原作'
+  isBonusWork.value ? '' :
+  props.item?.owned ? (props.item.owned_variant?.group_short_label || '原作') : (props.item.preferred_variant?.group_short_label || '原作')
 )
 const downloadRjcode = computed(() =>
-  props.item.download_plan?.rjcode || props.item.display_rjcode || props.item.canonical_rjcode || ''
+  props.item?.owned
+    ? (props.item.owned_variant?.rjcode || props.item.server_match_primary_rjcode || props.item.display_rjcode || props.item.canonical_rjcode || '')
+    : (props.item.download_plan?.rjcode || props.item.display_rjcode || props.item.canonical_rjcode || '')
 )
+const titleLooksLikeTranslation = computed(() => {
+  const title = String(props.item?.title || '').toLowerCase()
+  return /简体|簡体|简中|簡中|繁体|繁體|繁中|中文版|中国語|中國語/.test(title)
+})
+const asmrOneHasTranslation = computed(() => {
+  const groupKey = String(props.item?.preferred_variant?.group_key || '').trim()
+  const primaryBadge = String(props.item?.source_compare?.asmr_one?.primary_badge || '').trim()
+  return Boolean(props.item?.has_asmr_one)
+    && (['simplified', 'traditional'].includes(groupKey) || ['简中', '繁中'].includes(primaryBadge))
+})
+const canRepairSubtitle = computed(() =>
+  Boolean(props.item?.owned)
+  && (props.item?.owned_variant?.group_key || 'original') === 'original'
+  && !props.item?.subtitle_present
+  && asmrOneHasTranslation.value
+)
+const showOriginalSubtitleState = computed(() =>
+  Boolean(props.item?.owned)
+  && (props.item?.owned_variant?.group_key || 'original') === 'original'
+  && !titleLooksLikeTranslation.value
+)
+const originalSubtitleLabel = computed(() => {
+  if (canRepairSubtitle.value) return '可补配'
+  return props.item?.subtitle_present ? '有字幕' : '无字幕'
+})
 
 // "新作"判定：直接用后端 build_circle_completion_view 算好的 is_new_work。
 // 后端口径 = email_watcher 来源 + 48h 窗口 + email_watcher_first_seen_at（fallback created_at）。
@@ -171,7 +199,7 @@ function onImgError(e) {
         <span class="wlr-title-text">{{ item.title || '未命名作品' }}</span>
         <span v-if="isNewWork" class="wlr-new-badge">✦ 新作</span>
         <span v-if="isUnreleased" class="wlr-unreleased-badge"><Calendar :size="10" />未发售</span>
-        <span v-if="isBonusWork" class="wlr-bonus-badge" :title="bonusParentLabel"><Gift :size="10" />特典</span>
+        <span v-if="isBonusWork" class="wlr-bonus-badge" title="特典作品"><Gift :size="10" />特典</span>
       </div>
       <div class="wlr-subtitle">
         <span class="wlr-code">{{ displayCode }}</span>
@@ -188,7 +216,7 @@ function onImgError(e) {
 
     <!-- 来源/变体（移动端隐藏） -->
     <div v-if="!isMobile" class="wlr-meta">
-      <span class="wlr-variant"><Layers :size="11" />{{ variantLabel }}</span>
+      <span v-if="variantLabel" class="wlr-variant"><Layers :size="11" />{{ variantLabel }}</span>
       <span v-if="downloadRjcode !== displayCode" class="wlr-linked-code">{{ downloadRjcode }}</span>
     </div>
 
@@ -197,6 +225,9 @@ function onImgError(e) {
       <slot name="tags">
         <span class="wlr-pill" :class="item.server_owned ? 'pill-owned' : 'pill-missing'">
           <component :is="item.server_owned ? Server : X" :size="10" />{{ item.server_owned ? '已收录' : '未收录' }}
+        </span>
+        <span v-if="showOriginalSubtitleState" class="wlr-pill" :class="canRepairSubtitle ? 'pill-repair' : (item.subtitle_present ? 'pill-subtitle' : 'pill-subtitle-none')">
+          <FileText :size="10" />{{ originalSubtitleLabel }}
         </span>
         <span class="wlr-pill" :class="item.has_asmr_one ? 'pill-ok' : 'pill-none'">
           <LibraryBig :size="10" />{{ item.has_asmr_one ? '可下载' : '无源' }}
@@ -490,6 +521,9 @@ function onImgError(e) {
 .wlr-pill.pill-missing { background: #fef2f2; color: #dc2626; }
 .wlr-pill.pill-ok     { background: #eff6ff; color: #2563eb; }
 .wlr-pill.pill-none   { background: #f9fafb; color: #9ca3af; }
+.wlr-pill.pill-subtitle { background: #eef2ff; color: #4f46e5; }
+.wlr-pill.pill-subtitle-none { background: #f8fafc; color: #64748b; }
+.wlr-pill.pill-repair { background: #fff7ed; color: #ea580c; }
 
 /* ── 操作区 ── */
 .wlr-actions {
