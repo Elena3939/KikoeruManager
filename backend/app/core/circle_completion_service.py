@@ -4664,6 +4664,13 @@ class CircleCompletionService:
                     "group_short_label": "原作",
                 }
                 item["subtitle_present"] = bool((kikoeru_compare or {}).get("subtitle_present"))
+                asmr_compare = item["source_compare"].get("asmr_one") if isinstance(item["source_compare"], dict) else {}
+                item["subtitle_repairable"] = bool(
+                    completion_owned
+                    and item["owned_variant"].get("group_key") == "original"
+                    and not item["subtitle_present"]
+                    and str((asmr_compare or {}).get("primary_badge") or "").strip() in {"简中", "繁中"}
+                )
                 item["status_tags"] = [
                     *(["库存已收录"] if local_owned else []),
                     *(["本地已下载"] if item["local_download_ready"] else []),

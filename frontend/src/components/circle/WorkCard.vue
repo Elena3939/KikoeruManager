@@ -105,26 +105,10 @@ const displayVariantRjcode = computed(() =>
     ? (props.item.owned_variant?.rjcode || props.item.server_match_primary_rjcode || props.item.display_rjcode || props.item.canonical_rjcode)
     : (props.item.download_plan?.rjcode || props.item.display_rjcode || props.item.canonical_rjcode)
 )
-const titleLooksLikeTranslation = computed(() => {
-  const title = String(props.item?.title || '').toLowerCase()
-  return /简体|簡体|简中|簡中|繁体|繁體|繁中|中文版|中国語|中國語/.test(title)
-})
-const asmrOneHasTranslation = computed(() => {
-  const groupKey = String(props.item?.preferred_variant?.group_key || '').trim()
-  const primaryBadge = String(props.item?.source_compare?.asmr_one?.primary_badge || '').trim()
-  return Boolean(props.item?.has_asmr_one)
-    && (['simplified', 'traditional'].includes(groupKey) || ['简中', '繁中'].includes(primaryBadge))
-})
-const canRepairSubtitle = computed(() =>
-  Boolean(props.item?.owned)
-  && (props.item?.owned_variant?.group_key || 'original') === 'original'
-  && !props.item?.subtitle_present
-  && asmrOneHasTranslation.value
-)
+const canRepairSubtitle = computed(() => Boolean(props.item?.subtitle_repairable))
 const showOriginalSubtitleState = computed(() =>
   Boolean(props.item?.owned)
   && (props.item?.owned_variant?.group_key || 'original') === 'original'
-  && !titleLooksLikeTranslation.value
 )
 const originalSubtitleLabel = computed(() => {
   if (canRepairSubtitle.value) return '可补配'

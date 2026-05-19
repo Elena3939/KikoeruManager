@@ -1016,12 +1016,19 @@ const filters = reactive({
   includeDlOnly: true
 })
 const statusFilters = ref([])
-const statusFilterOptions = [
+const statusFilterBaseOptions = [
   { value: 'repairable', label: '可补配' },
   { value: 'downloadable', label: '可下载' },
   { value: 'missing', label: '未收录' },
   { value: 'no_source', label: '无源' },
 ]
+const statusFilterOptions = computed(() => {
+  const works = getStatusFilterScopeWorks()
+  return statusFilterBaseOptions.map(option => ({
+    ...option,
+    suffix: works.filter(item => itemMatchesStatusFilter(item, option.value)).length,
+  }))
+})
 
 function resetCircleDetail() {
   Object.assign(detail, {
@@ -1210,21 +1217,10 @@ function isPreferredMissingWorkVisible(item) {
   return ['original', 'simplified', 'traditional'].includes(groupKey || 'original')
 }
 
-function itemHasAsmrTranslation(item) {
-  const groupKey = String(item?.preferred_variant?.group_key || '').trim()
-  const primaryBadge = String(item?.source_compare?.asmr_one?.primary_badge || '').trim()
-  return Boolean(item?.has_asmr_one)
-    && (['simplified', 'traditional'].includes(groupKey) || ['简中', '繁中'].includes(primaryBadge))
-}
-
 function itemMatchesStatusFilter(item, key) {
-  const ownedGroupKey = String(item?.owned_variant?.group_key || 'original').trim() || 'original'
   switch (key) {
     case 'repairable':
-      return Boolean(item?.owned)
-        && ownedGroupKey === 'original'
-        && !item?.subtitle_present
-        && itemHasAsmrTranslation(item)
+      return Boolean(item?.subtitle_repairable)
     case 'downloadable':
       return Boolean(item?.has_asmr_one)
     case 'missing':
@@ -1236,6 +1232,13 @@ function itemMatchesStatusFilter(item, key) {
   }
 }
 
+function getStatusFilterScopeWorks() {
+  const works = Array.isArray(detail.works) ? detail.works : []
+  if (activeTab.value === 'missing') return works.filter(item => isPreferredMissingWorkVisible(item))
+  if (activeTab.value === 'owned') return works.filter(item => item?.owned)
+  return works
+}
+
 function applyStatusFilters(list) {
   const selected = Array.isArray(statusFilters.value) ? statusFilters.value : []
   if (!selected.length) return list
@@ -1243,7 +1246,7 @@ function applyStatusFilters(list) {
 }
 
 const missingWorks = computed(() => {
-  const list = applyStatusFilters(detail.works || []).filter(item => isPreferredMissingWorkVisible(item))
+  const list = applyStatusFilters((detail.works || []).filter(item => isPreferredMissingWorkVisible(item)))
   if (worksReleaseSort.value === 'asc' || worksReleaseSort.value === 'desc') {
     const direction = worksReleaseSort.value === 'asc' ? 1 : -1
     return [...list].sort((a, b) => {
@@ -1486,7 +1489,7 @@ function getOwnedVariantGroupKey(item) {
 }
 
 const ownedWorks = computed(() => {
-  let list = applyStatusFilters(detail.works || []).filter(item => item.owned)
+  let list = applyStatusFilters((detail.works || []).filter(item => item.owned))
 
   // Filter
   if (ownedWorksFilterType.value !== 'all') {
