@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_, text
@@ -6929,8 +6929,118 @@ def _is_library_preview_media_type(media_type: str) -> bool:
     return normalized in LIBRARY_PREVIEW_MIME_TYPES or any(normalized.startswith(prefix) for prefix in LIBRARY_PREVIEW_MIME_PREFIXES)
 
 
+LIBRARY_TEXT_PREVIEW_MAX_BYTES = 12 * 1024 * 1024
+LIBRARY_TEXT_PREVIEW_ENCODINGS = (
+    "utf-8-sig",
+    "utf-8",
+    "utf-16",
+    "utf-16-le",
+    "utf-16-be",
+    "cp932",
+    "shift_jis",
+    "gb18030",
+    "big5",
+)
+
+
+def _is_library_text_preview_type(media_type: str) -> bool:
+    normalized = str(media_type or "").split(";", 1)[0].strip().lower()
+    return (
+        normalized.startswith("text/")
+        or normalized in {"application/json", "application/xml", "application/x-subrip", "application/ass"}
+    )
+
+
+def _score_decoded_preview_text(text_value: str) -> float:
+    if not text_value:
+        return 999999.0
+    replacement_count = text_value.count("\ufffd")
+    control_count = sum(1 for ch in text_value if ord(ch) < 32 and ch not in "\r\n\t")
+    cjk_count = sum(1 for ch in text_value if "\u3040" <= ch <= "\u30ff" or "\u3400" <= ch <= "\u9fff")
+    printable_count = sum(1 for ch in text_value if ch.isprintable() or ch in "\r\n\t")
+    return replacement_count * 1000 + control_count * 40 - cjk_count * 0.2 - printable_count * 0.01
+
+
+def _decode_library_preview_text(raw_bytes: bytes) -> tuple[str, str]:
+    best_text = raw_bytes.decode("utf-8", errors="replace")
+    best_encoding = "utf-8"
+    best_score = _score_decoded_preview_text(best_text)
+    for encoding in LIBRARY_TEXT_PREVIEW_ENCODINGS:
+        try:
+            decoded = raw_bytes.decode(encoding, errors="strict")
+            score = _score_decoded_preview_text(decoded)
+        except Exception:
+            decoded = raw_bytes.decode(encoding, errors="replace")
+            score = _score_decoded_preview_text(decoded) + 25
+        if score < best_score:
+            best_text = decoded
+            best_encoding = encoding
+            best_score = score
+    return best_text, best_encoding
+
+
+def _normalize_library_preview_encoding(encoding: Optional[str]) -> str:
+    encoding_value = str(encoding or "").strip().lower().replace("-", "_")
+    aliases = {
+        "auto": "",
+        "utf8": "utf-8",
+        "utf_8": "utf-8",
+        "utf8_sig": "utf-8-sig",
+        "utf_8_sig": "utf-8-sig",
+        "utf16": "utf-16",
+        "utf_16": "utf-16",
+        "utf16le": "utf-16-le",
+        "utf_16_le": "utf-16-le",
+        "utf16be": "utf-16-be",
+        "utf_16_be": "utf-16-be",
+        "sjis": "shift_jis",
+        "shift_jis": "shift_jis",
+        "shiftjis": "shift_jis",
+        "cp932": "cp932",
+        "gbk": "gb18030",
+        "gb18030": "gb18030",
+        "big5": "big5",
+    }
+    return aliases.get(encoding_value, "")
+
+
+def _build_library_text_preview_response(
+    raw_bytes: bytes,
+    media_type: str,
+    headers: dict[str, str],
+    encoding: Optional[str] = None,
+) -> Response:
+    requested_encoding = _normalize_library_preview_encoding(encoding)
+    if requested_encoding:
+        text_value = raw_bytes.decode(requested_encoding, errors="replace")
+        detected_encoding = requested_encoding
+    else:
+        text_value, detected_encoding = _decode_library_preview_text(raw_bytes)
+    response_headers = dict(headers)
+    response_headers["X-KikoeruManager-Detected-Encoding"] = detected_encoding
+    normalized_type = str(media_type or "text/plain").split(";", 1)[0].strip().lower() or "text/plain"
+    return Response(
+        content=text_value.encode("utf-8"),
+        media_type=f"{normalized_type}; charset=utf-8",
+        headers=response_headers,
+    )
+
+
+async def _collect_library_preview_stream_bytes(stream) -> bytes:
+    chunks: list[bytes] = []
+    total_size = 0
+    async for chunk in stream:
+        if not chunk:
+            continue
+        total_size += len(chunk)
+        if total_size > LIBRARY_TEXT_PREVIEW_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="文本文件过大，暂不支持浏览器预览")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @app.get("/api/library/browser/preview")
-async def preview_library_browser_file(library_id: str, path: str):
+async def preview_library_browser_file(library_id: str, path: str, encoding: Optional[str] = None):
     """在浏览器内预览库存里的安全媒体 / 文本文件。"""
     try:
         if not library_id:
@@ -6958,6 +7068,9 @@ async def preview_library_browser_file(library_id: str, path: str):
                 "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
                 "X-Content-Type-Options": "nosniff",
             }
+            if _is_library_text_preview_type(media_type):
+                raw_bytes = await _collect_library_preview_stream_bytes(client.stream_download(target_path))
+                return _build_library_text_preview_response(raw_bytes, media_type, headers, encoding=encoding)
             return StreamingResponse(
                 client.stream_download(target_path),
                 media_type=media_type,
@@ -6982,6 +7095,11 @@ async def preview_library_browser_file(library_id: str, path: str):
             "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
             "X-Content-Type-Options": "nosniff",
         }
+        if _is_library_text_preview_type(media_type):
+            if os.path.getsize(target_path) > LIBRARY_TEXT_PREVIEW_MAX_BYTES:
+                raise HTTPException(status_code=413, detail="文本文件过大，暂不支持浏览器预览")
+            with open(target_path, "rb") as handle:
+                return _build_library_text_preview_response(handle.read(), media_type, headers, encoding=encoding)
         return FileResponse(target_path, media_type=media_type, headers=headers)
     except HTTPException:
         raise

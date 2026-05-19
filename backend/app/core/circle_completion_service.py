@@ -739,6 +739,13 @@ class CircleCompletionService:
             return "繁中"
         return ""
 
+    def _is_usable_work_title(self, rjcode: Any, title: Any) -> bool:
+        text = str(title or "").strip()
+        if not text:
+            return False
+        normalized_rj = self.normalize_rjcode(rjcode)
+        return not (normalized_rj and text.upper() == normalized_rj)
+
     # 历史上这里曾留过 ``_title_looks_like_bonus_work``：标题级特典兜底正则。
     # 已删——明确禁止用标题判定特典：很多正常作品标题里就含"特典"二字（"早期特典つき"
     # 这种"附带特典的作品本体"反而最容易误命中）。特典识别只走
@@ -1248,6 +1255,36 @@ class CircleCompletionService:
                 "primary_badge": resolve_variant_badge(asmr_available_rjcode),
                 "status": "available" if asmr_available_rjcode else "missing",
             },
+        }
+
+    def _build_variant_payload_for_rjcode(
+        self,
+        canonical_info: Dict[str, Any],
+        rjcode: Any,
+        metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, str]:
+        """按实际 RJ 号生成展示版本；用于已拥有态，不参与下载优先级选择。"""
+
+        normalized = self.normalize_rjcode(rjcode)
+        canonical = self.normalize_rjcode(canonical_info.get("canonical_rjcode"))
+        link_map = dict(canonical_info.get("link_map") or {})
+        meta = link_map.get(normalized) or {}
+        if normalized and normalized == canonical and not meta:
+            meta = {"link_type": "original", "lang": "JPN"}
+        group = self._variant_group(meta.get("link_type"), meta.get("lang"))
+        if group.get("key") == "other" and metadata_map:
+            badge = self._infer_variant_badge_from_metadata(normalized, metadata_map)
+            if badge == "简中":
+                group = {"key": "simplified", "label": "简体优先", "short_label": "简中"}
+            elif badge == "繁中":
+                group = {"key": "traditional", "label": "繁体优先", "short_label": "繁中"}
+        return {
+            "rjcode": normalized,
+            "lang": self._normalize_lang_code(meta.get("lang")),
+            "link_type": str(meta.get("link_type") or ("original" if normalized == canonical else "")).strip().lower(),
+            "group_key": group["key"],
+            "group_label": group["label"],
+            "group_short_label": group["short_label"],
         }
 
     def _build_local_download_session_map(self, db, works: List[CircleWork], link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
@@ -1953,6 +1990,7 @@ class CircleCompletionService:
 
         found_rjcodes: List[str] = []
         subtitle_rjcodes: List[str] = []
+        found_titles: Dict[str, str] = {}
         for workno, result in (results or {}).items():
             if not getattr(result, "is_found", False):
                 continue
@@ -1961,6 +1999,9 @@ class CircleCompletionService:
             )
             if matched_rj and matched_rj not in found_rjcodes:
                 found_rjcodes.append(matched_rj)
+            matched_title = str(getattr(result, "title", "") or "").strip()
+            if matched_rj and self._is_usable_work_title(matched_rj, matched_title):
+                found_titles[matched_rj] = matched_title
             subtitle_check_source = str(getattr(result, "subtitle_check_source", "") or "").strip()
             if matched_rj and getattr(result, "has_lyric_hint", False) and subtitle_check_source and subtitle_check_source != "search_only":
                 if matched_rj not in subtitle_rjcodes:
@@ -1969,6 +2010,7 @@ class CircleCompletionService:
             "has_kikoeru": bool(found_rjcodes),
             "found_rjcodes": found_rjcodes,
             "subtitle_rjcodes": subtitle_rjcodes,
+            "found_titles": found_titles,
         }
         self._kikoeru_state_cache[normalized_rj] = payload
         return payload
@@ -1984,6 +2026,7 @@ class CircleCompletionService:
 
         found_rjcodes: List[str] = []
         subtitle_rjcodes: List[str] = []
+        found_titles: Dict[str, str] = {}
         semaphore = asyncio.Semaphore(8)
 
         async def probe_candidate(candidate: str) -> Dict[str, Any]:
@@ -2000,11 +2043,16 @@ class CircleCompletionService:
                 normalized_code = self.normalize_rjcode(code)
                 if normalized_code and normalized_code not in subtitle_rjcodes:
                     subtitle_rjcodes.append(normalized_code)
+            for code, title in dict(state.get("found_titles") or {}).items():
+                normalized_code = self.normalize_rjcode(code)
+                if normalized_code and self._is_usable_work_title(normalized_code, title):
+                    found_titles[normalized_code] = str(title or "").strip()
 
         return {
             "has_kikoeru": bool(found_rjcodes),
             "found_rjcodes": found_rjcodes,
             "subtitle_rjcodes": subtitle_rjcodes,
+            "found_titles": found_titles,
         }
 
     async def _collect_external_snapshot(
@@ -4596,11 +4644,25 @@ class CircleCompletionService:
                 ).strip()
                 server_owned = bool(server_match_rjcodes)
                 completion_owned = bool(local_owned or server_owned)
+                local_owned_rjcodes = list((owned_row.owned_rjcodes or []) if owned_row else [])
+                owned_primary_rjcode = server_match_primary_rjcode or (local_owned_rjcodes[0] if local_owned_rjcodes else "")
                 item["owned"] = completion_owned
                 item["completion_owned"] = completion_owned
                 item["server_owned"] = server_owned
                 item["server_match_rjcodes"] = server_match_rjcodes
                 item["server_match_primary_rjcode"] = server_match_primary_rjcode
+                item["owned_variant"] = self._build_variant_payload_for_rjcode(
+                    view_canonical_info,
+                    owned_primary_rjcode,
+                    metadata_map,
+                ) if owned_primary_rjcode else {
+                    "rjcode": "",
+                    "lang": "",
+                    "link_type": "",
+                    "group_key": "original",
+                    "group_label": "原作优先",
+                    "group_short_label": "原作",
+                }
                 item["subtitle_present"] = bool((kikoeru_compare or {}).get("subtitle_present"))
                 item["status_tags"] = [
                     *(["库存已收录"] if local_owned else []),
@@ -5000,6 +5062,11 @@ class CircleCompletionService:
                 )
                 found_rjcodes = _normalize_code_list(kikoeru_state.get("found_rjcodes") or [])
                 subtitle_rjcodes = _normalize_code_list(kikoeru_state.get("subtitle_rjcodes") or [])
+                found_titles = {
+                    self.normalize_rjcode(code): str(title or "").strip()
+                    for code, title in dict(kikoeru_state.get("found_titles") or {}).items()
+                    if self.normalize_rjcode(code) and self._is_usable_work_title(code, title)
+                }
                 source_flags = {flag for flag in str(row.source_mask or "").split(",") if flag}
                 if row.has_dlsite:
                     source_flags.add("dlsite")
@@ -5012,8 +5079,21 @@ class CircleCompletionService:
                 else:
                     source_flags.discard("kikoeru")
 
+                server_match_primary_rjcode = _pick_server_primary(found_rjcodes, canonical_info, preferred_seed or canonical)
+                server_title = str(found_titles.get(server_match_primary_rjcode) or "").strip()
                 row.display_rjcode = self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical or row.display_rjcode
-                row.title = preferred_title or str((metadata_map.get(row.display_rjcode) or {}).get("work_name") or row.title or "").strip() or row.title
+                preferred_metadata_title = str((metadata_map.get(row.display_rjcode) or {}).get("work_name") or "").strip()
+                canonical_metadata_title = str((metadata_map.get(canonical) or {}).get("work_name") or "").strip()
+                for candidate_title, candidate_rj in [
+                    (server_title, server_match_primary_rjcode),
+                    (canonical_metadata_title, canonical),
+                    (preferred_title, row.display_rjcode),
+                    (preferred_metadata_title, row.display_rjcode),
+                    (row.title, row.display_rjcode),
+                ]:
+                    if self._is_usable_work_title(candidate_rj, candidate_title):
+                        row.title = str(candidate_title).strip()
+                        break
                 row.maker_id = str(metadata.get("maker_id") or row.maker_id or "").strip() or row.maker_id
                 row.maker_name = str(metadata.get("maker_name") or row.maker_name or "").strip() or row.maker_name
                 display_metadata = metadata_map.get(row.display_rjcode) or metadata or {}
@@ -5056,7 +5136,6 @@ class CircleCompletionService:
                     kikoeru_owned_count += 1
                 normalized_found_rjcodes = _normalize_code_list(row.kikoeru_found_rjcodes or [])
                 normalized_subtitle_rjcodes = _normalize_code_list(row.kikoeru_subtitle_rjcodes or [])
-                server_match_primary_rjcode = _pick_server_primary(normalized_found_rjcodes, canonical_info, preferred_seed or canonical)
                 subtitle_present = bool(normalized_subtitle_rjcodes)
                 change_details = _build_refresh_change_details(
                     previous_snapshot,

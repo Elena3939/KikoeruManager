@@ -96,6 +96,40 @@ const isUnreleased = computed(() => {
 // 但右侧卡片还在闪"新作"特效）。这里改成统一读后端字段，左右两侧永远一致。
 const isNewWork = computed(() => Boolean(props.item?.is_new_work))
 const isBonusWork = computed(() => Boolean(props.item?.is_bonus_work))
+const displayVariant = computed(() =>
+  isBonusWork.value ? '' :
+  props.item?.owned ? (props.item.owned_variant?.group_short_label || '原作') : (props.item.preferred_variant?.group_short_label || '原作')
+)
+const displayVariantRjcode = computed(() =>
+  props.item?.owned
+    ? (props.item.owned_variant?.rjcode || props.item.server_match_primary_rjcode || props.item.display_rjcode || props.item.canonical_rjcode)
+    : (props.item.download_plan?.rjcode || props.item.display_rjcode || props.item.canonical_rjcode)
+)
+const titleLooksLikeTranslation = computed(() => {
+  const title = String(props.item?.title || '').toLowerCase()
+  return /简体|簡体|简中|簡中|繁体|繁體|繁中|中文版|中国語|中國語/.test(title)
+})
+const asmrOneHasTranslation = computed(() => {
+  const groupKey = String(props.item?.preferred_variant?.group_key || '').trim()
+  const primaryBadge = String(props.item?.source_compare?.asmr_one?.primary_badge || '').trim()
+  return Boolean(props.item?.has_asmr_one)
+    && (['simplified', 'traditional'].includes(groupKey) || ['简中', '繁中'].includes(primaryBadge))
+})
+const canRepairSubtitle = computed(() =>
+  Boolean(props.item?.owned)
+  && (props.item?.owned_variant?.group_key || 'original') === 'original'
+  && !props.item?.subtitle_present
+  && asmrOneHasTranslation.value
+)
+const showOriginalSubtitleState = computed(() =>
+  Boolean(props.item?.owned)
+  && (props.item?.owned_variant?.group_key || 'original') === 'original'
+  && !titleLooksLikeTranslation.value
+)
+const originalSubtitleLabel = computed(() => {
+  if (canRepairSubtitle.value) return '可补配'
+  return props.item?.subtitle_present ? '有字幕' : '无字幕'
+})
 
 const bonusFlagClass = computed(() => {
   if (isUnreleased.value && isNewWork.value) return 'work-bonus-flag--double-below'
@@ -208,7 +242,7 @@ function onCoverError(event) {
       <div class="work-title" :title="item.title">{{ item.title || '未命名作品' }}</div>
       <slot name="meta">
         <div class="work-linked">
-          <span>{{ item.preferred_variant?.group_short_label || '原作' }} · {{ item.download_plan?.rjcode || item.display_rjcode || item.canonical_rjcode }}</span>
+          <span>{{ displayVariant ? `${displayVariant} · ${displayVariantRjcode}` : displayVariantRjcode }}</span>
           <span v-if="!isUnreleased && releaseLabel && releaseLabel !== '待定'" class="work-release-inline">
             <Calendar :size="11" />{{ releaseLabel }}
           </span>
@@ -224,6 +258,7 @@ function onCoverError(event) {
           </span>
           <template v-else>
             <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
+            <span v-if="showOriginalSubtitleState" class="tag-chip" :class="canRepairSubtitle ? 'is-repair' : (item.subtitle_present ? 'is-subtitle' : 'is-subtitle-none')">{{ originalSubtitleLabel }}</span>
             <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">{{ item.has_asmr_one ? '可下载' : '无源' }}</span>
           </template>
         </div>
@@ -776,6 +811,21 @@ function onCoverError(event) {
   background: #f4f6f9;
   color: #5d6d81;
   border: 1px solid #e2e8f0;
+}
+.tag-chip.is-subtitle {
+  background: #eef2ff;
+  color: #4f46e5;
+  border: 1px solid #c7d2fe;
+}
+.tag-chip.is-subtitle-none {
+  background: #f8fafc;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+.tag-chip.is-repair {
+  background: #fff7ed;
+  color: #ea580c;
+  border: 1px solid #fed7aa;
 }
 .tag-chip.is-bonus {
   max-width: 100%;
