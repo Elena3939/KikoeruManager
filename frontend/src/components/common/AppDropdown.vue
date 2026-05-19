@@ -1,37 +1,45 @@
 <template>
   <div ref="rootRef" class="app-dd-root">
     <!-- Trigger -->
-    <slot name="trigger" :open="open" :selected="selectedOption" :toggle="toggle">
-      <button
-        ref="triggerRef"
-        type="button"
-        class="app-dd-trigger"
-        :class="{ 'is-open': open, 'is-placeholder': !hasSelection }"
-        :style="triggerWidthStyle"
-        @click="toggle"
+    <div ref="triggerRef" class="app-dd-trigger-anchor" :style="triggerWidthStyle">
+      <slot
+        name="trigger"
+        :open="open"
+        :selected="selectedOption"
+        :toggle="toggle"
+        :has-selection="hasSelection"
+        :trigger-text="triggerText"
       >
-        <component
-          v-if="selectedOption?.icon"
-          :is="selectedOption.icon"
-          :size="14"
-          :stroke-width="2.2"
-          class="app-dd-trigger-icon"
-        />
-        <span v-if="label" class="app-dd-trigger-label">{{ label }}</span>
-        <span class="app-dd-trigger-value" :title="triggerText">{{ triggerText }}</span>
-        <span
-          v-if="selectedOption?.badge && showTriggerBadge"
-          class="app-dd-badge"
-          :class="badgeToneClass(selectedOption.badge.tone)"
-        >{{ selectedOption.badge.label }}</span>
-        <ChevronDown
-          :size="13"
-          :stroke-width="2.4"
-          class="app-dd-trigger-caret"
-          :class="{ 'is-open': open }"
-        />
-      </button>
-    </slot>
+        <button
+          type="button"
+          class="app-dd-trigger"
+          :class="{ 'is-open': open, 'is-placeholder': !hasSelection }"
+          :style="defaultTriggerStyle"
+          @click="toggle"
+        >
+          <component
+            v-if="selectedOption?.icon"
+            :is="selectedOption.icon"
+            :size="14"
+            :stroke-width="2.2"
+            class="app-dd-trigger-icon"
+          />
+          <span v-if="label" class="app-dd-trigger-label">{{ label }}</span>
+          <span class="app-dd-trigger-value" :title="triggerText">{{ triggerText }}</span>
+          <span
+            v-if="selectedOption?.badge && showTriggerBadge"
+            class="app-dd-badge"
+            :class="badgeToneClass(selectedOption.badge.tone)"
+          >{{ selectedOption.badge.label }}</span>
+          <ChevronDown
+            :size="13"
+            :stroke-width="2.4"
+            class="app-dd-trigger-caret"
+            :class="{ 'is-open': open }"
+          />
+        </button>
+      </slot>
+    </div>
 
     <!-- Menu -->
     <Teleport to="body">
@@ -40,7 +48,7 @@
           v-if="open"
           ref="menuRef"
           class="app-dd-menu"
-          :class="`app-dd-menu--${placement}`"
+          :class="[`app-dd-menu--${placement}`, menuClass]"
           :style="menuStyle"
           @click.stop
         >
@@ -103,6 +111,7 @@ const props = defineProps({
   emptyText: { type: String, default: '暂无选项' },
   showTriggerBadge: { type: Boolean, default: true },
   multiple: { type: Boolean, default: false },
+  menuClass: { type: String, default: '' },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -142,6 +151,11 @@ const hasSelection = computed(() =>
 const triggerWidthStyle = computed(() => {
   const w = Number(props.width)
   return w > 0 ? { width: `${w}px` } : {}
+})
+
+const defaultTriggerStyle = computed(() => {
+  const w = Number(props.width)
+  return w > 0 ? { width: '100%' } : {}
 })
 
 function badgeToneClass(tone) {
@@ -309,6 +323,11 @@ defineExpose({ close: () => (open.value = false) })
 .app-dd-root {
   display: inline-block;
   position: relative;
+}
+
+.app-dd-trigger-anchor {
+  display: inline-block;
+  max-width: 100%;
 }
 
 /* ---- Trigger ---- */

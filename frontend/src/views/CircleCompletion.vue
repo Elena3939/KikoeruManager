@@ -260,15 +260,61 @@
                 <ArrowDown v-else :size="12" class="release-sort-direction desc" />
               </button>
               <AppDropdown
-                v-model="statusFilters"
+                v-model="statusFilterModel"
                 multiple
                 :options="statusFilterOptions"
                 placeholder="状态筛选"
                 class="work-status-filter-dropdown"
-                :width="132"
-                :menu-min-width="180"
+                :width="148"
+                :menu-min-width="216"
                 :show-trigger-badge="false"
-              />
+                menu-class="circle-status-filter-menu"
+              >
+                <template #trigger="{ open, toggle, hasSelection }">
+                  <button
+                    type="button"
+                    class="status-filter-trigger"
+                    :class="{ 'is-open': open, 'is-placeholder': !hasSelection, 'has-overflow': statusFilterOverflowCount > 0 }"
+                    :title="statusFilterTriggerTitle"
+                    @click="toggle"
+                  >
+                    <span
+                      class="status-filter-trigger__content"
+                      :class="{ 'has-overflow': statusFilterOverflowCount > 0 }"
+                    >
+                      <span v-if="selectedStatusFilterOptions.length" class="status-filter-trigger__tags">
+                        <span
+                          v-for="option in statusFilterVisibleOptions"
+                          :key="option.value"
+                          class="status-filter-token"
+                        >{{ option.label }}</span>
+                      </span>
+                      <span v-else class="status-filter-trigger__placeholder">状态筛选</span>
+                    </span>
+                    <span v-if="statusFilterOverflowCount > 0" class="status-filter-overflow">+{{ statusFilterOverflowCount }}</span>
+                    <ChevronDown
+                      :size="13"
+                      :stroke-width="2.4"
+                      class="status-filter-trigger__caret"
+                      :class="{ 'is-open': open }"
+                    />
+                  </button>
+                </template>
+                <template #option="{ option, isActive }">
+                  <span class="status-filter-option">
+                    <span class="status-filter-option__label">{{ option.label }}</span>
+                    <span class="status-filter-option__meta">
+                      <span class="status-filter-option__count">{{ option.suffix ?? 0 }}</span>
+                      <Check
+                        v-if="isActive"
+                        :size="13"
+                        :stroke-width="2.6"
+                        class="status-filter-option__check"
+                      />
+                    </span>
+                  </span>
+                </template>
+              </AppDropdown>
               <div class="view-toggle-group">
                 <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'card' }" title="卡片视图" @click="viewMode = 'card'"><LayoutGrid :size="14" /></button>
                 <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'list' }" title="列表视图" @click="viewMode = 'list'"><List :size="14" /></button>
@@ -949,7 +995,7 @@ import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { CheckCircle2, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, BarChart3, Timer, Upload } from 'lucide-vue-next'
+import { Check, CheckCircle2, ChevronDown, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, BarChart3, Timer, Upload } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api, { asmrSyncApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
@@ -1022,6 +1068,10 @@ const statusFilterBaseOptions = [
   { value: 'missing', label: '未收录' },
   { value: 'no_source', label: '无源' },
 ]
+const statusFilterExclusiveGroups = [
+  ['downloadable', 'no_source'],
+  ['repairable', 'missing'],
+]
 const statusFilterOptions = computed(() => {
   const works = getStatusFilterScopeWorks()
   return statusFilterBaseOptions.map(option => ({
@@ -1029,6 +1079,48 @@ const statusFilterOptions = computed(() => {
     suffix: works.filter(item => itemMatchesStatusFilter(item, option.value)).length,
   }))
 })
+const statusFilterModel = computed({
+  get: () => statusFilters.value,
+  set: (next) => {
+    statusFilters.value = normalizeStatusFilters(next, statusFilters.value)
+  },
+})
+const selectedStatusFilterOptions = computed(() => {
+  const selected = Array.isArray(statusFilters.value) ? statusFilters.value : []
+  return statusFilterOptions.value.filter(option => selected.includes(option.value))
+})
+const statusFilterVisibleOptions = computed(() => (
+  selectedStatusFilterOptions.value.length <= 2
+    ? selectedStatusFilterOptions.value
+    : selectedStatusFilterOptions.value.slice(0, 1)
+))
+const statusFilterOverflowCount = computed(() => Math.max(
+  0,
+  selectedStatusFilterOptions.value.length - statusFilterVisibleOptions.value.length,
+))
+const statusFilterTriggerTitle = computed(() => (
+  selectedStatusFilterOptions.value.length
+    ? selectedStatusFilterOptions.value.map(option => option.label).join('、')
+    : '状态筛选'
+))
+
+function normalizeStatusFilters(next, previous = []) {
+  const allowed = new Set(statusFilterBaseOptions.map(option => option.value))
+  let values = [...new Set((Array.isArray(next) ? next : []).filter(value => allowed.has(value)))]
+  const previousValues = Array.isArray(previous) ? previous : []
+  const addedValue = values.find(value => !previousValues.includes(value))
+
+  for (const group of statusFilterExclusiveGroups) {
+    const selectedInGroup = values.filter(value => group.includes(value))
+    if (selectedInGroup.length <= 1) continue
+    const keepValue = addedValue && group.includes(addedValue)
+      ? addedValue
+      : selectedInGroup[selectedInGroup.length - 1]
+    values = values.filter(value => !group.includes(value) || value === keepValue)
+  }
+
+  return values
+}
 
 function resetCircleDetail() {
   Object.assign(detail, {
@@ -1217,12 +1309,23 @@ function isPreferredMissingWorkVisible(item) {
   return ['original', 'simplified', 'traditional'].includes(groupKey || 'original')
 }
 
+function isWorkUnreleased(item) {
+  if (item?.is_unreleased) return true
+  const value = String(item?.release_date || item?.date || item?.release_at || '').trim()
+  if (!value) return true
+  const m = value.match(/(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?/)
+  if (!m) return false
+  const rd = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3] || 1))
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  return rd > today
+}
+
 function itemMatchesStatusFilter(item, key) {
   switch (key) {
     case 'repairable':
       return Boolean(item?.subtitle_repairable)
     case 'downloadable':
-      return Boolean(item?.has_asmr_one)
+      return Boolean(item?.has_asmr_one) && !isWorkUnreleased(item)
     case 'missing':
       return !Boolean(item?.owned)
     case 'no_source':
@@ -4833,6 +4936,201 @@ function getUploadBackgroundTargetLabel(task) {
   gap: 12px;
   flex-shrink: 0;
 }
+.work-status-filter-dropdown {
+  flex-shrink: 0;
+}
+.status-filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 32px;
+  padding: 0 9px 0 11px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: 13px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.94) 100%);
+  color: #334155;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.035);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.status-filter-trigger:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(148, 163, 184, 0.92);
+  background: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 8px 18px rgba(15, 23, 42, 0.075);
+}
+.status-filter-trigger:active {
+  transform: scale(0.96);
+}
+.status-filter-trigger.is-open {
+  border-color: rgba(148, 163, 184, 0.96);
+  background: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 0 0 3px rgba(148, 163, 184, 0.13),
+    0 8px 18px rgba(15, 23, 42, 0.075);
+}
+.status-filter-trigger__content {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.status-filter-trigger__content.has-overflow::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.98) 100%);
+  pointer-events: none;
+}
+.status-filter-trigger__tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.status-filter-trigger__placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(100, 116, 139, 0.82);
+  font-size: 12px;
+  font-weight: 600;
+}
+.status-filter-token {
+  flex-shrink: 0;
+  min-width: 0;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: rgba(241, 245, 249, 0.92);
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  color: #334155;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  transition: all 0.2s ease;
+}
+.status-filter-overflow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.86);
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.status-filter-trigger__caret {
+  flex-shrink: 0;
+  color: #64748b;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.status-filter-trigger:hover .status-filter-trigger__caret {
+  color: #334155;
+  transform: translateY(-1px);
+}
+.status-filter-trigger__caret.is-open {
+  transform: rotate(180deg);
+  color: #334155;
+}
+.status-filter-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+}
+.status-filter-option__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+.status-filter-option__meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 56px;
+  flex-shrink: 0;
+}
+.status-filter-option__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 21px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.72);
+  border: 1px solid rgba(226, 232, 240, 0.78);
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.status-filter-option__check {
+  flex-shrink: 0;
+  color: #64748b;
+  opacity: 0.82;
+}
+:global(.circle-status-filter-menu.app-dd-menu) {
+  padding: 6px;
+  border-radius: 14px;
+  border-color: rgba(203, 213, 225, 0.92);
+  box-shadow:
+    0 20px 42px -18px rgba(15, 23, 42, 0.28),
+    0 8px 16px -12px rgba(15, 23, 42, 0.16);
+}
+:global(.circle-status-filter-menu .app-dd-item) {
+  min-height: 38px;
+  padding: 7px 9px 7px 10px;
+  border-radius: 10px;
+}
+:global(.circle-status-filter-menu .app-dd-item:hover) {
+  background: rgba(248, 250, 252, 0.98);
+}
+:global(.circle-status-filter-menu .app-dd-item.is-active) {
+  background: linear-gradient(90deg, rgba(248, 250, 252, 0.98) 0%, rgba(241, 245, 249, 0.58) 100%);
+  color: #0f172a;
+  font-weight: 600;
+}
+:global(.circle-status-filter-menu .app-dd-item.is-active:hover) {
+  background: linear-gradient(90deg, rgba(241, 245, 249, 0.98) 0%, rgba(226, 232, 240, 0.48) 100%);
+}
+:global(.circle-status-filter-menu .app-dd-item.is-active .status-filter-option__count) {
+  background: #ffffff;
+  border-color: rgba(203, 213, 225, 0.84);
+  color: #334155;
+}
 .filter-toggles {
   display: flex;
   align-items: center;
@@ -5724,7 +6022,7 @@ function getUploadBackgroundTargetLabel(task) {
   align-items: center;
 }
 .circle-tabs :deep(.el-tabs__nav-wrap) {
-  padding-right: 220px; /* 为右侧按钮留出空间 */
+  padding-right: 292px; /* 为右侧按钮留出空间 */
 }
 .circle-tabs :deep(.el-tabs__header) {
   margin: 0 0 12px;
@@ -6316,43 +6614,6 @@ function getUploadBackgroundTargetLabel(task) {
   justify-content: center;
   color: #6c7d95;
 }
-.compare-board {
-  border: 1px solid #e6edf7;
-  border-radius: 18px;
-  overflow: auto;
-  background: #fff;
-}
-.compare-head,
-.compare-row {
-  display: grid;
-  grid-template-columns: minmax(260px, 1.4fr) repeat(3, minmax(180px, 1fr));
-}
-.compare-head {
-  background: #f5f8fd;
-  border-bottom: 1px solid #e8eef6;
-  font-size: 12px;
-  font-weight: 800;
-  color: #61748d;
-}
-.compare-row + .compare-row {
-  border-top: 1px solid #eff3f8;
-}
-.compare-col {
-  padding: 14px 16px;
-  min-width: 0;
-}
-.compare-col + .compare-col {
-  border-left: 1px solid #eff3f8;
-}
-.compare-col.source.kikoeru {
-  background: rgba(239, 246, 255, 0.56);
-}
-.compare-col.source.dlsite {
-  background: rgba(255, 247, 237, 0.62);
-}
-.compare-col.source.asmr {
-  background: rgba(236, 253, 245, 0.66);
-}
 .compare-work-top {
   display: flex;
   align-items: center;
@@ -6459,10 +6720,6 @@ function getUploadBackgroundTargetLabel(task) {
   .download-settings-grid,
   .reimport-summary-grid {
     grid-template-columns: 1fr;
-  }
-  .compare-head,
-  .compare-row {
-    grid-template-columns: minmax(220px, 1.2fr) repeat(3, minmax(150px, 1fr));
   }
   /* .floating-card 已在全局 index.css 用 min(92vw, 420px) 自适应宽度，无需 mobile 覆盖 */
 }
