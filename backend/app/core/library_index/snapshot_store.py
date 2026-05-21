@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import Iterable, Iterator, Optional, Sequence, Union
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from ...models.database import (
@@ -32,8 +32,58 @@ from .types import (
     IndexStatusName,
     WatcherMode,
 )
+from .fts import (
+    FTS_TABLE_NAME,
+    build_library_index_fts_match_expression,
+    library_index_fts_enabled,
+    library_index_fts_ready_hint,
+    read_library_index_fts_tokenizer,
+    sanitize_library_index_search_text,
+)
 
 logger = logging.getLogger(__name__)
+
+_BULK_UPSERT_SQL = """
+INSERT INTO library_index_entries (
+    library_id,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+)
+VALUES (
+    :library_id,
+    :entry_type,
+    :relative_path,
+    :absolute_path,
+    :name,
+    :rjcode,
+    :parent_path,
+    :size,
+    :file_count,
+    :mtime,
+    :depth,
+    :indexed_at
+)
+ON CONFLICT(library_id, relative_path) DO UPDATE SET
+    entry_type = excluded.entry_type,
+    absolute_path = excluded.absolute_path,
+    name = excluded.name,
+    rjcode = excluded.rjcode,
+    parent_path = excluded.parent_path,
+    size = excluded.size,
+    file_count = excluded.file_count,
+    mtime = excluded.mtime,
+    depth = excluded.depth,
+    indexed_at = excluded.indexed_at
+"""
 
 
 def _now_ms() -> int:
@@ -105,30 +155,35 @@ class SnapshotStore:
     def bulk_upsert(self, entries: Iterable[IndexEntry], *, chunk_size: int = 500) -> int:
         """批量写入 / 更新，返回实际写入条数。
 
-        批次 1 实现用朴素 upsert 循环，批次 2 全量扫描落地时会改成
-        INSERT ... ON CONFLICT DO UPDATE 原生 SQL，以支撑几十万级数据。
+        主路径使用 SQLite 原生 UPSERT，避免逐条 SELECT + ORM 物化。
+        旧 SQLite / 异常环境下回退 `_upsert_one()`，保证用户现场可用。
         """
-        written = 0
-        buffer: list[IndexEntry] = []
+        deduped: dict[tuple[str, str], IndexEntry] = {}
+        for item in entries:
+            safe_item = _sqlite_safe_entry(item)
+            deduped[(safe_item.library_id, safe_item.relative_path)] = safe_item
+        if not deduped:
+            return 0
 
-        def _flush(db: Session) -> None:
-            nonlocal written
-            # 同一批次里如果出现了 relative_path 重复，按最后一个为准
-            deduped: dict[tuple[str, str], IndexEntry] = {}
-            for item in buffer:
-                deduped[(item.library_id, item.relative_path)] = item
-            for item in deduped.values():
+        chunk_size = max(1, int(chunk_size or 500))
+        payload = list(deduped.values())
+        try:
+            with self._session() as db:
+                for i in range(0, len(payload), chunk_size):
+                    chunk = payload[i:i + chunk_size]
+                    db.execute(
+                        text(_BULK_UPSERT_SQL),
+                        [self._entry_to_upsert_params(item) for item in chunk],
+                    )
+            return len(payload)
+        except Exception:
+            logger.warning("[索引] 原生批量 UPSERT 失败，回退逐条写入", exc_info=True)
+
+        written = 0
+        with self._session() as db:
+            for item in payload:
                 self._upsert_one(db, item)
                 written += 1
-            buffer.clear()
-
-        with self._session() as db:
-            for entry in entries:
-                buffer.append(entry)
-                if len(buffer) >= chunk_size:
-                    _flush(db)
-            if buffer:
-                _flush(db)
         return written
 
     def _upsert_one(self, db: Session, entry: IndexEntry) -> None:
@@ -169,6 +224,23 @@ class SnapshotStore:
             row.mtime = entry.mtime
             row.depth = entry.depth
             row.indexed_at = indexed_at
+
+    @staticmethod
+    def _entry_to_upsert_params(entry: IndexEntry) -> dict:
+        return {
+            "library_id": entry.library_id,
+            "entry_type": entry.entry_type,
+            "relative_path": entry.relative_path,
+            "absolute_path": entry.absolute_path,
+            "name": entry.name,
+            "rjcode": entry.rjcode,
+            "parent_path": entry.parent_path,
+            "size": entry.size or 0,
+            "file_count": entry.file_count or 0,
+            "mtime": entry.mtime,
+            "depth": entry.depth,
+            "indexed_at": entry.indexed_at or _now_ms(),
+        }
 
     # ========== Entry 删除 ==========
 
@@ -266,16 +338,12 @@ class SnapshotStore:
         entry_type: Optional[str] = None,
         limit: int = 200,
     ) -> list[IndexEntry]:
-        """按名称模糊搜索。
+        """按名称 / 路径 / RJ 号模糊搜索。
 
         关键性能优化：
-        - 之前用 `func.lower(name) LIKE`，会强制 SQLite 对每一行计算 LOWER()，
-          直接绕过 `idx_lie_library_name` 索引、做全表扫描，1M 级数据上要 5+ 秒。
-        - 改成 `name COLLATE NOCASE LIKE`：去掉了 per-row 函数调用，匹配方式
-          交给 SQLite 的 NOCASE 校对（对 ASCII 大小写不敏感，CJK 本身无大小写
-          所以无影响）。leading-wildcard 仍无法走 B-tree，但每行成本下降一个
-          数量级，总耗时显著改善。
-        - keyword 中的 `_` / `%` 做 escape，避免被当成 SQL 通配符。
+        - FTS5/trigram 可用时优先走 `library_index_entries_fts`，适合中文子串、
+          文件名片段、相对路径片段和 RJ 号搜索。
+        - FTS 不可用 / 查询失败时回退 LIKE，多列语义保持一致。
 
         library_id：
         - str → 仅该库存
@@ -284,34 +352,150 @@ class SnapshotStore:
         """
         if not name_like:
             return []
+        scope_ids = self._normalize_scope_ids(library_id)
+        with self._session() as db:
+            try:
+                fts_result = self._find_by_name_fts(
+                    db,
+                    scope_ids,
+                    name_like,
+                    entry_type=entry_type,
+                    limit=limit,
+                )
+                if fts_result is not None:
+                    return fts_result
+            except Exception:
+                logger.warning("[索引] FTS 搜索失败，回退 LIKE keyword=%r", name_like, exc_info=True)
+            return self._find_by_name_like(
+                db,
+                scope_ids,
+                name_like,
+                entry_type=entry_type,
+                limit=limit,
+            )
+
+    def _find_by_name_like(
+        self,
+        db: Session,
+        scope_ids: Optional[list[str]],
+        name_like: str,
+        *,
+        entry_type: Optional[str],
+        limit: int,
+    ) -> list[IndexEntry]:
         # 转义 SQL 通配符，让用户输入的 _ % 真正只匹配自身
         escaped = name_like.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
         pattern = f"%{escaped}%"
-        scope_ids: Optional[list[str]]
-        if library_id is None:
-            scope_ids = None
-        elif isinstance(library_id, str):
-            scope_ids = [library_id] if library_id else None
-        else:
-            scope_ids = [str(item) for item in library_id if item]
-            if not scope_ids:
-                scope_ids = None
-        with self._session() as db:
-            q = db.query(LibraryIndexEntry).filter(
+        q = db.query(LibraryIndexEntry).filter(
+            or_(
                 LibraryIndexEntry.name.collate('NOCASE').like(pattern, escape='\\'),
+                LibraryIndexEntry.relative_path.collate('NOCASE').like(pattern, escape='\\'),
+                LibraryIndexEntry.rjcode.collate('NOCASE').like(pattern, escape='\\'),
+                LibraryIndexEntry.parent_path.collate('NOCASE').like(pattern, escape='\\'),
             )
-            if scope_ids:
-                if len(scope_ids) == 1:
-                    q = q.filter(LibraryIndexEntry.library_id == scope_ids[0])
-                else:
-                    q = q.filter(LibraryIndexEntry.library_id.in_(scope_ids))
-            if entry_type:
-                q = q.filter(LibraryIndexEntry.entry_type == entry_type)
-            q = q.order_by(
-                LibraryIndexEntry.depth.asc(),
-                LibraryIndexEntry.name.asc(),
+        )
+        if scope_ids:
+            if len(scope_ids) == 1:
+                q = q.filter(LibraryIndexEntry.library_id == scope_ids[0])
+            else:
+                q = q.filter(LibraryIndexEntry.library_id.in_(scope_ids))
+        if entry_type:
+            q = q.filter(LibraryIndexEntry.entry_type == entry_type)
+        q = q.order_by(
+            LibraryIndexEntry.depth.asc(),
+            LibraryIndexEntry.name.asc(),
+            LibraryIndexEntry.relative_path.asc(),
+        )
+        return [self._row_to_entry(row) for row in q.limit(limit).all()]
+
+    def _find_by_name_fts(
+        self,
+        db: Session,
+        scope_ids: Optional[list[str]],
+        raw_keyword: str,
+        *,
+        entry_type: Optional[str],
+        limit: int,
+    ) -> Optional[list[IndexEntry]]:
+        conn = db.connection()
+        if library_index_fts_ready_hint() is False:
+            return None
+        if not library_index_fts_enabled(conn):
+            return None
+
+        tokenizer = read_library_index_fts_tokenizer(conn)
+        if not tokenizer:
+            return None
+
+        keyword = sanitize_library_index_search_text(raw_keyword)
+        if not keyword:
+            return []
+
+        params: dict[str, object] = {"limit": max(1, int(limit or 200))}
+        filters: list[str] = []
+        if scope_ids:
+            if len(scope_ids) == 1:
+                filters.append("e.library_id = :library_id_0")
+                params["library_id_0"] = scope_ids[0]
+            else:
+                placeholders = []
+                for idx, item in enumerate(scope_ids):
+                    key = f"library_id_{idx}"
+                    placeholders.append(f":{key}")
+                    params[key] = item
+                filters.append(f"e.library_id IN ({', '.join(placeholders)})")
+        if entry_type:
+            filters.append("e.entry_type = :entry_type")
+            params["entry_type"] = entry_type
+
+        tk = tokenizer.strip().lower()
+        if tk.startswith("trigram") and len(keyword) < 3:
+            params["pattern"] = f"%{keyword}%"
+            search_clause = (
+                f"({FTS_TABLE_NAME}.name LIKE :pattern "
+                f"OR {FTS_TABLE_NAME}.relative_path LIKE :pattern "
+                f"OR {FTS_TABLE_NAME}.rjcode LIKE :pattern "
+                f"OR {FTS_TABLE_NAME}.parent_path LIKE :pattern)"
             )
-            return [self._row_to_entry(row) for row in q.limit(limit).all()]
+        else:
+            match_expr = build_library_index_fts_match_expression(keyword, tokenizer)
+            if not match_expr:
+                return None
+            params["match_expr"] = match_expr
+            search_clause = f"{FTS_TABLE_NAME} MATCH :match_expr"
+
+        where_sql = " AND ".join([search_clause, *filters])
+        rows = db.execute(
+            text(
+                f"""
+                SELECT
+                    e.library_id AS library_id,
+                    e.entry_type AS entry_type,
+                    e.relative_path AS relative_path,
+                    e.absolute_path AS absolute_path,
+                    e.name AS name,
+                    e.rjcode AS rjcode,
+                    e.parent_path AS parent_path,
+                    e.size AS size,
+                    e.file_count AS file_count,
+                    e.mtime AS mtime,
+                    e.depth AS depth,
+                    e.indexed_at AS indexed_at
+                  FROM {FTS_TABLE_NAME}
+                  JOIN library_index_entries e ON e.id = {FTS_TABLE_NAME}.id
+                 WHERE {where_sql}
+                 ORDER BY e.depth ASC, e.name COLLATE NOCASE ASC, e.relative_path COLLATE NOCASE ASC
+                 LIMIT :limit
+                """
+            ),
+            params,
+        ).fetchall()
+
+        result = [self._mapping_to_entry(row._mapping) for row in rows]
+        # unicode61 对 CJK 子串较弱，空命中时回退 LIKE 保证搜索质量。
+        if not result and not tk.startswith("trigram"):
+            return None
+        return result
 
     def list_children(
         self,
@@ -495,6 +679,34 @@ class SnapshotStore:
             depth=row.depth,
             indexed_at=int(row.indexed_at or 0),
         )
+
+    @staticmethod
+    def _mapping_to_entry(row) -> IndexEntry:
+        return IndexEntry(
+            library_id=row["library_id"],
+            entry_type=row["entry_type"],
+            relative_path=row["relative_path"],
+            absolute_path=row["absolute_path"],
+            name=row["name"],
+            rjcode=row["rjcode"],
+            parent_path=row["parent_path"],
+            size=int(row["size"] or 0),
+            file_count=int(row["file_count"] or 0),
+            mtime=row["mtime"],
+            depth=row["depth"],
+            indexed_at=int(row["indexed_at"] or 0),
+        )
+
+    @staticmethod
+    def _normalize_scope_ids(
+        library_id: Optional[Union[str, Sequence[str]]],
+    ) -> Optional[list[str]]:
+        if library_id is None:
+            return None
+        if isinstance(library_id, str):
+            return [library_id] if library_id else None
+        scope_ids = [str(item) for item in library_id if item]
+        return scope_ids or None
 
     @staticmethod
     def _row_to_status(row: LibraryIndexStatus) -> IndexStatus:

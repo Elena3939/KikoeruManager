@@ -1553,6 +1553,14 @@ def init_db():
         # === Phase 2: activity_logs 迁移 ===
         _migrate_activity_logs_phase2(conn)
 
+        # === 库存索引 FTS5：只确保结构存在，老数据回填走后台线程 ===
+        try:
+            from ..core.library_index.fts import ensure_library_index_fts
+
+            ensure_library_index_fts(conn)
+        except Exception:
+            _db_logger.warning("[数据库] library_index_entries_fts 初始化失败（非致命）", exc_info=True)
+
         # === Phase 4A: activity_log_daily_stats 初次回填 ===
         _migrate_activity_log_daily_stats(conn)
 

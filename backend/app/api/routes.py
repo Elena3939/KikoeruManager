@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -51,6 +52,7 @@ app = FastAPI(
     description="DLsite作品整理工具API",
     version="1.0.0"
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # ========== 工具函数 ==========
 def _synology_http_status(exc: Exception) -> int:
@@ -1362,6 +1364,58 @@ def database_maintenance_shrink_reset():
     except Exception as e:
         logger.error(f"重置数据库瘦身状态失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"重置数据库瘦身状态失败: {str(e)}")
+
+
+@app.get("/api/database/maintenance/library-index-fts/status")
+def library_index_fts_maintenance_status():
+    """读取库存索引 FTS5 状态和后台重建进度。"""
+    from ..core.library_index.fts import (
+        get_library_index_fts_rebuild_state,
+        library_index_fts_status,
+    )
+
+    try:
+        info = library_index_fts_status()
+        rebuild = get_library_index_fts_rebuild_state()
+        return {
+            **info,
+            "state": rebuild.get("state"),
+            "total_entries": rebuild.get("total_entries", info.get("row_count", 0)),
+            "indexed_entries": rebuild.get("indexed_entries", info.get("fts_row_count", 0)),
+            "started_at": rebuild.get("started_at"),
+            "finished_at": rebuild.get("finished_at"),
+            "error": rebuild.get("error"),
+            "rebuild": rebuild,
+        }
+    except Exception as e:
+        logger.error(f"读取库存 FTS 状态失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取库存 FTS 状态失败: {str(e)}")
+
+
+@app.post("/api/database/maintenance/library-index-fts/rebuild")
+def trigger_library_index_fts_maintenance_rebuild(
+    target_tokenizer: Optional[str] = None,
+):
+    """后台重建库存索引 FTS5 表，用于首次回填或升级 trigram tokenizer。"""
+    from ..core.library_index.fts import (
+        FTS_PREFERRED_TOKENIZE,
+        library_index_fts_status,
+        trigger_library_index_fts_rebuild,
+    )
+
+    try:
+        desired = (target_tokenizer or FTS_PREFERRED_TOKENIZE).strip().lower()
+        info = library_index_fts_status()
+        if not info.get("fts_enabled"):
+            raise HTTPException(status_code=400, detail="当前 SQLite 不支持 FTS5，无法重建库存搜索索引")
+        if desired == FTS_PREFERRED_TOKENIZE and not info.get("trigram_supported"):
+            raise HTTPException(status_code=400, detail="当前 SQLite 不支持 trigram tokenizer（需要 ≥ 3.34.0）")
+        return trigger_library_index_fts_rebuild(target_tokenizer=desired)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"启动库存 FTS 重建失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动库存 FTS 重建失败: {str(e)}")
 
 
 @app.post("/api/activity-logs/backfill-auto-import-extract")

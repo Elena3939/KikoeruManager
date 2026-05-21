@@ -4408,6 +4408,17 @@ class TaskEngine:
             raise RuntimeError("社团索引未生成有效结果")
 
         summary_step = "批量社团索引完成" if is_batch else "社团索引完成"
+        successful_summaries = [item for item in batch_circle_summaries if item.get('success', True)]
+        aggregate_indexed_counts = {
+            'works': sum(int(item.get('works') or 0) for item in successful_summaries),
+            'local_owned_count': sum(int(item.get('local_owned_count') or 0) for item in successful_summaries),
+            'owned_count': sum(int(item.get('kikoeru_owned_count') or 0) for item in successful_summaries),
+            'dl_count': sum(int(item.get('dl_count') or 0) for item in successful_summaries),
+            'asmr_available_count': sum(int(item.get('asmr_available_count') or 0) for item in successful_summaries),
+            'downloadable_count': sum(int(item.get('downloadable_count') or 0) for item in successful_summaries),
+            'missing_count': sum(int(item.get('missing_count') or 0) for item in successful_summaries),
+        }
+        final_indexed_counts = aggregate_indexed_counts if is_batch else dict(last_successful_result.get('indexed_counts') or {})
         task.task_metadata = {
             **(task.task_metadata or {}),
             'circle_query': str((last_successful_result.get('summary') or {}).get('circle_name') or normalized_circle_queries[0]),
@@ -4416,9 +4427,15 @@ class TaskEngine:
             'index_result': last_successful_result,
             'index_batch_results': batch_results,
             'batch_circle_summaries': batch_circle_summaries,
-            'indexed_counts': dict(last_successful_result.get('indexed_counts') or {}),
+            'indexed_counts': final_indexed_counts,
             'index_meta': {
                 **dict((task.task_metadata or {}).get('index_meta') or {}),
+                **({
+                    'combined_candidates_count': aggregate_indexed_counts.get('works'),
+                    'aggregated_count': aggregate_indexed_counts.get('works'),
+                    'dlsite_candidates_count': aggregate_indexed_counts.get('dl_count'),
+                    'asmr_available_count': aggregate_indexed_counts.get('asmr_available_count'),
+                } if is_batch else {}),
                 'batch_total': total_queries,
                 'completed_queries': success_count,
                 'failed_queries': failed_count,
