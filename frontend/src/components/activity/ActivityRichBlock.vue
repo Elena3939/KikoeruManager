@@ -569,7 +569,7 @@
       <span
         v-for="b in circleIndexModel.sourceBreakdown"
         :key="`cibd-${b.key}`"
-        class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60"
+        class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60"
       >{{ b.label }}<span class="tabular-nums opacity-70">{{ b.count }}</span></span>
     </div>
     <div class="flex items-center gap-2 flex-wrap mb-2.5">
@@ -579,15 +579,22 @@
           v-model="compareSearchQuery"
           type="text"
           placeholder="搜索 RJ / 标题 / Tag..."
-          class="w-full pl-7 pr-3 py-1.5 text-[12px] rounded-md bg-white ring-1 ring-inset ring-slate-200/70 focus:ring-sky-300/70 focus:outline-none transition-all placeholder:text-slate-400"
+          class="w-full pl-7 pr-3 py-1.5 text-[12px] rounded-[6px] bg-white ring-1 ring-inset ring-slate-200/70 focus:ring-sky-300/70 focus:outline-none transition-all placeholder:text-slate-400"
         >
       </div>
+      <AppDropdown
+        v-model="compareVariantFilter"
+        :options="CIRCLE_VARIANT_FILTERS"
+        label="版本"
+        :width="150"
+        :menu-min-width="150"
+      />
       <div class="flex flex-wrap gap-1">
         <button
           v-for="f in CIRCLE_SOURCE_FILTERS"
           :key="`cif-${f.value}`"
           type="button"
-          class="px-2.5 py-1 rounded-md text-[11px] font-medium tracking-tight transition-all"
+          class="px-2.5 py-1 rounded-[6px] text-[11px] font-medium tracking-tight transition-all"
           :class="compareSourceFilter === f.value
             ? 'bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-200/70 shadow-sm'
             : 'text-slate-600 hover:bg-slate-50 ring-1 ring-inset ring-transparent'"
@@ -599,24 +606,26 @@
       <li
         v-for="work in filteredCircleIndexRows"
         :key="`cir-${work.canonical_rjcode || work.workRjcode}`"
-        class="px-3 py-2 rounded-lg bg-white ring-1 ring-inset ring-slate-200/50 hover:ring-slate-300/70 transition-all"
+        class="px-4.5 py-3.5 rounded-[10px] bg-white ring-1 ring-inset ring-slate-200/40 hover:ring-slate-300/60 hover:shadow-sm transition-all"
       >
         <div class="flex items-center gap-2 flex-wrap mb-1">
-          <span class="inline-flex items-center px-1.5 py-[2px] rounded text-[11px] font-mono font-semibold tracking-tight bg-slate-100/70 text-slate-700 ring-1 ring-inset ring-slate-200/60">{{ work.display_rjcode || work.workRjcode || work.canonical_rjcode || '—' }}</span>
+          <span class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[11px] font-mono font-semibold tracking-tight bg-slate-100/70 text-slate-700 ring-1 ring-inset ring-slate-200/60">{{ work.display_rjcode || work.workRjcode || work.canonical_rjcode || '—' }}</span>
           <span class="flex-1 min-w-0 truncate text-[12.5px] font-semibold text-slate-800">{{ work.title || '未命名作品' }}</span>
           <span
             v-if="work.statusLabel"
-            class="shrink-0 inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset"
+            class="shrink-0 inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset"
             :class="circleFlagClasses(work.statusKey === 'owned' ? 'is-owned' : (work.statusKey === 'missing' ? 'is-missing' : (work.statusKey === 'partial' ? 'is-partial' : '')))"
           >{{ work.statusLabel }}</span>
         </div>
         <div class="flex flex-wrap gap-1">
-          <span v-if="work.variantTypeTag" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">{{ work.variantTypeTag }}</span>
-          <span v-if="work.hasSubtitleTag" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">字幕</span>
-          <span v-if="work.sourceCompare.kikoeru.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">Kikoeru<span v-if="work.sourceCompare.kikoeru.primaryBadge"> · {{ work.sourceCompare.kikoeru.primaryBadge }}</span></span>
-          <span v-if="work.sourceCompare.dlsite.all_rjcodes.length" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('warn')">DLsite × {{ work.sourceCompare.dlsite.all_rjcodes.length }}</span>
-          <span v-if="work.sourceCompare.asmr_one.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">asmr.one<span v-if="work.sourceCompare.asmr_one.primaryBadge"> · {{ work.sourceCompare.asmr_one.primaryBadge }}</span></span>
-          <span v-if="!work.sourceCompare.kikoeru.primary_rjcode && !work.sourceCompare.dlsite.all_rjcodes.length && !work.sourceCompare.asmr_one.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('neutral')">暂无来源</span>
+          <span v-if="work.variantTypeTag" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">{{ work.variantTypeTag }}</span>
+          <span v-if="work.isBonusWork" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('warn')">特典</span>
+          <span v-if="work.variantTypeTag === '原作'" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses(work.originalSubtitlePresent ? 'success' : 'neutral')">{{ work.originalSubtitlePresent ? '原作字幕' : '原作无字幕' }}</span>
+          <span v-if="work.hasSubtitleTag" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">字幕</span>
+          <span v-if="work.sourceCompare.kikoeru.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">Kikoeru<span v-if="work.sourceCompare.kikoeru.primaryBadge"> · {{ work.sourceCompare.kikoeru.primaryBadge }}</span></span>
+          <span v-if="work.sourceCompare.dlsite.all_rjcodes.length" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('warn')">DLsite × {{ work.sourceCompare.dlsite.all_rjcodes.length }}</span>
+          <span v-if="work.sourceCompare.asmr_one.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">asmr.one<span v-if="work.sourceCompare.asmr_one.primaryBadge"> · {{ work.sourceCompare.asmr_one.primaryBadge }}</span></span>
+          <span v-if="!work.sourceCompare.kikoeru.primary_rjcode && !work.sourceCompare.dlsite.all_rjcodes.length && !work.sourceCompare.asmr_one.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('neutral')">暂无来源</span>
         </div>
       </li>
     </ul>
@@ -661,81 +670,97 @@
     </ul>
   </section>
 
-  <!-- 社团补全：分组的作品命中（index_completed 输出） -->
-  <section
-    v-for="section in workSections"
-    :key="`work-section-${section.key}`"
-    class="panel"
-  >
-    <div class="panel-head">
-      <Users :size="13" :stroke-width="2.4" />
-      <span>{{ section.label || section.key }}</span>
-      <span class="panel-head-count">{{ section.rows.length }}</span>
-      <span v-if="section.description" class="panel-meta">{{ section.description }}</span>
-      <button
-        v-if="section.rows.length > 6"
-        class="panel-toggle"
-        type="button"
-        @click="toggleSectionLimit(section.key)"
-      >
-        {{ isSectionExpanded(section.key) ? '收起' : '展开全部' }}
-      </button>
-    </div>
-    <ul class="circle-list">
-      <li
-        v-for="(work, idx) in workSectionVisibleRows(section)"
-        :key="`${section.key}-${work.canonical_rjcode || idx}`"
-        class="circle-item"
-        :class="statusItemClass(work.status_key)"
-      >
-        <div class="circle-head">
-          <span class="inline-flex items-center px-1.5 py-[2px] rounded text-[11px] font-mono font-semibold tracking-tight bg-slate-100/70 text-slate-700 ring-1 ring-inset ring-slate-200/60">{{ work.display_rjcode || work.work_rjcode || work.canonical_rjcode || '—' }}</span>
-          <span class="circle-title">{{ work.title || '未命名作品' }}</span>
-          <span v-if="work.status_label" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="circleFlagClasses(statusBadgeClass(work.status_key))">{{ work.status_label }}</span>
-        </div>
-        <div class="circle-sources">
-          <span v-if="work.variant_type_tag" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">{{ work.variant_type_tag }}</span>
-          <span v-if="work.has_subtitle_tag" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">字幕</span>
-          <span v-if="workSrc(work).kikoeru" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')" :title="workSrc(work).kikoeruTitle">Kikoeru<span v-if="workSrc(work).kikoeruBadge"> · {{ workSrc(work).kikoeruBadge }}</span></span>
-          <span v-if="workSrc(work).dlsiteCount" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('warn')">DLsite × {{ workSrc(work).dlsiteCount }}</span>
-          <span v-if="workSrc(work).asmr" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">asmr.one<span v-if="workSrc(work).asmrBadge"> · {{ workSrc(work).asmrBadge }}</span></span>
-        </div>
-      </li>
-    </ul>
-  </section>
-
   <!-- 社团补全：刷新结果 -->
   <section
-    v-if="circleRefreshItems.length"
+    v-if="circleRefreshModel"
     class="panel"
   >
     <div class="panel-head">
       <RefreshCw :size="13" :stroke-width="2.4" />
-      <span>本次更新</span>
-      <span class="panel-head-count">{{ circleRefreshItems.length }}</span>
-      <button
-        v-if="circleRefreshItems.length > circleRefreshLimit"
-        class="panel-toggle"
-        type="button"
-        @click="circleRefreshLimit = circleRefreshLimit === 6 ? circleRefreshItems.length : 6"
-      >
-        {{ circleRefreshLimit === 6 ? '展开全部' : '收起' }}
-      </button>
+      <span>本次刷新</span>
+      <span class="panel-head-count">{{ circleRefreshModel.refreshedCount }}</span>
     </div>
-    <ul class="circle-list">
+    <div class="flex flex-wrap gap-1.5 mb-2.5">
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-sky-50/80 text-sky-700 ring-1 ring-inset ring-sky-200/60">选中<span class="tabular-nums opacity-70">{{ circleRefreshModel.selectedCount }}</span></span>
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-emerald-50/80 text-emerald-700 ring-1 ring-inset ring-emerald-200/60">已刷新<span class="tabular-nums opacity-70">{{ circleRefreshModel.refreshedCount }}</span></span>
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-amber-50/80 text-amber-700 ring-1 ring-inset ring-amber-200/60">有变化<span class="tabular-nums opacity-70">{{ circleRefreshModel.changedCount }}</span></span>
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-violet-50/80 text-violet-700 ring-1 ring-inset ring-violet-200/60">服务器已有<span class="tabular-nums opacity-70">{{ circleRefreshModel.serverMatchedCount }}</span></span>
+    </div>
+    <div class="flex flex-wrap gap-1 mb-2.5">
+      <button
+        v-for="f in CIRCLE_REFRESH_FILTERS"
+        :key="`crf-${f.value}`"
+        type="button"
+        class="px-2.5 py-1 rounded-[6px] text-[11px] font-medium tracking-tight transition-all"
+        :class="circleRefreshFilter === f.value
+          ? 'bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-200/70 shadow-sm'
+          : 'text-slate-600 hover:bg-slate-50 ring-1 ring-inset ring-transparent'"
+        @click="setCircleRefreshFilter(f.value)"
+      >{{ f.label }}</button>
+    </div>
+    <ul class="m-0 p-0 list-none flex flex-col gap-1.5 max-h-[480px] overflow-y-auto pr-1">
       <li
-        v-for="(item, idx) in circleRefreshItems.slice(0, circleRefreshLimit)"
-        :key="`${item.canonical_rjcode || idx}`"
-        class="circle-item"
-        :class="{ 'is-changed': item.changed }"
+        v-for="item in pagedCircleRefreshItems"
+        :key="`crfi-${item.canonical_rjcode}`"
+        class="px-4.5 py-3.5 rounded-[10px] bg-white ring-1 ring-inset ring-slate-200/40 hover:ring-slate-300/60 hover:shadow-sm transition-all"
       >
-        <div class="circle-head">
-          <span class="inline-flex items-center px-1.5 py-[2px] rounded text-[11px] font-mono font-semibold tracking-tight bg-slate-100/70 text-slate-700 ring-1 ring-inset ring-slate-200/60">{{ item.display_rjcode || item.canonical_rjcode }}</span>
-          <span class="circle-title">{{ item.title || item.display_rjcode || '—' }}</span>
-          <span v-if="item.changed" class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-bold tracking-wider ring-1 ring-inset" :class="circleFlagClasses('is-new')">NEW</span>
+        <div class="flex items-center gap-2 flex-wrap mb-1">
+          <span class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[11px] font-mono font-semibold tracking-tight bg-slate-100/70 text-slate-700 ring-1 ring-inset ring-slate-200/60">{{ item.display_rjcode || item.canonical_rjcode }}</span>
+          <span class="flex-1 min-w-0 truncate text-[12.5px] font-semibold text-slate-800">{{ item.title || '未命名作品' }}</span>
+          <span v-if="item.changed" class="shrink-0 inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-bold tracking-wider ring-1 ring-inset" :class="circleFlagClasses('is-new')">NEW</span>
+          <span
+            class="shrink-0 inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset"
+            :class="circleFlagClasses(item.resultStatus === 'owned' ? 'is-owned' : (item.resultStatus === 'missing' ? 'is-missing' : ''))"
+          >{{ item.resultLabel }}</span>
         </div>
+        <div class="flex flex-wrap gap-1">
+          <span v-if="item.preferred_variant_label" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">{{ item.preferred_variant_label }}</span>
+          <span v-if="item.subtitlePresent" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">字幕</span>
+          <span v-if="item.serverMatchPrimaryRjcode" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-mono font-semibold tracking-tight ring-1 ring-inset" :class="srcTagClasses('info')">Kikoeru · {{ item.serverMatchPrimaryRjcode }}</span>
+          <span v-if="item.asmrAvailableRjcode" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-mono font-semibold tracking-tight ring-1 ring-inset" :class="srcTagClasses('success')">asmr.one · {{ item.asmrAvailableRjcode }}</span>
+        </div>
+        <ul v-if="item.changeDetails.length" class="m-0 p-0 list-none flex flex-col gap-0.5 mt-1.5 pt-1.5 border-t border-slate-100">
+          <li
+            v-for="change in item.changeDetails"
+            :key="`crfc-${item.canonical_rjcode}-${change.key}`"
+            class="flex items-center gap-1.5 text-[11px] text-slate-600 flex-wrap"
+          >
+            <ArrowRightLeft :size="10" :stroke-width="2.4" class="text-amber-500 shrink-0" />
+            <span class="font-semibold text-slate-700 tracking-tight">{{ change.label }}</span>
+            <span class="text-slate-400">{{ formatRefreshChangeValue(change.before) }}</span>
+            <ChevronRight :size="10" :stroke-width="2.4" class="text-slate-300" />
+            <span class="text-slate-700 font-medium">{{ formatRefreshChangeValue(change.after) }}</span>
+          </li>
+        </ul>
       </li>
     </ul>
+    <p v-if="pagedCircleRefreshItems.length === 0" class="text-[12px] text-slate-500 text-center py-4">当前筛选条件下没有结果</p>
+    <div
+      v-if="circleRefreshModel.items.length > circleRefreshPageSize"
+      class="flex items-center justify-between gap-2 mt-2.5 pt-2 border-t border-slate-100"
+    >
+      <span class="text-[11px] text-slate-500 tabular-nums">第 {{ circleRefreshPage }} / {{ Math.max(1, Math.ceil(circleRefreshModel.items.length / circleRefreshPageSize)) }} 页 · 共 {{ circleRefreshModel.items.length }} 项</span>
+      <div class="flex gap-1">
+        <button
+          type="button"
+          class="px-2 py-1 rounded-md text-[11px] font-medium ring-1 ring-inset transition-all"
+          :class="circleRefreshPage > 1
+            ? 'text-slate-700 bg-white ring-slate-200/70 hover:bg-slate-50'
+            : 'text-slate-300 bg-slate-50/50 ring-slate-100 cursor-not-allowed'"
+          :disabled="circleRefreshPage <= 1"
+          @click="setCircleRefreshPage(circleRefreshPage - 1)"
+        >上一页</button>
+        <button
+          type="button"
+          class="px-2 py-1 rounded-md text-[11px] font-medium ring-1 ring-inset transition-all"
+          :class="circleRefreshPage < Math.ceil(circleRefreshModel.items.length / circleRefreshPageSize)
+            ? 'text-slate-700 bg-white ring-slate-200/70 hover:bg-slate-50'
+            : 'text-slate-300 bg-slate-50/50 ring-slate-100 cursor-not-allowed'"
+          :disabled="circleRefreshPage >= Math.ceil(circleRefreshModel.items.length / circleRefreshPageSize)"
+          @click="setCircleRefreshPage(circleRefreshPage + 1)"
+        >下一页</button>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -748,6 +773,7 @@ import {
   Layers, Mail, RefreshCw, Search, SlidersHorizontal, Sparkles,
   Upload, Users
 } from 'lucide-vue-next'
+import AppDropdown from '../common/AppDropdown.vue'
 import { useActivityDetailModels } from '../../composables/useActivityDetailModels'
 
 const props = defineProps({
@@ -823,12 +849,39 @@ const filteredCircleIndexRows = m.filteredCircleIndexRows
 const circleIndexSummary = m.circleIndexSummary
 const compareSearchQuery = m.compareSearchQuery
 const compareSourceFilter = m.compareSourceFilter
+const compareVariantFilter = m.compareVariantFilter
+
+// 社团本次刷新相关 refs / computeds
+const circleRefreshModel = m.circleRefreshModel
+const pagedCircleRefreshItems = m.pagedCircleRefreshItems
+const circleRefreshFilter = m.circleRefreshFilter
+const circleRefreshPage = m.circleRefreshPage
+const circleRefreshPageSize = m.circleRefreshPageSize
+const setCircleRefreshFilter = m.setCircleRefreshFilter
+const setCircleRefreshPage = m.setCircleRefreshPage
+const formatRefreshChangeValue = m.formatRefreshChangeValue
+
+const CIRCLE_REFRESH_FILTERS = [
+  { value: 'all', label: '全部' },
+  { value: 'changed', label: '有变化' },
+  { value: 'unchanged', label: '无变化' }
+]
 
 const CIRCLE_SOURCE_FILTERS = [
   { value: 'all', label: '全部' },
   { value: 'kikoeru', label: 'Kikoeru' },
   { value: 'dlsite', label: 'DLsite' },
   { value: 'asmr_one', label: 'asmr.one' }
+]
+
+const CIRCLE_VARIANT_FILTERS = [
+  { value: 'all', label: '全部' },
+  { value: 'simp', label: '简体' },
+  { value: 'trad', label: '繁体' },
+  { value: 'original', label: '原作' },
+  { value: 'bonus', label: '特典' },
+  { value: 'original_subtitle', label: '原作有字幕' },
+  { value: 'original_no_subtitle', label: '原作无字幕' }
 ]
 
 // 抛出导航事件给父级（ActivityHistory.vue 里再 router.push）
@@ -919,8 +972,6 @@ const filterItemsLimit = ref(8)
 const asmrUploadLimit = ref(6)
 const extractLimit = ref(8)
 const circleIndexLimit = ref(8)
-const circleRefreshLimit = ref(6)
-const workSectionLimits = ref({})
 
 const detail = computed(() => {
   const d = props.row?.detail
@@ -985,116 +1036,6 @@ const circleIndexRows = computed(() => {
     asmr_one_primary_rjcode: item?.sourceCompare?.asmr_one?.primary_rjcode
   }))
 })
-
-const circleRefreshItems = computed(() => {
-  if (category.value !== 'circle_completion') return []
-  const arr = Array.isArray(detail.value.circle_refresh_items) ? detail.value.circle_refresh_items : []
-  return arr
-})
-
-// ===== 社团索引：work_sections =====
-// 用户诉求：下方“原作优先 / 其他语言”分组是冗余信息，
-// 顶部主列表已经能看到完整作品 + 类型 tag，这两个 section 直接不渲染。
-// 同时把每个 section 里的 ENG 版本作品过滤掉，与顶部主列表保持一致。
-const HIDDEN_WORK_SECTION_KEYS = new Set(['original', 'other'])
-const ENG_VARIANT_RE = /(\bENG\b|英文|english)/i
-
-function deriveVariantTypeTag(label) {
-  const text = String(label || '').trim()
-  if (!text) return ''
-  if (/简中/.test(text)) return '翻译作·简中'
-  if (/繁中/.test(text)) return '翻译作·繁中'
-  if (/原版|日文原版|\bJPN\b/i.test(text)) return '原作'
-  return text.replace(/^优先版本\s*/, '') || text
-}
-
-const workSections = computed(() => {
-  if (category.value !== 'circle_completion') return []
-  const arr = Array.isArray(detail.value.work_sections) ? detail.value.work_sections : []
-  return arr
-    .map(section => {
-      const key = String(section?.key || '')
-      if (HIDDEN_WORK_SECTION_KEYS.has(key)) {
-        return null
-      }
-      const rawRows = Array.isArray(section?.rows) ? section.rows : []
-      // 过滤 ENG 版本，并就地补出 variantTypeTag / hasSubtitleTag，与顶部主列表口径一致
-      const rows = rawRows
-        .filter(row => !ENG_VARIANT_RE.test(String(row?.preferred_variant_label || '')))
-        .map(row => {
-          const kikoeruTags = Array.isArray(row?.source_compare?.kikoeru?.tags)
-            ? row.source_compare.kikoeru.tags
-            : []
-          return {
-            ...row,
-            variant_type_tag: deriveVariantTypeTag(row?.preferred_variant_label),
-            has_subtitle_tag: kikoeruTags.includes('字幕') || Boolean(row?.source_compare?.kikoeru?.subtitle_present)
-          }
-        })
-      return {
-        key,
-        label: section?.label || key,
-        description: section?.description || '',
-        count: rows.length,
-        rows
-      }
-    })
-    .filter(section => section && section.rows.length > 0)
-})
-
-function isSectionExpanded(key) {
-  return Boolean(workSectionLimits.value[key])
-}
-
-function toggleSectionLimit(key) {
-  workSectionLimits.value = {
-    ...workSectionLimits.value,
-    [key]: !workSectionLimits.value[key]
-  }
-}
-
-function workSectionVisibleRows(section) {
-  if (!section || !Array.isArray(section.rows)) return []
-  if (isSectionExpanded(section.key)) return section.rows
-  return section.rows.slice(0, 6)
-}
-
-function statusBadgeClass(statusKey) {
-  const key = String(statusKey || '')
-  if (key === 'owned' || key === 'available') return 'is-owned'
-  if (key === 'missing' || key === 'unavailable') return 'is-missing'
-  if (key === 'partial') return 'is-partial'
-  return ''
-}
-
-function statusItemClass(statusKey) {
-  const key = String(statusKey || '')
-  if (key === 'owned' || key === 'available') return 'status-owned'
-  if (key === 'missing' || key === 'unavailable') return 'status-missing'
-  return ''
-}
-
-function parseRjcodeList(value) {
-  if (Array.isArray(value)) return value.filter(Boolean)
-  if (typeof value !== 'string') return []
-  return value.trim().split(/\s+/).filter(Boolean)
-}
-
-function workSrc(work) {
-  const sc = work?.source_compare || {}
-  const k = sc.kikoeru || {}
-  const d = sc.dlsite || {}
-  const a = sc.asmr_one || {}
-  const dlList = parseRjcodeList(d.all_rjcodes)
-  return {
-    kikoeru: Boolean(k.primary_rjcode),
-    kikoeruBadge: k.primary_badge || '',
-    kikoeruTitle: k.matched_rjcodes ? `已匹配: ${k.matched_rjcodes}` : '',
-    dlsiteCount: dlList.length,
-    asmr: Boolean(a.primary_rjcode),
-    asmrBadge: a.primary_badge || ''
-  }
-}
 
 // ===== 工具 =====
 function formatBytes(size) {

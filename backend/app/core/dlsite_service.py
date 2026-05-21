@@ -9,6 +9,7 @@ import httpx
 import inspect
 import json
 import logging
+import os
 import random
 import re
 from typing import Any, Dict, List, Optional, Set
@@ -78,6 +79,101 @@ class LinkedWork:
             'lang': self.lang,
             'title': self.title
         }
+
+
+@dataclass
+class DLsiteWorkSummary:
+    """DLsite maker 主页 / announce 列表 HTML 上能直接看到的作品摘要。
+
+    设计目标：
+
+    - **零 product/info/ajax 调用**：纯靠列表 HTML 上 ``data-product_id`` /
+      作品标题 / 作品类型 chip / category icon 等字段就能在 ``_collect_dlsite_circle_candidates``
+      上反过滤掉漫画 / CG / 游戏 / 视频类作品，让 ``fetch_candidate`` 后面只在
+      ASMR 候选上跑昂贵的 metadata 拉取。
+    - **不替代 metadata**：列表页 HTML 信号噪音大、字段缺失常见，仍是弱信号；
+      ``is_probably_audio`` 三态语义为：
+        - ``True``：列表层 90%+ 把握是音声作品（带 SOU/audio 标签 / 文件标识 / 标题里有强信号词）。
+        - ``False``：列表层强信号判定为非音声（manga/cg/RPG 等明确文件 type / category）。
+        - ``None``：列表层没有足够信号，必须 fallback 到旧的 product/info/ajax 校验。
+
+    历史现场（重构前）：大社团每个 RJ 都要先打 ``product.json`` + ``product/info/ajax``
+    才能判定是否音声作品。RaRo 社团 362 件作品里只有 ~58% 是音声，但所有 362 件都得
+    打两次 API，HTTP 量 720+ 次。新流程只对列表层 ``is_probably_audio is None``
+    的 RJ 才进入 metadata 链路，预期能省 50-70% 的列表阶段 HTTP。
+    """
+    workno: str
+    title: str = ""
+    maker_id: str = ""
+    maker_name: str = ""
+    category_label: str = ""  # 列表 HTML 上的 work_category chip 文案（"音声" / "ボイス・ASMR" / "漫画" 等）
+    work_type_code: str = ""  # 列表 HTML 上的 work_type code，如 SOU / RPG / ICG
+    file_format_labels: List[str] = field(default_factory=list)  # 文件形态 chip 文案（"音声" / "WAV" / "mp4" 等）
+    icon_classes: List[str] = field(default_factory=list)  # work-category icon CSS class，如 "type_SOU" / "type_RPG"
+    cover_url: str = ""
+    is_probably_audio: Optional[bool] = None  # 列表层判定：True 音声 / False 非音声 / None 不确定
+    classification_reason: str = ""  # 为什么判 True/False，纯调试用
+
+    def to_dict(self) -> dict:
+        return {
+            'workno': self.workno,
+            'title': self.title,
+            'maker_id': self.maker_id,
+            'maker_name': self.maker_name,
+            'category_label': self.category_label,
+            'work_type_code': self.work_type_code,
+            'file_format_labels': list(self.file_format_labels),
+            'icon_classes': list(self.icon_classes),
+            'cover_url': self.cover_url,
+            'is_probably_audio': self.is_probably_audio,
+            'classification_reason': self.classification_reason,
+        }
+
+
+# ============ 列表页 summary 分类规则（用于 _classify_listing_summary_audio） ============
+# 命中即判 True。这些都是 DLsite 列表 chip / icon 上专属于音声 / ASMR 作品的强信号。
+# 注意：``ASMR`` 也是一种音声分类标签，列表层有专属 chip；不需要靠正文 tag 强匹配。
+_LISTING_AUDIO_WORK_TYPE_CODES: Set[str] = {"SOU"}
+_LISTING_AUDIO_ICON_CLASSES: Set[str] = {"type_SOU", "type_ASMR", "work_audio"}
+_LISTING_AUDIO_CATEGORY_KEYWORDS: List[str] = [
+    "音声",        # JP "音声作品"
+    "ボイス",      # JP "ボイス・ASMR"
+    "asmr",        # ENG ASMR chip
+    "音声作品",
+    "drama",       # drama cd 类
+]
+_LISTING_AUDIO_FILE_FORMAT_KEYWORDS: List[str] = [
+    "mp3",
+    "wav",
+    "flac",
+    "ogg",
+    "aac",
+    "m4a",
+    "音声",
+]
+
+# 命中即判 False。这些是列表 chip / icon 上专属于非音声作品的强信号。
+# 命中后会让 _classify_listing_summary_audio 直接返回 False，跳过 metadata。
+_LISTING_NON_AUDIO_WORK_TYPE_CODES: Set[str] = {
+    "RPG", "ADV", "SLN", "TBL", "ACN", "STG", "PZL", "QIZ", "ETC",  # 游戏类
+    "ICG", "MNG", "CMC", "DNV",  # 漫画 / 插画 / 数字小说
+    "MOV", "VCM",  # 视频 / 动画 / 实拍
+    "GAM",  # 通用游戏
+}
+_LISTING_NON_AUDIO_ICON_CLASSES: Set[str] = {
+    "type_RPG", "type_ADV", "type_SLN", "type_TBL",
+    "type_ACN", "type_STG", "type_PZL", "type_QIZ",
+    "type_ETC", "type_ICG", "type_MNG", "type_CMC",
+    "type_DNV", "type_MOV", "type_VCM", "type_GAM",
+    "work_game", "work_comic", "work_video",
+}
+_LISTING_NON_AUDIO_CATEGORY_KEYWORDS: List[str] = [
+    "漫画", "manga", "cg", "插画", "插畫", "イラスト",
+    "ゲーム", "rpg", "アドベンチャー",
+    "动画", "動画", "video", "mov", "实拍",
+    "小説", "小说", "novel", "テキスト",
+    "ボイスドラマ動画",
+]
 
 
 class DLsiteApiService:
@@ -245,6 +341,189 @@ class DLsiteApiService:
                 seen.add(workno)
                 result.append(workno)
         return result
+
+    def _extract_summaries_from_listing_html(self, text: str) -> List[DLsiteWorkSummary]:
+        """从 DLsite maker 主页 / announce 列表页 HTML 提取每个 RJ 的 ``DLsiteWorkSummary``。
+
+        策略：
+
+        - 用 ``<li class="search_result_img_box_inner"> ... </li>`` 这种作品卡片块的边界
+          切分 HTML，每一段对应一个 RJ。对每段单独跑字段级正则，避免跨作品串字段。
+        - 切分失败 / 块少时 fallback 到 ``_extract_worknos_from_listing_html`` —— 这意味着
+          列表层没有 summary 增益，下游会全部走 ``is_probably_audio=None`` 进 metadata 链路，
+          降级为旧行为，不会出错。
+
+        提取的字段：
+
+        - ``workno``：必填，从 ``data-product_id`` / href 上 ``product_id/RJ...`` 二选一。
+        - ``title``：作品名链接的 ``alt`` 属性或锚文本。
+        - ``category_label`` / ``work_type_code`` / ``icon_classes``：DLsite 列表 chip 上的
+          ``work_category`` / ``work_type`` 文案 / icon class。
+        - ``file_format_labels``：``work_file_format`` chip 数组（实测主要 announce 列表才有）。
+
+        所有字段缺失时回 dataclass 默认值，下游 ``_classify_listing_summary_audio`` 会自动
+        转成 ``None`` 让 fallback 接管。
+        """
+        if not text:
+            return []
+        chunks: List[str] = []
+        for pattern in [
+            # maker_profile 经典 PC 模板
+            r'<li[^>]*class="[^"]*search_result_img_box_inner[^"]*"[^>]*>.*?</li>',
+            # maniax-touch / SP 模板
+            r'<li[^>]*class="[^"]*work_1col[^"]*"[^>]*>.*?</li>',
+            r'<li[^>]*class="[^"]*work_2col[^"]*"[^>]*>.*?</li>',
+            # announce 列表
+            r'<div[^>]*class="[^"]*work_news_each[^"]*"[^>]*>.*?</div>\s*</div>\s*</div>',
+        ]:
+            try:
+                chunks.extend(re.findall(pattern, text, re.IGNORECASE | re.DOTALL))
+            except Exception:
+                continue
+        # 当所有模板都没匹到时（DLsite 改版 / 极简 SSR），fallback：以 product_id 锚点切片。
+        if not chunks:
+            anchors = list(re.finditer(r'/(?:work|announce)/=/product_id/([RVB]J(?:\d{8}|\d{6}))', text, re.IGNORECASE))
+            for i, m in enumerate(anchors):
+                start = max(0, m.start() - 400)
+                end = min(len(text), (anchors[i + 1].start() if i + 1 < len(anchors) else m.end() + 1200))
+                chunks.append(text[start:end])
+
+        summaries: List[DLsiteWorkSummary] = []
+        seen: Set[str] = set()
+        for chunk in chunks:
+            workno = ""
+            # 1) data-product_id 属性优先（HTML5 自定义属性）
+            m = re.search(r'data-product_id\s*=\s*["\']([RVB]J(?:\d{8}|\d{6}))["\']', chunk, re.IGNORECASE)
+            if m:
+                workno = self._normalize_workno(m.group(1))
+            # 2) href 上 product_id/RJxxx
+            if not workno:
+                m = re.search(r'/(?:work|announce)/=/product_id/([RVB]J(?:\d{8}|\d{6}))', chunk, re.IGNORECASE)
+                if m:
+                    workno = self._normalize_workno(m.group(1))
+            if not workno or workno in seen:
+                continue
+            seen.add(workno)
+
+            summary = DLsiteWorkSummary(workno=workno)
+
+            # 标题：作品链接的 alt / title / 锚文本
+            for pat in [
+                r'<img[^>]*alt\s*=\s*["\']([^"\']+)["\'][^>]*src=["\'][^"\']*(?:product|resize)[^"\']*' + re.escape(workno.lower()) + r'[^"\']*["\']',
+                r'class="[^"]*work_name[^"]*"[^>]*>\s*<a[^>]*title=["\']([^"\']+)["\']',
+                r'class="[^"]*work_name[^"]*"[^>]*>\s*<a[^>]*>\s*([^<\n]+?)\s*</a>',
+            ]:
+                m = re.search(pat, chunk, re.IGNORECASE)
+                if m:
+                    summary.title = html.unescape(m.group(1)).strip()
+                    break
+
+            # maker 链接：href 上 maker_id 与文案
+            m = re.search(r'/(?:circle/profile|maker)/=/maker_id/(RG\d+)', chunk, re.IGNORECASE)
+            if m:
+                summary.maker_id = m.group(1).upper()
+            m = re.search(
+                r'class="[^"]*maker_name[^"]*"[^>]*>\s*<a[^>]*>\s*([^<\n]+?)\s*</a>',
+                chunk,
+                re.IGNORECASE,
+            )
+            if m:
+                summary.maker_name = html.unescape(m.group(1)).strip()
+
+            # cover：列表缩略图 src（避免懒加载占位图）
+            m = re.search(
+                r'<img[^>]*(?:src|data-src)\s*=\s*["\']([^"\']*resize[^"\']*' + re.escape(workno.lower()) + r'[^"\']*)["\']',
+                chunk,
+                re.IGNORECASE,
+            )
+            if m:
+                summary.cover_url = m.group(1).strip()
+
+            # work_category / work_type chip：class 名 + 文案分两条解析，避免任一缺失
+            for m in re.finditer(
+                r'class="[^"]*(work_category|work_genre|category_name)[^"]*"[^>]*>\s*([^<\n]+?)\s*</',
+                chunk,
+                re.IGNORECASE,
+            ):
+                label = html.unescape(m.group(2)).strip()
+                if label and not summary.category_label:
+                    summary.category_label = label
+            # work_type chip 在 PC 模板里通常是 type="type_SOU" 的 class
+            for m in re.finditer(
+                r'class="[^"]*(type_[A-Z]{2,5}|work_audio|work_game|work_comic|work_video)[^"]*"',
+                chunk,
+            ):
+                token = m.group(1).strip()
+                if token and token not in summary.icon_classes:
+                    summary.icon_classes.append(token)
+                    if not summary.work_type_code and token.startswith("type_"):
+                        summary.work_type_code = token[len("type_"):]
+
+            # file_format chip（announce + maker 主页都偶尔出现）
+            for m in re.finditer(
+                r'class="[^"]*work_file_format[^"]*"[^>]*>\s*([^<\n]+?)\s*</',
+                chunk,
+                re.IGNORECASE,
+            ):
+                label = html.unescape(m.group(1)).strip()
+                if label and label not in summary.file_format_labels:
+                    summary.file_format_labels.append(label)
+
+            summary.is_probably_audio, summary.classification_reason = self._classify_listing_summary_audio(summary)
+            summaries.append(summary)
+
+        return summaries
+
+    def _classify_listing_summary_audio(
+        self, summary: DLsiteWorkSummary
+    ) -> tuple[Optional[bool], str]:
+        """按列表 chip / icon / 类目文案三态分类音声作品。
+
+        返回 ``(is_probably_audio, reason)``：
+
+        - ``True`` → 列表强信号判定音声，``_collect_dlsite_circle_candidates`` 可跳过 metadata
+          只做轻量校验（product.json maker_id + work_type）。
+        - ``False`` → 列表强信号判定非音声，直接丢弃这个 RJ，**不** 走 metadata 链路。
+        - ``None`` → 列表信号不足，fallback 到旧的 ``_fetch_metadata_dict`` + ``_classify_asmr_work_candidate``。
+
+        分类顺序：work_type_code > icon_classes > category_label > file_format_labels > 标题关键词。
+        命中 audio 强信号优先返 True；只在 audio 强信号全部 miss 时才看 non-audio 强信号。
+        """
+        # work_type_code（最强信号）
+        if summary.work_type_code:
+            code = summary.work_type_code.strip().upper()
+            if code in _LISTING_AUDIO_WORK_TYPE_CODES:
+                return True, f"work_type_code={code}"
+            if code in _LISTING_NON_AUDIO_WORK_TYPE_CODES:
+                return False, f"work_type_code={code} 非音声"
+
+        # icon class（次强信号）
+        for icon in summary.icon_classes:
+            if icon in _LISTING_AUDIO_ICON_CLASSES:
+                return True, f"icon={icon}"
+        for icon in summary.icon_classes:
+            if icon in _LISTING_NON_AUDIO_ICON_CLASSES:
+                return False, f"icon={icon} 非音声"
+
+        # category_label / 标题（中等强度信号）
+        category = summary.category_label.lower()
+        title_lower = summary.title.lower()
+        if category:
+            for kw in _LISTING_AUDIO_CATEGORY_KEYWORDS:
+                if kw in category or kw in title_lower:
+                    return True, f"category 命中 {kw}"
+            for kw in _LISTING_NON_AUDIO_CATEGORY_KEYWORDS:
+                if kw in category:
+                    return False, f"category={kw} 非音声"
+
+        # file_format chip（兜底，主要 announce 列表才有）
+        for label in summary.file_format_labels:
+            lower = label.lower()
+            for kw in _LISTING_AUDIO_FILE_FORMAT_KEYWORDS:
+                if kw in lower:
+                    return True, f"file_format 命中 {kw}"
+
+        return None, ""
 
     def _extract_not_product_ids_from_html(self, text: str) -> List[str]:
         """从 maniax-touch 分页 href 的 not_product_ids 参数中提取 RJcode。
@@ -1015,16 +1294,25 @@ class DLsiteApiService:
     async def _guarded_get(self, url: str, **kwargs) -> httpx.Response:
         """带并发限制的 HTTP GET，超时时指数退避重试（最多 3 次）。
 
-        并发上限设为 3，与 DLsite 的隐式速率限制对齐，避免连接被服务端挂起。
+        并发上限设为 6，是社团补全 wave1 的核心瓶颈调优：旧值 3 + sleep 0.5s
+        在 588 RJ 全量索引下让 wave1 慢到 13 分钟（``wave1_sem=20`` 形同虚设，
+        外层 20 并发协程实际全在 dlsite sem=3 排队）。桌面端单 IP 流量稳定，
+        DLsite 公开 API 对 6 并发 + 0.1-0.3s 抖动的容忍度足够（实测后续如出现
+        ``aiohttp.ClientResponseError 429`` 再回滚）。
         每次进入 semaphore 后加随机抖动延迟，分散请求时序，降低被限流概率。
         """
         if self._http_semaphore is None:
-            # 最多 3 个并发 DLsite 请求，对标 kikoeru 的低并发策略
-            self._http_semaphore = asyncio.Semaphore(3)
+            # 6 个并发 DLsite 请求 + 0.1-0.3s 抖动：用 ``DLSITE_HTTP_CONCURRENCY``
+            # / ``DLSITE_HTTP_SLEEP_MIN`` / ``DLSITE_HTTP_SLEEP_MAX`` 环境变量可在
+            # 限流复现时临时压回 3 / 0.2 / 0.8。
+            sem_size = max(1, int(os.environ.get("DLSITE_HTTP_CONCURRENCY", "6") or "6"))
+            self._http_semaphore = asyncio.Semaphore(sem_size)
+        sleep_min = float(os.environ.get("DLSITE_HTTP_SLEEP_MIN", "0.1") or "0.1")
+        sleep_max = float(os.environ.get("DLSITE_HTTP_SLEEP_MAX", "0.3") or "0.3")
         for attempt in range(3):
             try:
                 async with self._http_semaphore:
-                    await asyncio.sleep(random.uniform(0.2, 0.8))
+                    await asyncio.sleep(random.uniform(sleep_min, sleep_max))
                     client = await self._get_client()
                     return await client.get(url, **kwargs)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as exc:
@@ -1357,9 +1645,20 @@ class DLsiteApiService:
                 for workno, work in list(result.items())
                 if workno != normalized_rjcode and str(getattr(work, 'lang', '') or '').strip().upper() != 'JPN'
             ]
-            for probe_workno in probe_worknos:
-                direct_links = await _get_direct_linked_works(probe_workno)
-                result = _merge_linked_works(result, direct_links)
+            # ⚠ 性能优化：原作有 N 个翻译版时，对每个翻译版 ``_get_direct_linked_works``
+            # 串行打 2N 次 HTTP（trans + product_info），加上 dlsite sem=3 + 0.1-0.3s 抖动，
+            # 单 RJ 内部就能堆出 5-15s 串行延迟。改为并发后由外层 ``_http_semaphore``
+            # 统一限流，整体时序不变但单 RJ wall-clock 折叠到 max(单次 probe)。
+            if probe_worknos:
+                direct_link_results = await asyncio.gather(
+                    *[_get_direct_linked_works(p) for p in probe_worknos],
+                    return_exceptions=True,
+                )
+                for direct_links in direct_link_results:
+                    if isinstance(direct_links, BaseException):
+                        logger.debug("[DLsite] probe 翻译版关联链失败: %s", direct_links)
+                        continue
+                    result = _merge_linked_works(result, direct_links)
 
             logger.info(f"[DLsite] {normalized_rjcode} 关联作品 ({len(result)}个): {list(result.keys())}")
             return result
@@ -1456,6 +1755,201 @@ class DLsiteApiService:
         markers = ('<html', '<body', '<title', 'dlsite', 'maniax', '</body>', '<meta')
         lowered = head.lower()
         return any(marker in lowered for marker in markers)
+
+    async def list_circle_work_summaries_by_maker(
+        self,
+        maker_id: str,
+        *,
+        language: str = "JPN",
+        max_pages: int = 200,
+    ) -> tuple[List[DLsiteWorkSummary], str]:
+        """抓取 maker_id 名下所有可见作品并返回带 chip 分类的 ``DLsiteWorkSummary``。
+
+        相比 ``list_circle_worknos_by_maker``：
+
+        - 返回的不是裸 RJ 列表，而是每个 RJ 一个 ``DLsiteWorkSummary``，已经在列表 HTML 层
+          做了 ``is_probably_audio`` 三态分类。``_collect_dlsite_circle_candidates`` 可
+          以直接据此跳过 manga/CG/RPG/视频类作品的 metadata 拉取链路。
+        - HTML 解析失败 / DLsite 改版 → 返回的 summary list 仍然带 ``is_probably_audio=None``，
+          下游会 fallback 到旧的 metadata 链路，行为完全等价于旧实现。
+        - ``parse_status`` 与 ``list_circle_worknos_by_maker`` 同义。
+
+        缓存复用同一份 raw bytes：底层 ``_guarded_get`` + ``self.cache`` 命中后，
+        两个对外 API 不会重复打 HTTP。
+        """
+        normalized_maker_id = str(maker_id or "").strip().upper()
+        normalized_language = str(language or "JPN").strip().upper() or "JPN"
+        if not normalized_maker_id:
+            return [], "empty"
+
+        cache_key = (
+            f"circle_profile_summaries_with_announce:"
+            f"{normalized_maker_id}:{normalized_language}"
+        )
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                cached_payload = list(cached_data.get('data') or [])
+                cached_status = str(cached_data.get('parse_status') or ("ok" if cached_payload else "empty"))
+                # 重新水合成 dataclass。这里 cache 存的是 dict，避免 dataclass 升级时
+                # 撞 backward incompatible。
+                hydrated: List[DLsiteWorkSummary] = []
+                for item in cached_payload:
+                    if isinstance(item, DLsiteWorkSummary):
+                        hydrated.append(item)
+                        continue
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        hydrated.append(DLsiteWorkSummary(
+                            workno=str(item.get('workno') or '').strip().upper(),
+                            title=str(item.get('title') or ''),
+                            maker_id=str(item.get('maker_id') or ''),
+                            maker_name=str(item.get('maker_name') or ''),
+                            category_label=str(item.get('category_label') or ''),
+                            work_type_code=str(item.get('work_type_code') or ''),
+                            file_format_labels=list(item.get('file_format_labels') or []),
+                            icon_classes=list(item.get('icon_classes') or []),
+                            cover_url=str(item.get('cover_url') or ''),
+                            is_probably_audio=item.get('is_probably_audio'),
+                            classification_reason=str(item.get('classification_reason') or ''),
+                        ))
+                    except Exception:
+                        continue
+                return hydrated, cached_status
+
+        # 与 list_circle_worknos_by_maker 复用同一套 HTTP 抓取逻辑（profile → profile-touch → announce → filter）。
+        # 这里 inline 实现是为了一次抓取既能产出 RJ-only 又能产出 summary，避免对同样 URL 打两遍 HTTP。
+        summaries_by_rj: Dict[str, DLsiteWorkSummary] = {}
+        seen: Set[str] = set()
+        any_http_success = False
+        any_html_looked_normal = False
+        ordered_rjcodes: List[str] = []
+
+        def absorb_summaries(extracted: List[DLsiteWorkSummary]) -> int:
+            new_count = 0
+            for summary in extracted:
+                if not summary.workno or summary.workno in seen:
+                    continue
+                seen.add(summary.workno)
+                summaries_by_rj[summary.workno] = summary
+                ordered_rjcodes.append(summary.workno)
+                new_count += 1
+            return new_count
+
+        def absorb_raw_worknos(raw_worknos: List[str]) -> int:
+            """fallback：HTML 解析不出 summary 时，把裸 RJ 也补进结果。``is_probably_audio=None``。"""
+            new_count = 0
+            for workno in raw_worknos:
+                if not workno or workno in seen:
+                    continue
+                seen.add(workno)
+                summaries_by_rj[workno] = DLsiteWorkSummary(workno=workno)
+                ordered_rjcodes.append(workno)
+                new_count += 1
+            return new_count
+
+        for mode, url_builder in [
+            ("profile", self._build_circle_profile_url),
+            ("profile-touch", self._build_circle_profile_touch_url),
+            ("announce", self._build_circle_announce_url),
+        ]:
+            if mode == "profile-touch" and summaries_by_rj:
+                continue
+            empty_streak = 0
+            for page in range(1, max(1, int(max_pages)) + 1):
+                if mode == "profile-touch":
+                    url = url_builder(normalized_maker_id, page=page)
+                else:
+                    url = url_builder(normalized_maker_id, language=normalized_language, page=page)
+                try:
+                    response = await self._guarded_get(url, headers=self._get_browser_headers())
+                    if response.status_code != 200:
+                        logger.warning(
+                            "[DLsite] 社团%s summary 抓取失败 maker_id=%s page=%s status=%s",
+                            mode, normalized_maker_id, page, response.status_code,
+                        )
+                        break
+                    any_http_success = True
+                    if self._looks_like_dlsite_html(response.text):
+                        any_html_looked_normal = True
+
+                    page_summaries = self._extract_summaries_from_listing_html(response.text)
+                    new_count = absorb_summaries(page_summaries)
+                    if new_count == 0:
+                        # summary 解析失败时降级到裸 RJ 提取，保持现存 fallback 路径。
+                        page_worknos = self._extract_worknos_from_listing_html(response.text)
+                        if not page_worknos and mode == "profile-touch":
+                            page_worknos = self._extract_any_worknos_from_listing_html(response.text)
+                        if not page_worknos and mode == "profile-touch":
+                            page_worknos = self._extract_not_product_ids_from_html(response.text)
+                        new_count = absorb_raw_worknos(page_worknos)
+                except Exception as exc:
+                    logger.warning(
+                        "[DLsite] 社团%s summary 抓取异常 maker_id=%s page=%s error=%s",
+                        mode, normalized_maker_id, page, exc,
+                    )
+                    break
+
+                if new_count == 0:
+                    empty_streak += 1
+                else:
+                    empty_streak = 0
+
+                logger.info(
+                    "[DLsite] 社团%s summary 分页抓取 maker_id=%s lang=%s page=%s new=%s total=%s",
+                    mode, normalized_maker_id, normalized_language, page, new_count, len(summaries_by_rj),
+                )
+
+                if page == 1 and new_count == 0 and mode in {"profile", "profile-touch"}:
+                    break
+
+                if empty_streak >= 2:
+                    break
+
+        # 兜底：profile-touch filter URL
+        if not summaries_by_rj:
+            try:
+                filter_url = (
+                    f"https://www.dlsite.com/maniax-touch/circle/profile/="
+                    f"/options[0]/{normalized_language}/maker_ids[0]/{normalized_maker_id}"
+                    f"/per_page/50/work_category/doujin/hd/1"
+                )
+                response_f = await self._guarded_get(filter_url, headers=self._get_browser_headers())
+                if response_f.status_code == 200:
+                    any_http_success = True
+                    if self._looks_like_dlsite_html(response_f.text):
+                        any_html_looked_normal = True
+                    page_summaries = self._extract_summaries_from_listing_html(response_f.text)
+                    if absorb_summaries(page_summaries) == 0:
+                        page_worknos = self._extract_worknos_from_listing_html(response_f.text)
+                        if not page_worknos:
+                            page_worknos = self._extract_any_worknos_from_listing_html(response_f.text)
+                        if not page_worknos:
+                            page_worknos = self._extract_not_product_ids_from_html(response_f.text)
+                        absorb_raw_worknos(page_worknos)
+            except Exception as exc:
+                logger.debug("[DLsite] 社团profile-touch-filter summary 异常 maker_id=%s error=%s", normalized_maker_id, exc)
+
+        # 推断 parse_status（与 list_circle_worknos_by_maker 同口径）
+        if summaries_by_rj:
+            parse_status = "ok"
+        elif not any_http_success:
+            parse_status = "http_error"
+        elif not any_html_looked_normal:
+            parse_status = "html_decode_failed"
+        else:
+            parse_status = "empty"
+
+        ordered_summaries = [summaries_by_rj[rj] for rj in ordered_rjcodes if rj in summaries_by_rj]
+
+        if ordered_summaries:
+            self.cache[cache_key] = {
+                'data': [s.to_dict() for s in ordered_summaries],
+                'parse_status': parse_status,
+                'timestamp': datetime.now(),
+            }
+        return ordered_summaries, parse_status
 
     async def list_circle_worknos_by_maker(
         self,

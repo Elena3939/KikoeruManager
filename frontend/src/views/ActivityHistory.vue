@@ -935,6 +935,10 @@ async function openDetail(row) {
   } catch (err) {
     console.warn('[活动记录] 拉取详情失败', err)
     ElMessage.warning('拉取完整详情失败，已显示基础信息')
+    if (selectedRowId.value === String(row.id) && selectedRow.value?.__isLite) {
+      const { __isLite, ...fallback } = selectedRow.value
+      selectedRow.value = fallback
+    }
   }
 }
 

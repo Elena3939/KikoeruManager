@@ -66,6 +66,7 @@
       class="detail-scroll"
       v-app-loading="{ loading: loading && !hasContent, text: '正在加载详情…', size: 96, minHeight: 240, delay: 80 }"
     >
+      <template v-if="!row?.__isLite">
       <!-- 摘要 -->
       <section v-if="row?.summary" class="panel">
         <div class="panel-head">
@@ -257,6 +258,7 @@
         description="暂无更多详情"
         size="sm"
       />
+      </template>
     </div>
 
     <!-- 底部操作 -->

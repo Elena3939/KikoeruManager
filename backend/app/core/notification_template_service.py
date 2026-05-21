@@ -442,6 +442,7 @@ def _build_stats_items(stats: dict) -> list:
         'asmr_one': 'asmr.one',
         'downloadable': '可下载',
         'missing': '缺失',
+        'search_efficiency': '搜索效率',
         'dl_only': '暂无来源',
         'circle_count': '社团数',
         'completed_circles': '完成社团',
@@ -457,15 +458,17 @@ def _build_stats_items(stats: dict) -> list:
         'total_size': '总大小',
         'duration': '耗时',
     }
+    is_circle_completion_stats = any(key in stats for key in ('circle_count', 'completed_circles', 'failed_circles', 'downloadable'))
+    hidden_keys = {'dl_count', 'asmr_one'} if is_circle_completion_stats else set()
     preferred = [
         'circle_count', 'completed_circles', 'failed_circles',
-        'works', 'local_owned', 'owned', 'dl_count', 'asmr_one', 'downloadable', 'missing', 'dl_only',
+        'works', 'local_owned', 'owned', 'duration', 'search_efficiency', 'downloadable', 'missing', 'dl_only',
         'total_files', 'uploaded_count', 'downloaded', 'written', 'skipped', 'filtered_count',
-        'failed_count', 'existing_subtitles', 'total_size', 'duration',
+        'failed_count', 'existing_subtitles', 'total_size',
     ]
-    keys = [key for key in preferred if stats.get(key) not in (None, '')]
+    keys = [key for key in preferred if key not in hidden_keys and stats.get(key) not in (None, '')]
     for key in stats.keys():
-        if key not in keys and stats.get(key) not in (None, ''):
+        if key not in hidden_keys and key not in keys and stats.get(key) not in (None, ''):
             keys.append(key)
     return [{'key': key, 'label': label_map.get(key, key), 'icon': ''} for key in keys[:9]]
 
