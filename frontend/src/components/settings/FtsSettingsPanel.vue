@@ -74,10 +74,14 @@
         </button>
         <button type="button" class="fts-btn-ghost" :disabled="activityLoading" @click="fetchActivity">
           <span class="fts-icon-swap">
-            <IconLoader2 v-if="activityLoading && !activityBusy" :size="12" class="fts-spin" />
-            <IconRefreshCw v-else :size="12" />
+            <span class="fts-icon-slot" :class="{ 'is-visible': activityLoading && !activityBusy }">
+              <IconLoader2 :size="12" class="fts-spin" />
+            </span>
+            <span class="fts-icon-slot" :class="{ 'is-visible': !(activityLoading && !activityBusy) }">
+              <IconRefreshCw :size="12" />
+            </span>
           </span>
-          <span>{{ activityLoading && !activityBusy ? '刷新中…' : '刷新状态' }}</span>
+          <span class="fts-ghost-label">{{ activityLoading && !activityBusy ? '刷新中…' : '刷新状态' }}</span>
         </button>
       </div>
 
@@ -162,10 +166,14 @@
         </button>
         <button type="button" class="fts-btn-ghost" :disabled="libraryLoading" @click="fetchLibrary">
           <span class="fts-icon-swap">
-            <IconLoader2 v-if="libraryLoading && !libraryBusy" :size="12" class="fts-spin" />
-            <IconRefreshCw v-else :size="12" />
+            <span class="fts-icon-slot" :class="{ 'is-visible': libraryLoading && !libraryBusy }">
+              <IconLoader2 :size="12" class="fts-spin" />
+            </span>
+            <span class="fts-icon-slot" :class="{ 'is-visible': !(libraryLoading && !libraryBusy) }">
+              <IconRefreshCw :size="12" />
+            </span>
           </span>
-          <span>{{ libraryLoading && !libraryBusy ? '刷新中…' : '刷新状态' }}</span>
+          <span class="fts-ghost-label">{{ libraryLoading && !libraryBusy ? '刷新中…' : '刷新状态' }}</span>
         </button>
       </div>
 
@@ -196,6 +204,11 @@ import { showSystemConfirm } from '../../composables/useSystemPrompt'
 const activityInfo = ref(null)
 const activityLoading = ref(false)
 let activityPollTimer = null
+
+/** 保证 loading 态最少持续 ms 毫秒，让动画有时间播完 */
+function withMinDuration(promise, ms = 600) {
+  return Promise.all([promise, new Promise(r => setTimeout(r, ms))]).then(([result]) => result)
+}
 
 const activityStatusKey = computed(() => {
   const info = activityInfo.value
@@ -239,7 +252,7 @@ async function fetchActivity() {
   if (activityLoading.value && !activityBusy.value) return
   activityLoading.value = true
   try {
-    const data = await activityLogApi.searchStatus()
+    const data = await withMinDuration(activityLogApi.searchStatus())
     activityInfo.value = data
     if (data?.rebuild?.running) {
       startActivityPolling()
@@ -347,7 +360,7 @@ async function fetchLibrary() {
   if (libraryLoading.value && !libraryBusy.value) return
   libraryLoading.value = true
   try {
-    const data = await databaseMaintenanceApi.libraryIndexFtsStatus()
+    const data = await withMinDuration(databaseMaintenanceApi.libraryIndexFtsStatus())
     libraryInfo.value = data
     const rebuildState = data?.rebuild?.state || data?.state
     if (rebuildState === 'running') {
@@ -796,10 +809,31 @@ onBeforeUnmount(() => {
 }
 
 .fts-icon-swap {
-  display: inline-flex;
-  align-items: center;
+  position: relative;
   width: 12px;
+  height: 12px;
   flex-shrink: 0;
+}
+
+.fts-icon-slot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.5) rotate(-45deg);
+  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: none;
+}
+
+.fts-icon-slot.is-visible {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+.fts-ghost-label {
+  min-width: 42px; /* 固定宽，避免「刷新状态」↔「刷新中…」跳宽 */
 }
 
 .fts-btn-ghost:hover:not(:disabled) {
