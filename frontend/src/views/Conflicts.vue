@@ -249,6 +249,17 @@
                   预览文件名
                 </button>
                 <button
+                  v-if="canUseAction(activeConflict, 'RENAME_VOLUMES')"
+                  type="button"
+                  class="conflicts-action-btn is-amber"
+                  :disabled="batchRunning || isConflictBusy(activeConflict.id)"
+                  @click="handleRenameVolumes(activeConflict)"
+                >
+                  <Loader2 v-if="isActionLoading(activeConflict.id, 'RENAME_VOLUMES')" class="conflicts-action-spinner" />
+                  <FileEdit v-else class="w-4 h-4" />
+                  手动重命名分卷
+                </button>
+                <button
                   v-if="canUseAction(activeConflict, 'RETRY')"
                   type="button"
                   class="conflicts-action-btn is-emerald"
@@ -576,6 +587,23 @@
       @confirm="handleBatchRetryConfirm"
     />
 
+    <RetryPasswordsDialog
+      v-model="retryPasswordsDialogVisible"
+      :conflict="retryPasswordsDialogConflict"
+      :title="retryPasswordsDialogTitle"
+      :description="retryPasswordsDialogDescription"
+      :confirm-text="retryPasswordsDialogConfirmText"
+      @confirm="handleRetryPasswordsConfirm"
+      @cancel="handleRetryPasswordsCancel"
+    />
+
+    <VolumeRenameDialog
+      v-model="volumeRenameDialogVisible"
+      :conflict="volumeRenameDialogConflict"
+      @confirm="handleVolumeRenameConfirm"
+      @cancel="handleVolumeRenameCancel"
+    />
+
     <!--
       文件名预览弹窗：完全对齐库存页 mediaPreviewDialog 的"系统自定义弹窗"风格
       Teleport + 全屏遮罩 + 圆角 22 玻璃面板 + backdrop-blur-2xl + 内嵌高光投影
@@ -721,10 +749,12 @@ import {
   GitMerge, AlertTriangle, FolderOpen, Archive, Info,
   CheckSquare, XSquare, ChevronRight, FileSearch,
   ShieldAlert, Hourglass, Loader2, FileText,
-  Folder, Music, File, X,
+  Folder, Music, File, X, FileEdit,
 } from 'lucide-vue-next'
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
 import BatchRetryPasswordDialog from '../components/conflicts/BatchRetryPasswordDialog.vue'
+import RetryPasswordsDialog from '../components/conflicts/RetryPasswordsDialog.vue'
+import VolumeRenameDialog from '../components/conflicts/VolumeRenameDialog.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
@@ -781,6 +811,21 @@ const filenamePreviewState = reactive({})
 
 const batchRetryDialogVisible = ref(false)
 const batchRetryTargets = ref([])
+
+// 单条问题项的多密码重试弹窗。
+// askRetryPassword 触发时塞入 conflict + resolver，dialog confirm/cancel 后唤醒 promise。
+const retryPasswordsDialogVisible = ref(false)
+const retryPasswordsDialogConflict = ref(null)
+const retryPasswordsDialogTitle = ref('')
+const retryPasswordsDialogDescription = ref('')
+const retryPasswordsDialogConfirmText = ref('开始重试')
+let retryPasswordsDialogResolver = null
+
+// 伪装多卷"手动重命名分卷"弹窗：分卷压缩包后缀无法识别 类型的 conflict 专用。
+// dialog 把 conflict.new_metadata.disguised_volume_set 里的 suspect_files / suggested_renames
+// 渲染成行编辑界面，提交时调 conflictApi.renameVolumes，可选 auto_retry 起新任务。
+const volumeRenameDialogVisible = ref(false)
+const volumeRenameDialogConflict = ref(null)
 
 // 文件名预览弹窗状态
 const fpDlgVisible = ref(false)
@@ -1609,48 +1654,87 @@ async function startRetry(conflict, payload = {}) {
   return conflictApi.retry(conflict.id, payload)
 }
 
+// 弹"多密码"对话框，返回用户输入的 passwords 数组（空数组 = 留空走默认）；
+// 用户取消时 reject('cancel') 与原 showSystemPrompt 的取消语义保持一致，让上游统一捕获。
+function promptMultiPasswords({ conflict, title, description, confirmText }) {
+  return new Promise((resolve, reject) => {
+    retryPasswordsDialogConflict.value = conflict || null
+    retryPasswordsDialogTitle.value = title || ''
+    retryPasswordsDialogDescription.value = description || ''
+    retryPasswordsDialogConfirmText.value = confirmText || '开始重试'
+    retryPasswordsDialogResolver = { resolve, reject }
+    retryPasswordsDialogVisible.value = true
+  })
+}
+
+function handleRetryPasswordsConfirm({ passwords }) {
+  const resolver = retryPasswordsDialogResolver
+  retryPasswordsDialogResolver = null
+  if (resolver) resolver.resolve(Array.isArray(passwords) ? passwords : [])
+}
+
+function handleRetryPasswordsCancel() {
+  const resolver = retryPasswordsDialogResolver
+  retryPasswordsDialogResolver = null
+  if (resolver) resolver.reject('cancel')
+}
+
 async function askRetryPassword(conflict, batchCount = 1) {
   const isBatch = batchCount > 1
   // 仅当 conflict.new_metadata.extract_failure_reason === 'garbled_filename' 或带有
   // garbled_filename_sample / top_samples 时，才认定为乱码错误。其它失败原因（密码错、
-  // 通用解压失败、SynologyError 等）不应该被强制走"指定编码 + 文件树预览"流程，
+  // 通用解压失败、SynologyError 等)不应该被强制走"指定编码 + 文件树预览"流程，
   // 否则会让大多数 EXTRACT_FAILED 用户多看一个无关弹窗。
   const isGarbledConflict = !isBatch && Boolean(getGarbledMeta(conflict))
-  const titleLabel = isBatch
-    ? `批量重试 ${batchCount} 个问题项`
-    : `重试 ${conflict.rjcode || '当前问题项'}`
-  const messageText = isBatch
-    ? `可选：指定一个密码用于全部 ${batchCount} 项重试。如各项需要不同密码，请关闭后单独逐项重试。留空则各项按原逻辑走密码库、RJ 推导和默认密码。`
-    : isGarbledConflict
-      ? `可选：指定密码 + 文件名编码（当前：${getEncodingLabel(getFilenamePreviewEncoding(conflict))}），下一步会预览压缩包目录确认是否仍然乱码。留空密码按密码库 / RJ 推导继续。`
-      : `可选：为这一条指定明文密码再重试；留空表示按密码库、RJ 推导、默认密码继续。当前问题项不是文件名乱码错误，无需指定 ZIP 文件名编码。`
-  const confirmText = isBatch
-    ? `开始批量重试 (${batchCount} 项)`
-    : isGarbledConflict
-      ? '下一步：编码预览'
-      : '开始重试'
+
+  // 批量场景：保持现有"单密码全局复用"的 showSystemPrompt 路径
+  // （BatchRetryPasswordDialog 是给"勾选多条 + 各自指定密码"用的，逻辑不同）。
+  if (isBatch) {
+    try {
+      const passwordValue = await showSystemPrompt({
+        title: `批量重试 ${batchCount} 个问题项`,
+        message: `可选：指定一个密码用于全部 ${batchCount} 项重试。如各项需要不同密码，请关闭后单独逐项重试。留空则各项按原逻辑走密码库、RJ 推导和默认密码。`,
+        confirmText: `开始批量重试 (${batchCount} 项)`,
+        cancelText: '取消',
+        inputType: 'text',
+        placeholder: '直接输入明文密码；留空表示正常重试',
+        closeOnClickModal: false,
+      })
+      const trimmed = String(passwordValue || '').trim()
+      return {
+        cancelled: false,
+        passwords: trimmed ? [trimmed] : [],
+        filenameEncoding: '',
+        ignoreGarbled: false,
+      }
+    } catch (error) {
+      if (error === 'cancel' || error === 'close') {
+        return { cancelled: true, passwords: [], filenameEncoding: '', ignoreGarbled: false }
+      }
+      throw error
+    }
+  }
+
+  // 单条场景：用新版多密码 dialog 收集 1~N 个密码
+  const title = `重试 ${conflict.rjcode || '当前问题项'}`
+  const description = isGarbledConflict
+    ? `可填多个密码（按顺序依次尝试）。当前编码：${getEncodingLabel(getFilenamePreviewEncoding(conflict))}，下一步会用首个密码预览压缩包目录确认是否仍然乱码。`
+    : '可填多个密码，按顺序依次尝试，任一命中即成功。当前问题项不是文件名乱码错误，无需指定 ZIP 文件名编码。'
+  const confirmText = isGarbledConflict ? '下一步：编码预览' : '开始重试'
   try {
-    const passwordValue = await showSystemPrompt({
-      title: titleLabel,
-      message: messageText,
-      confirmText,
-      cancelText: '取消',
-      inputType: 'text',
-      placeholder: '直接输入明文密码；留空表示正常重试',
-      closeOnClickModal: false
-    })
+    const passwords = await promptMultiPasswords({ conflict, title, description, confirmText })
     const result = {
       cancelled: false,
-      password: String(passwordValue || '').trim(),
+      passwords: Array.isArray(passwords) ? passwords.filter(p => p) : [],
       filenameEncoding: '',
       ignoreGarbled: false,
     }
-    // 批量重试 / 非乱码错误：跳过编码预览弹窗，直接返回，让上层走纯密码重试。
-    if (isBatch || !isGarbledConflict) return result
+    if (!isGarbledConflict) return result
+    // 乱码场景：编码预览只用首个密码做预读（多密码逐个跑预读没必要，最终解压会走整张 list）
     result.filenameEncoding = getFilenamePreviewEncoding(conflict)
     const preview = await previewArchiveFilenames(conflict, {
       filenameEncoding: result.filenameEncoding,
-      password: result.password,
+      password: result.passwords[0] || '',
     })
     preview.requested_encoding = result.filenameEncoding
     ensureFilenamePreviewState(conflict).preview = preview
@@ -1662,7 +1746,7 @@ async function askRetryPassword(conflict, batchCount = 1) {
     return result
   } catch (error) {
     if (error === 'cancel' || error === 'close') {
-      return { cancelled: true, password: '', filenameEncoding: '', ignoreGarbled: false }
+      return { cancelled: true, passwords: [], filenameEncoding: '', ignoreGarbled: false }
     }
     throw error
   }
@@ -1883,16 +1967,28 @@ async function handleRetry(conflict) {
     const retryInput = await askRetryPassword(conflict)
     if (retryInput.cancelled) return
     const retryPayload = {}
-    if (retryInput.password) retryPayload.password = retryInput.password
+    // 新版 ConflictRetryRequest 接受 passwords (list)：后端按序依次试，任一命中即成功
+    const passwords = Array.isArray(retryInput.passwords) ? retryInput.passwords.filter(p => p) : []
+    if (passwords.length) {
+      retryPayload.passwords = passwords
+      retryPayload.password = passwords[0]  // 兼容字段：旧后端如果还在生效会读这个
+    }
     if (retryInput.filenameEncoding) retryPayload.filename_encoding = retryInput.filenameEncoding
     if (retryInput.ignoreGarbled) retryPayload.ignore_garbled = true
     const result = await startRetry(conflict, retryPayload)
     markConflictRetrying(conflict.id, true)
-    ElMessage.success(
-      result.already_running
-        ? (retryInput.password ? '已将指定密码应用到现有重试任务，后台持续跟踪结果' : '已存在重试任务，后台持续跟踪结果')
-        : (retryInput.password ? '已开始使用指定密码重试，后台轮询中' : '已开始重试，后台轮询中')
-    )
+    const passwordCount = passwords.length
+    let successMessage
+    if (result.already_running) {
+      if (passwordCount > 1) successMessage = `已将 ${passwordCount} 个指定密码应用到现有重试任务，后台持续跟踪结果`
+      else if (passwordCount === 1) successMessage = '已将指定密码应用到现有重试任务，后台持续跟踪结果'
+      else successMessage = '已存在重试任务，后台持续跟踪结果'
+    } else {
+      if (passwordCount > 1) successMessage = `已开始使用 ${passwordCount} 个指定密码依次重试，后台轮询中`
+      else if (passwordCount === 1) successMessage = '已开始使用指定密码重试，后台轮询中'
+      else successMessage = '已开始重试，后台轮询中'
+    }
+    ElMessage.success(successMessage)
     await fetchConflicts()
     startRetryPoller(result.task_id, conflict.id)
   } catch (error) {
@@ -1949,6 +2045,51 @@ async function handleSkip(conflict) {
   } finally {
     markAction(conflict.id, 'SKIP', false)
   }
+}
+
+// 伪装多卷 conflict：弹"手动重命名分卷"对话框（分卷压缩包后缀无法识别 专用）。
+function handleRenameVolumes(conflict) {
+  if (!conflict) return
+  const disguised = conflict.new_metadata?.disguised_volume_set
+  if (!disguised || !Array.isArray(disguised.suspect_files) || !disguised.suspect_files.length) {
+    ElMessage.warning('该问题项缺少分卷探测信息，无法手动重命名')
+    return
+  }
+  volumeRenameDialogConflict.value = conflict
+  volumeRenameDialogVisible.value = true
+}
+
+async function handleVolumeRenameConfirm({ renames, autoRetry }) {
+  const conflict = volumeRenameDialogConflict.value
+  volumeRenameDialogConflict.value = null
+  if (!conflict) return
+  if (!Array.isArray(renames) || !renames.length) {
+    ElMessage.warning('没有可提交的重命名条目')
+    return
+  }
+  markAction(conflict.id, 'RENAME_VOLUMES', true)
+  try {
+    const result = await conflictApi.renameVolumes(conflict.id, {
+      renames,
+      auto_retry: !!autoRetry,
+    })
+    ElMessage.success(result?.message || `已重命名 ${result?.renamed?.length || renames.length} 个分卷`)
+    if (autoRetry && result?.task_id) {
+      // 自动重试已起任务：标记本地 retrying 状态 + 启动轮询，与 RETRY 路径完全一致
+      markConflictRetrying(conflict.id, true)
+      startRetryPoller(result.task_id, conflict.id)
+    }
+    await fetchConflicts()
+  } catch (error) {
+    console.error('手动重命名分卷失败:', error)
+    ElMessage.error(resolveErrorMessage(error, '重命名分卷失败'))
+  } finally {
+    markAction(conflict.id, 'RENAME_VOLUMES', false)
+  }
+}
+
+function handleVolumeRenameCancel() {
+  volumeRenameDialogConflict.value = null
 }
 
 async function handleBatchKeepNew() {

@@ -6,8 +6,9 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Any, Optional
+from typing import Any, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ..config.settings import get_config
@@ -81,7 +82,7 @@ class ConflictResolutionService:
             return "SKIP"
         if normalized in {"KEEP_BOTH", "MERGE_LANG"}:
             return "MERGE"
-        if normalized not in {"KEEP_NEW", "MERGE", "SKIP"}:
+        if normalized not in {"KEEP_NEW", "MERGE", "SKIP", "RETRY", "RENAME_VOLUMES"}:
             raise ValueError("Unsupported conflict action")
         return normalized
 
@@ -717,7 +718,19 @@ class ConflictResolutionService:
 
     def get_available_actions(self, conflict) -> list[str]:
         metadata = dict(conflict.new_metadata or {})
-        if str(conflict.conflict_type or "").upper() in {"EXTRACT_FAILED", "PROCESS_FAILED"}:
+        conflict_type_upper = str(conflict.conflict_type or "").upper()
+        if conflict_type_upper in {"EXTRACT_FAILED", "PROCESS_FAILED"}:
+            source_path = str(conflict.new_path or "").strip()
+            if source_path and os.path.exists(source_path):
+                return ["RETRY", "SKIP"]
+            return ["SKIP"]
+        if conflict_type_upper == "分卷压缩包后缀无法识别":
+            disguised = metadata.get("disguised_volume_set")
+            if isinstance(disguised, dict) and disguised.get("suspect_files"):
+                return ["RENAME_VOLUMES", "SKIP"]
+            # disguised payload 已被清掉的退化 case：通常是用户在前端
+            # auto_retry=False 提交了重命名，conflict 仍然在 PENDING 状态。
+            # 如果首卷路径还在，就允许走标准 RETRY；否则只能 SKIP。
             source_path = str(conflict.new_path or "").strip()
             if source_path and os.path.exists(source_path):
                 return ["RETRY", "SKIP"]
@@ -1248,6 +1261,178 @@ class ConflictResolutionService:
         return {
             "message": "已跳过当前压缩包或目录，并删除待处理来源",
             "deleted_path": delete_target,
+        }
+
+    async def rename_disguised_volumes(
+        self,
+        conflict,
+        renames: List[dict[str, str]],
+    ) -> dict[str, Any]:
+        """对伪装多卷 conflict 执行用户确认后的逐卷重命名。
+
+        ``renames`` 是 ``[{"old": str, "new": str}, ...]``。校验项（任意一项失败立即抛 ValueError）：
+
+        - conflict.conflict_type 必须是 ``分卷压缩包后缀无法识别``。
+        - new_metadata.disguised_volume_set.suspect_files 必须存在。
+        - 每个 ``old`` 都要在 suspect 路径集合里，避免被构造请求改到任意目录。
+        - ``new`` 必须落在同一目录、不能跳出（防 ``..``）、basename 不能为空、
+          basename 不能含路径分隔符。
+        - ``new`` 目标不能已经存在（除非就是某个 suspect 文件本身）。
+        - rename 全集要覆盖所有 suspect_files，且不能漏掉任何首卷。
+
+        校验通过后做"两阶段原子重命名"：先全部改到一个临时名 (.kikoeru-rename-<id>.tmp)，
+        再改到目标名。任意一步失败立刻把已改的回滚。最后更新 ``conflict.new_path``
+        指向新的首卷，metadata 清掉 disguised payload，记录 rename 历史。
+        """
+        conflict_type_upper = str(conflict.conflict_type or "").upper()
+        if conflict_type_upper != "分卷压缩包后缀无法识别":
+            raise ValueError("当前问题类型不支持手动重命名分卷")
+
+        metadata = dict(conflict.new_metadata or {})
+        disguised = metadata.get("disguised_volume_set")
+        if not isinstance(disguised, dict) or not disguised.get("suspect_files"):
+            raise ValueError("缺少分卷探测信息，无法执行重命名")
+
+        suspect_files = list(disguised.get("suspect_files") or [])
+        suspect_paths = {
+            os.path.normcase(os.path.normpath(str(item.get("path") or "")))
+            for item in suspect_files
+            if item.get("path")
+        }
+        if not suspect_paths:
+            raise ValueError("分卷探测信息为空")
+
+        directory = str(disguised.get("directory") or "").strip()
+        if not directory or not os.path.isdir(directory):
+            raise ValueError("分卷所在目录不存在")
+        directory_norm = os.path.normcase(os.path.normpath(directory))
+
+        if not renames or len(renames) != len(suspect_files):
+            raise ValueError("重命名条数必须等于探测到的分卷数")
+
+        # 校验每条 rename
+        normalized_pairs: List[Tuple[str, str]] = []
+        seen_olds: set[str] = set()
+        seen_news: set[str] = set()
+        for entry in renames:
+            old_raw = str(entry.get("old") or "").strip()
+            new_raw = str(entry.get("new") or "").strip()
+            if not old_raw or not new_raw:
+                raise ValueError("分卷映射的旧路径和新路径都不能为空")
+
+            old_abs = os.path.normpath(old_raw)
+            old_key = os.path.normcase(old_abs)
+            if old_key in seen_olds:
+                raise ValueError(f"重复的源分卷路径: {old_raw}")
+            seen_olds.add(old_key)
+            if old_key not in suspect_paths:
+                raise ValueError(f"源分卷不在探测列表内: {old_raw}")
+
+            # 任何 ".." 路径段直接拒（防跳出目录）
+            parts = new_raw.replace("\\", "/").split("/")
+            if any(p == ".." for p in parts):
+                raise ValueError(f"新路径不能包含 ..: {new_raw}")
+
+            if os.path.isabs(new_raw):
+                # 绝对路径写法：basename + dir 必须落在 directory 内
+                new_abs = os.path.normpath(new_raw)
+                new_basename = os.path.basename(new_abs)
+            else:
+                # 相对路径写法：只允许单一文件名，不允许含分隔符
+                if "/" in new_raw or "\\" in new_raw:
+                    raise ValueError(f"新文件名不能包含路径分隔符: {new_raw}")
+                new_basename = new_raw
+                new_abs = os.path.normpath(os.path.join(directory, new_basename))
+
+            if not new_basename or new_basename in {".", ".."}:
+                raise ValueError(f"新文件名无效: {new_raw}")
+
+            new_key = os.path.normcase(new_abs)
+            new_dir_norm = os.path.normcase(os.path.normpath(os.path.dirname(new_abs)))
+            if new_dir_norm != directory_norm:
+                raise ValueError(f"新路径必须在同一目录: {new_raw}")
+            if new_key in seen_news:
+                raise ValueError(f"新文件名重复: {new_basename}")
+            seen_news.add(new_key)
+
+            normalized_pairs.append((old_abs, new_abs))
+
+        # new 不能与现有非 suspect 文件冲突（如果 new 就是某个 suspect，那是允许的：
+        # 因为我们会在第一阶段先把 suspect 全部改到 .tmp）
+        for _, new_abs in normalized_pairs:
+            if not os.path.exists(new_abs):
+                continue
+            new_key = os.path.normcase(new_abs)
+            if new_key not in suspect_paths:
+                raise ValueError(f"目标文件已存在且非分卷: {new_abs}")
+
+        # 两阶段原子重命名
+        rename_id = uuid.uuid4().hex[:8]
+        stage1: List[Tuple[str, str]] = []  # old -> tmp
+        stage2: List[Tuple[str, str]] = []  # tmp -> new
+        try:
+            # Stage 1: old -> tmp
+            for idx, (old_abs, new_abs) in enumerate(normalized_pairs):
+                if not os.path.exists(old_abs):
+                    raise ValueError(f"源分卷已不存在: {old_abs}")
+                tmp_path = os.path.join(
+                    directory,
+                    f".kikoerumanager-rename-{rename_id}-{idx:03d}.tmp",
+                )
+                await asyncio.to_thread(os.rename, old_abs, tmp_path)
+                stage1.append((old_abs, tmp_path))
+                stage2.append((tmp_path, new_abs))
+
+            # Stage 2: tmp -> new
+            for tmp_path, new_abs in stage2:
+                await asyncio.to_thread(os.rename, tmp_path, new_abs)
+        except Exception as exc:
+            # Stage 2 失败 → 把已经改成 new 的退回 tmp，然后所有 tmp 退回 old
+            logger.error("[RenameVolumes] 重命名失败，开始回滚: %s", exc, exc_info=True)
+            for tmp_path, new_abs in stage2:
+                if os.path.exists(new_abs) and not os.path.exists(tmp_path):
+                    try:
+                        await asyncio.to_thread(os.rename, new_abs, tmp_path)
+                    except Exception:
+                        logger.error(
+                            "[RenameVolumes] 回滚 stage2 失败: %s -> %s",
+                            new_abs,
+                            tmp_path,
+                            exc_info=True,
+                        )
+            for old_abs, tmp_path in stage1:
+                if os.path.exists(tmp_path) and not os.path.exists(old_abs):
+                    try:
+                        await asyncio.to_thread(os.rename, tmp_path, old_abs)
+                    except Exception:
+                        logger.error(
+                            "[RenameVolumes] 回滚 stage1 失败: %s -> %s",
+                            tmp_path,
+                            old_abs,
+                            exc_info=True,
+                        )
+            raise
+
+        # 把 conflict.new_path 改成首卷的新路径，让后续 retry 任务能拿对路径。
+        first_new = normalized_pairs[0][1]
+        next_metadata = dict(metadata)
+        next_metadata.pop("disguised_volume_set", None)
+        next_metadata["volume_rename_history"] = [
+            {"old": old, "new": new}
+            for old, new in normalized_pairs
+        ]
+        next_metadata["volume_rename_at"] = datetime.now().isoformat()
+
+        conflict.new_path = first_new
+        conflict.new_metadata = next_metadata
+
+        return {
+            "renamed": [
+                {"old": old, "new": new}
+                for old, new in normalized_pairs
+            ],
+            "first_volume": first_new,
+            "directory": directory,
         }
 
     async def resolve_merge(

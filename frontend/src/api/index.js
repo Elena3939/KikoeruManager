@@ -476,6 +476,16 @@ export const conflictApi = {
     return response.data
   },
 
+  // 伪装多卷压缩包 conflict 的"手动重命名分卷"提交。
+  // payload = { renames: [{old, new}, ...], auto_retry: bool }
+  // 后端会做原子两阶段重命名 + 可选自动起 RETRY 任务，返回 { renamed, first_volume, task_id, ... }。
+  renameVolumes: async (conflictId, payload = {}) => {
+    const response = await apiClient.post(`/conflicts/${conflictId}/rename-volumes`, payload, {
+      timeout: 60 * 1000,
+    })
+    return response.data
+  },
+
   filenamePreview: async (conflictId, payload = {}) => {
     const response = await apiClient.post(`/conflicts/${conflictId}/filename-preview`, payload, {
       timeout: 60000,
