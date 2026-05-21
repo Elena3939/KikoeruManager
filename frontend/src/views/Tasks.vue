@@ -888,8 +888,28 @@ function getCircleIndexMetaEntries(item) {
   const metadata = item?.details?.metadata || {}
   const indexMeta = metadata.index_meta || {}
   const indexedCounts = metadata.indexed_counts || {}
+  // ★ 批量场景：metadata.circle_name 一直是第一个社团名（创建 task 时填的，task_engine 循环
+  // 没改它），所以单显示 circle_name 会误导。改成"批量补全 N 个社团：社团1, 社团2..."形式。
+  const circleQueriesList = Array.isArray(metadata.circle_queries)
+    ? metadata.circle_queries.map(value => String(value || '').trim()).filter(Boolean)
+    : []
+  const isBatch = Boolean(metadata.is_batch) || circleQueriesList.length > 1
+  const batchTotal = Number(metadata.batch_total || 0) || circleQueriesList.length
+  const currentCircle = String(indexMeta.current_circle_query || metadata.current_circle_query || metadata.circle_query || '').trim()
+  const completedQueries = Number(indexMeta.completed_queries || 0)
+  const failedQueries = Number(indexMeta.failed_queries || 0)
+  let circleField = ''
+  if (isBatch) {
+    const head = circleQueriesList.slice(0, 6).join('、')
+    const tail = circleQueriesList.length > 6 ? `… 等 ${batchTotal} 个` : `（共 ${batchTotal} 个）`
+    circleField = `批量补全 · ${head}${tail}`
+  } else {
+    circleField = metadata.circle_name || metadata.circle_query || ''
+  }
   const entries = [
-    ['社团', metadata.circle_name || metadata.circle_query || ''],
+    ['社团', circleField],
+    ['当前进度', isBatch ? `${completedQueries + failedQueries}/${batchTotal}${currentCircle ? `（正在：${currentCircle}）` : ''}` : ''],
+    ['批量结果', isBatch ? `成功 ${completedQueries} / 失败 ${failedQueries}` : ''],
     ['Maker ID', indexMeta.maker_id || ''],
     ['来源模式', indexMeta.dlsite_source_mode || ''],
     ['DLsite失败原因', getDLsiteFailureReason(item)],

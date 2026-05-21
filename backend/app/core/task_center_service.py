@@ -66,6 +66,19 @@ class TaskCenterService:
         "linked_workbench_applied",
         # 前端 list 页 getTaskSummary / getOutputPath 直接读
         "subtitle_dir",
+        # 社团补全批量任务：Tasks.vue 详情面板 + Dashboard 任务卡需要这些
+        # 字段判断 is_batch 并渲染"批量补全 N 个社团"；缺这些字段会导致
+        # summary 模式下 details.metadata 只能看到第一个社团名（错误展示）。
+        "circle_query",
+        "circle_queries",
+        "circle_name",
+        "circle_id",
+        "is_batch",
+        "is_refresh_all",
+        "batch_total",
+        "current_circle_query",
+        "index_meta",
+        "indexed_counts",
     )
 
     # summary 模式下 pending preview 仅保留这些键
@@ -932,12 +945,55 @@ class TaskCenterService:
             if task.type == TaskType.CIRCLE_COMPLETION_INDEX:
                 index_meta = dict(metadata.get("index_meta") or {})
                 indexed_counts = dict(metadata.get("indexed_counts") or {})
+                # ★ Bug 修复（2026-05-21）：批量补全任务卡 title/subtitle 错乱。
+                # 此前 ``is_batch=True`` 但 ``is_refresh_all=False`` 时没有专门分支，落到
+                # 单社团 fallback：``title = metadata.circle_name``（一直是第一个社团名，例如
+                # "Clover Voice"），``subtitle = metadata.circle_query``（被 task_engine 循环
+                # 改成"当前正在跑的社团名"，例如 "Whisp"）。结果任务卡顶部显示 "Clover Voice"
+                # + "Whisp" 两个不同社团名，前端没法看出这是"批量补全 2 个社团"。
+                # 修复：批量任务统一显示批量元信息，subtitle 显示当前进度 / 当前正在处理的社团。
+                circle_queries_list = [
+                    str(value or "").strip()
+                    for value in (metadata.get("circle_queries") or [])
+                    if str(value or "").strip()
+                ]
+                is_batch = bool(metadata.get("is_batch")) or len(circle_queries_list) > 1
+                batch_total = int(metadata.get("batch_total") or 0) or len(circle_queries_list)
+                completed_queries = int(index_meta.get("completed_queries") or 0)
+                failed_queries = int(index_meta.get("failed_queries") or 0)
+                current_circle = (
+                    self._safe_text(index_meta.get("current_circle_query"))
+                    or self._safe_text(metadata.get("current_circle_query"))
+                    or self._safe_text(metadata.get("circle_query"))
+                )
                 if bool(metadata.get("is_refresh_all")):
                     title = "全部刷新社团索引"
-                    subtitle = self._safe_text(metadata.get("source_label")) or f"{int(metadata.get('batch_total') or 0)} 个社团"
+                    subtitle = self._safe_text(metadata.get("source_label")) or f"{batch_total} 个社团"
+                elif is_batch:
+                    title = self._safe_text(metadata.get("source_label")) or f"批量补全 {batch_total} 个社团"
+                    if task.status == TaskStatus.PROCESSING and current_circle:
+                        done = completed_queries + failed_queries
+                        position = min(done + 1, batch_total) if batch_total else done + 1
+                        subtitle = f"正在处理 {current_circle}（{position}/{batch_total}）" if batch_total else f"正在处理 {current_circle}"
+                    elif task.status == TaskStatus.PENDING:
+                        subtitle = "排队中" + (f"，共 {batch_total} 个社团" if batch_total else "")
+                    elif task.status in (TaskStatus.PAUSED, TaskStatus.FAILED):
+                        subtitle = f"已完成 {completed_queries}/{batch_total}" + (f"，失败 {failed_queries}" if failed_queries else "")
+                    else:
+                        # COMPLETED 等终态：列出第一个 / 最后一个社团名做摘要
+                        head_name = circle_queries_list[0] if circle_queries_list else current_circle
+                        tail_hint = "..." if len(circle_queries_list) > 1 else ""
+                        subtitle = f"{head_name}{tail_hint}（成功 {completed_queries} / 失败 {failed_queries}）" if head_name else f"完成 {completed_queries} / 失败 {failed_queries}"
                 else:
                     title = self._safe_text(metadata.get("circle_name")) or self._safe_text(metadata.get("circle_query")) or "社团索引任务"
                     subtitle = self._safe_text(metadata.get("circle_id")) or self._safe_text(metadata.get("circle_query"))
+                if is_batch:
+                    self._append_metric(metrics, "批量", f"{batch_total} 个社团" if batch_total else None)
+                    self._append_metric(metrics, "进度", f"{completed_queries}/{batch_total}" if batch_total else None)
+                    if failed_queries > 0:
+                        self._append_metric(metrics, "失败", failed_queries)
+                    if task.status == TaskStatus.PROCESSING and current_circle:
+                        self._append_metric(metrics, "当前", current_circle)
                 self._append_metric(metrics, "候选", index_meta.get("combined_candidates_count") or index_meta.get("aggregated_count"))
                 self._append_metric(metrics, "DLsite", index_meta.get("dlsite_candidates_count") or index_meta.get("dlsite_profile_total") or indexed_counts.get("dl_count"))
                 self._append_metric(metrics, "可下载", index_meta.get("asmr_available_count") or indexed_counts.get("downloadable_count"))
