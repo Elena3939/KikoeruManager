@@ -47,6 +47,20 @@ if sys.platform == 'win32':
 else:
     CREATE_NO_WINDOW = 0
 
+class DisguisedVolumeSetError(Exception):
+    """检测到疑似被人为伪装命名的多卷压缩包，需要用户在前端手动确认重命名。
+
+    extract_service 在常规分卷识别 / 单体压缩包解压都失败后，会跑启发式探测；
+    命中时通过抛出本异常向上传递。任务中心 / 问题作品落库流程会读取
+    ``task.task_metadata['disguised_volume_set']`` 里的 suspect_files 清单，
+    把 conflict_type 改成 ``分卷压缩包后缀无法识别``，让前端弹"手动重命名分卷"。
+    """
+
+    def __init__(self, message: str, payload: Dict[str, Any]):
+        super().__init__(message)
+        self.payload = payload
+
+
 class ArchiveInfo:
     """压缩包信息"""
     def __init__(
@@ -316,6 +330,719 @@ class ExtractService:
         )
         normalized = str(value or "").strip()
         return normalized or None
+
+    def _get_manual_retry_passwords(self, task: Optional[Task]) -> List[str]:
+        """读取 task_metadata 里手动指定的密码 list（按顺序、去重、过滤空）。
+
+        新版 routes 把 ConflictRetryRequest.passwords 写入
+        ``task_metadata["manual_retry_passwords"]`` (list)。
+        旧 task / 旧外部脚本仍可能只写 ``manual_retry_password`` 单字段，
+        这里做兜底兼容：list 为空时回退到 ``[manual_retry_password]``。
+
+        返回的 list 即是 manual_retry_password_only 模式下要依次尝试的全部候选。
+        """
+        if task is None:
+            return []
+        metadata = dict(getattr(task, "task_metadata", None) or {})
+        seen: set[str] = set()
+        result: List[str] = []
+        raw_list = metadata.get("manual_retry_passwords")
+        if isinstance(raw_list, (list, tuple)):
+            for raw in raw_list:
+                normalized = normalize_password_value(raw)
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    result.append(normalized)
+        if not result:
+            legacy = normalize_password_value(metadata.get("manual_retry_password"))
+            if legacy:
+                result.append(legacy)
+        return result
+
+    # ------------------------------------------------------------------
+    # 伪装多卷压缩包识别：解决用户场景"分卷被故意改成 .z7.001 / .7z.删除001 /
+    # .png 等让系统拿不准的命名"。常规 _detect_volume_set 走完没识别 + 单体
+    # 解压必然失败时，在最终抛 Exception 之前由本方法兜底；命中后把 payload 写
+    # 进 task_metadata，由 task_engine 落库为 分卷压缩包后缀无法识别 冲突，
+    # 前端弹"手动重命名分卷"。
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _identify_archive_kind_by_magic(head: bytes) -> Optional[str]:
+        """按文件头前几字节识别真实 archive 类型（仅 7z / rar / zip 三选一）。
+
+        其它格式（gz / tar / xz / 媒体 / 文档）即使被改名为分卷也极少见，
+        识别面太广反而容易误伤同目录的合法文件。
+        """
+        if not head:
+            return None
+        if head.startswith(b'7z\xbc\xaf\x27\x1c'):
+            return '7z'
+        if head.startswith(b'Rar!\x1a\x07'):
+            return 'rar'
+        if head[:4] in (b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08'):
+            return 'zip'
+        return None
+
+    @staticmethod
+    def _read_file_head(path: str, n: int = 64) -> bytes:
+        """安全地读取文件头 n 字节，IO 错误一律返回空字节串。"""
+        try:
+            with open(path, 'rb') as f:
+                return f.read(n)
+        except OSError:
+            return b''
+
+    def _scan_disguised_volume_siblings(
+        self,
+        directory: str,
+        target_name: str,
+        entries: List[str],
+    ) -> List[Dict[str, Any]]:
+        """扫描同目录"伪装多卷兄弟"。
+
+        把 target_name 拆成 ``(prefix, num_str, suffix)`` 三段，再在 entries 里
+        匹配同 prefix + 同 suffix + 中间纯数字的兄弟。试两种拆分策略：
+
+        - **末尾连续数字（不含后缀）**：``foo.z7.001`` → ``("foo.z7.", "001", "")``
+          也覆盖 ``foo.7z.删除001``、``foo01``、``foo_part1`` 这种数字结尾。
+        - **后缀前的数字**：``foo.001.png`` / ``foo01.png`` →
+          ``("foo.", "001", ".png")`` / ``("foo", "01", ".png")``，覆盖被改成
+          图片后缀的伪装多卷。
+
+        返回每个匹配兄弟（含 target 自身）的 ``{path, size, index}``。
+        """
+        strategies = (
+            re.compile(r'^(?P<prefix>.+?)(?P<num>\d+)$'),
+            re.compile(r'^(?P<prefix>.+?)(?P<num>\d+)(?P<suffix>\.[^.]+)$'),
+        )
+        for pattern in strategies:
+            m = pattern.match(target_name)
+            if not m:
+                continue
+            prefix = m.group('prefix')
+            num_str = m.group('num')
+            try:
+                suffix = m.group('suffix')
+            except IndexError:
+                suffix = ''
+            suffix = suffix or ''
+            # 防御：极短 prefix（比如就是 1~2 个字符）容易误识别一堆无关文件。
+            if len(prefix) < 3:
+                continue
+            siblings: List[Dict[str, Any]] = []
+            for entry in entries:
+                if not entry.startswith(prefix):
+                    continue
+                if suffix and not entry.endswith(suffix):
+                    continue
+                mid = entry[len(prefix):]
+                if suffix:
+                    mid = mid[: len(mid) - len(suffix)]
+                if not mid or not mid.isdigit():
+                    continue
+                full_path = os.path.join(directory, entry)
+                if not os.path.isfile(full_path):
+                    continue
+                try:
+                    size = os.path.getsize(full_path)
+                except OSError:
+                    continue
+                siblings.append({
+                    "path": full_path,
+                    "name": entry,
+                    "size": size,
+                    "index": int(mid),
+                })
+            # 至少 2 个兄弟（含 target 自身）才能视为分卷
+            if len(siblings) < 2:
+                continue
+            return siblings
+        return []
+
+    def _detect_disguised_volume_set(self, target_path: str) -> Optional[Dict[str, Any]]:
+        """启发式探测疑似伪装多卷压缩包。
+
+        返回 dict（命中）：
+
+        ``{
+            "directory": str,
+            "detected_kind": "7z" | "rar" | "zip",
+            "suspect_files": [{path, name, size, index}, ...],
+            "suggested_renames": [{old, new}, ...],
+            "confidence": "high" | "medium",
+        }``
+
+        没命中（包括算法不确定）一律返回 None，由调用方走原失败链路。
+        全部安全闸门：
+
+        1. target 是合法 7z / rar / zip 首卷魔数（按文件头判断，不看后缀）。
+        2. 同目录至少 2 个 prefix-数字-suffix 兄弟。
+        3. 兄弟数字序连续（1..N 或 0..N-1）。
+        4. 每卷 size ≥ 1KB（伪装的小占位文件不算分卷）。
+        5. 除最后一卷外，主体卷大小差异 < 5%（真分卷 7z/rar 的中间卷尺寸严格相等）。
+        """
+        if not target_path or not os.path.isfile(target_path):
+            return None
+
+        head = self._read_file_head(target_path, n=64)
+        archive_kind = self._identify_archive_kind_by_magic(head)
+        if archive_kind is None:
+            return None
+
+        directory = os.path.dirname(target_path)
+        target_name = os.path.basename(target_path)
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            return None
+
+        siblings = self._scan_disguised_volume_siblings(directory, target_name, entries)
+        if len(siblings) < 2:
+            return None
+
+        # 按 index 排序
+        siblings.sort(key=lambda x: x["index"])
+
+        # 安全闸门：数字序号必须连续
+        indices = [c["index"] for c in siblings]
+        ok_one_based = indices == list(range(1, len(indices) + 1))
+        ok_zero_based = indices == list(range(0, len(indices)))
+        if not (ok_one_based or ok_zero_based):
+            return None
+
+        # target 必须是首卷（index 在 siblings 里最小）；否则魔数判断没意义
+        target_full = os.path.join(directory, target_name)
+        target_entry = next((c for c in siblings if c["path"] == target_full), None)
+        if target_entry is None or target_entry["index"] != indices[0]:
+            return None
+
+        # 安全闸门：单卷 ≥ 1KB
+        if any(c["size"] < 1024 for c in siblings):
+            return None
+
+        # 安全闸门：主体卷大小差异 < 5%（最后一卷允许较小）
+        if len(siblings) >= 3:
+            body_sizes = [c["size"] for c in siblings[:-1]]
+            max_size = max(body_sizes)
+            min_size = min(body_sizes)
+            if max_size > 0 and (max_size - min_size) / max_size > 0.05:
+                return None
+
+        # 推一个朴素的 base name（去掉末尾数字 + 常见伪装片段），
+        # 用于初始 suggested_renames；前端 dialog 仍允许用户手改。
+        base_name = self._extract_disguised_base_name(target_name, archive_kind)
+        suggested = []
+        for offset, c in enumerate(siblings, start=1):
+            new_name = self._build_standard_volume_name(base_name, archive_kind, offset)
+            new_path = os.path.join(directory, new_name)
+            suggested.append({"old": c["path"], "new": new_path})
+
+        confidence = "high" if len(siblings) >= 3 else "medium"
+        return {
+            "directory": directory,
+            "detected_kind": archive_kind,
+            "suspect_files": [
+                {
+                    "path": c["path"],
+                    "name": c["name"],
+                    "size": int(c["size"]),
+                    "index": int(c["index"]),
+                }
+                for c in siblings
+            ],
+            "suggested_renames": suggested,
+            "confidence": confidence,
+        }
+
+    @staticmethod
+    def _extract_disguised_base_name(target_name: str, archive_kind: str) -> str:
+        """从伪装首卷文件名里推断"干净"的基名，给 suggested_renames 当骨架。
+
+        多轮迭代剥离，每轮按下面顺序尝试，直到一轮没变化才停（最多 5 轮防死循环）：
+
+        1. 剥掉最后一个 ``.xxx`` 后缀（限 1~5 字符，避免吃掉中间的合法点段）。
+        2. 剥掉末尾的"删除/del/deleted"等伪装词（不含单字母如 x，避免吃掉
+           合法名字结尾的字母 ``xxx`` / ``box`` 等）。
+        3. 剥掉末尾的 ``.伪装格式片段``：``.z7`` / ``.7z`` / ``.rar`` / ``.zip`` / ``.part``。
+        4. 剥掉末尾连续数字（伪装序号）。**必须放在第 3 步之后**，否则
+           ``foo.z7`` 里的 ``7`` 会被先误剥，结果变成 ``foo.z``。
+        5. trim 末尾的 ``.``、``_``、``-``。
+
+        全部剥光后兜底返回 ``"archive"``。
+        """
+        name = target_name
+        for _ in range(5):
+            previous = name
+            name = re.sub(r'\.[^.]{1,5}$', '', name)
+            name = re.sub(r'(?:删除|del|deleted)$', '', name, flags=re.IGNORECASE)
+            name = re.sub(r'\.(z7|7z|rar|zip|part)$', '', name, flags=re.IGNORECASE)
+            name = re.sub(r'\d+$', '', name)
+            name = name.rstrip('._-')
+            if name == previous:
+                break
+        return name or 'archive'
+
+    @staticmethod
+    def _build_standard_volume_name(base_name: str, archive_kind: str, idx: int) -> str:
+        """根据探测出的 archive_kind 给第 idx 卷生成标准命名。
+
+        - ``7z`` → ``base.7z.NNN``（zero-padded 3 位）
+        - ``rar`` → ``base.partN.rar``（不 pad）
+        - ``zip`` → ``base.zip.NNN``（zero-padded 3 位，对齐 7z 的 split file 风格）
+        """
+        if archive_kind == 'rar':
+            return f"{base_name}.part{idx}.rar"
+        if archive_kind == '7z':
+            return f"{base_name}.7z.{idx:03d}"
+        # zip / 兜底
+        return f"{base_name}.zip.{idx:03d}"
+
+    def _maybe_raise_disguised_volume_set(self, archive_path: str, task: Task) -> None:
+        """伪装多卷探测兜底；命中则把 payload 写进 task_metadata 并抛异常。
+
+        没命中（包括算法不确定 / 单体压缩包 / 同目录无兄弟）时静默返回，
+        让 extract() 走原单体解压链路。
+
+        命中时：
+        - 把 detection payload 写到 ``task.task_metadata['disguised_volume_set']``，
+          task_engine 失败兜底 (``_record_problem_work_for_task_failure``) 会读取
+          这个字段把 conflict_type 改成 ``分卷压缩包后缀无法识别``。
+        - 抛 ``DisguisedVolumeSetError``，由 task_engine 全局 except 捕获 → 走失败链路。
+        """
+        try:
+            detection = self._detect_disguised_volume_set(archive_path)
+            # 现有探测以"target 自己是数字结尾的伪装首卷"为前提；用户实际场景
+            # 也可能是"target 是干净 archive 名（.zip/.rar/.7z 等）+ 同目录兄弟全
+            # 是伪装（.删除z02 / .删除z03 / ...）"，原算法无法拆 target_name 出
+            # (prefix, num, suffix) 直接返回空。第二探测专门兜底这种盲区，让
+            # 用户不用先知道哪个是真主卷，只要任意干净 archive 名首卷被扫描到
+            # 就能命中。
+            if not detection:
+                detection = self._detect_disguised_set_with_clean_target(archive_path)
+        except Exception:
+            logger.warning(
+                "伪装多卷探测意外失败，跳过启发式兜底: %s",
+                archive_path,
+                exc_info=True,
+            )
+            return
+        if not detection:
+            return
+
+        if task.task_metadata is None:
+            task.task_metadata = {}
+        task.task_metadata["disguised_volume_set"] = {
+            "directory": detection["directory"],
+            "detected_kind": detection["detected_kind"],
+            "suspect_files": detection["suspect_files"],
+            "suggested_renames": detection["suggested_renames"],
+            "confidence": detection["confidence"],
+        }
+        suspect_count = len(detection["suspect_files"])
+        message = (
+            f"疑似 {detection['detected_kind']} 伪装多卷压缩包：识别到 {suspect_count} 个候选分卷文件，"
+            f"请在问题作品页确认/重命名后再重试解压"
+        )
+        logger.warning(
+            "[Extract] 命中伪装多卷探测: kind=%s, suspect=%d, target=%s",
+            detection["detected_kind"],
+            suspect_count,
+            archive_path,
+        )
+        raise DisguisedVolumeSetError(message, detection)
+
+    # 统一的伪装词集合：必须用 ``re.IGNORECASE``。这里只放高置信度的中文 + 英文
+    # 伪装词，绝不能加 ``del`` / ``rm`` 之类短前缀，避免误剥合法的英文文件名片段
+    # （如 ``delta`` / ``rmvb``）。需要兜底新关键词时，先在用户实际样本上验证。
+    _DISGUISE_WORDS_PATTERN = re.compile(r'(?:删除|deleted|fake|junk)', re.IGNORECASE)
+
+    @classmethod
+    def _is_disguised_volume_suffix(cls, suffix: str) -> bool:
+        """判定 ``base_name.`` 后面的 suffix 是否带"伪装"特征。
+
+        判定规则（任一命中即视为伪装）：
+
+        1. 含**任何**非 ASCII 字符（中文 / 全角 / 假名 / 特殊符号），用户最常用的就是
+           塞中文 ``删`` / ``删除`` 把后缀拖出标准正则。
+        2. 含已知 ASCII 伪装词（``deleted`` / ``fake`` / ``junk`` 等），覆盖用户用
+           英文片段做伪装的场景，如 ``foo.fakez01`` / ``foo.zjunk02``。
+
+        ASCII 短前缀（``del`` / ``rm`` 等）有误伤合法名风险，故不纳入。需要支持
+        新伪装关键词时，请扩展 ``_DISGUISE_WORDS_PATTERN`` 而不是放进这里硬编码。
+        """
+        if not suffix:
+            return False
+        if any(ord(c) > 127 for c in suffix):
+            return True
+        if cls._DISGUISE_WORDS_PATTERN.search(suffix):
+            return True
+        return False
+
+    @classmethod
+    def _clean_disguised_volume_name(cls, name: str, base_name: str) -> Optional[str]:
+        """从伪装分卷文件名里剥掉非 ASCII 垃圾字符 + 已知伪装词，给出"干净"的目标名。
+
+        约束：
+
+        - name 必须是 ``base_name + '.' + suffix`` 形式，否则返回 None。
+        - 必须真的剥到东西（cleaned != suffix）；suffix 已是纯 ASCII + 没有伪装词时返回 None。
+        - 干净后 suffix 仍要有数字（保留分卷编号），否则返回 None。
+
+        典型场景：
+
+        - ``foo.z删02`` (base=foo) → ``foo.z02``  ← 中文嵌在 z 之后
+        - ``foo.删除z02`` (base=foo) → ``foo.z02``  ← 伪装词作为前缀
+        - ``foo.7z.删除003`` (base=foo) → ``foo.7z.003``
+        - ``foo.r删01`` (base=foo) → ``foo.r01``
+        """
+        prefix = base_name + '.'
+        if not name.startswith(prefix):
+            return None
+        suffix = name[len(prefix):]
+        if not suffix:
+            return None
+
+        cleaned = suffix
+        # 1. 剥掉已知伪装词（删除 / deleted / fake / junk）
+        cleaned = cls._DISGUISE_WORDS_PATTERN.sub('', cleaned)
+        # 2. 剥掉非 ASCII 字符（中文 / 全角 / 假名 / 特殊符号等）
+        cleaned = ''.join(c for c in cleaned if ord(c) < 128)
+        # 3. 收掉重复的点号 + 边界点号
+        cleaned = re.sub(r'\.+', '.', cleaned).strip('.')
+
+        if cleaned == suffix:
+            return None
+        if not cleaned:
+            return None
+        if not re.search(r'\d', cleaned):
+            return None
+        return f"{base_name}.{cleaned}"
+
+    def _scan_disguised_supplementary_siblings(
+        self,
+        volume_set: 'VolumeSet',
+    ) -> List[Dict[str, Any]]:
+        """在已识别 volume_set 之外，扫描"被伪装命名挡掉、漏识别"的兄弟卷。
+
+        典型场景：``xxx.zip + xxx.z01`` 是标准 ZIP 多卷被 ``_detect_volume_set`` 正确
+        识别，但同目录还有 ``xxx.z删02 / xxx.z删03``，因为后缀含中文 ``删`` 而被
+        ``\\.z\\d{2}`` 严格正则错过 → 实际分卷组不完整，下游解压必然失败。本方法
+        专门捞这类"伪装兄弟卷"。
+
+        匹配规则（任一不满足直接跳过）：
+
+        1. 文件名 startswith ``base_name + '.'``。
+        2. 文件名不在已识别的 volume_set.volumes 里（避免重复）。
+        3. suffix 含非 ASCII 字符（伪装的核心特征：用户故意塞 ``删`` 等中文阻挡正则）。
+        4. suffix 末尾是连续数字（合法分卷编号）。
+        5. 文件存在 + 大小 ≥ 1KB（防把小占位文件当分卷）。
+
+        返回按 index 排序的 ``[{path, name, size, index}, ...]``，无命中返回空 list。
+        """
+        if not volume_set or not volume_set.volumes:
+            return []
+
+        directory = os.path.dirname(volume_set.volumes[0])
+        base_name = volume_set.base_name
+        if not directory or not base_name:
+            return []
+        base_with_dot_lower = (base_name + '.').lower()
+        existing_names_lower = {os.path.basename(v).lower() for v in volume_set.volumes}
+
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            return []
+
+        suspects: List[Dict[str, Any]] = []
+        for entry in entries:
+            entry_lower = entry.lower()
+            if entry_lower in existing_names_lower:
+                continue
+            if not entry_lower.startswith(base_with_dot_lower):
+                continue
+            suffix = entry[len(base_name) + 1:]
+            if not suffix:
+                continue
+            # 必须含伪装特征（非 ASCII / 伪装词），统一走 _is_disguised_volume_suffix
+            if not self._is_disguised_volume_suffix(suffix):
+                continue
+            # 必须末尾有数字（合法分卷编号）
+            tail = re.search(r'(\d+)$', suffix)
+            if not tail:
+                continue
+            full_path = os.path.join(directory, entry)
+            if not os.path.isfile(full_path):
+                continue
+            try:
+                size = os.path.getsize(full_path)
+            except OSError:
+                continue
+            if size < 1024:
+                continue
+            suspects.append({
+                "path": full_path,
+                "name": entry,
+                "size": int(size),
+                "index": int(tail.group(1)),
+            })
+
+        suspects.sort(key=lambda x: x["index"])
+        return suspects
+
+    # 干净 archive 后缀白名单：用于"target 是干净 archive 名 + 兄弟全伪装"场景的入口判定。
+    # 仅放真实压缩包扩展名 + 长度合理（防止 .a / .z 单字符误中）；保持小集合是为了避免
+    # 把 .png / .txt 等无关后缀文件误吞进伪装兄弟扫描。
+    _CLEAN_ARCHIVE_EXTENSIONS = ('zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'cab')
+
+    def _detect_disguised_set_with_clean_target(self, target_path: str) -> Optional[Dict[str, Any]]:
+        """target 是干净 archive 名（如 ``RJ01358521.zip``）+ 同目录兄弟卷全是伪装命名时的探测。
+
+        补足 ``_detect_disguised_volume_set`` 的盲区：原方法的 ``_scan_disguised_volume_siblings``
+        要求 ``target_name`` 自己能被拆成 ``(prefix, num, suffix)``，即文件名末尾必须是数字
+        或"数字 + 后缀"。``RJ01358521.zip`` 末尾既不是数字也不是"数字 + 后缀"，原算法直接返回
+        空，导致用户场景 ``RJ01358521.zip + .删除z02 + .删除z03`` 没有任何探测能命中，下游
+        解压拿单卷主卷挣扎，最后报"压缩包损坏 (Headers/Data Error)"。
+
+        本方法专门处理这种场景：
+
+        1. target 必须是 ``base_name + '.' + ext``，``ext`` 在 ``_CLEAN_ARCHIVE_EXTENSIONS``
+           白名单里（zip / rar / 7z / ...）。``base_name`` 至少 3 字符，避免误吞同目录无关文件。
+        2. 同目录扫描所有 ``base_name + '.'`` 前缀的兄弟，过 ``_is_disguised_volume_suffix``
+           判定（含非 ASCII 或已知伪装词），且末尾有数字 + 大小 ≥ 1KB。
+        3. 命中 ≥ 1 个伪装兄弟即触发：archive_kind 优先取首卷魔数，魔数不可识别（典型：
+           ``.zip`` 是用户造的空主卷）兜底用 target 扩展名。
+        4. payload 里 target 自己 old==new 不动；伪装兄弟给"剥伪装"建议名（``_clean_disguised_volume_name``）。
+        """
+        if not target_path or not os.path.isfile(target_path):
+            return None
+
+        target_name = os.path.basename(target_path)
+        directory = os.path.dirname(target_path)
+        if not directory:
+            return None
+
+        # target 必须是 "base.ext" 格式 + ext 在白名单
+        ext_pattern = '|'.join(re.escape(e) for e in self._CLEAN_ARCHIVE_EXTENSIONS)
+        clean_match = re.match(
+            rf'^(?P<base>.+?)\.(?P<ext>{ext_pattern})$',
+            target_name,
+            re.IGNORECASE,
+        )
+        if not clean_match:
+            return None
+        base_name = clean_match.group('base')
+        target_ext = clean_match.group('ext').lower()
+        if len(base_name) < 3:
+            return None
+
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            return None
+
+        base_with_dot_lower = (base_name + '.').lower()
+        target_name_lower = target_name.lower()
+
+        suspects: List[Dict[str, Any]] = []
+        for entry in entries:
+            entry_lower = entry.lower()
+            if entry_lower == target_name_lower:
+                continue
+            if not entry_lower.startswith(base_with_dot_lower):
+                continue
+            suffix = entry[len(base_name) + 1:]
+            if not self._is_disguised_volume_suffix(suffix):
+                continue
+            tail = re.search(r'(\d+)$', suffix)
+            if not tail:
+                continue
+            full_path = os.path.join(directory, entry)
+            if not os.path.isfile(full_path):
+                continue
+            try:
+                size = os.path.getsize(full_path)
+            except OSError:
+                continue
+            if size < 1024:
+                continue
+            suspects.append({
+                "path": full_path,
+                "name": entry,
+                "size": int(size),
+                "index": int(tail.group(1)),
+            })
+
+        if not suspects:
+            return None
+
+        # archive_kind：优先 magic byte，魔数没识别用 target 扩展名兜底。
+        head = self._read_file_head(target_path, n=64)
+        archive_kind = self._identify_archive_kind_by_magic(head)
+        if archive_kind is None:
+            ext_to_kind = {
+                'zip': 'zip', 'rar': 'rar', '7z': '7z',
+                'tar': '7z', 'gz': '7z', 'bz2': '7z', 'xz': '7z', 'cab': '7z',
+            }
+            archive_kind = ext_to_kind.get(target_ext, 'zip')
+
+        # 排序 + 构建 payload
+        suspects.sort(key=lambda x: x["index"])
+
+        suspect_files: List[Dict[str, Any]] = []
+        suggested_renames: List[Dict[str, str]] = []
+
+        # target 自己（不动）
+        try:
+            target_size = int(os.path.getsize(target_path))
+        except OSError:
+            target_size = 0
+        suspect_files.append({
+            "path": target_path,
+            "name": target_name,
+            "size": target_size,
+            "index": -1,
+        })
+        suggested_renames.append({"old": target_path, "new": target_path})
+
+        # 伪装兄弟（按 index 升序）
+        for s in suspects:
+            suspect_files.append({
+                "path": s["path"],
+                "name": s["name"],
+                "size": int(s["size"]),
+                "index": int(s["index"]),
+            })
+            cleaned_name = self._clean_disguised_volume_name(s["name"], base_name)
+            new_path = os.path.join(directory, cleaned_name) if cleaned_name else s["path"]
+            suggested_renames.append({"old": s["path"], "new": new_path})
+
+        return {
+            "directory": directory,
+            "detected_kind": archive_kind,
+            "suspect_files": suspect_files,
+            "suggested_renames": suggested_renames,
+            "confidence": "high" if len(suspects) >= 2 else "medium",
+        }
+
+    def _maybe_raise_disguised_supplementary(
+        self,
+        archive_path: str,
+        task: Task,
+        volume_set: 'VolumeSet',
+    ) -> None:
+        """``_detect_volume_set`` 已经识别出（部分）分卷组，但同目录还有伪装命名的
+        兄弟卷漏识别 —— 抛 DisguisedVolumeSetError 让前端走"手动重命名分卷"流程。
+
+        核心解决用户场景：``xxx.zip + xxx.z01 + xxx.z删02 + xxx.z删03``。
+
+        - ``_build_zip_volume_set`` 因 ``\\.z\\d{2}`` 严格正则只认 ``.z01``，返回
+          partial set ``[xxx.zip, xxx.z01]``。
+        - 这里扫描发现 2 个伪装兄弟卷 ``.z删02 / .z删03`` → 提示用户去掉 ``删`` 。
+        - 不弹则后面解压必然失败，且报错是"无正确密码"，与实际原因（分卷不全）
+          完全不沾边，用户无从下手。
+
+        payload 里：
+
+        - suspect_files：现有标准卷 + 伪装兄弟卷的并集，让前端 dialog 展示完整分卷组。
+        - suggested_renames：标准卷 old==new（不动），伪装兄弟卷给出"剥掉 ``删``"的建议。
+        - 不动现有卷的策略：避免重命名后 7zz 仍然认不出（如 ``.zip`` 改名后破环原识别）。
+        """
+        try:
+            suspects = self._scan_disguised_supplementary_siblings(volume_set)
+        except Exception:
+            logger.warning(
+                "[Extract] 伪装多卷补全探测意外失败，跳过启发式兜底: %s",
+                archive_path,
+                exc_info=True,
+            )
+            return
+
+        if not suspects:
+            return
+
+        # 识别 archive_kind：优先看首卷魔数，失败兜底用 volume_set.type 推断
+        first_volume = volume_set.entry_path or volume_set.volumes[0]
+        head = self._read_file_head(first_volume, n=64)
+        archive_kind = self._identify_archive_kind_by_magic(head)
+        if archive_kind is None:
+            type_to_kind = {
+                'zip_volume_main': 'zip',
+                'zip_numeric_split': 'zip',
+                '7z_volume_with_ext': '7z',
+                '7z_volume': '7z',
+                'part': 'rar',
+                'part_no_ext': 'rar',
+                'exe_e_sequence': '7z',
+            }
+            archive_kind = type_to_kind.get(volume_set.type, 'zip')
+
+        directory = os.path.dirname(first_volume)
+        base_name = volume_set.base_name
+
+        suspect_files: List[Dict[str, Any]] = []
+        suggested_renames: List[Dict[str, str]] = []
+        seen_paths: set = set()
+
+        # 现有标准卷：放进 suspect_files 让前端看到完整分卷组，但 old==new（不动）
+        for v_path in volume_set.volumes:
+            normalized = os.path.normcase(os.path.normpath(v_path))
+            if normalized in seen_paths:
+                continue
+            try:
+                size = int(os.path.getsize(v_path))
+            except OSError:
+                size = 0
+            suspect_files.append({
+                "path": v_path,
+                "name": os.path.basename(v_path),
+                "size": size,
+                "index": -1,  # 不推断 index：标准卷由 7zz 自己按文件名排
+            })
+            suggested_renames.append({"old": v_path, "new": v_path})
+            seen_paths.add(normalized)
+
+        # 伪装兄弟卷：给出剥掉非 ASCII / 伪装词的建议名
+        for s in suspects:
+            normalized = os.path.normcase(os.path.normpath(s["path"]))
+            if normalized in seen_paths:
+                continue
+            suspect_files.append({
+                "path": s["path"],
+                "name": s["name"],
+                "size": int(s["size"]),
+                "index": int(s["index"]),
+            })
+            cleaned_name = self._clean_disguised_volume_name(s["name"], base_name)
+            new_path = os.path.join(directory, cleaned_name) if cleaned_name else s["path"]
+            suggested_renames.append({"old": s["path"], "new": new_path})
+            seen_paths.add(normalized)
+
+        payload = {
+            "directory": directory,
+            "detected_kind": archive_kind,
+            "suspect_files": suspect_files,
+            "suggested_renames": suggested_renames,
+            "confidence": "high",
+        }
+
+        if task.task_metadata is None:
+            task.task_metadata = {}
+        task.task_metadata["disguised_volume_set"] = payload
+
+        sample = os.path.basename(suspects[0]["path"])
+        message = (
+            f"识别到 {len(volume_set.volumes)} 个标准分卷 + {len(suspects)} 个伪装命名兄弟卷"
+            f"（如 {sample}）：分卷组不完整，请在问题作品页手动确认重命名后再重试。"
+        )
+        logger.warning(
+            "[Extract] 命中伪装多卷补全探测: kind=%s, existing=%d, disguised=%d, target=%s",
+            archive_kind,
+            len(volume_set.volumes),
+            len(suspects),
+            archive_path,
+        )
+        raise DisguisedVolumeSetError(message, payload)
 
     @property
     def _mcp_args(self) -> list:
@@ -666,6 +1393,22 @@ class ExtractService:
 
         # 3. 检查是否是分卷
         volume_set = self._detect_volume_set(archive_path)
+        if not volume_set:
+            # _detect_volume_set 没认出分卷组：在进入单体解压链路之前先跑一道
+            # 启发式"伪装多卷"探测。命中（首卷魔数 + 同前缀连续数字兄弟 +
+            # 大小相近 + 单卷 ≥ 1KB 全部满足）就抛 DisguisedVolumeSetError，
+            # task_engine 会落库为 分卷压缩包后缀无法识别 冲突，前端弹手动
+            # 重命名分卷流程。这里早抛异常 = 早止血，省掉本来就注定失败的
+            # 单体解压时间。
+            self._maybe_raise_disguised_volume_set(archive_path, task)
+        else:
+            # _detect_volume_set 识别出 partial set 但同目录可能还有伪装兄弟卷
+            # （典型：xxx.zip + xxx.z01 标准识别，但 xxx.z删02 / xxx.z删03 因
+            # 后缀含中文 ``删`` 被严格正则 ``\.z\d{2}`` 错过）。本探测专门捞
+            # 这种 case：扫描伪装兄弟（base_name 前缀 + 非 ASCII suffix + 末尾
+            # 数字 + ≥ 1KB），命中就抛 DisguisedVolumeSetError，避免下游解压拿
+            # 残缺分卷组挣扎、最后报"无正确密码"误导用户。
+            self._maybe_raise_disguised_supplementary(archive_path, task, volume_set)
         if volume_set:
             self._set_extract_meta(task, extract_stage="wait_volume_set")
             task.update_progress(15, "等待分卷组完整")
@@ -719,20 +1462,22 @@ class ExtractService:
                     )
                     task.source_path = archive_path
 
-        manual_retry_password = normalize_password_value(
-            (task.task_metadata or {}).get("manual_retry_password")
-        )
+        manual_retry_passwords = self._get_manual_retry_passwords(task)
         manual_retry_password_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
 
         password_candidates: List[Dict[str, Optional[str]]] = []
         hinted_rjcode = None
-        if manual_retry_password and manual_retry_password_only:
-            password_candidates = [{
-                "password": manual_retry_password,
-                "source": "指定密码",
-                "entry_id": None,
-                "rjcode": None,
-            }]
+        if manual_retry_passwords and manual_retry_password_only:
+            # 多个指定密码：每个都加进候选，下游按顺序依次尝试
+            password_candidates = [
+                {
+                    "password": pwd,
+                    "source": "指定密码",
+                    "entry_id": None,
+                    "rjcode": None,
+                }
+                for pwd in manual_retry_passwords
+            ]
         else:
             # 3.5 如果密码库是按文件名匹配到的，且条目里带 RJ 号，则只注入 RJ 提示。
             # 不改源文件名，避免监控链路还在等旧路径导致超时。
@@ -3890,16 +4635,18 @@ class ExtractService:
 
         if password_candidates is None:
             # 指定密码重试：从 task 元数据读取，只用指定密码，不查密码库
-            _task_meta = (task.task_metadata or {}) if task else {}
-            _manual_pw = normalize_password_value(_task_meta.get("manual_retry_password"))
-            _manual_only = bool(_task_meta.get("manual_retry_password_only"))
-            if _manual_pw and _manual_only:
-                password_candidates = [{
-                    "password": _manual_pw,
-                    "source": "指定密码",
-                    "entry_id": None,
-                    "rjcode": None,
-                }]
+            _manual_passwords = self._get_manual_retry_passwords(task)
+            _manual_only = bool((task.task_metadata or {}).get("manual_retry_password_only")) if task else False
+            if _manual_passwords and _manual_only:
+                password_candidates = [
+                    {
+                        "password": pwd,
+                        "source": "指定密码",
+                        "entry_id": None,
+                        "rjcode": None,
+                    }
+                    for pwd in _manual_passwords
+                ]
             else:
                 password_candidates = await self._get_password_candidates_for_archive(archive_path)
         vault_passwords = [item["password"] for item in password_candidates]
@@ -4005,16 +4752,18 @@ class ExtractService:
         if not target_path:
             return None
         # 指定密码重试：预读也只用指定密码，不触碰密码库
-        meta = task.task_metadata or {}
-        manual_pw = normalize_password_value(meta.get("manual_retry_password"))
-        manual_only = bool(meta.get("manual_retry_password_only"))
-        if manual_pw and manual_only:
-            precheck_candidates: Optional[List[Dict[str, Optional[str]]]] = [{
-                "password": manual_pw,
-                "source": "指定密码",
-                "entry_id": None,
-                "rjcode": None,
-            }]
+        manual_passwords = self._get_manual_retry_passwords(task)
+        manual_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
+        if manual_passwords and manual_only:
+            precheck_candidates: Optional[List[Dict[str, Optional[str]]]] = [
+                {
+                    "password": pwd,
+                    "source": "指定密码",
+                    "entry_id": None,
+                    "rjcode": None,
+                }
+                for pwd in manual_passwords
+            ]
         else:
             precheck_candidates = None
         return await self._get_archive_info(target_path, password_candidates=precheck_candidates, task=task)
@@ -4266,15 +5015,17 @@ class ExtractService:
             if item.get("rjcode")
         }
 
-        manual_retry_password = normalize_password_value(
-            (task.task_metadata or {}).get("manual_retry_password")
-        )
+        manual_retry_passwords = self._get_manual_retry_passwords(task)
         manual_retry_password_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
+        # 兼容字段：保留首个候选给老下游 (password_source 判断 / 日志)，新路径走整张 list。
+        manual_retry_password = manual_retry_passwords[0] if manual_retry_passwords else ""
+        manual_retry_password_set = set(manual_retry_passwords)
         manual_filename_encoding = self._manual_filename_encoding_from_task(task)
         manual_ignore_garbled = bool((task.task_metadata or {}).get("manual_retry_ignore_garbled"))
 
-        if manual_retry_password and manual_retry_password_only:
-            unique_passwords = [manual_retry_password]
+        if manual_retry_passwords and manual_retry_password_only:
+            # 多个指定密码：完整 list 作为候选，依次尝试，任一命中即成功
+            unique_passwords = list(manual_retry_passwords)
             vault_passwords = []
             rj_passwords = []
         else:
@@ -4377,7 +5128,7 @@ class ExtractService:
 
             try:
                 # 判断密码来源
-                if manual_retry_password and manual_retry_password_only:
+                if manual_retry_password_only and password in manual_retry_password_set:
                     password_source = "指定密码"
                 elif password in rj_passwords:
                     password_source = "RJ号"

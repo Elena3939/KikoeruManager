@@ -318,6 +318,12 @@ kikoeru_search:
 
 ## 更新日志
 
+### v1.5.43 - 智能伪装多卷分卷补全探测重构 + 任务取消崩溃 NameError 修复
+
+- **后端**：重构伪装多卷（分卷压缩包后缀无法识别）探测，新增 `_detect_disguised_set_with_clean_target` 算法。解决 target 为干净主卷（如 `RJ01358521.zip`）但兄弟卷全是伪装（如 `.删除z02 / .删除z03`）时原算法无法拆解、直接跳过导致下游误报"无正确密码/压缩包损坏"的痛点，实现自动提取干净 target 并智能重构伪装兄弟卷的改名建议。
+- **后端**：在 `task_engine` 的 generic dispatcher cancellation 处理中移除未定义的 `append_progress_log` 调用，避免用户主动取消或暂停正在进行 7zz 等子进程任务时抛出 NameError 毁掉 cancel 状态更新流程的问题。
+- **测试**：在 `test_extract_service.py` 补充 23 个针对伪装判定、兄弟卷剥离、干净主卷伪装兄弟探测、魔数不可读兜底等核心边界的自动化测试，100% 通过。
+
 ### v1.3.0 - 解压并发按存储类型自适应 + 7z 多线程 + verify scandir 优化
 
 - **后端**：`ExtractService._detect_storage_type` 跨平台探测 `temp_path` 所在物理盘（Windows 走 `Get-PhysicalDisk`，Linux 读 `/sys/dev/block/*/queue/rotational`），结果缓存到 class 级。`extract.max_concurrent_extractions` 默认 `0 = auto`：SSD → `min(processing.max_workers, 3)`，HDD / 未知 / 网络盘 → 1（机械盘并发寻道会让磁头在多个 GB 级文件之间疯狂寻道，实测单包从 12 分钟跌到 1.5 分钟）

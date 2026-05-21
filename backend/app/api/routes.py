@@ -2674,7 +2674,12 @@ class PasswordListResponse(BaseModel):
 
 
 class ConflictRetryRequest(BaseModel):
+    # 兼容旧调用：单密码字段（前端老版本/外部脚本仍可能只传这个）。
     password: Optional[str] = None
+    # 新增：多密码候选列表，按顺序依次尝试。
+    # 前端新版重试弹窗会传这个。后端落到 task.task_metadata["manual_retry_passwords"]，
+    # extract_service 在 manual_retry_password_only=True 时改用整张候选列表代替单密码。
+    passwords: Optional[List[str]] = None
     filename_encoding: Optional[str] = None
     ignore_garbled: bool = False
 
@@ -2683,6 +2688,24 @@ class ConflictFilenamePreviewRequest(BaseModel):
     filename_encoding: Optional[str] = None
     password: Optional[str] = None
     limit: int = 80
+
+
+class ConflictVolumeRenamePair(BaseModel):
+    """单条分卷重命名映射，由前端"手动重命名分卷"弹窗逐行编辑产出。"""
+    old: str
+    new: str
+
+
+class ConflictRenameVolumesRequest(BaseModel):
+    """伪装多卷 conflict 的"手动重命名分卷"提交体。
+
+    后端会把 ``renames`` 视为原子事务：所有 old 必须在 detection payload
+    的 ``suspect_files`` 集合内，所有 new 必须落在同一目录、不与现有非 suspect
+    文件冲突；任意一卷重命名失败立即回滚。``auto_retry=True`` 时重命名成功后
+    自动起一个解压重试任务，跟现有 ``/api/conflicts/{id}/retry`` 同款逻辑。
+    """
+    renames: List[ConflictVolumeRenamePair]
+    auto_retry: bool = True
 
 @app.get("/api/passwords", response_model=PasswordListResponse)
 async def get_passwords(
@@ -3799,7 +3822,20 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         if not os.path.exists(source_path):
             raise HTTPException(status_code=404, detail="待重试的源文件不存在")
 
-        specified_password = normalize_password_value(payload.password if payload else None)
+        # 把 payload.password (旧单字段) + payload.passwords (新 list) 合并成有序去重 list。
+        # 前端老版本只传 password；新版可以同时传 passwords 让后端依次试。
+        specified_passwords: List[str] = []
+        _seen_passwords: set[str] = set()
+        if payload:
+            for raw in (payload.passwords or []):
+                normalized = normalize_password_value(raw)
+                if normalized and normalized not in _seen_passwords:
+                    _seen_passwords.add(normalized)
+                    specified_passwords.append(normalized)
+            legacy_single = normalize_password_value(payload.password)
+            if legacy_single and legacy_single not in _seen_passwords:
+                _seen_passwords.add(legacy_single)
+                specified_passwords.append(legacy_single)
         specified_filename_encoding = str((payload.filename_encoding if payload else None) or "").strip()
         ignore_garbled = bool(payload.ignore_garbled) if payload else False
 
@@ -3815,8 +3851,17 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         )
         if existing_task:
             existing_metadata = existing_task.task_metadata or {}
-            existing_manual_password = normalize_password_value(existing_metadata.get("manual_retry_password"))
-            if specified_password and existing_manual_password != specified_password:
+            # 同源任务密码一致性检查：优先比较 list，没有 list 时回退到旧单字段
+            existing_manual_passwords = [
+                p for p in (
+                    [normalize_password_value(item) for item in (existing_metadata.get("manual_retry_passwords") or [])]
+                ) if p
+            ]
+            if not existing_manual_passwords:
+                legacy_existing = normalize_password_value(existing_metadata.get("manual_retry_password"))
+                if legacy_existing:
+                    existing_manual_passwords = [legacy_existing]
+            if specified_passwords and existing_manual_passwords != specified_passwords:
                 if existing_task.status == TaskStatus.PROCESSING:
                     raise HTTPException(
                         status_code=409,
@@ -3843,8 +3888,10 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             existing_task.task_metadata["conflict_resolution_action"] = "RETRY"
             if conflict.conflict_type == "EXTRACT_FAILED":
                 existing_task.task_metadata["skip_retry_precheck"] = True
-            if specified_password:
-                existing_task.task_metadata["manual_retry_password"] = specified_password
+            if specified_passwords:
+                # 落 list（新消费路径）+ 单字段（老消费路径兜底）
+                existing_task.task_metadata["manual_retry_passwords"] = list(specified_passwords)
+                existing_task.task_metadata["manual_retry_password"] = specified_passwords[0]
                 existing_task.task_metadata["manual_retry_password_only"] = True
                 existing_task.task_metadata["manual_retry_password_requested"] = True
             if specified_filename_encoding:
@@ -3880,8 +3927,9 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             task.task_metadata["skip_retry_precheck"] = True
         task.task_metadata["conflict_resolution_conflict_id"] = conflict.id
         task.task_metadata["conflict_resolution_action"] = "RETRY"
-        if specified_password:
-            task.task_metadata["manual_retry_password"] = specified_password
+        if specified_passwords:
+            task.task_metadata["manual_retry_passwords"] = list(specified_passwords)
+            task.task_metadata["manual_retry_password"] = specified_passwords[0]
             task.task_metadata["manual_retry_password_only"] = True
             task.task_metadata["manual_retry_password_requested"] = True
         if specified_filename_encoding:
@@ -3906,14 +3954,154 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             "resolution_task_id": task.id,
         }
         db.commit()
+        if specified_passwords:
+            if len(specified_passwords) > 1:
+                message = f"已开始使用 {len(specified_passwords)} 个指定密码依次重试失败问题项"
+            else:
+                message = "已开始使用指定密码重试失败问题项"
+        else:
+            message = "已开始重试失败问题项"
         return {
             "success": True,
-            "message": "已开始使用指定密码重试失败问题项" if specified_password else "已开始重试失败问题项",
+            "message": message,
             "task_id": task.id,
             "already_running": False,
         }
     finally:
         db.close()
+
+@app.post("/api/conflicts/{conflict_id}/rename-volumes")
+async def rename_disguised_volume_conflict(
+    conflict_id: str,
+    payload: ConflictRenameVolumesRequest,
+):
+    """对伪装多卷 conflict 执行用户确认后的逐卷重命名，可选自动起重试任务。
+
+    流程：
+    1. 校验 conflict 状态 + 类型（必须是 PENDING + 分卷压缩包后缀无法识别）。
+    2. 让 ConflictResolutionService 做"全套校验 + 两阶段原子重命名"。
+    3. 把 conflict.new_path 切到首卷新路径、清掉 ``disguised_volume_set`` payload。
+    4. ``auto_retry=True`` 时立刻起一个 RETRY 任务（复用 ``/retry`` 路径的元数据约定）。
+    """
+    from ..core.activity_log_service import log_conflict_resolution_activity
+    from ..core.conflict_resolution_service import get_conflict_resolution_service
+    from ..models.database import ConflictWork, get_db
+
+    db = next(get_db())
+    try:
+        conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+        if not conflict:
+            raise HTTPException(status_code=404, detail="问题作品不存在")
+        if conflict.status != "PENDING":
+            raise HTTPException(status_code=400, detail="当前问题项已不是待处理状态")
+        if str(conflict.conflict_type or "").upper() != "分卷压缩包后缀无法识别":
+            raise HTTPException(status_code=400, detail="只有伪装多卷问题项支持重命名")
+
+        service = get_conflict_resolution_service()
+        renames_payload = [{"old": item.old, "new": item.new} for item in payload.renames]
+        try:
+            result = await service.rename_disguised_volumes(conflict, renames_payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+        # 写一条活动日志
+        try:
+            log_conflict_resolution_activity(
+                conflict_id=str(conflict.id),
+                action="RENAME_VOLUMES",
+                status="success",
+                rjcode=conflict.rjcode,
+                task_id=conflict.task_id,
+                source_path=str(result.get("first_volume") or ""),
+                final_path=str(result.get("first_volume") or ""),
+                extra_detail={
+                    "renamed_count": len(result.get("renamed") or []),
+                    "directory": result.get("directory"),
+                },
+            )
+        except Exception:
+            logger.warning("写入伪装多卷重命名操作记录失败: conflict_id=%s", conflict.id, exc_info=True)
+
+        db.commit()
+
+        retry_task_id: Optional[str] = None
+        if payload.auto_retry:
+            # 重命名后立即起一个 RETRY 任务，逻辑跟 /retry 一致：把 conflict 切到 PROCESSING、
+            # 复用元数据约定（retry_conflict_id / retry_from_conflicts / skip_retry_precheck），
+            # 让 task_engine 的 _is_retry_from_conflicts_task / _resolve_retry_extract_conflict
+            # 链路能识别这是问题作品页发起的重试。
+            source_path = str(conflict.new_path or "").strip()
+            if not source_path or not os.path.exists(source_path):
+                # 重命名都做完了，首卷却又消失：极端边界，不阻断 rename，转 SKIP-only 状态
+                logger.warning(
+                    "[RenameVolumes] 重命名后首卷路径不存在，跳过自动重试: conflict_id=%s path=%s",
+                    conflict.id,
+                    source_path,
+                )
+            else:
+                engine = get_task_engine()
+                source_task_type_raw = str(
+                    (conflict.new_metadata or {}).get("source_task_type")
+                    or TaskType.AUTO_PROCESS.value
+                ).strip()
+                retry_task_type = (
+                    TaskType(source_task_type_raw)
+                    if source_task_type_raw in {t.value for t in TaskType}
+                    else TaskType.AUTO_PROCESS
+                )
+                if conflict.task_id:
+                    engine.cleanup_retry_output_artifacts(str(conflict.task_id), source_path)
+
+                retry_task = Task(
+                    task_type=retry_task_type,
+                    source_path=source_path,
+                    auto_classify=True,
+                )
+                retry_task.task_metadata["retry_conflict_id"] = conflict.id
+                retry_task.task_metadata["retry_conflict_source_path"] = source_path
+                retry_task.task_metadata["retry_conflict_type"] = conflict.conflict_type
+                retry_task.task_metadata["retry_from_conflicts"] = True
+                retry_task.task_metadata["skip_retry_precheck"] = True
+                retry_task.task_metadata["conflict_resolution_conflict_id"] = conflict.id
+                retry_task.task_metadata["conflict_resolution_action"] = "RENAME_VOLUMES"
+                if conflict.task_id:
+                    retry_task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
+                if conflict.rjcode:
+                    retry_task.task_metadata["inferred_rjcode"] = conflict.rjcode
+
+                conflict.status = "PROCESSING"
+                next_metadata = dict(conflict.new_metadata or {})
+                next_metadata["resolution_task_state"] = "queued"
+                next_metadata["resolution_action"] = "RENAME_VOLUMES"
+                next_metadata["resolution_requested_at"] = datetime.now().isoformat()
+                conflict.new_metadata = next_metadata
+                await engine.submit(retry_task)
+                conflict.task_id = retry_task.id
+                conflict.new_metadata = {
+                    **dict(conflict.new_metadata or {}),
+                    "resolution_task_id": retry_task.id,
+                }
+                db.commit()
+                retry_task_id = retry_task.id
+
+        return {
+            "success": True,
+            "conflict_id": conflict.id,
+            "renamed": result.get("renamed") or [],
+            "first_volume": result.get("first_volume"),
+            "directory": result.get("directory"),
+            "task_id": retry_task_id,
+            "auto_retry": payload.auto_retry,
+            "message": (
+                f"已重命名 {len(result.get('renamed') or [])} 个分卷"
+                + ("，并已开始重试解压" if retry_task_id else "")
+            ),
+        }
+    finally:
+        db.close()
+
 
 @app.post("/api/conflicts/{conflict_id}/preview")
 async def preview_conflict_resolution(conflict_id: str, payload: dict):

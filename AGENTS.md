@@ -192,6 +192,9 @@
 - `/api/conflicts` 列表分三阶段：`db_query` → `phase1_serial`（SQLAlchemy 串行 status 恢复 + actions 计算）→ `phase2_parallel_context`（信号量 8 限流的 `describe_conflict_async`）。三阶段都打 INFO 耗时日志（前缀 `[/api/conflicts]`），慢盘排查先看日志再动代码。
 - 详情区主操作按钮（保留新版 / 重试 / 合并）已落“主按钮设计语言”（三段渐变 + inset 高光 + 双层 glow），跳过用 ghost 拉低视觉权重。改样式前先看 `.conflicts-action-btn` 现有 class。
 - 问题作品 resolve 后必须联动操作记录：`/api/conflicts/{id}/resolve` 成功时调用 `mark_task_conflict_resolved_activity_log(task_id, action)`，把原任务那条 `task_finished/waiting` 行回写成 `已跳过 / 已保留新版 / 已合并`。否则操作记录会一直停在"等待处理"——用户觉得"拍完板了记录还在卡"。改 `KEEP_NEW / SKIP / MERGE` 任一分支都要确认这条联动还在。
+- **分卷压缩包后缀无法识别（伪装多卷）判定红线**：
+  - 核心判定走 `_is_disguised_volume_suffix`：含非 ASCII 字符（如中文 `删`/`删除`）或已知伪装词（`deleted`/`fake`/`junk`）即判定为伪装。**绝对禁止**增加 `del`/`rm` 等短前缀，防止误伤英文合法名（如 `delta01`）。
+  - 支持干净主卷（如 `.zip`）且兄弟全伪装（如 `.删除z02`）的链式探测 fallback 机制。改动此功能必须确保 `_detect_disguised_set_with_clean_target` 保持对 `_CLEAN_ARCHIVE_EXTENSIONS` 扩展名白名单的严格限定。
 
 ### ASMR 同步
 
@@ -325,6 +328,12 @@
 6. 清理旧文案、乱码注释、历史品牌残留。
 
 ## 11. 最近改动同步（2026-05）
+
+### 伪装多卷重构 + 任务取消崩溃修复（v1.5.43）
+
+- **重构伪装多卷补全探测**：新增 `_detect_disguised_set_with_clean_target` 干净主卷探测。解决了 target 是干净主卷名（如 `RJ01358521.zip`）但兄弟全伪装（如 `.删除z02 / .删除z03`）时原算法无法拆解而直接跳过、导致下游解压误报"压缩包损坏"或"无正确密码"的痛点。
+- **cancellation 异常修复**：修复在通用任务 dispatcher 中误用未定义的 `append_progress_log` 导致用户主动取消/暂停进行中 7zz 子进程任务时抛出 NameError 阻塞 cancel 状态扭转的问题。
+- **单元测试**：针对伪装后缀判定、兄弟卷剥离、干净主卷伪装兄弟探测、魔数不可读扩展名兜底等高风险边界，在 `test_extract_service.py` 补充 23 个自动化测试，100% 通过。
 
 ### 性能：DB 连接池 + 社团补全 / DLsite 调用栈（v1.5.35）
 

@@ -775,10 +775,19 @@ class TaskEngine:
         failure_stage = self._infer_failure_stage(task, reason)
         conflict_type = "EXTRACT_FAILED" if failure_stage == "extract" else "PROCESS_FAILED"
         metadata = dict(task.task_metadata or {})
+        available_actions = ["RETRY", "SKIP"]
+        # extract_service._maybe_raise_disguised_volume_set 命中"伪装多卷"时
+        # 会往 task_metadata["disguised_volume_set"] 写 detection payload。
+        # 这里把 conflict_type 切到 分卷压缩包后缀无法识别，让前端弹"手动重命名分卷"
+        # 而不是普通 RETRY；保留 SKIP 兜底。
+        disguised = metadata.get("disguised_volume_set")
+        if isinstance(disguised, dict) and disguised.get("suspect_files"):
+            conflict_type = "分卷压缩包后缀无法识别"
+            available_actions = ["RENAME_VOLUMES", "SKIP"]
         metadata.update({
             "failure_stage": failure_stage,
             "error_message": reason,
-            "available_actions": ["RETRY", "SKIP"],
+            "available_actions": available_actions,
             "source_task_type": task.type.value,
             "failed_task_id": task.id,
             "failed_step": str(task.current_step or "").strip(),
@@ -2251,7 +2260,13 @@ class TaskEngine:
                     logger.info(f"[{rjcode}] ========== 任务完成 ==========")
                 
         except asyncio.CancelledError:
-            append_progress_log('任务已取消', task.progress, 'warning')
+            # `append_progress_log` 是 _process_asmr_sync_download / _process_rj_subtitle_fetch /
+            # _process_circle_completion_index 等内部方法的局部闭包，专门给那几个任务类型
+            # 写 task.task_metadata['progress_log'] 给前端 UI 用。外层 _process_task 这个
+            # generic dispatcher 没有这个闭包，曾经误用过 → 任务被取消时（典型场景：用户暂停
+            # 正在 _probe_password 跑 7zz 的 EXTRACT 任务）抛 NameError 把 cancel 流程整段毁掉。
+            # 这里只写日志，task.cancel() 自身会更新状态、前端会反映，不再尝试写 progress_log。
+            logger.info(f"[{rjcode}] 任务已取消")
             if not task.is_cancelled():
                 task.cancel()
         except Exception as e:
