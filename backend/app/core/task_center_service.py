@@ -961,6 +961,29 @@ class TaskCenterService:
                 batch_total = int(metadata.get("batch_total") or 0) or len(circle_queries_list)
                 completed_queries = int(index_meta.get("completed_queries") or 0)
                 failed_queries = int(index_meta.get("failed_queries") or 0)
+                if is_batch:
+                    batch_rows = [
+                        item for item in list(metadata.get("batch_circle_summaries") or [])
+                        if isinstance(item, dict) and item.get("success", True)
+                    ]
+                    if batch_rows:
+                        indexed_counts = {
+                            **indexed_counts,
+                            "works": sum(int(item.get("works") or 0) for item in batch_rows),
+                            "local_owned_count": sum(int(item.get("local_owned_count") or 0) for item in batch_rows),
+                            "owned_count": sum(int(item.get("kikoeru_owned_count") or 0) for item in batch_rows),
+                            "dl_count": sum(int(item.get("dl_count") or 0) for item in batch_rows),
+                            "asmr_available_count": sum(int(item.get("asmr_available_count") or 0) for item in batch_rows),
+                            "downloadable_count": sum(int(item.get("downloadable_count") or 0) for item in batch_rows),
+                            "missing_count": sum(int(item.get("missing_count") or 0) for item in batch_rows),
+                        }
+                        index_meta = {
+                            **index_meta,
+                            "combined_candidates_count": indexed_counts.get("works"),
+                            "aggregated_count": indexed_counts.get("works"),
+                            "dlsite_candidates_count": indexed_counts.get("dl_count"),
+                            "asmr_available_count": indexed_counts.get("asmr_available_count"),
+                        }
                 current_circle = (
                     self._safe_text(index_meta.get("current_circle_query"))
                     or self._safe_text(metadata.get("current_circle_query"))
