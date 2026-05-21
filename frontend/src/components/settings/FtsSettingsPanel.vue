@@ -1,41 +1,45 @@
 <template>
   <div class="fts-stack">
     <!-- ─── 操作记录 FTS ─── -->
-    <section class="fts-card">
-      <header class="fts-card-head">
-        <div class="card-title">操作记录全文搜索</div>
-        <p class="fts-card-desc">
-          为操作历史搜索框提供 SQLite FTS5 加速。trigram tokenizer 支持中文任意片段搜索（"字幕"、"失败"等），
-          unicode61 仅支持英文前缀匹配。
-        </p>
-      </header>
+    <section class="fts-section">
+      <div class="card-title">操作记录全文搜索</div>
+      <p class="fts-desc">
+        为操作历史搜索框提供 SQLite FTS5 加速。trigram tokenizer 支持中文任意片段搜索（"字幕"、"失败"等），unicode61 仅支持英文前缀匹配。
+      </p>
 
-      <div class="fts-stat-row">
-        <span class="fts-chip" :class="activityChipClass">
-          <svg v-if="activityStatusKey === 'syncing'" class="fts-spinner" viewBox="0 0 16 16" aria-hidden="true">
-            <circle class="fts-spinner-track" cx="8" cy="8" r="6" />
-            <circle class="fts-spinner-arc" cx="8" cy="8" r="6" />
-          </svg>
-          <component :is="activityStatusIcon" v-else :size="11" :stroke-width="2.4" />
-          <span class="font-medium">{{ activityStatusLabel }}</span>
-        </span>
-
-        <div v-if="activityInfo?.fts_enabled" class="fts-counts">
-          <span class="fts-count-num">{{ (activityInfo.fts_row_count ?? 0).toLocaleString() }}</span>
-          <span class="fts-count-sep">/</span>
-          <span class="fts-count-total">{{ (activityInfo.row_count ?? 0).toLocaleString() }}</span>
-          <span class="fts-count-unit">条已索引</span>
+      <!-- 状态信息格子（对齐 DatabaseShrinkCard db-size-chip 设计语言） -->
+      <div class="fts-stat-grid">
+        <div class="fts-stat-cell">
+          <span class="fts-stat-label">状态</span>
+          <span class="fts-chip" :class="activityChipClass">
+            <svg v-if="activityStatusKey === 'syncing'" class="fts-spinner" viewBox="0 0 16 16" aria-hidden="true">
+              <circle class="fts-spinner-track" cx="8" cy="8" r="6" />
+              <circle class="fts-spinner-arc" cx="8" cy="8" r="6" />
+            </svg>
+            <component :is="activityStatusIcon" v-else :size="11" :stroke-width="2.4" />
+            <span>{{ activityStatusLabel }}</span>
+          </span>
         </div>
 
-        <span
-          v-if="activityInfo?.tokenizer"
-          class="fts-token-chip"
-          :class="{ 'is-trigram': activityInfo.tokenizer === 'trigram' }"
-        >
-          {{ activityInfo.tokenizer === 'trigram' ? '⚡ trigram' : activityInfo.tokenizer }}
-        </span>
+        <div v-if="activityInfo?.fts_enabled" class="fts-stat-cell">
+          <span class="fts-stat-label">已索引 / 总行数</span>
+          <span class="fts-counts">
+            <span class="fts-count-num">{{ (activityInfo.fts_row_count ?? 0).toLocaleString() }}</span>
+            <span class="fts-count-sep">/</span>
+            <span class="fts-count-total">{{ (activityInfo.row_count ?? 0).toLocaleString() }}</span>
+            <span class="fts-count-unit">条</span>
+          </span>
+        </div>
+
+        <div v-if="activityInfo?.tokenizer" class="fts-stat-cell">
+          <span class="fts-stat-label">Tokenizer</span>
+          <span class="fts-token-chip" :class="{ 'is-trigram': activityInfo.tokenizer === 'trigram' }">
+            {{ activityInfo.tokenizer === 'trigram' ? '⚡ trigram' : activityInfo.tokenizer }}
+          </span>
+        </div>
       </div>
 
+      <!-- 升级提示 -->
       <div v-if="activityInfo?.needs_upgrade" class="fts-upgrade-hint">
         <IconZap :size="13" />
         <span>检测到 trigram 支持，建议重建升级以获得中文全文搜索能力</span>
@@ -47,40 +51,28 @@
           <div class="fts-progress-fill" :style="{ width: activityProgressPct + '%' }" />
         </div>
         <span class="fts-progress-label">
-          {{ (activityInfo?.rebuild?.copied ?? 0).toLocaleString() }} /
-          {{ (activityInfo?.rebuild?.total ?? 0).toLocaleString() }} 条
+          {{ (activityInfo?.rebuild?.copied ?? 0).toLocaleString() }} / {{ (activityInfo?.rebuild?.total ?? 0).toLocaleString() }} 条
         </span>
       </div>
 
+      <!-- 结果行 -->
       <div v-else-if="activityInfo?.rebuild?.ok === true" class="fts-result is-done">
         <IconCheckCircle2 :size="13" />
-        <span>
-          重建完成 · tokenizer: {{ activityInfo.rebuild.target_tokenizer || activityInfo.tokenizer }}
-          · 共 {{ (activityInfo.rebuild.total ?? 0).toLocaleString() }} 条
-        </span>
+        <span>重建完成 · tokenizer: {{ activityInfo.rebuild.target_tokenizer || activityInfo.tokenizer }} · 共 {{ (activityInfo.rebuild.total ?? 0).toLocaleString() }} 条</span>
       </div>
       <div v-else-if="activityInfo?.rebuild?.ok === false" class="fts-result is-error">
         <IconAlertCircle :size="13" />
         <span>重建失败：{{ activityInfo.rebuild.reason || '未知错误' }}</span>
       </div>
 
+      <!-- 操作按钮 -->
       <div class="fts-actions">
-        <button
-          type="button"
-          class="fts-btn-primary"
-          :disabled="activityBusy || !activityInfo?.fts_enabled"
-          @click="rebuildActivity"
-        >
+        <button type="button" class="fts-btn-primary" :disabled="activityBusy || !activityInfo?.fts_enabled" @click="rebuildActivity">
           <IconLoader2 v-if="activityBusy" :size="13" class="fts-spin" />
           <IconRefreshCw v-else :size="13" />
           <span>{{ activityBusy ? '重建中…' : activityInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
         </button>
-        <button
-          type="button"
-          class="fts-btn-ghost"
-          :disabled="activityLoading"
-          @click="fetchActivity"
-        >
+        <button type="button" class="fts-btn-ghost" :disabled="activityLoading" @click="fetchActivity">
           <IconRefreshCw :size="12" :class="{ 'fts-spin': activityLoading && !activityBusy }" />
           <span>刷新状态</span>
         </button>
@@ -91,42 +83,48 @@
       </p>
     </section>
 
+    <div class="fts-divider" />
+
     <!-- ─── 库存索引 FTS ─── -->
-    <section class="fts-card">
-      <header class="fts-card-head">
-        <div class="card-title">库存索引全文搜索</div>
-        <p class="fts-card-desc">
-          为库存搜索框、RJ 跨库查找提供 SQLite FTS5 加速。
-          重建完成后搜索速度从秒级降至 ms 级；重建期间搜索自动 fallback，功能不中断。
-        </p>
-      </header>
+    <section class="fts-section">
+      <div class="card-title">库存索引全文搜索</div>
+      <p class="fts-desc">
+        为库存搜索框、RJ 跨库查找提供 SQLite FTS5 加速。重建完成后搜索速度从秒级降至 ms 级；重建期间搜索自动 fallback，功能不中断。
+      </p>
 
-      <div class="fts-stat-row">
-        <span class="fts-chip" :class="libraryChipClass">
-          <svg v-if="libraryStatusKey === 'syncing'" class="fts-spinner" viewBox="0 0 16 16" aria-hidden="true">
-            <circle class="fts-spinner-track" cx="8" cy="8" r="6" />
-            <circle class="fts-spinner-arc" cx="8" cy="8" r="6" />
-          </svg>
-          <component :is="libraryStatusIcon" v-else :size="11" :stroke-width="2.4" />
-          <span class="font-medium">{{ libraryStatusLabel }}</span>
-        </span>
-
-        <div v-if="libraryInfo?.fts_enabled" class="fts-counts">
-          <span class="fts-count-num">{{ (libraryInfo.fts_row_count ?? libraryInfo.indexed_entries ?? 0).toLocaleString() }}</span>
-          <span class="fts-count-sep">/</span>
-          <span class="fts-count-total">{{ (libraryInfo.row_count ?? libraryInfo.total_entries ?? 0).toLocaleString() }}</span>
-          <span class="fts-count-unit">条已索引</span>
+      <!-- 状态信息格子 -->
+      <div class="fts-stat-grid">
+        <div class="fts-stat-cell">
+          <span class="fts-stat-label">状态</span>
+          <span class="fts-chip" :class="libraryChipClass">
+            <svg v-if="libraryStatusKey === 'syncing'" class="fts-spinner" viewBox="0 0 16 16" aria-hidden="true">
+              <circle class="fts-spinner-track" cx="8" cy="8" r="6" />
+              <circle class="fts-spinner-arc" cx="8" cy="8" r="6" />
+            </svg>
+            <component :is="libraryStatusIcon" v-else :size="11" :stroke-width="2.4" />
+            <span>{{ libraryStatusLabel }}</span>
+          </span>
         </div>
 
-        <span
-          v-if="libraryInfo?.tokenizer"
-          class="fts-token-chip"
-          :class="{ 'is-trigram': libraryInfo.tokenizer === 'trigram' }"
-        >
-          {{ libraryInfo.tokenizer === 'trigram' ? '⚡ trigram' : libraryInfo.tokenizer }}
-        </span>
+        <div v-if="libraryInfo?.fts_enabled" class="fts-stat-cell">
+          <span class="fts-stat-label">已索引 / 总行数</span>
+          <span class="fts-counts">
+            <span class="fts-count-num">{{ (libraryInfo.fts_row_count ?? libraryInfo.indexed_entries ?? 0).toLocaleString() }}</span>
+            <span class="fts-count-sep">/</span>
+            <span class="fts-count-total">{{ (libraryInfo.row_count ?? libraryInfo.total_entries ?? 0).toLocaleString() }}</span>
+            <span class="fts-count-unit">条</span>
+          </span>
+        </div>
+
+        <div v-if="libraryInfo?.tokenizer" class="fts-stat-cell">
+          <span class="fts-stat-label">Tokenizer</span>
+          <span class="fts-token-chip" :class="{ 'is-trigram': libraryInfo.tokenizer === 'trigram' }">
+            {{ libraryInfo.tokenizer === 'trigram' ? '⚡ trigram' : libraryInfo.tokenizer }}
+          </span>
+        </div>
       </div>
 
+      <!-- 升级提示 -->
       <div v-if="libraryInfo?.needs_upgrade" class="fts-upgrade-hint">
         <IconZap :size="13" />
         <span>检测到 trigram 支持，建议重建升级以获得更精准的中文搜索能力</span>
@@ -138,40 +136,28 @@
           <div class="fts-progress-fill" :style="{ width: libraryProgressPct + '%' }" />
         </div>
         <span class="fts-progress-label">
-          {{ (libraryInfo?.indexed_entries ?? 0).toLocaleString() }} /
-          {{ (libraryInfo?.total_entries ?? 0).toLocaleString() }} 条
+          {{ (libraryInfo?.indexed_entries ?? 0).toLocaleString() }} / {{ (libraryInfo?.total_entries ?? 0).toLocaleString() }} 条
         </span>
       </div>
 
+      <!-- 结果行 -->
       <div v-else-if="libraryInfo?.rebuild?.state === 'done'" class="fts-result is-done">
         <IconCheckCircle2 :size="13" />
-        <span>
-          重建完成 · tokenizer: {{ libraryInfo.rebuild.tokenizer }}
-          · 共 {{ (libraryInfo.rebuild.total_entries ?? 0).toLocaleString() }} 条
-        </span>
+        <span>重建完成 · tokenizer: {{ libraryInfo.rebuild.tokenizer }} · 共 {{ (libraryInfo.rebuild.total_entries ?? 0).toLocaleString() }} 条</span>
       </div>
       <div v-else-if="libraryInfo?.rebuild?.state === 'error'" class="fts-result is-error">
         <IconAlertCircle :size="13" />
         <span>重建失败：{{ libraryInfo.rebuild.error || '未知错误' }}</span>
       </div>
 
+      <!-- 操作按钮 -->
       <div class="fts-actions">
-        <button
-          type="button"
-          class="fts-btn-primary"
-          :disabled="libraryBusy || !libraryInfo?.fts_enabled"
-          @click="rebuildLibrary"
-        >
+        <button type="button" class="fts-btn-primary" :disabled="libraryBusy || !libraryInfo?.fts_enabled" @click="rebuildLibrary">
           <IconLoader2 v-if="libraryBusy" :size="13" class="fts-spin" />
           <IconRefreshCw v-else :size="13" />
           <span>{{ libraryBusy ? '重建中…' : libraryInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
         </button>
-        <button
-          type="button"
-          class="fts-btn-ghost"
-          :disabled="libraryLoading"
-          @click="fetchLibrary"
-        >
+        <button type="button" class="fts-btn-ghost" :disabled="libraryLoading" @click="fetchLibrary">
           <IconRefreshCw :size="12" :class="{ 'fts-spin': libraryLoading && !libraryBusy }" />
           <span>刷新状态</span>
         </button>
@@ -432,23 +418,21 @@ onBeforeUnmount(() => {
 .fts-stack {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 0;
 }
 
-/* ─── 卡片容器（与 MaintenanceSettingsPanel 的 .settings-card 对齐） ─── */
-.fts-card {
+/* ─── 每个 FTS 区块（对齐 DatabaseShrinkCard .db-shrink 风格） ─── */
+.fts-section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 0;
-  border: none;
-  background: transparent;
+  gap: 14px;
+  padding: 20px 0;
 }
 
-.fts-card-head {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.fts-divider {
+  height: 1px;
+  background: rgba(226, 232, 240, 0.7);
+  margin: 0;
 }
 
 .card-title {
@@ -459,19 +443,42 @@ onBeforeUnmount(() => {
   letter-spacing: -0.1px;
 }
 
-.fts-card-desc {
+.fts-desc {
   margin: 0;
   color: #64748b;
   font-size: 12.5px;
   line-height: 1.6;
 }
 
-/* ─── 状态行 ─── */
-.fts-stat-row {
+/* ─── 状态信息格子（对齐 DatabaseShrinkCard .db-size-chip 设计语言） ─── */
+.fts-stat-grid {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
+}
+
+.fts-stat-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  min-width: 80px;
+  transition: border-color 0.18s ease;
+}
+
+.fts-stat-cell:hover {
+  border-color: rgba(148, 163, 184, 0.6);
+}
+
+.fts-stat-label {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 /* ─── 状态 Chip（对齐 LibraryIndexBadge 的 lib-index-chip 设计语言） ─── */
