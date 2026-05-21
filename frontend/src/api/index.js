@@ -300,6 +300,20 @@ export const databaseMaintenanceApi = {
   shrinkReset: async () => {
     const response = await apiClient.post('/database/maintenance/shrink/reset')
     return response.data
+  },
+
+  // 读取库存索引 FTS5 状态和后台重建进度
+  libraryIndexFtsStatus: async () => {
+    const response = await apiClient.get('/database/maintenance/library-index-fts/status')
+    return response.data
+  },
+
+  // 后台重建库存索引 FTS5 表（默认目标 trigram）
+  rebuildLibraryIndexFts: async (targetTokenizer = 'trigram') => {
+    const response = await apiClient.post('/database/maintenance/library-index-fts/rebuild', null, {
+      params: { target_tokenizer: targetTokenizer }
+    })
+    return response.data
   }
 }
 
